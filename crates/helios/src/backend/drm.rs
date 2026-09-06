@@ -73,6 +73,10 @@ pub struct DrmData {
     cursor: SolidColorBuffer,
     /// Set while a re-render timer is armed, so we never stack timers.
     retry_armed: bool,
+    /// A frame is queued and we are waiting for its VBlank.
+    frame_pending: bool,
+    /// Content changed since the last composite; render at the next chance.
+    needs_render: bool,
 }
 
 impl DrmData {
@@ -175,6 +179,8 @@ pub fn run(config: Config) -> Result<()> {
         crtc: None,
         cursor: SolidColorBuffer::new((CURSOR_SIZE, CURSOR_SIZE), CURSOR_COLOR),
         retry_armed: false,
+        frame_pending: false,
+        needs_render: false,
     }));
 
     if let Err(err) = init_output(&mut state, &gbm) {
@@ -190,6 +196,7 @@ pub fn run(config: Config) -> Result<()> {
     handle
         .insert_source(LibinputInputBackend::new(libinput), |event, _, state| {
             state.process_input_event(event);
+            schedule_render(state);
         })
         .map_err(|err| anyhow!("inserting libinput source: {err}"))?;
 
@@ -214,6 +221,8 @@ pub fn run(config: Config) -> Result<()> {
                         }
                     }
                     drm.retry_armed = false;
+                    drm.frame_pending = false;
+                    drm.needs_render = true;
                 }
                 render(state);
             }
@@ -223,14 +232,20 @@ pub fn run(config: Config) -> Result<()> {
     handle
         .insert_source(drm_notifier, move |event, _meta, state| match event {
             DrmEvent::VBlank(_crtc) => {
-                if let Some(drm) = state.drm.as_mut() {
+                let pending = if let Some(drm) = state.drm.as_mut() {
                     if let Some(compositor) = drm.compositor.as_mut() {
                         if let Err(err) = compositor.frame_submitted() {
                             tracing::warn!(?err, "frame_submitted");
                         }
                     }
+                    drm.frame_pending = false;
+                    drm.needs_render
+                } else {
+                    false
+                };
+                if pending {
+                    render(state);
                 }
-                render(state);
             }
             DrmEvent::Error(err) => tracing::error!(?err, "DRM event error"),
         })
@@ -265,6 +280,7 @@ pub fn run(config: Config) -> Result<()> {
             |_, display, state| {
                 // SAFETY: the display is only ever dispatched from this loop.
                 unsafe { display.get_mut().dispatch_clients(state) }?;
+                schedule_render(state);
                 Ok(PostAction::Continue)
             },
         )
@@ -397,6 +413,19 @@ fn refresh_mhz(mode: &smithay::reexports::drm::control::Mode) -> i32 {
     ((mode.clock() as u64 * 1_000_000) / denom) as i32
 }
 
+/// Mark the output as dirty and composite, unless a frame is already in
+/// flight — in that case the pending VBlank picks the new content up. This
+/// keeps `render_frame` calls one-to-one with submitted frames, which is what
+/// smithay's damage tracker assumes.
+pub fn schedule_render(state: &mut HeliosState) {
+    let Some(drm) = state.drm.as_mut() else { return };
+    drm.needs_render = true;
+    if drm.frame_pending || drm.retry_armed {
+        return;
+    }
+    render(state);
+}
+
 /// Composite and page-flip. Safe to call at any time; a no-op when the
 /// session is inactive or no output is configured.
 pub fn render(state: &mut HeliosState) {
@@ -430,24 +459,47 @@ pub fn render(state: &mut HeliosState) {
     // FrameFlags::empty() forces full composition: F-04 §2 assumes no plane
     // availability. Plane scanout is a probed optimisation for a later
     // milestone.
+    let mut failed = false;
+    let mut empty = false;
     let queued = match compositor.render_frame(&mut drm.renderer, &elements, CLEAR, FrameFlags::empty()) {
-        Ok(result) if result.is_empty => false,
+        Ok(result) if result.is_empty => {
+            empty = true;
+            false
+        }
         Ok(_) => match compositor.queue_frame(()) {
             Ok(()) => true,
             Err(err) => {
                 tracing::warn!(?err, "queueing frame");
+                failed = true;
                 false
             }
         },
         Err(err) => {
             tracing::warn!(?err, "rendering frame");
+            failed = true;
             false
         }
     };
     drop(elements);
 
-    if !queued && !drm.retry_armed {
-        // Nothing changed, so no vblank is coming: re-arm the render chain.
+    if empty {
+        // An empty frame is discarded rather than submitted, but the damage
+        // tracker still recorded it. That desynchronises the damage history
+        // from the swapchain slot ages, and every later frame then restores
+        // the wrong regions (stale content, cursor trails). Clearing the ages
+        // forces the next frame to be a full redraw, which resyncs both.
+        compositor.reset_buffer_ages();
+    }
+
+    drm.needs_render = false;
+    drm.frame_pending = queued;
+
+    if !queued && !drm.retry_armed && failed {
+        // The frame had damage but could not be queued: retry shortly. Never
+        // re-arm for an empty frame — an idle render_frame spin pushes empty
+        // entries into the damage tracker's history while the swapchain slot
+        // ages stand still, which desynchronises the two and leaves stale
+        // content on screen.
         drm.retry_armed = true;
         let handle = drm.loop_handle.clone();
         if let Err(err) =

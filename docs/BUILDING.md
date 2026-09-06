@@ -86,3 +86,58 @@ cargo deny check
 `cargo-deny` is not installed by default; `cargo install cargo-deny` if you want
 to run it locally. CI runs it on every push. `deny.toml` allows only AGPL-3.0
 compatible licences and rejects wildcard version requirements.
+
+## Testing DRM in a VM
+
+The DRM/KMS backend needs a real KMS device, so it cannot run nested under
+another compositor. A headless QEMU guest with `bochs-display` is enough to
+exercise the whole path (libseat session, DRM device, GBM/EGL, libinput,
+page flips) without leaving your desktop session.
+
+Guest requirements: `seatd` enabled, the test user in the `seat`, `video` and
+`input` groups, `mesa`, `libinput`, `seatd` and a Wayland client to poke at
+(`foot`, plus `ttf-dejavu` or foot fails to find a font).
+
+Host side, roughly:
+
+```
+qemu-system-x86_64 -enable-kvm -m 4096 -smp 4 \
+  -drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/x64/OVMF_CODE.4m.fd \
+  -drive if=pflash,format=raw,file=OVMF_VARS.4m.fd \
+  -drive file=disk.qcow2,if=virtio \
+  -device bochs-display -display none \
+  -netdev user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22 -device virtio-net,netdev=n0 \
+  -monitor unix:mon.sock,server,nowait -daemonize -pidfile qemu.pid
+```
+
+Build and run inside the guest over ssh:
+
+```
+ssh -p 2222 user@127.0.0.1
+cd ~/helios-src && cargo build
+XDG_RUNTIME_DIR=/run/user/1000 ./target/debug/helios --backend drm &
+XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1 foot &
+```
+
+Drive and inspect the guest through the QEMU monitor socket:
+
+```
+printf 'screendump shot.ppm\n' | socat -t1 - unix-connect:mon.sock
+printf 'sendkey meta_l-shift-q\n' | socat -t1 - unix-connect:mon.sock
+```
+
+Notes learned the hard way:
+
+- `bochs-drm` exposes `/dev/dri/card0` but **no render node**, so mesa falls
+  back to `llvmpipe`. That is fine for correctness testing and useless for
+  performance testing.
+- The QEMU monitor's `mouse_move` / `mouse_set` do **not** reach the guest with
+  `-display none`, with or without `-device usb-tablet`. To test pointer
+  handling, create a synthetic device inside the guest with `/dev/uinput`
+  (a small C program emitting `EV_REL` motion and `BTN_LEFT`) — that exercises
+  the real libinput path. `sendkey` for the keyboard works fine.
+- Screendumps are full-frame captures of the scanout buffer, which makes them a
+  good way to catch damage-tracking bugs (stale regions, cursor trails). Run a
+  known-good compositor such as `weston` in the same guest as a control before
+  blaming the hardware.
+- Only one compositor can hold DRM master: kill weston before starting helios.
