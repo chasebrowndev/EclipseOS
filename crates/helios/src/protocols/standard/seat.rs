@@ -19,7 +19,16 @@ impl SeatHandler for HeliosState {
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let client = focused.and_then(|s| s.wl_surface().map(|s| s.client())).flatten();
-        smithay::wayland::selection::data_device::set_data_device_focus(&self.display_handle, _seat, client);
+        smithay::wayland::selection::data_device::set_data_device_focus(
+            &self.display_handle,
+            _seat,
+            client.clone(),
+        );
+        smithay::wayland::selection::primary_selection::set_primary_focus(
+            &self.display_handle,
+            _seat,
+            client,
+        );
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {

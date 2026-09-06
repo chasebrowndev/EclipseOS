@@ -16,11 +16,16 @@ use smithay::{
     utils::{Logical, Point},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        input_method::{InputMethodManagerState, PopupSurface},
         output::OutputManagerState,
-        selection::data_device::DataDeviceState,
+        selection::{
+            data_device::DataDeviceState, primary_selection::PrimarySelectionState,
+            wlr_data_control::DataControlState,
+        },
         shell::{wlr_layer::WlrLayerShellState, xdg::XdgShellState},
         shm::ShmState,
         socket::ListeningSocketSource,
+        text_input::TextInputManagerState,
     },
 };
 
@@ -40,6 +45,13 @@ pub struct HeliosState {
     #[allow(dead_code)] // holds the xdg_output global alive
     pub output_manager_state: OutputManagerState,
     pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
+    #[allow(dead_code)] // holds the zwlr_data_control_manager_v1 global alive
+    pub data_control_state: DataControlState,
+    #[allow(dead_code)] // holds the zwp_text_input_manager_v3 global alive
+    pub text_input_manager_state: TextInputManagerState,
+    #[allow(dead_code)] // holds the zwp_input_method_manager_v2 global alive
+    pub input_method_manager_state: InputMethodManagerState,
     pub seat_state: SeatState<Self>,
 
     /// The human seat (`seat0`). Agent seats arrive in Phase 2.
@@ -55,6 +67,13 @@ pub struct HeliosState {
     pub focus: Option<Window>,
     /// Per-window border quads, kept alive across frames.
     pub borders: crate::render::BorderStore,
+
+    /// Who set the current clipboard (COMP-06 §4). Never holds contents.
+    pub clipboard: Option<crate::protocols::standard::data_device::ClipboardSource>,
+    /// Surface dragged under the cursor during a client-initiated DnD.
+    pub dnd_icon: Option<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+    /// The input method's popup surface, when one is mapped.
+    pub input_method_popup: Option<PopupSurface>,
 
     /// Pointer position in the global (logical) coordinate space.
     pub pointer_location: Point<f64, Logical>,
@@ -80,6 +99,18 @@ impl HeliosState {
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
+        // Data control reads every selection: allowlisted, fail-closed (ADR 0022).
+        let data_control_state = DataControlState::new::<Self, _>(
+            &dh,
+            Some(&primary_selection_state),
+            crate::protocols::standard::data_control::allow_filter(
+                dh.clone(),
+                config.clipboard.data_control_allow.clone(),
+            ),
+        );
+        let text_input_manager_state = TextInputManagerState::new::<Self>(&dh);
+        let input_method_manager_state = InputMethodManagerState::new::<Self, _>(&dh, |_| true);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         // Repeat defaults match COMP-04 until config lands (M6).
@@ -100,6 +131,13 @@ impl HeliosState {
             shm_state,
             output_manager_state,
             data_device_state,
+            primary_selection_state,
+            data_control_state,
+            text_input_manager_state,
+            input_method_manager_state,
+            clipboard: None,
+            dnd_icon: None,
+            input_method_popup: None,
             seat_state,
             seat,
             pointer_location: (0.0, 0.0).into(),

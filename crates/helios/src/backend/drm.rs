@@ -454,6 +454,7 @@ pub fn render(state: &mut HeliosState) {
         &output,
         &state.config,
         state.focus.as_ref(),
+        state.input_method_popup.as_ref(),
     ));
 
     // FrameFlags::empty() forces full composition: F-04 §2 assumes no plane

@@ -50,9 +50,18 @@ impl Default for General {
     }
 }
 
+/// `clipboard { ... }` (COMP-06 §4).
+#[derive(Debug, Clone, Default)]
+pub struct Clipboard {
+    /// Process names allowed to bind `zwlr_data_control_manager_v1`. Empty
+    /// (the default) denies everyone — data control reads every selection.
+    pub data_control_allow: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub general: General,
+    pub clipboard: Clipboard,
     pub binds: Vec<Bind>,
     /// Per-workspace layout overrides, indexed 1..=10.
     pub workspace_layout: [Option<LayoutKind>; 10],
@@ -64,6 +73,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             general: General::default(),
+            clipboard: Clipboard::default(),
             binds: default_binds(),
             workspace_layout: Default::default(),
             sources: Vec::new(),
@@ -257,6 +267,7 @@ impl Config {
                     Err(e) => tracing::warn!(error = %e, "ignoring bind"),
                 },
                 "workspace" => self.apply_workspace(node),
+                "clipboard" => self.apply_clipboard(node),
                 // Blocks specified but not implemented in M2.
                 "decoration" | "animations" | "input" | "output" | "windowrule" => {}
                 other => tracing::warn!(node = other, "unknown config node, ignored"),
@@ -290,6 +301,21 @@ impl Config {
                     }
                 }
                 other => tracing::warn!(node = other, "unknown general key, ignored"),
+            }
+        }
+    }
+
+    fn apply_clipboard(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "data-control-allow" => {
+                    self.clipboard.data_control_allow = args(n)
+                        .into_iter()
+                        .filter_map(|v| v.as_string().map(str::to_string))
+                        .collect();
+                }
+                other => tracing::warn!(node = other, "unknown clipboard node, ignored"),
             }
         }
     }

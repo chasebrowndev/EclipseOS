@@ -115,6 +115,7 @@ pub fn run(config: Config) -> Result<()> {
                         &out,
                         &state.config,
                         state.focus.as_ref(),
+                        state.input_method_popup.as_ref(),
                     );
                     match damage_tracker.render_output(renderer, &mut fb, age, &elements, CLEAR) {
                         Ok(r) => r.damage.map(|d| d.to_vec()),

@@ -61,6 +61,7 @@ pub fn collect_elements(
     output: &Output,
     config: &Config,
     focus: Option<&Window>,
+    im_popup: Option<&smithay::wayland::input_method::PopupSurface>,
 ) -> Vec<HeliosRenderElement> {
     let scale = Scale::from(output.current_scale().fractional_scale());
     let output_loc = space.output_geometry(output).map(|g| g.loc).unwrap_or_default();
@@ -87,6 +88,24 @@ pub fn collect_elements(
             }
         }
     };
+
+    // The input-method popup sits above everything the shell draws (COMP-06 §1).
+    if let Some((popup, loc)) =
+        im_popup.and_then(|p| crate::protocols::standard::input_method::popup_location(p).map(|l| (p, l)))
+    {
+        elements.extend(
+            smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
+                renderer,
+                popup.wl_surface(),
+                phys(loc + output_loc, scale),
+                scale,
+                1.0,
+                Kind::Unspecified,
+            )
+            .into_iter()
+            .map(HeliosRenderElement::Surface),
+        );
+    }
 
     layers(&mut elements, [Layer::Overlay, Layer::Top], renderer);
 
