@@ -13,6 +13,7 @@ use smithay::{
             Display, DisplayHandle,
         },
     },
+    utils::{Logical, Point},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         output::OutputManagerState,
@@ -42,6 +43,15 @@ pub struct HeliosState {
 
     /// The human seat (`seat0`). Agent seats arrive in Phase 2.
     pub seat: Seat<Self>,
+
+    /// Pointer position in the global (logical) coordinate space.
+    pub pointer_location: Point<f64, Logical>,
+
+    /// Live only on the DRM backend; `None` under winit/headless.
+    #[cfg(feature = "drm")]
+    pub drm: Option<Box<crate::backend::drm::DrmData>>,
+    #[cfg(feature = "drm")]
+    pub dmabuf_state: Option<smithay::wayland::dmabuf::DmabufState>,
 }
 
 impl HeliosState {
@@ -77,6 +87,11 @@ impl HeliosState {
             data_device_state,
             seat_state,
             seat,
+            pointer_location: (0.0, 0.0).into(),
+            #[cfg(feature = "drm")]
+            drm: None,
+            #[cfg(feature = "drm")]
+            dmabuf_state: None,
         }
     }
 

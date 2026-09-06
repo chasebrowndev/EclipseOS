@@ -5,7 +5,7 @@
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, KeyState,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     desktop::WindowSurfaceType,
     input::{
@@ -23,9 +23,19 @@ use crate::state::HeliosState;
 #[derive(Debug, Clone, Copy)]
 enum Action {
     Quit,
+    /// Ctrl+Alt+F1..F12 on the DRM backend.
+    SwitchVt(i32),
 }
 
+/// `XF86_Switch_VT_1` .. `XF86_Switch_VT_12`.
+const VT_SWITCH_FIRST: u32 = 0x1008_FE01;
+const VT_SWITCH_LAST: u32 = 0x1008_FE0C;
+
 fn binding(mods: &ModifiersState, sym: Keysym) -> Option<Action> {
+    let raw = sym.raw();
+    if (VT_SWITCH_FIRST..=VT_SWITCH_LAST).contains(&raw) {
+        return Some(Action::SwitchVt((raw - VT_SWITCH_FIRST + 1) as i32));
+    }
     match sym {
         Keysym::q | Keysym::Q if mods.logo && mods.shift => Some(Action::Quit),
         _ => None,
@@ -36,6 +46,7 @@ impl HeliosState {
     pub fn process_input_event<B: InputBackend>(&mut self, event: InputEvent<B>) {
         match event {
             InputEvent::Keyboard { event } => self.on_keyboard::<B>(event),
+            InputEvent::PointerMotion { event } => self.on_pointer_motion::<B>(event),
             InputEvent::PointerMotionAbsolute { event } => self.on_pointer_motion_absolute::<B>(event),
             InputEvent::PointerButton { event } => self.on_pointer_button::<B>(event),
             InputEvent::PointerAxis { event } => self.on_pointer_axis::<B>(event),
@@ -58,8 +69,59 @@ impl HeliosState {
         if let Some(action) = action {
             match action {
                 Action::Quit => self.quit(),
+                Action::SwitchVt(vt) => self.switch_vt(vt),
             }
         }
+    }
+
+    fn switch_vt(&mut self, vt: i32) {
+        #[cfg(feature = "drm")]
+        if let Some(drm) = self.drm.as_mut() {
+            tracing::info!(vt, "switching VT");
+            drm.change_vt(vt);
+            return;
+        }
+        tracing::debug!(vt, "VT switch ignored (not on the DRM backend)");
+    }
+
+    /// Clamp a candidate pointer position into the union of output geometry.
+    fn clamp_to_outputs(&self, pos: Point<f64, Logical>) -> Point<f64, Logical> {
+        let Some(output) = self.space.outputs().next().cloned() else { return pos };
+        let Some(geo) = self.space.output_geometry(&output) else { return pos };
+        let max_x = (geo.loc.x + geo.size.w - 1) as f64;
+        let max_y = (geo.loc.y + geo.size.h - 1) as f64;
+        (
+            pos.x.clamp(geo.loc.x as f64, max_x.max(geo.loc.x as f64)),
+            pos.y.clamp(geo.loc.y as f64, max_y.max(geo.loc.y as f64)),
+        )
+            .into()
+    }
+
+    /// Shared tail for both relative and absolute motion.
+    fn pointer_moved(&mut self, pos: Point<f64, Logical>, time: u32) {
+        let pos = self.clamp_to_outputs(pos);
+        self.pointer_location = pos;
+        let serial = SERIAL_COUNTER.next_serial();
+        let under = self.surface_under(pos);
+
+        // Focus-follows-mouse (decided 2026-09-05).
+        if let Some(window) = self.space.element_under(pos).map(|(w, _)| w.clone()) {
+            let keyboard = self.seat.get_keyboard().unwrap();
+            let target = window.toplevel().map(|t| t.wl_surface().clone());
+            if keyboard.current_focus() != target {
+                self.space.raise_element(&window, true);
+                keyboard.set_focus(self, target, serial);
+            }
+        }
+
+        let pointer = self.seat.get_pointer().unwrap();
+        pointer.motion(self, under, &MotionEvent { location: pos, serial, time });
+        pointer.frame(self);
+    }
+
+    fn on_pointer_motion<B: InputBackend>(&mut self, event: B::PointerMotionEvent) {
+        let pos = self.pointer_location + event.delta();
+        self.pointer_moved(pos, event.time_msec());
     }
 
     fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
@@ -70,24 +132,9 @@ impl HeliosState {
 
     fn on_pointer_motion_absolute<B: InputBackend>(&mut self, event: B::PointerMotionAbsoluteEvent) {
         let Some(output) = self.space.outputs().next().cloned() else { return };
-        let geometry = self.space.output_geometry(&output).unwrap();
+        let Some(geometry) = self.space.output_geometry(&output) else { return };
         let pos = event.position_transformed(geometry.size) + geometry.loc.to_f64();
-        let serial = SERIAL_COUNTER.next_serial();
-        let pointer = self.seat.get_pointer().unwrap();
-        let under = self.surface_under(pos);
-
-        // Focus-follows-mouse (decided 2026-09-05).
-        if let Some((window, _)) = self.space.element_under(pos).map(|(w, l)| (w.clone(), l)) {
-            let keyboard = self.seat.get_keyboard().unwrap();
-            let target = window.toplevel().map(|t| t.wl_surface().clone());
-            if keyboard.current_focus() != target {
-                self.space.raise_element(&window, true);
-                keyboard.set_focus(self, target, serial);
-            }
-        }
-
-        pointer.motion(self, under, &MotionEvent { location: pos, serial, time: event.time_msec() });
-        pointer.frame(self);
+        self.pointer_moved(pos, event.time_msec());
     }
 
     fn on_pointer_button<B: InputBackend>(&mut self, event: B::PointerButtonEvent) {

@@ -16,7 +16,6 @@ smithay = { workspace = true, features = [
   "wayland_frontend",
   "desktop",
   "renderer_gl",
-  "backend_winit",
 ] }
 calloop.workspace = true
 tracing.workspace = true
@@ -25,7 +24,19 @@ tracing-journald.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 xkbcommon.workspace = true
+libc = "0.2"
 
 [features]
-default = ["winit"]
-winit = []
+default = ["winit", "drm"]
+winit = ["smithay/backend_winit"]
+# Production backend: KMS via libseat + udev + libinput, GLES on GBM/EGL.
+drm = [
+  "smithay/backend_drm",
+  "smithay/backend_gbm",
+  "smithay/backend_egl",
+  "smithay/backend_libinput",
+  "smithay/backend_session",
+  "smithay/backend_session_libseat",
+  "smithay/backend_udev",
+  "smithay/use_system_lib",
+]
