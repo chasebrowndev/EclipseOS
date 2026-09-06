@@ -104,9 +104,16 @@ fn check_nvidia_modeset(node: &DrmNode) -> Result<()> {
     if driver != "nvidia" {
         return Ok(());
     }
-    let modeset = std::fs::read_to_string("/sys/module/nvidia_drm/parameters/modeset")
-        .unwrap_or_default();
-    if modeset.trim() == "Y" {
+    // The sysfs param is root-only readable (0400) on Arch; only fail on a
+    // readable, explicit "N". An unreadable param is not evidence.
+    let modeset = match std::fs::read_to_string("/sys/module/nvidia_drm/parameters/modeset") {
+        Ok(v) => v,
+        Err(err) => {
+            tracing::warn!(?err, "cannot read nvidia_drm modeset param; continuing");
+            return Ok(());
+        }
+    };
+    if modeset.trim() != "N" {
         Ok(())
     } else {
         Err(anyhow!(
