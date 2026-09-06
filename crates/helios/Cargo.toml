@@ -25,6 +25,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 xkbcommon.workspace = true
 libc = "0.2"
+kdl.workspace = true
 
 [features]
 default = ["winit", "drm"]

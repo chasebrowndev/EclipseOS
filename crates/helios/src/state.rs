@@ -18,7 +18,7 @@ use smithay::{
         compositor::{CompositorClientState, CompositorState},
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
-        shell::xdg::XdgShellState,
+        shell::{wlr_layer::WlrLayerShellState, xdg::XdgShellState},
         shm::ShmState,
         socket::ListeningSocketSource,
     },
@@ -35,6 +35,7 @@ pub struct HeliosState {
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
+    pub layer_shell_state: WlrLayerShellState,
     pub shm_state: ShmState,
     #[allow(dead_code)] // holds the xdg_output global alive
     pub output_manager_state: OutputManagerState,
@@ -43,6 +44,17 @@ pub struct HeliosState {
 
     /// The human seat (`seat0`). Agent seats arrive in Phase 2.
     pub seat: Seat<Self>,
+
+    /// Parsed configuration (COMP-13). Never fails to load; falls back to defaults.
+    pub config: crate::config::Config,
+    /// Workspaces 1..=10 on the primary output.
+    pub workspaces: Vec<crate::shell::workspace::Workspace>,
+    /// 0-based index into `workspaces`.
+    pub active_workspace: usize,
+    /// The window holding keyboard focus, if any.
+    pub focus: Option<Window>,
+    /// Per-window border quads, kept alive across frames.
+    pub borders: crate::render::BorderStore,
 
     /// Pointer position in the global (logical) coordinate space.
     pub pointer_location: Point<f64, Logical>,
@@ -59,10 +71,12 @@ impl HeliosState {
         display: &Display<Self>,
         loop_signal: LoopSignal,
         socket: &ListeningSocketSource,
+        config: crate::config::Config,
     ) -> Self {
         let dh = display.handle();
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
@@ -82,12 +96,18 @@ impl HeliosState {
             popups: PopupManager::default(),
             compositor_state,
             xdg_shell_state,
+            layer_shell_state,
             shm_state,
             output_manager_state,
             data_device_state,
             seat_state,
             seat,
             pointer_location: (0.0, 0.0).into(),
+            workspaces: crate::shell::workspace::new_set(),
+            active_workspace: 0,
+            focus: None,
+            borders: crate::render::BorderStore::default(),
+            config,
             #[cfg(feature = "drm")]
             drm: None,
             #[cfg(feature = "drm")]

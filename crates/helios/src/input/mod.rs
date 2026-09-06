@@ -7,7 +7,6 @@ use smithay::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, KeyState,
         KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
-    desktop::WindowSurfaceType,
     input::{
         keyboard::{FilterResult, Keysym, ModifiersState},
         pointer::{AxisFrame, ButtonEvent, MotionEvent},
@@ -18,29 +17,63 @@ use smithay::{
 
 use crate::state::HeliosState;
 
-/// Compositor-level action bound to a chord. Bindings come from config in
-/// M6; until then the set is fixed here.
-#[derive(Debug, Clone, Copy)]
-enum Action {
+/// Modifier set of a binding. Compared against the xkb modifier state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Mods {
+    pub logo: bool,
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+}
+
+impl Mods {
+    pub fn matches(&self, state: &ModifiersState) -> bool {
+        self.logo == state.logo
+            && self.shift == state.shift
+            && self.ctrl == state.ctrl
+            && self.alt == state.alt
+    }
+}
+
+/// Direction for focus/move actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// Compositor-level action bound to a chord (COMP-13 §3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
     Quit,
     /// Ctrl+Alt+F1..F12 on the DRM backend.
     SwitchVt(i32),
+    Spawn(String),
+    Close,
+    ToggleFloating,
+    ToggleLayout,
+    Focus(Direction),
+    /// Swap with the neighbour in this direction (nudges a floating window).
+    Move(Direction),
+    /// 1-based workspace index.
+    SwitchWorkspace(usize),
+    /// 1-based workspace index.
+    MoveToWorkspace(usize),
+}
+
+/// A configured key binding.
+#[derive(Debug, Clone)]
+pub struct Bind {
+    pub mods: Mods,
+    pub key: Keysym,
+    pub action: Action,
 }
 
 /// `XF86_Switch_VT_1` .. `XF86_Switch_VT_12`.
 const VT_SWITCH_FIRST: u32 = 0x1008_FE01;
 const VT_SWITCH_LAST: u32 = 0x1008_FE0C;
-
-fn binding(mods: &ModifiersState, sym: Keysym) -> Option<Action> {
-    let raw = sym.raw();
-    if (VT_SWITCH_FIRST..=VT_SWITCH_LAST).contains(&raw) {
-        return Some(Action::SwitchVt((raw - VT_SWITCH_FIRST + 1) as i32));
-    }
-    match sym {
-        Keysym::q | Keysym::Q if mods.logo && mods.shift => Some(Action::Quit),
-        _ => None,
-    }
-}
 
 impl HeliosState {
     pub fn process_input_event<B: InputBackend>(&mut self, event: InputEvent<B>) {
@@ -58,19 +91,45 @@ impl HeliosState {
         let serial = SERIAL_COUNTER.next_serial();
         let time = Event::time_msec(&event);
         let keyboard = self.seat.get_keyboard().unwrap();
-        let action = keyboard.input(self, event.key_code(), event.state(), serial, time, |_, mods, handle| {
-            if event.state() == KeyState::Pressed {
-                if let Some(a) = binding(mods, handle.modified_sym()) {
-                    return FilterResult::Intercept(a);
+        let action = keyboard.input(
+            self,
+            event.key_code(),
+            event.state(),
+            serial,
+            time,
+            |state, mods, handle| {
+                if event.state() != KeyState::Pressed {
+                    return FilterResult::Forward;
                 }
-            }
-            FilterResult::Forward
-        });
+                let sym = handle.modified_sym();
+                let raw = sym.raw();
+                if (VT_SWITCH_FIRST..=VT_SWITCH_LAST).contains(&raw) {
+                    return FilterResult::Intercept(Action::SwitchVt((raw - VT_SWITCH_FIRST + 1) as i32));
+                }
+                match state.config.action_for(mods, sym) {
+                    Some(a) => FilterResult::Intercept(a.clone()),
+                    None => FilterResult::Forward,
+                }
+            },
+        );
         if let Some(action) = action {
-            match action {
-                Action::Quit => self.quit(),
-                Action::SwitchVt(vt) => self.switch_vt(vt),
-            }
+            self.run_action(action);
+        }
+    }
+
+    fn run_action(&mut self, action: Action) {
+        use crate::shell;
+        match action {
+            Action::Quit => self.quit(),
+            Action::SwitchVt(vt) => self.switch_vt(vt),
+            Action::Spawn(cmd) => shell::spawn(&cmd),
+            Action::Close => shell::close_focused(self),
+            Action::ToggleFloating => shell::toggle_floating(self),
+            Action::ToggleLayout => shell::toggle_layout(self),
+            Action::Focus(dir) => shell::focus_direction(self, dir),
+            Action::Move(dir) => shell::move_direction(self, dir),
+            Action::SwitchWorkspace(n) => shell::switch_workspace(self, n),
+            Action::MoveToWorkspace(n) => shell::move_to_workspace(self, n),
         }
     }
 
@@ -86,8 +145,12 @@ impl HeliosState {
 
     /// Clamp a candidate pointer position into the union of output geometry.
     fn clamp_to_outputs(&self, pos: Point<f64, Logical>) -> Point<f64, Logical> {
-        let Some(output) = self.space.outputs().next().cloned() else { return pos };
-        let Some(geo) = self.space.output_geometry(&output) else { return pos };
+        let Some(output) = self.space.outputs().next().cloned() else {
+            return pos;
+        };
+        let Some(geo) = self.space.output_geometry(&output) else {
+            return pos;
+        };
         let max_x = (geo.loc.x + geo.size.w - 1) as f64;
         let max_y = (geo.loc.y + geo.size.h - 1) as f64;
         (
@@ -104,18 +167,34 @@ impl HeliosState {
         let serial = SERIAL_COUNTER.next_serial();
         let under = self.surface_under(pos);
 
-        // Focus-follows-mouse (decided 2026-09-05).
-        if let Some(window) = self.space.element_under(pos).map(|(w, _)| w.clone()) {
+        // Focus-follows-mouse (decided 2026-09-05), config-gated.
+        if let Some(window) = self
+            .config
+            .general
+            .focus_follows_mouse
+            .then(|| self.space.element_under(pos).map(|(w, _)| w.clone()))
+            .flatten()
+        {
             let keyboard = self.seat.get_keyboard().unwrap();
             let target = window.toplevel().map(|t| t.wl_surface().clone());
             if keyboard.current_focus() != target {
                 self.space.raise_element(&window, true);
+                self.focus = Some(window.clone());
                 keyboard.set_focus(self, target, serial);
+                crate::shell::arrange(self);
             }
         }
 
         let pointer = self.seat.get_pointer().unwrap();
-        pointer.motion(self, under, &MotionEvent { location: pos, serial, time });
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location: pos,
+                serial,
+                time,
+            },
+        );
         pointer.frame(self);
     }
 
@@ -125,14 +204,16 @@ impl HeliosState {
     }
 
     fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let (window, loc) = self.space.element_under(pos)?;
-        let (surface, surf_loc) = window.surface_under(pos - loc.to_f64(), WindowSurfaceType::ALL)?;
-        Some((surface, (loc + surf_loc).to_f64()))
+        crate::shell::surface_under(self, pos)
     }
 
     fn on_pointer_motion_absolute<B: InputBackend>(&mut self, event: B::PointerMotionAbsoluteEvent) {
-        let Some(output) = self.space.outputs().next().cloned() else { return };
-        let Some(geometry) = self.space.output_geometry(&output) else { return };
+        let Some(output) = self.space.outputs().next().cloned() else {
+            return;
+        };
+        let Some(geometry) = self.space.output_geometry(&output) else {
+            return;
+        };
         let pos = event.position_transformed(geometry.size) + geometry.loc.to_f64();
         self.pointer_moved(pos, event.time_msec());
     }

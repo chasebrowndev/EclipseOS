@@ -6,8 +6,10 @@
 //! globals, the public socket, one seat, and a render loop.
 
 mod backend;
+mod config;
 mod input;
 mod protocols;
+mod render;
 mod shell;
 mod state;
 
@@ -24,19 +26,28 @@ enum BackendKind {
 
 /// Nest under an existing session when there is one; otherwise drive KMS.
 fn default_backend() -> BackendKind {
-    let nested =
-        std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
+    let nested = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
     let _ = nested;
     #[cfg(all(feature = "winit", feature = "drm"))]
-    return if nested { BackendKind::Winit } else { BackendKind::Drm };
+    return if nested {
+        BackendKind::Winit
+    } else {
+        BackendKind::Drm
+    };
     #[cfg(all(feature = "winit", not(feature = "drm")))]
     return BackendKind::Winit;
     #[cfg(all(feature = "drm", not(feature = "winit")))]
     return BackendKind::Drm;
 }
 
-fn parse_args() -> Result<BackendKind> {
+struct Args {
+    backend: BackendKind,
+    config: Option<std::path::PathBuf>,
+}
+
+fn parse_args() -> Result<Args> {
     let mut kind = default_backend();
+    let mut config = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -50,14 +61,21 @@ fn parse_args() -> Result<BackendKind> {
                 }
                 None => anyhow::bail!("--backend requires a value"),
             },
+            "--config" => match args.next() {
+                Some(path) => config = Some(std::path::PathBuf::from(path)),
+                None => anyhow::bail!("--config requires a path"),
+            },
             "-h" | "--help" => {
-                println!("usage: helios [--backend drm|winit]");
+                println!("usage: helios [--backend drm|winit] [--config <path.kdl>]");
                 std::process::exit(0);
             }
             other => anyhow::bail!("unknown argument '{other}'"),
         }
     }
-    Ok(kind)
+    Ok(Args {
+        backend: kind,
+        config,
+    })
 }
 
 fn init_logging() {
@@ -68,17 +86,27 @@ fn init_logging() {
     } else {
         Some(tracing_subscriber::fmt::layer().compact())
     };
-    tracing_subscriber::registry().with(filter).with(journald).with(fmt).init();
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(journald)
+        .with(fmt)
+        .init();
 }
 
 fn main() -> Result<()> {
     init_logging();
-    let kind = parse_args()?;
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), ?kind, "helios starting");
-    match kind {
+    let args = parse_args()?;
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), kind = ?args.backend, "helios starting");
+    // Reap spawned children without a wait loop: nothing on the hot path may block.
+    // SAFETY: called once, before any thread or child exists.
+    unsafe {
+        libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+    }
+    let config = config::Config::load(args.config.as_deref());
+    match args.backend {
         #[cfg(feature = "winit")]
-        BackendKind::Winit => backend::winit::run(),
+        BackendKind::Winit => backend::winit::run(config),
         #[cfg(feature = "drm")]
-        BackendKind::Drm => backend::drm::run(),
+        BackendKind::Drm => backend::drm::run(config),
     }
 }
