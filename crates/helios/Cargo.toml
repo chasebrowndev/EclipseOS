@@ -1,0 +1,31 @@
+[package]
+name = "helios"
+description = "EclipseOS Wayland compositor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "helios"
+path = "src/main.rs"
+
+[dependencies]
+smithay = { workspace = true, features = [
+  "wayland_frontend",
+  "desktop",
+  "renderer_gl",
+  "backend_winit",
+] }
+calloop.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-journald.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+xkbcommon.workspace = true
+
+[features]
+default = ["winit"]
+winit = []
