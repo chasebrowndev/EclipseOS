@@ -27,6 +27,7 @@ writing a new ADR that says so.
 | 0019 | [Focus-follows-mouse default](0019-focus-follows-mouse-default.md) | accepted |
 | 0020 | [Interim quit binding `Super+Shift+Q`](0020-quit-binding-super-shift-q.md) | accepted |
 | 0021 | [Per-workspace arena binary tree for tiling](0021-layout-tree.md) | accepted |
+| 0022 | [`wlr_data_control` behind a process-name allowlist](0022-data-control-allowlist.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering
