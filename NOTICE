@@ -1,0 +1,44 @@
+EclipseOS
+Copyright (c) 2026 Chase Brown
+
+This product includes software developed as part of the EclipseOS project.
+
+LICENSING
+---------
+System components -- helios (compositor), policyd, policy-eval, sandbox,
+agentd, registryd, the audit store, default policy rulesets, classifier
+weights, and packaging/ISO build scripts -- are licensed under the GNU Affero
+General Public License, version 3 only (AGPL-3.0-only). See LICENSE.
+
+Protocol definitions (eclipse_agent_v1, eclipse_semantic_v1) and the agent
+SDKs (sdk-rust, sdk-python) are licensed under the Apache License, Version 2.0.
+See LICENSE-APACHE. The dividing line: anything that runs as part of the system
+is AGPL; anything an external agent links against is Apache-2.0, so that agents
+may be written under any licence.
+
+Documentation is licensed under CC BY-SA 4.0.
+
+Linux kernel patches, where distributed, remain GPLv2 and are distributed
+separately from the AGPL userspace.
+
+A commercial licence removing AGPL obligations, with support and indemnity, is
+available. It grants no additional features, no earlier releases, and nothing
+that makes the AGPL version second-class.
+
+THIRD-PARTY SOFTWARE
+--------------------
+This software links against and depends on third-party components under their
+own licences, including Smithay (MIT), libwayland (MIT), libinput (MIT),
+libxkbcommon (MIT), libseat (MIT), Mesa (MIT), and a set of Rust crates under
+MIT, Apache-2.0, BSD, ISC, Zlib, Unicode and MPL-2.0 terms. The permitted set
+is enforced by deny.toml in CI. GPLv2-only dependencies are incompatible with
+AGPL-3.0-only and are rejected.
+
+For a machine-readable inventory of dependency licences, run:
+
+    cargo deny list
+
+TRADEMARK
+---------
+"EclipseOS" and the project logo are not licensed under the AGPL or Apache-2.0.
+See TRADEMARK.md.

@@ -1,0 +1,75 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+# helios / EclipseOS — root invariants
+
+Governing specs: `ECLIPSEOS_SPECS_v2_VOL1.md` (and Vol 2). `docs/` is source of
+truth once code starts (F-07 §7). Read the spec section before implementing it.
+
+## Invariants (never violate; if a task seems to require it, stop and ask)
+- No ambient authority. Every operation requires a capability check.
+- Ratchet rule: classifier/`defer` may only tighten a decision, never grant.
+- No state mutation before `check()` returns `Allow`. Policy is fail-closed:
+  unknown request, missing table entry, or an unavailable `policyd` = deny.
+- App-declared sensitivity may only raise a class, never lower it. Default
+  class is `private`.
+- `password`-role values are never delivered, logged, or stored.
+- Human input is never logged by content (keystrokes, clipboard, IME).
+- **Single-threaded core.** One `calloop` loop owns `HeliosState`. No locks on
+  the hot path; blocking work goes to a pool and returns by channel.
+- **Handle-based state.** No `Rc<RefCell<_>>` graph — plain structs owned by
+  `HeliosState`, children referenced by `u64` handle/index.
+- **Backends live behind the backend trait** (`backend/`). Nothing outside it
+  may touch winit, DRM, libinput or GBM types directly.
+- Trusted UI is compositor-drawn, never a layer-shell client.
+- No allocation in the input-delivery or policy-check hot paths.
+- SPDX header on **every** source file: `// SPDX-License-Identifier: AGPL-3.0-only`
+  (system crates) or `Apache-2.0` (protocol crates, SDKs — F-05 §3).
+- Specs and code disagreeing is a bug in one of them — do not silently pick.
+
+## Smithay
+Pinned `=0.7.0`, `default-features = false`. **Do not guess its API.** Read the
+vendored source:
+`~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smithay-0.7.0/`
+Version bumps are their own PR with its own ADR if behavior changes.
+
+## Build / test / run
+```
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo fmt --check
+cargo deny check                # licenses + advisories + bans
+cargo run -- --backend winit    # nested under Hyprland for dev
+journalctl --user -t helios -f  # logs (tracing → journald)
+```
+
+## Commits & PRs (F-07 §5)
+- Conventional commits: `feat(helios): …`, `fix(policyd): …`, `docs: …`.
+- Trunk-based; short-lived branches named for the milestone
+  (`comp16-m03-multi-output`).
+- Every PR body cites the spec section it implements: `Implements COMP-08 §4`.
+- A PR that changes specified behavior updates the doc in the same PR, or says
+  why not.
+- TCB areas (`helios` enforcement path, `policyd`, `policy-eval`, `sandbox`)
+  get a line-by-line owner review. No exceptions.
+
+## Where things are
+```
+crates/helios/src/backend/     COMP-01  winit + DRM/udev behind one trait
+crates/helios/src/render/      COMP-02  damage, scanout, sync, redaction
+crates/helios/src/outputs/     COMP-03  hotplug, layout, virtual outputs
+crates/helios/src/input/       COMP-04  seats, focus, injection, override chord
+crates/helios/src/shell/       COMP-05  layouts, workspaces, rules, identity
+crates/helios/src/protocols/standard/  COMP-06
+crates/helios/src/protocols/agent/     COMP-08  eclipse_agent_v1
+crates/helios/src/protocols/semantic/  COMP-09  eclipse_semantic_v1
+crates/helios/src/trusted_ui/  COMP-10  prompts, indicator, emergency panel
+crates/helios/src/policy/      COMP-11  enforcement table, check()
+crates/helios/src/audit/       COMP-12  provenance emission
+crates/helios/src/ipc/         COMP-13  human JSON-RPC socket
+crates/helios/src/config/      COMP-13  KDL parse, validate, hot-reload
+crates/helios/src/xwayland/    COMP-07
+decisions/                     ADRs (F-08 format)
+docs/ARCHITECTURE.md, docs/BUILDING.md
+```
+Per-crate `CLAUDE.md` names the governing spec, local invariants, and whether
+the crate is TCB.
