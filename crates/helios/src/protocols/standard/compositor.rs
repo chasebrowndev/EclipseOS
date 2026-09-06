@@ -3,7 +3,9 @@ use smithay::{
     backend::renderer::utils::on_commit_buffer_handler,
     delegate_compositor, delegate_output,
     reexports::wayland_server::{protocol::wl_surface::WlSurface, Client},
-    wayland::compositor::{get_parent, is_sync_subsurface, CompositorClientState, CompositorHandler, CompositorState},
+    wayland::compositor::{
+        get_parent, is_sync_subsurface, CompositorClientState, CompositorHandler, CompositorState,
+    },
 };
 
 use smithay::wayland::output::OutputHandler;
@@ -26,7 +28,11 @@ impl CompositorHandler for HeliosState {
             while let Some(parent) = get_parent(&root) {
                 root = parent;
             }
-            if let Some(window) = self.space.elements().find(|w| w.toplevel().unwrap().wl_surface() == &root) {
+            if let Some(window) = self
+                .space
+                .elements()
+                .find(|w| w.toplevel().unwrap().wl_surface() == &root)
+            {
                 window.on_commit();
             }
         }

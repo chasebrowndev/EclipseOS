@@ -2,6 +2,7 @@
 mod compositor;
 #[cfg(feature = "drm")]
 mod dmabuf;
+mod layer_shell;
 mod seat;
 mod selection;
 mod shm;

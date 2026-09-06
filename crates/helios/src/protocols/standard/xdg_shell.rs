@@ -3,8 +3,7 @@ use smithay::{
     delegate_xdg_shell,
     desktop::{PopupKind, Window},
     reexports::{
-        wayland_protocols::xdg::shell::server::xdg_toplevel,
-        wayland_server::protocol::wl_seat::WlSeat,
+        wayland_protocols::xdg::shell::server::xdg_toplevel, wayland_server::protocol::wl_seat::WlSeat,
     },
     utils::Serial,
     wayland::shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
@@ -32,9 +31,10 @@ impl XdgShellHandler for HeliosState {
             .find(|w| w.toplevel().map(|t| t == &surface).unwrap_or(false))
             .cloned();
         if let Some(w) = found {
-            self.space.unmap_elem(&w);
+            crate::shell::unmap_window(self, &w);
+        } else {
+            crate::shell::refocus_topmost(self);
         }
-        crate::shell::refocus_topmost(self);
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {

@@ -2,7 +2,10 @@
 use smithay::{
     delegate_shm,
     reexports::wayland_server::protocol::wl_buffer::WlBuffer,
-    wayland::{buffer::BufferHandler, shm::{ShmHandler, ShmState}},
+    wayland::{
+        buffer::BufferHandler,
+        shm::{ShmHandler, ShmState},
+    },
 };
 
 use crate::state::HeliosState;
