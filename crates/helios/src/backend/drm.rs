@@ -25,7 +25,6 @@ use smithay::{
         renderer::{
             element::{
                 solid::{SolidColorBuffer, SolidColorRenderElement},
-                surface::WaylandSurfaceRenderElement,
                 Kind,
             },
             gles::GlesRenderer,
@@ -33,7 +32,6 @@ use smithay::{
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{primary_gpu, UdevBackend, UdevEvent},
     },
-    desktop::space::{space_render_elements, SpaceRenderElements},
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
@@ -49,25 +47,19 @@ use smithay::{
     wayland::{dmabuf::DmabufState, socket::ListeningSocketSource},
 };
 
-use crate::state::{client_state, HeliosState};
+use crate::{
+    config::Config,
+    render::{collect_elements, HeliosRenderElement},
+    state::{client_state, HeliosState},
+};
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 /// Amber-on-black placeholder pointer. A themed cursor lands with M3.
 const CURSOR_COLOR: [f32; 4] = [1.0, 0.72, 0.15, 1.0];
 const CURSOR_SIZE: i32 = 12;
 
-pub type HeliosDrmCompositor = DrmCompositor<
-    GbmAllocator<DrmDeviceFd>,
-    GbmFramebufferExporter<DrmDeviceFd>,
-    (),
-    DrmDeviceFd,
->;
-
-smithay::backend::renderer::element::render_elements! {
-    pub HeliosRenderElement<=GlesRenderer>;
-    Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
-    Cursor=SolidColorRenderElement,
-}
+pub type HeliosDrmCompositor =
+    DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 
 /// Everything the DRM backend needs to keep alive between callbacks.
 pub struct DrmData {
@@ -123,7 +115,7 @@ fn check_nvidia_modeset(node: &DrmNode) -> Result<()> {
     }
 }
 
-pub fn run() -> Result<()> {
+pub fn run(config: Config) -> Result<()> {
     let mut event_loop: EventLoop<'static, HeliosState> =
         EventLoop::try_new().context("calloop event loop")?;
     let display: Display<HeliosState> = Display::new().context("wayland display")?;
@@ -135,7 +127,7 @@ pub fn run() -> Result<()> {
     tracing::info!(seat = %seat_name, "libseat session acquired");
 
     let socket = ListeningSocketSource::new_auto().context("wayland socket")?;
-    let mut state = HeliosState::new(&display, event_loop.get_signal(), &socket);
+    let mut state = HeliosState::new(&display, event_loop.get_signal(), &socket, config);
 
     // --- GPU discovery -----------------------------------------------------
     let udev = UdevBackend::new(&seat_name).context("udev backend")?;
@@ -156,8 +148,7 @@ pub fn run() -> Result<()> {
     let node = DrmNode::from_file(&device_fd).context("resolving DRM node")?;
     check_nvidia_modeset(&node)?;
 
-    let (drm_device, drm_notifier) =
-        DrmDevice::new(device_fd.clone(), true).context("DrmDevice::new")?;
+    let (drm_device, drm_notifier) = DrmDevice::new(device_fd.clone(), true).context("DrmDevice::new")?;
     let gbm = GbmDevice::new(device_fd).context("GbmDevice::new")?;
 
     // SAFETY: the gbm device outlives the display (both live in DrmData /
@@ -170,8 +161,8 @@ pub fn run() -> Result<()> {
     // dmabuf is the expected client buffer path (F-04); shm still works.
     let dmabuf_formats = renderer.egl_context().dmabuf_texture_formats().clone();
     let mut dmabuf_state = DmabufState::new();
-    let _dmabuf_global = dmabuf_state
-        .create_global::<HeliosState>(&state.display_handle, dmabuf_formats.iter().copied());
+    let _dmabuf_global =
+        dmabuf_state.create_global::<HeliosState>(&state.display_handle, dmabuf_formats.iter().copied());
     state.dmabuf_state = Some(dmabuf_state);
 
     state.drm = Some(Box::new(DrmData {
@@ -262,10 +253,7 @@ pub fn run() -> Result<()> {
     // --- wayland -----------------------------------------------------------
     handle
         .insert_source(socket, |stream, _, state| {
-            if let Err(err) = state
-                .display_handle
-                .insert_client(stream, client_state())
-            {
+            if let Err(err) = state.display_handle.insert_client(stream, client_state()) {
                 tracing::warn!(?err, "rejecting client");
             }
         })
@@ -334,12 +322,7 @@ fn init_output(state: &mut HeliosState, gbm: &GbmDevice<DrmDeviceFd>) -> Result<
         .encoders()
         .iter()
         .filter_map(|enc| drm.drm.get_encoder(*enc).ok())
-        .find_map(|enc| {
-            resources
-                .filter_crtcs(enc.possible_crtcs())
-                .into_iter()
-                .next()
-        })
+        .find_map(|enc| resources.filter_crtcs(enc.possible_crtcs()).into_iter().next())
         .ok_or_else(|| anyhow!("no CRTC available for connector {name}"))?;
 
     let (w, h) = mode.size();
@@ -366,10 +349,7 @@ fn init_output(state: &mut HeliosState, gbm: &GbmDevice<DrmDeviceFd>) -> Result<
         .create_surface(crtc, mode, &[connector.handle()])
         .context("creating DRM surface")?;
 
-    let allocator = GbmAllocator::new(
-        gbm.clone(),
-        GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
-    );
+    let allocator = GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
     let exporter = GbmFramebufferExporter::new(gbm.clone(), None);
     let renderer_formats = drm.renderer.egl_context().dmabuf_render_formats().clone();
     let cursor_size = drm.drm.cursor_size();
@@ -430,31 +410,27 @@ pub fn render(state: &mut HeliosState) {
     let output = output.clone();
     let scale = Scale::from(output.current_scale().fractional_scale());
 
-    let mut elements: Vec<HeliosRenderElement> = vec![HeliosRenderElement::Cursor(
-        SolidColorRenderElement::from_buffer(
+    let mut elements: Vec<HeliosRenderElement> =
+        vec![HeliosRenderElement::Solid(SolidColorRenderElement::from_buffer(
             &drm.cursor,
             state.pointer_location.to_physical_precise_round(scale),
             scale,
             1.0,
             Kind::Cursor,
-        ),
-    )];
-    match space_render_elements(&mut drm.renderer, [&state.space], &output, 1.0) {
-        Ok(space_elements) => {
-            elements.extend(space_elements.into_iter().map(HeliosRenderElement::Space))
-        }
-        Err(err) => tracing::warn!(?err, "collecting space elements"),
-    }
+        ))];
+    elements.extend(collect_elements(
+        &mut drm.renderer,
+        &state.space,
+        &mut state.borders,
+        &output,
+        &state.config,
+        state.focus.as_ref(),
+    ));
 
     // FrameFlags::empty() forces full composition: F-04 §2 assumes no plane
     // availability. Plane scanout is a probed optimisation for a later
     // milestone.
-    let queued = match compositor.render_frame(
-        &mut drm.renderer,
-        &elements,
-        CLEAR,
-        FrameFlags::empty(),
-    ) {
+    let queued = match compositor.render_frame(&mut drm.renderer, &elements, CLEAR, FrameFlags::empty()) {
         Ok(result) if result.is_empty => false,
         Ok(_) => match compositor.queue_frame(()) {
             Ok(()) => true,
@@ -474,16 +450,15 @@ pub fn render(state: &mut HeliosState) {
         // Nothing changed, so no vblank is coming: re-arm the render chain.
         drm.retry_armed = true;
         let handle = drm.loop_handle.clone();
-        if let Err(err) = handle.insert_source(
-            Timer::from_duration(Duration::from_millis(16)),
-            |_, _, state| {
+        if let Err(err) =
+            handle.insert_source(Timer::from_duration(Duration::from_millis(16)), |_, _, state| {
                 if let Some(drm) = state.drm.as_mut() {
                     drm.retry_armed = false;
                 }
                 render(state);
                 TimeoutAction::Drop
-            },
-        ) {
+            })
+        {
             tracing::warn!(?err, "arming re-render timer");
             if let Some(drm) = state.drm.as_mut() {
                 drm.retry_armed = false;
@@ -492,9 +467,7 @@ pub fn render(state: &mut HeliosState) {
     }
 
     let time = state.start_time.elapsed();
-    for window in state.space.elements() {
-        window.send_frame(&output, time, Some(Duration::ZERO), |_, _| Some(output.clone()));
-    }
+    crate::render::send_frames(&state.space, &output, time);
     state.space.refresh();
     state.popups.cleanup();
     let _ = state.display_handle.flush_clients();

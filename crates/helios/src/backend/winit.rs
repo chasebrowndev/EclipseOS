@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Nested backend: one output inside a host Wayland/X11 window.
 
-use std::time::Duration;
-
 use anyhow::{Context, Result};
 use smithay::{
     backend::{
-        renderer::{damage::OutputDamageTracker, element::surface::WaylandSurfaceRenderElement, gles::GlesRenderer},
+        renderer::{damage::OutputDamageTracker, gles::GlesRenderer},
         winit::{self, WinitEvent},
     },
-    desktop::space::render_output,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{generic::Generic, EventLoop, Interest, Mode as CalloopMode, PostAction},
@@ -20,15 +17,19 @@ use smithay::{
     wayland::socket::ListeningSocketSource,
 };
 
-use crate::state::{client_state, HeliosState};
+use crate::{
+    config::Config,
+    render::{collect_elements, send_frames},
+    state::{client_state, HeliosState},
+};
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
-pub fn run() -> Result<()> {
+pub fn run(config: Config) -> Result<()> {
     let mut event_loop: EventLoop<HeliosState> = EventLoop::try_new().context("calloop")?;
     let display: Display<HeliosState> = Display::new().context("wayland display")?;
     let socket = ListeningSocketSource::new_auto().context("bind wayland socket")?;
-    let mut state = HeliosState::new(&display, event_loop.get_signal(), &socket);
+    let mut state = HeliosState::new(&display, event_loop.get_signal(), &socket, config);
     let dh = state.display_handle.clone();
 
     let attrs = WindowAttributes::default()
@@ -39,10 +40,18 @@ pub fn run() -> Result<()> {
         winit::init_from_attributes::<GlesRenderer>(attrs).map_err(|e| anyhow::anyhow!("winit init: {e}"))?;
 
     let size = backend.window_size();
-    let mode = Mode { size, refresh: 60_000 };
+    let mode = Mode {
+        size,
+        refresh: 60_000,
+    };
     let output = Output::new(
         "winit".into(),
-        PhysicalProperties { size: (0, 0).into(), subpixel: Subpixel::Unknown, make: "helios".into(), model: "winit".into() },
+        PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: Subpixel::Unknown,
+            make: "helios".into(),
+            model: "winit".into(),
+        },
     );
     let _global = output.create_global::<HeliosState>(&dh);
     output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
@@ -59,11 +68,14 @@ pub fn run() -> Result<()> {
         })
         .map_err(|e| anyhow::anyhow!("socket source: {e}"))?;
     handle
-        .insert_source(Generic::new(display, Interest::READ, CalloopMode::Level), |_, display, state| {
-            // SAFETY: the display is only touched from this callback on the loop thread.
-            unsafe { display.get_mut().dispatch_clients(state) }?;
-            Ok(PostAction::Continue)
-        })
+        .insert_source(
+            Generic::new(display, Interest::READ, CalloopMode::Level),
+            |_, display, state| {
+                // SAFETY: the display is only touched from this callback on the loop thread.
+                unsafe { display.get_mut().dispatch_clients(state) }?;
+                Ok(PostAction::Continue)
+            },
+        )
         .map_err(|e| anyhow::anyhow!("display source: {e}"))?;
 
     std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
@@ -73,10 +85,16 @@ pub fn run() -> Result<()> {
     handle
         .insert_source(winit_loop, move |event, _, state| match event {
             WinitEvent::Resized { size, .. } => {
-                out.change_current_state(Some(Mode { size, refresh: 60_000 }), None, None, None);
-                for w in state.space.elements().cloned().collect::<Vec<_>>() {
-                    crate::shell::place_new_window(state, w);
-                }
+                out.change_current_state(
+                    Some(Mode {
+                        size,
+                        refresh: 60_000,
+                    }),
+                    None,
+                    None,
+                    None,
+                );
+                crate::shell::arrange(state);
             }
             WinitEvent::Input(ev) => state.process_input_event(ev),
             WinitEvent::CloseRequested => state.quit(),
@@ -85,13 +103,25 @@ pub fn run() -> Result<()> {
                 let rendered = {
                     let (renderer, mut fb) = match backend.bind() {
                         Ok(b) => b,
-                        Err(e) => { tracing::error!(?e, "bind"); return; }
+                        Err(e) => {
+                            tracing::error!(?e, "bind");
+                            return;
+                        }
                     };
-                    match render_output::<_, WaylandSurfaceRenderElement<GlesRenderer>, _, _>(
-                        &out, renderer, &mut fb, 1.0, age, [&state.space], &[], &mut damage_tracker, CLEAR,
-                    ) {
+                    let elements = collect_elements(
+                        renderer,
+                        &state.space,
+                        &mut state.borders,
+                        &out,
+                        &state.config,
+                        state.focus.as_ref(),
+                    );
+                    match damage_tracker.render_output(renderer, &mut fb, age, &elements, CLEAR) {
                         Ok(r) => r.damage.map(|d| d.to_vec()),
-                        Err(e) => { tracing::error!(?e, "render"); return; }
+                        Err(e) => {
+                            tracing::error!(?e, "render");
+                            return;
+                        }
                     }
                 };
                 if let Some(damage) = rendered {
@@ -100,9 +130,7 @@ pub fn run() -> Result<()> {
                     }
                 }
                 let time = state.start_time.elapsed();
-                for w in state.space.elements() {
-                    w.send_frame(&out, time, Some(Duration::ZERO), |_, _| Some(out.clone()));
-                }
+                send_frames(&state.space, &out, time);
                 state.space.refresh();
                 state.popups.cleanup();
                 backend.window().request_redraw();
