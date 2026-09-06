@@ -26,6 +26,7 @@ writing a new ADR that says so.
 | 0018 | [Single-threaded core owning `HeliosState`](0018-single-threaded-core.md) | accepted |
 | 0019 | [Focus-follows-mouse default](0019-focus-follows-mouse-default.md) | accepted |
 | 0020 | [Interim quit binding `Super+Shift+Q`](0020-quit-binding-super-shift-q.md) | accepted |
+| 0021 | [Per-workspace arena binary tree for tiling](0021-layout-tree.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering
