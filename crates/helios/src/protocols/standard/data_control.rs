@@ -6,10 +6,10 @@
 //! fail-closed: a client whose identity cannot be determined does not see the
 //! global at all, and any bind attempt is refused by wayland-server.
 //!
-//! Identity is the peer pid from `SO_PEERCRED` resolved through
-//! `/proc/<pid>/comm` (falling back to the basename of `/proc/<pid>/exe`).
-//! This is a stopgap: pids are reusable and `comm` is writable by the process
-//! itself. See ADR 0022.
+//! Identity is the peer pid from `SO_PEERCRED` resolved through the basename
+//! of `/proc/<pid>/exe` (falling back to `/proc/<pid>/comm`). This is a
+//! stopgap: pids are reusable and a binary can be copied under an allowlisted
+//! name. See ADR 0022.
 //!
 //! TODO(COMP-05): replace with the app identity/provenance record once app
 //! identity exists, and drop the /proc lookup entirely.
@@ -37,14 +37,24 @@ pub fn client_name(dh: &DisplayHandle, client: &Client) -> Option<String> {
     if pid <= 0 {
         return None;
     }
-    if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
-        let comm = comm.trim();
-        if !comm.is_empty() {
-            return Some(comm.to_string());
+    // `exe` first: it is maintained by the kernel, is not writable by the
+    // process, and is not truncated. `comm` is capped at 15 bytes, so every
+    // `xdg-desktop-portal-*` backend collapses to `xdg-desktop-por` and one
+    // allowlist entry would admit all of them.
+    if let Ok(exe) = std::fs::read_link(format!("/proc/{pid}/exe")) {
+        if let Some(name) = exe.file_name() {
+            let name = name.to_string_lossy();
+            if !name.is_empty() {
+                return Some(name.into_owned());
+            }
         }
     }
-    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
-    Some(exe.file_name()?.to_string_lossy().into_owned())
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    let comm = comm.trim();
+    if comm.is_empty() {
+        return None;
+    }
+    Some(comm.to_string())
 }
 
 /// Build the fail-closed visibility filter for the data-control global.

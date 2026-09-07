@@ -47,3 +47,12 @@ it lands it goes behind the same filter.
 - Clipboard *provenance* is separate and tracked independently: `new_selection`
   records the focused toplevel's `app_id` and the offered MIME type names.
   Contents are never read, logged or stored (root invariant).
+
+## Amendment — 2026-09-07
+The resolution order is inverted: the basename of `/proc/<pid>/exe` is tried
+first, and `/proc/<pid>/comm` is now only the fallback. `comm` is capped at 15
+bytes, so every `xdg-desktop-portal-*` backend reports `xdg-desktop-por` and a
+single allowlist entry would have admitted all of them. `exe` is maintained by
+the kernel, is not writable by the process, and is not truncated. The identity
+is still containment rather than authentication: a binary copied under an
+allowlisted name still passes.

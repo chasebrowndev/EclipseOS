@@ -79,3 +79,12 @@ structurally uncapturable rather than uncapturable by policy.
 `decide()` calls `check()`, with the empty-allowlist default replaced by an
 unavailable-policyd deny that means the same thing — or when the COMP-10 capture
 prompt lands and consent becomes interactive rather than declared in config.
+
+## Amendment — 2026-09-07
+The resolution order is inverted: the basename of `/proc/<pid>/exe` is tried
+first, and `/proc/<pid>/comm` is now only the fallback. `comm` is capped at 15
+bytes, so every `xdg-desktop-portal-*` backend reports `xdg-desktop-por` and a
+single allowlist entry would have admitted all of them. `exe` is maintained by
+the kernel, is not writable by the process, and is not truncated. The identity
+is still containment rather than authentication: a binary copied under an
+allowlisted name still passes.
