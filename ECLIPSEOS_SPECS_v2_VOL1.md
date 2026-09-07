@@ -1952,7 +1952,8 @@ Phase 2 — agent protocol:
 10. Privileged socket, `agentd` skeleton, `list_toplevels`, audit stream.
 11. Agent seats, key/pointer/text injection, focus arbitration, override chord.
 12. Atomic batches, `click`, `wait_for`.
-13. Capture with redaction and sensitivity classes.
+13. Region-level redaction and policy-driven sensitivity classes.
+    (Frame-level redaction and the capture gate landed early, in milestone 8.)
 14. Trusted UI: indicator, consent prompt, emergency panel.
 15. Policy table enforcement, `prompt`/`defer` paths.
 16. `eclipse_semantic_v1` server side + reference client.
@@ -4774,7 +4775,7 @@ is met. Estimates deliberately omitted — they would be invented.
 | 10 | Privileged socket; `agentd` skeleton; grant verification; `list_toplevels`; audit emission to `policyd` | a test agent lists windows; every call audited |
 | 11 | Agent seats; key/pointer/text injection; focus arbitration; override chord | test agent types into an app while the human types into another |
 | 12 | Atomic batches, `click`, `wait_for`, dedupe, generations | multi-step interaction survives concurrent human use |
-| 13 | Capture with redaction and sensitivity classes | redaction suite (§2) green |
+| 13 | Region-level redaction; policy-driven sensitivity classes (frame-level redaction and the capture gate landed early in milestone 8) | redaction suite (§2) green |
 | 14 | Trusted UI: indicator, prompt, emergency panel, phrase | spoof suite green; prompts usable |
 | 15 | Policy table enforcement; prompt and defer paths | golden decision suite green; ≤50 µs p99 |
 | 16 | `eclipse_semantic_v1` server + reference client | round-trip tree and semantic actions |
