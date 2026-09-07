@@ -367,6 +367,11 @@ pub fn register(
         .add(identity.clone(), connector.clone(), output.clone(), kind, global);
     apply_settings(state, id);
     relayout(state);
+    crate::ipc::emit(
+        state,
+        "output",
+        serde_json::json!({"change": "added", "id": id, "name": identity}),
+    );
     tracing::info!(id, %identity, %connector, "output added");
     id
 }
@@ -505,6 +510,11 @@ pub fn unregister(state: &mut crate::state::HeliosState, id: u64) {
         state.focus = None;
     }
     relayout(state);
+    crate::ipc::emit(
+        state,
+        "output",
+        serde_json::json!({"change": "removed", "id": id, "name": identity}),
+    );
     tracing::info!(id, %identity, "output removed");
 }
 

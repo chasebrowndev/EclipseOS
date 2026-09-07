@@ -234,6 +234,12 @@ pub fn place_new_window(state: &mut HeliosState, window: Window) {
     state.focus = Some(window.clone());
     arrange(state);
     focus_window(state, &window);
+    let handle = state.ipc.handle_for(&window);
+    crate::ipc::emit(
+        state,
+        "window",
+        serde_json::json!({"change": "opened", "handle": handle}),
+    );
 }
 
 pub fn unmap_window(state: &mut HeliosState, window: &Window) {
@@ -244,6 +250,12 @@ pub fn unmap_window(state: &mut HeliosState, window: &Window) {
     }
     state.space.unmap_elem(window);
     state.borders.remove(window);
+    let handle = state.ipc.handle_for(window);
+    crate::ipc::emit(
+        state,
+        "window",
+        serde_json::json!({"change": "closed", "handle": handle}),
+    );
     if state.focus.as_ref() == Some(window) {
         state.focus = None;
     }
@@ -276,6 +288,8 @@ pub fn focus_window(state: &mut HeliosState, window: &Window) {
     let keyboard = state.seat.get_keyboard().unwrap();
     keyboard.set_focus(state, Some(surface), SERIAL_COUNTER.next_serial());
     arrange(state);
+    let handle = state.ipc.handle_for(window);
+    crate::ipc::emit(state, "focus", serde_json::json!({"handle": handle}));
 }
 
 pub fn focus_surface(state: &mut HeliosState, surface: Option<WlSurface>) {
@@ -579,6 +593,11 @@ pub fn switch_workspace(state: &mut HeliosState, idx: usize) {
     state.focus = None;
     arrange(state);
     refocus_topmost(state);
+    crate::ipc::emit(
+        state,
+        "workspace",
+        serde_json::json!({"change": "switched", "output": id, "workspace": idx}),
+    );
     tracing::info!(workspace = idx, "workspace switched");
 }
 

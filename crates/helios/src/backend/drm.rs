@@ -484,6 +484,8 @@ pub fn run(config: Config, stats: bool) -> Result<()> {
     );
 
     crate::input::idle::start(&mut state, &handle);
+    crate::ipc::start(&mut state, &handle);
+    crate::config::watch::start(&mut state, &handle);
     crate::xwayland::start(&mut state);
 
     // --- GPU discovery -----------------------------------------------------
@@ -729,6 +731,7 @@ pub fn run(config: Config, stats: bool) -> Result<()> {
     event_loop.run(None, &mut state, |state| {
         let _ = state.display_handle.flush_clients();
     })?;
+    crate::ipc::cleanup(&state);
     Ok(())
 }
 

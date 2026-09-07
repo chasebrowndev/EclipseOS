@@ -77,6 +77,40 @@ impl FrameStats {
         );
         self.frames = 0;
     }
+
+    /// Summarise the ring without disturbing it. Allocates two vectors the
+    /// size of the window; called only from the control socket, never from
+    /// the render path.
+    pub fn snapshot(&self) -> Snapshot {
+        if self.len == 0 {
+            return Snapshot::default();
+        }
+        let mut render: Vec<u32> = self.render_us[..self.len].to_vec();
+        let mut submit: Vec<u32> = self.submit_us[..self.len].to_vec();
+        render.sort_unstable();
+        submit.sort_unstable();
+        Snapshot {
+            samples: self.len,
+            frames: self.frames,
+            render_p50_us: pct(&render, 50),
+            render_p99_us: pct(&render, 99),
+            submit_p50_us: pct(&submit, 50),
+            submit_p99_us: pct(&submit, 99),
+        }
+    }
+}
+
+/// A point-in-time summary of the ring, for `get_metrics` (COMP-13 §2.1).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Snapshot {
+    /// Samples currently in the ring.
+    pub samples: usize,
+    /// Frames composited since the last periodic report.
+    pub frames: u64,
+    pub render_p50_us: u32,
+    pub render_p99_us: u32,
+    pub submit_p50_us: u32,
+    pub submit_p99_us: u32,
 }
 
 /// Nearest-rank percentile over an already sorted slice.

@@ -11,6 +11,8 @@
 //! Parsing never fails hard: every malformed node is logged and skipped, and a
 //! file that will not parse at all leaves the defaults in place.
 
+pub mod watch;
+
 use std::path::{Path, PathBuf};
 
 use kdl::{KdlDocument, KdlNode, KdlValue};
@@ -106,6 +108,15 @@ pub struct Idle {
     pub lock_command: Option<String>,
 }
 
+/// `misc { ... }` (COMP-13 §1.1).
+#[derive(Debug, Clone, Default)]
+pub struct Misc {
+    /// `scripted-input`: whether the control socket may synthesise input
+    /// (COMP-13 §2.2). Default **off**; only the socket owner can flip it,
+    /// because only the socket owner can write the config.
+    pub scripted_input: bool,
+}
+
 /// One `output "<pattern>" { .. }` block (COMP-13 §4). Config wins over the
 /// persisted layout.
 #[derive(Debug, Clone, Default)]
@@ -147,13 +158,18 @@ pub struct Config {
     pub capture: Capture,
     pub xwayland: Xwayland,
     pub idle: Idle,
+    pub misc: Misc,
     pub binds: Vec<Bind>,
     /// Per-workspace layout overrides, indexed 1..=10.
     pub workspace_layout: [Option<LayoutKind>; 10],
     /// `output` blocks in file order; the last match wins.
     pub outputs: Vec<OutputRule>,
-    /// Files this config was built from, for the hot-reload stub.
+    /// Files this config was built from, in load order. The hot-reload
+    /// watcher watches these and the directories that would contain them.
     pub sources: Vec<PathBuf>,
+    /// `--config <path>`, if one was given. Reload must honour it rather than
+    /// falling back to the search path.
+    pub explicit: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -165,10 +181,12 @@ impl Default for Config {
             capture: Capture::default(),
             xwayland: Xwayland::default(),
             idle: Idle::default(),
+            misc: Misc::default(),
             binds: default_binds(),
             workspace_layout: Default::default(),
             outputs: Vec::new(),
             sources: Vec::new(),
+            explicit: None,
         }
     }
 }
@@ -308,7 +326,10 @@ impl Config {
             Some(p) => vec![p.to_path_buf()],
             None => search_path(),
         };
-        let mut cfg = Config::default();
+        let mut cfg = Config {
+            explicit: explicit.map(|p| p.to_path_buf()),
+            ..Config::default()
+        };
         let mut binds_from_file = Vec::new();
         let mut any = false;
         for f in &files {
@@ -343,11 +364,10 @@ impl Config {
         cfg
     }
 
-    /// Re-read the same sources. Hot-reload (inotify on the search path) is a
-    /// TODO for M6; this is the reload entry point it will call.
-    #[allow(dead_code)]
+    /// Re-read the same sources. The inotify watcher (`config::watch`) calls
+    /// this; `Config::load` never fails hard, so the result is always usable.
     pub fn reload(&self) -> Self {
-        Self::load(self.sources.first().map(|p| p.as_path()))
+        Self::load(self.explicit.as_deref())
     }
 
     fn apply(&mut self, doc: &KdlDocument, binds: &mut Vec<Bind>) {
@@ -364,6 +384,7 @@ impl Config {
                 "capture" => self.apply_capture(node),
                 "xwayland" => self.apply_xwayland(node),
                 "idle" => self.apply_idle(node),
+                "misc" => self.apply_misc(node),
                 "output" => self.apply_output(node),
                 // Blocks specified but not implemented in M2.
                 "decoration" | "animations" | "input" | "windowrule" => {}
@@ -493,6 +514,22 @@ impl Config {
                     None => tracing::warn!("idle lock-command needs a string argument"),
                 },
                 other => tracing::warn!(node = other, "unknown idle node, ignored"),
+            }
+        }
+    }
+
+    /// `misc { scripted-input #false }`. Absent keys keep their defaults; the
+    /// scripted-input default is `false` and stays `false` on a malformed value.
+    fn apply_misc(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "scripted-input" => {
+                    self.misc.scripted_input = arg(n).and_then(KdlValue::as_bool).unwrap_or(false);
+                }
+                // Restart-only knobs (COMP-13 §1.2); parsed elsewhere or not yet.
+                "xwayland" | "render-device" => {}
+                other => tracing::warn!(node = other, "unknown misc key, ignored"),
             }
         }
     }

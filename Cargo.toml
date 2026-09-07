@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/helios"]
+members = ["crates/helios", "crates/eclipse-ctl"]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,6 +19,7 @@ anyhow = "1"
 thiserror = "2"
 xkbcommon = "0.8"
 kdl = "6"
+serde_json = "1"
 
 [profile.release]
 debug = 1

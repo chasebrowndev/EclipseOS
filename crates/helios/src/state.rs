@@ -147,6 +147,14 @@ pub struct HeliosState {
 
     /// Frame timing (COMP-14 §2).
     pub stats: crate::render::stats::FrameStats,
+
+    /// Human control socket (COMP-13 §2).
+    pub ipc: crate::ipc::IpcState,
+    /// Deadline for the debounced config reload, `None` when nothing is
+    /// pending (COMP-13 §1.2).
+    pub config_dirty: Option<Instant>,
+    /// The debounce timer's source, so repeated edits reuse one timer.
+    pub config_timer: Option<smithay::reexports::calloop::RegistrationToken>,
 }
 
 impl HeliosState {
@@ -260,6 +268,9 @@ impl HeliosState {
             xwayland_shell_state,
             xwayland: Default::default(),
             stats: crate::render::stats::FrameStats::new(stats),
+            ipc: crate::ipc::IpcState::default(),
+            config_dirty: None,
+            config_timer: None,
         }
     }
 

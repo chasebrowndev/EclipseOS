@@ -115,6 +115,8 @@ pub fn run(config: Config, stats: bool) -> Result<()> {
 
     let handle = event_loop.handle();
     crate::input::idle::start(&mut state, &handle);
+    crate::ipc::start(&mut state, &handle);
+    crate::config::watch::start(&mut state, &handle);
     handle
         .insert_source(socket, |stream, _, state| {
             if let Err(e) = state.display_handle.insert_client(stream, client_state()) {
@@ -172,6 +174,7 @@ pub fn run(config: Config, stats: bool) -> Result<()> {
             let _ = state.display_handle.flush_clients();
         })
         .context("event loop")?;
+    crate::ipc::cleanup(&state);
     tracing::info!("helios exited cleanly");
     Ok(())
 }
