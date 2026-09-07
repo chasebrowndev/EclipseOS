@@ -32,6 +32,7 @@ use smithay::{
         socket::ListeningSocketSource,
         text_input::TextInputManagerState,
         viewporter::ViewporterState,
+        xwayland_shell::XWaylandShellState,
     },
 };
 
@@ -126,6 +127,11 @@ pub struct HeliosState {
     /// `zwlr_output_power_management_v1`.
     pub output_power: crate::protocols::standard::output_power::OutputPowerState,
 
+    /// `xwayland_shell_v1`: how XWayland associates X windows with surfaces.
+    pub xwayland_shell_state: XWaylandShellState,
+    /// The X11 trust domain (COMP-07). Empty until XWayland is ready.
+    pub xwayland: crate::xwayland::XWaylandState,
+
     /// Frame timing (COMP-14 §2).
     pub stats: crate::render::stats::FrameStats,
 }
@@ -166,6 +172,7 @@ impl HeliosState {
         let session_lock_state = SessionLockManagerState::new::<Self, _>(&dh, |_| true);
         let idle_notifier = IdleNotifierState::<Self>::new(&dh, loop_handle.clone());
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&dh);
+        let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         let output_power = crate::protocols::standard::output_power::OutputPowerState::new(&dh);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
@@ -221,6 +228,8 @@ impl HeliosState {
             idle_notifier,
             idle_inhibit_state,
             output_power,
+            xwayland_shell_state,
+            xwayland: Default::default(),
             stats: crate::render::stats::FrameStats::new(stats),
         }
     }

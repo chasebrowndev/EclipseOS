@@ -43,6 +43,7 @@ pub fn run(config: Config, stats: bool) -> Result<()> {
         config,
         stats,
     );
+    crate::xwayland::start(&mut state);
     let dh = state.display_handle.clone();
 
     let attrs = WindowAttributes::default()

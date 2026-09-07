@@ -13,6 +13,7 @@ mod protocols;
 mod render;
 mod shell;
 mod state;
+mod xwayland;
 
 use anyhow::Result;
 use tracing_subscriber::{prelude::*, EnvFilter};
@@ -103,9 +104,17 @@ fn main() -> Result<()> {
     let args = parse_args()?;
     tracing::info!(version = env!("CARGO_PKG_VERSION"), kind = ?args.backend, "helios starting");
     // Reap spawned children without a wait loop: nothing on the hot path may block.
+    // `SIG_IGN` would do it, but an ignored SIGCHLD survives `execve` and breaks
+    // every child that waits on children of its own (Xwayland forking xkbcomp is
+    // the case that bit us). `SA_NOCLDWAIT` on top of the *default* disposition
+    // reaps ours and is cleared for children at exec.
     // SAFETY: called once, before any thread or child exists.
     unsafe {
-        libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+        let mut act: libc::sigaction = std::mem::zeroed();
+        act.sa_sigaction = libc::SIG_DFL;
+        act.sa_flags = libc::SA_NOCLDWAIT;
+        libc::sigemptyset(&mut act.sa_mask);
+        libc::sigaction(libc::SIGCHLD, &act, std::ptr::null_mut());
     }
     let config = config::Config::load(args.config.as_deref());
     match args.backend {

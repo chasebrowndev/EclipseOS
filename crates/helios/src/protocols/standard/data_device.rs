@@ -88,6 +88,32 @@ impl SelectionHandler for HeliosState {
         if ty == SelectionTarget::Clipboard {
             self.record_selection(source.as_ref());
         }
+        // Mirror the offer into X11 so its clients see the same clipboard
+        // (COMP-07 §3). Names only; no contents cross here.
+        if let Some(wm) = self.xwayland.wm.as_mut() {
+            let mimes = source.as_ref().map(|s| s.mime_types());
+            if let Err(e) = wm.new_selection(ty, mimes) {
+                tracing::warn!(error = %e, "could not advertise the selection to xwayland");
+            }
+        }
+    }
+
+    /// A Wayland client is reading a selection owned by X11.
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: std::os::unix::io::OwnedFd,
+        _seat: Seat<Self>,
+        _user_data: &Self::SelectionUserData,
+    ) {
+        let handle = self.loop_handle.clone();
+        let Some(wm) = self.xwayland.wm.as_mut() else {
+            return;
+        };
+        if let Err(e) = wm.send_selection(ty, mime_type, fd, handle) {
+            tracing::warn!(error = %e, "could not read a selection from xwayland");
+        }
     }
 }
 

@@ -484,6 +484,7 @@ pub fn run(config: Config, stats: bool) -> Result<()> {
     );
 
     crate::input::idle::start(&mut state, &handle);
+    crate::xwayland::start(&mut state);
 
     // --- GPU discovery -----------------------------------------------------
     let udev = UdevBackend::new(&seat_name).context("udev backend")?;

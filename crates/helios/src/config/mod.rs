@@ -58,6 +58,27 @@ pub struct Clipboard {
     pub data_control_allow: Vec<String>,
 }
 
+/// `xwayland { ... }` (COMP-07 §4, §7 open decision 2).
+#[derive(Debug, Clone)]
+pub struct Xwayland {
+    /// Run an X server at all. Disabling it is the strongest isolation
+    /// available: no X11 trust domain exists (COMP-07 §7).
+    pub enable: bool,
+    /// `false` (default): the compositor upscales X11 clients rendering at
+    /// scale 1 — blurry but always correct. `true`: hand the clients DPI
+    /// hints and let them render natively (COMP-07 §4).
+    pub scaling_client: bool,
+}
+
+impl Default for Xwayland {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            scaling_client: false,
+        }
+    }
+}
+
 /// `idle { ... }` (COMP-03 §7). Zero or absent disables a timeout.
 #[derive(Debug, Clone, Default)]
 pub struct Idle {
@@ -109,6 +130,7 @@ pub struct Config {
     pub general: General,
     pub render: Render,
     pub clipboard: Clipboard,
+    pub xwayland: Xwayland,
     pub idle: Idle,
     pub binds: Vec<Bind>,
     /// Per-workspace layout overrides, indexed 1..=10.
@@ -125,6 +147,7 @@ impl Default for Config {
             general: General::default(),
             render: Render::default(),
             clipboard: Clipboard::default(),
+            xwayland: Xwayland::default(),
             idle: Idle::default(),
             binds: default_binds(),
             workspace_layout: Default::default(),
@@ -322,6 +345,7 @@ impl Config {
                 "workspace" => self.apply_workspace(node),
                 "render" => self.apply_render(node),
                 "clipboard" => self.apply_clipboard(node),
+                "xwayland" => self.apply_xwayland(node),
                 "idle" => self.apply_idle(node),
                 "output" => self.apply_output(node),
                 // Blocks specified but not implemented in M2.
@@ -384,6 +408,26 @@ impl Config {
                         .collect();
                 }
                 other => tracing::warn!(node = other, "unknown clipboard node, ignored"),
+            }
+        }
+    }
+
+    fn apply_xwayland(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let name = n.name().value();
+            match name {
+                "enable" => {
+                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
+                        self.xwayland.enable = b;
+                    }
+                }
+                "scaling" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("client") => self.xwayland.scaling_client = true,
+                    Some("compositor") => self.xwayland.scaling_client = false,
+                    other => tracing::warn!(?other, "unknown xwayland scaling mode, keeping default"),
+                },
+                other => tracing::warn!(node = other, "unknown xwayland node, ignored"),
             }
         }
     }

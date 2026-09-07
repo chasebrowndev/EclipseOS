@@ -16,6 +16,7 @@ smithay = { workspace = true, features = [
   "wayland_frontend",
   "desktop",
   "renderer_gl",
+  "xwayland",
 ] }
 calloop.workspace = true
 tracing.workspace = true

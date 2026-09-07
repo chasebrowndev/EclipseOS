@@ -23,6 +23,15 @@ use crate::{
     state::HeliosState,
 };
 
+/// The `wl_surface` backing a window, xdg or X11 (COMP-07 §1).
+pub fn window_surface(window: &Window) -> Option<WlSurface> {
+    use smithay::desktop::WindowSurface;
+    match window.underlying_surface() {
+        WindowSurface::Wayland(t) => Some(t.wl_surface().clone()),
+        WindowSurface::X11(s) => s.wl_surface(),
+    }
+}
+
 /// The output that owns focus. Never `None` in practice: COMP-03 §5 guarantees
 /// a fallback output exists whenever there is no connector.
 pub fn focused_output(state: &HeliosState) -> Option<Output> {
@@ -82,6 +91,23 @@ fn shrink(r: Rectangle<i32, Logical>, by: i32) -> Rectangle<i32, Logical> {
 /// the tile wins, a min larger than the tile wins.
 fn clamp_size(window: &Window, mut size: Size<i32, Logical>) -> Size<i32, Logical> {
     let Some(toplevel) = window.toplevel() else {
+        if let Some(x11) = window.x11_surface() {
+            let (min, max) = (x11.min_size(), x11.max_size());
+            if let Some(max) = max {
+                if max.w > 0 {
+                    size.w = size.w.min(max.w);
+                }
+                if max.h > 0 {
+                    size.h = size.h.min(max.h);
+                }
+            }
+            if let Some(min) = min {
+                size.w = size.w.max(min.w);
+                size.h = size.h.max(min.h);
+            }
+            size.w = size.w.max(1);
+            size.h = size.h.max(1);
+        }
         return size;
     };
     with_states(toplevel.wl_surface(), |states| {
@@ -99,8 +125,17 @@ fn clamp_size(window: &Window, mut size: Size<i32, Logical>) -> Size<i32, Logica
     size
 }
 
-fn configure(window: &Window, size: Size<i32, Logical>, activated: bool) {
-    let Some(toplevel) = window.toplevel() else { return };
+fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool) {
+    let size = rect.size;
+    let Some(toplevel) = window.toplevel() else {
+        // X11 windows are positioned in the X root's coordinate space, so
+        // they need the whole rectangle, not just a size.
+        if let Some(x11) = window.x11_surface() {
+            x11.set_activated(activated).ok();
+            let _ = x11.configure(rect);
+        }
+        return;
+    };
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
     toplevel.with_pending_state(|s| {
         s.size = Some(size);
@@ -163,14 +198,14 @@ pub fn arrange_output(state: &mut HeliosState, id: u64) {
     for (w, rect) in tiled {
         let inner = shrink(rect, border);
         let size = clamp_size(&w, inner.size);
-        configure(&w, size, focus.as_ref() == Some(&w));
+        configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
         fractional_scale::update_window_scale(&w, &output);
         state.space.map_element(w, inner.loc, false);
     }
     for (w, rect) in floating {
         let inner = shrink(rect, border);
         let size = clamp_size(&w, inner.size);
-        configure(&w, size, focus.as_ref() == Some(&w));
+        configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
         fractional_scale::update_window_scale(&w, &output);
         state.space.map_element(w.clone(), inner.loc, false);
         state.space.raise_element(&w, false);
@@ -215,9 +250,23 @@ pub fn unmap_window(state: &mut HeliosState, window: &Window) {
 }
 
 pub fn focus_window(state: &mut HeliosState, window: &Window) {
-    let Some(surface) = window.toplevel().map(|t| t.wl_surface().clone()) else {
+    let Some(surface) = window_surface(window) else {
         return;
     };
+    // X11 focus is compositor-driven: activate, raise in the X stack, then
+    // let the keyboard follow (COMP-07 §1).
+    if let Some(x11) = window.x11_surface() {
+        x11.set_activated(true).ok();
+        if let Some(wm) = state.xwayland.wm.as_mut() {
+            let _ = wm.raise_window(x11);
+        }
+        let others: Vec<Window> = state.space.elements().filter(|w| *w != window).cloned().collect();
+        for w in others {
+            if let Some(other) = w.x11_surface() {
+                other.set_activated(false).ok();
+            }
+        }
+    }
     state.focus = Some(window.clone());
     if let Some(id) = output_of_window(state, window) {
         state.outputs.set_focused(id);
@@ -302,9 +351,13 @@ pub fn handle_commit(state: &mut HeliosState, surface: &WlSurface) {
     if let Some(window) = state
         .space
         .elements()
-        .find(|w| w.toplevel().map(|t| t.wl_surface() == surface).unwrap_or(false))
+        .find(|w| window_surface(w).as_ref() == Some(surface))
         .cloned()
     {
+        if window.toplevel().is_none() {
+            // X11: no configure handshake to complete on this side.
+            return;
+        }
         let initial_sent = with_states(surface, |states| {
             states
                 .data_map
@@ -364,8 +417,13 @@ pub fn handle_commit(state: &mut HeliosState, surface: &WlSurface) {
 
 pub fn close_focused(state: &mut HeliosState) {
     if let Some(w) = state.focus.clone() {
-        if let Some(t) = w.toplevel() {
-            t.send_close();
+        match w.underlying_surface() {
+            smithay::desktop::WindowSurface::Wayland(t) => t.send_close(),
+            smithay::desktop::WindowSurface::X11(x) => {
+                if let Err(e) = x.close() {
+                    tracing::warn!(error = %e, "could not close x11 window");
+                }
+            }
         }
     }
 }

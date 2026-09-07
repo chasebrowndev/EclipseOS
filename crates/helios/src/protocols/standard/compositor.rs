@@ -18,7 +18,15 @@ impl CompositorHandler for HeliosState {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
-        &client.get_data::<ClientState>().unwrap().compositor_state
+        // XWayland connects as a client of its own, carrying smithay's data
+        // rather than ours.
+        if let Some(state) = client.get_data::<smithay::xwayland::XWaylandClientData>() {
+            return &state.compositor_state;
+        }
+        &client
+            .get_data::<ClientState>()
+            .expect("every client carries one of the two client datas")
+            .compositor_state
     }
 
     #[cfg(feature = "drm")]
@@ -41,7 +49,7 @@ impl CompositorHandler for HeliosState {
             if let Some(window) = self
                 .space
                 .elements()
-                .find(|w| w.toplevel().unwrap().wl_surface() == &root)
+                .find(|w| crate::shell::window_surface(w).as_ref() == Some(&root))
             {
                 window.on_commit();
             }

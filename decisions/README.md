@@ -31,6 +31,7 @@ writing a new ADR that says so.
 | 0023 | [Output identity by EDID, layouts persisted per output-set](0023-output-identity-and-persistence.md) | accepted |
 | 0024 | [A locker crash leaves the session locked behind a compositor fallback](0024-session-lock-fallback.md) | accepted |
 | 0025 | [Direct scanout is off for any frame containing a sensitive surface](0025-direct-scanout-and-redaction.md) | accepted |
+| 0026 | [XWayland is one untrusted trust domain, its clipboard a focus-scoped grant](0026-xwayland-trust-domain.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering
