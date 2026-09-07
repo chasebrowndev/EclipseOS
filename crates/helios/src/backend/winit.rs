@@ -191,6 +191,26 @@ pub fn run(config: Config, stats: bool) -> Result<()> {
     Ok(())
 }
 
+/// Service queued captures without waiting for the host's next frame.
+///
+/// The nested backend composites only when the host compositor delivers a
+/// frame callback, and a host that has the helios window occluded or on
+/// another workspace delivers none. A screen-capture consumer must not stall
+/// on that: a queued `copy` renders its own offscreen pass and never touches
+/// the on-screen framebuffer, so it can be serviced from an idle instead.
+/// The DRM backend has no equivalent problem — there `damage_all` schedules a
+/// real render.
+pub fn service_captures(state: &mut HeliosState) {
+    if state.captures.is_empty() {
+        return;
+    }
+    let Some(mut data) = state.winit.take() else {
+        return;
+    };
+    crate::render::capture::service(state, data.0.renderer());
+    state.winit = Some(data);
+}
+
 /// One frame on the nested backend.
 fn redraw(
     state: &mut HeliosState,

@@ -36,10 +36,18 @@ pub trait Backend {
 /// Mark every output as needing a fresh composite. Used whenever compositor
 /// state changes outside the normal damage path (lock, unlock, DPMS).
 pub fn damage_all(state: &mut HeliosState) {
-    // winit drives its own continuous redraw, so it needs nothing here.
     #[cfg(feature = "drm")]
     if state.drm.is_some() {
         drm::schedule_render(state);
+        return;
+    }
+    // The nested backend redraws only when the host hands it a frame callback,
+    // and a host that has the helios window occluded hands it none. Anything
+    // queued behind this call — a screencopy `copy` in particular — would wait
+    // forever on a frame that is not coming, so service it from an idle.
+    #[cfg(feature = "winit")]
+    if state.winit.is_some() {
+        let _ = state.loop_handle.insert_idle(winit::service_captures);
     }
     let _ = state;
 }
