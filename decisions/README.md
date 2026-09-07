@@ -29,6 +29,7 @@ writing a new ADR that says so.
 | 0021 | [Per-workspace arena binary tree for tiling](0021-layout-tree.md) | accepted |
 | 0022 | [`wlr_data_control` behind a process-name allowlist](0022-data-control-allowlist.md) | accepted |
 | 0023 | [Output identity by EDID, layouts persisted per output-set](0023-output-identity-and-persistence.md) | accepted |
+| 0025 | [Direct scanout is off for any frame containing a sensitive surface](0025-direct-scanout-and-redaction.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering
