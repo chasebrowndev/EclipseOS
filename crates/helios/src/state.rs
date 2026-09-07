@@ -112,6 +112,13 @@ pub struct HeliosState {
     /// compositor keeps the pixels it can redact.
     pub sensitive: HashSet<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
 
+    /// Live capture allowlist, shared with the `zwlr_screencopy_v1` bind
+    /// filter. Written by the config reload path.
+    pub capture_allow: crate::config::Allowlist,
+    /// Live data-control allowlist, shared with the `zwlr_data_control_v1`
+    /// bind filter. Written by the config reload path.
+    pub clipboard_allow: crate::config::Allowlist,
+
     /// `zwlr_screencopy_v1` (COMP-06 §3). Holds the global alive; the gate
     /// lives in the dispatch impls.
     #[allow(dead_code)]
@@ -194,6 +201,10 @@ impl HeliosState {
             &dh,
             crate::protocols::standard::screencopy::EXTRA_SHM_FORMATS.to_vec(),
         );
+        // Live handles, shared with the two global filters so that a config
+        // reload retunes them without a restart (ADR 0022 amendment).
+        let clipboard_allow = crate::config::Allowlist::new(config.clipboard.data_control_allow.clone());
+        let capture_allow = crate::config::Allowlist::new(config.capture.allow.clone());
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
@@ -201,10 +212,7 @@ impl HeliosState {
         let data_control_state = DataControlState::new::<Self, _>(
             &dh,
             Some(&primary_selection_state),
-            crate::protocols::standard::data_control::allow_filter(
-                dh.clone(),
-                config.clipboard.data_control_allow.clone(),
-            ),
+            crate::protocols::standard::data_control::allow_filter(dh.clone(), clipboard_allow.clone()),
         );
         let text_input_manager_state = TextInputManagerState::new::<Self>(&dh);
         let input_method_manager_state = InputMethodManagerState::new::<Self, _>(&dh, |_| true);
@@ -220,7 +228,7 @@ impl HeliosState {
         let output_power = crate::protocols::standard::output_power::OutputPowerState::new(&dh);
         // Capture reads every pixel of an output: allowlisted, fail-closed.
         let screencopy =
-            crate::protocols::standard::screencopy::ScreencopyState::new(&dh, config.capture.allow.clone());
+            crate::protocols::standard::screencopy::ScreencopyState::new(&dh, capture_allow.clone());
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         // Repeat defaults match COMP-04 until config lands (M6).
@@ -245,6 +253,8 @@ impl HeliosState {
             data_device_state,
             primary_selection_state,
             data_control_state,
+            capture_allow,
+            clipboard_allow,
             screencopy,
             captures: Vec::new(),
             capture_seen: None,

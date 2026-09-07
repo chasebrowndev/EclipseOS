@@ -161,6 +161,12 @@ pub fn reload_now(state: &mut HeliosState) {
     let next = state.config.reload();
     let sources: Vec<String> = next.sources.iter().map(|p| p.display().to_string()).collect();
     state.config = next;
+    // Retune the two global bind filters. They hold Allowlist handles rather
+    // than snapshots precisely so this line is possible (ADR 0022 amendment).
+    state.capture_allow.set(state.config.capture.allow.clone());
+    state
+        .clipboard_allow
+        .set(state.config.clipboard.data_control_allow.clone());
     crate::outputs::relayout(state);
     crate::shell::arrange(state);
     crate::backend::damage_all(state);

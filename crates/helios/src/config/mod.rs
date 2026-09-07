@@ -52,6 +52,49 @@ impl Default for General {
     }
 }
 
+/// A live allowlist shared between `Config` and a Wayland global's filter.
+///
+/// Global visibility filters are `Fn(&Client) -> bool + Send + Sync + 'static`
+/// callbacks owned by the display, so they cannot borrow `HeliosState` and
+/// cannot see a later `Config`. This handle is the seam: `reload_now` writes
+/// the new names, and the filter reads them on the next bind.
+///
+/// The `RwLock` is not on a hot path — it is touched at global-bind time and
+/// on config reload, never in input delivery or a policy check — and the
+/// process is single-threaded besides. It exists to satisfy `Sync`, not to
+/// coordinate anything.
+#[derive(Debug, Clone, Default)]
+pub struct Allowlist(std::sync::Arc<std::sync::RwLock<Vec<String>>>);
+
+impl Allowlist {
+    pub fn new(names: Vec<String>) -> Self {
+        Self(std::sync::Arc::new(std::sync::RwLock::new(names)))
+    }
+
+    /// Replace the names. Called from the config reload path only.
+    pub fn set(&self, names: Vec<String>) {
+        if let Ok(mut guard) = self.0.write() {
+            *guard = names;
+        }
+    }
+
+    /// Whether `name` is allowed. An empty list denies everything, and a
+    /// poisoned lock denies too: fail-closed either way.
+    pub fn contains(&self, name: &str) -> bool {
+        self.0.read().is_ok_and(|g| g.iter().any(|a| a == name))
+    }
+
+    /// Whether the list is empty, i.e. nothing is allowed at all. A poisoned
+    /// lock reports empty, which is the denying answer.
+    pub fn is_empty(&self) -> bool {
+        self.0.read().is_ok_and(|g| g.is_empty())
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.0.read().map(|g| g.clone()).unwrap_or_default()
+    }
+}
+
 /// `clipboard { ... }` (COMP-06 §4).
 #[derive(Debug, Clone, Default)]
 pub struct Clipboard {
@@ -938,5 +981,35 @@ mod output_tests {
         assert_eq!(r.scale, Some(2.0));
         assert_eq!(r.position, Some((100, 0)));
         assert_eq!(c.output_rule("HDMI-A-1", "x").scale, Some(1.0));
+    }
+}
+
+#[cfg(test)]
+mod allowlist_tests {
+    use super::Allowlist;
+
+    #[test]
+    fn empty_denies_everything() {
+        let a = Allowlist::default();
+        assert!(a.is_empty());
+        assert!(!a.contains("grim"));
+    }
+
+    #[test]
+    fn set_is_visible_to_an_existing_handle() {
+        // The point of the type: the copy held by a global's bind filter sees
+        // what the config reload path wrote, without a restart.
+        let held = Allowlist::new(vec!["grim".to_string()]);
+        let reload = held.clone();
+        assert!(held.contains("grim"));
+
+        reload.set(vec!["wf-recorder".to_string()]);
+        assert!(!held.contains("grim"));
+        assert!(held.contains("wf-recorder"));
+
+        // Reloading to nothing revokes rather than leaving the old list live.
+        reload.set(Vec::new());
+        assert!(held.is_empty());
+        assert!(!held.contains("wf-recorder"));
     }
 }

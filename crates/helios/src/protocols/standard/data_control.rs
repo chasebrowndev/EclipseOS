@@ -20,7 +20,7 @@ use smithay::{
     wayland::selection::wlr_data_control::{DataControlHandler, DataControlState},
 };
 
-use crate::state::HeliosState;
+use crate::{config::Allowlist, state::HeliosState};
 
 impl DataControlHandler for HeliosState {
     fn data_control_state(&self) -> &DataControlState {
@@ -59,18 +59,20 @@ pub fn client_name(dh: &DisplayHandle, client: &Client) -> Option<String> {
 
 /// Build the fail-closed visibility filter for the data-control global.
 ///
-/// The allowlist is captured here, so it is *not* hot-reloadable — a config
-/// reload that changes it needs a compositor restart (TODO, M6).
+/// The filter holds an [`Allowlist`] handle rather than a snapshot, so a
+/// config reload takes effect on the next bind without a restart. Clients
+/// that already hold the global keep it — a filter is only consulted when a
+/// client asks what globals exist.
 pub fn allow_filter(
     dh: DisplayHandle,
-    allow: Vec<String>,
+    allow: Allowlist,
 ) -> impl for<'c> Fn(&'c Client) -> bool + Send + Sync + 'static {
     move |client: &Client| {
         if allow.is_empty() {
             return false;
         }
         match client_name(&dh, client) {
-            Some(name) if allow.iter().any(|a| a == &name) => true,
+            Some(name) if allow.contains(&name) => true,
             Some(name) => {
                 tracing::warn!(client = %name, "wlr_data_control denied (not in clipboard.data-control-allow)");
                 false

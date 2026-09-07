@@ -88,3 +88,11 @@ single allowlist entry would have admitted all of them. `exe` is maintained by
 the kernel, is not writable by the process, and is not truncated. The identity
 is still containment rather than authentication: a binary copied under an
 allowlisted name still passes.
+
+## Amendment — 2026-09-07 (hot reload)
+`capture.allow` is now a shared `config::Allowlist` handle rather than a
+snapshot, so a config reload retunes the `zwlr_screencopy_v1` bind filter
+without a restart; see the matching amendment on ADR 0022 for the mechanism and
+why the lock is not a hot-path violation. `decide()` takes `&Allowlist` and
+still consults the lock state first, so the ordering guarantee — a locked
+session denies capture regardless of the allowlist — is unchanged.

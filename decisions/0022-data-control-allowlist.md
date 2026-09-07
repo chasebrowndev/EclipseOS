@@ -56,3 +56,19 @@ single allowlist entry would have admitted all of them. `exe` is maintained by
 the kernel, is not writable by the process, and is not truncated. The identity
 is still containment rather than authentication: a binary copied under an
 allowlisted name still passes.
+
+## Amendment — 2026-09-07 (hot reload)
+The "editing the list needs a restart" consequence above is retired. Both
+allowlists are now a `config::Allowlist` — an `Arc<RwLock<Vec<String>>>` handle
+held by `HeliosState` and *shared with* the global's bind filter, rather than a
+`Vec<String>` snapshot moved into the closure. `config::watch::reload_now`
+writes the new names through the handle, so the next bind sees them; clients
+that already hold the global keep it, because a visibility filter is only
+consulted when a client asks what globals exist. Revoking a live grant is still
+restart-only and is COMP-11 work.
+
+The lock is not a hot-path violation: it is touched at global-bind time and on
+config reload, never in input delivery or a policy check. It exists to satisfy
+the `Send + Sync` bound wayland-server puts on filter closures, not to
+coordinate anything — the core stays single-threaded. Read failures (a poisoned
+lock) report "empty" and "not contained", i.e. they deny.

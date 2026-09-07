@@ -39,7 +39,7 @@ use smithay::{
     utils::{Physical, Rectangle},
 };
 
-use crate::{render::capture, state::HeliosState};
+use crate::{config::Allowlist, render::capture, state::HeliosState};
 
 /// Protocol version advertised. v3 adds `linux_dmabuf`/`buffer_done`; we
 /// advertise the version but offer shm buffers only.
@@ -80,7 +80,7 @@ impl Decision {
 ///
 /// Order matters: the lock check comes first so that no allowlist entry can
 /// ever unlock capture of a locked session.
-pub fn decide(allow: &[String], locked: bool, name: Option<&str>) -> Decision {
+pub fn decide(allow: &Allowlist, locked: bool, name: Option<&str>) -> Decision {
     if locked {
         return Decision::DenyLocked;
     }
@@ -89,7 +89,7 @@ pub fn decide(allow: &[String], locked: bool, name: Option<&str>) -> Decision {
     }
     match name {
         None => Decision::DenyUnknownClient,
-        Some(n) if allow.iter().any(|a| a == n) => Decision::Allow,
+        Some(n) if allow.contains(n) => Decision::Allow,
         Some(_) => Decision::DenyNotAllowed,
     }
 }
@@ -98,7 +98,7 @@ pub fn decide(allow: &[String], locked: bool, name: Option<&str>) -> Decision {
 #[derive(Debug)]
 pub struct ManagerData {
     dh: DisplayHandle,
-    allow: Vec<String>,
+    allow: Allowlist,
 }
 
 /// What a frame object is allowed to copy. `None` means the request was
@@ -123,13 +123,13 @@ pub struct FrameData {
 pub struct ScreencopyState;
 
 impl ScreencopyState {
-    /// Register the global. The allowlist is captured here, so it is not
-    /// hot-reloadable — same trade-off as `wlr_data_control` (ADR 0022).
-    pub fn new(dh: &DisplayHandle, allow: Vec<String>) -> Self {
+    /// Register the global. The bind filter holds an [`Allowlist`] handle, so
+    /// a config reload retunes it without a restart (ADR 0022 amendment).
+    pub fn new(dh: &DisplayHandle, allow: Allowlist) -> Self {
         if allow.is_empty() {
             tracing::info!("screencopy: no capture.allow entries, all capture denied");
         } else {
-            tracing::info!(?allow, "screencopy: capture allowlist");
+            tracing::info!(allow = ?allow.names(), "screencopy: capture allowlist");
         }
         dh.create_global::<HeliosState, ZwlrScreencopyManagerV1, _>(
             VERSION,
@@ -202,7 +202,7 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for HeliosState {
 
         // The gate runs before anything is computed, allocated or queued.
         let name = crate::protocols::standard::data_control::client_name(dh, client);
-        let decision = decide(&state.config.capture.allow, state.lock.locked, name.as_deref());
+        let decision = decide(&state.capture_allow, state.lock.locked, name.as_deref());
         if !decision.allowed() {
             tracing::warn!(
                 client = name.as_deref().unwrap_or("<unknown>"),
@@ -394,17 +394,21 @@ fn _assert_output_type(_: &WlOutput) {}
 
 #[cfg(test)]
 mod tests {
-    use super::{decide, Decision};
+    use super::{decide, Allowlist, Decision};
 
-    fn allow() -> Vec<String> {
-        vec!["grim".to_string()]
+    fn allow() -> Allowlist {
+        Allowlist::new(vec!["grim".to_string()])
+    }
+
+    fn empty() -> Allowlist {
+        Allowlist::default()
     }
 
     #[test]
     fn fail_closed_by_default() {
         // No configuration at all: nothing captures, whoever asks.
-        assert_eq!(decide(&[], false, Some("grim")), Decision::DenyNoAllowlist);
-        assert_eq!(decide(&[], false, None), Decision::DenyNoAllowlist);
+        assert_eq!(decide(&empty(), false, Some("grim")), Decision::DenyNoAllowlist);
+        assert_eq!(decide(&empty(), false, None), Decision::DenyNoAllowlist);
     }
 
     #[test]
@@ -424,6 +428,6 @@ mod tests {
         // The lock check is first, so no allowlist entry can capture a locked
         // session.
         assert_eq!(decide(&allow(), true, Some("grim")), Decision::DenyLocked);
-        assert_eq!(decide(&[], true, Some("grim")), Decision::DenyLocked);
+        assert_eq!(decide(&empty(), true, Some("grim")), Decision::DenyLocked);
     }
 }
