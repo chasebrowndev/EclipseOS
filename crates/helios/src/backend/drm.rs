@@ -483,6 +483,8 @@ pub fn run(config: Config, stats: bool) -> Result<()> {
         stats,
     );
 
+    crate::input::idle::start(&mut state, &handle);
+
     // --- GPU discovery -----------------------------------------------------
     let udev = UdevBackend::new(&seat_name).context("udev backend")?;
     let gpu_path: PathBuf = primary_gpu(&seat_name)
@@ -767,6 +769,16 @@ fn render_output(state: &mut HeliosState, index: usize) {
     let Some(entry) = drm.outputs.get(index) else {
         return;
     };
+    // DPMS off: the CRTC is already cleared, and re-arming it here would
+    // light the panel back up behind the human's back.
+    let out_id = entry.id;
+    if !state.outputs.get(out_id).map(|e| e.powered).unwrap_or(true) {
+        return;
+    }
+    let Some(drm) = state.drm.as_mut() else { return };
+    let Some(entry) = drm.outputs.get(index) else {
+        return;
+    };
     let output = entry.output.clone();
     let crtc = entry.crtc;
     let scale = Scale::from(output.current_scale().fractional_scale());
@@ -786,15 +798,23 @@ fn render_output(state: &mut HeliosState, index: usize) {
             1.0,
             Kind::Cursor,
         ))];
-    elements.extend(collect_elements(
-        &mut drm.renderer,
-        &state.space,
-        &mut state.borders,
-        &output,
-        &state.config,
-        state.focus.as_ref(),
-        state.input_method_popup.as_ref(),
-    ));
+    if state.lock.locked {
+        elements.extend(crate::protocols::standard::session_lock::lock_elements(
+            &mut drm.renderer,
+            &mut state.lock,
+            &output,
+        ));
+    } else {
+        elements.extend(collect_elements(
+            &mut drm.renderer,
+            &state.space,
+            &mut state.borders,
+            &output,
+            &state.config,
+            state.focus.as_ref(),
+            state.input_method_popup.as_ref(),
+        ));
+    }
 
     // A surface covering the whole output is both the direct-scanout candidate
     // and the trigger for adaptive sync (COMP-03 §8).
@@ -804,7 +824,7 @@ fn render_output(state: &mut HeliosState, index: usize) {
     // Direct scanout (COMP-02 §2) hands a client buffer to a KMS plane, which
     // means the compositor never touches its pixels — so it cannot redact
     // them. A sensitive surface therefore forces full composition (COMP-02 §7,
-    // ADR 0024), as does the config knob being off.
+    // ADR 0025), as does the config knob being off.
     let redact = candidate
         .as_ref()
         .map(|s| state.sensitive.contains(s))
@@ -917,4 +937,22 @@ fn render_output(state: &mut HeliosState, index: usize) {
     state.space.refresh();
     state.popups.cleanup();
     let _ = state.display_handle.flush_clients();
+}
+
+/// DPMS for one output (COMP-03 §7): clear the CRTC on the way down, and let
+/// the normal render path bring it back on the way up.
+pub fn set_power(state: &mut HeliosState, id: u64, on: bool) {
+    let Some(drm) = state.drm.as_mut() else { return };
+    let Some(index) = drm.outputs.iter().position(|o| o.id == id) else {
+        return;
+    };
+    if on {
+        drm.outputs[index].needs_render = true;
+        drm.outputs[index].frame_pending = false;
+        render_output(state, index);
+    } else if let Err(err) = drm.outputs[index].compositor.clear() {
+        tracing::warn!(?err, id, "powering output off");
+    } else {
+        drm.outputs[index].frame_pending = false;
+    }
 }

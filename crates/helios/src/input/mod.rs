@@ -5,7 +5,8 @@
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, KeyState,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, Switch, SwitchState,
+        SwitchToggleEvent,
     },
     input::{
         keyboard::{FilterResult, Keysym, ModifiersState},
@@ -16,6 +17,8 @@ use smithay::{
 };
 
 use crate::state::HeliosState;
+
+pub mod idle;
 
 /// Modifier set of a binding. Compared against the xkb modifier state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -77,12 +80,15 @@ const VT_SWITCH_LAST: u32 = 0x1008_FE0C;
 
 impl HeliosState {
     pub fn process_input_event<B: InputBackend>(&mut self, event: InputEvent<B>) {
+        // Activity only — never the event's content (COMP-04, F-02).
+        idle::on_activity(self);
         match event {
             InputEvent::Keyboard { event } => self.on_keyboard::<B>(event),
             InputEvent::PointerMotion { event } => self.on_pointer_motion::<B>(event),
             InputEvent::PointerMotionAbsolute { event } => self.on_pointer_motion_absolute::<B>(event),
             InputEvent::PointerButton { event } => self.on_pointer_button::<B>(event),
             InputEvent::PointerAxis { event } => self.on_pointer_axis::<B>(event),
+            InputEvent::SwitchToggle { event } => self.on_switch::<B>(event),
             _ => {}
         }
     }
@@ -105,6 +111,11 @@ impl HeliosState {
                 let raw = sym.raw();
                 if (VT_SWITCH_FIRST..=VT_SWITCH_LAST).contains(&raw) {
                     return FilterResult::Intercept(Action::SwitchVt((raw - VT_SWITCH_FIRST + 1) as i32));
+                }
+                // Locked: no binding may act on the session behind the lock.
+                // Keys still reach the locker, which holds keyboard focus.
+                if state.lock.locked {
+                    return FilterResult::Forward;
                 }
                 match state.config.action_for(mods, sym) {
                     Some(a) => FilterResult::Intercept(a.clone()),
@@ -177,6 +188,23 @@ impl HeliosState {
     fn pointer_moved(&mut self, pos: Point<f64, Logical>, time: u32) {
         let pos = self.clamp_to_outputs(pos);
         self.pointer_location = pos;
+        if self.lock.locked {
+            // The pointer still moves (the cursor is compositor-drawn) but no
+            // surface under the lock ever sees it.
+            let serial = SERIAL_COUNTER.next_serial();
+            let pointer = self.seat.get_pointer().unwrap();
+            pointer.motion(
+                self,
+                None,
+                &MotionEvent {
+                    location: pos,
+                    serial,
+                    time,
+                },
+            );
+            pointer.frame(self);
+            return;
+        }
         // Pointer motion moves output focus, so a new window opens where the
         // human is looking (COMP-03 §3).
         if let Some(id) = self
@@ -220,6 +248,21 @@ impl HeliosState {
             },
         );
         pointer.frame(self);
+    }
+
+    /// Hardware switches (COMP-01 §4.1). Lid close/open drives the internal
+    /// output; tablet mode is logged and otherwise ignored for now.
+    fn on_switch<B: InputBackend>(&mut self, event: B::SwitchToggleEvent) {
+        match event.switch() {
+            Some(Switch::Lid) => {
+                let closed = event.state() == SwitchState::On;
+                crate::outputs::power::lid_switch(self, closed);
+            }
+            Some(Switch::TabletMode) => {
+                tracing::info!(on = event.state() == SwitchState::On, "tablet-mode switch");
+            }
+            other => tracing::debug!(?other, "unhandled switch"),
+        }
     }
 
     fn on_pointer_motion<B: InputBackend>(&mut self, event: B::PointerMotionEvent) {

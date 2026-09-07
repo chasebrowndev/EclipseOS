@@ -113,6 +113,7 @@ pub fn run(config: Config, stats: bool) -> Result<()> {
     let damage_tracker = OutputDamageTracker::from_output(&output);
 
     let handle = event_loop.handle();
+    crate::input::idle::start(&mut state, &handle);
     handle
         .insert_source(socket, |stream, _, state| {
             if let Err(e) = state.display_handle.insert_client(stream, client_state()) {
@@ -191,15 +192,19 @@ fn redraw(
                 return;
             }
         };
-        let elements = collect_elements(
-            renderer,
-            &state.space,
-            &mut state.borders,
-            out,
-            &state.config,
-            state.focus.as_ref(),
-            state.input_method_popup.as_ref(),
-        );
+        let elements = if state.lock.locked {
+            crate::protocols::standard::session_lock::lock_elements(renderer, &mut state.lock, out)
+        } else {
+            collect_elements(
+                renderer,
+                &state.space,
+                &mut state.borders,
+                out,
+                &state.config,
+                state.focus.as_ref(),
+                state.input_method_popup.as_ref(),
+            )
+        };
         match damage_tracker.render_output(renderer, &mut fb, age, &elements, CLEAR) {
             Ok(r) => (r.damage.map(|d| d.to_vec()), r.states),
             Err(e) => {

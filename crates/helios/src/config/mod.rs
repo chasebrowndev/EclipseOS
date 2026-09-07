@@ -58,6 +58,19 @@ pub struct Clipboard {
     pub data_control_allow: Vec<String>,
 }
 
+/// `idle { ... }` (COMP-03 §7). Zero or absent disables a timeout.
+#[derive(Debug, Clone, Default)]
+pub struct Idle {
+    /// Seconds of inactivity before outputs are powered off (DPMS).
+    pub dpms_timeout: Option<u64>,
+    /// Seconds of inactivity before `lock_command` is run.
+    pub lock_timeout: Option<u64>,
+    /// Locker to spawn on the lock timeout. Without one, the timeout is inert:
+    /// the compositor never self-locks, because only a locker client can
+    /// unlock an `ext_session_lock_v1` session.
+    pub lock_command: Option<String>,
+}
+
 /// One `output "<pattern>" { .. }` block (COMP-13 §4). Config wins over the
 /// persisted layout.
 #[derive(Debug, Clone, Default)]
@@ -71,6 +84,9 @@ pub struct OutputRule {
     pub transform: Option<String>,
     pub enabled: Option<bool>,
     pub vrr: Option<bool>,
+    /// `off` | `suspend` | `ignore` — what a lid-close does to this output
+    /// (COMP-01 §4.1). Only meaningful on an internal panel.
+    pub lid_close: Option<String>,
 }
 
 /// `render { ... }` (COMP-02 §2).
@@ -93,6 +109,7 @@ pub struct Config {
     pub general: General,
     pub render: Render,
     pub clipboard: Clipboard,
+    pub idle: Idle,
     pub binds: Vec<Bind>,
     /// Per-workspace layout overrides, indexed 1..=10.
     pub workspace_layout: [Option<LayoutKind>; 10],
@@ -108,6 +125,7 @@ impl Default for Config {
             general: General::default(),
             render: Render::default(),
             clipboard: Clipboard::default(),
+            idle: Idle::default(),
             binds: default_binds(),
             workspace_layout: Default::default(),
             outputs: Vec::new(),
@@ -304,6 +322,7 @@ impl Config {
                 "workspace" => self.apply_workspace(node),
                 "render" => self.apply_render(node),
                 "clipboard" => self.apply_clipboard(node),
+                "idle" => self.apply_idle(node),
                 "output" => self.apply_output(node),
                 // Blocks specified but not implemented in M2.
                 "decoration" | "animations" | "input" | "windowrule" => {}
@@ -365,6 +384,33 @@ impl Config {
                         .collect();
                 }
                 other => tracing::warn!(node = other, "unknown clipboard node, ignored"),
+            }
+        }
+    }
+
+    fn apply_idle(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let name = n.name().value();
+            match name {
+                "dpms-timeout-seconds" | "lock-timeout-seconds" => {
+                    match arg(n).and_then(KdlValue::as_integer) {
+                        Some(v) if v >= 0 => {
+                            let v = (v as u64 != 0).then_some(v as u64);
+                            if name == "dpms-timeout-seconds" {
+                                self.idle.dpms_timeout = v;
+                            } else {
+                                self.idle.lock_timeout = v;
+                            }
+                        }
+                        _ => tracing::warn!(node = name, "idle timeout must be a non-negative integer"),
+                    }
+                }
+                "lock-command" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(c) => self.idle.lock_command = Some(c.to_owned()),
+                    None => tracing::warn!("idle lock-command needs a string argument"),
+                },
+                other => tracing::warn!(node = other, "unknown idle node, ignored"),
             }
         }
     }
@@ -438,6 +484,10 @@ impl Config {
                     Some(v) => rule.enabled = Some(v == (name == "enabled")),
                     None => rule.enabled = Some(name == "enabled"),
                 },
+                "lid-close" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(v @ ("off" | "suspend" | "ignore")) => rule.lid_close = Some(v.to_owned()),
+                    _ => tracing::warn!("output lid-close must be off, suspend or ignore"),
+                },
                 "vrr" | "adaptive-sync" => rule.vrr = arg(n).and_then(KdlValue::as_bool).or(Some(true)),
                 other => tracing::warn!(node = other, "unknown output key, ignored"),
             }
@@ -458,6 +508,7 @@ impl Config {
             out.scale = r.scale.or(out.scale);
             out.transform = r.transform.clone().or(out.transform);
             out.enabled = r.enabled.or(out.enabled);
+            out.lid_close = r.lid_close.clone().or(out.lid_close);
             out.vrr = r.vrr.or(out.vrr);
         }
         out
@@ -632,6 +683,26 @@ mod tests {
         assert_eq!(parse_color("#ff0000"), Some([1.0, 0.0, 0.0, 1.0]));
         assert_eq!(parse_color("0x80ff0000"), Some([1.0, 0.0, 0.0, 0.5019608]));
         assert_eq!(parse_color("nope"), None);
+    }
+
+    #[test]
+    fn parses_idle_and_lid() {
+        let doc: KdlDocument = r#"
+            idle { dpms-timeout-seconds 300; lock-timeout-seconds 600; lock-command "hyprlock" }
+            output "eDP-1" { lid-close "ignore" }
+        "#
+        .parse()
+        .unwrap();
+        let mut cfg = Config::default();
+        let mut binds = Vec::new();
+        cfg.apply(&doc, &mut binds);
+        assert_eq!(cfg.idle.dpms_timeout, Some(300));
+        assert_eq!(cfg.idle.lock_timeout, Some(600));
+        assert_eq!(cfg.idle.lock_command.as_deref(), Some("hyprlock"));
+        assert_eq!(
+            cfg.output_rule("eDP-1", "eDP-1").lid_close.as_deref(),
+            Some("ignore")
+        );
     }
 
     #[test]

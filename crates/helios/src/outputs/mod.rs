@@ -15,6 +15,7 @@
 
 pub mod edid;
 pub mod persist;
+pub mod power;
 
 use std::collections::HashMap;
 
@@ -50,6 +51,12 @@ pub struct OutputEntry {
     /// 0-based index into `workspaces`.
     pub active: usize,
     pub global: Option<GlobalId>,
+    /// Part of the desktop. A disabled output is unmapped and never rendered
+    /// (COMP-03 §4); the last enabled output can never be disabled.
+    pub enabled: bool,
+    /// Scanning out. `false` is DPMS off — the output keeps its geometry and
+    /// its windows, the CRTC just stops.
+    pub powered: bool,
 }
 
 impl OutputEntry {
@@ -68,7 +75,7 @@ impl OutputEntry {
             scale: Some(self.output.current_scale().fractional_scale()),
             mode,
             transform: Some(transform_name(self.output.current_transform()).to_string()),
-            enabled: Some(true),
+            enabled: Some(self.enabled),
         }
     }
 }
@@ -134,7 +141,8 @@ impl Outputs {
     pub fn fallback_id(&self) -> Option<u64> {
         self.entries
             .iter()
-            .find(|e| e.kind == OutputKind::Physical)
+            .find(|e| e.enabled && e.kind == OutputKind::Physical)
+            .or_else(|| self.entries.iter().find(|e| e.enabled))
             .or_else(|| self.entries.first())
             .map(|e| e.id)
     }
@@ -176,6 +184,8 @@ impl Outputs {
             workspaces,
             active: 0,
             global,
+            enabled: true,
+            powered: true,
         });
         if self.focused == 0 {
             self.focused = id;
@@ -239,7 +249,7 @@ impl Outputs {
     pub fn auto_layout(&self, pinned: &HashMap<u64, Point<i32, Logical>>) -> Vec<(u64, Point<i32, Logical>)> {
         let mut x = 0;
         let mut out = Vec::with_capacity(self.entries.len());
-        for e in &self.entries {
+        for e in self.entries.iter().filter(|e| e.enabled) {
             if let Some(p) = pinned.get(&e.id) {
                 out.push((e.id, *p));
                 continue;
@@ -362,6 +372,22 @@ fn apply_settings(state: &mut crate::state::HeliosState, id: u64) {
     let rule = state.config.output_rule(&entry.connector, &entry.identity);
     let saved = state.outputs.saved_for(&entry.identity).cloned();
 
+    let enabled = rule
+        .enabled
+        .or(saved.as_ref().and_then(|s| s.enabled))
+        .unwrap_or(true);
+    if !enabled {
+        // Refusal path (§4): a config that would leave zero outputs is ignored.
+        if state.outputs.iter().any(|e| e.enabled && e.id != id) {
+            if let Some(entry) = state.outputs.get_mut(id) {
+                entry.enabled = false;
+            }
+            tracing::info!(id, "output disabled by config");
+        } else {
+            tracing::warn!(id, "refusing to disable the only output");
+        }
+    }
+
     let mode = rule
         .mode
         .or(saved.as_ref().and_then(|s| s.mode))
@@ -410,6 +436,16 @@ pub fn relayout(state: &mut crate::state::HeliosState) {
             pinned.insert(*id, (x, y).into());
         }
     }
+    let disabled: Vec<Output> = state
+        .outputs
+        .iter()
+        .filter(|e| !e.enabled)
+        .map(|e| e.output.clone())
+        .collect();
+    for output in disabled {
+        state.space.unmap_output(&output);
+        state.lock.forget_output(&output);
+    }
     let placement = state.outputs.auto_layout(&pinned);
     for (id, pos) in placement {
         if let Some(entry) = state.outputs.get(id) {
@@ -437,6 +473,7 @@ pub fn unregister(state: &mut crate::state::HeliosState, id: u64) {
         state.space.unmap_elem(w);
     }
     state.space.unmap_output(&output);
+    state.lock.forget_output(&output);
     if let Some(global) = global {
         state
             .display_handle

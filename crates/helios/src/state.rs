@@ -17,6 +17,8 @@ use smithay::{
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         fractional_scale::FractionalScaleManagerState,
+        idle_inhibit::IdleInhibitManagerState,
+        idle_notify::IdleNotifierState,
         input_method::{InputMethodManagerState, PopupSurface},
         output::OutputManagerState,
         presentation::PresentationState,
@@ -24,6 +26,7 @@ use smithay::{
             data_device::DataDeviceState, primary_selection::PrimarySelectionState,
             wlr_data_control::DataControlState,
         },
+        session_lock::SessionLockManagerState,
         shell::{wlr_layer::WlrLayerShellState, xdg::XdgShellState},
         shm::ShmState,
         socket::ListeningSocketSource,
@@ -110,6 +113,19 @@ pub struct HeliosState {
     /// compositor keeps the pixels it can redact.
     pub sensitive: HashSet<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
 
+    /// `ext_session_lock_v1` (COMP-10 §5).
+    pub session_lock_state: SessionLockManagerState,
+    /// Lock surfaces and the compositor-drawn fallback (ADR 0024).
+    pub lock: crate::protocols::standard::session_lock::LockState,
+    /// Idle clock: last activity, inhibitors, DPMS state (COMP-03 §7).
+    pub idle: crate::input::idle::IdleTracker,
+    /// `ext_idle_notify_v1`.
+    pub idle_notifier: IdleNotifierState<Self>,
+    #[allow(dead_code)] // holds the zwp_idle_inhibit_manager_v1 global alive
+    pub idle_inhibit_state: IdleInhibitManagerState,
+    /// `zwlr_output_power_management_v1`.
+    pub output_power: crate::protocols::standard::output_power::OutputPowerState,
+
     /// Frame timing (COMP-14 §2).
     pub stats: crate::render::stats::FrameStats,
 }
@@ -146,6 +162,11 @@ impl HeliosState {
         let viewporter_state = ViewporterState::new::<Self>(&dh);
         // CLOCK_MONOTONIC: the clock every backend timestamps frames against.
         let presentation_state = PresentationState::new::<Self>(&dh, libc::CLOCK_MONOTONIC as u32);
+        // Any client may lock the session; a lock only ever removes access.
+        let session_lock_state = SessionLockManagerState::new::<Self, _>(&dh, |_| true);
+        let idle_notifier = IdleNotifierState::<Self>::new(&dh, loop_handle.clone());
+        let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&dh);
+        let output_power = crate::protocols::standard::output_power::OutputPowerState::new(&dh);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         // Repeat defaults match COMP-04 until config lands (M6).
@@ -194,6 +215,12 @@ impl HeliosState {
             #[cfg(feature = "drm")]
             syncobj_state: None,
             sensitive: HashSet::new(),
+            session_lock_state,
+            lock: Default::default(),
+            idle: Default::default(),
+            idle_notifier,
+            idle_inhibit_state,
+            output_power,
             stats: crate::render::stats::FrameStats::new(stats),
         }
     }
