@@ -2,11 +2,12 @@
 //! Production backend (COMP-01 §3, F-04): KMS via libseat + udev + libinput,
 //! GLES rendering onto GBM buffers through EGL.
 //!
-//! M1 scope: single GPU, single output (the first connected connector), no
-//! multi-GPU import path and no runtime hotplug beyond logging. Everything
+//! M3 scope: single GPU, every connected connector driven as its own output,
+//! runtime connector hotplug through udev, and a headless fallback output so
+//! the compositor survives with nothing plugged in (COMP-03 §5). Everything
 //! that touches hardware logs and continues rather than panicking.
 
-use std::{path::PathBuf, time::Duration};
+use std::{collections::HashSet, path::PathBuf, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
 use smithay::{
@@ -49,28 +50,29 @@ use smithay::{
 
 use crate::{
     config::Config,
+    outputs::OutputKind,
     render::{collect_elements, HeliosRenderElement},
     state::{client_state, HeliosState},
 };
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
-/// Amber-on-black placeholder pointer. A themed cursor lands with M3.
+/// Amber-on-black placeholder pointer. A themed cursor lands with M4.
 const CURSOR_COLOR: [f32; 4] = [1.0, 0.72, 0.15, 1.0];
 const CURSOR_SIZE: i32 = 12;
+/// Size of the headless fallback output used when no connector is present.
+const FALLBACK_SIZE: (i32, i32) = (1920, 1080);
 
 pub type HeliosDrmCompositor =
     DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 
-/// Everything the DRM backend needs to keep alive between callbacks.
-pub struct DrmData {
-    pub session: LibSeatSession,
-    pub loop_handle: LoopHandle<'static, HeliosState>,
-    pub drm: DrmDevice,
-    pub renderer: GlesRenderer,
-    pub compositor: Option<HeliosDrmCompositor>,
-    pub output: Option<Output>,
-    pub crtc: Option<crtc::Handle>,
-    cursor: SolidColorBuffer,
+/// One scanout pipeline: connector → CRTC → [`DrmCompositor`].
+pub struct DrmOutput {
+    /// Handle into [`crate::outputs::Outputs`].
+    pub id: u64,
+    pub crtc: crtc::Handle,
+    pub connector: connector::Handle,
+    pub output: Output,
+    pub compositor: HeliosDrmCompositor,
     /// Set while a re-render timer is armed, so we never stack timers.
     retry_armed: bool,
     /// A frame is queued and we are waiting for its VBlank.
@@ -79,11 +81,28 @@ pub struct DrmData {
     needs_render: bool,
 }
 
+/// Everything the DRM backend needs to keep alive between callbacks.
+pub struct DrmData {
+    pub session: LibSeatSession,
+    pub loop_handle: LoopHandle<'static, HeliosState>,
+    pub drm: DrmDevice,
+    pub gbm: GbmDevice<DrmDeviceFd>,
+    pub renderer: GlesRenderer,
+    pub outputs: Vec<DrmOutput>,
+    /// The headless stand-in, live only while no connector is.
+    fallback: Option<u64>,
+    cursor: SolidColorBuffer,
+}
+
 impl DrmData {
     pub fn change_vt(&mut self, vt: i32) {
         if let Err(err) = self.session.change_vt(vt) {
             tracing::warn!(?err, vt, "VT switch failed");
         }
+    }
+
+    fn index_of_crtc(&self, crtc: crtc::Handle) -> Option<usize> {
+        self.outputs.iter().position(|o| o.crtc == crtc)
     }
 }
 
@@ -119,6 +138,276 @@ fn check_nvidia_modeset(node: &DrmNode) -> Result<()> {
     }
 }
 
+/// Refresh rate in mHz, derived from the mode timings (`vrefresh` is only
+/// whole Hz and rounds 59.94 to 60).
+fn refresh_mhz(mode: &smithay::reexports::drm::control::Mode) -> i32 {
+    let denom = mode.hsync().2 as u64 * mode.vsync().2 as u64;
+    if denom == 0 {
+        return (mode.vrefresh() as i32) * 1000;
+    }
+    ((mode.clock() as u64 * 1_000_000) / denom) as i32
+}
+
+fn connector_name(info: &connector::Info) -> String {
+    format!("{}-{}", info.interface().as_str(), info.interface_id())
+}
+
+/// The connector's raw EDID blob, when the kernel exposes one. smithay 0.7
+/// ships no EDID helper (it lives in `smithay-drm-extras`, not a dependency),
+/// so the blob is parsed in tree — see ADR 0023.
+fn edid_blob(drm: &DrmDevice, conn: connector::Handle) -> Option<Vec<u8>> {
+    let props = drm.get_properties(conn).ok()?;
+    for (handle, value) in props.iter() {
+        let Ok(info) = drm.get_property(*handle) else {
+            continue;
+        };
+        if info.name().to_str().ok()? != "EDID" {
+            continue;
+        }
+        if *value == 0 {
+            return None;
+        }
+        return drm.get_property_blob(*value).ok();
+    }
+    None
+}
+
+/// A CRTC the connector can drive that no other output is already using.
+fn pick_crtc(
+    drm: &DrmDevice,
+    resources: &smithay::reexports::drm::control::ResourceHandles,
+    info: &connector::Info,
+    used: &HashSet<crtc::Handle>,
+) -> Option<crtc::Handle> {
+    // The CRTC the connector is already lit on, if any, is always the cheapest.
+    if let Some(enc) = info.current_encoder().and_then(|e| drm.get_encoder(e).ok()) {
+        if let Some(crtc) = enc.crtc() {
+            if !used.contains(&crtc) {
+                return Some(crtc);
+            }
+        }
+    }
+    info.encoders()
+        .iter()
+        .filter_map(|enc| drm.get_encoder(*enc).ok())
+        .flat_map(|enc| resources.filter_crtcs(enc.possible_crtcs()))
+        .find(|crtc| !used.contains(crtc))
+}
+
+/// Diff the kernel's connector list against the outputs we are driving and
+/// bring the two back into agreement (COMP-03 §3). Called at startup and on
+/// every udev `Changed` event for our GPU.
+pub fn scan_connectors(state: &mut HeliosState) {
+    let Some(drm) = state.drm.as_ref() else { return };
+    let Ok(resources) = drm.drm.resource_handles() else {
+        tracing::warn!("reading DRM resources");
+        return;
+    };
+
+    let mut connected: Vec<(connector::Handle, connector::Info)> = Vec::new();
+    for handle in resources.connectors() {
+        match drm.drm.get_connector(*handle, true) {
+            Ok(info) if info.state() == connector::State::Connected && !info.modes().is_empty() => {
+                connected.push((*handle, info))
+            }
+            Ok(_) => {}
+            Err(err) => tracing::warn!(?err, "reading connector"),
+        }
+    }
+    let present: HashSet<connector::Handle> = connected.iter().map(|(h, _)| *h).collect();
+
+    // --- departures ---------------------------------------------------------
+    let gone: Vec<(usize, u64)> = drm
+        .outputs
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| !present.contains(&o.connector))
+        .map(|(i, o)| (i, o.id))
+        .collect();
+    for (i, id) in gone.into_iter().rev() {
+        if let Some(drm) = state.drm.as_mut() {
+            // Dropping the DrmOutput releases its CRTC for reuse.
+            drm.outputs.remove(i);
+        }
+        crate::outputs::unregister(state, id);
+    }
+
+    // --- arrivals -----------------------------------------------------------
+    for (handle, info) in connected {
+        let known = state
+            .drm
+            .as_ref()
+            .is_some_and(|d| d.outputs.iter().any(|o| o.connector == handle));
+        if known {
+            continue;
+        }
+        if let Err(err) = add_connector(state, &resources, handle, &info) {
+            tracing::warn!(connector = %connector_name(&info), ?err, "could not bring up connector");
+        }
+    }
+
+    sync_fallback(state);
+}
+
+/// Bring up one connector: build its [`Output`], register it, and create the
+/// [`DrmCompositor`] that scans it out.
+fn add_connector(
+    state: &mut HeliosState,
+    resources: &smithay::reexports::drm::control::ResourceHandles,
+    handle: connector::Handle,
+    info: &connector::Info,
+) -> Result<()> {
+    let dh = state.display_handle.clone();
+    let name = connector_name(info);
+    let drm = state.drm.as_ref().ok_or_else(|| anyhow!("no DRM backend"))?;
+    let identity = crate::outputs::identity(edid_blob(&drm.drm, handle).as_deref(), &name);
+
+    let used: HashSet<crtc::Handle> = drm.outputs.iter().map(|o| o.crtc).collect();
+    let crtc = pick_crtc(&drm.drm, resources, info, &used)
+        .ok_or_else(|| anyhow!("no free CRTC for connector {name}"))?;
+
+    // Config, then the remembered layout, then the connector's preferred mode.
+    let wanted = state
+        .config
+        .output_rule(&name, &identity)
+        .mode
+        .or_else(|| state.outputs.saved_for(&identity).and_then(|s| s.mode));
+    let preferred = info
+        .modes()
+        .iter()
+        .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+        .copied()
+        .unwrap_or_else(|| info.modes()[0]);
+    let mode = wanted
+        .and_then(|(w, h, r)| {
+            let exact = info
+                .modes()
+                .iter()
+                .find(|m| m.size() == (w as u16, h as u16) && refresh_mhz(m) == r);
+            exact
+                .or_else(|| info.modes().iter().find(|m| m.size() == (w as u16, h as u16)))
+                .copied()
+        })
+        .unwrap_or(preferred);
+
+    let (phys_w, phys_h) = info.size().unwrap_or((0, 0));
+    let edid = edid_blob(&drm.drm, handle).and_then(|b| crate::outputs::edid::parse(&b));
+    let output = Output::new(
+        name.clone(),
+        PhysicalProperties {
+            size: (phys_w as i32, phys_h as i32).into(),
+            subpixel: Subpixel::Unknown,
+            make: edid.as_ref().map_or("Unknown".into(), |e| e.make.clone()),
+            model: edid.as_ref().map_or("Unknown".into(), |e| e.model.clone()),
+        },
+    );
+    // Advertise every mode the connector offers so clients (and the persisted
+    // layout) can name one other than the preferred.
+    for m in info.modes() {
+        output.add_mode(OutputMode {
+            size: (m.size().0 as i32, m.size().1 as i32).into(),
+            refresh: refresh_mhz(m),
+        });
+    }
+    let wl_mode = OutputMode {
+        size: (mode.size().0 as i32, mode.size().1 as i32).into(),
+        refresh: refresh_mhz(&mode),
+    };
+    let global = output.create_global::<HeliosState>(&dh);
+    output.change_current_state(Some(wl_mode), Some(Transform::Normal), None, Some((0, 0).into()));
+    output.set_preferred(wl_mode);
+
+    let drm = state.drm.as_mut().ok_or_else(|| anyhow!("no DRM backend"))?;
+    let surface = drm
+        .drm
+        .create_surface(crtc, mode, &[handle])
+        .context("creating DRM surface")?;
+    let allocator = GbmAllocator::new(
+        drm.gbm.clone(),
+        GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+    );
+    let exporter = GbmFramebufferExporter::new(drm.gbm.clone(), None);
+    let renderer_formats = drm.renderer.egl_context().dmabuf_render_formats().clone();
+    let cursor_size = drm.drm.cursor_size();
+    let gbm = drm.gbm.clone();
+    let compositor = HeliosDrmCompositor::new(
+        &output,
+        surface,
+        None,
+        allocator,
+        exporter,
+        [Fourcc::Abgr8888, Fourcc::Argb8888],
+        renderer_formats.iter().copied(),
+        cursor_size,
+        Some(gbm),
+    )
+    .context("DrmCompositor::new")?;
+
+    let id = crate::outputs::register(
+        state,
+        identity,
+        name.clone(),
+        output.clone(),
+        OutputKind::Physical,
+        Some(global),
+    );
+
+    if let Some(drm) = state.drm.as_mut() {
+        drm.outputs.push(DrmOutput {
+            id,
+            crtc,
+            connector: handle,
+            output,
+            compositor,
+            retry_armed: false,
+            frame_pending: false,
+            needs_render: true,
+        });
+    }
+    tracing::info!(
+        output = %name,
+        width = wl_mode.size.w,
+        height = wl_mode.size.h,
+        refresh_mhz = wl_mode.refresh,
+        "output configured"
+    );
+    Ok(())
+}
+
+/// Never leave the human with no output (COMP-03 §5): stand up a headless one
+/// when the last connector goes away, and retire it when a real one returns.
+fn sync_fallback(state: &mut HeliosState) {
+    let Some(drm) = state.drm.as_ref() else { return };
+    let physical = !drm.outputs.is_empty();
+    let fallback = drm.fallback;
+    match (physical, fallback) {
+        (false, None) => {
+            let (output, _) = crate::outputs::virtual_output("HEADLESS-1", FALLBACK_SIZE);
+            let global = output.create_global::<HeliosState>(&state.display_handle.clone());
+            let id = crate::outputs::register(
+                state,
+                "headless".into(),
+                "HEADLESS-1".into(),
+                output,
+                OutputKind::Virtual,
+                Some(global),
+            );
+            if let Some(drm) = state.drm.as_mut() {
+                drm.fallback = Some(id);
+            }
+            tracing::warn!("no connected outputs; running on a headless fallback");
+        }
+        (true, Some(id)) => {
+            if let Some(drm) = state.drm.as_mut() {
+                drm.fallback = None;
+            }
+            crate::outputs::unregister(state, id);
+            tracing::info!("headless fallback retired");
+        }
+        _ => {}
+    }
+}
+
 pub fn run(config: Config) -> Result<()> {
     let mut event_loop: EventLoop<'static, HeliosState> =
         EventLoop::try_new().context("calloop event loop")?;
@@ -151,6 +440,7 @@ pub fn run(config: Config) -> Result<()> {
 
     let node = DrmNode::from_file(&device_fd).context("resolving DRM node")?;
     check_nvidia_modeset(&node)?;
+    let our_device = node.dev_id();
 
     let (drm_device, drm_notifier) = DrmDevice::new(device_fd.clone(), true).context("DrmDevice::new")?;
     let gbm = GbmDevice::new(device_fd).context("GbmDevice::new")?;
@@ -173,19 +463,22 @@ pub fn run(config: Config) -> Result<()> {
         session: session.clone(),
         loop_handle: handle.clone(),
         drm: drm_device,
+        gbm,
         renderer,
-        compositor: None,
-        output: None,
-        crtc: None,
+        outputs: Vec::new(),
+        fallback: None,
         cursor: SolidColorBuffer::new((CURSOR_SIZE, CURSOR_SIZE), CURSOR_COLOR),
-        retry_armed: false,
-        frame_pending: false,
-        needs_render: false,
     }));
 
-    if let Err(err) = init_output(&mut state, &gbm) {
-        tracing::error!(?err, "no usable output");
-        return Err(err);
+    scan_connectors(&mut state);
+    if let Some(first) = state.outputs.iter().next() {
+        if let Some(geo) = state.space.output_geometry(&first.output) {
+            state.pointer_location = (
+                geo.loc.x as f64 + geo.size.w as f64 / 2.0,
+                geo.loc.y as f64 + geo.size.h as f64 / 2.0,
+            )
+                .into();
+        }
     }
 
     // --- input -------------------------------------------------------------
@@ -215,15 +508,17 @@ pub fn run(config: Config) -> Result<()> {
                     if let Err(err) = drm.drm.activate(false) {
                         tracing::error!(?err, "reactivating DRM device");
                     }
-                    if let Some(compositor) = drm.compositor.as_mut() {
-                        if let Err(err) = compositor.reset_state() {
+                    for o in drm.outputs.iter_mut() {
+                        if let Err(err) = o.compositor.reset_state() {
                             tracing::error!(?err, "resetting compositor state");
                         }
+                        o.retry_armed = false;
+                        o.frame_pending = false;
+                        o.needs_render = true;
                     }
-                    drm.retry_armed = false;
-                    drm.frame_pending = false;
-                    drm.needs_render = true;
                 }
+                // A connector may have changed while we were away.
+                scan_connectors(state);
                 render(state);
             }
         })
@@ -231,20 +526,24 @@ pub fn run(config: Config) -> Result<()> {
 
     handle
         .insert_source(drm_notifier, move |event, _meta, state| match event {
-            DrmEvent::VBlank(_crtc) => {
+            DrmEvent::VBlank(crtc) => {
                 let pending = if let Some(drm) = state.drm.as_mut() {
-                    if let Some(compositor) = drm.compositor.as_mut() {
-                        if let Err(err) = compositor.frame_submitted() {
-                            tracing::warn!(?err, "frame_submitted");
+                    match drm.index_of_crtc(crtc) {
+                        Some(i) => {
+                            let o = &mut drm.outputs[i];
+                            if let Err(err) = o.compositor.frame_submitted() {
+                                tracing::warn!(?err, "frame_submitted");
+                            }
+                            o.frame_pending = false;
+                            o.needs_render.then_some(i)
                         }
+                        None => None,
                     }
-                    drm.frame_pending = false;
-                    drm.needs_render
                 } else {
-                    false
+                    None
                 };
-                if pending {
-                    render(state);
+                if let Some(i) = pending {
+                    render_output(state, i);
                 }
             }
             DrmEvent::Error(err) => tracing::error!(?err, "DRM event error"),
@@ -252,15 +551,21 @@ pub fn run(config: Config) -> Result<()> {
         .map_err(|err| anyhow!("inserting drm source: {err}"))?;
 
     handle
-        .insert_source(udev, |event, _, _state| match event {
-            UdevEvent::Added { device_id, path } => {
-                tracing::info!(?device_id, path = %path.display(), "GPU added (hotplug lands in M3)")
-            }
-            UdevEvent::Changed { device_id } => {
-                tracing::info!(?device_id, "GPU changed (hotplug lands in M3)")
-            }
-            UdevEvent::Removed { device_id } => {
-                tracing::info!(?device_id, "GPU removed (hotplug lands in M3)")
+        .insert_source(udev, move |event, _, state| {
+            let changed = match event {
+                UdevEvent::Added { device_id, path } => {
+                    tracing::info!(?device_id, path = %path.display(), "GPU added");
+                    device_id == our_device
+                }
+                UdevEvent::Changed { device_id } => device_id == our_device,
+                UdevEvent::Removed { device_id } => {
+                    tracing::info!(?device_id, "GPU removed");
+                    device_id == our_device
+                }
+            };
+            if changed {
+                scan_connectors(state);
+                schedule_render(state);
             }
         })
         .map_err(|err| anyhow!("inserting udev source: {err}"))?;
@@ -297,152 +602,59 @@ pub fn run(config: Config) -> Result<()> {
     Ok(())
 }
 
-/// Pick the first connected connector, build the [`Output`] and the
-/// [`DrmCompositor`] driving it.
-fn init_output(state: &mut HeliosState, gbm: &GbmDevice<DrmDeviceFd>) -> Result<()> {
-    let dh = state.display_handle.clone();
-    let drm = state
-        .drm
-        .as_mut()
-        .ok_or_else(|| anyhow!("DRM backend not initialised"))?;
-
-    let resources = drm.drm.resource_handles().context("drm resource handles")?;
-
-    let mut chosen = None;
-    for handle in resources.connectors() {
-        let info = match drm.drm.get_connector(*handle, false) {
-            Ok(info) => info,
-            Err(err) => {
-                tracing::warn!(?err, "reading connector");
-                continue;
-            }
-        };
-        if info.state() != connector::State::Connected || info.modes().is_empty() {
-            continue;
-        }
-        chosen = Some(info);
-        break;
-    }
-    let connector = chosen.ok_or_else(|| anyhow!("no connected connector with modes"))?;
-
-    let name = format!("{}-{}", connector.interface().as_str(), connector.interface_id());
-    let mode = connector
-        .modes()
-        .iter()
-        .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
-        .copied()
-        .unwrap_or_else(|| connector.modes()[0]);
-
-    // A CRTC the connector's encoders can drive.
-    let crtc = connector
-        .encoders()
-        .iter()
-        .filter_map(|enc| drm.drm.get_encoder(*enc).ok())
-        .find_map(|enc| resources.filter_crtcs(enc.possible_crtcs()).into_iter().next())
-        .ok_or_else(|| anyhow!("no CRTC available for connector {name}"))?;
-
-    let (w, h) = mode.size();
-    let (phys_w, phys_h) = connector.size().unwrap_or((0, 0));
-    let output = Output::new(
-        name.clone(),
-        PhysicalProperties {
-            size: (phys_w as i32, phys_h as i32).into(),
-            subpixel: Subpixel::Unknown,
-            make: "Unknown".into(),
-            model: "Unknown".into(),
-        },
-    );
-    let wl_mode = OutputMode {
-        size: (w as i32, h as i32).into(),
-        refresh: refresh_mhz(&mode),
-    };
-    let _global = output.create_global::<HeliosState>(&dh);
-    output.change_current_state(Some(wl_mode), Some(Transform::Normal), None, Some((0, 0).into()));
-    output.set_preferred(wl_mode);
-
-    let surface = drm
-        .drm
-        .create_surface(crtc, mode, &[connector.handle()])
-        .context("creating DRM surface")?;
-
-    let allocator = GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
-    let exporter = GbmFramebufferExporter::new(gbm.clone(), None);
-    let renderer_formats = drm.renderer.egl_context().dmabuf_render_formats().clone();
-    let cursor_size = drm.drm.cursor_size();
-
-    let compositor = HeliosDrmCompositor::new(
-        &output,
-        surface,
-        None,
-        allocator,
-        exporter,
-        [Fourcc::Abgr8888, Fourcc::Argb8888],
-        renderer_formats.iter().copied(),
-        cursor_size,
-        Some(gbm.clone()),
-    )
-    .context("DrmCompositor::new")?;
-
-    tracing::info!(
-        output = %name,
-        width = w,
-        height = h,
-        refresh_mhz = wl_mode.refresh,
-        "output configured"
-    );
-
-    drm.compositor = Some(compositor);
-    drm.output = Some(output.clone());
-    drm.crtc = Some(crtc);
-
-    state.space.map_output(&output, (0, 0));
-    state.pointer_location = (w as f64 / 2.0, h as f64 / 2.0).into();
-    Ok(())
-}
-
-/// Refresh rate in mHz, derived from the mode timings (`vrefresh` is only
-/// whole Hz and rounds 59.94 to 60).
-fn refresh_mhz(mode: &smithay::reexports::drm::control::Mode) -> i32 {
-    let (hsync_start, _, htotal) = mode.hsync();
-    let (vsync_start, _, vtotal) = mode.vsync();
-    let _ = (hsync_start, vsync_start);
-    let denom = htotal as u64 * vtotal as u64;
-    if denom == 0 {
-        return (mode.vrefresh() as i32) * 1000;
-    }
-    ((mode.clock() as u64 * 1_000_000) / denom) as i32
-}
-
-/// Mark the output as dirty and composite, unless a frame is already in
-/// flight — in that case the pending VBlank picks the new content up. This
-/// keeps `render_frame` calls one-to-one with submitted frames, which is what
-/// smithay's damage tracker assumes.
+/// Mark every output dirty and composite the ones that are idle. An output
+/// with a frame in flight picks the new content up at its VBlank, which keeps
+/// `render_frame` calls one-to-one with submitted frames — what smithay's
+/// damage tracker assumes.
 pub fn schedule_render(state: &mut HeliosState) {
-    let Some(drm) = state.drm.as_mut() else { return };
-    drm.needs_render = true;
-    if drm.frame_pending || drm.retry_armed {
-        return;
+    let n = state.drm.as_ref().map_or(0, |d| d.outputs.len());
+    for i in 0..n {
+        let idle = match state.drm.as_mut() {
+            Some(drm) => {
+                let o = &mut drm.outputs[i];
+                o.needs_render = true;
+                !o.frame_pending && !o.retry_armed
+            }
+            None => false,
+        };
+        if idle {
+            render_output(state, i);
+        }
     }
-    render(state);
 }
 
-/// Composite and page-flip. Safe to call at any time; a no-op when the
-/// session is inactive or no output is configured.
+/// Composite every output. Safe to call at any time.
 pub fn render(state: &mut HeliosState) {
+    let n = state.drm.as_ref().map_or(0, |d| d.outputs.len());
+    for i in 0..n {
+        render_output(state, i);
+    }
+}
+
+/// Composite and page-flip one output. A no-op when the session is inactive.
+fn render_output(state: &mut HeliosState, index: usize) {
     let Some(drm) = state.drm.as_mut() else { return };
     if !drm.session.is_active() {
         return;
     }
-    let (Some(compositor), Some(output)) = (drm.compositor.as_mut(), drm.output.as_ref()) else {
+    let Some(entry) = drm.outputs.get(index) else {
         return;
     };
-    let output = output.clone();
+    let output = entry.output.clone();
+    let crtc = entry.crtc;
     let scale = Scale::from(output.current_scale().fractional_scale());
+    let output_loc = state
+        .space
+        .output_geometry(&output)
+        .map(|g| g.loc)
+        .unwrap_or_default();
 
+    // The pointer lives in the global space; elements are output-local.
+    let cursor_pos = state.pointer_location - output_loc.to_f64();
     let mut elements: Vec<HeliosRenderElement> =
         vec![HeliosRenderElement::Solid(SolidColorRenderElement::from_buffer(
             &drm.cursor,
-            state.pointer_location.to_physical_precise_round(scale),
+            cursor_pos.to_physical_precise_round(scale),
             scale,
             1.0,
             Kind::Cursor,
@@ -460,6 +672,7 @@ pub fn render(state: &mut HeliosState) {
     // FrameFlags::empty() forces full composition: F-04 §2 assumes no plane
     // availability. Plane scanout is a probed optimisation for a later
     // milestone.
+    let compositor = &mut drm.outputs[index].compositor;
     let mut failed = false;
     let mut empty = false;
     let queued = match compositor.render_frame(&mut drm.renderer, &elements, CLEAR, FrameFlags::empty()) {
@@ -492,29 +705,37 @@ pub fn render(state: &mut HeliosState) {
         compositor.reset_buffer_ages();
     }
 
-    drm.needs_render = false;
-    drm.frame_pending = queued;
-
-    if !queued && !drm.retry_armed && failed {
+    let entry = &mut drm.outputs[index];
+    entry.needs_render = false;
+    entry.frame_pending = queued;
+    let arm = !queued && !entry.retry_armed && failed;
+    if arm {
         // The frame had damage but could not be queued: retry shortly. Never
         // re-arm for an empty frame — an idle render_frame spin pushes empty
         // entries into the damage tracker's history while the swapchain slot
         // ages stand still, which desynchronises the two and leaves stale
         // content on screen.
-        drm.retry_armed = true;
+        entry.retry_armed = true;
         let handle = drm.loop_handle.clone();
-        if let Err(err) =
-            handle.insert_source(Timer::from_duration(Duration::from_millis(16)), |_, _, state| {
-                if let Some(drm) = state.drm.as_mut() {
-                    drm.retry_armed = false;
+        if let Err(err) = handle.insert_source(
+            Timer::from_duration(Duration::from_millis(16)),
+            move |_, _, state| {
+                let i = state.drm.as_mut().and_then(|drm| {
+                    let i = drm.index_of_crtc(crtc)?;
+                    drm.outputs[i].retry_armed = false;
+                    Some(i)
+                });
+                if let Some(i) = i {
+                    render_output(state, i);
                 }
-                render(state);
                 TimeoutAction::Drop
-            })
-        {
+            },
+        ) {
             tracing::warn!(?err, "arming re-render timer");
             if let Some(drm) = state.drm.as_mut() {
-                drm.retry_armed = false;
+                if let Some(i) = drm.index_of_crtc(crtc) {
+                    drm.outputs[i].retry_armed = false;
+                }
             }
         }
     }

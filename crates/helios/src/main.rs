@@ -8,6 +8,7 @@
 mod backend;
 mod config;
 mod input;
+mod outputs;
 mod protocols;
 mod render;
 mod shell;

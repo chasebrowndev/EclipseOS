@@ -58,6 +58,21 @@ pub struct Clipboard {
     pub data_control_allow: Vec<String>,
 }
 
+/// One `output "<pattern>" { .. }` block (COMP-13 §4). Config wins over the
+/// persisted layout.
+#[derive(Debug, Clone, Default)]
+pub struct OutputRule {
+    /// Matched against the connector name and the output identity, `*` globbing.
+    pub pattern: String,
+    /// `WIDTHxHEIGHT` or `WIDTHxHEIGHT@REFRESH`, refresh in Hz or mHz.
+    pub mode: Option<(i32, i32, i32)>,
+    pub position: Option<(i32, i32)>,
+    pub scale: Option<f64>,
+    pub transform: Option<String>,
+    pub enabled: Option<bool>,
+    pub vrr: Option<bool>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub general: General,
@@ -65,6 +80,8 @@ pub struct Config {
     pub binds: Vec<Bind>,
     /// Per-workspace layout overrides, indexed 1..=10.
     pub workspace_layout: [Option<LayoutKind>; 10],
+    /// `output` blocks in file order; the last match wins.
+    pub outputs: Vec<OutputRule>,
     /// Files this config was built from, for the hot-reload stub.
     pub sources: Vec<PathBuf>,
 }
@@ -76,6 +93,7 @@ impl Default for Config {
             clipboard: Clipboard::default(),
             binds: default_binds(),
             workspace_layout: Default::default(),
+            outputs: Vec::new(),
             sources: Vec::new(),
         }
     }
@@ -268,8 +286,9 @@ impl Config {
                 },
                 "workspace" => self.apply_workspace(node),
                 "clipboard" => self.apply_clipboard(node),
+                "output" => self.apply_output(node),
                 // Blocks specified but not implemented in M2.
-                "decoration" | "animations" | "input" | "output" | "windowrule" => {}
+                "decoration" | "animations" | "input" | "windowrule" => {}
                 other => tracing::warn!(node = other, "unknown config node, ignored"),
             }
         }
@@ -340,6 +359,78 @@ impl Config {
                 }
             }
         }
+    }
+
+    fn apply_output(&mut self, node: &KdlNode) {
+        let Some(pattern) = arg(node).and_then(KdlValue::as_string).map(str::to_owned) else {
+            tracing::warn!("output node needs a name pattern argument");
+            return;
+        };
+        let mut rule = OutputRule {
+            pattern,
+            ..Default::default()
+        };
+        let Some(children) = node.children() else {
+            self.outputs.push(rule);
+            return;
+        };
+        for n in children.nodes() {
+            let name = n.name().value();
+            match name {
+                "mode" => match arg(n)
+                    .and_then(KdlValue::as_string)
+                    .and_then(crate::outputs::persist::parse_mode)
+                {
+                    Some(m) => rule.mode = Some(m),
+                    None => tracing::warn!("bad output mode, expected \"1920x1080@60\""),
+                },
+                "position" => {
+                    let a = n.entries();
+                    match (
+                        a.first().and_then(|e| e.value().as_integer()),
+                        a.get(1).and_then(|e| e.value().as_integer()),
+                    ) {
+                        (Some(x), Some(y)) => rule.position = Some((x as i32, y as i32)),
+                        _ => tracing::warn!("output position takes two integers"),
+                    }
+                }
+                "scale" => match arg(n).and_then(as_f64) {
+                    Some(s) if s > 0.0 => rule.scale = Some(s),
+                    _ => tracing::warn!("output scale must be a positive number"),
+                },
+                "transform" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(t) if crate::outputs::parse_transform(t).is_some() => {
+                        rule.transform = Some(t.to_owned())
+                    }
+                    other => tracing::warn!(?other, "unknown output transform"),
+                },
+                "enabled" | "disabled" => match arg(n).and_then(KdlValue::as_bool) {
+                    Some(v) => rule.enabled = Some(v == (name == "enabled")),
+                    None => rule.enabled = Some(name == "enabled"),
+                },
+                "vrr" | "adaptive-sync" => rule.vrr = arg(n).and_then(KdlValue::as_bool).or(Some(true)),
+                other => tracing::warn!(node = other, "unknown output key, ignored"),
+            }
+        }
+        self.outputs.push(rule);
+    }
+
+    /// The effective rule for an output, later blocks overriding earlier ones.
+    pub fn output_rule(&self, connector: &str, identity: &str) -> OutputRule {
+        let mut out = OutputRule::default();
+        for r in &self.outputs {
+            if !(glob_match(&r.pattern, connector) || glob_match(&r.pattern, identity)) {
+                continue;
+            }
+            out.pattern = r.pattern.clone();
+            out.mode = r.mode.or(out.mode);
+            out.position = r.position.or(out.position);
+            out.scale = r.scale.or(out.scale);
+            out.transform = r.transform.clone().or(out.transform);
+            out.enabled = r.enabled.or(out.enabled);
+            out.vrr = r.vrr.or(out.vrr);
+        }
+        out
     }
 
     pub fn layout_for(&self, workspace: usize) -> LayoutKind {
@@ -544,5 +635,67 @@ mod tests {
         cfg.apply(&doc, &mut binds);
         assert_eq!(cfg.general.layout, LayoutKind::Dwindle);
         assert!(binds.is_empty(), "Super+Escape must stay reserved");
+    }
+}
+
+fn as_f64(v: &KdlValue) -> Option<f64> {
+    v.as_float().or_else(|| v.as_integer().map(|i| i as f64))
+}
+
+/// `*` matches any run of characters; everything else is literal. Anchored.
+pub fn glob_match(pattern: &str, text: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let Some(first) = parts.next() else {
+        return pattern == text;
+    };
+    if !text.starts_with(first) {
+        return false;
+    }
+    if !pattern.contains('*') {
+        return text.len() == first.len();
+    }
+    let mut rest = &text[first.len()..];
+    let parts: Vec<&str> = parts.collect();
+    for (i, p) in parts.iter().enumerate() {
+        if p.is_empty() {
+            continue;
+        }
+        if i + 1 == parts.len() && !pattern.ends_with('*') {
+            return rest.ends_with(p) && rest.len() >= p.len();
+        }
+        match rest.find(p) {
+            Some(at) => rest = &rest[at + p.len()..],
+            None => return false,
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+
+    #[test]
+    fn globs() {
+        assert!(glob_match("DP-1", "DP-1"));
+        assert!(!glob_match("DP-1", "DP-11"));
+        assert!(glob_match("eDP-*", "eDP-1"));
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("*Dell*", "Dell U2720Q ABC"));
+        assert!(!glob_match("*Dell*", "LG U2720Q"));
+    }
+
+    #[test]
+    fn later_blocks_win() {
+        let mut c = Config::default();
+        let doc: KdlDocument = "output \"*\" { scale 1.0 }\noutput \"DP-*\" { scale 2.0; position 100 0 }"
+            .parse()
+            .unwrap();
+        let mut binds = Vec::new();
+        c.apply(&doc, &mut binds);
+        let r = c.output_rule("DP-1", "Dell X Y");
+        assert_eq!(r.scale, Some(2.0));
+        assert_eq!(r.position, Some((100, 0)));
+        assert_eq!(c.output_rule("HDMI-A-1", "x").scale, Some(1.0));
     }
 }

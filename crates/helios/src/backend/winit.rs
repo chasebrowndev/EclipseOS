@@ -53,10 +53,17 @@ pub fn run(config: Config) -> Result<()> {
             model: "winit".into(),
         },
     );
-    let _global = output.create_global::<HeliosState>(&dh);
+    let global = output.create_global::<HeliosState>(&dh);
     output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
     output.set_preferred(mode);
-    state.space.map_output(&output, (0, 0));
+    crate::outputs::register(
+        &mut state,
+        "winit".into(),
+        "winit".into(),
+        output.clone(),
+        crate::outputs::OutputKind::Physical,
+        Some(global),
+    );
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
 
     let handle = event_loop.handle();
@@ -94,7 +101,7 @@ pub fn run(config: Config) -> Result<()> {
                     None,
                     None,
                 );
-                crate::shell::arrange(state);
+                crate::outputs::relayout(state);
             }
             WinitEvent::Input(ev) => state.process_input_event(ev),
             WinitEvent::CloseRequested => state.quit(),

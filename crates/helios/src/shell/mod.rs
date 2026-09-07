@@ -18,11 +18,38 @@ use smithay::{
     },
 };
 
-use crate::{config::LayoutKind, input::Direction, shell::workspace::Floating, state::HeliosState};
+use crate::{
+    config::LayoutKind, input::Direction, protocols::standard::fractional_scale, shell::workspace::Floating,
+    state::HeliosState,
+};
 
-/// The output everything is laid out on. Multi-output arrives in M3 (COMP-03).
-pub fn primary_output(state: &HeliosState) -> Option<Output> {
-    state.space.outputs().next().cloned()
+/// The output that owns focus. Never `None` in practice: COMP-03 §5 guarantees
+/// a fallback output exists whenever there is no connector.
+pub fn focused_output(state: &HeliosState) -> Option<Output> {
+    state.outputs.focused().map(|e| e.output.clone())
+}
+
+/// The output whose logical area contains `pos`, else the focused output.
+pub fn output_at(state: &HeliosState, pos: Point<f64, Logical>) -> Option<Output> {
+    state
+        .space
+        .output_under(pos)
+        .next()
+        .cloned()
+        .or_else(|| focused_output(state))
+}
+
+/// The handle of the output whose workspaces hold `window`.
+pub fn output_of_window(state: &HeliosState, window: &Window) -> Option<u64> {
+    state
+        .outputs
+        .iter()
+        .find(|e| {
+            e.workspaces
+                .iter()
+                .any(|ws| ws.windows().contains(window) || ws.pending.contains(window))
+        })
+        .map(|e| e.id)
 }
 
 /// Usable tiling area: output geometry minus layer-shell exclusive zones minus
@@ -86,30 +113,50 @@ fn configure(window: &Window, size: Size<i32, Logical>, activated: bool) {
     toplevel.send_pending_configure();
 }
 
-/// Re-run the layout for the active workspace and remap it into the space.
+/// Re-run the layout for every output's active workspace.
 pub fn arrange(state: &mut HeliosState) {
-    let Some(output) = primary_output(state) else {
+    let ids: Vec<u64> = state.outputs.iter().map(|e| e.id).collect();
+    for id in ids {
+        arrange_output(state, id);
+    }
+}
+
+/// Lay out one output's active workspace and remap it into the space.
+pub fn arrange_output(state: &mut HeliosState, id: u64) {
+    let Some(entry) = state.outputs.get(id) else {
         return;
     };
+    let output = entry.output.clone();
+    let ws = entry.active;
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
-    let ws = state.active_workspace;
-    let kind = state.workspaces[ws]
+
+    // Adopt anything handed over by an output that went away.
+    let pending: Vec<Window> = {
+        let entry = state.outputs.get_mut(id).expect("checked above");
+        std::mem::take(&mut entry.workspaces[ws].pending)
+    };
+    for w in pending {
+        let entry = state.outputs.get_mut(id).expect("checked above");
+        entry.workspaces[ws].tiled.insert(w, None, area);
+    }
+
+    let entry = state.outputs.get(id).expect("checked above");
+    let kind = entry.workspaces[ws]
         .layout
         .unwrap_or_else(|| state.config.layout_for(ws + 1));
     let gap = state.config.general.gaps_in;
     let border = state.config.general.border_size;
 
+    let entry = state.outputs.get_mut(id).expect("checked above");
     let tiled: Vec<(Window, Rectangle<i32, Logical>)> = match kind {
-        LayoutKind::Dwindle => state.workspaces[ws].tiled.dwindle(area, gap),
-        LayoutKind::Master => state.workspaces[ws].tiled.master(area, gap),
+        LayoutKind::Dwindle => entry.workspaces[ws].tiled.dwindle(area, gap),
+        LayoutKind::Master => entry.workspaces[ws].tiled.master(area, gap),
     };
-    let floating: Vec<Rectangle<i32, Logical>> =
-        state.workspaces[ws].floating.iter().map(|f| f.rect).collect();
-    let floating_windows: Vec<Window> = state.workspaces[ws]
+    let floating: Vec<(Window, Rectangle<i32, Logical>)> = entry.workspaces[ws]
         .floating
         .iter()
-        .map(|f| f.window.clone())
+        .map(|f| (f.window.clone(), f.rect))
         .collect();
     let focus = state.focus.clone();
 
@@ -117,12 +164,14 @@ pub fn arrange(state: &mut HeliosState) {
         let inner = shrink(rect, border);
         let size = clamp_size(&w, inner.size);
         configure(&w, size, focus.as_ref() == Some(&w));
+        fractional_scale::update_window_scale(&w, &output);
         state.space.map_element(w, inner.loc, false);
     }
-    for (w, rect) in floating_windows.into_iter().zip(floating) {
+    for (w, rect) in floating {
         let inner = shrink(rect, border);
         let size = clamp_size(&w, inner.size);
         configure(&w, size, focus.as_ref() == Some(&w));
+        fractional_scale::update_window_scale(&w, &output);
         state.space.map_element(w.clone(), inner.loc, false);
         state.space.raise_element(&w, false);
     }
@@ -130,17 +179,19 @@ pub fn arrange(state: &mut HeliosState) {
 
 /// A brand-new toplevel joins the active workspace, tiled, next to the focus.
 pub fn place_new_window(state: &mut HeliosState, window: Window) {
-    let Some(output) = primary_output(state) else {
+    let Some(id) = state.outputs.focused().map(|e| e.id) else {
         return;
     };
+    let output = state.outputs.get(id).expect("just resolved").output.clone();
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
-    let ws = state.active_workspace;
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    let ws = entry.active;
     let near = state
         .focus
         .clone()
-        .filter(|w| state.workspaces[ws].tiled.contains(w));
-    state.workspaces[ws]
+        .filter(|w| entry.workspaces[ws].tiled.contains(w));
+    entry.workspaces[ws]
         .tiled
         .insert(window.clone(), near.as_ref(), area);
     state.focus = Some(window.clone());
@@ -149,8 +200,10 @@ pub fn place_new_window(state: &mut HeliosState, window: Window) {
 }
 
 pub fn unmap_window(state: &mut HeliosState, window: &Window) {
-    for ws in state.workspaces.iter_mut() {
-        ws.remove(window);
+    for entry in state.outputs.iter_mut() {
+        for ws in entry.workspaces.iter_mut() {
+            ws.remove(window);
+        }
     }
     state.space.unmap_elem(window);
     state.borders.remove(window);
@@ -166,6 +219,9 @@ pub fn focus_window(state: &mut HeliosState, window: &Window) {
         return;
     };
     state.focus = Some(window.clone());
+    if let Some(id) = output_of_window(state, window) {
+        state.outputs.set_focused(id);
+    }
     let keyboard = state.seat.get_keyboard().unwrap();
     keyboard.set_focus(state, Some(surface), SERIAL_COUNTER.next_serial());
     arrange(state);
@@ -177,7 +233,17 @@ pub fn focus_surface(state: &mut HeliosState, surface: Option<WlSurface>) {
 }
 
 pub fn refocus_topmost(state: &mut HeliosState) {
-    let top = state.space.elements().next_back().cloned();
+    let here: Vec<Window> = state
+        .outputs
+        .focused()
+        .map(|e| e.workspace().windows())
+        .unwrap_or_default();
+    let top = state
+        .space
+        .elements()
+        .rfind(|w| here.contains(w))
+        .cloned()
+        .or_else(|| state.space.elements().next_back().cloned());
     match top {
         Some(w) => focus_window(state, &w),
         None => {
@@ -193,7 +259,7 @@ pub fn surface_under(
     state: &HeliosState,
     pos: Point<f64, Logical>,
 ) -> Option<(WlSurface, Point<f64, Logical>)> {
-    let output = primary_output(state)?;
+    let output = output_at(state, pos)?;
     let output_loc = state
         .space
         .output_geometry(&output)
@@ -254,7 +320,12 @@ pub fn handle_commit(state: &mut HeliosState, surface: &WlSurface) {
         return;
     }
 
-    if let Some(output) = primary_output(state) {
+    let layer_output = state.outputs.iter().map(|e| e.output.clone()).find(|o| {
+        layer_map_for_output(o)
+            .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+            .is_some()
+    });
+    if let Some(output) = layer_output {
         let mut arranged = false;
         let mut send_initial = false;
         {
@@ -301,16 +372,17 @@ pub fn close_focused(state: &mut HeliosState) {
 
 pub fn toggle_floating(state: &mut HeliosState) {
     let Some(window) = state.focus.clone() else { return };
-    let Some(output) = primary_output(state) else {
+    let Some(id) = output_of_window(state, &window).or_else(|| state.outputs.focused().map(|e| e.id)) else {
         return;
     };
+    let output = state.outputs.get(id).expect("just resolved").output.clone();
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
-    let ws = state.active_workspace;
-    if state.workspaces[ws].tiled.contains(&window) {
-        let rect = state
-            .space
-            .element_geometry(&window)
+    let geometry = state.space.element_geometry(&window);
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    let ws = entry.active;
+    if entry.workspaces[ws].tiled.contains(&window) {
+        let rect = geometry
             .unwrap_or_else(|| Rectangle::new(area.loc, Size::from((area.size.w / 2, area.size.h / 2))));
         let centered = Rectangle::new(
             (
@@ -320,36 +392,36 @@ pub fn toggle_floating(state: &mut HeliosState) {
                 .into(),
             rect.size,
         );
-        state.workspaces[ws].tiled.remove(&window);
-        state.workspaces[ws].floating.push(Floating {
+        entry.workspaces[ws].tiled.remove(&window);
+        entry.workspaces[ws].floating.push(Floating {
             window,
             rect: centered,
         });
-    } else if let Some(i) = state.workspaces[ws]
+    } else if let Some(i) = entry.workspaces[ws]
         .floating
         .iter()
         .position(|f| f.window == window)
     {
-        state.workspaces[ws].floating.remove(i);
-        let near = state
-            .focus
-            .clone()
-            .filter(|w| state.workspaces[ws].tiled.contains(w));
-        state.workspaces[ws].tiled.insert(window, near.as_ref(), area);
+        entry.workspaces[ws].floating.remove(i);
+        entry.workspaces[ws].tiled.insert(window, None, area);
     }
     arrange(state);
 }
 
 pub fn toggle_layout(state: &mut HeliosState) {
-    let ws = state.active_workspace;
-    let current = state.workspaces[ws]
-        .layout
-        .unwrap_or_else(|| state.config.layout_for(ws + 1));
-    state.workspaces[ws].layout = Some(match current {
+    let Some(id) = state.outputs.focused().map(|e| e.id) else {
+        return;
+    };
+    let ws = state.outputs.get(id).expect("just resolved").active;
+    let fallback = state.config.layout_for(ws + 1);
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    let current = entry.workspaces[ws].layout.unwrap_or(fallback);
+    let next = match current {
         LayoutKind::Dwindle => LayoutKind::Master,
         LayoutKind::Master => LayoutKind::Dwindle,
-    });
-    tracing::info!(workspace = ws + 1, layout = ?state.workspaces[ws].layout, "layout toggled");
+    };
+    entry.workspaces[ws].layout = Some(next);
+    tracing::info!(workspace = ws + 1, layout = ?next, "layout toggled");
     arrange(state);
 }
 
@@ -396,14 +468,18 @@ pub fn focus_direction(state: &mut HeliosState, dir: Direction) {
 /// floating window.
 pub fn move_direction(state: &mut HeliosState, dir: Direction) {
     let Some(from) = state.focus.clone() else { return };
-    let ws = state.active_workspace;
-    if let Some(i) = state.workspaces[ws]
+    let Some(id) = output_of_window(state, &from) else {
+        return;
+    };
+    let ws = state.outputs.get(id).expect("just resolved").active;
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    if let Some(i) = entry.workspaces[ws]
         .floating
         .iter()
         .position(|f| f.window == from)
     {
         const STEP: i32 = 50;
-        let r = &mut state.workspaces[ws].floating[i].rect;
+        let r = &mut entry.workspaces[ws].floating[i].rect;
         match dir {
             Direction::Left => r.loc.x -= STEP,
             Direction::Right => r.loc.x += STEP,
@@ -416,8 +492,9 @@ pub fn move_direction(state: &mut HeliosState, dir: Direction) {
     let Some(target) = neighbour(state, &from, dir) else {
         return;
     };
-    if state.workspaces[ws].tiled.contains(&target) {
-        state.workspaces[ws].tiled.swap(&from, &target);
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    if entry.workspaces[ws].tiled.contains(&target) {
+        entry.workspaces[ws].tiled.swap(&from, &target);
         arrange(state);
     }
 }
@@ -428,13 +505,17 @@ pub fn switch_workspace(state: &mut HeliosState, idx: usize) {
         return;
     }
     let target = idx - 1;
-    if target == state.active_workspace {
+    let Some(id) = state.outputs.focused().map(|e| e.id) else {
+        return;
+    };
+    let entry = state.outputs.get(id).expect("just resolved");
+    if target == entry.active {
         return;
     }
-    for w in state.workspaces[state.active_workspace].windows() {
+    for w in entry.workspace().windows() {
         state.space.unmap_elem(&w);
     }
-    state.active_workspace = target;
+    state.outputs.get_mut(id).expect("just resolved").active = target;
     state.focus = None;
     arrange(state);
     refocus_topmost(state);
@@ -447,17 +528,22 @@ pub fn move_to_workspace(state: &mut HeliosState, idx: usize) {
     }
     let target = idx - 1;
     let Some(window) = state.focus.clone() else { return };
-    if target == state.active_workspace {
-        return;
-    }
-    let Some(output) = primary_output(state) else {
+    let Some(id) = output_of_window(state, &window).or_else(|| state.outputs.focused().map(|e| e.id)) else {
         return;
     };
+    let entry = state.outputs.get(id).expect("just resolved");
+    if target == entry.active {
+        return;
+    }
+    let output = entry.output.clone();
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
-    state.workspaces[state.active_workspace].remove(&window);
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    let active = entry.active;
+    entry.workspaces[active].remove(&window);
     state.space.unmap_elem(&window);
-    state.workspaces[target].tiled.insert(window, None, area);
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    entry.workspaces[target].tiled.insert(window, None, area);
     state.focus = None;
     arrange(state);
     refocus_topmost(state);
@@ -478,14 +564,11 @@ pub fn spawn(command: &str) {
 
 /// Give keyboard focus to a newly mapped layer surface that asks for it.
 pub fn focus_layer_if_wanted(state: &mut HeliosState, surface: &WlSurface) {
-    let Some(output) = primary_output(state) else {
-        return;
-    };
-    let wants = {
-        let map = layer_map_for_output(&output);
-        map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+    let wants = state.outputs.iter().any(|e| {
+        layer_map_for_output(&e.output)
+            .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
             .is_some_and(|l| l.can_receive_keyboard_focus())
-    };
+    });
     if wants {
         state.focus = None;
         focus_surface(state, Some(surface.clone()));

@@ -145,25 +145,49 @@ impl HeliosState {
 
     /// Clamp a candidate pointer position into the union of output geometry.
     fn clamp_to_outputs(&self, pos: Point<f64, Logical>) -> Point<f64, Logical> {
-        let Some(output) = self.space.outputs().next().cloned() else {
+        let geometries: Vec<_> = self
+            .space
+            .outputs()
+            .filter_map(|o| self.space.output_geometry(o))
+            .collect();
+        if geometries.is_empty() || geometries.iter().any(|g| g.to_f64().contains(pos)) {
             return pos;
+        }
+        // Outside every output: clamp into whichever one is nearest.
+        let clamp = |g: &smithay::utils::Rectangle<i32, Logical>| -> Point<f64, Logical> {
+            let max_x = (g.loc.x + g.size.w - 1).max(g.loc.x) as f64;
+            let max_y = (g.loc.y + g.size.h - 1).max(g.loc.y) as f64;
+            (
+                pos.x.clamp(g.loc.x as f64, max_x),
+                pos.y.clamp(g.loc.y as f64, max_y),
+            )
+                .into()
         };
-        let Some(geo) = self.space.output_geometry(&output) else {
-            return pos;
-        };
-        let max_x = (geo.loc.x + geo.size.w - 1) as f64;
-        let max_y = (geo.loc.y + geo.size.h - 1) as f64;
-        (
-            pos.x.clamp(geo.loc.x as f64, max_x.max(geo.loc.x as f64)),
-            pos.y.clamp(geo.loc.y as f64, max_y.max(geo.loc.y as f64)),
-        )
-            .into()
+        geometries
+            .iter()
+            .map(clamp)
+            .min_by(|a, b| {
+                let d = |p: &Point<f64, Logical>| (p.x - pos.x).powi(2) + (p.y - pos.y).powi(2);
+                d(a).total_cmp(&d(b))
+            })
+            .unwrap_or(pos)
     }
 
     /// Shared tail for both relative and absolute motion.
     fn pointer_moved(&mut self, pos: Point<f64, Logical>, time: u32) {
         let pos = self.clamp_to_outputs(pos);
         self.pointer_location = pos;
+        // Pointer motion moves output focus, so a new window opens where the
+        // human is looking (COMP-03 §3).
+        if let Some(id) = self
+            .space
+            .output_under(pos)
+            .next()
+            .and_then(|o| self.outputs.by_output(o))
+            .map(|e| e.id)
+        {
+            self.outputs.set_focused(id);
+        }
         let serial = SERIAL_COUNTER.next_serial();
         let under = self.surface_under(pos);
 
@@ -208,9 +232,15 @@ impl HeliosState {
     }
 
     fn on_pointer_motion_absolute<B: InputBackend>(&mut self, event: B::PointerMotionAbsoluteEvent) {
-        let Some(output) = self.space.outputs().next().cloned() else {
-            return;
-        };
+        // Absolute devices are output-relative; use the output the pointer is
+        // already on, else the focused one.
+        let output = self
+            .space
+            .output_under(self.pointer_location)
+            .next()
+            .cloned()
+            .or_else(|| self.outputs.focused().map(|e| e.output.clone()));
+        let Some(output) = output else { return };
         let Some(geometry) = self.space.output_geometry(&output) else {
             return;
         };

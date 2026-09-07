@@ -30,7 +30,7 @@ impl WlrLayerShellHandler for HeliosState {
         let output = wl_output
             .as_ref()
             .and_then(smithay::output::Output::from_resource)
-            .or_else(|| shell::primary_output(self));
+            .or_else(|| shell::focused_output(self));
         let Some(output) = output else {
             tracing::warn!(%namespace, "layer surface with no output; closing");
             surface.send_close();
@@ -55,7 +55,11 @@ impl WlrLayerShellHandler for HeliosState {
     }
 
     fn layer_destroyed(&mut self, surface: LayerSurface) {
-        let Some(output) = shell::primary_output(self) else {
+        let Some(output) = self.outputs.iter().map(|e| e.output.clone()).find(|o| {
+            layer_map_for_output(o)
+                .layer_for_surface(surface.wl_surface(), WindowSurfaceType::TOPLEVEL)
+                .is_some()
+        }) else {
             return;
         };
         let mut refocus = false;

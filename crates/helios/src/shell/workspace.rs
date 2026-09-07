@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Workspaces (COMP-05 §4). Ten numbered workspaces; M2 keeps a single set
-//! shared by the (single) output — per-output sets land with multi-output in M3.
+//! Workspaces (COMP-05 §4). Ten numbered workspaces per output; the set is
+//! owned by the output's entry in `outputs::Outputs`, so unplugging a monitor
+//! takes its workspaces with it (COMP-03 §5).
 
 use smithay::{
     desktop::Window,
@@ -25,6 +26,9 @@ pub struct Workspace {
     pub floating: Vec<Floating>,
     /// Set by `toggle-layout`; otherwise the config decides.
     pub layout: Option<LayoutKind>,
+    /// Windows adopted from a departed output, not yet placed in the layout.
+    /// `shell::arrange` drains this.
+    pub pending: Vec<Window>,
 }
 
 impl Workspace {
@@ -36,6 +40,10 @@ impl Workspace {
     }
 
     pub fn remove(&mut self, w: &Window) -> bool {
+        if let Some(i) = self.pending.iter().position(|p| p == w) {
+            self.pending.remove(i);
+            return true;
+        }
         let was_floating = self.floating.iter().position(|f| &f.window == w);
         if let Some(i) = was_floating {
             self.floating.remove(i);

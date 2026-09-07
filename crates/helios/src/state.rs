@@ -16,6 +16,7 @@ use smithay::{
     utils::{Logical, Point},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        fractional_scale::FractionalScaleManagerState,
         input_method::{InputMethodManagerState, PopupSurface},
         output::OutputManagerState,
         selection::{
@@ -26,6 +27,7 @@ use smithay::{
         shm::ShmState,
         socket::ListeningSocketSource,
         text_input::TextInputManagerState,
+        viewporter::ViewporterState,
     },
 };
 
@@ -53,16 +55,18 @@ pub struct HeliosState {
     #[allow(dead_code)] // holds the zwp_input_method_manager_v2 global alive
     pub input_method_manager_state: InputMethodManagerState,
     pub seat_state: SeatState<Self>,
+    #[allow(dead_code)] // holds the wp_fractional_scale_manager_v1 global alive
+    pub fractional_scale_state: FractionalScaleManagerState,
+    #[allow(dead_code)] // holds the wp_viewporter global alive
+    pub viewporter_state: ViewporterState,
 
     /// The human seat (`seat0`). Agent seats arrive in Phase 2.
     pub seat: Seat<Self>,
 
     /// Parsed configuration (COMP-13). Never fails to load; falls back to defaults.
     pub config: crate::config::Config,
-    /// Workspaces 1..=10 on the primary output.
-    pub workspaces: Vec<crate::shell::workspace::Workspace>,
-    /// 0-based index into `workspaces`.
-    pub active_workspace: usize,
+    /// Every output, each with its own workspace set (COMP-03).
+    pub outputs: crate::outputs::Outputs,
     /// The window holding keyboard focus, if any.
     pub focus: Option<Window>,
     /// Per-window border quads, kept alive across frames.
@@ -111,6 +115,8 @@ impl HeliosState {
         );
         let text_input_manager_state = TextInputManagerState::new::<Self>(&dh);
         let input_method_manager_state = InputMethodManagerState::new::<Self, _>(&dh, |_| true);
+        let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
+        let viewporter_state = ViewporterState::new::<Self>(&dh);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         // Repeat defaults match COMP-04 until config lands (M6).
@@ -138,11 +144,12 @@ impl HeliosState {
             clipboard: None,
             dnd_icon: None,
             input_method_popup: None,
+            fractional_scale_state,
+            viewporter_state,
             seat_state,
             seat,
             pointer_location: (0.0, 0.0).into(),
-            workspaces: crate::shell::workspace::new_set(),
-            active_workspace: 0,
+            outputs: crate::outputs::Outputs::new(),
             focus: None,
             borders: crate::render::BorderStore::default(),
             config,
