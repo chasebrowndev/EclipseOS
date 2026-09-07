@@ -361,6 +361,24 @@ pub fn default_binds() -> Vec<Bind> {
     b
 }
 
+/// Collect the string arguments of a list node, warning when the same node
+/// appears twice in one block: the second occurrence replaces the first rather
+/// than adding to it, and silently dropping names from an allowlist is the
+/// failure direction that matters in a fail-closed path.
+fn names(n: &KdlNode, seen: &mut bool) -> Vec<String> {
+    if *seen {
+        tracing::warn!(
+            node = n.name().value(),
+            "repeated node replaces the previous one; list every name on a single node"
+        );
+    }
+    *seen = true;
+    args(n)
+        .into_iter()
+        .filter_map(|v| v.as_string().map(str::to_string))
+        .collect()
+}
+
 impl Config {
     /// Load from `explicit` if given, else from the search path. Errors are
     /// logged; the returned config is always usable.
@@ -480,13 +498,11 @@ impl Config {
 
     fn apply_clipboard(&mut self, node: &KdlNode) {
         let Some(children) = node.children() else { return };
+        let mut seen_allow = false;
         for n in children.nodes() {
             match n.name().value() {
                 "data-control-allow" => {
-                    self.clipboard.data_control_allow = args(n)
-                        .into_iter()
-                        .filter_map(|v| v.as_string().map(str::to_string))
-                        .collect();
+                    self.clipboard.data_control_allow = names(n, &mut seen_allow);
                 }
                 other => tracing::warn!(node = other, "unknown clipboard node, ignored"),
             }
@@ -495,19 +511,15 @@ impl Config {
 
     fn apply_capture(&mut self, node: &KdlNode) {
         let Some(children) = node.children() else { return };
+        let mut seen_allow = false;
+        let mut seen_redact = false;
         for n in children.nodes() {
             match n.name().value() {
                 "allow" => {
-                    self.capture.allow = args(n)
-                        .into_iter()
-                        .filter_map(|v| v.as_string().map(str::to_string))
-                        .collect();
+                    self.capture.allow = names(n, &mut seen_allow);
                 }
                 "redact-app-id" => {
-                    self.capture.redact_app_id = args(n)
-                        .into_iter()
-                        .filter_map(|v| v.as_string().map(str::to_string))
-                        .collect();
+                    self.capture.redact_app_id = names(n, &mut seen_redact);
                 }
                 other => tracing::warn!(node = other, "unknown capture node, ignored"),
             }
