@@ -31,6 +31,17 @@ vendored source:
 `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smithay-0.7.0/`
 Version bumps are their own PR with its own ADR if behavior changes.
 
+## Killing test processes (read this before any cleanup line)
+`kitty` is the terminal hosting the interactive session. **Never `pkill`/`killall`
+kitty, zsh, claude, Xwayland or quickshell** — that kills the session you are
+running in, mid-command, and looks like a mysterious external SIGKILL (exit 137).
+This has already happened more than once.
+
+- Kill only our own binary, by exact name: `pkill -x helios`. Never `pkill -f`.
+- Kill a spawned test client by the pid you captured when you spawned it
+  (`kitty ... & pid=$!` then `kill $pid`), never by process name.
+- Host pid 2245 is the host's own Xwayland under Hyprland. Leave it alone.
+
 ## Build / test / run
 ```
 cargo build --workspace
