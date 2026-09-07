@@ -33,6 +33,7 @@ use smithay::{
                 Kind,
             },
             gles::GlesRenderer,
+            ImportDma,
         },
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{primary_gpu, UdevBackend, UdevEvent},
@@ -116,13 +117,19 @@ pub struct DrmData {
     render_node: libc::dev_t,
 }
 
-impl DrmData {
-    pub fn change_vt(&mut self, vt: i32) {
+impl super::Backend for DrmData {
+    fn import_dmabuf(&mut self, buf: &smithay::backend::allocator::dmabuf::Dmabuf) -> bool {
+        self.renderer.import_dmabuf(buf, None).is_ok()
+    }
+
+    fn change_vt(&mut self, vt: i32) {
         if let Err(err) = self.session.change_vt(vt) {
             tracing::warn!(?err, vt, "VT switch failed");
         }
     }
+}
 
+impl DrmData {
     fn index_of_crtc(&self, crtc: crtc::Handle) -> Option<usize> {
         self.outputs.iter().position(|o| o.crtc == crtc)
     }

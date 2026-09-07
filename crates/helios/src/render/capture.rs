@@ -36,7 +36,7 @@ use crate::{render::HeliosRenderElement, state::HeliosState};
 /// The pixel format captured frames are handed to clients in. `Xbgr8888` maps
 /// straight onto the GL ES read path (`RGBA`/`UNSIGNED_BYTE`), so the readback
 /// needs no channel swizzle on the CPU.
-pub const FORMAT: smithay::backend::allocator::Fourcc = smithay::backend::allocator::Fourcc::Xbgr8888;
+pub const FORMAT: crate::backend::Fourcc = crate::backend::Fourcc::Xbgr8888;
 /// The matching `wl_shm` format advertised to clients.
 pub const SHM_FORMAT: smithay::reexports::wayland_server::protocol::wl_shm::Format =
     smithay::reexports::wayland_server::protocol::wl_shm::Format::Xbgr8888;

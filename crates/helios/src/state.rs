@@ -98,9 +98,7 @@ pub struct HeliosState {
     /// Live only on the winit backend. Held here so the dmabuf handler can
     /// import into the same renderer that draws the frame.
     #[cfg(feature = "winit")]
-    pub winit: Option<
-        Box<smithay::backend::winit::WinitGraphicsBackend<smithay::backend::renderer::gles::GlesRenderer>>,
-    >,
+    pub winit: Option<Box<crate::backend::winit::WinitData>>,
     /// `None` when no render node exists, in which case there is no global.
     pub dmabuf_state: Option<smithay::wayland::dmabuf::DmabufState>,
     /// Default (render) feedback, sent to every surface that cannot scan out.
@@ -158,6 +156,22 @@ pub struct HeliosState {
 }
 
 impl HeliosState {
+    /// The live backend, as the [`Backend`](crate::backend::Backend) trait.
+    ///
+    /// Exactly one of the two fields is ever `Some`, so the order here is a
+    /// formality rather than a preference. `None` means no backend is up yet.
+    pub fn backend_mut(&mut self) -> Option<&mut dyn crate::backend::Backend> {
+        #[cfg(feature = "drm")]
+        if let Some(drm) = self.drm.as_mut() {
+            return Some(&mut **drm);
+        }
+        #[cfg(feature = "winit")]
+        if let Some(winit) = self.winit.as_mut() {
+            return Some(&mut **winit);
+        }
+        None
+    }
+
     /// Is a client capturing right now? Drives the trusted-UI indicator.
     pub fn capture_active(&self) -> bool {
         self.capture_seen

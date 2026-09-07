@@ -145,13 +145,9 @@ impl HeliosState {
     }
 
     fn switch_vt(&mut self, vt: i32) {
-        #[cfg(feature = "drm")]
-        if let Some(drm) = self.drm.as_mut() {
-            tracing::info!(vt, "switching VT");
-            drm.change_vt(vt);
-            return;
+        if let Some(backend) = self.backend_mut() {
+            backend.change_vt(vt);
         }
-        tracing::debug!(vt, "VT switch ignored (not on the DRM backend)");
     }
 
     /// Clamp a candidate pointer position into the union of output geometry.

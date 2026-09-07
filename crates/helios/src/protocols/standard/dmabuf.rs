@@ -4,7 +4,7 @@
 //! promotes a full-screen surface to the output's scanout tranche.
 
 use smithay::{
-    backend::{allocator::dmabuf::Dmabuf, renderer::ImportDma},
+    backend::allocator::dmabuf::Dmabuf,
     delegate_dmabuf,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     wayland::dmabuf::{DmabufFeedback, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
@@ -30,18 +30,9 @@ impl DmabufHandler for HeliosState {
     }
 
     fn dmabuf_imported(&mut self, _global: &DmabufGlobal, dmabuf: Dmabuf, notifier: ImportNotifier) {
-        #[allow(unused_mut)]
-        let mut imported = false;
-        #[cfg(feature = "drm")]
-        if let Some(drm) = self.drm.as_mut() {
-            imported = drm.renderer.import_dmabuf(&dmabuf, None).is_ok();
-        }
-        #[cfg(feature = "winit")]
-        if !imported {
-            if let Some(winit) = self.winit.as_mut() {
-                imported = winit.renderer().import_dmabuf(&dmabuf, None).is_ok();
-            }
-        }
+        let imported = self
+            .backend_mut()
+            .is_some_and(|backend| backend.import_dmabuf(&dmabuf));
         if imported {
             let _ = notifier.successful::<HeliosState>();
         } else {

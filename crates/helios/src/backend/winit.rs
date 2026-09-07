@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use smithay::{
     backend::{
         egl::EGLDevice,
-        renderer::{damage::OutputDamageTracker, gles::GlesRenderer, ImportEgl},
+        renderer::{damage::OutputDamageTracker, gles::GlesRenderer, ImportDma, ImportEgl},
         winit::{self, WinitEvent, WinitGraphicsBackend},
     },
     output::{Mode, Output, PhysicalProperties, Subpixel},
@@ -30,6 +30,18 @@ use crate::{
 };
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
+/// The live winit backend, owned by [`HeliosState`].
+///
+/// A newtype rather than the smithay type directly so that no
+/// `smithay::backend::winit` path escapes this module (root invariant).
+pub struct WinitData(WinitGraphicsBackend<GlesRenderer>);
+
+impl super::Backend for WinitData {
+    fn import_dmabuf(&mut self, buf: &smithay::backend::allocator::dmabuf::Dmabuf) -> bool {
+        self.0.renderer().import_dmabuf(buf, None).is_ok()
+    }
+}
 
 pub fn run(config: Config, stats: bool) -> Result<()> {
     let mut event_loop: EventLoop<'static, HeliosState> = EventLoop::try_new().context("calloop")?;
@@ -138,7 +150,7 @@ pub fn run(config: Config, stats: bool) -> Result<()> {
     std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
     tracing::info!(socket = %state.socket_name, "listening");
 
-    state.winit = Some(Box::new(backend));
+    state.winit = Some(Box::new(WinitData(backend)));
     let out = output.clone();
     let mut damage_tracker = damage_tracker;
     handle
@@ -158,12 +170,12 @@ pub fn run(config: Config, stats: bool) -> Result<()> {
             WinitEvent::Input(ev) => state.process_input_event(ev),
             WinitEvent::CloseRequested => state.quit(),
             WinitEvent::Redraw => {
-                let Some(mut backend) = state.winit.take() else {
+                let Some(mut data) = state.winit.take() else {
                     return;
                 };
-                redraw(state, &mut backend, &out, &mut damage_tracker);
-                backend.window().request_redraw();
-                state.winit = Some(backend);
+                redraw(state, &mut data.0, &out, &mut damage_tracker);
+                data.0.window().request_redraw();
+                state.winit = Some(data);
             }
             WinitEvent::Focus(_) => {}
         })
