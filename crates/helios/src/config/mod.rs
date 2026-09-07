@@ -73,9 +73,25 @@ pub struct OutputRule {
     pub vrr: Option<bool>,
 }
 
+/// `render { ... }` (COMP-02 §2).
+#[derive(Debug, Clone)]
+pub struct Render {
+    /// Allow the DRM backend to hand buffers straight to KMS planes.
+    /// Composition is still forced for any frame containing a surface
+    /// flagged sensitive (COMP-02 §7).
+    pub direct_scanout: bool,
+}
+
+impl Default for Render {
+    fn default() -> Self {
+        Self { direct_scanout: true }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub general: General,
+    pub render: Render,
     pub clipboard: Clipboard,
     pub binds: Vec<Bind>,
     /// Per-workspace layout overrides, indexed 1..=10.
@@ -90,6 +106,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             general: General::default(),
+            render: Render::default(),
             clipboard: Clipboard::default(),
             binds: default_binds(),
             workspace_layout: Default::default(),
@@ -285,6 +302,7 @@ impl Config {
                     Err(e) => tracing::warn!(error = %e, "ignoring bind"),
                 },
                 "workspace" => self.apply_workspace(node),
+                "render" => self.apply_render(node),
                 "clipboard" => self.apply_clipboard(node),
                 "output" => self.apply_output(node),
                 // Blocks specified but not implemented in M2.
@@ -320,6 +338,18 @@ impl Config {
                     }
                 }
                 other => tracing::warn!(node = other, "unknown general key, ignored"),
+            }
+        }
+    }
+
+    fn apply_render(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "direct-scanout" => {
+                    self.render.direct_scanout = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
+                }
+                other => tracing::warn!(node = other, "unknown render node, ignored"),
             }
         }
     }

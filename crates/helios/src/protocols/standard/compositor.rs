@@ -21,6 +21,16 @@ impl CompositorHandler for HeliosState {
         &client.get_data::<ClientState>().unwrap().compositor_state
     }
 
+    #[cfg(feature = "drm")]
+    fn new_surface(&mut self, surface: &WlSurface) {
+        // Explicit sync: acquire points gate the transaction, never the loop.
+        let id =
+            smithay::wayland::compositor::add_pre_commit_hook::<Self, _>(surface, |state, _dh, surface| {
+                super::drm_syncobj::block_on_acquire_point(state, surface);
+            });
+        let _ = id;
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
         if !is_sync_subsurface(surface) {

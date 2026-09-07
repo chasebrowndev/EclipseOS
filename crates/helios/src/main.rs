@@ -44,11 +44,13 @@ fn default_backend() -> BackendKind {
 struct Args {
     backend: BackendKind,
     config: Option<std::path::PathBuf>,
+    stats: bool,
 }
 
 fn parse_args() -> Result<Args> {
     let mut kind = default_backend();
     let mut config = None;
+    let mut stats = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -66,8 +68,9 @@ fn parse_args() -> Result<Args> {
                 Some(path) => config = Some(std::path::PathBuf::from(path)),
                 None => anyhow::bail!("--config requires a path"),
             },
+            "--stats" => stats = true,
             "-h" | "--help" => {
-                println!("usage: helios [--backend drm|winit] [--config <path.kdl>]");
+                println!("usage: helios [--backend drm|winit] [--config <path.kdl>] [--stats]");
                 std::process::exit(0);
             }
             other => anyhow::bail!("unknown argument '{other}'"),
@@ -76,6 +79,7 @@ fn parse_args() -> Result<Args> {
     Ok(Args {
         backend: kind,
         config,
+        stats,
     })
 }
 
@@ -106,8 +110,8 @@ fn main() -> Result<()> {
     let config = config::Config::load(args.config.as_deref());
     match args.backend {
         #[cfg(feature = "winit")]
-        BackendKind::Winit => backend::winit::run(config),
+        BackendKind::Winit => backend::winit::run(config, args.stats),
         #[cfg(feature = "drm")]
-        BackendKind::Drm => backend::drm::run(config),
+        BackendKind::Drm => backend::drm::run(config, args.stats),
     }
 }

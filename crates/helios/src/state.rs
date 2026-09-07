@@ -1,24 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Root compositor state. Single-threaded, owned by the calloop loop.
 
-use std::{sync::Arc, time::Instant};
+use std::{collections::HashSet, sync::Arc, time::Instant};
 
 use smithay::{
     desktop::{PopupManager, Space, Window},
     input::{Seat, SeatState},
     reexports::{
-        calloop::LoopSignal,
+        calloop::{LoopHandle, LoopSignal},
         wayland_server::{
             backend::{ClientData, ClientId, DisconnectReason},
             Display, DisplayHandle,
         },
     },
-    utils::{Logical, Point},
+    utils::{Clock, Logical, Monotonic, Point},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         fractional_scale::FractionalScaleManagerState,
         input_method::{InputMethodManagerState, PopupSurface},
         output::OutputManagerState,
+        presentation::PresentationState,
         selection::{
             data_device::DataDeviceState, primary_selection::PrimarySelectionState,
             wlr_data_control::DataControlState,
@@ -33,8 +34,11 @@ use smithay::{
 
 pub struct HeliosState {
     pub start_time: Instant,
+    /// CLOCK_MONOTONIC, the clock `wp_presentation` timestamps are given in.
+    pub clock: Clock<Monotonic>,
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
+    pub loop_handle: LoopHandle<'static, Self>,
     pub socket_name: String,
 
     pub space: Space<Window>,
@@ -59,6 +63,8 @@ pub struct HeliosState {
     pub fractional_scale_state: FractionalScaleManagerState,
     #[allow(dead_code)] // holds the wp_viewporter global alive
     pub viewporter_state: ViewporterState,
+    #[allow(dead_code)] // holds the wp_presentation global alive
+    pub presentation_state: PresentationState,
 
     /// The human seat (`seat0`). Agent seats arrive in Phase 2.
     pub seat: Seat<Self>,
@@ -85,16 +91,37 @@ pub struct HeliosState {
     /// Live only on the DRM backend; `None` under winit/headless.
     #[cfg(feature = "drm")]
     pub drm: Option<Box<crate::backend::drm::DrmData>>,
-    #[cfg(feature = "drm")]
+    /// Live only on the winit backend. Held here so the dmabuf handler can
+    /// import into the same renderer that draws the frame.
+    #[cfg(feature = "winit")]
+    pub winit: Option<
+        Box<smithay::backend::winit::WinitGraphicsBackend<smithay::backend::renderer::gles::GlesRenderer>>,
+    >,
+    /// `None` when no render node exists, in which case there is no global.
     pub dmabuf_state: Option<smithay::wayland::dmabuf::DmabufState>,
+    /// Default (render) feedback, sent to every surface that cannot scan out.
+    pub dmabuf_feedback: Option<smithay::wayland::dmabuf::DmabufFeedback>,
+    /// Explicit sync (COMP-02 §3). `None` when the device has no syncobj eventfd.
+    #[cfg(feature = "drm")]
+    pub syncobj_state: Option<smithay::wayland::drm_syncobj::DrmSyncobjState>,
+
+    /// Surfaces flagged sensitive (COMP-02 §7). Stub until the policy engine
+    /// lands: a surface listed here is never handed to a scanout plane, so the
+    /// compositor keeps the pixels it can redact.
+    pub sensitive: HashSet<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
+
+    /// Frame timing (COMP-14 §2).
+    pub stats: crate::render::stats::FrameStats,
 }
 
 impl HeliosState {
     pub fn new(
         display: &Display<Self>,
         loop_signal: LoopSignal,
+        loop_handle: LoopHandle<'static, Self>,
         socket: &ListeningSocketSource,
         config: crate::config::Config,
+        stats: bool,
     ) -> Self {
         let dh = display.handle();
         let compositor_state = CompositorState::new::<Self>(&dh);
@@ -117,6 +144,8 @@ impl HeliosState {
         let input_method_manager_state = InputMethodManagerState::new::<Self, _>(&dh, |_| true);
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
         let viewporter_state = ViewporterState::new::<Self>(&dh);
+        // CLOCK_MONOTONIC: the clock every backend timestamps frames against.
+        let presentation_state = PresentationState::new::<Self>(&dh, libc::CLOCK_MONOTONIC as u32);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         // Repeat defaults match COMP-04 until config lands (M6).
@@ -126,8 +155,10 @@ impl HeliosState {
 
         Self {
             start_time: Instant::now(),
+            clock: Clock::new(),
             display_handle: dh,
             loop_signal,
+            loop_handle,
             socket_name: socket.socket_name().to_string_lossy().into_owned(),
             space: Space::default(),
             popups: PopupManager::default(),
@@ -146,6 +177,7 @@ impl HeliosState {
             input_method_popup: None,
             fractional_scale_state,
             viewporter_state,
+            presentation_state,
             seat_state,
             seat,
             pointer_location: (0.0, 0.0).into(),
@@ -155,8 +187,14 @@ impl HeliosState {
             config,
             #[cfg(feature = "drm")]
             drm: None,
-            #[cfg(feature = "drm")]
+            #[cfg(feature = "winit")]
+            winit: None,
             dmabuf_state: None,
+            dmabuf_feedback: None,
+            #[cfg(feature = "drm")]
+            syncobj_state: None,
+            sensitive: HashSet::new(),
+            stats: crate::render::stats::FrameStats::new(stats),
         }
     }
 

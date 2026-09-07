@@ -7,7 +7,11 @@
 //! the compositor survives with nothing plugged in (COMP-03 §5). Everything
 //! that touches hardware logs and continues rather than panicking.
 
-use std::{collections::HashSet, path::PathBuf, time::Duration};
+use std::{
+    collections::HashSet,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use anyhow::{anyhow, Context, Result};
 use smithay::{
@@ -19,7 +23,7 @@ use smithay::{
         drm::{
             compositor::{DrmCompositor, FrameFlags},
             exporter::gbm::GbmFramebufferExporter,
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmNode,
+            DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode, NodeType, VrrSupport,
         },
         egl::{context::EGLContext, display::EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
@@ -42,16 +46,25 @@ use smithay::{
         drm::control::{connector, crtc, Device as _, ModeTypeFlags},
         input::Libinput,
         rustix::fs::OFlags,
+        wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
         wayland_server::Display,
     },
     utils::{DeviceFd, Scale, Transform},
-    wayland::{dmabuf::DmabufState, socket::ListeningSocketSource},
+    wayland::{
+        dmabuf::{DmabufFeedbackBuilder, DmabufState},
+        drm_syncobj::{supports_syncobj_eventfd, DrmSyncobjState},
+        presentation::Refresh,
+        socket::ListeningSocketSource,
+    },
 };
 
 use crate::{
     config::Config,
     outputs::OutputKind,
-    render::{collect_elements, HeliosRenderElement},
+    render::{
+        collect_elements, presentation_feedback, send_dmabuf_feedback, update_primary_scanout,
+        HeliosRenderElement, SurfaceFeedback,
+    },
     state::{client_state, HeliosState},
 };
 
@@ -62,8 +75,11 @@ const CURSOR_SIZE: i32 = 12;
 /// Size of the headless fallback output used when no connector is present.
 const FALLBACK_SIZE: (i32, i32) = (1920, 1080);
 
+/// Per-frame user data: the presentation callbacks waiting on that page flip.
+type FrameData = Option<smithay::desktop::utils::OutputPresentationFeedback>;
+
 pub type HeliosDrmCompositor =
-    DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
+    DrmCompositor<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, FrameData, DrmDeviceFd>;
 
 /// One scanout pipeline: connector → CRTC → [`DrmCompositor`].
 pub struct DrmOutput {
@@ -79,6 +95,10 @@ pub struct DrmOutput {
     frame_pending: bool,
     /// Content changed since the last composite; render at the next chance.
     needs_render: bool,
+    /// Render + scanout dmabuf tranches for this output (COMP-02 §2).
+    feedback: Option<SurfaceFeedback>,
+    /// `vrr` requested for this output in the config.
+    vrr_config: bool,
 }
 
 /// Everything the DRM backend needs to keep alive between callbacks.
@@ -92,6 +112,8 @@ pub struct DrmData {
     /// The headless stand-in, live only while no connector is.
     fallback: Option<u64>,
     cursor: SolidColorBuffer,
+    /// Render node of the primary GPU, the `main_device` of every feedback.
+    render_node: libc::dev_t,
 }
 
 impl DrmData {
@@ -343,6 +365,35 @@ fn add_connector(
     )
     .context("DrmCompositor::new")?;
 
+    // Scanout tranche: the formats this output's primary plane can actually
+    // scan out, advertised above the render tranche so a full-screen client
+    // allocates something we can hand straight to KMS (COMP-02 §2).
+    let feedback = state.dmabuf_feedback.as_ref().and_then(|render| {
+        let plane_formats = compositor.surface().plane_info().formats.clone();
+        DmabufFeedbackBuilder::new(drm.render_node, renderer_formats.iter().copied())
+            .add_preference_tranche(
+                compositor.surface().device_fd().dev_id().ok()?,
+                Some(
+                    smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags::Scanout,
+                ),
+                plane_formats,
+            )
+            .build()
+            .ok()
+            .map(|scanout| SurfaceFeedback {
+                render: render.clone(),
+                scanout,
+            })
+    });
+
+    // COMP-03 §8: VRR is on/off/auto per output; "auto" only engages while a
+    // fullscreen surface owns the output, handled in render_output.
+    let vrr_support = compositor
+        .vrr_supported(handle)
+        .unwrap_or(VrrSupport::NotSupported);
+    let vrr_config = state.config.output_rule(&name, &identity).vrr.unwrap_or(false)
+        && matches!(vrr_support, VrrSupport::Supported);
+
     let id = crate::outputs::register(
         state,
         identity,
@@ -362,6 +413,8 @@ fn add_connector(
             retry_armed: false,
             frame_pending: false,
             needs_render: true,
+            feedback,
+            vrr_config,
         });
     }
     tracing::info!(
@@ -369,6 +422,7 @@ fn add_connector(
         width = wl_mode.size.w,
         height = wl_mode.size.h,
         refresh_mhz = wl_mode.refresh,
+        vrr = ?vrr_support,
         "output configured"
     );
     Ok(())
@@ -408,7 +462,7 @@ fn sync_fallback(state: &mut HeliosState) {
     }
 }
 
-pub fn run(config: Config) -> Result<()> {
+pub fn run(config: Config, stats: bool) -> Result<()> {
     let mut event_loop: EventLoop<'static, HeliosState> =
         EventLoop::try_new().context("calloop event loop")?;
     let display: Display<HeliosState> = Display::new().context("wayland display")?;
@@ -420,7 +474,14 @@ pub fn run(config: Config) -> Result<()> {
     tracing::info!(seat = %seat_name, "libseat session acquired");
 
     let socket = ListeningSocketSource::new_auto().context("wayland socket")?;
-    let mut state = HeliosState::new(&display, event_loop.get_signal(), &socket, config);
+    let mut state = HeliosState::new(
+        &display,
+        event_loop.get_signal(),
+        handle.clone(),
+        &socket,
+        config,
+        stats,
+    );
 
     // --- GPU discovery -----------------------------------------------------
     let udev = UdevBackend::new(&seat_name).context("udev backend")?;
@@ -443,6 +504,7 @@ pub fn run(config: Config) -> Result<()> {
     let our_device = node.dev_id();
 
     let (drm_device, drm_notifier) = DrmDevice::new(device_fd.clone(), true).context("DrmDevice::new")?;
+    let device_fd_for_syncobj = device_fd.clone();
     let gbm = GbmDevice::new(device_fd).context("GbmDevice::new")?;
 
     // SAFETY: the gbm device outlives the display (both live in DrmData /
@@ -453,11 +515,41 @@ pub fn run(config: Config) -> Result<()> {
     let renderer = unsafe { GlesRenderer::new(egl_context) }.context("GlesRenderer::new")?;
 
     // dmabuf is the expected client buffer path (F-04); shm still works.
+    // v5 default feedback names the render node and its texture formats; the
+    // per-output scanout tranche is added per surface in render_output.
+    let render_node = node
+        .node_with_type(NodeType::Render)
+        .and_then(|r| r.ok())
+        .unwrap_or(node)
+        .dev_id();
     let dmabuf_formats = renderer.egl_context().dmabuf_texture_formats().clone();
     let mut dmabuf_state = DmabufState::new();
-    let _dmabuf_global =
-        dmabuf_state.create_global::<HeliosState>(&state.display_handle, dmabuf_formats.iter().copied());
+    match DmabufFeedbackBuilder::new(render_node, dmabuf_formats.iter().copied()).build() {
+        Ok(feedback) => {
+            let _global = dmabuf_state
+                .create_global_with_default_feedback::<HeliosState>(&state.display_handle, &feedback);
+            state.dmabuf_feedback = Some(feedback);
+        }
+        Err(err) => {
+            tracing::warn!(?err, "dmabuf feedback build failed; advertising formats only");
+            let _global = dmabuf_state
+                .create_global::<HeliosState>(&state.display_handle, dmabuf_formats.iter().copied());
+        }
+    }
     state.dmabuf_state = Some(dmabuf_state);
+
+    // Explicit sync (COMP-02 §3). Without syncobj eventfd support in the
+    // driver there is no way to wait without blocking the loop, so the global
+    // is simply absent and clients fall back to implicit sync.
+    if supports_syncobj_eventfd(&device_fd_for_syncobj) {
+        state.syncobj_state = Some(DrmSyncobjState::new::<HeliosState>(
+            &state.display_handle,
+            device_fd_for_syncobj.clone(),
+        ));
+        tracing::info!("explicit sync (wp_linux_drm_syncobj_v1) enabled");
+    } else {
+        tracing::warn!("driver has no syncobj eventfd support; no explicit sync global");
+    }
 
     state.drm = Some(Box::new(DrmData {
         session: session.clone(),
@@ -468,6 +560,7 @@ pub fn run(config: Config) -> Result<()> {
         outputs: Vec::new(),
         fallback: None,
         cursor: SolidColorBuffer::new((CURSOR_SIZE, CURSOR_SIZE), CURSOR_COLOR),
+        render_node,
     }));
 
     scan_connectors(&mut state);
@@ -525,14 +618,48 @@ pub fn run(config: Config) -> Result<()> {
         .map_err(|err| anyhow!("inserting session source: {err}"))?;
 
     handle
-        .insert_source(drm_notifier, move |event, _meta, state| match event {
+        .insert_source(drm_notifier, move |event, meta, state| match event {
             DrmEvent::VBlank(crtc) => {
+                let clock_now = state.clock.now();
                 let pending = if let Some(drm) = state.drm.as_mut() {
                     match drm.index_of_crtc(crtc) {
                         Some(i) => {
                             let o = &mut drm.outputs[i];
-                            if let Err(err) = o.compositor.frame_submitted() {
-                                tracing::warn!(?err, "frame_submitted");
+                            let refresh = o
+                                .output
+                                .current_mode()
+                                .map(|m| Duration::from_secs_f64(1_000f64 / m.refresh as f64 / 1_000f64))
+                                .unwrap_or_else(|| Duration::from_millis(16));
+                            match o.compositor.frame_submitted() {
+                                // wp_presentation: report the real page-flip
+                                // timestamp and sequence the kernel gave us.
+                                Ok(Some(Some(mut feedback))) => {
+                                    let (time, seq) = match meta.as_ref() {
+                                        Some(m) => (
+                                            match m.time {
+                                                DrmEventTime::Monotonic(t) => t,
+                                                DrmEventTime::Realtime(_) => clock_now.into(),
+                                            },
+                                            m.sequence as u64,
+                                        ),
+                                        None => (clock_now.into(), 0),
+                                    };
+                                    let vrr = o.compositor.vrr_enabled();
+                                    feedback.presented::<_, smithay::utils::Monotonic>(
+                                        time,
+                                        if vrr {
+                                            Refresh::Variable(refresh)
+                                        } else {
+                                            Refresh::fixed(refresh)
+                                        },
+                                        seq,
+                                        wp_presentation_feedback::Kind::Vsync
+                                            | wp_presentation_feedback::Kind::HwClock
+                                            | wp_presentation_feedback::Kind::HwCompletion,
+                                    );
+                                }
+                                Ok(_) => {}
+                                Err(err) => tracing::warn!(?err, "frame_submitted"),
                             }
                             o.frame_pending = false;
                             o.needs_render.then_some(i)
@@ -669,32 +796,77 @@ fn render_output(state: &mut HeliosState, index: usize) {
         state.input_method_popup.as_ref(),
     ));
 
-    // FrameFlags::empty() forces full composition: F-04 §2 assumes no plane
-    // availability. Plane scanout is a probed optimisation for a later
-    // milestone.
+    // A surface covering the whole output is both the direct-scanout candidate
+    // and the trigger for adaptive sync (COMP-03 §8).
+    let candidate = crate::render::scanout_candidate(&state.space, &output);
+    let vrr_wanted = drm.outputs[index].vrr_config && candidate.is_some();
+
+    // Direct scanout (COMP-02 §2) hands a client buffer to a KMS plane, which
+    // means the compositor never touches its pixels — so it cannot redact
+    // them. A sensitive surface therefore forces full composition (COMP-02 §7,
+    // ADR 0024), as does the config knob being off.
+    let redact = candidate
+        .as_ref()
+        .map(|s| state.sensitive.contains(s))
+        .unwrap_or(false);
+    let flags = if state.config.render.direct_scanout && !redact {
+        FrameFlags::DEFAULT
+    } else {
+        FrameFlags::empty()
+    };
+
     let compositor = &mut drm.outputs[index].compositor;
+    // COMP-03 §8: adaptive sync only while a surface covers the whole output;
+    // a windowed desktop on a variable-refresh panel flickers otherwise.
+    if vrr_wanted != compositor.vrr_enabled() {
+        if let Err(err) = compositor.use_vrr(vrr_wanted) {
+            tracing::warn!(?err, vrr = vrr_wanted, "setting adaptive sync");
+        }
+    }
+
+    let render_start = Instant::now();
     let mut failed = false;
     let mut empty = false;
-    let queued = match compositor.render_frame(&mut drm.renderer, &elements, CLEAR, FrameFlags::empty()) {
-        Ok(result) if result.is_empty => {
-            empty = true;
-            false
-        }
-        Ok(_) => match compositor.queue_frame(()) {
-            Ok(()) => true,
-            Err(err) => {
-                tracing::warn!(?err, "queueing frame");
-                failed = true;
-                false
-            }
-        },
+    let mut states = None;
+    match compositor.render_frame(&mut drm.renderer, &elements, CLEAR, flags) {
+        Ok(result) if result.is_empty => empty = true,
+        Ok(result) => states = Some(result.states.clone()),
         Err(err) => {
             tracing::warn!(?err, "rendering frame");
             failed = true;
-            false
         }
-    };
+    }
+    let render_time = render_start.elapsed();
     drop(elements);
+    let surface_feedback = drm.outputs[index].feedback.as_ref().map(|f| SurfaceFeedback {
+        render: f.render.clone(),
+        scanout: f.scanout.clone(),
+    });
+
+    // Feedback needs `&state.space`, so the frame data is built outside the
+    // `drm` borrow and handed back to `queue_frame`.
+    let mut queued = false;
+    if let Some(states) = states {
+        update_primary_scanout(&state.space, &output, &states);
+        if let Some(fb) = surface_feedback.as_ref() {
+            send_dmabuf_feedback(&state.space, &output, fb, candidate.as_ref());
+        }
+        let presentation = presentation_feedback(&state.space, &output, &states);
+        let submit_start = Instant::now();
+        let Some(drm) = state.drm.as_mut() else { return };
+        match drm.outputs[index].compositor.queue_frame(Some(presentation)) {
+            Ok(()) => queued = true,
+            Err(err) => {
+                tracing::warn!(?err, "queueing frame");
+                failed = true;
+            }
+        }
+        state.stats.record(render_time, submit_start.elapsed());
+        state.stats.maybe_report();
+    }
+
+    let Some(drm) = state.drm.as_mut() else { return };
+    let compositor = &mut drm.outputs[index].compositor;
 
     if empty {
         // An empty frame is discarded rather than submitted, but the damage

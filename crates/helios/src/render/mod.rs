@@ -4,8 +4,11 @@
 //! Both the winit and DRM backends build their frame from [`collect_elements`];
 //! the stacking order lives here once, not per backend.
 
+pub mod stats;
+
 use std::collections::HashMap;
 
+use smithay::backend::renderer::element::{default_primary_scanout_output_compare, RenderElementStates};
 use smithay::{
     backend::renderer::{
         element::{
@@ -15,10 +18,19 @@ use smithay::{
         },
         gles::GlesRenderer,
     },
-    desktop::{layer_map_for_output, space::SpaceRenderElements, Space, Window},
+    desktop::{
+        layer_map_for_output,
+        space::SpaceRenderElements,
+        utils::{
+            surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
+            update_surface_primary_scanout_output, OutputPresentationFeedback,
+        },
+        Space, Window,
+    },
     output::Output,
+    reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Physical, Point, Rectangle, Scale},
-    wayland::shell::wlr_layer::Layer,
+    wayland::{dmabuf::DmabufFeedback, shell::wlr_layer::Layer},
 };
 
 use crate::config::Config;
@@ -78,7 +90,8 @@ pub fn collect_elements(
                     surface
                         .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
                             renderer,
-                            phys(geo.loc + output_loc, scale),
+                            // Layer geometry is already output-local.
+                            phys(geo.loc, scale),
                             scale,
                             1.0,
                         )
@@ -97,7 +110,7 @@ pub fn collect_elements(
             smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
                 renderer,
                 popup.wl_surface(),
-                phys(loc + output_loc, scale),
+                phys(loc - output_loc, scale),
                 scale,
                 1.0,
                 Kind::Unspecified,
@@ -149,7 +162,8 @@ fn border_elements(
         };
         // Outer rect: the tile, with the window inset by `width` on every side.
         let outer = Rectangle::new(
-            (geo.loc.x - width + output_loc.x, geo.loc.y - width + output_loc.y).into(),
+            // Window geometry is global; elements are output-local.
+            (geo.loc.x - width - output_loc.x, geo.loc.y - width - output_loc.y).into(),
             (geo.size.w + 2 * width, geo.size.h + 2 * width).into(),
         );
         let quads = [
@@ -189,15 +203,121 @@ fn border_elements(
 /// Send frame callbacks to everything that was just drawn.
 pub fn send_frames(space: &Space<Window>, output: &Output, time: std::time::Duration) {
     for window in space.elements() {
-        window.send_frame(output, time, Some(std::time::Duration::ZERO), |_, _| {
-            Some(output.clone())
-        });
+        window.send_frame(
+            output,
+            time,
+            Some(std::time::Duration::ZERO),
+            surface_primary_scanout_output,
+        );
     }
     let mut map = layer_map_for_output(output);
     for layer in map.layers() {
-        layer.send_frame(output, time, Some(std::time::Duration::ZERO), |_, _| {
-            Some(output.clone())
-        });
+        layer.send_frame(
+            output,
+            time,
+            Some(std::time::Duration::ZERO),
+            surface_primary_scanout_output,
+        );
     }
     map.cleanup();
+}
+
+/// Per-surface dmabuf feedback for one render device (COMP-02 §5).
+///
+/// `render` is what every surface gets by default; `scanout` additionally
+/// carries a `Scanout`-flagged tranche built from the formats the output's
+/// primary plane accepts, and is handed only to surfaces that are plausible
+/// direct-scanout candidates.
+#[derive(Debug, Clone)]
+pub struct SurfaceFeedback {
+    pub render: DmabufFeedback,
+    pub scanout: DmabufFeedback,
+}
+
+/// Record, per surface, which output actually presented it. Feeds both
+/// `wp_presentation` (zero-copy flag) and frame-callback throttling.
+pub fn update_primary_scanout(space: &Space<Window>, output: &Output, states: &RenderElementStates) {
+    for window in space.elements() {
+        window.with_surfaces(|surface, data| {
+            update_surface_primary_scanout_output(
+                surface,
+                output,
+                data,
+                states,
+                default_primary_scanout_output_compare,
+            );
+        });
+    }
+    let map = layer_map_for_output(output);
+    for layer in map.layers() {
+        layer.with_surfaces(|surface, data| {
+            update_surface_primary_scanout_output(
+                surface,
+                output,
+                data,
+                states,
+                default_primary_scanout_output_compare,
+            );
+        });
+    }
+}
+
+/// Collect the `wp_presentation` feedback owed for the frame just composited
+/// on `output`. Call after [`update_primary_scanout`].
+pub fn presentation_feedback(
+    space: &Space<Window>,
+    output: &Output,
+    states: &RenderElementStates,
+) -> OutputPresentationFeedback {
+    let mut feedback = OutputPresentationFeedback::new(output);
+    for window in space.elements() {
+        window.take_presentation_feedback(&mut feedback, surface_primary_scanout_output, |surface, _| {
+            surface_presentation_feedback_flags_from_states(surface, states)
+        });
+    }
+    let map = layer_map_for_output(output);
+    for layer in map.layers() {
+        layer.take_presentation_feedback(&mut feedback, surface_primary_scanout_output, |surface, _| {
+            surface_presentation_feedback_flags_from_states(surface, states)
+        });
+    }
+    feedback
+}
+
+/// The surface that could plausibly be scanned out directly on `output`: the
+/// top-most window whose geometry covers the whole output. Returning `None`
+/// means every surface keeps the plain render feedback.
+pub fn scanout_candidate(space: &Space<Window>, output: &Output) -> Option<WlSurface> {
+    let geo = space.output_geometry(output)?;
+    let window = space.elements_for_output(output).last()?;
+    let win_geo = space.element_geometry(window)?;
+    if !win_geo.contains_rect(geo) {
+        return None;
+    }
+    use smithay::wayland::seat::WaylandFocus;
+    window.wl_surface().map(|s| s.into_owned())
+}
+
+/// Send dmabuf feedback for every surface on `output`, giving the scanout
+/// tranche only to `candidate`.
+pub fn send_dmabuf_feedback(
+    space: &Space<Window>,
+    output: &Output,
+    feedback: &SurfaceFeedback,
+    candidate: Option<&WlSurface>,
+) {
+    let select = |surface: &WlSurface, _: &_| {
+        if Some(surface) == candidate {
+            &feedback.scanout
+        } else {
+            &feedback.render
+        }
+    };
+    for window in space.elements() {
+        window.send_dmabuf_feedback(output, surface_primary_scanout_output, select);
+    }
+    let map = layer_map_for_output(output);
+    for layer in map.layers() {
+        layer.send_dmabuf_feedback(output, surface_primary_scanout_output, select);
+    }
 }
