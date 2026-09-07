@@ -193,7 +193,7 @@ fn redraw(
                 return;
             }
         };
-        let elements = if state.lock.locked {
+        let mut elements = if state.lock.locked {
             crate::protocols::standard::session_lock::lock_elements(renderer, &mut state.lock, out)
         } else {
             collect_elements(
@@ -206,6 +206,11 @@ fn redraw(
                 state.input_method_popup.as_ref(),
             )
         };
+        // Trusted UI, drawn on top of everything and never into a capture.
+        elements.splice(
+            0..0,
+            crate::render::capture::indicator(out, state.capture_active()),
+        );
         match damage_tracker.render_output(renderer, &mut fb, age, &elements, CLEAR) {
             Ok(r) => (r.damage.map(|d| d.to_vec()), r.states),
             Err(e) => {
@@ -223,6 +228,9 @@ fn redraw(
             tracing::error!(?e, "submit");
         }
     }
+    // Authorised captures are serviced after submit, so a capture never delays
+    // the frame the user is looking at.
+    crate::render::capture::service(state, backend.renderer());
     // Best effort: winit gives us no page-flip timestamp, so the submit time is
     // reported without a hardware-completion flag.
     let now = state.clock.now();

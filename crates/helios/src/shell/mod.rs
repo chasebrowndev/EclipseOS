@@ -214,6 +214,8 @@ pub fn arrange_output(state: &mut HeliosState, id: u64) {
 
 /// A brand-new toplevel joins the active workspace, tiled, next to the focus.
 pub fn place_new_window(state: &mut HeliosState, window: Window) {
+    // Classify before the window is ever composited (COMP-02 §7). Raise-only.
+    crate::render::capture::mark_sensitive(state, &window);
     let Some(id) = state.outputs.focused().map(|e| e.id) else {
         return;
     };

@@ -124,6 +124,14 @@ impl Outputs {
         self.entries.iter().find(|e| &e.output == output)
     }
 
+    /// Resolve a client's `wl_output` back to its entry.
+    pub fn by_wl_output(
+        &self,
+        wl: &smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+    ) -> Option<&OutputEntry> {
+        self.entries.iter().find(|e| e.output.owns(wl))
+    }
+
     /// The focused output, or the first one. `None` only when there are none at
     /// all, which the fallback-output rule (§5) is meant to prevent.
     pub fn focused(&self) -> Option<&OutputEntry> {

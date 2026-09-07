@@ -58,6 +58,20 @@ pub struct Clipboard {
     pub data_control_allow: Vec<String>,
 }
 
+/// `capture { ... }` (COMP-06 §3, COMP-02 §7). Fail-closed by construction:
+/// every field defaults to "nothing is allowed, everything is redacted that
+/// asks to be".
+#[derive(Debug, Clone, Default)]
+pub struct Capture {
+    /// Process names allowed to bind `zwlr_screencopy_manager_v1`. Empty
+    /// (the default) denies everyone — screen capture reads every pixel of an
+    /// output, including other clients' windows.
+    pub allow: Vec<String>,
+    /// `app_id`s whose windows are `secret`: never composited into a capture
+    /// target, only a solid placeholder (COMP-02 §7).
+    pub redact_app_id: Vec<String>,
+}
+
 /// `xwayland { ... }` (COMP-07 §4, §7 open decision 2).
 #[derive(Debug, Clone)]
 pub struct Xwayland {
@@ -130,6 +144,7 @@ pub struct Config {
     pub general: General,
     pub render: Render,
     pub clipboard: Clipboard,
+    pub capture: Capture,
     pub xwayland: Xwayland,
     pub idle: Idle,
     pub binds: Vec<Bind>,
@@ -147,6 +162,7 @@ impl Default for Config {
             general: General::default(),
             render: Render::default(),
             clipboard: Clipboard::default(),
+            capture: Capture::default(),
             xwayland: Xwayland::default(),
             idle: Idle::default(),
             binds: default_binds(),
@@ -345,6 +361,7 @@ impl Config {
                 "workspace" => self.apply_workspace(node),
                 "render" => self.apply_render(node),
                 "clipboard" => self.apply_clipboard(node),
+                "capture" => self.apply_capture(node),
                 "xwayland" => self.apply_xwayland(node),
                 "idle" => self.apply_idle(node),
                 "output" => self.apply_output(node),
@@ -408,6 +425,27 @@ impl Config {
                         .collect();
                 }
                 other => tracing::warn!(node = other, "unknown clipboard node, ignored"),
+            }
+        }
+    }
+
+    fn apply_capture(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "allow" => {
+                    self.capture.allow = args(n)
+                        .into_iter()
+                        .filter_map(|v| v.as_string().map(str::to_string))
+                        .collect();
+                }
+                "redact-app-id" => {
+                    self.capture.redact_app_id = args(n)
+                        .into_iter()
+                        .filter_map(|v| v.as_string().map(str::to_string))
+                        .collect();
+                }
+                other => tracing::warn!(node = other, "unknown capture node, ignored"),
             }
         }
     }
@@ -768,6 +806,27 @@ mod tests {
         assert_eq!(binds.len(), 1);
         assert!(matches!(binds[0].action, Action::Spawn(ref c) if c == "foot"));
         assert!(binds[0].mods.shift && binds[0].mods.logo);
+    }
+
+    #[test]
+    fn capture_defaults_to_denying_everything() {
+        let cfg = Config::default();
+        assert!(cfg.capture.allow.is_empty());
+        assert!(cfg.capture.redact_app_id.is_empty());
+    }
+
+    #[test]
+    fn parses_capture() {
+        let doc: KdlDocument = r#"
+            capture { allow "grim" "xdg-desktop-portal-wlr"; redact-app-id "bitwarden" }
+        "#
+        .parse()
+        .unwrap();
+        let mut cfg = Config::default();
+        let mut binds = Vec::new();
+        cfg.apply(&doc, &mut binds);
+        assert_eq!(cfg.capture.allow, ["grim", "xdg-desktop-portal-wlr"]);
+        assert_eq!(cfg.capture.redact_app_id, ["bitwarden"]);
     }
 
     #[test]

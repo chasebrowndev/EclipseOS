@@ -751,6 +751,18 @@ pub fn schedule_render(state: &mut HeliosState) {
             render_output(state, i);
         }
     }
+    service_captures(state);
+}
+
+/// Drain the authorised capture queue. The renderer is moved out of
+/// `HeliosState` for the call because `service` needs the state too.
+fn service_captures(state: &mut HeliosState) {
+    if state.captures.is_empty() {
+        return;
+    }
+    let Some(mut drm) = state.drm.take() else { return };
+    crate::render::capture::service(state, &mut drm.renderer);
+    state.drm = Some(drm);
 }
 
 /// Composite every output. Safe to call at any time.
@@ -759,10 +771,12 @@ pub fn render(state: &mut HeliosState) {
     for i in 0..n {
         render_output(state, i);
     }
+    service_captures(state);
 }
 
 /// Composite and page-flip one output. A no-op when the session is inactive.
 fn render_output(state: &mut HeliosState, index: usize) {
+    let capture_active = state.capture_active();
     let Some(drm) = state.drm.as_mut() else { return };
     if !drm.session.is_active() {
         return;
@@ -791,14 +805,15 @@ fn render_output(state: &mut HeliosState, index: usize) {
 
     // The pointer lives in the global space; elements are output-local.
     let cursor_pos = state.pointer_location - output_loc.to_f64();
-    let mut elements: Vec<HeliosRenderElement> =
-        vec![HeliosRenderElement::Solid(SolidColorRenderElement::from_buffer(
-            &drm.cursor,
-            cursor_pos.to_physical_precise_round(scale),
-            scale,
-            1.0,
-            Kind::Cursor,
-        ))];
+    // Trusted UI, above the cursor and never drawn into a capture target.
+    let mut elements: Vec<HeliosRenderElement> = crate::render::capture::indicator(&output, capture_active);
+    elements.push(HeliosRenderElement::Solid(SolidColorRenderElement::from_buffer(
+        &drm.cursor,
+        cursor_pos.to_physical_precise_round(scale),
+        scale,
+        1.0,
+        Kind::Cursor,
+    )));
     if state.lock.locked {
         elements.extend(crate::protocols::standard::session_lock::lock_elements(
             &mut drm.renderer,

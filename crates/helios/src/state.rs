@@ -114,6 +114,19 @@ pub struct HeliosState {
     /// compositor keeps the pixels it can redact.
     pub sensitive: HashSet<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
 
+    /// `zwlr_screencopy_v1` (COMP-06 §3). Holds the global alive; the gate
+    /// lives in the dispatch impls.
+    #[allow(dead_code)]
+    pub screencopy: crate::protocols::standard::screencopy::ScreencopyState,
+    /// Authorised captures awaiting a renderer. Only the backend drains this.
+    pub captures: Vec<crate::render::capture::Pending>,
+    /// When capture last produced a frame, for the trusted-UI indicator
+    /// (COMP-10 §3.6). `None` means nothing has ever been captured.
+    pub capture_seen: Option<Instant>,
+    /// Process name of the client currently capturing, for the indicator and
+    /// the audit log. Never a buffer, never window content.
+    pub capture_consumer: Option<String>,
+
     /// `ext_session_lock_v1` (COMP-10 §5).
     pub session_lock_state: SessionLockManagerState,
     /// Lock surfaces and the compositor-drawn fallback (ADR 0024).
@@ -137,6 +150,12 @@ pub struct HeliosState {
 }
 
 impl HeliosState {
+    /// Is a client capturing right now? Drives the trusted-UI indicator.
+    pub fn capture_active(&self) -> bool {
+        self.capture_seen
+            .is_some_and(|t| t.elapsed() < crate::render::capture::INDICATOR_LINGER)
+    }
+
     pub fn new(
         display: &Display<Self>,
         loop_signal: LoopSignal,
@@ -149,7 +168,10 @@ impl HeliosState {
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
-        let shm_state = ShmState::new::<Self>(&dh, vec![]);
+        let shm_state = ShmState::new::<Self>(
+            &dh,
+            crate::protocols::standard::screencopy::EXTRA_SHM_FORMATS.to_vec(),
+        );
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
@@ -174,6 +196,9 @@ impl HeliosState {
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         let output_power = crate::protocols::standard::output_power::OutputPowerState::new(&dh);
+        // Capture reads every pixel of an output: allowlisted, fail-closed.
+        let screencopy =
+            crate::protocols::standard::screencopy::ScreencopyState::new(&dh, config.capture.allow.clone());
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         // Repeat defaults match COMP-04 until config lands (M6).
@@ -198,6 +223,10 @@ impl HeliosState {
             data_device_state,
             primary_selection_state,
             data_control_state,
+            screencopy,
+            captures: Vec::new(),
+            capture_seen: None,
+            capture_consumer: None,
             text_input_manager_state,
             input_method_manager_state,
             clipboard: None,

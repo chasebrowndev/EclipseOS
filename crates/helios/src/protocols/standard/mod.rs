@@ -13,6 +13,7 @@ mod layer_shell;
 pub mod output_power;
 mod presentation;
 mod primary_selection;
+pub mod screencopy;
 mod seat;
 pub mod session_lock;
 mod shm;

@@ -4,6 +4,7 @@
 //! Both the winit and DRM backends build their frame from [`collect_elements`];
 //! the stacking order lives here once, not per backend.
 
+pub mod capture;
 pub mod stats;
 
 use std::collections::HashMap;
