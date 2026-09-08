@@ -7,10 +7,9 @@ Volume 2 holds the security semantics (S-05..S-11), perception (P-02..P-07),
 the agent gateway (A-01..A-07), and **Appendix A — amendments that are not
 yet applied inline to the documents in this volume.**
 
-> Anything in this volume marked DONE may still have a pending amendment in
-> Volume 2's Appendix A. Check it before implementing. The documents with
-> pending changes are: S-01, S-02, S-03, S-04, P-01, COMP-02, COMP-05,
-> COMP-08, COMP-09, COMP-10, COMP-12, COMP-14, COMP-15, F-02.
+> **Appendix A is applied.** All amendment batches (v1–v4) are merged inline
+> as of 2026-09-07; Volume 2's Appendix A is now a log, not a pending queue.
+> COMP-08 is at v0.3, S-01 and S-05 at v0.2.
 
 The full planning index is reproduced in both volumes so either can start a
 session on its own.
@@ -183,8 +182,11 @@ SPECIFICATION (remaining)
     └─ I-01 local serving ─ I-02 router ─ I-03 classifier
 ```
 
-Phase 2 implementation (COMP-16 milestones 10-18) is blocked on Appendix A,
-because COMP-08 v0.2 changes wire signatures.
+Phase 2 implementation (COMP-16 milestones 10-18) is **no longer blocked on
+Appendix A**: it is applied. COMP-08 is at v0.3 and its wire signatures are
+settled — `button` gained a target and generation, the seat interface gained
+lease, preflight and secret_fill requests, and every acting request carries
+`provenance_ids`. Implement against the documents, not against the appendix.
 
 ## New Components Introduced in Session 2
 
@@ -205,9 +207,14 @@ S-03, S-04 written. Tiers 0 and 1 complete.
 
 Session 2 (2026-09-05): S-05..S-11, A-01..A-07, P-02, P-04, P-05, P-07
 written. **Tiers 2 (except S-12/S-13) and 4 complete.** Four amendment sets
-were produced and are collected in Appendix A; **they are NOT yet applied
-inline to the DONE documents.** Read Appendix A before implementing any
-document it touches. COMP-08 is nominally at v0.2 once A-06.* is applied.
+were produced and collected in Appendix A.
+
+Session 3 (2026-09-07): interaction leases, pointer hardening, trusted-UI
+agent status and deferred consent, and remote-vision consent designed
+(batch v4, A4-01..A4-24). **All five amendment batches applied inline** in
+order v1, v2, v3a, v3b, v4. COMP-08 → v0.3; S-01, S-05 → v0.2. Appendix A is
+now a log. Two errors in the amendment text were caught by merging in order
+and are recorded there.
 
 Two scope decisions were taken in session 2 that are not yet reflected in
 COMP-16 milestones:
@@ -230,7 +237,9 @@ Remaining: S-12, S-13; P-03, P-06, P-08, P-09; all of Tiers 5, 6, 7.
    release; A-07 §4 already fixes several of their inputs.
 5. Tier 5 (I-01..I-07), then Tiers 6 and 7.
 
-Before any of the above: apply Appendix A.
+Appendix A is applied; nothing is gated on it. Before P-06 is written,
+measure real perception accuracy on reference hardware — the coverage claim
+P-06 is allowed to make depends on a number nobody has yet.
 
 ---
 
@@ -1763,7 +1772,8 @@ Events carry serials for ordering against `result` events.
 ```
 scene.read            scene.read.private   scene.read.secret
 scene.tree            scene.text
-seat.key              seat.pointer         seat.text
+seat.key              seat.pointer.motion  seat.pointer.button
+seat.text             seat.lease.release   seat.lease.take
 seat.focus.agent      seat.focus.human     seat.atomic
 capture.toplevel      capture.output       capture.stream
 capture.private       capture.secret
@@ -2440,6 +2450,19 @@ Rules:
   leak it: redaction happens per-surface in the pass list, so occlusion
   culling never "sees through" a redacted surface.
 - Content hash (COMP-08 §5) is computed after redaction.
+- Redaction operates at **two granularities**. A *surface* whose class
+  exceeds authorization is replaced wholesale. A *node* classified `secret`
+  inside a surface that is not (S-05 §4) produces a redaction rectangle in
+  the surface's local coordinates, transformed with the surface and clipped
+  to it, filled with a solid placeholder before the surface is composited
+  into the capture target.
+- Node rectangles come from the semantic tree and are therefore only as
+  accurate as the tree. If the tree for a surface is stale (`generation`
+  older than the surface's current generation) or absent while a `secret`
+  node is known to exist, the **whole surface** is redacted. Fail closed at
+  the surface level rather than trusting a stale rectangle.
+- Both decisions are recorded in the pass list with the rectangle list, so
+  tests assert on geometry without reading pixels.
 
 Test requirement (COMP-15): for every capture path, prove a `secret`
 surface never contributes a pixel without `capture.secret`.
@@ -2497,6 +2520,13 @@ protocol.
 | `capture_toplevel` 1080p → dmabuf | ≤8 ms |
 | Direct scanout hit rate, fullscreen video | >95% of frames |
 | Missed-frame rate, 144 Hz, typical load | <0.1% |
+| `classify()` recompute for one surface | ≤50 µs; full reclassification of 50 surfaces ≤1 frame at 144 Hz (S-05 §5) |
+| Irreversible matcher in `check()` | ≤20 µs (S-06 §3.1) |
+| Provenance resolution of ≤8 chain ids | ≤30 µs (summary lookup only) |
+| Lease lookup in the enforcement path | ≤1 µs (single map lookup) |
+| Button-press hit-test resolution (COMP-08 §10 step 6e) | ≤20 µs |
+| Egress proxy added latency, splice mode | ≤2 ms p99 |
+| Egress proxy added latency, MITM mode | ≤8 ms p99 |
 
 Benchmarks live in `bench/` and gate CI on regression (F-07 §3).
 
@@ -2777,11 +2807,16 @@ never waits for the next frame to be *read*. Target ≤1 frame to submission
 
 ```
 eclipse_agent_seat_v1 request
-  → enforcement order (COMP-08 §10)
+  → enforcement order (COMP-08 §10), including the lease check (6d)
+    and button-press resolution (6e)
   → synthetic event on the agent's seat
   → focus resolution on that seat → client delivery
   → audit record with req_id (COMP-12)
 ```
+
+A lease-gated request against a handle held by another principal returns
+`busy` and never reaches the synthetic-event stage: nothing is partially
+applied and no modifier state is touched.
 
 Primitives per COMP-08 §4. Notes on the ones with real complexity:
 
@@ -2799,6 +2834,21 @@ The path used is reported in `result.detail` so agents can adapt.
 presses Shift and never releases it does not affect the human, and its own
 stuck modifier is cleared when its atomic batch ends or its seat is
 destroyed.
+
+**`button` press resolution.** On every agent-seat button press, before the
+policy check, the compositor resolves the pointer's current global
+coordinates to `(handle, node)` using the same scene-graph and semantic-tree
+walk that serves `hit_test`. The resolved node enters `RequestCtx`
+(COMP-11 §3) and the audit record (COMP-12). Where the agent supplied a
+`handle` (COMP-08 §4) and the resolved handle differs, both are recorded and
+the divergence is available to policy as `target_divergence`. Divergence is
+not an error — it is the fact the policy engine most needs to see.
+
+Press carries `expected_generation`; release does not, because the press
+already established the target. A drag is therefore: generation-checked
+press → unchecked motion → release. Atomic batches are the wrong tool for a
+drag: `max_frames` defaults to 4 and exists for sub-frame determinism, not
+for a human-timescale gesture.
 
 **Rate limiting** per grant constraints (S-01 §4), enforced before
 execution; excess returns `rate_limited` with `retry_after_ms`.
@@ -2941,6 +2991,11 @@ Toplevel {
   app_trust: trusted|standard|untrusted,  // S-05
   semantic: none|atspi|native,
   seat_compat: multi|lock,                // COMP-04 §8
+  irreversible_capable: bool,             // S-06 §3.3; from rules, default
+                                          // true for browsers, mail clients,
+                                          // terminals, file managers, and any
+                                          // app with a matching irreversible rule
+  class_source: u8,                       // which rule produced sensitivity
   parent, popups[],
   generation,                             // P-01 §4
 }
@@ -3318,7 +3373,7 @@ Consequences, all enforced:
 
 <!-- ===== FILE: COMP-08_AGENT_PROTOCOL.md ===== -->
 
-# COMP-08 — `eclipse_agent_v1` Protocol (Draft v0.1)
+# COMP-08 — `eclipse_agent_v1` Protocol (Draft v0.3)
 
 Depends on: C-00 §8, S-01, P-01, COMP-09. Consumed by: A-01, A-02, A-05,
 COMP-11, COMP-12.
@@ -3386,12 +3441,43 @@ event   resumed()
 16 quota_exceeded         detail: quota name
 17 duplicate              (req_id seen; result replayed, no execution)
 18 deferred_timeout       (policyd slow path timed out → fail-closed)
+19 class_changed          (read spanned a sensitivity raise; nothing delivered)
+20 broker_locked          (S-08 §2)
+21 secret_rotated
+22 batch_exhausted        (preflight token does not cover this target)
+23 circuit_breaker        (S-06 §8; agent is being paused)
+24 provenance_required    (acting request arrived with no resolvable chain)
+25 task_closed            (principal's task is closed or draining; class denied)
+26 busy                   detail: retry_after_ms; lease held by another
+                          principal (§4.1)
 ```
+
+### 2.3 Provenance on acting requests
+
+Every acting request carries a trailing argument:
+
+```
+provenance_ids: array<u8>    -- CBOR array of chain_ids the agent asserts
+                             -- as inputs to this action. Recorded verbatim;
+                             -- the compositor resolves each against its own
+                             -- stamped set and uses the resolved union for
+                             -- policy. Unresolvable ids → recorded as
+                             -- claimed-only and flagged provenance_mismatch.
+```
+
+This affects `focus`, `key`, `keysym`, `text`, `pointer_*`, `button`, `axis`,
+`touch_*`, `click`, `action`, `secret_fill`, `launch`, `write` (clipboard),
+and the mutating `eclipse_workspace_v1` requests. An empty array is legal and
+means "no asserted inputs"; it does not mean trusted.
 
 ### 2.2 Dedupe
 The compositor keeps `(agent, req_id) → result` for `dedupe_window` (default
 60 s). A repeated `req_id` returns the stored result with status
 `duplicate`+original status in `detail` and executes nothing.
+
+Retention is `max(dedupe_window, prompt_timeout + 30 s)` for any request that
+entered the prompt path (A-05 §3). Without this, a retry issued after a slow
+prompt executes a second time.
 
 ---
 
@@ -3434,10 +3520,23 @@ event   hit(req_id, handle, local_x, local_y: int, node: uint, generation: uint)
 request wait_for(req_id, predicate: string, timeout_ms: uint)
   -- predicate KDL: toplevel_appears{app_id, title}, title_matches{handle, regex},
   --   focus{seat, handle}, node{handle, id, state|role|name}, generation_gt{handle, n},
-  --   text_contains{handle, node, needle}, unmapped{handle}
+  --   text_contains{handle, node, needle}, unmapped{handle},
+  --   idle{handle, ms}, command_finished{handle, exit_code?},
+  --   node_gone{handle, id}, lease_free{handle}
 event   waited(req_id, satisfied: uint, handle, node, generation)
+  -- generation is the generation AT SATISFACTION, not at request (P-07 §5.3).
 request cancel_wait(req_id)
+
+event   provenance(req_id, chain_id: array<u8>, min_trust: uint,
+                   max_sensitivity: uint, len: uint, head_kind: uint)
+  -- Emitted immediately before every tree/text/hit/toplevel_detail event.
+  -- chain_id is 16 bytes. The agent may not construct one.
 ```
+
+`lease_free{handle}` is the blocking counterpart to the non-blocking `busy`
+status (§4.1). An agent that wants to wait for a contended surface waits
+here rather than spinning on retries; the protocol keeps one blocking
+mechanism, not two.
 
 Visibility: every response is filtered to the agent's `scene.list` scope
 and sensitivity class. Nothing outside scope appears, including in
@@ -3459,7 +3558,10 @@ request text(req_id, handle, node: uint, text: string, expected_generation)
   -- else keysym sequence. Detail reports which path.
 request pointer_abs(req_id, x, y: int)
 request pointer_rel(req_id, dx, dy: fixed)
-request button(req_id, button: uint, state: uint)
+request button(req_id, handle, button: uint, state: uint, expected_generation)
+  -- handle and expected_generation are REQUIRED on press (state=1) and
+  -- IGNORED on release (state=0): the press already established the target.
+  -- Generation mismatch → stale_generation, nothing executed.
 request axis(req_id, axis: uint, value: fixed, discrete: int, source: uint)
 request touch_down(req_id, touch_id: int, x, y) / touch_up / touch_motion
 
@@ -3477,14 +3579,94 @@ request click(req_id, handle, node: uint, x, y: int, button: uint, expected_gene
 request action(req_id, handle, node: uint, verb: uint, args: string, expected_generation)
   -- Semantic action via COMP-09 §4.
 
+request preflight(req_id, taxonomy_id: string, handles: array<uint>,
+                  nodes: array<uint>, summary: string)
+event   batch_token(req_id, token: uint, covered: uint, expires_ms: uint)
+  -- Approval mints a token bound to the enumerated (handle, node) set.
+  -- Subsequent acting requests carry token; a target outside the set returns
+  -- batch_exhausted. Single-use per target, expires with the task (S-06 §6).
+  -- summary is agent text and is rendered untrusted.
+
+request secret_fill(req_id, handle, node: uint, secret_name: string,
+                    expected_generation)
+  -- Preconditions checked before any value is read from brokerd: node role is
+  -- password, or textfield with ext.credential=true; target app_id/url matches
+  -- the secret's bound_to; principal holds secret.use:<name> and seat.text in
+  -- scope; app is on the owner's field_fill list (S-08 §3.2).
+  -- Failures: no_capability, out_of_scope, invalid_argument, broker_locked,
+  -- secret_rotated, stale_generation. The value is committed on the agent's
+  -- seat and the buffer zeroed. result.detail carries "filled:<len>" only.
+
+request lease_hold(req_id, handle, duration_ms: uint)
+  -- Explicit acquisition, for a critical section across a slow model call.
+  -- duration_ms is clamped to the task deadline (A-04).
+request lease_release(req_id, handle)
+  -- Voluntary release. Not required; the lease dies with the task.
+
 request compat_lock(req_id, handle, timeout_ms)   -- explicit focus-steal lock
+  -- Implies an exclusive lease (§4.1) on handle for its duration, acquired
+  -- atomically with the lock and released with it. A second agent's
+  -- compat_lock on a held handle returns busy.
 request compat_unlock(req_id)
 
 event   focus_changed(handle, generation)
 event   keymap(fd, size)                          -- the seat's active keymap
+event   lease_lost(handle, reason: uint)
+  -- reason: 0 idle_expiry, 1 task_ended, 2 released_by_supervisor,
+  --         3 human_override
+event   human_active(handle)
+  -- The human seat delivered input to a leased toplevel. Advisory: the lease
+  -- is NOT broken. A well-behaved agent yields.
 ```
 
 Rate limits per grant constraints; excess → `rate_limited`.
+
+Every acting request in this interface carries the trailing
+`provenance_ids: array<u8>` argument specified in §2.3.
+
+### 4.1 Interaction leases
+
+A toplevel is refused to a second principal by default. A lease is **mutual
+exclusion between principals**, not a permission: it confers nothing an agent
+does not already hold, and it prevents two principals from acting on one
+toplevel at once.
+
+- **Gated:** `focus`, `key`, `keysym`, `text`, `pointer_abs`, `pointer_rel`,
+  `button`, `axis`, `touch_*`, `click`, `action`, `secret_fill`,
+  `begin_atomic`, and the mutating `eclipse_workspace_v1` requests.
+- **Not gated:** every `eclipse_scene_v1` read, `get_text`, `hit_test`,
+  `wait_for`, and all capture. Two agents observing one window is a supported
+  pattern and generations already handle staleness; gating reads would break
+  the observer case for no security gain, since read authority is already
+  bounded by `scene.list` scope.
+- **Acquisition is implicit** on the first gated request against a handle,
+  and explicit via `lease_hold`. Implicit acquisition is not an authority
+  expansion, so it does not violate no-ambient-authority.
+- **Lifetime is the A-04 task.** Completion, cancellation, or process death
+  releases every lease that task holds. No reaper is required.
+- **Idle expiry: 30 s** (configurable, COMP-13), measured from the last gated
+  request against that handle. Holder receives `lease_lost{idle_expiry}`.
+- **Contention never blocks.** A gated request against a handle leased by
+  another principal returns `busy` immediately. Requests are never queued.
+  With no queueing there is no wait-for graph, so multi-window deadlock is
+  impossible by construction: an agent copying from window A into window B
+  cannot deadlock against an agent doing the reverse. Any future revision
+  that adds queueing must preserve this property or replace it.
+- **Disclosure.** `busy` names the holder principal only if the requesting
+  principal's scope already covers that principal; otherwise it carries an
+  opaque lease token plus `retry_after_ms`. Without this rule, `busy` is an
+  unstamped cross-agent information channel of exactly the kind S-07 exists
+  to make visible. Audit records the holder unconditionally (COMP-12).
+- **The human is never a holder and is never blocked.** Human-seat input to a
+  leased toplevel is delivered normally and does not break the lease; the
+  holder receives `human_active`. Implicit preemption by human input is
+  rejected deliberately: it produces silent partial completion of agent work,
+  which is worse than an agent that finishes and yields. The escape hatch for
+  a wedged agent is the emergency panel (COMP-10), not preemption.
+
+Per-toplevel is the enforcement unit. Two windows of one process are two
+handles but one application state; that hazard is covered by the
+`lease_sibling_holder` predicate (S-02 §3), not by coarsening the lease.
 
 ---
 
@@ -3574,19 +3756,62 @@ Serials are shared with `result` events for total ordering per agent.
 
 ## 10. Enforcement Order (every acting request)
 
-1. Parse & validate args → `invalid_argument`.
-2. Dedupe lookup → `duplicate`.
-3. Paused? → `paused`.
-4. Capability + scope (S-01) → `no_capability` / `out_of_scope`.
-5. Rate/quota → `rate_limited` / `quota_exceeded`.
-6. Sensitivity of target vs class caps → `sensitivity_denied`.
-7. Enforcement table (COMP-11/S-02): allow → 8; deny → `policy_denied`;
-   prompt → trusted UI, await; defer → `policyd`, await ≤ timeout,
-   fail-closed → `deferred_timeout`.
-8. Generation check → `stale_generation`.
-9. Execute (atomic if batched). Emit `result`. Emit audit (COMP-12).
+1.  Parse & validate args → `invalid_argument`.
+2.  Dedupe lookup → `duplicate`.
+3.  Paused? → `paused`. Task closed or draining? → `task_closed`.
+4.  Capability + scope (S-01) → `no_capability` / `out_of_scope`.
+5.  Rate/quota → `rate_limited` / `quota_exceeded`.
+6.  Sensitivity of target vs class caps → `sensitivity_denied`.
+6b. Resolve `provenance_ids` → chain summary. Unresolvable → record mismatch.
+6c. Circuit-breaker counters (S-06 §8) → `circuit_breaker` (+ pause).
+6d. Lease check (§4.1). If the request is lease-gated and the target handle
+    is leased by a different principal → `busy`, stop. If unleased, acquire
+    implicitly for the calling task. One `HashMap<handle, LeaseHolder>`
+    lookup; zero cost when a single agent is running.
+6e. If the request is a `button` press, resolve the pointer's current global
+    coordinates to `(handle, node)` using the same scene-graph and semantic-
+    tree walk that serves `hit_test`. The resolved node enters `RequestCtx`
+    (COMP-11 §3) and the audit record. Where the agent supplied a `handle`
+    and the resolved handle differs, **both** are recorded and the divergence
+    is available to policy as `target_divergence`. Divergence is not an
+    error — it is the fact the policy engine most needs to see.
+7.  Enforcement table (COMP-11/S-02): allow → 8; deny → `policy_denied`;
+    prompt → batch token check first (S-06 §6), else trusted UI, await;
+    defer → `policyd`, await ≤ timeout, fail-closed → `deferred_timeout`.
+8.  Generation check → `stale_generation`.
+8b. Re-check sensitivity class (it may have risen during a prompt) →
+    `class_changed`. This second check is mandatory: a prompt can take 120 s
+    and the target can navigate in that time.
+9.  Execute (atomic if batched). Emit `result`. Emit audit (COMP-12).
 
 No state mutation before step 9.
+
+**Step 8b is the one to be careful about in implementation.** A prompt
+answered "allow" for a Gmail send button is not an allow for whatever now
+occupies that node id.
+
+**Ordering rationale for 6d, to be preserved.** The lease check must follow
+capability and scope so that a principal without scope on a handle receives
+its normal denial rather than `busy`, which would disclose that another
+principal is active on a handle it cannot otherwise see.
+
+**Ordering rationale for 6e.** S-02's irreversible taxonomy matches on node
+facts, and a `pointer_abs` + `button` pair supplied none. Coordinate-only
+input was not *uncovered* — S-06 §3.3's app-capable fallback already resolves
+it to `prompt` with taxonomy `unknown.capable_app` — but it was covered only
+coarsely, and only in apps flagged `irreversible_capable`. Step 6e converts
+that catch-all into precise matching: the resolved node feeds the real
+taxonomy, so a Pay button prompts as `financial.pay` with its own reversal
+wording rather than as a generic "this app can do irreversible things".
+S-06 §3.3 says the response to fallback annoyance is better node-level
+matching, not disabling the fallback; this is that better matching. Two
+further effects: coordinate-only input in apps *not* flagged
+`irreversible_capable` becomes matchable at all, and `node_source` is
+populated, without which `rule "vision-in-irreversible-apps"` cannot fire on
+the coordinate path it was written for.
+
+The fallback in S-06 §3.3 is retained. Step 6e narrows how often it is the
+only thing standing; it does not replace it.
 
 ---
 
@@ -3602,7 +3827,10 @@ schemas (A-02) accordingly.
    (e.g., emoji on a client without IME support). Proposed: `unsupported`
    status and let the agent choose clipboard paste (if granted).
 2. Should `click` ever auto-prefer semantic action, or only when the agent
-   asks? Proposed: auto-prefer, reported in `detail`.
+   asks? Proposed: auto-prefer, reported in `detail`. When `click` resolves
+   to a semantic action, the irreversible taxonomy is matched against the
+   **action**, not the coordinates, and the app-capable fallback (S-06 §3.3)
+   therefore does not fire. This is the main reason to prefer semantic.
 3. Dedupe window 60 s vs per-grant configurable. Proposed: configurable,
    60 s default, max 600 s.
 
@@ -3693,7 +3921,8 @@ request destroy()
 ```
 
 Protocol errors: `INVALID_NODE`, `INVALID_PARENT`, `CYCLE`, `ALREADY_EXISTS`,
-`NOT_OWNER`, `LOWER_SENSITIVITY`, `EXT_LIMIT`, `UNCOMMITTED_DESTROY`.
+`NOT_OWNER`, `LOWER_CLASSIFICATION` (was `LOWER_SENSITIVITY`; same code),
+`EXT_LIMIT`, `UNCOMMITTED_DESTROY`.
 
 ---
 
@@ -3717,6 +3946,18 @@ Protocol errors: `INVALID_NODE`, `INVALID_PARENT`, `CYCLE`, `ALREADY_EXISTS`,
 - Native trees are exposed to `registryd` over its IPC so it can unify with
   AT-SPI for apps that publish both (native wins per node id space; AT-SPI
   fills gaps only if the client sets `ext.atspi_merge=true`).
+- Client-settable extensions gain:
+  ```
+  ext.irreversible = "<taxonomy_id>"   -- raise only; S-06 §3.4
+  ext.credential   = bool              -- this field takes a credential; S-08 §3.2
+  ```
+  Both are **raise-only**: a client may declare a node irreversible or
+  credential-bearing; it may not clear a classification the policy assigned.
+  Attempting to lower either is protocol error `LOWER_CLASSIFICATION`
+  (renamed from `LOWER_SENSITIVITY` in v0.2; the wire code is unchanged).
+- Validate `ext.irreversible` against the compiled taxonomy. Unknown ids are
+  dropped with a `budget_exceeded`-style warning rather than accepted, so a
+  client cannot invent categories that no rule matches.
 
 ---
 
@@ -3878,7 +4119,31 @@ Task (stated by agent, untrusted):
 This content came from: acme-invoices.com (untrusted web page)
 Category: communication.send (irreversible)
 
-[Allow once] [Allow for this task] [Allow unattended 1h ▾]
+[Allow once] [Allow for this task] [Allow unattended 1h ▾]  [Deny ←focus]
+```
+
+Mandatory elements, none of them suppressible:
+
+1. **Untrusted-provenance line.** When the resolved chain has
+   `min_trust == untrusted`, the prompt renders above the buttons, in the
+   compositor's warning style:
+   `⚠ Part of this action's input came from an untrusted source.`
+   plus the head source.
+2. **Reversal wording.** Every irreversible prompt states the taxonomy's
+   `reversal` property in plain words — "This cannot be undone from here" /
+   "This goes to the trash" / "Undoing this needs the other party" — taken
+   from the S-06 §2 table, never free text.
+3. **Default focus is on Deny**, and Escape means Deny. This is stronger
+   than "no default-focused affirmative".
+4. **Scope display for "Allow for this task"**, not only for the unattended
+   option: the exact predicate set that would be written into the grant is
+   shown before the human answers. §7 asserts the minted grant is
+   byte-identical to the scope displayed.
+5. `statement` renders as compositor text; `agent_note` renders in the
+   untrusted block (A-04 §11). Two fields, two treatments. §7 asserts an
+   agent cannot cause its text to render in the trusted position.
+
+```
 [Deny] [Deny & pause agent]
 ```
 
@@ -3935,6 +4200,104 @@ persistent indicator naming the consumer. Never a transient toast.
   mouse away and back must not dismiss anything.
 - Agent seats: a prompt is not in their focus set; agent input during a
   prompt goes to whatever their seat was focused on, unaffected.
+
+### 3.7 Batch prompt (`preflight`)
+
+Rendering for COMP-08 §4 `preflight`: taxonomy, count, and an enumerated
+scrollable target list capped at 50 shown with an explicit "+N more" the
+human can expand. Approving grants **only** the enumerated set.
+
+### 3.8 Install review
+
+A new trusted-UI surface for agent package install (A-07): capability list,
+version diff, compatibility check results, and the strike-a-capability
+control.
+
+### 3.9 Agent status indicators
+
+A compositor-drawn indicator per active agent principal, in the trusted
+overlay layer. It is trusted UI and not a bar widget because a status dot is
+a claim about system state, and any client can bind `wlr_layer_shell` and
+draw a convincing green dot.
+
+| State | Source |
+|---|---|
+| `awaiting_approval` | a live prompt-class decision parked for this principal (COMP-11 §4) |
+| `blocked` | `busy` on a contended lease (COMP-08 §4.1) |
+| `needs_attention` | deferred consent pending (§3.10) |
+| `error` | task failure, circuit breaker, session limit, provider error |
+| `active` | task running, nothing pending |
+
+Colour per state, placement, size, per-output vs focused-output, and disable
+are all configurable in KDL (COMP-13). Per-*agent* colour follows §8 open
+decision 3 (deterministic hash of agent id, colourblind-safe palette);
+per-*state* colour is a separate axis and fully user-defined.
+
+Two constraints that are security properties, not preferences:
+
+- **The capture indicator (§3.6) is neither configurable nor disableable**,
+  and must remain visually distinct from agent status indicators. "An agent
+  is working" is suppressible; "your screen is being captured" is not. The
+  same holds for the remote-vision indicator (§3.11).
+- **Disabled means not rendered, not unavailable.** With indicators off, the
+  same state must remain reachable through `eclipse-ctl` and the emergency
+  panel (§3.3). Otherwise disabling the overlay is a supported way to run
+  agents invisibly.
+
+### 3.10 Deferred consent
+
+An agent needing an authorization the human must give does not steal focus
+and does not block indefinitely. It raises `needs_attention`, §3.9 shows it,
+and the human answers when ready.
+
+The `agent-attention` bind (COMP-13 §1.1) opens the **pending decision
+queue**. It grants nothing by itself: each pending item names the principal,
+the concrete action, and the capability at issue, and is answered
+individually. An earlier formulation had one chord meaning "take my screen
+for a second"; overloading it to also mean "approve sending pixels to a
+remote provider" would have the human pressing one key without knowing which
+authorization they were granting. Surfacing the queue generalizes to every
+prompt-class decision and needs no new chord per capability.
+
+`agent-attention` and `agent-override` are both evaluated **on the human seat
+only**. Agent seats have no bindings (COMP-04 §5), so an injected keystroke
+sequence cannot open, answer, or dismiss the queue.
+
+**Absence.** Where the human is demonstrably absent — `idle-notify` idleness
+beyond the configured threshold **and** no pending human-seat input — a
+deferred item of class *focus steal* may proceed without an answer.
+
+**Absence never authorizes an irreversible action.** The taxonomy match
+(S-06) is evaluated independently of presence. A task that goes unattended
+into a checkout flow parks on the prompt rather than proceeding. Collapsing
+these two would make stepping away from the keyboard an authority upgrade.
+The threshold is configurable per app and per irreversibility class, never
+globally.
+
+### 3.11 Remote vision prompt and indicator
+
+Prompt content: principal, task statement, app_id and title, the resolved
+sensitivity class, the destination provider, and the owner's anti-spoof
+phrase. Options: **Allow once** · **Allow for this session, this app and
+origin** · **Deny**.
+
+- **No password field.** Trusted UI is already unspoofable: a render pass
+  above every client, focusable only by the human seat, agent seats excluded
+  from its focus set. A password defends against nothing in the threat model,
+  introduces credential handling inside the TCB that does not otherwise
+  exist, adds a typo failure mode, and trains the reflex of typing a password
+  into a dialog — which is the reflex phishing depends on. Authenticity runs
+  the other way: the phrase is the system proving itself to the human.
+- **"Allow for this session" mints an S-01 grant**, not a consent-cache
+  entry, so `revoke_grants`, audit, and scope display all apply without a
+  parallel mechanism.
+- **No auto-approve on absence** (§3.10). Pixels leaving the machine cannot
+  be un-sent. An unattended task that hits vision fallback parks. Practical
+  consequence: unattended agents cannot use remote vision unless the app was
+  pre-granted.
+
+A **non-suppressible indicator** is shown while pixels are in flight to a
+remote provider, visually distinct from both §3.6 and §3.9.
 
 ---
 
@@ -4197,8 +4560,14 @@ Not emitted by the compositor: `grant`, `revoke`, `channel`, `sandbox`,
 
 The compositor is the origin of most provenance chains (S-07):
 
-- Every `perception` record carries `{handle, node set, source, app_trust,
-  sensitivity}`. That tuple is the first link in any chain.
+- Every perception delivery emits a `Link` (S-07 §2) stamped by the
+  compositor, carrying `Surface{handle, generation, node_ids_hash}` or
+  `Terminal`/`Url`, with `trust` and `sensitivity` from S-05 **at delivery
+  time**. The link is appended to a chain owned by the requesting principal
+  and the resulting `ProvenanceRef` is returned to the agent alongside the
+  data (COMP-08 §3 `provenance` event). The compositor never accepts a chain
+  from an agent as authoritative; asserted `provenance_ids` are resolved
+  against the compositor's own stamped set.
 - The tag is returned to the agent alongside the data, so the SDK can
   propagate it into channel messages (F-02 §7.5) without the agent having
   to reconstruct it.
@@ -4298,6 +4667,31 @@ input {
     accel-profile "flat"
 }
 
+agent-indicators {
+    enabled #true
+    placement "top-right"        // or bottom-right|top-left|bottom-left|off
+    per-output #true              // agents may act on outputs you are not watching
+    size 10
+    color "active"             "#4caf50"
+    color "awaiting_approval"  "#ffc107"
+    color "needs_attention"    "#ffc107"
+    color "blocked"            "#9e9e9e"
+    color "error"              "#f44336"
+    // Every colour and position here is user-defined. The CAPTURE indicator
+    // (COMP-10 §3.6) and the remote-vision indicator (§3.9) are NOT
+    // configurable and cannot be disabled from this block.
+}
+
+lease {
+    idle-expiry 30s              // COMP-08 §4.1
+}
+
+attention {
+    absence-threshold 5m         // idle-notify threshold for deferred consent
+    // Per-app and per-irreversibility overrides live in policy, not here:
+    // absence may permit a focus steal and never an irreversible action.
+}
+
 output "DP-1" { mode "2560x1440@144"; position 0 0; scale 1.0; vrr #true }
 output "eDP-*" { scale 1.5; lid-close "off" }
 
@@ -4307,6 +4701,7 @@ bind "SUPER" "1"       { workspace 1 }
 bind "SUPER+SHIFT" "1" { move-to-workspace 1 }
 // reserved, not rebindable to nothing:
 bind "SUPER" "Escape"  { agent-override }
+bind "SUPER" "space"   { agent-attention }
 
 windowrule "float"              { app-id "pavucontrol" }
 windowrule "sensitivity secret" { app-id "org.keepassxc.KeePassXC" }
@@ -4725,6 +5120,16 @@ source available (native / atspi / none) which feeds P-02 and P-09.
 
 ---
 
+## 4b. Security Suites (blocking in CI, F-07 §3)
+
+S-05 §9 race harness and redaction proofs; S-06 §10 matcher corpus and
+audit-replay harness; S-07 §10 algebra and two-hop relay; S-08 §8 broker
+tests; S-09 §8 leak matrix. Added by this revision: a lease suite (implicit
+acquisition, idle expiry, task-death release, `busy` disclosure limits,
+absence of a wait-for graph under crossed multi-window contention) and a
+press-resolution suite (claimed-vs-resolved divergence is recorded, and a
+press whose hit test resolves to no node still reaches S-06 §3.3's fallback).
+
 ## 5. Agent Protocol Conformance
 
 A reference agent exercising every request, event, and error status in
@@ -4795,6 +5200,13 @@ is met. Estimates deliberately omitted — they would be invented.
 
 ## Dependencies outside the compositor
 
+`inference.remote.vision` (S-01 §2.6c) cannot ship before **milestone 13**.
+Frame-level redaction landed in milestone 8 and is all-or-nothing: an
+opaque-black placeholder over the whole surface. Without region-level
+redaction the only options are sending a black rectangle or sending the
+entire surface. This puts a Phase 2 compositor milestone on the critical path
+for a Tier 5 decision.
+
 Phase 2 milestones 10, 15, and 18 need `policyd` (S-01..S-04) and `agentd`
 (A-01, A-02) in parallel. Those are separable, testable, GPU-free crates —
 the right candidates for delegated work while compositor milestones proceed
@@ -4811,7 +5223,7 @@ serially.
 
 <!-- ===== FILE: S-01_CAPABILITIES.md ===== -->
 
-# S-01 — Capability Model & Grant Format (Draft v0.1)
+# S-01 — Capability Model & Grant Format (Draft v0.2)
 
 Depends on: THREAT_MODEL.md. Consumed by: COMP-08, COMP-11, S-02, A-01.
 
@@ -4833,6 +5245,14 @@ Depends on: THREAT_MODEL.md. Consumed by: COMP-08, COMP-11, S-02, A-01.
 
 Principle: **no ambient authority.** A principal with no grant can do
 nothing, including list windows.
+
+Hard rules, not expressible away by any policy file:
+
+- Taxonomies `system.policy` and `system.firmware` (S-06 §2) resolve to
+  `deny` for every non-`system:` principal. No grant, no rule, and no prompt
+  answer can produce an allow. The prompt path is never entered; the request
+  fails immediately with `policy_denied` and is audited with the taxonomy id.
+- No secret value is ever an input to a policy predicate.
 
 ---
 
@@ -4858,13 +5278,25 @@ Dotted names. A capability may be scoped with `:<scope>`.
 |---|---|---|
 | `seat.key` | key events on own seat | yes |
 | `seat.text` | text commit on own seat | yes |
-| `seat.pointer` | pointer motion/button/axis on own seat | yes |
+| `seat.pointer.motion` | pointer motion (absolute and relative) and axis/scroll on own seat | yes |
+| `seat.pointer.button` | button press and release on own seat | yes, task-scoped |
 | `seat.touch` | touch on own seat | no |
 | `seat.focus` | set own seat's focus to a toplevel within scope | yes |
 | `seat.focus.human` | move the human seat's focus | prompt |
 | `seat.atomic` | atomic batches | yes |
-| `seat.compat_lock` | focus-steal lock on compat-flagged apps | yes, scoped |
+| `seat.compat_lock` | focus-steal lock on compat-flagged apps; implies an exclusive lease (COMP-08 §4.1) | yes, scoped |
 | `seat.action` | invoke semantic actions on nodes within scope | yes |
+| `seat.lease.release` | release another principal's interaction lease; the lease returns to unheld | no; unattended-grantable only to a validated supervisor (§4) |
+| `seat.lease.take` | release **and** immediately acquire | **prompt** |
+
+Motion and scroll change no application state and stay cheap; buttons are the
+state-changing primitive and carry the gate. `seat.pointer` as a bare name is
+**retired, not aliased**, so a stale rule fails compilation (S-02 §4
+unknown-predicate error) rather than silently matching nothing.
+
+The lease split exists because releasing is a cleanup operation while taking
+is only useful if the holder intends to act. A supervisor needs the first and
+must not silently acquire the second.
 
 ### 2.3 Capture
 | Capability | Grants | Default |
@@ -4898,17 +5330,54 @@ Dotted names. A capability may be scoped with `:<scope>`.
 ### 2.6 Channels (`agentd`)
 | Capability | Grants |
 |---|---|
-| `channel.create` | create channels (quota'd) |
+| `channel.create` | create channels; quota is **per task** (A-03 §7) |
 | `channel.post:<name>` | post to channel |
 | `channel.read:<name>` | subscribe/read channel |
+
+Channel names in grants are fully qualified `<creator>/<name>`.
+
+### 2.6b Agent control (`agentd` / `policyd`)
+| Capability | Grants | Default |
+|---|---|---|
+| `agent.control:<scope>` | `pause`, `resume`, `terminate` on another principal within scope | no |
+
+Scope grammar (**open, see §9**): `lineage:<own_subtree>` — the principal may
+control tasks descended from its own, bounded by the A-04 §10 `max_depth`
+ceiling. Lineage needs no new grammar and cannot reach sideways into agents
+the supervisor did not spawn. `principal:<glob>` is the more flexible
+alternative a standalone watchdog would need. Proposed: lineage for v1.
+
+`pause_agent`, `resume_agent` and `terminate_agent` exist today only as
+owner-uid IPC rows reachable by the human. A-01's lifecycle model has no
+notion of one agent terminating another and must be extended before this is
+implementable.
+
+### 2.6c Inference
+| Capability | Grants | Default |
+|---|---|---|
+| `inference.remote.vision` | transmit captured pixels of a surface to a non-local provider for element synthesis | **no** |
+
+Scope: `app_id:<glob>` **and** origin where the toplevel's tree carries a url;
+`app_id` + `handle` where it does not. `app_id` alone is too wide for a
+browser — `app_id "firefox"` is one identity across every tab, so approving a
+canvas on one site would approve vision on a banking tab for the session.
+
+Eligibility is additionally gated by S-05's fail-closed rule for opaque
+unclassified surfaces. Transport is brokered through `agentd`, where `Model`
+provenance links are already stamped; `registryd` does not egress directly
+(**open, see §9**).
 
 ### 2.7 Sandbox-enforced (compiled into profile, not runtime-checked)
 | Capability | Effect |
 |---|---|
 | `fs.read:<path>` / `fs.write:<path>` | bind mount + Landlock rule |
-| `net.egress:<host[:port]>` | egress allowlist entry |
+| `net.egress:<host[:port]>` | egress allowlist entry; SNI-filtered, no decryption (S-09 §2c) |
+| `net.egress.mitm:<host>` | as above, plus TLS termination with a per-agent ephemeral CA; required for `proxy_header` secret injection |
+| `net.local:<service>` | named local service over a bind-mounted unix socket (S-09 §3) |
+| `net.bulk:<host>` | raises per-request and per-window egress volume quotas (S-09 §4c) |
 | `dbus:<busname>[.<iface>]` | xdg-dbus-proxy allow rule |
-| `secret.use:<name>` | credential broker (S-08) may inject named secret into a request on the agent's behalf; agent never sees the value |
+| `secret.use:<name>` | broker may inject named secret at a boundary the agent cannot observe (S-08 §3.1, §3.2); agent never sees the value |
+| `secret.expose:<name>` | **prompt-class.** Secret is materialized into the sandbox as env var or file; the agent *can* read it (S-08 §3.3) |
 
 ### 2.8 Meta
 | Capability | Effect |
@@ -4965,7 +5434,8 @@ grant {
   constraints {
     rate "requests" 200 per="10s"
     rate "input_events" 500 per="1s"
-    prompt_budget 3                 // >3 prompts in this grant → policyd flags grant as mis-sized
+    prompt_budget 3                 // per-task counter (A-04 §6); >3 prompts on
+                                    // the task → policyd flags every grant on it
   }
   signature "…COSE_Sign1…"
 }
@@ -4982,11 +5452,57 @@ Rules:
 - Expiry is checked at request time in the compositor; no grace.
 - `capture.secret`, `scene.*.secret`, `clipboard.read.secret`,
   `seat.focus.human`, `launch.shell`, `launch.outside_sandbox`,
-  `workspace.human` are **prompt-class**: a grant may *name* them, but every
-  use triggers trusted UI unless the grant carries an explicit
-  `unattended=true` that was itself approved via prompt with the exact
-  scope shown. Unattended prompt-class grants max expiry: 1 h (F-02 §10.2
-  proposed; adopted here).
+  `workspace.human`, `secret.expose:*`, `net.egress.mitm:*`,
+  `seat.lease.take`, `inference.remote.vision` are **prompt-class**: a grant
+  may *name* them, but every use triggers trusted UI unless the grant carries
+  an explicit `unattended=true` that was itself approved via prompt with the
+  exact scope shown. Unattended prompt-class grants max expiry: 1 h
+  (F-02 §10.2, closed).
+- A grant names `task_id "<ULID>"` referencing an A-04 task, not a free-text
+  `task`. A grant's `expires` must be ≤ its task's `deadline`; a grant naming
+  a `closed` task is rejected.
+- Grants at run time are the **intersection** of manifest, install policy,
+  and owner policy (A-07 §3). Install policy is a named input to grant
+  compilation and is never re-widened by an update or a rollback.
+
+**Validation at issue time.** `policyd` rejects or flags grant sets whose
+capability combination defeats a control elsewhere. These are static checks
+on the union of a principal's live grants, re-run on every addition:
+
+| Combination | Result |
+|---|---|
+| Read capability (`scene.tree`, `scene.text`, `capture.*`, `fs.read`) over targets that can be above `public` **+** `net.egress` to any host not in the policy's `trusted_endpoint` list | **Reject** |
+| `secret.expose:*` **+** any `net.egress` | **Reject** unless the prompt that minted the grant displayed the exposure and the destination |
+| `channel.read:*` **+** egress outside `trusted_endpoint` | Warn |
+| `secret.use:<n>` **+** egress hosts outside that secret's `bound_to` | Warn (binding still enforced at injection) |
+| `net.egress:*` for a non-`system:` principal | **Reject** |
+| Unattended `irreversible` allow rule with no narrowing scope | **Reject** (S-06 §7) |
+| `seat.lease.release` or `agent.control:*` **+** any of `seat.{key,text,pointer.button,action}` with overlapping scope | **Prompt-class; no unattended grant** |
+
+A rejected grant is audited (`grant{outcome:rejected, reason}`) and shown in
+the trusted-UI panel. Rejection is not a prompt: there is no answer the human
+can give that makes the combination safe, only a different grant.
+
+The last row is the supervisor separation. An agent that can stop other
+agents must not also be able to act in their place without a human in the
+loop, and enforcing this at issue time rather than in a profile template
+means it holds however the profile was written. Reference profile:
+
+```
+profile "supervisor" {
+  scene.list, scene.read           // observe
+  agent.control:<scope>            // pause / terminate within scope
+  seat.lease.release               // release, never take
+  // deliberately absent: seat.key, seat.text, seat.pointer.*, seat.action,
+  //                      capture.*, clipboard.*, launch, net.egress
+}
+```
+
+A hijacked supervisor is a denial of service against other agents, which is
+recoverable. It is not an actor. Consequence to record, not to fix: because
+`seat.lease.take` stays prompt-class, a supervisor that needs to act in a
+stopped agent's place requires a human at the keyboard. Unattended
+*supervision* exists; unattended *takeover* does not. Deliberate v1 boundary.
 
 ---
 
@@ -5052,6 +5568,11 @@ No profile includes any `.secret` capability persistently.
 3. Quota semantics for `output.virtual` (count vs. pixel area).
 4. Whether task text in grants is mandatory (proposed: yes; it is what the
    human sees in prompts).
+5. `agent.control` scoping: `lineage` vs `principal` (§2.6b). Proposed:
+   lineage for v1, on the same reasoning that deferred Z-02.
+6. Whether remote vision egresses from `registryd` behind its own proxy or is
+   brokered through `agentd` (§2.6c). Proposed: `agentd`. S-09's egress proxy
+   is per-*agent* and does not cover a TCB daemon transmitting pixels.
 
 
 ---
@@ -5110,6 +5631,25 @@ defaults {
   prompt_timeout 120s
   defer_timeout 500ms            // fail-closed after
   dedupe_window 60s
+  downgrade_grace 500ms          // S-05 §5.2
+  provenance_max_links 32        // S-07 §3.1
+  irreversible_per_hour 20       // S-06 §8
+  communication_per_hour 10
+  financial_per_hour 3
+  denied_irreversible_streak 3
+  egress_upload_per_request 4MiB // S-09 §4c
+  egress_upload_per_hour 64MiB
+  lease_idle_expiry 30s          // COMP-08 §4.1
+}
+
+dedupe_exclude {
+  irreversible "financial.*" "identity.credential" "identity.session"
+               "destructive.overwrite"
+  provenance_contains trust:"untrusted"
+}
+
+trusted_endpoint {
+  host "api.anthropic.com"
 }
 
 // Sensitivity classification (S-05)
@@ -5145,7 +5685,7 @@ rule "no-secret-capture" deny {
   unless grant_has "capture.secret" unattended=true
 }
 rule "irreversible-prompts" prompt {
-  capability "seat.action" "seat.key" "seat.pointer" "click"
+  capability "seat.action" "seat.key" "seat.pointer.button" "click"
   irreversible "*"
   principal_profile "operator" "builder"
 }
@@ -5167,6 +5707,15 @@ rule "channel-laundering" defer {
   provenance_contains source:"channel"
 }
 rule "human-workspace" prompt { capability "workspace.human" "seat.focus.human" }
+rule "blind-irreversible" prompt {
+  irreversible "*"
+  provenance_absent                       // acting with no asserted inputs
+}
+rule "sibling-process-irreversible" prompt {
+  irreversible "*"
+  lease_sibling_holder                    // another agent live in the same process
+}
+rule "remote-vision" prompt { capability "inference.remote.vision" }
 rule "default-allow" allow { capability "*" }   // reached only if the grant permits
 
 profile "operator" { /* S-01 §7 template, expanded here */ }
@@ -5177,7 +5726,38 @@ Semantics:
   `target_handle`, `node_role`, `node_name` (regex), `node_source`,
   `node_confidence_lt`, `irreversible` (taxonomy id glob), `url`,
   `principal`, `principal_profile`, `grant_has`, `grant_scope`,
-  `provenance_contains`, `app_trust`, `time` (window), `rate_gt`.
+  `provenance_contains`, `app_trust`, `time` (window), `rate_gt`,
+  plus:
+
+```
+provenance_min_trust <untrusted|standard|trusted|human>
+provenance_head source:"<kind>"
+provenance_age_gt <duration>
+provenance_mismatch
+provenance_absent                      // acting request with empty provenance_ids
+app_irreversible_capable <bool>        // used in the §3 example, never defined
+egress_bytes_gt <bytes> window=<duration>
+secret_bound_host_mismatch
+node_credential <bool>                 // ext.credential, S-08 §3.2
+lease_holder <principal-glob>          // target handle leased by a match
+lease_sibling_holder                   // target's client process has another
+                                       // live lease held by a different principal
+target_divergence                      // agent's claimed handle differs from
+                                       // the handle resolved at press time
+                                       // (COMP-08 §10 step 6e)
+```
+
+  `provenance_*` predicates read the `ProvenanceRef` summary (S-07 §5) on the
+  fast path. Any predicate needing the *full* chain (e.g. matching a specific
+  `Url` link) is `defer`-only and the compiler enforces that, as it already
+  does for other context-hungry predicates.
+
+  `lease_sibling_holder` covers what the per-toplevel lease cannot: two
+  browser windows are two handles, one process, one cookie jar. Agent A
+  signing out in window 1 while agent B is mid-checkout in window 2 is two
+  *uncontended* leases and one broken task. Enforcement stays per-toplevel
+  and cheap; the shared-state hazard becomes a policy question instead of an
+  invisible one. The compositor already has the pid from `list_toplevels`.
 - **Phases**: all `deny` rules are checked first; any match → deny. Then
   `prompt`, then `defer`, then `allow`. This ordering makes the language
   monotone: adding a rule can only tighten unless it is an `allow`, and
@@ -5230,7 +5810,9 @@ owner's anti-spoof secret. Options: **Allow once · Allow for this task ·
 Allow unattended for 1 h (scope shown) · Deny · Deny & pause agent**.
 Answers are audited and, for "for this task"/"unattended", turned into new
 grants by `policyd`. Prompt frequency per grant is counted against
-`prompt_budget`; exceeding it flags the grant for resizing (F-02 §10.5).
+`prompt_budget`, which is a **task** counter (A-04 §6), not a per-grant one.
+Exceeding it flags every grant on that task, since the mis-sizing is of the
+task's authority as a whole (F-02 §10.5).
 
 ## 6. Defer Path
 
@@ -5323,9 +5905,23 @@ on TCP entirely inside the namespace, since `pasta` handles egress.
 
 seccomp base: deny `ptrace`, `process_vm_*`, `mount`, `umount2`,
 `pivot_root`, `kexec_*`, `add_key`, `request_key`, `keyctl`, `bpf`,
-`perf_event_open`, `userfaultfd`, `io_uring_*` (v1; revisit), `socket`
-with `AF_PACKET|AF_NETLINK` (except `NETLINK_ROUTE` read), `personality`,
+`perf_event_open`, `userfaultfd`, `open_by_handle_at`, `pidfd_getfd`,
+`io_uring_setup`/`io_uring_enter`/`io_uring_register`, `socket`
+with `AF_PACKET|AF_NETLINK` (except `NETLINK_ROUTE` read), `bind` on
+non-`AF_UNIX` families (S-09 §1), `personality`,
 `unshare`/`setns`/`clone3` with namespace flags.
+
+io_uring is denied outright, not "revisit": an io_uring instance performs
+filesystem and network operations submitted through a shared ring, which is
+exactly the shape that bypasses per-syscall filtering. Rust async runtimes
+wanting io_uring fall back to epoll inside agent sandboxes.
+
+Mounts: `hidepid=2` on `/proc`; `/sys` masked except the subset the GPU
+userspace needs when a sandboxed app renders.
+
+**D-Bus**: agent sandbox profiles deny `org.a11y.Bus` and the accessibility
+bus socket. Direct AT-SPI access from an agent bypasses classification,
+scoping, and sanitization entirely. `registryd` only.
 
 Resource limits (cgroup): memory default 4 GiB, CPU weight 50, pids 512,
 tasks-per-agent adjustable via grant `constraints`.
@@ -5460,6 +6056,11 @@ Record {
 | `sandbox` | compiled bwrap argv hash, landlock hash, seccomp hash |
 | `policy` | table version, source file hashes, compiler warnings |
 | `lifecycle` | agent start/stop/pause/resume, override on/off |
+| `net` | principal, grant_id, host, sni, ip, port, mode (`splice`\|`mitm`), bytes_up, bytes_down, duration_ms, outcome, rule_id? (S-09 §7) |
+| `secret` | secret_id, rotation_counter, mode, destination, principal, grant_id, outcome, length? (S-08 §7) |
+| `task` | task_id, principal, origin, origin_ref, parent_task_id, state, statement_hash, counters_snapshot, reason. Emitted on every state transition. |
+| `lease` | event (`acquire`\|`release`\|`refuse`\|`expire`\|`override`), principal, handle, app_id, holder principal (recorded unconditionally on `refuse`, regardless of the disclosure limit applied to the agent in COMP-08 §4.1) |
+| `remote_inference` | surface handle, app_id, resolved class, provider, content_hash, bytes, grant_id, outcome |
 | `anchor` | periodic external anchor (§4) |
 
 ---
@@ -5724,7 +6325,11 @@ link in any channel message's provenance chain (F-02 §7.5, S-07).
 
 - `role=password` → `secret`, always, at every source.
 - Nodes inside a toplevel classified `secret` inherit `secret`.
-- Apps may raise a node's class via native protocol; never lower.
+- Class is computed by the join in S-05 §3 over: owner classify rules,
+  role-derived (`password` → `secret`), app-declared raise, ancestor node
+  class, and owning toplevel class. The join is a **maximum**, so ordering is
+  irrelevant and no source can lower a class another source raised. Only
+  owner policy sets a `public` base.
 - Delivery: nodes above the agent's granted class are replaced by a stub
   `{id, role, sensitivity, states:{hidden}}` with no name/value/rect; the
   agent knows something is there and that it cannot see it (so it can ask

@@ -1,6 +1,6 @@
 # Abyss — implementation status
 
-Last updated: 2026-09-07.
+Last updated: 2026-09-07 (spec revision: Appendix A applied, COMP-08 v0.3).
 
 The COMP-16 table in `ECLIPSEOS_SPECS_v2_VOL1.md` is the *contract*: what each
 milestone must contain and what its exit gate is. It deliberately carries no
@@ -28,6 +28,14 @@ of them are exercised, three carry hardware gates that have never been run.
 Milestone 9a (COMP-06 §1 protocol completeness) is done: all fifteen protocols
 are implemented and verified live on the socket. What is left in Phase 1 is
 blocked on hardware or is 9b (effects).
+
+Phase 2's *specification* is now settled: Appendix A is applied inline across
+both volumes and COMP-08 is at v0.3, so the wire signatures milestone 10
+implements are fixed. Three v0.3 changes affect code or gate rows that already
+exist: `button` gains a target handle and `expected_generation`;
+`seat.pointer` splits into `seat.pointer.motion` and `seat.pointer.button`
+(the bare name is retired, so any stale reference must fail rather than
+match); and every acting request carries a trailing `provenance_ids`.
 Phase 2 (milestones 10–18, the agent protocol) has **no code at all** — the
 `trusted_ui/`, `policy/`, `audit/`, `protocols/agent/` and `protocols/semantic/`
 directories named in the root `CLAUDE.md` module map do not exist on disk. The
@@ -138,14 +146,24 @@ macros anywhere in the workspace.
 9. **`agent-override` is bound but inert** — Super+Escape is a built-in
    default bind carrying `Action::AgentOverride` and the config parser still
    refuses to let anyone rebind it, but the action itself only logs. It gets
-   its behaviour with the trusted UI in milestone 11.
-10. **XWayland eager start, no hardening flags** — see milestone 7. Blocked on
+   its behaviour with the trusted UI in milestone 11. COMP-13 §1.1 now also
+   reserves `agent-attention` (`SUPER+space`, COMP-10 §3.10), which opens the
+   pending decision queue; `input::Action` has no variant for that one, so the
+   bind is still rejected as unknown. *Unblocked by:* milestone 14.
+10. **No lease state** — COMP-08 §4.1 specifies interaction leases and
+    enforcement step 6d. Nothing in the tree holds a `handle → LeaseHolder`
+    map. *Unblocked by:* milestone 12.
+11. **No press-time hit-test resolution** — COMP-08 §10 step 6e requires
+    resolving an agent button press to `(handle, node)` before policy
+    evaluation. `hit_test` exists in spec only, and `click_at` is gated
+    `implemented: false`. *Unblocked by:* milestones 11 and 15.
+12. **XWayland eager start, no hardening flags** — see milestone 7. Blocked on
     smithay upstream, verified in the vendored source.
-11. **Only two IPC event kinds are emitted for shell changes** — `window`,
+13. **Only two IPC event kinds are emitted for shell changes** — `window`,
     `output`, plus `focus` and workspace events (9 `emit` call sites across
     `outputs/mod.rs`, `shell/mod.rs`, `ipc/methods.rs`). `agent-activity` and
     `config-error` are named by COMP-13 and never emitted.
-12. **No `crates/policyd`, `crates/agentd`, `crates/sandbox`** — the TCB crates
+14. **No `crates/policyd`, `crates/agentd`, `crates/sandbox`** — the TCB crates
     named in the root `CLAUDE.md` do not exist. The module map in that file
     describes the intended end state, not the tree.
 
