@@ -31,8 +31,19 @@ regex.workspace = true
 serde_json.workspace = true
 
 [features]
-default = ["winit", "drm"]
-winit = ["smithay/backend_winit"]
+default = ["winit", "drm", "headless"]
+# `winit.rs` binds wl_drm and imports dmabuf, both of which need the system
+# EGL library, and `EGLDevice::try_get_render_node` is gated on `backend_drm`;
+# the feature has to name all three rather than relying on `drm` being on too.
+winit = [
+  "smithay/backend_winit",
+  "smithay/backend_egl",
+  "smithay/backend_drm",
+  "smithay/use_system_lib",
+]
+# CI backend: EGL device (hardware render node or Mesa software), no KMS, no
+# host display server. COMP-01 §10.
+headless = ["smithay/backend_egl", "smithay/backend_drm", "smithay/use_system_lib"]
 # Production backend: KMS via libseat + udev + libinput, GLES on GBM/EGL.
 drm = [
   "smithay/backend_drm",

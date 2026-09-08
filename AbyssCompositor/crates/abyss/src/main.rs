@@ -26,6 +26,8 @@ enum BackendKind {
     Winit,
     #[cfg(feature = "drm")]
     Drm,
+    #[cfg(feature = "headless")]
+    Headless,
 }
 
 /// Nest under an existing session when there is one; otherwise drive KMS.
@@ -42,6 +44,9 @@ fn default_backend() -> BackendKind {
     return BackendKind::Winit;
     #[cfg(all(feature = "drm", not(feature = "winit")))]
     return BackendKind::Drm;
+    // A headless-only build has nothing else to fall back to.
+    #[cfg(all(feature = "headless", not(feature = "winit"), not(feature = "drm")))]
+    return BackendKind::Headless;
 }
 
 struct Args {
@@ -50,6 +55,19 @@ struct Args {
     stats: bool,
     session: bool,
     render_device: Option<String>,
+    /// Virtual output size. Headless only — every other backend takes its size
+    /// from the host window or the connector.
+    #[cfg(feature = "headless")]
+    size: (i32, i32),
+}
+
+/// `WxH`, both sides positive. Anything else is a refusal — a silently
+/// defaulted size would make a failing test look like a passing one.
+#[cfg(feature = "headless")]
+fn parse_size(s: &str) -> Option<(i32, i32)> {
+    let (w, h) = s.split_once(['x', 'X'])?;
+    let (w, h) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+    (w > 0 && h > 0).then_some((w, h))
 }
 
 fn parse_args() -> Result<Args> {
@@ -58,6 +76,8 @@ fn parse_args() -> Result<Args> {
     let mut stats = false;
     let mut session = false;
     let mut render_device = None;
+    #[cfg(feature = "headless")]
+    let mut size = backend::headless::DEFAULT_SIZE;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -66,8 +86,10 @@ fn parse_args() -> Result<Args> {
                 Some("winit") => kind = BackendKind::Winit,
                 #[cfg(feature = "drm")]
                 Some("drm") => kind = BackendKind::Drm,
+                #[cfg(feature = "headless")]
+                Some("headless") => kind = BackendKind::Headless,
                 Some(other) => {
-                    anyhow::bail!("unsupported backend '{other}' (expected 'drm' or 'winit')")
+                    anyhow::bail!("unsupported backend '{other}' (expected 'drm', 'winit' or 'headless')")
                 }
                 None => anyhow::bail!("--backend requires a value"),
             },
@@ -90,10 +112,15 @@ fn parse_args() -> Result<Args> {
                 }
                 std::process::exit(0);
             }
+            #[cfg(feature = "headless")]
+            "--size" => match args.next().as_deref().and_then(parse_size) {
+                Some(v) => size = v,
+                None => anyhow::bail!("--size requires WxH with both above zero"),
+            },
             "--stats" => stats = true,
             "--session" => session = true,
             "-h" | "--help" => {
-                println!("usage: abyss [--backend drm|winit] [--config <path.kdl>] [--render-device <path|pci:DDDD:BB:DD.F>] [--list-gpus] [--stats] [--session]");
+                println!("usage: abyss [--backend drm|winit|headless] [--config <path.kdl>] [--render-device <path|pci:DDDD:BB:DD.F>] [--list-gpus] [--size WxH] [--stats] [--session]");
                 std::process::exit(0);
             }
             other => anyhow::bail!("unknown argument '{other}'"),
@@ -105,6 +132,8 @@ fn parse_args() -> Result<Args> {
         stats,
         session,
         render_device,
+        #[cfg(feature = "headless")]
+        size,
     })
 }
 
@@ -161,6 +190,8 @@ fn main() -> Result<()> {
     match args.backend {
         #[cfg(feature = "winit")]
         BackendKind::Winit => backend::winit::run(config, args.stats, args.session),
+        #[cfg(feature = "headless")]
+        BackendKind::Headless => backend::headless::run(config, args.stats, args.session, args.size),
         #[cfg(feature = "drm")]
         BackendKind::Drm => backend::drm::run(config, args.stats, args.session),
     }

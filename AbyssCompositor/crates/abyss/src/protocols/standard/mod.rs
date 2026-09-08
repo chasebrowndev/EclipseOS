@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-#[cfg(feature = "drm")]
 mod activation;
 mod compositor;
 pub mod data_control;
 pub mod data_device;
 mod decoration;
 pub mod dmabuf;
+// Explicit sync rides on the DRM state; without that backend there is no
+// syncobj eventfd to hand out, so the global is not advertised at all.
+#[cfg(feature = "drm")]
 pub mod drm_syncobj;
 pub mod foreign;
 pub mod foreign_toplevel;

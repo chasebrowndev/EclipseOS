@@ -6,6 +6,8 @@
 pub mod drm;
 #[cfg(feature = "drm")]
 pub mod gpu;
+#[cfg(feature = "headless")]
+pub mod headless;
 #[cfg(feature = "winit")]
 pub mod winit;
 

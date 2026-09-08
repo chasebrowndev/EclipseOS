@@ -141,6 +141,10 @@ pub struct AbyssState {
     /// import into the same renderer that draws the frame.
     #[cfg(feature = "winit")]
     pub winit: Option<Box<crate::backend::winit::WinitData>>,
+    /// Live only on the headless backend. Same reason as `winit`: the dmabuf
+    /// handler imports into the renderer that draws the frame.
+    #[cfg(feature = "headless")]
+    pub headless: Option<Box<crate::backend::headless::HeadlessData>>,
     /// `None` when no render node exists, in which case there is no global.
     pub dmabuf_state: Option<smithay::wayland::dmabuf::DmabufState>,
     /// Default (render) feedback, sent to every surface that cannot scan out.
@@ -221,6 +225,10 @@ impl AbyssState {
         #[cfg(feature = "winit")]
         if let Some(winit) = self.winit.as_mut() {
             return Some(&mut **winit);
+        }
+        #[cfg(feature = "headless")]
+        if let Some(headless) = self.headless.as_mut() {
+            return Some(&mut **headless);
         }
         None
     }
@@ -379,6 +387,8 @@ impl AbyssState {
             drm: None,
             #[cfg(feature = "winit")]
             winit: None,
+            #[cfg(feature = "headless")]
+            headless: None,
             dmabuf_state: None,
             dmabuf_feedback: None,
             #[cfg(feature = "drm")]
