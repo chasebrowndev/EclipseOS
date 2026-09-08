@@ -3144,6 +3144,10 @@ deliberately do **not** implement.
 
 ## 1. Required for Phase 1
 
+Completing this table is owned by COMP-16 milestone 9a. `wl_subcompositor`
+ships with `wl_compositor` (one Smithay global pair) and `xdg_output` with
+`wl_output`; they are not separate work items.
+
 | Protocol | Version | Notes |
 |---|---|---|
 | `wl_compositor`, `wl_subcompositor`, `wl_shm`, `wl_seat`, `wl_output`, `wl_data_device_manager` | core | Multiple seats advertised (COMP-04 §1) |
@@ -4768,6 +4772,7 @@ is met. Estimates deliberately omitted — they would be invented.
 | 7 | XWayland | Steam + a Proton game + a Java app |
 | 8 | Screen sharing via xdg-desktop-portal | a video call with screen share |
 | 9 | Human IPC, `eclipse-ctl`, metrics | waybar driven by our IPC |
+| **9a** | COMP-06 §1 protocol completeness: `xdg_decoration`, `xdg_activation`, `wp_single_pixel_buffer`, `zwp_pointer_constraints`, `zwp_relative_pointer`, `zwp_pointer_gestures`, `ext_foreign_toplevel_list`, `wp_security_context`, `zwp_tablet_v2`, `wlr_output_management`, `xdg_foreign`, `wlr_gamma_control`, `content_type`, `wp_alpha_modifier`, `cursor_shape` | every protocol in COMP-06 §1 appears in `wayland-info`; a third-party bar lists windows it does not own; mouse-look works in a Proton game; toolkits set their own cursors |
 | **9b** | *(stretch)* animations, rounding, shadows, dim, blur | visuals at Hyprland parity; frame budget still met |
 | — | **PHASE 1 EXIT** | **Owner has used it as the only compositor for 14 consecutive days** |
 
