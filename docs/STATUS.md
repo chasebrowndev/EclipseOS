@@ -63,7 +63,7 @@ or a known, listed gap.
 | 8 | Screen sharing via xdg-desktop-portal | **partial** | Two capture protocols behind **one shared fail-closed gate**: `zwlr_screencopy_v1` (`screencopy.rs`) and `ext_image_copy_capture_v1` + `ext_image_capture_source_v1` (`image_copy_capture.rs`), ADRs 0027/0029/0030. Measured against `xdg-desktop-portal-wlr` 0.8.3: 60 frames in 1.18 s. Frame-level redaction verified across 860,343 pixels of a redacted surface, all exactly opaque black. Remaining for the gate: an actual video call. Cursor capture is refused (session answered `stopped`/`leave`, `image_copy_capture.rs:333`). |
 | 9 | Human IPC, `eclipse-ctl`, metrics | **done (Phase 1 scope)** | `ipc/` (JSON-RPC 2.0 line-delimited over `$XDG_RUNTIME_DIR/eclipse/abyss.sock`, `SO_PEERCRED` owner-uid gating, ADR 0028), `ipc/gate.rs` authorisation table, `ipc/methods.rs` (17 methods), `crates/eclipse-ctl` (327 lines). 7 of the 24 gate rows are deliberately `implemented: false` — all Phase 2 surface, listed below and asserted by the `phase_two_rows_stay_unimplemented` test. Gate "waybar driven by our IPC" is met in the weaker sense that `eclipse-ctl watch` streams workspace/window/output/focus events; a bar cannot yet enumerate windows it does not own because there is no `ext-foreign-toplevel-list`. |
 | 9a | COMP-06 §1 protocol completeness | **done** | All fifteen protocols implemented and confirmed advertised on a live socket: `xdg_decoration`, `xdg_activation`, `wp_single_pixel_buffer`, `zwp_pointer_constraints`, `zwp_relative_pointer`, `zwp_pointer_gestures`, `ext_foreign_toplevel_list`, `wp_security_context`, `zwp_tablet_v2`, `wlr_output_management` (v4), `xdg_foreign` (exporter+importer v2), `wlr_gamma_control`, `content_type`, `wp_alpha_modifier`, `cursor_shape`. Smithay 0.7 has no module for `wlr_output_management` or `wlr_gamma_control`, so those two are hand-written dispatch following `output_power.rs`. Output configuration from the wlr protocol and from the human IPC now share one apply path (`outputs::apply_change`), so the COMP-03 §4 "never disable the last enabled output" refusal cannot be routed around. Remaining gate items are behavioural, not code: a third-party bar listing windows, mouse-look in a Proton game. |
-| 9b | *(stretch)* animations, rounding, shadows, dim, blur | **partial** | Borders, `active-opacity`/`inactive-opacity`, `dim-inactive`, `rounding` and `shadow` draw (`render/mod.rs`, `render/effects.rs`); rounding is a fragment-shader mask in framebuffer space and the shadow an SDF pixel shader over the grown window rect, both confirmed visually under the winit backend. The `windows` animation interpolates window position from the frame clock (`render/anim.rs`), also confirmed visually; `workspaces`, `fade`, `border` and `blur` are parsed and validated but not drawn. Every effect is off by default, so an unconfigured frame is still the single `space_render_elements` call — damage tracking and direct scanout unchanged. Rounding a window necessarily makes it non-opaque, so a rounded window cannot take a scanout plane; that is inherent, not a regression. |
+| 9b | *(stretch)* animations, rounding, shadows, dim, blur | **partial** | Borders, `active-opacity`/`inactive-opacity`, `dim-inactive`, `rounding` and `shadow` draw (`render/mod.rs`, `render/effects.rs`); rounding is a fragment-shader mask in framebuffer space and the shadow an SDF pixel shader over the grown window rect, both confirmed visually under the winit backend. The `windows` animation interpolates window position from the frame clock (`render/anim.rs`), also confirmed visually, as are `fade` (a newly mapped window's alpha ramps from zero; there is no fade-out, since a closing window is out of the space before the next frame) and `border` (the border colour crossfades on focus change). `workspaces` and `blur` are parsed and validated but not drawn. Every effect is off by default, so an unconfigured frame is still the single `space_render_elements` call — damage tracking and direct scanout unchanged. Rounding a window necessarily makes it non-opaque, so a rounded window cannot take a scanout plane; that is inherent, not a regression. |
 | — | **PHASE 1 EXIT** — 14 consecutive days as the only compositor | **not started** | Blocked on milestone 3's gate. Abyss is now *launchable* from any greeter: `abyss --session` plus `dist/abyss.desktop`, `dist/abyss-session`, `dist/abyss-session.target` (ADR 0032). What has never happened is a real KMS boot. |
 
 ---
@@ -147,9 +147,10 @@ macros anywhere in the workspace.
    own shadow (also verified nested under winit). Window move animations are
    in `render/anim.rs`: the shell always maps a window at its target, and the
    store hands the render path a shrinking offset, so `scene`/`get_tree`
-   never report an interpolated position. Still not drawn: `blur`
-   (needs multi-pass framebuffers) and open/close, workspace and border
-   animation
+   never report an interpolated position. The same store drives `fade` (map-in
+   alpha ramp, no fade-out) and `border` (focus-change colour crossfade).
+   Still not drawn: `blur` (needs multi-pass framebuffers) and the
+   `workspaces` switch animation
    interpolation (needs the frame clock, plus COMP-08's rule that agents see
    target geometry, never the interpolated value). All are off by default, so
    the default frame path is the single `space_render_elements` call it was
@@ -249,9 +250,9 @@ In rough order:
 4. **A real xcursor theme** on DRM, replacing the built-in amber arrow used
    for named cursor shapes.
 5. **Effects (9b)** — optional by COMP-16 Open Decision 1. Borders, opacity,
-   dim-inactive, rounding, shadows and move animations are in; blur and the
-   non-move animation names are what remain of the visible gap against the
-   current Hyprland setup.
+   dim-inactive, rounding, shadows and the `windows`/`fade`/`border`
+   animations are in; `blur` and the `workspaces` switch animation are what
+   remain of the visible gap against the current Hyprland setup.
 6. **The last two COMP-05 §4 rules** — the `fullscreen` action and the
    `launching-principal` matcher (gap 7); everything else in §4 now applies.
 

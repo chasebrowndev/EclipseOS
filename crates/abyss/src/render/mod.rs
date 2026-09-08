@@ -141,9 +141,10 @@ pub fn collect_elements(
     // With no per-window effect configured (the default) the whole space goes
     // through smithay's one call at alpha 1.0, so damage tracking and direct
     // scanout are exactly what they were before milestone 9b (COMP-02 §9).
-    borders.anim.sync(space, config);
+    borders.anim.sync(space, config, focus);
     if borders.anim.running()
         || config.decoration.any_window_effect()
+        || borders.anim.fading()
         || crate::shell::rules::any_opacity_override(space.elements())
     {
         elements.extend(window_elements(renderer, space, borders, output, config, focus));
@@ -155,7 +156,7 @@ pub fn collect_elements(
         }
     }
 
-    elements.extend(border_elements(space, borders, output_loc, scale, config, focus));
+    elements.extend(border_elements(space, borders, output_loc, scale, config));
     elements.extend(shadow_elements(renderer, space, borders, output_loc, config));
 
     layers(&mut elements, [Layer::Bottom, Layer::Background], renderer);
@@ -221,7 +222,7 @@ fn window_elements(
             deco.active_opacity
         } else {
             deco.inactive_opacity
-        });
+        }) * store.anim.fade(&window);
 
         // The dim overlay belongs above this window but below the ones in
         // front of it, so it is pushed just before the window's own surfaces.
@@ -335,7 +336,6 @@ fn border_elements(
     output_loc: Point<i32, Logical>,
     scale: Scale<f64>,
     config: &Config,
-    focus: Option<&Window>,
 ) -> Vec<AbyssRenderElement> {
     let width = config.general.border_size;
     if width <= 0 {
@@ -351,11 +351,11 @@ fn border_elements(
             continue;
         };
         geo.loc += store.anim.offset(&window);
-        let color = if focus == Some(&window) {
-            config.general.col_active
-        } else {
-            config.general.col_inactive
-        };
+        // The `border` animation crossfades this on focus change; with the
+        // animation off it is the focused/unfocused colour outright.
+        let color = store
+            .anim
+            .border_color(&window, config.general.col_active, config.general.col_inactive);
         // Outer rect: the tile, with the window inset by `width` on every side.
         let outer = Rectangle::new(
             // Window geometry is global; elements are output-local.

@@ -2517,9 +2517,12 @@ would not track `rounding`; the SDF costs one cheap element and no texture
 memory. The shader discards everything inside the window rect, so a translucent
 window is never darkened by its own shadow.
 
-Animations are geometry-only in v1. **They must not affect what an agent
-sees**: `scene`/`get_tree` geometry reports the *target* geometry, not the
-interpolated one, so an agent never clicks where a window was mid-flight.
+Animations in v1 are a window's position (`windows`), its alpha as it maps
+(`fade`) and its border colour on focus change (`border`). There is no
+fade-out: a closing window has left the space before the next frame, and the
+compositor does not hold a dead client's buffers to animate them.
+**No animation may affect what an agent sees**: `scene`/`get_tree` geometry
+reports the *target* geometry, not the interpolated one, so an agent never clicks where a window was mid-flight.
 The compositor keeps this true by construction: the shell maps every window at
 its target, and the animation store holds only a render-time offset that decays
 to zero — nothing outside the render path can observe it. A backend that
