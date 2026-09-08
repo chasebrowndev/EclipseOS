@@ -38,6 +38,9 @@ writing a new ADR that says so.
 | 0030 | [Two capture protocols coexist, behind one shared gate](0030-ext-image-copy-capture.md) | accepted |
 | 0031 | [Resizing a window over the control socket](0031-resize-over-the-control-socket.md) | accepted |
 | 0032 | [The systemd session handoff lives in the compositor, behind `--session`](0032-session-handoff-in-compositor.md) | accepted |
+| 0033 | [An explicit render-device that does not resolve refuses to start](0033-render-device-override-refuses-on-miss.md) | accepted |
+| 0034 | [Terminal emulator: keep the foot fork, extract the publisher as `cataclysm-pub`](0034-terminal-foot-fork-publisher-crate.md) | accepted |
+| 0035 | [Day-one CI: cloud-only gate, `cargo-deny` interim, mechanized review rules](0035-ci-harness-day-one.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

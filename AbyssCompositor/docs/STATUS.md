@@ -1,6 +1,13 @@
 # Abyss — implementation status
 
-Last updated: 2026-09-08 (spec revision: Appendix A applied, COMP-08 v0.3).
+Last updated: 2026-09-08.
+
+**Spec baseline: v2 + Appendix A applied (2026-09-08).** The amendment set
+that previously sat unapplied at the end of VOL2 is now merged inline;
+COMP-08 is at v0.2. What changed is mostly the contract the code is measured
+against, and the new gaps that opens are recorded in the spec-gaps section;
+the code-state rows below carry forward the 2026-09-07 verification pass,
+with milestones 6 and 9b re-checked against the tree on 2026-09-08.
 
 The COMP-16 table in `ECLIPSEOS_SPECS_v2_VOL1.md` is the *contract*: what each
 milestone must contain and what its exit gate is. It deliberately carries no
@@ -9,9 +16,7 @@ the progress record, and per F-07 §7 `docs/` is source of truth once code
 exists.
 
 Everything below was re-verified against the code on 2026-09-07, not against
-the previous revision of this file. The 2026-09-08 pass revisited only what
-changed that day: the config-validation gap, the GPU-ranking gap, and the
-counts in "Test and gate status".
+the previous revision of this file.
 
 ---
 
@@ -25,40 +30,35 @@ the `Backend` trait in `backend/`: `winit` (nested, the dev path) and `drm`
 (KMS/udev/libinput/libseat/GBM/EGL/GLES). The second crate,
 `crates/eclipse-ctl`, is the human CLI over the JSON-RPC socket.
 
-Phase 1 of COMP-16 is substantially built: milestones 1–9 all have code, seven
-of them are exercised, three carry hardware gates that have never been run.
+Phase 1 of COMP-16 is substantially built: milestones 1–9b all have code,
+seven of them are exercised, three carry hardware gates that have never been
+run. COMP-16 v0.2 added milestones 9c–9f (headless backend, node-level
+redaction, window-rules engine, benchmark harness); none has code.
 Milestone 9a (COMP-06 §1 protocol completeness) is done: all fifteen protocols
 are implemented and verified live on the socket. What is left in Phase 1 is
-blocked on hardware or is 9b (effects).
-
-Phase 2's *specification* is now settled: Appendix A is applied inline across
-both volumes and COMP-08 is at v0.3, so the wire signatures milestone 10
-implements are fixed. Three v0.3 changes affect code or gate rows that already
-exist: `button` gains a target handle and `expected_generation`;
-`seat.pointer` splits into `seat.pointer.motion` and `seat.pointer.button`
-(the bare name is retired, so any stale reference must fail rather than
-match); and every acting request carries a trailing `provenance_ids`.
-Phase 2 (milestones 10–18, the agent protocol) has **no code at all** — the
+blocked on hardware or is 9c–9f; 9b (effects) is done.
+Phase 2 (milestones 10–25, the agent protocol) has **no code at all** — the
 `trusted_ui/`, `policy/`, `audit/`, `protocols/agent/` and `protocols/semantic/`
 directories named in the root `CLAUDE.md` module map do not exist on disk. The
-one exception is frame-level capture redaction, which milestone 13 specifies
-but which landed early inside milestone 8.
+one exception is frame-level capture redaction, which milestones 9d and 22
+specify but which landed early inside milestone 8.
 
 The single thing standing between the tree and Phase 1 exit is that the DRM
 backend has never run on real KMS. Everything else in Phase 1 is either done
 or a known, listed gap.
 
 **Open vs. not, as of 2026-09-08.** Closed and needing nothing further:
-milestones 1, 2, 5, 7, 9, 9a; spec gaps 1, 2, 3, 4 and 5. Code complete but
-waiting on hardware that does not exist in this session: milestones 3, 4 and 6,
-plus the multi-GPU half of COMP-01 §11's test plan — all listed under
+milestones 1, 2, 5, 7, 9, 9a, 9b; spec gaps 1, 2, 3, 4 and 5. Code complete
+but waiting on hardware that does not exist in this session: milestones 3, 4
+and 6, plus the multi-GPU half of COMP-01 §11's test plan — all listed under
 "Deferred hardware verification", none of them a defect. Genuinely open work
-that can be done today: an `ext-foreign-toplevel-list` consumer for milestone 9's bar gate, and the whole
-of Phase 2 (milestones 10-18), whose specification is settled but whose
-directories do not exist. Open and *not* actionable: gap 6 (three COMP-07
-requirements smithay 0.7.0 cannot express — blocked upstream behind a pinned
-dependency) and stub 13's `agent-activity` event, which has no source to fire
-from until milestone 10 lands.
+that can be done today: an `ext-foreign-toplevel-list` consumer for milestone
+9's bar gate, the four milestones COMP-16 v0.2 added to Phase 1 (9c, 9d, the
+rest of 9e, 9f), and the whole of Phase 2 (milestones 10–25), whose
+specification is settled but whose directories do not exist. Open and *not*
+actionable: gap 6 (three COMP-07 requirements smithay 0.7.0 cannot express —
+blocked upstream behind a pinned dependency) and stub 13's `agent-activity`
+event, which has no source to fire from until milestone 11 lands.
 
 ---
 
@@ -67,8 +67,7 @@ from until milestone 10 lands.
 | # | Milestone | State | Evidence / what the gate needs |
 |---|---|---|---|
 | 1 | winit backend; one xdg toplevel; keyboard + pointer; quit binding | **done** | `backend/winit.rs`, `protocols/standard/xdg_shell.rs`, `input/`. Gate run: terminal clients open, type and close cleanly nested under Hyprland (`WAYLAND_DISPLAY=wayland-1 ./target/debug/abyss --backend winit`). |
-| 2 | Config (KDL), dwindle + master layouts, workspaces, floating, bindings, layer-shell | **done** | `config/mod.rs` (1027 lines, inotify hot-reload, ADR 0016), `shell/` layouts, `protocols/standard/layer_shell.rs`. Gate run nested: layer-shell bar + launcher + notifier clients run; layouts usable by hand. Config blocks `decoration`, `animations`, `input`, `input` and `xwayland` parse and are then **ignored**; `decoration`,
-`animations` and `windowrule` now apply in part — see stubs. |
+| 2 | Config (KDL), dwindle + master layouts, workspaces, floating, bindings, layer-shell | **done** | `config/mod.rs` (1027 lines, inotify hot-reload, ADR 0016), `shell/` layouts, `protocols/standard/layer_shell.rs`. Gate run nested: layer-shell bar + launcher + notifier clients run; layouts usable by hand. Config blocks `decoration`, `animations`, `input` and `xwayland` all parse and validate; `decoration` and `animations` now apply in full (milestone 9b), `windowrule` applies except `fullscreen` and `launching-principal` (stub 7), and `xwayland` is still parsed and ignored. |
 | 3 | DRM backend, multi-output, hotplug, fractional scale, output persistence | **code complete, gate never run** | `backend/drm.rs` (1013 lines), `outputs/` (hotplug, layout, persistence), `protocols/standard/fractional_scale.rs`. Gate needs three physical monitors on a real TTY plus a dock/undock cycle. Cannot be run from inside the nested session this work happens in; requires a VT login. |
 | 4 | dmabuf + explicit sync + direct scanout + VRR; damage tracking complete | **code complete, gate never run** | `protocols/standard/dmabuf.rs`, `drm_syncobj.rs` (registered only when the driver reports `supports_syncobj_eventfd`, else a warning and no global), `render/` damage + `scanout_candidate` (`backend/drm.rs:856`), VRR via `VrrSupport::Supported` + per-output `vrr` config. Gate needs Firefox and mpv on real KMS and the COMP-14 frame benchmarks, which have never been collected. |
 | 5 | Clipboard, primary selection, data-control, DnD, IME | **done** | `data_device.rs`, `primary_selection.rs`, `data_control.rs` (allowlisted per ADR 0027), `text_input.rs`, `input_method.rs`. Gate run nested: copy/paste across clients including primary; `wl-clipboard` via data-control honours the allowlist. |
@@ -78,23 +77,38 @@ from until milestone 10 lands.
 | 9 | Human IPC, `eclipse-ctl`, metrics | **done (Phase 1 scope)** | `ipc/` (JSON-RPC 2.0 line-delimited over `$XDG_RUNTIME_DIR/eclipse/abyss.sock`, `SO_PEERCRED` owner-uid gating, ADR 0028), `ipc/gate.rs` authorisation table, `ipc/methods.rs` (17 methods), `crates/eclipse-ctl` (327 lines). 7 of the 24 gate rows are deliberately `implemented: false` — all Phase 2 surface, listed below and asserted by the `phase_two_rows_stay_unimplemented` test. Gate "waybar driven by our IPC" is met in the weaker sense that `eclipse-ctl watch` streams workspace/window/output/focus events; a bar cannot yet enumerate windows it does not own because there is no `ext-foreign-toplevel-list`. |
 | 9a | COMP-06 §1 protocol completeness | **done** | All fifteen protocols implemented and confirmed advertised on a live socket: `xdg_decoration`, `xdg_activation`, `wp_single_pixel_buffer`, `zwp_pointer_constraints`, `zwp_relative_pointer`, `zwp_pointer_gestures`, `ext_foreign_toplevel_list`, `wp_security_context`, `zwp_tablet_v2`, `wlr_output_management` (v4), `xdg_foreign` (exporter+importer v2), `wlr_gamma_control`, `content_type`, `wp_alpha_modifier`, `cursor_shape`. Smithay 0.7 has no module for `wlr_output_management` or `wlr_gamma_control`, so those two are hand-written dispatch following `output_power.rs`. Output configuration from the wlr protocol and from the human IPC now share one apply path (`outputs::apply_change`), so the COMP-03 §4 "never disable the last enabled output" refusal cannot be routed around. Remaining gate items are behavioural, not code: a third-party bar listing windows, mouse-look in a Proton game. |
 | 9b | *(stretch)* animations, rounding, shadows, dim, blur | **done** | Borders, `active-opacity`/`inactive-opacity`, `dim-inactive`, `rounding` and `shadow` draw (`render/mod.rs`, `render/effects.rs`); rounding is a fragment-shader mask in framebuffer space and the shadow an SDF pixel shader over the grown window rect, both confirmed visually under the winit backend. The `windows` animation interpolates window position from the frame clock (`render/anim.rs`), also confirmed visually, as are `fade` (a newly mapped window's alpha ramps from zero; there is no fade-out, since a closing window is out of the space before the next frame) and `border` (the border colour crossfades on focus change). `workspaces` slides the arriving workspace's windows in from the edge the switch came from (there is no outgoing half — the old workspace's windows are unmapped before the frame is drawn), also confirmed visually. `blur` is a dual-Kawase chain (`render/blur.rs`): the element list below a translucent window is rendered into an offscreen buffer, downsampled `passes` times and upsampled back, and the result spliced in directly beneath that window's surfaces; it is skipped entirely for opaque windows, and any enabled effect (blur included) disqualifies direct scanout. Every effect is off by default, so an unconfigured frame is still the single `space_render_elements` call — damage tracking and direct scanout unchanged. Rounding a window necessarily makes it non-opaque, so a rounded window cannot take a scanout plane; that is inherent, not a regression. |
-| — | **PHASE 1 EXIT** — 14 consecutive days as the only compositor | **not started** | Blocked on milestone 3's gate. Abyss is now *launchable* from any greeter: `abyss --session` plus `dist/abyss.desktop`, `dist/abyss-session`, `dist/abyss-session.target` (ADR 0032). What has never happened is a real KMS boot. |
+| 9c | `headless` backend (COMP-01 §10) | **not started** | `backend/` is `winit` + `drm` only. Blocks `wlcs` and every COMP-15 §2 suite: CI is cloud-only with no GPU (ADR 0035), and COMP-15 §1 makes `headless` the reason the suite is GPU-free. |
+| 9d | Node-level redaction, fail-closed on stale/absent tree | **not started** | `render/capture.rs` is surface-level only. Implementable now: COMP-02 §7 defines the absent-tree case, so the fail-closed arm needs no semantic tree. |
+| 9e | Window-rules engine; `class_source`, `irreversible_capable` | **partially landed** | `shell/rules.rs` matches at map time and re-evaluates on commit; all COMP-05 §4 actions and matchers apply except the `fullscreen` action and the `launching-principal` matcher (stub 7). Neither `class_source` nor `irreversible_capable` exists in `shell/`. |
+| 9f | Benchmark harness (COMP-14 §2 + A-14 budgets) | **not started** | No harness. Milestone 4's gate has cited COMP-14 budgets since v0.1 with nothing able to produce them. |
+| — | **PHASE 1 EXIT** — 14 consecutive days as the only compositor on real hardware | **not started** | Blocked on milestone 3's gate and on 9c–9f. Abyss is now *launchable* from any greeter: `abyss --session` plus `dist/abyss.desktop`, `dist/abyss-session`, `dist/abyss-session.target` (ADR 0032). The DRM backend has run only under VM/virtio-gpu; a real KMS boot has never happened, and COMP-01 §10 treats VM/virtio-gpu as a `drm` path, so that boot satisfies none of the gates of 3, 4 or 6. |
 
 ---
 
 ## Phase 2 — agent protocol
 
+Renumbered by COMP-16 v0.2. Old → new: 10→11, 11→13, 12→14, 13→split
+across 9d/17/22, 14→15, 15→16, 16→22, 17→24, 18→25. Milestones 10, 12, 19,
+20, 21 and 23 are new.
+
 | # | Milestone | State | Evidence |
 |---|---|---|---|
-| 10 | Privileged socket; `agentd` skeleton; grants; `list_toplevels`; audit | **not started** | No `protocols/agent/`, no `audit/`. `get_agents` answers "not implemented". |
-| 11 | Agent seats; injection; focus arbitration; override chord | **not started** | No agent seats. `type_text`/`click_at` are gated `implemented: false`. `Action::AgentOverride` now exists and is bound by default to Super+Escape, but its handler is a stub until the trusted UI has something to show. |
-| 12 | Atomic batches, `click`, `wait_for`, dedupe, generations | **not started** | — |
-| 13 | Region-level redaction; policy-driven sensitivity classes | **partially landed early** | Frame-level redaction and the capture gate shipped in milestone 8 (`render/capture.rs`, opaque-black `PLACEHOLDER`). Region-level redaction and policy-driven classification do not exist: sensitivity is a manual flag on the surface (`state.rs:110`, "Stub until the policy engine"). |
-| 14 | Trusted UI: indicator, prompt, emergency panel, phrase | **indicator only** | `render::capture::indicator()` draws the compositor-drawn capture indicator (COMP-10 §3.6) in both backends. No prompt, no emergency panel, no phrase, no `trusted_ui/`. |
-| 15 | Policy table enforcement; prompt and defer paths | **not started** | No `policy/`. The IPC gate in `ipc/gate.rs` is a separate, narrower mechanism (COMP-13 §2) and must not be mistaken for COMP-11's enforcement table. |
-| 16 | `eclipse_semantic_v1` server + reference client | **not started** | No `protocols/semantic/`. |
-| 17 | Launcher with cgroup attribution; agent workspaces; virtual outputs | **not started** | Virtual outputs are unimplemented; `outputs/` handles physical outputs only. |
-| 18 | MCP surface in `agentd`; SDK; reference agent | **not started** | Out of this repo. |
+| 10 | `policyd` skeleton; task store; grant compilation, issue, revocation | **not started** | No `crates/policyd`. The task object (A-04) exists in no code. |
+| 11 | Privileged socket; `agentd` skeleton; grant verification; `list_toplevels` | **not started** | No `protocols/agent/`. `get_agents` answers "not implemented". |
+| 12 | Audit spine: append-only journal, req-id chaining, `trace` | **not started** | No `audit/`. |
+| 13 | Agent seats; injection; focus arbitration; `agent-override` chord | **not started** | No agent seats. `type_text`/`click_at` are gated `implemented: false`. The `agent-override` bind reserved by COMP-13 §1.1 has no `Action` variant. |
+| 14 | Atomic batches, `click`, `wait_for`, dedupe, generations | **not started** | — |
+| 15 | Trusted UI: prompt, emergency panel, phrase | **indicator landed early** | `render::capture::indicator()` draws the compositor-drawn capture indicator (COMP-10 §3.6) in both backends, from milestone 8. No prompt, no emergency panel, no phrase, no `trusted_ui/`. |
+| 16 | Policy table enforcement; prompt and defer paths | **not started** | No `policy/`. The IPC gate in `ipc/gate.rs` is a separate, narrower mechanism (COMP-13 §2) and must not be mistaken for COMP-11's enforcement table. |
+| 17 | Policy-driven sensitivity classes; classification races | **not started** | Sensitivity is a manual flag on the surface (`state.rs:110`, "Stub until the policy engine"); nothing classifies automatically. |
+| 18 | Provenance chain; irreversible matcher | **not started** | Blocked on F-03 (defect 13) for the S-07 §5 `stamper` enum. |
+| 19 | `brokerd` | **not started** | Does not exist in any repo. |
+| 20 | Per-agent egress proxy; netns + pasta; stub resolver | **not started** | Does not exist in any repo. |
+| 21 | `cataclysm-pub` | **not started** | Does not exist (defect 12). |
+| 22 | `eclipse_semantic_v1` server + reference client | **not started** | No `protocols/semantic/`. |
+| 23 | `cataclysm` foot fork | **not started** | Does not exist; vendoring undecided (defect 12, F-07 §1 VERIFY). |
+| 24 | Launcher with cgroup attribution; agent workspaces; virtual outputs | **not started** | Virtual outputs are unimplemented; `outputs/` handles physical outputs only. Gated on C-00 §17 open item 1. |
+| 25 | MCP surface in `agentd`; SDK; reference agent | **not started** | Out of this repo. |
 | — | **PHASE 2 EXIT** | **not started** | Also depends on `policyd` (S-01..S-04) and `agentd` (A-01, A-02), neither of which exists in any repo. |
 
 ---
@@ -117,7 +131,7 @@ from until milestone 10 lands.
 | COMP-12 audit | — | Does not exist. |
 | COMP-13 human IPC + config | `crates/abyss/src/ipc/`, `crates/abyss/src/config/`, `crates/eclipse-ctl` | Socket, gate table, 17 methods, event stream, KDL parse + hot-reload. |
 | COMP-14 performance | — | No benchmark harness. The §COMP-14 frame budgets referenced by milestone 4's gate have never been measured. |
-| COMP-15 testing | `cargo test --workspace` | 73 tests, all passing. Unit-level; no compat matrix, no redaction suite as a suite (redaction was verified by hand once). |
+| COMP-15 testing | `cargo test --workspace`, `.github/workflows/gate.yml` | 85 tests, all passing, now enforced by CI. Unit-level. Zero of the twelve COMP-15 §2 security suites exist. No compat matrix. |
 | COMP-16 milestones | this file | — |
 
 ---
@@ -134,10 +148,10 @@ macros anywhere in the workspace.
    `"{method} is specified but not implemented yet"` (`ipc/mod.rs:484`).
    Deliberate: all are Phase 2 surface, and the test
    `phase_two_rows_stay_unimplemented` pins the exact list so it cannot drift.
-   *Unblocked by:* milestones 10–11.
+   *Unblocked by:* milestones 11–13.
 2. **Sensitivity flag is manual** (`state.rs:110`, "Stub until the policy
    engine"). Surfaces can be flagged sensitive and are then redacted, but
-   nothing classifies them automatically. *Unblocked by:* milestone 15.
+   nothing classifies them automatically. *Unblocked by:* milestone 17.
 3. **App identity is a `/proc` read** (`protocols/standard/data_control.rs:14`,
    `TODO(COMP-05)`) — to be replaced by the app identity/provenance record.
    *Unblocked by:* COMP-05 §6 provenance work in Phase 2.
@@ -148,7 +162,7 @@ macros anywhere in the workspace.
    cursor surfaces composite correctly at their hotspot, but named
    `wp_cursor_shape_v1` shapes all fall back to one built-in amber arrow
    rather than loading the user's theme.
-6. **Effects parsed but not drawn**: `decoration` and `animations` now parse
+6. **Effects all draw; `xwayland` config block still ignored**: `decoration` and `animations` now parse
    and validate in full (`config/mod.rs`), and `active-opacity` /
    `inactive-opacity` / `dim-inactive` / `rounding` render (`render/mod.rs`,
    `window_elements`; the rounded-corner mask itself is
@@ -165,12 +179,12 @@ macros anywhere in the workspace.
    alpha ramp, no fade-out) and `border` (focus-change colour crossfade).
    `workspaces` slides an arriving workspace in through the same store.
    `blur` is a dual-Kawase down/upsample chain (`render/blur.rs`) spliced in
-   beneath each translucent window; every 9b effect now draws.
-   interpolation (needs the frame clock, plus COMP-08's rule that agents see
-   target geometry, never the interpolated value). All are off by default, so
+   beneath each translucent window; every 9b effect now draws. Agents see target
+   geometry, never an interpolated value (COMP-08's rule). All are off by default, so
    the default frame path is the single `space_render_elements` call it was
    before — damage and direct scanout unchanged. `xwayland` is still parsed and
-   ignored. *Unblocked by:* the rest of 9b.
+   ignored. *Unblocked by:* nothing for the effects themselves — 9b is done; the
+   `xwayland` block waits on COMP-07 work.
 7. **`windowrule` is complete except `fullscreen` and `launching-principal`**
    (COMP-05 §4). `shell/rules.rs` matches at map time and re-evaluates on every
    commit; `float`, `tile`, `workspace N`, `size WxH`, `position X,Y`,
@@ -204,14 +218,14 @@ macros anywhere in the workspace.
    (`SUPER+space`, COMP-13 §1.1 / COMP-10 §3.10) is in exactly the same state:
    a built-in default bind carrying `Action::AgentAttention`, reserved against
    rebinding, whose handler only logs until there is a pending decision queue
-   to open. *Unblocked by:* milestone 14.
+   to open. *Unblocked by:* milestone 15.
 10. **No lease state** — COMP-08 §4.1 specifies interaction leases and
     enforcement step 6d. Nothing in the tree holds a `handle → LeaseHolder`
-    map. *Unblocked by:* milestone 12.
+    map. *Unblocked by:* milestone 14.
 11. **No press-time hit-test resolution** — COMP-08 §10 step 6e requires
     resolving an agent button press to `(handle, node)` before policy
     evaluation. `hit_test` exists in spec only, and `click_at` is gated
-    `implemented: false`. *Unblocked by:* milestones 11 and 15.
+    `implemented: false`. *Unblocked by:* milestones 13 and 16.
 12. **XWayland eager start, no hardening flags** — see milestone 7. Blocked on
     smithay upstream, verified in the vendored source.
 13. **`agent-activity` is the one IPC event kind still never emitted.**
@@ -220,7 +234,7 @@ macros anywhere in the workspace.
     fires from `config/watch.rs::reload_now` when a reload is refused.
     **Stub 13 is therefore only partially closed** — `config-error` is done,
     `agent-activity` is not, so this entry stays open. It closes when
-    COMP-08 `eclipse_agent_v1` lands (Phase 2, milestone 10): the event has no
+    COMP-08 `eclipse_agent_v1` lands (Phase 2, milestone 11): the event has no
     source to fire from until an agent client can attach, so there is nothing
     to implement before then. Nothing else blocks it.
 14. **No `crates/policyd`, `crates/agentd`, `crates/sandbox`** — the TCB crates
@@ -364,16 +378,82 @@ fixed by editing either side.
    "XWayland is not running with no X11 clients". Smithay 0.7.0 cannot express
    any of the three. The spec is right and the code is constrained; the pin
    note in `CLAUDE.md` applies (a version bump is its own PR with its own ADR).
-7. **COMP-16 milestone 13** is described as region-level redaction plus
-   policy-driven classes, and the table itself now notes that frame-level
-   redaction landed early in milestone 8 — that parenthetical is accurate and
-   was verified.
+7. **COMP-16 v0.2 splits the old milestone 13** three ways: the fail-closed
+   node-level redaction arm to Phase 1 milestone 9d, policy-driven classes
+   to milestone 17, and live-tree region redaction to milestone 22. Frame-
+   level redaction landing early in milestone 8 was verified and remains
+   accurate.
+
+New as of the 2026-09-08 spec baseline. These are gaps the amendments
+opened; none is a code regression, and none was introduced by a change to
+the tree:
+
+8. **COMP-02 §7 now mandates node-level redaction** (A-10), including the
+   fail-closed rule that a stale or absent semantic tree redacts the *whole*
+   surface. `render/capture.rs` implements surface-level redaction only.
+   Previously this was a milestone 13 item; it is now a requirement of a
+   Phase 1 document, which makes the gap visible against COMP-02 rather than
+   only against COMP-16. COMP-16 v0.2 sequences it as milestone 9d. The code is not wrong, but the document it is
+   measured against changed underneath it.
+9. **COMP-05 §1 `Toplevel` gains two fields** (A-12):
+   `irreversible_capable: bool` and `class_source: u8`. Neither exists in
+   `shell/`. `irreversible_capable` is rule-derived and therefore blocked on
+   the window-rules engine, which parses and does nothing today.
+10. **COMP-15 §2's twelve blocking suites do not exist.** Twelve, not ten:
+    redaction, seat isolation, trusted UI, enforcement, scope leakage, audit
+    completeness, X11 posture, classification races, irreversible matching,
+    provenance, secrets, egress — the count in the gate table below was
+    always right and this entry was wrong. The five added by A-15 joined
+    seven, not five. CI now exists (ADR 0035), so these are *unimplemented*
+    rather than *unenforceable* — but the harness cannot run any of the ones
+    asserting on pixels or a live socket until milestone 9c lands a headless
+    backend. Each is now attached to a COMP-16 v0.2 milestone.
+11. **COMP-14 gained five budgets** (A-14) covering `classify()`, the
+    irreversible matcher, provenance resolution, and egress proxy latency.
+    They join the existing §2 targets in never having been measured: there
+    is still no benchmark harness. Unchanged by ADR 0035 — CI has a slot
+    for this gate and nothing to put in it. COMP-16 v0.2 sequences the
+    harness as milestone 9f; before that, milestone 4's exit gate is
+    unclosable as written, and has been since v0.1.
+12. **`cataclysm` and `cataclysm-pub` do not exist** (ADR 0034). Neither
+    appears in the workspace, and the foot fork's vendoring and build
+    integration are undecided (F-07 §1 VERIFY). Blocks P-04 entirely.
+13. **F-03 is marked DONE in the planning index and has no body.** It is the
+    document that would have settled the `abyss`/`helios` name fork, which
+    was instead resolved by normalization during Appendix A application.
+    Until F-03 exists, that resolution rests on an editorial judgment
+    recorded only in Appendix A's application record — and the S-07 §5
+    `stamper` enum, a protocol-visible string literal, depends on it.
 
 ---
 
 ## Test and gate status
 
-`cargo build --workspace`, `cargo clippy --workspace --all-targets -- -D
-warnings`, `cargo fmt --check` and `cargo test --workspace` (73 tests) are all
-green as of this revision, with and without `--features drm`. There is no CI;
-the gate is run by hand.
+CI runs on every push (`.github/workflows/gate.yml`, cloud runner, no GPU —
+ADR 0035). The `gate` job is a required status check.
+
+**Live and blocking:** `cargo fmt --all --check`; `cargo clippy --workspace
+--all-targets --all-features -- -D warnings`; `cargo build --workspace
+--all-targets`; `cargo test --workspace` (85 tests); `cargo deny check
+advisories bans licenses sources`; spec-citation check (F-07 §5).
+
+**Live and advisory:** TCB-touch warning (F-07 §4).
+
+**Specified and absent.** Every one of these has a CI slot waiting and no
+suite to put in it:
+
+| Gate | Required by | Blocked on |
+|---|---|---|
+| `wlcs` headless conformance | COMP-15 §1 | milestone 9c — no headless backend exists |
+| `cargo-fuzz` smoke | COMP-15 §3 | proto crates existing |
+| Redaction suite | COMP-15 §2 | suite does not exist |
+| Seat isolation, trusted UI, enforcement, scope leakage, audit completeness, X11 posture | COMP-15 §2 | suites do not exist |
+| S-05 race harness, S-06 matcher corpus, S-07 algebra, S-08 broker, S-09 leak matrix | COMP-15 §2 (A-15) | suites do not exist |
+| Benchmark regression gate | COMP-14 §5 | milestone 9f — no benchmark harness (defect 11) |
+| Golden decision suite | F-07 §3 | S-02 implemented |
+| Red team (S-10) | F-07 §3 | S-01..S-07 implemented |
+| Client compat matrix | F-07 §3 | self-hosted runner |
+
+The 85 tests are unit-level. Nothing in the security suite of COMP-15 §2 is
+asserted by anything today; redaction was verified by hand, once. **The
+presence of CI must not be read as coverage.**

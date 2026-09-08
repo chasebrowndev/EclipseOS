@@ -1,4 +1,5 @@
-# cargo-deny configuration — F-05 §9, F-07 §3
+# cargo-deny configuration — F-05 §9, F-07 §3, ADR 0035 (interim supply-chain
+# gate until S-12; `cargo vet` is adopted then, not now).
 # Run: cargo deny check
 # Not installed by default: cargo install cargo-deny
 

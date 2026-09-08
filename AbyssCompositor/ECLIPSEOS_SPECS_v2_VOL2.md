@@ -6,9 +6,8 @@ written in session 2, plus Appendix A.
 Volume 1 holds the charter, threat model, compositor (COMP-01..16), the
 policy core (S-01..S-04), and P-01.
 
-> **Appendix A is applied inline** as of 2026-09-07 and is now a log of what
-> was merged, plus two corrections the merge surfaced. COMP-08 is at v0.3,
-> S-01 and S-05 at v0.2.
+> **Appendix A is not applied inline.** It amends documents in *both*
+> volumes. Apply it before implementing anything it touches.
 
 The full planning index is reproduced in both volumes so either can start a
 session on its own.
@@ -41,7 +40,7 @@ priority.
 | F-07 | Repo layout, branching, CI/CD, release engineering | **DONE** | F-05 |
 | F-08 | Decision log (ADR format & index) | **DONE** | — |
 
-## Tier 1 — Compositor (`helios`)
+## Tier 1 — Compositor (`abyss`)
 
 | ID | Document | Status | Depends on |
 |---|---|---|---|
@@ -53,7 +52,7 @@ priority.
 | COMP-05 | Window management: layouts, workspaces, rules, identity, launch | **DONE** | C-00 |
 | COMP-06 | Standard protocol support matrix | **DONE** | C-00 |
 | COMP-07 | XWayland | **DONE** | C-00 |
-| COMP-08 | `eclipse_agent_v1` protocol (full XML) | **DONE** | C-00, F-02, S-01 |
+| COMP-08 | `eclipse_agent_v1` protocol (full XML) | **DONE (v0.2)** | C-00, F-02, S-01 |
 | COMP-09 | `eclipse_semantic_v1` protocol (full XML) | **DONE** | C-00, P-01 |
 | COMP-10 | Trusted UI: prompts, indicators, anti-spoof, emergency panel | **DONE** | F-02 |
 | COMP-11 | Policy enforcement hooks & table format | **DONE** | S-01 |
@@ -79,6 +78,10 @@ priority.
 | S-10 | Red-team suite: injection corpus, escape attempts, redaction proofs | **DONE** | S-01..S-07 |
 | S-11 | Incident response: detection, kill switch, forensics from audit | **DONE** | S-04 |
 | S-12 | Supply chain: crate vetting, package signing, model pinning, reproducible builds | planned | F-07, A-07 |
+| ↳ | *S-12 must **consume**, not re-decide: package signing, lockfile pinning, no-network-at-install, and reproducible package builds are already fixed by A-07 §4 (A3-05); the
+`deny.toml` advisory, license, ban and source policy is already fixed by
+ADR 0035. S-12 may supersede `deny.toml`, but must say so explicitly rather
+than silently restating it.* | | |
 | S-13 | Update & rollback security (system + policy + model updates) | planned | S-12 |
 
 ## Tier 3 — Perception (`registryd`)
@@ -127,7 +130,7 @@ priority.
 | D-02 | Package repository: build infra, signing, mirrors | planned | F-07, S-12 |
 | D-03 | ISO build (archiso) & installer | planned | D-01 |
 | D-04 | Update strategy: rolling vs snapshots, atomic updates, rollback | planned | D-02 |
-| D-05 | Default userland: bar, launcher, terminal (`eclipse-term`, P-04), portal, notifications | planned | C-00, P-04 |
+| D-05 | Default userland: bar, launcher, terminal (`cataclysm`, P-04), portal, notifications | planned | C-00, P-04 |
 | D-06 | Hardware support matrix, GPU drivers, firmware | planned | F-04 |
 | D-07 | First-run experience & agent onboarding | planned | D-03 |
 | D-08 | Telemetry & crash reporting (opt-in; privacy stance) | planned | F-02 |
@@ -169,11 +172,12 @@ chains that do not block each other:
 ```
 IMPLEMENTATION (unblocked now)
   COMP-01..07  Phase 1 daily-driver compositor
-    └─ COMP-16 milestones 1-9  ── no pending amendments except
-                                  COMP-02 §7 (A-10) and COMP-05 (A-12, A3-07)
+    └─ COMP-16 milestones 1-9f ── amendments landed: COMP-02 §7 (A-10),
+                                  COMP-05 (A-12, A3-07). Both are code
+                                  deltas against the existing tree.
+  COMP-08 v0.2 ── Phase 2 milestones 10-25 are no longer spec-blocked
 
 SPECIFICATION (remaining)
-  Appendix A applied inline
     └─ P-08 web  ─┐
        P-06 vision ┼─ P-09 perception benchmark
        P-03 toolkit┘
@@ -181,21 +185,30 @@ SPECIFICATION (remaining)
     └─ I-01 local serving ─ I-02 router ─ I-03 classifier
 ```
 
-Phase 2 implementation (COMP-16 milestones 10-18) is **no longer blocked on
-Appendix A**: it is applied. COMP-08 is at v0.3 and its wire signatures are
-settled — `button` gained a target and generation, the seat interface gained
-lease, preflight and secret_fill requests, and every acting request carries
-`provenance_ids`. Implement against the documents, not against the appendix.
+Phase 2 implementation was blocked on Appendix A because COMP-08 v0.2
+changes wire signatures. That block is cleared.
+
+**COMP-16 is at v0.2, re-sequenced 2026-09-08.** Phase 1 gained milestones
+9c–9f — the headless backend (COMP-01 §10), node-level redaction, the
+window-rules engine, and the benchmark harness — all of them Phase 1
+requirements in Phase 1 documents that had no milestone. Phase 2 was
+renumbered 10–25 to give slots to `brokerd`, the per-agent egress proxy,
+the task store, `cataclysm-pub` and `cataclysm`, and to attach each of the
+twelve COMP-15 §2 suites to the milestone that builds what it asserts on.
+Phase 1 does not close in this revision: the DRM backend has run only
+under VM/virtio-gpu, and milestone 3's gate requires real hardware.
 
 ## New Components Introduced in Session 2
 
-These are real build artifacts with no owning Tier 6 document yet. They need
-to appear in D-01/D-05 and in COMP-16 sequencing:
+These are real build artifacts with no owning Tier 6 document yet. Each now
+has a COMP-16 milestone (10, 19, 20, 21, 23); each still needs to appear in
+D-01/D-05:
 
 | Component | Introduced by | Note |
 |---|---|---|
 | `brokerd` | S-08 §2 | Separate TCB daemon for secrets; TPM-sealed store |
-| `eclipse-term` | P-04 §1 | Patched terminal emulator (foot fork) publishing the grid |
+| `cataclysm` | P-04 §1, ADR 0034 | Terminal emulator (foot fork); publishes the grid. Not TCB. |
+| `cataclysm-pub` | ADR 0034 | Rust crate, C ABI: semantic publisher shared by `cataclysm` and `abyss` |
 | per-agent egress proxy | S-09 §2 | Userspace proxy with stub resolver and optional MITM |
 | task store | A-04 §6 | Journaled task objects and counters inside `policyd` |
 
@@ -208,19 +221,21 @@ Session 2 (2026-09-05): S-05..S-11, A-01..A-07, P-02, P-04, P-05, P-07
 written. **Tiers 2 (except S-12/S-13) and 4 complete.** Four amendment sets
 were produced and collected in Appendix A.
 
-Session 3 (2026-09-07): interaction leases, pointer hardening, trusted-UI
-agent status and deferred consent, and remote-vision consent designed
-(batch v4, A4-01..A4-24). **All five amendment batches applied inline** in
-order v1, v2, v3a, v3b, v4. COMP-08 → v0.3; S-01, S-05 → v0.2. Appendix A is
-now a log. Two errors in the amendment text were caught by merging in order
-and are recorded there.
+Session 3 (2026-09-08): **Appendix A applied inline.** All 42 amendments
+(A-01..A-16, A2-01..A2-11, A3-01..A3-15) are merged into the documents they
+touch; Appendix A is retained as a historical record and is no longer a
+reading prerequisite. COMP-08 is now **v0.2**. Three defects were found and
+resolved during application — see the application record at the head of
+Appendix A.
 
-Two scope decisions were taken in session 2 that are not yet reflected in
-COMP-16 milestones:
+Two scope decisions were taken in session 2 and are reflected in COMP-16
+v0.2:
 - **A-04**: the task object; one active task per principal; a task boundary
-  is a process boundary.
-- **P-04**: EclipseOS ships a patched terminal emulator (`eclipse-term`,
-  foot fork) because terminal perception has no other viable source.
+  is a process boundary. Sequenced as milestone 10.
+- **P-04 / ADR 0034**: EclipseOS ships `cataclysm`, a foot fork, with the
+  semantic publisher extracted to `cataclysm-pub`, a Rust crate with a C ABI
+  shared with `abyss`. A from-scratch emulator is deferred, not rejected.
+  Sequenced as milestones 21 and 23.
 
 Remaining: S-12, S-13; P-03, P-06, P-08, P-09; all of Tiers 5, 6, 7.
 
@@ -236,9 +251,11 @@ Remaining: S-12, S-13; P-03, P-06, P-08, P-09; all of Tiers 5, 6, 7.
    release; A-07 §4 already fixes several of their inputs.
 5. Tier 5 (I-01..I-07), then Tiers 6 and 7.
 
-Appendix A is applied; nothing is gated on it. Before P-06 is written,
-measure real perception accuracy on reference hardware — the coverage claim
-P-06 is allowed to make depends on a number nobody has yet.
+~~Before any of the above: apply Appendix A.~~ Done, session 3.
+
+~~Ahead of all of the above: re-sequence COMP-16.~~ Done 2026-09-08;
+COMP-16 is at v0.2. The implementation queue is now Phase 1 remediation
+(9c–9f), which is code, not planning.
 
 ---
 
@@ -250,7 +267,7 @@ P-06 is allowed to make depends on a number nobody has yet.
 
 <!-- ===== FILE: S-05_SENSITIVITY.md ===== -->
 
-# S-05 — Sensitivity Classification & App Trust (Draft v0.2)
+# S-05 — Sensitivity Classification & App Trust (Draft v0.1)
 
 Depends on: THREAT_MODEL.md §6, S-02 §3. Consumed by: COMP-02 (redaction),
 COMP-05 (toplevel fields), COMP-09, COMP-12, P-01, S-06, S-07, S-09, S-10.
@@ -393,6 +410,12 @@ Rules:
    tree and `sensitivity_raised`, then nothing.
 5. **Capture streams stop.** An active `capture.stream` whose target raises
    to `secret` is terminated, not paused, and audited.
+6. **Terminal `ECHO` off is a transient raise.** When a pty in a terminal
+   toplevel disables `ECHO`, that toplevel raises to `secret` for the
+   duration plus `downgrade_grace` (P-04 §6.1). `ECHO` off is the
+   near-universal signal that a human is about to type a credential —
+   `sudo`, `ssh`, `gpg`, every password prompt in the base system — and it
+   is available to the emulator without inspecting a single keystroke.
 
 Latency requirement: recompute + apply ≤ 1 frame at 144 Hz (≤ 6.9 ms) for
 the matcher set compiled from a policy of ≤ 1,000 classify rules. Matchers
@@ -433,38 +456,9 @@ pages are not.
 | Channel message (F-02 §7.5) | `max` over its provenance chain | `min` over its chain | Computed by `agentd`; agents cannot set either. |
 | Agent scratch file | Class inherited from the highest-class read that the agent performed since process start (coarse, conservative) | — | Honest limit: this is a process-level watermark, not information-flow tracking. See S-07 §9. |
 | Notification content | `private` unless a rule matches the sending app | Trust of sending app | Agents need `scene.*` scoped to the notification surface to see it at all. |
-| Terminal buffer | Class of the terminal toplevel; a rule may raise on prompt-detected `ssh`/`sudo` context | `trusted` if the terminal is | Typed-secret detection is out of scope; use S-08 injection instead. |
+| Terminal **emulator** | Class of the terminal toplevel; a rule may raise on prompt-detected `ssh`/`sudo` context | Carries the app's trust — `trusted` if the terminal is | Typed-secret detection is out of scope; use S-08 injection instead. |
+| Terminal **line content** (`terminal_line` nodes) | Class of the enclosing toplevel | **`untrusted` by default**, regardless of the emulator's trust | Exception: a line the human typed at a prompt — OSC 133 `B`→`C` bracket **plus** human-seat input over that interval — carries a `Human` link (P-04 §6.2). Without this split, command output launders into trusted instructions: `curl evil.com \| cat` would print attacker text into a `trusted` buffer. |
 | File read through `fs.read` grant | Path-rule class (`classify` supports `path` matchers for this axis only) | `untrusted` for anything under `~/Downloads`, `/tmp`, agent scratch | Enforced by S-09 §5 grant-compatibility, not at read time. |
-
----
-
-## 7b. Opaque Surfaces and Remote-Vision Eligibility
-
-**Fail closed on unknown, for remote transmission only.** A surface that
-publishes no semantic tree **and** matches no `classify` rule resolves to
-`secret` **for the purposes of `inference.remote.vision` eligibility**
-(S-01 §2.6c). The surface's ordinary sensitivity class is unaffected.
-
-Rationale: classification draws on `app_id`, `title`, `node_role`, and `url`.
-Two of those four come from the semantic tree. Vision fallback runs exactly
-when there is no semantic tree, so the surfaces most likely to be routed to a
-remote provider are the ones classification has the least to work with — and
-a custom-drawn application controls or omits both remaining inputs.
-Unknown-and-opaque is the highest-risk combination, not the average one.
-"The redaction layer covers it" is circular here: redaction fires on
-classification, and classification is what is missing.
-
-**Sticky demotion.** A surface that has ever published a `password`-role node
-or matched a `secret` classify rule is permanently ineligible for remote
-vision for the lifetime of that surface, and any live
-`inference.remote.vision` grant covering it is revoked immediately.
-
-Note also that redaction protects `secret`, not the screen. Default
-sensitivity is `private` and `capture.toplevel` covers `public`+`private` by
-design, so document text, mail bodies, code, filenames and chat contents are
-capturable and unredacted. That may be an acceptable trade; it is a different
-trade from the one "redaction handles it" implies, and it is the human's to
-make at the §3.11 prompt.
 
 ---
 
@@ -478,14 +472,6 @@ make at the §3.11 prompt.
 | No table at all (cold start before `policyd` ready) | Every surface `secret`, every app `untrusted`, so agents can see nothing. Compositor runs; agents wait. (COMP-01 §6 degraded mode.) |
 | Class recompute panics | Treat as `secret` for that target, log, do not crash the compositor |
 | Tree arrives from `registryd` for a surface that is now `secret` | Discard, emit `perception` audit record with zero nodes and reason |
-
----
-
-### 5.x Transient raise: pty ECHO
-
-Disabling `ECHO` on a pty in a terminal raises that toplevel to `secret` for
-the duration plus `downgrade_grace` (P-04 §6.1). This is what covers a
-password prompt in a terminal that has no semantic role to key off.
 
 ---
 
@@ -595,11 +581,19 @@ and no prompt answer can produce an allow; this is a hard rule (S-02 §2.1).
 | Semantic action `verb` | P-01 §1.4 |
 | Target `app_id`, window `title` | COMP-05 |
 | `ext.url` of the enclosing `document` | P-01 §9 |
-| Terminal command line, from the current input line before commit | P-04 / `ext.is_prompt` |
+| Terminal command line, at the OSC 133 `C` boundary, fully expanded | P-04 §3 |
 | Node `source` and `confidence` | P-01 §1.5 |
 
 Compiled into `Table.irreversible` (S-02 §4) as DFAs. Cost budget: ≤ 20 µs
 added to `check()`.
+
+Terminal matching happens **at the OSC 133 `C` boundary on the fully
+expanded command line**, not by parsing the input line character by
+character as it is typed. This is a materially better matching point: the
+line is complete, aliases and history expansion have already been applied,
+and there is exactly one match attempt per command instead of one per
+keystroke. Character-by-character matching on the input line both misses
+`rm -rf /` typed via history recall and fires spuriously on prefixes.
 
 ### 3.2 Extended path (`defer` to `policyd`)
 
@@ -610,16 +604,10 @@ may only tighten (S-02 §6).
 
 ### 3.3 The app-capable fallback
 
-Any request that is **coordinate-only** and remains unresolved after
-COMP-08 §10 step 6e (`seat.pointer.button` press whose hit-test resolves to
-no node), or targets a node with `source=vision` and `confidence < 0.8`, in
+Any request that is **coordinate-only** (`seat.pointer` click without a
+node id) or targets a node with `source=vision` and `confidence < 0.8`, in
 an application flagged `irreversible_capable`, resolves to `prompt` with
 taxonomy id `unknown.capable_app`.
-
-Step 6e resolves most coordinate-only presses to a real node, so this
-fallback now fires on genuinely opaque targets rather than on every
-coordinate click. That is a reduction in prompt volume, not in coverage:
-a press that resolves to no node still lands here.
 
 `irreversible_capable` is a per-app rule fact, defaulting to **true** for
 browsers, mail clients, terminals, file managers, and any app with a
@@ -635,17 +623,6 @@ Via `eclipse_semantic_v1`, an application may set `ext.irreversible =
 can declare its own button dangerous, never declare it safe. Well-behaved
 apps declaring their own commit points is the cheapest path to low miss
 rates, and it is the main reason the native protocol is worth shipping.
-
----
-
-### 3.6 Terminal command matching
-
-Matching happens at the OSC 133 `C` boundary on the **fully expanded command
-line**, not by parsing the input line character by character as it is typed
-(P-04 §3). Aliases, variable expansion, and history substitution have all
-resolved by that point, so the string matched is the string that will run.
-This is a materially better matching point and closes the class of evasion
-that consists of typing a benign-looking line that expands to something else.
 
 ---
 
@@ -680,7 +657,7 @@ these precise semantics:
 | Answer | Effect | Lifetime |
 |---|---|---|
 | **Allow once** | This `req_id` only. No grant is created. | Single request |
-| **Allow for this task** | New grant scoped to `(taxonomy_id, target scope of the shown action, same task text)`. | Expires with the parent grant |
+| **Allow for this task** | New grant scoped to `(taxonomy_id, displayed target scope, task_id)` — the A-04 task id, not the task *text*. | Expires with the task, and never later than the parent grant |
 | **Allow unattended 1 h** | New prompt-class grant with `unattended=true`, scope shown verbatim in the prompt. | ≤ 1 h, non-renewable without a fresh prompt |
 | **Deny** | Request fails with `denied`. Agent may proceed with other work. | Single request |
 | **Deny & pause agent** | Request fails; agent is suspended (`lifecycle` record); resumption requires the human. | Until resumed |
@@ -689,6 +666,11 @@ these precise semantics:
 answers — not "allow sends in Gmail" but the concrete predicate set that
 will be written into the grant. A consent UI that shows an action and grants
 a category is the classic consent-dialog failure and is prohibited here.
+
+Both "for this task" grants and the §6 batch tokens are scoped to the
+`task_id` and are invalidated with it per A-04 §9.1. Scoping to task *text*
+would have been forgeable — two tasks can carry identical text — and would
+have survived the task it was granted for.
 
 ---
 
@@ -849,7 +831,7 @@ Link {
   trust:       untrusted | standard | trusted | human
   sensitivity: public | private | secret
   ts:          u64 ns (mono) + u64 ns (realtime)
-  stamper:     "helios" | "agentd" | "policyd"
+  stamper:     "abyss" | "agentd" | "policyd"
   principal:   string?          // agent that caused the read
   req_id:      u64?
   prev_hash:   [u8;32]
@@ -917,7 +899,7 @@ lost, and the full chain remains reconstructible from audit.
 
 | Stamper | Stamps |
 |---|---|
-| `helios` (compositor) | Every perception read: `Surface`/`Terminal`/`Url` link with class and trust from S-05, at delivery time (COMP-12 §3). Clipboard reads. This is the **root of every chain that matters**. |
+| `abyss` (compositor) | Every perception read: `Surface`/`Terminal`/`Url` link with class and trust from S-05, at delivery time (COMP-12 §3). Clipboard reads. This is the **root of every chain that matters**. |
 | `agentd` | `Model` links on every inference call; `Channel` links on post and on read; `Agent` links on any agent-to-agent hop; `File` links for reads through granted mounts that `agentd` brokered. |
 | `policyd` | `Human` links from trusted-UI answers; grant-time links. |
 | Agent SDK | Nothing authoritative. It *carries* chains and attaches them to outgoing requests. |
@@ -932,7 +914,7 @@ Honest limit: mismatch detection is best-effort. `agentd` can verify that
 every link an agent claims exists in the audit store attributed to that
 principal within the session; it cannot verify that the agent included
 *every* link it should have. Omission is detectable only when the omitted
-read is one `agentd` or `helios` stamped independently — which, for the
+read is one `agentd` or `abyss` stamped independently — which, for the
 paths that matter (perception, model calls, channels), it always is.
 Filesystem reads inside the sandbox are the gap; see §9.
 
@@ -975,7 +957,7 @@ rule "untrusted-into-shell" defer {
   provenance_contains trust:"untrusted"
 }
 rule "untrusted-into-irreversible" prompt {
-  capability "seat.action" "seat.pointer.button" irreversible "*"
+  capability "seat.action" "seat.pointer" irreversible "*"
   provenance_contains trust:"untrusted"
 }
 rule "channel-laundering" defer {
@@ -1802,7 +1784,7 @@ keep the evidence, understand it, prevent it.
 | **I2** Suspected injection | A gated action fired with `provenance_min_trust == untrusted`, or `provenance_mismatch`, or the classifier flagged a laundering pattern | Auto-pause agent, notify, preserve |
 | **I3** Sandbox escape | Evidence of filesystem, network, or IPC access outside the compiled profile | **Global pause**, preserve, treat all agents as suspect |
 | **I4** Secret exposure | A secret may have reached an agent, a log, or a non-bound destination | Pause, rotate, preserve |
-| **I5** TCB integrity | Policy table signature failure, unexpected policy change, `brokerd`/`policyd` unexpected restart, binary hash mismatch | **Halt agent subsystem**, do not auto-restart |
+| **I5** TCB integrity | Policy table signature failure, unexpected policy change, `brokerd`/`policyd` unexpected restart, binary hash mismatch, **agent package content-hash or lockfile mismatch at launch** (A-01 §5) | **Halt agent subsystem**, do not auto-restart |
 | **I6** Audit integrity | Hash chain verification failure, anchor mismatch, gap in `seq` | **Halt agent subsystem**, preserve, assume everything after the break is untrustworthy |
 
 I5 and I6 are the only classes where the correct action includes *not*
@@ -1995,7 +1977,7 @@ does not replace `at-spi2-registryd`; it connects to it.
 apps ──ATK/QAccessible──► at-spi2-registryd ──D-Bus──► registryd
                                                           │
                                           Placement from  │
-                                          helios (COMP-05)│
+                                           abyss (COMP-05)│
                                                           ▼
                                                  P-01 Tree → agentd
 ```
@@ -2251,11 +2233,15 @@ Three possible sources of structure, in descending fidelity:
    No existing terminal does this; EclipseOS ships a patched one.
 3. **Vision** — OCR of a text grid. Works everywhere, poorly.
 
-Decision: **ship a terminal.** `eclipse-term` is a thin fork of an existing
-emulator (foot is the leading candidate: small, Wayland-native, clean
-code) that publishes the grid and cursor over the native protocol. Third-
-party terminals fall back to shell integration for command boundaries plus
-vision for the grid, and agents are told the difference via `source`.
+Decision: **ship a terminal.** `cataclysm` is a fork of foot (small,
+Wayland-native, clean C) that publishes the grid and cursor over the native
+protocol. The publisher itself — `eclipse_semantic_v1` types, the §2 node
+model, line diffing, and the §7 publish-rate policy — is **not** in the
+fork: it lives in `cataclysm-pub`, a Rust crate with a C ABI, linked by the
+fork through FFI and by `abyss` natively (ADR 0034). Nothing
+protocol-shaped is reimplemented in C. Third-party terminals fall back to
+shell integration for command boundaries plus vision for the grid, and
+agents are told the difference via `source`.
 
 Building a terminal is scope, and it is justified: without it, terminal
 perception is OCR, and OCR of a scrolling 200×50 grid at 60 Hz is not a
@@ -2289,7 +2275,7 @@ Cells are synthesized only for explicit region queries.
 
 OSC 133 markers (`A` prompt start, `B` prompt end / input start, `C`
 command start, `D;<exit>` command end) give command boundaries for free
-when the shell is configured. `eclipse-term` reports them; the shell
+when the shell is configured. `cataclysm` reports them; the shell
 integration snippet ships with the distro.
 
 This yields `group` nodes with `ext.command`, `ext.exit_code`,
@@ -2347,7 +2333,7 @@ irreversible) applies here and is the reason the confidence ceiling exists.
 ### 6.1 Echo-off means secret
 
 When the pty has `ECHO` disabled — `sudo` asking for a password, `ssh`
-asking for a passphrase, any `getpass()` — `eclipse-term` raises the
+asking for a passphrase, any `getpass()` — `cataclysm` raises the
 terminal's sensitivity to `secret` for the duration plus
 `downgrade_grace` (S-05 §5.2).
 
@@ -2410,15 +2396,20 @@ Publishing per-frame would drown `registryd` and the agent.
   and that confidence stays ≤ 0.9.
 - Third-party terminal fixture: assert graceful degradation with
   `source_mix` reflecting the reduced fidelity.
+- FFI fixture (ADR 0034): the throughput, echo-off and OSC 133 fixtures run
+  against the C-ABI boundary as `cataclysm` links it, not only against a
+  Rust-side harness. Ownership and lifetime rules for grid buffers crossing
+  the boundary are asserted under ASan.
 
 ---
 
 ## 9. Open Decisions
 
-1. Which emulator to fork. foot (small, Wayland-native, C) vs. writing the
-   grid publisher as a general library other terminals could adopt.
-   Proposed: fork foot for v1, factor the publisher out later if anyone
-   else wants it.
+1. ~~Which emulator to fork.~~ **Closed by ADR 0034**: fork foot, and factor
+   the publisher out *now* rather than later — it is `cataclysm-pub`, a Rust
+   crate with a C ABI shared with `abyss`. A from-scratch emulator is
+   deferred, not rejected: the crate boundary reduces it to replacing a
+   frontend under a stable publisher.
 2. Whether to expose scrollback beyond 2,000 lines at all.
 3. Whether `ext.command` should be matched by S-06 at `C` (about to run,
    can still be blocked) or `B` (input complete, before Enter). Proposed:
@@ -2783,7 +2774,7 @@ brokers, translates, and stamps, but it authorizes nothing.
 agent process (sandboxed)
      │  MCP over per-agent unix socket
      ▼
-  agentd  ──── eclipse_agent_v1 ────►  helios     (authorizes, enforces)
+  agentd  ──── eclipse_agent_v1 ────►  abyss      (authorizes, enforces)
      │
      ├──── grants, defer, audit ────►  policyd    (authorizes)
      ├──── tree unification ────────►  registryd  (perception)
@@ -2798,7 +2789,7 @@ agent process (sandboxed)
 - Read a secret value. It requests injection; it never handles material
   (S-08 §3).
 - Forge compositor-stamped provenance. It appends its own links; the
-  `Surface` links that carry the load are stamped by `helios` and are
+  `Surface` links that carry the load are stamped by `abyss` and are
   cross-checkable against audit (S-07 §4).
 - Read the audit store.
 - Bypass the sandbox: it *requests* profiles, `policyd` compiles them.
@@ -2870,6 +2861,15 @@ candidate (S-11 §1).
 
 Rules:
 
+- **Agent state is derived from task state (A-04 §4), not tracked
+  independently.** `agentd` does not own a second state machine that can
+  disagree with `policyd`'s; it reads the task's state and reflects it. Two
+  authorities for "is this agent paused" is one authority too many, and the
+  disagreement always resolves in favour of whichever component was asked
+  last.
+- Consequently the persisted `paused` flag lives on the **task**, in
+  `policyd`. This resolves the §5 gap: nothing about pause state needs to
+  survive in `agentd` memory, because `agentd` never held it.
 - Provisioning is **atomic**: if any of grants, sandbox, netns, or socket
   fails, everything built is torn down. A half-provisioned agent is the
   shape that produces a sandbox without a Landlock ruleset.
@@ -2883,7 +2883,7 @@ Rules:
 
 ## 5. Startup and Degraded Mode
 
-Order: `policyd` → `helios` → `agentd`. `agentd` refuses to start without
+Order: `policyd` → `abyss` → `agentd`. `agentd` refuses to start without
 a verified `policyd` connection.
 
 If `policyd` becomes unavailable while agents run (COMP-01 §6):
@@ -2895,10 +2895,10 @@ If `policyd` becomes unavailable while agents run (COMP-01 §6):
   the compositor verifies them independently. When a grant expires with no
   `policyd` to renew it, the agent is paused rather than left with a
   shrinking capability set.
-- Audit buffers in `helios` with backpressure onto the *agent*, never the
+- Audit buffers in `abyss` with backpressure onto the *agent*, never the
   human (S-04 §4). If the buffer fills, agents pause.
 
-If `helios` restarts, all agent objects are gone; `agentd` re-binds and
+If `abyss` restarts, all agent objects are gone; `agentd` re-binds and
 re-presents grants. Agents see a `resumed` after a `paused`, and any handle
 they held is invalid. The SDK (A-06) must treat handle invalidation as
 routine, not exceptional.
@@ -2906,10 +2906,17 @@ routine, not exceptional.
 If `agentd` itself crashes: agent processes lose their socket and block;
 compositor objects are destroyed with the connection, which revokes
 capability *bindings* but not grants. On restart, `agentd` re-provisions
-from `policyd`'s live grant set. Agents that were `paused` must come back
-`paused` — so the paused set is persisted to `policyd`, not held only in
-`agentd` memory. This is the one piece of lifecycle state that must
-survive an `agentd` restart.
+from `policyd`'s live grant set. Agents that were `paused` come back
+`paused` for free, because pause lives on the task object in `policyd`
+(§4) and `agentd` derives state from it rather than storing any.
+
+**Integrity check at launch.** `agentd` refuses to launch an agent whose
+package content hash or lockfile hash does not match its manifest (A-07 §4).
+This is **not** a start error reported to the caller and retried: it is an
+S-11 **I5** (TCB integrity) incident, which halts the agent subsystem and
+does not auto-restart. A package that does not match its manifest is either
+a corrupted install or a tampered one, and the two are indistinguishable
+from inside the machine.
 
 ---
 
@@ -3017,16 +3024,12 @@ record something other than what happened.
 | `ui.read_text(window, node?, subtree?, rows?)` | `get_text` | `scene.text` |
 | `ui.wait_for(predicate, timeout_ms)` | `wait_for` | `scene.wait` |
 | `ui.hit_test(x, y)` | `hit_test` | `scene.read` |
-| `ui.click(window, node?, x?, y?, revision)` | `click` | `seat.pointer.button` (+ `seat.action`) |
+| `ui.click(window, node?, x?, y?, revision)` | `click` | `seat.pointer` (+ `seat.action`) |
 | `ui.act(window, node, verb, args?, revision)` | `action` | `seat.action` |
 | `ui.type(window, node?, text, revision)` | `text` | `seat.text` |
 | `ui.key(keys)` | `key`/`keysym` | `seat.key` |
-| `ui.scroll(window, node?, dx, dy)` | `axis` | `seat.pointer.motion` |
+| `ui.scroll(window, node?, dx, dy)` | `axis` | `seat.pointer` |
 | `ui.focus(window, revision)` | `focus` | `seat.focus` |
-| `ui.lease(window, duration_ms?)` | `lease_hold` | (the seat capability already held) |
-| `ui.release(window)` | `lease_release` | — |
-| `agent.pause/resume/terminate(principal)` | `policyd` | `agent.control:<scope>` |
-| `agent.release_lease(window)` | `lease_release` on another holder | `seat.lease.release` |
 | `ui.preflight(taxonomy, targets, summary)` | `preflight` (A-06.3) | — |
 | `ui.fill_secret(window, node, secret_name, revision)` | `secret_fill` (A-06.4) | `secret.use:<n>` |
 | `screen.capture(window\|output\|region, scale?)` | `capture_*` | `capture.*` |
@@ -3039,6 +3042,12 @@ record something other than what happened.
 | `grant.request(capabilities, scope, reason)` | `policyd` | `grant.request` |
 | `self.capabilities()` | local | — |
 | `self.provenance(ref?)` | local | — |
+
+Two parameters exist for token economics rather than capability:
+`ui.read`'s `hint` steers pruning and ranking toward what the agent is
+actually looking for (P-05 §5), and `ui.read_text`'s `rows` requests a
+terminal row range instead of a whole scrollback (P-04 §4). Neither widens
+what the agent may see; both narrow what it pays for.
 
 Deliberately absent: any tool that lists what the agent cannot see, any
 tool that reads audit, any tool that edits policy, any "run shell command"
@@ -3782,8 +3791,6 @@ authority.
 | Status | Class |
 |---|---|
 | `client_gone`, `client_timeout` | `transient` |
-| `busy` | `transient` — lease contention (COMP-08 §4.1). Carries `retry_after_ms`. Retry is safe: the dedupe window applies, so a retry with the same `req_id` after the lease frees executes exactly once. The payload names the holder only if the requester's scope covers that principal; otherwise an opaque lease token. |
-| `task_closed` | `denied` |
 | `stale_generation`, `class_changed`, `focus_lost`, `batch_exhausted`, `broker_locked`, `secret_rotated` | `precondition` |
 | `no_capability`, `out_of_scope`, `sensitivity_denied`, `policy_denied`, `revoked` | `denied` |
 | `prompt_denied` | `refused` |
@@ -4352,92 +4359,508 @@ Refused at install, no review offered:
 
 ---
 
-# APPENDIX A — AMENDMENT LOG (APPLIED INLINE)
+# APPENDIX A — AMENDMENTS (APPLIED 2026-09-08)
 
-**Status: applied.** Batches v1, v2, v3a, v3b and v4 have been merged into
-the documents they amend, in that order, on 2026-09-07. The patch text is no
-longer reproduced here; the documents themselves are now authoritative.
+**Status: applied inline. Historical record only.**
 
-| Batch | Entries | Origin |
+All 42 amendments below (A-01..A-16, A2-01..A2-11, A3-01..A3-15) have been
+merged into the documents they touch. This appendix is retained because the
+reasoning in each entry is often better than the sentence it produced, and
+because an amendment whose *premise* was wrong is worth being able to find
+again. It is no longer a reading prerequisite: the documents are now the
+source of truth for their own content.
+
+Ordering as originally written: v1, v2, v3a, v3b.
+
+---
+
+## Application record
+
+Applied 2026-09-08 by anchored patch, one amendment at a time, each
+asserting its target text occurred exactly once in the bundle. Three
+defects were found in the amendment set during application and resolved as
+follows. Each is a deviation from Appendix A as written, recorded here
+rather than silently absorbed.
+
+**1. A-16's premise was false.** It states that `io_uring` "is not in the
+seccomp deny list". S-03 §2 already denied `io_uring_*` — annotated
+`(v1; revisit)` — along with `bpf`, `perf_event_open`, `userfaultfd` and
+`process_vm_*`, all of which A-16 also proposed adding. What A-16 actually
+contributed, and what was applied: `open_by_handle_at`, `pidfd_getfd`,
+`bind` on non-`AF_UNIX` families, the `hidepid=2` and `/sys` mount
+constraints, and removal of the `revisit` hedge on io_uring. The reasoning
+in A-16 for why io_uring must stay denied was folded into S-03 §2 as prose,
+since it was the strongest part of the entry.
+
+**2. The compositor name had forked.** VOL1, the code, `ARCHITECTURE.md`
+and `STATUS.md` all say `abyss`. The session-2 documents in VOL2 said
+`helios`, in 11 places including the S-07 §5 `stamper` enum — a
+protocol-visible string literal. A-09 instructed that COMP-12 record links
+stamped `helios`, which would have written the fork into a VOL1 document.
+VOL2 was normalized to `abyss` throughout, and A-09 was applied with
+`abyss`. **Reverse this if `helios` was a deliberate rename**, in which case
+the code, VOL1, and both index headers need the opposite change and F-03
+needs to say so.
+
+**3. F-03 has no body.** The index marks *Naming & trademark resolution*
+**DONE**, but no F-03 document exists in either volume. It is the document
+that would have settled defect 2. Recorded, not fixed.
+
+Two judgment calls, also recorded:
+
+- **A-06.2b** adds a trailing `provenance_ids` argument to sixteen acting
+  requests. Rather than rewrite sixteen signatures — sixteen chances to
+  mistype one — it was applied as a normative subsection (COMP-08 §4.1)
+  that names every affected request and states that the argument is
+  appended to each. Same content, one place to get wrong instead of
+  sixteen.
+- **A-08** was applied by rewriting the whole COMP-10 §3.2 requirements
+  list rather than patching four bullets independently, because three of
+  the four modified the same bullets and the interleaving of "no
+  default-focused affirmative" with "default focus is Deny" needed to
+  resolve to one statement, not two adjacent ones.
+
+---
+
+---
+
+# EclipseOS — Amendments to DONE Specs (from batch S-05…S-09)
+
+Generated 2026-09-05. Each entry is a concrete patch: where it goes and
+what the replacement or inserted text is. Apply in order; A-06 (COMP-08)
+takes that document to **v0.2**.
+
+Two corrections to the amendment *list* I gave with the previous batch:
+
+- **COMP-10 needs less than I claimed.** §3.2 already specifies the
+  untrusted-text marking, the irreversible visual distinction, the scope
+  display for unattended grants, and no default-focused affirmative. The
+  real gaps are four narrow ones (A-08).
+- **S-03 needs an amendment I missed.** `io_uring` is not in the seccomp
+  deny list and it is a general-purpose syscall-bypass surface. See A-16.
+
+---
+
+## A-01 — S-01 §2.7, new capabilities
+
+Replace the §2.7 table with:
+
+| Capability | Effect |
+|---|---|
+| `fs.read:<path>` / `fs.write:<path>` | bind mount + Landlock rule |
+| `net.egress:<host[:port]>` | egress allowlist entry; SNI-filtered, no decryption (S-09 §2c) |
+| `net.egress.mitm:<host>` | as above, plus TLS termination with a per-agent ephemeral CA; required for `proxy_header` secret injection |
+| `net.local:<service>` | named local service over a bind-mounted unix socket (S-09 §3) |
+| `net.bulk:<host>` | raises per-request and per-window egress volume quotas (S-09 §4c) |
+| `dbus:<busname>[.<iface>]` | xdg-dbus-proxy allow rule |
+| `secret.use:<n>` | broker may inject named secret at a boundary the agent cannot observe (S-08 §3.1, §3.2); agent never sees the value |
+| `secret.expose:<n>` | **prompt-class.** Secret is materialized into the sandbox as env var or file; the agent *can* read it (S-08 §3.3) |
+
+Add to the §4 prompt-class list: `secret.expose:*`, `net.egress.mitm:*`.
+
+## A-02 — S-01 §4, grant validation
+
+Insert after the "Rules:" list:
+
+> **Validation at issue time.** `policyd` rejects or flags grant sets whose
+> capability combination defeats a control elsewhere. These are static
+> checks on the union of a principal's live grants, re-run on every
+> addition:
+>
+> | Combination | Result |
+> |---|---|
+> | Read capability (`scene.tree`, `scene.text`, `capture.*`, `fs.read`) over targets that can be above `public` **+** `net.egress` to any host not in the policy's `trusted_endpoint` list | **Reject** |
+> | `secret.expose:*` **+** any `net.egress` | **Reject** unless the prompt that minted the grant displayed the exposure and the destination |
+> | `channel.read:*` **+** egress outside `trusted_endpoint` | Warn |
+> | `secret.use:<n>` **+** egress hosts outside that secret's `bound_to` | Warn (binding still enforced at injection) |
+> | `net.egress:*` for a non-`system:` principal | **Reject** |
+> | Unattended `irreversible` allow rule with no narrowing scope | **Reject** (S-06 §7) |
+>
+> A rejected grant is audited (`grant{outcome:rejected, reason}`) and shown
+> in the trusted-UI panel. Rejection is not a prompt: there is no answer
+> the human can give that makes the combination safe, only a different
+> grant.
+
+## A-03 — S-02 §2, hard rules
+
+Add to the hard-rule list in §2 item 1:
+
+> - Taxonomies `system.policy` and `system.firmware` (S-06 §2) resolve to
+>   `deny` for every non-`system:` principal. No grant, no rule, and no
+>   prompt answer can produce an allow. The prompt path is never entered;
+>   the request fails immediately with `policy_denied` and is audited with
+>   the taxonomy id.
+> - No secret value is ever an input to a policy predicate.
+
+## A-04 — S-02 §3, predicate additions
+
+Add to the predicate list:
+
+```
+provenance_min_trust <untrusted|standard|trusted|human>
+provenance_head source:"<kind>"
+provenance_age_gt <duration>
+provenance_mismatch
+app_irreversible_capable <bool>       // was used in the §3 example, never defined
+egress_bytes_gt <bytes> window=<duration>
+secret_bound_host_mismatch
+node_credential <bool>                 // ext.credential, S-08 §3.2
+```
+
+`provenance_*` predicates read the `ProvenanceRef` summary (S-07 §5) on the
+fast path. Any predicate needing the *full* chain (e.g. matching a specific
+`Url` link) is `defer`-only and the compiler enforces that, as it already
+does for other context-hungry predicates.
+
+Extend the `defaults` block:
+
+```kdl
+defaults {
+  sensitivity "private"
+  app_trust "standard"
+  prompt_timeout 120s
+  defer_timeout 500ms
+  dedupe_window 60s
+  downgrade_grace 500ms            // S-05 §5.2
+  provenance_max_links 32          // S-07 §3.1
+  irreversible_per_hour 20         // S-06 §8
+  communication_per_hour 10
+  financial_per_hour 3
+  denied_irreversible_streak 3
+  egress_upload_per_request 4MiB   // S-09 §4c
+  egress_upload_per_hour 64MiB
+}
+
+dedupe_exclude {
+  irreversible "financial.*" "identity.credential" "identity.session"
+               "destructive.overwrite"
+  provenance_contains trust:"untrusted"
+}
+
+trusted_endpoint {
+  host "api.anthropic.com"
+}
+```
+
+## A-05 — S-04 §1.1 and §2, audit
+
+Add two kinds to the §1.1 table:
+
+| Kind | Body |
+|---|---|
+| `net` | principal, grant_id, host, sni, ip, port, mode (`splice`\|`mitm`), bytes_up, bytes_down, duration_ms, outcome, rule_id? (S-09 §7) |
+| `secret` | secret_id, rotation_counter, mode, destination, principal, grant_id, outcome, length? (S-08 §7) |
+
+Add to §2 "What Is Never Logged":
+
+> - Secret values **and hashes of secret values**. Secrets are identified in
+>   audit by their random `secret_id` plus `rotation_counter`. A hash of a
+>   low-entropy credential is offline-brute-forceable and is therefore a
+>   leak, not a redaction.
+
+Add to §1 `Record`: an optional `chain_id: u128?` field, present on
+`request`, `perception`, `input`, `channel`, and `decision` records, linking
+the record to the provenance chain (S-07 §5) it was evaluated against.
+
+## A-06 — COMP-08 → v0.2
+
+### A-06.1 New statuses (§2.1)
+
+```
+19 class_changed         (read spanned a sensitivity raise; nothing delivered)
+20 broker_locked         (S-08 §2)
+21 secret_rotated
+22 batch_exhausted       (preflight token does not cover this target)
+23 circuit_breaker       (S-06 §8; agent is being paused)
+24 provenance_required   (acting request arrived with no resolvable chain)
+```
+
+### A-06.2 Provenance on perception (§3)
+
+Add to `eclipse_scene_v1`:
+
+```
+event provenance(req_id, chain_id: array<u8>, min_trust: uint,
+                 max_sensitivity: uint, len: uint, head_kind: uint)
+  -- Emitted immediately before every tree/text/hit/toplevel_detail event.
+  -- chain_id is 16 bytes. The agent may not construct one.
+```
+
+Add to `eclipse_agent_v1`, for acting requests only, a trailing argument:
+
+```
+provenance_ids: array<u8>    -- CBOR array of chain_ids the agent asserts
+                             -- as inputs to this action. Recorded verbatim;
+                             -- the compositor resolves each against its own
+                             -- stamped set and uses the resolved union for
+                             -- policy. Unresolvable ids → recorded as
+                             -- claimed-only and flagged provenance_mismatch.
+```
+
+This affects `focus`, `key`, `keysym`, `text`, `pointer_*`, `button`,
+`axis`, `touch_*`, `click`, `action`, `launch`, `write` (clipboard), and the
+`eclipse_workspace_v1` mutating requests. An empty array is legal and means
+"no asserted inputs"; it does not mean trusted.
+
+### A-06.3 `preflight` (§4)
+
+```
+request preflight(req_id, taxonomy_id: string, handles: array<uint>,
+                  nodes: array<uint>, summary: string)
+event   batch_token(req_id, token: uint, covered: uint, expires_ms: uint)
+```
+
+Approval mints a token bound to the enumerated `(handle, node)` set.
+Subsequent acting requests carry `token`; a target outside the set returns
+`batch_exhausted`. Single-use per target, expires with the task
+(S-06 §6). `summary` is agent text and is rendered untrusted.
+
+### A-06.4 `secret_fill` (§4)
+
+```
+request secret_fill(req_id, handle, node: uint, secret_name: string,
+                    expected_generation)
+```
+
+Preconditions checked before any value is read from `brokerd`: node role is
+`password` or `textfield` with `ext.credential=true`; target `app_id`/`url`
+matches the secret's `bound_to`; principal holds `secret.use:<name>` and
+`seat.text` in scope; app is on the owner's `field_fill` list (S-08 §3.2).
+Failure modes: `no_capability`, `out_of_scope`, `invalid_argument`,
+`broker_locked`, `secret_rotated`, `stale_generation`.
+
+The value is committed on the agent's seat and the buffer zeroed. `result.detail`
+carries `"filled:<len>"` and nothing else.
+
+### A-06.5 Enforcement order (§10)
+
+Replace steps 6–9 with:
+
+```
+6.  Sensitivity of target vs class caps → sensitivity_denied.
+6b. Resolve provenance_ids → chain summary. Unresolvable → record mismatch.
+6c. Circuit-breaker counters (S-06 §8) → circuit_breaker (+ pause).
+7.  Enforcement table (COMP-11/S-02): allow → 8; deny → policy_denied;
+    prompt → batch token check first (S-06 §6), else trusted UI, await;
+    defer → policyd, await ≤ timeout, fail-closed → deferred_timeout.
+8.  Generation check → stale_generation.
+8b. Re-check sensitivity class (it may have risen during a prompt) →
+    class_changed. This second check is mandatory: a prompt can take
+    120 s and the target can navigate in that time.
+9.  Execute (atomic if batched). Emit result. Emit audit (COMP-12).
+```
+
+Step 8b is the one to be careful about in implementation. A prompt answered
+"allow" for a Gmail send button is not an allow for whatever now occupies
+that node id.
+
+### A-06.6 Open decision closed
+
+§12 item 2 ("should `click` auto-prefer semantic action") stays as
+proposed, but add: when `click` resolves to a semantic action, the
+irreversible taxonomy is matched against the **action**, not the
+coordinates, and the app-capable fallback (S-06 §3.3) therefore does not
+fire. This is the main reason to prefer semantic.
+
+## A-07 — COMP-09, node extensions
+
+Add to the client-settable extension set:
+
+```
+ext.irreversible = "<taxonomy_id>"   -- raise only; S-06 §3.4
+ext.credential   = bool              -- this field takes a credential; S-08 §3.2
+```
+
+Both are **raise-only**: a client may declare a node irreversible or
+credential-bearing; it may not clear a classification the policy assigned.
+Attempting to lower either is protocol error `LOWER_SENSITIVITY` (reuse the
+existing error; rename it `LOWER_CLASSIFICATION` in v0.2 and keep the code).
+
+Add to §3 compositor behavior: validate `ext.irreversible` against the
+compiled taxonomy; unknown ids are dropped with a `budget_exceeded`-style
+warning rather than accepted, so a client cannot invent categories that no
+rule matches.
+
+## A-08 — COMP-10, four narrow additions
+
+1. **§3.2, mandatory untrusted-provenance line.** When the resolved chain
+   has `min_trust == untrusted`, the prompt must render, above the buttons,
+   in the compositor's warning style:
+   `⚠ Part of this action's input came from an untrusted source.`
+   plus the head source. This line is not optional and not suppressible.
+
+2. **§3.2, reversal wording.** Every irreversible prompt states the
+   taxonomy's `reversal` property in plain words: "This cannot be undone
+   from here" / "This goes to the trash" / "Undoing this needs the other
+   party". Taken from the S-06 §2 table, not free text.
+
+3. **§3.2, default focus.** "No default-focused affirmative button" becomes
+   the stronger: **default focus is on Deny**, and Escape means Deny.
+
+4. **§3.2, scope display for "Allow for this task".** The exact predicate
+   set that would be written into the grant is shown before the human
+   answers, not only for the unattended option. Add to §7: a test asserting
+   the minted grant is byte-identical to the scope displayed.
+
+5. **New §3.7, batch prompt.** Rendering for `preflight`: taxonomy,
+   count, and an enumerated scrollable target list capped at 50 shown with
+   an explicit "+N more" that the human can expand. Approving grants only
+   the enumerated set.
+
+## A-09 — COMP-12 §3, provenance tagging
+
+Replace the ad-hoc tuple with:
+
+> Every perception delivery emits a `Link` (S-07 §2) stamped `abyss`,
+> carrying `Surface{handle, generation, node_ids_hash}` or
+> `Terminal`/`Url`, with `trust` and `sensitivity` from S-05 at delivery
+> time. The link is appended to a chain owned by the requesting principal
+> and the resulting `ProvenanceRef` is returned to the agent alongside the
+> data (COMP-08 §3 `provenance` event). The compositor never accepts a
+> chain from an agent as authoritative; asserted `provenance_ids` are
+> resolved against the compositor's own stamped set.
+
+## A-10 — COMP-02 §7, node-level redaction
+
+Add to the Rules list:
+
+> - Redaction operates at two granularities. A **surface** whose class
+>   exceeds authorization is replaced wholesale. A **node** classified
+>   `secret` inside a surface that is not (S-05 §4) produces a redaction
+>   rectangle in the surface's local coordinates, transformed with the
+>   surface and clipped to it, filled with a solid placeholder before the
+>   surface is composited into the capture target.
+> - Node rectangles come from the semantic tree and are therefore only as
+>   accurate as the tree. If the tree for a surface is stale
+>   (`generation` older than the surface's current generation) or absent
+>   while a `secret` node is known to exist, the **whole surface** is
+>   redacted. Fail closed at the surface level rather than trusting a stale
+>   rectangle.
+> - Both decisions are recorded in the pass list (existing rule) with the
+>   rectangle list, so tests assert on geometry without reading pixels.
+
+## A-11 — P-01 §7, sensitivity rules
+
+Replace the bullet "Apps may raise a node's class via native protocol;
+never lower" with:
+
+> - Class is computed by the join in S-05 §3 over: owner classify rules,
+>   role-derived (`password` → `secret`), app-declared raise, ancestor
+>   node class, and owning toplevel class. The join is a maximum, so
+>   ordering is irrelevant and no source can lower a class another source
+>   raised. Only owner policy sets a `public` base.
+
+## A-12 — COMP-05 §1, Toplevel fields
+
+Add to the `Toplevel` struct:
+
+```
+irreversible_capable: bool,   // S-06 §3.3; from rules, default true for
+                              // browsers, mail clients, terminals, file
+                              // managers, and any app with a matching
+                              // irreversible rule
+class_source: u8,             // which rule produced sensitivity (audit/debug)
+```
+
+## A-13 — F-02 §10, close open decisions
+
+- **Item 1 (trust classes)**: closed. Three classes — `untrusted`,
+  `standard`, `trusted` — plus the implicit `human` provenance level.
+  Assignment by owner rule only; **no runtime promotion path** (S-05 §6).
+- **Item 2 (time-box defaults)**: closed. 1 h for unattended prompt-class
+  grants, renewable only via a fresh prompt (already adopted in S-01 §4).
+- **Item 4 (`registryd` in the TCB)**: closed as proposed —
+  semi-trusted. `secret`-class trees are never delivered to `registryd`
+  (S-05 §8), so it never holds secret material and does not need TCB
+  status.
+- Items 3 (D-Bus allowlist contents) and 5 (prompt-frequency budget)
+  remain open.
+
+## A-14 — COMP-14, performance budgets
+
+Add:
+
+| Path | Budget |
+|---|---|
+| `classify()` recompute for one surface | ≤ 50 µs; full reclassification of 50 surfaces ≤ 1 frame at 144 Hz (S-05 §5) |
+| Irreversible matcher in `check()` | ≤ 20 µs (S-06 §3.1) |
+| Provenance resolution of ≤ 8 chain ids | ≤ 30 µs (summary lookup only) |
+| Egress proxy added latency, splice mode | ≤ 2 ms p99 |
+| Egress proxy added latency, MITM mode | ≤ 8 ms p99 |
+
+## A-15 — COMP-15, new suites
+
+Add to the suite list: S-05 §9 race harness and redaction proofs;
+S-06 §10 matcher corpus and audit-replay harness; S-07 §10 algebra and
+two-hop relay; S-08 §8 broker tests; S-09 §8 leak matrix. All are blocking
+in CI per F-07 §3 ("security suite, every push, blocking").
+
+## A-16 — S-03, seccomp additions
+
+Add to the default deny list alongside `ptrace`, `mount`, `kexec`, keyring
+syscalls, and raw sockets:
+
+- `io_uring_setup`, `io_uring_enter`, `io_uring_register` — an io_uring
+  instance can perform filesystem and network operations submitted through
+  a shared ring, which is exactly the shape that bypasses per-syscall
+  filtering. Rust async runtimes that want io_uring must fall back to
+  epoll inside agent sandboxes.
+- `bpf`, `perf_event_open`, `userfaultfd`, `process_vm_readv`,
+  `process_vm_writev`, `open_by_handle_at`, `pidfd_getfd`.
+- `bind` on non-`AF_UNIX` families (S-09 §1).
+
+Add to the mount set: `hidepid=2` on `/proc`; `/sys` masked except the
+subset needed by the GPU userspace when a sandboxed app needs rendering.
+
+---
+
+# Amendments from batch 4
+
+| id | Doc | Change |
 |---|---|---|
-| v1 | A-01 … A-16 | session 2, from S-05…S-09 |
-| v2 | A2-01 … A2-11 | session 2, task model |
-| v3a | A3-01 … A3-06 | session 2, packaging |
-| v3b | A3-07 … A3-15 | session 2, perception |
-| v4 | A4-01 … A4-24 | session 3, leases / pointer / trusted UI / remote vision |
+| A2-01 | **S-01 §4** | Grant field `task "…"` becomes `task_id "<ULID>"`, referencing an A-04 task. Add validation: a grant's `expires` must be ≤ its task's `deadline`; a grant naming a `closed` task is rejected. |
+| A2-02 | **S-02 §5** | `prompt_budget` is a task counter (A-04 §6), not a per-grant one. Exceeding it flags every grant on that task, since the mis-sizing is of the task's authority as a whole. |
+| A2-03 | **S-06 §5** | "Allow for this task" mints a grant scoped to `(taxonomy_id, displayed scope, task_id)`. §6 batch tokens are task-scoped and invalidated per A-04 §9.1. |
+| A2-04 | **A-01 §4** | Agent lifecycle states are derived from task state (A-04 §4), not tracked independently. The persisted `paused` flag lives on the task in `policyd`, which resolves the open gap in A-01 §5. |
+| A2-05 | **COMP-10 §3.2** | Prompt renders `statement` as compositor text and `agent_note` in the untrusted block (A-04 §11). Two fields, two treatments. Add a test asserting an agent cannot cause its text to render in the trusted position. |
+| A2-06 | **COMP-08 §2.2** | Dedupe retention becomes `max(dedupe_window, prompt_timeout + 30 s)` for any request that entered the prompt path (A-05 §3). Without this, a retry after a slow prompt executes twice. |
+| A2-07 | **S-04 §1.1** | New audit kind `task`: `{task_id, principal, origin, origin_ref, parent_task_id, state, statement_hash, counters_snapshot, reason}`. Emitted on every state transition. |
+| A2-08 | **S-04 §1** | `Record` gains `task_id: string?` alongside the `chain_id` added in A-05 of the previous amendment set. Every request, decision, prompt, input, and channel record carries it. |
+| A2-09 | **S-01 §2.6** | `channel.create` quota is per task (A-03 §7), and channel names are fully qualified `<creator>/<name>` in grants. |
+| A2-10 | **COMP-08 §2.1** | Add status `25 task_closed` — request arrived for a principal whose task is `closed` or `draining`. Class `denied`. |
+| A2-11 | **F-02 §10.6** | Deferred item (b), "agent groups with a shared principal and grant set", is superseded by A-04 §10 task nesting: the group is the task subtree, with subset and rollup rules. Item (a), cross-agent scene grants, remains deferred. |
 
-## Two corrections made during the merge
+---
 
-Both are recorded because they were wrong in the amendment text and right in
-the source documents, and the difference only surfaced by merging in order.
+---
 
-1. **COMP-11 §3's "step 7" reference does not break.** A4-03 warned that
-   inserting the lease check into COMP-08 §10 would renumber `check()`. It
-   does not: A-06.5 had already rewritten §10 with lettered sub-steps, so the
-   lease check lands at 6d and press resolution at 6e, leaving step 7 as the
-   enforcement table. No cross-reference changed.
+# Amendments from batch 5
 
-2. **Coordinate-only input was never uncovered.** A4-14's rationale claimed
-   a hijacked agent could evade the irreversible taxonomy by using
-   `pointer_abs` + `button` instead of `click`. S-06 §3.3's app-capable
-   fallback already resolved coordinate-only requests to `prompt` with
-   taxonomy `unknown.capable_app`. Press-time hit-test resolution is a
-   **precision** improvement — it converts a coarse catch-all into a real
-   taxonomy match, and extends coverage to apps not flagged
-   `irreversible_capable` — not a hole closure. The fallback is retained.
+| id | Doc | Change |
+|---|---|---|
+| A3-01 | **S-01 §4** | Grants at run time are the intersection of manifest, install policy, and owner policy (A-07 §3). Add install policy as a named input to grant compilation. |
+| A3-02 | **S-02 §3** | Add predicate `provenance_absent` (an act with an empty `provenance_ids`), and ship a default rule making blind irreversible actions `prompt` (A-06 §10.2). |
+| A3-03 | **A-01 §5** | `agentd` refuses to launch an agent whose package content hash or lockfile hash does not match the manifest; the failure is an S-11 I5, not a start error. |
+| A3-04 | **S-11 §1** | Add to I5 triggers: agent package content-hash or lockfile mismatch at launch. |
+| A3-05 | **S-12** (planned) | Must consume: package signing, lockfile pinning, no-network-at-install, and reproducible package builds as specified in A-07 §4. Noted so S-12 does not re-decide them. |
+| A3-06 | **COMP-10** | Install review is a new trusted-UI surface (§3.8): capability list, version diff, compatibility check results, and the strike-a-capability control. |
 
-## What v4 decided
+---
 
-1. **Interaction leases** (COMP-08 §4.1). A toplevel is refused to a second
-   agent by default; concurrent work on one surface needs an explicit lease.
-   Reads are never gated. Non-blocking by design, which makes multi-window
-   deadlock impossible by construction.
-2. **Pointer hardening.** `button` press carries a target and generation;
-   the compositor resolves the press to a node before policy evaluation;
-   `seat.pointer` splits into `.motion` and `.button`.
-3. **Trusted-UI agent status and deferred consent** (COMP-10 §3.9–§3.10).
-   Per-agent state indicators, one bind that opens the pending-decision
-   queue, and an absence rule that permits a focus steal but never an
-   irreversible action.
-4. **Remote vision consent** (S-01 §2.6c, S-05 §7b, COMP-10 §3.11). Screen
-   pixels leave the machine only under an explicit, scoped, revocable grant,
-   with opaque unclassified surfaces failing closed to ineligible.
+---
 
-## Notes for documents not yet written
+# Amendments from batch 6
 
-- **P-06.** Specify the vision fallback as a detection *pipeline* (detector +
-  OCR + icon captioning), not a resident general VLM: vision-token count
-  scales with screen area rather than model size, so a smaller VLM does not
-  solve the multi-monitor screenshot case. The trade is accuracy — published
-  grounding results on high-resolution screens with small targets are poor,
-  and detector output flickers frame to frame. P-06 must therefore require
-  temporal smoothing as a *correctness* requirement, since P-01 promises node
-  ids stable within a generation and a flickering detector breaks
-  `expected_generation` and `wait_for` nondeterministically. It must also
-  scope its coverage claim honestly rather than promising "everything AT-SPI
-  cannot reach". **Measure before specifying.**
-- **I-03.** The policy classifier consumes request facts and provenance from
-  the S-04 export, never pixels. Not a VLM and probably not a transformer; a
-  1–2 B model is oversized for tabular features and fights the 500 ms
-  `defer_timeout`.
-- **I-01.** Must state what yields under GPU pressure. The dangerous default
-  is a router that silently spills vision to a remote provider under memory
-  pressure, inverting the privacy stance automatically on exactly the
-  surfaces S-05 §7b says cannot be classified. `inference.remote.vision`
-  makes that transition require a capability; I-01 must not route around it.
+| id | Doc | Change |
+|---|---|---|
+| A3-07 | **COMP-05** | Launch rules must support injecting per-app environment for accessibility enablement (`QT_ACCESSIBILITY`, `--force-renderer-accessibility`, etc., P-02 §3). Rule-driven, off by default for apps with no agent grant. |
+| A3-08 | **P-01 §1.5** | Split geometric from semantic confidence. Add `ext.rect_source` (`local`\|`global`\|`derived`\|`none`) and `ext.rect_confidence` (f32). `atspi` keeps semantic confidence 1.0; its rects frequently do not deserve it (P-02 §8). |
+| A3-09 | **S-05 §7** | Correct the terminal row. The **emulator** carries the app's trust; `terminal_line` **content** is `untrusted` by default. The exception is a line the human typed at a prompt (OSC 133 `B`→`C` plus human-seat input), which carries a `Human` link (P-04 §6.2). Without this, command output launders into trusted instructions. |
+| A3-10 | **S-03** | Agent sandbox profiles must deny `org.a11y.Bus` and the accessibility bus socket. Direct AT-SPI access from an agent bypasses classification, scoping, and sanitization entirely. `registryd` only. |
+| A3-11 | **S-05 §5** | Add a transient raise trigger: pty `ECHO` disabled in a terminal raises that toplevel to `secret` for the duration plus `downgrade_grace` (P-04 §6.1). |
+| A3-12 | **COMP-08 §3** | `wait_for` predicate set gains `idle{handle, ms}`, `command_finished{handle, exit_code?}`, and `node_gone{handle, id}`. `waited` already returns a generation; specify that it is the generation **at satisfaction** (P-07 §5.3). |
+| A3-13 | **A-02 §1** | `ui.read` gains `hint` (P-05 §5); `ui.read_text` gains `rows` for terminal ranges (P-04 §4). |
+| A3-14 | **P-01 §10** | Open decision 2 (whether value changes bump generation for form roles) is superseded by P-07 §2, which resolves it by field rather than by role. |
+| A3-15 | **S-06 §3.1** | Terminal command matching happens at the OSC 133 `C` boundary on the fully expanded command line, not by parsing the input line character by character (P-04 §3). Materially better matching point. |
 
-## Open items carried forward
-
-1. `agent.control` scoping: lineage vs principal (S-01 §2.6b, §8 item 5).
-   Proposed: lineage for v1.
-2. Remote-vision transport: `registryd` egress proxy vs brokering through
-   `agentd` (S-01 §8 item 6). Proposed: `agentd`.
-3. Agent-seat cursor rendering: whether agent seats draw a visible cursor.
-   COMP-09 §4 cites "no pointer movement for the human to see" as an argument
-   for semantic actions, implying agent pointer motion is visible; never
-   decided explicitly, and on a virtual output nobody is looking.
-4. Lease idle expiry default of 30 s has no evidence behind it beyond
-   "longer than a cloud model round-trip, shorter than a minute". Instrument.
-5. Lease granularity for XWayland. X11 clients see each other's input
-   (THREAT_MODEL S13), so a per-toplevel lease over XWayland surfaces may not
-   mean what it means natively. Unexamined.
+---

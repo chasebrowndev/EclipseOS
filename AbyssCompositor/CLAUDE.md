@@ -44,20 +44,28 @@ This has already happened more than once.
 
 ## Build / test / run
 ```
-cargo build --workspace
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo build --workspace --all-targets
 cargo test --workspace
-cargo clippy --workspace -- -D warnings
-cargo fmt --check
-cargo deny check                # licenses + advisories + bans
+cargo deny check advisories bans licenses sources
 cargo run -- --backend winit    # nested under Hyprland for dev
 journalctl --user -t abyss -f  # logs (tracing → journald)
 ```
+The first five are exactly what CI runs (`.github/workflows/gate.yml`). If you
+change one, change both — a local gate that differs from CI is worse than no
+local gate.
+
+The toolchain is pinned in `rust-toolchain.toml`; CI and dev must not drift.
+Same rule as the Smithay 0.7.0 pin: a bump is its own PR with its own
+justification.
 
 ## Commits & PRs (F-07 §5)
 - Conventional commits: `feat(abyss): …`, `fix(policyd): …`, `docs: …`.
 - Trunk-based; short-lived branches named for the milestone
   (`comp16-m03-multi-output`).
 - Every PR body cites the spec section it implements: `Implements COMP-08 §4`.
+  The `spec-trail` job in `gate.yml` blocks the PR without it.
 - A PR that changes specified behavior updates the doc in the same PR, or says
   why not.
 - TCB areas (`abyss` enforcement path, `policyd`, `policy-eval`, `sandbox`)
