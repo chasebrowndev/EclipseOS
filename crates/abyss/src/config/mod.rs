@@ -19,6 +19,7 @@ use kdl::{KdlDocument, KdlNode, KdlValue};
 use smithay::input::keyboard::{xkb, Keysym, ModifiersState};
 
 use crate::input::{Action, Bind, Direction, Mods};
+use crate::xwayland::security::{AppTrust, SeatCompat};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutKind {
@@ -327,6 +328,10 @@ pub struct Matchers {
     /// Glob against the output connector or its persistent identity.
     pub output: Option<String>,
     pub workspace: Option<i32>,
+    /// Regex against the client's cgroup path, read once from
+    /// `/proc/<pid>/cgroup`. This is how a rule targets "everything systemd
+    /// started under this unit" without knowing the app id.
+    pub cgroup: Option<Pattern>,
 }
 
 impl Matchers {
@@ -338,6 +343,7 @@ impl Matchers {
             && self.xwayland.is_none()
             && self.output.is_none()
             && self.workspace.is_none()
+            && self.cgroup.is_none()
     }
 }
 
@@ -346,6 +352,19 @@ pub enum RuleAction {
     Float,
     Tile,
     Workspace(i32),
+    /// Placement-time float geometry, in logical pixels. Both imply `float`:
+    /// a tiled window's geometry belongs to the layout, not to a rule.
+    Size(i32, i32),
+    Position(i32, i32),
+    /// Glob against an output connector or persistent identity.
+    Output(String),
+    /// COMP-07 §2 clamps this to `standard` for X11 windows.
+    Trust(AppTrust),
+    /// COMP-07 §6 clamps this to `lock` for X11 windows.
+    Seat(SeatCompat),
+    /// Hold the idle timers off while the window is mapped, for a client that
+    /// does not speak `zwp_idle_inhibit_manager_v1` itself.
+    IdleInhibit,
     Opacity(f32),
     /// Raise-only: `secret` or `private`. `public` is refused at parse time
     /// because a rule may never lower a sensitivity class.
@@ -382,6 +401,13 @@ impl Pattern {
     pub fn matches(&self, text: &str) -> bool {
         self.0.is_match(text)
     }
+}
+
+/// `800x600` / `100,-40` for the geometry actions. Both halves must parse and
+/// nothing may trail, so a typo drops its rule instead of half-applying.
+fn parse_pair(source: &str, sep: char) -> Option<(i32, i32)> {
+    let (a, b) = source.split_once(sep)?;
+    Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
 }
 
 /// Animation names and easing curves accepted by `animations`. Unknown values
@@ -1014,6 +1040,26 @@ impl Config {
             ("tile", None) => RuleAction::Tile,
             ("no-agent", None) => RuleAction::NoAgent,
             ("no-focus-steal", None) => RuleAction::NoFocusSteal,
+            ("idle-inhibit", None) => RuleAction::IdleInhibit,
+            ("size", Some(p)) => match parse_pair(p, 'x') {
+                Some((w, h)) if w > 0 && h > 0 => RuleAction::Size(w, h),
+                _ => {
+                    tracing::warn!(action, "windowrule size must be WxH in pixels, rule ignored");
+                    return;
+                }
+            },
+            ("position", Some(p)) => match parse_pair(p, ',') {
+                Some((x, y)) => RuleAction::Position(x, y),
+                None => {
+                    tracing::warn!(action, "windowrule position must be X,Y in pixels, rule ignored");
+                    return;
+                }
+            },
+            ("output", Some(p)) => RuleAction::Output(p.to_owned()),
+            ("app-trust", Some("standard")) => RuleAction::Trust(AppTrust::Standard),
+            ("app-trust", Some("trusted")) => RuleAction::Trust(AppTrust::Trusted),
+            ("seat-compat", Some("lock")) => RuleAction::Seat(SeatCompat::Lock),
+            ("seat-compat", Some("multi")) => RuleAction::Seat(SeatCompat::Multi),
             ("workspace", Some(p)) => match p.parse::<i32>() {
                 Ok(n) if (1..=10).contains(&n) => RuleAction::Workspace(n),
                 _ => {
@@ -1077,6 +1123,13 @@ impl Config {
                     Some(v) => matchers.output = Some(v.to_owned()),
                     None => {
                         tracing::warn!("windowrule output needs a name pattern, rule ignored");
+                        return;
+                    }
+                },
+                "cgroup" => match arg(n).and_then(KdlValue::as_string).and_then(Pattern::parse) {
+                    Some(p) => matchers.cgroup = Some(p),
+                    None => {
+                        tracing::warn!("windowrule cgroup matcher is not a valid regex, rule ignored");
                         return;
                     }
                 },
@@ -1496,6 +1549,48 @@ mod tests {
     }
 
     #[test]
+    fn parses_geometry_and_classification_rules() {
+        let doc: KdlDocument = r#"
+            windowrule "size 800x600"        { app-id "mpv" }
+            windowrule "position 40,-20"     { app-id "mpv" }
+            windowrule "output DP-*"         { app-id "mpv" }
+            windowrule "app-trust trusted"   { cgroup "app-remnant" }
+            windowrule "seat-compat multi"   { app-id "mpv" }
+            windowrule "idle-inhibit"        { app-id "mpv" }
+            windowrule "size 800"            { app-id "mpv" }
+            windowrule "position left"       { app-id "mpv" }
+            windowrule "app-trust root"      { app-id "mpv" }
+            windowrule "seat-compat none"    { app-id "mpv" }
+            windowrule "cgroup-typo"         { cgroup "(" }
+        "#
+        .parse()
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        let actions: Vec<&RuleAction> = cfg.window_rules.iter().map(|r| &r.action).collect();
+        assert_eq!(
+            actions,
+            vec![
+                &RuleAction::Size(800, 600),
+                &RuleAction::Position(40, -20),
+                &RuleAction::Output("DP-*".to_owned()),
+                &RuleAction::Trust(AppTrust::Trusted),
+                &RuleAction::Seat(SeatCompat::Multi),
+                &RuleAction::IdleInhibit,
+            ]
+        );
+        assert!(cfg.window_rules[3].matchers.cgroup.is_some());
+    }
+
+    #[test]
+    fn pairs() {
+        assert_eq!(parse_pair("800x600", 'x'), Some((800, 600)));
+        assert_eq!(parse_pair(" 40 , -20 ", ','), Some((40, -20)));
+        assert_eq!(parse_pair("800x600x1", 'x'), None);
+        assert_eq!(parse_pair("800", 'x'), None);
+    }
+
+    #[test]
     fn durations() {
         assert_eq!(parse_duration_ms(&KdlValue::Integer(150)), Some(150));
         assert_eq!(parse_duration_ms(&KdlValue::String("150ms".into())), Some(150));
@@ -1540,7 +1635,8 @@ mod tests {
             windowrule "sensitivity public" { app-id "a"; }
             windowrule "workspace 99" { app-id "a"; }
             windowrule "opacity 2.0" { app-id "a"; }
-            windowrule "float" { cgroup "x"; }
+            windowrule "float" { launching-principal "x"; }
+            windowrule "fullscreen" { app-id "a"; }
             windowrule "float" { title "^(a|b"; }
             windowrule "float" { pid 0; }
         "#

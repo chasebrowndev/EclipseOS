@@ -3096,6 +3096,20 @@ Matchers: `app-id`, `title` (regex), `pid`, `cgroup`,
 Actions: float/tile, size, position, workspace, output, opacity, fullscreen,
 sensitivity, app-trust, seat-compat, no-agent, no-focus-steal, idle-inhibit.
 
+`size` and `position` are logical pixels, both imply `float` (a tiled
+window's geometry belongs to the layout), and `position` is relative to the
+output's tiling area so the same rule lands identically on any output.
+`cgroup` matches the unified-hierarchy path from `/proc/<pid>/cgroup`.
+
+Placement actions (float/tile, size, position, workspace, output,
+no-focus-steal) apply at map time only — a window that jumped outputs
+because a page title changed would be worse than the rule not firing. The
+one exception: most clients have not yet sent an `app-id` or `title` when
+they map, so a window with no identity at map time gets a single deferred
+placement pass on the first commit that carries one. Placement is frozen
+after that. Property actions (opacity, sensitivity, app-trust, seat-compat,
+no-agent, idle-inhibit) re-apply on every re-evaluation.
+
 `no-agent` is worth calling out: it removes a window from every agent's
 scene entirely — not merely redacted, but absent from `list_toplevels`,
 `hit_test`, and events. The escape hatch for windows you never want an

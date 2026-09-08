@@ -17,9 +17,23 @@ use smithay::reexports::wayland_server::Resource;
 
 use crate::config::{Matchers, RuleAction};
 use crate::state::AbyssState;
+use crate::xwayland::security::{AppTrust, SeatCompat};
 
 /// Per-window opacity set by a matched `opacity` rule, read by the renderer.
 pub struct RuleOpacity(pub Cell<f32>);
+
+/// Trust class pinned by an `app-trust` rule (COMP-05 §4). Consumed once
+/// COMP-08 gates agent actions on it.
+pub struct RuleTrust(pub Cell<AppTrust>);
+
+/// Seat concurrency pinned by a `seat-compat` rule (COMP-04 §8).
+pub struct RuleSeat(pub Cell<SeatCompat>);
+
+/// Marker that a window has had its one placement pass with a known identity.
+/// A client's `app_id`/`title` are usually still empty at map time, so the
+/// placement actions get one deferred retry on the first commit that carries
+/// an identity; after that placement is frozen (module comment).
+pub struct Placed;
 
 /// Marker for `windowrule "no-agent"`: the window is absent from every agent's
 /// scene. Nothing consumes it until COMP-08 lands `list_toplevels`.
@@ -32,6 +46,11 @@ pub struct Placement {
     /// 1-based workspace, as written in the config.
     pub workspace: Option<i32>,
     pub no_focus_steal: bool,
+    /// Float geometry in logical pixels; either half implies `float`.
+    pub size: Option<(i32, i32)>,
+    pub position: Option<(i32, i32)>,
+    /// Glob for the output to map on, matched against connector or identity.
+    pub output: Option<String>,
 }
 
 /// The opacity a matched rule pinned on this window, if any.
@@ -45,6 +64,18 @@ pub fn any_opacity_override<'a>(mut windows: impl Iterator<Item = &'a Window>) -
     windows.any(|w| w.user_data().get::<RuleOpacity>().is_some())
 }
 
+/// The trust class a matched rule pinned on this window, if any.
+#[allow(dead_code)] // consumed when COMP-08 gates on app trust
+pub fn trust_of(window: &Window) -> Option<AppTrust> {
+    window.user_data().get::<RuleTrust>().map(|t| t.0.get())
+}
+
+/// The seat concurrency a matched rule pinned on this window, if any.
+#[allow(dead_code)] // consumed when COMP-04 §8 focus locks land
+pub fn seat_compat_of(window: &Window) -> Option<SeatCompat> {
+    window.user_data().get::<RuleSeat>().map(|s| s.0.get())
+}
+
 /// COMP-08 will consult this before putting a window in an agent scene.
 #[allow(dead_code)]
 pub fn hidden_from_agents(window: &Window) -> bool {
@@ -56,13 +87,26 @@ pub fn apply(state: &mut AbyssState, window: &Window) -> Placement {
     evaluate(state, window, true)
 }
 
-/// Re-evaluate after a title change. Placement is left alone; see the module
-/// comment.
-pub fn reevaluate(state: &mut AbyssState, window: &Window) {
+/// Re-evaluate after a commit. Property actions always re-apply; placement is
+/// returned only for the one deferred pass described on [`Placed`], and the
+/// caller then has to re-install the window.
+#[must_use]
+pub fn reevaluate(state: &mut AbyssState, window: &Window) -> Option<Placement> {
     if state.config.window_rules.is_empty() {
-        return;
+        return None;
     }
-    evaluate(state, window, false);
+    if window.user_data().get::<Placed>().is_some() {
+        evaluate(state, window, false);
+        return None;
+    }
+    let placement = evaluate(state, window, true);
+    if placement == Placement::default() {
+        return None;
+    }
+    // A rule matched on something other than identity (pid, cgroup); freeze
+    // placement here too, or the window would be re-installed on every commit.
+    window.user_data().insert_if_missing(|| Placed);
+    Some(placement)
 }
 
 fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> Placement {
@@ -71,6 +115,12 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> Placement
         return placement;
     }
     let facts = Facts::gather(state, window);
+    // Identity arrives after the first commit for most clients; until it does,
+    // a placement pass would match on empty strings. Hold the marker back so
+    // the caller retries once the client has named itself.
+    if placing && !(facts.app_id.is_empty() && facts.title.is_empty()) {
+        window.user_data().insert_if_missing(|| Placed);
+    }
     // Rules apply in file order, so a later rule wins on the same property.
     for i in 0..state.config.window_rules.len() {
         if !facts.matches(&state.config.window_rules[i].matchers) {
@@ -81,7 +131,50 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> Placement
             RuleAction::Tile if placing => placement.float = false,
             RuleAction::Workspace(n) if placing => placement.workspace = Some(n),
             RuleAction::NoFocusSteal if placing => placement.no_focus_steal = true,
-            RuleAction::Float | RuleAction::Tile | RuleAction::Workspace(_) | RuleAction::NoFocusSteal => {}
+            RuleAction::Size(w, h) if placing => {
+                placement.float = true;
+                placement.size = Some((w, h));
+            }
+            RuleAction::Position(x, y) if placing => {
+                placement.float = true;
+                placement.position = Some((x, y));
+            }
+            RuleAction::Output(name) if placing => placement.output = Some(name),
+            RuleAction::Float
+            | RuleAction::Tile
+            | RuleAction::Workspace(_)
+            | RuleAction::NoFocusSteal
+            | RuleAction::Size(..)
+            | RuleAction::Position(..)
+            | RuleAction::Output(_) => {}
+            RuleAction::Trust(trust) => {
+                // COMP-07 §2: an X11 window never exceeds `standard`, whatever
+                // the rule asks for.
+                let trust = if facts.xwayland { AppTrust::Standard } else { trust };
+                if let Some(slot) = window.user_data().get::<RuleTrust>() {
+                    slot.0.set(trust);
+                } else {
+                    window
+                        .user_data()
+                        .insert_if_missing(|| RuleTrust(Cell::new(trust)));
+                }
+            }
+            RuleAction::Seat(compat) => {
+                // COMP-07 §6: X11 windows are always seat-locked.
+                let compat = if facts.xwayland { SeatCompat::Lock } else { compat };
+                if let Some(slot) = window.user_data().get::<RuleSeat>() {
+                    slot.0.set(compat);
+                } else {
+                    window
+                        .user_data()
+                        .insert_if_missing(|| RuleSeat(Cell::new(compat)));
+                }
+            }
+            RuleAction::IdleInhibit => {
+                if let Some(surface) = crate::shell::window_surface(window) {
+                    state.idle.add_rule_inhibitor(surface);
+                }
+            }
             RuleAction::Opacity(v) => {
                 if let Some(o) = window.user_data().get::<RuleOpacity>() {
                     o.0.set(v);
@@ -110,6 +203,7 @@ struct Facts {
     title: String,
     pid: Option<i32>,
     xwayland: bool,
+    cgroup: String,
     output_connector: String,
     output_identity: String,
     workspace: i32,
@@ -126,6 +220,7 @@ impl Facts {
             .and_then(|id| state.outputs.get(id))
             .or_else(|| state.outputs.focused());
         Self {
+            cgroup: pid.map(cgroup_of).unwrap_or_default(),
             app_id: app_id.unwrap_or_default(),
             title: title.unwrap_or_default(),
             pid,
@@ -144,6 +239,11 @@ impl Facts {
         }
         if let Some(p) = &m.title {
             if !p.matches(&self.title) {
+                return false;
+            }
+        }
+        if let Some(p) = &m.cgroup {
+            if !p.matches(&self.cgroup) {
                 return false;
             }
         }
@@ -171,4 +271,18 @@ impl Facts {
         }
         true
     }
+}
+
+/// The client's cgroup path, or empty when the kernel will not say. Read once
+/// per evaluation, off the input hot path.
+fn cgroup_of(pid: i32) -> String {
+    std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .map(|s| {
+            // Unified hierarchy lines are `0::<path>`; take the path.
+            s.lines()
+                .find_map(|l| l.split("::").nth(1))
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .unwrap_or_default()
 }

@@ -155,18 +155,27 @@ macros anywhere in the workspace.
    the default frame path is the single `space_render_elements` call it was
    before — damage and direct scanout unchanged. `xwayland` is still parsed and
    ignored. *Unblocked by:* the rest of 9b.
-7. **`windowrule` actions are partial** (COMP-05 §4). `shell/rules.rs` matches
-   at map time and re-evaluates on title change; `float`, `tile`,
-   `workspace N`, `opacity F`, `sensitivity secret|private` (raise-only),
-   `no-focus-steal` and `no-agent` all parse and apply — except `no-agent`,
-   which sets a flag nothing reads until COMP-08 ships `list_toplevels`.
-   `size`, `position`, `fullscreen`, `app-trust`, `seat-compat` and
-   `idle-inhibit` actions, and the `cgroup` / `launching-principal` matchers,
-   are unimplemented. `app-id` and `title` are full regexes (the `regex` crate,
-   linear-time by construction because titles are client-controlled); a pattern
-   that does not compile is refused at parse time and the rule is dropped
-   whole, so a rule never applies in part. *Unblocked by:* the COMP-05 actions
-   above.
+7. **`windowrule` is complete except `fullscreen` and `launching-principal`**
+   (COMP-05 §4). `shell/rules.rs` matches at map time and re-evaluates on every
+   commit; `float`, `tile`, `workspace N`, `size WxH`, `position X,Y`,
+   `output NAME`, `opacity F`, `sensitivity secret|private` (raise-only),
+   `app-trust`, `seat-compat`, `idle-inhibit`, `no-focus-steal` and `no-agent`
+   all parse and apply. `no-agent`, `app-trust` and `seat-compat` set state
+   nothing reads yet — COMP-08 `list_toplevels` and the COMP-04 §8 focus locks
+   consume them; the COMP-07 clamps (X11 never above `standard`, always
+   seat-locked) are applied where the rule is stored, not where it is read.
+   Matchers `app-id`, `title`, `pid`, `cgroup`, `output`, `workspace` and
+   `xwayland` all work; `app-id`/`title`/`cgroup` are full regexes (the `regex`
+   crate, linear-time by construction because titles are client-controlled) and
+   a pattern that does not compile is refused at parse time with the rule
+   dropped whole, so a rule never applies in part. Placement actions get one
+   deferred pass: most clients have no `app_id`/`title` at map time, so a
+   window without an identity is re-placed on the first commit that carries
+   one (`rules::Placed`), and placement is frozen after that. Still
+   unimplemented: the `fullscreen` action (the shell has no fullscreen state at
+   all) and the `launching-principal` matcher (needs COMP-08 launch tracking);
+   both are refused at parse time. *Unblocked by:* COMP-08, and fullscreen
+   support in `shell/`.
 8. **Custom modes are refused by `wlr_output_management`** — a
    `set_custom_mode` request with valid dimensions fails the whole
    configuration rather than modesetting outside the connector's own mode
@@ -243,9 +252,8 @@ In rough order:
    dim-inactive, rounding, shadows and move animations are in; blur and the
    non-move animation names are what remain of the visible gap against the
    current Hyprland setup.
-6. **Full COMP-05 §4 matchers** — `size`, `position`, `fullscreen`,
-   `app-trust`, `seat-compat`, `idle-inhibit`, `cgroup` and
-   `launching-principal`, plus real regex patterns (gap 7).
+6. **The last two COMP-05 §4 rules** — the `fullscreen` action and the
+   `launching-principal` matcher (gap 7); everything else in §4 now applies.
 
 ---
 

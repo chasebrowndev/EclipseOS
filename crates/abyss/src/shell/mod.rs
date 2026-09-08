@@ -218,11 +218,49 @@ pub fn place_new_window(state: &mut AbyssState, window: Window) {
     // Classify before the window is ever composited (COMP-02 §7). Raise-only.
     crate::render::capture::mark_sensitive(state, &window);
     crate::protocols::standard::foreign_toplevel::window_mapped(state, &window);
-    let Some(id) = state.outputs.focused().map(|e| e.id) else {
-        return;
-    };
     // COMP-05 §4: rules decide placement before the window joins a workspace.
     let placement = rules::apply(state, &window);
+    if !install(state, &window, &placement) {
+        return;
+    }
+    let handle = state.ipc.handle_for(&window);
+    crate::ipc::emit(
+        state,
+        "window",
+        serde_json::json!({"change": "opened", "handle": handle}),
+    );
+}
+
+/// Re-run placement once a client has finally named itself, so rules that match
+/// on `app-id`/`title` still land (see `rules::Placed`). The window keeps its
+/// handle and its identity — only where it sits changes.
+pub fn replace_window(state: &mut AbyssState, window: &Window, placement: &rules::Placement) {
+    for entry in state.outputs.iter_mut() {
+        for ws in entry.workspaces.iter_mut() {
+            ws.remove(window);
+        }
+    }
+    install(state, window, placement);
+}
+
+/// Put a window into a workspace according to `placement`. False when there is
+/// no output to place it on.
+fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement) -> bool {
+    let window = window.clone();
+    let Some(mut id) = state.outputs.focused().map(|e| e.id) else {
+        return false;
+    };
+    // An `output` rule retargets the window before anything is computed from
+    // the output; an unmatched name leaves it on the focused output.
+    if let Some(name) = &placement.output {
+        if let Some(target) = state.outputs.iter().find(|e| {
+            crate::config::glob_match(name, &e.connector) || crate::config::glob_match(name, &e.identity)
+        }) {
+            id = target.id;
+        } else {
+            tracing::warn!(output = name, "windowrule output matches no connected output");
+        }
+    }
     let output = state.outputs.get(id).expect("just resolved").output.clone();
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
@@ -233,17 +271,22 @@ pub fn place_new_window(state: &mut AbyssState, window: Window) {
         .map(|n| (n as usize - 1).min(entry.workspaces.len() - 1))
         .unwrap_or(entry.active);
     if placement.float {
-        let size = geometry
-            .map(|g| g.size)
+        let size = placement
+            .size
+            .map(Size::from)
+            .or_else(|| geometry.map(|g| g.size))
             .unwrap_or_else(|| Size::from((area.size.w / 2, area.size.h / 2)));
-        let rect = Rectangle::new(
-            (
+        // A `position` rule is relative to the output's tiling area, so the
+        // same rule lands in the same place on any output.
+        let loc = match placement.position {
+            Some((x, y)) => (area.loc.x + x, area.loc.y + y).into(),
+            None => (
                 area.loc.x + (area.size.w - size.w).max(0) / 2,
                 area.loc.y + (area.size.h - size.h).max(0) / 2,
             )
                 .into(),
-            size,
-        );
+        };
+        let rect = Rectangle::new(loc, size);
         entry.workspaces[ws].floating.push(Floating {
             window: window.clone(),
             rect,
@@ -267,12 +310,7 @@ pub fn place_new_window(state: &mut AbyssState, window: Window) {
         arrange(state);
         focus_window(state, &window);
     }
-    let handle = state.ipc.handle_for(&window);
-    crate::ipc::emit(
-        state,
-        "window",
-        serde_json::json!({"change": "opened", "handle": handle}),
-    );
+    true
 }
 
 /// Resolve a surface to the window that owns it, if any.
@@ -436,7 +474,9 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
         // has no other notification path for them.
         crate::protocols::standard::foreign_toplevel::window_updated(&window);
         // Title-matching rules are re-evaluated on title change (COMP-05 §4).
-        rules::reevaluate(state, &window);
+        if let Some(placement) = rules::reevaluate(state, &window) {
+            replace_window(state, &window, &placement);
+        }
         if window.toplevel().is_none() {
             // X11: no configure handshake to complete on this side.
             return;

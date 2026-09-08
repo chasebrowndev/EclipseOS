@@ -47,6 +47,15 @@ impl IdleTracker {
         self.inhibitors.push(surface);
     }
 
+    /// A `windowrule "idle-inhibit"` inhibitor. Idempotent, because rules are
+    /// re-evaluated on every title change and the window holds no object to
+    /// destroy — the entry falls out when the surface dies or unmaps.
+    pub fn add_rule_inhibitor(&mut self, surface: WlSurface) {
+        if !self.inhibitors.contains(&surface) {
+            self.inhibitors.push(surface);
+        }
+    }
+
     pub fn remove_inhibitor(&mut self, surface: &WlSurface) {
         self.inhibitors.retain(|s| s != surface);
     }
