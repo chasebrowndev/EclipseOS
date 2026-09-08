@@ -12,6 +12,7 @@ mod ipc;
 mod outputs;
 mod protocols;
 mod render;
+mod session;
 mod shell;
 mod state;
 mod xwayland;
@@ -47,12 +48,14 @@ struct Args {
     backend: BackendKind,
     config: Option<std::path::PathBuf>,
     stats: bool,
+    session: bool,
 }
 
 fn parse_args() -> Result<Args> {
     let mut kind = default_backend();
     let mut config = None;
     let mut stats = false;
+    let mut session = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -71,8 +74,9 @@ fn parse_args() -> Result<Args> {
                 None => anyhow::bail!("--config requires a path"),
             },
             "--stats" => stats = true,
+            "--session" => session = true,
             "-h" | "--help" => {
-                println!("usage: abyss [--backend drm|winit] [--config <path.kdl>] [--stats]");
+                println!("usage: abyss [--backend drm|winit] [--config <path.kdl>] [--stats] [--session]");
                 std::process::exit(0);
             }
             other => anyhow::bail!("unknown argument '{other}'"),
@@ -82,6 +86,7 @@ fn parse_args() -> Result<Args> {
         backend: kind,
         config,
         stats,
+        session,
     })
 }
 
@@ -120,8 +125,8 @@ fn main() -> Result<()> {
     let config = config::Config::load(args.config.as_deref());
     match args.backend {
         #[cfg(feature = "winit")]
-        BackendKind::Winit => backend::winit::run(config, args.stats),
+        BackendKind::Winit => backend::winit::run(config, args.stats, args.session),
         #[cfg(feature = "drm")]
-        BackendKind::Drm => backend::drm::run(config, args.stats),
+        BackendKind::Drm => backend::drm::run(config, args.stats, args.session),
     }
 }

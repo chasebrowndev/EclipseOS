@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Login-session wrapper for Abyss. Install to /usr/bin/abyss-session.
+#
+# This sets only the environment that is knowable before the compositor runs.
+# The systemd/D-Bus handoff is NOT done here: WAYLAND_DISPLAY does not exist
+# until the compositor has created its socket, so the import must happen inside
+# abyss, behind --session (ADR 0032).
+export XDG_CURRENT_DESKTOP=Abyss
+export XDG_SESSION_TYPE=wayland
+export XDG_SESSION_DESKTOP=abyss
+exec abyss --session "$@"

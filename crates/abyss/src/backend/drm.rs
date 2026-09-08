@@ -472,7 +472,7 @@ fn sync_fallback(state: &mut AbyssState) {
     }
 }
 
-pub fn run(config: Config, stats: bool) -> Result<()> {
+pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     let mut event_loop: EventLoop<'static, AbyssState> =
         EventLoop::try_new().context("calloop event loop")?;
     let display: Display<AbyssState> = Display::new().context("wayland display")?;
@@ -736,12 +736,18 @@ pub fn run(config: Config, stats: bool) -> Result<()> {
     // SAFETY: single-threaded; nothing else reads the environment concurrently.
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
     tracing::info!(socket = %state.socket_name, "abyss ready on DRM");
+    if session_handoff {
+        crate::session::import();
+    }
 
     render(&mut state);
     event_loop.run(None, &mut state, |state| {
         let _ = state.display_handle.flush_clients();
     })?;
     crate::ipc::cleanup(&state);
+    if session_handoff {
+        crate::session::teardown();
+    }
     Ok(())
 }
 

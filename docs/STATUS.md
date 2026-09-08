@@ -26,7 +26,7 @@ Last updated: 2026-09-07.
 | 8 | Screen sharing via xdg-desktop-portal | **partial** | Two capture protocols behind one shared fail-closed gate (ADR 0027, ADR 0030): `zwlr_screencopy_v1` and `ext_image_copy_capture_v1` + `ext_image_capture_source_v1` (output source, `wl_shm` only). `xdg-desktop-portal-wlr` 0.8.3, allowlisted by the user (ADR 0029), now takes its `ext_image_copy_capture` path against abyss and streams continuously — measured end to end over D-Bus and PipeWire at 60 frames in 1.18 s, no stall (the one-frame stall on its wlr path is an xdpw bug and is simply not on this path any more). Redaction verified in pixels on the new path: with `redact-app-id "kitty"` a captured frame is uniformly (0,0,0) across all 860,343 pixels, and the same scene without the entry comes back in real colour. Outstanding: dmabuf capture (readback per frame), per-toplevel capture (blocked on `ext-foreign-toplevel-list`, not on the protocol), the COMP-10 consent prompt (M14) — today the allowlist entry is the only gate and cannot tell portal clients apart — and lock-denies-capture is unit-tested only, since no locker available here will lock a nested session |
 | 9 | Human IPC, `eclipse-ctl`, metrics | **done (Phase 1)** | JSON-RPC socket, gate table and CLI complete for Phase 1: `resize`, `move_workspace_to_output` and `set_output` landed (COMP-13 §2.1, ADR 0031). 7 gate rows stay `implemented: false` by design — the five agent/grant methods (`get_agents`, `pause_agent`, `resume_agent`, `terminate_agent`, `revoke_grants`) wait on the agent protocol (COMP-08, Phase 2), and `type_text` / `click_at` wait on input injection (COMP-04) |
 | 9b | *(stretch)* animations, rounding, shadows, dim, blur | **not started** | Open Decision #1 proposes after Phase 1 exit |
-| — | **PHASE 1 EXIT** — 14 days as the only compositor | **not started** | |
+| — | **PHASE 1 EXIT** — 14 days as the only compositor | **not started** | now launchable from a greeter: `abyss --session` plus the `dist/` files (ADR 0032) |
 
 ## Phase 2
 
@@ -39,7 +39,9 @@ classes) in `aa4f4b5`.
 
 Batched for a session at a real TTY on the RTX 4060 Ti: DRM page-flip
 presentation, direct scanout planes, VRR, dmabuf and explicit sync on NVIDIA,
-DPMS on real KMS, lid switch.
+DPMS on real KMS, lid switch, and the `--session` systemd handoff (that the
+user target actually starts and the user's services come up with it — the
+nested smoke test only proves the calls are made and failures are tolerated).
 
 ## Known stubs
 

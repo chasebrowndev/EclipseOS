@@ -43,7 +43,7 @@ impl super::Backend for WinitData {
     }
 }
 
-pub fn run(config: Config, stats: bool) -> Result<()> {
+pub fn run(config: Config, stats: bool, session: bool) -> Result<()> {
     let mut event_loop: EventLoop<'static, AbyssState> = EventLoop::try_new().context("calloop")?;
     let display: Display<AbyssState> = Display::new().context("wayland display")?;
     let socket = ListeningSocketSource::new_auto().context("bind wayland socket")?;
@@ -149,6 +149,9 @@ pub fn run(config: Config, stats: bool) -> Result<()> {
 
     std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
     tracing::info!(socket = %state.socket_name, "listening");
+    if session {
+        crate::session::import();
+    }
 
     state.winit = Some(Box::new(WinitData(backend)));
     let out = output.clone();
@@ -187,6 +190,9 @@ pub fn run(config: Config, stats: bool) -> Result<()> {
         })
         .context("event loop")?;
     crate::ipc::cleanup(&state);
+    if session {
+        crate::session::teardown();
+    }
     tracing::info!("abyss exited cleanly");
     Ok(())
 }

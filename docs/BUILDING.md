@@ -64,6 +64,40 @@ Quit the nested compositor with **`Super+Shift+Q`** (interim hardcoded binding â
 ADR 0020). `Super+Escape` is reserved for the agent override chord and is never
 bound to anything else.
 
+## Running as a login session
+
+`abyss --session` performs the systemd/D-Bus handoff itself, immediately after
+its Wayland socket exists â€” see ADR 0032 for why that is not in the wrapper.
+It publishes `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP` and `XDG_SESSION_TYPE` to
+the user bus and to `systemd --user`, then starts `abyss-session.target`; on
+exit it stops that target again. Every one of those calls is best effort: a
+box without systemd or D-Bus still gets a compositor, just no user services.
+
+Install the three files in `dist/`:
+
+| From | To |
+|---|---|
+| `dist/abyss.desktop` | `/usr/share/wayland-sessions/abyss.desktop` |
+| `dist/abyss-session` | `/usr/bin/abyss-session` (mode 0755) |
+| `dist/abyss-session.target` | `~/.config/systemd/user/abyss-session.target` |
+
+`greetd`/`regreet` builds its session list from `/usr/share/wayland-sessions`,
+so the desktop entry is all that is needed for "Abyss" to appear at the
+greeter; it runs `/usr/bin/abyss-session`, which sets the session environment
+and `exec`s `abyss --session`. After adding the target, run
+`systemctl --user daemon-reload` once.
+
+User services that should come up with the session declare the usual pair:
+
+```
+[Unit]
+PartOf=graphical-session.target
+After=graphical-session.target
+```
+
+`abyss-session.target` is `BindsTo=graphical-session.target`, so starting it
+starts `graphical-session.target` and those services with it.
+
 ## Logs
 
 `abyss` logs through `tracing` to journald under the identifier `abyss`:

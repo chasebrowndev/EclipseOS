@@ -1,0 +1,9 @@
+# Wayland session entry for Abyss, the EclipseOS compositor.
+# Install to /usr/share/wayland-sessions/abyss.desktop — greetd/regreet and
+# other display managers read that directory to build their session list.
+[Desktop Entry]
+Name=Abyss
+Comment=The EclipseOS Wayland compositor
+Exec=/usr/bin/abyss-session
+Type=Application
+DesktopNames=Abyss
