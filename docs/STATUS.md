@@ -48,8 +48,10 @@ DPMS on real KMS, lid switch.
 - Trusted UI is not yet prepended in the render path (COMP-10).
 - The DRM cursor is an amber placeholder pending a themed cursor.
 - Tablet-mode switches are logged and ignored.
-- Capture is `wl_shm` only, with no per-toplevel capture — that needs
-  `ext-image-copy-capture-v1`.
+- Capture is `wl_shm` only; every frame is a readback. Per-toplevel capture is
+  blocked on `ext-foreign-toplevel-list`, not on the capture protocol.
+- `ext_image_copy_capture_v1` cursor sessions are stubbed: the session is
+  answered `stopped`/`leave` from the start rather than silently ignored.
 - The capture indicator does not name the consumer; there is no text rendering
   yet.
 - IPC subscribers cannot claim a principal until COMP-08.
