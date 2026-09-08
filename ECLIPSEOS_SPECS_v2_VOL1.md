@@ -2520,6 +2520,11 @@ window is never darkened by its own shadow.
 Animations are geometry-only in v1. **They must not affect what an agent
 sees**: `scene`/`get_tree` geometry reports the *target* geometry, not the
 interpolated one, so an agent never clicks where a window was mid-flight.
+The compositor keeps this true by construction: the shell maps every window at
+its target, and the animation store holds only a render-time offset that decays
+to zero — nothing outside the render path can observe it. A backend that
+repaints on damage keeps asking for frames while a move is in flight and stops
+the frame it finishes.
 This is the single most important interaction between effects and the agent
 protocol.
 

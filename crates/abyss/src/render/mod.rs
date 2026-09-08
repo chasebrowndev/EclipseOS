@@ -4,6 +4,7 @@
 //! Both the winit and DRM backends build their frame from [`collect_elements`];
 //! the stacking order lives here once, not per backend.
 
+pub mod anim;
 pub mod capture;
 pub mod cursor;
 pub mod effects;
@@ -55,6 +56,8 @@ type Border = [SolidColorBuffer; 4];
 #[derive(Default)]
 pub struct BorderStore {
     borders: HashMap<Window, Border>,
+    /// In-flight window moves (COMP-02 §9).
+    pub anim: anim::AnimStore,
     /// One dim-inactive overlay quad per window, kept alive between frames.
     dims: HashMap<Window, SolidColorBuffer>,
     /// Rounded-corner texture program, compiled on the first frame that rounds.
@@ -138,7 +141,11 @@ pub fn collect_elements(
     // With no per-window effect configured (the default) the whole space goes
     // through smithay's one call at alpha 1.0, so damage tracking and direct
     // scanout are exactly what they were before milestone 9b (COMP-02 §9).
-    if config.decoration.any_window_effect() || crate::shell::rules::any_opacity_override(space.elements()) {
+    borders.anim.sync(space, config);
+    if borders.anim.running()
+        || config.decoration.any_window_effect()
+        || crate::shell::rules::any_opacity_override(space.elements())
+    {
         elements.extend(window_elements(renderer, space, borders, output, config, focus));
     } else {
         borders.dims.clear();
@@ -219,7 +226,8 @@ fn window_elements(
         // The dim overlay belongs above this window but below the ones in
         // front of it, so it is pushed just before the window's own surfaces.
         if !active && deco.dim_inactive > 0.0 {
-            if let Some(geo) = space.element_geometry(&window) {
+            if let Some(mut geo) = space.element_geometry(&window) {
+                geo.loc += store.anim.offset(&window);
                 let color = [0.0, 0.0, 0.0, deco.dim_inactive * alpha];
                 let buffer = store
                     .dims
@@ -236,7 +244,7 @@ fn window_elements(
             }
         }
 
-        let render_loc = loc - window.geometry().loc - output_geo.loc;
+        let render_loc = loc + store.anim.offset(&window) - window.geometry().loc - output_geo.loc;
         let surfaces = window.render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
             renderer,
             phys(render_loc, scale),
@@ -247,7 +255,8 @@ fn window_elements(
         // Every surface of one window is masked by the same rectangle, so a
         // window with subsurfaces rounds as a single shape.
         match (&rounding, space.element_geometry(&window)) {
-            (Some(((fb_height, flip_y), program)), Some(geo)) => {
+            (Some(((fb_height, flip_y), program)), Some(mut geo)) => {
+                geo.loc += store.anim.offset(&window);
                 let rect = Rectangle::new(
                     phys(geo.loc - output_geo.loc, scale),
                     geo.size.to_f64().to_physical(scale).to_i32_round(),
@@ -298,9 +307,10 @@ fn shadow_elements(
     let range = shadow.range;
     let mut out = Vec::new();
     for window in space.elements() {
-        let Some(geo) = space.element_geometry(window) else {
+        let Some(mut geo) = space.element_geometry(window) else {
             continue;
         };
+        geo.loc += store.anim.offset(window);
         let area = Rectangle::new(
             (
                 geo.loc.x - output_loc.x - inset - range,
@@ -337,9 +347,10 @@ fn border_elements(
 
     let mut out = Vec::new();
     for window in live {
-        let Some(geo) = space.element_geometry(&window) else {
+        let Some(mut geo) = space.element_geometry(&window) else {
             continue;
         };
+        geo.loc += store.anim.offset(&window);
         let color = if focus == Some(&window) {
             config.general.col_active
         } else {

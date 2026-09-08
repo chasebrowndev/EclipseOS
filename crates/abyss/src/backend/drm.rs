@@ -900,6 +900,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
             state.input_method_popup.as_ref(),
         ));
     }
+    let animating = state.borders.anim.running();
 
     // A surface covering the whole output is both the direct-scanout candidate
     // and the trigger for adaptive sync (COMP-03 §8).
@@ -983,7 +984,10 @@ fn render_output(state: &mut AbyssState, index: usize) {
     }
 
     let entry = &mut drm.outputs[index];
-    entry.needs_render = false;
+    // A running animation asks for the next frame here: leaving `needs_render`
+    // set makes this VBlank's completion schedule another render, and it
+    // clears itself the frame the last move finishes (COMP-02 §9).
+    entry.needs_render = animating;
     entry.frame_pending = queued;
     let arm = !queued && !entry.retry_armed && failed;
     if arm {
