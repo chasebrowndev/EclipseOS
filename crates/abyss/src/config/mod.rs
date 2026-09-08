@@ -721,16 +721,25 @@ impl Config {
             let doc = match text.parse::<KdlDocument>() {
                 Ok(d) => d,
                 Err(e) => {
-                    let off = e
-                        .diagnostics
-                        .first()
-                        .map_or(0, |d| d.span.offset())
-                        .min(text.len());
+                    // Prefer the first diagnostic: it carries the position and the
+                    // "expected ..." help, where the outer error is only generic.
+                    let (off, message) = match e.diagnostics.first() {
+                        Some(d) => {
+                            let mut m = d.message.clone().unwrap_or_else(|| "invalid syntax".to_string());
+                            if let Some(help) = &d.help {
+                                m.push_str(" (");
+                                m.push_str(help);
+                                m.push(')');
+                            }
+                            (d.span.offset().min(text.len()), m)
+                        }
+                        None => (0, format!("{e}")),
+                    };
                     cfg.errors.push(ConfigError {
                         file: f.clone(),
                         line: text[..off].matches('\n').count() + 1,
                         col: off - text[..off].rfind('\n').map_or(0, |i| i + 1) + 1,
-                        message: format!("{e}"),
+                        message,
                     });
                     continue;
                 }
@@ -800,7 +809,7 @@ impl Config {
                 "decoration" => self.apply_decoration(node),
                 "animations" => self.apply_animations(node),
                 "windowrule" => self.apply_windowrule(node),
-                other => self.reject(node, format!("unknown config node (node={})", other)),
+                other => self.reject(node, format!("unknown config node {other:?}")),
             }
         }
     }
@@ -833,16 +842,16 @@ impl Config {
                 "layout" => match arg(n).and_then(KdlValue::as_string) {
                     Some("dwindle") => self.general.layout = LayoutKind::Dwindle,
                     Some("master") => self.general.layout = LayoutKind::Master,
-                    other => self.reject(n, format!("unknown layout, keeping default (other={:?})", other)),
+                    other => self.reject(n, format!("unknown layout {other:?}")),
                 },
                 "col-active-border" | "col-inactive-border" => {
                     match arg(n).and_then(KdlValue::as_string).and_then(parse_color) {
                         Some(c) if name.starts_with("col-active") => self.general.col_active = c,
                         Some(c) => self.general.col_inactive = c,
-                        None => self.reject(n, format!("bad color, keeping default (node={})", name)),
+                        None => self.reject(n, format!("bad color for {name:?}")),
                     }
                 }
-                other => self.reject(n, format!("unknown general key (node={})", other)),
+                other => self.reject(n, format!("unknown general key {other:?}")),
             }
         }
     }
@@ -854,7 +863,7 @@ impl Config {
                 "direct-scanout" => {
                     self.render.direct_scanout = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
                 }
-                other => self.reject(n, format!("unknown render node (node={})", other)),
+                other => self.reject(n, format!("unknown render node {other:?}")),
             }
         }
     }
@@ -870,7 +879,7 @@ impl Config {
                     }
                     self.clipboard.data_control_allow = names(n, &mut seen_allow);
                 }
-                other => self.reject(n, format!("unknown clipboard node (node={})", other)),
+                other => self.reject(n, format!("unknown clipboard node {other:?}")),
             }
         }
     }
@@ -896,7 +905,7 @@ impl Config {
                     }
                     self.capture.redact_app_id = names(n, &mut seen_redact);
                 }
-                other => self.reject(n, format!("unknown capture node (node={})", other)),
+                other => self.reject(n, format!("unknown capture node {other:?}")),
             }
         }
     }
@@ -922,7 +931,7 @@ impl Config {
                         ),
                     ),
                 },
-                other => self.reject(n, format!("unknown xwayland node (node={})", other)),
+                other => self.reject(n, format!("unknown xwayland node {other:?}")),
             }
         }
     }
@@ -952,7 +961,7 @@ impl Config {
                     Some(c) => self.idle.lock_command = Some(c.to_owned()),
                     None => self.reject(n, "idle lock-command needs a string argument"),
                 },
-                other => self.reject(n, format!("unknown idle node (node={})", other)),
+                other => self.reject(n, format!("unknown idle node {other:?}")),
             }
         }
     }
@@ -991,10 +1000,10 @@ impl Config {
                 }
                 "accel-profile" => match arg(n).and_then(KdlValue::as_string) {
                     Some(v @ ("flat" | "adaptive")) => self.input.accel_profile = v.to_string(),
-                    other => self.reject(n, format!("unknown accel-profile (other={:?})", other)),
+                    other => self.reject(n, format!("unknown accel-profile {other:?}")),
                 },
                 "touchpad" => self.apply_touchpad(n),
-                other => self.reject(n, format!("unknown input key (node={})", other)),
+                other => self.reject(n, format!("unknown input key {other:?}")),
             }
         }
     }
@@ -1004,14 +1013,14 @@ impl Config {
         for n in children.nodes() {
             let name = n.name().value();
             let Some(b) = arg(n).and_then(KdlValue::as_bool) else {
-                self.reject(n, format!("touchpad key needs a boolean (node={})", name));
+                self.reject(n, format!("touchpad key needs a boolean: {name:?}"));
                 continue;
             };
             match name {
                 "natural-scroll" => self.input.touchpad.natural_scroll = b,
                 "tap-to-click" => self.input.touchpad.tap_to_click = b,
                 "dwt" => self.input.touchpad.dwt = b,
-                other => self.reject(n, format!("unknown touchpad key (node={})", other)),
+                other => self.reject(n, format!("unknown touchpad key {other:?}")),
             }
         }
     }
@@ -1036,11 +1045,11 @@ impl Config {
                             _ => self.decoration.dim_inactive = v,
                         }
                     }
-                    _ => self.reject(n, format!("decoration key must be 0.0..=1.0 (node={})", name)),
+                    _ => self.reject(n, format!("{name} must be 0.0..=1.0")),
                 },
                 "blur" => self.apply_blur(n),
                 "shadow" => self.apply_shadow(n),
-                other => self.reject(n, format!("unknown decoration key (node={})", other)),
+                other => self.reject(n, format!("unknown decoration key {other:?}")),
             }
         }
     }
@@ -1060,7 +1069,7 @@ impl Config {
                     Some(v) if (1..=6).contains(&v) => self.decoration.blur.passes = v as i32,
                     _ => self.reject(n, "blur passes must be an integer 1..=6"),
                 },
-                other => self.reject(n, format!("unknown blur key (node={})", other)),
+                other => self.reject(n, format!("unknown blur key {other:?}")),
             }
         }
     }
@@ -1076,7 +1085,7 @@ impl Config {
                     Some(v) if (0..=128).contains(&v) => self.decoration.shadow.range = v as i32,
                     _ => self.reject(n, "shadow range must be an integer 0..=128"),
                 },
-                other => self.reject(n, format!("unknown shadow key (node={})", other)),
+                other => self.reject(n, format!("unknown shadow key {other:?}")),
             }
         }
     }
@@ -1090,7 +1099,7 @@ impl Config {
                     self.animations.enabled = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
                 }
                 "animation" => self.apply_animation(n),
-                other => self.reject(n, format!("unknown animations key (node={})", other)),
+                other => self.reject(n, format!("unknown animations key {other:?}")),
             }
         }
     }
@@ -1101,7 +1110,7 @@ impl Config {
             return;
         };
         if !ANIMATION_NAMES.contains(&name) {
-            self.reject(node, format!("unknown animation name (name={})", name));
+            self.reject(node, format!("unknown animation name {name:?}"));
             return;
         }
         let mut anim = Animation {
@@ -1137,7 +1146,7 @@ impl Config {
                         return;
                     }
                 },
-                other => self.reject(node, format!("unknown animation property (node={})", other)),
+                other => self.reject(node, format!("unknown animation property {other:?}")),
             }
         }
         self.animations.curves.push(anim);
@@ -1313,7 +1322,7 @@ impl Config {
                 },
                 // Restart-only knobs (COMP-13 §1.2); parsed elsewhere or not yet.
                 "xwayland" => {}
-                other => self.reject(n, format!("unknown misc key (node={})", other)),
+                other => self.reject(n, format!("unknown misc key {other:?}")),
             }
         }
     }
@@ -1334,7 +1343,7 @@ impl Config {
                 match arg(n).and_then(KdlValue::as_string) {
                     Some("dwindle") => *slot = Some(LayoutKind::Dwindle),
                     Some("master") => *slot = Some(LayoutKind::Master),
-                    other => self.reject(n, format!("unknown workspace layout (other={:?})", other)),
+                    other => self.reject(n, format!("unknown workspace layout {other:?}")),
                 }
             }
         }
@@ -1381,7 +1390,7 @@ impl Config {
                     Some(t) if crate::outputs::parse_transform(t).is_some() => {
                         rule.transform = Some(t.to_owned())
                     }
-                    other => self.reject(n, format!("unknown output transform (other={:?})", other)),
+                    other => self.reject(n, format!("unknown output transform {other:?}")),
                 },
                 "enabled" | "disabled" => match arg(n).and_then(KdlValue::as_bool) {
                     Some(v) => rule.enabled = Some(v == (name == "enabled")),
@@ -1392,7 +1401,7 @@ impl Config {
                     _ => self.reject(n, "output lid-close must be off, suspend or ignore"),
                 },
                 "vrr" | "adaptive-sync" => rule.vrr = arg(n).and_then(KdlValue::as_bool).or(Some(true)),
-                other => self.reject(n, format!("unknown output key (node={})", other)),
+                other => self.reject(n, format!("unknown output key {other:?}")),
             }
         }
         self.outputs.push(rule);

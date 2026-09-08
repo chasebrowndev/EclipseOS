@@ -203,7 +203,11 @@ macros anywhere in the workspace.
     `window`, `output`, `focus` and workspace events fire from
     `outputs/mod.rs`, `shell/mod.rs` and `ipc/methods.rs`; `config-error` now
     fires from `config/watch.rs::reload_now` when a reload is refused.
-    `agent-activity` waits on the agent protocol (Phase 2).
+    **Stub 13 is therefore only partially closed** — `config-error` is done,
+    `agent-activity` is not, so this entry stays open. It closes when
+    COMP-08 `eclipse_agent_v1` lands (Phase 2, milestone 10): the event has no
+    source to fire from until an agent client can attach, so there is nothing
+    to implement before then. Nothing else blocks it.
 14. **No `crates/policyd`, `crates/agentd`, `crates/sandbox`** — the TCB crates
     named in the root `CLAUDE.md` do not exist. The module map in that file
     describes the intended end state, not the tree.
