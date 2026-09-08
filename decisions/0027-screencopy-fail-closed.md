@@ -28,7 +28,7 @@ normally answer "may this client capture?", does not exist yet.
 
 ## Decision
 Option 3. `capture { allow "<comm>" ... }` in the KDL config names the processes
-that may capture; it is **empty by default**, so a stock helios denies every
+that may capture; it is **empty by default**, so a stock abyss denies every
 capture request. The client's identity is its `/proc/<pid>/comm`, resolved from
 the `SO_PEERCRED` pid of the connection, exactly as ADR 0022 does.
 
@@ -48,7 +48,7 @@ the capture is actually serviced.
 
 Redaction rides on the same path. `capture_elements` builds its own pass list
 rather than reusing `space_render_elements`: a surface that is sensitive (in
-`HeliosState::sensitive`, or matching `capture { redact-app-id ... }`) is
+`AbyssState::sensitive`, or matching `capture { redact-app-id ... }`) is
 **excluded** from that list and an opaque black quad is drawn in its place, so
 the pixels are never rendered into the capture buffer rather than being painted
 over afterwards. Both inputs may only raise the class — the ratchet rule holds

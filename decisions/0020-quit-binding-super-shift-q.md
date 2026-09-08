@@ -4,7 +4,7 @@ Date: 2026-09-05
 Deciders: chase (owner), Claude (advisory)
 
 ## Context
-Milestone 1 runs `helios` nested under Hyprland with no config parser yet
+Milestone 1 runs `abyss` nested under Hyprland with no config parser yet
 (KDL lands in milestone 2, ADR 0016). A nested compositor with no way out is a
 lost session. `Super+Escape` is reserved by COMP-04 §6 as the human override
 chord that pauses all agent seats, and must never be overloaded — muscle memory

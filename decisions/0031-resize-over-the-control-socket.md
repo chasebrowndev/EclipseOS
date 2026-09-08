@@ -55,7 +55,7 @@ winit backend — is `invalid_params`; `vrr: false` is always accepted.
 - Changing the master layout to honour tree geometry later would remove the
   refusal without changing the wire contract.
 - VRR does not survive a restart; a human who wants it permanently sets it in
-  `helios.kdl`. If that proves wrong, `SavedOutput` gains a field and this ADR
+  `abyss.kdl`. If that proves wrong, `SavedOutput` gains a field and this ADR
   is revisited.
 
 ## Revisit when

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `eclipse-ctl` — thin CLI over the helios control socket (COMP-13 §2.3).
+//! `eclipse-ctl` — thin CLI over the abyss control socket (COMP-13 §2.3).
 //!
-//! It holds no authority: it opens `$XDG_RUNTIME_DIR/eclipse/helios.sock` and
+//! It holds no authority: it opens `$XDG_RUNTIME_DIR/eclipse/abyss.sock` and
 //! writes JSON-RPC. The compositor decides what is allowed; anything this
 //! tool can do, a shell one-liner can do too. Keep it that way.
 
@@ -14,7 +14,7 @@ use std::{
 use serde_json::{json, Value};
 
 const USAGE: &str = "\
-eclipse-ctl — control the helios compositor
+eclipse-ctl — control the abyss compositor
 
   eclipse-ctl outputs [--all]         list outputs (--all includes virtual)
   eclipse-ctl workspaces              list workspaces
@@ -83,7 +83,7 @@ fn main() -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             eprintln!("eclipse-ctl: {path}: {e}");
-            eprintln!("is helios running, and is this the same session?");
+            eprintln!("is abyss running, and is this the same session?");
             return ExitCode::FAILURE;
         }
     };
@@ -108,7 +108,7 @@ fn main() -> ExitCode {
 
 fn default_socket() -> String {
     let base = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".into());
-    format!("{base}/eclipse/helios.sock")
+    format!("{base}/eclipse/abyss.sock")
 }
 
 /// Which columns a listing prints. Anything not here falls back to JSON.

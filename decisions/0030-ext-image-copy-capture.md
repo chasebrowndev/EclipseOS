@@ -53,7 +53,7 @@ by the one `capture::service`, which builds its pass list with the one
 place. There is no second redaction implementation to keep in step.
 
 Continuous capture is driven by re-arming on a short calloop timer per
-serviced frame rather than by damage. A nested helios whose host window is
+serviced frame rather than by damage. A nested abyss whose host window is
 occluded receives no frame callbacks, and commit `dedc26e` already had to route
 `backend::damage_all` around that for the wlr path; making the new path wait on
 damage would reintroduce the same class of stall.
@@ -65,7 +65,7 @@ silent no-op. The foreign-toplevel capture source is not implemented, because
 
 ## Consequences
 - M8's blocking client bug is routed around: xdpw takes its
-  `ext_image_copy_capture` path against helios and streams continuously —
+  `ext_image_copy_capture` path against abyss and streams continuously —
   measured at 60 frames in 1.18 s through PipeWire, sustained, with no stall.
 - Two capture protocols to maintain, and two globals to hide. The mitigation is
   that they are two front ends onto one enforcement path; a change to the gate
@@ -74,7 +74,7 @@ silent no-op. The foreign-toplevel capture source is not implemented, because
   deprecated upstream and this ADR is the place to record its removal when the
   ecosystem has moved; there is no deadline on it today.
 - `wl_shm` only, again. `ext_image_copy_capture_v1` can advertise dmabuf
-  constraints and helios sends none, so a video-rate consumer still pays a
+  constraints and abyss sends none, so a video-rate consumer still pays a
   readback per frame. Owed, as in ADR 0027.
 - Per-toplevel capture becomes expressible for the first time, but is still not
   implemented: it needs `ext-foreign-toplevel-list`, which is now what COMP-02

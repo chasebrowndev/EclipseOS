@@ -1,6 +1,6 @@
-# helios — architecture
+# abyss — architecture
 
-`helios` is the EclipseOS Wayland compositor and one half of the trusted
+`abyss` is the EclipseOS Wayland compositor and one half of the trusted
 computing base (the other is `policyd`). It is a Rust compositor built on
 Smithay `=0.7.0` used as a library, not a fork of an existing compositor
 (ADR 0002).
@@ -17,7 +17,7 @@ CLAUDE.md             root invariants + commands
 docs/                 specs and this document
 decisions/            ADRs (F-08 format)
 crates/
-  helios/             compositor                       [TCB]
+  abyss/             compositor                       [TCB]
   policyd/            policy + audit daemon            [TCB]   (not yet)
   policy-eval/        shared evaluator, linked by both [TCB]   (not yet)
   agentd/             agent gateway                            (not yet)
@@ -32,7 +32,7 @@ fuzz/                 cargo-fuzz targets
 bench/                COMP-14 benchmarks
 ```
 
-Only `crates/helios` exists today. TCB crates get a line-by-line owner review
+Only `crates/abyss` exists today. TCB crates get a line-by-line owner review
 on every change (F-07 §4).
 
 ## Licensing split (F-05 §3, ADR 0005)
@@ -43,7 +43,7 @@ SPDX header naming which.
 
 ## Core model (COMP-01 §3, ADR 0018)
 
-- One `calloop` event loop owns `HeliosState`. No locks on the hot path.
+- One `calloop` event loop owns `AbyssState`. No locks on the hot path.
 - State is a tree of plain structs; children are referenced by `u64` handle or
   index, never by pointer. No `Rc<RefCell<_>>` graph.
 - Concurrency only where it pays: a render thread per GPU, and blocking work
@@ -53,7 +53,7 @@ SPDX header naming which.
   never busy-waits.
 - No allocation in input delivery or the policy check.
 
-## Module map — `crates/helios/src/`
+## Module map — `crates/abyss/src/`
 
 | Module | Spec | Responsibility |
 |---|---|---|
@@ -68,10 +68,10 @@ SPDX header naming which.
 | `trusted_ui/` | COMP-10 | Compositor-drawn consent prompts, agent-activity indicator, emergency panel. Never a client (ADR 0009). |
 | `policy/` | COMP-11 | The compiled enforcement table and `check()`. Fail-closed; no state mutation before `Allow`; `defer` may only tighten. |
 | `audit/` | COMP-12 | Audit and provenance event emission. Never records human input by content. |
-| `ipc/` | COMP-13 | Human JSON-RPC socket — the bar, the launcher, `heliosctl`. Unprivileged, human-principal only. |
+| `ipc/` | COMP-13 | Human JSON-RPC socket — the bar, the launcher, `abyssctl`. Unprivileged, human-principal only. |
 | `config/` | COMP-13 | KDL parse, validate, hot-reload (ADR 0016). A bad config never takes down a live session. |
 | `xwayland/` | COMP-07 | X11 client support, window identity mapping, scaling. |
-| `state.rs` | COMP-01 | `HeliosState` itself: the single owner of everything above. |
+| `state.rs` | COMP-01 | `AbyssState` itself: the single owner of everything above. |
 
 ## Trust boundaries
 

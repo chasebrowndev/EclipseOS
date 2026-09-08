@@ -26,7 +26,7 @@ own picker is an out-of-tree UI we do not control and do not trust.
 Measured this milestone, on the winit backend: our screencopy loop sustains 851
 frames in ~11 s to a direct client (`wf-recorder`), and delivers correct redacted
 frames. Through xdpw 0.8.3, exactly one frame reaches the PipeWire consumer and
-the stream then stalls; the wire trace shows helios answering `capture_output`
+the stream then stalls; the wire trace shows abyss answering `capture_output`
 with `buffer`/`buffer_done` and then `damage`/`ready` in 5 ms, after which xdpw
 never issues another capture. In that version the wlr backend restarts the loop
 only from `pwr_handle_stream_on_process`, and the stream is connected
@@ -50,7 +50,7 @@ the limit is xdpw's wlr path and its PipeWire scheduling, not our protocol.
 Option 3. `capture { allow "xdg-desktop-portal-wlr" }` is a supported
 configuration and is what a user writes to screen-share today. It is **not** in
 any config we ship, not in a default, not in an example, and not created by the
-first run; `capture.allow` stays empty, so a stock helios still denies every
+first run; `capture.allow` stays empty, so a stock abyss still denies every
 capture. The entry is described in the docs together with what it widens: it
 grants capture to the portal, and therefore to every client the portal will serve,
 for as long as it is in the file.

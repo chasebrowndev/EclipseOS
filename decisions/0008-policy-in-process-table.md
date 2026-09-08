@@ -16,7 +16,7 @@ decisions genuinely need slow-path context.
 3. In-process only, no slow path — cannot express context-dependent rules.
 
 ## Decision
-`policyd` compiles rules into an enforcement table that `helios` evaluates
+`policyd` compiles rules into an enforcement table that `abyss` evaluates
 in-process, as a table lookup with no allocation. Only requests explicitly
 marked deferrable take the `policyd` slow path, and a deferred answer may only
 **tighten** the table's outcome — never turn a deny or prompt into an allow
@@ -26,7 +26,7 @@ an unavailable `policyd` denies.
 ## Consequences
 - Hot-path check is benchmarked in `bench/` and stays allocation-free.
 - Two evaluators exist, so a golden decision suite proving `policy-eval` ≡
-  `helios` is a CI gate once S-02 lands.
+  `abyss` is a CI gate once S-02 lands.
 - `policyd` being down degrades to deny, never to allow.
 
 ## Revisit when

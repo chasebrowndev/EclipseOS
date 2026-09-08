@@ -5,7 +5,7 @@ This product includes software developed as part of the EclipseOS project.
 
 LICENSING
 ---------
-System components -- helios (compositor), policyd, policy-eval, sandbox,
+System components -- abyss (compositor), policyd, policy-eval, sandbox,
 agentd, registryd, the audit store, default policy rulesets, classifier
 weights, and packaging/ISO build scripts -- are licensed under the GNU Affero
 General Public License, version 3 only (AGPL-3.0-only). See LICENSE.

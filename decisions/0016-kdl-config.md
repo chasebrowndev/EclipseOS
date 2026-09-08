@@ -19,7 +19,7 @@ KDL, with a Hyprland-like block structure. hyprlang is not reimplemented and
 Hyprland-config compatibility is an explicit non-goal.
 
 ## Consequences
-- Parse/validate/hot-reload lives in `crates/helios/src/config/`.
+- Parse/validate/hot-reload lives in `crates/abyss/src/config/`.
 - Errors report file, line and column; an invalid config never takes down a
   running session — the last good config stays live.
 - Migrating a Hyprland user is a documentation job, not a compatibility shim.

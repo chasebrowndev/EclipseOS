@@ -1,4 +1,4 @@
-# Building and running helios
+# Building and running abyss
 
 ## Toolchain
 
@@ -56,7 +56,7 @@ During development, run nested inside your existing session (Hyprland works):
 cargo run -- --backend winit
 ```
 
-That opens `helios` in a window with a winit backend, which is milestone 1's
+That opens `abyss` in a window with a winit backend, which is milestone 1's
 target. The DRM/udev backend is selected by running from a TTY without a parent
 compositor.
 
@@ -66,13 +66,13 @@ bound to anything else.
 
 ## Logs
 
-`helios` logs through `tracing` to journald under the identifier `helios`:
+`abyss` logs through `tracing` to journald under the identifier `abyss`:
 
 ```
-journalctl --user -t helios -f
+journalctl --user -t abyss -f
 ```
 
-Verbosity is controlled by `RUST_LOG`, e.g. `RUST_LOG=helios=debug cargo run -- --backend winit`.
+Verbosity is controlled by `RUST_LOG`, e.g. `RUST_LOG=abyss=debug cargo run -- --backend winit`.
 Human input is never logged by content, at any level. If you find a log line
 that would print a keystroke, clipboard contents or a `password`-role value,
 that is a bug — fix it before anything else.
@@ -114,8 +114,8 @@ Build and run inside the guest over ssh:
 
 ```
 ssh -p 2222 user@127.0.0.1
-cd ~/helios-src && cargo build
-XDG_RUNTIME_DIR=/run/user/1000 ./target/debug/helios --backend drm &
+cd ~/abyss-src && cargo build
+XDG_RUNTIME_DIR=/run/user/1000 ./target/debug/abyss --backend drm &
 XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1 foot &
 ```
 
@@ -140,4 +140,4 @@ Notes learned the hard way:
   good way to catch damage-tracking bugs (stale regions, cursor trails). Run a
   known-good compositor such as `weston` in the same guest as a control before
   blaming the hardware.
-- Only one compositor can hold DRM master: kill weston before starting helios.
+- Only one compositor can hold DRM master: kill weston before starting abyss.

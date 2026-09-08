@@ -23,7 +23,7 @@ writing a new ADR that says so.
 | 0015 | `registryd` outside TCB; never receives secret surfaces | accepted (not yet written up) |
 | 0016 | [Configuration format is KDL](0016-kdl-config.md) | accepted |
 | 0017 | [NVIDIA-first GPU baseline; explicit sync mandatory](0017-nvidia-first-gpu-baseline.md) | accepted |
-| 0018 | [Single-threaded core owning `HeliosState`](0018-single-threaded-core.md) | accepted |
+| 0018 | [Single-threaded core owning `AbyssState`](0018-single-threaded-core.md) | accepted |
 | 0019 | [Focus-follows-mouse default](0019-focus-follows-mouse-default.md) | accepted |
 | 0020 | [Interim quit binding `Super+Shift+Q`](0020-quit-binding-super-shift-q.md) | accepted |
 | 0021 | [Per-workspace arena binary tree for tiling](0021-layout-tree.md) | accepted |

@@ -42,7 +42,7 @@ it lands it goes behind the same filter.
   the user can defeat this. It raises the bar from "any client" to "a client
   the user's config named", which is the point until COMP-05 app identity
   exists — `TODO(COMP-05)` in `protocols/standard/data_control.rs`.
-- The filter closure captures the allowlist at `HeliosState::new`, so editing
+- The filter closure captures the allowlist at `AbyssState::new`, so editing
   the list needs a restart. Hot-reload is M6 work.
 - Clipboard *provenance* is separate and tracked independently: `new_selection`
   records the focused toplevel's `app_id` and the offered MIME type names.
@@ -60,7 +60,7 @@ allowlisted name still passes.
 ## Amendment — 2026-09-07 (hot reload)
 The "editing the list needs a restart" consequence above is retired. Both
 allowlists are now a `config::Allowlist` — an `Arc<RwLock<Vec<String>>>` handle
-held by `HeliosState` and *shared with* the global's bind filter, rather than a
+held by `AbyssState` and *shared with* the global's bind filter, rather than a
 `Vec<String>` snapshot moved into the closure. `config::watch::reload_now`
 writes the new names through the handle, so the next bind sees them; clients
 that already hold the global keep it, because a visibility filter is only

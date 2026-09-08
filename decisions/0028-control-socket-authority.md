@@ -30,7 +30,7 @@ the interesting methods depend on subsystems that land in Phase 2.
    disclosure behind the same uid check as the session itself.
 
 ## Decision
-Option 3. The socket lives at `$XDG_RUNTIME_DIR/eclipse/helios.sock` with the
+Option 3. The socket lives at `$XDG_RUNTIME_DIR/eclipse/abyss.sock` with the
 directory 0700 and the socket 0600, so only the session owner's uid can connect
 at all. Every request crosses `ipc::gate::check` before any state is read or
 written: a method with no row in `TABLE` does not exist and is denied, and the
@@ -51,7 +51,7 @@ not exposed by any method, and no metric is derived from them.
   real disclosure and it is deliberate; it is the same trust boundary that
   already lets a process read the owner's files.
 - The socket is a single-threaded calloop event source, so it holds no lock on
-  `HeliosState` and cannot stall the hot path.
+  `AbyssState` and cannot stall the hot path.
 - We owe a per-peer identity story. Right now the uid check is the whole
   authorisation; there is no way to give a bar read-only access while denying
   it `close_window`. The `Kind` classes exist so that can be added without

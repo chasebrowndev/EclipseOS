@@ -45,7 +45,7 @@ windows are mapped into the single `Space`.
   is an explicit id walk, and removing a leaf must collapse its parent split.
 - Forbidden: storing per-window layout state in `Window::user_data()` (that
   requires `Send + Sync` and would reintroduce shared mutability). Border
-  buffers live in `HeliosState.borders` for the same reason.
+  buffers live in `AbyssState.borders` for the same reason.
 - Owed: unit tests for insert/remove/geometry across both layouts beyond the
   current config tests, and a resize-by-ratio binding (M3).
 

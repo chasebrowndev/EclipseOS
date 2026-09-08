@@ -43,7 +43,7 @@ priority.
 | F-07 | Repo layout, branching, CI/CD, release engineering | **DONE** | F-05 |
 | F-08 | Decision log (ADR format & index) | **DONE** | — |
 
-## Tier 1 — Compositor (`helios`)
+## Tier 1 — Compositor (`abyss`)
 
 | ID | Document | Status | Depends on |
 |---|---|---|---|
@@ -472,7 +472,7 @@ COMPOSITOR.md, and is the input to the Security & Policy spec.
 | Principal | Trust | Notes |
 |---|---|---|
 | P0 Human owner | Full | Root of authority. Can be deceived (phishing via agent-produced UI) but not malicious. |
-| P1 Compositor (`helios`) | Trusted computing base | Enforces policy, draws trusted UI, mediates all input/capture. Must be smallest possible. |
+| P1 Compositor (`abyss`) | Trusted computing base | Enforces policy, draws trusted UI, mediates all input/capture. Must be smallest possible. |
 | P2 `policyd` | TCB | Compiles policy, stores audit, runs slow-path decisions. |
 | P3 `agentd` | Semi-trusted | Multiplexes agents; authenticates them; must not be able to escalate an agent's capabilities beyond what `policyd` granted. Compromise of `agentd` = compromise of every agent's granted capabilities, but not more. |
 | P4 `registryd` | Semi-trusted | Reads trees and captures; a compromise leaks perception (A1, A2) but cannot act. Deliberately has no action capabilities. |
@@ -490,7 +490,7 @@ Key stance: **P5 is untrusted even when it is "our" agent running "our" prompt.*
 
 ```
                  ┌──────────────── TCB ────────────────┐
-  P0 human ──►   │  helios (compositor)   policyd       │
+  P0 human ──►   │  abyss (compositor)   policyd       │
   physical input │  trusted UI, seats,    policy table  │
                  │  capture, enforcement  audit store   │
                  └───────▲──────────▲────────▲──────────┘
@@ -970,7 +970,7 @@ mean version-juggling for no benefit at this team size.
   docs/                       # all specs (CHARTER, COMP-*, S-*, P-*, …)
   decisions/                  # ADRs (F-08 format)
   crates/
-    helios/                   # compositor            [TCB]
+    abyss/                   # compositor            [TCB]
     policyd/                  # policy + audit        [TCB]
     policy-eval/              # shared evaluator crate (linked by both)
     agentd/                   # agent gateway
@@ -1025,7 +1025,7 @@ latency regression fails the build.
 
 | Area | Review |
 |---|---|
-| `helios` enforcement path, `policyd`, `policy-eval`, `sandbox` | **Owner reads every line.** No exceptions. |
+| `abyss` enforcement path, `policyd`, `policy-eval`, `sandbox` | **Owner reads every line.** No exceptions. |
 | Everything else | Merge on green CI; owner reviews at leisure |
 
 Write this down because in six months you will not remember which crates
@@ -1033,7 +1033,7 @@ were TCB.
 
 ## 5. Commits & PRs
 
-- Conventional commits (`feat(helios): …`, `fix(policyd): …`).
+- Conventional commits (`feat(abyss): …`, `fix(policyd): …`).
 - Every PR body cites the spec section it implements
   (`Implements COMP-08 §4`). This is what makes the spec→code trail
   auditable when work is delegated.
@@ -1132,7 +1132,7 @@ auditable or the product's central claim is unverifiable.
 
 | Component | Licence |
 |---|---|
-| `helios`, `policyd`, `policy-eval`, `sandbox`, `agentd`, `registryd` | AGPLv3 |
+| `abyss`, `policyd`, `policy-eval`, `sandbox`, `agentd`, `registryd` | AGPLv3 |
 | Protocol definitions (`eclipse_agent_v1`, `eclipse_semantic_v1`) | **Permissive (Apache-2.0 or MIT)** — see §4 |
 | SDKs (`sdk-rust`, `sdk-python`) | **Permissive (Apache-2.0)** — see §4 |
 | Toolkit bridges (P-03), upstreamed patches | Licence of the upstream project |
@@ -1259,13 +1259,13 @@ source file, `cargo-deny` config.
 | **Provenance** | Ordered chain of sources a piece of data passed through | audit |
 | **Channel** | Named message stream between agents in `agentd` | Wayland event stream |
 | **Trusted UI** | Compositor-drawn surfaces above all clients | layer-shell |
-| **TCB** | `helios` + `policyd` | `agentd`, `registryd` (semi-trusted) |
+| **TCB** | `abyss` + `policyd` | `agentd`, `registryd` (semi-trusted) |
 | **Perception** | Reading system state (scene, tree, text, capture) | vision (one perception source) |
 | **Action** | Semantic action on a node (`activate`…) or synthesized input | irreversible action (a policy taxonomy) |
 | **Irreversible action** | Taxonomy id (`communication.send`…) matched by policy | destructive (subset) |
 | **Human override** | Reserved chord pausing all agent seats | screen lock |
 
-Process names: `helios` (compositor), `agentd`, `registryd`, `policyd`.
+Process names: `abyss` (compositor), `agentd`, `registryd`, `policyd`.
 Protocol names: `eclipse_agent_v1`, `eclipse_semantic_v1` (rename with
 project name per F-03).
 
@@ -1325,7 +1325,7 @@ Seeded ADRs (from decisions already made):
 
 # Compositor — Master Design Specification (Draft v0.1)
 
-Component codename: `helios` (placeholder; see charter §6 name decision).
+Component codename: `abyss` (placeholder; see charter §6 name decision).
 Language: Rust. Foundation: Smithay. Event loop: calloop.
 Scope: Charter Phases 1 (daily-driver compositor) and 2 (agent protocol).
 
@@ -1418,7 +1418,7 @@ Single compositor process. Privileged helper processes are separate:
 
 | Process | Role | Privilege |
 |---|---|---|
-| `helios` | Compositor: DRM, input, rendering, protocol servers | User, with DRM/input via logind/seatd |
+| `abyss` | Compositor: DRM, input, rendering, protocol servers | User, with DRM/input via logind/seatd |
 | `agentd` | Agent gateway: speaks `eclipse_agent_v1` to compositor as a privileged client, exposes MCP to agents | User; holds the agent socket |
 | `registryd` | Semantic aggregation (AT-SPI2 + `eclipse_semantic_v1` + vision fallback) | User; separate doc (Perception) |
 | `policyd` | Compiles policy, serves decisions, stores audit | User; separate doc (Security) |
@@ -1449,7 +1449,7 @@ implemented via Smithay's helpers or our own renderer path.
 1. Acquire session (libseat), enumerate GPUs (udev), pick primary render node.
 2. Init renderer, load cursor theme, load config.
 3. Create Wayland display and socket `wayland-N`; create **second** listening
-   socket `helios-agent-N` restricted by filesystem permissions and used only
+   socket `abyss-agent-N` restricted by filesystem permissions and used only
    by `agentd`.
 4. Start XWayland lazily on first X11 client.
 5. Spawn `agentd`, `registryd`, `policyd` as systemd user units (compositor
@@ -1458,7 +1458,7 @@ implemented via Smithay's helpers or our own renderer path.
 
 ### 1.4 Crash resilience
 - Compositor state snapshot (outputs, workspaces, toplevel → workspace
-  mapping) written on change to `$XDG_RUNTIME_DIR/helios/state`.
+  mapping) written on change to `$XDG_RUNTIME_DIR/abyss/state`.
 - On restart, clients are gone (Wayland limitation), but layout is restored
   so re-launched apps land where they were.
 - Panic handler: log, dump state, attempt to switch VT so the machine is not
@@ -1682,7 +1682,7 @@ Clipboard: agents read/write the clipboard through `eclipse_agent_v1`, not
 ## 8. Agent Protocol `eclipse_agent_v1` (COMP-08)
 
 ### 8.1 Transport and trust
-- A Wayland protocol served **only** on the `helios-agent-N` socket.
+- A Wayland protocol served **only** on the `abyss-agent-N` socket.
   Connections on the normal socket never see these globals.
 - `agentd` is the sole intended client. It authenticates agents, assigns
   agent ids and capability sets (from `policyd`), and multiplexes.
@@ -1884,7 +1884,7 @@ Assumption pending threat model: default sensitivity is `private`;
   and scripts: list workspaces, focus, move, output config, reload. This is
   *not* the agent path and has no injection ability.
 - `agentd` IPC: the privileged Wayland socket (§8.1). `agentd` exposes MCP
-  over `$XDG_RUNTIME_DIR/helios/mcp.sock` and optionally TCP+auth for
+  over `$XDG_RUNTIME_DIR/abyss/mcp.sock` and optionally TCP+auth for
   remote agents (off by default).
 - `policyd` IPC: policy table push, `defer` decisions, audit stream.
 
@@ -1998,7 +1998,7 @@ Open:
 Depends on: COMPOSITOR.md (C-00), F-04. Consumed by: COMP-02..07, COMP-13,
 COMP-16, A-01.
 
-Crate: `crates/helios`. TCB. Language: Rust. Foundation: Smithay.
+Crate: `crates/abyss`. TCB. Language: Rust. Foundation: Smithay.
 Event loop: `calloop`.
 
 ---
@@ -2010,16 +2010,16 @@ display lives outside it.
 
 | Process | Unit | Role | Trust |
 |---|---|---|---|
-| `helios` | `helios.service` (user) | DRM, input, rendering, protocol servers, policy enforcement | TCB |
+| `abyss` | `abyss.service` (user) | DRM, input, rendering, protocol servers, policy enforcement | TCB |
 | `policyd` | `eclipse-policyd.service` | Policy compilation, audit store, defer path | TCB |
 | `agentd` | `eclipse-agentd.service` | Agent gateway, MCP surface | semi-trusted |
 | `registryd` | `eclipse-registryd.service` | AT-SPI aggregation, coordinate join, vision fallback | semi-trusted |
 
-All are **systemd user units**. `helios` does not `exec` them; it declares
+All are **systemd user units**. `abyss` does not `exec` them; it declares
 readiness with `sd_notify(READY=1)` and the others are ordered
-`After=helios.service` with `BindsTo=` so they stop when it stops.
+`After=abyss.service` with `BindsTo=` so they stop when it stops.
 
-Rationale for keeping `helios` small: a crash ends the session (Wayland
+Rationale for keeping `abyss` small: a crash ends the session (Wayland
 clients cannot survive compositor loss). Every line in this process is a
 line that can take down your desktop, and it is also TCB, so it is a line
 that must be reviewed by hand (F-07 §4).
@@ -2029,9 +2029,9 @@ that must be reviewed by hand (F-07 §4).
 ## 2. Crate Layout (internal modules)
 
 ```
-helios/
+abyss/
   main.rs           argument parsing, logging, session bring-up
-  state.rs          HeliosState — the single mutable root
+  state.rs          AbyssState — the single mutable root
   backend/
     drm.rs          udev + DRM/KMS, device selection (§4), hotplug
     winit.rs        nested dev backend
@@ -2057,13 +2057,13 @@ helios/
 
 ## 3. State & Event Loop
 
-- **Single-threaded core.** One `calloop` loop owns `HeliosState`; no locks
+- **Single-threaded core.** One `calloop` loop owns `AbyssState`; no locks
   on the hot path. Concurrency where it pays: a render thread per GPU
   (COMP-02) and blocking work (config parse, screenshot encode, audit
   serialization) on a small `rayon`-style pool, communicating by channel
   back into the loop.
 - **No `Rc<RefCell<>>` graph.** State is a tree of plain structs owned by
-  `HeliosState`; children are referenced by index/handle (`u64` surface
+  `AbyssState`; children are referenced by index/handle (`u64` surface
   handles per C-00 §5.2), not by pointer. This keeps borrow-checker pain
   low and makes state snapshotting (§7) trivial.
 - Event sources registered on the loop: libseat, udev monitor, libinput,
@@ -2163,7 +2163,7 @@ Explicit sync is mandatory; there is no implicit-sync fallback path.
 8. Create the Wayland display; bind standard globals (COMP-06).
 9. Create the public socket `wayland-N`; export $WAYLAND_DISPLAY.
 10. Create the privileged socket at
-    $XDG_RUNTIME_DIR/eclipse/helios-agent.sock, mode 0600, owned by the
+    $XDG_RUNTIME_DIR/eclipse/abyss-agent.sock, mode 0600, owned by the
     user. Agent globals are advertised only on this socket.
 11. Connect to policyd (§6). Non-blocking.
 12. Open human IPC socket (COMP-13).
@@ -2282,7 +2282,7 @@ is testable without a GPU (F-07 §3).
 
 ## 12. Open Decisions
 
-1. Whether `helios` should refuse to start if the config names a
+1. Whether `abyss` should refuse to start if the config names a
    `render_device` that does not exist, or fall back to auto-selection with
    a warning. Proposed: refuse — silent fallback hides typos.
 2. Snapshot location: `$XDG_RUNTIME_DIR` (lost on reboot) vs
@@ -3319,7 +3319,7 @@ Consequences, all enforced:
 Depends on: C-00 §8, S-01, P-01, COMP-09. Consumed by: A-01, A-02, A-05,
 COMP-11, COMP-12.
 
-Privileged Wayland protocol served only on `helios-agent-N`. Sole intended
+Privileged Wayland protocol served only on `abyss-agent-N`. Sole intended
 client: `agentd`. Every object is attributed to one agent principal.
 
 Conventions: all requests that act carry `req_id: uint` (agent-assigned,
@@ -4012,7 +4012,7 @@ common path.
 
 ## 1. Split of Responsibility
 
-| | `policyd` | `helios` |
+| | `policyd` | `abyss` |
 |---|---|---|
 | Parse & compile policy | ✓ | |
 | Hold grants, sign them | ✓ | |
@@ -4256,9 +4256,9 @@ pretending compatibility with a different dispatcher model would be a trap.
 
 Location, later overriding earlier:
 ```
-/etc/eclipse/helios.kdl
-$XDG_CONFIG_HOME/eclipse/helios.kdl
-$XDG_CONFIG_HOME/eclipse/helios.d/*.kdl        (sorted)
+/etc/eclipse/abyss.kdl
+$XDG_CONFIG_HOME/eclipse/abyss.kdl
+$XDG_CONFIG_HOME/eclipse/abyss.d/*.kdl        (sorted)
 ```
 
 ### 1.1 Shape
@@ -4342,7 +4342,7 @@ misc {
 
 ## 2. Human IPC
 
-Unix socket at `$XDG_RUNTIME_DIR/eclipse/helios.sock`, mode 0600.
+Unix socket at `$XDG_RUNTIME_DIR/eclipse/abyss.sock`, mode 0600.
 Line-delimited JSON-RPC 2.0. For bars, launchers, scripts, and
 `eclipse-ctl`.
 
@@ -4393,7 +4393,7 @@ agent:research-7`, `eclipse-ctl outputs --all`, `eclipse-ctl watch`.
 |---|---|---|---|
 | `policyd` | `$XDG_RUNTIME_DIR/eclipse/policyd.sock` | SEQPACKET, CBOR | table push, defer requests, audit stream (COMP-12) |
 | `registryd` | `$XDG_RUNTIME_DIR/eclipse/registryd.sock` | SEQPACKET, CBOR | native tree mirroring, placement queries for the coordinate join |
-| `agentd` | `$XDG_RUNTIME_DIR/eclipse/helios-agent.sock` | Wayland, 0600 | the privileged protocol (COMP-08) |
+| `agentd` | `$XDG_RUNTIME_DIR/eclipse/abyss-agent.sock` | Wayland, 0600 | the privileged protocol (COMP-08) |
 
 All are peer-credential-checked (`SO_PEERCRED`) against the expected uid,
 and `policyd`/`registryd` additionally against the cgroup of their systemd
@@ -4416,7 +4416,7 @@ unit, so a random user process cannot impersonate a daemon.
 1. Whether `subscribe` should be a separate socket to avoid slow readers
    blocking request/response (proposed: same socket, per-connection queue
    with drop-oldest for events).
-2. Whether `eclipse-ctl` ships as part of `helios` or its own crate
+2. Whether `eclipse-ctl` ships as part of `abyss` or its own crate
    (proposed: own crate, so it can be installed on a remote box later).
 
 
@@ -4492,8 +4492,8 @@ machine attached is meaningless.
 ### 2.3 Memory
 | Metric | Target |
 |---|---|
-| `helios` RSS, 50 windows, 3 outputs | ≤150 MB |
-| `helios` RSS growth over 72 h soak | 0 (no leak) |
+| `abyss` RSS, 50 windows, 3 outputs | ≤150 MB |
+| `abyss` RSS growth over 72 h soak | 0 (no leak) |
 | Per agent seat overhead | ≤512 KB |
 | Per stored semantic tree, 5k nodes | ≤2 MB |
 | VRAM, compositor only, 3×1440p | ≤600 MB |
@@ -4817,7 +4817,7 @@ Depends on: THREAT_MODEL.md. Consumed by: COMP-08, COMP-11, S-02, A-01.
 - **Grant**: a signed statement by `policyd` that a principal holds a set
   of capabilities under stated constraints for a stated time.
 - **Scope**: a constraint on which targets a capability applies to.
-- **Enforcement point**: compositor (`helios`) for scene/seat/capture/
+- **Enforcement point**: compositor (`abyss`) for scene/seat/capture/
   clipboard/launch/workspace/output; `agentd` for channel and MCP-level
   operations; sandbox for filesystem/network/D-Bus.
 
@@ -4989,7 +4989,7 @@ agent manifest (declared needs, A-07)
 policyd: rule match ──► auto-grant (rules say yes)
         │                  │
         │                  ▼
-        │            sign, push to helios + agentd + sandbox builder
+        │            sign, push to abyss + agentd + sandbox builder
         │
         ├──► prompt (rules say ask) ──► trusted UI ──► human approves/edits/denies
         │                                                   │

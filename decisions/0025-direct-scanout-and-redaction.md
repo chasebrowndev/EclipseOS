@@ -16,7 +16,7 @@ directly — so there is no point at which redaction could paint over it. Any
 "redacted" plane would show the unredacted pixels.
 
 At this milestone there is no policy engine, so "sensitive" is a per-window flag
-(`HeliosState::sensitive`) with no producer yet.
+(`AbyssState::sensitive`) with no producer yet.
 
 ## Options
 1. Scan out unconditionally, redact only on the screencopy path. Fastest;

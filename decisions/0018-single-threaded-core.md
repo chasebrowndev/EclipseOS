@@ -1,4 +1,4 @@
-# 0018 — Single-threaded core owning `HeliosState`; handle-based state
+# 0018 — Single-threaded core owning `AbyssState`; handle-based state
 Status: accepted
 Date: 2026-09-04
 Deciders: chase (owner), Claude (advisory)
@@ -17,7 +17,7 @@ threads) makes both hard and makes borrow errors a daily tax.
 3. Single `calloop` loop owning a plain-struct tree, children by handle.
 
 ## Decision
-One `calloop` event loop owns `HeliosState` exclusively. State is a tree of
+One `calloop` event loop owns `AbyssState` exclusively. State is a tree of
 plain structs; children are referenced by `u64` handle or index, never by
 pointer. No locks on the hot path. Concurrency is used only where it pays: a
 render thread per GPU, and blocking work (config parse, screenshot encode,

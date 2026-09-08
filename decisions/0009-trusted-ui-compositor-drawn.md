@@ -16,13 +16,13 @@ pixel, and the human has no way to tell.
 3. Compositor-drawn surfaces above all clients.
 
 ## Decision
-Trusted UI is drawn by `helios` itself, in surfaces that live above every
+Trusted UI is drawn by `abyss` itself, in surfaces that live above every
 client in the scene graph and cannot be occluded, screenshotted by an agent, or
 synthesized into. The override chord (`Super+Escape`) reaches it even while a
 client holds a shortcuts inhibitor and while a prompt is already up.
 
 ## Consequences
-- `helios` carries its own minimal text/shape rendering; no toolkit.
+- `abyss` carries its own minimal text/shape rendering; no toolkit.
 - Anti-spoof tests are mandatory: assert no client can produce a surface above
   trusted UI, and that the chord works with a prompt open.
 - Prompt visual design is constrained by what the compositor can draw.

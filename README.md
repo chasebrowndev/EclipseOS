@@ -1,6 +1,6 @@
-# helios — the EclipseOS compositor
+# abyss — the EclipseOS compositor
 
-`helios` is a Wayland compositor written in Rust on
+`abyss` is a Wayland compositor written in Rust on
 [Smithay](https://github.com/Smithay/smithay) (pinned `=0.7.0`). It is the
 window manager for EclipseOS and half of its trusted computing base: agents
 drive the desktop through a compositor-native protocol, under a policy check
@@ -25,7 +25,7 @@ keyboard and pointer. Not usable as a daily driver yet.
 ```
 cargo build --workspace
 cargo run -- --backend winit     # nested in your current session
-journalctl --user -t helios -f   # logs
+journalctl --user -t abyss -f   # logs
 ```
 
 `Super+Shift+Q` quits. Full instructions and system dependencies:

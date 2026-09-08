@@ -38,7 +38,7 @@ they rot.
 Conventional commits, scoped by crate:
 
 ```
-feat(helios): multi-output hotplug with layout persistence
+feat(abyss): multi-output hotplug with layout persistence
 fix(policyd): deny on missing table entry instead of falling through
 docs: record focus-follows-mouse default as ADR 0019
 ```
@@ -57,7 +57,7 @@ docs: record focus-follows-mouse default as ADR 0019
 
 | Area | Review |
 |---|---|
-| `helios` enforcement path, `policyd`, `policy-eval`, `sandbox` | Owner reads every line. No exceptions. These are the TCB. |
+| `abyss` enforcement path, `policyd`, `policy-eval`, `sandbox` | Owner reads every line. No exceptions. These are the TCB. |
 | Everything else | Merge on green CI; owner reviews at leisure |
 
 ## Architecture decisions

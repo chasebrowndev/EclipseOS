@@ -1,6 +1,6 @@
 [package]
 name = "eclipse-ctl"
-description = "CLI for the helios human control socket"
+description = "CLI for the abyss human control socket"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -18,7 +18,7 @@ third-party agent development — the exact ecosystem the project needs.
 5. AGPLv3 + CLA + commercial dual licence.
 
 ## Decision
-All first-party system code (`helios`, `policyd`, `policy-eval`, `sandbox`,
+All first-party system code (`abyss`, `policyd`, `policy-eval`, `sandbox`,
 `agentd`, `registryd`, packaging) is **AGPL-3.0-only**. Protocol definitions
 and the agent SDKs are **Apache-2.0** (patent grant; lets agents be any
 licence). Documentation is CC BY-SA 4.0. A CLA — Apache ICLA-derived, with a

@@ -4,7 +4,7 @@ Date: 2026-09-07
 Deciders: chase (owner), Claude (advisory)
 
 ## Context
-COMP-07 asks for rootless XWayland so X11 applications run under helios. The X11
+COMP-07 asks for rootless XWayland so X11 applications run under abyss. The X11
 protocol has no client isolation worth the name: any client that can open the
 display can enumerate every other client's windows, read their titles and
 properties, grab the keyboard, take screenshots of the root window, and take
@@ -67,12 +67,12 @@ resolved as a config knob defaulting to enabled.
   for — they are unmanaged by definition — and are tracked separately so a later
   milestone can exclude them from the agent scene.
 
-## Two deviations from COMP-07, both in smithay, not in helios
+## Two deviations from COMP-07, both in smithay, not in abyss
 1. **§1/§6 lazy start.** The spec wants XWayland spawned on the first X11 client
    connection, and asserts no `Xwayland` process exists when no X11 client is
    running. Smithay 0.7's `XWayland::spawn` has no lazy mode: the socket
    preparation it would need (`prepare_x11_sockets`) is private, and hand-rolling
-   the listener would drop the first client's pending connection. helios spawns
+   the listener would drop the first client's pending connection. abyss spawns
    eagerly at backend start; the shutdown half of the property holds anyway
    because smithay passes `-terminate`. Costs one idle X server (~10 MB RSS)
    for a session that never runs an X client — or zero, with `enable #false`.

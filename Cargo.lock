@@ -3,6 +3,23 @@
 version = 4
 
 [[package]]
+name = "abyss"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "calloop 0.14.4",
+ "kdl",
+ "libc",
+ "serde_json",
+ "smithay",
+ "thiserror 2.0.20",
+ "tracing",
+ "tracing-journald",
+ "tracing-subscriber",
+ "xkbcommon",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -575,23 +592,6 @@ name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
-
-[[package]]
-name = "helios"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "calloop 0.14.4",
- "kdl",
- "libc",
- "serde_json",
- "smithay",
- "thiserror 2.0.20",
- "tracing",
- "tracing-journald",
- "tracing-subscriber",
- "xkbcommon",
-]
 
 [[package]]
 name = "hermit-abi"
