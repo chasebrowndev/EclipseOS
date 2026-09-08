@@ -696,10 +696,31 @@ pub fn switch_workspace(state: &mut AbyssState, idx: usize) {
     for w in entry.workspace().windows() {
         state.space.unmap_elem(&w);
     }
+    let previous = entry.active;
     state.outputs.get_mut(id).expect("just resolved").active = target;
     state.focus = None;
     arrange(state);
     refocus_topmost(state);
+    // COMP-02 §9 `workspaces`: slide the arriving windows in from the side the
+    // switch came from. There is no outgoing half — the old workspace's
+    // windows were unmapped above and no longer exist for the render path.
+    if let Some(anim) = state.config.animations.get("workspaces").cloned() {
+        let width = state
+            .outputs
+            .get(id)
+            .and_then(|e| state.space.output_geometry(&e.output))
+            .map_or(0, |g| g.size.w);
+        let dir = if target > previous { 1 } else { -1 };
+        let windows = state
+            .outputs
+            .get(id)
+            .map(|e| e.workspace().windows())
+            .unwrap_or_default();
+        state
+            .borders
+            .anim
+            .slide(&state.space, &anim, &windows, (dir * width, 0).into());
+    }
     crate::ipc::emit(
         state,
         "workspace",

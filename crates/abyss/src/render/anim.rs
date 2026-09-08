@@ -11,7 +11,10 @@
 //! a newly mapped window's alpha from zero; there is no fade-out, because a
 //! closing window is gone from the space before the next frame and the
 //! compositor never holds a dead client's buffers to animate. `border`
-//! crossfades the border colour on focus change.
+//! crossfades the border colour on focus change, and `workspaces` slides the
+//! windows of a newly activated workspace in from the edge of the output.
+//! Like `fade`, it has no outgoing half: the old workspace's windows are
+//! already unmapped by the time the frame is drawn.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -173,8 +176,9 @@ impl AnimStore {
         for (window, target) in live {
             let previous = self.targets.insert(window.clone(), target);
             let Some(anim) = curve else {
-                // Animations off: the window is simply drawn where it is.
-                self.moves.remove(&window);
+                // `windows` off: never start a move from a target change. Any
+                // move already in flight is left to finish — it can only have
+                // come from `workspaces`, which is a separate setting.
                 continue;
             };
             match previous {
@@ -205,6 +209,40 @@ impl AnimStore {
         self.fades.retain(|_, r| !r.done(now));
         self.borders.retain(|_, (r, _)| !r.done(now));
         self.running = !self.moves.is_empty() || !self.fades.is_empty() || !self.borders.is_empty();
+    }
+
+    /// Slide `windows` in from `from`, an offset in logical pixels relative to
+    /// where each already sits. Used by `workspaces` on a workspace switch;
+    /// the windows are mapped at their targets first, so nothing outside the
+    /// render path sees the offset (COMP-02 §9).
+    pub fn slide(
+        &mut self,
+        space: &Space<Window>,
+        anim: &crate::config::Animation,
+        windows: &[Window],
+        from: Point<i32, Logical>,
+    ) {
+        let now = Instant::now();
+        for window in windows {
+            let Some(target) = space.element_location(window) else {
+                continue;
+            };
+            self.moves.insert(
+                window.clone(),
+                Move {
+                    from: target + from,
+                    target,
+                    start: now,
+                    duration: Duration::from_millis(anim.duration_ms as u64),
+                    curve: Curve::parse(&anim.curve),
+                },
+            );
+            // `sync` only starts a move when a window's target *changes*, so
+            // seed the target too or the next frame would treat this as a
+            // first sighting and drop the slide.
+            self.targets.insert(window.clone(), target);
+        }
+        self.running |= !self.moves.is_empty();
     }
 
     /// How far from its target this window should be drawn, in logical pixels.

@@ -2518,9 +2518,11 @@ memory. The shader discards everything inside the window rect, so a translucent
 window is never darkened by its own shadow.
 
 Animations in v1 are a window's position (`windows`), its alpha as it maps
-(`fade`) and its border colour on focus change (`border`). There is no
-fade-out: a closing window has left the space before the next frame, and the
-compositor does not hold a dead client's buffers to animate them.
+(`fade`), its border colour on focus change (`border`) and the arrival of a
+workspace's windows on a switch (`workspaces`). There is no fade-out and no
+slide-out: a closing window has left the space before the next frame, and the
+compositor does not hold a dead client's buffers to animate them, and the
+outgoing workspace's windows are unmapped before the frame is drawn.
 **No animation may affect what an agent sees**: `scene`/`get_tree` geometry
 reports the *target* geometry, not the interpolated one, so an agent never clicks where a window was mid-flight.
 The compositor keeps this true by construction: the shell maps every window at
