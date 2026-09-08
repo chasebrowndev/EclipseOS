@@ -134,9 +134,15 @@ pub fn lid_switch(state: &mut AbyssState, closed: bool) {
         return;
     }
     if action == "suspend" {
-        // System suspend is logind's business (COMP-01 §8) and is not wired up
-        // yet; fall back to switching the panel off rather than doing nothing.
-        tracing::warn!("lid-close \"suspend\" not implemented yet, treating as \"off\"");
+        // Suspend is logind's call, not ours (COMP-01 §8): it owns the inhibitor
+        // locks and the wake path, and re-implementing that over its D-Bus API
+        // would only duplicate what systemctl already does correctly. Opening
+        // the lid is handled by the resume path, so there is nothing to undo.
+        if closed {
+            tracing::info!("lid closed, suspending");
+            crate::shell::spawn("systemctl suspend");
+        }
+        return;
     }
     if closed {
         if !set_enabled(state, id, false) {

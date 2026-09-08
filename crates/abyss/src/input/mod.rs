@@ -64,6 +64,10 @@ pub enum Action {
     SwitchWorkspace(usize),
     /// 1-based workspace index.
     MoveToWorkspace(usize),
+    /// The override chord reserved by COMP-13 §1.1. Accepted and dispatched
+    /// today so a config naming it is valid; it has nothing to revoke until
+    /// agent seats exist (COMP-16 milestone 11).
+    AgentOverride,
 }
 
 /// A configured key binding.
@@ -141,7 +145,16 @@ impl AbyssState {
             Action::Move(dir) => shell::move_direction(self, dir),
             Action::SwitchWorkspace(n) => shell::switch_workspace(self, n),
             Action::MoveToWorkspace(n) => shell::move_to_workspace(self, n),
+            Action::AgentOverride => self.agent_override(),
         }
+    }
+
+    /// COMP-04 §6: hand the seat back to the human, unconditionally. There are
+    /// no agent seats yet, so there is nothing to take back — but the chord must
+    /// already work, because a chord that silently does nothing on the day it is
+    /// needed is worse than one that was never bound.
+    fn agent_override(&mut self) {
+        tracing::warn!("agent override chord pressed; no agent seats exist yet");
     }
 
     fn switch_vt(&mut self, vt: i32) {
@@ -323,5 +336,57 @@ impl AbyssState {
         let pointer = self.seat.get_pointer().unwrap();
         pointer.axis(self, frame);
         pointer.frame(self);
+    }
+}
+
+/// Borrowed xkb settings from the `input` block (COMP-13 §1.2). Rules and model
+/// stay at the xkb defaults; the spec exposes neither.
+pub fn xkb_config(input: &crate::config::Input) -> smithay::input::keyboard::XkbConfig<'_> {
+    smithay::input::keyboard::XkbConfig {
+        layout: &input.kb_layout,
+        variant: &input.kb_variant,
+        options: input.kb_options.clone(),
+        ..Default::default()
+    }
+}
+
+/// Push the current `input` block onto the live seat and every open device.
+/// Called once at startup and again on every config reload.
+pub fn apply_config(state: &mut AbyssState) {
+    let Some(kbd) = state.seat.get_keyboard() else {
+        return;
+    };
+    let (rate, delay) = (state.config.input.repeat_rate, state.config.input.repeat_delay);
+    kbd.change_repeat_info(rate, delay);
+    // A bad layout must not take the keyboard away: the old keymap stays.
+    let cfg = state.config.clone();
+    if let Err(err) = kbd.set_xkb_config(state, xkb_config(&cfg.input)) {
+        tracing::error!(?err, layout = cfg.input.kb_layout, "keeping the previous keymap");
+    }
+    #[cfg(feature = "drm")]
+    if let Some(drm) = state.drm.as_mut() {
+        for device in drm.input_devices.iter_mut() {
+            configure_device(device, &cfg.input);
+        }
+    }
+}
+
+/// Apply the pointer half of the `input` block to one libinput device. Every
+/// setter is optional on the device; a device that does not support a knob
+/// simply reports failure and keeps its default.
+#[cfg(feature = "drm")]
+pub fn configure_device(device: &mut smithay::reexports::input::Device, input: &crate::config::Input) {
+    use smithay::reexports::input::{AccelProfile, ClickMethod, ScrollMethod};
+    let _ = device.config_accel_set_profile(match input.accel_profile.as_str() {
+        "flat" => AccelProfile::Flat,
+        _ => AccelProfile::Adaptive,
+    });
+    if device.config_tap_finger_count() > 0 {
+        let _ = device.config_tap_set_enabled(input.touchpad.tap_to_click);
+        let _ = device.config_click_set_method(ClickMethod::Clickfinger);
+        let _ = device.config_dwt_set_enabled(input.touchpad.dwt);
+        if device.config_scroll_methods().contains(&ScrollMethod::TwoFinger) {
+            let _ = device.config_scroll_set_natural_scroll_enabled(input.touchpad.natural_scroll);
+        }
     }
 }

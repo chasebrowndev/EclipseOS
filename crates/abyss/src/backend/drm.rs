@@ -26,15 +26,9 @@ use smithay::{
             DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode, NodeType, VrrSupport,
         },
         egl::{context::EGLContext, display::EGLDisplay},
+        input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{
-            element::{
-                solid::{SolidColorBuffer, SolidColorRenderElement},
-                Kind,
-            },
-            gles::GlesRenderer,
-            ImportDma,
-        },
+        renderer::{gles::GlesRenderer, ImportDma},
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{primary_gpu, UdevBackend, UdevEvent},
     },
@@ -70,9 +64,6 @@ use crate::{
 };
 
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
-/// Amber-on-black placeholder pointer. A themed cursor lands with M4.
-const CURSOR_COLOR: [f32; 4] = [1.0, 0.72, 0.15, 1.0];
-const CURSOR_SIZE: i32 = 12;
 /// Size of the headless fallback output used when no connector is present.
 const FALLBACK_SIZE: (i32, i32) = (1920, 1080);
 
@@ -114,7 +105,9 @@ pub struct DrmData {
     pub outputs: Vec<DrmOutput>,
     /// The headless stand-in, live only while no connector is.
     fallback: Option<u64>,
-    cursor: SolidColorBuffer,
+    cursor: crate::render::cursor::Fallback,
+    /// Open libinput devices, so a config reload can reconfigure them.
+    pub input_devices: Vec<smithay::reexports::input::Device>,
     /// Render node of the primary GPU, the `main_device` of every feedback.
     render_node: libc::dev_t,
 }
@@ -574,7 +567,8 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         renderer,
         outputs: Vec::new(),
         fallback: None,
-        cursor: SolidColorBuffer::new((CURSOR_SIZE, CURSOR_SIZE), CURSOR_COLOR),
+        cursor: crate::render::cursor::Fallback::default(),
+        input_devices: Vec::new(),
         render_node,
     }));
 
@@ -596,6 +590,23 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         .map_err(|_| anyhow!("libinput could not assign seat '{seat_name}'"))?;
     handle
         .insert_source(LibinputInputBackend::new(libinput), |event, _, state| {
+            // Devices are configured as they appear, and remembered so a config
+            // reload can reach the ones already open (COMP-13 §1.2).
+            match &event {
+                InputEvent::DeviceAdded { device } => {
+                    let mut device = device.clone();
+                    crate::input::configure_device(&mut device, &state.config.input);
+                    if let Some(drm) = state.drm.as_mut() {
+                        drm.input_devices.push(device);
+                    }
+                }
+                InputEvent::DeviceRemoved { device } => {
+                    if let Some(drm) = state.drm.as_mut() {
+                        drm.input_devices.retain(|d| d != device);
+                    }
+                }
+                _ => {}
+            }
             state.process_input_event(event);
             schedule_render(state);
         })
@@ -826,13 +837,13 @@ fn render_output(state: &mut AbyssState, index: usize) {
     let cursor_pos = state.pointer_location - output_loc.to_f64();
     // Trusted UI, above the cursor and never drawn into a capture target.
     let mut elements: Vec<AbyssRenderElement> = crate::render::capture::indicator(&output, capture_active);
-    elements.push(AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
-        &drm.cursor,
-        cursor_pos.to_physical_precise_round(scale),
+    elements.extend(crate::render::cursor::elements(
+        &mut drm.renderer,
+        &state.cursor_status,
+        &mut drm.cursor,
+        cursor_pos,
         scale,
-        1.0,
-        Kind::Cursor,
-    )));
+    ));
     if state.lock.locked {
         elements.extend(crate::protocols::standard::session_lock::lock_elements(
             &mut drm.renderer,

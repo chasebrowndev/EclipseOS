@@ -167,6 +167,7 @@ pub fn reload_now(state: &mut AbyssState) {
     state
         .clipboard_allow
         .set(state.config.clipboard.data_control_allow.clone());
+    crate::input::apply_config(state);
     crate::outputs::relayout(state);
     crate::shell::arrange(state);
     crate::backend::damage_all(state);

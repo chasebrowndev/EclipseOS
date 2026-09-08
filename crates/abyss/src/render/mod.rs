@@ -5,6 +5,7 @@
 //! the stacking order lives here once, not per backend.
 
 pub mod capture;
+pub mod cursor;
 pub mod stats;
 
 use std::collections::HashMap;
@@ -41,6 +42,7 @@ smithay::backend::renderer::element::render_elements! {
     Space=SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>,
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
     Solid=SolidColorRenderElement,
+    Texture=smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>,
 }
 
 /// Four solid quads (top, bottom, left, right) per window.

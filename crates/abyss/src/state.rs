@@ -113,6 +113,8 @@ pub struct AbyssState {
     /// The human seat (`seat0`). Agent seats arrive in Phase 2.
     pub seat: Seat<Self>,
 
+    /// What the focused client last asked the pointer to look like (COMP-02 §2).
+    pub cursor_status: smithay::input::pointer::CursorImageStatus,
     /// Parsed configuration (COMP-13). Never fails to load; falls back to defaults.
     pub config: crate::config::Config,
     /// Every output, each with its own workspace set (COMP-03).
@@ -301,8 +303,19 @@ impl AbyssState {
         );
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
-        // Repeat defaults match COMP-04 until config lands (M6).
-        seat.add_keyboard(Default::default(), 300, 40)
+        // Keyboard settings come from the `input` block (COMP-13 §1.2); a bad
+        // layout there must not leave the seat without a keyboard at all.
+        let xkb = crate::input::xkb_config(&config.input);
+        let (delay, rate) = (config.input.repeat_delay, config.input.repeat_rate);
+        seat.add_keyboard(xkb, delay, rate)
+            .or_else(|err| {
+                tracing::error!(
+                    ?err,
+                    layout = config.input.kb_layout,
+                    "falling back to the default keymap"
+                );
+                seat.add_keyboard(Default::default(), delay, rate)
+            })
             .expect("default xkb keymap must load");
         seat.add_pointer();
 
@@ -360,6 +373,7 @@ impl AbyssState {
             outputs: crate::outputs::Outputs::new(),
             focus: None,
             borders: crate::render::BorderStore::default(),
+            cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
             config,
             #[cfg(feature = "drm")]
             drm: None,

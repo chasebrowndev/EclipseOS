@@ -193,6 +193,43 @@ impl Default for Render {
     }
 }
 
+/// `input { ... }` (COMP-13 §1.2, COMP-04). Keyboard settings are pushed to the
+/// seat on reload; pointer settings are applied per libinput device as it
+/// appears, and on reload to every device already open.
+#[derive(Debug, Clone)]
+pub struct Input {
+    pub kb_layout: String,
+    pub kb_variant: String,
+    pub kb_options: Option<String>,
+    pub repeat_rate: i32,
+    pub repeat_delay: i32,
+    /// `flat` | `adaptive`.
+    pub accel_profile: String,
+    pub touchpad: Touchpad,
+}
+
+impl Default for Input {
+    fn default() -> Self {
+        Self {
+            kb_layout: "us".into(),
+            kb_variant: String::new(),
+            kb_options: None,
+            repeat_rate: 40,
+            repeat_delay: 300,
+            accel_profile: "adaptive".into(),
+            touchpad: Touchpad::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Touchpad {
+    pub natural_scroll: bool,
+    pub tap_to_click: bool,
+    /// Disable-while-typing.
+    pub dwt: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub general: General,
@@ -202,6 +239,7 @@ pub struct Config {
     pub xwayland: Xwayland,
     pub idle: Idle,
     pub misc: Misc,
+    pub input: Input,
     pub binds: Vec<Bind>,
     /// Per-workspace layout overrides, indexed 1..=10.
     pub workspace_layout: [Option<LayoutKind>; 10],
@@ -225,6 +263,7 @@ impl Default for Config {
             xwayland: Xwayland::default(),
             idle: Idle::default(),
             misc: Misc::default(),
+            input: Input::default(),
             binds: default_binds(),
             workspace_layout: Default::default(),
             outputs: Vec::new(),
@@ -243,12 +282,18 @@ fn m(logo: bool, shift: bool, ctrl: bool, alt: bool) -> Mods {
     }
 }
 
-/// Hyprland-ish defaults. `Super+Escape` is deliberately left unbound: it is
-/// reserved for the trusted-UI override chord (COMP-04 §6).
+/// Hyprland-ish defaults. `Super+Escape` is bound here and nowhere else: it is
+/// the trusted-UI override chord (COMP-04 §6), always present and not
+/// rebindable — `parse_bind` refuses any config that names it.
 pub fn default_binds() -> Vec<Bind> {
     let sup = m(true, false, false, false);
     let sup_shift = m(true, true, false, false);
     let mut b = vec![
+        Bind {
+            mods: sup,
+            key: Keysym::Escape,
+            action: Action::AgentOverride,
+        },
         Bind {
             mods: sup,
             key: Keysym::Return,
@@ -446,9 +491,10 @@ impl Config {
                 "xwayland" => self.apply_xwayland(node),
                 "idle" => self.apply_idle(node),
                 "misc" => self.apply_misc(node),
+                "input" => self.apply_input(node),
                 "output" => self.apply_output(node),
                 // Blocks specified but not implemented in M2.
-                "decoration" | "animations" | "input" | "windowrule" => {}
+                "decoration" | "animations" | "windowrule" => {}
                 other => tracing::warn!(node = other, "unknown config node, ignored"),
             }
         }
@@ -575,6 +621,55 @@ impl Config {
 
     /// `misc { scripted-input #false }`. Absent keys keep their defaults; the
     /// scripted-input default is `false` and stays `false` on a malformed value.
+    fn apply_input(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "kb-layout" => {
+                    if let Some(v) = arg(n).and_then(KdlValue::as_string) {
+                        self.input.kb_layout = v.to_string();
+                    }
+                }
+                "kb-variant" => {
+                    if let Some(v) = arg(n).and_then(KdlValue::as_string) {
+                        self.input.kb_variant = v.to_string();
+                    }
+                }
+                "kb-options" => {
+                    self.input.kb_options = arg(n)
+                        .and_then(KdlValue::as_string)
+                        .filter(|v| !v.is_empty())
+                        .map(str::to_string);
+                }
+                "repeat-rate" => set_i32(&mut self.input.repeat_rate, n),
+                "repeat-delay" => set_i32(&mut self.input.repeat_delay, n),
+                "accel-profile" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(v @ ("flat" | "adaptive")) => self.input.accel_profile = v.to_string(),
+                    other => tracing::warn!(?other, "unknown accel-profile, ignored"),
+                },
+                "touchpad" => self.apply_touchpad(n),
+                other => tracing::warn!(node = other, "unknown input key, ignored"),
+            }
+        }
+    }
+
+    fn apply_touchpad(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let name = n.name().value();
+            let Some(b) = arg(n).and_then(KdlValue::as_bool) else {
+                tracing::warn!(node = name, "touchpad key needs a boolean, ignored");
+                continue;
+            };
+            match name {
+                "natural-scroll" => self.input.touchpad.natural_scroll = b,
+                "tap-to-click" => self.input.touchpad.tap_to_click = b,
+                "dwt" => self.input.touchpad.dwt = b,
+                other => tracing::warn!(node = other, "unknown touchpad key, ignored"),
+            }
+        }
+    }
+
     fn apply_misc(&mut self, node: &KdlNode) {
         let Some(children) = node.children() else { return };
         for n in children.nodes() {
@@ -836,6 +931,7 @@ fn parse_action(node: &KdlNode) -> Result<Action, String> {
         "move-down" => Action::Move(Direction::Down),
         "workspace" => Action::SwitchWorkspace(workspace_arg(num())?),
         "move-to-workspace" => Action::MoveToWorkspace(workspace_arg(num())?),
+        "agent-override" => Action::AgentOverride,
         "quit" | "exit" => Action::Quit,
         other => return Err(format!("unknown action '{other}'")),
     })
@@ -851,6 +947,36 @@ fn workspace_arg(n: Option<i128>) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_input() {
+        let doc: KdlDocument = r#"
+            input {
+                kb-layout "de"
+                kb-options "compose:ralt"
+                repeat-rate 25
+                repeat-delay 400
+                accel-profile "flat"
+                touchpad { natural-scroll #true; tap-to-click #true; dwt #false }
+            }
+        "#
+        .parse()
+        .unwrap();
+        let mut cfg = Config::default();
+        let mut binds = Vec::new();
+        cfg.apply(&doc, &mut binds);
+        assert_eq!(cfg.input.kb_layout, "de");
+        assert_eq!(cfg.input.kb_options.as_deref(), Some("compose:ralt"));
+        assert_eq!((cfg.input.repeat_rate, cfg.input.repeat_delay), (25, 400));
+        assert_eq!(cfg.input.accel_profile, "flat");
+        assert!(cfg.input.touchpad.natural_scroll && cfg.input.touchpad.tap_to_click);
+        assert!(!cfg.input.touchpad.dwt);
+        // The override chord is built in, never taken from the config.
+        assert!(binds.is_empty());
+        assert!(default_binds()
+            .iter()
+            .any(|b| b.key == Keysym::Escape && matches!(b.action, crate::input::Action::AgentOverride)));
+    }
 
     #[test]
     fn colors() {

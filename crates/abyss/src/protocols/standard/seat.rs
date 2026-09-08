@@ -31,8 +31,11 @@ impl SeatHandler for AbyssState {
         );
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {
-        // Cursor rendering lands with the DRM backend (M2); winit draws the host cursor.
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        // Named shapes from `wp_cursor_shape_v1` arrive here too, so this one
+        // path covers both. The winit backend draws the host cursor and ignores
+        // this; the DRM backend composites it (`render::cursor`).
+        self.cursor_status = image;
     }
 }
 

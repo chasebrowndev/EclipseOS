@@ -49,7 +49,7 @@ or a known, listed gap.
 | 3 | DRM backend, multi-output, hotplug, fractional scale, output persistence | **code complete, gate never run** | `backend/drm.rs` (1013 lines), `outputs/` (hotplug, layout, persistence), `protocols/standard/fractional_scale.rs`. Gate needs three physical monitors on a real TTY plus a dock/undock cycle. Cannot be run from inside the nested session this work happens in; requires a VT login. |
 | 4 | dmabuf + explicit sync + direct scanout + VRR; damage tracking complete | **code complete, gate never run** | `protocols/standard/dmabuf.rs`, `drm_syncobj.rs` (registered only when the driver reports `supports_syncobj_eventfd`, else a warning and no global), `render/` damage + `scanout_candidate` (`backend/drm.rs:856`), VRR via `VrrSupport::Supported` + per-output `vrr` config. Gate needs Firefox and mpv on real KMS and the COMP-14 frame benchmarks, which have never been collected. |
 | 5 | Clipboard, primary selection, data-control, DnD, IME | **done** | `data_device.rs`, `primary_selection.rs`, `data_control.rs` (allowlisted per ADR 0027), `text_input.rs`, `input_method.rs`. Gate run nested: copy/paste across clients including primary; `wl-clipboard` via data-control honours the allowlist. |
-| 6 | Session lock, idle, DPMS, power, lid | **code complete, gate never run** | `session_lock.rs`, `idle_notify.rs`, `idle_inhibit.rs`, `output_power.rs`, `outputs/power.rs`. Lock/unlock is exercised nested; suspend/resume and lid handling need real hardware. `lid-close "suspend"` is not implemented and warns, treating it as `"off"` (`outputs/power.rs:139`). |
+| 6 | Session lock, idle, DPMS, power, lid | **code complete, gate never run** | `session_lock.rs`, `idle_notify.rs`, `idle_inhibit.rs`, `output_power.rs`, `outputs/power.rs`. Lock/unlock is exercised nested; suspend/resume and lid handling need real hardware. `lid-close "suspend"` now spawns `systemctl suspend` (`outputs/power.rs`), untested for want of a lid. |
 | 7 | XWayland | **done, with two spec deviations** | `xwayland/mod.rs` (167 lines) + `xwayland_shell.rs`; rootless, one untrusted trust domain (ADR 0026). Gate run nested with X11 clients. Deviations: started **eagerly at compositor start**, not lazily, and without `-noTouchPointerEmulation` / MIT-SHM off — smithay 0.7.0's `XWayland::spawn` exposes no lazy entry point and no flag parameter (verified in the vendored source, `src/xwayland/xserver.rs:112`). Both are blocked upstream, not oversights. |
 | 8 | Screen sharing via xdg-desktop-portal | **partial** | Two capture protocols behind **one shared fail-closed gate**: `zwlr_screencopy_v1` (`screencopy.rs`) and `ext_image_copy_capture_v1` + `ext_image_capture_source_v1` (`image_copy_capture.rs`), ADRs 0027/0029/0030. Measured against `xdg-desktop-portal-wlr` 0.8.3: 60 frames in 1.18 s. Frame-level redaction verified across 860,343 pixels of a redacted surface, all exactly opaque black. Remaining for the gate: an actual video call. Cursor capture is refused (session answered `stopped`/`leave`, `image_copy_capture.rs:333`). |
 | 9 | Human IPC, `eclipse-ctl`, metrics | **done (Phase 1 scope)** | `ipc/` (JSON-RPC 2.0 line-delimited over `$XDG_RUNTIME_DIR/eclipse/abyss.sock`, `SO_PEERCRED` owner-uid gating, ADR 0028), `ipc/gate.rs` authorisation table, `ipc/methods.rs` (17 methods), `crates/eclipse-ctl` (327 lines). 7 of the 24 gate rows are deliberately `implemented: false` — all Phase 2 surface, listed below and asserted by the `phase_two_rows_stay_unimplemented` test. Gate "waybar driven by our IPC" is met in the weaker sense that `eclipse-ctl watch` streams workspace/window/output/focus events; a bar cannot yet enumerate windows it does not own because there is no `ext-foreign-toplevel-list`. |
@@ -64,7 +64,7 @@ or a known, listed gap.
 | # | Milestone | State | Evidence |
 |---|---|---|---|
 | 10 | Privileged socket; `agentd` skeleton; grants; `list_toplevels`; audit | **not started** | No `protocols/agent/`, no `audit/`. `get_agents` answers "not implemented". |
-| 11 | Agent seats; injection; focus arbitration; override chord | **not started** | No agent seats. `type_text`/`click_at` are gated `implemented: false`. The `agent-override` bind reserved by COMP-13 §1.1 has no `Action` variant. |
+| 11 | Agent seats; injection; focus arbitration; override chord | **not started** | No agent seats. `type_text`/`click_at` are gated `implemented: false`. `Action::AgentOverride` now exists and is bound by default to Super+Escape, but its handler is a stub until the trusted UI has something to show. |
 | 12 | Atomic batches, `click`, `wait_for`, dedupe, generations | **not started** | — |
 | 13 | Region-level redaction; policy-driven sensitivity classes | **partially landed early** | Frame-level redaction and the capture gate shipped in milestone 8 (`render/capture.rs`, opaque-black `PLACEHOLDER`). Region-level redaction and policy-driven classification do not exist: sensitivity is a manual flag on the surface (`state.rs:110`, "Stub until the policy engine"). |
 | 14 | Trusted UI: indicator, prompt, emergency panel, phrase | **indicator only** | `render::capture::indicator()` draws the compositor-drawn capture indicator (COMP-10 §3.6) in both backends. No prompt, no emergency panel, no phrase, no `trusted_ui/`. |
@@ -121,25 +121,24 @@ macros anywhere in the workspace.
 4. **Cursor capture refused** (`image_copy_capture.rs:333`) — a session asking
    for cursor capture is handed back stopped. Matches the `capture.cursor`
    default of `no`; a real implementation waits on the capability model.
-5. **`lid-close "suspend"` unimplemented** (`outputs/power.rs:139`) — warns and
-   falls back to `"off"`. *Unblocked by:* logind inhibitor plumbing.
-6. **DRM cursor is an amber-on-black placeholder** (`backend/drm.rs:73`) —
-   comment says a themed cursor lands with M4; it did not. Cosmetic, but it is
-   the first thing a daily-driver user will see.
-7. **Config blocks parsed and ignored**: `decoration`, `animations`, `input`,
-   `windowrule` (`config/mod.rs:~434`, "Blocks specified but not implemented
-   in M2"), plus `xwayland` / `render-device` at line 586. Unknown nodes warn
-   and are ignored. *Unblocked by:* 9b for the first two, COMP-04 config for
-   `input`, COMP-05 rules for `windowrule`.
+5. **DRM cursor has no xcursor theme** (`render/cursor.rs`) — client-set
+   cursor surfaces composite correctly at their hotspot, but named
+   `wp_cursor_shape_v1` shapes all fall back to one built-in amber arrow
+   rather than loading the user's theme.
+6. **Config blocks parsed and ignored**: `decoration`, `animations`,
+   `windowrule` (`config/mod.rs`, "Blocks specified but not implemented in
+   M2"), plus `xwayland` / `render-device`. Unknown nodes warn and are
+   ignored. *Unblocked by:* 9b for the first two, COMP-05 rules for
+   `windowrule`.
 8. **Custom modes are refused by `wlr_output_management`** — a
    `set_custom_mode` request with valid dimensions fails the whole
    configuration rather than modesetting outside the connector's own mode
    list. Deliberate (a silent landing on a neighbouring mode is worse), but it
    is a real limitation for anyone using `wlr-randr` with a custom mode.
-9. **No `agent-override` action** — COMP-13 §1.1 reserves
-   `bind "SUPER" "Escape" { agent-override }`; `input::Action` has no variant
-   for it, so the bind is rejected as unknown. Harmless today (there are no
-   agents to override) but it is a specified name with no home.
+9. **`agent-override` is bound but inert** — Super+Escape is a built-in
+   default bind carrying `Action::AgentOverride` and the config parser still
+   refuses to let anyone rebind it, but the action itself only logs. It gets
+   its behaviour with the trusted UI in milestone 11.
 10. **XWayland eager start, no hardening flags** — see milestone 7. Blocked on
     smithay upstream, verified in the vendored source.
 11. **Only two IPC event kinds are emitted for shell changes** — `window`,
@@ -190,7 +189,8 @@ In rough order:
    are advertised and the handlers are written, but a third-party bar over
    `ext_foreign_toplevel_list` and mouse-look in a Proton game over
    `pointer_constraints`/`relative_pointer` have not been run.
-4. **A real cursor theme** on DRM, replacing the amber placeholder.
+4. **A real xcursor theme** on DRM, replacing the built-in amber arrow used
+   for named cursor shapes.
 5. **Effects (9b)** — optional by COMP-16 Open Decision 1, but "no rounding, no
    animation, no shadows" is the visible gap against the current Hyprland
    setup.
@@ -232,9 +232,12 @@ fixed by editing either side.
    typo mid-edit should not kill the session) but it contradicts the spec as
    written. One of the two needs to change; the `config-error` IPC event the
    spec names would be the natural bridge, and it is never emitted.
-5. **COMP-13 §1.1 reserves `agent-override`** as a binding action; the parser
-   has no such action and rejects the bind. Specified name, no implementation
-   and no stub.
+5. **KDL v2 booleans.** The `kdl` crate we depend on is v2, where bare `true`
+   and `false` are not values — they must be written `#true` / `#false`. The
+   spec's `input` block example (`ECLIPSEOS_SPECS_v2_VOL1.md:4293`) uses bare
+   booleans and would fail to parse as written. Either the spec's examples
+   move to KDL v2 syntax or the parser has to accept the bare identifiers;
+   this needs a decision, not a silent pick.
 6. **COMP-07 §1 requires lazy XWayland start**, §5 requires
    `-noTouchPointerEmulation` and no MIT-SHM, and §6's test plan asserts
    "XWayland is not running with no X11 clients". Smithay 0.7.0 cannot express
