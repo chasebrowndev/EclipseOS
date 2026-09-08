@@ -19,6 +19,13 @@ anyhow = "1"
 thiserror = "2"
 xkbcommon = "0.8"
 kdl = "6"
+# Window-rule matchers (COMP-05 §4). Titles are client-controlled, so the
+# matcher engine must be linear-time; `regex` guarantees no backtracking.
+regex = { version = "1", default-features = false, features = [
+  "std",
+  "perf",
+  "unicode-case",
+] }
 serde_json = "1"
 
 [profile.release]

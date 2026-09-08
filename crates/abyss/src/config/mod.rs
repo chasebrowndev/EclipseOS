@@ -351,56 +351,33 @@ pub enum RuleAction {
     NoFocusSteal,
 }
 
-/// The matcher pattern language actually implemented here.
+/// A COMP-05 §4 matcher pattern: a regular expression.
 ///
-/// COMP-05 §4 specifies regular expressions. This build has no regex
-/// dependency, so it implements the subset the spec's own examples use —
-/// `|` alternation, `^`/`$` anchors, `*` as "any run", everything else
-/// literal — and *rejects* any pattern using another regex metacharacter
-/// rather than quietly matching something different. See docs/STATUS.md.
+/// `regex` is used rather than a hand-rolled matcher because window titles are
+/// client-controlled and this runs on the compositor's only thread — a
+/// backtracking engine here would be a denial of service. A pattern that does
+/// not compile is refused at parse time and takes its whole rule with it.
 #[derive(Debug, Clone)]
-pub struct Pattern {
-    /// One glob per `|` branch, already padded with `*` where unanchored.
-    globs: Vec<String>,
-}
+pub struct Pattern(regex::Regex);
 
 impl Pattern {
-    /// Compile a matcher value, or `None` if it needs more than the subset.
+    /// Compile a COMP-05 §4 matcher. Unanchored, like every other regex — the
+    /// spec's own examples (`^Meet —`) anchor explicitly when they mean to.
     pub fn parse(source: &str) -> Option<Self> {
         if source.is_empty() {
             return None;
         }
-        let mut globs = Vec::new();
-        for branch in source.split('|') {
-            if branch.chars().any(|c| "[](){}+?\\".contains(c)) {
-                return None;
+        match regex::Regex::new(source) {
+            Ok(re) => Some(Self(re)),
+            Err(err) => {
+                tracing::warn!(pattern = source, %err, "bad matcher regex");
+                None
             }
-            // `^`/`$` are anchors only at the edges; anywhere else they are
-            // regex constructs this subset does not implement.
-            let start = branch.strip_prefix('^');
-            let anchored_start = start.is_some();
-            let body = start.unwrap_or(branch);
-            let end = body.strip_suffix('$');
-            let anchored_end = end.is_some();
-            let body = end.unwrap_or(body);
-            if body.contains('^') || body.contains('$') {
-                return None;
-            }
-            let mut glob = String::with_capacity(body.len() + 2);
-            if !anchored_start {
-                glob.push('*');
-            }
-            glob.push_str(body);
-            if !anchored_end {
-                glob.push('*');
-            }
-            globs.push(glob);
         }
-        Some(Self { globs })
     }
 
     pub fn matches(&self, text: &str) -> bool {
-        self.globs.iter().any(|g| glob_match(g, text))
+        self.0.is_match(text)
     }
 }
 
@@ -1075,7 +1052,7 @@ impl Config {
                     let Some(pat) = arg(n).and_then(KdlValue::as_string).and_then(Pattern::parse) else {
                         tracing::warn!(
                             matcher = name,
-                            "matcher pattern needs a regex feature this build lacks, rule ignored"
+                            "matcher pattern is not a valid regex, rule ignored"
                         );
                         return;
                     };
@@ -1561,7 +1538,7 @@ mod tests {
             windowrule "workspace 99" { app-id "a"; }
             windowrule "opacity 2.0" { app-id "a"; }
             windowrule "float" { cgroup "x"; }
-            windowrule "float" { title "^(a|b)+$"; }
+            windowrule "float" { title "^(a|b"; }
             windowrule "float" { pid 0; }
         "#
         .parse()
@@ -1572,7 +1549,7 @@ mod tests {
     }
 
     #[test]
-    fn pattern_subset() {
+    fn patterns_are_regexes() {
         let p = Pattern::parse("Meet").expect("literal");
         assert!(p.matches("Google Meet — call"));
         let p = Pattern::parse("^Meet").expect("anchored");
@@ -1581,13 +1558,17 @@ mod tests {
         let p = Pattern::parse("^kitty$").expect("exact");
         assert!(p.matches("kitty"));
         assert!(!p.matches("kitty-dev"));
-        let p = Pattern::parse("^org.gnome.*$").expect("glob");
+        let p = Pattern::parse("^org\\.gnome\\.").expect("escaped");
         assert!(p.matches("org.gnome.Calculator"));
-        // Anything needing real regex is refused, never approximated.
-        assert!(Pattern::parse("a[bc]").is_none());
-        assert!(Pattern::parse("a+").is_none());
-        assert!(Pattern::parse("(a|b)").is_none());
-        assert!(Pattern::parse("a$b").is_none());
+        assert!(!p.matches("org-gnome-Calculator"));
+        // The full syntax, not the old glob subset.
+        assert!(Pattern::parse("a[bc]d").expect("class").matches("abd"));
+        assert!(Pattern::parse("^(chromium|firefox)$")
+            .expect("group")
+            .matches("firefox"));
+        assert!(Pattern::parse("x+y").expect("repeat").matches("xxy"));
+        // A malformed regex is refused, never approximated.
+        assert!(Pattern::parse("a[bc").is_none());
         assert!(Pattern::parse("").is_none());
     }
 

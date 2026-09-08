@@ -145,19 +145,18 @@ macros anywhere in the workspace.
    the default frame path is the single `space_render_elements` call it was
    before — damage and direct scanout unchanged. `xwayland` is still parsed and
    ignored. *Unblocked by:* the rest of 9b.
-7. **`windowrule` matchers are a regex subset, not regex** (COMP-05 §4 says
-   regex). `shell/rules.rs` matches at map time and re-evaluates on title
-   change; `float`, `tile`, `workspace N`, `opacity F`, `sensitivity
-   secret|private` (raise-only), `no-focus-steal` and `no-agent` all parse and
-   apply — except `no-agent`, which sets a flag nothing reads until COMP-08
-   ships `list_toplevels`. `size`, `position`, `fullscreen`, `app-trust`,
-   `seat-compat` and `idle-inhibit` actions, and the `cgroup` /
-   `launching-principal` matchers, are unimplemented. The pattern language is
-   `|` alternation, `^`/`$` anchors and `*`; **any pattern needing more is
-   refused at parse time with a warning and the rule is dropped whole**, so a
-   rule never applies in part and never matches something the spec's regex
-   would not. *Unblocked by:* a `regex` dependency (needs approval) plus the
-   COMP-05 actions above.
+7. **`windowrule` actions are partial** (COMP-05 §4). `shell/rules.rs` matches
+   at map time and re-evaluates on title change; `float`, `tile`,
+   `workspace N`, `opacity F`, `sensitivity secret|private` (raise-only),
+   `no-focus-steal` and `no-agent` all parse and apply — except `no-agent`,
+   which sets a flag nothing reads until COMP-08 ships `list_toplevels`.
+   `size`, `position`, `fullscreen`, `app-trust`, `seat-compat` and
+   `idle-inhibit` actions, and the `cgroup` / `launching-principal` matchers,
+   are unimplemented. `app-id` and `title` are full regexes (the `regex` crate,
+   linear-time by construction because titles are client-controlled); a pattern
+   that does not compile is refused at parse time and the rule is dropped
+   whole, so a rule never applies in part. *Unblocked by:* the COMP-05 actions
+   above.
 8. **Custom modes are refused by `wlr_output_management`** — a
    `set_custom_mode` request with valid dimensions fails the whole
    configuration rather than modesetting outside the connector's own mode
