@@ -3058,7 +3058,7 @@ windowrule "float" {
   app-id "pavucontrol|org.gnome.Calculator"
 }
 windowrule "workspace 3" {
-  app-id "firefox" title ~"^Meet —"
+  app-id "firefox"; title "^Meet —"
 }
 windowrule "sensitivity secret" {
   app-id "org.keepassxc.KeePassXC"

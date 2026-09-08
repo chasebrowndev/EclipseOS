@@ -131,7 +131,7 @@ pub fn collect_elements(
     // With no per-window effect configured (the default) the whole space goes
     // through smithay's one call at alpha 1.0, so damage tracking and direct
     // scanout are exactly what they were before milestone 9b (COMP-02 §9).
-    if config.decoration.any_window_effect() {
+    if config.decoration.any_window_effect() || crate::shell::rules::any_opacity_override(space.elements()) {
         elements.extend(window_elements(renderer, space, borders, output, config, focus));
     } else {
         borders.dims.clear();
@@ -178,11 +178,12 @@ fn window_elements(
             continue;
         };
         let active = focus == Some(&window);
-        let alpha = if active {
+        // A matched `windowrule "opacity …"` overrides the global pair.
+        let alpha = crate::shell::rules::opacity_of(&window).unwrap_or(if active {
             deco.active_opacity
         } else {
             deco.inactive_opacity
-        };
+        });
 
         // The dim overlay belongs above this window but below the ones in
         // front of it, so it is pushed just before the window's own surfaces.

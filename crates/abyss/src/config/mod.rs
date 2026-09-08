@@ -299,6 +299,106 @@ pub struct Animation {
     pub curve: String,
 }
 
+/// One `windowrule "<action>" { <matchers> }` block (COMP-05 §4).
+///
+/// A rule applies only when every matcher present in the block matches. A rule
+/// whose action or matcher set this build cannot honour is dropped whole at
+/// parse time — never applied in part.
+#[derive(Debug, Clone)]
+pub struct WindowRule {
+    pub action: RuleAction,
+    pub matchers: Matchers,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Matchers {
+    pub app_id: Option<Pattern>,
+    pub title: Option<Pattern>,
+    pub pid: Option<i32>,
+    pub xwayland: Option<bool>,
+    /// Glob against the output connector or its persistent identity.
+    pub output: Option<String>,
+    pub workspace: Option<i32>,
+}
+
+impl Matchers {
+    /// True when no matcher was given, i.e. the rule would hit every window.
+    fn is_empty(&self) -> bool {
+        self.app_id.is_none()
+            && self.title.is_none()
+            && self.pid.is_none()
+            && self.xwayland.is_none()
+            && self.output.is_none()
+            && self.workspace.is_none()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuleAction {
+    Float,
+    Tile,
+    Workspace(i32),
+    Opacity(f32),
+    /// Raise-only: `secret` or `private`. `public` is refused at parse time
+    /// because a rule may never lower a sensitivity class.
+    Sensitivity(String),
+    NoAgent,
+    NoFocusSteal,
+}
+
+/// The matcher pattern language actually implemented here.
+///
+/// COMP-05 §4 specifies regular expressions. This build has no regex
+/// dependency, so it implements the subset the spec's own examples use —
+/// `|` alternation, `^`/`$` anchors, `*` as "any run", everything else
+/// literal — and *rejects* any pattern using another regex metacharacter
+/// rather than quietly matching something different. See docs/STATUS.md.
+#[derive(Debug, Clone)]
+pub struct Pattern {
+    /// One glob per `|` branch, already padded with `*` where unanchored.
+    globs: Vec<String>,
+}
+
+impl Pattern {
+    /// Compile a matcher value, or `None` if it needs more than the subset.
+    pub fn parse(source: &str) -> Option<Self> {
+        if source.is_empty() {
+            return None;
+        }
+        let mut globs = Vec::new();
+        for branch in source.split('|') {
+            if branch.chars().any(|c| "[](){}+?\\".contains(c)) {
+                return None;
+            }
+            // `^`/`$` are anchors only at the edges; anywhere else they are
+            // regex constructs this subset does not implement.
+            let start = branch.strip_prefix('^');
+            let anchored_start = start.is_some();
+            let body = start.unwrap_or(branch);
+            let end = body.strip_suffix('$');
+            let anchored_end = end.is_some();
+            let body = end.unwrap_or(body);
+            if body.contains('^') || body.contains('$') {
+                return None;
+            }
+            let mut glob = String::with_capacity(body.len() + 2);
+            if !anchored_start {
+                glob.push('*');
+            }
+            glob.push_str(body);
+            if !anchored_end {
+                glob.push('*');
+            }
+            globs.push(glob);
+        }
+        Some(Self { globs })
+    }
+
+    pub fn matches(&self, text: &str) -> bool {
+        self.globs.iter().any(|g| glob_match(g, text))
+    }
+}
+
 /// Animation names and easing curves accepted by `animations`. Unknown values
 /// are rejected at parse time rather than silently ignored at render time.
 const ANIMATION_NAMES: [&str; 4] = ["windows", "workspaces", "fade", "border"];
@@ -358,6 +458,9 @@ pub struct Config {
     pub workspace_layout: [Option<LayoutKind>; 10],
     /// `output` blocks in file order; the last match wins.
     pub outputs: Vec<OutputRule>,
+    /// `windowrule` blocks in file order; all matching rules apply, later ones
+    /// overriding earlier ones for the same property.
+    pub window_rules: Vec<WindowRule>,
     /// Files this config was built from, in load order. The hot-reload
     /// watcher watches these and the directories that would contain them.
     pub sources: Vec<PathBuf>,
@@ -382,6 +485,7 @@ impl Default for Config {
             binds: default_binds(),
             workspace_layout: Default::default(),
             outputs: Vec::new(),
+            window_rules: Vec::new(),
             sources: Vec::new(),
             explicit: None,
         }
@@ -615,8 +719,7 @@ impl Config {
                 "output" => self.apply_output(node),
                 "decoration" => self.apply_decoration(node),
                 "animations" => self.apply_animations(node),
-                // Blocks specified but not implemented in M2.
-                "windowrule" => {}
+                "windowrule" => self.apply_windowrule(node),
                 other => tracing::warn!(node = other, "unknown config node, ignored"),
             }
         }
@@ -908,6 +1011,111 @@ impl Config {
             }
         }
         self.animations.curves.push(anim);
+    }
+
+    /// `windowrule "float" { app-id "pavucontrol|org.gnome.Calculator" }`
+    /// (COMP-05 §4). An action or matcher this build cannot honour drops the
+    /// whole rule with a warning, so a rule never applies in part.
+    fn apply_windowrule(&mut self, node: &KdlNode) {
+        let Some(action) = arg(node).and_then(KdlValue::as_string) else {
+            tracing::warn!("windowrule needs an action argument");
+            return;
+        };
+        let mut words = action.split_whitespace();
+        let verb = words.next().unwrap_or_default();
+        let param = words.next();
+        let action = match (verb, param) {
+            ("float", None) => RuleAction::Float,
+            ("tile", None) => RuleAction::Tile,
+            ("no-agent", None) => RuleAction::NoAgent,
+            ("no-focus-steal", None) => RuleAction::NoFocusSteal,
+            ("workspace", Some(p)) => match p.parse::<i32>() {
+                Ok(n) if (1..=10).contains(&n) => RuleAction::Workspace(n),
+                _ => {
+                    tracing::warn!(action, "windowrule workspace must be 1..=10, rule ignored");
+                    return;
+                }
+            },
+            ("opacity", Some(p)) => match p.parse::<f32>() {
+                Ok(v) if (0.0..=1.0).contains(&v) => RuleAction::Opacity(v),
+                _ => {
+                    tracing::warn!(action, "windowrule opacity must be 0.0..=1.0, rule ignored");
+                    return;
+                }
+            },
+            ("sensitivity", Some(p @ ("secret" | "private"))) => RuleAction::Sensitivity(p.to_owned()),
+            ("sensitivity", Some(p)) => {
+                // App-declared sensitivity may only raise a class, never lower.
+                tracing::warn!(class = p, "windowrule sensitivity may only raise, rule ignored");
+                return;
+            }
+            _ => {
+                tracing::warn!(action, "unimplemented windowrule action, rule ignored");
+                return;
+            }
+        };
+
+        let mut matchers = Matchers::default();
+        let Some(children) = node.children() else {
+            tracing::warn!(
+                ?action,
+                "windowrule with no matchers would hit every window, ignored"
+            );
+            return;
+        };
+        for n in children.nodes() {
+            let name = n.name().value();
+            match name {
+                "app-id" | "title" => {
+                    let Some(pat) = arg(n).and_then(KdlValue::as_string).and_then(Pattern::parse) else {
+                        tracing::warn!(
+                            matcher = name,
+                            "matcher pattern needs a regex feature this build lacks, rule ignored"
+                        );
+                        return;
+                    };
+                    if name == "app-id" {
+                        matchers.app_id = Some(pat);
+                    } else {
+                        matchers.title = Some(pat);
+                    }
+                }
+                "pid" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if v > 0 => matchers.pid = Some(v as i32),
+                    _ => {
+                        tracing::warn!("windowrule pid must be a positive integer, rule ignored");
+                        return;
+                    }
+                },
+                "xwayland" => matchers.xwayland = Some(arg(n).and_then(KdlValue::as_bool).unwrap_or(true)),
+                "output" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(v) => matchers.output = Some(v.to_owned()),
+                    None => {
+                        tracing::warn!("windowrule output needs a name pattern, rule ignored");
+                        return;
+                    }
+                },
+                "workspace" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (1..=10).contains(&v) => matchers.workspace = Some(v as i32),
+                    _ => {
+                        tracing::warn!("windowrule workspace matcher must be 1..=10, rule ignored");
+                        return;
+                    }
+                },
+                other => {
+                    tracing::warn!(matcher = other, "unimplemented windowrule matcher, rule ignored");
+                    return;
+                }
+            }
+        }
+        if matchers.is_empty() {
+            tracing::warn!(
+                ?action,
+                "windowrule with no matchers would hit every window, ignored"
+            );
+            return;
+        }
+        self.window_rules.push(WindowRule { action, matchers });
     }
 
     fn apply_misc(&mut self, node: &KdlNode) {
@@ -1305,6 +1513,72 @@ mod tests {
         assert_eq!(parse_duration_ms(&KdlValue::String("1m".into())), Some(60_000));
         assert_eq!(parse_duration_ms(&KdlValue::String("2h".into())), None);
         assert_eq!(parse_duration_ms(&KdlValue::Integer(-1)), None);
+    }
+
+    #[test]
+    fn parses_windowrules() {
+        let doc: KdlDocument = r#"
+            windowrule "float" { app-id "pavucontrol|org.gnome.Calculator"; }
+            windowrule "workspace 3" { title "^Meet"; output "DP-*"; }
+            windowrule "opacity 0.85" { app-id "kitty"; xwayland #false; }
+            windowrule "sensitivity secret" { app-id "keepassxc"; }
+            windowrule "no-agent" { pid 42; }
+        "#
+        .parse()
+        .unwrap();
+        let mut c = Config::default();
+        c.apply(&doc, &mut Vec::new());
+        assert_eq!(c.window_rules.len(), 5);
+        assert_eq!(c.window_rules[1].action, RuleAction::Workspace(3));
+        assert_eq!(c.window_rules[2].action, RuleAction::Opacity(0.85));
+        assert_eq!(c.window_rules[4].action, RuleAction::NoAgent);
+        let m = &c.window_rules[0].matchers;
+        let app = m.app_id.as_ref().expect("app-id");
+        assert!(app.matches("pavucontrol"));
+        assert!(app.matches("org.gnome.Calculator"));
+        assert!(!app.matches("firefox"));
+        assert_eq!(c.window_rules[2].matchers.xwayland, Some(false));
+        assert_eq!(c.window_rules[4].matchers.pid, Some(42));
+    }
+
+    #[test]
+    fn rejects_unhonourable_windowrules() {
+        let doc: KdlDocument = r#"
+            windowrule "float" { }
+            windowrule "float"
+            windowrule "size 800 600" { app-id "a"; }
+            windowrule "sensitivity public" { app-id "a"; }
+            windowrule "workspace 99" { app-id "a"; }
+            windowrule "opacity 2.0" { app-id "a"; }
+            windowrule "float" { cgroup "x"; }
+            windowrule "float" { title "^(a|b)+$"; }
+            windowrule "float" { pid 0; }
+        "#
+        .parse()
+        .unwrap();
+        let mut c = Config::default();
+        c.apply(&doc, &mut Vec::new());
+        assert!(c.window_rules.is_empty(), "{:?}", c.window_rules);
+    }
+
+    #[test]
+    fn pattern_subset() {
+        let p = Pattern::parse("Meet").expect("literal");
+        assert!(p.matches("Google Meet — call"));
+        let p = Pattern::parse("^Meet").expect("anchored");
+        assert!(p.matches("Meet — call"));
+        assert!(!p.matches("Google Meet"));
+        let p = Pattern::parse("^kitty$").expect("exact");
+        assert!(p.matches("kitty"));
+        assert!(!p.matches("kitty-dev"));
+        let p = Pattern::parse("^org.gnome.*$").expect("glob");
+        assert!(p.matches("org.gnome.Calculator"));
+        // Anything needing real regex is refused, never approximated.
+        assert!(Pattern::parse("a[bc]").is_none());
+        assert!(Pattern::parse("a+").is_none());
+        assert!(Pattern::parse("(a|b)").is_none());
+        assert!(Pattern::parse("a$b").is_none());
+        assert!(Pattern::parse("").is_none());
     }
 
     #[test]

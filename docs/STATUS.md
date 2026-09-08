@@ -53,7 +53,8 @@ or a known, listed gap.
 | # | Milestone | State | Evidence / what the gate needs |
 |---|---|---|---|
 | 1 | winit backend; one xdg toplevel; keyboard + pointer; quit binding | **done** | `backend/winit.rs`, `protocols/standard/xdg_shell.rs`, `input/`. Gate run: terminal clients open, type and close cleanly nested under Hyprland (`WAYLAND_DISPLAY=wayland-1 ./target/debug/abyss --backend winit`). |
-| 2 | Config (KDL), dwindle + master layouts, workspaces, floating, bindings, layer-shell | **done** | `config/mod.rs` (1027 lines, inotify hot-reload, ADR 0016), `shell/` layouts, `protocols/standard/layer_shell.rs`. Gate run nested: layer-shell bar + launcher + notifier clients run; layouts usable by hand. Config blocks `decoration`, `animations`, `input`, `windowrule` parse and are then **ignored** — see stubs. |
+| 2 | Config (KDL), dwindle + master layouts, workspaces, floating, bindings, layer-shell | **done** | `config/mod.rs` (1027 lines, inotify hot-reload, ADR 0016), `shell/` layouts, `protocols/standard/layer_shell.rs`. Gate run nested: layer-shell bar + launcher + notifier clients run; layouts usable by hand. Config blocks `decoration`, `animations`, `input`, `input` and `xwayland` parse and are then **ignored**; `decoration`,
+`animations` and `windowrule` now apply in part — see stubs. |
 | 3 | DRM backend, multi-output, hotplug, fractional scale, output persistence | **code complete, gate never run** | `backend/drm.rs` (1013 lines), `outputs/` (hotplug, layout, persistence), `protocols/standard/fractional_scale.rs`. Gate needs three physical monitors on a real TTY plus a dock/undock cycle. Cannot be run from inside the nested session this work happens in; requires a VT login. |
 | 4 | dmabuf + explicit sync + direct scanout + VRR; damage tracking complete | **code complete, gate never run** | `protocols/standard/dmabuf.rs`, `drm_syncobj.rs` (registered only when the driver reports `supports_syncobj_eventfd`, else a warning and no global), `render/` damage + `scanout_candidate` (`backend/drm.rs:856`), VRR via `VrrSupport::Supported` + per-output `vrr` config. Gate needs Firefox and mpv on real KMS and the COMP-14 frame benchmarks, which have never been collected. |
 | 5 | Clipboard, primary selection, data-control, DnD, IME | **done** | `data_device.rs`, `primary_selection.rs`, `data_control.rs` (allowlisted per ADR 0027), `text_input.rs`, `input_method.rs`. Gate run nested: copy/paste across clients including primary; `wl-clipboard` via data-control honours the allowlist. |
@@ -142,9 +143,21 @@ macros anywhere in the workspace.
    interpolation (needs the frame clock, plus COMP-08's rule that agents see
    target geometry, never the interpolated value). All are off by default, so
    the default frame path is the single `space_render_elements` call it was
-   before — damage and direct scanout unchanged. `windowrule` is still parsed
-   and ignored, as are `xwayland` / `render-device`. *Unblocked by:* the rest
-   of 9b; COMP-05 §4 for `windowrule`.
+   before — damage and direct scanout unchanged. `xwayland` and
+   `render-device` are still parsed and ignored. *Unblocked by:* the rest of 9b.
+7. **`windowrule` matchers are a regex subset, not regex** (COMP-05 §4 says
+   regex). `shell/rules.rs` matches at map time and re-evaluates on title
+   change; `float`, `tile`, `workspace N`, `opacity F`, `sensitivity
+   secret|private` (raise-only), `no-focus-steal` and `no-agent` all parse and
+   apply — except `no-agent`, which sets a flag nothing reads until COMP-08
+   ships `list_toplevels`. `size`, `position`, `fullscreen`, `app-trust`,
+   `seat-compat` and `idle-inhibit` actions, and the `cgroup` /
+   `launching-principal` matchers, are unimplemented. The pattern language is
+   `|` alternation, `^`/`$` anchors and `*`; **any pattern needing more is
+   refused at parse time with a warning and the rule is dropped whole**, so a
+   rule never applies in part and never matches something the spec's regex
+   would not. *Unblocked by:* a `regex` dependency (needs approval) plus the
+   COMP-05 actions above.
 8. **Custom modes are refused by `wlr_output_management`** — a
    `set_custom_mode` request with valid dimensions fails the whole
    configuration rather than modesetting outside the connector's own mode

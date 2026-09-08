@@ -2,6 +2,7 @@
 //! Window management: placement, layout, workspaces, focus (COMP-05).
 
 pub mod layout;
+pub mod rules;
 pub mod workspace;
 
 use smithay::{
@@ -220,21 +221,52 @@ pub fn place_new_window(state: &mut AbyssState, window: Window) {
     let Some(id) = state.outputs.focused().map(|e| e.id) else {
         return;
     };
+    // COMP-05 §4: rules decide placement before the window joins a workspace.
+    let placement = rules::apply(state, &window);
     let output = state.outputs.get(id).expect("just resolved").output.clone();
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
+    let geometry = state.space.element_geometry(&window);
     let entry = state.outputs.get_mut(id).expect("just resolved");
-    let ws = entry.active;
-    let near = state
-        .focus
-        .clone()
-        .filter(|w| entry.workspaces[ws].tiled.contains(w));
-    entry.workspaces[ws]
-        .tiled
-        .insert(window.clone(), near.as_ref(), area);
-    state.focus = Some(window.clone());
-    arrange(state);
-    focus_window(state, &window);
+    let ws = placement
+        .workspace
+        .map(|n| (n as usize - 1).min(entry.workspaces.len() - 1))
+        .unwrap_or(entry.active);
+    if placement.float {
+        let size = geometry
+            .map(|g| g.size)
+            .unwrap_or_else(|| Size::from((area.size.w / 2, area.size.h / 2)));
+        let rect = Rectangle::new(
+            (
+                area.loc.x + (area.size.w - size.w).max(0) / 2,
+                area.loc.y + (area.size.h - size.h).max(0) / 2,
+            )
+                .into(),
+            size,
+        );
+        entry.workspaces[ws].floating.push(Floating {
+            window: window.clone(),
+            rect,
+        });
+    } else {
+        let near = state
+            .focus
+            .clone()
+            .filter(|w| entry.workspaces[ws].tiled.contains(w));
+        entry.workspaces[ws]
+            .tiled
+            .insert(window.clone(), near.as_ref(), area);
+    }
+    // A no-focus-steal window is mapped where the rule put it but never takes
+    // the focus; the human is told it wants attention (COMP-05 §5).
+    if placement.no_focus_steal {
+        arrange(state);
+        mark_urgent(state, &window);
+    } else {
+        state.focus = Some(window.clone());
+        arrange(state);
+        focus_window(state, &window);
+    }
     let handle = state.ipc.handle_for(&window);
     crate::ipc::emit(
         state,
@@ -394,15 +426,17 @@ pub fn surface_under(
 pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
     state.popups.commit(surface);
 
-    if let Some(window) = state
+    let mapped = state
         .space
         .elements()
         .find(|w| window_surface(w).as_ref() == Some(surface))
-        .cloned()
-    {
+        .cloned();
+    if let Some(window) = mapped {
         // Title and app_id can change at any commit; the foreign-toplevel list
         // has no other notification path for them.
         crate::protocols::standard::foreign_toplevel::window_updated(&window);
+        // Title-matching rules are re-evaluated on title change (COMP-05 §4).
+        rules::reevaluate(state, &window);
         if window.toplevel().is_none() {
             // X11: no configure handshake to complete on this side.
             return;
