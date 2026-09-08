@@ -199,10 +199,11 @@ macros anywhere in the workspace.
     `implemented: false`. *Unblocked by:* milestones 11 and 15.
 12. **XWayland eager start, no hardening flags** — see milestone 7. Blocked on
     smithay upstream, verified in the vendored source.
-13. **Only two IPC event kinds are emitted for shell changes** — `window`,
-    `output`, plus `focus` and workspace events (9 `emit` call sites across
-    `outputs/mod.rs`, `shell/mod.rs`, `ipc/methods.rs`). `agent-activity` and
-    `config-error` are named by COMP-13 and never emitted.
+13. **`agent-activity` is the one IPC event kind still never emitted.**
+    `window`, `output`, `focus` and workspace events fire from
+    `outputs/mod.rs`, `shell/mod.rs` and `ipc/methods.rs`; `config-error` now
+    fires from `config/watch.rs::reload_now` when a reload is refused.
+    `agent-activity` waits on the agent protocol (Phase 2).
 14. **No `crates/policyd`, `crates/agentd`, `crates/sandbox`** — the TCB crates
     named in the root `CLAUDE.md` do not exist. The module map in that file
     describes the intended end state, not the tree.
@@ -263,18 +264,24 @@ Per the root `CLAUDE.md`: "specs and code disagreeing is a bug in one of them �
 do not silently pick." These are recorded, not resolved. None of them has been
 fixed by editing either side.
 
-1. **COMP-01 §5 stops at step 9** ("export `$WAYLAND_DISPLAY`") and says
-   nothing about handing off to the user session manager. `session.rs` does
-   exactly that and its own docstring says the module is *additive to the
-   spec, not an implementation of it* (ADR 0032). The spec needs a step 10 or
-   an explicit statement that session integration is out of scope. Steps 10,
-   11 and 13 of that startup sequence likewise have no counterpart in code.
-2. **COMP-01 §4 GPU selection.** The spec describes a ranking for choosing the
-   primary GPU; `backend/drm.rs:503` calls smithay's `primary_gpu(&seat_name)`
-   instead, which is a different (simpler) policy. The `render-device` config
-   key that would let a user override it parses and is discarded
-   (`config/mod.rs:586`). Either the spec's ranking should be implemented or
-   §4 should adopt smithay's.
+1. ~~**COMP-01 §5 says nothing about the user session manager.**~~ *Closed.*
+   The gap was recorded against a stale reading — §5 runs to 14 steps, not 9 —
+   but the substance stood: `session.rs` hands off to the systemd user session
+   and its docstring calls itself *additive to the spec, not an implementation
+   of it* (ADR 0032). §5 now states that session-manager integration is
+   deliberately out of scope and points at ADR 0032, so a compositor that never
+   talks to one still satisfies the section. Steps 10, 11 and 13 remain
+   Phase 2 work with no counterpart in code yet.
+2. **COMP-01 §4 GPU ranking.** The spec describes a deterministic ranking
+   (discrete before integrated, larger VRAM, PCI DBDF tiebreak);
+   `backend/drm.rs` calls smithay's `primary_gpu(&seat_name)` instead, a
+   different and simpler policy. The override half of §4 is closed — the
+   `--render-device` flag, `ECLIPSE_RENDER_DEVICE` and the `render-device`
+   config key are all honoured in that precedence (commit `78142ec`, ADR 0033);
+   the earlier claim that the config key "parses and is discarded" was stale.
+   What remains is a decision: implement the spec's ranking or amend §4 to
+   adopt smithay's. It cannot be verified on this single-GPU machine either
+   way, so it is chase's call, not a defect to fix blind.
 3. **COMP-06 §1 protocol list vs. the implemented modules.** *Closed.* The
    fifteen missing protocols are implemented (milestone 9a). COMP-06 §1 also
    gained a note that
@@ -282,14 +289,19 @@ fixed by editing either side.
    already advertised, `wl_subcompositor` by `CompositorState::new` and
    `xdg_output` by `OutputManagerState::new_with_xdg_output`
    (`state.rs:212`).
-4. **COMP-13 §1.2 config validation.** The spec calls for total validation —
-   a bad config is an error. `Config::load` (`config/mod.rs:382`) logs
-   `"config unreadable, using defaults"` or `"config parse failed, file
-   ignored"` and **always returns a usable config**, warning on unknown nodes
-   rather than rejecting them. This is a deliberate choice for hot-reload (a
-   typo mid-edit should not kill the session) but it contradicts the spec as
-   written. One of the two needs to change; the `config-error` IPC event the
-   spec names would be the natural bridge, and it is never emitted.
+4. ~~**COMP-13 §1.2 config validation.**~~ *Closed — the spec was right and
+   the code was wrong.* `Config::load` used to log and carry on, always
+   returning a usable config. That was worse than either behaviour §1.2
+   contemplates: because an unparseable file was skipped and the config was
+   built from `Config::default()`, a typo saved mid-edit made hot-reload
+   replace the live config with **built-in defaults** — the opposite of "keep
+   the last good config. Never half-apply." Validation is now total: every
+   refusal is recorded in `Config::errors` as a `ConfigError` carrying
+   `file:line:col` and the offending token. Startup (COMP-01 §5 step 3) prints
+   them and exits non-zero; `config/watch.rs::reload_now` keeps `state.config`
+   untouched, logs, and emits the `config-error` IPC event the spec names.
+   **User-visible behaviour change: abyss now refuses to start on an invalid
+   config.**
 5. ~~**KDL v2 booleans.**~~ *Resolved.* The `kdl` crate is v2, where bare
    `true` and `false` are identifiers rather than values; the spec's examples
    were written in v1 syntax and would not have parsed. The examples were
@@ -312,5 +324,5 @@ fixed by editing either side.
 ## Test and gate status
 
 `cargo build --workspace`, `cargo clippy --workspace --all-targets -- -D
-warnings`, `cargo fmt --check` and `cargo test --workspace` (46 tests) are all
+warnings`, `cargo fmt --check` and `cargo test --workspace` (66 tests) are all
 green as of this revision. There is no CI; the gate is run by hand.

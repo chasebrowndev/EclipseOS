@@ -8,8 +8,12 @@
 //!   4. `$XDG_CONFIG_HOME/abyss/config.kdl` (compatibility fallback)
 //!      `--config <path>` replaces the whole search path with that one file.
 //!
-//! Parsing never fails hard: every malformed node is logged and skipped, and a
-//! file that will not parse at all leaves the defaults in place.
+//! Validation is total (COMP-13 §1.2): an unknown key or a malformed value is
+//! an error, not a warning. Refusals are collected in [`Config::errors`] as
+//! [`ConfigError`]s carrying `file:line:col` and the offending token; the
+//! caller decides what to do with them. Startup (COMP-01 §5 step 3) prints them
+//! and exits; hot-reload ([`watch::reload_now`]) keeps the last good config and
+//! emits a `config-error` IPC event. Never half-apply.
 
 pub mod watch;
 
@@ -452,6 +456,29 @@ pub struct Touchpad {
     pub dwt: bool,
 }
 
+/// A refusal from config validation (COMP-13 §1.2). Carries the precise
+/// `file:line:col` the spec requires so the message can be acted on directly.
+#[derive(Debug, Clone)]
+pub struct ConfigError {
+    pub file: PathBuf,
+    pub line: usize,
+    pub col: usize,
+    pub message: String,
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:{}:{}: {}",
+            self.file.display(),
+            self.line,
+            self.col,
+            self.message
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub general: General,
@@ -478,6 +505,12 @@ pub struct Config {
     /// `--config <path>`, if one was given. Reload must honour it rather than
     /// falling back to the search path.
     pub explicit: Option<PathBuf>,
+    /// Validation refusals collected during the last load. Non-empty means the
+    /// config is invalid: startup exits, hot-reload keeps the last good one.
+    pub errors: Vec<ConfigError>,
+    /// The file being parsed, and its text, so `reject` can turn a KDL span
+    /// into `file:line:col`. Cleared when the load finishes.
+    cur: Option<(PathBuf, String)>,
 }
 
 impl Default for Config {
@@ -499,6 +532,8 @@ impl Default for Config {
             window_rules: Vec::new(),
             sources: Vec::new(),
             explicit: None,
+            errors: Vec::new(),
+            cur: None,
         }
     }
 }
@@ -646,12 +681,6 @@ pub fn default_binds() -> Vec<Bind> {
 /// than adding to it, and silently dropping names from an allowlist is the
 /// failure direction that matters in a fail-closed path.
 fn names(n: &KdlNode, seen: &mut bool) -> Vec<String> {
-    if *seen {
-        tracing::warn!(
-            node = n.name().value(),
-            "repeated node replaces the previous one; list every name on a single node"
-        );
-    }
     *seen = true;
     args(n)
         .into_iter()
@@ -660,8 +689,9 @@ fn names(n: &KdlNode, seen: &mut bool) -> Vec<String> {
 }
 
 impl Config {
-    /// Load from `explicit` if given, else from the search path. Errors are
-    /// logged; the returned config is always usable.
+    /// Load from `explicit` if given, else from the search path. Validation is
+    /// total (COMP-13 §1.2): any refusal lands in `errors`, and the caller
+    /// decides — startup exits, hot-reload keeps the last good config.
     pub fn load(explicit: Option<&Path>) -> Self {
         let files: Vec<PathBuf> = match explicit {
             Some(p) => vec![p.to_path_buf()],
@@ -678,7 +708,12 @@ impl Config {
                 Ok(t) => t,
                 Err(e) => {
                     if explicit.is_some() {
-                        tracing::error!(path = %f.display(), %e, "config unreadable, using defaults");
+                        cfg.errors.push(ConfigError {
+                            file: f.clone(),
+                            line: 0,
+                            col: 0,
+                            message: format!("config unreadable: {e}"),
+                        });
                     }
                     continue;
                 }
@@ -686,13 +721,25 @@ impl Config {
             let doc = match text.parse::<KdlDocument>() {
                 Ok(d) => d,
                 Err(e) => {
-                    tracing::error!(path = %f.display(), error = %e, "config parse failed, file ignored");
+                    let off = e
+                        .diagnostics
+                        .first()
+                        .map_or(0, |d| d.span.offset())
+                        .min(text.len());
+                    cfg.errors.push(ConfigError {
+                        file: f.clone(),
+                        line: text[..off].matches('\n').count() + 1,
+                        col: off - text[..off].rfind('\n').map_or(0, |i| i + 1) + 1,
+                        message: format!("{e}"),
+                    });
                     continue;
                 }
             };
             any = true;
             cfg.sources.push(f.clone());
+            cfg.cur = Some((f.clone(), text));
             cfg.apply(&doc, &mut binds_from_file);
+            cfg.cur = None;
         }
         if !binds_from_file.is_empty() {
             cfg.binds = binds_from_file;
@@ -706,9 +753,31 @@ impl Config {
     }
 
     /// Re-read the same sources. The inotify watcher (`config::watch`) calls
-    /// this; `Config::load` never fails hard, so the result is always usable.
+    /// this and must check `errors` before applying the result.
     pub fn reload(&self) -> Self {
         Self::load(self.explicit.as_deref())
+    }
+
+    /// Record a validation refusal against `node`'s position (COMP-13 §1.2).
+    /// Also logged, so the journal shows the same text the caller gets.
+    fn reject(&mut self, node: &KdlNode, message: impl Into<String>) {
+        let message = message.into();
+        let (file, line, col) = match &self.cur {
+            Some((f, text)) => {
+                let off = node.span().offset().min(text.len());
+                let line = text[..off].matches('\n').count() + 1;
+                let col = off - text[..off].rfind('\n').map_or(0, |i| i + 1) + 1;
+                (f.clone(), line, col)
+            }
+            None => (PathBuf::new(), 0, 0),
+        };
+        tracing::error!(path = %file.display(), line, col, %message, "invalid config");
+        self.errors.push(ConfigError {
+            file,
+            line,
+            col,
+            message,
+        });
     }
 
     fn apply(&mut self, doc: &KdlDocument, binds: &mut Vec<Bind>) {
@@ -717,7 +786,7 @@ impl Config {
                 "general" => self.apply_general(node),
                 "bind" => match parse_bind(node) {
                     Ok(b) => binds.push(b),
-                    Err(e) => tracing::warn!(error = %e, "ignoring bind"),
+                    Err(e) => self.reject(node, format!("ignoring bind (error={})", e)),
                 },
                 "workspace" => self.apply_workspace(node),
                 "render" => self.apply_render(node),
@@ -731,7 +800,7 @@ impl Config {
                 "decoration" => self.apply_decoration(node),
                 "animations" => self.apply_animations(node),
                 "windowrule" => self.apply_windowrule(node),
-                other => tracing::warn!(node = other, "unknown config node, ignored"),
+                other => self.reject(node, format!("unknown config node (node={})", other)),
             }
         }
     }
@@ -741,9 +810,21 @@ impl Config {
         for n in children.nodes() {
             let name = n.name().value();
             match name {
-                "gaps-in" => set_i32(&mut self.general.gaps_in, n),
-                "gaps-out" => set_i32(&mut self.general.gaps_out, n),
-                "border-size" => set_i32(&mut self.general.border_size, n),
+                "gaps-in" => {
+                    if !set_i32(&mut self.general.gaps_in, n) {
+                        self.reject(n, "gaps-in expects an integer");
+                    }
+                }
+                "gaps-out" => {
+                    if !set_i32(&mut self.general.gaps_out, n) {
+                        self.reject(n, "gaps-out expects an integer");
+                    }
+                }
+                "border-size" => {
+                    if !set_i32(&mut self.general.border_size, n) {
+                        self.reject(n, "border-size expects an integer");
+                    }
+                }
                 "focus-follows-mouse" => {
                     if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
                         self.general.focus_follows_mouse = b;
@@ -752,16 +833,16 @@ impl Config {
                 "layout" => match arg(n).and_then(KdlValue::as_string) {
                     Some("dwindle") => self.general.layout = LayoutKind::Dwindle,
                     Some("master") => self.general.layout = LayoutKind::Master,
-                    other => tracing::warn!(?other, "unknown layout, keeping default"),
+                    other => self.reject(n, format!("unknown layout, keeping default (other={:?})", other)),
                 },
                 "col-active-border" | "col-inactive-border" => {
                     match arg(n).and_then(KdlValue::as_string).and_then(parse_color) {
                         Some(c) if name.starts_with("col-active") => self.general.col_active = c,
                         Some(c) => self.general.col_inactive = c,
-                        None => tracing::warn!(node = name, "bad color, keeping default"),
+                        None => self.reject(n, format!("bad color, keeping default (node={})", name)),
                     }
                 }
-                other => tracing::warn!(node = other, "unknown general key, ignored"),
+                other => self.reject(n, format!("unknown general key (node={})", other)),
             }
         }
     }
@@ -773,7 +854,7 @@ impl Config {
                 "direct-scanout" => {
                     self.render.direct_scanout = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
                 }
-                other => tracing::warn!(node = other, "unknown render node, ignored"),
+                other => self.reject(n, format!("unknown render node (node={})", other)),
             }
         }
     }
@@ -784,9 +865,12 @@ impl Config {
         for n in children.nodes() {
             match n.name().value() {
                 "data-control-allow" => {
+                    if seen_allow {
+                        self.reject(n, "repeated data-control-allow replaces the previous one; list every name on a single node");
+                    }
                     self.clipboard.data_control_allow = names(n, &mut seen_allow);
                 }
-                other => tracing::warn!(node = other, "unknown clipboard node, ignored"),
+                other => self.reject(n, format!("unknown clipboard node (node={})", other)),
             }
         }
     }
@@ -798,12 +882,21 @@ impl Config {
         for n in children.nodes() {
             match n.name().value() {
                 "allow" => {
+                    if seen_allow {
+                        self.reject(
+                            n,
+                            "repeated allow replaces the previous one; list every name on a single node",
+                        );
+                    }
                     self.capture.allow = names(n, &mut seen_allow);
                 }
                 "redact-app-id" => {
+                    if seen_redact {
+                        self.reject(n, "repeated redact-app-id replaces the previous one; list every name on a single node");
+                    }
                     self.capture.redact_app_id = names(n, &mut seen_redact);
                 }
-                other => tracing::warn!(node = other, "unknown capture node, ignored"),
+                other => self.reject(n, format!("unknown capture node (node={})", other)),
             }
         }
     }
@@ -821,9 +914,15 @@ impl Config {
                 "scaling" => match arg(n).and_then(KdlValue::as_string) {
                     Some("client") => self.xwayland.scaling_client = true,
                     Some("compositor") => self.xwayland.scaling_client = false,
-                    other => tracing::warn!(?other, "unknown xwayland scaling mode, keeping default"),
+                    other => self.reject(
+                        n,
+                        format!(
+                            "unknown xwayland scaling mode, keeping default (other={:?})",
+                            other
+                        ),
+                    ),
                 },
-                other => tracing::warn!(node = other, "unknown xwayland node, ignored"),
+                other => self.reject(n, format!("unknown xwayland node (node={})", other)),
             }
         }
     }
@@ -843,14 +942,17 @@ impl Config {
                                 self.idle.lock_timeout = v;
                             }
                         }
-                        _ => tracing::warn!(node = name, "idle timeout must be a non-negative integer"),
+                        _ => self.reject(
+                            n,
+                            format!("idle timeout must be a non-negative integer (node={})", name),
+                        ),
                     }
                 }
                 "lock-command" => match arg(n).and_then(KdlValue::as_string) {
                     Some(c) => self.idle.lock_command = Some(c.to_owned()),
-                    None => tracing::warn!("idle lock-command needs a string argument"),
+                    None => self.reject(n, "idle lock-command needs a string argument"),
                 },
-                other => tracing::warn!(node = other, "unknown idle node, ignored"),
+                other => self.reject(n, format!("unknown idle node (node={})", other)),
             }
         }
     }
@@ -877,14 +979,22 @@ impl Config {
                         .filter(|v| !v.is_empty())
                         .map(str::to_string);
                 }
-                "repeat-rate" => set_i32(&mut self.input.repeat_rate, n),
-                "repeat-delay" => set_i32(&mut self.input.repeat_delay, n),
+                "repeat-rate" => {
+                    if !set_i32(&mut self.input.repeat_rate, n) {
+                        self.reject(n, "repeat-rate expects an integer");
+                    }
+                }
+                "repeat-delay" => {
+                    if !set_i32(&mut self.input.repeat_delay, n) {
+                        self.reject(n, "repeat-delay expects an integer");
+                    }
+                }
                 "accel-profile" => match arg(n).and_then(KdlValue::as_string) {
                     Some(v @ ("flat" | "adaptive")) => self.input.accel_profile = v.to_string(),
-                    other => tracing::warn!(?other, "unknown accel-profile, ignored"),
+                    other => self.reject(n, format!("unknown accel-profile (other={:?})", other)),
                 },
                 "touchpad" => self.apply_touchpad(n),
-                other => tracing::warn!(node = other, "unknown input key, ignored"),
+                other => self.reject(n, format!("unknown input key (node={})", other)),
             }
         }
     }
@@ -894,14 +1004,14 @@ impl Config {
         for n in children.nodes() {
             let name = n.name().value();
             let Some(b) = arg(n).and_then(KdlValue::as_bool) else {
-                tracing::warn!(node = name, "touchpad key needs a boolean, ignored");
+                self.reject(n, format!("touchpad key needs a boolean (node={})", name));
                 continue;
             };
             match name {
                 "natural-scroll" => self.input.touchpad.natural_scroll = b,
                 "tap-to-click" => self.input.touchpad.tap_to_click = b,
                 "dwt" => self.input.touchpad.dwt = b,
-                other => tracing::warn!(node = other, "unknown touchpad key, ignored"),
+                other => self.reject(n, format!("unknown touchpad key (node={})", other)),
             }
         }
     }
@@ -915,7 +1025,7 @@ impl Config {
             match name {
                 "rounding" => match arg(n).and_then(KdlValue::as_integer) {
                     Some(v) if (0..=64).contains(&v) => self.decoration.rounding = v as i32,
-                    _ => tracing::warn!("decoration rounding must be an integer 0..=64"),
+                    _ => self.reject(n, "decoration rounding must be an integer 0..=64"),
                 },
                 "active-opacity" | "inactive-opacity" | "dim-inactive" => match arg(n).and_then(as_f64) {
                     Some(v) if (0.0..=1.0).contains(&v) => {
@@ -926,11 +1036,11 @@ impl Config {
                             _ => self.decoration.dim_inactive = v,
                         }
                     }
-                    _ => tracing::warn!(node = name, "decoration key must be 0.0..=1.0"),
+                    _ => self.reject(n, format!("decoration key must be 0.0..=1.0 (node={})", name)),
                 },
                 "blur" => self.apply_blur(n),
                 "shadow" => self.apply_shadow(n),
-                other => tracing::warn!(node = other, "unknown decoration key, ignored"),
+                other => self.reject(n, format!("unknown decoration key (node={})", other)),
             }
         }
     }
@@ -944,13 +1054,13 @@ impl Config {
                 }
                 "size" => match arg(n).and_then(KdlValue::as_integer) {
                     Some(v) if (1..=64).contains(&v) => self.decoration.blur.size = v as i32,
-                    _ => tracing::warn!("blur size must be an integer 1..=64"),
+                    _ => self.reject(n, "blur size must be an integer 1..=64"),
                 },
                 "passes" => match arg(n).and_then(KdlValue::as_integer) {
                     Some(v) if (1..=6).contains(&v) => self.decoration.blur.passes = v as i32,
-                    _ => tracing::warn!("blur passes must be an integer 1..=6"),
+                    _ => self.reject(n, "blur passes must be an integer 1..=6"),
                 },
-                other => tracing::warn!(node = other, "unknown blur key, ignored"),
+                other => self.reject(n, format!("unknown blur key (node={})", other)),
             }
         }
     }
@@ -964,9 +1074,9 @@ impl Config {
                 }
                 "range" => match arg(n).and_then(KdlValue::as_integer) {
                     Some(v) if (0..=128).contains(&v) => self.decoration.shadow.range = v as i32,
-                    _ => tracing::warn!("shadow range must be an integer 0..=128"),
+                    _ => self.reject(n, "shadow range must be an integer 0..=128"),
                 },
-                other => tracing::warn!(node = other, "unknown shadow key, ignored"),
+                other => self.reject(n, format!("unknown shadow key (node={})", other)),
             }
         }
     }
@@ -980,18 +1090,18 @@ impl Config {
                     self.animations.enabled = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
                 }
                 "animation" => self.apply_animation(n),
-                other => tracing::warn!(node = other, "unknown animations key, ignored"),
+                other => self.reject(n, format!("unknown animations key (node={})", other)),
             }
         }
     }
 
     fn apply_animation(&mut self, node: &KdlNode) {
         let Some(name) = arg(node).and_then(KdlValue::as_string) else {
-            tracing::warn!("animation node needs a name argument");
+            self.reject(node, "animation node needs a name argument");
             return;
         };
         if !ANIMATION_NAMES.contains(&name) {
-            tracing::warn!(name, "unknown animation name, ignored");
+            self.reject(node, format!("unknown animation name (name={})", name));
             return;
         }
         let mut anim = Animation {
@@ -1007,18 +1117,27 @@ impl Config {
                 "duration" => match parse_duration_ms(e.value()) {
                     Some(ms) if ms <= 10_000 => anim.duration_ms = ms,
                     _ => {
-                        tracing::warn!(name, "animation duration must be <= 10s, e.g. \"150ms\"");
+                        self.reject(
+                            node,
+                            format!(
+                                "animation duration must be <= 10s, e.g. \"150ms\" (name={})",
+                                name
+                            ),
+                        );
                         return;
                     }
                 },
                 "curve" => match e.value().as_string() {
                     Some(c) if ANIMATION_CURVES.contains(&c) => anim.curve = c.to_owned(),
                     other => {
-                        tracing::warn!(name, ?other, "unknown animation curve, rule ignored");
+                        self.reject(
+                            node,
+                            format!("unknown animation curve (name={}, other={:?})", name, other),
+                        );
                         return;
                     }
                 },
-                other => tracing::warn!(node = other, "unknown animation property, ignored"),
+                other => self.reject(node, format!("unknown animation property (node={})", other)),
             }
         }
         self.animations.curves.push(anim);
@@ -1029,7 +1148,7 @@ impl Config {
     /// whole rule with a warning, so a rule never applies in part.
     fn apply_windowrule(&mut self, node: &KdlNode) {
         let Some(action) = arg(node).and_then(KdlValue::as_string) else {
-            tracing::warn!("windowrule needs an action argument");
+            self.reject(node, "windowrule needs an action argument");
             return;
         };
         let mut words = action.split_whitespace();
@@ -1044,14 +1163,20 @@ impl Config {
             ("size", Some(p)) => match parse_pair(p, 'x') {
                 Some((w, h)) if w > 0 && h > 0 => RuleAction::Size(w, h),
                 _ => {
-                    tracing::warn!(action, "windowrule size must be WxH in pixels, rule ignored");
+                    self.reject(
+                        node,
+                        format!("windowrule size must be WxH in pixels (action={})", action),
+                    );
                     return;
                 }
             },
             ("position", Some(p)) => match parse_pair(p, ',') {
                 Some((x, y)) => RuleAction::Position(x, y),
                 None => {
-                    tracing::warn!(action, "windowrule position must be X,Y in pixels, rule ignored");
+                    self.reject(
+                        node,
+                        format!("windowrule position must be X,Y in pixels (action={})", action),
+                    );
                     return;
                 }
             },
@@ -1063,34 +1188,49 @@ impl Config {
             ("workspace", Some(p)) => match p.parse::<i32>() {
                 Ok(n) if (1..=10).contains(&n) => RuleAction::Workspace(n),
                 _ => {
-                    tracing::warn!(action, "windowrule workspace must be 1..=10, rule ignored");
+                    self.reject(
+                        node,
+                        format!("windowrule workspace must be 1..=10 (action={})", action),
+                    );
                     return;
                 }
             },
             ("opacity", Some(p)) => match p.parse::<f32>() {
                 Ok(v) if (0.0..=1.0).contains(&v) => RuleAction::Opacity(v),
                 _ => {
-                    tracing::warn!(action, "windowrule opacity must be 0.0..=1.0, rule ignored");
+                    self.reject(
+                        node,
+                        format!("windowrule opacity must be 0.0..=1.0 (action={})", action),
+                    );
                     return;
                 }
             },
             ("sensitivity", Some(p @ ("secret" | "private"))) => RuleAction::Sensitivity(p.to_owned()),
             ("sensitivity", Some(p)) => {
                 // App-declared sensitivity may only raise a class, never lower.
-                tracing::warn!(class = p, "windowrule sensitivity may only raise, rule ignored");
+                self.reject(
+                    node,
+                    format!("windowrule sensitivity may only raise (class={})", p),
+                );
                 return;
             }
             _ => {
-                tracing::warn!(action, "unimplemented windowrule action, rule ignored");
+                self.reject(
+                    node,
+                    format!("unimplemented windowrule action (action={})", action),
+                );
                 return;
             }
         };
 
         let mut matchers = Matchers::default();
         let Some(children) = node.children() else {
-            tracing::warn!(
-                ?action,
-                "windowrule with no matchers would hit every window, ignored"
+            self.reject(
+                node,
+                format!(
+                    "windowrule with no matchers would hit every window (action={:?})",
+                    action
+                ),
             );
             return;
         };
@@ -1099,9 +1239,9 @@ impl Config {
             match name {
                 "app-id" | "title" => {
                     let Some(pat) = arg(n).and_then(KdlValue::as_string).and_then(Pattern::parse) else {
-                        tracing::warn!(
-                            matcher = name,
-                            "matcher pattern is not a valid regex, rule ignored"
+                        self.reject(
+                            n,
+                            format!("matcher pattern is not a valid regex (matcher={})", name),
                         );
                         return;
                     };
@@ -1114,7 +1254,7 @@ impl Config {
                 "pid" => match arg(n).and_then(KdlValue::as_integer) {
                     Some(v) if v > 0 => matchers.pid = Some(v as i32),
                     _ => {
-                        tracing::warn!("windowrule pid must be a positive integer, rule ignored");
+                        self.reject(n, "windowrule pid must be a positive integer");
                         return;
                     }
                 },
@@ -1122,34 +1262,37 @@ impl Config {
                 "output" => match arg(n).and_then(KdlValue::as_string) {
                     Some(v) => matchers.output = Some(v.to_owned()),
                     None => {
-                        tracing::warn!("windowrule output needs a name pattern, rule ignored");
+                        self.reject(n, "windowrule output needs a name pattern");
                         return;
                     }
                 },
                 "cgroup" => match arg(n).and_then(KdlValue::as_string).and_then(Pattern::parse) {
                     Some(p) => matchers.cgroup = Some(p),
                     None => {
-                        tracing::warn!("windowrule cgroup matcher is not a valid regex, rule ignored");
+                        self.reject(n, "windowrule cgroup matcher is not a valid regex");
                         return;
                     }
                 },
                 "workspace" => match arg(n).and_then(KdlValue::as_integer) {
                     Some(v) if (1..=10).contains(&v) => matchers.workspace = Some(v as i32),
                     _ => {
-                        tracing::warn!("windowrule workspace matcher must be 1..=10, rule ignored");
+                        self.reject(n, "windowrule workspace matcher must be 1..=10");
                         return;
                     }
                 },
                 other => {
-                    tracing::warn!(matcher = other, "unimplemented windowrule matcher, rule ignored");
+                    self.reject(n, format!("unimplemented windowrule matcher (matcher={})", other));
                     return;
                 }
             }
         }
         if matchers.is_empty() {
-            tracing::warn!(
-                ?action,
-                "windowrule with no matchers would hit every window, ignored"
+            self.reject(
+                node,
+                format!(
+                    "windowrule with no matchers would hit every window (action={:?})",
+                    action
+                ),
             );
             return;
         }
@@ -1166,22 +1309,22 @@ impl Config {
                 "render-device" => match arg(n).and_then(KdlValue::as_string) {
                     Some("auto") => self.misc.render_device = None,
                     Some(v) => self.misc.render_device = Some(v.to_owned()),
-                    None => tracing::warn!("render-device needs a string, ignored"),
+                    None => self.reject(n, "render-device needs a string"),
                 },
                 // Restart-only knobs (COMP-13 §1.2); parsed elsewhere or not yet.
                 "xwayland" => {}
-                other => tracing::warn!(node = other, "unknown misc key, ignored"),
+                other => self.reject(n, format!("unknown misc key (node={})", other)),
             }
         }
     }
 
     fn apply_workspace(&mut self, node: &KdlNode) {
         let Some(idx) = arg(node).and_then(KdlValue::as_integer) else {
-            tracing::warn!("workspace node needs a number argument");
+            self.reject(node, "workspace node needs a number argument");
             return;
         };
         if !(1..=10).contains(&idx) {
-            tracing::warn!(idx, "workspace out of range 1..=10, ignored");
+            self.reject(node, format!("workspace out of range 1..=10 (idx={})", idx));
             return;
         }
         let Some(children) = node.children() else { return };
@@ -1191,7 +1334,7 @@ impl Config {
                 match arg(n).and_then(KdlValue::as_string) {
                     Some("dwindle") => *slot = Some(LayoutKind::Dwindle),
                     Some("master") => *slot = Some(LayoutKind::Master),
-                    other => tracing::warn!(?other, "unknown workspace layout"),
+                    other => self.reject(n, format!("unknown workspace layout (other={:?})", other)),
                 }
             }
         }
@@ -1199,7 +1342,7 @@ impl Config {
 
     fn apply_output(&mut self, node: &KdlNode) {
         let Some(pattern) = arg(node).and_then(KdlValue::as_string).map(str::to_owned) else {
-            tracing::warn!("output node needs a name pattern argument");
+            self.reject(node, "output node needs a name pattern argument");
             return;
         };
         let mut rule = OutputRule {
@@ -1218,7 +1361,7 @@ impl Config {
                     .and_then(crate::outputs::persist::parse_mode)
                 {
                     Some(m) => rule.mode = Some(m),
-                    None => tracing::warn!("bad output mode, expected \"1920x1080@60\""),
+                    None => self.reject(n, "bad output mode, expected \"1920x1080@60\""),
                 },
                 "position" => {
                     let a = n.entries();
@@ -1227,18 +1370,18 @@ impl Config {
                         a.get(1).and_then(|e| e.value().as_integer()),
                     ) {
                         (Some(x), Some(y)) => rule.position = Some((x as i32, y as i32)),
-                        _ => tracing::warn!("output position takes two integers"),
+                        _ => self.reject(n, "output position takes two integers"),
                     }
                 }
                 "scale" => match arg(n).and_then(as_f64) {
                     Some(s) if s > 0.0 => rule.scale = Some(s),
-                    _ => tracing::warn!("output scale must be a positive number"),
+                    _ => self.reject(n, "output scale must be a positive number"),
                 },
                 "transform" => match arg(n).and_then(KdlValue::as_string) {
                     Some(t) if crate::outputs::parse_transform(t).is_some() => {
                         rule.transform = Some(t.to_owned())
                     }
-                    other => tracing::warn!(?other, "unknown output transform"),
+                    other => self.reject(n, format!("unknown output transform (other={:?})", other)),
                 },
                 "enabled" | "disabled" => match arg(n).and_then(KdlValue::as_bool) {
                     Some(v) => rule.enabled = Some(v == (name == "enabled")),
@@ -1246,10 +1389,10 @@ impl Config {
                 },
                 "lid-close" => match arg(n).and_then(KdlValue::as_string) {
                     Some(v @ ("off" | "suspend" | "ignore")) => rule.lid_close = Some(v.to_owned()),
-                    _ => tracing::warn!("output lid-close must be off, suspend or ignore"),
+                    _ => self.reject(n, "output lid-close must be off, suspend or ignore"),
                 },
                 "vrr" | "adaptive-sync" => rule.vrr = arg(n).and_then(KdlValue::as_bool).or(Some(true)),
-                other => tracing::warn!(node = other, "unknown output key, ignored"),
+                other => self.reject(n, format!("unknown output key (node={})", other)),
             }
         }
         self.outputs.push(rule);
@@ -1326,10 +1469,15 @@ fn args(node: &KdlNode) -> Vec<&KdlValue> {
         .collect()
 }
 
-fn set_i32(slot: &mut i32, node: &KdlNode) {
+/// `false` when the node carries no integer, so the caller can reject it.
+#[must_use]
+fn set_i32(slot: &mut i32, node: &KdlNode) -> bool {
     match arg(node).and_then(KdlValue::as_integer) {
-        Some(v) => *slot = v.clamp(0, 512) as i32,
-        None => tracing::warn!(node = node.name().value(), "expected an integer"),
+        Some(v) => {
+            *slot = v.clamp(0, 512) as i32;
+            true
+        }
+        None => false,
     }
 }
 
@@ -1442,6 +1590,47 @@ fn workspace_arg(n: Option<i128>) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// COMP-13 §1.2: validation is total — an unknown key is an error, not a
+    /// warning, and it carries the position of the offending token.
+    #[test]
+    fn unknown_keys_are_errors_with_a_position() {
+        let text = "general {\n    gaps-in 4\n    gaps-inn 4\n}\n";
+        let doc: KdlDocument = text.parse().unwrap();
+        let mut cfg = Config {
+            cur: Some((PathBuf::from("/etc/eclipse/abyss.kdl"), text.to_owned())),
+            ..Config::default()
+        };
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.errors.len(), 1);
+        let e = &cfg.errors[0];
+        assert_eq!((e.line, e.col), (3, 5));
+        assert!(e.message.contains("gaps-inn"), "{}", e.message);
+        assert!(e.to_string().starts_with("/etc/eclipse/abyss.kdl:3:5: "));
+    }
+
+    /// A valid config records no refusals, so hot-reload applies it.
+    #[test]
+    fn a_valid_config_has_no_errors() {
+        let doc: KdlDocument = "general { gaps-in 4; layout \"master\" }\n".parse().unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    }
+
+    /// An unparseable file is a refusal, not a silent fall back to defaults —
+    /// which used to wipe the live config on hot-reload.
+    #[test]
+    fn an_unparseable_file_is_refused_not_defaulted() {
+        let dir = std::env::temp_dir().join(format!("abyss-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("abyss.kdl");
+        std::fs::write(&f, "general { gaps-in \"unterminated\n").unwrap();
+        let cfg = Config::load(Some(&f));
+        assert!(!cfg.errors.is_empty());
+        assert_eq!(cfg.errors[0].file, f);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn parses_input() {

@@ -153,12 +153,34 @@ fn schedule(state: &mut AbyssState) {
 /// Re-read the config and apply it. Also the body of `reload_config` over the
 /// control socket.
 ///
-/// `Config::load` never fails hard today, so "keep the last good config" has
-/// nothing to trigger on — see the note in `config::mod`. When validation
-/// becomes total (COMP-13 §1.2) the failure branch belongs here, emitting
-/// `config-error` and leaving `state.config` untouched.
+/// Validation is total (COMP-13 §1.2): an invalid file keeps the last good
+/// config, surfaces the refusals as a `config-error` IPC event and in journald,
+/// and applies nothing. Never half-apply.
 pub fn reload_now(state: &mut AbyssState) {
     let next = state.config.reload();
+    if !next.errors.is_empty() {
+        let errors: Vec<serde_json::Value> = next
+            .errors
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "file": e.file.display().to_string(),
+                    "line": e.line,
+                    "col": e.col,
+                    "message": e.message,
+                })
+            })
+            .collect();
+        for e in &next.errors {
+            tracing::error!("{e}");
+        }
+        tracing::warn!(
+            count = next.errors.len(),
+            "config invalid, keeping the last good one"
+        );
+        crate::ipc::emit(state, "config-error", serde_json::json!({ "errors": errors }));
+        return;
+    }
     let sources: Vec<String> = next.sources.iter().map(|p| p.display().to_string()).collect();
     state.config = next;
     // Retune the two global bind filters. They hold Allowlist handles rather

@@ -2184,6 +2184,13 @@ Explicit sync is mandatory; there is no implicit-sync fallback path.
 Steps 3 and 4 are the two that fail on new hardware; both emit a single
 actionable error rather than a backtrace.
 
+Integration with the user session manager — importing the environment into the
+systemd user session, and the `graphical-session.target` handoff that lets user
+units start once step 9 has run — is deliberately **out of scope for this
+spec**. It is not a compositor guarantee, it is a distribution-integration
+concern, and it is described in ADR 0032 instead. A compositor that never talks
+to a session manager still satisfies §5.
+
 ---
 
 ## 6. Daemon Coupling & Degraded Mode

@@ -130,6 +130,15 @@ fn main() -> Result<()> {
         libc::sigaction(libc::SIGCHLD, &act, std::ptr::null_mut());
     }
     let mut config = config::Config::load(args.config.as_deref());
+    // COMP-01 §5 step 3 / COMP-13 §1.2: validation is total, and an invalid
+    // config at startup is a refusal to start, not a silent fallback.
+    if !config.errors.is_empty() {
+        for e in &config.errors {
+            eprintln!("abyss: {e}");
+        }
+        eprintln!("abyss: refusing to start on an invalid config");
+        std::process::exit(1);
+    }
     // COMP-01 §4 override precedence: CLI flag > ECLIPSE_RENDER_DEVICE > config.
     if let Some(dev) = args
         .render_device
