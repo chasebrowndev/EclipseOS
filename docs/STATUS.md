@@ -1,6 +1,6 @@
 # Abyss — implementation status
 
-Last updated: 2026-09-07 (spec revision: Appendix A applied, COMP-08 v0.3).
+Last updated: 2026-09-08 (spec revision: Appendix A applied, COMP-08 v0.3).
 
 The COMP-16 table in `ECLIPSEOS_SPECS_v2_VOL1.md` is the *contract*: what each
 milestone must contain and what its exit gate is. It deliberately carries no
@@ -9,7 +9,9 @@ the progress record, and per F-07 §7 `docs/` is source of truth once code
 exists.
 
 Everything below was re-verified against the code on 2026-09-07, not against
-the previous revision of this file.
+the previous revision of this file. The 2026-09-08 pass revisited only what
+changed that day: the config-validation gap, the GPU-ranking gap, and the
+counts in "Test and gate status".
 
 ---
 
@@ -45,6 +47,19 @@ but which landed early inside milestone 8.
 The single thing standing between the tree and Phase 1 exit is that the DRM
 backend has never run on real KMS. Everything else in Phase 1 is either done
 or a known, listed gap.
+
+**Open vs. not, as of 2026-09-08.** Closed and needing nothing further:
+milestones 1, 2, 5, 7, 9, 9a; spec gaps 1, 2, 3, 4 and 5. Code complete but
+waiting on hardware that does not exist in this session: milestones 3, 4 and 6,
+plus the multi-GPU half of COMP-01 §11's test plan — all listed under
+"Deferred hardware verification", none of them a defect. Genuinely open work
+that can be done today: `blur` (the last unimplemented effect in 9b), an
+`ext-foreign-toplevel-list` consumer for milestone 9's bar gate, and the whole
+of Phase 2 (milestones 10-18), whose specification is settled but whose
+directories do not exist. Open and *not* actionable: gap 6 (three COMP-07
+requirements smithay 0.7.0 cannot express — blocked upstream behind a pinned
+dependency) and stub 13's `agent-activity` event, which has no source to fire
+from until milestone 10 lands.
 
 ---
 
@@ -89,7 +104,7 @@ or a known, listed gap.
 
 | Spec | Where the code is | State |
 |---|---|---|
-| COMP-01 backends | `crates/abyss/src/backend/{mod,winit,drm}.rs` | winit exercised; DRM unverified on hardware. `mod.rs` holds the trait; nothing outside it touches winit/DRM/libinput/GBM types. |
+| COMP-01 backends | `crates/abyss/src/backend/{mod,winit,drm,gpu}.rs` | winit exercised; DRM unverified on hardware. `mod.rs` holds the trait; nothing outside it touches winit/DRM/libinput/GBM types. `gpu.rs` is §4's device ranking, unit-tested over synthetic candidates and observable live with `abyss --list-gpus`. |
 | COMP-02 render | `crates/abyss/src/render/{mod,capture}.rs` | Damage tracking, direct-scanout candidate selection, frame-level redaction, capture indicator. Region-level redaction absent. |
 | COMP-03 outputs | `crates/abyss/src/outputs/{mod,power}.rs` | Hotplug, layout, persistence, per-output rules (mode/position/scale/transform/enabled/vrr/lid-close). No virtual outputs. |
 | COMP-04 input | `crates/abyss/src/input/mod.rs` (327 lines) | One human seat, keyboard/pointer, VT-switch intercept, bindings. No agent seats, no injection, no override chord. |
@@ -103,7 +118,7 @@ or a known, listed gap.
 | COMP-12 audit | — | Does not exist. |
 | COMP-13 human IPC + config | `crates/abyss/src/ipc/`, `crates/abyss/src/config/`, `crates/eclipse-ctl` | Socket, gate table, 17 methods, event stream, KDL parse + hot-reload. |
 | COMP-14 performance | — | No benchmark harness. The §COMP-14 frame budgets referenced by milestone 4's gate have never been measured. |
-| COMP-15 testing | `cargo test --workspace` | 46 tests, all passing. Unit-level; no compat matrix, no redaction suite as a suite (redaction was verified by hand once). |
+| COMP-15 testing | `cargo test --workspace` | 73 tests, all passing. Unit-level; no compat matrix, no redaction suite as a suite (redaction was verified by hand once). |
 | COMP-16 milestones | this file | — |
 
 ---
@@ -276,16 +291,38 @@ fixed by editing either side.
    deliberately out of scope and points at ADR 0032, so a compositor that never
    talks to one still satisfies the section. Steps 10, 11 and 13 remain
    Phase 2 work with no counterpart in code yet.
-2. **COMP-01 §4 GPU ranking.** The spec describes a deterministic ranking
-   (discrete before integrated, larger VRAM, PCI DBDF tiebreak);
-   `backend/drm.rs` calls smithay's `primary_gpu(&seat_name)` instead, a
-   different and simpler policy. The override half of §4 is closed — the
-   `--render-device` flag, `ECLIPSE_RENDER_DEVICE` and the `render-device`
-   config key are all honoured in that precedence (commit `78142ec`, ADR 0033);
-   the earlier claim that the config key "parses and is discarded" was stale.
-   What remains is a decision: implement the spec's ranking or amend §4 to
-   adopt smithay's. It cannot be verified on this single-GPU machine either
-   way, so it is chase's call, not a defect to fix blind.
+2. ~~**COMP-01 §4 GPU ranking.**~~ *Closed — the spec was right and the code
+   was taking a shortcut.* `backend/drm.rs` used to call smithay's
+   `primary_gpu(&seat_name)`, a different and simpler policy. `backend/gpu.rs`
+   now implements §4's ranking directly over every DRM device udev reports for
+   the seat: render-capable first, then discrete > integrated > virtual, then
+   VRAM, then PCI domain:bus:device.function ascending. The full ranked list
+   and the reason are logged at startup.
+
+   Two judgement calls worth knowing about:
+   - **Discreteness is decided by PCI topology, not `boot_vga`.** On this
+     single-GPU desktop the 4060 Ti is *also* the boot VGA device, so
+     `boot_vga` alone would classify it integrated. An integrated GPU hangs
+     directly off the host bridge; a discrete card sits behind a PCIe port
+     bridge. `boot_vga` is recorded and logged as corroboration only.
+   - **VRAM is a hint.** `mem_info_vram_total` where the driver exposes it
+     (amdgpu), else the largest prefetchable PCI BAR. The proprietary NVIDIA
+     driver publishes neither, and without resizable BAR the aperture reads
+     256 MiB on a 8 GiB card. It only ever orders two cards of the same class,
+     and it is deterministic.
+
+   §4's hybrid-graphics paragraph is also enforced now: a selected GPU with no
+   connectors while another device has them refuses to start rather than
+   coming up blind.
+
+   The ordering is proven by unit tests over synthetic candidates (hybrid
+   laptop, virtual device, VRAM tiebreak, PCI tiebreak, display-only card), so
+   it is verified without a second GPU. `abyss --list-gpus` prints the live
+   ranking without taking over the display; on this machine it reports
+   `1. /dev/dri/card1 [0000:01:00.0 discrete vram=256MiB connectors=4
+   render=yes boot_vga=true]`. **Still unverified on real multi-GPU
+   hardware** — that is COMP-01 §11's test plan and needs a machine with a
+   second card.
 3. **COMP-06 §1 protocol list vs. the implemented modules.** *Closed.* The
    fifteen missing protocols are implemented (milestone 9a). COMP-06 §1 also
    gained a note that
@@ -328,5 +365,6 @@ fixed by editing either side.
 ## Test and gate status
 
 `cargo build --workspace`, `cargo clippy --workspace --all-targets -- -D
-warnings`, `cargo fmt --check` and `cargo test --workspace` (66 tests) are all
-green as of this revision. There is no CI; the gate is run by hand.
+warnings`, `cargo fmt --check` and `cargo test --workspace` (73 tests) are all
+green as of this revision, with and without `--features drm`. There is no CI;
+the gate is run by hand.
