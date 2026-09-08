@@ -51,6 +51,55 @@ jobs:
 
       - run: cargo test --workspace
 
+  conformance:
+    name: wlcs (headless)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # llvmpipe (mesa-vulkan-drivers pulls the GL software rasteriser) is
+      # what makes the headless backend work on a GPU-free runner — ADR 0035.
+      # boost + gtest are wlcs's own build deps.
+      - name: system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev libxkbcommon-dev libegl-dev libgles2-mesa-dev \
+            libdisplay-info-dev libpixman-1-dev libdrm-dev libinput-dev \
+            libseat-dev libudev-dev libgbm-dev pkg-config cmake g++ \
+            libboost-dev libgtest-dev libgmock-dev libwayland-egl-backend-dev \
+            wayland-protocols libepoxy-dev mesa-utils libgl1-mesa-dri
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Pinned to the same revision smithay's own wlcs job uses. A floating
+      # checkout would let an upstream test change turn this gate red on a
+      # commit that did not touch the compositor.
+      - name: build wlcs
+        env:
+          WLCS_SHA: 12234affdc0a4cc104fbaf8a502efc5f822b973b
+        run: |
+          git clone https://github.com/MirServer/wlcs.git target/wlcs-src
+          git -C target/wlcs-src checkout "$WLCS_SHA"
+          cmake -S target/wlcs-src -B target/wlcs-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build target/wlcs-build -j"$(nproc)"
+
+      - name: build the integration
+        run: cargo build -p wlcs-abyss
+
+      # Software GL: no /dev/dri on the runner.
+      - name: run the suite
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+          RUST_BACKTRACE: "1"
+        run: |
+          skip=$(grep -vE '^\s*(#|$)' ci/wlcs-skip.txt | paste -sd: -)
+          target/wlcs-build/wlcs target/debug/libwlcs_abyss.so \
+            --gtest_filter="-${skip}"
+
   supply-chain:
     name: cargo-deny
     runs-on: ubuntu-24.04

@@ -1,0 +1,12 @@
+# wlcs tests abyss does not pass yet (COMP-15 §1).
+#
+# This list is a ratchet: entries only ever come out. Adding one needs a
+# reason on the line above it, and a milestone that will remove it. A test
+# that is not listed here must pass, or the gate goes red.
+#
+# One gtest name per line ("Suite.Test" or "Suite.*"); blank lines and
+# lines starting with '#' are ignored.
+
+# No touch capability on the seat yet (COMP-04).
+TouchInput/*
+SelfTest/*Touch*

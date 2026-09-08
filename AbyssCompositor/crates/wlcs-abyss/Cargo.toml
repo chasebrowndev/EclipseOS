@@ -1,0 +1,18 @@
+[package]
+name = "wlcs-abyss"
+description = "wlcs conformance integration for the abyss compositor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# wlcs dlopen()s this and looks up `wlcs_server_integration` by symbol.
+[lib]
+name = "wlcs_abyss"
+crate-type = ["cdylib"]
+
+[dependencies]
+abyss = { path = "../abyss", default-features = false, features = ["headless"] }
+wlcs = "0.1"
+wayland-sys = { version = "0.31", features = ["client"] }

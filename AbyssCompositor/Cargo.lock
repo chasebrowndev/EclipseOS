@@ -267,6 +267,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "container_of"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89f5bbeb86761f66a87f8e327265ea0111f82f1928a84037b9abedab9f79472b"
+dependencies = [
+ "memoffset 0.6.5",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -862,6 +871,15 @@ dependencies = [
 
 [[package]]
 name = "memoffset"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5aa361d4faea93603064a027415f07bd8e1d5c88c9fbf68bf56a285428fd79ce"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
+name = "memoffset"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
@@ -907,6 +925,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
 dependencies = [
  "jni-sys 0.3.1",
+]
+
+[[package]]
+name = "nix"
+version = "0.27.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2eb04e9c688eff1c89d72b407f168cf79bb9e867a9d3323ed6c01519eb9cc053"
+dependencies = [
+ "bitflags 2.13.1",
+ "cfg-if",
+ "libc",
 ]
 
 [[package]]
@@ -2086,7 +2115,7 @@ dependencies = [
  "dlib",
  "libc",
  "log",
- "memoffset",
+ "memoffset 0.9.1",
  "once_cell",
  "pkg-config",
 ]
@@ -2357,6 +2386,27 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "wlcs"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d99c305ce368db32f0c675a3a17abbfd4123a59f4a1c56c0ee70b372cb7609e"
+dependencies = [
+ "container_of",
+ "memoffset 0.9.1",
+ "nix",
+ "wayland-sys",
+]
+
+[[package]]
+name = "wlcs-abyss"
+version = "0.1.0"
+dependencies = [
+ "abyss",
+ "wayland-sys",
+ "wlcs",
+]
 
 [[package]]
 name = "x11-dl"

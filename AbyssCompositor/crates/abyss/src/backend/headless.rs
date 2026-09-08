@@ -32,12 +32,13 @@ use smithay::{
             EventLoop, Interest, Mode as CalloopMode, PostAction,
         },
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
-        wayland_server::Display,
+        wayland_server::{Display, Resource},
     },
     utils::{Size, Transform},
     wayland::{
         dmabuf::{DmabufFeedbackBuilder, DmabufState},
         presentation::Refresh,
+        seat::WaylandFocus,
         socket::ListeningSocketSource,
     },
 };
@@ -119,7 +120,76 @@ fn open_renderer() -> Result<(GlesRenderer, Option<smithay::backend::drm::DrmNod
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no usable EGL device")))
 }
 
+/// Events the `wlcs` harness sends from its own thread into the loop.
+///
+/// The suite drives the compositor from the thread that runs the C++ test, so
+/// something has to cross a thread boundary. Only the [`Sender`] does: every
+/// event is queued and applied by the loop thread, so the single-threaded-core
+/// invariant holds — there is no shared state and no lock.
+///
+/// Coordinates are plain tuples rather than smithay `Point`s so the harness
+/// crate links `abyss` alone and never names a smithay type.
+#[derive(Debug)]
+pub enum WlcsEvent {
+    /// Shut the loop down; the harness joins the thread afterwards.
+    Exit,
+    /// A client socket wlcs already created. `client_id` is the fd number on
+    /// the wlcs side, and is what later events use to name the client.
+    NewClient {
+        stream: std::os::unix::net::UnixStream,
+        client_id: i32,
+    },
+    /// Place a toplevel at an absolute position. `surface_id` is the
+    /// client-side protocol id of its `wl_surface`.
+    PositionWindow {
+        client_id: i32,
+        surface_id: u32,
+        location: (i32, i32),
+    },
+    PointerMoveAbsolute {
+        location: (f64, f64),
+    },
+    PointerMoveRelative {
+        delta: (f64, f64),
+    },
+    PointerButtonDown {
+        button_id: i32,
+    },
+    PointerButtonUp {
+        button_id: i32,
+    },
+}
+
+/// Build the channel the harness sends on. Exported so the harness crate does
+/// not have to depend on the same calloop version by name.
+pub fn wlcs_channel() -> (
+    smithay::reexports::calloop::channel::Sender<WlcsEvent>,
+    smithay::reexports::calloop::channel::Channel<WlcsEvent>,
+) {
+    smithay::reexports::calloop::channel::channel()
+}
+
+pub type WlcsSender = smithay::reexports::calloop::channel::Sender<WlcsEvent>;
+
+/// Run a headless session driven by `wlcs` instead of by a Wayland socket.
+///
+/// Same compositor, same render loop; the only difference is where clients and
+/// input come from. Blocks until the harness sends [`WlcsEvent::Exit`].
+pub fn run_wlcs(channel: smithay::reexports::calloop::channel::Channel<WlcsEvent>) -> Result<()> {
+    boot(Config::default(), false, false, DEFAULT_SIZE, Some(channel))
+}
+
 pub fn run(config: Config, stats: bool, session: bool, size: (i32, i32)) -> Result<()> {
+    boot(config, stats, session, size, None)
+}
+
+fn boot(
+    config: Config,
+    stats: bool,
+    session: bool,
+    size: (i32, i32),
+    wlcs: Option<smithay::reexports::calloop::channel::Channel<WlcsEvent>>,
+) -> Result<()> {
     let mut event_loop: EventLoop<'static, AbyssState> = EventLoop::try_new().context("calloop")?;
     let display: Display<AbyssState> = Display::new().context("wayland display")?;
     let socket = ListeningSocketSource::new_auto().context("bind wayland socket")?;
@@ -219,8 +289,24 @@ pub fn run(config: Config, stats: bool, session: bool, size: (i32, i32)) -> Resu
         )
         .map_err(|e| anyhow::anyhow!("display source: {e}"))?;
 
-    std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
+    // Under wlcs the socket exists but nothing connects to it, and the
+    // harness runs several compositors at once — exporting a global
+    // WAYLAND_DISPLAY would have them fight over one process-wide variable.
+    if wlcs.is_none() {
+        std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
+    }
     tracing::info!(socket = %state.socket_name, w = size.0, h = size.1, "listening (headless)");
+
+    if let Some(channel) = wlcs {
+        let mut clients: std::collections::HashMap<i32, smithay::reexports::wayland_server::Client> =
+            std::collections::HashMap::new();
+        handle
+            .insert_source(channel, move |event, _, state| match event {
+                smithay::reexports::calloop::channel::Event::Msg(e) => wlcs_event(state, &mut clients, e),
+                smithay::reexports::calloop::channel::Event::Closed => state.loop_signal.stop(),
+            })
+            .map_err(|e| anyhow::anyhow!("wlcs channel source: {e}"))?;
+    }
     if session {
         crate::session::import();
     }
@@ -344,4 +430,59 @@ fn redraw(
     send_frames(&state.space, out, time);
     state.space.refresh();
     state.popups.cleanup();
+}
+
+/// Apply one harness event on the loop thread.
+///
+/// Input goes through [`AbyssState`]'s injection path rather than the seat
+/// handle, so a wlcs run exercises the same focus and clamping code a real
+/// device would (COMP-04 §6).
+fn wlcs_event(
+    state: &mut AbyssState,
+    clients: &mut std::collections::HashMap<i32, smithay::reexports::wayland_server::Client>,
+    event: WlcsEvent,
+) {
+    let time = state.start_time.elapsed().as_millis() as u32;
+    match event {
+        WlcsEvent::Exit => state.loop_signal.stop(),
+        WlcsEvent::NewClient { stream, client_id } => {
+            match state.display_handle.insert_client(stream, client_state()) {
+                Ok(client) => {
+                    clients.insert(client_id, client);
+                }
+                Err(e) => tracing::error!(?e, "wlcs: insert client"),
+            }
+        }
+        WlcsEvent::PositionWindow {
+            client_id,
+            surface_id,
+            location,
+        } => {
+            // wlcs names a window by (its client, the protocol id of its
+            // surface); nothing else identifies it across the boundary.
+            let client = clients.get(&client_id);
+            let window = state
+                .space
+                .elements()
+                .find(|w| {
+                    w.wl_surface().is_some_and(|s| {
+                        state.display_handle.get_client(s.id()).ok().as_ref() == client
+                            && s.id().protocol_id() == surface_id
+                    })
+                })
+                .cloned();
+            match window {
+                Some(w) => state.space.map_element(w, location, false),
+                None => tracing::warn!(client_id, surface_id, "wlcs: no such window to position"),
+            }
+        }
+        WlcsEvent::PointerMoveAbsolute { location } => state.inject_pointer_absolute(location.into(), time),
+        WlcsEvent::PointerMoveRelative { delta } => state.inject_pointer_relative(delta.into(), time),
+        WlcsEvent::PointerButtonDown { button_id } => {
+            state.inject_pointer_button(button_id as u32, true, time)
+        }
+        WlcsEvent::PointerButtonUp { button_id } => {
+            state.inject_pointer_button(button_id as u32, false, time)
+        }
+    }
 }

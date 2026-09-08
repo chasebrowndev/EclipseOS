@@ -19,6 +19,7 @@ use smithay::{
 use crate::state::AbyssState;
 
 pub mod idle;
+pub mod inject;
 
 /// Modifier set of a binding. Compared against the xkb modifier state.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -206,7 +207,7 @@ impl AbyssState {
     }
 
     /// Shared tail for both relative and absolute motion.
-    fn pointer_moved(&mut self, pos: Point<f64, Logical>, time: u32) {
+    pub(crate) fn pointer_moved(&mut self, pos: Point<f64, Logical>, time: u32) {
         let pos = self.clamp_to_outputs(pos);
         self.pointer_location = pos;
         if self.lock.locked {
@@ -291,7 +292,7 @@ impl AbyssState {
         self.pointer_moved(pos, event.time_msec());
     }
 
-    fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+    pub(crate) fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         crate::shell::surface_under(self, pos)
     }
 
