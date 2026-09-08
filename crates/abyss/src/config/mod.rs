@@ -207,9 +207,9 @@ impl Default for Render {
 /// default: the defaults below are the "no effect" values, so a config without a
 /// `decoration` block renders exactly as it did before milestone 9b and keeps
 /// direct scanout available. Opacity and `dim-inactive` are rendered today;
-/// `blur` and `shadow` are parsed and validated but not yet drawn (they need
-/// multi-pass framebuffers and a nine-slice texture respectively) — see
-/// docs/STATUS.md. `rounding` is drawn as a fragment-shader mask.
+/// `shadow` is an SDF pixel shader over the grown window rect and `blur` a
+/// dual-Kawase chain behind translucent windows (COMP-02 §9); both draw today.
+/// `rounding` is drawn as a fragment-shader mask.
 #[derive(Debug, Clone)]
 pub struct Decoration {
     /// Corner radius in logical pixels; 0 disables.

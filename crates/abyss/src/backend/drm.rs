@@ -945,7 +945,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
 
     // A surface covering the whole output is both the direct-scanout candidate
     // and the trigger for adaptive sync (COMP-03 §8).
-    let candidate = crate::render::scanout_candidate(&state.space, &output);
+    let candidate = crate::render::scanout_candidate(&state.space, &output, &state.config);
     let vrr_wanted = drm.outputs[index].vrr_config && candidate.is_some();
 
     // Direct scanout (COMP-02 §2) hands a client buffer to a KMS plane, which

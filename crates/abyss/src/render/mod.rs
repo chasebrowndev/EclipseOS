@@ -5,6 +5,7 @@
 //! the stacking order lives here once, not per backend.
 
 pub mod anim;
+pub mod blur;
 pub mod capture;
 pub mod cursor;
 pub mod effects;
@@ -47,7 +48,12 @@ smithay::backend::renderer::element::render_elements! {
     Texture=smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>,
     Rounded=effects::RoundedElement,
     Shader=smithay::backend::renderer::gles::element::PixelShaderElement,
+    Blur=blur::BlurElement,
 }
+
+/// A window that wants a blurred backdrop: the window, the index in the element
+/// list directly below its surfaces, and the region it blurs.
+type BlurRequest = (Window, usize, Rectangle<i32, Physical>);
 
 /// Four solid quads (top, bottom, left, right) per window.
 type Border = [SolidColorBuffer; 4];
@@ -64,12 +70,15 @@ pub struct BorderStore {
     rounded: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     /// Drop-shadow pixel program, compiled on the first frame that shadows.
     shadow: Option<smithay::backend::renderer::gles::GlesPixelProgram>,
+    /// Blur chain, programs and per-window backdrops (COMP-02 §9).
+    blur: blur::BlurStore,
 }
 
 impl BorderStore {
     pub fn remove(&mut self, window: &Window) {
         self.borders.remove(window);
         self.dims.remove(window);
+        self.blur.forget(window);
     }
 }
 
@@ -94,6 +103,8 @@ pub fn collect_elements(
     let scale = Scale::from(output.current_scale().fractional_scale());
     let output_loc = space.output_geometry(output).map(|g| g.loc).unwrap_or_default();
     let mut elements: Vec<AbyssRenderElement> = Vec::new();
+    // (window, index in `elements` directly below its surfaces, region).
+    let mut blur_requests: Vec<BlurRequest> = Vec::new();
 
     let layers = |elements: &mut Vec<AbyssRenderElement>, which: [Layer; 2], renderer: &mut GlesRenderer| {
         let map = layer_map_for_output(output);
@@ -147,7 +158,13 @@ pub fn collect_elements(
         || borders.anim.fading()
         || crate::shell::rules::any_opacity_override(space.elements())
     {
-        elements.extend(window_elements(renderer, space, borders, output, config, focus));
+        let base = elements.len();
+        let (window_els, mut blurred) = window_elements(renderer, space, borders, output, config, focus);
+        elements.extend(window_els);
+        for req in &mut blurred {
+            req.1 += base;
+        }
+        blur_requests = blurred;
     } else {
         borders.dims.clear();
         match smithay::desktop::space::space_render_elements(renderer, [space], output, 1.0) {
@@ -161,7 +178,40 @@ pub fn collect_elements(
 
     layers(&mut elements, [Layer::Bottom, Layer::Background], renderer);
 
+    insert_blur(renderer, output, borders, config, blur_requests, &mut elements);
+
     elements
+}
+
+/// Build and splice in one blurred backdrop per translucent window (COMP-02 §9).
+///
+/// Requests arrive in the order the windows were drawn (front to back); they are
+/// consumed back to front so each insertion leaves the earlier indices — and the
+/// backdrop of every window further back, already spliced in — intact.
+fn insert_blur(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    store: &mut BorderStore,
+    config: &Config,
+    requests: Vec<BlurRequest>,
+    elements: &mut Vec<AbyssRenderElement>,
+) {
+    let cfg = &config.decoration.blur;
+    if !cfg.enabled {
+        // Switching blur off must not leave the chain sitting in GPU memory.
+        store.blur.clear();
+        return;
+    }
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    for (window, index, region) in requests.into_iter().rev() {
+        let behind = &elements[index..];
+        if let Some(element) = store
+            .blur
+            .element(renderer, output, &window, region, behind, cfg, scale)
+        {
+            elements.insert(index, AbyssRenderElement::Blur(element));
+        }
+    }
 }
 
 /// Per-window toplevel elements, front to back, with `decoration` opacity and
@@ -178,9 +228,9 @@ fn window_elements(
     output: &Output,
     config: &Config,
     focus: Option<&Window>,
-) -> Vec<AbyssRenderElement> {
+) -> (Vec<AbyssRenderElement>, Vec<BlurRequest>) {
     let Some(output_geo) = space.output_geometry(output) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let scale = Scale::from(output.current_scale().fractional_scale());
     let deco = &config.decoration;
@@ -211,6 +261,7 @@ fn window_elements(
     let rounding = fb_height.zip(store.rounded.clone());
 
     let mut out = Vec::new();
+    let mut blurred: Vec<BlurRequest> = Vec::new();
     // `space.elements()` is bottom-to-top; frames are collected front-to-back.
     for window in live.into_iter().rev() {
         let Some(loc) = space.element_location(&window) else {
@@ -274,8 +325,24 @@ fn window_elements(
             }
             _ => out.extend(surfaces.into_iter().map(AbyssRenderElement::Surface)),
         }
+
+        // Blur samples what shows through the window's alpha, so a window drawn
+        // at full opacity gets no backdrop pass at all.
+        if config.decoration.blur.enabled && alpha < 1.0 {
+            if let Some(mut geo) = space.element_geometry(&window) {
+                geo.loc += store.anim.offset(&window);
+                blurred.push((
+                    window.clone(),
+                    out.len(),
+                    Rectangle::new(
+                        phys(geo.loc - output_geo.loc, scale),
+                        geo.size.to_f64().to_physical(scale).to_i32_round(),
+                    ),
+                ));
+            }
+        }
     }
-    out
+    (out, blurred)
 }
 
 /// One drop shadow behind each window, below the borders (COMP-02 §9).
@@ -483,7 +550,14 @@ pub fn presentation_feedback(
 /// The surface that could plausibly be scanned out directly on `output`: the
 /// top-most window whose geometry covers the whole output. Returning `None`
 /// means every surface keeps the plain render feedback.
-pub fn scanout_candidate(space: &Space<Window>, output: &Output) -> Option<WlSurface> {
+///
+/// A configured window effect rules scanout out entirely: opacity, rounding,
+/// dim and blur all mean we composite the window's pixels ourselves, and a
+/// buffer handed straight to a plane never passes through any of them.
+pub fn scanout_candidate(space: &Space<Window>, output: &Output, config: &Config) -> Option<WlSurface> {
+    if config.decoration.any_window_effect() || config.decoration.blur.enabled {
+        return None;
+    }
     let geo = space.output_geometry(output)?;
     let window = space.elements_for_output(output).last()?;
     let win_geo = space.element_geometry(window)?;
