@@ -2606,7 +2606,7 @@ output "DP-1" {
   mode "2560x1440@144"
   position 0 0
   scale 1.0
-  vrr true
+  vrr #true
 }
 output "eDP-*" {
   scale 1.5
@@ -4273,19 +4273,19 @@ general {
     gaps-out 10
     border-size 2
     layout "dwindle"          // dwindle | master
-    focus-follows-mouse true  // default (COMP-04)
+    focus-follows-mouse #true  // default (COMP-04)
 }
 
 decoration {
     rounding 8
     active-opacity 1.0
     inactive-opacity 0.95
-    blur { enabled false; size 8; passes 2 }     // milestone 9b
-    shadow { enabled true; range 20 }
+    blur { enabled #false; size 8; passes 2 }     // milestone 9b
+    shadow { enabled #true; range 20 }
 }
 
 animations {
-    enabled true
+    enabled #true
     animation "windows" duration=150ms curve="ease-out"
     animation "workspaces" duration=200ms curve="ease-out"
 }
@@ -4294,11 +4294,11 @@ input {
     kb-layout "us"
     repeat-rate 40
     repeat-delay 400
-    touchpad { natural-scroll true; tap-to-click true; dwt true }
+    touchpad { natural-scroll #true; tap-to-click #true; dwt #true }
     accel-profile "flat"
 }
 
-output "DP-1" { mode "2560x1440@144"; position 0 0; scale 1.0; vrr true }
+output "DP-1" { mode "2560x1440@144"; position 0 0; scale 1.0; vrr #true }
 output "eDP-*" { scale 1.5; lid-close "off" }
 
 bind "SUPER" "Return"  { spawn "foot" }
@@ -4313,20 +4313,22 @@ windowrule "sensitivity secret" { app-id "org.keepassxc.KeePassXC" }
 windowrule "no-agent"           { app-id "org.signal.Signal" }
 
 agents {
-    enabled true
-    trusted-ui-phrase-set true     // the phrase itself lives in a 0600 file
+    enabled #true
+    trusted-ui-phrase-set #true     // the phrase itself lives in a 0600 file
     indicator "per-output"
     virtual-keyboard-allowlist "wtype" "squeekboard"
 }
 
 misc {
-    xwayland true
+    xwayland #true
     render-device "auto"           // or "pci:0000:01:00.0"
 }
 ```
 
 ### 1.2 Semantics
 
+- **KDL 2.0 syntax.** Booleans are `#true` / `#false`; bare `true` and
+  `false` are identifiers, not values, and are rejected by the parser.
 - **Validation is total.** Unknown keys are errors, not warnings — a typo
   that silently does nothing is worse than a refusal.
 - **Startup**: invalid config → refuse to start with a precise
@@ -4376,7 +4378,7 @@ grant manipulation.
 
 `type_text` and `click_at` exist here, guarded by:
 - socket ownership (uid check on connect),
-- a config toggle `misc { scripted-input false }`, default **off**,
+- a config toggle `misc { scripted-input #false }`, default **off**,
 - a trusted-UI indicator while a scripted-input session is active,
 - an audit record per call attributed to `human:script`.
 
@@ -4411,7 +4413,7 @@ unit, so a random user process cannot impersonate a daemon.
 - Assert the phrase file is never read by config parsing or dumped by
   `dump_state`.
 - IPC: assert a non-owner uid is rejected; assert `type_text` fails with
-  `scripted-input false`.
+  `scripted-input #false`.
 - Assert `get_windows` over IPC respects `no-agent` only for agents, not
   for the human (the human sees everything).
 - Fuzz the JSON-RPC parser and the KDL parser.

@@ -232,12 +232,13 @@ fixed by editing either side.
    typo mid-edit should not kill the session) but it contradicts the spec as
    written. One of the two needs to change; the `config-error` IPC event the
    spec names would be the natural bridge, and it is never emitted.
-5. **KDL v2 booleans.** The `kdl` crate we depend on is v2, where bare `true`
-   and `false` are not values — they must be written `#true` / `#false`. The
-   spec's `input` block example (`ECLIPSEOS_SPECS_v2_VOL1.md:4293`) uses bare
-   booleans and would fail to parse as written. Either the spec's examples
-   move to KDL v2 syntax or the parser has to accept the bare identifiers;
-   this needs a decision, not a silent pick.
+5. ~~**KDL v2 booleans.**~~ *Resolved.* The `kdl` crate is v2, where bare
+   `true` and `false` are identifiers rather than values; the spec's examples
+   were written in v1 syntax and would not have parsed. The examples were
+   swept to `#true` / `#false` and COMP-13 §1.2 now states the rule
+   explicitly. The parser was left strict — accepting the bare identifiers
+   would have meant blessing a non-KDL syntax in the one place the spec asks
+   for total validation.
 6. **COMP-07 §1 requires lazy XWayland start**, §5 requires
    `-noTouchPointerEmulation` and no MIT-SHM, and §6's test plan asserts
    "XWayland is not running with no X11 clients". Smithay 0.7.0 cannot express
