@@ -17,7 +17,13 @@ feature-depth = 1
 version = 2
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
-ignore = []
+ignore = [
+    # RUSTSEC-2026-0196 — `cgmath` is unmaintained. Not a vulnerability, and
+    # there is no safe upgrade: it reaches us only through smithay 0.7.0,
+    # which is pinned `=0.7.0` per the root CLAUDE.md. Revisit when the
+    # smithay pin moves (that bump is its own PR with its own ADR).
+    "RUSTSEC-2026-0196",
+]
 
 # ---------------------------------------------------------------------------
 # Licences — must be compatible with AGPL-3.0-only distribution.
