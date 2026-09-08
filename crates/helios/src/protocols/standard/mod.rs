@@ -8,6 +8,7 @@ pub mod drm_syncobj;
 pub mod fractional_scale;
 mod idle_inhibit;
 mod idle_notify;
+pub mod image_copy_capture;
 pub mod input_method;
 mod layer_shell;
 pub mod output_power;

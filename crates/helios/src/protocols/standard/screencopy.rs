@@ -349,7 +349,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for HeliosState {
         }
 
         state.captures.push(capture::Pending {
-            frame: frame.clone(),
+            sink: capture::Sink::Wlr(frame.clone()),
             buffer,
             output_id: target.output_id,
             region: target.region,
@@ -364,7 +364,9 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for HeliosState {
         frame: &ZwlrScreencopyFrameV1,
         _data: &FrameData,
     ) {
-        state.captures.retain(|p| &p.frame != frame);
+        state
+            .captures
+            .retain(|p| p.sink != capture::Sink::Wlr(frame.clone()));
     }
 }
 

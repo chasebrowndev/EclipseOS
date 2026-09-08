@@ -24,8 +24,14 @@ use smithay::{
     desktop::{layer_map_for_output, Window},
     output::Output,
     reexports::{
+        wayland_protocols::ext::image_copy_capture::v1::server::ext_image_copy_capture_frame_v1::{
+            self, ExtImageCopyCaptureFrameV1,
+        },
         wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1,
-        wayland_server::{protocol::wl_buffer::WlBuffer, Resource},
+        wayland_server::{
+            protocol::{wl_buffer::WlBuffer, wl_output},
+            Resource,
+        },
     },
     utils::{Buffer as BufferCoord, Logical, Physical, Point, Rectangle, Scale, Transform},
     wayland::shell::wlr_layer::Layer,
@@ -52,11 +58,67 @@ pub struct Redacted {
     pub geometry: Rectangle<i32, Logical>,
 }
 
-/// A `copy` request waiting for a renderer. Holding this does not mean the
-/// capture was authorised — nothing reaches this queue until [`super::super::
-/// protocols::standard::screencopy`] has returned `Allow`.
+/// Where a serviced capture reports back to.
+///
+/// Two capture protocols share this queue and the whole servicing path below
+/// (ADR 0030); only the wire events differ, so the difference is confined to
+/// this enum rather than duplicated through `service`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Sink {
+    /// `zwlr_screencopy_v1` frame.
+    Wlr(ZwlrScreencopyFrameV1),
+    /// `ext_image_copy_capture_v1` frame.
+    Ext(ExtImageCopyCaptureFrameV1),
+}
+
+impl Sink {
+    pub fn is_alive(&self) -> bool {
+        match self {
+            Sink::Wlr(f) => f.is_alive(),
+            Sink::Ext(f) => f.is_alive(),
+        }
+    }
+
+    /// Report a runtime failure. The client must destroy the frame after this.
+    pub fn failed(&self) {
+        match self {
+            Sink::Wlr(f) => f.failed(),
+            Sink::Ext(f) => f.failed(ext_image_copy_capture_frame_v1::FailureReason::Unknown),
+        }
+    }
+
+    /// Report success: the protocol-specific metadata, then `ready`.
+    fn ready(&self, region: Rectangle<i32, Physical>, with_damage: bool, now: std::time::Duration) {
+        let (w, h) = (region.size.w.max(0) as u32, region.size.h.max(0) as u32);
+        let secs = now.as_secs();
+        let (hi, lo, nsec) = (
+            (secs >> 32) as u32,
+            (secs & 0xFFFF_FFFF) as u32,
+            now.subsec_nanos(),
+        );
+        match self {
+            Sink::Wlr(f) => {
+                if with_damage {
+                    f.damage(0, 0, w, h);
+                }
+                f.ready(hi, lo, nsec);
+            }
+            Sink::Ext(f) => {
+                // The order the protocol requires: metadata, then ready.
+                f.transform(wl_output::Transform::Normal);
+                f.damage(0, 0, region.size.w, region.size.h);
+                f.presentation_time(hi, lo, nsec);
+                f.ready();
+            }
+        }
+    }
+}
+
+/// A capture request waiting for a renderer. Holding this does not mean the
+/// capture was authorised — nothing reaches this queue until the shared gate
+/// in [`crate::protocols::standard::screencopy::decide`] has returned `Allow`.
 pub struct Pending {
-    pub frame: ZwlrScreencopyFrameV1,
+    pub sink: Sink,
     pub buffer: WlBuffer,
     pub output_id: u64,
     /// Region of the output to copy, output-local and physical.
@@ -267,34 +329,25 @@ pub fn service(state: &mut HeliosState, renderer: &mut GlesRenderer) {
     }
     let pending: Vec<Pending> = std::mem::take(&mut state.captures);
     for p in pending {
-        if !p.frame.is_alive() {
+        if !p.sink.is_alive() {
             continue;
         }
         // Re-check the gate at service time: the session may have locked
-        // between the `copy` request and this composite.
+        // between the capture request and this composite.
         if state.lock.locked {
-            tracing::warn!("screencopy denied at service time (session locked)");
-            p.frame.failed();
+            tracing::warn!("capture denied at service time (session locked)");
+            p.sink.failed();
             continue;
         }
         match copy_one(state, renderer, &p) {
             Ok(()) => {
-                if p.with_damage {
-                    p.frame
-                        .damage(0, 0, p.region.size.w.max(0) as u32, p.region.size.h.max(0) as u32);
-                }
                 let now = std::time::Duration::from(state.clock.now());
-                let secs = now.as_secs();
-                p.frame.ready(
-                    (secs >> 32) as u32,
-                    (secs & 0xFFFF_FFFF) as u32,
-                    now.subsec_nanos(),
-                );
+                p.sink.ready(p.region, p.with_damage, now);
                 state.capture_seen = Some(std::time::Instant::now());
             }
             Err(e) => {
-                tracing::warn!(error = %e, "screencopy failed");
-                p.frame.failed();
+                tracing::warn!(error = %e, "capture failed");
+                p.sink.failed();
             }
         }
     }

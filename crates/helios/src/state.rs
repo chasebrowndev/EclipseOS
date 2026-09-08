@@ -123,6 +123,10 @@ pub struct HeliosState {
     /// lives in the dispatch impls.
     #[allow(dead_code)]
     pub screencopy: crate::protocols::standard::screencopy::ScreencopyState,
+    /// `ext_image_copy_capture_v1` + `ext_image_capture_source_v1` (COMP-02 §8,
+    /// COMP-06 §3). Holds both globals alive and owns the session/frame tables;
+    /// the gate is the same `screencopy::decide` (ADR 0030).
+    pub image_copy: crate::protocols::standard::image_copy_capture::ImageCopyCaptureState,
     /// Authorised captures awaiting a renderer. Only the backend drains this.
     pub captures: Vec<crate::render::capture::Pending>,
     /// When capture last produced a frame, for the trusted-UI indicator
@@ -229,6 +233,10 @@ impl HeliosState {
         // Capture reads every pixel of an output: allowlisted, fail-closed.
         let screencopy =
             crate::protocols::standard::screencopy::ScreencopyState::new(&dh, capture_allow.clone());
+        let image_copy = crate::protocols::standard::image_copy_capture::ImageCopyCaptureState::new(
+            &dh,
+            capture_allow.clone(),
+        );
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&dh, "seat0");
         // Repeat defaults match COMP-04 until config lands (M6).
@@ -256,6 +264,7 @@ impl HeliosState {
             capture_allow,
             clipboard_allow,
             screencopy,
+            image_copy,
             captures: Vec::new(),
             capture_seen: None,
             capture_consumer: None,

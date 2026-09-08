@@ -96,3 +96,11 @@ without a restart; see the matching amendment on ADR 0022 for the mechanism and
 why the lock is not a hot-path violation. `decide()` takes `&Allowlist` and
 still consults the lock state first, so the ordering guarantee — a locked
 session denies capture regardless of the allowlist — is unchanged.
+
+## Amendment — 2026-09-07 (ext-image-copy-capture)
+The last consequence — "No per-toplevel capture … which is owed" — is retired.
+`ext-image-copy-capture-v1` is implemented (ADR 0030), sharing this ADR's
+`decide()` gate, its pending-capture queue and its `capture_elements` redaction
+pass rather than reimplementing any of them. Per-toplevel capture is now
+expressible but still unimplemented: what COMP-02 §8 `capture_toplevel` is
+blocked on is `ext-foreign-toplevel-list`, not the capture protocol.
