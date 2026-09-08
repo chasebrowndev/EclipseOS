@@ -202,9 +202,9 @@ impl Default for Render {
 /// default: the defaults below are the "no effect" values, so a config without a
 /// `decoration` block renders exactly as it did before milestone 9b and keeps
 /// direct scanout available. Opacity and `dim-inactive` are rendered today;
-/// `rounding`, `blur` and `shadow` are parsed and validated but not yet drawn
-/// (they need a shader mask, multi-pass framebuffers and a nine-slice texture
-/// respectively) — see docs/STATUS.md.
+/// `blur` and `shadow` are parsed and validated but not yet drawn (they need
+/// multi-pass framebuffers and a nine-slice texture respectively) — see
+/// docs/STATUS.md. `rounding` is drawn as a fragment-shader mask.
 #[derive(Debug, Clone)]
 pub struct Decoration {
     /// Corner radius in logical pixels; 0 disables.
@@ -237,7 +237,10 @@ impl Decoration {
     /// false the renderer keeps the single `space_render_elements` call, so
     /// damage tracking and direct scanout behave as they do with no config.
     pub fn any_window_effect(&self) -> bool {
-        self.active_opacity < 1.0 || self.inactive_opacity < 1.0 || self.dim_inactive > 0.0
+        self.rounding > 0
+            || self.active_opacity < 1.0
+            || self.inactive_opacity < 1.0
+            || self.dim_inactive > 0.0
     }
 }
 
@@ -1804,5 +1807,19 @@ mod allowlist_tests {
         reload.set(Vec::new());
         assert!(held.is_empty());
         assert!(!held.contains("wf-recorder"));
+    }
+}
+
+#[cfg(test)]
+mod rounding_tests {
+    use super::*;
+
+    #[test]
+    fn rounding_parses_and_enables_the_effect_path() {
+        let doc: KdlDocument = "decoration {\n    rounding 20\n}\n".parse().expect("kdl parses");
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.decoration.rounding, 20);
+        assert!(cfg.decoration.any_window_effect());
     }
 }

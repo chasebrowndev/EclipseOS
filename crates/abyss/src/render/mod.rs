@@ -6,6 +6,7 @@
 
 pub mod capture;
 pub mod cursor;
+pub mod effects;
 pub mod stats;
 
 use std::collections::HashMap;
@@ -43,6 +44,7 @@ smithay::backend::renderer::element::render_elements! {
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
     Solid=SolidColorRenderElement,
     Texture=smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>,
+    Rounded=effects::RoundedElement,
 }
 
 /// Four solid quads (top, bottom, left, right) per window.
@@ -54,6 +56,8 @@ pub struct BorderStore {
     borders: HashMap<Window, Border>,
     /// One dim-inactive overlay quad per window, kept alive between frames.
     dims: HashMap<Window, SolidColorBuffer>,
+    /// Rounded-corner texture program, compiled on the first frame that rounds.
+    rounded: Option<smithay::backend::renderer::gles::GlesTexProgram>,
 }
 
 impl BorderStore {
@@ -171,6 +175,29 @@ fn window_elements(
     let live: Vec<Window> = space.elements().cloned().collect();
     store.dims.retain(|w, _| live.contains(w));
 
+    // Rounding masks in framebuffer space, so it needs the output's own height
+    // and the sense of its vertical axis. `Normal` puts the physical origin at
+    // the top-left and GL's at the bottom-left; `Flipped180` (what the winit
+    // backend uses) already mirrors vertically, so the two coincide. A rotated
+    // output keeps square corners rather than drawing the mask in the wrong
+    // place (COMP-02 §9).
+    let fb_height = match (
+        deco.rounding > 0,
+        output.current_transform(),
+        output.current_mode(),
+    ) {
+        (true, smithay::utils::Transform::Normal, Some(mode)) => Some((mode.size.h, false)),
+        (true, smithay::utils::Transform::Flipped180, Some(mode)) => Some((mode.size.h, true)),
+        _ => None,
+    };
+    if fb_height.is_some() && store.rounded.is_none() {
+        match effects::compile_rounded(renderer) {
+            Ok(program) => store.rounded = Some(program),
+            Err(err) => tracing::warn!(?err, "compiling the rounded-corner shader; rounding disabled"),
+        }
+    }
+    let rounding = fb_height.zip(store.rounded.clone());
+
     let mut out = Vec::new();
     // `space.elements()` is bottom-to-top; frames are collected front-to-back.
     for window in live.into_iter().rev() {
@@ -206,17 +233,33 @@ fn window_elements(
         }
 
         let render_loc = loc - window.geometry().loc - output_geo.loc;
-        out.extend(
-            window
-                .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
-                    renderer,
-                    phys(render_loc, scale),
-                    scale,
-                    alpha,
-                )
-                .into_iter()
-                .map(AbyssRenderElement::Surface),
+        let surfaces = window.render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
+            renderer,
+            phys(render_loc, scale),
+            scale,
+            alpha,
         );
+
+        // Every surface of one window is masked by the same rectangle, so a
+        // window with subsurfaces rounds as a single shape.
+        match (&rounding, space.element_geometry(&window)) {
+            (Some(((fb_height, flip_y), program)), Some(geo)) => {
+                let rect = Rectangle::new(
+                    phys(geo.loc - output_geo.loc, scale),
+                    geo.size.to_f64().to_physical(scale).to_i32_round(),
+                );
+                let radius = deco.rounding as f64 * scale.x.max(scale.y);
+                let uniforms = effects::rounding_uniforms(rect, *fb_height, *flip_y, radius as f32);
+                out.extend(surfaces.into_iter().map(|surface| {
+                    AbyssRenderElement::Rounded(effects::RoundedElement::new(
+                        surface,
+                        program.clone(),
+                        uniforms.clone(),
+                    ))
+                }));
+            }
+            _ => out.extend(surfaces.into_iter().map(AbyssRenderElement::Surface)),
+        }
     }
     out
 }

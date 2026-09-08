@@ -63,7 +63,7 @@ or a known, listed gap.
 | 8 | Screen sharing via xdg-desktop-portal | **partial** | Two capture protocols behind **one shared fail-closed gate**: `zwlr_screencopy_v1` (`screencopy.rs`) and `ext_image_copy_capture_v1` + `ext_image_capture_source_v1` (`image_copy_capture.rs`), ADRs 0027/0029/0030. Measured against `xdg-desktop-portal-wlr` 0.8.3: 60 frames in 1.18 s. Frame-level redaction verified across 860,343 pixels of a redacted surface, all exactly opaque black. Remaining for the gate: an actual video call. Cursor capture is refused (session answered `stopped`/`leave`, `image_copy_capture.rs:333`). |
 | 9 | Human IPC, `eclipse-ctl`, metrics | **done (Phase 1 scope)** | `ipc/` (JSON-RPC 2.0 line-delimited over `$XDG_RUNTIME_DIR/eclipse/abyss.sock`, `SO_PEERCRED` owner-uid gating, ADR 0028), `ipc/gate.rs` authorisation table, `ipc/methods.rs` (17 methods), `crates/eclipse-ctl` (327 lines). 7 of the 24 gate rows are deliberately `implemented: false` — all Phase 2 surface, listed below and asserted by the `phase_two_rows_stay_unimplemented` test. Gate "waybar driven by our IPC" is met in the weaker sense that `eclipse-ctl watch` streams workspace/window/output/focus events; a bar cannot yet enumerate windows it does not own because there is no `ext-foreign-toplevel-list`. |
 | 9a | COMP-06 §1 protocol completeness | **done** | All fifteen protocols implemented and confirmed advertised on a live socket: `xdg_decoration`, `xdg_activation`, `wp_single_pixel_buffer`, `zwp_pointer_constraints`, `zwp_relative_pointer`, `zwp_pointer_gestures`, `ext_foreign_toplevel_list`, `wp_security_context`, `zwp_tablet_v2`, `wlr_output_management` (v4), `xdg_foreign` (exporter+importer v2), `wlr_gamma_control`, `content_type`, `wp_alpha_modifier`, `cursor_shape`. Smithay 0.7 has no module for `wlr_output_management` or `wlr_gamma_control`, so those two are hand-written dispatch following `output_power.rs`. Output configuration from the wlr protocol and from the human IPC now share one apply path (`outputs::apply_change`), so the COMP-03 §4 "never disable the last enabled output" refusal cannot be routed around. Remaining gate items are behavioural, not code: a third-party bar listing windows, mouse-look in a Proton game. |
-| 9b | *(stretch)* animations, rounding, shadows, dim, blur | **not started** | No effects code. Per COMP-16 Open Decision 1 this is expected to follow Phase 1 exit. The `decoration` and `animations` config blocks already parse, so config compatibility is preserved for when it lands. |
+| 9b | *(stretch)* animations, rounding, shadows, dim, blur | **partial** | Borders, `active-opacity`/`inactive-opacity`, `dim-inactive` and `rounding` draw (`render/mod.rs`, `render/effects.rs`); rounding is a fragment-shader mask in framebuffer space, confirmed visually under the winit backend. Animations, `shadow` and `blur` are parsed and validated but not drawn. Every effect is off by default, so an unconfigured frame is still the single `space_render_elements` call — damage tracking and direct scanout unchanged. Rounding a window necessarily makes it non-opaque, so a rounded window cannot take a scanout plane; that is inherent, not a regression. |
 | — | **PHASE 1 EXIT** — 14 consecutive days as the only compositor | **not started** | Blocked on milestone 3's gate. Abyss is now *launchable* from any greeter: `abyss --session` plus `dist/abyss.desktop`, `dist/abyss-session`, `dist/abyss-session.target` (ADR 0032). What has never happened is a real KMS boot. |
 
 ---
@@ -136,9 +136,12 @@ macros anywhere in the workspace.
    rather than loading the user's theme.
 6. **Effects parsed but not drawn**: `decoration` and `animations` now parse
    and validate in full (`config/mod.rs`), and `active-opacity` /
-   `inactive-opacity` / `dim-inactive` render (`render/mod.rs`,
-   `window_elements`). Still not drawn: `rounding` (needs a fragment-shader
-   mask in the surface pass), `shadow` (needs a pre-blurred nine-slice
+   `inactive-opacity` / `dim-inactive` / `rounding` render (`render/mod.rs`,
+   `window_elements`; the rounded-corner mask itself is
+   `render/effects.rs`, a custom texture program bound for the duration of
+   each surface's draw, so every subsurface of one window is cut by the same
+   rectangle and the window rounds as a single shape — verified nested under
+   winit). Still not drawn: `shadow` (needs a pre-blurred nine-slice
    texture), `blur` (needs multi-pass framebuffers) and animation
    interpolation (needs the frame clock, plus COMP-08's rule that agents see
    target geometry, never the interpolated value). All are off by default, so
@@ -229,9 +232,9 @@ In rough order:
    `pointer_constraints`/`relative_pointer` have not been run.
 4. **A real xcursor theme** on DRM, replacing the built-in amber arrow used
    for named cursor shapes.
-5. **Effects (9b)** — optional by COMP-16 Open Decision 1, but "no rounding, no
-   animation, no shadows" is the visible gap against the current Hyprland
-   setup.
+5. **Effects (9b)** — optional by COMP-16 Open Decision 1. Borders, opacity,
+   dim-inactive and rounding are in; "no animation, no shadows, no blur" is
+   what remains of the visible gap against the current Hyprland setup.
 6. **Full COMP-05 §4 matchers** — `size`, `position`, `fullscreen`,
    `app-trust`, `seat-compat`, `idle-inhibit`, `cgroup` and
    `launching-principal`, plus real regex patterns (gap 7).

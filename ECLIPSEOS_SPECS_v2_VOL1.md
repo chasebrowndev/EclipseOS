@@ -2503,6 +2503,12 @@ All optional, all off by default until 9b, all designed for now:
 | Blur | Dual-Kawase downsample/upsample, N passes on the region behind translucent surfaces | Expensive; expands damage by kernel radius; disables direct scanout; skipped entirely when the blurred surface is opaque |
 | Animations | Interpolated geometry driven by the frame clock | Forces repaint while running; must not extend past the animation |
 
+The rounding mask is computed in framebuffer coordinates from the *window's*
+geometry, not each surface's own, so a window with subsurfaces (or client-side
+decorations) rounds as one shape rather than rounding each piece. An output
+whose transform rotates the framebuffer keeps square corners rather than
+masking in the wrong place.
+
 Animations are geometry-only in v1. **They must not affect what an agent
 sees**: `scene`/`get_tree` geometry reports the *target* geometry, not the
 interpolated one, so an agent never clicks where a window was mid-flight.
