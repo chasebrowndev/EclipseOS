@@ -193,6 +193,117 @@ impl Default for Render {
     }
 }
 
+/// `decoration { ... }` (COMP-13 §1.1, COMP-02 §9). Every effect here is off by
+/// default: the defaults below are the "no effect" values, so a config without a
+/// `decoration` block renders exactly as it did before milestone 9b and keeps
+/// direct scanout available. Opacity and `dim-inactive` are rendered today;
+/// `rounding`, `blur` and `shadow` are parsed and validated but not yet drawn
+/// (they need a shader mask, multi-pass framebuffers and a nine-slice texture
+/// respectively) — see docs/STATUS.md.
+#[derive(Debug, Clone)]
+pub struct Decoration {
+    /// Corner radius in logical pixels; 0 disables.
+    pub rounding: i32,
+    /// Alpha applied to the focused window, 0.0..=1.0.
+    pub active_opacity: f32,
+    /// Alpha applied to every unfocused window, 0.0..=1.0.
+    pub inactive_opacity: f32,
+    /// Strength of the darkening overlay on unfocused windows, 0.0..=1.0.
+    pub dim_inactive: f32,
+    pub blur: Blur,
+    pub shadow: Shadow,
+}
+
+impl Default for Decoration {
+    fn default() -> Self {
+        Self {
+            rounding: 0,
+            active_opacity: 1.0,
+            inactive_opacity: 1.0,
+            dim_inactive: 0.0,
+            blur: Blur::default(),
+            shadow: Shadow::default(),
+        }
+    }
+}
+
+impl Decoration {
+    /// Whether any per-window effect diverges from the plain path. When this is
+    /// false the renderer keeps the single `space_render_elements` call, so
+    /// damage tracking and direct scanout behave as they do with no config.
+    pub fn any_window_effect(&self) -> bool {
+        self.active_opacity < 1.0 || self.inactive_opacity < 1.0 || self.dim_inactive > 0.0
+    }
+}
+
+/// `blur { enabled #false; size 8; passes 2 }`. Dual-Kawase (COMP-02 §9).
+#[derive(Debug, Clone)]
+pub struct Blur {
+    pub enabled: bool,
+    pub size: i32,
+    pub passes: i32,
+}
+
+impl Default for Blur {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            size: 8,
+            passes: 2,
+        }
+    }
+}
+
+/// `shadow { enabled #false; range 20 }`. Nine-slice (COMP-02 §9).
+#[derive(Debug, Clone)]
+pub struct Shadow {
+    pub enabled: bool,
+    pub range: i32,
+}
+
+impl Default for Shadow {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            range: 20,
+        }
+    }
+}
+
+/// `animations { ... }` (COMP-13 §1.1, COMP-02 §9). Animations are geometry-only
+/// and must never change what an agent sees: `scene`/`get_tree` always report
+/// target geometry, not the interpolated value (COMP-08).
+#[derive(Debug, Clone, Default)]
+pub struct Animations {
+    pub enabled: bool,
+    /// `animation` nodes in file order; a later node for the same name wins.
+    pub curves: Vec<Animation>,
+}
+
+impl Animations {
+    /// The configured curve for `name`, if animations are on and one was given.
+    #[allow(dead_code)] // read once 9b geometry interpolation lands
+    pub fn get(&self, name: &str) -> Option<&Animation> {
+        if !self.enabled {
+            return None;
+        }
+        self.curves.iter().rev().find(|a| a.name == name)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Animation {
+    #[allow(dead_code)] // matched by Animations::get
+    pub name: String,
+    pub duration_ms: u32,
+    pub curve: String,
+}
+
+/// Animation names and easing curves accepted by `animations`. Unknown values
+/// are rejected at parse time rather than silently ignored at render time.
+const ANIMATION_NAMES: [&str; 4] = ["windows", "workspaces", "fade", "border"];
+const ANIMATION_CURVES: [&str; 4] = ["linear", "ease-in", "ease-out", "ease-in-out"];
+
 /// `input { ... }` (COMP-13 §1.2, COMP-04). Keyboard settings are pushed to the
 /// seat on reload; pointer settings are applied per libinput device as it
 /// appears, and on reload to every device already open.
@@ -234,6 +345,8 @@ pub struct Touchpad {
 pub struct Config {
     pub general: General,
     pub render: Render,
+    pub decoration: Decoration,
+    pub animations: Animations,
     pub clipboard: Clipboard,
     pub capture: Capture,
     pub xwayland: Xwayland,
@@ -258,6 +371,8 @@ impl Default for Config {
         Self {
             general: General::default(),
             render: Render::default(),
+            decoration: Decoration::default(),
+            animations: Animations::default(),
             clipboard: Clipboard::default(),
             capture: Capture::default(),
             xwayland: Xwayland::default(),
@@ -498,8 +613,10 @@ impl Config {
                 "misc" => self.apply_misc(node),
                 "input" => self.apply_input(node),
                 "output" => self.apply_output(node),
+                "decoration" => self.apply_decoration(node),
+                "animations" => self.apply_animations(node),
                 // Blocks specified but not implemented in M2.
-                "decoration" | "animations" | "windowrule" => {}
+                "windowrule" => {}
                 other => tracing::warn!(node = other, "unknown config node, ignored"),
             }
         }
@@ -673,6 +790,124 @@ impl Config {
                 other => tracing::warn!(node = other, "unknown touchpad key, ignored"),
             }
         }
+    }
+
+    /// `decoration { rounding 8; active-opacity 1.0; blur { ... } }`.
+    /// Out-of-range values are warned about and dropped, keeping the default.
+    fn apply_decoration(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let name = n.name().value();
+            match name {
+                "rounding" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (0..=64).contains(&v) => self.decoration.rounding = v as i32,
+                    _ => tracing::warn!("decoration rounding must be an integer 0..=64"),
+                },
+                "active-opacity" | "inactive-opacity" | "dim-inactive" => match arg(n).and_then(as_f64) {
+                    Some(v) if (0.0..=1.0).contains(&v) => {
+                        let v = v as f32;
+                        match name {
+                            "active-opacity" => self.decoration.active_opacity = v,
+                            "inactive-opacity" => self.decoration.inactive_opacity = v,
+                            _ => self.decoration.dim_inactive = v,
+                        }
+                    }
+                    _ => tracing::warn!(node = name, "decoration key must be 0.0..=1.0"),
+                },
+                "blur" => self.apply_blur(n),
+                "shadow" => self.apply_shadow(n),
+                other => tracing::warn!(node = other, "unknown decoration key, ignored"),
+            }
+        }
+    }
+
+    fn apply_blur(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "enabled" => {
+                    self.decoration.blur.enabled = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
+                }
+                "size" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (1..=64).contains(&v) => self.decoration.blur.size = v as i32,
+                    _ => tracing::warn!("blur size must be an integer 1..=64"),
+                },
+                "passes" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (1..=6).contains(&v) => self.decoration.blur.passes = v as i32,
+                    _ => tracing::warn!("blur passes must be an integer 1..=6"),
+                },
+                other => tracing::warn!(node = other, "unknown blur key, ignored"),
+            }
+        }
+    }
+
+    fn apply_shadow(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "enabled" => {
+                    self.decoration.shadow.enabled = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
+                }
+                "range" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (0..=128).contains(&v) => self.decoration.shadow.range = v as i32,
+                    _ => tracing::warn!("shadow range must be an integer 0..=128"),
+                },
+                other => tracing::warn!(node = other, "unknown shadow key, ignored"),
+            }
+        }
+    }
+
+    /// `animations { enabled #true; animation "windows" duration="150ms" curve="ease-out" }`.
+    fn apply_animations(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "enabled" => {
+                    self.animations.enabled = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
+                }
+                "animation" => self.apply_animation(n),
+                other => tracing::warn!(node = other, "unknown animations key, ignored"),
+            }
+        }
+    }
+
+    fn apply_animation(&mut self, node: &KdlNode) {
+        let Some(name) = arg(node).and_then(KdlValue::as_string) else {
+            tracing::warn!("animation node needs a name argument");
+            return;
+        };
+        if !ANIMATION_NAMES.contains(&name) {
+            tracing::warn!(name, "unknown animation name, ignored");
+            return;
+        }
+        let mut anim = Animation {
+            name: name.to_owned(),
+            duration_ms: 150,
+            curve: "ease-out".to_owned(),
+        };
+        for e in node.entries() {
+            let Some(key) = e.name().map(|k| k.value().to_owned()) else {
+                continue; // the positional name argument
+            };
+            match key.as_str() {
+                "duration" => match parse_duration_ms(e.value()) {
+                    Some(ms) if ms <= 10_000 => anim.duration_ms = ms,
+                    _ => {
+                        tracing::warn!(name, "animation duration must be <= 10s, e.g. \"150ms\"");
+                        return;
+                    }
+                },
+                "curve" => match e.value().as_string() {
+                    Some(c) if ANIMATION_CURVES.contains(&c) => anim.curve = c.to_owned(),
+                    other => {
+                        tracing::warn!(name, ?other, "unknown animation curve, rule ignored");
+                        return;
+                    }
+                },
+                other => tracing::warn!(node = other, "unknown animation property, ignored"),
+            }
+        }
+        self.animations.curves.push(anim);
     }
 
     fn apply_misc(&mut self, node: &KdlNode) {
@@ -991,6 +1226,88 @@ mod tests {
     }
 
     #[test]
+    fn parses_decoration_and_animations() {
+        let doc: KdlDocument = r#"
+            decoration {
+                rounding 8
+                active-opacity 1.0
+                inactive-opacity 0.95
+                dim-inactive 0.2
+                blur { enabled #false; size 12; passes 3 }
+                shadow { enabled #true; range 20 }
+            }
+            animations {
+                enabled #true
+                animation "windows" duration="150ms" curve="ease-out"
+                animation "workspaces" duration=200 curve="linear"
+            }
+        "#
+        .parse()
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.decoration.rounding, 8);
+        assert_eq!(cfg.decoration.active_opacity, 1.0);
+        assert_eq!(cfg.decoration.inactive_opacity, 0.95);
+        assert_eq!(cfg.decoration.dim_inactive, 0.2);
+        assert!(!cfg.decoration.blur.enabled);
+        assert_eq!((cfg.decoration.blur.size, cfg.decoration.blur.passes), (12, 3));
+        assert!(cfg.decoration.shadow.enabled && cfg.decoration.shadow.range == 20);
+        assert!(cfg.decoration.any_window_effect());
+        let w = cfg.animations.get("windows").expect("windows curve");
+        assert_eq!((w.duration_ms, w.curve.as_str()), (150, "ease-out"));
+        assert_eq!(cfg.animations.get("workspaces").unwrap().duration_ms, 200);
+        assert!(cfg.animations.get("nope").is_none());
+    }
+
+    #[test]
+    fn decoration_defaults_are_no_effect() {
+        let cfg = Config::default();
+        assert!(!cfg.decoration.any_window_effect());
+        assert!(!cfg.decoration.blur.enabled && !cfg.decoration.shadow.enabled);
+        assert_eq!(cfg.decoration.rounding, 0);
+        // Animations off means no curve resolves even if one were parsed.
+        assert!(!cfg.animations.enabled);
+    }
+
+    #[test]
+    fn rejects_bad_decoration_and_animation_values() {
+        let doc: KdlDocument = r#"
+            decoration {
+                rounding 999
+                active-opacity 4.0
+                inactive-opacity "half"
+                nonsense 1
+            }
+            animations {
+                enabled #true
+                animation "windows" curve="bounce"
+                animation "nope" duration="10ms"
+                animation "fade" duration="2h"
+            }
+        "#
+        .parse()
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        // Every bad value keeps its default rather than half-applying.
+        assert_eq!(cfg.decoration.rounding, 0);
+        assert_eq!(cfg.decoration.active_opacity, 1.0);
+        assert_eq!(cfg.decoration.inactive_opacity, 1.0);
+        assert!(cfg.animations.curves.is_empty());
+    }
+
+    #[test]
+    fn durations() {
+        assert_eq!(parse_duration_ms(&KdlValue::Integer(150)), Some(150));
+        assert_eq!(parse_duration_ms(&KdlValue::String("150ms".into())), Some(150));
+        assert_eq!(parse_duration_ms(&KdlValue::String("2s".into())), Some(2000));
+        assert_eq!(parse_duration_ms(&KdlValue::String("1m".into())), Some(60_000));
+        assert_eq!(parse_duration_ms(&KdlValue::String("2h".into())), None);
+        assert_eq!(parse_duration_ms(&KdlValue::Integer(-1)), None);
+    }
+
+    #[test]
     fn colors() {
         assert_eq!(parse_color("#ff0000"), Some([1.0, 0.0, 0.0, 1.0]));
         assert_eq!(parse_color("0x80ff0000"), Some([1.0, 0.0, 0.0, 0.5019608]));
@@ -1092,6 +1409,26 @@ mod tests {
         cfg.apply(&doc, &mut binds);
         assert!(matches!(binds[0].action, crate::input::Action::AgentAttention));
     }
+}
+
+/// A duration written either as a bare integer of milliseconds or as a string
+/// with a unit: `"150ms"`, `"2s"`, `"1m"`. KDL 2.0 has no duration literal, so
+/// the unit form has to be quoted.
+fn parse_duration_ms(v: &KdlValue) -> Option<u32> {
+    if let Some(i) = v.as_integer() {
+        return u32::try_from(i).ok();
+    }
+    let s = v.as_string()?.trim();
+    let (num, mult) = if let Some(n) = s.strip_suffix("ms") {
+        (n, 1)
+    } else if let Some(n) = s.strip_suffix('s') {
+        (n, 1000)
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 60_000)
+    } else {
+        (s, 1)
+    };
+    num.trim().parse::<u32>().ok()?.checked_mul(mult)
 }
 
 fn as_f64(v: &KdlValue) -> Option<f64> {

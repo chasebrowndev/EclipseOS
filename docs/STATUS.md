@@ -133,11 +133,18 @@ macros anywhere in the workspace.
    cursor surfaces composite correctly at their hotspot, but named
    `wp_cursor_shape_v1` shapes all fall back to one built-in amber arrow
    rather than loading the user's theme.
-6. **Config blocks parsed and ignored**: `decoration`, `animations`,
-   `windowrule` (`config/mod.rs`, "Blocks specified but not implemented in
-   M2"), plus `xwayland` / `render-device`. Unknown nodes warn and are
-   ignored. *Unblocked by:* 9b for the first two, COMP-05 rules for
-   `windowrule`.
+6. **Effects parsed but not drawn**: `decoration` and `animations` now parse
+   and validate in full (`config/mod.rs`), and `active-opacity` /
+   `inactive-opacity` / `dim-inactive` render (`render/mod.rs`,
+   `window_elements`). Still not drawn: `rounding` (needs a fragment-shader
+   mask in the surface pass), `shadow` (needs a pre-blurred nine-slice
+   texture), `blur` (needs multi-pass framebuffers) and animation
+   interpolation (needs the frame clock, plus COMP-08's rule that agents see
+   target geometry, never the interpolated value). All are off by default, so
+   the default frame path is the single `space_render_elements` call it was
+   before — damage and direct scanout unchanged. `windowrule` is still parsed
+   and ignored, as are `xwayland` / `render-device`. *Unblocked by:* the rest
+   of 9b; COMP-05 §4 for `windowrule`.
 8. **Custom modes are refused by `wlr_output_management`** — a
    `set_custom_mode` request with valid dimensions fails the whole
    configuration rather than modesetting outside the connector's own mode

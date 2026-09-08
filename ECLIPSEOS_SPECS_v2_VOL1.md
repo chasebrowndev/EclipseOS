@@ -4655,8 +4655,8 @@ decoration {
 
 animations {
     enabled #true
-    animation "windows" duration=150ms curve="ease-out"
-    animation "workspaces" duration=200ms curve="ease-out"
+    animation "windows" duration="150ms" curve="ease-out"
+    animation "workspaces" duration="200ms" curve="ease-out"
 }
 
 input {

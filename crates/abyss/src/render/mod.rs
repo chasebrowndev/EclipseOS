@@ -52,11 +52,14 @@ type Border = [SolidColorBuffer; 4];
 #[derive(Default)]
 pub struct BorderStore {
     borders: HashMap<Window, Border>,
+    /// One dim-inactive overlay quad per window, kept alive between frames.
+    dims: HashMap<Window, SolidColorBuffer>,
 }
 
 impl BorderStore {
     pub fn remove(&mut self, window: &Window) {
         self.borders.remove(window);
+        self.dims.remove(window);
     }
 }
 
@@ -125,9 +128,17 @@ pub fn collect_elements(
 
     layers(&mut elements, [Layer::Overlay, Layer::Top], renderer);
 
-    match smithay::desktop::space::space_render_elements(renderer, [space], output, 1.0) {
-        Ok(space_elements) => elements.extend(space_elements.into_iter().map(AbyssRenderElement::Space)),
-        Err(err) => tracing::warn!(?err, "collecting space elements"),
+    // With no per-window effect configured (the default) the whole space goes
+    // through smithay's one call at alpha 1.0, so damage tracking and direct
+    // scanout are exactly what they were before milestone 9b (COMP-02 §9).
+    if config.decoration.any_window_effect() {
+        elements.extend(window_elements(renderer, space, borders, output, config, focus));
+    } else {
+        borders.dims.clear();
+        match smithay::desktop::space::space_render_elements(renderer, [space], output, 1.0) {
+            Ok(space_elements) => elements.extend(space_elements.into_iter().map(AbyssRenderElement::Space)),
+            Err(err) => tracing::warn!(?err, "collecting space elements"),
+        }
     }
 
     elements.extend(border_elements(space, borders, output_loc, scale, config, focus));
@@ -135,6 +146,78 @@ pub fn collect_elements(
     layers(&mut elements, [Layer::Bottom, Layer::Background], renderer);
 
     elements
+}
+
+/// Per-window toplevel elements, front to back, with `decoration` opacity and
+/// `dim-inactive` applied (COMP-02 §9).
+///
+/// This mirrors what `space_render_elements` does for toplevels, but one window
+/// at a time so each can carry its own alpha. Any surface drawn at less than
+/// full alpha cannot go to a scanout plane; the caller only takes this path when
+/// an effect is actually configured.
+fn window_elements(
+    renderer: &mut GlesRenderer,
+    space: &Space<Window>,
+    store: &mut BorderStore,
+    output: &Output,
+    config: &Config,
+    focus: Option<&Window>,
+) -> Vec<AbyssRenderElement> {
+    let Some(output_geo) = space.output_geometry(output) else {
+        return Vec::new();
+    };
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    let deco = &config.decoration;
+    let live: Vec<Window> = space.elements().cloned().collect();
+    store.dims.retain(|w, _| live.contains(w));
+
+    let mut out = Vec::new();
+    // `space.elements()` is bottom-to-top; frames are collected front-to-back.
+    for window in live.into_iter().rev() {
+        let Some(loc) = space.element_location(&window) else {
+            continue;
+        };
+        let active = focus == Some(&window);
+        let alpha = if active {
+            deco.active_opacity
+        } else {
+            deco.inactive_opacity
+        };
+
+        // The dim overlay belongs above this window but below the ones in
+        // front of it, so it is pushed just before the window's own surfaces.
+        if !active && deco.dim_inactive > 0.0 {
+            if let Some(geo) = space.element_geometry(&window) {
+                let color = [0.0, 0.0, 0.0, deco.dim_inactive * alpha];
+                let buffer = store
+                    .dims
+                    .entry(window.clone())
+                    .or_insert_with(|| SolidColorBuffer::new(geo.size, color));
+                buffer.update(geo.size, color);
+                out.push(AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
+                    buffer,
+                    phys(geo.loc - output_geo.loc, scale),
+                    scale,
+                    1.0,
+                    Kind::Unspecified,
+                )));
+            }
+        }
+
+        let render_loc = loc - window.geometry().loc - output_geo.loc;
+        out.extend(
+            window
+                .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
+                    renderer,
+                    phys(render_loc, scale),
+                    scale,
+                    alpha,
+                )
+                .into_iter()
+                .map(AbyssRenderElement::Surface),
+        );
+    }
+    out
 }
 
 fn border_elements(
