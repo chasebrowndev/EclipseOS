@@ -36,6 +36,7 @@ writing a new ADR that says so.
 | 0028 | [The control socket is owner-only, and window titles cross it](0028-control-socket-authority.md) | accepted |
 | 0029 | [`xdg-desktop-portal-wlr` is allowlisted by the user, never by default](0029-portal-capture-allowlist.md) | accepted |
 | 0030 | [Two capture protocols coexist, behind one shared gate](0030-ext-image-copy-capture.md) | accepted |
+| 0031 | [Resizing a window over the control socket](0031-resize-over-the-control-socket.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

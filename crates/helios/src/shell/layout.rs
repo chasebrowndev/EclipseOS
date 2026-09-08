@@ -230,6 +230,88 @@ impl Tree {
         }
     }
 
+    /// Give `window` a new tiled size by re-solving split ratios.
+    ///
+    /// A tiled window has no size of its own: what it has is the ratio of the
+    /// nearest ancestor split along each axis. For each requested axis we walk
+    /// from the leaf to the first ancestor split running along that axis and
+    /// solve `split_rect`'s formula for the ratio that yields the wanted
+    /// extent, clamped so neither side can be squeezed away. A window with no
+    /// such ancestor (the only window on its workspace, or the only column)
+    /// cannot be resized along that axis; `false` says nothing changed.
+    pub fn resize(
+        &mut self,
+        window: &Window,
+        area: Rectangle<i32, Logical>,
+        gap: i32,
+        want: (Option<i32>, Option<i32>),
+    ) -> bool {
+        let Some(leaf) = self.leaf_of(window) else {
+            return false;
+        };
+        let rects: Vec<(NodeId, Rectangle<i32, Logical>)> = self.node_rects(area, gap);
+        let mut changed = false;
+        for (horizontal, target) in [(true, want.0), (false, want.1)] {
+            let Some(target) = target else { continue };
+            let mut child = leaf;
+            let mut cur = self.get(leaf).map(|n| n.parent).unwrap_or(NIL);
+            while cur != NIL {
+                let (a, side_by_side) = match self.get(cur).map(|n| &n.kind) {
+                    Some(Kind::Split { a, side_by_side, .. }) => (*a, *side_by_side),
+                    _ => break,
+                };
+                if side_by_side == horizontal {
+                    let Some((_, rect)) = rects.iter().find(|(id, _)| *id == cur) else {
+                        break;
+                    };
+                    let span = if horizontal {
+                        rect.size.w - gap
+                    } else {
+                        rect.size.h - gap
+                    };
+                    if span > 0 {
+                        let share = target as f64 / span as f64;
+                        let ratio = if a == child { share } else { 1.0 - share };
+                        if let Some(Some(n)) = self.nodes.get_mut(cur as usize) {
+                            if let Kind::Split { ratio: r, .. } = &mut n.kind {
+                                *r = ratio.clamp(0.05, 0.95);
+                                changed = true;
+                            }
+                        }
+                    }
+                    break;
+                }
+                child = cur;
+                cur = self.get(cur).map(|n| n.parent).unwrap_or(NIL);
+            }
+        }
+        changed
+    }
+
+    /// Rectangle of every node, internal splits included.
+    fn node_rects(&self, area: Rectangle<i32, Logical>, gap: i32) -> Vec<(NodeId, Rectangle<i32, Logical>)> {
+        let mut out = Vec::new();
+        if self.root == NIL {
+            return out;
+        }
+        let mut stack = vec![(self.root, area)];
+        while let Some((id, rect)) = stack.pop() {
+            out.push((id, rect));
+            if let Some(Kind::Split {
+                a,
+                b,
+                side_by_side,
+                ratio,
+            }) = self.get(id).map(|n| &n.kind)
+            {
+                let (ra, rb) = split_rect(rect, *side_by_side, *ratio, gap);
+                stack.push((*b, rb));
+                stack.push((*a, ra));
+            }
+        }
+        out
+    }
+
     /// (leaf id, window, rectangle) for the dwindle arrangement.
     fn geometries(
         &self,

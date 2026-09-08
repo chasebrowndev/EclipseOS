@@ -98,8 +98,10 @@ pub struct DrmOutput {
     needs_render: bool,
     /// Render + scanout dmabuf tranches for this output (COMP-02 §2).
     feedback: Option<SurfaceFeedback>,
-    /// `vrr` requested for this output in the config.
+    /// `vrr` requested for this output in the config or over the socket.
     vrr_config: bool,
+    /// The connector advertises adaptive sync.
+    vrr_capable: bool,
 }
 
 /// Everything the DRM backend needs to keep alive between callbacks.
@@ -422,6 +424,7 @@ fn add_connector(
             needs_render: true,
             feedback,
             vrr_config,
+            vrr_capable: matches!(vrr_support, VrrSupport::Supported),
         });
     }
     tracing::info!(
@@ -963,6 +966,26 @@ fn render_output(state: &mut HeliosState, index: usize) {
     state.space.refresh();
     state.popups.cleanup();
     let _ = state.display_handle.flush_clients();
+}
+
+/// Turn adaptive sync on or off for one output at runtime (COMP-13 §2.1).
+/// `false` means the request was refused: unknown output, or a connector that
+/// does not support it. Turning it *off* always succeeds where the output
+/// exists, because "off" is what an unsupported connector already is.
+pub fn set_vrr(state: &mut HeliosState, id: u64, on: bool) -> bool {
+    let Some(drm) = state.drm.as_mut() else {
+        return false;
+    };
+    let Some(index) = drm.outputs.iter().position(|o| o.id == id) else {
+        return false;
+    };
+    if on && !drm.outputs[index].vrr_capable {
+        return false;
+    }
+    drm.outputs[index].vrr_config = on;
+    drm.outputs[index].needs_render = true;
+    schedule_render(state);
+    true
 }
 
 /// DPMS for one output (COMP-03 §7): clear the CRTC on the way down, and let

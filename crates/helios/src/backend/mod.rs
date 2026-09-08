@@ -59,3 +59,16 @@ pub fn set_output_power(state: &mut HeliosState, id: u64, on: bool) {
     drm::set_power(state, id, on);
     let _ = (state, id, on);
 }
+
+/// Ask one output for adaptive sync (VRR, COMP-13 §2.1). `false` means the
+/// backend cannot do it — no DRM device, unknown output, or a connector that
+/// does not advertise support — and nothing was changed.
+pub fn set_output_vrr(state: &mut HeliosState, id: u64, on: bool) -> bool {
+    #[cfg(feature = "drm")]
+    return drm::set_vrr(state, id, on);
+    #[cfg(not(feature = "drm"))]
+    {
+        let _ = (state, id, on);
+        false
+    }
+}

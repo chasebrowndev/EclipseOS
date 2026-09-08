@@ -629,6 +629,141 @@ pub fn move_to_workspace(state: &mut HeliosState, idx: usize) {
     tracing::info!(workspace = idx, "window moved to workspace");
 }
 
+/// Resize one window to an absolute logical size (COMP-13 §2.1).
+///
+/// Floating and tiled are different operations and both are handled here. A
+/// floating window owns its rectangle, so the new size is simply stored. A
+/// tiled window owns nothing but the split ratios above it, so the size is
+/// expressed as ratios by [`layout::Tree::resize`] and may not be honoured
+/// exactly. Errors are strings so the caller can hand them straight back over
+/// the socket; nothing is mutated on an error path.
+pub fn resize_window(
+    state: &mut HeliosState,
+    window: &Window,
+    width: Option<i32>,
+    height: Option<i32>,
+) -> Result<bool, &'static str> {
+    let Some(id) = output_of_window(state, window) else {
+        return Err("window is not on any output");
+    };
+    let output = state.outputs.get(id).expect("just resolved").output.clone();
+    let entry = state.outputs.get(id).expect("just resolved");
+    let Some(ws) = entry
+        .workspaces
+        .iter()
+        .position(|w| w.windows().iter().any(|w| w == window))
+    else {
+        return Err("window is not on any workspace");
+    };
+    let tiled = entry.workspaces[ws].tiled.contains(window);
+    let kind = entry.workspaces[ws]
+        .layout
+        .unwrap_or_else(|| state.config.layout_for(ws + 1));
+    // The master layout ignores the tree's shape (ADR 0031), so a ratio has
+    // nowhere to land. Say so rather than silently doing nothing.
+    if tiled && kind == LayoutKind::Master {
+        return Err("a tiled window cannot be resized under the master layout");
+    }
+    let border = state.config.general.border_size;
+    let gap = state.config.general.gaps_in;
+    layer_map_for_output(&output).arrange();
+    let area = tiling_area(state, &output);
+    // Callers name the window's own size; the tree deals in tiles, which are
+    // the window plus its border on each side.
+    let want = (width.map(|w| w + 2 * border), height.map(|h| h + 2 * border));
+
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    let changed = if tiled {
+        entry.workspaces[ws].tiled.resize(window, area, gap, want)
+    } else if let Some(f) = entry.workspaces[ws]
+        .floating
+        .iter_mut()
+        .find(|f| &f.window == window)
+    {
+        let before = f.rect.size;
+        f.rect.size.w = want.0.unwrap_or(before.w).max(1);
+        f.rect.size.h = want.1.unwrap_or(before.h).max(1);
+        f.rect.size != before
+    } else {
+        return Err("window is neither tiled nor floating");
+    };
+    if changed {
+        arrange_output(state, id);
+    }
+    Ok(changed)
+}
+
+/// Hand one output's workspace over to another output (COMP-13 §2.1).
+///
+/// Every output owns its own fixed set of workspaces, so this moves the
+/// *windows* of `idx` on `from` into the same index on `to` — the slot itself
+/// stays where it is, which is why emptying it can never strand an output.
+/// Both outputs are validated before anything moves.
+pub fn move_workspace_to_output(
+    state: &mut HeliosState,
+    from: u64,
+    idx: usize,
+    to: u64,
+) -> Result<bool, &'static str> {
+    if !(1..=workspace::COUNT).contains(&idx) {
+        return Err("workspace is out of range");
+    }
+    let target = idx - 1;
+    if state.outputs.get(from).is_none() {
+        return Err("no such source output");
+    }
+    match state.outputs.get(to) {
+        None => return Err("no such output"),
+        Some(e) if !e.enabled => return Err("target output is disabled"),
+        Some(_) => {}
+    }
+    if from == to {
+        return Ok(false);
+    }
+    let src_origin = state
+        .outputs
+        .get(from)
+        .and_then(|e| state.space.output_geometry(&e.output))
+        .map(|g| g.loc)
+        .unwrap_or_default();
+    let dst_output = state.outputs.get(to).expect("checked above").output.clone();
+    let dst_origin = state
+        .space
+        .output_geometry(&dst_output)
+        .map(|g| g.loc)
+        .unwrap_or_default();
+    let entry = state.outputs.get_mut(from).expect("checked above");
+    let tiled = entry.workspaces[target].tiled.windows();
+    let floating: Vec<Floating> = entry.workspaces[target].floating.drain(..).collect();
+    let pending: Vec<Window> = std::mem::take(&mut entry.workspaces[target].pending);
+    for w in &tiled {
+        entry.workspaces[target].tiled.remove(w);
+    }
+    if tiled.is_empty() && floating.is_empty() && pending.is_empty() {
+        return Ok(false);
+    }
+    for w in tiled.iter().chain(floating.iter().map(|f| &f.window)) {
+        state.space.unmap_elem(w);
+    }
+    layer_map_for_output(&dst_output).arrange();
+    let area = tiling_area(state, &dst_output);
+    let dst = state.outputs.get_mut(to).expect("checked above");
+    for w in tiled.into_iter().chain(pending) {
+        dst.workspaces[target].tiled.insert(w, None, area);
+    }
+    for mut f in floating {
+        // The rectangle is in global logical coordinates, so carry it across
+        // by the difference between the two outputs' origins.
+        f.rect.loc += dst_origin - src_origin;
+        dst.workspaces[target].floating.push(f);
+    }
+    state.focus = None;
+    arrange(state);
+    refocus_topmost(state);
+    tracing::info!(from, to, workspace = idx, "workspace moved to output");
+    Ok(true)
+}
+
 pub fn spawn(command: &str) {
     tracing::info!(command, "spawning");
     use std::os::unix::process::CommandExt;

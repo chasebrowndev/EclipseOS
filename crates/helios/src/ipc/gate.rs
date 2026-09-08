@@ -62,9 +62,9 @@ pub const TABLE: &[Entry] = &[
     e("set_floating", Kind::Command, true),
     e("switch_workspace", Kind::Command, true),
     e("reload_config", Kind::Command, true),
-    e("resize", Kind::Command, false),
-    e("move_workspace_to_output", Kind::Command, false),
-    e("set_output", Kind::Command, false),
+    e("resize", Kind::Command, true),
+    e("move_workspace_to_output", Kind::Command, true),
+    e("set_output", Kind::Command, true),
     // Agent lifecycle: the protocol itself is Phase 2 (COMP-08).
     e("get_agents", Kind::Privileged, false),
     e("pause_agent", Kind::Privileged, false),
@@ -229,5 +229,37 @@ mod tests {
                 a.method
             );
         }
+    }
+
+    #[test]
+    fn phase_one_commands_are_implemented() {
+        for m in ["resize", "move_workspace_to_output", "set_output"] {
+            let row = TABLE.iter().find(|e| e.method == m).expect("row exists");
+            assert_eq!(row.kind, Kind::Command);
+            assert!(row.implemented, "{m} should be implemented");
+        }
+    }
+
+    #[test]
+    fn phase_two_rows_stay_unimplemented() {
+        // Agent lifecycle (COMP-08) and scripted input (COMP-04) are not
+        // Phase 1; the gate must keep answering "not implemented".
+        let pending: Vec<&str> = TABLE
+            .iter()
+            .filter(|e| !e.implemented)
+            .map(|e| e.method)
+            .collect();
+        assert_eq!(
+            pending,
+            vec![
+                "get_agents",
+                "pause_agent",
+                "resume_agent",
+                "terminate_agent",
+                "revoke_grants",
+                "type_text",
+                "click_at",
+            ]
+        );
     }
 }
