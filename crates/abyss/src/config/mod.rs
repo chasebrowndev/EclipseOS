@@ -296,6 +296,11 @@ pub fn default_binds() -> Vec<Bind> {
         },
         Bind {
             mods: sup,
+            key: Keysym::space,
+            action: Action::AgentAttention,
+        },
+        Bind {
+            mods: sup,
             key: Keysym::Return,
             action: Action::Spawn("kitty".into()),
         },
@@ -909,6 +914,9 @@ fn parse_bind(node: &KdlNode) -> Result<Bind, String> {
     if mods == m(true, false, false, false) && key == Keysym::Escape {
         return Err("Super+Escape is reserved (COMP-04 §6) and cannot be bound".into());
     }
+    if mods == m(true, false, false, false) && key == Keysym::space {
+        return Err("Super+space is reserved (COMP-13 §1.1) and cannot be bound".into());
+    }
     Ok(Bind { mods, key, action })
 }
 
@@ -932,6 +940,7 @@ fn parse_action(node: &KdlNode) -> Result<Action, String> {
         "workspace" => Action::SwitchWorkspace(workspace_arg(num())?),
         "move-to-workspace" => Action::MoveToWorkspace(workspace_arg(num())?),
         "agent-override" => Action::AgentOverride,
+        "agent-attention" => Action::AgentAttention,
         "quit" | "exit" => Action::Quit,
         other => return Err(format!("unknown action '{other}'")),
     })
@@ -976,6 +985,9 @@ mod tests {
         assert!(default_binds()
             .iter()
             .any(|b| b.key == Keysym::Escape && matches!(b.action, crate::input::Action::AgentOverride)));
+        assert!(default_binds()
+            .iter()
+            .any(|b| b.key == Keysym::space && matches!(b.action, crate::input::Action::AgentAttention)));
     }
 
     #[test]
@@ -1057,6 +1069,28 @@ mod tests {
         cfg.apply(&doc, &mut binds);
         assert_eq!(cfg.general.layout, LayoutKind::Dwindle);
         assert!(binds.is_empty(), "Super+Escape must stay reserved");
+    }
+
+    #[test]
+    fn both_agent_chords_stay_reserved() {
+        let doc: KdlDocument =
+            "bind \"SUPER\" \"Escape\" { quit; }\nbind \"SUPER\" \"space\" { quit; }\nbind \"SUPER\" \"F1\" { quit; }\n"
+                .parse()
+                .unwrap();
+        let mut cfg = Config::default();
+        let mut binds = Vec::new();
+        cfg.apply(&doc, &mut binds);
+        assert_eq!(binds.len(), 1, "only the unreserved bind survives");
+        assert_eq!(binds[0].key, Keysym::F1);
+    }
+
+    #[test]
+    fn agent_attention_action_parses() {
+        let doc: KdlDocument = "bind \"CTRL\" \"space\" { agent-attention; }".parse().unwrap();
+        let mut cfg = Config::default();
+        let mut binds = Vec::new();
+        cfg.apply(&doc, &mut binds);
+        assert!(matches!(binds[0].action, crate::input::Action::AgentAttention));
     }
 }
 

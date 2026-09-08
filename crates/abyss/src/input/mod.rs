@@ -68,6 +68,10 @@ pub enum Action {
     /// today so a config naming it is valid; it has nothing to revoke until
     /// agent seats exist (COMP-16 milestone 11).
     AgentOverride,
+    /// The pending-decision-queue chord reserved by COMP-13 §1.1 (COMP-10
+    /// §3.10). Dispatched today for the same reason as `AgentOverride`; the
+    /// queue it opens arrives with the trusted UI (COMP-16 milestone 14).
+    AgentAttention,
 }
 
 /// A configured key binding.
@@ -146,6 +150,7 @@ impl AbyssState {
             Action::SwitchWorkspace(n) => shell::switch_workspace(self, n),
             Action::MoveToWorkspace(n) => shell::move_to_workspace(self, n),
             Action::AgentOverride => self.agent_override(),
+            Action::AgentAttention => self.agent_attention(),
         }
     }
 
@@ -155,6 +160,13 @@ impl AbyssState {
     /// needed is worse than one that was never bound.
     fn agent_override(&mut self) {
         tracing::warn!("agent override chord pressed; no agent seats exist yet");
+    }
+
+    /// COMP-10 §3.10: opens the pending decision queue. Both agent chords are
+    /// evaluated on the human seat only — agent seats carry no bindings
+    /// (COMP-04 §5), so injected keys can never reach here.
+    fn agent_attention(&mut self) {
+        tracing::warn!("agent attention chord pressed; no pending decision queue exists yet");
     }
 
     fn switch_vt(&mut self, vt: i32) {

@@ -146,10 +146,11 @@ macros anywhere in the workspace.
 9. **`agent-override` is bound but inert** — Super+Escape is a built-in
    default bind carrying `Action::AgentOverride` and the config parser still
    refuses to let anyone rebind it, but the action itself only logs. It gets
-   its behaviour with the trusted UI in milestone 11. COMP-13 §1.1 now also
-   reserves `agent-attention` (`SUPER+space`, COMP-10 §3.10), which opens the
-   pending decision queue; `input::Action` has no variant for that one, so the
-   bind is still rejected as unknown. *Unblocked by:* milestone 14.
+   its behaviour with the trusted UI in milestone 11. `agent-attention`
+   (`SUPER+space`, COMP-13 §1.1 / COMP-10 §3.10) is in exactly the same state:
+   a built-in default bind carrying `Action::AgentAttention`, reserved against
+   rebinding, whose handler only logs until there is a pending decision queue
+   to open. *Unblocked by:* milestone 14.
 10. **No lease state** — COMP-08 §4.1 specifies interaction leases and
     enforcement step 6d. Nothing in the tree holds a `handle → LeaseHolder`
     map. *Unblocked by:* milestone 12.
