@@ -49,6 +49,7 @@ struct Args {
     config: Option<std::path::PathBuf>,
     stats: bool,
     session: bool,
+    render_device: Option<String>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -56,6 +57,7 @@ fn parse_args() -> Result<Args> {
     let mut config = None;
     let mut stats = false;
     let mut session = false;
+    let mut render_device = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -73,10 +75,14 @@ fn parse_args() -> Result<Args> {
                 Some(path) => config = Some(std::path::PathBuf::from(path)),
                 None => anyhow::bail!("--config requires a path"),
             },
+            "--render-device" => match args.next() {
+                Some(v) => render_device = Some(v),
+                None => anyhow::bail!("--render-device requires a path or pci: address"),
+            },
             "--stats" => stats = true,
             "--session" => session = true,
             "-h" | "--help" => {
-                println!("usage: abyss [--backend drm|winit] [--config <path.kdl>] [--stats] [--session]");
+                println!("usage: abyss [--backend drm|winit] [--config <path.kdl>] [--render-device <path|pci:DDDD:BB:DD.F>] [--stats] [--session]");
                 std::process::exit(0);
             }
             other => anyhow::bail!("unknown argument '{other}'"),
@@ -87,6 +93,7 @@ fn parse_args() -> Result<Args> {
         config,
         stats,
         session,
+        render_device,
     })
 }
 
@@ -122,7 +129,15 @@ fn main() -> Result<()> {
         libc::sigemptyset(&mut act.sa_mask);
         libc::sigaction(libc::SIGCHLD, &act, std::ptr::null_mut());
     }
-    let config = config::Config::load(args.config.as_deref());
+    let mut config = config::Config::load(args.config.as_deref());
+    // COMP-01 §4 override precedence: CLI flag > ECLIPSE_RENDER_DEVICE > config.
+    if let Some(dev) = args
+        .render_device
+        .clone()
+        .or_else(|| std::env::var("ECLIPSE_RENDER_DEVICE").ok())
+    {
+        config.misc.render_device = if dev == "auto" { None } else { Some(dev) };
+    }
     match args.backend {
         #[cfg(feature = "winit")]
         BackendKind::Winit => backend::winit::run(config, args.stats, args.session),

@@ -465,6 +465,46 @@ fn sync_fallback(state: &mut AbyssState) {
     }
 }
 
+/// COMP-01 §4: resolve the render device to use.
+///
+/// `None` means "auto" — smithay's own primary-GPU query. An explicit request is
+/// either a device path or a `pci:DDDD:BB:DD.F` address resolved through sysfs.
+/// An explicit request that does not resolve is a hard error rather than a
+/// silent fallback (ADR 0033): a typo that quietly lands on the wrong GPU is
+/// worse than a refusal to start.
+fn resolve_render_device(requested: Option<&str>, seat_name: &str) -> Result<PathBuf> {
+    let Some(req) = requested else {
+        return primary_gpu(seat_name)
+            .context("querying primary GPU")?
+            .ok_or_else(|| anyhow!("no GPU found on seat '{seat_name}'"));
+    };
+    let path = match req.strip_prefix("pci:") {
+        Some(addr) => {
+            let dir = PathBuf::from("/sys/bus/pci/devices").join(addr).join("drm");
+            let mut cards: Vec<PathBuf> = std::fs::read_dir(&dir)
+                .with_context(|| format!("render-device 'pci:{addr}' has no DRM node ({})", dir.display()))?
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name())
+                .filter(|n| n.to_string_lossy().starts_with("card"))
+                .map(|n| PathBuf::from("/dev/dri").join(n))
+                .collect();
+            cards.sort();
+            cards
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow!("render-device 'pci:{addr}' exposes no card node"))?
+        }
+        None => PathBuf::from(req),
+    };
+    if !path.exists() {
+        anyhow::bail!(
+            "render-device '{req}' resolved to {} which does not exist",
+            path.display()
+        );
+    }
+    Ok(path)
+}
+
 pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     let mut event_loop: EventLoop<'static, AbyssState> =
         EventLoop::try_new().context("calloop event loop")?;
@@ -476,6 +516,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     let seat_name = session.seat();
     tracing::info!(seat = %seat_name, "libseat session acquired");
 
+    let requested_device = config.misc.render_device.clone();
     let socket = ListeningSocketSource::new_auto().context("wayland socket")?;
     let mut state = AbyssState::new(
         &display,
@@ -493,9 +534,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
 
     // --- GPU discovery -----------------------------------------------------
     let udev = UdevBackend::new(&seat_name).context("udev backend")?;
-    let gpu_path: PathBuf = primary_gpu(&seat_name)
-        .context("querying primary GPU")?
-        .ok_or_else(|| anyhow!("no GPU found on seat '{seat_name}'"))?;
+    let gpu_path: PathBuf = resolve_render_device(requested_device.as_deref(), &seat_name)?;
     tracing::info!(path = %gpu_path.display(), "primary GPU");
 
     let mut session_for_open = session.clone();

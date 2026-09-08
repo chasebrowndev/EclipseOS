@@ -158,6 +158,11 @@ pub struct Misc {
     /// (COMP-13 §2.2). Default **off**; only the socket owner can flip it,
     /// because only the socket owner can write the config.
     pub scripted_input: bool,
+    /// `render-device`: `None` or `"auto"` means smithay's own primary-GPU
+    /// query; otherwise a `/dev/dri/…` path or `pci:DDDD:BB:DD.F` address.
+    /// Restart-only (COMP-13 §1.2) — the CLI flag and `ECLIPSE_RENDER_DEVICE`
+    /// both override it.
+    pub render_device: Option<String>,
 }
 
 /// One `output "<pattern>" { .. }` block (COMP-13 §4). Config wins over the
@@ -1125,8 +1130,13 @@ impl Config {
                 "scripted-input" => {
                     self.misc.scripted_input = arg(n).and_then(KdlValue::as_bool).unwrap_or(false);
                 }
+                "render-device" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("auto") => self.misc.render_device = None,
+                    Some(v) => self.misc.render_device = Some(v.to_owned()),
+                    None => tracing::warn!("render-device needs a string, ignored"),
+                },
                 // Restart-only knobs (COMP-13 §1.2); parsed elsewhere or not yet.
-                "xwayland" | "render-device" => {}
+                "xwayland" => {}
                 other => tracing::warn!(node = other, "unknown misc key, ignored"),
             }
         }
@@ -1579,6 +1589,25 @@ mod tests {
         assert!(Pattern::parse("(a|b)").is_none());
         assert!(Pattern::parse("a$b").is_none());
         assert!(Pattern::parse("").is_none());
+    }
+
+    #[test]
+    fn parses_render_device() {
+        let doc: KdlDocument = r#"
+            misc { render-device "pci:0000:01:00.0" }
+        "#
+        .parse()
+        .unwrap();
+        let mut c = Config::default();
+        c.apply(&doc, &mut Vec::new());
+        assert_eq!(c.misc.render_device.as_deref(), Some("pci:0000:01:00.0"));
+
+        // "auto" is the explicit spelling of the default.
+        let doc: KdlDocument = r#"misc { render-device "auto" }"#.parse().unwrap();
+        let mut c = Config::default();
+        c.misc.render_device = Some("/dev/dri/card9".into());
+        c.apply(&doc, &mut Vec::new());
+        assert_eq!(c.misc.render_device, None);
     }
 
     #[test]

@@ -2292,9 +2292,10 @@ is testable without a GPU (F-07 §3).
 
 ## 12. Open Decisions
 
-1. Whether `abyss` should refuse to start if the config names a
+1. ~~Whether `abyss` should refuse to start if the config names a
    `render_device` that does not exist, or fall back to auto-selection with
-   a warning. Proposed: refuse — silent fallback hides typos.
+   a warning.~~ **Resolved: refuse** (ADR 0033) — silent fallback hides
+   typos. Absent or `"auto"` still auto-selects.
 2. Snapshot location: `$XDG_RUNTIME_DIR` (lost on reboot) vs
    `$XDG_STATE_HOME` (survives). Proposed: state dir for layout, runtime
    dir for volatile focus state.

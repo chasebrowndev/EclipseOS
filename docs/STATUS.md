@@ -143,8 +143,8 @@ macros anywhere in the workspace.
    interpolation (needs the frame clock, plus COMP-08's rule that agents see
    target geometry, never the interpolated value). All are off by default, so
    the default frame path is the single `space_render_elements` call it was
-   before — damage and direct scanout unchanged. `xwayland` and
-   `render-device` are still parsed and ignored. *Unblocked by:* the rest of 9b.
+   before — damage and direct scanout unchanged. `xwayland` is still parsed and
+   ignored. *Unblocked by:* the rest of 9b.
 7. **`windowrule` matchers are a regex subset, not regex** (COMP-05 §4 says
    regex). `shell/rules.rs` matches at map time and re-evaluates on title
    change; `float`, `tile`, `workspace N`, `opacity F`, `sensitivity
@@ -233,8 +233,9 @@ In rough order:
 5. **Effects (9b)** — optional by COMP-16 Open Decision 1, but "no rounding, no
    animation, no shadows" is the visible gap against the current Hyprland
    setup.
-6. **`input` config block** — pointer accel, keyboard repeat and layout are not
-   configurable today; they use defaults.
+6. **Full COMP-05 §4 matchers** — `size`, `position`, `fullscreen`,
+   `app-trust`, `seat-compat`, `idle-inhibit`, `cgroup` and
+   `launching-principal`, plus real regex patterns (gap 7).
 
 ---
 
