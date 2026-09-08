@@ -4749,6 +4749,9 @@ task while the human works in parallel.
 
 # COMP-16 — Milestones & Sequencing (Draft v0.1)
 
+> Current progress against these milestones lives in `docs/STATUS.md`. The
+> tables below stay status-free: they are the contract, not the tracker.
+
 Sequential. Each milestone has an exit gate; do not start the next until it
 is met. Estimates deliberately omitted — they would be invented.
 

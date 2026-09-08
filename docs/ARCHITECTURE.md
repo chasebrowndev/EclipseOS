@@ -18,6 +18,7 @@ docs/                 specs and this document
 decisions/            ADRs (F-08 format)
 crates/
   abyss/             compositor                       [TCB]
+  eclipse-ctl/        human CLI over the COMP-13 IPC socket
   policyd/            policy + audit daemon            [TCB]   (not yet)
   policy-eval/        shared evaluator, linked by both [TCB]   (not yet)
   agentd/             agent gateway                            (not yet)
@@ -32,7 +33,8 @@ fuzz/                 cargo-fuzz targets
 bench/                COMP-14 benchmarks
 ```
 
-Only `crates/abyss` exists today. TCB crates get a line-by-line owner review
+Only `crates/abyss` and `crates/eclipse-ctl` exist today (see
+`docs/STATUS.md`). TCB crates get a line-by-line owner review
 on every change (F-07 §4).
 
 ## Licensing split (F-05 §3, ADR 0005)
@@ -68,7 +70,7 @@ SPDX header naming which.
 | `trusted_ui/` | COMP-10 | Compositor-drawn consent prompts, agent-activity indicator, emergency panel. Never a client (ADR 0009). |
 | `policy/` | COMP-11 | The compiled enforcement table and `check()`. Fail-closed; no state mutation before `Allow`; `defer` may only tighten. |
 | `audit/` | COMP-12 | Audit and provenance event emission. Never records human input by content. |
-| `ipc/` | COMP-13 | Human JSON-RPC socket — the bar, the launcher, `abyssctl`. Unprivileged, human-principal only. |
+| `ipc/` | COMP-13 | Human JSON-RPC socket — the bar, the launcher, `eclipse-ctl`. Unprivileged, human-principal only. |
 | `config/` | COMP-13 | KDL parse, validate, hot-reload (ADR 0016). A bad config never takes down a live session. |
 | `xwayland/` | COMP-07 | X11 client support, window identity mapping, scaling. |
 | `state.rs` | COMP-01 | `AbyssState` itself: the single owner of everything above. |
