@@ -2498,7 +2498,7 @@ All optional, all off by default until 9b, all designed for now:
 |---|---|---|
 | Rounded corners | Fragment-shader mask in the surface pass | Negligible; disables direct scanout for that surface |
 | Borders | Quad pass around surface geometry | Negligible |
-| Shadows | Pre-blurred nine-slice texture | Cheap; expands damage |
+| Shadows | Signed-distance-field pixel shader over the window's grown rect | Cheap; expands damage |
 | Dim inactive | Colour multiply in the surface pass | Negligible |
 | Blur | Dual-Kawase downsample/upsample, N passes on the region behind translucent surfaces | Expensive; expands damage by kernel radius; disables direct scanout; skipped entirely when the blurred surface is opaque |
 | Animations | Interpolated geometry driven by the frame clock | Forces repaint while running; must not extend past the animation |
@@ -2508,6 +2508,14 @@ geometry, not each surface's own, so a window with subsurfaces (or client-side
 decorations) rounds as one shape rather than rounding each piece. An output
 whose transform rotates the framebuffer keeps square corners rather than
 masking in the wrong place.
+
+The shadow is one pixel-shader element per window covering the window rect
+grown by `border-size + shadow.range` on every side, with the falloff computed
+from a rounded-rect signed distance field so it follows the corner radius
+exactly. A nine-slice texture would need an upload per (radius, range) pair and
+would not track `rounding`; the SDF costs one cheap element and no texture
+memory. The shader discards everything inside the window rect, so a translucent
+window is never darkened by its own shadow.
 
 Animations are geometry-only in v1. **They must not affect what an agent
 sees**: `scene`/`get_tree` geometry reports the *target* geometry, not the

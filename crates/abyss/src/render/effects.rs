@@ -13,10 +13,13 @@
 
 use smithay::backend::renderer::{
     element::{surface::WaylandSurfaceRenderElement, Element, Id, Kind, RenderElement, UnderlyingStorage},
-    gles::{GlesError, GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformName, UniformType},
+    gles::{
+        element::PixelShaderElement, GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram,
+        Uniform, UniformName, UniformType,
+    },
     utils::{CommitCounter, DamageSet, OpaqueRegions},
 };
-use smithay::utils::{Buffer as BufferCoords, Physical, Point, Rectangle, Scale, Transform};
+use smithay::utils::{Buffer as BufferCoords, Logical, Physical, Point, Rectangle, Scale, Transform};
 
 /// Mirrors smithay's built-in `texture.frag`, with a rounded-box mask applied
 /// to the final colour. `win_rect` is the window's rectangle in framebuffer
@@ -199,3 +202,75 @@ impl RenderElement<GlesRenderer> for RoundedElement {
         None
     }
 }
+
+const SHADOW_SRC: &str = r#"
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+
+uniform vec2 size;
+uniform float alpha;
+varying vec2 v_coords;
+
+#if defined(DEBUG_FLAGS)
+uniform float tint;
+#endif
+
+uniform vec4 shadow_color;
+uniform float blur;
+uniform float radius;
+
+void main() {
+    // The element is the window rect grown by `blur` on every side, so the
+    // window itself is the inner rectangle inset by that much.
+    vec2 p = v_coords * size - size * 0.5;
+    vec2 half_inner = max(size * 0.5 - vec2(blur), vec2(0.0));
+    float r = min(radius, min(half_inner.x, half_inner.y));
+    vec2 q = abs(p) - half_inner + r;
+    float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+
+    // `step` drops everything under the window: the shadow is a ring, so a
+    // translucent window is not darkened by its own shadow.
+    float a = (1.0 - smoothstep(0.0, blur, d)) * step(0.0, d);
+    gl_FragColor = shadow_color * (a * alpha);
+}
+"#;
+
+pub fn compile_shadow(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, GlesError> {
+    renderer.compile_custom_pixel_shader(
+        SHADOW_SRC,
+        &[
+            UniformName::new("shadow_color", UniformType::_4f),
+            UniformName::new("blur", UniformType::_1f),
+            UniformName::new("radius", UniformType::_1f),
+        ],
+    )
+}
+
+/// One drop-shadow element for `area` (the window rect grown by `range`).
+pub fn shadow_element(
+    program: GlesPixelProgram,
+    area: Rectangle<i32, Logical>,
+    range: f32,
+    radius: f32,
+) -> PixelShaderElement {
+    PixelShaderElement::new(
+        program,
+        area,
+        None,
+        1.0,
+        vec![
+            // Premultiplied, so the colour carries its own alpha.
+            Uniform::new("shadow_color", [0.0, 0.0, 0.0, SHADOW_ALPHA]),
+            Uniform::new("blur", range),
+            Uniform::new("radius", radius),
+        ],
+        Kind::Unspecified,
+    )
+}
+
+/// Opacity of the shadow directly against the window edge. Not configurable:
+/// `shadow { range }` is the only knob COMP-13 §1.1 gives.
+const SHADOW_ALPHA: f32 = 0.55;

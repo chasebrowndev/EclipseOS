@@ -45,6 +45,7 @@ smithay::backend::renderer::element::render_elements! {
     Solid=SolidColorRenderElement,
     Texture=smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>,
     Rounded=effects::RoundedElement,
+    Shader=smithay::backend::renderer::gles::element::PixelShaderElement,
 }
 
 /// Four solid quads (top, bottom, left, right) per window.
@@ -58,6 +59,8 @@ pub struct BorderStore {
     dims: HashMap<Window, SolidColorBuffer>,
     /// Rounded-corner texture program, compiled on the first frame that rounds.
     rounded: Option<smithay::backend::renderer::gles::GlesTexProgram>,
+    /// Drop-shadow pixel program, compiled on the first frame that shadows.
+    shadow: Option<smithay::backend::renderer::gles::GlesPixelProgram>,
 }
 
 impl BorderStore {
@@ -146,6 +149,7 @@ pub fn collect_elements(
     }
 
     elements.extend(border_elements(space, borders, output_loc, scale, config, focus));
+    elements.extend(shadow_elements(renderer, space, borders, output_loc, config));
 
     layers(&mut elements, [Layer::Bottom, Layer::Background], renderer);
 
@@ -260,6 +264,57 @@ fn window_elements(
             }
             _ => out.extend(surfaces.into_iter().map(AbyssRenderElement::Surface)),
         }
+    }
+    out
+}
+
+/// One drop shadow behind each window, below the borders (COMP-02 §9).
+fn shadow_elements(
+    renderer: &mut GlesRenderer,
+    space: &Space<Window>,
+    store: &mut BorderStore,
+    output_loc: Point<i32, Logical>,
+    config: &Config,
+) -> Vec<AbyssRenderElement> {
+    let shadow = &config.decoration.shadow;
+    if !shadow.enabled || shadow.range <= 0 {
+        return Vec::new();
+    }
+    if store.shadow.is_none() {
+        match effects::compile_shadow(renderer) {
+            Ok(program) => store.shadow = Some(program),
+            Err(err) => {
+                tracing::warn!(?err, "compiling the shadow shader; shadows disabled");
+                return Vec::new();
+            }
+        }
+    }
+    let Some(program) = store.shadow.clone() else {
+        return Vec::new();
+    };
+
+    // The shadow sits outside the border, so it grows from the bordered rect.
+    let inset = config.general.border_size;
+    let range = shadow.range;
+    let mut out = Vec::new();
+    for window in space.elements() {
+        let Some(geo) = space.element_geometry(window) else {
+            continue;
+        };
+        let area = Rectangle::new(
+            (
+                geo.loc.x - output_loc.x - inset - range,
+                geo.loc.y - output_loc.y - inset - range,
+            )
+                .into(),
+            (geo.size.w + 2 * (inset + range), geo.size.h + 2 * (inset + range)).into(),
+        );
+        out.push(AbyssRenderElement::Shader(effects::shadow_element(
+            program.clone(),
+            area,
+            range as f32,
+            config.decoration.rounding as f32,
+        )));
     }
     out
 }
