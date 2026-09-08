@@ -320,9 +320,18 @@ fixed by editing either side.
    it is verified without a second GPU. `abyss --list-gpus` prints the live
    ranking without taking over the display; on this machine it reports
    `1. /dev/dri/card1 [0000:01:00.0 discrete vram=256MiB connectors=4
-   render=yes boot_vga=true]`. **Still unverified on real multi-GPU
+   render=yes boot_vga=true]`.
+
+   The ordering was also checked against a real second DRM device: loading the
+   `vkms` module produced `/dev/dri/card0`, which sorts *first* by path and so
+   would beat the 4060 Ti under any enumeration-order policy. The ranking put
+   it second, on two independent criteria (no render node, no PCI parent).
+   `vkms` cannot be unloaded while a session is running — logind and the
+   running compositor both hold the card open — so it stays resident until the
+   next logout; nothing autoloads it. **Still unverified on real multi-GPU
    hardware** — that is COMP-01 §11's test plan and needs a machine with a
-   second card.
+   second card, where the discrete-vs-integrated and VRAM comparisons actually
+   fire.
 3. **COMP-06 §1 protocol list vs. the implemented modules.** *Closed.* The
    fifteen missing protocols are implemented (milestone 9a). COMP-06 §1 also
    gained a note that
