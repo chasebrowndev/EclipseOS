@@ -464,6 +464,26 @@ pub struct ConfigError {
     pub line: usize,
     pub col: usize,
     pub message: String,
+    /// The offending source line, verbatim, and how many columns of it the
+    /// token covers — so [`Display`] can point at it the way rustc does.
+    pub snippet: Option<String>,
+    pub span_len: usize,
+}
+
+/// Locate `offset` in `text`: 1-based line and column, plus the whole line it
+/// falls on. `len` is clamped to what is left of that line so the caret run
+/// never spills past the snippet.
+fn locate(text: &str, offset: usize, len: usize) -> (usize, usize, String, usize) {
+    let off = offset.min(text.len());
+    let start = text[..off].rfind('\n').map_or(0, |i| i + 1);
+    let end = text[off..].find('\n').map_or(text.len(), |i| off + i);
+    let line = text[..off].matches('\n').count() + 1;
+    (
+        line,
+        off - start + 1,
+        text[start..end].to_string(),
+        len.clamp(1, end - off),
+    )
 }
 
 impl std::fmt::Display for ConfigError {
@@ -475,7 +495,23 @@ impl std::fmt::Display for ConfigError {
             self.line,
             self.col,
             self.message
-        )
+        )?;
+        // Show the line and underline the token, so the position is actionable
+        // without opening the file (COMP-13 §1.2 "the offending token").
+        if let Some(src) = &self.snippet {
+            let n = self.line.to_string();
+            let pad = " ".repeat(n.len());
+            write!(f, "\n{pad} |\n{n} | {src}\n{pad} | ")?;
+            for (i, c) in src.char_indices() {
+                if i + 1 >= self.col {
+                    break;
+                }
+                // Keep tabs as tabs so the caret lines up in the user's terminal.
+                f.write_str(if c == '\t' { "\t" } else { " " })?;
+            }
+            write!(f, "{}", "^".repeat(self.span_len.max(1)))?;
+        }
+        Ok(())
     }
 }
 
@@ -713,6 +749,8 @@ impl Config {
                             line: 0,
                             col: 0,
                             message: format!("config unreadable: {e}"),
+                            snippet: None,
+                            span_len: 0,
                         });
                     }
                     continue;
@@ -731,15 +769,18 @@ impl Config {
                                 m.push_str(help);
                                 m.push(')');
                             }
-                            (d.span.offset().min(text.len()), m)
+                            ((d.span.offset(), d.span.len()), m)
                         }
-                        None => (0, format!("{e}")),
+                        None => ((0, 0), format!("{e}")),
                     };
+                    let (line, col, snippet, span_len) = locate(&text, off.0, off.1);
                     cfg.errors.push(ConfigError {
                         file: f.clone(),
-                        line: text[..off].matches('\n').count() + 1,
-                        col: off - text[..off].rfind('\n').map_or(0, |i| i + 1) + 1,
+                        line,
+                        col,
                         message,
+                        snippet: Some(snippet),
+                        span_len,
                     });
                     continue;
                 }
@@ -771,14 +812,14 @@ impl Config {
     /// Also logged, so the journal shows the same text the caller gets.
     fn reject(&mut self, node: &KdlNode, message: impl Into<String>) {
         let message = message.into();
-        let (file, line, col) = match &self.cur {
+        // Underline the node name only; the node's own span runs to the end of
+        // its children, which would drown the line in carets.
+        let (file, line, col, snippet, span_len) = match &self.cur {
             Some((f, text)) => {
-                let off = node.span().offset().min(text.len());
-                let line = text[..off].matches('\n').count() + 1;
-                let col = off - text[..off].rfind('\n').map_or(0, |i| i + 1) + 1;
-                (f.clone(), line, col)
+                let (line, col, snippet, len) = locate(text, node.span().offset(), node.name().value().len());
+                (f.clone(), line, col, Some(snippet), len)
             }
-            None => (PathBuf::new(), 0, 0),
+            None => (PathBuf::new(), 0, 0, None, 0),
         };
         tracing::error!(path = %file.display(), line, col, %message, "invalid config");
         self.errors.push(ConfigError {
@@ -786,6 +827,8 @@ impl Config {
             line,
             col,
             message,
+            snippet,
+            span_len,
         });
     }
 
@@ -1616,6 +1659,28 @@ mod tests {
         assert_eq!((e.line, e.col), (3, 5));
         assert!(e.message.contains("gaps-inn"), "{}", e.message);
         assert!(e.to_string().starts_with("/etc/eclipse/abyss.kdl:3:5: "));
+        // The caret run underlines the offending token, on the right line.
+        assert_eq!(
+            e.to_string().lines().skip(1).collect::<Vec<_>>(),
+            ["  |", "3 |     gaps-inn 4", "  |     ^^^^^^^^"]
+        );
+    }
+
+    /// A tab-indented line keeps its tabs in the caret gutter so the run still
+    /// lands under the token whatever tab width the terminal uses.
+    #[test]
+    fn the_caret_gutter_preserves_tabs() {
+        let text = "general {\n\tgaps-inn 4\n}\n";
+        let doc: KdlDocument = text.parse().unwrap();
+        let mut cfg = Config {
+            cur: Some((PathBuf::from("a.kdl"), text.to_owned())),
+            ..Config::default()
+        };
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(
+            cfg.errors[0].to_string().lines().last().unwrap(),
+            "  | \t^^^^^^^^"
+        );
     }
 
     /// A valid config records no refusals, so hot-reload applies it.

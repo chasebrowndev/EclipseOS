@@ -4,6 +4,8 @@
 
 #[cfg(feature = "drm")]
 pub mod drm;
+#[cfg(feature = "drm")]
+pub mod gpu;
 #[cfg(feature = "winit")]
 pub mod winit;
 

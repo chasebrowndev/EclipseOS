@@ -79,10 +79,21 @@ fn parse_args() -> Result<Args> {
                 Some(v) => render_device = Some(v),
                 None => anyhow::bail!("--render-device requires a path or pci: address"),
             },
+            #[cfg(feature = "drm")]
+            "--list-gpus" => {
+                // COMP-01 §4 is only observable from a TTY otherwise; this
+                // prints the same ranking the compositor would use, so the
+                // pick can be checked without taking over the display.
+                let seat = std::env::var("XDG_SEAT").unwrap_or_else(|_| "seat0".to_string());
+                for (i, g) in backend::gpu::probe_seat(&seat)?.iter().enumerate() {
+                    println!("{}. {}", i + 1, g.describe());
+                }
+                std::process::exit(0);
+            }
             "--stats" => stats = true,
             "--session" => session = true,
             "-h" | "--help" => {
-                println!("usage: abyss [--backend drm|winit] [--config <path.kdl>] [--render-device <path|pci:DDDD:BB:DD.F>] [--stats] [--session]");
+                println!("usage: abyss [--backend drm|winit] [--config <path.kdl>] [--render-device <path|pci:DDDD:BB:DD.F>] [--list-gpus] [--stats] [--session]");
                 std::process::exit(0);
             }
             other => anyhow::bail!("unknown argument '{other}'"),

@@ -30,7 +30,7 @@ use smithay::{
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{gles::GlesRenderer, ImportDma},
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
-        udev::{primary_gpu, UdevBackend, UdevEvent},
+        udev::{UdevBackend, UdevEvent},
     },
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
     reexports::{
@@ -54,6 +54,7 @@ use smithay::{
 };
 
 use crate::{
+    backend::gpu,
     config::Config,
     outputs::OutputKind,
     render::{
@@ -467,16 +468,15 @@ fn sync_fallback(state: &mut AbyssState) {
 
 /// COMP-01 §4: resolve the render device to use.
 ///
-/// `None` means "auto" — smithay's own primary-GPU query. An explicit request is
+/// `None` means "auto" — every DRM device on the seat is ranked by
+/// [`crate::backend::gpu`] and the best one wins. An explicit request is
 /// either a device path or a `pci:DDDD:BB:DD.F` address resolved through sysfs.
 /// An explicit request that does not resolve is a hard error rather than a
 /// silent fallback (ADR 0033): a typo that quietly lands on the wrong GPU is
 /// worse than a refusal to start.
 fn resolve_render_device(requested: Option<&str>, seat_name: &str) -> Result<PathBuf> {
     let Some(req) = requested else {
-        return primary_gpu(seat_name)
-            .context("querying primary GPU")?
-            .ok_or_else(|| anyhow!("no GPU found on seat '{seat_name}'"));
+        return auto_select_render_device(seat_name);
     };
     let path = match req.strip_prefix("pci:") {
         Some(addr) => {
@@ -503,6 +503,48 @@ fn resolve_render_device(requested: Option<&str>, seat_name: &str) -> Result<Pat
         );
     }
     Ok(path)
+}
+
+/// The COMP-01 §4 automatic path: rank every DRM device on the seat and take
+/// the best. The whole ranked list is logged with the reason, as the spec
+/// requires — with one render device driving everything, a wrong pick is a
+/// black screen, and the log is the only way to see why it happened.
+fn auto_select_render_device(seat_name: &str) -> Result<PathBuf> {
+    let ranked = gpu::probe_seat(seat_name).context("enumerating GPUs")?;
+    let best = ranked
+        .first()
+        .ok_or_else(|| anyhow!("no GPU found on seat '{seat_name}'"))?;
+    for (i, g) in ranked.iter().enumerate() {
+        tracing::info!(rank = i + 1, "GPU candidate: {}", g.describe());
+    }
+    if best.render.is_none() {
+        anyhow::bail!(
+            "best GPU {} exposes no render node; abyss needs one to composite",
+            best.card.display()
+        );
+    }
+    // Multi-GPU is out of scope for v1: outputs on a device we did not select
+    // are never lit, so a machine whose connectors all hang off another GPU
+    // (a hybrid dGPU laptop) must refuse to start rather than come up blind.
+    if best.connectors == 0 {
+        if let Some(other) = ranked.iter().find(|g| g.connectors > 0) {
+            anyhow::bail!(
+                "selected {} has no connectors; the displays are on {} \
+                 (multi-GPU and hybrid graphics are not supported in v1 — \
+                 set render_device to pin one GPU that has both)",
+                best.card.display(),
+                other.card.display(),
+            );
+        }
+        anyhow::bail!("no GPU on seat '{seat_name}' has any connector");
+    }
+    tracing::info!(
+        path = %best.card.display(),
+        driver = %best.driver,
+        "selected render device: best of {} by class/VRAM/PCI-address",
+        ranked.len()
+    );
+    Ok(best.card.clone())
 }
 
 pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
@@ -535,7 +577,6 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     // --- GPU discovery -----------------------------------------------------
     let udev = UdevBackend::new(&seat_name).context("udev backend")?;
     let gpu_path: PathBuf = resolve_render_device(requested_device.as_deref(), &seat_name)?;
-    tracing::info!(path = %gpu_path.display(), "primary GPU");
 
     let mut session_for_open = session.clone();
     let fd = session_for_open

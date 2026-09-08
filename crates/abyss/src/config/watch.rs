@@ -168,6 +168,8 @@ pub fn reload_now(state: &mut AbyssState) {
                     "line": e.line,
                     "col": e.col,
                     "message": e.message,
+                    "snippet": e.snippet,
+                    "spanLen": e.span_len,
                 })
             })
             .collect();
