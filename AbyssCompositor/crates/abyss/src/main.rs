@@ -5,17 +5,7 @@
 //! nested (winit) session needs: logging, the Wayland display and core
 //! globals, the public socket, one seat, and a render loop.
 
-mod backend;
-mod config;
-mod input;
-mod ipc;
-mod outputs;
-mod protocols;
-mod render;
-mod session;
-mod shell;
-mod state;
-mod xwayland;
+use abyss::{backend, config};
 
 use anyhow::Result;
 use tracing_subscriber::{prelude::*, EnvFilter};

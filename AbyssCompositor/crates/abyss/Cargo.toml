@@ -7,6 +7,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+# lib + bin: the conformance harness (COMP-15 §1) links the compositor and
+# drives it in-process, which a bin-only crate cannot support.
+[lib]
+name = "abyss"
+path = "src/lib.rs"
+
 [[bin]]
 name = "abyss"
 path = "src/main.rs"
