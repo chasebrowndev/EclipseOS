@@ -216,6 +216,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
 pub fn place_new_window(state: &mut AbyssState, window: Window) {
     // Classify before the window is ever composited (COMP-02 §7). Raise-only.
     crate::render::capture::mark_sensitive(state, &window);
+    crate::protocols::standard::foreign_toplevel::window_mapped(state, &window);
     let Some(id) = state.outputs.focused().map(|e| e.id) else {
         return;
     };
@@ -242,6 +243,32 @@ pub fn place_new_window(state: &mut AbyssState, window: Window) {
     );
 }
 
+/// Resolve a surface to the window that owns it, if any.
+pub fn window_for_surface(state: &AbyssState, surface: &WlSurface) -> Option<Window> {
+    state
+        .space
+        .elements()
+        .find(|w| window_surface(w).as_ref() == Some(surface))
+        .cloned()
+}
+
+/// COMP-05 §5: the fallback when a focus request is refused. The window stays
+/// where it is; the human is told it wants attention and decides.
+pub fn mark_urgent(state: &mut AbyssState, window: &Window) {
+    if state.focus.as_ref() == Some(window) {
+        return;
+    }
+    if !state.urgent.iter().any(|w| w == window) {
+        state.urgent.push(window.clone());
+    }
+    let handle = state.ipc.handle_for(window);
+    crate::ipc::emit(
+        state,
+        "window",
+        serde_json::json!({"change": "urgent", "handle": handle}),
+    );
+}
+
 pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     for entry in state.outputs.iter_mut() {
         for ws in entry.workspaces.iter_mut() {
@@ -250,6 +277,8 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     }
     state.space.unmap_elem(window);
     state.borders.remove(window);
+    state.urgent.retain(|w| w != window);
+    crate::protocols::standard::foreign_toplevel::window_closed(window);
     let handle = state.ipc.handle_for(window);
     crate::ipc::emit(
         state,
@@ -282,6 +311,7 @@ pub fn focus_window(state: &mut AbyssState, window: &Window) {
         }
     }
     state.focus = Some(window.clone());
+    state.urgent.retain(|w| w != window);
     if let Some(id) = output_of_window(state, window) {
         state.outputs.set_focused(id);
     }
@@ -370,6 +400,9 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
         .find(|w| window_surface(w).as_ref() == Some(surface))
         .cloned()
     {
+        // Title and app_id can change at any commit; the foreign-toplevel list
+        // has no other notification path for them.
+        crate::protocols::standard::foreign_toplevel::window_updated(&window);
         if window.toplevel().is_none() {
             // X11: no configure handshake to complete on this side.
             return;

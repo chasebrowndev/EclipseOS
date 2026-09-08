@@ -994,6 +994,51 @@ pub fn set_vrr(state: &mut AbyssState, id: u64, on: bool) -> bool {
     true
 }
 
+/// The size of one gamma ramp channel for an output, or `None` if the output is
+/// unknown or its CRTC has no programmable ramp.
+pub fn vrr(state: &AbyssState, id: u64) -> bool {
+    let Some(drm) = state.drm.as_ref() else {
+        return false;
+    };
+    drm.outputs
+        .iter()
+        .find(|o| o.id == id)
+        .is_some_and(|o| o.vrr_config && o.vrr_capable)
+}
+
+pub fn gamma_size(state: &AbyssState, id: u64) -> Option<u32> {
+    let drm = state.drm.as_ref()?;
+    let output = drm.outputs.iter().find(|o| o.id == id)?;
+    let info = drm.drm.get_crtc(output.crtc).ok()?;
+    let len = info.gamma_length();
+    (len > 0).then_some(len)
+}
+
+/// Load a gamma ramp onto one output's CRTC (COMP-03 §7). The three slices must
+/// each be [`gamma_size`] long. `false` means the request was refused: unknown
+/// output, wrong length, or a driver that rejected the ramp.
+pub fn set_gamma(state: &mut AbyssState, id: u64, r: &[u16], g: &[u16], b: &[u16]) -> bool {
+    let Some(size) = gamma_size(state, id) else {
+        return false;
+    };
+    if r.len() != size as usize || g.len() != size as usize || b.len() != size as usize {
+        return false;
+    }
+    let Some(drm) = state.drm.as_ref() else {
+        return false;
+    };
+    let Some(output) = drm.outputs.iter().find(|o| o.id == id) else {
+        return false;
+    };
+    match drm.drm.set_gamma(output.crtc, r, g, b) {
+        Ok(()) => true,
+        Err(err) => {
+            tracing::warn!(?err, id, "setting gamma ramp");
+            false
+        }
+    }
+}
+
 /// DPMS for one output (COMP-03 §7): clear the CRTC on the way down, and let
 /// the normal render path bring it back on the way up.
 pub fn set_power(state: &mut AbyssState, id: u64, on: bool) {

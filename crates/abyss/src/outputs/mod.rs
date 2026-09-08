@@ -329,6 +329,71 @@ pub fn transform_name(t: Transform) -> &'static str {
     }
 }
 
+/// One validated runtime change to a single output (COMP-03 §4). Every field is
+/// already known good: parsing and mode lookup happen in the caller, so the
+/// apply path cannot fail halfway and leave a half-configured output.
+#[derive(Debug, Default, Clone)]
+pub struct OutputChange {
+    pub mode: Option<Mode>,
+    pub scale: Option<Scale>,
+    pub transform: Option<Transform>,
+    pub position: Option<(i32, i32)>,
+    pub enabled: Option<bool>,
+    pub vrr: Option<bool>,
+}
+
+/// The one place output geometry changes at runtime, shared by the human IPC
+/// (COMP-13 §2.1) and `wlr-output-management` (COMP-06 §1) so both go through
+/// the same refusals. `Ok(Some(false))` means VRR was asked for and the
+/// connector does not support it; `Err` means nothing was changed at all.
+pub fn apply_change(
+    state: &mut crate::state::AbyssState,
+    id: u64,
+    change: &OutputChange,
+) -> Result<Option<bool>, &'static str> {
+    let Some(entry) = state.outputs.get(id) else {
+        return Err("no such output");
+    };
+    let output = entry.output.clone();
+    // The refusal (COMP-03 §4) is checked before anything is applied.
+    if change.enabled == Some(false) && !state.outputs.iter().any(|e| e.enabled && e.id != id) {
+        return Err("refusing to disable the only enabled output");
+    }
+
+    if change.mode.is_some() || change.scale.is_some() || change.transform.is_some() {
+        output.change_current_state(change.mode, change.transform, change.scale, None);
+        if let Some(m) = change.mode {
+            output.set_preferred(m);
+        }
+    }
+    if let Some((x, y)) = change.position {
+        state.space.map_output(&output, (x, y));
+        // Record the new geometry before relayout reads it back as a pin.
+        let space = &state.space;
+        state.outputs.save(|o| space.output_geometry(o).map(|g| g.loc));
+    }
+    if let Some(want) = change.enabled {
+        power::set_enabled(state, id, want);
+    }
+    let mut vrr_applied = None;
+    if let Some(want) = change.vrr {
+        let ok = crate::backend::set_output_vrr(state, id, want);
+        if !ok && want {
+            return Err("this output does not support adaptive sync");
+        }
+        vrr_applied = Some(ok);
+    }
+    relayout(state);
+    crate::backend::damage_all(state);
+    crate::protocols::standard::output_management::refresh(state);
+    crate::ipc::emit(
+        state,
+        "output",
+        serde_json::json!({"change": "changed", "id": id}),
+    );
+    Ok(vrr_applied)
+}
+
 pub fn parse_transform(s: &str) -> Option<Transform> {
     Some(match s {
         "normal" | "0" => Transform::Normal,
@@ -367,6 +432,7 @@ pub fn register(
         .add(identity.clone(), connector.clone(), output.clone(), kind, global);
     apply_settings(state, id);
     relayout(state);
+    crate::protocols::standard::output_management::refresh(state);
     crate::ipc::emit(
         state,
         "output",
@@ -510,6 +576,7 @@ pub fn unregister(state: &mut crate::state::AbyssState, id: u64) {
         state.focus = None;
     }
     relayout(state);
+    crate::protocols::standard::output_management::refresh(state);
     crate::ipc::emit(
         state,
         "output",

@@ -15,7 +15,7 @@
 //! `get_tree`, no capture, no grant manipulation (COMP-13 §2).
 
 pub mod gate;
-mod methods;
+pub(crate) mod methods;
 
 use std::{
     collections::VecDeque,

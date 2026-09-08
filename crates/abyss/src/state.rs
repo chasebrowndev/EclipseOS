@@ -15,23 +15,36 @@ use smithay::{
     },
     utils::{Clock, Logical, Monotonic, Point},
     wayland::{
+        alpha_modifier::AlphaModifierState,
         compositor::{CompositorClientState, CompositorState},
+        content_type::ContentTypeState,
+        cursor_shape::CursorShapeManagerState,
+        foreign_toplevel_list::ForeignToplevelListState,
         fractional_scale::FractionalScaleManagerState,
         idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
         input_method::{InputMethodManagerState, PopupSurface},
         output::OutputManagerState,
+        pointer_constraints::PointerConstraintsState,
+        pointer_gestures::PointerGesturesState,
         presentation::PresentationState,
+        relative_pointer::RelativePointerManagerState,
+        security_context::SecurityContextState,
         selection::{
             data_device::DataDeviceState, primary_selection::PrimarySelectionState,
             wlr_data_control::DataControlState,
         },
         session_lock::SessionLockManagerState,
+        shell::xdg::decoration::XdgDecorationState,
         shell::{wlr_layer::WlrLayerShellState, xdg::XdgShellState},
         shm::ShmState,
+        single_pixel_buffer::SinglePixelBufferState,
         socket::ListeningSocketSource,
+        tablet_manager::TabletManagerState,
         text_input::TextInputManagerState,
         viewporter::ViewporterState,
+        xdg_activation::XdgActivationState,
+        xdg_foreign::XdgForeignState,
         xwayland_shell::XWaylandShellState,
     },
 };
@@ -69,6 +82,33 @@ pub struct AbyssState {
     pub viewporter_state: ViewporterState,
     #[allow(dead_code)] // holds the wp_presentation global alive
     pub presentation_state: PresentationState,
+    #[allow(dead_code)] // holds the wp_single_pixel_buffer_manager_v1 global alive
+    pub single_pixel_buffer_state: SinglePixelBufferState,
+    #[allow(dead_code)] // holds the wp_content_type_manager_v1 global alive
+    pub content_type_state: ContentTypeState,
+    #[allow(dead_code)] // holds the wp_alpha_modifier_v1 global alive
+    pub alpha_modifier_state: AlphaModifierState,
+    #[allow(dead_code)] // holds the zwp_relative_pointer_manager_v1 global alive
+    pub relative_pointer_state: RelativePointerManagerState,
+    #[allow(dead_code)] // holds the zwp_pointer_gestures_v1 global alive
+    pub pointer_gestures_state: PointerGesturesState,
+    #[allow(dead_code)] // holds the wp_cursor_shape_manager_v1 global alive
+    pub cursor_shape_state: CursorShapeManagerState,
+    #[allow(dead_code)] // holds the zwp_tablet_manager_v2 global alive
+    pub tablet_state: TabletManagerState,
+    #[allow(dead_code)] // holds the zwp_pointer_constraints_v1 global alive
+    pub pointer_constraints_state: PointerConstraintsState,
+    #[allow(dead_code)] // holds the zxdg_decoration_manager_v1 global alive
+    pub xdg_decoration_state: XdgDecorationState,
+    #[allow(dead_code)] // holds the wp_security_context_manager_v1 global alive
+    pub security_context_state: SecurityContextState,
+    pub activation_state: XdgActivationState,
+    pub xdg_foreign_state: XdgForeignState,
+    pub foreign_toplevel_list: ForeignToplevelListState,
+    pub gamma_control: crate::protocols::standard::gamma_control::GammaControlState,
+    pub output_management: crate::protocols::standard::output_management::OutputManagementState,
+    /// Windows that asked for focus and were refused (COMP-05 §5).
+    pub urgent: Vec<smithay::desktop::Window>,
 
     /// The human seat (`seat0`). Agent seats arrive in Phase 2.
     pub seat: Seat<Self>,
@@ -224,6 +264,28 @@ impl AbyssState {
         let viewporter_state = ViewporterState::new::<Self>(&dh);
         // CLOCK_MONOTONIC: the clock every backend timestamps frames against.
         let presentation_state = PresentationState::new::<Self>(&dh, libc::CLOCK_MONOTONIC as u32);
+        // Passive globals: no handler, no policy, no gate (COMP-06 §1).
+        let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&dh);
+        let content_type_state = ContentTypeState::new::<Self>(&dh);
+        let alpha_modifier_state = AlphaModifierState::new::<Self>(&dh);
+        let relative_pointer_state = RelativePointerManagerState::new::<Self>(&dh);
+        let pointer_gestures_state = PointerGesturesState::new::<Self>(&dh);
+        let cursor_shape_state = CursorShapeManagerState::new::<Self>(&dh);
+        let tablet_state = TabletManagerState::new::<Self>(&dh);
+        let pointer_constraints_state = PointerConstraintsState::new::<Self>(&dh);
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
+        let activation_state = XdgActivationState::new::<Self>(&dh);
+        let xdg_foreign_state = XdgForeignState::new::<Self>(&dh);
+        let foreign_toplevel_list = ForeignToplevelListState::new::<Self>(&dh);
+        let gamma_control = crate::protocols::standard::gamma_control::GammaControlState::new(&dh);
+        let output_management =
+            crate::protocols::standard::output_management::OutputManagementState::new(&dh);
+        // A sandboxed client may not mint further sandbox identities for itself.
+        let security_context_state = SecurityContextState::new::<Self, _>(&dh, |client| {
+            client
+                .get_data::<ClientState>()
+                .is_none_or(|s| s.security_context.is_none())
+        });
         // Any client may lock the session; a lock only ever removes access.
         let session_lock_state = SessionLockManagerState::new::<Self, _>(&dh, |_| true);
         let idle_notifier = IdleNotifierState::<Self>::new(&dh, loop_handle.clone());
@@ -276,6 +338,22 @@ impl AbyssState {
             fractional_scale_state,
             viewporter_state,
             presentation_state,
+            single_pixel_buffer_state,
+            content_type_state,
+            alpha_modifier_state,
+            relative_pointer_state,
+            pointer_gestures_state,
+            cursor_shape_state,
+            tablet_state,
+            pointer_constraints_state,
+            xdg_decoration_state,
+            security_context_state,
+            activation_state,
+            xdg_foreign_state,
+            foreign_toplevel_list,
+            gamma_control,
+            output_management,
+            urgent: Vec::new(),
             seat_state,
             seat,
             pointer_location: (0.0, 0.0).into(),
@@ -316,6 +394,9 @@ impl AbyssState {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
+    /// Set when the client connected through a `wp_security_context` socket:
+    /// the sandbox engine, app id and instance id it was launched under.
+    pub security_context: Option<smithay::wayland::security_context::SecurityContext>,
 }
 
 impl ClientData for ClientState {

@@ -72,3 +72,38 @@ pub fn set_output_vrr(state: &mut AbyssState, id: u64, on: bool) -> bool {
         false
     }
 }
+
+/// Length of one gamma ramp channel for an output, or `None` where the backend
+/// has no programmable ramp (winit) or the output is unknown.
+pub fn gamma_size(state: &AbyssState, id: u64) -> Option<u32> {
+    #[cfg(feature = "drm")]
+    return drm::gamma_size(state, id);
+    #[cfg(not(feature = "drm"))]
+    {
+        let _ = (state, id);
+        None
+    }
+}
+
+/// Load a gamma ramp onto one output (COMP-03 §7). Each slice must be
+/// [`gamma_size`] long; `false` means nothing was changed.
+pub fn set_gamma(state: &mut AbyssState, id: u64, r: &[u16], g: &[u16], b: &[u16]) -> bool {
+    #[cfg(feature = "drm")]
+    return drm::set_gamma(state, id, r, g, b);
+    #[cfg(not(feature = "drm"))]
+    {
+        let _ = (state, id, r, g, b);
+        false
+    }
+}
+
+/// Whether adaptive sync is currently requested for this output.
+pub fn output_vrr(state: &AbyssState, id: u64) -> bool {
+    #[cfg(feature = "drm")]
+    return drm::vrr(state, id);
+    #[cfg(not(feature = "drm"))]
+    {
+        let _ = (state, id);
+        false
+    }
+}

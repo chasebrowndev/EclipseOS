@@ -101,7 +101,7 @@ fn window_param(state: &AbyssState, params: &Value) -> Result<Window, RpcError> 
 
 /// `app_id` and `title` for a toplevel. Read here and returned to the owner;
 /// never written to the journal (COMP-13 §2, ADR 0028).
-fn identity_of(window: &Window) -> (Option<String>, Option<String>) {
+pub(crate) fn identity_of(window: &Window) -> (Option<String>, Option<String>) {
     let Some(surface) = crate::shell::window_surface(window) else {
         return (None, None);
     };
@@ -533,47 +533,21 @@ fn set_output(state: &mut AbyssState, params: &Value) -> Reply {
         None => None,
         Some(_) => Some(bool_param(params, "enabled")?),
     };
-    // The refusal (COMP-03 §4) is checked before anything is applied, not
-    // discovered halfway through.
-    if enabled == Some(false) && !state.outputs.iter().any(|e| e.enabled && e.id != id) {
-        return Err(RpcError::invalid_params(
-            "refusing to disable the only enabled output",
-        ));
-    }
     let vrr = match obj.get("vrr") {
         None => None,
         Some(_) => Some(bool_param(params, "vrr")?),
     };
 
-    // --- everything validated; mutate from here.
-    if mode.is_some() || scale.is_some() || transform.is_some() {
-        output.change_current_state(mode, transform, scale, None);
-        if let Some(m) = mode {
-            output.set_preferred(m);
-        }
-    }
-    if let Some((x, y)) = position {
-        state.space.map_output(&output, (x, y));
-        // Record the new geometry before relayout reads it back as a pin.
-        let space = &state.space;
-        state.outputs.save(|o| space.output_geometry(o).map(|g| g.loc));
-    }
-    if let Some(want) = enabled {
-        crate::outputs::power::set_enabled(state, id, want);
-    }
-    let mut vrr_applied = None;
-    if let Some(want) = vrr {
-        let ok = crate::backend::set_output_vrr(state, id, want);
-        if !ok && want {
-            return Err(RpcError::invalid_params(
-                "this output does not support adaptive sync",
-            ));
-        }
-        vrr_applied = Some(ok);
-    }
-    crate::outputs::relayout(state);
-    crate::backend::damage_all(state);
-    super::emit(state, "output", json!({"change": "changed", "id": id}));
+    // --- everything validated; hand off to the shared apply path.
+    let change = crate::outputs::OutputChange {
+        mode,
+        scale,
+        transform,
+        position,
+        enabled,
+        vrr,
+    };
+    let vrr_applied = crate::outputs::apply_change(state, id, &change).map_err(RpcError::invalid_params)?;
     Ok(json!({"ok": true, "vrr": vrr_applied}))
 }
 

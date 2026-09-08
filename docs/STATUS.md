@@ -25,8 +25,9 @@ the `Backend` trait in `backend/`: `winit` (nested, the dev path) and `drm`
 
 Phase 1 of COMP-16 is substantially built: milestones 1–9 all have code, seven
 of them are exercised, three carry hardware gates that have never been run.
-Milestone 9a (COMP-06 §1 protocol completeness) is new, has no code, and is the
-largest remaining Phase 1 work item that is not blocked on hardware.
+Milestone 9a (COMP-06 §1 protocol completeness) is done: all fifteen protocols
+are implemented and verified live on the socket. What is left in Phase 1 is
+blocked on hardware or is 9b (effects).
 Phase 2 (milestones 10–18, the agent protocol) has **no code at all** — the
 `trusted_ui/`, `policy/`, `audit/`, `protocols/agent/` and `protocols/semantic/`
 directories named in the root `CLAUDE.md` module map do not exist on disk. The
@@ -52,7 +53,7 @@ or a known, listed gap.
 | 7 | XWayland | **done, with two spec deviations** | `xwayland/mod.rs` (167 lines) + `xwayland_shell.rs`; rootless, one untrusted trust domain (ADR 0026). Gate run nested with X11 clients. Deviations: started **eagerly at compositor start**, not lazily, and without `-noTouchPointerEmulation` / MIT-SHM off — smithay 0.7.0's `XWayland::spawn` exposes no lazy entry point and no flag parameter (verified in the vendored source, `src/xwayland/xserver.rs:112`). Both are blocked upstream, not oversights. |
 | 8 | Screen sharing via xdg-desktop-portal | **partial** | Two capture protocols behind **one shared fail-closed gate**: `zwlr_screencopy_v1` (`screencopy.rs`) and `ext_image_copy_capture_v1` + `ext_image_capture_source_v1` (`image_copy_capture.rs`), ADRs 0027/0029/0030. Measured against `xdg-desktop-portal-wlr` 0.8.3: 60 frames in 1.18 s. Frame-level redaction verified across 860,343 pixels of a redacted surface, all exactly opaque black. Remaining for the gate: an actual video call. Cursor capture is refused (session answered `stopped`/`leave`, `image_copy_capture.rs:333`). |
 | 9 | Human IPC, `eclipse-ctl`, metrics | **done (Phase 1 scope)** | `ipc/` (JSON-RPC 2.0 line-delimited over `$XDG_RUNTIME_DIR/eclipse/abyss.sock`, `SO_PEERCRED` owner-uid gating, ADR 0028), `ipc/gate.rs` authorisation table, `ipc/methods.rs` (17 methods), `crates/eclipse-ctl` (327 lines). 7 of the 24 gate rows are deliberately `implemented: false` — all Phase 2 surface, listed below and asserted by the `phase_two_rows_stay_unimplemented` test. Gate "waybar driven by our IPC" is met in the weaker sense that `eclipse-ctl watch` streams workspace/window/output/focus events; a bar cannot yet enumerate windows it does not own because there is no `ext-foreign-toplevel-list`. |
-| 9a | COMP-06 §1 protocol completeness | **not started** | Fourteen protocols the spec marks required for Phase 1 have no code: `xdg_decoration`, `xdg_activation`, `wp_single_pixel_buffer`, `zwp_pointer_constraints`, `zwp_relative_pointer`, `zwp_pointer_gestures`, `ext_foreign_toplevel_list`, `wp_security_context`, `zwp_tablet_v2`, `wlr_output_management`, `xdg_foreign`, `wlr_gamma_control`, `content_type`/`wp_alpha_modifier`, `cursor_shape`. Added to COMP-16 as its own row because nothing owned it before. Load-bearing for Phase 1 exit: `ext_foreign_toplevel_list` (third-party bars — this is why milestone 9's gate is only weakly met), `pointer_constraints`/`relative_pointer` (mouse-look in any game), `cursor_shape`, `xdg_decoration`. |
+| 9a | COMP-06 §1 protocol completeness | **done** | All fifteen protocols implemented and confirmed advertised on a live socket: `xdg_decoration`, `xdg_activation`, `wp_single_pixel_buffer`, `zwp_pointer_constraints`, `zwp_relative_pointer`, `zwp_pointer_gestures`, `ext_foreign_toplevel_list`, `wp_security_context`, `zwp_tablet_v2`, `wlr_output_management` (v4), `xdg_foreign` (exporter+importer v2), `wlr_gamma_control`, `content_type`, `wp_alpha_modifier`, `cursor_shape`. Smithay 0.7 has no module for `wlr_output_management` or `wlr_gamma_control`, so those two are hand-written dispatch following `output_power.rs`. Output configuration from the wlr protocol and from the human IPC now share one apply path (`outputs::apply_change`), so the COMP-03 §4 "never disable the last enabled output" refusal cannot be routed around. Remaining gate items are behavioural, not code: a third-party bar listing windows, mouse-look in a Proton game. |
 | 9b | *(stretch)* animations, rounding, shadows, dim, blur | **not started** | No effects code. Per COMP-16 Open Decision 1 this is expected to follow Phase 1 exit. The `decoration` and `animations` config blocks already parse, so config compatibility is preserved for when it lands. |
 | — | **PHASE 1 EXIT** — 14 consecutive days as the only compositor | **not started** | Blocked on milestone 3's gate. Abyss is now *launchable* from any greeter: `abyss --session` plus `dist/abyss.desktop`, `dist/abyss-session`, `dist/abyss-session.target` (ADR 0032). What has never happened is a real KMS boot. |
 
@@ -130,12 +131,11 @@ macros anywhere in the workspace.
    in M2"), plus `xwayland` / `render-device` at line 586. Unknown nodes warn
    and are ignored. *Unblocked by:* 9b for the first two, COMP-04 config for
    `input`, COMP-05 rules for `windowrule`.
-8. **Fifteen COMP-06 §1 protocols are unimplemented** — see spec gaps §3 for
-   the list. The most user-visible are `ext_foreign_toplevel_list` (a status
-   bar cannot enumerate windows; IPC `list_windows` serves our own CLI only),
-   `cursor_shape`, `xdg_decoration` and
-   `pointer_constraints`/`relative_pointer`. *Unblocked by:* nothing — they
-   are simply unwritten, and no milestone owns them.
+8. **Custom modes are refused by `wlr_output_management`** — a
+   `set_custom_mode` request with valid dimensions fails the whole
+   configuration rather than modesetting outside the connector's own mode
+   list. Deliberate (a silent landing on a neighbouring mode is worse), but it
+   is a real limitation for anyone using `wlr-randr` with a custom mode.
 9. **No `agent-override` action** — COMP-13 §1.1 reserves
    `bind "SUPER" "Escape" { agent-override }`; `input::Action` has no variant
    for it, so the bind is rejected as unknown. Harmless today (there are no
@@ -186,10 +186,10 @@ In rough order:
    target to the user's systemd units, and log in from the greeter. Nothing
    about this path has ever executed. Everything below assumes it works.
 2. **Milestone 3 and 4 gates**, which are the same session as step 1.
-3. **Milestone 9a — the missing COMP-06 §1 protocols**, above all
-   `ext_foreign_toplevel_list` (no task list, no window switcher outside
-   Abyss's own binds), `cursor_shape`, `xdg_decoration`, and
-   `pointer_constraints`/`relative_pointer` for games.
+3. **Exercise the milestone 9a protocols against real clients** — the globals
+   are advertised and the handlers are written, but a third-party bar over
+   `ext_foreign_toplevel_list` and mouse-look in a Proton game over
+   `pointer_constraints`/`relative_pointer` have not been run.
 4. **A real cursor theme** on DRM, replacing the amber placeholder.
 5. **Effects (9b)** — optional by COMP-16 Open Decision 1, but "no rounding, no
    animation, no shadows" is the visible gap against the current Hyprland
@@ -217,14 +217,13 @@ fixed by editing either side.
    key that would let a user override it parses and is discarded
    (`config/mod.rs:586`). Either the spec's ranking should be implemented or
    §4 should adopt smithay's.
-3. **COMP-06 §1 protocol list vs. the 20 implemented modules.** Fourteen
-   required protocols have no code; they are enumerated in the milestone 9a
-   row above. **Resolved on the spec side:** COMP-16 now carries milestone 9a
-   owning exactly this work, and COMP-06 §1 gained a note that
+3. **COMP-06 §1 protocol list vs. the implemented modules.** *Closed.* The
+   fifteen missing protocols are implemented (milestone 9a). COMP-06 §1 also
+   gained a note that
    `wl_subcompositor` and `xdg_output` are not separate items — both are
    already advertised, `wl_subcompositor` by `CompositorState::new` and
    `xdg_output` by `OutputManagerState::new_with_xdg_output`
-   (`state.rs:212`). The code gap itself stands.
+   (`state.rs:212`).
 4. **COMP-13 §1.2 config validation.** The spec calls for total validation —
    a bad config is an error. `Config::load` (`config/mod.rs:382`) logs
    `"config unreadable, using defaults"` or `"config parse failed, file
