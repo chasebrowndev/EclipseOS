@@ -209,6 +209,27 @@ impl AbyssState {
     /// Shared tail for both relative and absolute motion.
     pub(crate) fn pointer_moved(&mut self, pos: Point<f64, Logical>, time: u32) {
         let pos = self.clamp_to_outputs(pos);
+        let current = self.pointer_location;
+        let pointer = self.seat.get_pointer().unwrap();
+        let focus = pointer.current_focus();
+        drop(pointer);
+        // A `zwp_pointer_constraints_v1` lock/confine on the currently
+        // focused surface overrides raw device motion (COMP-06 §1):
+        // smithay does no clamping itself, only tracks activation state.
+        let pos = if let Some(surface) = &focus {
+            let origin = crate::shell::surface_under(self, current)
+                .filter(|(s, _)| s == surface)
+                .map(|(_, p)| p.to_i32_round());
+            crate::protocols::standard::pointer_constraints::apply_pointer_constraint(
+                self,
+                Some(surface),
+                origin,
+                current,
+                pos,
+            )
+        } else {
+            pos
+        };
         self.pointer_location = pos;
         if self.lock.locked {
             // The pointer still moves (the cursor is compositor-drawn) but no
@@ -259,6 +280,7 @@ impl AbyssState {
             }
         }
 
+        let new_focus = under.as_ref().map(|(s, _)| s.clone());
         let pointer = self.seat.get_pointer().unwrap();
         pointer.motion(
             self,
@@ -270,6 +292,14 @@ impl AbyssState {
             },
         );
         pointer.frame(self);
+        // Smithay deactivates a constraint on the surface being left
+        // automatically (`PointerTarget::leave`); activating one held by the
+        // surface being entered is the compositor's half (COMP-06 §1).
+        crate::protocols::standard::pointer_constraints::update_pointer_constraint_focus(
+            self,
+            focus.as_ref(),
+            new_focus.as_ref(),
+        );
     }
 
     /// Hardware switches (COMP-01 §4.1). Lid close/open drives the internal

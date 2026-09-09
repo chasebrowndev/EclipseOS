@@ -20,7 +20,7 @@ pub mod input_method;
 mod layer_shell;
 pub mod output_management;
 pub mod output_power;
-mod pointer_constraints;
+pub(crate) mod pointer_constraints;
 mod pointer_extra;
 mod presentation;
 mod primary_selection;
