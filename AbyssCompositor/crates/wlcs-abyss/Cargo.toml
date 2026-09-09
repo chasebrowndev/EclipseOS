@@ -6,6 +6,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# A test-only harness dlopen()ed by wlcs; never goes to crates.io. Marking it
+# unpublished is also what lets cargo-deny's `allow-wildcard-paths` cover its
+# path dependency on `abyss` (that allowance applies to private crates only).
+publish = false
 
 # wlcs dlopen()s this and looks up `wlcs_server_integration` by symbol.
 [lib]
