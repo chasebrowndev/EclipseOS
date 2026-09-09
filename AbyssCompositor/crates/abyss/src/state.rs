@@ -54,12 +54,20 @@ pub struct AbyssState {
     /// CLOCK_MONOTONIC, the clock `wp_presentation` timestamps are given in.
     pub clock: Clock<Monotonic>,
     pub display_handle: DisplayHandle,
+    /// Keeps the `WeakDh` handed to global user data upgradable. Dropped with
+    /// the state, which is what breaks the display <-> global-data cycle.
+    _dh_owner: std::sync::Arc<DisplayHandle>,
     pub loop_signal: LoopSignal,
     pub loop_handle: LoopHandle<'static, Self>,
     pub socket_name: String,
 
     pub space: Space<Window>,
     pub popups: PopupManager,
+
+    /// Windows currently maximized (COMP-05 §4), with the placement to restore
+    /// on unmaximize: `Some(rect)` for a floating window's prior rectangle,
+    /// `None` for a window that was tiled.
+    pub maximized: std::collections::HashMap<Window, Option<smithay::utils::Rectangle<i32, Logical>>>,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -248,6 +256,12 @@ impl AbyssState {
         stats: bool,
     ) -> Self {
         let dh = display.handle();
+        // The display owns its globals' user data, so anything stored there
+        // that needs a handle takes a `WeakDh` upgraded through this `Arc`.
+        // A `DisplayHandle` parked in global data would be a strong cycle and
+        // leak the display's fds per compositor. See `data_control::WeakDh`.
+        let dh_owner = std::sync::Arc::new(dh.clone());
+        let weak_dh = crate::protocols::standard::data_control::WeakDh::new(&dh_owner);
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
@@ -266,7 +280,7 @@ impl AbyssState {
         let data_control_state = DataControlState::new::<Self, _>(
             &dh,
             Some(&primary_selection_state),
-            crate::protocols::standard::data_control::allow_filter(dh.clone(), clipboard_allow.clone()),
+            crate::protocols::standard::data_control::allow_filter(weak_dh.clone(), clipboard_allow.clone()),
         );
         let text_input_manager_state = TextInputManagerState::new::<Self>(&dh);
         let input_method_manager_state = InputMethodManagerState::new::<Self, _>(&dh, |_| true);
@@ -303,10 +317,14 @@ impl AbyssState {
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         let output_power = crate::protocols::standard::output_power::OutputPowerState::new(&dh);
         // Capture reads every pixel of an output: allowlisted, fail-closed.
-        let screencopy =
-            crate::protocols::standard::screencopy::ScreencopyState::new(&dh, capture_allow.clone());
+        let screencopy = crate::protocols::standard::screencopy::ScreencopyState::new(
+            &dh,
+            weak_dh.clone(),
+            capture_allow.clone(),
+        );
         let image_copy = crate::protocols::standard::image_copy_capture::ImageCopyCaptureState::new(
             &dh,
+            weak_dh,
             capture_allow.clone(),
         );
         let mut seat_state = SeatState::new();
@@ -331,11 +349,13 @@ impl AbyssState {
             start_time: Instant::now(),
             clock: Clock::new(),
             display_handle: dh,
+            _dh_owner: dh_owner,
             loop_signal,
             loop_handle,
             socket_name: socket.socket_name().to_string_lossy().into_owned(),
             space: Space::default(),
             popups: PopupManager::default(),
+            maximized: std::collections::HashMap::new(),
             compositor_state,
             xdg_shell_state,
             layer_shell_state,

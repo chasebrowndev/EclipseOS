@@ -57,6 +57,31 @@ pub fn client_name(dh: &DisplayHandle, client: &Client) -> Option<String> {
     Some(comm.to_string())
 }
 
+/// A non-owning [`DisplayHandle`], for data the `Display` itself owns.
+///
+/// Global user data and bind filters are stored *inside* the display, so a
+/// `DisplayHandle` parked in one is a strong reference cycle: the backend
+/// never reaches refcount zero and every fd it owns (its epoll, eventfds,
+/// timerfd, the seat's keymap memfd) leaks for the life of the process. That
+/// is fatal under wlcs, which builds one compositor per test in one process.
+/// Bind-time code holds this instead and upgrades through the `Arc` that
+/// [`AbyssState`] owns.
+#[derive(Debug, Clone)]
+pub struct WeakDh(std::sync::Weak<DisplayHandle>);
+
+impl WeakDh {
+    pub fn new(dh: &std::sync::Arc<DisplayHandle>) -> Self {
+        Self(std::sync::Arc::downgrade(dh))
+    }
+
+    /// [`client_name`] through the weak handle. Fail-closed: once the display
+    /// is gone the identity is unknown, which callers must read as a denial.
+    pub fn client_name(&self, client: &Client) -> Option<String> {
+        let dh = self.0.upgrade()?;
+        client_name(&dh, client)
+    }
+}
+
 /// Build the fail-closed visibility filter for the data-control global.
 ///
 /// The filter holds an [`Allowlist`] handle rather than a snapshot, so a
@@ -64,14 +89,14 @@ pub fn client_name(dh: &DisplayHandle, client: &Client) -> Option<String> {
 /// that already hold the global keep it — a filter is only consulted when a
 /// client asks what globals exist.
 pub fn allow_filter(
-    dh: DisplayHandle,
+    dh: WeakDh,
     allow: Allowlist,
 ) -> impl for<'c> Fn(&'c Client) -> bool + Send + Sync + 'static {
     move |client: &Client| {
         if allow.is_empty() {
             return false;
         }
-        match client_name(&dh, client) {
+        match dh.client_name(client) {
             Some(name) if allow.contains(&name) => true,
             Some(name) => {
                 tracing::warn!(client = %name, "wlr_data_control denied (not in clipboard.data-control-allow)");

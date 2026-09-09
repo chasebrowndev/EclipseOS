@@ -6,15 +6,18 @@ pub mod rules;
 pub mod workspace;
 
 use smithay::{
-    desktop::{layer_map_for_output, PopupKind, Window, WindowSurfaceType},
+    desktop::{
+        find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, LayerMap,
+        LayerSurface as DesktopLayerSurface, PopupKind, Window, WindowSurfaceType,
+    },
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Point, Rectangle, Size, SERIAL_COUNTER},
     wayland::{
         compositor::with_states,
         shell::{
-            wlr_layer::{Layer, LayerSurfaceData},
-            xdg::{SurfaceCachedState, XdgToplevelSurfaceData},
+            wlr_layer::{Anchor, ExclusiveZone, Layer, LayerSurfaceData},
+            xdg::{PopupSurface, SurfaceCachedState, XdgPopupSurfaceData, XdgToplevelSurfaceData},
         },
     },
 };
@@ -62,22 +65,77 @@ pub fn output_of_window(state: &AbyssState, window: &Window) -> Option<u64> {
         .map(|e| e.id)
 }
 
-/// Usable tiling area: output geometry minus layer-shell exclusive zones minus
-/// the outer gap.
-fn tiling_area(state: &AbyssState, output: &Output) -> Rectangle<i32, Logical> {
+/// Usable area: output geometry minus layer-shell exclusive zones, with no
+/// outer gap applied. This is the area a maximized toplevel is constrained to
+/// (COMP-06 §3): the raw protocol-defined usable region, independent of
+/// abyss's own gap styling.
+fn usable_area(state: &AbyssState, output: &Output) -> Rectangle<i32, Logical> {
     let geo = state.space.output_geometry(output).unwrap_or_default();
-    let zone = layer_map_for_output(output).non_exclusive_zone();
-    let g = &state.config.general;
-    let loc = Point::from((
-        geo.loc.x + zone.loc.x + g.gaps_out,
-        geo.loc.y + zone.loc.y + g.gaps_out,
-    ));
-    // The layer map's zone can lag behind a mode change, so clamp it to the
-    // output we actually have.
-    let size = Size::from((
-        (zone.size.w.min(geo.size.w - zone.loc.x) - 2 * g.gaps_out).max(1),
-        (zone.size.h.min(geo.size.h - zone.loc.y) - 2 * g.gaps_out).max(1),
-    ));
+    let zone = accumulate_non_exclusive_zone(output, geo.size);
+    let loc = Point::from((geo.loc.x + zone.loc.x, geo.loc.y + zone.loc.y));
+    let size = Size::from((zone.size.w.max(1), zone.size.h.max(1)));
+    Rectangle::new(loc, size)
+}
+
+/// The output's non-exclusive zone, accumulated by hand.
+///
+/// `LayerMap::non_exclusive_zone` cannot be used here: smithay honours a
+/// non-zero exclusive zone for *any* anchor that touches an edge, including
+/// two adjacent edges, two opposite edges, no edge at all, and all four (which
+/// it collapses to a zero-sized zone). wlr-layer-shell only defines an
+/// exclusive zone when the surface is anchored to exactly one edge, or to
+/// three edges — i.e. when there is exactly one "attached edge". wlroots and
+/// Mir ignore the zone for every other anchor set, and wlcs asserts it
+/// (`maximized_xdg_toplevel_is_shrunk_for_exclusive_zone`, parametrized over
+/// all sixteen anchor combinations). COMP-06 §3.
+fn accumulate_non_exclusive_zone(
+    output: &Output,
+    output_size: Size<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let mut zone = Rectangle::from_size(output_size);
+    for layer in layer_map_for_output(output).layers() {
+        let data = layer.cached_state();
+        let ExclusiveZone::Exclusive(amount) = data.exclusive_zone else {
+            continue;
+        };
+        let amount = amount as i32;
+        let a = data.anchor;
+        let (l, r, t, b) = (
+            a.contains(Anchor::LEFT),
+            a.contains(Anchor::RIGHT),
+            a.contains(Anchor::TOP),
+            a.contains(Anchor::BOTTOM),
+        );
+        // A vertical edge is attached when the surface spans (or spans neither
+        // of) top and bottom and picks exactly one of left/right; a horizontal
+        // edge, the mirror. Anything else claims nothing.
+        if t == b && l != r {
+            if l {
+                let take = amount + data.margin.left;
+                zone.loc.x += take;
+                zone.size.w -= take;
+            } else {
+                zone.size.w -= amount + data.margin.right;
+            }
+        } else if l == r && t != b {
+            if t {
+                let take = amount + data.margin.top;
+                zone.loc.y += take;
+                zone.size.h -= take;
+            } else {
+                zone.size.h -= amount + data.margin.bottom;
+            }
+        }
+    }
+    zone
+}
+
+/// Usable tiling area: the usable area minus the outer gap.
+fn tiling_area(state: &AbyssState, output: &Output) -> Rectangle<i32, Logical> {
+    let area = usable_area(state, output);
+    let g = state.config.general.gaps_out;
+    let loc = Point::from((area.loc.x + g, area.loc.y + g));
+    let size = Size::from(((area.size.w - 2 * g).max(1), (area.size.h - 2 * g).max(1)));
     Rectangle::new(loc, size)
 }
 
@@ -149,6 +207,35 @@ fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool) {
     toplevel.send_pending_configure();
 }
 
+/// Order an output's layer map so every surface claiming an exclusive zone is
+/// arranged before the surfaces that have to avoid it (COMP-06 §3).
+///
+/// Smithay's `LayerMap::arrange` accumulates the non-exclusive zone in a single
+/// pass over the map's insertion order, so a surface mapped before a panel is
+/// laid out against the *full* output and never re-centred once the panel claims
+/// its strip. wlroots and Mir avoid this by running an exclusive pass first;
+/// with the map's order being the only knob smithay exposes, sorting the
+/// claimants to the front is the equivalent. Relative order is otherwise
+/// preserved, so stacking within a layer is unchanged.
+fn order_layers(output: &Output) {
+    let mut map = layer_map_for_output(output);
+    let current: Vec<_> = map.layers().cloned().collect();
+    let mut wanted = current.clone();
+    wanted.sort_by_key(|l| !matches!(l.cached_state().exclusive_zone, ExclusiveZone::Exclusive(n) if n > 0));
+    if wanted == current {
+        return;
+    }
+    // `unmap_layer` clears the cached location, which `map_layer` requires.
+    for l in &current {
+        map.unmap_layer(l);
+    }
+    for l in &wanted {
+        if let Err(err) = map.map_layer(l) {
+            tracing::warn!(?err, "re-mapping layer surface while ordering");
+        }
+    }
+}
+
 /// Re-run the layout for every output's active workspace.
 pub fn arrange(state: &mut AbyssState) {
     let ids: Vec<u64> = state.outputs.iter().map(|e| e.id).collect();
@@ -164,8 +251,26 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
     };
     let output = entry.output.clone();
     let ws = entry.active;
+    order_layers(&output);
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
+    // A maximized toplevel tracks the usable area, so it has to be recomputed
+    // on every arrange — a layer surface claiming an exclusive zone after the
+    // window was maximized must still shrink it (COMP-06 §3).
+    let max_area = usable_area(state, &output);
+    {
+        // `Window` hashes by its stable `ObjectId`; the interior mutability
+        // clippy flags lives in fields that take no part in `Hash`/`Eq`, so
+        // it is sound as a key. This is smithay's own idiom.
+        #[allow(clippy::mutable_key_type)]
+        let maximized = &state.maximized;
+        let entry = state.outputs.get_mut(id).expect("checked above");
+        for f in entry.workspaces[ws].floating.iter_mut() {
+            if maximized.contains_key(&f.window) {
+                f.rect = max_area;
+            }
+        }
+    }
 
     // Adopt anything handed over by an output that went away.
     let pending: Vec<Window> = {
@@ -204,7 +309,12 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         state.space.map_element(w, inner.loc, false);
     }
     for (w, rect) in floating {
-        let inner = shrink(rect, border);
+        // Maximized windows fill the usable area exactly; no border inset.
+        let inner = if state.maximized.contains_key(&w) {
+            rect
+        } else {
+            shrink(rect, border)
+        };
         let size = clamp_size(&w, inner.size);
         configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
         fractional_scale::update_window_scale(&w, &output);
@@ -434,8 +544,8 @@ pub fn surface_under(
     {
         let map = layer_map_for_output(&output);
         for layer in [Layer::Overlay, Layer::Top] {
-            if let Some(l) = map.layer_under(layer, local) {
-                let geo = map.layer_geometry(l).unwrap_or_default();
+            if let Some(l) = layer_under(&map, layer, local) {
+                let geo = layer_geometry(&map, l).unwrap_or_default();
                 if let Some((s, p)) = l.surface_under(local - geo.loc.to_f64(), WindowSurfaceType::ALL) {
                     return Some((s, (output_loc + geo.loc + p).to_f64()));
                 }
@@ -449,14 +559,125 @@ pub fn surface_under(
     }
     let map = layer_map_for_output(&output);
     for layer in [Layer::Bottom, Layer::Background] {
-        if let Some(l) = map.layer_under(layer, local) {
-            let geo = map.layer_geometry(l).unwrap_or_default();
+        if let Some(l) = layer_under(&map, layer, local) {
+            let geo = layer_geometry(&map, l).unwrap_or_default();
             if let Some((s, p)) = l.surface_under(local - geo.loc.to_f64(), WindowSurfaceType::ALL) {
                 return Some((s, (output_loc + geo.loc + p).to_f64()));
             }
         }
     }
     None
+}
+
+// ------------------------------------------------------ layer placement
+
+/// An explicit position for a layer surface, over and above the arrangement
+/// `LayerMap::arrange` derives from its anchors and margins.
+///
+/// The layer map has no notion of a position a layer surface did not ask for,
+/// so the delta is kept beside it, in the surface's own user data. Nothing in
+/// the protocol sets this; it exists for the harnesses and test hooks that
+/// place a layer surface directly (the wlcs `position_window` hook is the only
+/// caller today). An unset offset is `(0, 0)`, so every read path below stays
+/// exactly the arrangement the layer map produced.
+#[derive(Default)]
+struct LayerOffset(std::cell::Cell<Point<i32, Logical>>);
+
+fn layer_offset(layer: &DesktopLayerSurface) -> Point<i32, Logical> {
+    layer
+        .user_data()
+        .get::<LayerOffset>()
+        .map(|o| o.0.get())
+        .unwrap_or_default()
+}
+
+/// Geometry of a mapped layer surface, including any explicit placement.
+///
+/// Every hit-test and render path must use this rather than
+/// `LayerMap::layer_geometry`, or an explicitly placed layer surface is drawn
+/// in one place and clicked in another.
+pub fn layer_geometry(map: &LayerMap, layer: &DesktopLayerSurface) -> Option<Rectangle<i32, Logical>> {
+    let mut geo = map.layer_geometry(layer)?;
+    geo.loc += layer_offset(layer);
+    Some(geo)
+}
+
+/// Place a mapped layer surface at an explicit output-local position.
+pub fn place_layer(map: &LayerMap, layer: &DesktopLayerSurface, loc: Point<i32, Logical>) {
+    let Some(base) = map.layer_geometry(layer) else {
+        return;
+    };
+    let data = layer.user_data();
+    data.insert_if_missing(LayerOffset::default);
+    if let Some(offset) = data.get::<LayerOffset>() {
+        offset.0.set(loc - base.loc);
+    }
+}
+
+/// The topmost layer surface of `layer` under `point`, in output-local
+/// coordinates. `LayerMap::layer_under` tests the arranged bounding box, which
+/// is the wrong rectangle once a surface has been placed explicitly.
+fn layer_under(map: &LayerMap, layer: Layer, point: Point<f64, Logical>) -> Option<&DesktopLayerSurface> {
+    map.layers_on(layer).rev().find(|l| {
+        let Some(geo) = layer_geometry(map, l) else {
+            return false;
+        };
+        let mut bbox = l.bbox_with_popups();
+        bbox.loc += geo.loc - l.bbox().loc;
+        bbox.to_f64().contains(point)
+    })
+}
+
+/// Constrain a popup to the output its parent sits on (COMP-06 §1).
+///
+/// The positioner works in coordinates relative to the parent's geometry
+/// origin, so the output rectangle has to be translated into that space before
+/// `get_unconstrained_geometry` can apply the client's constraint adjustment.
+/// The parent may be a toplevel *or* a layer surface; both need the same
+/// treatment, and only resolving the toplevel case leaves every layer-shell
+/// popup placed against an unconstrained, wrongly-originated rectangle.
+pub fn unconstrain_popup(state: &AbyssState, popup: &PopupSurface) {
+    let kind = PopupKind::Xdg(popup.clone());
+    let Ok(root) = find_popup_root_surface(&kind) else {
+        return;
+    };
+
+    // (output, parent geometry origin in global coordinates)
+    let resolved = state
+        .space
+        .elements()
+        .find(|w| window_surface(w).as_ref() == Some(&root))
+        .and_then(|w| {
+            let geo = state.space.element_geometry(w)?;
+            let output = output_of_window(state, w).and_then(|id| state.outputs.get(id))?;
+            Some((output.output.clone(), geo.loc))
+        })
+        .or_else(|| {
+            state.outputs.iter().find_map(|e| {
+                let map = layer_map_for_output(&e.output);
+                let layer = map.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)?;
+                let geo = layer_geometry(&map, layer)?;
+                let output_loc = state
+                    .space
+                    .output_geometry(&e.output)
+                    .map(|g| g.loc)
+                    .unwrap_or_default();
+                Some((e.output.clone(), output_loc + geo.loc))
+            })
+        });
+    let Some((output, parent_loc)) = resolved else {
+        return;
+    };
+    let Some(output_geo) = state.space.output_geometry(&output) else {
+        return;
+    };
+
+    let mut target = output_geo;
+    target.loc -= get_popup_toplevel_coords(&kind);
+    target.loc -= parent_loc;
+    popup.with_pending_state(|s| {
+        s.geometry = s.positioner.get_unconstrained_geometry(target);
+    });
 }
 
 /// Send the initial configure for toplevels, layer surfaces and popups, and
@@ -514,10 +735,16 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
                         .map(|d| d.lock().unwrap().initial_configure_sent)
                         .unwrap_or(true)
                 });
+                let layer = layer.clone();
+                // Arrange *before* the initial configure. `new_layer_surface`
+                // fires at `get_layer_surface` time, i.e. before the client has
+                // set its anchor, size or exclusive zone, so the geometry from
+                // that first arrange is stale. Configuring from it hands the
+                // client a wrong size that it may well act on (COMP-06 §3).
+                arranged = map.arrange();
                 if send_initial {
                     layer.layer_surface().send_configure();
                 }
-                arranged = map.arrange();
             }
         }
         if arranged || send_initial {
@@ -530,10 +757,27 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
 
     if let Some(popup) = state.popups.find_popup(surface) {
         let PopupKind::Xdg(ref xdg) = popup else { return };
-        if !xdg.is_initial_configure_sent() {
-            let _ = xdg.send_configure();
+        if !xdg.is_initial_configure_sent() && xdg.send_configure().is_ok() {
+            publish_popup_geometry(xdg);
         }
     }
+}
+
+/// Publish a popup's configured geometry into its current state.
+///
+/// Smithay only promotes the configured geometry on the commit *after* the
+/// client acks it (`PopupSurface::post_commit_hook`). A client that acks and
+/// never commits again would then be hit-tested and rendered at the origin. A
+/// popup's position is server-determined — there is nothing to negotiate — so
+/// publish it as soon as it is configured, the way wlroots and Mir do
+/// (COMP-06 §4).
+pub(crate) fn publish_popup_geometry(popup: &PopupSurface) {
+    let geometry = popup.with_pending_state(|s| s.geometry);
+    with_states(popup.wl_surface(), |states| {
+        if let Some(data) = states.data_map.get::<XdgPopupSurfaceData>() {
+            data.lock().unwrap().current.geometry = geometry;
+        }
+    });
 }
 
 // ---------------------------------------------------------------- actions
@@ -586,6 +830,112 @@ pub fn toggle_floating(state: &mut AbyssState) {
         entry.workspaces[ws].floating.remove(i);
         entry.workspaces[ws].tiled.insert(window, None, area);
     }
+    arrange(state);
+}
+
+/// A client's `xdg_toplevel.set_maximized` (COMP-05 §4): fill the output's
+/// usable area, i.e. shrunk by any layer-shell exclusive zone, with no gap or
+/// border — the raw protocol contract, not abyss's own tiling style.
+pub fn maximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::shell::xdg::ToplevelSurface) {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+
+    let Some(window) = state
+        .space
+        .elements()
+        .find(|w| w.toplevel() == Some(surface))
+        .cloned()
+    else {
+        return;
+    };
+    if state.maximized.contains_key(&window) {
+        return;
+    }
+    let Some(id) = output_of_window(state, &window).or_else(|| state.outputs.focused().map(|e| e.id)) else {
+        return;
+    };
+    let output = state.outputs.get(id).expect("just resolved").output.clone();
+    layer_map_for_output(&output).arrange();
+    let area = usable_area(state, &output);
+
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    let ws = entry.active;
+    let restore = if let Some(i) = entry.workspaces[ws]
+        .floating
+        .iter()
+        .position(|f| f.window == window)
+    {
+        Some(entry.workspaces[ws].floating.remove(i).rect)
+    } else {
+        entry.workspaces[ws].tiled.remove(&window);
+        None
+    };
+    entry.workspaces[ws].floating.push(Floating {
+        window: window.clone(),
+        rect: area,
+    });
+    state.maximized.insert(window.clone(), restore);
+
+    surface.with_pending_state(|s| {
+        s.size = Some(area.size);
+        s.states.set(State::Maximized);
+    });
+    surface.send_configure();
+    arrange(state);
+}
+
+/// A client's `xdg_toplevel.unset_maximized`: restore whatever placement the
+/// window had before it was maximized.
+pub fn unmaximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::shell::xdg::ToplevelSurface) {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+
+    let Some(window) = state
+        .space
+        .elements()
+        .find(|w| w.toplevel() == Some(surface))
+        .cloned()
+    else {
+        return;
+    };
+    let Some(restore) = state.maximized.remove(&window) else {
+        return;
+    };
+    let Some(id) = output_of_window(state, &window).or_else(|| state.outputs.focused().map(|e| e.id)) else {
+        surface.with_pending_state(|s| s.states.unset(State::Maximized));
+        surface.send_configure();
+        return;
+    };
+    let output = state.outputs.get(id).expect("just resolved").output.clone();
+    layer_map_for_output(&output).arrange();
+    let area = tiling_area(state, &output);
+
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    let ws = entry.active;
+    if let Some(i) = entry.workspaces[ws]
+        .floating
+        .iter()
+        .position(|f| f.window == window)
+    {
+        entry.workspaces[ws].floating.remove(i);
+    }
+    let size = match restore {
+        Some(rect) => {
+            entry.workspaces[ws].floating.push(Floating {
+                window: window.clone(),
+                rect,
+            });
+            rect.size
+        }
+        None => {
+            entry.workspaces[ws].tiled.insert(window.clone(), None, area);
+            area.size
+        }
+    };
+
+    surface.with_pending_state(|s| {
+        s.size = Some(size);
+        s.states.unset(State::Maximized);
+    });
+    surface.send_configure();
     arrange(state);
 }
 

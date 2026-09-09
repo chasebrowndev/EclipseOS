@@ -75,7 +75,7 @@ const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16)
 /// Global data for both managers: enough to identify a client at bind time.
 #[derive(Debug)]
 pub struct ManagerData {
-    dh: DisplayHandle,
+    dh: crate::protocols::standard::data_control::WeakDh,
     allow: Allowlist,
 }
 
@@ -83,7 +83,7 @@ impl ManagerData {
     fn can_view(&self, client: &Client, what: &'static str) -> bool {
         // The lock state is not reachable here; `decide` re-checks it per
         // request and at service time.
-        let name = crate::protocols::standard::data_control::client_name(&self.dh, client);
+        let name = self.dh.client_name(client);
         let d = decide(&self.allow, false, name.as_deref());
         if !d.allowed() {
             tracing::debug!(
@@ -149,20 +149,21 @@ pub struct ImageCopyCaptureState {
 impl ImageCopyCaptureState {
     /// Register both globals. The bind filters hold an [`Allowlist`] handle,
     /// so a config reload retunes them without a restart (ADR 0022 amendment).
-    pub fn new(dh: &DisplayHandle, allow: Allowlist) -> Self {
+    pub fn new(
+        dh: &DisplayHandle,
+        weak_dh: crate::protocols::standard::data_control::WeakDh,
+        allow: Allowlist,
+    ) -> Self {
         dh.create_global::<AbyssState, ExtOutputImageCaptureSourceManagerV1, _>(
             VERSION,
             ManagerData {
-                dh: dh.clone(),
+                dh: weak_dh.clone(),
                 allow: allow.clone(),
             },
         );
         dh.create_global::<AbyssState, ExtImageCopyCaptureManagerV1, _>(
             VERSION,
-            ManagerData {
-                dh: dh.clone(),
-                allow,
-            },
+            ManagerData { dh: weak_dh, allow },
         );
         Self {
             next: 1,

@@ -24,6 +24,7 @@ use smithay::{
         egl::{EGLContext, EGLDevice, EGLDisplay},
         renderer::{damage::OutputDamageTracker, gles::GlesRenderer, Bind, ImportDma, ImportEgl, Offscreen},
     },
+    desktop::layer_map_for_output,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
@@ -34,7 +35,7 @@ use smithay::{
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
         wayland_server::{Display, Resource},
     },
-    utils::{Size, Transform},
+    utils::{Point, Size, Transform},
     wayland::{
         dmabuf::{DmabufFeedbackBuilder, DmabufState},
         presentation::Refresh,
@@ -52,6 +53,15 @@ use crate::{
 const CLEAR: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 /// Default virtual output size when `--size` is not given.
 pub const DEFAULT_SIZE: (i32, i32) = (1280, 800);
+
+/// Output size for the wlcs harness.
+///
+/// wlcs parks a 400x500 test window at (500, 500) and expects popups anchored
+/// to its bottom edge to be on-screen and clickable, which needs a little over
+/// 1000 rows. The interactive default is shorter, so the conformance run gets
+/// its own mode rather than every popup test failing on geometry the tests
+/// never asked about.
+pub const WLCS_SIZE: (i32, i32) = (1280, 1024);
 /// Frame clock. Fixed rather than derived from anything real: a headless run
 /// has no vblank, and a benchmark or a conformance test wants the same cadence
 /// on every runner (COMP-14 §5).
@@ -139,7 +149,8 @@ pub enum WlcsEvent {
         stream: std::os::unix::net::UnixStream,
         client_id: i32,
     },
-    /// Place a toplevel at an absolute position. `surface_id` is the
+    /// Place a toplevel or layer surface at an absolute position.
+    /// `surface_id` is the
     /// client-side protocol id of its `wl_surface`.
     PositionWindow {
         client_id: i32,
@@ -176,7 +187,7 @@ pub type WlcsSender = smithay::reexports::calloop::channel::Sender<WlcsEvent>;
 /// Same compositor, same render loop; the only difference is where clients and
 /// input come from. Blocks until the harness sends [`WlcsEvent::Exit`].
 pub fn run_wlcs(channel: smithay::reexports::calloop::channel::Channel<WlcsEvent>) -> Result<()> {
-    boot(Config::default(), false, false, DEFAULT_SIZE, Some(channel))
+    boot(Config::default(), false, false, WLCS_SIZE, Some(channel))
 }
 
 pub fn run(config: Config, stats: bool, session: bool, size: (i32, i32)) -> Result<()> {
@@ -201,7 +212,14 @@ fn boot(
         config,
         stats,
     );
-    crate::xwayland::start(&mut state);
+    // Not under wlcs: the suite advertises no X11 global, so an Xwayland per
+    // compositor tests nothing. It also leaks — wlcs builds one compositor per
+    // test in a single process, and each Xwayland child keeps its listening
+    // sockets in that process's fd table, exhausting `ulimit -n` partway
+    // through the run and taking the whole suite down with it.
+    if wlcs.is_none() {
+        crate::xwayland::start(&mut state);
+    }
     let dh = state.display_handle.clone();
 
     let (mut renderer, render_node) = open_renderer()?;
@@ -471,10 +489,32 @@ fn wlcs_event(
                     })
                 })
                 .cloned();
-            match window {
-                Some(w) => state.space.map_element(w, location, false),
-                None => tracing::warn!(client_id, surface_id, "wlcs: no such window to position"),
+            if let Some(w) = window {
+                state.space.map_element(w, location, false);
+                return;
             }
+            // A layer surface is not a space element: wlcs positions the
+            // parent of a layer-shell popup this way, so the request has to
+            // reach the layer map's placement override too.
+            let outputs: Vec<_> = state.outputs.iter().map(|e| e.output.clone()).collect();
+            for output in outputs {
+                let output_loc = state
+                    .space
+                    .output_geometry(&output)
+                    .map(|g| g.loc)
+                    .unwrap_or_default();
+                let map = layer_map_for_output(&output);
+                let found = map.layers().find(|l| {
+                    let s = l.wl_surface();
+                    state.display_handle.get_client(s.id()).ok().as_ref() == client
+                        && s.id().protocol_id() == surface_id
+                });
+                if let Some(layer) = found {
+                    crate::shell::place_layer(&map, layer, Point::from(location) - output_loc);
+                    return;
+                }
+            }
+            tracing::warn!(client_id, surface_id, "wlcs: no such window to position");
         }
         WlcsEvent::PointerMoveAbsolute { location } => state.inject_pointer_absolute(location.into(), time),
         WlcsEvent::PointerMoveRelative { delta } => state.inject_pointer_relative(delta.into(), time),

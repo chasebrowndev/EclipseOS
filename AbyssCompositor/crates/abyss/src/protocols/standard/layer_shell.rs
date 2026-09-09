@@ -49,6 +49,7 @@ impl WlrLayerShellHandler for AbyssState {
     }
 
     fn new_popup(&mut self, _parent: LayerSurface, popup: PopupSurface) {
+        shell::unconstrain_popup(self, &popup);
         if let Err(err) = self.popups.track_popup(PopupKind::Xdg(popup)) {
             tracing::warn!(?err, "tracking layer-shell popup");
         }

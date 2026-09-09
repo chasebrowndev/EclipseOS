@@ -244,7 +244,7 @@ fn layer_elements(
     let map = layer_map_for_output(output);
     for layer in which {
         for surface in map.layers_on(layer).rev() {
-            let Some(geo) = map.layer_geometry(surface) else {
+            let Some(geo) = crate::shell::layer_geometry(&map, surface) else {
                 continue;
             };
             let wl = surface.wl_surface();

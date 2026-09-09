@@ -37,7 +37,15 @@ impl XdgShellHandler for AbyssState {
         }
     }
 
-    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
+    fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+        // The initial `xdg_popup.configure` sent from `handle_commit` must
+        // carry real geometry (COMP-06 §4), so seed it from the positioner
+        // before unconstraining it against the parent's output.
+        surface.with_pending_state(|s| {
+            s.geometry = positioner.get_geometry();
+            s.positioner = positioner;
+        });
+        crate::shell::unconstrain_popup(self, &surface);
         if let Err(e) = self.popups.track_popup(PopupKind::Xdg(surface)) {
             tracing::warn!(?e, "failed to track popup");
         }
@@ -52,7 +60,19 @@ impl XdgShellHandler for AbyssState {
             s.geometry = positioner.get_geometry();
             s.positioner = positioner;
         });
+        crate::shell::unconstrain_popup(self, &surface);
         surface.send_repositioned(token);
+        if surface.send_configure().is_ok() {
+            crate::shell::publish_popup_geometry(&surface);
+        }
+    }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        crate::shell::maximize_toplevel(self, &surface);
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        crate::shell::unmaximize_toplevel(self, &surface);
     }
 }
 

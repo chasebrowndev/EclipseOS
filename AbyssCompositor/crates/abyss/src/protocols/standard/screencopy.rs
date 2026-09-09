@@ -97,7 +97,7 @@ pub fn decide(allow: &Allowlist, locked: bool, name: Option<&str>) -> Decision {
 /// Global data for the manager: enough to identify a client at bind time.
 #[derive(Debug)]
 pub struct ManagerData {
-    dh: DisplayHandle,
+    dh: crate::protocols::standard::data_control::WeakDh,
     allow: Allowlist,
 }
 
@@ -125,7 +125,11 @@ pub struct ScreencopyState;
 impl ScreencopyState {
     /// Register the global. The bind filter holds an [`Allowlist`] handle, so
     /// a config reload retunes it without a restart (ADR 0022 amendment).
-    pub fn new(dh: &DisplayHandle, allow: Allowlist) -> Self {
+    pub fn new(
+        dh: &DisplayHandle,
+        weak_dh: crate::protocols::standard::data_control::WeakDh,
+        allow: Allowlist,
+    ) -> Self {
         if allow.is_empty() {
             tracing::info!("screencopy: no capture.allow entries, all capture denied");
         } else {
@@ -133,10 +137,7 @@ impl ScreencopyState {
         }
         dh.create_global::<AbyssState, ZwlrScreencopyManagerV1, _>(
             VERSION,
-            ManagerData {
-                dh: dh.clone(),
-                allow,
-            },
+            ManagerData { dh: weak_dh, allow },
         );
         Self
     }
@@ -157,7 +158,7 @@ impl GlobalDispatch<ZwlrScreencopyManagerV1, ManagerData> for AbyssState {
     fn can_view(client: Client, global_data: &ManagerData) -> bool {
         // The lock state is not reachable from here, so this filter enforces
         // the allowlist only; `decide` re-checks the lock per request.
-        let name = crate::protocols::standard::data_control::client_name(&global_data.dh, &client);
+        let name = global_data.dh.client_name(&client);
         let d = decide(&global_data.allow, false, name.as_deref());
         if !d.allowed() {
             tracing::debug!(
