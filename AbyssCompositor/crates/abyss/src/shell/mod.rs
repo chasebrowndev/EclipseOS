@@ -259,15 +259,24 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
     // on every arrange — a layer surface claiming an exclusive zone after the
     // window was maximized must still shrink it (COMP-06 §3).
     let max_area = usable_area(state, &output);
+    // A fullscreen toplevel takes the whole output, exclusive zones included, so
+    // it tracks the raw geometry rather than the usable area (COMP-05 §4).
+    let full_area = state.space.output_geometry(&output).unwrap_or_default();
     {
         // `Window` hashes by its stable `ObjectId`; the interior mutability
         // clippy flags lives in fields that take no part in `Hash`/`Eq`, so
         // it is sound as a key. This is smithay's own idiom.
         #[allow(clippy::mutable_key_type)]
         let maximized = &state.maximized;
+        #[allow(clippy::mutable_key_type)]
+        let fullscreen = &state.fullscreen;
         let entry = state.outputs.get_mut(id).expect("checked above");
         for f in entry.workspaces[ws].floating.iter_mut() {
-            if maximized.contains_key(&f.window) {
+            // Fullscreen wins over maximized: a maximized window that then goes
+            // fullscreen keeps its `maximized` entry so unfullscreen can restore it.
+            if fullscreen.contains_key(&f.window) {
+                f.rect = full_area;
+            } else if maximized.contains_key(&f.window) {
                 f.rect = max_area;
             }
         }
@@ -310,8 +319,8 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         state.space.map_element(w, inner.loc, false);
     }
     for (w, rect) in floating {
-        // Maximized windows fill the usable area exactly; no border inset.
-        let inner = if state.maximized.contains_key(&w) {
+        // Maximized and fullscreen windows fill their area exactly; no border inset.
+        let inner = if state.fullscreen.contains_key(&w) || state.maximized.contains_key(&w) {
             rect
         } else {
             shrink(rect, border)
@@ -329,9 +338,9 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
 /// what an interactive move/resize grab and an external placement request both
 /// end up calling.
 pub fn place_at(state: &mut AbyssState, window: &Window, geo: Rectangle<i32, Logical>) {
-    // A maximized window is mapped without the border inset and has its
-    // rectangle recomputed on every arrange, so pinning it would be a lie.
-    if state.maximized.contains_key(window) {
+    // A maximized or fullscreen window is mapped without the border inset and has
+    // its rectangle recomputed on every arrange, so pinning it would be a lie.
+    if state.maximized.contains_key(window) || state.fullscreen.contains_key(window) {
         return;
     }
     // `arrange_output` shrinks the stored rectangle by the border before it
@@ -465,6 +474,13 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
         arrange(state);
         focus_window(state, &window);
     }
+    // A `fullscreen` rule fires last, so the rectangle it restores to on
+    // unfullscreen is the one the other rules just placed (COMP-05 §4).
+    if placement.fullscreen {
+        if let Some(toplevel) = window.toplevel().cloned() {
+            fullscreen_toplevel(state, &toplevel, None);
+        }
+    }
     true
 }
 
@@ -548,6 +564,8 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     state.space.unmap_elem(window);
     state.borders.remove(window);
     state.geo_loc.remove(window);
+    state.maximized.remove(window);
+    state.fullscreen.remove(window);
     state.urgent.retain(|w| w != window);
     crate::protocols::standard::foreign_toplevel::window_closed(window);
     let handle = state.ipc.handle_for(window);
@@ -1164,6 +1182,158 @@ pub fn unmaximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::s
     surface.with_pending_state(|s| {
         s.size = Some(size);
         s.states.unset(State::Maximized);
+    });
+    surface.send_configure();
+    arrange(state);
+}
+
+/// Remove `window` from whatever placement it holds on `id`'s active workspace,
+/// returning its floating rectangle if it had one and `None` if it was tiled.
+fn detach_from_layout(state: &mut AbyssState, id: u64, window: &Window) -> Option<Rectangle<i32, Logical>> {
+    let entry = state.outputs.get_mut(id)?;
+    let ws = entry.active;
+    if let Some(i) = entry.workspaces[ws]
+        .floating
+        .iter()
+        .position(|f| f.window == *window)
+    {
+        Some(entry.workspaces[ws].floating.remove(i).rect)
+    } else {
+        entry.workspaces[ws].tiled.remove(window);
+        None
+    }
+}
+
+/// Does a fullscreen toplevel currently own `output`'s active workspace?
+///
+/// The render pass needs this to decide whether the `Top` layer (the bar) draws
+/// above or below the window stack; it cannot see [`AbyssState`] itself, so the
+/// answer is threaded in from the backend call sites (COMP-02 §3).
+pub fn output_has_fullscreen(state: &AbyssState, output: &Output) -> bool {
+    let Some(entry) = state.outputs.by_output(output) else {
+        return false;
+    };
+    let ws = entry.active;
+    entry.workspaces[ws]
+        .floating
+        .iter()
+        .any(|f| state.fullscreen.contains_key(&f.window))
+}
+
+/// A client's `xdg_toplevel.set_fullscreen` (COMP-05 §4): fill the whole output,
+/// exclusive zones included — unlike maximize, which stops at the usable area.
+///
+/// `target` is the client's requested output; `None` means "wherever it is now".
+/// Honouring a different output moves the window there, which is what the
+/// protocol asks for.
+pub fn fullscreen_toplevel(
+    state: &mut AbyssState,
+    surface: &smithay::wayland::shell::xdg::ToplevelSurface,
+    target: Option<&smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+) {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+
+    let Some(window) = state
+        .space
+        .elements()
+        .find(|w| w.toplevel() == Some(surface))
+        .cloned()
+    else {
+        return;
+    };
+    if state.fullscreen.contains_key(&window) {
+        return;
+    }
+    let current = output_of_window(state, &window);
+    let Some(id) = target
+        .and_then(|wl| state.outputs.by_wl_output(wl).map(|e| e.id))
+        .or(current)
+        .or_else(|| state.outputs.focused().map(|e| e.id))
+    else {
+        return;
+    };
+    let output = state.outputs.get(id).expect("just resolved").output.clone();
+    let area = state.space.output_geometry(&output).unwrap_or_default();
+
+    // Detach from wherever it lives now, which may be a different output than
+    // the one the client asked to be fullscreen on.
+    let restore = current.and_then(|from| detach_from_layout(state, from, &window));
+
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    let ws = entry.active;
+    entry.workspaces[ws].floating.push(Floating {
+        window: window.clone(),
+        rect: area,
+    });
+    state.fullscreen.insert(window.clone(), restore);
+
+    surface.with_pending_state(|s| {
+        s.size = Some(area.size);
+        s.states.set(State::Fullscreen);
+    });
+    surface.send_configure();
+    arrange(state);
+}
+
+/// A client's `xdg_toplevel.unset_fullscreen`: restore whatever placement the
+/// window had before. A window that was maximized when it went fullscreen drops
+/// back to maximized rather than to its pre-maximize rectangle.
+pub fn unfullscreen_toplevel(
+    state: &mut AbyssState,
+    surface: &smithay::wayland::shell::xdg::ToplevelSurface,
+) {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+
+    let Some(window) = state
+        .space
+        .elements()
+        .find(|w| w.toplevel() == Some(surface))
+        .cloned()
+    else {
+        return;
+    };
+    let Some(restore) = state.fullscreen.remove(&window) else {
+        return;
+    };
+    let Some(id) = output_of_window(state, &window).or_else(|| state.outputs.focused().map(|e| e.id)) else {
+        surface.with_pending_state(|s| s.states.unset(State::Fullscreen));
+        surface.send_configure();
+        return;
+    };
+    let output = state.outputs.get(id).expect("just resolved").output.clone();
+    layer_map_for_output(&output).arrange();
+    let area = tiling_area(state, &output);
+    let still_maximized = state.maximized.contains_key(&window);
+    let max_area = usable_area(state, &output);
+
+    detach_from_layout(state, id, &window);
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    let ws = entry.active;
+    let size = if still_maximized {
+        entry.workspaces[ws].floating.push(Floating {
+            window: window.clone(),
+            rect: max_area,
+        });
+        max_area.size
+    } else {
+        match restore {
+            Some(rect) => {
+                entry.workspaces[ws].floating.push(Floating {
+                    window: window.clone(),
+                    rect,
+                });
+                rect.size
+            }
+            None => {
+                entry.workspaces[ws].tiled.insert(window.clone(), None, area);
+                area.size
+            }
+        }
+    };
+
+    surface.with_pending_state(|s| {
+        s.size = Some(size);
+        s.states.unset(State::Fullscreen);
     });
     surface.send_configure();
     arrange(state);

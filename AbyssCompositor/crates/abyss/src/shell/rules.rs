@@ -43,6 +43,8 @@ pub struct NoAgent;
 #[derive(Debug, Default, PartialEq)]
 pub struct Placement {
     pub float: bool,
+    /// Map the window fullscreen; the caller applies it after placement.
+    pub fullscreen: bool,
     /// 1-based workspace, as written in the config.
     pub workspace: Option<i32>,
     pub no_focus_steal: bool,
@@ -129,6 +131,7 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> Placement
         match state.config.window_rules[i].action.clone() {
             RuleAction::Float if placing => placement.float = true,
             RuleAction::Tile if placing => placement.float = false,
+            RuleAction::Fullscreen if placing => placement.fullscreen = true,
             RuleAction::Workspace(n) if placing => placement.workspace = Some(n),
             RuleAction::NoFocusSteal if placing => placement.no_focus_steal = true,
             RuleAction::Size(w, h) if placing => {
@@ -142,6 +145,7 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> Placement
             RuleAction::Output(name) if placing => placement.output = Some(name),
             RuleAction::Float
             | RuleAction::Tile
+            | RuleAction::Fullscreen
             | RuleAction::Workspace(_)
             | RuleAction::NoFocusSteal
             | RuleAction::Size(..)
