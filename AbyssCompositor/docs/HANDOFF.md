@@ -5,7 +5,8 @@ verified progress record; this file is the short-lived queue of what to pick
 up next. If the two disagree, STATUS.md is right about the past and this file
 is right about the intent.
 
-Branch: `comp16-m9c-headless`, pushed, ~20 commits ahead of `main`. No PR open.
+Branch: `comp16-m9c-headless`. PR #1 is open (`Implements COMP-15 §1`).
+Commit `5395443` (pointer-focus refresh) is local-only — push it.
 
 ---
 
@@ -110,8 +111,8 @@ protocol bugs.
 
 `zwlr_virtual_pointer_v1` is implemented (`protocols/standard/virtual_pointer.rs`,
 hand-rolled — smithay 0.7 has no module) and all 12 of its tests pass. Full
-suite: **RC=0, 755 passed, 308 skipped, 0 failed** against the same 85 skip
-entries; those 12 were wlcs *skips* (extension not advertised), not skip-list
+suite at the time: **RC=0, 755 passed, 308 skipped, 0 failed** against the
+same 85 skip entries; those 12 were wlcs *skips* (extension not advertised), not skip-list
 entries, so the ratchet did not move. Worth keeping:
 
 - **Discrete scroll steps go in as `discrete * 120`.** smithay divides `v120`
@@ -126,6 +127,50 @@ entries, so the ratchet did not move. Worth keeping:
 
 Foreign-toplevel (30 tests) is now the only genuine unimplemented protocol in
 the skipped set, and it is owner-blocked.
+
+## Pointer focus follows the scene, not just the mouse (fixed)
+
+Skip groups 15, 16 and 17 were one bug. `pointer_moved` was the *only* code
+that delivered `wl_pointer` focus, so focus was re-evaluated on device motion
+and never on a change of scene: a stationary pointer never learned that a
+window had moved or resized under it, that a subsurface had slid under or out
+from under it, or that `set_input_region` had shrunk away from beneath it.
+
+`AbyssState::refresh_pointer_focus` (`input/mod.rs`) is the scene-driven twin of
+`pointer_moved`: hit-test the current pointer location and deliver
+`motion` + `frame` only when the `(surface, rounded surface-relative position)`
+pair actually changed, tracked in `AbyssState.last_pointer_focus`. Three things
+worth keeping:
+
+- **The changed-only guard is load-bearing, not an optimisation.** smithay's
+  `PointerInnerHandle::motion` sends `enter`/`replace`/`leave` on a focus
+  change but forwards a *same-focus* refresh as an unconditional
+  `wl_pointer.motion` (`wayland/seat/pointer.rs:95`). Unguarded, every commit
+  would spam every StrictMock listener in the suite and turn passing tests red.
+  Compare on `to_i32_round()` — f64 comparison yields spurious motion.
+- **Call it from `CompositorHandler::commit` and `shell::place_at`, never from
+  `arrange`.** `pointer_moved` calls `arrange` itself via focus-follows-mouse,
+  so an `arrange` hook re-enters motion delivery mid-flight. Committed state
+  only is also why `subsurface_does_not_move_when_parent_not_committed`
+  correctly sees no change. The refresh touches neither output nor keyboard
+  focus — those are human-motion behaviours, and driving keyboard focus from a
+  commit hook invites recursion.
+- **Read the wlcs C++ first.** `tests/test_surface_events.cpp:430`
+  (`surface_moves_while_under_pointer`) is what pins the design: it moves a
+  surface repeatedly under a pointer parked at (500,500) and asserts a
+  `wl_pointer.motion` carrying `(500 - new_x, 500 - new_y)` for *each* move.
+  That plus the StrictMock constraint above is the whole specification.
+
+20 entries out (12 `RegionSurfaceInputCombinations`, 4 `SubsurfaceTest`, 4
+`ClientSurfaceEventsTest`). Full suite: **RC=0, 775 passed, 308 skipped, 0
+failed** against 65 skip entries.
+
+Negative result worth not re-chasing:
+`subsurface_does_not_move_when_parent_not_committed` is **not** a focus bug. It
+fails at `subsurfaces.cpp:273` with `position_on_window()` = (2560,2560) where
+the test wants (7680,7680) — a factor-of-3 subsurface-offset/sync-commit
+accounting error, same family as the `place_above_simple` / `place_below_simple`
+restack failures. Correctly still skipped.
 
 ## Queue after that
 
@@ -145,11 +190,28 @@ the skipped set, and it is owner-blocked.
   after they exist. Restrict pushes, block force-push, require `attribution`
   plus the gate jobs. Requiring *signed commits* is a separate decision: it
   needs a GPG or SSH signing key configured locally or every commit fails.
-- **Open the PR** for `comp16-m9c-headless`. Body must cite the spec section
-  (`Implements COMP-15 §1`) or the `spec-trail` job blocks it — that job is
-  live now, not theoretical.
-- **85 remaining skip-listed failures** in 17 live groups (group 1 retired): future
-  milestone work, not this session's.
+- **PR #1** is open. Its `spec-trail` job failed on the *empty* body the PR was
+  opened with, not on the regex — the body cites `Implements COMP-15 §1` now, so
+  re-run that job (`gh run rerun <run> --job <id>`) once the in-flight
+  `wlcs (headless)` in the same run finishes; a job cannot be rerun while its
+  run is still going. Then confirm `wlcs (headless)` is green on the llvmpipe
+  runner — that is what closes m9c.
+- **65 remaining skip-listed failures.** Clusters, best breakthrough candidates
+  first:
+  - `XdgToplevelStable*` window-geometry-offset / configure, ~15 —
+    `pointer_respects_window_geom_offset`, `touch_respects_window_geom_offset`,
+    `surface_can_be_{moved,resized}_interactively`,
+    `pointer_leaves_surface_during_interactive_{move,resize}`, the 6
+    `XdgToplevelStableConfigurationTest` cases, 4 parent-setting. Strongest
+    single-bug smell of what's left.
+  - Subsurface sync-commit / offset, 6 — already localized to a factor-of-3
+    offset error at `subsurfaces.cpp:273` (see above).
+  - `XdgPopupTest` 11; `PointerConstraints` 5 (cheap retest: the new refresh
+    now calls `update_pointer_constraint_focus` on scene changes);
+    `PrimarySelection` 4 + `CopyCutPaste` 1; `LayerSurfaceTest` 4;
+    `XdgSurfaceStableTest` 4; `ClientSurfaceEventsTest.frame_timestamp_increases`
+    1 (COMP-02); `BadBufferTest.test_truncated_shm_file` 1.
+  - `TextInputV3WithInputMethodV2Test` 11 — closed won't-fix, see above.
 - **First hardware KMS boot on cbbedroomdesktop** — explicitly sequenced last.
 - Not started: 9d node-level redaction, 9e window-rules completion,
   9f benchmark harness.
