@@ -302,6 +302,21 @@ fn boot(
     crate::input::idle::start(&mut state, &handle);
     crate::ipc::start(&mut state, &handle);
     crate::config::watch::start(&mut state, &handle);
+    // Registered ahead of the wayland sources on purpose: calloop dispatches in
+    // registration order, so a queued PositionWindow wins over client requests
+    // that arrived in the same wakeup. wlcs assumes move_surface_to has taken
+    // effect before the requests that follow it, and does not roundtrip.
+    let under_wlcs = wlcs.is_some();
+    if let Some(channel) = wlcs {
+        let mut clients: std::collections::HashMap<i32, smithay::reexports::wayland_server::Client> =
+            std::collections::HashMap::new();
+        handle
+            .insert_source(channel, move |event, _, state| match event {
+                smithay::reexports::calloop::channel::Event::Msg(e) => wlcs_event(state, &mut clients, e),
+                smithay::reexports::calloop::channel::Event::Closed => state.loop_signal.stop(),
+            })
+            .map_err(|e| anyhow::anyhow!("wlcs channel source: {e}"))?;
+    }
     handle
         .insert_source(socket, |stream, _, state| {
             if let Err(e) = state.display_handle.insert_client(stream, client_state()) {
@@ -323,21 +338,11 @@ fn boot(
     // Under wlcs the socket exists but nothing connects to it, and the
     // harness runs several compositors at once — exporting a global
     // WAYLAND_DISPLAY would have them fight over one process-wide variable.
-    if wlcs.is_none() {
+    if !under_wlcs {
         std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
     }
     tracing::info!(socket = %state.socket_name, w = size.0, h = size.1, "listening (headless)");
 
-    if let Some(channel) = wlcs {
-        let mut clients: std::collections::HashMap<i32, smithay::reexports::wayland_server::Client> =
-            std::collections::HashMap::new();
-        handle
-            .insert_source(channel, move |event, _, state| match event {
-                smithay::reexports::calloop::channel::Event::Msg(e) => wlcs_event(state, &mut clients, e),
-                smithay::reexports::calloop::channel::Event::Closed => state.loop_signal.stop(),
-            })
-            .map_err(|e| anyhow::anyhow!("wlcs channel source: {e}"))?;
-    }
     if session {
         crate::session::import();
     }
