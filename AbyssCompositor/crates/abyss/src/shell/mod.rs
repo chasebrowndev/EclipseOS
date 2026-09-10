@@ -323,6 +323,47 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
     }
 }
 
+/// Pin a window to an exact window-geometry rectangle, floating it out of the
+/// tiling layout so the next layout pass leaves it there (COMP-05 §3). This is
+/// what an interactive move/resize grab and an external placement request both
+/// end up calling.
+pub fn place_at(state: &mut AbyssState, window: &Window, geo: Rectangle<i32, Logical>) {
+    // A maximized window is mapped without the border inset and has its
+    // rectangle recomputed on every arrange, so pinning it would be a lie.
+    if state.maximized.contains_key(window) {
+        return;
+    }
+    // `arrange_output` shrinks the stored rectangle by the border before it
+    // configures and maps, so store the outer rectangle that shrinks back to
+    // exactly `geo`.
+    let border = state.config.general.border_size;
+    let outer = Rectangle::new(
+        Point::from((geo.loc.x - border, geo.loc.y - border)),
+        Size::from((geo.size.w + 2 * border, geo.size.h + 2 * border)),
+    );
+    let mut found = false;
+    'outer: for entry in state.outputs.iter_mut() {
+        for ws in entry.workspaces.iter_mut() {
+            if let Some(f) = ws.floating.iter_mut().find(|f| &f.window == window) {
+                f.rect = outer;
+                found = true;
+                break 'outer;
+            }
+            if ws.remove(window) {
+                ws.floating.push(Floating {
+                    window: window.clone(),
+                    rect: outer,
+                });
+                found = true;
+                break 'outer;
+            }
+        }
+    }
+    if found {
+        arrange(state);
+    }
+}
+
 /// A brand-new toplevel joins the active workspace, tiled, next to the focus.
 pub fn place_new_window(state: &mut AbyssState, window: Window) {
     // Classify before the window is ever composited (COMP-02 §7). Raise-only.

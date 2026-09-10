@@ -35,7 +35,7 @@ use smithay::{
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
         wayland_server::{Display, Resource},
     },
-    utils::{Point, Size, Transform},
+    utils::{Point, Rectangle, Size, Transform},
     wayland::{
         dmabuf::{DmabufFeedbackBuilder, DmabufState},
         presentation::Refresh,
@@ -490,7 +490,11 @@ fn wlcs_event(
                 })
                 .cloned();
             if let Some(w) = window {
-                state.space.map_element(w, location, false);
+                // `arrange` re-maps every element on every layout pass, so a
+                // bare `map_element` would be undone by the next one; pin the
+                // window as floating at the requested geometry instead.
+                let size = w.geometry().size;
+                crate::shell::place_at(state, &w, Rectangle::new(location.into(), size));
                 return;
             }
             // A layer surface is not a space element: wlcs positions the

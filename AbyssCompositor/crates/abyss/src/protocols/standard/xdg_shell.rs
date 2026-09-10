@@ -51,6 +51,32 @@ impl XdgShellHandler for AbyssState {
         }
     }
 
+    /// COMP-05 §3: `xdg_toplevel.move` starts a pointer grab that drags the
+    /// window; it is honoured only for a serial the client really was sent.
+    fn move_request(&mut self, surface: ToplevelSurface, _seat: WlSeat, serial: Serial) {
+        let wl_surface = surface.wl_surface().clone();
+        let Some(window) = crate::shell::window_for_surface(self, &wl_surface) else {
+            return;
+        };
+        crate::input::grabs::start_move(self, window, &wl_surface, serial);
+    }
+
+    /// COMP-05 §3: `xdg_toplevel.resize` drags the named edges; the opposite
+    /// edges stay put.
+    fn resize_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _seat: WlSeat,
+        serial: Serial,
+        edges: xdg_toplevel::ResizeEdge,
+    ) {
+        let wl_surface = surface.wl_surface().clone();
+        let Some(window) = crate::shell::window_for_surface(self, &wl_surface) else {
+            return;
+        };
+        crate::input::grabs::start_resize(self, window, &wl_surface, serial, edges);
+    }
+
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
         // Popup grabs land with the full shell in M3.
     }

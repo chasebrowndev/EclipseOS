@@ -18,6 +18,7 @@ use smithay::{
 
 use crate::state::AbyssState;
 
+pub mod grabs;
 pub mod idle;
 pub mod inject;
 
