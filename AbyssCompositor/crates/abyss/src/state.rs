@@ -218,6 +218,8 @@ pub struct AbyssState {
     pub idle_notifier: IdleNotifierState<Self>,
     #[allow(dead_code)] // holds the zwp_idle_inhibit_manager_v1 global alive
     pub idle_inhibit_state: IdleInhibitManagerState,
+    /// `zwlr_virtual_pointer_v1`.
+    pub virtual_pointer: crate::protocols::standard::virtual_pointer::VirtualPointerState,
     /// `zwlr_output_power_management_v1`.
     pub output_power: crate::protocols::standard::output_power::OutputPowerState,
 
@@ -334,6 +336,7 @@ impl AbyssState {
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         let output_power = crate::protocols::standard::output_power::OutputPowerState::new(&dh);
+        let virtual_pointer = crate::protocols::standard::virtual_pointer::VirtualPointerState::new(&dh);
         // Capture reads every pixel of an output: allowlisted, fail-closed.
         let screencopy = crate::protocols::standard::screencopy::ScreencopyState::new(
             &dh,
@@ -443,6 +446,7 @@ impl AbyssState {
             idle_notifier,
             idle_inhibit_state,
             output_power,
+            virtual_pointer,
             xwayland_shell_state,
             xwayland: Default::default(),
             stats: crate::render::stats::FrameStats::new(stats),

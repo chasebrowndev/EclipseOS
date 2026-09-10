@@ -10,17 +10,20 @@
 # tests pass now, and the 2 that do not are pointer bugs in touch clothing,
 # rehomed into group 16 next to their pointer twins.)
 #
-# The 319 are not one bucket, and only 42 of them are worth chasing. wlcs
+# The 319 are not one bucket, and only 30 of them are worth chasing. wlcs
 # skips a test when the integration does not advertise the extension it
-# needs; ours advertises six globals (`SUPPORTED_EXTENSIONS` in
+# needs; ours advertises nine globals (`SUPPORTED_EXTENSIONS` in
 # `crates/wlcs-abyss/src/lib.rs`). Breakdown:
 #
 #   244  wl_shell + zxdg_shell_v6        dead protocols; will never pass
 #     5  gtk_primary_selection           superseded by zwp_primary_selection
 #     4  wlcs SelfTest                   tests wlcs itself, not us
 #    30  foreign-toplevel                UNIMPLEMENTED -- real gap
-#    12  zwlr_virtual_pointer_v1         UNIMPLEMENTED -- real gap
 #    24  touch                           wl_shell/zxdg_shell_v6 variants
+#
+# zwlr_virtual_pointer_v1 used to sit in that list with 12 skipped tests. It
+# is implemented now (`protocols/standard/virtual_pointer.rs`), advertised in
+# `SUPPORTED_EXTENSIONS`, and all 12 pass.
 #
 # 120 of the 244 are the numerically-named `*InputCombinations` cases, which
 # `Combine(edges, all_surface_types, all_input_types)` in wlcs's

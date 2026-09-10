@@ -83,6 +83,15 @@ impl AbyssState {
         pointer.frame(self);
     }
 
+    /// A scroll frame. The `AxisFrame` is built by the caller, since only it
+    /// knows the source, discrete steps and stop flags of the event.
+    pub fn inject_pointer_axis(&mut self, frame: smithay::input::pointer::AxisFrame) {
+        super::idle::on_activity(self);
+        let pointer = self.seat.get_pointer().unwrap();
+        pointer.axis(self, frame);
+        pointer.frame(self);
+    }
+
     /// A touch point coming down, in global compositor coordinates.
     ///
     /// Touch has no cursor, so there is nothing to clamp and no

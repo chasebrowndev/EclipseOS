@@ -42,6 +42,7 @@ static SUPPORTED_EXTENSIONS: &[WlcsExtensionDescriptor] = extension_list!(
     ("xdg_wm_base", 6),
     ("zwp_text_input_manager_v3", 1),
     ("zwp_input_method_manager_v2", 1),
+    ("zwlr_virtual_pointer_manager_v1", 2),
 );
 
 static DESCRIPTOR: WlcsIntegrationDescriptor = WlcsIntegrationDescriptor {

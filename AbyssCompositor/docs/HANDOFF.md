@@ -106,9 +106,29 @@ entries (down from 105). Lesson worth keeping: an input failure that spans
 several unrelated input suites is more likely one placement bug than several
 protocol bugs.
 
+## Virtual pointer is done
+
+`zwlr_virtual_pointer_v1` is implemented (`protocols/standard/virtual_pointer.rs`,
+hand-rolled — smithay 0.7 has no module) and all 12 of its tests pass. Full
+suite: **RC=0, 755 passed, 308 skipped, 0 failed** against the same 85 skip
+entries; those 12 were wlcs *skips* (extension not advertised), not skip-list
+entries, so the ratchet did not move. Worth keeping:
+
+- **Discrete scroll steps go in as `discrete * 120`.** smithay divides `v120`
+  by 120 again to send the legacy `wl_pointer.axis_discrete`
+  (`wayland/seat/pointer.rs:150`).
+- **`Dispatch::request` only hands you `&Data`**, so the frame batch lives in
+  `AbyssState.virtual_pointer.devices`, keyed by resource — not in user data.
+- Resolve `motion_absolute`'s output geometry *before* borrowing the pending
+  batch mutably, or `state` is borrowed twice.
+- Replaying the batch through `inject_pointer_*` rather than `PointerHandle`
+  keeps idle activity, click-to-focus, clamping and lock suppression.
+
+Foreign-toplevel (30 tests) is now the only genuine unimplemented protocol in
+the skipped set, and it is owner-blocked.
+
 ## Queue after that
 
-- **`zwlr_virtual_pointer_v1`** — 12 tests, self-contained, no design call needed.
 - **Foreign-toplevel** — 30 tests, but **blocked**: needs an owner decision on
   whether enumerating other clients' toplevels takes a capability check
   (COMP-08 / COMP-11). Do not invent a check; leave `TODO(COMP-11)`.

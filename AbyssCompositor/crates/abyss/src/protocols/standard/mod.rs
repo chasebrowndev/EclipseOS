@@ -32,4 +32,5 @@ mod shm;
 mod surface_extra;
 mod tablet;
 mod text_input;
+pub mod virtual_pointer;
 mod xdg_shell;
