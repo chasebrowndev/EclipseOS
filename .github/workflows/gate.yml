@@ -64,6 +64,10 @@ jobs:
   conformance:
     name: wlcs (headless)
     runs-on: ubuntu-24.04
+    # PR-only, like tcb-review and spec-trail. The suite is a ~40 minute job
+    # dominated by a from-scratch cmake build of wlcs; running it on every
+    # push to every branch bought nothing that the PR run does not.
+    if: github.event_name == 'pull_request'
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -88,10 +92,23 @@ jobs:
 
       # Pinned to the same revision smithay's own wlcs job uses. A floating
       # checkout would let an upstream test change turn this gate red on a
-      # commit that did not touch the compositor.
+      # commit that did not touch the compositor. The pin is also the cache
+      # key: rust-cache covers cargo, not this cmake build.
+      - name: wlcs sha
+        id: wlcs
+        run: echo "sha=12234affdc0a4cc104fbaf8a502efc5f822b973b" >> "$GITHUB_OUTPUT"
+
+      - name: cache wlcs
+        id: wlcs-cache
+        uses: actions/cache@v4
+        with:
+          path: AbyssCompositor/target/wlcs-build
+          key: wlcs-${{ runner.os }}-${{ steps.wlcs.outputs.sha }}
+
       - name: build wlcs
+        if: steps.wlcs-cache.outputs.cache-hit != 'true'
         env:
-          WLCS_SHA: 12234affdc0a4cc104fbaf8a502efc5f822b973b
+          WLCS_SHA: ${{ steps.wlcs.outputs.sha }}
         run: |
           git clone https://github.com/MirServer/wlcs.git target/wlcs-src
           git -C target/wlcs-src checkout "$WLCS_SHA"
