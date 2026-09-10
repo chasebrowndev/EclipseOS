@@ -266,12 +266,20 @@ pub fn scan_connectors(state: &mut AbyssState) {
         .filter(|(_, o)| !present.contains(&o.connector))
         .map(|(i, o)| (i, o.id))
         .collect();
-    for (i, id) in gone.into_iter().rev() {
+    // Drop every departing DrmOutput first, then stand the fallback up *before*
+    // unregistering, so that unplugging the last monitor has somewhere to re-home
+    // its windows instead of silently dropping them.
+    for (i, _) in gone.iter().rev() {
         if let Some(drm) = state.drm.as_mut() {
             // Dropping the DrmOutput releases its CRTC for reuse.
-            drm.outputs.remove(i);
+            drm.outputs.remove(*i);
         }
-        crate::outputs::unregister(state, id);
+    }
+    if !gone.is_empty() {
+        sync_fallback(state);
+        for (_, id) in gone {
+            crate::outputs::unregister(state, id);
+        }
     }
 
     // --- arrivals -----------------------------------------------------------
@@ -455,6 +463,24 @@ fn add_connector(
         "output configured"
     );
     Ok(())
+}
+
+/// Our render GPU disappeared (COMP-03 §3): its fd is dead, so tear every output
+/// it was driving down and land on the headless fallback rather than re-scanning
+/// a device that is no longer there.
+fn teardown_gpu(state: &mut AbyssState) {
+    let ids: Vec<u64> = match state.drm.as_mut() {
+        Some(drm) => drm.outputs.drain(..).map(|o| o.id).collect(),
+        None => return,
+    };
+    if ids.is_empty() {
+        return;
+    }
+    sync_fallback(state);
+    for id in ids {
+        crate::outputs::unregister(state, id);
+    }
+    tracing::warn!("render GPU removed; outputs torn down");
 }
 
 /// Never leave the human with no output (COMP-03 §5): stand up a headless one
@@ -818,7 +844,12 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
                 UdevEvent::Changed { device_id } => device_id == our_device,
                 UdevEvent::Removed { device_id } => {
                     tracing::info!(?device_id, "GPU removed");
-                    device_id == our_device
+                    if device_id == our_device {
+                        // The fd is dead; re-scanning it would only log errors.
+                        // Tear the outputs down and fall back to headless.
+                        teardown_gpu(state);
+                    }
+                    false
                 }
             };
             if changed {

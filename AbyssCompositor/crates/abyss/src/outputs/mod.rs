@@ -562,9 +562,12 @@ pub fn unregister(state: &mut crate::state::AbyssState, id: u64) {
     // copy, so re-docking the same monitor takes them back.
     if let (Some(fallback), Some(removed)) = (state.outputs.fallback_id(), removed) {
         if let Some(target) = state.outputs.get_mut(fallback) {
-            for (i, wins) in removed.windows.into_iter().enumerate() {
-                let slot = i.min(target.workspaces.len() - 1);
-                target.workspaces[slot].pending.extend(wins);
+            let last = target.workspaces.len().saturating_sub(1);
+            if !target.workspaces.is_empty() {
+                for (i, wins) in removed.windows.into_iter().enumerate() {
+                    let slot = i.min(last);
+                    target.workspaces[slot].pending.extend(wins);
+                }
             }
         }
     }
