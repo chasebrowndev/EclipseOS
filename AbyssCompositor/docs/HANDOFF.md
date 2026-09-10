@@ -61,23 +61,26 @@ Only after that probe does the tty2 boot need the user.
 
 `cbbedroomdesktop` has been offline for hours (`tailscale ping` times out), and
 the VM pass is **cancelled by the owner** — "we've done enough VM testing".
-So the first real KMS boot happens on `chase-pc` itself, from a second VT.
+So the first real KMS boot happens on `chase-pc` itself, on a second VT,
+driven over ssh — **not** from the physical console.
 
 ### Why this is safe for a running session
 
-Only the **active** VT's logind session holds DRM master. `Ctrl+Alt+F2` makes
-tty2 active, logind revokes Hyprland's master, and Hyprland is *suspended*, not
-killed — every process inside it survives, terminals and long-lived shells
-included. `Ctrl+Alt+F1` brings it all back. Nothing is `pkill`ed.
+Only the **active** VT's logind session holds DRM master. Making another VT
+active revokes Hyprland's master and *suspends* it — it is not killed, every
+process inside survives, terminals and long-lived shells included. Switching
+back brings it all back. Nothing is `pkill`ed. See "Run it over ssh" below for
+how to do that switch without being at the keyboard.
 
 ### Preconditions, verified on chase-pc 2026-09-10
 
 - One GPU: `/dev/dri/card1` + `/dev/dri/renderD128` (nvidia). Render node
   present, so `gpu.rs` has something to find. **No `card0`** — anything
   assuming `card0` is wrong, though `drm.rs` hardcodes no path.
-- logind session 4 on `seat0`/`tty1`. `seatd.service` is also active, but
-  **libseat prefers logind**, so the missing `seat` group does not matter.
-  `chase` is in `video` and `input`, which is what is needed.
+- logind session 4 on `seat0`/`tty1` (Hyprland). `seatd.service` is also
+  active. `chase` is in `video` and `input` but **not** in a `seat` group —
+  which is why the ssh path below runs as root with `LIBSEAT_BACKEND=seatd`.
+  libseat prefers logind, and logind will not give a seat to a pty session.
 - `nvidia-drm.modeset=1` is **not** on the kernel cmdline, but recent
   `nvidia-open-dkms` defaults it on and Hyprland could not run otherwise.
   Note `/sys/module/nvidia_drm/parameters/modeset` is mode 0400, so the guard
@@ -85,36 +88,77 @@ included. `Ctrl+Alt+F1` brings it all back. Nothing is `pkill`ed.
   surface as an opaque EGL error from `EGLDisplay::new(gbm)` at `drm.rs:600`,
   not as the clear message that guard intends.
 
-### Before switching VTs
+### Run it over ssh, not from the console
 
-**Open the out-of-band recovery path first.** `chase-laptop`
-(`100.124.173.22`) is online on the tailnet. From it:
+**The previous plan said "sit at the machine and Ctrl+Alt+F2". Don't. Drive it
+from an ssh shell instead** — the shell you launch from is the shell you rescue
+from, so recovery needs no second machine and no keyboard at the box.
+
+Verified on chase-pc 2026-09-10:
 
 ```
-tailscale ssh chase-pc
+session 4  chase  seat0  tty1    <- Hyprland, owns DRM master
+session 7  chase  (none) pts/1   <- an ssh session: Seat= empty, VTNr=0
+seatd.service: active     openvt + chvt: present
+```
+
+**Do not run abyss directly from the ssh shell.** A pty session has no seat, so
+`LibSeatSession::new()` fails with
+`libseat session (is seatd running, or logind available?)`. That message is a
+red herring — seatd *is* running. The real cause is the empty `Seat=`. Budget
+an hour if you meet this cold without knowing it.
+
+Allocate a VT instead. `chase` is not in a `seat` group, so this is root work,
+and `tailscale ssh root@chase-pc` grants root directly (no password; `sudo -n`
+does not work on this box):
+
+```
+tailscale ssh root@chase-pc
+LIBSEAT_BACKEND=seatd openvt -sw -- /path/to/abyss --backend drm
+```
+
+`-s` switches to the freshly allocated VT, `-w` waits for the process to exit.
+Recovery, from that same ssh shell:
+
+```
 pkill -x abyss        # exact name only. NEVER pkill -f.
+chvt 1                # back to Hyprland
 ```
 
-A compositor that wedges holding DRM master can make the VT switch back fail,
-leaving a black screen with the desktop alive underneath. There is no keyboard
-recovery from that. `cbbedroomdesktop` is not available as the recovery box.
+Two things this does **not** solve:
+
+- **Verification still needs eyes on the monitor.** Over ssh you get logs and an
+  exit code, not a picture. Milestones M3/M4/M6 below are visual; someone has to
+  look at the screen, or you settle for what the logs assert.
+- **VT switching is the flaky part on nvidia-open.** Switching away from tty1
+  makes logind mark Hyprland's session inactive; it loses DRM master and is
+  *suspended*, not killed — every process inside it survives, and `chvt 1`
+  restores it. But nvidia's fbcon-restore path is historically where this
+  driver misbehaves, so expect a glitchy resume as the plausible failure rather
+  than a wedge.
+
+`chase-laptop` (`100.124.173.22`) is on the tailnet and still works as a second
+recovery path if the ssh session itself dies. `cbbedroomdesktop` has been
+offline for hours and is not available.
 
 ### The run
 
 ```
-git checkout comp16-drm-preboot
+git checkout main       # after PR #4 is merged
 cargo build
 ```
 
-Then `Ctrl+Alt+F2`, log in as `chase`, and:
+Then, as root over ssh, with `XDG_RUNTIME_DIR` pointed at chase's runtime dir
+so the wayland socket lands where clients expect it:
 
 ```
-cd ~/syncedprojects/EclipseOS/AbyssCompositor
-XDG_RUNTIME_DIR=/run/user/1000 ./target/debug/abyss --backend drm
+cd /home/chase/syncedprojects/EclipseOS/AbyssCompositor
+LIBSEAT_BACKEND=seatd openvt -sw -- \
+  env XDG_RUNTIME_DIR=/run/user/1000 ./target/debug/abyss --backend drm
 ```
 
-A Claude session left running under Hyprland survives the switch and can tail
-`journalctl --user -t abyss -f` from tty1 while you are on tty2.
+A Claude session left running under Hyprland survives the VT switch and can
+tail `journalctl --user -t abyss -f` throughout.
 
 ### What to verify, per milestone
 
