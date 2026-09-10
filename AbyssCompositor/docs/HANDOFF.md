@@ -271,63 +271,30 @@ Load-bearing details and negative results:
   after they exist. Restrict pushes, block force-push, require `attribution`
   plus the gate jobs. Requiring *signed commits* is a separate decision: it
   needs a GPG or SSH signing key configured locally or every commit fails.
-- **PR #1** is open and everything is green except `wlcs (headless)`, which is
-  the last thing standing between m9c and closed. It fails on exactly one test
-  the box passes:
+- **PR #1** is open. `wlcs (headless)` was the last red job; the missing
+  map-time configure fixed in `6dd1ea8` cleared it along with the whole
+  `XdgToplevelStable*` cluster, so re-check the run before assuming anything
+  here is still true. The long-chased
   `SurfaceInputRegions/SurfaceInputCombinations.input_seen_after_surface_unmapped_and_remapped/7`
-  (the touch variant; `/6`, the pointer one, failed too before the pointer-focus
-  fix and now passes). `current_surface` is NULL at
-  `surface_input_regions.cpp:623` — the client sees no touch down at all. Ruled
-  out so far: `attach_visible_buffer` blocks on a frame callback, so the remap
-  commit really was processed and rendered before `down_at`; we never
-  `unmap_window` on a null-buffer commit (only `toplevel_destroyed` and the
-  XWM); `Space::element_under` hit-tests a live `Window::bbox_with_popups`, and
-  `Window::bbox` is a cached value that `CompositorHandler::commit` does refresh
-  via `window.on_commit()`; `Window::alive()` is resource liveness, not
-  mapped-ness, so `space.refresh()`'s `retain` cannot drop a remapped element.
-  Next step is empirical, not more reading: `eprintln!` in
-  `inject_touch_down` and `shell::surface_under` (the wlcs cdylib installs no
-  tracing subscriber) and run just that test in a loop on the box under load.
-  If it stays reclusive it is a fair skip-list candidate under the
-  "reclusive and UX-inconsequential" rule — but that is a ratchet regression and
-  must be recorded as one.
-
-- **`/7` is the window-geometry-inset variant, not a touch bug.** Decoded from
-  the wlcs sources on the box: `all_surface_types()` is `[wl_shell, xdg_v6,
-  xdg_stable(0,0,0,0), xdg_stable(12,5,20,6), subsurface(0,0),
-  subsurface(7,12)]` and `all_input_methods()` is `[pointer, touch]`;
-  `Combine()` varies the last parameter fastest, so `/6` is inset+pointer and
-  `/7` is inset+touch. The zero-inset pair `/4`,`/5` both pass, so the
-  discriminator is the geometry inset, which puts this failure in the same
-  family as the `XdgToplevelStable*` window-geometry cluster. The builder makes
-  a 215x108 buffer, sets window geometry `(12,5,183,97)`, then
-  `move_surface_to(200+12, 49+5)` — the compositor is handed the *geometry*
-  origin, so the buffer origin is at `(200,49)` and the touch at `(204,53)` is
-  inside the buffer but outside the geometry rect, which must still hit the
-  surface because the default input region is the whole surface. Pointer passes
-  and touch fails because the pointer gets a second chance from
-  `refresh_pointer_focus` on the post-remap commit while `inject_touch_down`
-  hit-tests exactly once. Prime suspect: `shell::reanchor`. On the null-buffer
-  commit smithay's `Window::geometry()` intersects the set geometry with an
-  empty bbox and falls back to the bbox, so `loc` becomes `(0,0)` and reanchor
-  shifts by `(-12,-5)`, then by `(12,5)` on the remap — symmetric only if the
-  window is found in `ws.floating`; otherwise the delta is silently dropped and
-  the space location stops matching the geometry origin.
-- **65 remaining skip-listed failures.** Clusters, best breakthrough candidates
-  first:
-  - `XdgToplevelStable*` window-geometry-offset / configure, ~15 —
-    `pointer_respects_window_geom_offset`, `touch_respects_window_geom_offset`,
-    `surface_can_be_{moved,resized}_interactively`,
-    `pointer_leaves_surface_during_interactive_{move,resize}`, the 6
-    `XdgToplevelStableConfigurationTest` cases, 4 parent-setting. Strongest
-    single-bug smell of what's left.
-  - Subsurface sync-commit / offset, 6 — already localized to a factor-of-3
-    offset error at `subsurfaces.cpp:273` (see above).
-  - `XdgPopupTest` 11; `PointerConstraints` 5 (cheap retest: the new refresh
-    now calls `update_pointer_constraint_focus` on scene changes);
-    `PrimarySelection` 4 + `CopyCutPaste` 1; `LayerSurfaceTest` 4;
-    `XdgSurfaceStableTest` 4; `ClientSurfaceEventsTest.frame_timestamp_increases`
-    1 (COMP-02); `BadBufferTest.test_truncated_shm_file` 1.
+  had nothing to do with touch, hit-test offsets, `reanchor` or window-geometry
+  insets — every one of those hypotheses was wrong (see the negative results
+  above). It was the same missing configure, and it passes untouched.
+- **54 remaining skip-listed failures** (down from 65). Actual counts from
+  `ci/wlcs-skip.txt`, best breakthrough candidates first:
+  - Popups, 12 — `XdgPopupTest` 4, `XdgPopupStable/XdgPopupTest` 4,
+    `LayerShellPopup/XdgPopupTest` 4. Now the largest live cluster and three
+    parameterizations of the same suite, so the single-bug odds are good.
+  - Subsurfaces, 6 — `XdgShellStableSubsurfaces/SubsurfaceTest` 4 and
+    `SubsurfaceMultilevelTest` 2; already localized to a factor-of-3 offset
+    error at `subsurfaces.cpp:273` (see above).
+  - `PointerConstraints` 5 — cheap retest, the pointer-focus refresh now calls
+    `update_pointer_constraint_focus` on scene changes.
+  - `XdgSurfaceStableTest` 4; `LayerSurfaceTest` 4; `PrimarySelection` 4 +
+    `CopyCutPaste` 1; `XdgToplevelStableConfigurationTest` 3 and
+    `XdgToplevelStableTest` 2 (what survived `6dd1ea8`; `defaults` and the two
+    fullscreen cases are deliberate, fullscreen is an unimplemented COMP-05
+    feature); `ClientSurfaceEventsTest.frame_timestamp_increases` 1 (COMP-02);
+    `BadBufferTest.test_truncated_shm_file` 1.
   - `TextInputV3WithInputMethodV2Test` 11 — closed won't-fix, see above.
 - **First hardware KMS boot on cbbedroomdesktop** — explicitly sequenced last.
 - Not started: 9d node-level redaction, 9e window-rules completion,
