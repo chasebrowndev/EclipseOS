@@ -168,9 +168,26 @@ fn check_nvidia_modeset(node: &DrmNode) -> Result<()> {
 fn refresh_mhz(mode: &smithay::reexports::drm::control::Mode) -> i32 {
     let denom = mode.hsync().2 as u64 * mode.vsync().2 as u64;
     if denom == 0 {
-        return (mode.vrefresh() as i32) * 1000;
+        return mode.vrefresh().saturating_mul(1000).min(i32::MAX as u32) as i32;
     }
-    ((mode.clock() as u64 * 1_000_000) / denom) as i32
+    // Saturate rather than truncate: `as i32` on a bad blob can land negative,
+    // and a negative refresh reaches `Duration::from_secs_f64` in the VBlank
+    // handler.
+    ((mode.clock() as u64 * 1_000_000) / denom).min(i32::MAX as u64) as i32
+}
+
+/// Frame period for a mode's mHz refresh rate.
+///
+/// `Duration::from_secs_f64` panics on a negative or non-finite argument, and
+/// this runs in the VBlank handler on every page flip, so a mode reporting a
+/// nonsensical refresh must fall back rather than take the compositor down the
+/// moment the screen lights up. The period is `1000 / mHz` seconds: 60_000 mHz
+/// is a 16.6 ms frame.
+fn frame_period(refresh_mhz: i32) -> Duration {
+    if refresh_mhz <= 0 {
+        return Duration::from_millis(16);
+    }
+    Duration::from_secs_f64(1_000f64 / refresh_mhz as f64)
 }
 
 fn connector_name(info: &connector::Info) -> String {
@@ -249,12 +266,20 @@ pub fn scan_connectors(state: &mut AbyssState) {
         .filter(|(_, o)| !present.contains(&o.connector))
         .map(|(i, o)| (i, o.id))
         .collect();
-    for (i, id) in gone.into_iter().rev() {
+    // Drop every departing DrmOutput first, then stand the fallback up *before*
+    // unregistering, so that unplugging the last monitor has somewhere to re-home
+    // its windows instead of silently dropping them.
+    for (i, _) in gone.iter().rev() {
         if let Some(drm) = state.drm.as_mut() {
             // Dropping the DrmOutput releases its CRTC for reuse.
-            drm.outputs.remove(i);
+            drm.outputs.remove(*i);
         }
-        crate::outputs::unregister(state, id);
+    }
+    if !gone.is_empty() {
+        sync_fallback(state);
+        for (_, id) in gone {
+            crate::outputs::unregister(state, id);
+        }
     }
 
     // --- arrivals -----------------------------------------------------------
@@ -361,7 +386,15 @@ fn add_connector(
         None,
         allocator,
         exporter,
-        [Fourcc::Abgr8888, Fourcc::Argb8888],
+        // Opaque variants are listed too: a driver that advertises only
+        // XRGB8888 on its primary plane would otherwise fail the modeset
+        // outright and surface as a black screen behind a single warning.
+        [
+            Fourcc::Abgr8888,
+            Fourcc::Argb8888,
+            Fourcc::Xbgr8888,
+            Fourcc::Xrgb8888,
+        ],
         renderer_formats.iter().copied(),
         cursor_size,
         Some(gbm),
@@ -430,6 +463,24 @@ fn add_connector(
         "output configured"
     );
     Ok(())
+}
+
+/// Our render GPU disappeared (COMP-03 §3): its fd is dead, so tear every output
+/// it was driving down and land on the headless fallback rather than re-scanning
+/// a device that is no longer there.
+fn teardown_gpu(state: &mut AbyssState) {
+    let ids: Vec<u64> = match state.drm.as_mut() {
+        Some(drm) => drm.outputs.drain(..).map(|o| o.id).collect(),
+        None => return,
+    };
+    if ids.is_empty() {
+        return;
+    }
+    sync_fallback(state);
+    for id in ids {
+        crate::outputs::unregister(state, id);
+    }
+    tracing::warn!("render GPU removed; outputs torn down");
 }
 
 /// Never leave the human with no output (COMP-03 §5): stand up a headless one
@@ -734,7 +785,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
                             let refresh = o
                                 .output
                                 .current_mode()
-                                .map(|m| Duration::from_secs_f64(1_000f64 / m.refresh as f64 / 1_000f64))
+                                .map(|m| frame_period(m.refresh))
                                 .unwrap_or_else(|| Duration::from_millis(16));
                             match o.compositor.frame_submitted() {
                                 // wp_presentation: report the real page-flip
@@ -793,7 +844,12 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
                 UdevEvent::Changed { device_id } => device_id == our_device,
                 UdevEvent::Removed { device_id } => {
                     tracing::info!(?device_id, "GPU removed");
-                    device_id == our_device
+                    if device_id == our_device {
+                        // The fd is dead; re-scanning it would only log errors.
+                        // Tear the outputs down and fall back to headless.
+                        teardown_gpu(state);
+                    }
+                    false
                 }
             };
             if changed {
