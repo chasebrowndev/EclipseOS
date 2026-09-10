@@ -173,10 +173,13 @@ rather than re-deriving at a wedged console.
    compositor.
 7. `outputs/mod.rs:566` — `target.workspaces.len() - 1` underflow, latent on
    the hotplug-removal path.
-8. smithay `drm_syncobj/mod.rs:73` `unreachable!()` is reachable via
-   `drm.rs:632`. Silent abort, zero diagnostic, if it ever trips.
-9. `drm.rs:305` `info.modes()[0]` and `drm.rs:854` cached-`n` indexing —
-   invariant-safe today, both refactor hazards.
+8. smithay `drm_syncobj/mod.rs:73` `unreachable!()` is reachable via the
+   startup probe — **fixed**: the probe now runs under `catch_unwind` and a
+   panic degrades to "no explicit sync" instead of killing the compositor.
+9. `info.modes()[0]` in `add_connector` — **fixed**: a connector reporting no
+   modes now fails that connector instead of panicking. The cached-`n`
+   indexing in the VBlank/render paths is invariant-safe today (every index is
+   re-derived through `index_of_crtc`) but remains a refactor hazard.
 
 Other hardcodes worth knowing: `drm.rs:69` `FALLBACK_SIZE (1920,1080)`;
 `outputs/mod.rs:298` `refresh: 60_000` (fabricated); `drm.rs:443` `"HEADLESS-1"`
