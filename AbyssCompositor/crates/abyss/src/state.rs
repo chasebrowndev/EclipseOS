@@ -69,6 +69,17 @@ pub struct AbyssState {
     /// `None` for a window that was tiled.
     pub maximized: std::collections::HashMap<Window, Option<smithay::utils::Rectangle<i32, Logical>>>,
 
+    /// Last-seen `Window::geometry().loc` per space element (COMP-05 §3).
+    ///
+    /// A toplevel that never calls `set_window_geometry` has its geometry
+    /// derived from the bounding box of its whole surface tree, so adding a
+    /// subsurface that extends left or above the root moves the geometry
+    /// origin. A `Space` pins an element by its geometry origin, so without
+    /// this the window would silently translate under the client. The delta is
+    /// applied back to the stored placement in `shell::reanchor`.
+    #[allow(clippy::mutable_key_type)]
+    pub geo_loc: std::collections::HashMap<Window, smithay::utils::Point<i32, Logical>>,
+
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub layer_shell_state: WlrLayerShellState,
@@ -366,6 +377,7 @@ impl AbyssState {
             space: Space::default(),
             popups: PopupManager::default(),
             maximized: std::collections::HashMap::new(),
+            geo_loc: std::collections::HashMap::new(),
             compositor_state,
             xdg_shell_state,
             layer_shell_state,

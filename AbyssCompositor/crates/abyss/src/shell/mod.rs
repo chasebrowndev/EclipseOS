@@ -490,6 +490,38 @@ pub fn mark_urgent(state: &mut AbyssState, window: &Window) {
     );
 }
 
+/// Keep a window's surface anchored when its window geometry origin moves.
+///
+/// `Space` positions an element by the origin of its window geometry, and a
+/// toplevel with no explicit `set_window_geometry` derives that geometry from
+/// the bounding box of its whole surface tree. So a client that attaches a
+/// subsurface extending left of (or above) its root surface moves its own
+/// geometry origin, and the window would jump by that much on screen even
+/// though the client asked for nothing of the kind. Shift the stored placement
+/// by the same delta instead, which leaves the surface exactly where it was.
+pub(crate) fn reanchor(state: &mut AbyssState, window: &Window) {
+    let now = window.geometry().loc;
+    let Some(prev) = state.geo_loc.insert(window.clone(), now) else {
+        return;
+    };
+    if prev == now {
+        return;
+    }
+    let delta = now - prev;
+    let mut moved = false;
+    for entry in state.outputs.iter_mut() {
+        for ws in entry.workspaces.iter_mut() {
+            if let Some(f) = ws.floating.iter_mut().find(|f| &f.window == window) {
+                f.rect.loc += delta;
+                moved = true;
+            }
+        }
+    }
+    if moved {
+        arrange(state);
+    }
+}
+
 pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     for entry in state.outputs.iter_mut() {
         for ws in entry.workspaces.iter_mut() {
@@ -498,6 +530,7 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     }
     state.space.unmap_elem(window);
     state.borders.remove(window);
+    state.geo_loc.remove(window);
     state.urgent.retain(|w| w != window);
     crate::protocols::standard::foreign_toplevel::window_closed(window);
     let handle = state.ipc.handle_for(window);

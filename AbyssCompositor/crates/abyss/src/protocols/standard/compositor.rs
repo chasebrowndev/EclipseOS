@@ -55,12 +55,17 @@ impl CompositorHandler for AbyssState {
             while let Some(parent) = get_parent(&root) {
                 root = parent;
             }
-            if let Some(window) = self
+            let window = self
                 .space
                 .elements()
                 .find(|w| crate::shell::window_surface(w).as_ref() == Some(&root))
-            {
+                .cloned();
+            if let Some(window) = window {
                 window.on_commit();
+                // The commit may have grown the surface tree past the root's
+                // own bounds, which moves the window geometry origin the space
+                // pins the element by.
+                crate::shell::reanchor(self, &window);
             }
         }
         crate::shell::handle_commit(self, surface);

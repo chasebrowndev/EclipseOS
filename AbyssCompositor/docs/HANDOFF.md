@@ -12,7 +12,7 @@ Branch: `comp16-m9c-headless`, pushed, ~20 commits ahead of `main`. No PR open.
 ## What just landed
 
 **m9c conformance is green, and touch has landed.** Full wlcs suite on the
-test box: `RC=0, OK=723, FAILED=0` against `ci/wlcs-skip.txt` (105 skip
+test box: `RC=0, OK=743, FAILED=0` against `ci/wlcs-skip.txt` (85 skip
 entries, down from 273). The skip list is a ratchet — entries only ever come
 out, and an unlisted failing test must turn the gate red.
 
@@ -75,11 +75,36 @@ Two things cost most of that day, both worth remembering:
   `nullptr` for cancel. `AbyssState.touch_points` keeps the `Client` from
   down time and `release_touch_on` sends `up` + `frame` to it directly.
 
-The 2 holdouts are the touch twins of
-`input_seen_by_subsurface_after_parent_unmapped_and_remapped`; their pointer
-cases (indices 8 and 10) fail the same way, so a remapped parent's subsurface
-is not re-entering the focus tree at all. That is the next real input bug, and
-it is worth 4 tests.
+The 2 holdouts are closed, and they took 18 more tests with them — see
+"The geometry-origin bug" below.
+
+## The geometry-origin bug (fixed)
+
+The hypothesis in this file was wrong: the remapped parent's subsurface *was*
+in the focus tree. The whole window had moved.
+
+`Space` positions an element by the origin of its **window geometry**, and a
+toplevel that never calls `xdg_surface.set_window_geometry` derives that
+geometry from the bounding box of its whole surface tree (spec-correct). So a
+client that attaches a subsurface extending left of or above its root surface
+moves its own geometry origin, and the element translates by that much after it
+was placed — the probe showed `geometry().loc` at `(-100, 0)` and the window
+100px off, so hit-testing *and* rendering were displaced. Index 4 of the same
+suite passes only because it sets an explicit window geometry.
+
+Fix: `AbyssState.geo_loc` records each element's last-seen
+`Window::geometry().loc`; `shell::reanchor`, called from
+`CompositorHandler::commit`, shifts the stored floating rect by any delta and
+re-arranges, holding `render_location` (the surface origin) constant.
+
+That cleared **20** skip entries in three suites that looked unrelated —
+`input_seen_by_subsurface_after_parent_unmapped_and_remapped/{8,9,10,11}`, the
+four `input_seen_by_second_surface_after_drag_off_first_and_up`, and 12
+`RegionSurfaceInputCombinations.input_not_seen_after_leaving_region` cases.
+Full suite on the test box: **RC=0, 743 passed, 0 failed** against 85 skip
+entries (down from 105). Lesson worth keeping: an input failure that spans
+several unrelated input suites is more likely one placement bug than several
+protocol bugs.
 
 ## Queue after that
 
@@ -103,7 +128,7 @@ it is worth 4 tests.
 - **Open the PR** for `comp16-m9c-headless`. Body must cite the spec section
   (`Implements COMP-15 §1`) or the `spec-trail` job blocks it — that job is
   live now, not theoretical.
-- **105 remaining skip-listed failures** in 17 live groups (group 1 retired): future
+- **85 remaining skip-listed failures** in 17 live groups (group 1 retired): future
   milestone work, not this session's.
 - **First hardware KMS boot on cbbedroomdesktop** — explicitly sequenced last.
 - Not started: 9d node-level redaction, 9e window-rules completion,
