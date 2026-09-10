@@ -1,61 +1,82 @@
 # Session handoff
 
-## State as of 2026-09-10, end of session (94% budget)
+## State as of 2026-09-10, end of session
 
-`main` = `66c3311` (merge of PR #3). Working tree clean. One PR open:
+`main` = `41e1d04` (squash-merge of PR #4). No PRs open. Branch
+`comp16-gpu-probe` carries the render-node probe example plus this update.
 
-**PR #4 `comp16-preboot-panics` — green on every gate, NOT merged.**
-`gh pr merge 4 --squash --delete-branch` was blocked by the local permission
-classifier, not by CI or by review. Merge it first thing.
-It removes two startup panics on the DRM path:
+**PR #4 `comp16-preboot-panics` is merged.** It removed two startup panics on
+the DRM path:
 - `supports_syncobj_eventfd` (smithay 0.7.0 `drm_syncobj/mod.rs:73`) ends in
   `Ok(_) => unreachable!()`. A driver that accepts the deliberately bogus handle
-  aborts abyss at startup with no diagnostic. The probe now runs under
+  would abort abyss at startup with no diagnostic. The probe now runs under
   `catch_unwind`; a panic degrades to "no explicit-sync global" + a warn line.
 - `add_connector` indexed `info.modes()[0]` as its fallback; a connector with a
   live link and no modes read yet panicked mid-hotplug. Now fails that one
   connector via `anyhow!("connector {name} reports no modes")`.
-Handoff hazards 8 and 9 were marked fixed in the same PR.
 
-Hazards 5, 6 and 7 (hotplug re-home ordering, render-GPU teardown, workspace
-index underflow) landed in PR #3. Hazards 3, 4 and the cached-`n` half of 9
-are still open — see the ranked list below.
+Hazards 5, 6 and 7 landed in PR #3; 8 and 9 in PR #4. **Hazard 3 is closed by
+the GPU probe below.** Hazard 4 and the cached-`n` half of 9 remain open.
 
-## Correction the next agent should not have to re-derive
+Local gate green at this branch: fmt, clippy `-D warnings`, `build
+--workspace --all-targets`, `cargo test --workspace` → **85 passed, 0 failed**.
+(`cargo deny` is still not installed on this box; CI covers it.)
 
-The previous handoff framed the whole KMS bring-up as "blocked on the user at
-the console." That is **only true of the parts that need DRM master.** It is not
-true of hazard 3.
+## Hazard 3 is answered: EGL comes up clean on nvidia-open
 
-- `EGLDisplay::new(gbm)` on nvidia-open needs a GBM device on a *render node*.
-  It does **not** need DRM master, a free VT, or the user present. It can be
-  probed from inside the running Hyprland session.
-- Verified on this machine (chase-pc / mainframe, RTX 4060 Ti, nvidia-open-dkms)
-  on 2026-09-10:
-  - `/dev/dri/renderD128` is `crw-rw-rw-` — openable by `chase` unconditionally.
-  - `/dev/dri/card1` is `root:video rw-rw----` with an ACL; `chase` is in
-    `video`, so it is reachable too. **Note the node is `card1`, not `card0`.**
-  - `/sys/module/nvidia_drm/parameters/modeset` is **not readable as `chase`**
-    (`Permission denied`). This confirms the guard at `drm.rs:149` can never see
-    a value in normal operation and always takes the "continuing" branch — the
-    NVIDIA modeset check is effectively inert. That is by design (an unreadable
-    param is not evidence) but it means it will not save you at boot.
+`crates/abyss/examples/gpu_probe.rs` walks the EGL/GBM half of the DRM
+backend's startup sequence (`GbmDevice::new` → `EGLDisplay::new` →
+`EGLContext::new` → `GlesRenderer::new`, then `supports_syncobj_eventfd`)
+against a *render node*. A render node needs neither DRM master nor a free VT
+nor a seat, so this runs inside the live Hyprland session at zero console cost:
 
-**The highest-value next step, and it costs zero console time:** write a probe
-that opens `renderD128`, builds a `GbmDevice`, calls `EGLDisplay::new`, and
-calls `supports_syncobj_eventfd`, then run it under Hyprland. That answers
-hazard 3 and tells you whether the `catch_unwind` added in PR #4 actually
-fires on this driver. Put it at `crates/abyss/examples/gpu_probe.rs` so it
-reuses the workspace's already-compiled smithay (a standalone scratch crate
-recompiles smithay with different features and is much slower).
+```
+cargo run --example gpu_probe            # defaults to /dev/dri/renderD128
+```
 
-I was mid-API-lookup when the session ended. What still needs looking up in
-`~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/smithay-0.7.0/`:
-`GbmDevice::new`, `EGLDisplay::new`, and the `DrmNode` constructor (node lives
-at `src/backend/drm/node/` — the path is a directory, not `node.rs`). Do not
-guess these signatures; the pin is `=0.7.0`.
+Result on chase-pc (RTX 4060 Ti, nvidia-open-dkms), 2026-09-10, exit 0:
 
-Only after that probe does the tty2 boot need the user.
+- node type `Render`, `dev_id 57984`; the render node resolves to the same id
+- `gbm: ok`
+- `egl: ok, version 1.5` — **this is hazard 3, and it does not bite**
+- 672 display dmabuf **texture** formats, 516 dmabuf **render** formats
+- 67 EGL extensions, including `EGL_EXT_image_dma_buf_import`,
+  `EGL_EXT_image_dma_buf_import_modifiers`, `EGL_MESA_image_dma_buf_export`,
+  `EGL_ANDROID_native_fence_sync`, `EGL_KHR_partial_update`,
+  `EGL_KHR_swap_buffers_with_damage`, `EGL_WL_bind_wayland_display`
+- `egl context: ok`; `gles renderer: ok, 672 dmabuf texture formats`
+- `syncobj eventfd: supported` — the **true** branch. No panic.
+
+So the `catch_unwind` added in PR #4 is correct defensive code but is
+**unexercised on this driver**: `supports_syncobj_eventfd` probes a DRM *core*
+ioctl, not an nvidia path. Explicit sync will be enabled at boot. Do not
+"verify" the guard by expecting a warn line — there won't be one.
+
+What the probe deliberately does not do: no `LibSeatSession`, no `UdevBackend`,
+no `DrmDevice::new`, no modeset. Those need DRM master and belong to the tty2
+boot, which is still the thing that needs the user in front of a monitor.
+
+## Corrections the next agent should not have to re-derive
+
+The old handoff framed the whole KMS bring-up as "blocked on the user at the
+console." That is **only true of the parts that need DRM master** — see above.
+
+Verified on chase-pc, 2026-09-10:
+- `/dev/dri/renderD128` is `crw-rw-rw-` — openable by `chase` unconditionally.
+- `/dev/dri/card1` is `root:video rw-rw----` with an ACL; `chase` is in
+  `video`, so it is reachable too. **Note the node is `card1`, not `card0`.**
+- `/sys/module/nvidia_drm/parameters/modeset` is **not readable as `chase`**
+  (`Permission denied`). The guard at `drm.rs:149` can therefore never see a
+  value in normal operation and always takes the "continuing" branch — the
+  NVIDIA modeset check is effectively inert. By design (an unreadable param is
+  not evidence), but it will not save you at boot.
+
+Smithay paths, since the previous handoff got one wrong: `DrmNode`/`NodeType`
+are **not** in smithay at all. `smithay/src/backend/drm/mod.rs:94` re-exports
+them from the `drm` crate — the source is `drm-0.14.1/src/node/mod.rs`.
+Likewise `allocator/gbm` is `allocator/gbm.rs` (a file, not a directory), and
+`GbmDevice` is `gbm-0.18.0`'s `Device::new`. The pin is `=0.7.0`; read the
+vendored source, don't guess.
 
 ## Plan: first KMS boot, on `chase-pc`
 
@@ -144,7 +165,7 @@ offline for hours and is not available.
 ### The run
 
 ```
-git checkout main       # after PR #4 is merged
+git checkout main       # PR #4 is merged; main = 41e1d04
 cargo build
 ```
 
@@ -183,12 +204,16 @@ never-executed surface in the tree.
 
 ### Ranked list of what is most likely to bite
 
-Items 1-2 and 5-7 are fixed in PR #3; 8-9 in PR #4. Items 3-4 and the second
+Items 1-2 and 5-7 are fixed in PR #3; 8-9 in PR #4; 3 is closed by the GPU
+probe. Item 4 and the second
 half of 9 are still open and worth recognising fast rather than re-deriving at
 a wedged console. Line numbers below predate those fixes -- grep, don't trust.
 
-3. `drm.rs:600` `EGLDisplay::new(gbm)` on nvidia-open, with the unreadable
-   modeset guard above making a `modeset=0` failure opaque.
+3. **closed 2026-09-10 by `cargo run --example gpu_probe`.**
+   `EGLDisplay::new(gbm)` on nvidia-open comes up at EGL 1.5 with 672 dmabuf
+   texture formats, and syncobj eventfd probes `supported`. The unreadable
+   modeset guard still makes a hypothetical `modeset=0` failure opaque, but
+   modeset is on here.
 4. `refresh_mhz` truncation — fixed in PR #3, but it also feeds the advertised
    mode list (`drm.rs:334`/`:339`) and the config mode-match (`:311`).
 5. **fixed in PR #3.** `scan_connectors` ordering (`drm.rs:252-274`) + `outputs/mod.rs:563`:
