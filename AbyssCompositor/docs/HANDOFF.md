@@ -209,6 +209,28 @@ restack failures. Correctly still skipped.
   If it stays reclusive it is a fair skip-list candidate under the
   "reclusive and UX-inconsequential" rule — but that is a ratchet regression and
   must be recorded as one.
+
+- **`/7` is the window-geometry-inset variant, not a touch bug.** Decoded from
+  the wlcs sources on the box: `all_surface_types()` is `[wl_shell, xdg_v6,
+  xdg_stable(0,0,0,0), xdg_stable(12,5,20,6), subsurface(0,0),
+  subsurface(7,12)]` and `all_input_methods()` is `[pointer, touch]`;
+  `Combine()` varies the last parameter fastest, so `/6` is inset+pointer and
+  `/7` is inset+touch. The zero-inset pair `/4`,`/5` both pass, so the
+  discriminator is the geometry inset, which puts this failure in the same
+  family as the `XdgToplevelStable*` window-geometry cluster. The builder makes
+  a 215x108 buffer, sets window geometry `(12,5,183,97)`, then
+  `move_surface_to(200+12, 49+5)` — the compositor is handed the *geometry*
+  origin, so the buffer origin is at `(200,49)` and the touch at `(204,53)` is
+  inside the buffer but outside the geometry rect, which must still hit the
+  surface because the default input region is the whole surface. Pointer passes
+  and touch fails because the pointer gets a second chance from
+  `refresh_pointer_focus` on the post-remap commit while `inject_touch_down`
+  hit-tests exactly once. Prime suspect: `shell::reanchor`. On the null-buffer
+  commit smithay's `Window::geometry()` intersects the set geometry with an
+  empty bbox and falls back to the bbox, so `loc` becomes `(0,0)` and reanchor
+  shifts by `(-12,-5)`, then by `(12,5)` on the remap — symmetric only if the
+  window is found in `ws.floating`; otherwise the delta is silently dropped and
+  the space location stops matching the geometry origin.
 - **65 remaining skip-listed failures.** Clusters, best breakthrough candidates
   first:
   - `XdgToplevelStable*` window-geometry-offset / configure, ~15 —
