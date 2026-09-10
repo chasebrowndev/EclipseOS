@@ -322,12 +322,15 @@ fn add_connector(
         .output_rule(&name, &identity)
         .mode
         .or_else(|| state.outputs.saved_for(&identity).and_then(|s| s.mode));
+    // A connector can report zero modes (a live link that has not read EDID
+    // yet); indexing [0] would panic mid-hotplug, so bail instead.
     let preferred = info
         .modes()
         .iter()
         .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+        .or_else(|| info.modes().first())
         .copied()
-        .unwrap_or_else(|| info.modes()[0]);
+        .ok_or_else(|| anyhow!("connector {name} reports no modes"))?;
     let mode = wanted
         .and_then(|(w, h, r)| {
             let exact = info
@@ -680,7 +683,18 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     // Explicit sync (COMP-02 §3). Without syncobj eventfd support in the
     // driver there is no way to wait without blocking the loop, so the global
     // is simply absent and clients fall back to implicit sync.
-    if supports_syncobj_eventfd(&device_fd_for_syncobj) {
+    // smithay 0.7.0's probe is `match eventfd(..) { Ok(_) => unreachable!(), .. }`
+    // (drm_syncobj/mod.rs:73): a driver that accepts the deliberately bogus
+    // handle panics the compositor at startup with no diagnostic. Treat a panic
+    // there as "no explicit sync" instead.
+    let syncobj_supported = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        supports_syncobj_eventfd(&device_fd_for_syncobj)
+    }))
+    .unwrap_or_else(|_| {
+        tracing::warn!("syncobj eventfd probe panicked; disabling explicit sync");
+        false
+    });
+    if syncobj_supported {
         state.syncobj_state = Some(DrmSyncobjState::new::<AbyssState>(
             &state.display_handle,
             device_fd_for_syncobj.clone(),
