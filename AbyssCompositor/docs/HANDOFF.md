@@ -7,6 +7,58 @@ file is right about the intent.
 
 Branch: `comp16-m9c-headless`, pushed. PR #1 is open (`Implements COMP-15 §1`).
 
+## `input_seen_after_surface_unmapped_and_remapped/6` (2026-09-10) -- closed
+
+The last red check on PR #1. **Root cause: `shell::reanchor` chased the
+collapsed geometry of an *unmapped* window.**
+
+smithay 0.7.0 `Window::geometry()` intersects the client's window-geometry rect
+with the bounding box and falls back to the bbox when that intersection is
+`None` (`desktop/wayland/window.rs:152-170`). An unmapped window's bbox is
+`0x0` at the origin, so `geometry().loc` collapses from `(12,5)` to `(0,0)` on
+the null-buffer commit and springs back to `(12,5)` on the remap commit.
+`reanchor` read that as the client moving its geometry origin and applied the
+delta to the floating rect: `-(12,5)` on unmap, `+(12,5)` on remap.
+
+Those two cancel **only if the window is floating for both commits**, and
+nothing guarantees that. wlcs `build()` posts the surface and the
+`PositionWindow` event separately, so on a slow/serialised runner the
+null-buffer commit is dispatched *before* the window is pinned floating: the
+`-(12,5)` finds no floating entry and is dropped, then the remap's `+(12,5)`
+lands unpaired. The window ends up anchored at geometry origin `(224,59)`
+instead of `(212,54)`, its buffer at `(212,54)`, and the `down_at (204,53)`
+misses it entirely -> `current_surface == NULL`, then "bad optional access"
+from `position_on_surface`.
+
+Fix: `reanchor` returns early when `window.geometry().is_empty()`, leaving
+`geo_loc` holding the last mapped origin, so the remap commit sees
+`prev == now` and is a no-op. Both dispatch orders now agree.
+
+### How to reproduce a "runner-only" wlcs failure
+
+`taskset -c 0` on `cbbedroomdesktop` reproduced this **60/60**, where the
+unpinned run passed 100%. Pin to one core before concluding a wlcs failure is
+GitHub-runner-specific; `--gtest_repeat` alone did not surface it.
+
+### Negative results -- do not re-chase
+
+- **Not a lost/late `refresh_pointer_focus`.** Probes showed the remap commit
+  (and its `refresh_pointer_focus`) landing *before* `pointer_moved`, with
+  `surface_under` returning `None` for a pointer that was geometrically
+  outside the window. The focus plumbing was never at fault; the window was in
+  the wrong place.
+- **Not the pointer-vs-touch input path.** `/7` (same inset, touch) passed for
+  a timing reason, not a behavioural one: the misplacement is in the shell, so
+  whichever input method asks gets the same wrong answer.
+  `WlcsEvent::PointerButtonDown` bypassing `process_input_event` is real (see
+  the popup section) but irrelevant here.
+- **Not `place_at`/`Space` window-geometry handling.** As recorded earlier,
+  `InnerElement::render_location` subtracts the window-geometry offset live;
+  that half is correct. The bug was `reanchor` *also* adjusting the stored
+  rect, from a geometry value that was not a real one.
+
+---
+
 ## Where the 2026-09-10 session left off
 
 - **Head is the popup-cluster commit** on `comp16-m9c-headless` (parent

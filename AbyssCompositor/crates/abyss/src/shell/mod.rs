@@ -504,7 +504,20 @@ pub fn mark_urgent(state: &mut AbyssState, window: &Window) {
 /// though the client asked for nothing of the kind. Shift the stored placement
 /// by the same delta instead, which leaves the surface exactly where it was.
 pub(crate) fn reanchor(state: &mut AbyssState, window: &Window) {
-    let now = window.geometry().loc;
+    let geo = window.geometry();
+    // An unmapped window has no geometry: smithay intersects the client's
+    // window-geometry rect with the bounding box, and an unmapped bounding box
+    // is empty, so `geometry()` collapses to `0x0` at the origin (see
+    // smithay 0.7.0 `desktop/wayland/window.rs::geometry`). That collapse is
+    // not the client moving its geometry origin, and chasing it corrupts the
+    // anchor: the offset is subtracted on the unmap commit and added back on
+    // the remap commit only if the window is floating for *both*, which is a
+    // race against anything that maps it in between. Leave `geo_loc` holding
+    // the last mapped origin so the remap commit is a no-op.
+    if geo.is_empty() {
+        return;
+    }
+    let now = geo.loc;
     let Some(prev) = state.geo_loc.insert(window.clone(), now) else {
         return;
     };
