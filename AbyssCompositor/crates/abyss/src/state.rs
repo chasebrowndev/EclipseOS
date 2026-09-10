@@ -159,6 +159,12 @@ pub struct AbyssState {
 
     /// Pointer position in the global (logical) coordinate space.
     pub pointer_location: Point<f64, Logical>,
+    /// The (surface, rounded surface-relative position) last delivered to the
+    /// pointer, so a scene-driven refresh can tell whether anything changed.
+    pub last_pointer_focus: Option<(
+        smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+        Point<i32, Logical>,
+    )>,
 
     /// Live only on the DRM backend; `None` under winit/headless.
     #[cfg(feature = "drm")]
@@ -423,6 +429,7 @@ impl AbyssState {
             seat_state,
             seat,
             pointer_location: (0.0, 0.0).into(),
+            last_pointer_focus: None,
             outputs: crate::outputs::Outputs::new(),
             focus: None,
             touch_points: Vec::new(),

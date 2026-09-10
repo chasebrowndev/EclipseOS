@@ -247,6 +247,7 @@ impl AbyssState {
                 },
             );
             pointer.frame(self);
+            self.last_pointer_focus = None;
             return;
         }
         // Pointer motion moves output focus, so a new window opens where the
@@ -282,6 +283,7 @@ impl AbyssState {
         }
 
         let new_focus = under.as_ref().map(|(s, _)| s.clone());
+        self.last_pointer_focus = under.as_ref().map(|(s, p)| (s.clone(), p.to_i32_round()));
         let pointer = self.seat.get_pointer().unwrap();
         pointer.motion(
             self,
@@ -299,6 +301,48 @@ impl AbyssState {
         crate::protocols::standard::pointer_constraints::update_pointer_constraint_focus(
             self,
             focus.as_ref(),
+            new_focus.as_ref(),
+        );
+    }
+
+    /// Re-evaluate what the pointer is over when the *scene* changed under a
+    /// stationary pointer: a window moved or resized, a subsurface slid
+    /// under/out from under it, or an input region shrank away (COMP-04 §6).
+    /// Device motion goes through `pointer_moved`; this is its scene-driven
+    /// twin and deliberately does not touch output or keyboard focus.
+    pub(crate) fn refresh_pointer_focus(&mut self) {
+        if self.lock.locked {
+            return;
+        }
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let under = self.surface_under(self.pointer_location);
+        let next = under.as_ref().map(|(s, p)| (s.clone(), p.to_i32_round()));
+        // Smithay forwards a same-focus refresh as an unconditional
+        // `wl_pointer.motion`, so only deliver when something actually moved.
+        if next == self.last_pointer_focus {
+            return;
+        }
+        let old_focus = self.last_pointer_focus.take().map(|(s, _)| s);
+        let new_focus = next.as_ref().map(|(s, _)| s.clone());
+        self.last_pointer_focus = next;
+        let serial = SERIAL_COUNTER.next_serial();
+        let time = self.start_time.elapsed().as_millis() as u32;
+        let location = self.pointer_location;
+        pointer.motion(
+            self,
+            under,
+            &MotionEvent {
+                location,
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+        crate::protocols::standard::pointer_constraints::update_pointer_constraint_focus(
+            self,
+            old_focus.as_ref(),
             new_focus.as_ref(),
         );
     }

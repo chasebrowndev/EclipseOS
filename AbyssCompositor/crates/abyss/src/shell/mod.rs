@@ -361,6 +361,9 @@ pub fn place_at(state: &mut AbyssState, window: &Window, geo: Rectangle<i32, Log
     }
     if found {
         arrange(state);
+        // A server-side move can put a different surface under a stationary
+        // pointer (COMP-04 §6).
+        state.refresh_pointer_focus();
     }
 }
 

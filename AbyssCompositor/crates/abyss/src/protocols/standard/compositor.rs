@@ -69,6 +69,9 @@ impl CompositorHandler for AbyssState {
             }
         }
         crate::shell::handle_commit(self, surface);
+        // A commit can move a subsurface, resize a window or shrink an input
+        // region out from under a stationary pointer; committed state only.
+        self.refresh_pointer_focus();
     }
 }
 

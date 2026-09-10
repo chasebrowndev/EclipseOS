@@ -5,10 +5,12 @@
 # that is not listed here must pass, or the gate goes red.
 #
 # Measured against the full suite on the headless backend (COMP-16 m9c):
-# 723 pass, 319 skipped by wlcs itself, 105 excluded below. (Touch landed:
+# 775 pass, 308 skipped by wlcs itself, 65 excluded below. (Touch landed:
 # the 170-entry touch bloc that used to head this list is gone — 168 of those
 # tests pass now, and the 2 that do not are pointer bugs in touch clothing,
-# rehomed into group 16 next to their pointer twins.)
+# rehomed next to their pointer twins.) Group 16 (input-region leave) is gone
+# entirely: all 12 entries pass now that pointer focus is re-evaluated on
+# commit; group numbers are otherwise left as they were.
 #
 # The 319 are not one bucket, and only 30 of them are worth chasing. wlcs
 # skips a test when the integration does not advertise the extension it
@@ -241,6 +243,14 @@ LayerSurfaceTest.gets_configured_with_supplied_size_even_when_anchored_to_edges
 # commits). Pointer parameterisation only -- the touch variants are in
 # group 1 above.
 #
+# The four focus-re-evaluation cases that used to sit here (moves under/out
+# from under the input device, extends_parent_input_region) pass now that a
+# commit re-evaluates pointer focus (`AbyssState::refresh_pointer_focus`).
+# What is left is genuinely about restacking and sync-commit timing: the
+# `does_not_move_when_parent_not_committed` case still reports the pointer at
+# the old surface-relative position, which is a subsurface-offset bug, not a
+# focus one.
+#
 # Removed by: no milestone assigned yet -- COMP-06 wl_subsurface.
 XdgShellStableSubsurfaces/SubsurfaceMultilevelTest.subsurface_does_not_move_when_grandparent_commit_is_before_sync_parent_commit/0
 XdgShellStableSubsurfaces/SubsurfaceMultilevelTest.subsurface_with_sync_parent_does_not_move_when_only_grandparent_committed/0
@@ -248,47 +258,17 @@ XdgShellStableSubsurfaces/SubsurfaceTest.desync_subsurface_moves_when_only_paren
 XdgShellStableSubsurfaces/SubsurfaceTest.place_above_simple/0
 XdgShellStableSubsurfaces/SubsurfaceTest.place_below_simple/0
 XdgShellStableSubsurfaces/SubsurfaceTest.subsurface_does_not_move_when_parent_not_committed/0
-XdgShellStableSubsurfaces/SubsurfaceTest.subsurface_extends_parent_input_region/0
-XdgShellStableSubsurfaces/SubsurfaceTest.subsurface_moves_out_from_under_input_device/0
-XdgShellStableSubsurfaces/SubsurfaceTest.subsurface_moves_under_input_device_once/0
-XdgShellStableSubsurfaces/SubsurfaceTest.subsurface_moves_under_input_device_twice/0
 
 # ---------------------------------------------------------------------------
-# 16. Pointer leave is not sent when the pointer exits an input region.
+# 17. Frame-callback timestamps do not advance.
 #
-# GENUINE BUG: wl_surface.set_input_region is respected on entry but leaving
-# the region (or dragging off one surface onto another, or re-mapping a
-# parent) does not produce the expected leave/enter sequence. All of these
-# are the even (pointer) parameter indices; the odd (touch) indices of the
-# same suites crash and are in group 1.
+# The focus-re-evaluation half of this group is fixed (a scene change under a
+# stationary pointer now re-runs the hit test -- `refresh_pointer_focus`).
+# What remains is the frame clock: successive frame callbacks report the same
+# timestamp.
 #
-# Removed by: no milestone assigned yet -- COMP-04 input regions.
-ClippedLargerRegion/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/0
-ClippedLargerRegion/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/6
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/10
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/4
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/40
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/42
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/44
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/46
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/6
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/8
-FullSurface/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/0
-FullSurface/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/6
-
-# ---------------------------------------------------------------------------
-# 17. Surface enter/leave and frame callbacks around moves and resizes.
-#
-# GENUINE BUG: moving or resizing a surface under a stationary pointer does
-# not re-evaluate focus, and frame-callback timestamps do not advance.
-#
-# Removed by: no milestone assigned yet -- COMP-02 frame clock / COMP-04
-# focus re-evaluation.
+# Removed by: no milestone assigned yet -- COMP-02 frame clock.
 ClientSurfaceEventsTest.frame_timestamp_increases
-ClientSurfaceEventsTest.surface_moves_over_surface_under_pointer
-ClientSurfaceEventsTest.surface_moves_under_pointer
-ClientSurfaceEventsTest.surface_moves_while_under_pointer
-ClientSurfaceEventsTest.surface_resizes_under_pointer
 
 # ---------------------------------------------------------------------------
 # 18. A truncated shm file does not raise wl_shm.error.
