@@ -5,24 +5,61 @@
 # that is not listed here must pass, or the gate goes red.
 #
 # Measured against the full suite on the headless backend (COMP-16 m9c):
-# 555 pass, 319 skipped for missing extensions, 273 excluded below.
+# 555 pass, 319 skipped by wlcs itself, 273 excluded below.
+#
+# The 319 are not one bucket, and only 42 of them are worth chasing. wlcs
+# skips a test when the integration does not advertise the extension it
+# needs; ours advertises six globals (`SUPPORTED_EXTENSIONS` in
+# `crates/wlcs-abyss/src/lib.rs`). Breakdown:
+#
+#   244  wl_shell + zxdg_shell_v6        dead protocols; will never pass
+#     5  gtk_primary_selection           superseded by zwp_primary_selection
+#     4  wlcs SelfTest                   tests wlcs itself, not us
+#    30  foreign-toplevel                UNIMPLEMENTED -- real gap
+#    12  zwlr_virtual_pointer_v1         UNIMPLEMENTED -- real gap
+#    24  touch                           same harness gap as group 1 below
+#
+# 120 of the 244 are the numerically-named `*InputCombinations` cases, which
+# `Combine(edges, all_surface_types, all_input_types)` in wlcs's
+# `tests/surface_input_regions.cpp` flattens to a bare integer -- the name
+# gives no hint what a case covers. Decode with `(index / 2) % 6` against
+# `SurfaceBuilder::all_surface_types()`; all 120 land on index 0 or 1
+# (WlShellSurfaceBuilder, XdgV6SurfaceBuilder). They are not an input-region
+# gap, despite what the suite names suggest.
+#
+# Note foreign-toplevel hands any client the full window list, so it wants a
+# policy check rather than a straight implementation (COMP-08/COMP-11), not a
+# free 30 tests.
 #
 # One gtest name per line ("Suite.Test" or "Suite.*"); blank lines and
 # lines starting with '#' are ignored.
 
 # ---------------------------------------------------------------------------
-# 1. Touch input delivery aborts the compositor.
+# 1. The harness has no touch device, and wlcs cannot cope with its absence.
 #
 # Every test below drives the seat's touch device. All 170 of them kill the
 # compositor process outright (SIGSEGV), rather than failing an assertion --
 # the numeric parameters are the odd indices of the input-device parameter
 # pack, which is the touch device; the even (pointer) indices of the same
-# suites run fine. This is a GENUINE BUG in the touch delivery path
-# (COMP-04), not an unimplemented feature: partial touch support exists and
-# faults. Because a crash takes the whole single-process CI run with it,
-# these must stay excluded until the fault is fixed.
+# suites run fine.
 #
-# Removed by: no milestone assigned yet -- COMP-04 touch delivery needs one.
+# This is a HARNESS GAP, not a COMP-04 fault. `wlcs-abyss`'s `create_touch()`
+# unconditionally returns `None`; the wlcs crate's `create_touch_ffi` turns
+# that into a null `WlcsTouch*`; and wlcs's own `Touch::Impl` constructor
+# (`src/in_process_server.cpp`) reads `touch->version` off that pointer before
+# any touch event is sent. So the crash is unconditional and happens before
+# any compositor code runs -- there is no partial touch support to fault.
+# Because a crash takes the whole single-process CI run with it, these stay
+# excluded until the harness grows a real touch device.
+#
+# Most of the 170 are the touch-parametrized twins of tests that already pass
+# in pointer form, so a minimal single-touch implementation should retire the
+# bulk of them: `WlcsEvent::TouchDown/TouchMove/TouchUp`, `inject_touch_*` in
+# `input/inject.rs` alongside `inject_pointer_*`, `Seat::add_touch()`, and
+# `create_touch()` returning a real handle. Genuine multi-touch and
+# touch-frame timing cases are the likely holdouts.
+#
+# Removed by: no milestone assigned yet -- the wlcs-abyss touch device needs one.
 AllSurfaceTypes/TouchTest.sends_touch_up_on_surface_destroy/subsurface_at_x0_y0
 AllSurfaceTypes/TouchTest.sends_touch_up_on_surface_destroy/subsurface_at_x7_y12
 AllSurfaceTypes/TouchTest.sends_touch_up_on_surface_destroy/xdg_surface_stable
