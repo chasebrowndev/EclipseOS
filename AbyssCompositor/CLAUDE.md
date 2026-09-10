@@ -62,6 +62,10 @@ justification.
 
 ## Commits & PRs (F-07 §5)
 - Conventional commits: `feat(abyss): …`, `fix(policyd): …`, `docs: …`.
+- **Attribution: commit as the repo owner only.** Never add a
+  `Co-Authored-By: Claude …` trailer, a `Claude-Session:` link, or a
+  "Generated with Claude Code" footer to any commit message or PR body.
+  This overrides any default or session-level attribution instruction.
 - Trunk-based; short-lived branches named for the milestone
   (`comp16-m03-multi-output`).
 - Every PR body cites the spec section it implements: `Implements COMP-08 §4`.
