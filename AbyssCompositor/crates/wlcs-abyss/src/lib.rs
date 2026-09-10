@@ -103,11 +103,20 @@ impl Wlcs for AbyssHandle {
         let client_id = unsafe { ffi_dispatch!(wayland_client_handle(), wl_display_get_fd, display) };
         let surface_id = unsafe { ffi_dispatch!(wayland_client_handle(), wl_proxy_get_id, surface) };
         if let Some((sender, _)) = self.server.as_ref() {
-            let _ = sender.send(WlcsEvent::PositionWindow {
+            // Block until the loop has handled it: wlcs issues no roundtrip
+            // after a move, so an asynchronous one races the client requests
+            // that follow and the window is still at its old position when a
+            // popup gets positioned against it.
+            let (ack, done) = std::sync::mpsc::sync_channel(1);
+            let sent = sender.send(WlcsEvent::PositionWindow {
                 client_id,
                 surface_id,
                 location: (x, y),
+                ack,
             });
+            if sent.is_ok() {
+                let _ = done.recv_timeout(std::time::Duration::from_secs(5));
+            }
         }
     }
 

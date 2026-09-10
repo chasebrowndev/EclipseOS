@@ -234,6 +234,8 @@ fn redraw(
                 return;
             }
         };
+        // A fullscreen toplevel drops the `Top` layer below the window stack.
+        let fullscreen = crate::shell::output_has_fullscreen(state, out);
         let mut elements = if state.lock.locked {
             crate::protocols::standard::session_lock::lock_elements(renderer, &mut state.lock, out)
         } else {
@@ -245,6 +247,7 @@ fn redraw(
                 &state.config,
                 state.focus.as_ref(),
                 state.input_method_popup.as_ref(),
+                fullscreen,
             )
         };
         // Trusted UI, drawn on top of everything and never into a capture.

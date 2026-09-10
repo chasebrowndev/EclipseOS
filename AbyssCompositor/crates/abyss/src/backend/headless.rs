@@ -156,6 +156,11 @@ pub enum WlcsEvent {
         client_id: i32,
         surface_id: u32,
         location: (i32, i32),
+        /// Dropped when the loop has finished handling this event; the sender
+        /// blocks on the receiving end so that `move_surface_to` is synchronous
+        /// from wlcs's point of view. wlcs does not roundtrip after it, and the
+        /// requests that follow assume the window has already moved.
+        ack: std::sync::mpsc::SyncSender<()>,
     },
     PointerMoveAbsolute {
         location: (f64, f64),
@@ -302,6 +307,21 @@ fn boot(
     crate::input::idle::start(&mut state, &handle);
     crate::ipc::start(&mut state, &handle);
     crate::config::watch::start(&mut state, &handle);
+    // Registered ahead of the wayland sources on purpose: calloop dispatches in
+    // registration order, so a queued PositionWindow wins over client requests
+    // that arrived in the same wakeup. wlcs assumes move_surface_to has taken
+    // effect before the requests that follow it, and does not roundtrip.
+    let under_wlcs = wlcs.is_some();
+    if let Some(channel) = wlcs {
+        let mut clients: std::collections::HashMap<i32, smithay::reexports::wayland_server::Client> =
+            std::collections::HashMap::new();
+        handle
+            .insert_source(channel, move |event, _, state| match event {
+                smithay::reexports::calloop::channel::Event::Msg(e) => wlcs_event(state, &mut clients, e),
+                smithay::reexports::calloop::channel::Event::Closed => state.loop_signal.stop(),
+            })
+            .map_err(|e| anyhow::anyhow!("wlcs channel source: {e}"))?;
+    }
     handle
         .insert_source(socket, |stream, _, state| {
             if let Err(e) = state.display_handle.insert_client(stream, client_state()) {
@@ -323,21 +343,11 @@ fn boot(
     // Under wlcs the socket exists but nothing connects to it, and the
     // harness runs several compositors at once — exporting a global
     // WAYLAND_DISPLAY would have them fight over one process-wide variable.
-    if wlcs.is_none() {
+    if !under_wlcs {
         std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
     }
     tracing::info!(socket = %state.socket_name, w = size.0, h = size.1, "listening (headless)");
 
-    if let Some(channel) = wlcs {
-        let mut clients: std::collections::HashMap<i32, smithay::reexports::wayland_server::Client> =
-            std::collections::HashMap::new();
-        handle
-            .insert_source(channel, move |event, _, state| match event {
-                smithay::reexports::calloop::channel::Event::Msg(e) => wlcs_event(state, &mut clients, e),
-                smithay::reexports::calloop::channel::Event::Closed => state.loop_signal.stop(),
-            })
-            .map_err(|e| anyhow::anyhow!("wlcs channel source: {e}"))?;
-    }
     if session {
         crate::session::import();
     }
@@ -406,6 +416,8 @@ fn redraw(
     let frame_start = std::time::Instant::now();
     let rendered = {
         let renderer = &mut data.renderer;
+        // A fullscreen toplevel drops the `Top` layer below the window stack.
+        let fullscreen = crate::shell::output_has_fullscreen(state, out);
         let mut elements = if state.lock.locked {
             crate::protocols::standard::session_lock::lock_elements(renderer, &mut state.lock, out)
         } else {
@@ -417,6 +429,7 @@ fn redraw(
                 &state.config,
                 state.focus.as_ref(),
                 state.input_method_popup.as_ref(),
+                fullscreen,
             )
         };
         // Trusted UI, drawn on top of everything and never into a capture.
@@ -488,6 +501,7 @@ fn wlcs_event(
             client_id,
             surface_id,
             location,
+            ack: _ack,
         } => {
             // wlcs names a window by (its client, the protocol id of its
             // surface); nothing else identifies it across the boundary.

@@ -141,15 +141,7 @@ XdgToplevelStableTest.when_parent_is_set_to_child_descendant_error_is_raised
 XdgToplevelStableTest.when_parent_is_set_to_self_error_is_raised
 
 # ---------------------------------------------------------------------------
-# 10. xdg_toplevel fullscreen is not implemented, and `defaults` wants an
-#     unconstrained window.
-#
-# `window_can_fullscreen_itself` / `window_can_unfullscreen_itself`: there is
-# no `fullscreen_request`/`unfullscreen_request` in
-# `protocols/standard/xdg_shell.rs` and no fullscreen state anywhere in
-# `shell/`, so the configure never carries the fullscreen flag. This is a
-# missing COMP-05 feature, not a bug in implemented code -- do not re-chase it
-# as a configure bug.
+# 10. `defaults` wants an unconstrained window.
 #
 # `defaults` requires the last configure of a freshly mapped toplevel to carry
 # width 0, height 0, i.e. "pick your own size". abyss tiles by default
@@ -158,10 +150,11 @@ XdgToplevelStableTest.when_parent_is_set_to_self_error_is_raised
 # lie about a tiled window. Deliberate divergence pending a decision on
 # whether an unconstrained-size path is wanted at all.
 #
-# Removed by: no milestone assigned yet -- COMP-05 fullscreen.
+# `window_can_fullscreen_itself` / `window_can_unfullscreen_itself` came out
+# here when COMP-05 §4 fullscreen landed.
+#
+# Removed by: no milestone assigned yet -- the tiling-default decision.
 XdgToplevelStableConfigurationTest.defaults
-XdgToplevelStableConfigurationTest.window_can_fullscreen_itself
-XdgToplevelStableConfigurationTest.window_can_unfullscreen_itself
 
 # ---------------------------------------------------------------------------
 # 11. Zero-size xdg_positioner anchor rectangle.

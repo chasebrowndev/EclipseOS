@@ -106,6 +106,18 @@ impl XdgShellHandler for AbyssState {
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
         crate::shell::unmaximize_toplevel(self, &surface);
     }
+
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        crate::shell::fullscreen_toplevel(self, &surface, output.as_ref());
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        crate::shell::unfullscreen_toplevel(self, &surface);
+    }
 }
 
 delegate_xdg_shell!(AbyssState);

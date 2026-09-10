@@ -900,6 +900,11 @@ fn render_output(state: &mut AbyssState, index: usize) {
     if !state.outputs.get(out_id).map(|e| e.powered).unwrap_or(true) {
         return;
     }
+    // A fullscreen toplevel drops the `Top` layer below the window stack.
+    let fullscreen = match state.outputs.get(out_id).map(|e| e.output.clone()) {
+        Some(out) => crate::shell::output_has_fullscreen(state, &out),
+        None => false,
+    };
     let Some(drm) = state.drm.as_mut() else { return };
     let Some(entry) = drm.outputs.get(index) else {
         return;
@@ -939,6 +944,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
             &state.config,
             state.focus.as_ref(),
             state.input_method_popup.as_ref(),
+            fullscreen,
         ));
     }
     let animating = state.borders.anim.running();

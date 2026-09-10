@@ -355,6 +355,10 @@ impl Matchers {
 pub enum RuleAction {
     Float,
     Tile,
+    /// Map the window fullscreen (COMP-05 §4). Applied after placement, so the
+    /// rectangle it restores to on unfullscreen is whatever the other rules asked
+    /// for.
+    Fullscreen,
     Workspace(i32),
     /// Placement-time float geometry, in logical pixels. Both imply `float`:
     /// a tiled window's geometry belongs to the layout, not to a rule.
@@ -1209,6 +1213,7 @@ impl Config {
         let action = match (verb, param) {
             ("float", None) => RuleAction::Float,
             ("tile", None) => RuleAction::Tile,
+            ("fullscreen", None) => RuleAction::Fullscreen,
             ("no-agent", None) => RuleAction::NoAgent,
             ("no-focus-steal", None) => RuleAction::NoFocusSteal,
             ("idle-inhibit", None) => RuleAction::IdleInhibit,
@@ -1871,15 +1876,17 @@ mod tests {
             windowrule "opacity 0.85" { app-id "kitty"; xwayland #false; }
             windowrule "sensitivity secret" { app-id "keepassxc"; }
             windowrule "no-agent" { pid 42; }
+            windowrule "fullscreen" { app-id "mpv"; }
         "#
         .parse()
         .unwrap();
         let mut c = Config::default();
         c.apply(&doc, &mut Vec::new());
-        assert_eq!(c.window_rules.len(), 5);
+        assert_eq!(c.window_rules.len(), 6);
         assert_eq!(c.window_rules[1].action, RuleAction::Workspace(3));
         assert_eq!(c.window_rules[2].action, RuleAction::Opacity(0.85));
         assert_eq!(c.window_rules[4].action, RuleAction::NoAgent);
+        assert_eq!(c.window_rules[5].action, RuleAction::Fullscreen);
         let m = &c.window_rules[0].matchers;
         let app = m.app_id.as_ref().expect("app-id");
         assert!(app.matches("pavucontrol"));
@@ -1899,7 +1906,6 @@ mod tests {
             windowrule "workspace 99" { app-id "a"; }
             windowrule "opacity 2.0" { app-id "a"; }
             windowrule "float" { launching-principal "x"; }
-            windowrule "fullscreen" { app-id "a"; }
             windowrule "float" { title "^(a|b"; }
             windowrule "float" { pid 0; }
         "#

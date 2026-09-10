@@ -91,6 +91,12 @@ fn phys(p: Point<i32, Logical>, scale: Scale<f64>) -> Point<i32, Physical> {
 /// Order (topmost first) follows COMP-02 §4: overlay layer surfaces, top layer
 /// surfaces, toplevels, their borders, then bottom and background layers.
 /// Trusted UI is prepended by the caller once COMP-10 lands.
+///
+/// `fullscreen` says a fullscreen toplevel owns this output, which drops the
+/// `Top` layer — the bar — below the window stack so the surface actually covers
+/// it. `Overlay` stays on top: it is the layer reserved for things that outrank a
+/// fullscreen window, such as a lock screen.
+#[allow(clippy::too_many_arguments)]
 pub fn collect_elements(
     renderer: &mut GlesRenderer,
     space: &Space<Window>,
@@ -99,6 +105,7 @@ pub fn collect_elements(
     config: &Config,
     focus: Option<&Window>,
     im_popup: Option<&smithay::wayland::input_method::PopupSurface>,
+    fullscreen: bool,
 ) -> Vec<AbyssRenderElement> {
     let scale = Scale::from(output.current_scale().fractional_scale());
     let output_loc = space.output_geometry(output).map(|g| g.loc).unwrap_or_default();
@@ -106,9 +113,9 @@ pub fn collect_elements(
     // (window, index in `elements` directly below its surfaces, region).
     let mut blur_requests: Vec<BlurRequest> = Vec::new();
 
-    let layers = |elements: &mut Vec<AbyssRenderElement>, which: [Layer; 2], renderer: &mut GlesRenderer| {
+    let layers = |elements: &mut Vec<AbyssRenderElement>, which: &[Layer], renderer: &mut GlesRenderer| {
         let map = layer_map_for_output(output);
-        for layer in which {
+        for &layer in which {
             for surface in map.layers_on(layer).rev() {
                 let Some(geo) = crate::shell::layer_geometry(&map, surface) else {
                     continue;
@@ -147,7 +154,12 @@ pub fn collect_elements(
         );
     }
 
-    layers(&mut elements, [Layer::Overlay, Layer::Top], renderer);
+    let (above, below): (&[Layer], &[Layer]) = if fullscreen {
+        (&[Layer::Overlay], &[Layer::Top, Layer::Bottom, Layer::Background])
+    } else {
+        (&[Layer::Overlay, Layer::Top], &[Layer::Bottom, Layer::Background])
+    };
+    layers(&mut elements, above, renderer);
 
     // With no per-window effect configured (the default) the whole space goes
     // through smithay's one call at alpha 1.0, so damage tracking and direct
@@ -176,7 +188,7 @@ pub fn collect_elements(
     elements.extend(border_elements(space, borders, output_loc, scale, config));
     elements.extend(shadow_elements(renderer, space, borders, output_loc, config));
 
-    layers(&mut elements, [Layer::Bottom, Layer::Background], renderer);
+    layers(&mut elements, below, renderer);
 
     insert_blur(renderer, output, borders, config, blur_requests, &mut elements);
 
