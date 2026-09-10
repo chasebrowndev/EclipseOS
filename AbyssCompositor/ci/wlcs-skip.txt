@@ -232,10 +232,30 @@ ToplevelInputRegions/ToplevelInputCombinations.input_falls_through_surface_witho
 XdgToplevelStableTest.touch_can_not_steal_pointer_based_move
 
 # ---------------------------------------------------------------------------
-# 2. text-input-v3 / input-method-v2 not implemented.
+# 2. text-input-v3 / input-method-v2: smithay request-discard behaviour.
 #
-# The protocol pair is entirely absent, so every assertion in
-# text_input_v3_with_input_method_v2.cpp fails. Legitimately deferred.
+# Both globals ARE implemented and advertised (state.rs, and the wlcs
+# integration's SUPPORTED_EXTENSIONS). The tests still fail for a reason
+# outside our code.
+#
+# wlcs's fixture uses two clients: app_client holds the zwp_text_input_v3,
+# input_client holds the zwp_input_method_v2. Neither the fixture's
+# `bind_if_supported` nor `get_input_method` flushes input_client's
+# connection, so the compositor does not receive the input-method bind until
+# a test calls `input_client.roundtrip()` -- which happens *after* the
+# app_client has already sent enable/commit. Verified with WAYLAND_DEBUG=server:
+# the bind arrives 17ms after `zwp_text_input_v3#9.commit()`.
+#
+# smithay 0.7.0 discards every text-input request while no input-method
+# instance exists (text_input_handle.rs: "discarding text-input request
+# without IME running") and gates `text_input.enter()` on
+# `input_method.has_instance()` (seat/keyboard.rs). It never replays the
+# pending enable/commit when the IME appears late, so `activate`/`done`
+# never fire. Mir, which these tests were written against, replays.
+#
+# Passing them requires either patching the pinned smithay=0.7.0 or replacing
+# its text_input/input_method modules with a hand-rolled implementation
+# (archived on branch comp16-ime-v3, commit 4abd048). Neither is in scope here.
 #
 # Removed by: no milestone assigned yet -- COMP-06 text-input-v3.
 TextInputV3WithInputMethodV2Test.input_method_can_be_disabled
