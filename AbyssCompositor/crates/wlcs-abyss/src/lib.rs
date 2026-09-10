@@ -172,18 +172,23 @@ struct TouchHandle {
 
 const WLCS_TOUCH_SLOT: u32 = 0;
 
+// wlcs declares the touch hooks as taking `wl_fixed_t` (`include/wlcs/touch.h`)
+// but hands them plain pixel ints (`src/in_process_server.cpp:271`, `down_at`).
+// So touch coordinates are *not* 24.8 fixed point the way the pointer ones are:
+// dividing by 256 here put every touch at (0.35, 0.05) and no surface was hit.
+
 impl wlcs::Touch for TouchHandle {
     fn touch_down(&mut self, x: i32, y: i32) {
         let _ = self.sender.send(WlcsEvent::TouchDown {
             slot: WLCS_TOUCH_SLOT,
-            location: (fixed(x), fixed(y)),
+            location: (x as f64, y as f64),
         });
     }
 
     fn touch_move(&mut self, x: i32, y: i32) {
         let _ = self.sender.send(WlcsEvent::TouchMove {
             slot: WLCS_TOUCH_SLOT,
-            location: (fixed(x), fixed(y)),
+            location: (x as f64, y as f64),
         });
     }
 
