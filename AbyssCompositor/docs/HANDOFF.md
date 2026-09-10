@@ -11,10 +11,10 @@ Branch: `comp16-m9c-headless`, pushed, ~20 commits ahead of `main`. No PR open.
 
 ## What just landed
 
-**m9c conformance is green.** Full wlcs suite on the test box: `RC=0, OK=555,
-FAILED=0` against `ci/wlcs-skip.txt` (273 skip entries). The skip list is a
-ratchet — entries only ever come out, and an unlisted failing test must turn
-the gate red.
+**m9c conformance is green, and touch has landed.** Full wlcs suite on the
+test box: `RC=0, OK=723, FAILED=0` against `ci/wlcs-skip.txt` (105 skip
+entries, down from 273). The skip list is a ratchet — entries only ever come
+out, and an unlisted failing test must turn the gate red.
 
 **The 11 `TextInputV3WithInputMethodV2Test.*` failures are closed as
 won't-fix.** Not an abyss gap: wlcs's fixture binds `zwp_input_method_manager_v2`
@@ -54,32 +54,32 @@ trailer names in prose.
 
 ---
 
-## Next dev step: touch injection in the harness
+## Touch is done
 
-The biggest single ratchet win, and the only large item not blocked on a
-design conversation. Roughly a day.
+The 170-entry touch bloc is out of the skip list: 168 pass, 2 rehomed. The
+sizing question that headed this section is settled — it was 168, not 34 and
+not ~190; the odd numeric indices of the `*InputCombinations` packs really
+were the touch device.
 
-1. `WlcsEvent::TouchDown` / `TouchMove` / `TouchUp`.
-2. `inject_touch_down` / `_move` / `_up` in `crates/abyss/src/input/inject.rs`
-   — today that file has only the three pointer paths. Route through
-   `AbyssState`, not the seat handle directly, for the reason in its module
-   doc: idle activity, focus, clamping and lock suppression must all fire for
-   an injected event too.
-3. `Seat::add_touch()` in `state.rs`.
-4. Real `create_touch()` in `crates/wlcs-abyss` in place of the stub.
+Two things cost most of that day, both worth remembering:
 
-**Resolve the sizing question first (~10 min).** I have been quoting "~170
-tests unlocked" and cannot substantiate it. Firmly confirmed: **34** — the 16
-`AllSurfaceTypes/TouchTest.*` plus 18 explicitly touch-named entries
-elsewhere. The two large blocs, `RegionSurfaceInputCombinations` (122) and
-`SurfaceInputCombinations` (50), are gtest-parameterized by device type with
-bare numeric indices; the skipped ones skew heavily odd (153 odd vs 30 even),
-which *suggests* odd = touch, but wlcs sources are not checked out locally so
-it is unproven. Check the parameter list in wlcs's
-`tests/surface_input_regions.cpp` before committing to a number. It is the
-difference between 34 and ~190.
+- **wlcs touch coordinates are plain pixels.** `include/wlcs/touch.h` types
+  the hooks as `wl_fixed_t`, `src/in_process_server.cpp:271` passes ints.
+  Dividing by 256 put every touch at (0.35, 0.05). The *pointer* hooks are
+  genuinely fixed point, so `fixed()` stays where it is.
+- **A `wl_touch.up` cannot be routed through a destroyed surface.** smithay
+  matches `wl_touch` instances by the focus surface's client, and by the time
+  `CompositorHandler::destroyed` runs the surface has no client
+  (`Resource::client()` → `None`), so the event is dropped with no error.
+  `wl_touch.cancel` is not a substitute: no id, and wlcs's listener has
+  `nullptr` for cancel. `AbyssState.touch_points` keeps the `Client` from
+  down time and `release_touch_on` sends `up` + `frame` to it directly.
 
----
+The 2 holdouts are the touch twins of
+`input_seen_by_subsurface_after_parent_unmapped_and_remapped`; their pointer
+cases (indices 8 and 10) fail the same way, so a remapped parent's subsurface
+is not re-entering the focus tree at all. That is the next real input bug, and
+it is worth 4 tests.
 
 ## Queue after that
 
@@ -103,7 +103,7 @@ difference between 34 and ~190.
 - **Open the PR** for `comp16-m9c-headless`. Body must cite the spec section
   (`Implements COMP-15 §1`) or the `spec-trail` job blocks it — that job is
   live now, not theoretical.
-- **~230 remaining skip-listed failures** in 18 catalogued groups: future
+- **105 remaining skip-listed failures** in 17 live groups (group 1 retired): future
   milestone work, not this session's.
 - **First hardware KMS boot on cbbedroomdesktop** — explicitly sequenced last.
 - Not started: 9d node-level redaction, 9e window-rules completion,
