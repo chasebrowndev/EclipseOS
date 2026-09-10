@@ -52,7 +52,8 @@ cargo deny check advisories bans licenses sources
 cargo run -- --backend winit    # nested under Hyprland for dev
 journalctl --user -t abyss -f  # logs (tracing → journald)
 ```
-The first five are exactly what CI runs (`.github/workflows/gate.yml`). If you
+The first five are exactly what CI runs (`../.github/workflows/gate.yml` — the
+workflows sit at the repository root, one level above this crate tree). If you
 change one, change both — a local gate that differs from CI is worse than no
 local gate.
 

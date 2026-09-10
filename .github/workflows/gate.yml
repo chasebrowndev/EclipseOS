@@ -10,6 +10,14 @@ concurrency:
   group: gate-${{ github.ref }}
   cancel-in-progress: true
 
+# The workflow files must sit at the repository root for GitHub to read
+# them; the cargo workspace lives one directory down. Every `run:` step is
+# therefore rooted at AbyssCompositor/, and each `uses:` action that touches
+# the filesystem is pointed there explicitly (actions ignore `defaults`).
+defaults:
+  run:
+    working-directory: AbyssCompositor
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -42,6 +50,8 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: AbyssCompositor
 
       - run: cargo fmt --all --check
 
@@ -73,6 +83,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: AbyssCompositor
 
       # Pinned to the same revision smithay's own wlcs job uses. A floating
       # checkout would let an upstream test change turn this gate red on a
@@ -111,6 +123,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans licenses sources
+          manifest-path: AbyssCompositor/Cargo.toml
 
   tcb-review:
     name: TCB touch check
@@ -131,7 +144,7 @@ jobs:
           head="${{ github.event.pull_request.head.sha }}"
           changed=$(git diff --name-only "$base" "$head")
           tcb=$(echo "$changed" | grep -E \
-            '^(crates/(policyd|policy-eval|sandbox|brokerd)/|crates/abyss/src/(policy|trusted_ui|audit)/|crates/abyss/src/render/capture\.rs$)' \
+            '^AbyssCompositor/(crates/(policyd|policy-eval|sandbox|brokerd)/|crates/abyss/src/(policy|trusted_ui|audit)/|crates/abyss/src/render/capture\.rs$)' \
             || true)
           if [ -n "$tcb" ]; then
             echo "::warning title=TCB path touched::Line-by-line owner review required (F-07 §4)"
