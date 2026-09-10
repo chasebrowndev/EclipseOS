@@ -164,32 +164,18 @@ XdgToplevelStableConfigurationTest.window_can_fullscreen_itself
 XdgToplevelStableConfigurationTest.window_can_unfullscreen_itself
 
 # ---------------------------------------------------------------------------
-# 11. Popup grabs: keyboard focus and done-event ordering.
+# 11. Zero-size xdg_positioner anchor rectangle.
 #
-# Popups map and position, but an explicit grab does not take keyboard focus
-# and dismissal does not cascade done events in the right order. Popup grab
-# semantics are unimplemented (COMP-05).
+# UPSTREAM BLOCKER, not an abyss bug: the xdg_positioner global is delegated
+# wholly to smithay, and smithay 0.7.0's `set_anchor_rect` handler posts
+# `xdg_positioner::Error::InvalidInput` for any width or height < 1, while
+# xdg-shell only mandates an error for *negative* values. wlcs maps a popup
+# with a 0x0 anchor rect, so the client is killed before abyss ever places it.
+# abyss's own placement math is correct for this case -- it yields the expected
+# (170, 230). Fixing it needs a smithay change (or taking over the positioner
+# handler), and the pin is `=0.7.0` (root CLAUDE.md: a bump is its own PR).
 #
-# Removed by: no milestone assigned yet -- COMP-05 popup grabs.
-LayerShellPopup/XdgPopupTest.grabbed_popup_gets_done_event_when_new_toplevel_created/0
-LayerShellPopup/XdgPopupTest.grabbed_popup_gets_keyboard_focus/0
-LayerShellPopup/XdgPopupTest.grabbed_popups_get_done_events_in_correct_order/0
-LayerShellPopup/XdgPopupTest.popup_gives_up_pointer_focus_when_gone/0
-XdgPopupStable/XdgPopupTest.grabbed_popup_gets_done_event_when_new_toplevel_created/0
-XdgPopupStable/XdgPopupTest.grabbed_popup_gets_keyboard_focus/0
-XdgPopupStable/XdgPopupTest.grabbed_popups_get_done_events_in_correct_order/0
-XdgPopupStable/XdgPopupTest.popup_gives_up_pointer_focus_when_gone/0
-
-# ---------------------------------------------------------------------------
-# 12. Popup repositioning and anchor-rect edge cases.
-#
-# GENUINE BUG: xdg_positioner reposition and reactive popups are handled but
-# produce the wrong geometry; a zero-size anchor rect is mishandled.
-#
-# Removed by: no milestone assigned yet -- COMP-05 xdg_positioner.
-XdgPopupTest.popup_can_be_repositioned
-XdgPopupTest.when_parent_surface_is_moved_a_nonreactive_popup_is_not_moved
-XdgPopupTest.when_parent_surface_is_moved_a_reactive_popup_is_moved
+# Removed by: a smithay bump that relaxes the anchor-rect validation.
 XdgPopupTest.zero_size_anchor_rect_stable
 
 # ---------------------------------------------------------------------------

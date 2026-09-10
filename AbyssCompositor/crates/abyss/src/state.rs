@@ -170,6 +170,8 @@ pub struct AbyssState {
     /// callback, so *any* re-entrant call into it from inside that callback
     /// self-deadlocks; this flag is what keeps `refresh_pointer_focus` out.
     pub pointer_grab_active: bool,
+    /// Active `xdg_popup.grab` stack, outermost first (COMP-06 §4).
+    pub popup_grabs: Vec<smithay::wayland::shell::xdg::PopupSurface>,
 
     /// Live only on the DRM backend; `None` under winit/headless.
     #[cfg(feature = "drm")]
@@ -435,6 +437,7 @@ impl AbyssState {
             seat,
             pointer_location: (0.0, 0.0).into(),
             last_pointer_focus: None,
+            popup_grabs: Vec::new(),
             pointer_grab_active: false,
             outputs: crate::outputs::Outputs::new(),
             focus: None,

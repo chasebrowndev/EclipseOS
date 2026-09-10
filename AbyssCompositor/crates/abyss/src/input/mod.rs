@@ -398,6 +398,7 @@ impl AbyssState {
     }
 
     fn on_pointer_button<B: InputBackend>(&mut self, event: B::PointerButtonEvent) {
+        let pressed = event.state() == ButtonState::Pressed;
         let pointer = self.seat.get_pointer().unwrap();
         pointer.button(
             self,
@@ -412,6 +413,12 @@ impl AbyssState {
             },
         );
         pointer.frame(self);
+        // A press outside the grab dismisses it, and must be delivered first:
+        // xdg-shell forbids `popup_done` preceding the button that caused it.
+        if pressed && !self.popup_grabs.is_empty() {
+            let under = self.surface_under(self.pointer_location).map(|(s, _)| s);
+            crate::shell::popup_grab_button_press(self, under.as_ref());
+        }
     }
 
     fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {

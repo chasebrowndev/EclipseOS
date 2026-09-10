@@ -9,30 +9,103 @@ Branch: `comp16-m9c-headless`, pushed. PR #1 is open (`Implements COMP-15 §1`).
 
 ## Where the 2026-09-10 session left off
 
-- **Head is `3dcd5fd`**, pushed, working tree clean. The substantive commit of
-  the session is `6dd1ea8` (map-time configure + grab deadlock, see its own
-  section below); `5c0317f`, `a4eb33e`, `d4e1ddf`, `d27c5fe` and `3dcd5fd` are
-  docs and the `spec-trail` working-directory fix.
-- **Suite: `RC=0, 786 passed / 307 skipped / 0 failed` against 54 skip
-  entries**, measured on `cbbedroomdesktop` after `6dd1ea8`. Previous baseline
-  was 775 passed against 65 entries. Local gate green on all five.
+- **Head is the popup-cluster commit** on `comp16-m9c-headless` (parent
+  `028ad7c`). The substantive commits of the session are `6dd1ea8` (map-time
+  configure + grab deadlock, see its own section below) and the popup-cluster
+  commit (popup grabs, reactive popups, reposition geometry, popup pointer
+  leave); the rest are docs and the `spec-trail` working-directory fix.
+- **Suite: `RC=0, 797 passed / 307 skipped / 0 failed` against 43 skip
+  entries**, measured on `cbbedroomdesktop` after the popup-cluster commit.
+  Previous baselines: 786 passed / 54 entries, and 775 / 65. Local gate green
+  on all five.
 - **PR #1 CI was re-running on `6dd1ea8` when the session paused.** `wlcs
   (headless)` was the only red job before that commit and the fix cleared it
   locally on the box, but the *CI* run had not finished — check
   `gh pr checks 1` before assuming PR #1 is green.
-- **A background subagent was hunting the popup cluster** (the 12
-  `XdgPopupTest` / `XdgPopupStable/XdgPopupTest` / `LayerShellPopup/XdgPopupTest`
-  entries) with a mandate to fix what it can, correct the rationales of what it
-  leaves, unskip accordingly, run the full suite and the local gate, commit as
-  owner-only and update this file. If its commit is not on
-  `comp16-m9c-headless`, that work was lost and the cluster is still open —
-  restart it rather than assuming any of it landed.
+- **The popup cluster is closed, 11 of 12.** It was four independent root
+  causes, not one shared bug (see "Popup cluster" below). The only entry left
+  skipped is `XdgPopupTest.zero_size_anchor_rect_stable`, and it is an upstream
+  smithay 0.7.0 blocker, not an abyss bug -- its rationale in
+  `ci/wlcs-skip.txt` now says so.
 - **Two hypotheses were burned on `/7` before `6dd1ea8` and must not be
   re-chased**: that it was touch-specific, and that the
   `XdgStableSurfaceBuilder(12,5,20,6)` window-geometry inset shifted the
   hit test through `shell::reanchor`. Both wrong. `Space` subtracts the
   window-geometry offset live in `InnerElement::render_location`, and `/7` was
   the same missing map-time configure as the rest of its cluster.
+
+---
+
+## Popup cluster (2026-09-10) -- four root causes, 11 of 12 unskipped
+
+The 12 skipped `XdgPopupTest` entries across the three parameterizations were
+**not** one shared bug the way the previous ~15-entry cluster was. Four causes:
+
+1. `popup_can_be_repositioned` -- smithay's `PopupSurface::post_commit_hook`
+   sets `attributes.current = last_acked` on **every** popup commit once the
+   initial configure is sent, so a one-shot `publish_popup_geometry` at the
+   initial configure was silently undone by the next commit and
+   `PopupKind::location()` read `{0,0}`. Fixed by republishing the geometry on
+   every popup commit in `shell::handle_commit`.
+2. `when_parent_surface_is_moved_a_reactive_popup_is_moved` -- nothing re-ran
+   `unconstrain_popup` + configure when the parent moved. Fixed with
+   `shell::refresh_reactive_popups`, called from `shell::arrange` (and so from
+   `place_at`). It deliberately sends a plain `send_configure()` and **no**
+   `repositioned` token, because the test asserts zero `repositioned` calls;
+   that is legal only because the positioner is reactive (smithay's
+   `send_configure` errors for a non-reactive popup after the initial one).
+3. `popup_gives_up_pointer_focus_when_gone` (x2) -- no `wl_pointer.leave` when
+   the popup died, so wlcs failed at `in_process_server.cpp:1222`. Fixed with
+   `XdgShellHandler::popup_destroyed` -> `shell::popup_gone`, which sends
+   `pointer.motion(None)` + `frame` while the `wl_surface` is still alive, then
+   `refresh_pointer_focus()` to deliver the enter to the toplevel. Safe because
+   `PopupTree::iter_popups()` filters out non-`alive()` nodes, so the dying
+   popup is no longer hit-tested.
+4. The three grab tests (x2 params) -- a hand-rolled grab stack
+   (`AbyssState::popup_grabs`). smithay's own `PopupGrab` is unusable here: it
+   requires `KeyboardFocus: WaylandFocus + From<PopupKind>` and the orphan rule
+   forbids `impl From<PopupKind> for WlSurface`, which is abyss's
+   `SeatHandler::KeyboardFocus`. `grab()` pushes and takes keyboard focus;
+   `new_toplevel` dismisses; an outside press dismisses via
+   `PopupManager::dismiss_popup` (child-then-parent `popup_done` ordering comes
+   free from `PopupNode::send_done`) followed by `refocus_topmost`. Dismissal
+   runs **after** the button is delivered, since xdg-shell forbids `popup_done`
+   preceding its cause, and `grab_root_of` scopes "outside" by comparing popup
+   roots -- which is why `does_not_get_popup_done_event_before_button_press`
+   (a click inside the parent toplevel) correctly does not dismiss.
+
+### Negative results -- do not re-chase
+
+- **"Wrong geometry store."** Disproved. `publish_popup_geometry` already
+  writes `XdgPopupSurfaceData.current.geometry`, which is exactly the store
+  `PopupKind::location()` reads. The bug was the timing (cause 1), not the
+  store. The other store, `SurfaceCachedState.current().geometry`, drives
+  `PopupKind::geometry()` and is not involved.
+- **`reposition_request` needed a second configure.** No --
+  `PopupSurface::send_repositioned(token)` is
+  `send_configure_internal(Some(token))` and already emits the configure; the
+  extra `send_configure` was doubling it.
+- **wlcs pointer input does not flow through `AbyssState::process_input_event`.**
+  Buttons arrive as `WlcsEvent::PointerButtonDown/Up`, handled in
+  `backend/headless.rs` (~line 538), which calls
+  `input/inject.rs::inject_pointer_button`. Any input-path behaviour that must
+  be visible to wlcs has to be added in **both** `input/mod.rs::on_pointer_button`
+  and `inject_pointer_button`. The first grab-dismissal attempt only patched the
+  former and looked like the grab hook was never firing at all.
+- **`XdgPopupTest.zero_size_anchor_rect_stable` is not an abyss geometry bug.**
+  The `xdg_positioner` global is delegated wholly to smithay, and smithay
+  0.7.0's `handlers/positioner.rs` posts `xdg_positioner::Error::InvalidInput`
+  ("Invalid size for positioner's anchor rectangle.") for `width < 1 ||
+  height < 1`, while xdg-shell only mandates an error for *negative* values.
+  wlcs sets a 0x0 anchor rect, so the client is killed before abyss places
+  anything; abyss's own math yields the expected (170, 230). Needs a smithay
+  bump (its own PR under the `=0.7.0` pin) or taking the positioner handler
+  over locally.
+
+### Next
+
+- Layer-shell keyboard interactivity (skip section 13) and the subsurface
+  placement cluster (section 15) are the two largest remaining blocks.
 
 ---
 

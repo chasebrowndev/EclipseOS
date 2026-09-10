@@ -81,6 +81,12 @@ impl AbyssState {
             },
         );
         pointer.frame(self);
+        // A press outside the grab dismisses it, and must be delivered after
+        // the button: xdg-shell forbids `popup_done` preceding its cause.
+        if pressed && !self.popup_grabs.is_empty() {
+            let under = self.surface_under(self.pointer_location).map(|(s, _)| s);
+            crate::shell::popup_grab_button_press(self, under.as_ref());
+        }
     }
 
     /// A scroll frame. The `AxisFrame` is built by the caller, since only it

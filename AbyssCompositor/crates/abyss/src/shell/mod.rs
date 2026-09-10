@@ -8,7 +8,7 @@ pub mod workspace;
 use smithay::{
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, LayerMap,
-        LayerSurface as DesktopLayerSurface, PopupKind, Window, WindowSurfaceType,
+        LayerSurface as DesktopLayerSurface, PopupKind, PopupManager, Window, WindowSurfaceType,
     },
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -242,6 +242,7 @@ pub fn arrange(state: &mut AbyssState) {
     for id in ids {
         arrange_output(state, id);
     }
+    refresh_reactive_popups(state);
 }
 
 /// Lay out one output's active workspace and remap it into the space.
@@ -855,9 +856,13 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
 
     if let Some(popup) = state.popups.find_popup(surface) {
         let PopupKind::Xdg(ref xdg) = popup else { return };
-        if !xdg.is_initial_configure_sent() && xdg.send_configure().is_ok() {
-            publish_popup_geometry(xdg);
+        if !xdg.is_initial_configure_sent() && xdg.send_configure().is_err() {
+            return;
         }
+        // Smithay's popup post-commit hook resets `current` to the last acked
+        // configure on *every* commit, so republishing only once at the
+        // initial configure would be undone by the next commit (COMP-06 §4).
+        publish_popup_geometry(xdg);
     }
 }
 
@@ -876,6 +881,120 @@ pub(crate) fn publish_popup_geometry(popup: &PopupSurface) {
             data.lock().unwrap().current.geometry = geometry;
         }
     });
+}
+
+/// Reconstrain every reactive popup against its parent's current position.
+///
+/// `xdg_positioner.set_reactive` asks the compositor to re-run the constraint
+/// adjustment whenever the parent moves or the visible area changes
+/// (COMP-06 §4). Nothing in smithay does this for us, so it runs at the end of
+/// every layout pass. A plain `configure` is what the protocol wants here — a
+/// `repositioned` token belongs only to an explicit `xdg_popup.reposition`.
+pub fn refresh_reactive_popups(state: &mut AbyssState) {
+    let roots: Vec<WlSurface> = state.space.elements().filter_map(window_surface).collect();
+    let mut reactive: Vec<PopupSurface> = Vec::new();
+    for root in &roots {
+        for (kind, _) in PopupManager::popups_for_surface(root) {
+            let PopupKind::Xdg(xdg) = kind else { continue };
+            if xdg.with_pending_state(|s| s.positioner.reactive) {
+                reactive.push(xdg);
+            }
+        }
+    }
+    for popup in reactive {
+        unconstrain_popup(state, &popup);
+        if popup.send_configure().is_ok() {
+            publish_popup_geometry(&popup);
+        }
+    }
+}
+
+/// The popup-root surface an arbitrary surface belongs to, for grab-scope tests.
+fn grab_root_of(state: &AbyssState, surface: &WlSurface) -> WlSurface {
+    state
+        .popups
+        .find_popup(surface)
+        .and_then(|k| find_popup_root_surface(&k).ok())
+        .or_else(|| window_for_surface(state, surface).and_then(|w| window_surface(&w)))
+        .unwrap_or_else(|| surface.clone())
+}
+
+/// `xdg_popup.grab`: an explicit grab takes keyboard focus and stays up until
+/// it is dismissed (COMP-06 §4). Smithay's own `PopupGrab` needs
+/// `From<PopupKind>` for the seat's focus type, which the orphan rule forbids
+/// for `WlSurface`, so the stack is kept here instead.
+pub fn popup_grab_start(state: &mut AbyssState, popup: PopupSurface) {
+    let surface = popup.wl_surface().clone();
+    state.popup_grabs.push(popup);
+    focus_surface(state, Some(surface));
+}
+
+/// Dismiss the whole grab stack, deepest popup first.
+pub fn popup_grab_dismiss(state: &mut AbyssState) {
+    let grabs = std::mem::take(&mut state.popup_grabs);
+    let Some(bottom) = grabs.first() else {
+        return;
+    };
+    // `PopupManager::dismiss_popup` walks the tree children-first, which is the
+    // ordering xdg-shell mandates for `popup_done`.
+    let kind = PopupKind::Xdg(bottom.clone());
+    if let Ok(root) = find_popup_root_surface(&kind) {
+        let _ = PopupManager::dismiss_popup(&root, &kind);
+    }
+    refocus_topmost(state);
+}
+
+/// A button press outside the grabbing popup's own surface tree dismisses it.
+pub fn popup_grab_button_press(state: &mut AbyssState, under: Option<&WlSurface>) {
+    let Some(bottom) = state.popup_grabs.first().cloned() else {
+        return;
+    };
+    let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(bottom)) else {
+        state.popup_grabs.clear();
+        return;
+    };
+    if let Some(under) = under {
+        if grab_root_of(state, under) == root {
+            return;
+        }
+    }
+    popup_grab_dismiss(state);
+}
+
+/// A popup died: hand pointer focus back while its `wl_surface` is still alive.
+///
+/// `wl_pointer.leave` can only be delivered to a live resource, so waiting for
+/// the surface itself to go leaves the client believing the pointer is still
+/// inside a surface it destroyed, and the next `enter` looks unpaired
+/// (COMP-04 §6).
+pub fn popup_gone(state: &mut AbyssState, popup: &PopupSurface) {
+    let surface = popup.wl_surface().clone();
+    let was_grab = state.popup_grabs.iter().any(|p| p.wl_surface() == &surface);
+    state.popup_grabs.retain(|p| p.wl_surface() != &surface);
+    if state.last_pointer_focus.as_ref().map(|(s, _)| s) == Some(&surface) {
+        state.last_pointer_focus = None;
+        if !state.pointer_grab_active {
+            if let Some(pointer) = state.seat.get_pointer() {
+                let serial = SERIAL_COUNTER.next_serial();
+                let time = state.start_time.elapsed().as_millis() as u32;
+                let location = state.pointer_location;
+                pointer.motion(
+                    state,
+                    None,
+                    &smithay::input::pointer::MotionEvent {
+                        location,
+                        serial,
+                        time,
+                    },
+                );
+                pointer.frame(state);
+            }
+        }
+        state.refresh_pointer_focus();
+    }
+    if was_grab && state.popup_grabs.is_empty() {
+        refocus_topmost(state);
+    }
 }
 
 // ---------------------------------------------------------------- actions

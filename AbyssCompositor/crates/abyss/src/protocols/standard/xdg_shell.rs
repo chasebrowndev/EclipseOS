@@ -17,6 +17,8 @@ impl XdgShellHandler for AbyssState {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        // A new toplevel breaks an active popup grab (COMP-06 §4).
+        crate::shell::popup_grab_dismiss(self);
         surface.with_pending_state(|s| {
             s.states.set(xdg_toplevel::State::Activated);
         });
@@ -77,8 +79,12 @@ impl XdgShellHandler for AbyssState {
         crate::input::grabs::start_resize(self, window, &wl_surface, serial, edges);
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
-        // Popup grabs land with the full shell in M3.
+    fn grab(&mut self, surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
+        crate::shell::popup_grab_start(self, surface);
+    }
+
+    fn popup_destroyed(&mut self, surface: PopupSurface) {
+        crate::shell::popup_gone(self, &surface);
     }
 
     fn reposition_request(&mut self, surface: PopupSurface, positioner: PositionerState, token: u32) {
@@ -87,10 +93,10 @@ impl XdgShellHandler for AbyssState {
             s.positioner = positioner;
         });
         crate::shell::unconstrain_popup(self, &surface);
+        // `send_repositioned` already emits the configure pair; a second
+        // `send_configure` would double it.
         surface.send_repositioned(token);
-        if surface.send_configure().is_ok() {
-            crate::shell::publish_popup_geometry(&surface);
-        }
+        crate::shell::publish_popup_geometry(&surface);
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
