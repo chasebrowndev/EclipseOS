@@ -5,7 +5,10 @@
 # that is not listed here must pass, or the gate goes red.
 #
 # Measured against the full suite on the headless backend (COMP-16 m9c):
-# 555 pass, 319 skipped by wlcs itself, 273 excluded below.
+# 723 pass, 319 skipped by wlcs itself, 105 excluded below. (Touch landed:
+# the 170-entry touch bloc that used to head this list is gone — 168 of those
+# tests pass now, and the 2 that do not are pointer bugs in touch clothing,
+# rehomed into group 16 next to their pointer twins.)
 #
 # The 319 are not one bucket, and only 42 of them are worth chasing. wlcs
 # skips a test when the integration does not advertise the extension it
@@ -17,7 +20,7 @@
 #     4  wlcs SelfTest                   tests wlcs itself, not us
 #    30  foreign-toplevel                UNIMPLEMENTED -- real gap
 #    12  zwlr_virtual_pointer_v1         UNIMPLEMENTED -- real gap
-#    24  touch                           same harness gap as group 1 below
+#    24  touch                           wl_shell/zxdg_shell_v6 variants
 #
 # 120 of the 244 are the numerically-named `*InputCombinations` cases, which
 # `Combine(edges, all_surface_types, all_input_types)` in wlcs's
@@ -35,201 +38,11 @@
 # lines starting with '#' are ignored.
 
 # ---------------------------------------------------------------------------
-# 1. The harness has no touch device, and wlcs cannot cope with its absence.
-#
-# Every test below drives the seat's touch device. All 170 of them kill the
-# compositor process outright (SIGSEGV), rather than failing an assertion --
-# the numeric parameters are the odd indices of the input-device parameter
-# pack, which is the touch device; the even (pointer) indices of the same
-# suites run fine.
-#
-# This is a HARNESS GAP, not a COMP-04 fault. `wlcs-abyss`'s `create_touch()`
-# unconditionally returns `None`; the wlcs crate's `create_touch_ffi` turns
-# that into a null `WlcsTouch*`; and wlcs's own `Touch::Impl` constructor
-# (`src/in_process_server.cpp`) reads `touch->version` off that pointer before
-# any touch event is sent. So the crash is unconditional and happens before
-# any compositor code runs -- there is no partial touch support to fault.
-# Because a crash takes the whole single-process CI run with it, these stay
-# excluded until the harness grows a real touch device.
-#
-# Most of the 170 are the touch-parametrized twins of tests that already pass
-# in pointer form, so a minimal single-touch implementation should retire the
-# bulk of them: `WlcsEvent::TouchDown/TouchMove/TouchUp`, `inject_touch_*` in
-# `input/inject.rs` alongside `inject_pointer_*`, `Seat::add_touch()`, and
-# `create_touch()` returning a real handle. Genuine multi-touch and
-# touch-frame timing cases are the likely holdouts.
-#
-# Removed by: no milestone assigned yet -- the wlcs-abyss touch device needs one.
-AllSurfaceTypes/TouchTest.sends_touch_up_on_surface_destroy/subsurface_at_x0_y0
-AllSurfaceTypes/TouchTest.sends_touch_up_on_surface_destroy/subsurface_at_x7_y12
-AllSurfaceTypes/TouchTest.sends_touch_up_on_surface_destroy/xdg_surface_stable
-AllSurfaceTypes/TouchTest.sends_touch_up_on_surface_destroy/xdg_surface_stable_12_5_20_6
-AllSurfaceTypes/TouchTest.touch_and_drag_on_surface_seen/subsurface_at_x0_y0
-AllSurfaceTypes/TouchTest.touch_and_drag_on_surface_seen/subsurface_at_x7_y12
-AllSurfaceTypes/TouchTest.touch_and_drag_on_surface_seen/xdg_surface_stable
-AllSurfaceTypes/TouchTest.touch_and_drag_on_surface_seen/xdg_surface_stable_12_5_20_6
-AllSurfaceTypes/TouchTest.touch_drag_outside_of_surface_and_back_not_lost/subsurface_at_x0_y0
-AllSurfaceTypes/TouchTest.touch_drag_outside_of_surface_and_back_not_lost/subsurface_at_x7_y12
-AllSurfaceTypes/TouchTest.touch_drag_outside_of_surface_and_back_not_lost/xdg_surface_stable
-AllSurfaceTypes/TouchTest.touch_drag_outside_of_surface_and_back_not_lost/xdg_surface_stable_12_5_20_6
-AllSurfaceTypes/TouchTest.touch_on_surface_seen/subsurface_at_x0_y0
-AllSurfaceTypes/TouchTest.touch_on_surface_seen/subsurface_at_x7_y12
-AllSurfaceTypes/TouchTest.touch_on_surface_seen/xdg_surface_stable
-AllSurfaceTypes/TouchTest.touch_on_surface_seen/xdg_surface_stable_12_5_20_6
-ClippedLargerRegion/RegionSurfaceInputCombinations.input_inside_region_seen/1
-ClippedLargerRegion/RegionSurfaceInputCombinations.input_inside_region_seen/3
-ClippedLargerRegion/RegionSurfaceInputCombinations.input_inside_region_seen/5
-ClippedLargerRegion/RegionSurfaceInputCombinations.input_inside_region_seen/7
-ClippedLargerRegion/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/1
-ClippedLargerRegion/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/3
-ClippedLargerRegion/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/5
-ClippedLargerRegion/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/7
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/11
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/17
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/19
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/21
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/23
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/29
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/31
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/33
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/35
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/41
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/43
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/45
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/47
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/5
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/7
-DefaultEdges/RegionSurfaceInputCombinations.input_inside_region_seen/9
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/11
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/17
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/19
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/21
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/23
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/29
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/31
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/33
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/35
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/41
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/43
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/45
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/47
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/5
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/7
-DefaultEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/9
-FullSurface/RegionSurfaceInputCombinations.input_inside_region_seen/1
-FullSurface/RegionSurfaceInputCombinations.input_inside_region_seen/3
-FullSurface/RegionSurfaceInputCombinations.input_inside_region_seen/5
-FullSurface/RegionSurfaceInputCombinations.input_inside_region_seen/7
-FullSurface/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/1
-FullSurface/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/3
-FullSurface/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/5
-FullSurface/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/7
-MultiRectCorners/RegionSurfaceInputCombinations.input_inside_region_seen/1
-MultiRectCorners/RegionSurfaceInputCombinations.input_inside_region_seen/11
-MultiRectCorners/RegionSurfaceInputCombinations.input_inside_region_seen/3
-MultiRectCorners/RegionSurfaceInputCombinations.input_inside_region_seen/5
-MultiRectCorners/RegionSurfaceInputCombinations.input_inside_region_seen/7
-MultiRectCorners/RegionSurfaceInputCombinations.input_inside_region_seen/9
-MultiRectCorners/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/1
-MultiRectCorners/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/11
-MultiRectCorners/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/3
-MultiRectCorners/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/5
-MultiRectCorners/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/7
-MultiRectCorners/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/9
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/11
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/17
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/19
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/21
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/23
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/29
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/31
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/33
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/35
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/41
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/43
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/45
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/47
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/5
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/53
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/55
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/57
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/59
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/7
-MultiRectEdges/RegionSurfaceInputCombinations.input_inside_region_seen/9
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/11
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/17
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/19
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/21
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/23
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/29
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/31
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/33
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/35
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/41
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/43
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/45
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/47
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/5
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/53
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/55
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/57
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/59
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/7
-MultiRectEdges/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/9
-SmallerRegion/RegionSurfaceInputCombinations.input_inside_region_seen/1
-SmallerRegion/RegionSurfaceInputCombinations.input_inside_region_seen/3
-SmallerRegion/RegionSurfaceInputCombinations.input_inside_region_seen/5
-SmallerRegion/RegionSurfaceInputCombinations.input_inside_region_seen/7
-SmallerRegion/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/1
-SmallerRegion/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/3
-SmallerRegion/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/5
-SmallerRegion/RegionSurfaceInputCombinations.input_not_seen_after_leaving_region/7
-SurfaceInputRegions/SurfaceInputCombinations.input_falls_through_subsurface_when_parent_unmapped/11
-SurfaceInputRegions/SurfaceInputCombinations.input_falls_through_subsurface_when_parent_unmapped/5
-SurfaceInputRegions/SurfaceInputCombinations.input_falls_through_subsurface_when_parent_unmapped/7
-SurfaceInputRegions/SurfaceInputCombinations.input_falls_through_subsurface_when_parent_unmapped/9
-SurfaceInputRegions/SurfaceInputCombinations.input_falls_through_subsurface_when_unmapped/11
-SurfaceInputRegions/SurfaceInputCombinations.input_falls_through_subsurface_when_unmapped/5
-SurfaceInputRegions/SurfaceInputCombinations.input_falls_through_subsurface_when_unmapped/7
-SurfaceInputRegions/SurfaceInputCombinations.input_falls_through_subsurface_when_unmapped/9
-SurfaceInputRegions/SurfaceInputCombinations.input_hits_parent_after_falling_through_subsurface/11
-SurfaceInputRegions/SurfaceInputCombinations.input_hits_parent_after_falling_through_subsurface/5
-SurfaceInputRegions/SurfaceInputCombinations.input_hits_parent_after_falling_through_subsurface/7
-SurfaceInputRegions/SurfaceInputCombinations.input_hits_parent_after_falling_through_subsurface/9
-SurfaceInputRegions/SurfaceInputCombinations.input_not_seen_in_region_after_null_buffer_committed/11
-SurfaceInputRegions/SurfaceInputCombinations.input_not_seen_in_region_after_null_buffer_committed/5
-SurfaceInputRegions/SurfaceInputCombinations.input_not_seen_in_region_after_null_buffer_committed/7
-SurfaceInputRegions/SurfaceInputCombinations.input_not_seen_in_region_after_null_buffer_committed/9
-SurfaceInputRegions/SurfaceInputCombinations.input_not_seen_in_surface_without_region_after_null_buffer_committed/11
-SurfaceInputRegions/SurfaceInputCombinations.input_not_seen_in_surface_without_region_after_null_buffer_committed/5
-SurfaceInputRegions/SurfaceInputCombinations.input_not_seen_in_surface_without_region_after_null_buffer_committed/7
-SurfaceInputRegions/SurfaceInputCombinations.input_not_seen_in_surface_without_region_after_null_buffer_committed/9
-SurfaceInputRegions/SurfaceInputCombinations.input_not_seen_over_empty_region/11
-SurfaceInputRegions/SurfaceInputCombinations.input_not_seen_over_empty_region/5
-SurfaceInputRegions/SurfaceInputCombinations.input_not_seen_over_empty_region/7
-SurfaceInputRegions/SurfaceInputCombinations.input_not_seen_over_empty_region/9
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_after_dragged_off_surface/11
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_after_dragged_off_surface/5
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_after_dragged_off_surface/7
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_after_dragged_off_surface/9
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_after_surface_unmapped_and_remapped/11
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_after_surface_unmapped_and_remapped/5
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_after_surface_unmapped_and_remapped/7
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_after_surface_unmapped_and_remapped/9
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_by_second_surface_after_drag_off_first_and_up/11
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_by_second_surface_after_drag_off_first_and_up/5
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_by_second_surface_after_drag_off_first_and_up/7
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_by_second_surface_after_drag_off_first_and_up/9
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_by_subsurface_after_parent_unmapped_and_remapped/11
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_by_subsurface_after_parent_unmapped_and_remapped/5
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_by_subsurface_after_parent_unmapped_and_remapped/7
-SurfaceInputRegions/SurfaceInputCombinations.input_seen_by_subsurface_after_parent_unmapped_and_remapped/9
-SurfaceInputRegions/SurfaceInputCombinations.unmapping_parent_stops_subsurface_getting_input/11
-SurfaceInputRegions/SurfaceInputCombinations.unmapping_parent_stops_subsurface_getting_input/5
-SurfaceInputRegions/SurfaceInputCombinations.unmapping_parent_stops_subsurface_getting_input/7
-SurfaceInputRegions/SurfaceInputCombinations.unmapping_parent_stops_subsurface_getting_input/9
-ToplevelInputRegions/ToplevelInputCombinations.input_falls_through_surface_without_region_after_null_buffer_committed/5
-XdgToplevelStableTest.touch_can_not_steal_pointer_based_move
+# 1. RETIRED. Was "the harness has no touch device": 170 entries that all
+# SIGSEGV'd because `wlcs-abyss`'s `create_touch()` returned `None` and wlcs
+# dereferences the resulting null `WlcsTouch*`. The harness has a real touch
+# device now and 168 of those tests pass. Group numbers below are left as they
+# were so existing references still resolve.
 
 # ---------------------------------------------------------------------------
 # 2. text-input-v3 / input-method-v2: smithay request-discard behaviour.
@@ -477,6 +290,11 @@ SurfaceInputRegions/SurfaceInputCombinations.input_seen_by_second_surface_after_
 SurfaceInputRegions/SurfaceInputCombinations.input_seen_by_second_surface_after_drag_off_first_and_up/8
 SurfaceInputRegions/SurfaceInputCombinations.input_seen_by_subsurface_after_parent_unmapped_and_remapped/10
 SurfaceInputRegions/SurfaceInputCombinations.input_seen_by_subsurface_after_parent_unmapped_and_remapped/8
+# The touch twins of the two above (odd index = touch device). Same fault, not
+# a touch fault: the pointer cases 8 and 10 fail identically, so a remapped
+# parent's subsurface is not re-entering the focus tree at all.
+SurfaceInputRegions/SurfaceInputCombinations.input_seen_by_subsurface_after_parent_unmapped_and_remapped/11
+SurfaceInputRegions/SurfaceInputCombinations.input_seen_by_subsurface_after_parent_unmapped_and_remapped/9
 
 # ---------------------------------------------------------------------------
 # 17. Surface enter/leave and frame callbacks around moves and resizes.
