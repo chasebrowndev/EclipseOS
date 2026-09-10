@@ -1,19 +1,47 @@
 # Session handoff
 
-Written 2026-09-09, end of the COMP-16 m9c session. `docs/STATUS.md` is the
-verified progress record; this file is the short-lived queue of what to pick
-up next. If the two disagree, STATUS.md is right about the past and this file
-is right about the intent.
+Written 2026-09-09, last refreshed 2026-09-10 mid-session. `docs/STATUS.md` is
+the verified progress record; this file is the short-lived queue of what to
+pick up next. If the two disagree, STATUS.md is right about the past and this
+file is right about the intent.
 
 Branch: `comp16-m9c-headless`, pushed. PR #1 is open (`Implements COMP-15 §1`).
+
+## Where the 2026-09-10 session left off
+
+- **Head is `3dcd5fd`**, pushed, working tree clean. The substantive commit of
+  the session is `6dd1ea8` (map-time configure + grab deadlock, see its own
+  section below); `5c0317f`, `a4eb33e`, `d4e1ddf`, `d27c5fe` and `3dcd5fd` are
+  docs and the `spec-trail` working-directory fix.
+- **Suite: `RC=0, 786 passed / 307 skipped / 0 failed` against 54 skip
+  entries**, measured on `cbbedroomdesktop` after `6dd1ea8`. Previous baseline
+  was 775 passed against 65 entries. Local gate green on all five.
+- **PR #1 CI was re-running on `6dd1ea8` when the session paused.** `wlcs
+  (headless)` was the only red job before that commit and the fix cleared it
+  locally on the box, but the *CI* run had not finished — check
+  `gh pr checks 1` before assuming PR #1 is green.
+- **A background subagent was hunting the popup cluster** (the 12
+  `XdgPopupTest` / `XdgPopupStable/XdgPopupTest` / `LayerShellPopup/XdgPopupTest`
+  entries) with a mandate to fix what it can, correct the rationales of what it
+  leaves, unskip accordingly, run the full suite and the local gate, commit as
+  owner-only and update this file. If its commit is not on
+  `comp16-m9c-headless`, that work was lost and the cluster is still open —
+  restart it rather than assuming any of it landed.
+- **Two hypotheses were burned on `/7` before `6dd1ea8` and must not be
+  re-chased**: that it was touch-specific, and that the
+  `XdgStableSurfaceBuilder(12,5,20,6)` window-geometry inset shifted the
+  hit test through `shell::reanchor`. Both wrong. `Space` subtracts the
+  window-geometry offset live in `InnerElement::render_location`, and `/7` was
+  the same missing map-time configure as the rest of its cluster.
 
 ---
 
 ## What just landed
 
 **m9c conformance is green, and touch has landed.** Full wlcs suite on the
-test box: `RC=0, OK=743, FAILED=0` against `ci/wlcs-skip.txt` (85 skip
-entries, down from 273). The skip list is a ratchet — entries only ever come
+test box, as of `6dd1ea8`: `RC=0, 786 passed / 307 skipped / 0 failed` against
+`ci/wlcs-skip.txt` (54 skip entries, down from 273 and from 85 earlier in this
+session). The skip list is a ratchet — entries only ever come
 out, and an unlisted failing test must turn the gate red.
 
 **The 11 `TextInputV3WithInputMethodV2Test.*` failures are closed as
