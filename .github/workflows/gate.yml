@@ -181,6 +181,10 @@ jobs:
       # This is what makes the spec->code trail auditable when work is
       # delegated to an agent rather than typed by hand.
       - name: check PR body
+        # No checkout in this job, so the workflow-level
+        # `working-directory: AbyssCompositor` would not exist yet and bash
+        # fails to start at all. Run from the workspace root.
+        working-directory: .
         env:
           BODY: ${{ github.event.pull_request.body }}
         run: |
