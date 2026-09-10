@@ -5,8 +5,7 @@ verified progress record; this file is the short-lived queue of what to pick
 up next. If the two disagree, STATUS.md is right about the past and this file
 is right about the intent.
 
-Branch: `comp16-m9c-headless`. PR #1 is open (`Implements COMP-15 §1`).
-Commit `5395443` (pointer-focus refresh) is local-only — push it.
+Branch: `comp16-m9c-headless`, pushed. PR #1 is open (`Implements COMP-15 §1`).
 
 ---
 
@@ -190,12 +189,26 @@ restack failures. Correctly still skipped.
   after they exist. Restrict pushes, block force-push, require `attribution`
   plus the gate jobs. Requiring *signed commits* is a separate decision: it
   needs a GPG or SSH signing key configured locally or every commit fails.
-- **PR #1** is open. Its `spec-trail` job failed on the *empty* body the PR was
-  opened with, not on the regex — the body cites `Implements COMP-15 §1` now, so
-  re-run that job (`gh run rerun <run> --job <id>`) once the in-flight
-  `wlcs (headless)` in the same run finishes; a job cannot be rerun while its
-  run is still going. Then confirm `wlcs (headless)` is green on the llvmpipe
-  runner — that is what closes m9c.
+- **PR #1** is open and everything is green except `wlcs (headless)`, which is
+  the last thing standing between m9c and closed. It fails on exactly one test
+  the box passes:
+  `SurfaceInputRegions/SurfaceInputCombinations.input_seen_after_surface_unmapped_and_remapped/7`
+  (the touch variant; `/6`, the pointer one, failed too before the pointer-focus
+  fix and now passes). `current_surface` is NULL at
+  `surface_input_regions.cpp:623` — the client sees no touch down at all. Ruled
+  out so far: `attach_visible_buffer` blocks on a frame callback, so the remap
+  commit really was processed and rendered before `down_at`; we never
+  `unmap_window` on a null-buffer commit (only `toplevel_destroyed` and the
+  XWM); `Space::element_under` hit-tests a live `Window::bbox_with_popups`, and
+  `Window::bbox` is a cached value that `CompositorHandler::commit` does refresh
+  via `window.on_commit()`; `Window::alive()` is resource liveness, not
+  mapped-ness, so `space.refresh()`'s `retain` cannot drop a remapped element.
+  Next step is empirical, not more reading: `eprintln!` in
+  `inject_touch_down` and `shell::surface_under` (the wlcs cdylib installs no
+  tracing subscriber) and run just that test in a loop on the box under load.
+  If it stays reclusive it is a fair skip-list candidate under the
+  "reclusive and UX-inconsequential" rule — but that is a ratchet regression and
+  must be recorded as one.
 - **65 remaining skip-listed failures.** Clusters, best breakthrough candidates
   first:
   - `XdgToplevelStable*` window-geometry-offset / configure, ~15 —
@@ -220,6 +233,13 @@ restack failures. Correctly still skipped.
 
 ## Traps that have already cost time
 
+- **A GitHub Actions job with no `actions/checkout` has no working directory.**
+  `gate.yml` sets `defaults.run.working-directory: AbyssCompositor` at the
+  workflow level, so the checkout-less `spec-trail` job could not even start
+  bash: `An error occurred trying to start process '/usr/bin/bash' with working
+  directory '…/AbyssCompositor'. No such file or directory`. It read as a PR-body
+  regex failure and was not one — the grep never ran. Fixed in `a4eb33e` by
+  pinning that step to `working-directory: .`.
 - **The remote tree is not your tree.** A full-suite run was misread as a real
   failure because the test box's binary was stale, built from a `state.rs`
   still carrying a debug probe. Sync and rebuild before trusting a remote
