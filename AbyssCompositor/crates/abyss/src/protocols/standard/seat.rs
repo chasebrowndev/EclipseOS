@@ -18,6 +18,11 @@ impl SeatHandler for AbyssState {
     }
 
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        {
+            use smithay::wayland::text_input::TextInputSeat;
+            let mut n = 0; _seat.text_input().with_focused_text_input(|_, _| n += 1);
+            eprintln!("DBG focus_changed some={} ti_focus={} n_ti={}", focused.is_some(), _seat.text_input().focus().is_some(), n);
+        }
         let client = focused.and_then(|s| s.wl_surface().map(|s| s.client())).flatten();
         smithay::wayland::selection::data_device::set_data_device_focus(
             &self.display_handle,
