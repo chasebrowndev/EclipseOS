@@ -112,6 +112,16 @@ impl AbyssState {
                 crate::shell::arrange(self);
             }
         }
+        if let Some((surface, _)) = &focus {
+            if let Some(client) = smithay::reexports::wayland_server::Resource::client(surface) {
+                self.touch_points.retain(|p| p.slot != slot);
+                self.touch_points.push(crate::state::TouchPoint {
+                    slot,
+                    surface: surface.clone(),
+                    client,
+                });
+            }
+        }
         touch.down(
             self,
             focus,
@@ -153,6 +163,7 @@ impl AbyssState {
     /// A touch point lifting.
     pub fn inject_touch_up(&mut self, slot: u32, time: u32) {
         super::idle::on_activity(self);
+        self.touch_points.retain(|p| p.slot != slot);
         let touch = match self.seat.get_touch() {
             Some(touch) => touch,
             None => return,
@@ -167,4 +178,58 @@ impl AbyssState {
         );
         touch.frame(self);
     }
+
+    /// Release every touch point that came down on `surface`.
+    ///
+    /// Called when a surface is destroyed: the client must still get an `up`
+    /// for each id it saw come down, or it goes on believing the point is held.
+    /// `wl_touch.cancel` is not a substitute — it carries no id, and a client
+    /// that does not listen for it (wlcs does not) never learns anything.
+    ///
+    /// smithay cannot do this for us. It routes touch events through the focus
+    /// surface (`for_each_focused_touch` matches `wl_touch` instances by
+    /// client), and by the time `CompositorHandler::destroyed` runs the surface
+    /// is already dead and has no client, so the event is silently dropped. So
+    /// the `up` goes straight to the client's `wl_touch` here, and smithay's own
+    /// slot bookkeeping is then cleared through the normal `up` path (which
+    /// delivers nothing, for the same reason).
+    pub(crate) fn release_touch_on(
+        &mut self,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+        time: u32,
+    ) {
+        let points: Vec<crate::state::TouchPoint> = self
+            .touch_points
+            .iter()
+            .filter(|p| &p.surface == surface)
+            .cloned()
+            .collect();
+        for point in points {
+            if let Some(touch) = client_touch(&self.display_handle, &point.client) {
+                let serial = SERIAL_COUNTER.next_serial();
+                touch.up(serial.into(), time, point.slot as i32);
+                touch.frame();
+            }
+            self.inject_touch_up(point.slot, time);
+        }
+    }
 }
+
+/// The client's `wl_touch`, if it has one.
+///
+/// wayland-server exposes no way to enumerate a client's objects, only
+/// `object_from_protocol_id`, so the client's id space is walked. Client object
+/// ids are handed out from 2 upwards and a Wayland client that has a seat has a
+/// handful of objects, not thousands; this runs once per touch point whose
+/// surface was destroyed under it, never on the input path.
+fn client_touch(
+    dh: &smithay::reexports::wayland_server::DisplayHandle,
+    client: &smithay::reexports::wayland_server::Client,
+) -> Option<smithay::reexports::wayland_server::protocol::wl_touch::WlTouch> {
+    (2..=MAX_CLIENT_OBJECT_ID)
+        .find_map(|id| client.object_from_protocol_id(dh, id).ok())
+        .filter(smithay::reexports::wayland_server::Resource::is_alive)
+}
+
+/// How far to walk a client's object id space looking for its `wl_touch`.
+const MAX_CLIENT_OBJECT_ID: u32 = 1024;

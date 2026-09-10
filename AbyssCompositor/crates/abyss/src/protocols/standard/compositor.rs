@@ -39,6 +39,15 @@ impl CompositorHandler for AbyssState {
         let _ = id;
     }
 
+    fn destroyed(&mut self, surface: &WlSurface) {
+        // A touch point whose target dies must still be lifted: the client is
+        // owed an `up` for every id it saw come down (COMP-04 §6).
+        if !self.touch_points.is_empty() {
+            let time = self.start_time.elapsed().as_millis() as u32;
+            self.release_touch_on(surface, time);
+        }
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
         if !is_sync_subsurface(surface) {

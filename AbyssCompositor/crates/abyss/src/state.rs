@@ -129,6 +129,13 @@ pub struct AbyssState {
     pub outputs: crate::outputs::Outputs,
     /// The window holding keyboard focus, if any.
     pub focus: Option<Window>,
+    /// Touch points currently down, with the surface each came down on.
+    ///
+    /// smithay's touch state is private, and a destroyed surface leaves the
+    /// point stranded: the client is still holding an id it will never see an
+    /// `up` for, and `wl_touch.cancel` is not a substitute (it carries no id).
+    /// So the down-time target is kept here and released explicitly.
+    pub touch_points: Vec<TouchPoint>,
     /// Per-window border quads, kept alive across frames.
     pub borders: crate::render::BorderStore,
 
@@ -403,6 +410,7 @@ impl AbyssState {
             pointer_location: (0.0, 0.0).into(),
             outputs: crate::outputs::Outputs::new(),
             focus: None,
+            touch_points: Vec::new(),
             borders: crate::render::BorderStore::default(),
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
             config,
@@ -457,4 +465,19 @@ impl ClientData for ClientState {
 
 pub fn client_state() -> Arc<ClientState> {
     Arc::new(ClientState::default())
+}
+
+/// A touch point that is currently down.
+///
+/// The client handle is kept alongside the surface because a destroyed surface
+/// has no client any more (`Resource::client()` returns `None`), and the `up`
+/// still has to reach the `wl_touch` that saw the `down`.
+#[derive(Debug, Clone)]
+pub struct TouchPoint {
+    /// Touch id as the client saw it in `wl_touch.down`.
+    pub slot: u32,
+    /// Surface the point came down on.
+    pub surface: smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    /// Client that owns both the surface and the `wl_touch`.
+    pub client: smithay::reexports::wayland_server::Client,
 }
