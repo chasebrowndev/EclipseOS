@@ -1,0 +1,63 @@
+[package]
+name = "abyss"
+description = "EclipseOS Wayland compositor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# lib + bin: the conformance harness (COMP-15 §1) links the compositor and
+# drives it in-process, which a bin-only crate cannot support.
+[lib]
+name = "abyss"
+path = "src/lib.rs"
+
+[[bin]]
+name = "abyss"
+path = "src/main.rs"
+
+[dependencies]
+smithay = { workspace = true, features = [
+  "wayland_frontend",
+  "desktop",
+  "renderer_gl",
+  "xwayland",
+] }
+calloop.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-journald.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+xkbcommon.workspace = true
+libc = "0.2"
+kdl.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+
+[features]
+default = ["winit", "drm", "headless"]
+# `winit.rs` binds wl_drm and imports dmabuf, both of which need the system
+# EGL library, and `EGLDevice::try_get_render_node` is gated on `backend_drm`;
+# the feature has to name all three rather than relying on `drm` being on too.
+winit = [
+  "smithay/backend_winit",
+  "smithay/backend_egl",
+  "smithay/backend_drm",
+  "smithay/use_system_lib",
+]
+# CI backend: EGL device (hardware render node or Mesa software), no KMS, no
+# host display server. COMP-01 §10.
+headless = ["smithay/backend_egl", "smithay/backend_drm", "smithay/use_system_lib"]
+# Production backend: KMS via libseat + udev + libinput, GLES on GBM/EGL.
+drm = [
+  "smithay/backend_drm",
+  "smithay/backend_gbm",
+  "smithay/backend_egl",
+  "smithay/backend_libinput",
+  "smithay/backend_session",
+  "smithay/backend_session_libseat",
+  "smithay/backend_udev",
+  "smithay/use_system_lib",
+]

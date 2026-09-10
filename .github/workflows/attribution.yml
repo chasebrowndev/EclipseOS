@@ -1,0 +1,96 @@
+# Enforces the attribution rule in AbyssCompositor/CLAUDE.md ("Commits & PRs"):
+# every commit is authored by the repo owner, and no commit message carries an
+# agent co-author trailer or session link.
+#
+# This is the server-side half of the rule. The local `commit-msg` hook is the
+# fast half; a hook can be bypassed with --no-verify, this cannot.
+name: attribution
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  attribution:
+    name: owner-only authorship
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: check commits
+        env:
+          # Identities allowed to author or commit. The noreply addresses are
+          # what GitHub itself stamps on web-UI edits and merge commits; they
+          # are still the owner, so rejecting them would only teach people to
+          # stop using the web UI.
+          ALLOWED: |
+            chasebrowndev <chase.brown.dev@gmail.com>
+            chasebrowndev <chasebrowndev@users.noreply.github.com>
+            GitHub <noreply@github.com>
+        run: |
+          set -euo pipefail
+
+          # The commits this event actually introduces. On a pull_request the
+          # merge base is authoritative; on a push, `before` is a zero sha for
+          # a newly created branch, in which case only the tip is checkable
+          # without guessing at a base.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+            range="$base..$head"
+          else
+            before="${{ github.event.before }}"
+            if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ] \
+               && git cat-file -e "$before^{commit}" 2>/dev/null; then
+              range="$before..${{ github.sha }}"
+            else
+              range="${{ github.sha }}~1..${{ github.sha }}"
+              git cat-file -e "${{ github.sha }}~1^{commit}" 2>/dev/null || range="${{ github.sha }}"
+            fi
+          fi
+
+          commits=$(git rev-list "$range" 2>/dev/null || git rev-list -1 "${{ github.sha }}")
+          if [ -z "$commits" ]; then
+            echo "no new commits to check"
+            exit 0
+          fi
+
+          fail=0
+          for sha in $commits; do
+            short=$(git log -1 --format=%h "$sha")
+
+            # A forbidden trailer or footer. Anchored to the start of a
+            # line: real trailers always are, and an unanchored pattern
+            # would reject a commit message that merely names the rule --
+            # including the one that introduced this check.
+            hits=$(git log -1 --format='%B' "$sha" | grep -inE \
+              '^[[:space:]]*(co-authored-by:.*(claude|anthropic)|claude-session:|(.{0,4})?generated with \[?claude code)' || true)
+            if [ -n "$hits" ]; then
+              echo "::error title=Agent attribution in commit message::$short"
+              echo "$hits" | sed 's/^/    /'
+              fail=1
+            fi
+
+            # Author and committer identity.
+            for role in an cn; do
+              case "$role" in
+                an) who=$(git log -1 --format='%an <%ae>' "$sha"); label=author ;;
+                cn) who=$(git log -1 --format='%cn <%ce>' "$sha"); label=committer ;;
+              esac
+              if ! printf '%s\n' "$ALLOWED" | grep -qxF "$who"; then
+                echo "::error title=Unexpected $label::$short is ${label}ed by '$who'"
+                fail=1
+              fi
+            done
+          done
+
+          if [ "$fail" -ne 0 ]; then
+            echo
+            echo "Commits must be authored by the repo owner with no agent attribution."
+            echo "See the 'Commits & PRs' section of AbyssCompositor/CLAUDE.md."
+            exit 1
+          fi
+          echo "checked $(echo "$commits" | wc -l) commit(s): clean"

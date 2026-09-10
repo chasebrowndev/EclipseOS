@@ -1,0 +1,245 @@
+# wlcs tests abyss does not pass yet (COMP-15 §1).
+#
+# This list is a ratchet: entries only ever come out. Adding one needs a
+# reason on the line above it, and a milestone that will remove it. A test
+# that is not listed here must pass, or the gate goes red.
+#
+# Measured against the full suite on the headless backend (COMP-16 m9c):
+# 786 pass, 307 skipped by wlcs itself, 54 excluded below. (Touch landed:
+# the 170-entry touch bloc that used to head this list is gone — 168 of those
+# tests pass now, and the 2 that do not are pointer bugs in touch clothing,
+# rehomed next to their pointer twins.) Group 16 (input-region leave) is gone
+# entirely: all 12 entries pass now that pointer focus is re-evaluated on
+# commit; group numbers are otherwise left as they were. Groups 7 (interactive
+# move/resize), 8 (set_parent) and 9 (window-geometry hit-test offset) are gone
+# too -- see the map-time-configure and grab-reentrancy fixes in
+# docs/HANDOFF.md.
+#
+# The 319 are not one bucket, and only 30 of them are worth chasing. wlcs
+# skips a test when the integration does not advertise the extension it
+# needs; ours advertises nine globals (`SUPPORTED_EXTENSIONS` in
+# `crates/wlcs-abyss/src/lib.rs`). Breakdown:
+#
+#   244  wl_shell + zxdg_shell_v6        dead protocols; will never pass
+#     5  gtk_primary_selection           superseded by zwp_primary_selection
+#     4  wlcs SelfTest                   tests wlcs itself, not us
+#    30  foreign-toplevel                UNIMPLEMENTED -- real gap
+#    24  touch                           wl_shell/zxdg_shell_v6 variants
+#
+# zwlr_virtual_pointer_v1 used to sit in that list with 12 skipped tests. It
+# is implemented now (`protocols/standard/virtual_pointer.rs`), advertised in
+# `SUPPORTED_EXTENSIONS`, and all 12 pass.
+#
+# 120 of the 244 are the numerically-named `*InputCombinations` cases, which
+# `Combine(edges, all_surface_types, all_input_types)` in wlcs's
+# `tests/surface_input_regions.cpp` flattens to a bare integer -- the name
+# gives no hint what a case covers. Decode with `(index / 2) % 6` against
+# `SurfaceBuilder::all_surface_types()`; all 120 land on index 0 or 1
+# (WlShellSurfaceBuilder, XdgV6SurfaceBuilder). They are not an input-region
+# gap, despite what the suite names suggest.
+#
+# Note foreign-toplevel hands any client the full window list, so it wants a
+# policy check rather than a straight implementation (COMP-08/COMP-11), not a
+# free 30 tests.
+#
+# One gtest name per line ("Suite.Test" or "Suite.*"); blank lines and
+# lines starting with '#' are ignored.
+
+# ---------------------------------------------------------------------------
+# 1. RETIRED. Was "the harness has no touch device": 170 entries that all
+# SIGSEGV'd because `wlcs-abyss`'s `create_touch()` returned `None` and wlcs
+# dereferences the resulting null `WlcsTouch*`. The harness has a real touch
+# device now and 168 of those tests pass. Group numbers below are left as they
+# were so existing references still resolve.
+
+# ---------------------------------------------------------------------------
+# 2. text-input-v3 / input-method-v2: smithay request-discard behaviour.
+#
+# Both globals ARE implemented and advertised (state.rs, and the wlcs
+# integration's SUPPORTED_EXTENSIONS). The tests still fail for a reason
+# outside our code.
+#
+# wlcs's fixture uses two clients: app_client holds the zwp_text_input_v3,
+# input_client holds the zwp_input_method_v2. Neither the fixture's
+# `bind_if_supported` nor `get_input_method` flushes input_client's
+# connection, so the compositor does not receive the input-method bind until
+# a test calls `input_client.roundtrip()` -- which happens *after* the
+# app_client has already sent enable/commit. Verified with WAYLAND_DEBUG=server:
+# the bind arrives 17ms after `zwp_text_input_v3#9.commit()`.
+#
+# smithay 0.7.0 discards every text-input request while no input-method
+# instance exists (text_input_handle.rs: "discarding text-input request
+# without IME running") and gates `text_input.enter()` on
+# `input_method.has_instance()` (seat/keyboard.rs). It never replays the
+# pending enable/commit when the IME appears late, so `activate`/`done`
+# never fire. Mir, which these tests were written against, replays.
+#
+# Passing them requires either patching the pinned smithay=0.7.0 or replacing
+# its text_input/input_method modules with a hand-rolled implementation
+# (archived on branch comp16-ime-v3, commit 4abd048). Neither is in scope here.
+#
+# Removed by: no milestone assigned yet -- COMP-06 text-input-v3.
+TextInputV3WithInputMethodV2Test.input_method_can_be_disabled
+TextInputV3WithInputMethodV2Test.input_method_can_be_enabled
+TextInputV3WithInputMethodV2Test.input_method_can_send_preedit
+TextInputV3WithInputMethodV2Test.input_method_can_send_text
+TextInputV3WithInputMethodV2Test.input_method_disabled_when_text_input_destroyed
+TextInputV3WithInputMethodV2Test.text_field_state_can_be_set
+TextInputV3WithInputMethodV2Test.text_input_does_not_enter_non_grabbing_popup
+TextInputV3WithInputMethodV2Test.text_input_enters_grabbing_popup
+TextInputV3WithInputMethodV2Test.text_input_enters_parent_surface_after_child_destroyed
+TextInputV3WithInputMethodV2Test.text_input_enters_surface_on_focus
+TextInputV3WithInputMethodV2Test.text_input_leaves_surface_on_unfocus
+
+# ---------------------------------------------------------------------------
+# 3. zwp_pointer_constraints_v1 not implemented.
+#
+# Lock/confine requests are accepted by the global but no constraint is ever
+# applied or torn down. Legitimately deferred.
+#
+# Removed by: no milestone assigned yet -- COMP-04 pointer constraints.
+PointerConstraints.confined_pointer_movement_is_constrained
+PointerConstraints.when_surface_is_reselected_persistent_confined_pointer_gets_notifications
+PointerConstraints.when_surface_is_reselected_persistent_locked_pointer_gets_notifications
+PointerConstraints.when_surface_is_unselected_confined_pointer_gets_unconfined_notification
+PointerConstraints.when_surface_is_unselected_locked_pointer_gets_unlocked_notification
+
+# ---------------------------------------------------------------------------
+# 4. zwp_primary_selection_v1 not implemented.
+#
+# No primary-selection device manager is offered. Legitimately deferred.
+#
+# Removed by: no milestone assigned yet -- COMP-06 primary selection.
+PrimarySelection.sink_can_listen
+PrimarySelection.sink_can_request
+PrimarySelection.source_can_supply_request
+PrimarySelection.source_sees_request
+
+# ---------------------------------------------------------------------------
+# 5. Data-device offer is not delivered to the focused sink.
+#
+# wl_data_device IS implemented, so this looks like a GENUINE BUG in the
+# selection-offer path rather than a missing feature: the sink holds keyboard
+# focus and still never sees the offer.
+#
+# Removed by: no milestone assigned yet -- COMP-06 clipboard.
+CopyCutPaste.given_sink_has_focus_when_source_makes_offer_sink_sees_offer
+
+# ---------------------------------------------------------------------------
+# 6. xdg_shell protocol-error cases are not raised.
+#
+# The compositor accepts these malformed sequences instead of killing the
+# client with the specified error. Unimplemented error checking, but it is
+# specified behaviour we are missing rather than an optional feature.
+#
+# Removed by: no milestone assigned yet -- COMP-06 xdg-shell error paths.
+XdgSurfaceStableTest.attaching_buffer_to_unconfigured_xdg_surface_is_an_error
+XdgSurfaceStableTest.creating_xdg_surface_from_wl_surface_with_attached_buffer_is_an_error
+XdgSurfaceStableTest.creating_xdg_surface_from_wl_surface_with_committed_buffer_is_an_error
+XdgSurfaceStableTest.creating_xdg_surface_from_wl_surface_with_existing_role_is_an_error
+XdgToplevelStableTest.when_parent_is_set_to_child_descendant_error_is_raised
+XdgToplevelStableTest.when_parent_is_set_to_self_error_is_raised
+
+# ---------------------------------------------------------------------------
+# 10. xdg_toplevel fullscreen is not implemented, and `defaults` wants an
+#     unconstrained window.
+#
+# `window_can_fullscreen_itself` / `window_can_unfullscreen_itself`: there is
+# no `fullscreen_request`/`unfullscreen_request` in
+# `protocols/standard/xdg_shell.rs` and no fullscreen state anywhere in
+# `shell/`, so the configure never carries the fullscreen flag. This is a
+# missing COMP-05 feature, not a bug in implemented code -- do not re-chase it
+# as a configure bug.
+#
+# `defaults` requires the last configure of a freshly mapped toplevel to carry
+# width 0, height 0, i.e. "pick your own size". abyss tiles by default
+# (`Placement::float` is false in `shell/rules.rs`), so `arrange` computes a
+# real rectangle and `shell::configure` sends it. Reporting 0x0 would be a
+# lie about a tiled window. Deliberate divergence pending a decision on
+# whether an unconstrained-size path is wanted at all.
+#
+# Removed by: no milestone assigned yet -- COMP-05 fullscreen.
+XdgToplevelStableConfigurationTest.defaults
+XdgToplevelStableConfigurationTest.window_can_fullscreen_itself
+XdgToplevelStableConfigurationTest.window_can_unfullscreen_itself
+
+# ---------------------------------------------------------------------------
+# 11. Zero-size xdg_positioner anchor rectangle.
+#
+# UPSTREAM BLOCKER, not an abyss bug: the xdg_positioner global is delegated
+# wholly to smithay, and smithay 0.7.0's `set_anchor_rect` handler posts
+# `xdg_positioner::Error::InvalidInput` for any width or height < 1, while
+# xdg-shell only mandates an error for *negative* values. wlcs maps a popup
+# with a 0x0 anchor rect, so the client is killed before abyss ever places it.
+# abyss's own placement math is correct for this case -- it yields the expected
+# (170, 230). Fixing it needs a smithay change (or taking over the positioner
+# handler), and the pin is `=0.7.0` (root CLAUDE.md: a bump is its own PR).
+#
+# Removed by: a smithay bump that relaxes the anchor-rect validation.
+XdgPopupTest.zero_size_anchor_rect_stable
+
+# ---------------------------------------------------------------------------
+# 13. Layer-shell keyboard interactivity.
+#
+# Layer surfaces never take, hold or release keyboard focus per their
+# keyboard-interactivity mode; the policy is unimplemented (COMP-05).
+#
+# Removed by: no milestone assigned yet -- COMP-05 layer keyboard focus.
+LayerSurfaceTest.does_not_lose_keyboard_focus_with_exclusive_keyboard_interactivity
+LayerSurfaceTest.loses_keybaord_focus_when_interactivity_changes_to_none
+LayerSurfaceTest.takes_keyboard_focus_when_interactivity_changes_to_exclusive
+
+# ---------------------------------------------------------------------------
+# 14. Layer surface size is overridden by a four-edge anchor.
+#
+# GENUINE BUG: zwlr_layer_surface_v1.set_size is discarded in shell arrange()
+# when the surface is anchored to all four edges, so the client is configured
+# with the output size instead of the size it asked for.
+#
+# Removed by: no milestone assigned yet -- COMP-05 layer-shell arrange.
+LayerSurfaceTest.gets_configured_with_supplied_size_even_when_anchored_to_edges
+
+# ---------------------------------------------------------------------------
+# 15. Subsurface placement and synchronised commit.
+#
+# GENUINE BUG in implemented code: place_above/place_below do not restack,
+# and a synchronised subsurface's position is applied at the wrong commit
+# (moves when only the parent committed, does not move after the grandparent
+# commits). Pointer parameterisation only -- the touch variants are in
+# group 1 above.
+#
+# The four focus-re-evaluation cases that used to sit here (moves under/out
+# from under the input device, extends_parent_input_region) pass now that a
+# commit re-evaluates pointer focus (`AbyssState::refresh_pointer_focus`).
+# What is left is genuinely about restacking and sync-commit timing: the
+# `does_not_move_when_parent_not_committed` case still reports the pointer at
+# the old surface-relative position, which is a subsurface-offset bug, not a
+# focus one.
+#
+# Removed by: no milestone assigned yet -- COMP-06 wl_subsurface.
+XdgShellStableSubsurfaces/SubsurfaceMultilevelTest.subsurface_does_not_move_when_grandparent_commit_is_before_sync_parent_commit/0
+XdgShellStableSubsurfaces/SubsurfaceMultilevelTest.subsurface_with_sync_parent_does_not_move_when_only_grandparent_committed/0
+XdgShellStableSubsurfaces/SubsurfaceTest.desync_subsurface_moves_when_only_parent_committed/0
+XdgShellStableSubsurfaces/SubsurfaceTest.place_above_simple/0
+XdgShellStableSubsurfaces/SubsurfaceTest.place_below_simple/0
+XdgShellStableSubsurfaces/SubsurfaceTest.subsurface_does_not_move_when_parent_not_committed/0
+
+# ---------------------------------------------------------------------------
+# 17. Frame-callback timestamps do not advance.
+#
+# The focus-re-evaluation half of this group is fixed (a scene change under a
+# stationary pointer now re-runs the hit test -- `refresh_pointer_focus`).
+# What remains is the frame clock: successive frame callbacks report the same
+# timestamp.
+#
+# Removed by: no milestone assigned yet -- COMP-02 frame clock.
+ClientSurfaceEventsTest.frame_timestamp_increases
+
+# ---------------------------------------------------------------------------
+# 18. A truncated shm file does not raise wl_shm.error.
+#
+# Unimplemented: the compositor does not validate that the pool fd is large
+# enough for the declared buffer, so no protocol error is sent.
+#
+# Removed by: no milestone assigned yet -- COMP-06 wl_shm validation.
+BadBufferTest.test_truncated_shm_file
