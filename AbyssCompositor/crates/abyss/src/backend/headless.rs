@@ -156,6 +156,11 @@ pub enum WlcsEvent {
         client_id: i32,
         surface_id: u32,
         location: (i32, i32),
+        /// Dropped when the loop has finished handling this event; the sender
+        /// blocks on the receiving end so that `move_surface_to` is synchronous
+        /// from wlcs's point of view. wlcs does not roundtrip after it, and the
+        /// requests that follow assume the window has already moved.
+        ack: std::sync::mpsc::SyncSender<()>,
     },
     PointerMoveAbsolute {
         location: (f64, f64),
@@ -496,6 +501,7 @@ fn wlcs_event(
             client_id,
             surface_id,
             location,
+            ack: _ack,
         } => {
             // wlcs names a window by (its client, the protocol id of its
             // surface); nothing else identifies it across the boundary.
