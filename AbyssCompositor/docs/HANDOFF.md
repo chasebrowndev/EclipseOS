@@ -386,3 +386,44 @@ differs on every iteration, which defeated whole-line dedupe.
 - Connecting to a Unix socket needs *write* permission — `chown chase:chase` +
   `chmod 666` on the wayland socket, per chase's call to stop engineering around
   root ownership.
+
+---
+## [2026-09-10 16:30]
+
+**Done:**
+- The `e024947` modeset fix is **confirmed on real KMS**. Two runs of
+  `/tmp/abyss-kms/run.sh` as root, after deleting the stale
+  `/root/.local/state/eclipse/outputs.kdl`.
+- The atomic-commit EINVAL retry storm is gone: `boot.log` went from 2.4 MB to
+  ~11 KB, and the only dedupe bucket left is `[x4] config loaded`.
+- Both outputs came up on their *own* native modes — crtc 198 / plane 52 @
+  1360x768 on HDMI-A-1 (connector 829), crtc 390 / plane 244 @ 1280x720 on DP-3
+  (connector 832). `Setting new mode` fires once per output and sticks, so the
+  surface and the smithay `Output` agree and src==dst on the primary plane.
+- A kitty client rendered on each run (HDMI-A-1 the first time, DP-3 the
+  second), `grim exit=0`, `shot.png` 2640x768. Run 2's shot shows `ls` typed at
+  the prompt with full output, i.e. live keyboard input → shell → paint.
+- chase confirmed it with his own eyes on the panels.
+- Frame stats over the run (`--stats`, now passed by `run.sh`): 465 frames,
+  1.0 → 38.1 fps as damage arrives, render p50 ~500 us, submit p50 ~166 us.
+
+**Watch out — journald and message-less spans:**
+`stats::maybe_report()` calls `tracing::info!(frames, fps, ...)` with **no
+message string**. The journald layer stores those as `F_`-prefixed fields
+(`F_FPS`, `F_FRAMES`, `F_RENDER_P50_US`, ...) with an *empty* `MESSAGE`, so they
+are invisible to `journalctl -o cat` and to any grep for "fps". Read them with
+`journalctl -t abyss -o json | jq 'select(.F_FPS)'`. Their absence from a plain
+log dump is not evidence that no frames were submitted — this cost most of a
+session. Same trap in reverse at `backend/drm.rs:1083`: `"queueing frame"` is a
+`warn!` on the *error* path only, so a silent journal means every queue
+succeeded.
+
+**State:**
+- Branch `comp16-output-identity-modeset`, clean, one commit + this doc commit.
+- PR #5 merged and squashed (`079456a` on main); branch deleted both sides.
+
+**Next:**
+- Open the PR for this branch, `Implements COMP-03 §2/§4`.
+- Open bugs from the previous entry are all still open and all cosmetic: the
+  drop-master EINVAL, the mode-blob ENOENT, both connectors claiming PREFERRED,
+  `vram=256MiB` being the PCI BAR, `refresh_mhz` truncation.
