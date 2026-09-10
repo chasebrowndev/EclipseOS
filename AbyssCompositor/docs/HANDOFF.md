@@ -171,6 +171,88 @@ the test wants (7680,7680) — a factor-of-3 subsurface-offset/sync-commit
 accounting error, same family as the `place_above_simple` / `place_below_simple`
 restack failures. Correctly still skipped.
 
+## The map-time configure, and the grab that deadlocked itself (fixed)
+
+Eleven skip entries in four groups (7 interactive move/resize, 8 `set_parent`,
+9 window-geometry hit-test offset, and 3 of the 6 group-10 configure cases)
+were **two** bugs, neither of which was the one the skip file blamed.
+
+**Bug 1 — no configure at map time.** abyss sent the *initial*
+`xdg_toplevel.configure` from `shell::handle_commit` on the first, buffer-less
+commit, and then nothing. Every later configure goes through
+`shell::configure`, which ends in `ToplevelSurface::send_pending_configure()`,
+and smithay suppresses that when the pending state has not changed since the
+last one (`wayland/shell/xdg/mod.rs:1474`, `:1722`). The tiled size and
+`Activated` that `arrange` computes at `place_new_window` time are already in
+the initial configure, so the pending state is unchanged and the map configure
+never goes out. wlcs's `ConfigurationWindow` constructor (in
+`tests/xdg_toplevel_stable.cpp`) commits, roundtrips, attaches a buffer,
+commits, and then `dispatch_until_configure()` — it *requires* a second
+configure. Ten tests instantiate that helper, so all ten failed identically
+with `C++ exception "Timeout waiting for condition"` at the 10s mark, from
+inside the constructor. Nothing was wrong with the coordinates the skip file
+accused: the two `*_respects_window_geom_offset` tests passed the moment they
+got past the constructor. Fix: in `handle_commit`, force one
+`send_configure()` at the unmapped→mapped transition, guarded by a per-window
+`MapConfigured` marker in the window's user data so it fires exactly once, and
+by `has_buffer()` (`with_renderer_surface_state(..).buffer().is_some()` —
+smithay 0.7 has no `Window::is_mapped`) so the transition is detected at all.
+
+**Bug 2 — `refresh_pointer_focus` re-entered a held mutex.** The four
+interactive move/resize tests did not fail, they *hung the whole wlcs process*
+(and in one earlier run took it down with a SIGSEGV). `MoveSurfaceGrab::motion`
+calls `shell::place_at`, which ends in `AbyssState::refresh_pointer_focus`,
+which calls `PointerHandle::motion`. But `PointerHandle::motion` does
+`self.inner.lock().unwrap()` and holds that `std::sync::Mutex` guard *across*
+the grab callback (`input/pointer/mod.rs:232`). Re-entering it from inside the
+callback self-deadlocks the single compositor thread. Fix: a
+`AbyssState.pointer_grab_active` flag, set after `set_grab` in
+`input::grabs::start_move`/`start_resize` and cleared in each grab's `unset`,
+with an early return at the top of `refresh_pointer_focus`. That is also the
+correct behaviour on its own terms — a drag deliberately clears pointer focus
+for its duration, so there is nothing to refresh.
+
+Full suite on the test box: **RC=0, 786 passed, 307 skipped, 0 failed** against
+**54** skip entries, up from 775 passed against 65.
+
+Load-bearing details and negative results:
+
+- **The flag cannot be `pointer.is_grabbed()`.** That method locks the same
+  mutex, so the guard would deadlock exactly where the bug did. It has to be
+  compositor state, not seat state.
+- **Set `pointer_grab_active` *after* `set_grab`**, never before: `set_grab`
+  runs the previous grab's `unset`, which clears the flag.
+- **`Space` already handles the window-geometry offset**, and always did.
+  `InnerElement::render_location()` is `location - element.geometry().loc`,
+  computed live at query time (`desktop/space/mod.rs:509`), so `map_element`'s
+  location *is* the geometry origin and hit-testing subtracts the offset for
+  free. Skip group 9's "the offset is not subtracted when hit-testing" was
+  wrong; `shell::reanchor` and `geo_loc` were not involved either. Do not go
+  looking for a hit-test offset bug — there isn't one.
+- **`SurfaceInputCombinations.input_seen_after_surface_unmapped_and_remapped/7`**
+  (the window-geometry-inset + touch variant) passes now too, without being
+  touched. It was the same missing map-time configure, not a touch or a
+  `reanchor` bug.
+- **`XdgToplevelStableConfigurationTest.defaults` stays skipped, deliberately.**
+  It wants the last configure of a fresh toplevel to carry 0x0 ("pick your own
+  size"). abyss tiles by default (`Placement::float` is false in
+  `shell/rules.rs`), so `arrange` computes a real rectangle and
+  `shell::configure` sends it — 1256x1000 on the headless output. Reporting
+  0x0 would be a lie about a tiled window. Needs an owner decision on whether
+  an unconstrained-size path is wanted, not a patch.
+- **`window_can_fullscreen_itself` / `window_can_unfullscreen_itself` stay
+  skipped: fullscreen is not implemented at all.** There is no
+  `fullscreen_request`/`unfullscreen_request` in
+  `protocols/standard/xdg_shell.rs` and no fullscreen state anywhere under
+  `shell/` (`grep -rn fullscreen crates/abyss/src` finds two comments). Those
+  two are a missing COMP-05 feature; they are not a configure bug and should
+  not be re-chased as one. `window_stays_maximized_after_fullscreen` and
+  `window_can_maximize_itself_while_fullscreen` are `DISABLED_` in wlcs and
+  never run.
+- **A wlcs run that stops mid-suite with no result line and leaves the process
+  alive is a compositor deadlock**, the sibling of the documented
+  SIGSEGV-vs-hang rule. `ps -eo pid,etime,comm | grep wlcs` distinguishes them.
+
 ## Queue after that
 
 - **Foreign-toplevel** — 30 tests, but **blocked**: needs an owner decision on

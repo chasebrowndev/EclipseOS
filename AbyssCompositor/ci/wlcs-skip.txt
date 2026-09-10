@@ -5,12 +5,15 @@
 # that is not listed here must pass, or the gate goes red.
 #
 # Measured against the full suite on the headless backend (COMP-16 m9c):
-# 775 pass, 308 skipped by wlcs itself, 65 excluded below. (Touch landed:
+# 786 pass, 307 skipped by wlcs itself, 54 excluded below. (Touch landed:
 # the 170-entry touch bloc that used to head this list is gone — 168 of those
 # tests pass now, and the 2 that do not are pointer bugs in touch clothing,
 # rehomed next to their pointer twins.) Group 16 (input-region leave) is gone
 # entirely: all 12 entries pass now that pointer focus is re-evaluated on
-# commit; group numbers are otherwise left as they were.
+# commit; group numbers are otherwise left as they were. Groups 7 (interactive
+# move/resize), 8 (set_parent) and 9 (window-geometry hit-test offset) are gone
+# too -- see the map-time-configure and grab-reentrancy fixes in
+# docs/HANDOFF.md.
 #
 # The 319 are not one bucket, and only 30 of them are worth chasing. wlcs
 # skips a test when the integration does not advertise the extension it
@@ -138,51 +141,27 @@ XdgToplevelStableTest.when_parent_is_set_to_child_descendant_error_is_raised
 XdgToplevelStableTest.when_parent_is_set_to_self_error_is_raised
 
 # ---------------------------------------------------------------------------
-# 7. Interactive move/resize (xdg_toplevel.move / .resize) not implemented.
+# 10. xdg_toplevel fullscreen is not implemented, and `defaults` wants an
+#     unconstrained window.
 #
-# The requests are parsed and ignored; no grab is started, so the pointer
-# never leaves the surface and the window never moves. Legitimately deferred.
+# `window_can_fullscreen_itself` / `window_can_unfullscreen_itself`: there is
+# no `fullscreen_request`/`unfullscreen_request` in
+# `protocols/standard/xdg_shell.rs` and no fullscreen state anywhere in
+# `shell/`, so the configure never carries the fullscreen flag. This is a
+# missing COMP-05 feature, not a bug in implemented code -- do not re-chase it
+# as a configure bug.
 #
-# Removed by: no milestone assigned yet -- COMP-05 interactive grabs.
-XdgToplevelStableTest.pointer_leaves_surface_during_interactive_move
-XdgToplevelStableTest.pointer_leaves_surface_during_interactive_resize
-XdgToplevelStableTest.surface_can_be_moved_interactively
-XdgToplevelStableTest.surface_can_be_resized_interactively
-
-# ---------------------------------------------------------------------------
-# 8. xdg_toplevel.set_parent not implemented.
+# `defaults` requires the last configure of a freshly mapped toplevel to carry
+# width 0, height 0, i.e. "pick your own size". abyss tiles by default
+# (`Placement::float` is false in `shell/rules.rs`), so `arrange` computes a
+# real rectangle and `shell::configure` sends it. Reporting 0x0 would be a
+# lie about a tiled window. Deliberate divergence pending a decision on
+# whether an unconstrained-size path is wanted at all.
 #
-# Parent/child toplevel relationships are not tracked. Legitimately deferred.
-#
-# Removed by: 9e (window-rules completion).
-XdgToplevelStableTest.null_parent_can_be_set
-XdgToplevelStableTest.parent_can_be_set
-
-# ---------------------------------------------------------------------------
-# 9. Window geometry offset is not applied to input coordinates.
-#
-# GENUINE BUG: xdg_surface.set_window_geometry is honoured for layout but the
-# offset is not subtracted when hit-testing, so pointer (and touch) events
-# land at the wrong surface-local coordinates.
-#
-# Removed by: no milestone assigned yet -- COMP-04 hit-test geometry.
-XdgToplevelStableTest.pointer_respects_window_geom_offset
-XdgToplevelStableTest.touch_respects_window_geom_offset
-
-# ---------------------------------------------------------------------------
-# 10. xdg_toplevel configure state is wrong.
-#
-# GENUINE BUG in implemented code: initial configure defaults, self-driven
-# maximize/fullscreen/unmaximize/unfullscreen and the activated state
-# following pointer focus all report the wrong state set.
-#
-# Removed by: 9e (window-rules completion).
-XdgToplevelStableConfigurationTest.activated_state_follows_pointer
+# Removed by: no milestone assigned yet -- COMP-05 fullscreen.
 XdgToplevelStableConfigurationTest.defaults
 XdgToplevelStableConfigurationTest.window_can_fullscreen_itself
-XdgToplevelStableConfigurationTest.window_can_maximize_itself
 XdgToplevelStableConfigurationTest.window_can_unfullscreen_itself
-XdgToplevelStableConfigurationTest.window_can_unmaximize_itself
 
 # ---------------------------------------------------------------------------
 # 11. Popup grabs: keyboard focus and done-event ordering.

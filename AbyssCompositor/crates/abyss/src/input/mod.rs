@@ -314,6 +314,15 @@ impl AbyssState {
         if self.lock.locked {
             return;
         }
+        // An interactive move/resize deliberately clears pointer focus for the
+        // duration of the drag, so there is nothing to refresh — and refreshing
+        // would be fatal: this is called from `shell::place_at`, which the move
+        // grab calls from inside its own `motion` callback, and smithay holds
+        // the pointer's internal mutex across that callback. Re-entering
+        // `PointerHandle::motion` there deadlocks the compositor thread.
+        if self.pointer_grab_active {
+            return;
+        }
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };

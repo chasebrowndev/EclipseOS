@@ -165,6 +165,11 @@ pub struct AbyssState {
         smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
         Point<i32, Logical>,
     )>,
+    /// True while a shell-owned pointer grab (interactive move/resize) is
+    /// active. `PointerHandle` holds its internal mutex across the grab
+    /// callback, so *any* re-entrant call into it from inside that callback
+    /// self-deadlocks; this flag is what keeps `refresh_pointer_focus` out.
+    pub pointer_grab_active: bool,
 
     /// Live only on the DRM backend; `None` under winit/headless.
     #[cfg(feature = "drm")]
@@ -430,6 +435,7 @@ impl AbyssState {
             seat,
             pointer_location: (0.0, 0.0).into(),
             last_pointer_focus: None,
+            pointer_grab_active: false,
             outputs: crate::outputs::Outputs::new(),
             focus: None,
             touch_points: Vec::new(),

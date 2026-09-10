@@ -757,6 +757,15 @@ pub fn unconstrain_popup(state: &AbyssState, popup: &PopupSurface) {
     });
 }
 
+/// Marker: this window has had its map-time configure sent (see `handle_commit`).
+struct MapConfigured;
+
+/// True once `surface` has a committed buffer, i.e. the window is mapped.
+fn has_buffer(surface: &WlSurface) -> bool {
+    smithay::backend::renderer::utils::with_renderer_surface_state(surface, |s| s.buffer().is_some())
+        .unwrap_or(false)
+}
+
 /// Send the initial configure for toplevels, layer surfaces and popups, and
 /// keep the layer map arranged.
 pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
@@ -787,6 +796,18 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
                 .unwrap_or(true)
         });
         if !initial_sent {
+            if let Some(t) = window.toplevel() {
+                t.send_configure();
+            }
+        } else if window.user_data().get::<MapConfigured>().is_none() && has_buffer(surface) {
+            // COMP-05 §3: a toplevel gets a configure when it maps. The commit
+            // that first attaches a buffer is that moment, and it is the only
+            // point at which the client learns the size and state the shell
+            // actually chose for a window it has already been placed into.
+            // `configure` uses `send_pending_configure`, which suppresses a
+            // configure whose content is unchanged since the initial one, so
+            // without this the map configure never goes out.
+            window.user_data().insert_if_missing(|| MapConfigured);
             if let Some(t) = window.toplevel() {
                 t.send_configure();
             }

@@ -189,7 +189,9 @@ impl PointerGrab<AbyssState> for MoveSurfaceGrab {
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut AbyssState) {}
+    fn unset(&mut self, data: &mut AbyssState) {
+        data.pointer_grab_active = false;
+    }
 }
 
 /// Drag one or two edges of the window; the opposite edges stay put.
@@ -361,7 +363,9 @@ impl PointerGrab<AbyssState> for ResizeSurfaceGrab {
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut AbyssState) {}
+    fn unset(&mut self, data: &mut AbyssState) {
+        data.pointer_grab_active = false;
+    }
 }
 
 /// Begin an interactive move for `window` if `serial` really is a live press.
@@ -380,7 +384,10 @@ pub fn start_move(state: &mut AbyssState, window: Window, surface: &WlSurface, s
         window,
         initial_location,
     };
+    // Set after `set_grab`: it runs the *previous* grab's `unset`, which
+    // clears the flag.
     pointer.set_grab(state, grab, serial, Focus::Clear);
+    state.pointer_grab_active = true;
 }
 
 /// Begin an interactive resize for `window` if `serial` really is a live press.
@@ -407,4 +414,5 @@ pub fn start_resize(
         initial_rect,
     };
     pointer.set_grab(state, grab, serial, Focus::Clear);
+    state.pointer_grab_active = true;
 }
