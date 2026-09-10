@@ -64,6 +64,21 @@ pub fn set_output_power(state: &mut AbyssState, id: u64, on: bool) {
     let _ = (state, id, on);
 }
 
+/// Switch one output's scanout mode (COMP-03 §4). `false` means nothing was
+/// changed and the caller must not update the `Output` either — a backend whose
+/// surface stayed on the old timing while the `Output` advertises a new one
+/// produces a plane rect the kernel rejects on every commit. Backends with no
+/// modesetting of their own (winit, headless) accept unconditionally.
+pub fn set_output_mode(state: &mut AbyssState, id: u64, mode: smithay::output::Mode) -> bool {
+    #[cfg(feature = "drm")]
+    return drm::set_mode(state, id, mode);
+    #[cfg(not(feature = "drm"))]
+    {
+        let _ = (state, id, mode);
+        true
+    }
+}
+
 /// Ask one output for adaptive sync (VRR, COMP-13 §2.1). `false` means the
 /// backend cannot do it — no DRM device, unknown output, or a connector that
 /// does not advertise support — and nothing was changed.
