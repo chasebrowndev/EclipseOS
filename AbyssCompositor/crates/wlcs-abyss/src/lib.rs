@@ -117,11 +117,11 @@ impl Wlcs for AbyssHandle {
         })
     }
 
-    /// No touch. abyss's seat has no touch capability yet (COMP-04), and
-    /// advertising one would make wlcs run touch tests against a seat that
-    /// cannot answer them.
     fn create_touch(&mut self) -> Option<Self::Touch> {
-        None
+        let (sender, _) = self.server.as_ref()?;
+        Some(TouchHandle {
+            sender: sender.clone(),
+        })
     }
 
     fn get_descriptor(&self) -> &WlcsIntegrationDescriptor {
@@ -164,11 +164,32 @@ impl wlcs::Pointer for PointerHandle {
     }
 }
 
-/// Never constructed — [`Wlcs::create_touch`] returns `None`.
-struct TouchHandle;
+/// wlcs's synthetic touch device. The suite only ever drives a single touch
+/// point, so every event goes to slot 0.
+struct TouchHandle {
+    sender: WlcsSender,
+}
+
+const WLCS_TOUCH_SLOT: u32 = 0;
 
 impl wlcs::Touch for TouchHandle {
-    fn touch_down(&mut self, _x: i32, _y: i32) {}
-    fn touch_move(&mut self, _x: i32, _y: i32) {}
-    fn touch_up(&mut self) {}
+    fn touch_down(&mut self, x: i32, y: i32) {
+        let _ = self.sender.send(WlcsEvent::TouchDown {
+            slot: WLCS_TOUCH_SLOT,
+            location: (fixed(x), fixed(y)),
+        });
+    }
+
+    fn touch_move(&mut self, x: i32, y: i32) {
+        let _ = self.sender.send(WlcsEvent::TouchMove {
+            slot: WLCS_TOUCH_SLOT,
+            location: (fixed(x), fixed(y)),
+        });
+    }
+
+    fn touch_up(&mut self) {
+        let _ = self.sender.send(WlcsEvent::TouchUp {
+            slot: WLCS_TOUCH_SLOT,
+        });
+    }
 }

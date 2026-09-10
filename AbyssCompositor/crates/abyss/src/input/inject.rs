@@ -11,8 +11,11 @@
 //! compositor.
 
 use smithay::{
-    backend::input::ButtonState,
-    input::pointer::{ButtonEvent, RelativeMotionEvent},
+    backend::input::{ButtonState, TouchSlot},
+    input::{
+        pointer::{ButtonEvent, RelativeMotionEvent},
+        touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent},
+    },
     utils::{Logical, Point, SERIAL_COUNTER},
 };
 
@@ -78,5 +81,90 @@ impl AbyssState {
             },
         );
         pointer.frame(self);
+    }
+
+    /// A touch point coming down, in global compositor coordinates.
+    ///
+    /// Touch has no cursor, so there is nothing to clamp and no
+    /// focus-follows-motion: the surface under the point at down time owns the
+    /// whole sequence (smithay's `DefaultGrab` holds it until the last point
+    /// lifts). Down does raise and focus its window, the same way a pointer
+    /// click does — a tap is how a touch user picks a window.
+    pub fn inject_touch_down(&mut self, slot: u32, location: Point<f64, Logical>, time: u32) {
+        super::idle::on_activity(self);
+        let serial = SERIAL_COUNTER.next_serial();
+        let touch = match self.seat.get_touch() {
+            Some(touch) => touch,
+            None => return,
+        };
+        // Fail closed under the lock screen: no surface behind it sees input.
+        let focus = if self.lock.locked {
+            None
+        } else {
+            self.surface_under(location)
+        };
+        if !self.lock.locked && !touch.is_grabbed() {
+            if let Some(window) = self.space.element_under(location).map(|(w, _)| w.clone()) {
+                self.space.raise_element(&window, true);
+                self.focus = Some(window.clone());
+                let target = window.toplevel().map(|t| t.wl_surface().clone());
+                self.seat.get_keyboard().unwrap().set_focus(self, target, serial);
+                crate::shell::arrange(self);
+            }
+        }
+        touch.down(
+            self,
+            focus,
+            &DownEvent {
+                slot: TouchSlot::from(Some(slot)),
+                location,
+                serial,
+                time,
+            },
+        );
+        touch.frame(self);
+    }
+
+    /// A touch point moving. The focus handed to smithay here is only used to
+    /// find drag-and-drop targets; the point keeps the surface it came down on.
+    pub fn inject_touch_motion(&mut self, slot: u32, location: Point<f64, Logical>, time: u32) {
+        super::idle::on_activity(self);
+        let touch = match self.seat.get_touch() {
+            Some(touch) => touch,
+            None => return,
+        };
+        let focus = if self.lock.locked {
+            None
+        } else {
+            self.surface_under(location)
+        };
+        touch.motion(
+            self,
+            focus,
+            &TouchMotionEvent {
+                slot: TouchSlot::from(Some(slot)),
+                location,
+                time,
+            },
+        );
+        touch.frame(self);
+    }
+
+    /// A touch point lifting.
+    pub fn inject_touch_up(&mut self, slot: u32, time: u32) {
+        super::idle::on_activity(self);
+        let touch = match self.seat.get_touch() {
+            Some(touch) => touch,
+            None => return,
+        };
+        touch.up(
+            self,
+            &UpEvent {
+                slot: TouchSlot::from(Some(slot)),
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
+        );
+        touch.frame(self);
     }
 }

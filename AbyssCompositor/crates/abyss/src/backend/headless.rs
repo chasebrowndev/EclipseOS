@@ -169,6 +169,19 @@ pub enum WlcsEvent {
     PointerButtonUp {
         button_id: i32,
     },
+    /// wlcs drives one touch device with one point at a time; `slot` is kept
+    /// explicit so a multi-touch caller (IPC, agent seats) needs no new event.
+    TouchDown {
+        slot: u32,
+        location: (f64, f64),
+    },
+    TouchMove {
+        slot: u32,
+        location: (f64, f64),
+    },
+    TouchUp {
+        slot: u32,
+    },
 }
 
 /// Build the channel the harness sends on. Exported so the harness crate does
@@ -528,5 +541,8 @@ fn wlcs_event(
         WlcsEvent::PointerButtonUp { button_id } => {
             state.inject_pointer_button(button_id as u32, false, time)
         }
+        WlcsEvent::TouchDown { slot, location } => state.inject_touch_down(slot, location.into(), time),
+        WlcsEvent::TouchMove { slot, location } => state.inject_touch_motion(slot, location.into(), time),
+        WlcsEvent::TouchUp { slot } => state.inject_touch_up(slot, time),
     }
 }

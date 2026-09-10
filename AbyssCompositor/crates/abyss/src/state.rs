@@ -344,6 +344,9 @@ impl AbyssState {
             })
             .expect("default xkb keymap must load");
         seat.add_pointer();
+        // Touch: no device on this box, but the seat must advertise the
+        // capability for injected touch (COMP-04 §6) to reach clients at all.
+        seat.add_touch();
 
         Self {
             start_time: Instant::now(),
