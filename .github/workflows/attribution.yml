@@ -22,12 +22,17 @@ jobs:
 
       - name: check commits
         env:
-          # Identities allowed to author or commit. The noreply addresses are
-          # what GitHub itself stamps on web-UI edits and merge commits; they
-          # are still the owner, so rejecting them would only teach people to
-          # stop using the web UI.
+          # Identities allowed to author or commit. Both the git user.name
+          # (chasebrowndev) and the GitHub profile display name (Chase Brown)
+          # appear: the merge button and web-UI edits stamp the display name,
+          # and the noreply address. They are still the owner, so rejecting
+          # them would only teach people to stop using the web UI. The
+          # agent-attribution half of this check is what catches a real
+          # violation; this half only asserts the identity is the owner's.
           ALLOWED: |
             chasebrowndev <chase.brown.dev@gmail.com>
+            Chase Brown <chase.brown.dev@gmail.com>
+            Chase Brown <chasebrowndev@users.noreply.github.com>
             chasebrowndev <chasebrowndev@users.noreply.github.com>
             GitHub <noreply@github.com>
         run: |
