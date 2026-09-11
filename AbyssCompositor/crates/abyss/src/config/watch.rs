@@ -159,20 +159,7 @@ fn schedule(state: &mut AbyssState) {
 pub fn reload_now(state: &mut AbyssState) {
     let next = state.config.reload();
     if !next.errors.is_empty() {
-        let errors: Vec<serde_json::Value> = next
-            .errors
-            .iter()
-            .map(|e| {
-                serde_json::json!({
-                    "file": e.file.display().to_string(),
-                    "line": e.line,
-                    "col": e.col,
-                    "message": e.message,
-                    "snippet": e.snippet,
-                    "spanLen": e.span_len,
-                })
-            })
-            .collect();
+        let errors: Vec<serde_json::Value> = next.errors.iter().map(crate::config::error_json).collect();
         for e in &next.errors {
             tracing::error!("{e}");
         }
@@ -183,21 +170,5 @@ pub fn reload_now(state: &mut AbyssState) {
         crate::ipc::emit(state, "config-error", serde_json::json!({ "errors": errors }));
         return;
     }
-    let sources: Vec<String> = next
-        .sources
-        .iter()
-        .map(|s| s.path.display().to_string())
-        .collect();
-    state.config = next;
-    // Retune the two global bind filters. They hold Allowlist handles rather
-    // than snapshots precisely so this line is possible (ADR 0022 amendment).
-    state.capture_allow.set(state.config.capture.allow.clone());
-    state
-        .clipboard_allow
-        .set(state.config.clipboard.data_control_allow.clone());
-    crate::input::apply_config(state);
-    crate::outputs::relayout(state);
-    crate::shell::arrange(state);
-    crate::backend::damage_all(state);
-    tracing::info!(?sources, "config reloaded");
+    crate::config::apply_loaded(state, next);
 }

@@ -66,6 +66,14 @@ pub const TABLE: &[Entry] = &[
     e("move_workspace_to_output", Kind::Command, true),
     e("set_output", Kind::Command, true),
     e("calibrate_output", Kind::Command, true),
+    // Config read/write (COMP-13 §1.4). `set_config_value` is Command and not
+    // Privileged on purpose: it edits the same keys a human edits in a text
+    // editor, and the file it may touch is decided by `CONFIG_FILES`, not by
+    // the method's kind. Making it Privileged would suggest the kind is what
+    // protects `policy.kdl`; it is not.
+    e("get_config", Kind::Query, true),
+    e("validate_config", Kind::Query, true),
+    e("set_config_value", Kind::Command, true),
     // Agent lifecycle: the protocol itself is Phase 2 (COMP-08).
     e("get_agents", Kind::Privileged, false),
     e("pause_agent", Kind::Privileged, false),
@@ -76,6 +84,67 @@ pub const TABLE: &[Entry] = &[
     e("type_text", Kind::ScriptedInput, false),
     e("click_at", Kind::ScriptedInput, false),
 ];
+
+/// Which config file an operation names (COMP-13 §1.3). Not a path: the
+/// gate decides about *roles*, and the search path decides about paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigFile {
+    Abyss,
+    Policy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    Read,
+    Write,
+}
+
+/// One (file, access) permission, as data, for the same reason [`TABLE`] is
+/// data: a reviewer reads four lines instead of tracing branches.
+#[derive(Debug, Clone, Copy)]
+pub struct FileEntry {
+    pub file: ConfigFile,
+    pub access: Access,
+    pub allowed: bool,
+}
+
+const fn f(file: ConfigFile, access: Access, allowed: bool) -> FileEntry {
+    FileEntry {
+        file,
+        access,
+        allowed,
+    }
+}
+
+/// The control socket's authority over the config files.
+///
+/// `policy.kdl` is closed in **both** directions and is not config-toggleable:
+/// a socket peer cannot read the security surface and cannot write it. Read is
+/// closed too because the policy viewer reads the file from disk under the
+/// human's own uid — it needs no socket capability, so granting one would be
+/// authority nothing asked for.
+pub const CONFIG_FILES: &[FileEntry] = &[
+    f(ConfigFile::Abyss, Access::Read, true),
+    f(ConfigFile::Abyss, Access::Write, true),
+    f(ConfigFile::Policy, Access::Read, false),
+    f(ConfigFile::Policy, Access::Write, false),
+];
+
+/// Second gate, inside the handler, before any file is opened or any `Config`
+/// field is read. Tightens onto the outer [`check`] result (the ratchet), so
+/// this can only ever remove access the method table already granted.
+pub fn check_config_file(outer: Decision, file: ConfigFile, access: Access) -> Decision {
+    let mut d = outer;
+    let allowed = CONFIG_FILES
+        .iter()
+        .find(|e| e.file == file && e.access == access)
+        .is_some_and(|e| e.allowed);
+    d.tighten(
+        !allowed,
+        "the control socket has no such authority over that config file",
+    );
+    d
+}
 
 pub fn lookup(method: &str) -> Option<&'static Entry> {
     TABLE.iter().find(|e| e.method == method)
@@ -189,6 +258,38 @@ mod tests {
             check(&anon, 1000, &cfg, "get_workspaces"),
             Decision::Deny(_)
         ));
+    }
+
+    /// COMP-13 §1.3: `policy.kdl` is closed both ways, unconditionally. This
+    /// is a constant assertion, not a behaviour test — if someone adds a
+    /// config toggle for it, this fails.
+    #[test]
+    fn policy_is_never_reachable_over_the_socket() {
+        for e in CONFIG_FILES {
+            if e.file == ConfigFile::Policy {
+                assert!(!e.allowed, "{:?} {:?} is open", e.file, e.access);
+            }
+        }
+        for access in [Access::Read, Access::Write] {
+            assert!(matches!(
+                check_config_file(Decision::Allow, ConfigFile::Policy, access),
+                Decision::Deny(_)
+            ));
+        }
+    }
+
+    /// The inner check is a ratchet: it never turns a denial into an allow.
+    #[test]
+    fn the_file_check_only_tightens() {
+        let denied = Decision::Deny("peer uid is not the session owner");
+        assert_eq!(
+            check_config_file(denied, ConfigFile::Abyss, Access::Write),
+            denied
+        );
+        assert_eq!(
+            check_config_file(Decision::Allow, ConfigFile::Abyss, Access::Write),
+            Decision::Allow
+        );
     }
 
     #[test]

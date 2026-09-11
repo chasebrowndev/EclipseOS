@@ -465,6 +465,52 @@ pub struct Touchpad {
     pub dwt: bool,
 }
 
+/// Swap in an already-validated config and retune everything that caches a
+/// piece of it.
+///
+/// Factored out of `watch::reload_now` so the control socket's write path
+/// (COMP-13 §1.4) applies a config by exactly the same steps a file edit
+/// does. Two apply paths that drift is how a GUI-set value ends up meaning
+/// something different from the same value typed into the file.
+///
+/// Caller's obligation: `next.errors` is empty. Nothing here re-validates.
+pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
+    debug_assert!(next.errors.is_empty(), "apply_loaded got an invalid config");
+    let sources: Vec<String> = next
+        .sources
+        .iter()
+        .map(|s| s.path.display().to_string())
+        .collect();
+    state.config = next;
+    // Retune the two global bind filters. They hold Allowlist handles rather
+    // than snapshots precisely so this line is possible (ADR 0022 amendment).
+    state.capture_allow.set(state.config.capture.allow.clone());
+    state
+        .clipboard_allow
+        .set(state.config.clipboard.data_control_allow.clone());
+    crate::input::apply_config(state);
+    crate::outputs::relayout(state);
+    crate::shell::arrange(state);
+    crate::backend::damage_all(state);
+    tracing::info!(?sources, "config applied");
+}
+
+/// The one JSON shape a config refusal is reported in.
+///
+/// `watch::reload_now` emits it on the `config-error` event and the control
+/// socket returns it from `validate_config`. One shape, one place: a GUI that
+/// learns to render a hot-reload failure renders a rejected edit for free.
+pub fn error_json(e: &ConfigError) -> serde_json::Value {
+    serde_json::json!({
+        "file": e.file.display().to_string(),
+        "line": e.line,
+        "col": e.col,
+        "message": e.message,
+        "snippet": e.snippet,
+        "spanLen": e.span_len,
+    })
+}
+
 /// A refusal from config validation (COMP-13 §1.2). Carries the precise
 /// `file:line:col` the spec requires so the message can be acted on directly.
 #[derive(Debug, Clone)]
@@ -869,6 +915,48 @@ impl Config {
     /// this and must check `errors` before applying the result.
     pub fn reload(&self) -> Self {
         Self::load(self.explicit.as_deref())
+    }
+
+    /// Validate `text` as if it were the file at `path` owned by `owner`,
+    /// without touching disk or the live config.
+    ///
+    /// This is what `validate_config` answers with, and it is deliberately the
+    /// same code the loader runs: a GUI that previews an edit must be told
+    /// exactly what a file edit would have been told, down to the wording.
+    pub fn check_text(path: &Path, owner: schema::Owner, text: &str) -> Vec<ConfigError> {
+        let doc = match text.parse::<KdlDocument>() {
+            Ok(d) => d,
+            Err(e) => {
+                let (off, message) = match e.diagnostics.first() {
+                    Some(d) => (
+                        (d.span.offset(), d.span.len()),
+                        d.message.clone().unwrap_or_else(|| "invalid syntax".to_string()),
+                    ),
+                    None => ((0, 0), format!("{e}")),
+                };
+                let (line, col, snippet, span_len) = locate(text, off.0, off.1);
+                return vec![ConfigError {
+                    file: path.to_path_buf(),
+                    line,
+                    col,
+                    message,
+                    snippet: Some(snippet),
+                    span_len,
+                }];
+            }
+        };
+        let mut cfg = Config {
+            cur: Some((
+                Source {
+                    path: path.to_path_buf(),
+                    owner,
+                },
+                text.to_owned(),
+            )),
+            ..Config::default()
+        };
+        cfg.apply(&doc, &mut Vec::new());
+        cfg.errors
     }
 
     /// Record a validation refusal against `node`'s position (COMP-13 §1.2).

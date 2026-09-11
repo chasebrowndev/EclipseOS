@@ -14,6 +14,7 @@
 //! This socket deliberately has none of the agent protocol's reach: no
 //! `get_tree`, no capture, no grant manipulation (COMP-13 §2).
 
+pub(crate) mod config_rpc;
 pub mod gate;
 pub(crate) mod methods;
 
@@ -49,8 +50,8 @@ const MAX_OUT: usize = 256 * 1024;
 const PARSE_ERROR: i32 = -32700;
 const INVALID_REQUEST: i32 = -32600;
 const METHOD_NOT_FOUND: i32 = -32601;
-const INVALID_PARAMS: i32 = -32602;
-const DENIED: i32 = -32000;
+pub(crate) const INVALID_PARAMS: i32 = -32602;
+pub(crate) const DENIED: i32 = -32000;
 const NOT_IMPLEMENTED: i32 = -32001;
 
 /// One connected client.
@@ -506,6 +507,12 @@ impl RpcError {
     pub fn invalid_params(m: &str) -> Self {
         Self {
             code: INVALID_PARAMS,
+            message: m.to_owned(),
+        }
+    }
+    pub fn denied(m: &str) -> Self {
+        Self {
+            code: DENIED,
             message: m.to_owned(),
         }
     }
