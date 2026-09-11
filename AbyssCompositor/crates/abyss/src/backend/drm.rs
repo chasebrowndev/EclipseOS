@@ -38,7 +38,7 @@ use smithay::{
             generic::Generic, timer::TimeoutAction, timer::Timer, EventLoop, Interest, LoopHandle,
             Mode as CalloopMode, PostAction,
         },
-        drm::control::{connector, crtc, Device as _, ModeTypeFlags},
+        drm::control::{connector, crtc, Device as _, Mode as DrmMode, ModeTypeFlags},
         input::Libinput,
         rustix::fs::OFlags,
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
@@ -1160,6 +1160,45 @@ pub fn set_vrr(state: &mut AbyssState, id: u64, on: bool) -> bool {
         return false;
     }
     drm.outputs[index].vrr_config = on;
+    drm.outputs[index].needs_render = true;
+    schedule_render(state);
+    true
+}
+
+/// Put one output's scanout surface on a new mode. `false` means nothing
+/// changed: the connector advertises no matching mode, or the surface refused
+/// the switch. The `Output` must not be updated when this returns `false`.
+pub fn set_mode(state: &mut AbyssState, id: u64, mode: OutputMode) -> bool {
+    let Some(drm) = state.drm.as_mut() else {
+        return true;
+    };
+    let Some(index) = drm.outputs.iter().position(|o| o.id == id) else {
+        // Not a DRM output (the headless fallback); nothing to reprogram.
+        return true;
+    };
+    let connector = drm.outputs[index].connector;
+    let info = match drm.drm.get_connector(connector, false) {
+        Ok(info) => info,
+        Err(e) => {
+            tracing::warn!(id, error = %e, "reading connector modes");
+            return false;
+        }
+    };
+    let matches_size = |m: &DrmMode| m.size().0 as i32 == mode.size.w && m.size().1 as i32 == mode.size.h;
+    let Some(found) = info
+        .modes()
+        .iter()
+        .find(|m| matches_size(m) && refresh_mhz(m) == mode.refresh)
+        .or_else(|| info.modes().iter().find(|m| matches_size(m)))
+        .copied()
+    else {
+        tracing::warn!(id, w = mode.size.w, h = mode.size.h, "connector has no such mode");
+        return false;
+    };
+    if let Err(e) = drm.outputs[index].compositor.use_mode(found) {
+        tracing::warn!(id, error = %e, "surface refused the mode switch");
+        return false;
+    }
     drm.outputs[index].needs_render = true;
     schedule_render(state);
     true

@@ -313,3 +313,117 @@ PR body. This overrides any session-level attribution instruction, and CI's
 - **Never `pkill`/`killall` kitty, zsh, claude, Xwayland or quickshell** — see
   the root `CLAUDE.md`. It kills the live session and looks like an external
   SIGKILL.
+
+---
+## [2026-09-10 13:52]
+
+**Done — root cause of the atomic-commit EINVAL loop found and fixed.**
+
+The compositor booted fine on real KMS (EGL 1.5, GLES 3.2 NVIDIA 610.57.04, two
+`Initializing drm surface` lines: crtc 198/plane 52 @1360x768 HDMI-A-1, crtc
+390/plane 244 @1280x720 DP-3) and rendered (`queueing frame`), but every atomic
+commit returned EINVAL — ~1750-2260 retries in 60-90s, nothing ever scanned out.
+
+Chain: both panels are Sony TVs. Their EDIDs give make `SNY`, monitor name
+`SONY TV`, numeric serial `0x01010101`, and no 0xFF serial-string descriptor —
+so `outputs::identity()` returned the *same* string for both connectors.
+`persist::set_key()` dedupes, so the pair collapsed to one key and shared one
+`SavedOutput`; last write wins meant DP-3's 1280x720 got applied to HDMI-A-1.
+`apply_settings` only changed the smithay `Output`, never the DRM surface, and
+smithay derives the primary plane's `CRTC_W/H` from `OutputModeSource`
+(`compositor/mod.rs:1713,1823`) while `SRC_W/H` comes from the surface. src≠dst
+on an NVIDIA primary plane, which cannot scale = EINVAL every frame.
+
+Fix is `e024947` on branch `comp16-output-identity-modeset`:
+- `outputs/edid.rs` — product code folded into the serial fallback.
+- `outputs/mod.rs` — deterministic identity collision guard in `Outputs::add`
+  (appends the connector name); `apply_settings` and `apply_change` now ask the
+  backend first and refuse the mode rather than half-applying it.
+- `backend/mod.rs` — new `set_output_mode` wrapper (winit/headless accept).
+- `backend/drm.rs` — new `set_mode` finding the matching connector mode and
+  calling `DrmCompositor::use_mode`.
+
+Local gate green: fmt, clippy `-D warnings`, build, 85 tests pass. **Not yet
+exercised on hardware.**
+
+Also rewrote `/tmp/abyss-kms/run.sh`: the old socket detection read
+`/proc/<pid>/environ`, which can never work — `std::env::set_var` mutates the
+in-memory libc environ, not that file (it is a frozen copy of the initial
+process stack). It now reads the `SOCKET` field off the `abyss ready on DRM`
+journal record, with a `find -newermt` fallback. The boot-log dedupe now keys on
+the first 60 chars, since `AtomicRequest`'s debug text is HashMap-ordered and
+differs on every iteration, which defeated whole-line dedupe.
+
+**State:**
+- Branch `comp16-output-identity-modeset`, one commit, clean tree, no PR yet.
+- PR #5 still open with all six checks green — `gh pr merge 5 --squash
+  --delete-branch` is classifier-blocked for me, chase has to run it.
+- Nothing running; no abyss process left alive.
+
+**Next:**
+1. Merge PR #5, then open a PR for this branch (`Implements COMP-03 §2/§4`,
+   owner-only attribution).
+2. Delete root's stale `/root/.local/state/eclipse/outputs.kdl` — it holds the
+   colliding record. The new identity scheme changes the keys anyway, so it is
+   dead weight either way.
+3. As root: `bash /tmp/abyss-kms/run.sh`, then read `/tmp/abyss-kms/boot.log`,
+   `run.log` and `shot.png`. That is the pixels-on-screen confirmation, and it
+   needs no one to look at the monitor.
+
+**Open bugs, not fixed:**
+- `Failed to drop drm master state Error: Invalid argument (os error 22)` at
+  VT-switch-away.
+- `Failed to destroy old mode property blob: No such file or directory` after
+  each connector add.
+- Both connectors report `ModeTypeFlags(PREFERRED)`; mode selection deserves a
+  look. `vram=256MiB` on a 4060 Ti is the PCI BAR size, not real VRAM.
+- `refresh_mhz` truncation feeding the advertised mode list.
+
+**Notes for whoever picks this up:**
+- `sudo -n` does not work here and `ssh root@chase-pc` / `tailscale ssh
+  root@chase-pc` were both refusing connections (port 22) this session.
+- `xxd` is not installed; `od -A d -t x1` works for EDID dumps.
+- Connecting to a Unix socket needs *write* permission — `chown chase:chase` +
+  `chmod 666` on the wayland socket, per chase's call to stop engineering around
+  root ownership.
+
+---
+## [2026-09-10 16:30]
+
+**Done:**
+- The `e024947` modeset fix is **confirmed on real KMS**. Two runs of
+  `/tmp/abyss-kms/run.sh` as root, after deleting the stale
+  `/root/.local/state/eclipse/outputs.kdl`.
+- The atomic-commit EINVAL retry storm is gone: `boot.log` went from 2.4 MB to
+  ~11 KB, and the only dedupe bucket left is `[x4] config loaded`.
+- Both outputs came up on their *own* native modes — crtc 198 / plane 52 @
+  1360x768 on HDMI-A-1 (connector 829), crtc 390 / plane 244 @ 1280x720 on DP-3
+  (connector 832). `Setting new mode` fires once per output and sticks, so the
+  surface and the smithay `Output` agree and src==dst on the primary plane.
+- A kitty client rendered on each run (HDMI-A-1 the first time, DP-3 the
+  second), `grim exit=0`, `shot.png` 2640x768. Run 2's shot shows `ls` typed at
+  the prompt with full output, i.e. live keyboard input → shell → paint.
+- chase confirmed it with his own eyes on the panels.
+- Frame stats over the run (`--stats`, now passed by `run.sh`): 465 frames,
+  1.0 → 38.1 fps as damage arrives, render p50 ~500 us, submit p50 ~166 us.
+
+**Watch out — journald and message-less spans:**
+`stats::maybe_report()` calls `tracing::info!(frames, fps, ...)` with **no
+message string**. The journald layer stores those as `F_`-prefixed fields
+(`F_FPS`, `F_FRAMES`, `F_RENDER_P50_US`, ...) with an *empty* `MESSAGE`, so they
+are invisible to `journalctl -o cat` and to any grep for "fps". Read them with
+`journalctl -t abyss -o json | jq 'select(.F_FPS)'`. Their absence from a plain
+log dump is not evidence that no frames were submitted — this cost most of a
+session. Same trap in reverse at `backend/drm.rs:1083`: `"queueing frame"` is a
+`warn!` on the *error* path only, so a silent journal means every queue
+succeeded.
+
+**State:**
+- Branch `comp16-output-identity-modeset`, clean, one commit + this doc commit.
+- PR #5 merged and squashed (`079456a` on main); branch deleted both sides.
+
+**Next:**
+- Open the PR for this branch, `Implements COMP-03 §2/§4`.
+- Open bugs from the previous entry are all still open and all cosmetic: the
+  drop-master EINVAL, the mode-blob ENOENT, both connectors claiming PREFERRED,
+  `vram=256MiB` being the PCI BAR, `refresh_mhz` truncation.

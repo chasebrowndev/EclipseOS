@@ -51,7 +51,11 @@ pub fn parse(blob: &[u8]) -> Option<EdidInfo> {
     Some(EdidInfo {
         make,
         model: name.unwrap_or_else(|| format!("{product:04X}")),
-        serial: serial_str.unwrap_or_else(|| format!("{serial_num:08X}")),
+        // Without a serial-string descriptor the numeric serial is often a
+        // constant the vendor never bothered to vary (0x01010101 is common), so
+        // the product code goes in too — two different models of the same make
+        // must not share an identity.
+        serial: serial_str.unwrap_or_else(|| format!("{product:04X}-{serial_num:08X}")),
     })
 }
 
@@ -134,6 +138,6 @@ mod tests {
         e[127] = (0u8).wrapping_sub(sum);
         let info = parse(&e).expect("valid edid");
         assert_eq!(info.model, "1234");
-        assert_eq!(info.serial, "DEADBEEF");
+        assert_eq!(info.serial, "1234-DEADBEEF");
     }
 }

@@ -163,6 +163,16 @@ impl Outputs {
         kind: OutputKind,
         global: Option<GlobalId>,
     ) -> u64 {
+        // Two panels can advertise byte-identical EDIDs (a TV with two inputs
+        // does exactly that). Identity has to stay unique or they share one
+        // persisted layout and one window stash, and the second one's saved
+        // mode gets applied to the first — an unsatisfiable modeset that the
+        // kernel rejects on every frame, forever.
+        let identity = if self.entries.iter().any(|e| e.identity == identity) {
+            format!("{identity} ({connector})")
+        } else {
+            identity
+        };
         let id = self.next_id;
         self.next_id += 1;
         let mut workspaces = workspace::new_set();
@@ -360,6 +370,14 @@ pub fn apply_change(
         return Err("refusing to disable the only enabled output");
     }
 
+    // Refused before anything is applied, so the failure cannot leave the
+    // `Output` describing a mode the scanout surface is not actually in.
+    if let Some(m) = change.mode {
+        if !crate::backend::set_output_mode(state, id, m) {
+            return Err("backend refused that mode");
+        }
+    }
+
     if change.mode.is_some() || change.scale.is_some() || change.transform.is_some() {
         output.change_current_state(change.mode, change.transform, change.scale, None);
         if let Some(m) = change.mode {
@@ -491,6 +509,21 @@ fn apply_settings(state: &mut crate::state::AbyssState, id: u64) {
         .as_deref()
         .or(saved.as_ref().and_then(|s| s.transform.as_deref()))
         .and_then(parse_transform);
+    // The backend has to accept the mode first: changing only the `Output`
+    // leaves the scanout surface on its old timing, and every atomic commit
+    // then asks the primary plane to scale, which no plane here can do.
+    let mode = match mode {
+        Some(m) if !crate::backend::set_output_mode(state, id, m) => {
+            tracing::warn!(
+                id,
+                w = m.size.w,
+                h = m.size.h,
+                "backend refused mode, keeping current"
+            );
+            None
+        }
+        other => other,
+    };
     if mode.is_some() || scale.is_some() || transform.is_some() {
         output.change_current_state(mode, transform, scale, None);
         if let Some(m) = mode {
