@@ -157,6 +157,10 @@ fn schedule(state: &mut AbyssState) {
 /// config, surfaces the refusals as a `config-error` IPC event and in journald,
 /// and applies nothing. Never half-apply.
 pub fn reload_now(state: &mut AbyssState) {
+    if already_ours(state) {
+        tracing::debug!("config change was our own write, already applied");
+        return;
+    }
     let next = state.config.reload();
     if !next.errors.is_empty() {
         let errors: Vec<serde_json::Value> = next.errors.iter().map(crate::config::error_json).collect();
@@ -171,4 +175,38 @@ pub fn reload_now(state: &mut AbyssState) {
         return;
     }
     crate::config::apply_loaded(state, next);
+}
+
+/// True when every source on disk still holds exactly the bytes this process
+/// last wrote there (COMP-13 §1.4).
+///
+/// The control socket's write path applies its edit in-process and then the
+/// kernel reports the change, which would reload and re-apply an identical
+/// config a moment later. Suppression is by content, not by a time window: a
+/// human saving the file in the same second as the GUI must still win, and a
+/// window would silently drop that edit.
+///
+/// `apply_loaded` records a hash for every source, so a missing entry means
+/// the map is stale and the safe answer is to reload. Any mismatch forgets
+/// that file's entry, so the next change reloads even if the file is later
+/// restored to what we wrote.
+fn already_ours(state: &mut AbyssState) -> bool {
+    if state.config_written.is_empty() {
+        return false;
+    }
+    let paths: Vec<std::path::PathBuf> = state.config.sources.iter().map(|s| s.path.clone()).collect();
+    let mut all = true;
+    for path in paths {
+        let on_disk = std::fs::read_to_string(&path)
+            .ok()
+            .map(|t| crate::ipc::config_rpc::hash(&t));
+        match (state.config_written.get(&path).copied(), on_disk) {
+            (Some(ours), Some(now)) if ours == now => {}
+            _ => {
+                state.config_written.remove(&path);
+                all = false;
+            }
+        }
+    }
+    all
 }

@@ -482,6 +482,21 @@ pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
         .map(|s| s.path.display().to_string())
         .collect();
     state.config = next;
+    // Remember what is on disk now, so the inotify event our own write is
+    // about to produce can be told from a human's edit by content (A4). Done
+    // for every source, not just the one written: the rule is "the live config
+    // is exactly these bytes", and a file with no entry would otherwise make
+    // every suppression check fail as soon as there are two sources.
+    state.config_written = state
+        .config
+        .sources
+        .iter()
+        .filter_map(|s| {
+            std::fs::read_to_string(&s.path)
+                .ok()
+                .map(|t| (s.path.clone(), crate::ipc::config_rpc::hash(&t)))
+        })
+        .collect();
     // Retune the two global bind filters. They hold Allowlist handles rather
     // than snapshots precisely so this line is possible (ADR 0022 amendment).
     state.capture_allow.set(state.config.capture.allow.clone());

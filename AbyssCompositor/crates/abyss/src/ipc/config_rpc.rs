@@ -290,9 +290,8 @@ fn set_config_value(state: &mut AbyssState, outer: Decision, params: &Value) -> 
         return Err(RpcError::invalid_params(&message));
     }
 
-    // Suppress the inotify storm this write just caused (A4): the watcher
-    // compares content hashes and skips a reload it knows it already has.
-    state.config_written.insert(target.clone(), hash(&after));
+    // `apply_loaded` records the on-disk hashes, which is what stops the
+    // inotify event this write just caused from reloading an identical config.
     crate::config::apply_loaded(state, next);
 
     Ok(json!({
