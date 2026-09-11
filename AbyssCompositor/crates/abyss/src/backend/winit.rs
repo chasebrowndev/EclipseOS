@@ -255,6 +255,18 @@ fn redraw(
             0..0,
             crate::render::capture::indicator(out, state.capture_active()),
         );
+        // Overscan compensation (COMP-03 §2) — same wrap as the DRM path, so a
+        // nested dev session shows exactly what the panel will.
+        let (overscan, calibrating) = state
+            .outputs
+            .by_output(out)
+            .map(|e| (e.overscan, e.calibrating.is_some()))
+            .unwrap_or_default();
+        let mode_size = crate::outputs::mode_size(out);
+        let mut elements = crate::render::overscan::frame(elements, overscan, mode_size);
+        if calibrating {
+            crate::render::overscan::calibration_markers(overscan, mode_size, &mut elements);
+        }
         match damage_tracker.render_output(renderer, &mut fb, age, &elements, CLEAR) {
             Ok(r) => (r.damage.map(|d| d.to_vec()), r.states),
             Err(e) => {

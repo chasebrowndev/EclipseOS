@@ -74,6 +74,10 @@ pub enum Action {
     /// §3.10). Dispatched today for the same reason as `AgentOverride`; the
     /// queue it opens arrives with the trusted UI (COMP-16 milestone 14).
     AgentAttention,
+    /// One keypress consumed by the overscan calibration overlay (COMP-03 §2).
+    /// Not bindable from config — the input filter synthesises it while a
+    /// calibration session owns the seat.
+    Calibrate(crate::outputs::calibrate::Step),
 }
 
 /// A configured key binding.
@@ -127,6 +131,11 @@ impl AbyssState {
                 if state.lock.locked {
                     return FilterResult::Forward;
                 }
+                // Calibration owns the seat outright while it runs: every key
+                // is consumed, including ones that are bound to something else.
+                if let Some(step) = crate::outputs::calibrate::step_for(state, mods, sym) {
+                    return FilterResult::Intercept(Action::Calibrate(step));
+                }
                 match state.config.action_for(mods, sym) {
                     Some(a) => FilterResult::Intercept(a.clone()),
                     None => FilterResult::Forward,
@@ -153,6 +162,9 @@ impl AbyssState {
             Action::MoveToWorkspace(n) => shell::move_to_workspace(self, n),
             Action::AgentOverride => self.agent_override(),
             Action::AgentAttention => self.agent_attention(),
+            Action::Calibrate(step) => {
+                crate::outputs::calibrate::apply(self, step);
+            }
         }
     }
 
@@ -393,7 +405,22 @@ impl AbyssState {
         let Some(geometry) = self.space.output_geometry(&output) else {
             return;
         };
-        let pos = event.position_transformed(geometry.size) + geometry.loc.to_f64();
+        // The event lands where the *panel* was touched; with overscan the
+        // desktop is painted into an inset rect, so invert that map or the
+        // pointer sits off by the margin (COMP-03 §2).
+        let overscan = self
+            .outputs
+            .by_output(&output)
+            .map(|e| e.overscan)
+            .unwrap_or_default();
+        let mut local = event.position_transformed(geometry.size);
+        if !overscan.is_zero() {
+            let (w, h) = (geometry.size.w.max(1) as f64, geometry.size.h.max(1) as f64);
+            let unit = Point::<f64, Logical>::from((local.x / w, local.y / h));
+            let unit = overscan.untransform_unit(unit, crate::outputs::mode_size(&output));
+            local = (unit.x * w, unit.y * h).into();
+        }
+        let pos = local + geometry.loc.to_f64();
         self.pointer_moved(pos, event.time_msec());
     }
 

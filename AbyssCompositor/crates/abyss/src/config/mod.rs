@@ -183,6 +183,9 @@ pub struct OutputRule {
     pub transform: Option<String>,
     pub enabled: Option<bool>,
     pub vrr: Option<bool>,
+    /// Per-edge inset in physical pixels for a panel that crops the signal
+    /// (COMP-03 §2). Hand-written here wins over anything calibration saved.
+    pub overscan: Option<crate::outputs::overscan::Overscan>,
     /// `off` | `suspend` | `ignore` — what a lid-close does to this output
     /// (COMP-01 §4.1). Only meaningful on an internal panel.
     pub lid_close: Option<String>,
@@ -1448,6 +1451,24 @@ impl Config {
                     Some(v @ ("off" | "suspend" | "ignore")) => rule.lid_close = Some(v.to_owned()),
                     _ => self.reject(n, "output lid-close must be off, suspend or ignore"),
                 },
+                // `overscan 30` for all four edges, or any subset of
+                // `overscan top=20 bottom=20 left=40 right=40`.
+                "overscan" => {
+                    let has_value = n.entries().iter().any(|e| e.value().as_integer().is_some());
+                    let negative = n
+                        .entries()
+                        .iter()
+                        .any(|e| e.value().as_integer().is_some_and(|i| i < 0));
+                    if !has_value || negative {
+                        self.reject(
+                            n,
+                            "output overscan takes non-negative pixels: `overscan 30` or \
+                             `overscan top=20 left=40`",
+                        );
+                    } else {
+                        rule.overscan = Some(crate::outputs::persist::overscan_of(n));
+                    }
+                }
                 "vrr" | "adaptive-sync" => rule.vrr = arg(n).and_then(KdlValue::as_bool).or(Some(true)),
                 other => self.reject(n, format!("unknown output key {other:?}")),
             }
@@ -1470,6 +1491,7 @@ impl Config {
             out.enabled = r.enabled.or(out.enabled);
             out.lid_close = r.lid_close.clone().or(out.lid_close);
             out.vrr = r.vrr.or(out.vrr);
+            out.overscan = r.overscan.or(out.overscan);
         }
         out
     }

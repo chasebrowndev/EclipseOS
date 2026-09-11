@@ -38,6 +38,7 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "resize" => resize(state, params),
         "move_workspace_to_output" => move_workspace_to_output(state, params),
         "set_output" => set_output(state, params),
+        "calibrate_output" => calibrate_output(state, params),
         "reload_config" => reload_config(state),
         // Unreachable: the gate rejects anything not in the table and
         // `handle_line` rejects anything the table marks unimplemented.
@@ -454,12 +455,24 @@ fn move_workspace_to_output(state: &mut AbyssState, params: &Value) -> Reply {
     Ok(json!({"ok": true, "changed": moved}))
 }
 
+/// One overscan edge, in physical pixels. Non-negative and sane; the caller
+/// clamps to a fraction of the axis, which needs the mode and so happens later.
+fn edge_px(raw: Option<i64>) -> Result<i32, RpcError> {
+    match raw {
+        Some(n) if (0..=10_000).contains(&n) => Ok(n as i32),
+        _ => Err(RpcError::invalid_params(
+            "overscan pixels must be an integer in [0, 10000]",
+        )),
+    }
+}
+
 /// Output runtime configuration (COMP-13 §2.1): mode, scale, position,
 /// transform, enabled, vrr. Everything is parsed and checked first; the output
 /// is touched only once every field is known good, so a rejected request
 /// leaves no half-applied state. Geometry changes persist to `outputs.kdl`
 /// through the normal `outputs::relayout` save path (COMP-03 §4); `vrr` does
-/// not, because the persisted record has no field for it.
+/// not, because the persisted record has no field for it. `overscan` persists
+/// on its own per-panel path (COMP-03 §2).
 fn set_output(state: &mut AbyssState, params: &Value) -> Reply {
     only_keys(
         params,
@@ -471,6 +484,7 @@ fn set_output(state: &mut AbyssState, params: &Value) -> Reply {
             "transform",
             "enabled",
             "vrr",
+            "overscan",
         ],
     )?;
     let id = u64_param(params, "output")?;
@@ -537,9 +551,44 @@ fn set_output(state: &mut AbyssState, params: &Value) -> Reply {
         None => None,
         Some(_) => Some(bool_param(params, "vrr")?),
     };
+    // `overscan` is either a single number for all four edges or an object with
+    // any subset of the edges; the omitted ones stay at zero, matching the
+    // config spelling exactly so the two front ends cannot drift.
+    let overscan = match obj.get("overscan") {
+        None => None,
+        Some(Value::Number(n)) => {
+            let px = edge_px(n.as_i64())?;
+            Some(crate::outputs::overscan::Overscan::uniform(px))
+        }
+        Some(Value::Object(o)) => {
+            for key in o.keys() {
+                if !["top", "bottom", "left", "right"].contains(&key.as_str()) {
+                    return Err(RpcError::invalid_params(&format!("unknown overscan edge: {key}")));
+                }
+            }
+            let mut v = crate::outputs::overscan::Overscan::default();
+            for (key, slot) in [
+                ("top", &mut v.top),
+                ("bottom", &mut v.bottom),
+                ("left", &mut v.left),
+                ("right", &mut v.right),
+            ] {
+                if let Some(raw) = o.get(key) {
+                    *slot = edge_px(raw.as_i64())?;
+                }
+            }
+            Some(v)
+        }
+        Some(_) => {
+            return Err(RpcError::invalid_params(
+                "overscan must be a number or {top, bottom, left, right}",
+            ))
+        }
+    };
 
     // --- everything validated; hand off to the shared apply path.
     let change = crate::outputs::OutputChange {
+        overscan,
         mode,
         scale,
         transform,
@@ -549,6 +598,50 @@ fn set_output(state: &mut AbyssState, params: &Value) -> Reply {
     };
     let vrr_applied = crate::outputs::apply_change(state, id, &change).map_err(RpcError::invalid_params)?;
     Ok(json!({"ok": true, "vrr": vrr_applied}))
+}
+
+/// Drive the overscan calibration overlay on one output (COMP-03 §2).
+///
+/// `action` defaults to `start`. The overlay owns the seat while it runs, so
+/// `commit` and `cancel` take no output: there is only ever one session, and
+/// naming an output that is not the one calibrating would be a lie either way.
+fn calibrate_output(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &["output", "action"])?;
+    let action = params_obj(params)
+        .get("action")
+        .map(|v| {
+            v.as_str()
+                .ok_or_else(|| RpcError::invalid_params("action must be a string"))
+        })
+        .transpose()?
+        .unwrap_or("start");
+
+    match action {
+        "start" => {
+            let id = u64_param(params, "output")?;
+            if state.outputs.get(id).is_none() {
+                return Err(RpcError::invalid_params("no such output"));
+            }
+            if !crate::outputs::calibrate::start(state, id) {
+                return Err(RpcError::invalid_params("a calibration is already running"));
+            }
+            Ok(json!({"ok": true, "calibrating": id}))
+        }
+        "commit" | "cancel" => {
+            let Some(id) = crate::outputs::calibrate::active(state) else {
+                return Err(RpcError::invalid_params("no calibration is running"));
+            };
+            if action == "commit" {
+                crate::outputs::calibrate::commit(state);
+            } else {
+                crate::outputs::calibrate::cancel(state);
+            }
+            Ok(json!({"ok": true, "output": id}))
+        }
+        other => Err(RpcError::invalid_params(&format!(
+            "unknown action {other:?}: expected start, commit or cancel"
+        ))),
+    }
 }
 
 #[cfg(test)]

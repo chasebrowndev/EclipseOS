@@ -28,6 +28,9 @@ eclipse-ctl — control the abyss compositor
   eclipse-ctl float HANDLE on|off     set a window floating or tiled
   eclipse-ctl workspace N             switch to workspace N
   eclipse-ctl move HANDLE N           move a window to workspace N
+  eclipse-ctl output ID overscan SPEC set overscan: N, or top=N,left=N,...
+  eclipse-ctl output ID calibrate [commit|cancel]
+                                      drive the on-screen overscan calibration
   eclipse-ctl reload                  re-read the config
   eclipse-ctl call METHOD [JSON]      raw JSON-RPC, for anything not above
 
@@ -145,6 +148,30 @@ fn parse(args: &[String], all: bool) -> Result<Parsed, String> {
             };
             ("subscribe".into(), params, None)
         }
+        "output" => {
+            let id = num(1)?;
+            match a(2) {
+                "overscan" => (
+                    "set_output".into(),
+                    json!({"output": id, "overscan": overscan_spec(a(3))?}),
+                    None,
+                ),
+                "calibrate" => {
+                    let action = match a(3) {
+                        "" | "start" => "start",
+                        "commit" => "commit",
+                        "cancel" => "cancel",
+                        other => return Err(format!("expected start|commit|cancel, got {other:?}")),
+                    };
+                    (
+                        "calibrate_output".into(),
+                        json!({"output": id, "action": action}),
+                        None,
+                    )
+                }
+                other => return Err(format!("unknown output subcommand {other:?}")),
+            }
+        }
         "focus" => ("focus_window".into(), json!({"handle": num(1)?}), None),
         "close" => ("close_window".into(), json!({"handle": num(1)?}), None),
         "float" => {
@@ -188,6 +215,31 @@ fn parse(args: &[String], all: bool) -> Result<Parsed, String> {
         }
         other => return Err(format!("unknown command {other:?}; try --help")),
     })
+}
+
+/// `48` (uniform) or `top=20,bottom=20,left=40` (per edge, any subset).
+/// Kept here rather than in the compositor so the wire stays plain JSON.
+fn overscan_spec(raw: &str) -> Result<Value, String> {
+    if raw.is_empty() {
+        return Err("expected a pixel count, or top=N,bottom=N,left=N,right=N".into());
+    }
+    if let Ok(n) = raw.parse::<i64>() {
+        return Ok(json!(n));
+    }
+    let mut obj = serde_json::Map::new();
+    for part in raw.split(',') {
+        let (edge, px) = part
+            .split_once('=')
+            .ok_or_else(|| format!("expected edge=px, got {part:?}"))?;
+        if !matches!(edge, "top" | "bottom" | "left" | "right") {
+            return Err(format!("unknown edge {edge:?}"));
+        }
+        let px: i64 = px
+            .parse()
+            .map_err(|_| format!("{edge}: expected a number, got {px:?}"))?;
+        obj.insert(edge.into(), json!(px));
+    }
+    Ok(Value::Object(obj))
 }
 
 fn request(method: &str, params: Value) -> String {

@@ -9,6 +9,7 @@ pub mod blur;
 pub mod capture;
 pub mod cursor;
 pub mod effects;
+pub mod overscan;
 pub mod stats;
 
 use std::collections::HashMap;
