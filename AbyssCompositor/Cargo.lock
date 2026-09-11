@@ -653,6 +653,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "eclipse-settings"
+version = "0.1.0"
+dependencies = [
+ "abyss",
+ "eclipse-ipc",
+ "eclipse-ui",
+ "iced",
+ "serde_json",
+]
+
+[[package]]
 name = "eclipse-ui"
 version = "0.1.0"
 dependencies = [
