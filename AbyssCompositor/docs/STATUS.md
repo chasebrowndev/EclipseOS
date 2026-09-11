@@ -531,6 +531,28 @@ the tree:
 
 ---
 
+## Open merge — PR #6
+
+`fix(abyss): keep the scanout mode and the output mode in sync`
+(`comp16-output-identity-modeset` -> `main`) is **green and unmerged**.
+GitHub reports `MERGEABLE` / `mergeStateStatus: CLEAN`, with every check
+SUCCESS: gate build/fmt/clippy/test, cargo-deny, wlcs (headless), TCB touch
+check, spec-citation, owner-only authorship. It is the first CI run of the
+`conformance` job, so it is also the evidence for the wlcs row below.
+
+It stays open only because the local Claude Code auto-mode classifier refuses
+to run `gh pr merge`. The repo owner merges it by hand:
+
+```
+cd /home/chase/syncedprojects/EclipseOS && gh pr merge 6 --merge
+```
+
+Deliberately **without** `--delete-branch`: `comp16-output-identity-modeset` is
+the local base of `comp03-overscan-compensation`. Once #6 lands, that branch
+rebases onto `main`, pushes, and opens its own PR citing COMP-03 §2.
+
+---
+
 ## Test and gate status
 
 CI runs on every push (`.github/workflows/gate.yml`, cloud runner, no GPU —
