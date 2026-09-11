@@ -1,6 +1,6 @@
 # Abyss — implementation status
 
-Last updated: 2026-09-11.
+Last updated: 2026-09-11 (late).
 
 **Spec baseline: v2 + Appendix A applied (2026-09-08).** The amendment set
 that previously sat unapplied at the end of VOL2 is now merged inline;
@@ -154,10 +154,10 @@ parallel one.
 | `docs/CONFIG.md` | **done** | generated from the schema (`fab0eb3`) |
 | B2 `crates/eclipse-ipc` | **done** | `5ebe0a9`. Raw fd exposed, non-blocking, no async runtime — it drops into a calloop client loop |
 | B1 `crates/eclipse-ui` | **done** | `a501576`. `tokens.rs` (the style spec's only transcription), `theme.rs` (style fns over iced's stock widgets), `widget/` (the 44×25 toggle and the bar chart, written from scratch because the spec fixes their geometry), vendored instanced typefaces under `assets/fonts/` |
-| B5 settings app | **next** | controls generated from `get_config {schema:true}`; `policy.kdl` keys read-only; the Display pane closes stub 15(a) by driving `calibrate_output` |
-| B3 bar | not started | `wlr_foreign_toplevel_management` stays absent — the bar lists windows over Wayland and acts over `eclipse-ipc` |
+| B5 settings app | **done** | `770ff33`. | controls generated from `get_config {schema:true}`; `policy.kdl` keys read-only; the Display pane closes stub 15(a) by driving `calibrate_output` |
+| B3 bar | **scaffolded, paused** | `wlr_foreign_toplevel_management` stays absent — the bar lists windows over Wayland and acts over `eclipse-ipc`. `crates/eclipse-bar/` exists untracked with `model.rs` + `clock.rs` written and no `main.rs`; **not** a workspace member yet |
 | B4 control center + services | not started | notifications in-house over zbus; tray, audio, network/BT/battery, session, launcher and clipboard crates already chosen in the plan |
-| B6 policy viewer | not started | a separate binary reading `policy.kdl` from disk. **Not** over the socket — `Policy/Read` stays closed |
+| B6 policy viewer | **scaffolded, paused** | a separate binary reading `policy.kdl` from disk. **Not** over the socket — `Policy/Read` stays closed. `crates/eclipse-policy-viewer/` exists untracked with a manifest only; **not** a workspace member yet |
 
 Out of scope by decision (plan B7): desktop icons (DP-6), `mode wm|de`
 profiles (DP-3), the compositor-drawn policy editor (that stays milestone 15),

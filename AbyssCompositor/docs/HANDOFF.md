@@ -1,9 +1,12 @@
 # Session handoff
 
-## State as of 2026-09-11 — DE userland, Part A done, B2+B1 done, B5 next
+## State as of 2026-09-11 (late) — DE userland, B5 done, B3+B6 scaffolded and paused
 
-Branch `ci-attribution-display-name`, working tree clean, ten commits ahead of
-the last merge (`a82a8e5` … `a501576`). Nothing is pushed as a PR yet.
+Branch `ci-attribution-display-name`. **Working tree: clean except two
+untracked directories, `crates/eclipse-bar/` and `crates/eclipse-policy-viewer/`
+— deliberately left that way, see "Where B3 and B6 actually stand" below.**
+`HEAD` is `770ff33` and all five gate commands are green at it. Nothing is
+pushed as a PR yet.
 
 **The work in flight is the plan at `~/.claude/plans/ok-claude-today-we-inherited-cook.md`**
 ("Usable frontend: taskbar, control center, settings GUI, policy viewer").
@@ -24,30 +27,104 @@ narrative.
 | A5 `eclipse-ctl config` + coverage ratchet | done | `18b97cf`, `ci/gui-coverage-exceptions.txt` |
 | B2 `crates/eclipse-ipc` | done | `5ebe0a9` |
 | B1 `crates/eclipse-ui` | done | `a501576`, ADR 0039 |
-| **B5 settings app** | **next** | — |
-| B3 bar | not started | — |
+| B5 settings app | **done** | `770ff33` |
+| **B3 bar** | **scaffolded, two source files, paused** | uncommitted |
 | B4 control center + services | not started | — |
-| B6 policy viewer | not started | — |
+| **B6 policy viewer** | **scaffolded, empty, paused** | uncommitted |
 
 B7 is out of scope on purpose: desktop icons (DP-6), `mode wm\|de` profiles
 (DP-3), the compositor-drawn policy editor, the first-boot overscan offer, and
 bind/windowrule editing.
 
-### What B5 has to do
+### Where B3 and B6 actually stand — read this first
 
-Generate its controls from `get_config {schema: true}` — never from a
-hand-written list of keys. The `gui-coverage` ratchet in CI (`gate.yml:174`)
-already stops `ci/gui-coverage-exceptions.txt` from growing; B5 owes the other
-half of that claim, a unit test in the settings crate walking `schema::TABLE`,
-subtracting `COLLECTIONS` and the exception file, and asserting every path
-left resolves to a rendered control. That test wants the crate's own control
-registry, so it belongs in `cargo test`, not in a workflow step. A `policy.kdl`-owned key renders
-read-only (that is what `eclipse_ui::widget::Toggle::locked` is for) with its
-value visible and the editor affordance shown; it must not be writable by any
-path in the UI. The Display pane closes stub 15(a): a screen-edges selector
-driving `calibrate_output {output, action}` start/commit/cancel, with the
-overlay itself compositor-drawn — the client sends the verb, it does not draw
-the calibration surface.
+Two subagents were started on B3 and B6 in parallel and **stopped early** when
+the session ran low on budget. What survives is honest scaffolding, not a
+half-finished build:
+
+- `crates/eclipse-bar/` — `Cargo.toml` (iced 0.14 + `iced_layershell` 0.19.1 +
+  eclipse-ui + eclipse-ipc, `publish = false`), an **empty** `src/lib.rs`, and
+  two finished, reviewable modules: `src/model.rs` (the control-socket wire
+  shapes the bar reads, including the `Trust::Secret` rule that a secret
+  window's title is never rendered) and `src/clock.rs` (`localtime_r`-style
+  wall-clock formatting, no date crate). No `main.rs`, no view, no update.
+- `crates/eclipse-policy-viewer/` — `Cargo.toml` (iced 0.14 + eclipse-ui +
+  `kdl` 6, **no `eclipse-ipc` by design**, `publish = false`) and an empty
+  `src/lib.rs`. Nothing else.
+
+**Neither crate is a workspace member.** The root `Cargo.toml` was reverted on
+purpose so that `cargo build --workspace` stays green at `770ff33` — a crate
+with no `main.rs` would fail the bin target. The first thing the next session
+does is re-add both to the `members` list (alphabetical: `crates/eclipse-bar`
+after `crates/abyss`, `crates/eclipse-policy-viewer` after `crates/eclipse-ipc`)
+and then finish them. Do not "discover" that the build is broken and delete the
+partial files.
+
+Both crate manifests already carry `publish = false`. That is not cosmetic:
+`cargo deny check bans` fails with `error[wildcard]: found 2 wildcard
+dependencies` on a publishable crate with path deps, and that is exactly how
+B5 first failed the gate.
+
+### The facts the next session should not re-derive
+
+`iced_layershell` 0.19.1, vendored at
+`~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iced_layershell-0.19.1/src/`
+(its `build_pattern/application.md` is the canonical worked example):
+
+- `iced_layershell::build_pattern::application(boot, namespace, update, view)`
+  returns a builder with `.run() .settings() .layer_settings() .style()
+  .subscription() .theme() .font() .antialiasing() .default_text_size()
+  .scale_factor() .executor()`. `namespace` is an `fn() -> String`.
+- **The `Message` enum must carry `#[to_layer_message]` above
+  `#[derive(Debug, Clone)]`.** The builder's bound is
+  `Message: TryInto<LayerShellCustomActionWithId, Error = Message> + Send +
+  Debug`, and that proc macro is what supplies it. The macro injects extra
+  variants (`AnchorSizeChange(Anchor,(u32,u32))` and friends), so `update`
+  needs a trailing arm.
+- `LayerShellSettings { anchor, layer, exclusive_zone: i32, size:
+  Option<(u32,u32)>, margin, keyboard_interactivity, start_mode,
+  events_transparent }`. A top bar is `Anchor::Top | Left | Right`,
+  `size: Some((0, H))`, `exclusive_zone: H`, `KeyboardInteractivity::None`.
+- `iced_layershell::disable_clipboard()` opts out of the smithay-clipboard
+  worker thread. The bar has no clipboard use; call it.
+- It tracks the same iced 0.14 family (`iced_core`/`iced_runtime`/`iced_widget`
+  0.14, `layershellev` 0.19.1). No version split to manage.
+
+The bar's control-socket surface, verified against `crates/abyss/src/ipc/`:
+
+- `get_workspaces` → bare array of `{index, output, output_name, active,
+  windows, owner}`; `get_windows` → bare array of `{handle, app_id, title,
+  output, workspace, floating, focused, trust, no_agent}`; `get_focused` →
+  an array of **one** `{seat, window|null, output, workspace}`.
+- `focus_window {handle}`, `close_window {handle}`, `switch_workspace
+  {workspace}`, `set_floating {floating, handle}`, `move_to_workspace
+  {workspace, handle?}`. Workspace indices are **1-based on the wire**.
+- Events: `window {change: opened|closed|urgent, handle}`, `workspace
+  {change: switched, output, workspace}`, `focus {handle}`, `output
+  {change: changed, id}`, `config-error {errors}`.
+- Every one of those has an `implemented: true` row in `ipc/gate.rs`. A method
+  with no row does not exist.
+
+B6's surface, pinned by `schema.rs`'s own `the_policy_owned_set_is_exactly_this`
+test: exactly four policy-owned keys (`misc.scripted-input`,
+`clipboard.data-control-allow`, `capture.allow`, `capture.redact-app-id`) and
+exactly four policy-owned `windowrule` actions (`sensitivity`, `app-trust`,
+`seat-compat`, `no-agent`). An empty allowlist **denies everyone** and must
+read that way on screen — never as a blank list. The search path is
+`/etc/eclipse/policy.kdl` then `$XDG_CONFIG_HOME/eclipse/policy.kdl`
+(`config/mod.rs::search_path`), read from disk with the user's own permissions;
+the viewer never asks the socket, because the `Policy`/`Read` gate row is
+default-closed and stays closed.
+
+### What B5 shipped
+
+`crates/eclipse-settings` at `770ff33`: `src/{app,conn,lib,main,output,pane,schema}.rs`
+plus `tests/coverage.rs`, which owns the local half of the GUI-coverage ratchet.
+A plain `xdg_toplevel` — `iced::application(...).title(..).theme(..).subscription(..)
+.window_size((1100.0, 760.0)).antialiasing(true)` with a `for face in
+eclipse_ui::FONTS` loop. **Still untested at runtime** — nothing has drawn a
+window yet; that needs `abyss` running, and it is the first thing worth doing
+with a live compositor.
 
 ### Pins and traps for the new crates
 
@@ -56,11 +133,19 @@ the calibration surface.
   mandatory: without `wayland`, winit fails to compile with "The platform
   you're compiling for is not supported by winit"; without a futures executor,
   iced fires a `compile_error!`. `iced_layershell` is `0.19.1`.
+- **`iced::time::every` does not exist for us** — it is gated on `tokio`/`smol`
+  and we enable only `thread-pool`. Every periodic job is a `std::thread` plus
+  `iced::stream::channel` and `try_send`. `crates/eclipse-settings/src/app.rs`
+  `subscription()` is the working pattern; copy it rather than reinventing it.
 - **Do not guess the iced API** — same discipline as the Smithay pin. The
   vendored source is at
   `~/.cargo/registry/src/*/iced_widget-0.14.2/src` (note `.2`, not `.0` — the
   `.0` directory does not exist). Guessing cost this session three compile
   cycles on `rule::Style`, `scrollable::Scroller` and `scrollable::Style`.
+- `eclipse_ipc::Client::connect()` is an **associated function**, not a free
+  `eclipse_ipc::connect()`. That mistake has already cost one compile cycle.
+- `eclipse_ui::widget::parts::segmented` takes `&'a [(T, &'a str)]` and does
+  not fit a `Vec<String>` read off the wire; build the pill row by hand there.
 - `crates/eclipse-ui/src/tokens.rs` is the **only** transcription of
   `/home/chase/Downloads/eclipse-style-spec.md`. A literal colour, radius or
   size anywhere else in the DE is a bug.
@@ -75,7 +160,7 @@ the calibration surface.
 ### Gate
 
 The five commands in the root `CLAUDE.md` are exactly what
-`.github/workflows/gate.yml` runs, and all five were green at `a501576`
+`.github/workflows/gate.yml` runs, and all five were green at `770ff33`
 (`cargo test --workspace` 115+ tests, 0 failures; `cargo deny` advisories/bans/
 licenses/sources all ok). Commits carry **no** attribution trailers — the root
 `CLAUDE.md` rule overrides any session-level instruction to add them.
