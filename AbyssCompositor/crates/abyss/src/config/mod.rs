@@ -16,6 +16,7 @@
 //! emits a `config-error` IPC event. Never half-apply.
 
 pub mod edit;
+pub mod schema;
 pub mod watch;
 
 use std::path::{Path, PathBuf};
@@ -478,6 +479,35 @@ pub struct ConfigError {
     pub span_len: usize,
 }
 
+/// Nearest schema path by edit distance, when it is near enough to be worth
+/// suggesting. Bounded at a third of the name's length so a wholly different
+/// word never gets proposed as a typo.
+fn did_you_mean(path: &str) -> Option<&'static str> {
+    let budget = (path.len() / 3).max(1);
+    schema::TABLE
+        .iter()
+        .map(|k| (edit_distance(path, k.path), k.path))
+        .filter(|(d, _)| *d <= budget)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, p)| p)
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.chars().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            cur[j + 1] = (prev[j] + usize::from(ca != *cb))
+                .min(prev[j + 1] + 1)
+                .min(cur[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
 /// Locate `offset` in `text`: 1-based line and column, plus the whole line it
 /// falls on. `len` is clamped to what is left of that line so the caret run
 /// never spills past the snippet.
@@ -818,6 +848,37 @@ impl Config {
 
     /// Record a validation refusal against `node`'s position (COMP-13 §1.2).
     /// Also logged, so the journal shows the same text the caller gets.
+    /// The parser's `unknown key` fallthrough, checked against the schema.
+    ///
+    /// This is the second of the three anti-drift sides in `schema.rs`: it runs
+    /// at parse time, on the real user's file. A name the parser does not
+    /// handle but the schema *does* claim is a wiring bug in this file, and the
+    /// message says so rather than telling the human their config is wrong.
+    fn unknown_key(&mut self, node: &KdlNode, prefix: &str, what: &str) {
+        let name = node.name().value();
+        let path = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}.{name}")
+        };
+        match schema::get_key(&path) {
+            Some(_) => self.reject(
+                node,
+                format!("{path} is in the config schema but is not wired into the parser \u{2014} this is a bug in abyss, not in your config"),
+            ),
+            None => {
+                let hint = did_you_mean(&path);
+                self.reject(
+                    node,
+                    match hint {
+                        Some(h) => format!("unknown {what} {name:?} (did you mean {h:?}?)"),
+                        None => format!("unknown {what} {name:?}"),
+                    },
+                )
+            }
+        }
+    }
+
     fn reject(&mut self, node: &KdlNode, message: impl Into<String>) {
         let message = message.into();
         // Underline the node name only; the node's own span runs to the end of
@@ -860,7 +921,7 @@ impl Config {
                 "decoration" => self.apply_decoration(node),
                 "animations" => self.apply_animations(node),
                 "windowrule" => self.apply_windowrule(node),
-                other => self.reject(node, format!("unknown config node {other:?}")),
+                _ => self.unknown_key(node, "", "config node"),
             }
         }
     }
@@ -902,7 +963,7 @@ impl Config {
                         None => self.reject(n, format!("bad color for {name:?}")),
                     }
                 }
-                other => self.reject(n, format!("unknown general key {other:?}")),
+                _ => self.unknown_key(n, "general", "general key"),
             }
         }
     }
@@ -914,7 +975,7 @@ impl Config {
                 "direct-scanout" => {
                     self.render.direct_scanout = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
                 }
-                other => self.reject(n, format!("unknown render node {other:?}")),
+                _ => self.unknown_key(n, "render", "render node"),
             }
         }
     }
@@ -930,7 +991,7 @@ impl Config {
                     }
                     self.clipboard.data_control_allow = names(n, &mut seen_allow);
                 }
-                other => self.reject(n, format!("unknown clipboard node {other:?}")),
+                _ => self.unknown_key(n, "clipboard", "clipboard node"),
             }
         }
     }
@@ -956,7 +1017,7 @@ impl Config {
                     }
                     self.capture.redact_app_id = names(n, &mut seen_redact);
                 }
-                other => self.reject(n, format!("unknown capture node {other:?}")),
+                _ => self.unknown_key(n, "capture", "capture node"),
             }
         }
     }
@@ -982,7 +1043,7 @@ impl Config {
                         ),
                     ),
                 },
-                other => self.reject(n, format!("unknown xwayland node {other:?}")),
+                _ => self.unknown_key(n, "xwayland", "xwayland node"),
             }
         }
     }
@@ -1012,7 +1073,7 @@ impl Config {
                     Some(c) => self.idle.lock_command = Some(c.to_owned()),
                     None => self.reject(n, "idle lock-command needs a string argument"),
                 },
-                other => self.reject(n, format!("unknown idle node {other:?}")),
+                _ => self.unknown_key(n, "idle", "idle node"),
             }
         }
     }
@@ -1054,7 +1115,7 @@ impl Config {
                     other => self.reject(n, format!("unknown accel-profile {other:?}")),
                 },
                 "touchpad" => self.apply_touchpad(n),
-                other => self.reject(n, format!("unknown input key {other:?}")),
+                _ => self.unknown_key(n, "input", "input key"),
             }
         }
     }
@@ -1071,7 +1132,7 @@ impl Config {
                 "natural-scroll" => self.input.touchpad.natural_scroll = b,
                 "tap-to-click" => self.input.touchpad.tap_to_click = b,
                 "dwt" => self.input.touchpad.dwt = b,
-                other => self.reject(n, format!("unknown touchpad key {other:?}")),
+                _ => self.unknown_key(n, "input.touchpad", "touchpad key"),
             }
         }
     }
@@ -1100,7 +1161,7 @@ impl Config {
                 },
                 "blur" => self.apply_blur(n),
                 "shadow" => self.apply_shadow(n),
-                other => self.reject(n, format!("unknown decoration key {other:?}")),
+                _ => self.unknown_key(n, "decoration", "decoration key"),
             }
         }
     }
@@ -1120,7 +1181,7 @@ impl Config {
                     Some(v) if (1..=6).contains(&v) => self.decoration.blur.passes = v as i32,
                     _ => self.reject(n, "blur passes must be an integer 1..=6"),
                 },
-                other => self.reject(n, format!("unknown blur key {other:?}")),
+                _ => self.unknown_key(n, "decoration.blur", "blur key"),
             }
         }
     }
@@ -1136,7 +1197,7 @@ impl Config {
                     Some(v) if (0..=128).contains(&v) => self.decoration.shadow.range = v as i32,
                     _ => self.reject(n, "shadow range must be an integer 0..=128"),
                 },
-                other => self.reject(n, format!("unknown shadow key {other:?}")),
+                _ => self.unknown_key(n, "decoration.shadow", "shadow key"),
             }
         }
     }
@@ -1150,7 +1211,7 @@ impl Config {
                     self.animations.enabled = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
                 }
                 "animation" => self.apply_animation(n),
-                other => self.reject(n, format!("unknown animations key {other:?}")),
+                _ => self.unknown_key(n, "animations", "animations key"),
             }
         }
     }
@@ -1374,7 +1435,7 @@ impl Config {
                 },
                 // Restart-only knobs (COMP-13 §1.2); parsed elsewhere or not yet.
                 "xwayland" => {}
-                other => self.reject(n, format!("unknown misc key {other:?}")),
+                _ => self.unknown_key(n, "misc", "misc key"),
             }
         }
     }
@@ -1692,6 +1753,27 @@ mod tests {
             e.to_string().lines().skip(1).collect::<Vec<_>>(),
             ["  |", "3 |     gaps-inn 4", "  |     ^^^^^^^^"]
         );
+    }
+
+    /// Anti-drift side (b): the parser's reject path consults the schema, so a
+    /// near-miss is named and a key the schema claims but the parser does not
+    /// handle is reported as an abyss bug rather than as the human's mistake.
+    #[test]
+    fn unknown_keys_suggest_the_schema_path_they_nearly_are() {
+        fn err(text: &str) -> String {
+            let doc: KdlDocument = text.parse().unwrap();
+            let mut cfg = Config::default();
+            cfg.apply(&doc, &mut Vec::new());
+            assert_eq!(cfg.errors.len(), 1);
+            cfg.errors[0].message.clone()
+        }
+
+        let m = err("general {\n    gaps-inn 4\n}\n");
+        assert!(m.contains("did you mean \"general.gaps-in\""), "{m}");
+
+        // Nothing close enough: no suggestion rather than a misleading one.
+        let m = err("general {\n    quux 4\n}\n");
+        assert!(!m.contains("did you mean"), "{m}");
     }
 
     /// A tab-indented line keeps its tabs in the caret gutter so the run still

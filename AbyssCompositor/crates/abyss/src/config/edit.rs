@@ -83,7 +83,11 @@ pub fn set_value(text: &str, path: &str, value: &KdlValue) -> Result<String, Edi
         Resolved::Block(path) => Err(EditError::NotAValue(path)),
         // The key is absent: insert it, plus whichever enclosing blocks are
         // missing, at the end of the deepest block that does exist.
-        Resolved::Missing { depth, insert_at, indent } => {
+        Resolved::Missing {
+            depth,
+            insert_at,
+            indent,
+        } => {
             let mut body = String::new();
             for (i, part) in parts[depth..parts.len() - 1].iter().enumerate() {
                 body.push_str(&indent);
@@ -135,10 +139,12 @@ fn resolve(text: &str, doc: &KdlDocument, parts: &[&str]) -> Resolved {
     let mut cur = doc;
     let mut depth = 0;
     let mut node: Option<&KdlNode> = None;
-    loop {
-        let Some(found) = cur.nodes().iter().rev().find(|n| n.name().value() == parts[depth]) else {
-            break;
-        };
+    while let Some(found) = cur
+        .nodes()
+        .iter()
+        .rev()
+        .find(|n| n.name().value() == parts[depth])
+    {
         node = Some(found);
         depth += 1;
         if depth == parts.len() {
