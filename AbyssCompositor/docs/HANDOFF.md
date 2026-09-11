@@ -1,5 +1,60 @@
 # Session handoff
 
+## State as of 2026-09-11 (night) — the launcher landed; B4's remainder needs decisions
+
+Branch `ci-attribution-display-name`. `HEAD` is the launcher commit; the four
+gate commands available on this box are green at it (`cargo deny` is still not
+installed here). Still nothing pushed, still no PR.
+
+`eclipse-launcher` — the fourth `[[bin]]` in `eclipse-bar`, at
+`src/launcher/{mod,app,view,main}.rs`. A centred `Layer::Overlay` surface with
+`KeyboardInteractivity::Exclusive`: unlike the bar's menus, a launcher is
+nothing but keyboard, so it takes it and gives it back on exit. It holds no
+capability of its own (ADR 0038) — it reads what `eclipse_services::apps`
+reads and spawns a child of itself.
+
+Decisions worth not re-deriving:
+
+- **`MAX_ROWS = 8` is a compile-time constant**, same reason the center's row
+  set is: the surface size is fixed before the boot fn runs, so the height
+  cannot depend on how many entries matched. Unfilled slots draw empty rather
+  than shortening the list — rows that slide up as you type are rows you
+  misclick. When more matched than fit, the footer says how many are off the
+  bottom.
+- **A `Terminal=true` entry is listed, greyed, and keeps its `mouse_area`.**
+  `apps::launch` refuses it (`ErrorKind::Unsupported`) and the refusal goes on
+  the footer verbatim. The center's opposite choice — no `mouse_area` on an
+  unavailable row — is right there because logind's row is permanently dead;
+  here the human needs to learn *why* the row does nothing.
+- **The keyboard is split between two places on purpose.** iced 0.14 has no
+  `iced::keyboard::on_key_press` (the plan named it; it does not exist), and
+  `text_input` *captures* both Enter and Escape. So Enter is
+  `text_input(..).on_submit(Message::Activate)`, and Escape/Up/Down come from
+  `iced::event::listen_with`, which sees captured events too. `listen_with`
+  takes a plain `fn` pointer, not a capturing closure.
+- **Focus at boot** is `iced::widget::operation::focus(INPUT_ID)`, returned
+  from the boot fn as `(App, Task)` — `build_pattern::application`'s `IntoBoot`
+  accepts that pair.
+- **No `disable_clipboard()` here**, unlike the toast stack and the center: the
+  filter field is a place a human will paste into.
+
+**Not visually verified.** The gate is green and the behaviour is covered by
+tests, but nothing has been looked at: `grim` reports this compositor exposes
+no screen-capture protocol, so the visual pass needs a human at the machine
+running `cargo run --bin eclipse-launcher` nested under Hyprland.
+
+Still owed in B4, unchanged and all three blocked on a decision that is not
+mine:
+
+- **SNI tray host** — blocked. Our iced feature set omits `image`, so an SNI
+  `IconPixmap` (raw ARGB) cannot be drawn at all.
+- **Audio** (`libpulse-binding`) and **clipboard** (`smithay-clipboard`) — each
+  a new dependency, so each an ask first.
+
+The branch/PR story is also unchanged: land PR #9 with only its attribution
+commit, move the DE commits onto `comp17-de-userland` off a freshly merged
+`main`, one PR citing `Implements COMP-17 / DP-2 / F-01 §4`.
+
 ## State as of 2026-09-11 (evening) — B4 is half landed, the launcher is next
 
 Branch `ci-attribution-display-name`. `HEAD` is `c9fab92`; all five gate

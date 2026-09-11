@@ -10,6 +10,7 @@ pub mod app;
 pub mod center;
 pub mod clock;
 pub mod conn;
+pub mod launcher;
 pub mod model;
 pub mod toasts;
 pub mod view;

@@ -31,6 +31,12 @@ path = "src/toasts/main.rs"
 name = "eclipse-center"
 path = "src/center/main.rs"
 
+# The launcher: the same tokens and the same service layer once more, spawned
+# by a keybind, it runs one application and exits.
+[[bin]]
+name = "eclipse-launcher"
+path = "src/launcher/main.rs"
+
 [dependencies]
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
 iced_layershell = "0.19.1"
