@@ -9,6 +9,8 @@
 use iced::{Subscription, Task};
 use iced_layershell::to_layer_message;
 
+use eclipse_services::status::{Battery, Bluetooth, Network, Update};
+
 use crate::conn::Conn;
 use crate::model::Snapshot;
 
@@ -28,11 +30,18 @@ pub enum Message {
     Focus(u64),
     /// A window entry was middle-clicked.
     Close(u64),
+    /// The system bus said something about network, bluetooth or battery.
+    Status(Update),
 }
 
 pub struct App {
     pub conn: Conn,
     pub snapshot: Snapshot,
+    pub network: Network,
+    pub bluetooth: Bluetooth,
+    /// `None` on a machine with no battery, and before the first reading. The
+    /// bar draws nothing in both cases rather than inventing a 0%.
+    pub battery: Option<Battery>,
 }
 
 impl Default for App {
@@ -45,7 +54,13 @@ impl App {
     pub fn new() -> Self {
         let mut conn = Conn::new();
         let snapshot = conn.snapshot();
-        App { conn, snapshot }
+        App {
+            conn,
+            snapshot,
+            network: Network::default(),
+            bluetooth: Bluetooth::default(),
+            battery: None,
+        }
     }
 }
 
@@ -55,6 +70,16 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Switch(index) => app.conn.switch_workspace(index),
         Message::Focus(handle) => app.conn.focus_window(handle),
         Message::Close(handle) => app.conn.close_window(handle),
+        // The system bus is not the compositor: fold the reading in and stop,
+        // rather than falling through to a refetch the socket never asked for.
+        Message::Status(update) => {
+            match update {
+                Update::Network(network) => app.network = network,
+                Update::Bluetooth(bluetooth) => app.bluetooth = bluetooth,
+                Update::Battery(battery) => app.battery = battery,
+            }
+            return Task::none();
+        }
         // `to_layer_message` injects the layer-control variants. The bar never
         // sends one — it is anchored for its whole life — but the match must
         // still be total.
@@ -76,6 +101,10 @@ pub fn subscription(_app: &App) -> Subscription<Message> {
         iced::stream::channel(32, async move |mut sender| {
             std::thread::spawn(move || {
                 let mut client = None;
+                // One system-bus connection for all three watchers. A machine
+                // without a system bus simply never sends a status message;
+                // the compositor half of this thread is unaffected.
+                let status = eclipse_services::status::spawn().ok();
                 let mut minute = String::new();
                 loop {
                     if client.is_none() {
@@ -106,6 +135,13 @@ pub fn subscription(_app: &App) -> Subscription<Message> {
                             }
                         }
                     }
+                    if let Some(status) = status.as_ref() {
+                        while let Some(update) = status.try_recv() {
+                            if sender.try_send(Message::Status(update)).is_err() {
+                                return;
+                            }
+                        }
+                    }
                     let now = crate::clock::time();
                     if now != minute {
                         minute = now;
@@ -126,10 +162,7 @@ mod tests {
     use crate::model::{Trust, Window, Workspace};
 
     fn app() -> App {
-        App {
-            conn: Conn::new(),
-            snapshot: Snapshot::default(),
-        }
+        App::new()
     }
 
     #[test]
@@ -154,6 +187,38 @@ mod tests {
         if !a.snapshot.connected {
             assert!(a.snapshot.workspaces.is_empty());
         }
+    }
+
+    /// The status cells come off the system bus, not the control socket, so a
+    /// reading must not drag a compositor refetch along with it.
+    #[test]
+    fn a_status_reading_does_not_touch_the_compositor() {
+        let mut a = app();
+        a.snapshot.connected = true;
+        let _ = update(
+            &mut a,
+            Message::Status(Update::Network(Network::Wifi {
+                id: "House".into(),
+                strength: 49,
+            })),
+        );
+        assert!(a.snapshot.connected);
+        assert_eq!(
+            a.network,
+            Network::Wifi {
+                id: "House".into(),
+                strength: 49
+            }
+        );
+    }
+
+    /// An absent battery and a flat battery are different pictures, and only
+    /// one of them gets a cell.
+    #[test]
+    fn an_absent_battery_clears_the_cell() {
+        let mut a = app();
+        let _ = update(&mut a, Message::Status(Update::Battery(None)));
+        assert!(a.battery.is_none());
     }
 
     #[test]

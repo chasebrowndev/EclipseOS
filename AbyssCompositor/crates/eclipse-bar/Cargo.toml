@@ -23,6 +23,9 @@ iced = { version = "0.14", default-features = false, features = ["wgpu", "advanc
 iced_layershell = "0.19.1"
 eclipse-ui = { path = "../eclipse-ui" }
 eclipse-ipc = { path = "../eclipse-ipc" }
+# The system-status watchers (ADR 0038). Read-only: the bar draws network,
+# bluetooth and battery, and can change none of them.
+eclipse-services = { path = "../eclipse-services" }
 serde_json.workspace = true
 # `clock.rs` formats wall-clock time through `localtime_r`, so that the bar
 # follows the user's zone and DST without carrying a time crate.
