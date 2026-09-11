@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/abyss", "crates/eclipse-ctl", "crates/eclipse-ipc", "crates/eclipse-settings", "crates/eclipse-ui", "crates/wlcs-abyss"]
+members = ["crates/abyss", "crates/eclipse-bar", "crates/eclipse-ctl", "crates/eclipse-ipc", "crates/eclipse-policy-viewer", "crates/eclipse-settings", "crates/eclipse-ui", "crates/wlcs-abyss"]
 
 [workspace.package]
 version = "0.1.0"
