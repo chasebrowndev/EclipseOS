@@ -1,0 +1,30 @@
+# Settings that are not yet reachable from a GUI (F-01 §4, Appendix B).
+#
+# Appendix B says every setting is configurable without a text editor. This
+# file lists the ones that are not there yet. It is a ratchet, exactly like
+# ci/wlcs-skip.txt: entries only ever come out. Adding one needs a reason on
+# the line above it and a milestone that will remove it, and the `gui-coverage`
+# job in gate.yml fails a PR that makes the list longer or swaps one entry for
+# another. A schema key that is not listed here must be settable from the
+# settings app, or the gate goes red.
+#
+# One entry per line, as a schema path (`crates/abyss/src/config/schema.rs`)
+# or a collection node name. Blank lines and `#` comments are ignored by the
+# same filter the wlcs list uses.
+
+# Collections, not scalars. `set_config_value` v1 writes a single scalar value
+# at a dotted path (A6); editing a keybind or a window rule means adding,
+# removing and reordering whole nodes, which is a different write shape and a
+# different editor. Removed by the bind/rule editor work item, after B5.
+bind
+windowrule
+
+# Output configuration is written by the Display pane, but per-output modes,
+# scale and transform arrive as a collection of `output` nodes with the same
+# node-editing problem as above. The Display pane closes stub 15(a) — overscan
+# — in B5; the rest of the node follows the bind/rule editor.
+output
+
+# Workspace pinning is a collection node for the same reason. No milestone of
+# its own: it comes out with the bind/rule editor.
+workspace

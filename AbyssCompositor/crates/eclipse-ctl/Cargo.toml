@@ -14,3 +14,10 @@ path = "src/main.rs"
 [dependencies]
 serde_json.workspace = true
 libc = "0.2"
+kdl.workspace = true
+
+[dev-dependencies]
+# Only so `tests/schema_drift.rs` can compare this crate's copy of the
+# policy-owned key list against the schema it mirrors. Not linked into the
+# shipped binary.
+abyss = { path = "../abyss" }

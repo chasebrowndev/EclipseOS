@@ -171,6 +171,42 @@ jobs:
             echo "no TCB paths touched"
           fi
 
+  gui-coverage:
+    name: GUI coverage ratchet
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # F-01 §4 (Appendix B): every setting reachable without a text editor.
+      # ci/gui-coverage-exceptions.txt lists the ones that are not yet, and
+      # only ever shrinks. Both halves matter: the count check stops the list
+      # growing, and the inclusion check stops a swap that keeps the count the
+      # same while smuggling a new exception in.
+      - name: exception list only shrinks
+        run: |
+          base=$(git merge-base "${{ github.event.pull_request.base.sha }}" HEAD)
+          filter() { grep -vE '^\s*(#|$)' | sort -u; }
+          git show "$base:AbyssCompositor/ci/gui-coverage-exceptions.txt" 2>/dev/null \
+            | filter > /tmp/base.txt || : > /tmp/base.txt
+          filter < ci/gui-coverage-exceptions.txt > /tmp/head.txt
+          echo "base: $(wc -l < /tmp/base.txt)  head: $(wc -l < /tmp/head.txt)"
+          if [ "$(wc -l < /tmp/head.txt)" -gt "$(wc -l < /tmp/base.txt)" ]; then
+            echo "::error::the GUI-coverage exception list grew; it is a ratchet"
+            comm -13 /tmp/base.txt /tmp/head.txt | sed 's/^/  + /'
+            exit 1
+          fi
+          new=$(comm -13 /tmp/base.txt /tmp/head.txt)
+          if [ -n "$new" ]; then
+            echo "::error::new entries on the GUI-coverage exception list"
+            echo "$new" | sed 's/^/  + /'
+            exit 1
+          fi
+          echo "ratchet holds"
+
   spec-trail:
     name: PR cites a spec section
     runs-on: ubuntu-24.04
