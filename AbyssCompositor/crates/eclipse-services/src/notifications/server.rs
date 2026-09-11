@@ -7,6 +7,7 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 
 use zbus::blocking::connection;
+use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::interface;
 use zbus::zvariant::OwnedValue;
 
@@ -138,8 +139,13 @@ pub fn spawn() -> zbus::Result<Notifications> {
     thread::Builder::new()
         .name("eclipse-notifications".into())
         .spawn(move || {
+            // Not `Builder::name()`: it requests the name but throws the reply
+            // away, so an already-owned name comes back as a happily-built
+            // connection that owns nothing. Request it ourselves and insist on
+            // being the primary owner. `DoNotQueue` keeps us from lurking in the
+            // queue, and we never ask for `ReplaceExisting` — stealing the name
+            // from a running daemon is the failure we are guarding against.
             let connection = connection::Builder::session()
-                .and_then(|b| b.name(BUS_NAME))
                 .and_then(|b| {
                     b.serve_at(
                         OBJECT_PATH,
@@ -149,7 +155,13 @@ pub fn spawn() -> zbus::Result<Notifications> {
                         },
                     )
                 })
-                .and_then(connection::Builder::build);
+                .and_then(connection::Builder::build)
+                .and_then(|connection| {
+                    match connection.request_name_with_flags(BUS_NAME, RequestNameFlags::DoNotQueue.into())? {
+                        RequestNameReply::PrimaryOwner => Ok(connection),
+                        _ => Err(zbus::Error::NameTaken),
+                    }
+                });
 
             let connection = match connection {
                 Ok(connection) => {
