@@ -25,6 +25,12 @@ path = "src/main.rs"
 name = "eclipse-toasts"
 path = "src/toasts/main.rs"
 
+# The control center: the same tokens and the same service layer again, with
+# its own lifetime — it is spawned by a keybind and exits when it is done.
+[[bin]]
+name = "eclipse-center"
+path = "src/center/main.rs"
+
 [dependencies]
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
 iced_layershell = "0.19.1"

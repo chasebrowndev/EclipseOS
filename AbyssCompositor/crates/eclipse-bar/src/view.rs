@@ -165,7 +165,7 @@ fn status(app: &crate::app::App) -> Element<'_, Message, Theme> {
 }
 
 /// Percentage at or below which a discharging battery is drawn as a warning.
-const LOW: u8 = 15;
+pub(crate) const LOW: u8 = 15;
 
 fn reading(body: String, live: bool) -> Element<'static, Message, Theme> {
     // Present but idle reads as secondary; absent or off reads as tertiary.
@@ -183,7 +183,7 @@ fn reading(body: String, live: bool) -> Element<'static, Message, Theme> {
 
 /// Signal strength is shown as a number, not as bars: the bar has no icon set,
 /// and "49" is more use than four boxes anyway.
-fn network_text(network: &Network) -> String {
+pub(crate) fn network_text(network: &Network) -> String {
     match network {
         Network::Offline => "offline".to_owned(),
         Network::Wired { .. } => "wired".to_owned(),
@@ -194,7 +194,7 @@ fn network_text(network: &Network) -> String {
 
 /// A powered-down adapter draws nothing. Bluetooth being off is the ordinary
 /// state on most machines and is not news.
-fn bluetooth_text(bluetooth: Bluetooth) -> Option<String> {
+pub(crate) fn bluetooth_text(bluetooth: Bluetooth) -> Option<String> {
     if !bluetooth.powered {
         return None;
     }
@@ -206,7 +206,7 @@ fn bluetooth_text(bluetooth: Bluetooth) -> Option<String> {
 
 /// Charging is a leading `+`, discharging bare, full the word. Time remaining
 /// is deliberately absent: it is the least trustworthy number UPower reports.
-fn battery_text(battery: Battery) -> String {
+pub(crate) fn battery_text(battery: Battery) -> String {
     match battery.state {
         Charge::Charging => format!("+{}%", battery.percent),
         Charge::Full => "full".to_owned(),

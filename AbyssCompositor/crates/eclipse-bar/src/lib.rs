@@ -7,6 +7,7 @@
 //! `u64` the compositor handed us by name.
 
 pub mod app;
+pub mod center;
 pub mod clock;
 pub mod conn;
 pub mod model;
