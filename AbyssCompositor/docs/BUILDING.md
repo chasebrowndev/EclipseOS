@@ -2,8 +2,11 @@
 
 ## Toolchain
 
-Rust **1.85+** (edition 2021, workspace `rust-version = "1.85"`). Install via
-`rustup`. `rustfmt` and `clippy` components are required for CI parity.
+Rust **1.97.0**, pinned in `rust-toolchain.toml` — that exact channel is what
+CI uses, and dev must not drift from it (a bump is its own PR). The workspace's
+`rust-version = "1.85"` is the *minimum* the crates claim to compile against,
+not the toolchain you should build with. Install via `rustup`; `rustfmt` and
+`clippy` components are required for CI parity.
 
 ## System dependencies
 
@@ -56,9 +59,27 @@ During development, run nested inside your existing session (Hyprland works):
 cargo run -- --backend winit
 ```
 
-That opens `abyss` in a window with a winit backend, which is milestone 1's
-target. The DRM/udev backend is selected by running from a TTY without a parent
-compositor.
+That opens `abyss` in a window with a winit backend. The DRM/udev backend is
+selected by running from a TTY without a parent compositor; `--backend headless`
+runs with no display or input hardware at all (COMP-01 §10) and is what the wlcs
+conformance suite drives.
+
+Add `--stats` on any backend to get periodic frame counts, fps, and render and
+submit latency percentiles. **These are logged with no message string**, so
+journald stores them as `F_`-prefixed fields with an empty `MESSAGE` — they are
+invisible to `journalctl -o cat` and to a grep for "fps". Read them with:
+
+```
+journalctl -t abyss -o json | jq 'select(.F_FPS)'
+```
+
+## Running wlcs locally
+
+The `conformance` job in `gate.yml` builds `crates/wlcs-abyss` as a cdylib and
+hands it to wlcs, which drives the headless backend in-process. `ci/wlcs-skip.txt`
+is a ratchet of the tests known to fail — entries may be removed, never added
+without justification. Locally you need wlcs itself installed; without it, the
+job is CI-only.
 
 Quit the nested compositor with **`Super+Shift+Q`** (interim hardcoded binding —
 ADR 0020). `Super+Escape` is reserved for the agent override chord and is never
@@ -136,6 +157,11 @@ rather than killed.
 3. `Ctrl+Alt+F1` returns to the desktop; the compositor on tty2 is suspended in
    turn.
 
+This is the path the 2026-09-10 real-KMS boot took (scripted with `openvt -sw`
+under a `timeout`, as root, with `LIBSEAT_BACKEND=seatd`). Wrapping the run in
+`timeout -s TERM 60` is worth doing on a first attempt: it bounds the damage if
+the compositor wedges while holding DRM master.
+
 Preconditions: `seatd.service` active *or* logind (libseat prefers logind, in
 which case the `seat` group is not needed — `video` and `input` are). On
 NVIDIA, `nvidia-drm.modeset=1`; recent `nvidia-open-dkms` defaults it on, and
@@ -192,8 +218,9 @@ Notes learned the hard way:
   `/dev/dri/card0` but **no render node**, so `backend/gpu.rs` finds nothing to
   render on. `virtio-gpu` exposes both a card and a render node; mesa still
   falls back to `llvmpipe` behind it, which is fine for correctness testing and
-  useless for performance testing. The DRM backend runs recorded in
-  `docs/STATUS.md` were all under `virtio-gpu`.
+  useless for performance testing. Every DRM run recorded in `docs/STATUS.md`
+  before 2026-09-10 was under `virtio-gpu`; the first real-KMS boot (NVIDIA,
+  `nvidia-open-dkms`) is written up in that file's "Real-KMS boot record".
 - The QEMU monitor's `mouse_move` / `mouse_set` do **not** reach the guest with
   `-display none`, with or without `-device usb-tablet`. To test pointer
   handling, create a synthetic device inside the guest with `/dev/uinput`

@@ -50,8 +50,14 @@ docs: record focus-follows-mouse default as ADR 0019
   when work is delegated.
 - **If you change behavior a doc specifies, update the doc in the same PR**, or
   explain why not.
-- CI must be green: `cargo fmt --check`, `cargo clippy -D warnings`,
-  `cargo build`, `cargo test`, `cargo deny check`.
+- CI must be green. `gate.yml` runs five jobs, all blocking:
+  - `gate` — `cargo fmt --check`, `cargo clippy -D warnings`, `cargo build`,
+    `cargo test`.
+  - `conformance` — wlcs against the headless backend, ratcheted by
+    `ci/wlcs-skip.txt`.
+  - `supply-chain` — `cargo deny check advisories bans licenses sources`.
+  - `tcb-review` — owner review enforcement on TCB paths.
+  - `spec-trail` — rejects a PR body with no `Implements COMP-NN §N` citation.
 
 ## Review policy
 

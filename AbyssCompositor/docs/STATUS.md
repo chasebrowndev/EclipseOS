@@ -1,6 +1,6 @@
 # Abyss — implementation status
 
-Last updated: 2026-09-08.
+Last updated: 2026-09-10.
 
 **Spec baseline: v2 + Appendix A applied (2026-09-08).** The amendment set
 that previously sat unapplied at the end of VOL2 is now merged inline;
@@ -16,7 +16,9 @@ the progress record, and per F-07 §7 `docs/` is source of truth once code
 exists.
 
 Everything below was re-verified against the code on 2026-09-07, not against
-the previous revision of this file.
+the previous revision of this file. The 2026-09-10 revision folds in the first
+**real-KMS boot** (see "Real-KMS boot record" below), which retires the single
+largest unknown this document has carried since it was written.
 
 ---
 
@@ -44,13 +46,19 @@ directories named in the root `CLAUDE.md` module map do not exist on disk. The
 one exception is frame-level capture redaction, which milestones 9d and 22
 specify but which landed early inside milestone 8.
 
-The single thing standing between the tree and Phase 1 exit is that the DRM
-backend has never run on real KMS. Everything else in Phase 1 is either done
-or a known, listed gap.
+**The DRM backend now runs on real KMS.** On 2026-09-10 `abyss --backend drm`
+booted on this machine's own hardware (RTX 4060 Ti, `nvidia-open-dkms`), lit
+both connected panels on their native modes, ran a real client on them and took
+live keyboard input. That closes the question the previous revisions of this
+file were organised around. What remains between the tree and Phase 1 exit is
+now concrete and enumerable: the *multi-monitor* half of milestone 3's gate
+(three panels, hotplug, dock/undock), milestone 4's gate (Firefox/mpv, scanout
+actually taken, COMP-14 budgets), milestone 6's gate (suspend/resume, lid), and
+9c–9f.
 
-**Open vs. not, as of 2026-09-08.** Closed and needing nothing further:
-milestones 1, 2, 5, 7, 9, 9a, 9b; spec gaps 1, 2, 3, 4 and 5. Code complete
-but waiting on hardware that does not exist in this session: milestones 3, 4
+**Open vs. not, as of 2026-09-10.** Closed and needing nothing further:
+milestones 1, 2, 5, 7, 9, 9a, 9b; spec gaps 1, 2, 3, 4 and 5. Partly hardware-verified, with the rest of the
+gate still waiting on hardware this box does not have: milestones 3, 4
 and 6, plus the multi-GPU half of COMP-01 §11's test plan — all listed under
 "Deferred hardware verification", none of them a defect. Genuinely open work
 that can be done today: an `ext-foreign-toplevel-list` consumer for milestone
@@ -69,8 +77,8 @@ event, which has no source to fire from until milestone 11 lands.
 |---|---|---|---|
 | 1 | winit backend; one xdg toplevel; keyboard + pointer; quit binding | **done** | `backend/winit.rs`, `protocols/standard/xdg_shell.rs`, `input/`. Gate run: terminal clients open, type and close cleanly nested under Hyprland (`WAYLAND_DISPLAY=wayland-1 ./target/debug/abyss --backend winit`). |
 | 2 | Config (KDL), dwindle + master layouts, workspaces, floating, bindings, layer-shell | **done** | `config/mod.rs` (1027 lines, inotify hot-reload, ADR 0016), `shell/` layouts, `protocols/standard/layer_shell.rs`. Gate run nested: layer-shell bar + launcher + notifier clients run; layouts usable by hand. Config blocks `decoration`, `animations`, `input` and `xwayland` all parse and validate; `decoration` and `animations` now apply in full (milestone 9b), `windowrule` applies except `fullscreen` and `launching-principal` (stub 7), and `xwayland` is still parsed and ignored. |
-| 3 | DRM backend, multi-output, hotplug, fractional scale, output persistence | **code complete, gate never run** | `backend/drm.rs` (1013 lines), `outputs/` (hotplug, layout, persistence), `protocols/standard/fractional_scale.rs`. Gate needs three physical monitors on a real TTY plus a dock/undock cycle. Cannot be run from inside the nested session this work happens in; requires a VT login. |
-| 4 | dmabuf + explicit sync + direct scanout + VRR; damage tracking complete | **code complete, gate never run** | `protocols/standard/dmabuf.rs`, `drm_syncobj.rs` (registered only when the driver reports `supports_syncobj_eventfd`, else a warning and no global), `render/` damage + `scanout_candidate` (`backend/drm.rs:856`), VRR via `VrrSupport::Supported` + per-output `vrr` config. Gate needs Firefox and mpv on real KMS and the COMP-14 frame benchmarks, which have never been collected. |
+| 3 | DRM backend, multi-output, hotplug, fractional scale, output persistence | **runs on real KMS; gate partially met** | `backend/drm.rs`, `outputs/` (hotplug, layout, persistence), `protocols/standard/fractional_scale.rs`. **Booted on real KMS 2026-09-10**: two connectors, each on its own native mode (HDMI-A-1 1360x768 on crtc 198/plane 52; DP-3 1280x720 on crtc 390/plane 244), a kitty client rendered and typed into, `grim` capture 2640x768. Multi-output composition and per-output modeset are therefore verified. **Still unmet:** three physical monitors, a hotplug event, and a dock/undock cycle restoring a saved layout — this box has two panels and no dock. |
+| 4 | dmabuf + explicit sync + direct scanout + VRR; damage tracking complete | **code complete, gate never run** | `protocols/standard/dmabuf.rs`, `drm_syncobj.rs` (registered only when the driver reports `supports_syncobj_eventfd`, else a warning and no global), `render/` damage + `scanout_candidate` (`backend/drm.rs:856`), VRR via `VrrSupport::Supported` + per-output `vrr` config. Gate needs Firefox and mpv on real KMS and the COMP-14 frame benchmarks, which have never been collected. The 2026-09-10 KMS boot produced the first real frame timings from any backend (`--stats`: 465 frames, ~1 fps idle rising to 38.1 fps under input, render p50 ~500 us, submit p50 ~166 us) — that is the damage tracker and the submit path behaving, not a COMP-14 measurement, and direct scanout was not confirmed taken. |
 | 5 | Clipboard, primary selection, data-control, DnD, IME | **done** | `data_device.rs`, `primary_selection.rs`, `data_control.rs` (allowlisted per ADR 0027), `text_input.rs`, `input_method.rs`. Gate run nested: copy/paste across clients including primary; `wl-clipboard` via data-control honours the allowlist. |
 | 6 | Session lock, idle, DPMS, power, lid | **code complete, gate never run** | `session_lock.rs`, `idle_notify.rs`, `idle_inhibit.rs`, `output_power.rs`, `outputs/power.rs`. Lock/unlock is exercised nested; suspend/resume and lid handling need real hardware. `lid-close "suspend"` now spawns `systemctl suspend` (`outputs/power.rs`), untested for want of a lid. |
 | 7 | XWayland | **done, with two spec deviations** | `xwayland/mod.rs` (167 lines) + `xwayland_shell.rs`; rootless, one untrusted trust domain (ADR 0026). Gate run nested with X11 clients. Deviations: started **eagerly at compositor start**, not lazily, and without `-noTouchPointerEmulation` / MIT-SHM off — smithay 0.7.0's `XWayland::spawn` exposes no lazy entry point and no flag parameter (verified in the vendored source, `src/xwayland/xserver.rs:112`). Both are blocked upstream, not oversights. |
@@ -82,7 +90,7 @@ event, which has no source to fire from until milestone 11 lands.
 | 9d | Node-level redaction, fail-closed on stale/absent tree | **not started** | `render/capture.rs` is surface-level only. Implementable now: COMP-02 §7 defines the absent-tree case, so the fail-closed arm needs no semantic tree. |
 | 9e | Window-rules engine; `class_source`, `irreversible_capable` | **partially landed** | `shell/rules.rs` matches at map time and re-evaluates on commit; all COMP-05 §4 actions and matchers apply except the `fullscreen` action and the `launching-principal` matcher (stub 7). Neither `class_source` nor `irreversible_capable` exists in `shell/`. |
 | 9f | Benchmark harness (COMP-14 §2 + A-14 budgets) | **not started** | No harness. Milestone 4's gate has cited COMP-14 budgets since v0.1 with nothing able to produce them. |
-| — | **PHASE 1 EXIT** — 14 consecutive days as the only compositor on real hardware | **not started** | Blocked on milestone 3's gate and on 9c–9f. Abyss is now *launchable* from any greeter: `abyss --session` plus `dist/abyss.desktop`, `dist/abyss-session`, `dist/abyss-session.target` (ADR 0032). The DRM backend has run only under VM/virtio-gpu; a real KMS boot has never happened, and COMP-01 §10 treats VM/virtio-gpu as a `drm` path, so that boot satisfies none of the gates of 3, 4 or 6. |
+| — | **PHASE 1 EXIT** — 14 consecutive days as the only compositor on real hardware | **not started** | Blocked on the rest of milestone 3's gate, on 4 and 6, and on 9c–9f. Abyss is now *launchable* from any greeter: `abyss --session` plus `dist/abyss.desktop`, `dist/abyss-session`, `dist/abyss-session.target` (ADR 0032). The DRM backend has now booted on real KMS (2026-09-10) as well as under VM/virtio-gpu, but that boot was launched by hand on a VT via `openvt`, not from a greeter, and ran for 60 s under a `timeout`. Nobody has yet used abyss as their session for a whole day, let alone fourteen. |
 
 ---
 
@@ -118,7 +126,7 @@ across 9d/17/22, 14→15, 15→16, 16→22, 17→24, 18→25. Milestones 10, 12,
 
 | Spec | Where the code is | State |
 |---|---|---|
-| COMP-01 backends | `crates/abyss/src/backend/{mod,winit,drm,gpu}.rs` | winit exercised; DRM unverified on hardware. `mod.rs` holds the trait; nothing outside it touches winit/DRM/libinput/GBM types. `gpu.rs` is §4's device ranking, unit-tested over synthetic candidates and observable live with `abyss --list-gpus`. |
+| COMP-01 backends | `crates/abyss/src/backend/{mod,winit,drm,gpu}.rs` | winit exercised; headless exercised by wlcs; DRM verified on real KMS 2026-09-10 (two outputs, native modes, live client). `mod.rs` holds the trait; nothing outside it touches winit/DRM/libinput/GBM types. `gpu.rs` is §4's device ranking, unit-tested over synthetic candidates and observable live with `abyss --list-gpus`. |
 | COMP-02 render | `crates/abyss/src/render/{mod,capture}.rs` | Damage tracking, direct-scanout candidate selection, frame-level redaction, capture indicator. Region-level redaction absent. |
 | COMP-03 outputs | `crates/abyss/src/outputs/{mod,power}.rs` | Hotplug, layout, persistence, per-output rules (mode/position/scale/transform/enabled/vrr/lid-close). No virtual outputs. |
 | COMP-04 input | `crates/abyss/src/input/mod.rs` (327 lines) | One human seat, keyboard/pointer, VT-switch intercept, bindings. No agent seats, no injection, no override chord. |
@@ -131,7 +139,7 @@ across 9d/17/22, 14→15, 15→16, 16→22, 17→24, 18→25. Milestones 10, 12,
 | COMP-11 policy | — | Does not exist. |
 | COMP-12 audit | — | Does not exist. |
 | COMP-13 human IPC + config | `crates/abyss/src/ipc/`, `crates/abyss/src/config/`, `crates/eclipse-ctl` | Socket, gate table, 17 methods, event stream, KDL parse + hot-reload. |
-| COMP-14 performance | — | No benchmark harness. The §COMP-14 frame budgets referenced by milestone 4's gate have never been measured. |
+| COMP-14 performance | — | No benchmark harness. The §COMP-14 frame budgets referenced by milestone 4's gate have never been measured. `--stats` now reports frames/fps and render/submit percentiles from a live KMS run, which is a diagnostic, not the harness 9f specifies. |
 | COMP-15 testing | `cargo test --workspace`, `.github/workflows/gate.yml` | 85 tests, all passing, now enforced by CI. Unit-level. Zero of the twelve COMP-15 §2 security suites exist. No compat matrix. |
 | COMP-16 milestones | this file | — |
 
@@ -241,16 +249,108 @@ macros anywhere in the workspace.
 14. **No `crates/policyd`, `crates/agentd`, `crates/sandbox`** — the TCB crates
     named in the root `CLAUDE.md` do not exist. The module map in that file
     describes the intended end state, not the tree.
+15. **Overscan compensation has no frontend.** The backend is complete
+    (COMP-03 §2): `outputs/overscan.rs` (per-edge insets, clamping, the
+    inverse map), `render/overscan.rs` (the scale-and-pad wrap plus the
+    corner markers), the wrap wired into both `backend/drm.rs` and
+    `backend/winit.rs`, the absolute-pointer inverse in `input/mod.rs`, the
+    `calibrate.rs` seat-grabbing state machine, per-panel persistence keyed
+    by EDID identity with the hand-written config winning over saved state,
+    and both IPC methods (`set_output` with `overscan`, `calibrate_output`
+    with `start`/`commit`/`cancel`) plus the `eclipse-ctl output ID overscan`
+    and `eclipse-ctl output ID calibrate` verbs. **What is missing is UI**,
+    and it is deliberately batched with the rest of the frontend work:
+    - a settings-GUI panel that can start calibration on *any* output the
+      user picks, including one plugged in long after first boot;
+    - a first-boot/setup step that *offers* calibration rather than forcing
+      it — the user's explicit call.
+    Nothing is cropped by this feature at any point: the scene is scaled
+    down into an inset rect and the margins are left black. The calibration
+    overlay is compositor-drawn, not a layer-shell client, because trusted
+    UI has to be.
+
+---
+
+## Real-KMS boot record
+
+**2026-09-10.** `abyss --backend drm --stats` booted on this machine's own
+hardware for the first time — RTX 4060 Ti, `nvidia-open-dkms`, launched on a
+free VT with `openvt -sw` as root, `LIBSEAT_BACKEND=seatd`. Two runs, both
+successful. Harness: `/tmp/abyss-kms/run.sh`.
+
+What it proved:
+
+- The libseat session, DRM master acquisition, GBM/EGL/GLES setup, atomic
+  modeset, page-flip-driven frame scheduling and libinput keyboard path all
+  work on real KMS, on the NVIDIA open driver.
+- Both connectors came up on their **own** native modes and stayed there —
+  HDMI-A-1 (connector 829) at 1360x768 on crtc 198 / plane 52, DP-3
+  (connector 832) at 1280x720 on crtc 390 / plane 244. `Setting new mode`
+  fires once per output and sticks.
+- A kitty client mapped, rendered, and accepted live keyboard input: the
+  second run's screenshot shows `ls` typed at the prompt with its output.
+  `grim` exited 0 with a 2640x768 capture spanning both outputs.
+- First frame timings from any backend: 465 frames over the run, ~1.0 fps
+  idle rising to 38.1 fps while typing, render p50 ~500 us, submit p50
+  ~166 us. The variance is damage tracking working, not a stall.
+
+### The bug it found and fixed (COMP-03 §2/§4, commit `e024947`)
+
+Both panels on this box advertise **byte-identical EDIDs**. Output identity is
+derived from EDID, and `persist::set_key()` dedupes, so the pair collapsed into
+a single `SavedOutput`: the second output was restored onto the first one's
+saved mode. The `DrmCompositor` surface was then built for one mode while the
+smithay `Output` claimed another, so the primary plane got `SRC_W/H` from one
+and `CRTC_W/H` from the other. **NVIDIA primary planes cannot scale**, so every
+atomic commit returned `EINVAL` and the backend retried forever — a log that
+grew to 2.4 MB in 60 s. The fix keeps the scanout mode and the output mode in
+sync via `use_mode`, so `src == dst` on the primary plane. After it, the same
+run's deduped log is ~11 KB and the only repeated line is `[x4] config loaded`.
+
+### Two logging traps, both of which have cost a session
+
+- `stats::maybe_report()` calls `tracing::info!(frames, fps, ...)` with **no
+  message string**. The journald layer stores those as `F_`-prefixed fields
+  (`F_FPS`, `F_FRAMES`, `F_RENDER_P50_US`, `F_SUBMIT_P50_US`) with an *empty*
+  `MESSAGE`, so they are invisible to `journalctl -o cat` and to any grep for
+  "fps". Read them with
+  `journalctl -t abyss -o json | jq 'select(.F_FPS)'`. Their absence from a
+  plain log dump is **not** evidence that no frames were submitted.
+- `"queueing frame"` (`backend/drm.rs:1083`) is a `warn!` on the **error**
+  branch only. A silent journal there means every queue succeeded.
+
+### Cosmetic issues seen during the boot, all still open
+
+None of these stopped the compositor; all are worth fixing before daily-driving.
+
+- `EINVAL` when dropping DRM master on VT-switch-away.
+- `ENOENT` reading a mode property blob just after a connector add.
+- Duplicate modes in the connector mode list (HDMI-A-1 lists 1920x1080@60 and
+  1280x720@60 twice; DP-3 lists 1920x1080@60 and 640x480@60 twice). *Not* an
+  ambiguous-PREFERRED bug: `underscan_probe` shows exactly one PREFERRED mode
+  per connector. The duplication is the real source of the earlier report.
+- `vram=256MiB` in the GPU probe is the PCI BAR size, not real VRAM
+  (already recorded as spec gap 2, COMP-01 §4).
+- `refresh_mhz` is truncated rather than rounded.
 
 ---
 
 ## Deferred hardware verification
 
 None of these can run inside the nested dev session; each needs a real TTY
-login on the target machine.
+login on the target machine. The first such login happened on 2026-09-10 and
+retired part of this list — see "Real-KMS boot record" below for what it
+actually covered.
 
-- **Milestone 3 gate** — three monitors, hotplug, dock/undock restoring saved
-  layouts.
+**Done as of 2026-09-10:** the DRM/KMS boot itself (libseat session, DRM
+master, GBM/EGL, atomic modeset, page flips, libinput keyboard, VT switch back
+out), multi-output composition across two connectors on their own native modes,
+and output persistence writing and re-reading `outputs.kdl`.
+
+Still deferred:
+
+- **Milestone 3 gate, remainder** — three monitors, hotplug, dock/undock
+  restoring saved layouts. Two panels and no dock on this box.
 - **Milestone 4 gate** — Firefox and mpv on KMS; direct scanout actually taken;
   explicit sync path exercised on a driver that reports syncobj eventfd
   support; COMP-14 frame benchmarks collected for the first time.
@@ -273,11 +373,14 @@ login on the target machine.
 
 In rough order:
 
-1. **Boot it on real KMS.** Install `dist/abyss.desktop` to
-   `/usr/share/wayland-sessions/`, `dist/abyss-session` to `/usr/bin/`, the
-   target to the user's systemd units, and log in from the greeter. Nothing
-   about this path has ever executed. Everything below assumes it works.
-2. **Milestone 3 and 4 gates**, which are the same session as step 1.
+1. **Boot it from the greeter.** The compositor itself now starts on real KMS
+   and paints (2026-09-10), but only when launched by hand on a VT. The
+   session path — `dist/abyss.desktop` in `/usr/share/wayland-sessions/`,
+   `dist/abyss-session` in `/usr/bin/`, the target in the user's systemd
+   units, `abyss --session` doing the D-Bus/systemd handoff — has still never
+   executed end to end from greetd.
+2. **Milestone 3, 4 and 6 gates**, most of which want the same session as
+   step 1 plus hardware this box does not have (a third panel, a dock, a lid).
 3. **Exercise the milestone 9a protocols against real clients** — the globals
    are advertised and the handlers are written, but a third-party bar over
    `ext_foreign_toplevel_list` and mouse-look in a Proton game over
@@ -445,7 +548,7 @@ suite to put in it:
 
 | Gate | Required by | Blocked on |
 |---|---|---|
-| `wlcs` headless conformance | COMP-15 §1 | harness and the blocking `conformance` job exist; the suite runs green off-CI (775 passed / 308 skipped / 0 failed at `ulimit -n 1024`, against 65 skip entries; of the skips only foreign-toplevel's 30 are a real gap, the rest being dead protocols and wlcs self-tests); awaiting a green run on CI’s llvmpipe runner |
+| `wlcs` headless conformance | COMP-15 §1 | harness and the blocking `conformance` job exist; the suite runs green off-CI (775 passed / 308 skipped / 0 failed at `ulimit -n 1024`, against 65 skip entries; of the skips only foreign-toplevel's 30 are a real gap, the rest being dead protocols and wlcs self-tests); the first CI run of the job is in flight on PR #6 and has not yet reported |
 | `cargo-fuzz` smoke | COMP-15 §3 | proto crates existing |
 | Redaction suite | COMP-15 §2 | suite does not exist |
 | Seat isolation, trusted UI, enforcement, scope leakage, audit completeness, X11 posture | COMP-15 §2 | suites do not exist |

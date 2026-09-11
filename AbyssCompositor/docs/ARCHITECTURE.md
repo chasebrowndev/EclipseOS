@@ -19,6 +19,7 @@ decisions/            ADRs (F-08 format)
 crates/
   abyss/             compositor                       [TCB]
   eclipse-ctl/        human CLI over the COMP-13 IPC socket
+  wlcs-abyss/         wlcs conformance cdylib, drives the headless backend
   policyd/            policy + audit daemon            [TCB]   (not yet)
   policy-eval/        shared evaluator, linked by both [TCB]   (not yet)
   agentd/             agent gateway                            (not yet)
@@ -33,8 +34,8 @@ fuzz/                 cargo-fuzz targets
 bench/                COMP-14 benchmarks
 ```
 
-Only `crates/abyss` and `crates/eclipse-ctl` exist today (see
-`docs/STATUS.md`). TCB crates get a line-by-line owner review
+Only `crates/abyss`, `crates/eclipse-ctl` and `crates/wlcs-abyss` exist today
+(see `docs/STATUS.md`). TCB crates get a line-by-line owner review
 on every change (F-07 §4).
 
 ## Licensing split (F-05 §3, ADR 0005)
@@ -59,7 +60,8 @@ SPDX header naming which.
 
 | Module | Spec | Responsibility |
 |---|---|---|
-| `backend/` | COMP-01 | Session, devices, presentation, behind one trait. `winit.rs` for nested dev; DRM/udev/libinput for real sessions. Nothing outside this module names a backend type. |
+| `backend/` | COMP-01 | Session, devices, presentation, behind one trait. `winit.rs` for nested dev; `drm.rs` (DRM/udev/libinput) for real sessions;
+`headless.rs` (COMP-01 §10) for wlcs and tests, with no display or input hardware at all. Nothing outside this module names a backend type. |
 | `render/` | COMP-02 | Damage tracking, composition, direct scanout, explicit sync, fractional scaling, capture redaction, effects. |
 | `outputs/` | COMP-03 | Output discovery and hotplug, layout, persistence, virtual outputs for agent workspaces, DPMS/power. |
 | `input/` | COMP-04 | Seats (one human, one per agent), libinput plumbing, xkb, focus arbitration, agent injection, atomic batches, the reserved override chord, keybindings. |

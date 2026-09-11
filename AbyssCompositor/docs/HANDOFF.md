@@ -375,8 +375,10 @@ differs on every iteration, which defeated whole-line dedupe.
   VT-switch-away.
 - `Failed to destroy old mode property blob: No such file or directory` after
   each connector add.
-- Both connectors report `ModeTypeFlags(PREFERRED)`; mode selection deserves a
-  look. `vram=256MiB` on a 4060 Ti is the PCI BAR size, not real VRAM.
+- Duplicate entries in the connector mode list; mode selection deserves a look.
+  (Corrected 2026-09-10 by `underscan_probe`: only *one* mode reports
+  PREFERRED per connector — duplicates, not flag ambiguity.)
+  `vram=256MiB` on a 4060 Ti is the PCI BAR size, not real VRAM.
 - `refresh_mhz` truncation feeding the advertised mode list.
 
 **Notes for whoever picks this up:**
@@ -425,5 +427,58 @@ succeeded.
 **Next:**
 - Open the PR for this branch, `Implements COMP-03 §2/§4`.
 - Open bugs from the previous entry are all still open and all cosmetic: the
-  drop-master EINVAL, the mode-blob ENOENT, both connectors claiming PREFERRED,
+  drop-master EINVAL, the mode-blob ENOENT, duplicate connector modes,
   `vram=256MiB` being the PCI BAR, `refresh_mhz` truncation.
+
+---
+
+## 2026-09-10 — probe results (Task 1) and the KDL round-trip spike (Task 4)
+
+### Overscan: kernel-side compensation is NOT available
+
+`cargo run --example underscan_probe` against `/dev/dri/card1` (nvidia-open,
+RTX 4060 Ti). Four connectors — DP-1 (disconnected), DP-2 (disconnected),
+HDMI-A-1 (connected), DP-3 (connected) — expose exactly nine properties each:
+EDID, DPMS, link-status, non-desktop, TILE, Colorspace, HDR_OUTPUT_METADATA,
+dithering mode, vrr_capable.
+
+**No `underscan`, `underscan hborder` or `underscan vborder` on any connector.**
+
+Consequences:
+
+- The DP-1 logical-geometry inset system **cannot be deleted**. Overscan
+  compensation has to be done by letterbox compositing in the render path.
+- `vrr_capable = false` on all four connectors. VRR is not testable on this
+  hardware; it stays on the deferred-hardware list alongside the multi-monitor,
+  dock, lid and second-GPU Phase 1 gates.
+- Both panels report a bogus 1600mm x 900mm physical size from EDID — worth
+  remembering before any DPI-derived scaling lands.
+
+### KDL round-trip: the write API is safe to build
+
+Spike against `kdl` 6.7.1 (KDL v2), throwaway. Parse → `to_string()` is
+**byte-identical** (`cmp -s` clean) across own-line `//`, trailing `//`,
+`/* */`, `/-` slashdash on nodes/properties/child nodes, mixed 2/4/6/8-space
+indentation, aligned values and double blank lines. A single value edit three
+levels deep produced a one-line diff and nothing else. "The settings GUI writes
+your config file" (DP-5) survives contact: no span surgery, no override file,
+no sentinel needed.
+
+API traps for the real implementation:
+
+1. **`set_value()` alone is a silent no-op.** `impl Display for KdlEntry` writes
+   `format.value_repr` — the original source text — when a format is present, so
+   a parsed document renders the *old* value with no error. Always pair it with
+   `entry.clear_format()` (or set `format_mut().unwrap().value_repr`). Wrap this
+   in one set-value-and-repr helper or the bug is guaranteed.
+2. `KdlValue: From<i128>`, not `From<i64>` — `1920i64` does not compile.
+3. **Never call `autoformat()` on a user's file.** It strips blank lines and
+   end-of-line comments, reflows block-comment interiors, normalizes
+   indentation, and unquotes bare-identifier-valid strings
+   (`output "eDP-1"` → `output eDP-1`).
+4. `get_mut(name)` returns only the *first* node of that name. Multiple `output`
+   nodes need `nodes_mut().iter_mut()` filtered on the first entry's value.
+5. `span()` is invalidated after mutation — re-resolve, don't cache.
+6. The `query`/`query_all` API is not available in 6.7.1.
+7. Booleans must be written `#true` / `#false` (spec gap 5): bare `true` and
+   `false` are identifiers in KDL v2.
