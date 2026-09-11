@@ -15,6 +15,7 @@
 //! and exits; hot-reload ([`watch::reload_now`]) keeps the last good config and
 //! emits a `config-error` IPC event. Never half-apply.
 
+pub mod edit;
 pub mod watch;
 
 use std::path::{Path, PathBuf};
