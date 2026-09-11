@@ -553,6 +553,18 @@ impl std::fmt::Display for ConfigError {
     }
 }
 
+/// One config file and the half of the surface it is allowed to set.
+///
+/// COMP-13 §1.3: `abyss.kdl` holds everything the human may retune freely;
+/// `policy.kdl` holds the security surface (`schema::Owner::Policy`). Keeping
+/// them apart is what lets the config GUI hold a write capability for one and
+/// not the other, and what lets a deployment ship policy.kdl root-owned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Source {
+    pub path: PathBuf,
+    pub owner: schema::Owner,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub general: General,
@@ -575,7 +587,7 @@ pub struct Config {
     pub window_rules: Vec<WindowRule>,
     /// Files this config was built from, in load order. The hot-reload
     /// watcher watches these and the directories that would contain them.
-    pub sources: Vec<PathBuf>,
+    pub sources: Vec<Source>,
     /// `--config <path>`, if one was given. Reload must honour it rather than
     /// falling back to the search path.
     pub explicit: Option<PathBuf>,
@@ -584,7 +596,7 @@ pub struct Config {
     pub errors: Vec<ConfigError>,
     /// The file being parsed, and its text, so `reject` can turn a KDL span
     /// into `file:line:col`. Cleared when the load finishes.
-    cur: Option<(PathBuf, String)>,
+    cur: Option<(Source, String)>,
 }
 
 impl Default for Config {
@@ -767,8 +779,21 @@ impl Config {
     /// total (COMP-13 §1.2): any refusal lands in `errors`, and the caller
     /// decides — startup exits, hot-reload keeps the last good config.
     pub fn load(explicit: Option<&Path>) -> Self {
-        let files: Vec<PathBuf> = match explicit {
-            Some(p) => vec![p.to_path_buf()],
+        // An explicit `--config` names one abyss.kdl; policy stays on the
+        // search path, since a flag must not be able to swap the policy file.
+        let files: Vec<Source> = match explicit {
+            Some(p) => {
+                let mut v = vec![Source {
+                    path: p.to_path_buf(),
+                    owner: schema::Owner::Abyss,
+                }];
+                v.extend(
+                    search_path()
+                        .into_iter()
+                        .filter(|s| s.owner == schema::Owner::Policy),
+                );
+                v
+            }
             None => search_path(),
         };
         let mut cfg = Config {
@@ -778,12 +803,12 @@ impl Config {
         let mut binds_from_file = Vec::new();
         let mut any = false;
         for f in &files {
-            let text = match std::fs::read_to_string(f) {
+            let text = match std::fs::read_to_string(&f.path) {
                 Ok(t) => t,
                 Err(e) => {
-                    if explicit.is_some() {
+                    if explicit.is_some() && f.owner == schema::Owner::Abyss {
                         cfg.errors.push(ConfigError {
-                            file: f.clone(),
+                            file: f.path.clone(),
                             line: 0,
                             col: 0,
                             message: format!("config unreadable: {e}"),
@@ -813,7 +838,7 @@ impl Config {
                     };
                     let (line, col, snippet, span_len) = locate(&text, off.0, off.1);
                     cfg.errors.push(ConfigError {
-                        file: f.clone(),
+                        file: f.path.clone(),
                         line,
                         col,
                         message,
@@ -835,7 +860,7 @@ impl Config {
         if !any {
             tracing::info!("no config found, using built-in defaults");
         } else {
-            tracing::info!(sources = ?cfg.sources, binds = cfg.binds.len(), "config loaded");
+            tracing::info!(sources = ?cfg.sources.iter().map(|s| &s.path).collect::<Vec<_>>(), binds = cfg.binds.len(), "config loaded");
         }
         cfg
     }
@@ -879,6 +904,28 @@ impl Config {
         }
     }
 
+    /// COMP-13 §1.3: refuse a key that belongs in the other file.
+    ///
+    /// Both directions. A policy key in `abyss.kdl` is the one that matters —
+    /// `abyss.kdl` is writable by the config GUI and `policy.kdl` is not, so
+    /// accepting it there would be a way around the write gate. The reverse is
+    /// refused too, so `policy.kdl` stays small enough to read.
+    ///
+    /// The message names the file the key does belong in; a refusal the human
+    /// cannot act on is a worse bug than the one it reports.
+    fn owned_here(&mut self, node: &KdlNode, what: &str, owner: schema::Owner) -> bool {
+        let Some((src, _)) = &self.cur else { return true };
+        if src.owner == owner {
+            return true;
+        }
+        let dest = match owner {
+            schema::Owner::Abyss => "abyss.kdl",
+            schema::Owner::Policy => "policy.kdl",
+        };
+        self.reject(node, format!("{what} belongs in {dest}, not in this file"));
+        false
+    }
+
     fn reject(&mut self, node: &KdlNode, message: impl Into<String>) {
         let message = message.into();
         // Underline the node name only; the node's own span runs to the end of
@@ -886,7 +933,7 @@ impl Config {
         let (file, line, col, snippet, span_len) = match &self.cur {
             Some((f, text)) => {
                 let (line, col, snippet, len) = locate(text, node.span().offset(), node.name().value().len());
-                (f.clone(), line, col, Some(snippet), len)
+                (f.path.clone(), line, col, Some(snippet), len)
             }
             None => (PathBuf::new(), 0, 0, None, 0),
         };
@@ -903,7 +950,16 @@ impl Config {
 
     fn apply(&mut self, doc: &KdlDocument, binds: &mut Vec<Bind>) {
         for node in doc.nodes() {
-            match node.name().value() {
+            let name = node.name().value();
+            // Whole-node ownership, before the node is parsed at all. `misc`
+            // and `windowrule` are mixed and check themselves, one key or one
+            // action at a time.
+            if let Some(owner) = schema::node_owner(name) {
+                if !self.owned_here(node, &format!("{name:?}"), owner) {
+                    continue;
+                }
+            }
+            match name {
                 "general" => self.apply_general(node),
                 "bind" => match parse_bind(node) {
                     Ok(b) => binds.push(b),
@@ -1275,6 +1331,14 @@ impl Config {
         let mut words = action.split_whitespace();
         let verb = words.next().unwrap_or_default();
         let param = words.next();
+        // Ownership is per-action here, not per-node: `float` is cosmetic,
+        // `sensitivity` and `no-agent` are the security surface. Refused in
+        // both directions, same as a whole node.
+        if let Some(owner) = schema::rule_owner(verb) {
+            if !self.owned_here(node, &format!("windowrule {verb:?}"), owner) {
+                return;
+            }
+        }
         let action = match (verb, param) {
             ("float", None) => RuleAction::Float,
             ("tile", None) => RuleAction::Tile,
@@ -1426,6 +1490,9 @@ impl Config {
         for n in children.nodes() {
             match n.name().value() {
                 "scripted-input" => {
+                    if !self.owned_here(n, "\"misc.scripted-input\"", schema::Owner::Policy) {
+                        continue;
+                    }
                     self.misc.scripted_input = arg(n).and_then(KdlValue::as_bool).unwrap_or(false);
                 }
                 "render-device" => match arg(n).and_then(KdlValue::as_string) {
@@ -1574,13 +1641,31 @@ impl Config {
     }
 }
 
-fn search_path() -> Vec<PathBuf> {
-    let mut out = vec![PathBuf::from("/etc/eclipse/abyss.kdl")];
+/// Every file that may contribute, in apply order.
+///
+/// Each directory contributes its `policy.kdl` after its `abyss.kdl`, so a
+/// policy-owned key set in the wrong file is refused rather than quietly
+/// shadowed. There are deliberately no `policy.d/` drop-ins: the security
+/// surface is one file per directory, so "what is the policy here" has one
+/// answer a human can read.
+fn search_path() -> Vec<Source> {
+    let abyss = |p: PathBuf| Source {
+        path: p,
+        owner: schema::Owner::Abyss,
+    };
+    let policy = |p: PathBuf| Source {
+        path: p,
+        owner: schema::Owner::Policy,
+    };
+    let mut out = vec![
+        abyss(PathBuf::from("/etc/eclipse/abyss.kdl")),
+        policy(PathBuf::from("/etc/eclipse/policy.kdl")),
+    ];
     let cfg_home = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
     let Some(base) = cfg_home else { return out };
-    out.push(base.join("eclipse/abyss.kdl"));
+    out.push(abyss(base.join("eclipse/abyss.kdl")));
     if let Ok(dir) = std::fs::read_dir(base.join("eclipse/abyss.d")) {
         let mut drop_ins: Vec<PathBuf> = dir
             .filter_map(|e| e.ok())
@@ -1588,10 +1673,11 @@ fn search_path() -> Vec<PathBuf> {
             .filter(|p| p.extension().is_some_and(|x| x == "kdl"))
             .collect();
         drop_ins.sort();
-        out.extend(drop_ins);
+        out.extend(drop_ins.into_iter().map(abyss));
     }
+    out.push(policy(base.join("eclipse/policy.kdl")));
     // Compatibility with the path used by the M2 task brief.
-    out.push(base.join("abyss/config.kdl"));
+    out.push(abyss(base.join("abyss/config.kdl")));
     out
 }
 
@@ -1732,6 +1818,89 @@ fn workspace_arg(n: Option<i128>) -> Result<usize, String> {
 mod tests {
     use super::*;
 
+    fn abyss_src(p: &str) -> Source {
+        Source {
+            path: PathBuf::from(p),
+            owner: schema::Owner::Abyss,
+        }
+    }
+
+    fn policy_src(p: &str) -> Source {
+        Source {
+            path: PathBuf::from(p),
+            owner: schema::Owner::Policy,
+        }
+    }
+
+    /// COMP-13 §1.3: the security surface lives in `policy.kdl` and nowhere
+    /// else. A policy key written into `abyss.kdl` is refused rather than
+    /// honoured, because `abyss.kdl` is what the config GUI may write.
+    #[test]
+    fn ownership_is_refused_in_both_directions() {
+        fn err(src: Source, text: &str) -> String {
+            let doc: KdlDocument = text.parse().unwrap();
+            let mut cfg = Config {
+                cur: Some((src, text.to_owned())),
+                ..Config::default()
+            };
+            cfg.apply(&doc, &mut Vec::new());
+            assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+            cfg.errors[0].message.clone()
+        }
+
+        // Whole node, policy-owned, in the wrong file.
+        let m = err(abyss_src("a.kdl"), "capture {\n    allow #true\n}\n");
+        assert!(m.contains("policy.kdl"), "{m}");
+
+        // Whole node, abyss-owned, in policy.kdl.
+        let m = err(policy_src("p.kdl"), "general {\n    gaps-in 4\n}\n");
+        assert!(m.contains("abyss.kdl"), "{m}");
+
+        // `misc` is mixed: the policy key is refused, the abyss key beside it
+        // is not.
+        let m = err(
+            abyss_src("a.kdl"),
+            "misc {\n    render-device \"/dev/dri/card0\"\n    scripted-input #true\n}\n",
+        );
+        assert!(
+            m.contains("misc.scripted-input") && m.contains("policy.kdl"),
+            "{m}"
+        );
+
+        // `windowrule` is decided per action, not per node.
+        let m = err(abyss_src("a.kdl"), "windowrule \"no-agent\" app-id=\"x\"\n");
+        assert!(m.contains("no-agent") && m.contains("policy.kdl"), "{m}");
+        let m = err(policy_src("p.kdl"), "windowrule \"float\" app-id=\"x\"\n");
+        assert!(m.contains("float") && m.contains("abyss.kdl"), "{m}");
+    }
+
+    /// Each directory contributes its policy file after its abyss file, so a
+    /// later abyss.d drop-in can never shadow policy.
+    #[test]
+    fn the_search_path_pairs_each_directory() {
+        let path = search_path();
+        let names: Vec<String> = path
+            .iter()
+            .map(|s| {
+                format!(
+                    "{}:{}",
+                    s.path.display(),
+                    if s.owner == schema::Owner::Policy {
+                        "p"
+                    } else {
+                        "a"
+                    }
+                )
+            })
+            .collect();
+        assert!(names[0].ends_with("/etc/eclipse/abyss.kdl:a"), "{names:?}");
+        assert!(names[1].ends_with("/etc/eclipse/policy.kdl:p"), "{names:?}");
+        let policies: Vec<_> = path.iter().filter(|s| s.owner == schema::Owner::Policy).collect();
+        assert!(policies
+            .iter()
+            .all(|s| s.path.file_name().unwrap() == "policy.kdl"));
+    }
+
     /// COMP-13 §1.2: validation is total — an unknown key is an error, not a
     /// warning, and it carries the position of the offending token.
     #[test]
@@ -1739,7 +1908,7 @@ mod tests {
         let text = "general {\n    gaps-in 4\n    gaps-inn 4\n}\n";
         let doc: KdlDocument = text.parse().unwrap();
         let mut cfg = Config {
-            cur: Some((PathBuf::from("/etc/eclipse/abyss.kdl"), text.to_owned())),
+            cur: Some((abyss_src("/etc/eclipse/abyss.kdl"), text.to_owned())),
             ..Config::default()
         };
         cfg.apply(&doc, &mut Vec::new());
@@ -1783,7 +1952,7 @@ mod tests {
         let text = "general {\n\tgaps-inn 4\n}\n";
         let doc: KdlDocument = text.parse().unwrap();
         let mut cfg = Config {
-            cur: Some((PathBuf::from("a.kdl"), text.to_owned())),
+            cur: Some((abyss_src("a.kdl"), text.to_owned())),
             ..Config::default()
         };
         cfg.apply(&doc, &mut Vec::new());

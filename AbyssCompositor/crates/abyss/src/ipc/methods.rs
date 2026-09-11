@@ -277,7 +277,7 @@ fn dump_state(state: &mut AbyssState) -> Reply {
         "focused": get_focused(state)?,
         "metrics": get_metrics(state)?,
         "config": {
-            "sources": state.config.sources.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            "sources": state.config.sources.iter().map(|s| s.path.display().to_string()).collect::<Vec<_>>(),
             "scripted_input": state.config.misc.scripted_input,
         },
     }))
@@ -393,7 +393,7 @@ fn reload_config(state: &mut AbyssState) -> Reply {
     crate::config::watch::reload_now(state);
     Ok(json!({
         "ok": true,
-        "sources": state.config.sources.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "sources": state.config.sources.iter().map(|s| s.path.display().to_string()).collect::<Vec<_>>(),
     }))
 }
 

@@ -425,6 +425,29 @@ pub const TABLE: &[Key] = &[
     ),
 ];
 
+/// Owner of a whole top-level node, when every key under it agrees.
+///
+/// `None` means either "not in the schema" or "mixed" — `misc` holds
+/// `render-device` (abyss) beside `scripted-input` (policy), and `windowrule`
+/// is decided per action. Both are checked one key at a time instead.
+pub fn node_owner(node: &str) -> Option<Owner> {
+    if let Some(c) = COLLECTIONS.iter().find(|c| c.node == node) {
+        // windowrule's owner is its action's; see RULE_ACTIONS.
+        return if c.node == "windowrule" {
+            None
+        } else {
+            Some(c.owner)
+        };
+    }
+    let prefix = format!("{node}.");
+    let mut owners = TABLE
+        .iter()
+        .filter(|k| k.path.starts_with(&prefix))
+        .map(|k| k.owner);
+    let first = owners.next()?;
+    owners.all(|o| o == first).then_some(first)
+}
+
 pub fn get_key(path: &str) -> Option<&'static Key> {
     TABLE.iter().find(|k| k.path == path)
 }

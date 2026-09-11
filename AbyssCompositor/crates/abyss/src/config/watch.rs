@@ -40,7 +40,7 @@ fn watch_dirs(state: &AbyssState) -> Vec<PathBuf> {
         }
     };
     for src in &state.config.sources {
-        if let Some(parent) = src.parent() {
+        if let Some(parent) = src.path.parent() {
             push(parent.to_path_buf());
         }
     }
@@ -183,7 +183,11 @@ pub fn reload_now(state: &mut AbyssState) {
         crate::ipc::emit(state, "config-error", serde_json::json!({ "errors": errors }));
         return;
     }
-    let sources: Vec<String> = next.sources.iter().map(|p| p.display().to_string()).collect();
+    let sources: Vec<String> = next
+        .sources
+        .iter()
+        .map(|s| s.path.display().to_string())
+        .collect();
     state.config = next;
     // Retune the two global bind filters. They hold Allowlist handles rather
     // than snapshots precisely so this line is possible (ADR 0022 amendment).
