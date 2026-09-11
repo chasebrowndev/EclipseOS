@@ -135,3 +135,27 @@ fn the_system_bus_answers_what_the_bar_asks_it() {
     eprintln!("{seen:#?}");
     assert!(!seen.is_empty(), "no daemon on the system bus answered");
 }
+
+/// Asks logind what it would allow. Deliberately only asks — nothing in this
+/// test calls `perform`, because a test suite that can suspend the machine it
+/// is running on is a test suite nobody runs twice.
+#[test]
+#[ignore = "reads the host's system bus"]
+fn logind_says_what_it_would_allow() {
+    use eclipse_services::session::{Action, Availability, Session};
+
+    let session = Session::connect().expect("system bus");
+
+    // Acting on our own session needs no permission from logind.
+    assert_eq!(session.availability(Action::Lock), Availability::Yes);
+    assert_eq!(session.availability(Action::LogOut), Availability::Yes);
+
+    for action in [
+        Action::Suspend,
+        Action::Hibernate,
+        Action::Reboot,
+        Action::PowerOff,
+    ] {
+        eprintln!("{action:?}: {:?}", session.availability(action));
+    }
+}
