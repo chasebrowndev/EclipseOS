@@ -1,10 +1,120 @@
 # Session handoff
 
+## State as of 2026-09-11 (later) — B3 and B6 are done, both run
+
+Branch `ci-attribution-display-name`. **Working tree clean.** `HEAD` is
+`d40aaee`; all five gate commands are green at it. Still nothing pushed.
+
+The previous entry (below) said B3 and B6 were scaffolded, paused and
+deliberately outside the workspace `members` list. They are now finished, in
+the workspace, committed, and each has been run nested under Hyprland.
+
+| Commit | What |
+|---|---|
+| `460809d` | `docs/STYLE.md` — the frontend style spec now lives in the repo instead of the owner's Downloads, and `eclipse-ui/src/tokens.rs` points at it |
+| `3a6f7a5` | `feat(eclipse-bar)` — the bar, plus the `Cargo.lock` winit pin |
+| `1a5d506` | `feat(eclipse-policy-viewer)` — the read-only policy window |
+| `d40aaee` | `default-members = ["crates/abyss"]` |
+
+### Things a later session will otherwise rediscover the hard way
+
+**`Cargo.lock` carries a deliberate downgrade — do not "fix" it.**
+`iced_layershell 0.19.1` depends on `iced_exdevtools 0.19.1` unconditionally,
+and that crate's `keymap.rs` fails `E0004` against `winit-core 0.31.0-beta.3`'s
+non-exhaustive `NativeKeyCode`. `winit-common` requires `winit-core` exactly, so
+pinning `winit-core` alone is refused; the working incantation is
+`cargo update -p winit-common --precise 0.31.0-beta.2`. A `cargo update` that
+floats those two back up breaks the whole workspace build.
+
+**`default-members` exists for a reason.** Five binaries in the workspace made
+the bare `cargo run -- --backend winit` that `CLAUDE.md` and `docs/BUILDING.md`
+both document fail with "could not determine which binary to run".
+
+**`publish = false` on both new crates is load-bearing** — the same reason as
+the other `eclipse-*` crates: `cargo deny check bans` reports
+`error[wildcard]: found 2 wildcard dependencies` on a publishable crate with
+path dependencies.
+
+**The policy viewer has no `tests/coverage.rs` on purpose.** The settings app's
+ratchet tests its generated control table against `abyss::config::schema`; the
+viewer has no control table, and linking `abyss` would pull Smithay, DRM and GBM
+into a small read-only GUI. The equivalent drift check is inline in
+`read.rs::the_policy_owned_set_is_mirrored`, which mirrors `schema.rs`'s
+`the_policy_owned_set_is_exactly_this` — if the policy-owned set changes, one of
+the two fails and names the other.
+
+`ci/gui-coverage-exceptions.txt` needed no change for either crate.
+
+### Runtime verification — what was actually checked
+
+Nested under Hyprland on `wayland-2`, `abyss --backend winit`, with both clients
+against it. All of this passed:
+
+- The viewer maps as a plain `xdg_toplevel` (`get_windows` shows it; the bar
+  does not appear there, because it is a layer surface — correct).
+- `wayland-info | grep foreign_toplevel` → **nothing**, with the bar running.
+  The bar did not cause the protocol to be advertised.
+- `switch_workspace`, `move_to_workspace`, `focus_window`, `close_window` all
+  return `{"ok":true}` and the state moves with them; the bar stayed up across
+  every one of them, and both clients logged not one byte.
+- `dump_state` confirms abyss reads
+  `~/.config/eclipse/{abyss.kdl,policy.kdl}` — the same pair the viewer's
+  `search_path()` derives independently. They agree.
+- Clean shutdown: `kill <captured pid>` for the bar, then `pkill -x abyss`.
+
+**Not checked, and it needs a human at the machine:** anything visual. The bar's
+rendering, its exclusive zone, the accent discipline, and the viewer's three
+sections were never seen. There is no capture path from an SSH session —
+`grim` against the nested compositor reports *"compositor doesn't support the
+screen capture protocol"*, so screencopy is not advertised at all. That is worth
+a look on its own: `capture.allow` is enforced, but there appears to be no
+protocol behind it yet to enforce against.
+
+### Two disagreements between the plan and the code — do not silently pick
+
+1. **`get_config {file:"policy"}` does not return `DENIED`.** The plan and the
+   older handoff both assert it must. What it actually returns is the four
+   policy-owned keys with `"readable": false, "value": null, "source": null`.
+   No policy content leaks, so the security property holds — but "the method is
+   denied" and "the method enumerates the schema and withholds the values" are
+   different claims, and the docs assert the first. Decide which is intended and
+   fix the other.
+2. **`get_windows` lists only the active workspace.** Moving the viewer to
+   workspace 2 made `get_windows` return `[]`. That suits the bar, which scopes
+   to the focused workspace anyway, but nothing documents it, and a caller
+   expecting every window will be quietly wrong.
+
+### One config change was made outside the repo
+
+`~/.config/eclipse/abyss.kdl` still had a `capture` block in it, predating the
+ADR 0037 split, and abyss refuses to start on it
+(*"capture belongs in policy.kdl, not in this file"*). The block was moved into
+a new `~/.config/eclipse/policy.kdl`, which also now carries a
+`clipboard.data-control-allow`, a `misc.scripted-input`, and one `app-trust`
+windowrule so the viewer has something real to render. This is the owner's live
+config, not repo content — mentioned here so it is not mistaken for a code
+change.
+
+### Next
+
+1. **The branch story is still wrong and is now the blocking item.** 19 unpushed
+   commits covering all of A1→B6 sit on `ci-attribution-display-name`, whose
+   open PR #9 is a one-line CI fix. Land #9 with only its attribution commit,
+   branch `comp17-de-userland` off freshly-merged `main`, move the DE commits
+   there, and open one PR citing `Implements COMP-17 / DP-2 / F-01 §4` — the
+   `spec-trail` job blocks a PR without a citation.
+2. Visual verification of the bar and the viewer, by a human at the machine.
+3. B4 — the control center and the service layer. Everything the bar is
+   currently missing (tray, audio, network, bluetooth, battery, notifications,
+   media) is blocked on it.
+
+
 ## State as of 2026-09-11 (late) — DE userland, B5 done, B3+B6 scaffolded and paused
 
 Branch `ci-attribution-display-name`. **Working tree: clean except two
 untracked directories, `crates/eclipse-bar/` and `crates/eclipse-policy-viewer/`
-— deliberately left that way, see "Where B3 and B6 actually stand" below.**
+— deliberately left that way. **Superseded: both were finished and committed
+later the same day; see the entry at the top of this file.**
 `HEAD` is `770ff33` and all five gate commands are green at it. Nothing is
 pushed as a PR yet.
 
@@ -28,42 +138,24 @@ narrative.
 | B2 `crates/eclipse-ipc` | done | `5ebe0a9` |
 | B1 `crates/eclipse-ui` | done | `a501576`, ADR 0039 |
 | B5 settings app | **done** | `770ff33` |
-| **B3 bar** | **scaffolded, two source files, paused** | uncommitted |
+| B3 bar | done (later the same day) | `3a6f7a5` |
 | B4 control center + services | not started | — |
-| **B6 policy viewer** | **scaffolded, empty, paused** | uncommitted |
+| B6 policy viewer | done (later the same day) | `1a5d506` |
 
 B7 is out of scope on purpose: desktop icons (DP-6), `mode wm\|de` profiles
 (DP-3), the compositor-drawn policy editor, the first-boot overscan offer, and
 bind/windowrule editing.
 
-### Where B3 and B6 actually stand — read this first
+### Where B3 and B6 actually stand — superseded
 
-Two subagents were started on B3 and B6 in parallel and **stopped early** when
-the session ran low on budget. What survives is honest scaffolding, not a
-half-finished build:
-
-- `crates/eclipse-bar/` — `Cargo.toml` (iced 0.14 + `iced_layershell` 0.19.1 +
-  eclipse-ui + eclipse-ipc, `publish = false`), an **empty** `src/lib.rs`, and
-  two finished, reviewable modules: `src/model.rs` (the control-socket wire
-  shapes the bar reads, including the `Trust::Secret` rule that a secret
-  window's title is never rendered) and `src/clock.rs` (`localtime_r`-style
-  wall-clock formatting, no date crate). No `main.rs`, no view, no update.
-- `crates/eclipse-policy-viewer/` — `Cargo.toml` (iced 0.14 + eclipse-ui +
-  `kdl` 6, **no `eclipse-ipc` by design**, `publish = false`) and an empty
-  `src/lib.rs`. Nothing else.
-
-**Neither crate is a workspace member.** The root `Cargo.toml` was reverted on
-purpose so that `cargo build --workspace` stays green at `770ff33` — a crate
-with no `main.rs` would fail the bin target. The first thing the next session
-does is re-add both to the `members` list (alphabetical: `crates/eclipse-bar`
-after `crates/abyss`, `crates/eclipse-policy-viewer` after `crates/eclipse-ipc`)
-and then finish them. Do not "discover" that the build is broken and delete the
-partial files.
-
-Both crate manifests already carry `publish = false`. That is not cosmetic:
+This section described both crates as scaffolded, paused and deliberately
+outside the workspace `members` list. Both were finished, added to the
+workspace and committed later the same day (`3a6f7a5`, `1a5d506`) — read the
+entry at the top of this file instead. The one durable point it made survives
+below: `publish = false` on both manifests is load-bearing, because
 `cargo deny check bans` fails with `error[wildcard]: found 2 wildcard
-dependencies` on a publishable crate with path deps, and that is exactly how
-B5 first failed the gate.
+dependencies` on a publishable crate with path dependencies, which is how B5
+first failed the gate.
 
 ### The facts the next session should not re-derive
 
