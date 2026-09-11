@@ -1,6 +1,6 @@
 # Abyss — implementation status
 
-Last updated: 2026-09-10.
+Last updated: 2026-09-11 (late).
 
 **Spec baseline: v2 + Appendix A applied (2026-09-08).** The amendment set
 that previously sat unapplied at the end of VOL2 is now merged inline;
@@ -29,8 +29,18 @@ on Smithay `=0.7.0` as a library (ADR 0002). A single `calloop` loop owns
 `AbyssState`; there is no lock on the hot path and no `Rc<RefCell<_>>` scene
 graph — children are `u64` handles into plain structs. Two backends sit behind
 the `Backend` trait in `backend/`: `winit` (nested, the dev path) and `drm`
-(KMS/udev/libinput/libseat/GBM/EGL/GLES). The second crate,
-`crates/eclipse-ctl`, is the human CLI over the JSON-RPC socket.
+(KMS/udev/libinput/libseat/GBM/EGL/GLES).
+
+Four crates sit around it. `crates/eclipse-ctl` is the human CLI over the
+JSON-RPC socket. `crates/wlcs-abyss` is the conformance shim. As of 2026-09-11
+there are two more, and they are the beginning of the DE userland (COMP-17,
+F-01 §4): `crates/eclipse-ipc` is the client half of COMP-13 — a blocking,
+calloop-friendly control-socket client with no async runtime — and
+`crates/eclipse-ui` is the Eclipse design system over `iced` 0.14, which is
+where every colour, radius and size in the DE is defined exactly once
+(ADR 0038 chose native Rust over Quickshell; ADR 0039 records the four narrow
+supply-chain exceptions iced cost). Neither is TCB. See
+`docs/HANDOFF.md` for where that work stands and what comes next.
 
 Phase 1 of COMP-16 is substantially built: milestones 1–9b all have code,
 seven of them are exercised, three carry hardware gates that have never been
@@ -122,6 +132,43 @@ across 9d/17/22, 14→15, 15→16, 16→22, 17→24, 18→25. Milestones 10, 12,
 
 ---
 
+## DE userland — COMP-17, DP-2, F-01 §4
+
+Started 2026-09-11 against the plan at
+`~/.claude/plans/ok-claude-today-we-inherited-cook.md`, which holds the owner's
+settled decisions and the build order. This is the human-facing surface abyss
+has never had: today everything the user sees is a Quickshell/QML config living
+outside the repo at `~/.config/quickshell/eclipse/`. Appendix B's F-01 §4
+requires every setting to be reachable from a GUI, with the files still the
+source of truth and the GUI writing only through the COMP-13 §1.4 API — never a
+parallel one.
+
+| Unit | State | Evidence |
+|---|---|---|
+| A0 KDL round-trip spike | **done** | verdict at the foot of `docs/HANDOFF.md`: byte-splice edits round-trip, the `value_repr` trap is real and is handled |
+| A1 declarative schema | **done** | `config/schema.rs`, three-sided anti-drift over `schema::KEYS` (`ac3cb4f`) |
+| A2 `abyss.kdl` / `policy.kdl` split | **done** | `a95d657`, ADR 0037. Ownership is refused in both directions at parse time, naming the other file |
+| A3 config over the socket | **done** | `ipc/config_rpc.rs`, per-file gate rows, `Policy` rows default-closed (`b63b6ac`) |
+| A4 self-write vs. hot-reload | **done** | one `apply_loaded`, no `config-error` storm, a genuine external rewrite still reloads (`6d8f5a8`) |
+| A5 `eclipse-ctl config` + coverage ratchet | **done** | `18b97cf`; `ci/gui-coverage-exceptions.txt` may only shrink |
+| `docs/CONFIG.md` | **done** | generated from the schema (`fab0eb3`) |
+| B2 `crates/eclipse-ipc` | **done** | `5ebe0a9`. Raw fd exposed, non-blocking, no async runtime — it drops into a calloop client loop |
+| B1 `crates/eclipse-ui` | **done** | `a501576`. `tokens.rs` (the style spec's only transcription), `theme.rs` (style fns over iced's stock widgets), `widget/` (the 44×25 toggle and the bar chart, written from scratch because the spec fixes their geometry), vendored instanced typefaces under `assets/fonts/` |
+| B5 settings app | **done** | `770ff33`. Controls generated from `get_config {schema:true}`; `policy.kdl` keys read-only; the Display pane closes stub 15(a) by driving `calibrate_output` |
+| B3 bar | **done** | `3a6f7a5`. Workspaces, window list and clock on an `iced_layershell` layer surface; refreshed by `subscribe`, not polling. `wlr_foreign_toplevel_management` stays absent — verified 2026-09-11, `wayland-info` advertises no `foreign_toplevel` global with the bar running. Window text is `Window::label()`, so a `Trust::Secret` window reads "Protected window". Tray/audio/network/BT/battery/notification/media cells wait on B4 |
+| B4 control center + services | **in progress** | Landed: the notification server, system status (network/BT/battery), session control, the bar's status cells, the toast stack (`eclipse-toasts`), the control center (`eclipse-center`, `2408781`), the `.desktop` reader (`c9fab92`) and the launcher GUI over it (`eclipse-launcher`) — a centred overlay surface that takes the keyboard, filters as you type and refuses a terminal-only entry out loud. Owed: an SNI tray host (blocked — our iced feature set has no `image`, so `IconPixmap` cannot be drawn), audio (`libpulse-binding`) and clipboard (`smithay-clipboard`), both new dependencies and therefore an ask first |
+| B6 policy viewer | **done** | `1a5d506`. A plain `xdg_toplevel` reading `policy.kdl` off disk, never over the socket — `Policy/Read` stays closed. An empty allowlist renders as a sentence saying every client is denied, never a blank list. The policy-owned set is restated locally with a mirroring test rather than linking `abyss`; no `tests/coverage.rs` (that ratchet is settings-specific) |
+
+Out of scope by decision (plan B7): desktop icons (DP-6), `mode wm|de`
+profiles (DP-3), the compositor-drawn policy editor (that stays milestone 15),
+the first-boot overscan offer, and bind/windowrule editing.
+
+The toolkit is iced 0.14 + `iced_layershell` 0.19.1, all Rust, in house — no
+Quickshell and no QML (ADR 0038). Blur under a translucent client is abyss's
+own `decoration { blur }`, not the toolkit's.
+
+---
+
 ## Component map (COMP-01..COMP-16)
 
 | Spec | Where the code is | State |
@@ -138,9 +185,9 @@ across 9d/17/22, 14→15, 15→16, 16→22, 17→24, 18→25. Milestones 10, 12,
 | COMP-10 trusted UI | `render/capture.rs::indicator` only | Indicator done; prompts/panel/phrase absent. |
 | COMP-11 policy | — | Does not exist. |
 | COMP-12 audit | — | Does not exist. |
-| COMP-13 human IPC + config | `crates/abyss/src/ipc/`, `crates/abyss/src/config/`, `crates/eclipse-ctl` | Socket, gate table, 17 methods, event stream, KDL parse + hot-reload. |
+| COMP-13 human IPC + config | `crates/abyss/src/ipc/`, `crates/abyss/src/config/`, `crates/eclipse-ctl`, `crates/eclipse-ipc` | Socket, gate table, event stream, KDL parse + hot-reload, plus (2026-09-11) the §1.4 write API: byte-splice in-place edits, a declarative schema over every key, per-file gate rows after the `policy.kdl` split, `eclipse-ctl config` verbs, and `crates/eclipse-ipc` as the client half. |
 | COMP-14 performance | — | No benchmark harness. The §COMP-14 frame budgets referenced by milestone 4's gate have never been measured. `--stats` now reports frames/fps and render/submit percentiles from a live KMS run, which is a diagnostic, not the harness 9f specifies. |
-| COMP-15 testing | `cargo test --workspace`, `.github/workflows/gate.yml` | 95 tests, all passing, now enforced by CI. Unit-level. Zero of the twelve COMP-15 §2 security suites exist. No compat matrix. |
+| COMP-15 testing | `cargo test --workspace`, `.github/workflows/gate.yml` | 128 tests, all passing, now enforced by CI. Unit-level. Zero of the twelve COMP-15 §2 security suites exist. No compat matrix. |
 | COMP-16 milestones | this file | — |
 
 ---
@@ -560,10 +607,21 @@ ADR 0035). The `gate` job is a required status check.
 
 **Live and blocking:** `cargo fmt --all --check`; `cargo clippy --workspace
 --all-targets --all-features -- -D warnings`; `cargo build --workspace
---all-targets`; `cargo test --workspace` (95 tests); `cargo deny check
+--all-targets`; `cargo test --workspace` (128 tests); `cargo deny check
 advisories bans licenses sources`; spec-citation check (F-07 §5).
 
 **Live and advisory:** TCB-touch warning (F-07 §4).
+
+**Live and blocking on PRs:** the `gui-coverage` ratchet (`gate.yml:174`,
+landed `18b97cf`) — `ci/gui-coverage-exceptions.txt` may not grow and may not
+gain an entry even at an unchanged length, so a swap cannot smuggle one in.
+
+The other half of F-01 §4's coverage claim — every `schema::TABLE` path that is
+not a collection and not on the exception list has a rendered control — is
+**not** asserted anywhere, because there is no settings app to enumerate yet.
+It is owed with B5, and it belongs in that crate as a unit test over its own
+control registry rather than as a workflow step: a CI step cannot see the
+registry without linking the crate, and `cargo test --workspace` already runs.
 
 **Specified and absent.** Every one of these has a CI slot waiting and no
 suite to put in it:
@@ -580,6 +638,6 @@ suite to put in it:
 | Red team (S-10) | F-07 §3 | S-01..S-07 implemented |
 | Client compat matrix | F-07 §3 | self-hosted runner |
 
-The 95 tests are unit-level. Nothing in the security suite of COMP-15 §2 is
+The 128 tests are unit-level. Nothing in the security suite of COMP-15 §2 is
 asserted by anything today; redaction was verified by hand, once. **The
 presence of CI must not be read as coverage.**

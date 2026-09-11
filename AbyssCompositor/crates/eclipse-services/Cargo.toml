@@ -1,0 +1,22 @@
+[package]
+name = "eclipse-services"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Desktop services for the Eclipse userland: the freedesktop notification server (ADR 0038)."
+# A library for the DE binaries, never published. `publish = false` also keeps
+# cargo-deny's wildcard check off our path dependencies.
+publish = false
+
+[lib]
+name = "eclipse_services"
+path = "src/lib.rs"
+
+[dependencies]
+# Already in the tree via iced_layershell 0.19.1 -> mundy 0.2.3, so this adds
+# no new supply-chain surface (ADR 0038, ADR 0039). The blocking API is the
+# one that fits: iced runs no tokio runtime, so the server owns its own thread
+# and talks to the GUI over a channel, exactly like eclipse-settings' watcher.
+zbus = "5.19"

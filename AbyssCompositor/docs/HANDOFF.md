@@ -1,5 +1,368 @@
 # Session handoff
 
+## State as of 2026-09-11 (night) — the launcher landed; B4's remainder needs decisions
+
+Branch `ci-attribution-display-name`. `HEAD` is the launcher commit; the four
+gate commands available on this box are green at it (`cargo deny` is still not
+installed here). Still nothing pushed, still no PR.
+
+`eclipse-launcher` — the fourth `[[bin]]` in `eclipse-bar`, at
+`src/launcher/{mod,app,view,main}.rs`. A centred `Layer::Overlay` surface with
+`KeyboardInteractivity::Exclusive`: unlike the bar's menus, a launcher is
+nothing but keyboard, so it takes it and gives it back on exit. It holds no
+capability of its own (ADR 0038) — it reads what `eclipse_services::apps`
+reads and spawns a child of itself.
+
+Decisions worth not re-deriving:
+
+- **`MAX_ROWS = 8` is a compile-time constant**, same reason the center's row
+  set is: the surface size is fixed before the boot fn runs, so the height
+  cannot depend on how many entries matched. Unfilled slots draw empty rather
+  than shortening the list — rows that slide up as you type are rows you
+  misclick. When more matched than fit, the footer says how many are off the
+  bottom.
+- **A `Terminal=true` entry is listed, greyed, and keeps its `mouse_area`.**
+  `apps::launch` refuses it (`ErrorKind::Unsupported`) and the refusal goes on
+  the footer verbatim. The center's opposite choice — no `mouse_area` on an
+  unavailable row — is right there because logind's row is permanently dead;
+  here the human needs to learn *why* the row does nothing.
+- **The keyboard is split between two places on purpose.** iced 0.14 has no
+  `iced::keyboard::on_key_press` (the plan named it; it does not exist), and
+  `text_input` *captures* both Enter and Escape. So Enter is
+  `text_input(..).on_submit(Message::Activate)`, and Escape/Up/Down come from
+  `iced::event::listen_with`, which sees captured events too. `listen_with`
+  takes a plain `fn` pointer, not a capturing closure.
+- **Focus at boot** is `iced::widget::operation::focus(INPUT_ID)`, returned
+  from the boot fn as `(App, Task)` — `build_pattern::application`'s `IntoBoot`
+  accepts that pair.
+- **No `disable_clipboard()` here**, unlike the toast stack and the center: the
+  filter field is a place a human will paste into.
+
+**Not visually verified.** The gate is green and the behaviour is covered by
+tests, but nothing has been looked at: `grim` reports this compositor exposes
+no screen-capture protocol, so the visual pass needs a human at the machine
+running `cargo run --bin eclipse-launcher` nested under Hyprland.
+
+Still owed in B4, unchanged and all three blocked on a decision that is not
+mine:
+
+- **SNI tray host** — blocked. Our iced feature set omits `image`, so an SNI
+  `IconPixmap` (raw ARGB) cannot be drawn at all.
+- **Audio** (`libpulse-binding`) and **clipboard** (`smithay-clipboard`) — each
+  a new dependency, so each an ask first.
+
+The branch/PR story is also unchanged: land PR #9 with only its attribution
+commit, move the DE commits onto `comp17-de-userland` off a freshly merged
+`main`, one PR citing `Implements COMP-17 / DP-2 / F-01 §4`.
+
+## State as of 2026-09-11 (evening) — B4 is half landed, the launcher is next
+
+Branch `ci-attribution-display-name`. `HEAD` is `c9fab92`; all five gate
+commands are green at it. Still nothing pushed.
+
+Landed this session, on top of the notification server and the system-status
+watchers:
+
+- `eclipse-toasts` — the notification stack, its own layer surface.
+- `eclipse-center` (`2408781`) — the control center. Anchored top-right under
+  the bar, spawned by a keybind, exits when it is done. Its height is a
+  compile-time constant because a layer surface fixes its size before the boot
+  fn runs: all six session actions are always drawn, and the ones logind
+  refuses are `TEXT_TERTIARY` with no `mouse_area` at all, so they are inert to
+  the pointer as well as to the eye. A `Challenge` answer reads "asks first" on
+  the row — a polkit prompt appearing out of nowhere looks like a compromised
+  machine rather than one doing its job. A refusal is shown verbatim in
+  `color::DANGER`: restating a policy decision in our own words loses the only
+  information the human can act on.
+- `eclipse_services::apps` (`c9fab92`) — an in-house `.desktop` reader. No new
+  dependency. See the commit message for what it drops and why.
+
+**Next action: the launcher GUI.** `crates/eclipse-bar/src/launcher/{mod,app,
+view,main}.rs` as a fourth `[[bin]]` (`eclipse-launcher`) in that package,
+following the toast and center precedent exactly. Centred `Layer::Overlay`,
+`KeyboardInteractivity::Exclusive` (unlike the other two — a launcher must take
+the keyboard), a `text_input` filter over `apps::matches`/`apps::rank`, a result
+list, `iced::exit()` on launch or on dismiss, every colour and size from
+`eclipse_ui::tokens`. `apps::launch` already refuses a `Terminal=true` entry;
+the view has to say so rather than silently dropping the row.
+
+Still owed in B4 after that: an SNI tray host — pure zbus, no new dependency,
+but **blocked**, because our iced feature set omits `image` and SNI
+`IconPixmap` ARGB data therefore cannot be rendered; a tray of bare text labels
+is not worth shipping. Audio (`libpulse-binding`) and clipboard
+(`smithay-clipboard`) each need a new dependency, so **ask the owner first**.
+
+Unchanged and still owed: the branch/PR story (land PR #9 with only its
+attribution commit, move the DE commits onto `comp17-de-userland` off a freshly
+merged `main`, one PR citing `Implements COMP-17 / DP-2 / F-01 §4`), and visual
+verification of the bar, the toasts, the center and the viewer — which needs a
+human at the machine. `grim` reports the compositor has no screen-capture
+protocol, so none of it can be checked over SSH.
+
+## State as of 2026-09-11 (later) — B3 and B6 are done, both run
+
+Branch `ci-attribution-display-name`. **Working tree clean.** `HEAD` is
+`d40aaee`; all five gate commands are green at it. Still nothing pushed.
+
+The previous entry (below) said B3 and B6 were scaffolded, paused and
+deliberately outside the workspace `members` list. They are now finished, in
+the workspace, committed, and each has been run nested under Hyprland.
+
+| Commit | What |
+|---|---|
+| `460809d` | `docs/STYLE.md` — the frontend style spec now lives in the repo instead of the owner's Downloads, and `eclipse-ui/src/tokens.rs` points at it |
+| `3a6f7a5` | `feat(eclipse-bar)` — the bar, plus the `Cargo.lock` winit pin |
+| `1a5d506` | `feat(eclipse-policy-viewer)` — the read-only policy window |
+| `d40aaee` | `default-members = ["crates/abyss"]` |
+
+### Things a later session will otherwise rediscover the hard way
+
+**`Cargo.lock` carries a deliberate downgrade — do not "fix" it.**
+`iced_layershell 0.19.1` depends on `iced_exdevtools 0.19.1` unconditionally,
+and that crate's `keymap.rs` fails `E0004` against `winit-core 0.31.0-beta.3`'s
+non-exhaustive `NativeKeyCode`. `winit-common` requires `winit-core` exactly, so
+pinning `winit-core` alone is refused; the working incantation is
+`cargo update -p winit-common --precise 0.31.0-beta.2`. A `cargo update` that
+floats those two back up breaks the whole workspace build.
+
+**`default-members` exists for a reason.** Five binaries in the workspace made
+the bare `cargo run -- --backend winit` that `CLAUDE.md` and `docs/BUILDING.md`
+both document fail with "could not determine which binary to run".
+
+**`publish = false` on both new crates is load-bearing** — the same reason as
+the other `eclipse-*` crates: `cargo deny check bans` reports
+`error[wildcard]: found 2 wildcard dependencies` on a publishable crate with
+path dependencies.
+
+**The policy viewer has no `tests/coverage.rs` on purpose.** The settings app's
+ratchet tests its generated control table against `abyss::config::schema`; the
+viewer has no control table, and linking `abyss` would pull Smithay, DRM and GBM
+into a small read-only GUI. The equivalent drift check is inline in
+`read.rs::the_policy_owned_set_is_mirrored`, which mirrors `schema.rs`'s
+`the_policy_owned_set_is_exactly_this` — if the policy-owned set changes, one of
+the two fails and names the other.
+
+`ci/gui-coverage-exceptions.txt` needed no change for either crate.
+
+### Runtime verification — what was actually checked
+
+Nested under Hyprland on `wayland-2`, `abyss --backend winit`, with both clients
+against it. All of this passed:
+
+- The viewer maps as a plain `xdg_toplevel` (`get_windows` shows it; the bar
+  does not appear there, because it is a layer surface — correct).
+- `wayland-info | grep foreign_toplevel` → **nothing**, with the bar running.
+  The bar did not cause the protocol to be advertised.
+- `switch_workspace`, `move_to_workspace`, `focus_window`, `close_window` all
+  return `{"ok":true}` and the state moves with them; the bar stayed up across
+  every one of them, and both clients logged not one byte.
+- `dump_state` confirms abyss reads
+  `~/.config/eclipse/{abyss.kdl,policy.kdl}` — the same pair the viewer's
+  `search_path()` derives independently. They agree.
+- Clean shutdown: `kill <captured pid>` for the bar, then `pkill -x abyss`.
+
+**Not checked, and it needs a human at the machine:** anything visual. The bar's
+rendering, its exclusive zone, the accent discipline, and the viewer's three
+sections were never seen. There is no capture path from an SSH session —
+`grim` against the nested compositor reports *"compositor doesn't support the
+screen capture protocol"*, so screencopy is not advertised at all. That is worth
+a look on its own: `capture.allow` is enforced, but there appears to be no
+protocol behind it yet to enforce against.
+
+### Two disagreements between the plan and the code — both resolved
+
+1. **`get_config {file:"policy"}` does not return `DENIED`, and should not.**
+   The plan asserted it must. The code is the correct half: `config_rpc.rs`'s
+   module doc already states the rule — a policy key is *named* in `get_config`
+   output with `value: null, readable: false`, because a GUI that silently omits
+   a key cannot show the human a setting exists but is not theirs to change.
+   Reading a *specific* policy key is a structured denial naming the file
+   (`a_policy_key_is_denied_and_a_typo_is_not_found` locks that in, and
+   distinguishes it from a typo's `invalid_params`). No policy content leaks in
+   either shape. No repo doc ever claimed otherwise — the wrong assertion lived
+   only in the plan file.
+2. **`get_windows` lists only the active workspace, and that is now written
+   down.** `switch_workspace` unmaps the outgoing set from `state.space`, and
+   `get_windows` iterates `state.space.elements()`, so a window on an inactive
+   workspace is simply absent. The per-row `workspace` field made the opposite
+   read plausible. A doc comment on `get_windows` now says so explicitly, and
+   notes the bar depends on exactly this behaviour.
+
+### One config change was made outside the repo
+
+`~/.config/eclipse/abyss.kdl` still had a `capture` block in it, predating the
+ADR 0037 split, and abyss refuses to start on it
+(*"capture belongs in policy.kdl, not in this file"*). The block was moved into
+a new `~/.config/eclipse/policy.kdl`, which also now carries a
+`clipboard.data-control-allow`, a `misc.scripted-input`, and one `app-trust`
+windowrule so the viewer has something real to render. This is the owner's live
+config, not repo content — mentioned here so it is not mistaken for a code
+change.
+
+### Next
+
+1. **The branch story is still wrong and is now the blocking item.** 19 unpushed
+   commits covering all of A1→B6 sit on `ci-attribution-display-name`, whose
+   open PR #9 is a one-line CI fix. Land #9 with only its attribution commit,
+   branch `comp17-de-userland` off freshly-merged `main`, move the DE commits
+   there, and open one PR citing `Implements COMP-17 / DP-2 / F-01 §4` — the
+   `spec-trail` job blocks a PR without a citation.
+2. Visual verification of the bar and the viewer, by a human at the machine.
+3. B4 — the control center and the service layer. Everything the bar is
+   currently missing (tray, audio, network, bluetooth, battery, notifications,
+   media) is blocked on it.
+
+
+## State as of 2026-09-11 (late) — DE userland, B5 done, B3+B6 scaffolded and paused
+
+Branch `ci-attribution-display-name`. **Working tree: clean except two
+untracked directories, `crates/eclipse-bar/` and `crates/eclipse-policy-viewer/`
+— deliberately left that way. **Superseded: both were finished and committed
+later the same day; see the entry at the top of this file.**
+`HEAD` is `770ff33` and all five gate commands are green at it. Nothing is
+pushed as a PR yet.
+
+**The work in flight is the plan at `~/.claude/plans/ok-claude-today-we-inherited-cook.md`**
+("Usable frontend: taskbar, control center, settings GUI, policy viewer").
+Read it before touching anything in `crates/eclipse-*`; it carries the owner's
+settled decisions and the B8 order. Its progress markers are kept in the file
+itself — they are the authority on where the work stands, this section is the
+narrative.
+
+### Where the plan stands
+
+| Unit | State | Commit |
+|---|---|---|
+| A0 round-trip spike | done | verdict recorded at the foot of this file (2026-09-10) |
+| A1 schema | done | `ac3cb4f` |
+| A2 `abyss.kdl` / `policy.kdl` split | done | `a95d657`, ADR 0037 |
+| A3 config IPC | done | `b63b6ac` |
+| A4 self-write vs. watcher | done | `6d8f5a8` |
+| A5 `eclipse-ctl config` + coverage ratchet | done | `18b97cf`, `ci/gui-coverage-exceptions.txt` |
+| B2 `crates/eclipse-ipc` | done | `5ebe0a9` |
+| B1 `crates/eclipse-ui` | done | `a501576`, ADR 0039 |
+| B5 settings app | **done** | `770ff33` |
+| B3 bar | done (later the same day) | `3a6f7a5` |
+| B4 control center + services | not started | — |
+| B6 policy viewer | done (later the same day) | `1a5d506` |
+
+B7 is out of scope on purpose: desktop icons (DP-6), `mode wm\|de` profiles
+(DP-3), the compositor-drawn policy editor, the first-boot overscan offer, and
+bind/windowrule editing.
+
+### Where B3 and B6 actually stand — superseded
+
+This section described both crates as scaffolded, paused and deliberately
+outside the workspace `members` list. Both were finished, added to the
+workspace and committed later the same day (`3a6f7a5`, `1a5d506`) — read the
+entry at the top of this file instead. The one durable point it made survives
+below: `publish = false` on both manifests is load-bearing, because
+`cargo deny check bans` fails with `error[wildcard]: found 2 wildcard
+dependencies` on a publishable crate with path dependencies, which is how B5
+first failed the gate.
+
+### The facts the next session should not re-derive
+
+`iced_layershell` 0.19.1, vendored at
+`~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/iced_layershell-0.19.1/src/`
+(its `build_pattern/application.md` is the canonical worked example):
+
+- `iced_layershell::build_pattern::application(boot, namespace, update, view)`
+  returns a builder with `.run() .settings() .layer_settings() .style()
+  .subscription() .theme() .font() .antialiasing() .default_text_size()
+  .scale_factor() .executor()`. `namespace` is an `fn() -> String`.
+- **The `Message` enum must carry `#[to_layer_message]` above
+  `#[derive(Debug, Clone)]`.** The builder's bound is
+  `Message: TryInto<LayerShellCustomActionWithId, Error = Message> + Send +
+  Debug`, and that proc macro is what supplies it. The macro injects extra
+  variants (`AnchorSizeChange(Anchor,(u32,u32))` and friends), so `update`
+  needs a trailing arm.
+- `LayerShellSettings { anchor, layer, exclusive_zone: i32, size:
+  Option<(u32,u32)>, margin, keyboard_interactivity, start_mode,
+  events_transparent }`. A top bar is `Anchor::Top | Left | Right`,
+  `size: Some((0, H))`, `exclusive_zone: H`, `KeyboardInteractivity::None`.
+- `iced_layershell::disable_clipboard()` opts out of the smithay-clipboard
+  worker thread. The bar has no clipboard use; call it.
+- It tracks the same iced 0.14 family (`iced_core`/`iced_runtime`/`iced_widget`
+  0.14, `layershellev` 0.19.1). No version split to manage.
+
+The bar's control-socket surface, verified against `crates/abyss/src/ipc/`:
+
+- `get_workspaces` → bare array of `{index, output, output_name, active,
+  windows, owner}`; `get_windows` → bare array of `{handle, app_id, title,
+  output, workspace, floating, focused, trust, no_agent}`; `get_focused` →
+  an array of **one** `{seat, window|null, output, workspace}`.
+- `focus_window {handle}`, `close_window {handle}`, `switch_workspace
+  {workspace}`, `set_floating {floating, handle}`, `move_to_workspace
+  {workspace, handle?}`. Workspace indices are **1-based on the wire**.
+- Events: `window {change: opened|closed|urgent, handle}`, `workspace
+  {change: switched, output, workspace}`, `focus {handle}`, `output
+  {change: changed, id}`, `config-error {errors}`.
+- Every one of those has an `implemented: true` row in `ipc/gate.rs`. A method
+  with no row does not exist.
+
+B6's surface, pinned by `schema.rs`'s own `the_policy_owned_set_is_exactly_this`
+test: exactly four policy-owned keys (`misc.scripted-input`,
+`clipboard.data-control-allow`, `capture.allow`, `capture.redact-app-id`) and
+exactly four policy-owned `windowrule` actions (`sensitivity`, `app-trust`,
+`seat-compat`, `no-agent`). An empty allowlist **denies everyone** and must
+read that way on screen — never as a blank list. The search path is
+`/etc/eclipse/policy.kdl` then `$XDG_CONFIG_HOME/eclipse/policy.kdl`
+(`config/mod.rs::search_path`), read from disk with the user's own permissions;
+the viewer never asks the socket, because the `Policy`/`Read` gate row is
+default-closed and stays closed.
+
+### What B5 shipped
+
+`crates/eclipse-settings` at `770ff33`: `src/{app,conn,lib,main,output,pane,schema}.rs`
+plus `tests/coverage.rs`, which owns the local half of the GUI-coverage ratchet.
+A plain `xdg_toplevel` — `iced::application(...).title(..).theme(..).subscription(..)
+.window_size((1100.0, 760.0)).antialiasing(true)` with a `for face in
+eclipse_ui::FONTS` loop. **Still untested at runtime** — nothing has drawn a
+window yet; that needs `abyss` running, and it is the first thing worth doing
+with a live compositor.
+
+### Pins and traps for the new crates
+
+- `iced = { version = "0.14", default-features = false, features = ["wgpu",
+  "advanced", "wayland", "thread-pool"] }`. Both non-obvious features are
+  mandatory: without `wayland`, winit fails to compile with "The platform
+  you're compiling for is not supported by winit"; without a futures executor,
+  iced fires a `compile_error!`. `iced_layershell` is `0.19.1`.
+- **`iced::time::every` does not exist for us** — it is gated on `tokio`/`smol`
+  and we enable only `thread-pool`. Every periodic job is a `std::thread` plus
+  `iced::stream::channel` and `try_send`. `crates/eclipse-settings/src/app.rs`
+  `subscription()` is the working pattern; copy it rather than reinventing it.
+- **Do not guess the iced API** — same discipline as the Smithay pin. The
+  vendored source is at
+  `~/.cargo/registry/src/*/iced_widget-0.14.2/src` (note `.2`, not `.0` — the
+  `.0` directory does not exist). Guessing cost this session three compile
+  cycles on `rule::Style`, `scrollable::Scroller` and `scrollable::Style`.
+- `eclipse_ipc::Client::connect()` is an **associated function**, not a free
+  `eclipse_ipc::connect()`. That mistake has already cost one compile cycle.
+- `eclipse_ui::widget::parts::segmented` takes `&'a [(T, &'a str)]` and does
+  not fit a `Vec<String>` read off the wire; build the pill row by hand there.
+- `crates/eclipse-ui/src/tokens.rs` is the **only** transcription of
+  `/home/chase/Downloads/eclipse-style-spec.md`. A literal colour, radius or
+  size anywhere else in the DE is a bug.
+- Glass blur is abyss's own `decoration { blur }` (dual-Kawase, `render/blur.rs`),
+  not something the toolkit does. A client just needs to be translucent.
+- Fonts are vendored and instanced under `assets/fonts/` and re-exported as
+  `eclipse_ui::FONTS`; register them once from the application builder.
+- `deny.toml` carries four narrow exceptions added for iced, each per-crate,
+  with the reasoning in ADR 0039. Four, not a blanket allow — that was
+  deliberate and is the owner's to overrule.
+
+### Gate
+
+The five commands in the root `CLAUDE.md` are exactly what
+`.github/workflows/gate.yml` runs, and all five were green at `770ff33`
+(`cargo test --workspace` 115+ tests, 0 failures; `cargo deny` advisories/bans/
+licenses/sources all ok). Commits carry **no** attribution trailers — the root
+`CLAUDE.md` rule overrides any session-level instruction to add them.
+
+---
+
 ## State as of 2026-09-10, end of session
 
 `main` = `41e1d04` (squash-merge of PR #4). No PRs open. Branch

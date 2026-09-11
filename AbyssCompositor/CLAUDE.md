@@ -61,6 +61,27 @@ The toolchain is pinned in `rust-toolchain.toml`; CI and dev must not drift.
 Same rule as the Smithay 0.7.0 pin: a bump is its own PR with its own
 justification.
 
+## Working style — parallelize with subagents
+Spawn subagents freely and keep the main thread thin. This tree is large, the
+specs are long, and the expensive failure mode is a main context stuffed with
+file dumps until it compacts mid-task and loses the plan.
+
+- **Default to a subagent for anything that reads a lot to answer a little**:
+  sweeping the crate tree for a pattern, reading a spec section to extract one
+  rule, reading vendored dependency source to pin down an API. Ask for the
+  conclusion, not the excerpts.
+- **Fan out on independent units.** Separate crates, separate panes, separate
+  milestones — run them at once rather than in series. Give each agent a
+  written brief with its own directory confinement ("touch only
+  `crates/<x>/`"), the SPDX rule, the four gate commands, and "you do not
+  commit". One shared brief file reused across agents beats retyping it.
+- **Keep integration in the main thread.** Workspace `Cargo.toml`, shared
+  crates, `docs/`, and every commit are the parent's job. Agents produce
+  source; the parent wires it up, runs the gate, and writes the message.
+- The counterweight: **no subagent for a direct lookup.** One grep, one
+  targeted read, one command runs inline — a cold agent re-derives context at
+  full price to answer something a single call would have.
+
 ## Commits & PRs (F-07 §5)
 - Conventional commits: `feat(abyss): …`, `fix(policyd): …`, `docs: …`.
 - **Attribution: commit as the repo owner only.** Never add a

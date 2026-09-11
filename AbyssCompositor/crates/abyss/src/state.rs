@@ -258,6 +258,16 @@ pub struct AbyssState {
     pub config_dirty: Option<Instant>,
     /// The debounce timer's source, so repeated edits reuse one timer.
     pub config_timer: Option<smithay::reexports::calloop::RegistrationToken>,
+    /// Content hash of each config file this process last wrote itself
+    /// (COMP-13 §1.4).
+    ///
+    /// The write path applies its own edit in-process and then the kernel
+    /// tells the inotify watcher the file changed, which would reload and
+    /// re-apply the identical config a moment later. Suppression is by content
+    /// hash rather than by a time window because a human editing the file in
+    /// the same second as the GUI must still win; a window would drop that
+    /// edit, a hash cannot.
+    pub config_written: std::collections::HashMap<std::path::PathBuf, u64>,
 }
 
 impl AbyssState {
@@ -477,6 +487,7 @@ impl AbyssState {
             ipc: crate::ipc::IpcState::default(),
             config_dirty: None,
             config_timer: None,
+            config_written: std::collections::HashMap::new(),
         }
     }
 

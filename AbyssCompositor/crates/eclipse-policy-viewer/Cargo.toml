@@ -1,0 +1,22 @@
+[package]
+name = "eclipse-policy-viewer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Read-only viewer for policy.kdl: capture allowlist, data-control allowlist, security window rules."
+publish = false
+
+[lib]
+name = "eclipse_policy_viewer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eclipse-policy-viewer"
+path = "src/main.rs"
+
+[dependencies]
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
+eclipse-ui = { path = "../eclipse-ui" }
+kdl.workspace = true

@@ -15,6 +15,8 @@
 //! and exits; hot-reload ([`watch::reload_now`]) keeps the last good config and
 //! emits a `config-error` IPC event. Never half-apply.
 
+pub mod edit;
+pub mod schema;
 pub mod watch;
 
 use std::path::{Path, PathBuf};
@@ -463,6 +465,67 @@ pub struct Touchpad {
     pub dwt: bool,
 }
 
+/// Swap in an already-validated config and retune everything that caches a
+/// piece of it.
+///
+/// Factored out of `watch::reload_now` so the control socket's write path
+/// (COMP-13 §1.4) applies a config by exactly the same steps a file edit
+/// does. Two apply paths that drift is how a GUI-set value ends up meaning
+/// something different from the same value typed into the file.
+///
+/// Caller's obligation: `next.errors` is empty. Nothing here re-validates.
+pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
+    debug_assert!(next.errors.is_empty(), "apply_loaded got an invalid config");
+    let sources: Vec<String> = next
+        .sources
+        .iter()
+        .map(|s| s.path.display().to_string())
+        .collect();
+    state.config = next;
+    // Remember what is on disk now, so the inotify event our own write is
+    // about to produce can be told from a human's edit by content (A4). Done
+    // for every source, not just the one written: the rule is "the live config
+    // is exactly these bytes", and a file with no entry would otherwise make
+    // every suppression check fail as soon as there are two sources.
+    state.config_written = state
+        .config
+        .sources
+        .iter()
+        .filter_map(|s| {
+            std::fs::read_to_string(&s.path)
+                .ok()
+                .map(|t| (s.path.clone(), crate::ipc::config_rpc::hash(&t)))
+        })
+        .collect();
+    // Retune the two global bind filters. They hold Allowlist handles rather
+    // than snapshots precisely so this line is possible (ADR 0022 amendment).
+    state.capture_allow.set(state.config.capture.allow.clone());
+    state
+        .clipboard_allow
+        .set(state.config.clipboard.data_control_allow.clone());
+    crate::input::apply_config(state);
+    crate::outputs::relayout(state);
+    crate::shell::arrange(state);
+    crate::backend::damage_all(state);
+    tracing::info!(?sources, "config applied");
+}
+
+/// The one JSON shape a config refusal is reported in.
+///
+/// `watch::reload_now` emits it on the `config-error` event and the control
+/// socket returns it from `validate_config`. One shape, one place: a GUI that
+/// learns to render a hot-reload failure renders a rejected edit for free.
+pub fn error_json(e: &ConfigError) -> serde_json::Value {
+    serde_json::json!({
+        "file": e.file.display().to_string(),
+        "line": e.line,
+        "col": e.col,
+        "message": e.message,
+        "snippet": e.snippet,
+        "spanLen": e.span_len,
+    })
+}
+
 /// A refusal from config validation (COMP-13 §1.2). Carries the precise
 /// `file:line:col` the spec requires so the message can be acted on directly.
 #[derive(Debug, Clone)]
@@ -475,6 +538,35 @@ pub struct ConfigError {
     /// token covers — so [`Display`] can point at it the way rustc does.
     pub snippet: Option<String>,
     pub span_len: usize,
+}
+
+/// Nearest schema path by edit distance, when it is near enough to be worth
+/// suggesting. Bounded at a third of the name's length so a wholly different
+/// word never gets proposed as a typo.
+fn did_you_mean(path: &str) -> Option<&'static str> {
+    let budget = (path.len() / 3).max(1);
+    schema::TABLE
+        .iter()
+        .map(|k| (edit_distance(path, k.path), k.path))
+        .filter(|(d, _)| *d <= budget)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, p)| p)
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.chars().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            cur[j + 1] = (prev[j] + usize::from(ca != *cb))
+                .min(prev[j + 1] + 1)
+                .min(cur[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
 }
 
 /// Locate `offset` in `text`: 1-based line and column, plus the whole line it
@@ -522,6 +614,18 @@ impl std::fmt::Display for ConfigError {
     }
 }
 
+/// One config file and the half of the surface it is allowed to set.
+///
+/// COMP-13 §1.3: `abyss.kdl` holds everything the human may retune freely;
+/// `policy.kdl` holds the security surface (`schema::Owner::Policy`). Keeping
+/// them apart is what lets the config GUI hold a write capability for one and
+/// not the other, and what lets a deployment ship policy.kdl root-owned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Source {
+    pub path: PathBuf,
+    pub owner: schema::Owner,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub general: General,
@@ -544,7 +648,7 @@ pub struct Config {
     pub window_rules: Vec<WindowRule>,
     /// Files this config was built from, in load order. The hot-reload
     /// watcher watches these and the directories that would contain them.
-    pub sources: Vec<PathBuf>,
+    pub sources: Vec<Source>,
     /// `--config <path>`, if one was given. Reload must honour it rather than
     /// falling back to the search path.
     pub explicit: Option<PathBuf>,
@@ -553,7 +657,7 @@ pub struct Config {
     pub errors: Vec<ConfigError>,
     /// The file being parsed, and its text, so `reject` can turn a KDL span
     /// into `file:line:col`. Cleared when the load finishes.
-    cur: Option<(PathBuf, String)>,
+    cur: Option<(Source, String)>,
 }
 
 impl Default for Config {
@@ -736,8 +840,21 @@ impl Config {
     /// total (COMP-13 §1.2): any refusal lands in `errors`, and the caller
     /// decides — startup exits, hot-reload keeps the last good config.
     pub fn load(explicit: Option<&Path>) -> Self {
-        let files: Vec<PathBuf> = match explicit {
-            Some(p) => vec![p.to_path_buf()],
+        // An explicit `--config` names one abyss.kdl; policy stays on the
+        // search path, since a flag must not be able to swap the policy file.
+        let files: Vec<Source> = match explicit {
+            Some(p) => {
+                let mut v = vec![Source {
+                    path: p.to_path_buf(),
+                    owner: schema::Owner::Abyss,
+                }];
+                v.extend(
+                    search_path()
+                        .into_iter()
+                        .filter(|s| s.owner == schema::Owner::Policy),
+                );
+                v
+            }
             None => search_path(),
         };
         let mut cfg = Config {
@@ -747,12 +864,12 @@ impl Config {
         let mut binds_from_file = Vec::new();
         let mut any = false;
         for f in &files {
-            let text = match std::fs::read_to_string(f) {
+            let text = match std::fs::read_to_string(&f.path) {
                 Ok(t) => t,
                 Err(e) => {
-                    if explicit.is_some() {
+                    if explicit.is_some() && f.owner == schema::Owner::Abyss {
                         cfg.errors.push(ConfigError {
-                            file: f.clone(),
+                            file: f.path.clone(),
                             line: 0,
                             col: 0,
                             message: format!("config unreadable: {e}"),
@@ -782,7 +899,7 @@ impl Config {
                     };
                     let (line, col, snippet, span_len) = locate(&text, off.0, off.1);
                     cfg.errors.push(ConfigError {
-                        file: f.clone(),
+                        file: f.path.clone(),
                         line,
                         col,
                         message,
@@ -804,7 +921,7 @@ impl Config {
         if !any {
             tracing::info!("no config found, using built-in defaults");
         } else {
-            tracing::info!(sources = ?cfg.sources, binds = cfg.binds.len(), "config loaded");
+            tracing::info!(sources = ?cfg.sources.iter().map(|s| &s.path).collect::<Vec<_>>(), binds = cfg.binds.len(), "config loaded");
         }
         cfg
     }
@@ -815,8 +932,103 @@ impl Config {
         Self::load(self.explicit.as_deref())
     }
 
+    /// Validate `text` as if it were the file at `path` owned by `owner`,
+    /// without touching disk or the live config.
+    ///
+    /// This is what `validate_config` answers with, and it is deliberately the
+    /// same code the loader runs: a GUI that previews an edit must be told
+    /// exactly what a file edit would have been told, down to the wording.
+    pub fn check_text(path: &Path, owner: schema::Owner, text: &str) -> Vec<ConfigError> {
+        let doc = match text.parse::<KdlDocument>() {
+            Ok(d) => d,
+            Err(e) => {
+                let (off, message) = match e.diagnostics.first() {
+                    Some(d) => (
+                        (d.span.offset(), d.span.len()),
+                        d.message.clone().unwrap_or_else(|| "invalid syntax".to_string()),
+                    ),
+                    None => ((0, 0), format!("{e}")),
+                };
+                let (line, col, snippet, span_len) = locate(text, off.0, off.1);
+                return vec![ConfigError {
+                    file: path.to_path_buf(),
+                    line,
+                    col,
+                    message,
+                    snippet: Some(snippet),
+                    span_len,
+                }];
+            }
+        };
+        let mut cfg = Config {
+            cur: Some((
+                Source {
+                    path: path.to_path_buf(),
+                    owner,
+                },
+                text.to_owned(),
+            )),
+            ..Config::default()
+        };
+        cfg.apply(&doc, &mut Vec::new());
+        cfg.errors
+    }
+
     /// Record a validation refusal against `node`'s position (COMP-13 §1.2).
     /// Also logged, so the journal shows the same text the caller gets.
+    /// The parser's `unknown key` fallthrough, checked against the schema.
+    ///
+    /// This is the second of the three anti-drift sides in `schema.rs`: it runs
+    /// at parse time, on the real user's file. A name the parser does not
+    /// handle but the schema *does* claim is a wiring bug in this file, and the
+    /// message says so rather than telling the human their config is wrong.
+    fn unknown_key(&mut self, node: &KdlNode, prefix: &str, what: &str) {
+        let name = node.name().value();
+        let path = if prefix.is_empty() {
+            name.to_string()
+        } else {
+            format!("{prefix}.{name}")
+        };
+        match schema::get_key(&path) {
+            Some(_) => self.reject(
+                node,
+                format!("{path} is in the config schema but is not wired into the parser \u{2014} this is a bug in abyss, not in your config"),
+            ),
+            None => {
+                let hint = did_you_mean(&path);
+                self.reject(
+                    node,
+                    match hint {
+                        Some(h) => format!("unknown {what} {name:?} (did you mean {h:?}?)"),
+                        None => format!("unknown {what} {name:?}"),
+                    },
+                )
+            }
+        }
+    }
+
+    /// COMP-13 §1.3: refuse a key that belongs in the other file.
+    ///
+    /// Both directions. A policy key in `abyss.kdl` is the one that matters —
+    /// `abyss.kdl` is writable by the config GUI and `policy.kdl` is not, so
+    /// accepting it there would be a way around the write gate. The reverse is
+    /// refused too, so `policy.kdl` stays small enough to read.
+    ///
+    /// The message names the file the key does belong in; a refusal the human
+    /// cannot act on is a worse bug than the one it reports.
+    fn owned_here(&mut self, node: &KdlNode, what: &str, owner: schema::Owner) -> bool {
+        let Some((src, _)) = &self.cur else { return true };
+        if src.owner == owner {
+            return true;
+        }
+        let dest = match owner {
+            schema::Owner::Abyss => "abyss.kdl",
+            schema::Owner::Policy => "policy.kdl",
+        };
+        self.reject(node, format!("{what} belongs in {dest}, not in this file"));
+        false
+    }
+
     fn reject(&mut self, node: &KdlNode, message: impl Into<String>) {
         let message = message.into();
         // Underline the node name only; the node's own span runs to the end of
@@ -824,7 +1036,7 @@ impl Config {
         let (file, line, col, snippet, span_len) = match &self.cur {
             Some((f, text)) => {
                 let (line, col, snippet, len) = locate(text, node.span().offset(), node.name().value().len());
-                (f.clone(), line, col, Some(snippet), len)
+                (f.path.clone(), line, col, Some(snippet), len)
             }
             None => (PathBuf::new(), 0, 0, None, 0),
         };
@@ -841,7 +1053,16 @@ impl Config {
 
     fn apply(&mut self, doc: &KdlDocument, binds: &mut Vec<Bind>) {
         for node in doc.nodes() {
-            match node.name().value() {
+            let name = node.name().value();
+            // Whole-node ownership, before the node is parsed at all. `misc`
+            // and `windowrule` are mixed and check themselves, one key or one
+            // action at a time.
+            if let Some(owner) = schema::node_owner(name) {
+                if !self.owned_here(node, &format!("{name:?}"), owner) {
+                    continue;
+                }
+            }
+            match name {
                 "general" => self.apply_general(node),
                 "bind" => match parse_bind(node) {
                     Ok(b) => binds.push(b),
@@ -859,7 +1080,7 @@ impl Config {
                 "decoration" => self.apply_decoration(node),
                 "animations" => self.apply_animations(node),
                 "windowrule" => self.apply_windowrule(node),
-                other => self.reject(node, format!("unknown config node {other:?}")),
+                _ => self.unknown_key(node, "", "config node"),
             }
         }
     }
@@ -901,7 +1122,7 @@ impl Config {
                         None => self.reject(n, format!("bad color for {name:?}")),
                     }
                 }
-                other => self.reject(n, format!("unknown general key {other:?}")),
+                _ => self.unknown_key(n, "general", "general key"),
             }
         }
     }
@@ -913,7 +1134,7 @@ impl Config {
                 "direct-scanout" => {
                     self.render.direct_scanout = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
                 }
-                other => self.reject(n, format!("unknown render node {other:?}")),
+                _ => self.unknown_key(n, "render", "render node"),
             }
         }
     }
@@ -929,7 +1150,7 @@ impl Config {
                     }
                     self.clipboard.data_control_allow = names(n, &mut seen_allow);
                 }
-                other => self.reject(n, format!("unknown clipboard node {other:?}")),
+                _ => self.unknown_key(n, "clipboard", "clipboard node"),
             }
         }
     }
@@ -955,7 +1176,7 @@ impl Config {
                     }
                     self.capture.redact_app_id = names(n, &mut seen_redact);
                 }
-                other => self.reject(n, format!("unknown capture node {other:?}")),
+                _ => self.unknown_key(n, "capture", "capture node"),
             }
         }
     }
@@ -981,7 +1202,7 @@ impl Config {
                         ),
                     ),
                 },
-                other => self.reject(n, format!("unknown xwayland node {other:?}")),
+                _ => self.unknown_key(n, "xwayland", "xwayland node"),
             }
         }
     }
@@ -1011,7 +1232,7 @@ impl Config {
                     Some(c) => self.idle.lock_command = Some(c.to_owned()),
                     None => self.reject(n, "idle lock-command needs a string argument"),
                 },
-                other => self.reject(n, format!("unknown idle node {other:?}")),
+                _ => self.unknown_key(n, "idle", "idle node"),
             }
         }
     }
@@ -1053,7 +1274,7 @@ impl Config {
                     other => self.reject(n, format!("unknown accel-profile {other:?}")),
                 },
                 "touchpad" => self.apply_touchpad(n),
-                other => self.reject(n, format!("unknown input key {other:?}")),
+                _ => self.unknown_key(n, "input", "input key"),
             }
         }
     }
@@ -1070,7 +1291,7 @@ impl Config {
                 "natural-scroll" => self.input.touchpad.natural_scroll = b,
                 "tap-to-click" => self.input.touchpad.tap_to_click = b,
                 "dwt" => self.input.touchpad.dwt = b,
-                other => self.reject(n, format!("unknown touchpad key {other:?}")),
+                _ => self.unknown_key(n, "input.touchpad", "touchpad key"),
             }
         }
     }
@@ -1099,7 +1320,7 @@ impl Config {
                 },
                 "blur" => self.apply_blur(n),
                 "shadow" => self.apply_shadow(n),
-                other => self.reject(n, format!("unknown decoration key {other:?}")),
+                _ => self.unknown_key(n, "decoration", "decoration key"),
             }
         }
     }
@@ -1119,7 +1340,7 @@ impl Config {
                     Some(v) if (1..=6).contains(&v) => self.decoration.blur.passes = v as i32,
                     _ => self.reject(n, "blur passes must be an integer 1..=6"),
                 },
-                other => self.reject(n, format!("unknown blur key {other:?}")),
+                _ => self.unknown_key(n, "decoration.blur", "blur key"),
             }
         }
     }
@@ -1135,7 +1356,7 @@ impl Config {
                     Some(v) if (0..=128).contains(&v) => self.decoration.shadow.range = v as i32,
                     _ => self.reject(n, "shadow range must be an integer 0..=128"),
                 },
-                other => self.reject(n, format!("unknown shadow key {other:?}")),
+                _ => self.unknown_key(n, "decoration.shadow", "shadow key"),
             }
         }
     }
@@ -1149,7 +1370,7 @@ impl Config {
                     self.animations.enabled = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
                 }
                 "animation" => self.apply_animation(n),
-                other => self.reject(n, format!("unknown animations key {other:?}")),
+                _ => self.unknown_key(n, "animations", "animations key"),
             }
         }
     }
@@ -1213,6 +1434,14 @@ impl Config {
         let mut words = action.split_whitespace();
         let verb = words.next().unwrap_or_default();
         let param = words.next();
+        // Ownership is per-action here, not per-node: `float` is cosmetic,
+        // `sensitivity` and `no-agent` are the security surface. Refused in
+        // both directions, same as a whole node.
+        if let Some(owner) = schema::rule_owner(verb) {
+            if !self.owned_here(node, &format!("windowrule {verb:?}"), owner) {
+                return;
+            }
+        }
         let action = match (verb, param) {
             ("float", None) => RuleAction::Float,
             ("tile", None) => RuleAction::Tile,
@@ -1364,6 +1593,9 @@ impl Config {
         for n in children.nodes() {
             match n.name().value() {
                 "scripted-input" => {
+                    if !self.owned_here(n, "\"misc.scripted-input\"", schema::Owner::Policy) {
+                        continue;
+                    }
                     self.misc.scripted_input = arg(n).and_then(KdlValue::as_bool).unwrap_or(false);
                 }
                 "render-device" => match arg(n).and_then(KdlValue::as_string) {
@@ -1373,7 +1605,7 @@ impl Config {
                 },
                 // Restart-only knobs (COMP-13 §1.2); parsed elsewhere or not yet.
                 "xwayland" => {}
-                other => self.reject(n, format!("unknown misc key {other:?}")),
+                _ => self.unknown_key(n, "misc", "misc key"),
             }
         }
     }
@@ -1512,13 +1744,31 @@ impl Config {
     }
 }
 
-fn search_path() -> Vec<PathBuf> {
-    let mut out = vec![PathBuf::from("/etc/eclipse/abyss.kdl")];
+/// Every file that may contribute, in apply order.
+///
+/// Each directory contributes its `policy.kdl` after its `abyss.kdl`, so a
+/// policy-owned key set in the wrong file is refused rather than quietly
+/// shadowed. There are deliberately no `policy.d/` drop-ins: the security
+/// surface is one file per directory, so "what is the policy here" has one
+/// answer a human can read.
+fn search_path() -> Vec<Source> {
+    let abyss = |p: PathBuf| Source {
+        path: p,
+        owner: schema::Owner::Abyss,
+    };
+    let policy = |p: PathBuf| Source {
+        path: p,
+        owner: schema::Owner::Policy,
+    };
+    let mut out = vec![
+        abyss(PathBuf::from("/etc/eclipse/abyss.kdl")),
+        policy(PathBuf::from("/etc/eclipse/policy.kdl")),
+    ];
     let cfg_home = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
     let Some(base) = cfg_home else { return out };
-    out.push(base.join("eclipse/abyss.kdl"));
+    out.push(abyss(base.join("eclipse/abyss.kdl")));
     if let Ok(dir) = std::fs::read_dir(base.join("eclipse/abyss.d")) {
         let mut drop_ins: Vec<PathBuf> = dir
             .filter_map(|e| e.ok())
@@ -1526,10 +1776,11 @@ fn search_path() -> Vec<PathBuf> {
             .filter(|p| p.extension().is_some_and(|x| x == "kdl"))
             .collect();
         drop_ins.sort();
-        out.extend(drop_ins);
+        out.extend(drop_ins.into_iter().map(abyss));
     }
+    out.push(policy(base.join("eclipse/policy.kdl")));
     // Compatibility with the path used by the M2 task brief.
-    out.push(base.join("abyss/config.kdl"));
+    out.push(abyss(base.join("abyss/config.kdl")));
     out
 }
 
@@ -1670,6 +1921,89 @@ fn workspace_arg(n: Option<i128>) -> Result<usize, String> {
 mod tests {
     use super::*;
 
+    fn abyss_src(p: &str) -> Source {
+        Source {
+            path: PathBuf::from(p),
+            owner: schema::Owner::Abyss,
+        }
+    }
+
+    fn policy_src(p: &str) -> Source {
+        Source {
+            path: PathBuf::from(p),
+            owner: schema::Owner::Policy,
+        }
+    }
+
+    /// COMP-13 §1.3: the security surface lives in `policy.kdl` and nowhere
+    /// else. A policy key written into `abyss.kdl` is refused rather than
+    /// honoured, because `abyss.kdl` is what the config GUI may write.
+    #[test]
+    fn ownership_is_refused_in_both_directions() {
+        fn err(src: Source, text: &str) -> String {
+            let doc: KdlDocument = text.parse().unwrap();
+            let mut cfg = Config {
+                cur: Some((src, text.to_owned())),
+                ..Config::default()
+            };
+            cfg.apply(&doc, &mut Vec::new());
+            assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+            cfg.errors[0].message.clone()
+        }
+
+        // Whole node, policy-owned, in the wrong file.
+        let m = err(abyss_src("a.kdl"), "capture {\n    allow #true\n}\n");
+        assert!(m.contains("policy.kdl"), "{m}");
+
+        // Whole node, abyss-owned, in policy.kdl.
+        let m = err(policy_src("p.kdl"), "general {\n    gaps-in 4\n}\n");
+        assert!(m.contains("abyss.kdl"), "{m}");
+
+        // `misc` is mixed: the policy key is refused, the abyss key beside it
+        // is not.
+        let m = err(
+            abyss_src("a.kdl"),
+            "misc {\n    render-device \"/dev/dri/card0\"\n    scripted-input #true\n}\n",
+        );
+        assert!(
+            m.contains("misc.scripted-input") && m.contains("policy.kdl"),
+            "{m}"
+        );
+
+        // `windowrule` is decided per action, not per node.
+        let m = err(abyss_src("a.kdl"), "windowrule \"no-agent\" app-id=\"x\"\n");
+        assert!(m.contains("no-agent") && m.contains("policy.kdl"), "{m}");
+        let m = err(policy_src("p.kdl"), "windowrule \"float\" app-id=\"x\"\n");
+        assert!(m.contains("float") && m.contains("abyss.kdl"), "{m}");
+    }
+
+    /// Each directory contributes its policy file after its abyss file, so a
+    /// later abyss.d drop-in can never shadow policy.
+    #[test]
+    fn the_search_path_pairs_each_directory() {
+        let path = search_path();
+        let names: Vec<String> = path
+            .iter()
+            .map(|s| {
+                format!(
+                    "{}:{}",
+                    s.path.display(),
+                    if s.owner == schema::Owner::Policy {
+                        "p"
+                    } else {
+                        "a"
+                    }
+                )
+            })
+            .collect();
+        assert!(names[0].ends_with("/etc/eclipse/abyss.kdl:a"), "{names:?}");
+        assert!(names[1].ends_with("/etc/eclipse/policy.kdl:p"), "{names:?}");
+        let policies: Vec<_> = path.iter().filter(|s| s.owner == schema::Owner::Policy).collect();
+        assert!(policies
+            .iter()
+            .all(|s| s.path.file_name().unwrap() == "policy.kdl"));
+    }
+
     /// COMP-13 §1.2: validation is total — an unknown key is an error, not a
     /// warning, and it carries the position of the offending token.
     #[test]
@@ -1677,7 +2011,7 @@ mod tests {
         let text = "general {\n    gaps-in 4\n    gaps-inn 4\n}\n";
         let doc: KdlDocument = text.parse().unwrap();
         let mut cfg = Config {
-            cur: Some((PathBuf::from("/etc/eclipse/abyss.kdl"), text.to_owned())),
+            cur: Some((abyss_src("/etc/eclipse/abyss.kdl"), text.to_owned())),
             ..Config::default()
         };
         cfg.apply(&doc, &mut Vec::new());
@@ -1693,6 +2027,27 @@ mod tests {
         );
     }
 
+    /// Anti-drift side (b): the parser's reject path consults the schema, so a
+    /// near-miss is named and a key the schema claims but the parser does not
+    /// handle is reported as an abyss bug rather than as the human's mistake.
+    #[test]
+    fn unknown_keys_suggest_the_schema_path_they_nearly_are() {
+        fn err(text: &str) -> String {
+            let doc: KdlDocument = text.parse().unwrap();
+            let mut cfg = Config::default();
+            cfg.apply(&doc, &mut Vec::new());
+            assert_eq!(cfg.errors.len(), 1);
+            cfg.errors[0].message.clone()
+        }
+
+        let m = err("general {\n    gaps-inn 4\n}\n");
+        assert!(m.contains("did you mean \"general.gaps-in\""), "{m}");
+
+        // Nothing close enough: no suggestion rather than a misleading one.
+        let m = err("general {\n    quux 4\n}\n");
+        assert!(!m.contains("did you mean"), "{m}");
+    }
+
     /// A tab-indented line keeps its tabs in the caret gutter so the run still
     /// lands under the token whatever tab width the terminal uses.
     #[test]
@@ -1700,7 +2055,7 @@ mod tests {
         let text = "general {\n\tgaps-inn 4\n}\n";
         let doc: KdlDocument = text.parse().unwrap();
         let mut cfg = Config {
-            cur: Some((PathBuf::from("a.kdl"), text.to_owned())),
+            cur: Some((abyss_src("a.kdl"), text.to_owned())),
             ..Config::default()
         };
         cfg.apply(&doc, &mut Vec::new());

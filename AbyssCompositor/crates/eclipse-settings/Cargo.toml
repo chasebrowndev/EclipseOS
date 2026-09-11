@@ -1,0 +1,34 @@
+[package]
+name = "eclipse-settings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Eclipse settings app: every abyss.kdl setting, without a text editor."
+# An application, not a library. It also keeps cargo-deny's wildcard check off
+# our path dependencies, which it only exempts for unpublished crates.
+publish = false
+
+[lib]
+name = "eclipse_settings"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eclipse-settings"
+path = "src/main.rs"
+
+[dependencies]
+# Pinned to match eclipse-ui exactly. `wayland` and `thread-pool` are both
+# load-bearing: without the first, winit does not compile at all; without a
+# futures executor, iced fires a compile_error!. See ADR 0039.
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
+eclipse-ui = { path = "../eclipse-ui" }
+eclipse-ipc = { path = "../eclipse-ipc" }
+serde_json.workspace = true
+
+[dev-dependencies]
+# Only so `tests/coverage.rs` can walk the compositor's config schema and
+# assert this app renders a control for every key in it. Not linked into the
+# shipped binary.
+abyss = { path = "../abyss" }

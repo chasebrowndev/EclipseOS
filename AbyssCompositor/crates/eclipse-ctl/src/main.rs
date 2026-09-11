@@ -13,6 +13,8 @@ use std::{
 
 use serde_json::{json, Value};
 
+mod migrate;
+
 const USAGE: &str = "\
 eclipse-ctl — control the abyss compositor
 
@@ -32,10 +34,19 @@ eclipse-ctl — control the abyss compositor
   eclipse-ctl output ID calibrate [commit|cancel]
                                       drive the on-screen overscan calibration
   eclipse-ctl reload                  re-read the config
+  eclipse-ctl config list [--changed] every setting, its value and its file
+  eclipse-ctl config describe PATH    one setting: type, range, default, doc
+  eclipse-ctl config get PATH         one setting's value, bare
+  eclipse-ctl config set PATH VALUE   write a setting (abyss.kdl only)
+  eclipse-ctl config validate         check a config file without applying it
+  eclipse-ctl config migrate          split a legacy abyss.kdl into two files
   eclipse-ctl call METHOD [JSON]      raw JSON-RPC, for anything not above
 
 Options:
-  --json    print the raw result even for the table commands
+  --json          print the raw result even for the table commands
+  --file abyss|policy   which config file a config verb is about
+  --changed       config list: only settings that differ from the default
+  --dry-run       config set/migrate: say what would happen, write nothing
   --socket PATH
 ";
 
@@ -48,18 +59,34 @@ fn main() -> ExitCode {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut socket = None;
     let mut raw = false;
-    let mut all = false;
+    let mut flags = Flags::default();
     args.retain(|a| match a.as_str() {
         "--json" => {
             raw = true;
             false
         }
         "--all" => {
-            all = true;
+            flags.all = true;
+            false
+        }
+        "--changed" => {
+            flags.changed = true;
+            false
+        }
+        "--dry-run" => {
+            flags.dry_run = true;
             false
         }
         _ => true,
     });
+    if let Some(i) = args.iter().position(|a| a == "--file") {
+        if i + 1 >= args.len() {
+            eprintln!("--file needs abyss or policy");
+            return ExitCode::FAILURE;
+        }
+        flags.file = Some(args.remove(i + 1));
+        args.remove(i);
+    }
     if let Some(i) = args.iter().position(|a| a == "--socket") {
         if i + 1 >= args.len() {
             eprintln!("--socket needs a path");
@@ -73,7 +100,23 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let (method, params, table) = match parse(&args, all) {
+    // `config migrate` never touches the socket: it edits the files in place,
+    // and one of them is `policy.kdl`, which the socket may never write
+    // (COMP-13 §1.3). It must also work with the compositor stopped.
+    if args[0] == "config" && args.get(1).map(String::as_str) == Some("migrate") {
+        return match migrate::run(flags.dry_run) {
+            Ok(report) => {
+                print!("{report}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("eclipse-ctl: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    let (method, params, table) = match parse(&args, &flags) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("eclipse-ctl: {e}");
@@ -114,24 +157,46 @@ fn default_socket() -> String {
     format!("{base}/eclipse/abyss.sock")
 }
 
+/// Command-line flags that survive into `parse`. Grouped rather than passed
+/// one by one so adding a verb's flag does not re-thread every call site.
+#[derive(Default)]
+struct Flags {
+    all: bool,
+    changed: bool,
+    dry_run: bool,
+    file: Option<String>,
+}
+
 /// Which columns a listing prints. Anything not here falls back to JSON.
 #[derive(Clone, Copy)]
 enum Table {
     Outputs,
     Workspaces,
     Windows,
+    /// `config list`. `changed` drops rows still at their default, which is
+    /// what "show me what I have actually configured" means.
+    Config {
+        changed: bool,
+    },
+    ConfigKey,
+    ConfigValue,
+    ConfigCheck,
 }
 
 type Parsed = (String, Value, Option<Table>);
 
-fn parse(args: &[String], all: bool) -> Result<Parsed, String> {
+fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
     let a = |i: usize| args.get(i).map(String::as_str).unwrap_or_default();
     let num = |i: usize| -> Result<u64, String> {
         a(i).parse::<u64>()
             .map_err(|_| format!("expected a number, got {:?}", a(i)))
     };
     Ok(match a(0) {
-        "outputs" => ("get_outputs".into(), json!({"all": all}), Some(Table::Outputs)),
+        "outputs" => (
+            "get_outputs".into(),
+            json!({"all": flags.all}),
+            Some(Table::Outputs),
+        ),
         "workspaces" => ("get_workspaces".into(), Value::Null, Some(Table::Workspaces)),
         "windows" => ("get_windows".into(), Value::Null, Some(Table::Windows)),
         "focused" => ("get_focused".into(), Value::Null, None),
@@ -170,6 +235,72 @@ fn parse(args: &[String], all: bool) -> Result<Parsed, String> {
                     )
                 }
                 other => return Err(format!("unknown output subcommand {other:?}")),
+            }
+        }
+        "config" => {
+            let path = a(2);
+            let need_path = |verb: &str| -> Result<String, String> {
+                if path.is_empty() {
+                    Err(format!("config {verb} needs a setting path"))
+                } else {
+                    Ok(path.to_string())
+                }
+            };
+            let file = || match flags.file.as_deref() {
+                None => Value::Null,
+                Some(f) => json!(f),
+            };
+            match a(1) {
+                "" | "list" => {
+                    let mut params = json!({"schema": false});
+                    if let Value::String(f) = file() {
+                        params["file"] = json!(f);
+                    }
+                    (
+                        "get_config".into(),
+                        params,
+                        Some(Table::Config {
+                            changed: flags.changed,
+                        }),
+                    )
+                }
+                "describe" => (
+                    "get_config".into(),
+                    json!({"schema": true, "path": need_path("describe")?}),
+                    Some(Table::ConfigKey),
+                ),
+                "get" => (
+                    "get_config".into(),
+                    json!({"schema": false, "path": need_path("get")?}),
+                    Some(Table::ConfigValue),
+                ),
+                "set" => {
+                    let path = need_path("set")?;
+                    let raw = args.get(3).ok_or("config set needs a value")?;
+                    (
+                        "set_config_value".into(),
+                        json!({
+                            "path": path,
+                            // Sent as a JSON string unless it is plainly a
+                            // number or a bool; the compositor coerces per the
+                            // key's type, which is the only place that knows it.
+                            "value": scalar(raw),
+                            "dry_run": flags.dry_run,
+                        }),
+                        None,
+                    )
+                }
+                "validate" => {
+                    // `config validate [FILE]` — the positional is the same
+                    // abyss|policy name `--file` takes.
+                    let named = if path.is_empty() { file() } else { json!(path) };
+                    let mut params = json!({});
+                    if let Value::String(f) = named {
+                        params["file"] = json!(f);
+                    }
+                    ("validate_config".into(), params, Some(Table::ConfigCheck))
+                }
+                other => return Err(format!("unknown config subcommand {other:?}")),
             }
         }
         "focus" => ("focus_window".into(), json!({"handle": num(1)?}), None),
@@ -242,6 +373,24 @@ fn overscan_spec(raw: &str) -> Result<Value, String> {
     Ok(Value::Object(obj))
 }
 
+/// A `config set` value, as JSON. Bare `true`/`false` and numbers go over the
+/// wire as themselves; everything else is a string. The compositor coerces
+/// against the key's declared type either way — this only decides what a shell
+/// word looks like before it gets there, so `set … 0.5` is a float and
+/// `set … "0.5"` is not something the shell can express differently.
+fn scalar(raw: &str) -> Value {
+    match raw {
+        "true" | "false" => json!(raw == "true"),
+        _ => match raw.parse::<i64>() {
+            Ok(n) => json!(n),
+            Err(_) => match raw.parse::<f64>() {
+                Ok(f) => json!(f),
+                Err(_) => json!(raw),
+            },
+        },
+    }
+}
+
 fn request(method: &str, params: Value) -> String {
     let mut req = json!({"jsonrpc": "2.0", "id": 1, "method": method});
     if !params.is_null() {
@@ -309,7 +458,108 @@ fn s(v: &Value, key: &str) -> String {
     }
 }
 
+/// The one-line form of a value: strings bare, lists space-joined, null as `-`.
+fn scalar_str(v: &Value) -> String {
+    match v {
+        Value::Null => "-".into(),
+        Value::String(s) => s.clone(),
+        Value::Array(items) => items.iter().map(scalar_str).collect::<Vec<_>>().join(" "),
+        other => other.to_string(),
+    }
+}
+
+fn print_config_list(rows: &[Value], changed: bool) {
+    println!("{:<34} {:<7} {:<20} FLAGS", "SETTING", "FILE", "VALUE");
+    for r in rows {
+        if changed && r.get("source").is_none_or(Value::is_null) {
+            continue;
+        }
+        let mut flags = Vec::new();
+        if r["readable"] == Value::Bool(false) {
+            flags.push("unreadable");
+        }
+        if r["writable"] == Value::Bool(false) {
+            flags.push("read-only");
+        }
+        if !r.get("source").is_none_or(Value::is_null) {
+            flags.push("set");
+        }
+        println!(
+            "{:<34} {:<7} {:<20} {}",
+            s(r, "path"),
+            s(r, "file"),
+            scalar_str(r.get("value").unwrap_or(&Value::Null)),
+            flags.join(",")
+        );
+    }
+}
+
+fn print_config_key(rows: &[Value]) {
+    let Some(r) = rows.first() else {
+        eprintln!("no such setting");
+        return;
+    };
+    println!("{}", s(r, "path"));
+    println!("  file      {}", s(r, "file"));
+    println!("  type      {}", s(r, "type"));
+    if !r.get("constraints").is_none_or(Value::is_null) {
+        println!("  allows    {}", r["constraints"]);
+    }
+    println!(
+        "  value     {}",
+        scalar_str(r.get("value").unwrap_or(&Value::Null))
+    );
+    println!(
+        "  default   {}",
+        scalar_str(r.get("default").unwrap_or(&Value::Null))
+    );
+    println!("  source    {}", s(r, "source"));
+    println!("  reload    {}", s(r, "reload"));
+    println!(
+        "  writable  {}",
+        if r["writable"] == Value::Bool(true) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    println!("  {}", s(r, "doc"));
+}
+
 fn print_table(table: Table, result: &Value) {
+    // The config verbs answer with an object, not a bare array.
+    match table {
+        Table::Config { changed } => {
+            return print_config_list(result["keys"].as_array().unwrap_or(&Vec::new()), changed)
+        }
+        Table::ConfigKey => return print_config_key(result["keys"].as_array().unwrap_or(&Vec::new())),
+        Table::ConfigValue => {
+            let empty = Vec::new();
+            let rows = result["keys"].as_array().unwrap_or(&empty);
+            match rows.first() {
+                Some(r) => println!("{}", scalar_str(r.get("value").unwrap_or(&Value::Null))),
+                None => eprintln!("no such setting"),
+            }
+            return;
+        }
+        Table::ConfigCheck => {
+            if result["valid"] == Value::Bool(true) {
+                println!("ok");
+                return;
+            }
+            for e in result["errors"].as_array().unwrap_or(&Vec::new()) {
+                println!(
+                    "{}:{}:{}: {}",
+                    s(e, "file"),
+                    s(e, "line"),
+                    s(e, "col"),
+                    s(e, "message")
+                );
+            }
+            return;
+        }
+        _ => {}
+    }
     let Some(rows) = result.as_array() else {
         println!("{result}");
         return;
@@ -358,6 +608,9 @@ fn print_table(table: Table, result: &Value) {
                     if r["active"] == Value::Bool(true) { "*" } else { "" }
                 );
             }
+        }
+        Table::Config { .. } | Table::ConfigKey | Table::ConfigValue | Table::ConfigCheck => {
+            unreachable!("handled above")
         }
         Table::Windows => {
             println!(

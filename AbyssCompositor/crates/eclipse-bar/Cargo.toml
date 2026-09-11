@@ -1,0 +1,51 @@
+[package]
+name = "eclipse-bar"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Eclipse bar: a layer surface that lists windows over Wayland and acts over the control socket."
+# An application, not a library — and it keeps cargo-deny's wildcard check off
+# our path dependencies, which it only exempts for unpublished crates.
+publish = false
+
+[lib]
+name = "eclipse_bar"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eclipse-bar"
+path = "src/main.rs"
+
+# The notification stack is its own layer surface with its own lifetime, but it
+# shares the bar's tokens and its service layer, so it is a second binary here
+# rather than a second crate.
+[[bin]]
+name = "eclipse-toasts"
+path = "src/toasts/main.rs"
+
+# The control center: the same tokens and the same service layer again, with
+# its own lifetime — it is spawned by a keybind and exits when it is done.
+[[bin]]
+name = "eclipse-center"
+path = "src/center/main.rs"
+
+# The launcher: the same tokens and the same service layer once more, spawned
+# by a keybind, it runs one application and exits.
+[[bin]]
+name = "eclipse-launcher"
+path = "src/launcher/main.rs"
+
+[dependencies]
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
+iced_layershell = "0.19.1"
+eclipse-ui = { path = "../eclipse-ui" }
+eclipse-ipc = { path = "../eclipse-ipc" }
+# The system-status watchers (ADR 0038). Read-only: the bar draws network,
+# bluetooth and battery, and can change none of them.
+eclipse-services = { path = "../eclipse-services" }
+serde_json.workspace = true
+# `clock.rs` formats wall-clock time through `localtime_r`, so that the bar
+# follows the user's zone and DST without carrying a time crate.
+libc = "0.2"

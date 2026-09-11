@@ -40,6 +40,11 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "set_output" => set_output(state, params),
         "calibrate_output" => calibrate_output(state, params),
         "reload_config" => reload_config(state),
+        // Config read/write (COMP-13 §1.4). The outer gate already returned
+        // `Allow` to reach this line; `config_rpc` tightens onto it per file.
+        "get_config" | "set_config_value" | "validate_config" => {
+            super::config_rpc::dispatch(state, super::gate::Decision::Allow, method, params)
+        }
         // Unreachable: the gate rejects anything not in the table and
         // `handle_line` rejects anything the table marks unimplemented.
         other => Err(RpcError::not_implemented(other)),
@@ -205,6 +210,12 @@ fn get_outputs(state: &mut AbyssState, params: &Value) -> Reply {
     Ok(Value::Array(out))
 }
 
+/// Windows on the **active workspace of each output**, not every window the
+/// compositor holds. `state.space` only maps what is currently shown; a window
+/// moved to an inactive workspace leaves the list until that workspace is
+/// switched back to. The per-row `workspace` field therefore names where a
+/// visible window is, and is never a way to find a hidden one. The bar relies
+/// on exactly this — it renders the focused workspace and nothing else.
 fn get_windows(state: &mut AbyssState) -> Reply {
     state.ipc.gc();
     let windows: Vec<Window> = state.space.elements().cloned().collect();
@@ -277,7 +288,7 @@ fn dump_state(state: &mut AbyssState) -> Reply {
         "focused": get_focused(state)?,
         "metrics": get_metrics(state)?,
         "config": {
-            "sources": state.config.sources.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            "sources": state.config.sources.iter().map(|s| s.path.display().to_string()).collect::<Vec<_>>(),
             "scripted_input": state.config.misc.scripted_input,
         },
     }))
@@ -393,7 +404,7 @@ fn reload_config(state: &mut AbyssState) -> Reply {
     crate::config::watch::reload_now(state);
     Ok(json!({
         "ok": true,
-        "sources": state.config.sources.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "sources": state.config.sources.iter().map(|s| s.path.display().to_string()).collect::<Vec<_>>(),
     }))
 }
 
