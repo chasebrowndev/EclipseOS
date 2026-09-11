@@ -64,6 +64,7 @@ priority.
 | COMP-14 | Performance targets & benchmarking | **DONE** | F-04 |
 | COMP-15 | Testing, fuzzing, client compat matrix | **DONE** | C-00 |
 | COMP-16 | Milestones & sequencing | **DONE** | C-00 |
+| COMP-17 | Desktop profiles: WM and DE interaction modes | planned (B-03) | C-00, COMP-13 |
 
 ## Tier 2 — Security & Policy (`policyd`)
 
@@ -133,7 +134,7 @@ than silently restating it.* | | |
 | D-02 | Package repository: build infra, signing, mirrors | planned | F-07, S-12 |
 | D-03 | ISO build (archiso) & installer | planned | D-01 |
 | D-04 | Update strategy: rolling vs snapshots, atomic updates, rollback | planned | D-02 |
-| D-05 | Default userland: bar, launcher, terminal (`cataclysm`, P-04), portal, notifications | planned | C-00, P-04 |
+| D-05 | Default userland: bar, launcher, terminal (`cataclysm`, P-04), portal, notifications, **settings GUI** | planned; **bar pulled forward into Phase 1** (B-08) | C-00, P-04, COMP-17 |
 | D-06 | Hardware support matrix, GPU drivers, firmware | planned | F-04 |
 | D-07 | First-run experience & agent onboarding | planned | D-03 |
 | D-08 | Telemetry & crash reporting (opt-in; privacy stance) | planned | F-02 |
@@ -301,9 +302,15 @@ model that cannot be talked past.
 - Cost leadership or token-economics marketing. Capability is the goal.
 - Supporting every application. Non-cooperating apps get a vision fallback,
   not a fork.
-- Beginner-friendliness, GUI installers polish, theming, or desktop-environment
-  breadth.
+- Desktop-environment *breadth*. EclipseOS ships one opinionated desktop with
+  two interaction modes (COMP-17) and does not aim to support many desktop
+  environments. **Amended B-01 (2026-09-10): beginner-friendliness and theming
+  are no longer non-goals** — see §4 "Configurable without a text editor". GUI
+  installer polish remains deferred, but see B-01's open decision 2.
 - Multi-user or enterprise deployment. v1 is single-user: the owner.
+  **Open (B-01 decision 1):** this sits in tension with the configurability
+  commitment in §4, which implies users beyond the owner. Settle before COMP-17
+  is written — it determines how much of D-05 and D-07 is v1 scope.
 - Training foundation models. We fine-tune small models at most, and only
   after we have real data.
 
@@ -319,6 +326,23 @@ model that cannot be talked past.
   decision is logged in a structured, queryable form.
 - **Dogfood constantly.** The owner runs this daily from the first bootable
   build. Bugs that block daily use outrank features.
+- **Configurable without a text editor.** *(Added B-02, 2026-09-10.)* Every
+  setting a user is expected to change is reachable from a GUI, in both
+  interaction modes (COMP-17), out of the box. Configuration files remain the
+  source of truth and remain hand-editable — the GUI is a client of the same
+  validated write path (COMP-13 §1.4), never a parallel one.
+
+  Consequences, which are not optional once this principle stands: the settings
+  GUI is a v1 deliverable rather than furniture; the COMP-13 config write API is
+  load-bearing rather than convenience; D-07 (first-run experience) can no
+  longer be a Phase 6 afterthought; and §7 should gain a companion gate to the
+  30-minute install gate — *a user can reach a working configuration without
+  editing a file* (proposed, not yet written).
+- **Parity between the terminal and the GUI.** *(Added B-09, 2026-09-10.)*
+  Every setting is reachable both ways: from a shell, and from a graphical
+  control. Neither front end is the privileged one, and neither may be the only
+  way to reach a capability. See COMP-13 §1.5 for the mechanism and the honest
+  asymmetry it rests on.
 
 ## 5. Architecture Pillars
 
@@ -2644,12 +2668,68 @@ Output {
   scale: f64,                        // fractional allowed
   transform: Normal|90|180|270|Flipped*,
   vrr: bool, enabled: bool,
+  visible: Inset{t,r,b,l},           // B-06; zero = the whole mode
   owner: Principal,                  // human, or agent:<id> for virtual
 }
 ```
 
 Global space is in **logical pixels**. Every geometry an agent sees
 (COMP-08 §3) is in this space; per-output scale converts to physical.
+
+### 1.1 Visible region *(added B-06, 2026-09-10)*
+
+`visible` insets the region of the output that is actually used, for overscan
+compensation on displays that crop — televisions above all. It is persisted in
+`outputs.kdl` alongside mode, position, scale, transform, enabled and vrr,
+under the same output identity scheme, and it is exposed in the settings GUI as
+a screen-edges selector (COMP-17).
+
+**Scale and pad; nothing is ever cropped.** The scene is scaled down into the
+inset rectangle and the margins are left black. Every pixel the user would have
+seen is still on screen, smaller — which is the point on a television, where
+the alternative is silently losing the edges of what the compositor drew.
+
+*(Amended 2026-09-11. B-06 as first written specified letterbox — composite into
+the inset and lose what falls outside — with scale-to-fit as an opt-in. The
+implementation chose scale-and-pad instead and is the better answer for the
+hardware this exists for. The spec is corrected to match the code; the cost
+below is the price, and it is accepted deliberately rather than discovered.)*
+
+**Cost: scale-and-pad requires a GLES pass**, because NVIDIA primary planes
+cannot scale, so **an output with a non-zero inset cannot take direct scanout**
+(COMP-02). An output at zero inset is unaffected and the default frame path is
+unchanged. This is inherent to not cropping, not a defect.
+
+**Driver first where it exists.** Where the DRM connector exposes `underscan`,
+`underscan hborder` and `underscan vborder`, those may be used instead and cost
+nothing. On the reference hardware they are absent — `underscan_probe` confirms
+nvidia-open exposes none of the three — so the compositor path above is the one
+that runs.
+
+**`visible` changes the output's logical geometry, not merely its rendering.**
+It is a COMP-03 property and not a COMP-02 one. It must flow into layer-shell
+exclusive zones, window placement (COMP-05), pointer clamping and cursor
+confinement (COMP-04 §6), fullscreen sizing — a fullscreen window fills the
+visible region, never the raw mode — and capture region geometry (COMP-02 §7).
+An implementation that insets only the render path produces windows placed
+off-screen and a cursor that walks into the black.
+
+**Calibration is compositor-drawn, not a layer-shell client.** The overlay the
+user drags the edges with grabs the seat and paints in the very coordinate
+space it is remapping; a client cannot reliably draw a region whose
+logical-to-physical mapping is changing underneath it, and it cannot hold the
+seat.
+
+> **VERIFY — the conclusion is right, the stated reason may not be.** The
+> implementation note justifies this as "trusted UI has to be". Calibration is
+> not a security surface: no authority is granted by dragging a screen edge, so
+> COMP-10's anti-spoofing requirements do not apply and it should not be
+> counted as a COMP-10 §3 surface. The seat grab and the coordinate-space
+> argument are sufficient on their own. Worth settling, so a later reader does
+> not infer that any compositor-drawn overlay is therefore trusted UI.
+
+**Persistence is per panel, keyed by EDID identity** (§2), with hand-written
+configuration winning over saved calibration state.
 
 ---
 
@@ -4184,6 +4264,37 @@ remainder, which is what makes "requested is not granted" (A-07 §1) real
 rather than aspirational. The struck set becomes install policy and is a
 named input to grant compilation (S-01 §4).
 
+### 3.9 Policy editor *(added B-07, 2026-09-10)*
+
+The application that edits agent configuration and policy — everything living
+in `policy.kdl` (COMP-13 §1.3) and, once they exist, the S-01 grant set and
+COMP-11's enforcement table. It is **a surface of the trusted UI**, in the same
+trust class as §3.2's consent prompt and §3.3's emergency panel, and it is a
+**separate application from the settings GUI** (COMP-17 §3).
+
+**Splitting the binary is necessary but not sufficient.** An ordinary Wayland
+client can be impersonated by any other client, so a policy editor that is
+merely a different process buys nothing: a spoof harvests agent grants from the
+user exactly as it would from a fake consent prompt. §1 ("Why It Is Not a
+Client") applies to this surface in full, as does §2's personal secret.
+
+**Invocation is by chord, not by menu item.** `agent-attention` (SUPER+space,
+COMP-13 §1.1, reserved against rebinding) summons it. A chord the compositor
+owns and no client can intercept is the only invocation path that cannot be
+imitated by a client drawing a convincing launcher entry.
+
+**Consequence for COMP-17.** Because policy lives in `policy.kdl` and the
+settings GUI cannot write it (COMP-13 §1.3), the settings GUI stays an ordinary
+client, outside the TCB, freely sandboxable. That is the point of the file
+split: the application users touch constantly carries no security
+responsibility, and the one that does is small enough to review.
+
+**Sequencing.** This surface is gated on the policy engine having produced
+something to edit — `policyd`, the enforcement table, and grants. The COMP-13
+§1.3 file split is *not* so gated and should land first, because every
+security-relevant key that accrues in `abyss.kdl` before the split is one that
+has to be migrated after it.
+
 ---
 
 ## 4. Input Handling
@@ -4544,6 +4655,11 @@ $XDG_CONFIG_HOME/eclipse/abyss.kdl
 $XDG_CONFIG_HOME/eclipse/abyss.d/*.kdl        (sorted)
 ```
 
+**Configuration is split across two files with different trust levels**
+(B-04, 2026-09-10). The paths above are `abyss.kdl`; `policy.kdl` sits beside
+it at each level. See §1.3. Its exact filesystem location and ownership are a
+D-01 decision and deliberately not fixed here.
+
 ### 1.1 Shape
 
 ```kdl
@@ -4620,6 +4736,143 @@ misc {
   shared without leaking it (COMP-10 §2).
 - Output runtime changes persist to `outputs.kdl`, separate from this file
   (COMP-03 §4).
+
+### 1.3 The two files *(added B-04, 2026-09-10)*
+
+| File | Contents | Writable by an ordinary client |
+|---|---|---|
+| `abyss.kdl` | appearance, input, outputs, layouts, keybinds, animations, decoration | yes, via §1.4 |
+| `policy.kdl` | capture allowlist (ADR 0027), data-control allowlist, agent-relevant window rules, and COMP-11's enforcement table when it exists | **never** |
+
+**Rationale — fail-safe by construction.** The alternative, a deny list of
+security-relevant keys inside one file, is default-open: a security key added
+later and omitted from the list becomes silently writable by untrusted
+furniture, and nothing fails loudly enough to notice. With two files a new key
+lands on the correct side by construction. The split also preserves the option
+of giving `policy.kdl` different ownership or location, which composes with the
+per-agent sandboxing of S-03.
+
+**`windowrule` has mixed criticality and cannot live in one file.** `float`,
+`tile`, `workspace`, `size`, `position`, `output` and `opacity` are appearance;
+`sensitivity`, `app-trust`, `seat-compat` and `no-agent` are security
+(COMP-05 §4). Resolution: the same syntax is accepted in both files, with a
+**different action set permitted per file**. A `sensitivity secret` action
+appearing in `abyss.kdl` is refused at parse time with an error naming
+`policy.kdl` — preserving §1.2's totality and COMP-05 §4's rule that a rule is
+refused whole and never applies in part.
+
+**Both files behave identically on failure**, per §1.2. Keeping the last good
+`policy.kdl` across a failed reload *is* the fail-closed behaviour: it never
+widens permissions.
+
+**Migration** from a single-file config is an explicit startup error naming
+each misplaced key and its destination, plus `eclipse-ctl config migrate`. Not
+a silent auto-migration — §1.2 refuses rather than guesses, and this is no
+exception.
+
+**Read and write are distinct gate rows.** Whether an untrusted client may read
+`policy.kdl` is decided separately from whether it may write it. Default: no.
+
+### 1.4 Configuration write API *(added B-05, 2026-09-10)*
+
+Required by CHARTER §4, "Configurable without a text editor". Adds to the human
+IPC surface of §2:
+
+- `get_config` — structured read, gated per file.
+- `set_config_value` — key addressed by path; the server resolves which file
+  owns that key from the schema and checks the caller's gate row **for that
+  file**.
+- `validate_config` — validation without a write.
+
+**Every write goes through the same total validation as startup** (§1.2),
+returning the same `file:line:col` error and offending token. §1.2's "never
+half-apply" extends to writes: a write that fails validation leaves the file
+untouched.
+
+**Round-trip fidelity is a requirement, not a nicety.** Writes must preserve
+comments and formatting. A GUI that reformats a hand-edited config or drops its
+comments breaks CHARTER §4's promise that files remain the source of truth and
+stay hand-editable, and would make the two mechanisms rivals rather than one
+path with two front ends.
+
+> **VERIFY.** Whether the `kdl` v2 document model can round-trip comments and
+> formatting is unverified and gates this section. If it cannot, §1.4 as
+> written cannot be built and CHARTER §4 needs a different mechanism. Run the
+> spike before relying on this.
+
+### 1.5 Terminal/GUI parity *(added B-09, 2026-09-10)*
+
+Required by CHARTER §4, "Parity between the terminal and the GUI". Every
+setting is reachable from a shell and from a graphical control. Neither front
+end may be the only path to a capability.
+
+**One write path, two front ends.** `eclipse-ctl` and the settings GUI
+(COMP-17 §3) are both clients of §1.4. Neither has a private path into the
+config files, and neither may implement a setting the other cannot express. A
+front end that writes config by any route other than §1.4 is a defect, not an
+optimisation.
+
+#### The asymmetry, stated honestly
+
+The two directions are **not** equally hard, and pretending otherwise would
+produce a rule that quietly fails in one direction:
+
+- **Terminal completeness is structural.** CHARTER §4 requires that
+  configuration files remain the source of truth and stay hand-editable, and
+  §1.4 requires that everything the GUI does lands in those files. Any setting
+  that reaches a file is therefore reachable by editing the file and by
+  `eclipse-ctl`. Terminal parity is free as long as that line holds. **The way
+  it breaks is GUI-managed state that never reaches a file** — remembered
+  window positions, wizard progress, anything a graphical front end is tempted
+  to keep for itself. That is the failure to guard against, and it is a
+  violation of the source-of-truth rule before it is a parity violation.
+- **GUI completeness is not structural and must be enforced.** A new key added
+  to the schema works from the terminal the moment the parser accepts it, and
+  works from the GUI only when someone builds a control. The default drift is
+  therefore toward terminal-only settings, by neglect rather than by decision.
+
+#### The mechanism: one declarative schema
+
+Parity is **generated, not maintained**. The configuration schema is
+declarative — for each key: its type, constraints, default, owning file
+(§1.3), and a human-readable description. From that one source:
+
+- the parser validates (§1.2);
+- `eclipse-ctl` enumerates, describes, gets and sets;
+- the settings GUI **generates** its controls;
+- and a key with no reachable control is detectable mechanically.
+
+A hand-built GUI guarantees drift. A generated one reduces the problem to the
+small set of keys wanting a bespoke control, which is a list someone can hold
+in their head.
+
+#### Bespoke controls are allowed; terminal-only is a tracked exception
+
+Some settings deserve better than a generated widget — the COMP-03 §1.1
+screen-edges selector is a drag-the-edges canvas, not a spinbox for four
+integers. A bespoke control is fine. The rule is only that the underlying key
+stays settable from the terminal, which §1.3's file ownership already
+guarantees.
+
+Some settings resist a meaningful control entirely: a regex in a
+`windowrule` matcher, a shell command in a bind. **The GUI exposes these as
+validated text fields rather than omitting them.** An omitted setting is a
+terminal-only setting, which is the thing this section exists to prevent.
+
+Where a control genuinely cannot be built yet, the key is recorded in a
+**GUI-coverage exception list that may only ever shrink** — the same ratchet
+discipline `ci/wlcs-skip.txt` already uses for conformance. An exception is a
+debt with a name, not a silent gap.
+
+#### Test Plan (into COMP-15)
+
+- Enumerate every schema key; assert each is settable through `eclipse-ctl`
+  and reachable in the GUI, or named in the exception list.
+- Assert the exception list never grows relative to the previous commit.
+- Assert the GUI holds no persistent setting that does not appear in a config
+  file.
+- Round-trip: set a key from the GUI, read it with `eclipse-ctl`, and the
+  reverse; assert identical values and an unchanged file otherwise.
 
 ---
 
@@ -6269,6 +6522,166 @@ carry `app_trust=untrusted` regardless of the browser's class.
    which field changed, not which kind of widget holds it.
 3. Compact table encoding as default in MCP vs. JSON. Proposed: table
    default, JSON on request.
+
+---
+
+<!-- ===== FILE: COMP-17_DESKTOP_PROFILES.md ===== -->
+
+# COMP-17 — Desktop Profiles (Draft v0.1)
+
+*Added by Appendix B, B-03, 2026-09-10.*
+
+Depends on: C-00, COMP-13. Consumed by: D-05, D-07.
+
+---
+
+## 1. Model
+
+Abyss supports two **interaction modes**, selected by configuration and
+switchable at runtime without a restart:
+
+- **WM mode** — tiling, keyboard-driven. What abyss is today.
+- **DE mode** — desktop metaphor: taskbar, desktop icons, pointer-first
+  navigation.
+
+**These are interaction styles, not capability tiers.** Neither is the "real"
+mode and neither is degraded. Both are fully configurable through the GUI, both
+are supported equally, and every feature outside the shell layer behaves
+identically in both. A user choosing WM mode is choosing tiling; they are not
+choosing to give up the settings application.
+
+This is a presentation-layer decision inside one compositor. It is **not**
+compositor swappability, and it changes nothing in COMP-02, COMP-04, COMP-08,
+COMP-09 or COMP-11 — the agent architecture and the trust boundary are
+identical in both modes.
+
+## 2. The `mode` key
+
+```kdl
+mode "wm"     // wm | de
+```
+
+`mode` selects **defaults that explicit configuration overrides**. It does not
+force values. A user who sets `rounding 8` and then switches modes keeps their
+rounding. A toggle that discards explicit configuration is one nobody touches
+twice, and it would violate CHARTER §4's promise that configuration files
+remain the source of truth.
+
+What the mode selects: the autostart set, default keybinds, whether the panel
+and desktop layers launch, and decoration defaults.
+
+Mode changes apply on hot reload (COMP-13 §1.2); the session changes shape
+without a restart.
+
+## 3. Settings GUI
+
+Required by CHARTER §4. A client over the COMP-13 §1.4 write API, scoped to
+**`abyss.kdl` only**: appearance, input, outputs, layouts, keybinds, and the
+COMP-03 §1.1 screen-edges selector.
+
+Because it can only write `abyss.kdl`, it is an ordinary Wayland client — it is
+**not** in the TCB, needs no anti-spoofing story, and can be sandboxed freely.
+Agent configuration and policy are edited by a separate trusted surface,
+COMP-10 §3.9.
+
+Where a user navigates to a policy-owned setting, the correct behaviour is to
+show its current value read-only — if COMP-13 §1.3 permits the read at all —
+and offer to summon the policy editor. Not to fail silently, and not to hide
+that the setting exists.
+
+**Its controls are generated from the configuration schema** (COMP-13 §1.5),
+not hand-built per key. Bespoke controls are permitted where a generated widget
+would be poor — the COMP-03 §1.1 screen-edges selector is the motivating case —
+but a key with no control at all is a tracked exception on a list that may only
+shrink, never a quiet omission.
+
+**The settings GUI keeps no persistent state of its own.** Anything it
+remembers between sessions lives in `abyss.kdl` and is therefore equally
+reachable from a shell. A graphical front end that keeps its own store breaks
+CHARTER §4's source-of-truth rule and creates exactly the GUI-only lock-in
+COMP-13 §1.5 exists to prevent.
+
+## 4. Relationship to Z-01
+
+Z-01 ("Native desktop environment / shell") remains deferred to post-v1 ship.
+DE mode is a configuration profile over D-05 default userland, not a native
+shell. **If DE mode later grows native components, that is Z-01 arriving early
+and must be re-decided explicitly rather than allowed to drift.**
+
+## 5. Test Plan (into COMP-15)
+
+- Flip `mode`, hot-reload, confirm the session changes shape without a restart
+  and without dropping any explicitly-set value.
+- Confirm every setting reachable in one mode is reachable in the other.
+- Confirm the settings GUI cannot write any `policy.kdl` key by any path.
+
+## 6. Open Decisions
+
+1. Whether DE mode's default userland is Quickshell configuration or native
+   crates. Proposed: Quickshell first, revisit once the shape settles.
+2. Whether desktop icons are in v1 scope. They are the largest single piece of
+   DE mode and the least security-relevant.
+
+---
+
+<!-- ===== FILE: APPENDIX_B.md ===== -->
+
+# Appendix B — amendment record, 2026-09-10
+
+**Applied inline to this volume on 2026-09-10.** Recorded here so the
+provenance of each change is auditable, per the convention Appendix A
+established. Source: owner assertions made while planning work after the first
+real-KMS boot.
+
+| ID | Target | Change | Applied |
+|---|---|---|---|
+| B-01 | F-01 §3 | Beginner-friendliness and theming withdrawn as v1 non-goals; DE *breadth* retained as a non-goal | yes |
+| B-02 | F-01 §4 | New principle: "Configurable without a text editor" | yes |
+| B-03 | Planning index, new COMP-17 | Desktop profiles: WM and DE interaction modes | yes |
+| B-04 | COMP-13 §1, §1.3 | Configuration splits into `abyss.kdl` and `policy.kdl` | yes |
+| B-05 | COMP-13 §1.4 | Configuration write API | yes |
+| B-06 | COMP-03 §1, §1.1 | Per-output visible region (overscan) | yes |
+| B-07 | COMP-10 §3.9 | Policy editor is a trusted-UI surface, summoned by chord | yes |
+| B-08 | Planning index D-05 | Settings GUI added to scope; bar pulled forward into Phase 1 | yes |
+| B-09 | F-01 §4, COMP-13 §1.5, COMP-17 §3 | Terminal/GUI parity: one schema, two front ends, a shrink-only exception list | yes |
+
+**B-06 was amended on 2026-09-11** to match the implementation, which chose
+scale-and-pad over the letterbox this appendix originally specified. The spec
+was wrong and the code was right; the direct-scanout cost of not cropping is
+now recorded in COMP-03 §1.1 rather than left to be rediscovered.
+
+## Open decisions this appendix leaves standing
+
+1. **Who is v1 for?** F-01 §3 still says v1 is single-user, the owner, while
+   §4 now commits to configurability that implies users beyond the owner.
+   These pull apart. Settle before COMP-17 leaves draft — it determines how
+   much of D-05 and D-07 is v1 scope.
+2. **Does "GUI installer polish" stay a non-goal?** B-01 retains it, but a
+   system committed to GUI configurability with a text-only installer is
+   incoherent at the seam. Affects D-03 and D-07.
+3. **Does §7 gain a configurability gate?** Proposed in B-02: *a user can reach
+   a working configuration without editing a file.* Not written.
+4. **Does Z-01 move?** Retained as post-v1 on the reading that Quickshell
+   userland is not a native shell. COMP-17 §4 says when to revisit.
+
+## Blocking verification
+
+**COMP-13 §1.4 rests on an unverified assumption.** If the `kdl` v2 document
+model cannot round-trip comments and formatting, the write API as specified
+cannot be built and CHARTER §4 needs a different mechanism. The section carries
+a VERIFY marker. Run the spike before building against it.
+
+## A numbering discrepancy noticed while applying this appendix
+
+The COMP-16 milestone table in this volume lists **14** as trusted UI and
+**15** as policy-table enforcement. `STATUS.md` tracks COMP-16 **v0.2**, whose
+renumbering maps old 14 → new 15 and old 15 → new 16. This volume therefore
+carries pre-v0.2 milestone numbers while STATUS carries post-v0.2 ones.
+
+**Not resolved here**, because it is not this appendix's change to make and
+silently renumbering a spec is exactly the failure the root `CLAUDE.md`
+forbids. B-07 is written against COMP-10 section numbers rather than milestone
+numbers so that it is correct either way. Someone should reconcile the two.
 
 ---
 

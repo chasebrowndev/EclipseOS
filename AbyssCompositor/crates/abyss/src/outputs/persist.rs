@@ -7,6 +7,12 @@
 //! present, so a laptop docked to two monitors and the same laptop alone get
 //! different remembered layouts.
 //!
+//! Overscan is the one exception to the set keying: it is a property of the
+//! *panel*, not of the arrangement, so it lives in its own top-level table
+//! keyed by identity alone. A TV that needs 30px of compensation needs it
+//! whether or not the laptop is docked, and needs it the first time it is
+//! plugged into a set it has never been part of before.
+//!
 //! Writes are atomic (tmp + rename) and rate-limited to at most one per second.
 
 use std::{
@@ -16,6 +22,8 @@ use std::{
 };
 
 use kdl::{KdlDocument, KdlValue};
+
+use super::overscan::Overscan;
 
 const MIN_WRITE_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -32,10 +40,19 @@ pub struct SavedOutput {
 
 type Set = BTreeMap<String, SavedOutput>;
 
+/// Everything a state file holds. Split out so [`parse`] can be tested against
+/// [`Persist::render`] without a filesystem.
+#[derive(Debug, Default, PartialEq)]
+struct State {
+    sets: BTreeMap<String, Set>,
+    /// Per-identity, deliberately *not* per-set — see the module docs.
+    overscan: BTreeMap<String, Overscan>,
+}
+
 #[derive(Debug, Default)]
 pub struct Persist {
     path: Option<PathBuf>,
-    sets: BTreeMap<String, Set>,
+    state: State,
     dirty: bool,
     last_write: Option<Instant>,
 }
@@ -59,7 +76,7 @@ impl Persist {
     pub fn load() -> Self {
         let mut p = Self {
             path: state_path(),
-            sets: BTreeMap::new(),
+            state: State::default(),
             dirty: false,
             last_write: None,
         };
@@ -76,18 +93,35 @@ impl Persist {
             }
         };
         match text.parse::<KdlDocument>() {
-            Ok(doc) => p.sets = parse(&doc),
+            Ok(doc) => p.state = parse(&doc),
             Err(e) => tracing::warn!(path = %path.display(), error = %e, "output state unparseable, ignored"),
         }
         p
     }
 
     pub fn get(&self, set: &str, identity: &str) -> Option<&SavedOutput> {
-        self.sets.get(set).and_then(|s| s.get(identity))
+        self.state.sets.get(set).and_then(|s| s.get(identity))
+    }
+
+    /// Remembered overscan for a panel, regardless of what else is plugged in.
+    pub fn overscan(&self, identity: &str) -> Option<Overscan> {
+        self.state.overscan.get(identity).copied()
+    }
+
+    /// Record calibrated overscan. Zero is stored as an *absence* rather than
+    /// as four zeroes, so a panel that has been reset leaves no trace and the
+    /// file does not accumulate a row per monitor ever connected.
+    pub fn record_overscan(&mut self, identity: &str, value: Overscan) {
+        let changed = if value.is_zero() {
+            self.state.overscan.remove(identity).is_some()
+        } else {
+            self.state.overscan.insert(identity.to_string(), value) != Some(value)
+        };
+        self.dirty |= changed;
     }
 
     pub fn record(&mut self, set: &str, identity: &str, saved: SavedOutput) {
-        let slot = self.sets.entry(set.to_string()).or_default();
+        let slot = self.state.sets.entry(set.to_string()).or_default();
         if slot.get(identity) == Some(&saved) {
             return;
         }
@@ -129,7 +163,17 @@ impl Persist {
 
     fn render(&self) -> String {
         let mut out = String::from("// abyss output layout — machine-written, safe to delete\n");
-        for (set, outputs) in &self.sets {
+        for (identity, o) in &self.state.overscan {
+            out.push_str(&format!(
+                "overscan {} top={} bottom={} left={} right={}\n",
+                quote(identity),
+                o.top,
+                o.bottom,
+                o.left,
+                o.right
+            ));
+        }
+        for (set, outputs) in &self.state.sets {
             out.push_str(&format!("set {} {{\n", quote(set)));
             for (identity, o) in outputs {
                 out.push_str(&format!("    output {} {{\n", quote(identity)));
@@ -167,9 +211,15 @@ fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn parse(doc: &KdlDocument) -> BTreeMap<String, Set> {
-    let mut sets = BTreeMap::new();
+fn parse(doc: &KdlDocument) -> State {
+    let mut state = State::default();
     for node in doc.nodes() {
+        if node.name().value() == "overscan" {
+            if let Some(identity) = first_string(node) {
+                state.overscan.insert(identity, overscan_of(node));
+            }
+            continue;
+        }
         if node.name().value() != "set" {
             continue;
         }
@@ -207,9 +257,30 @@ fn parse(doc: &KdlDocument) -> BTreeMap<String, Set> {
             }
             set.insert(identity, saved);
         }
-        sets.insert(key, set);
+        state.sets.insert(key, set);
     }
-    sets
+    state
+}
+
+/// Read `top=`/`bottom=`/`left=`/`right=` properties off a node. Shared with
+/// the config parser's `overscan` key so the two spellings cannot drift.
+pub fn overscan_of(node: &kdl::KdlNode) -> Overscan {
+    let prop = |name: &str| -> Option<i32> { node.get(name).and_then(|v| v.as_integer()).map(|i| i as i32) };
+    // A bare `overscan 30` means all four edges, which is what a human writing
+    // this by hand almost always wants.
+    let all = node
+        .entries()
+        .iter()
+        .find(|e| e.name().is_none() && e.value().as_integer().is_some())
+        .and_then(|e| e.value().as_integer())
+        .map(|i| i as i32)
+        .unwrap_or(0);
+    Overscan {
+        top: prop("top").unwrap_or(all),
+        bottom: prop("bottom").unwrap_or(all),
+        left: prop("left").unwrap_or(all),
+        right: prop("right").unwrap_or(all),
+    }
 }
 
 fn first_string(node: &kdl::KdlNode) -> Option<String> {
@@ -269,9 +340,37 @@ mod tests {
     }
 
     #[test]
+    fn overscan_is_keyed_by_identity_not_by_set() {
+        let mut p = Persist::default();
+        p.record_overscan("TV", Overscan::uniform(30));
+        let doc: KdlDocument = p.render().parse().expect("valid kdl");
+        assert_eq!(parse(&doc).overscan.get("TV"), Some(&Overscan::uniform(30)));
+
+        // Resetting to zero removes the row rather than writing four zeroes.
+        p.record_overscan("TV", Overscan::default());
+        let doc: KdlDocument = p.render().parse().expect("valid kdl");
+        assert!(parse(&doc).overscan.is_empty());
+    }
+
+    #[test]
+    fn bare_overscan_means_all_four_edges() {
+        let doc: KdlDocument = "overscan \"TV\" 12\n".parse().expect("valid kdl");
+        assert_eq!(parse(&doc).overscan.get("TV"), Some(&Overscan::uniform(12)));
+    }
+
+    #[test]
     fn round_trips() {
         let mut p = Persist::default();
-        p.sets.insert(
+        p.record_overscan(
+            "A",
+            Overscan {
+                top: 1,
+                bottom: 2,
+                left: 3,
+                right: 4,
+            },
+        );
+        p.state.sets.insert(
             "A + B".into(),
             [(
                 "A".to_string(),
@@ -289,6 +388,6 @@ mod tests {
         let text = p.render();
         let doc: KdlDocument = text.parse().expect("renders valid kdl");
         let back = parse(&doc);
-        assert_eq!(back, p.sets);
+        assert_eq!(back, p.state);
     }
 }

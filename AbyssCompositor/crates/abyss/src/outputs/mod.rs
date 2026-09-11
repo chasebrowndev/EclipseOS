@@ -13,7 +13,9 @@
 //! which is why it must not be the connector name when we can do better: kernel
 //! connector numbering shifts across driver upgrades.
 
+pub mod calibrate;
 pub mod edid;
+pub mod overscan;
 pub mod persist;
 pub mod power;
 
@@ -57,7 +59,29 @@ pub struct OutputEntry {
     /// Scanning out. `false` is DPMS off — the output keeps its geometry and
     /// its windows, the CRTC just stops.
     pub powered: bool,
+    /// Effective overscan compensation (COMP-03 §2). Purely a render and input
+    /// transform: the logical size stays the full mode size, so layout, layer
+    /// shell and window placement never see it. Non-zero costs direct scanout
+    /// on this output.
+    pub overscan: overscan::Overscan,
+    /// Set while the calibration overlay owns this output's input.
+    pub calibrating: Option<Calibration>,
 }
+
+/// Live state of the on-screen overscan calibration (COMP-03 §2). The overlay
+/// is compositor-drawn — it has to be, since its corner markers live in the
+/// framebuffer margin that no client can ever address.
+#[derive(Debug, Clone)]
+pub struct Calibration {
+    /// Value to restore on `Esc`.
+    pub original: overscan::Overscan,
+    /// Last time a key was handled; the overlay self-cancels after
+    /// [`CALIBRATION_TIMEOUT`] so a TV left mid-calibration recovers on its own.
+    pub last_input: std::time::Instant,
+}
+
+/// How long the calibration overlay waits before reverting itself.
+pub const CALIBRATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 impl OutputEntry {
     pub fn workspace(&self) -> &Workspace {
@@ -204,6 +228,8 @@ impl Outputs {
             global,
             enabled: true,
             powered: true,
+            overscan: overscan::Overscan::default(),
+            calibrating: None,
         });
         if self.focused == 0 {
             self.focused = id;
@@ -232,6 +258,18 @@ impl Outputs {
             self.focused = self.entries.first().map(|e| e.id).unwrap_or(0);
         }
         Some(Removed { windows })
+    }
+
+    /// Overscan remembered for a panel, keyed by identity alone — see
+    /// [`persist`]'s module docs for why this one field is not set-keyed.
+    pub fn saved_overscan(&self, identity: &str) -> Option<overscan::Overscan> {
+        self.persist.overscan(identity)
+    }
+
+    /// Remember calibrated overscan for a panel and write it out.
+    pub fn save_overscan(&mut self, identity: &str, value: overscan::Overscan) {
+        self.persist.record_overscan(identity, value);
+        self.persist.flush();
     }
 
     /// Key identifying the currently-present set of outputs, for persistence.
@@ -344,6 +382,7 @@ pub fn transform_name(t: Transform) -> &'static str {
 /// apply path cannot fail halfway and leave a half-configured output.
 #[derive(Debug, Default, Clone)]
 pub struct OutputChange {
+    pub overscan: Option<overscan::Overscan>,
     pub mode: Option<Mode>,
     pub scale: Option<Scale>,
     pub transform: Option<Transform>,
@@ -392,6 +431,9 @@ pub fn apply_change(
     }
     if let Some(want) = change.enabled {
         power::set_enabled(state, id, want);
+    }
+    if let Some(value) = change.overscan {
+        set_overscan(state, id, value, true);
     }
     let mut vrr_applied = None;
     if let Some(want) = change.vrr {
@@ -466,6 +508,7 @@ fn apply_settings(state: &mut crate::state::AbyssState, id: u64) {
         return;
     };
     let output = entry.output.clone();
+    let ident = entry.identity.clone();
     let rule = state.config.output_rule(&entry.connector, &entry.identity);
     let saved = state.outputs.saved_for(&entry.identity).cloned();
 
@@ -530,6 +573,79 @@ fn apply_settings(state: &mut crate::state::AbyssState, id: u64) {
             output.set_preferred(m);
         }
     }
+
+    // Config wins over persisted calibration, same precedence as every other
+    // field above: `abyss.kdl` is hand-written and is the human's stated
+    // intent, `outputs.kdl` is only what we last observed.
+    let value = rule
+        .overscan
+        .or_else(|| state.outputs.saved_overscan(&ident))
+        .unwrap_or_default();
+    if let Some(entry) = state.outputs.get_mut(id) {
+        entry.overscan = value.clamped(mode_size(&output));
+    }
+}
+
+/// Physical size of an output's current mode — the framebuffer the overscan
+/// inset is measured against.
+pub fn mode_size(output: &Output) -> smithay::utils::Size<i32, smithay::utils::Physical> {
+    output
+        .current_mode()
+        .map(|m| (m.size.w, m.size.h).into())
+        .unwrap_or_else(|| (0, 0).into())
+}
+
+/// Overscan currently in effect for an output.
+pub fn overscan_of(state: &crate::state::AbyssState, id: u64) -> overscan::Overscan {
+    state.outputs.get(id).map(|e| e.overscan).unwrap_or_default()
+}
+
+/// The one place overscan changes. `persist` is false while calibrating — the
+/// preview must be live on screen without writing a file on every arrow key.
+///
+/// A hand-written `overscan` in `abyss.kdl` outranks the state file, so when
+/// one is present this reports that the new value will not survive a restart
+/// rather than silently taking effect and then vanishing.
+pub fn set_overscan(
+    state: &mut crate::state::AbyssState,
+    id: u64,
+    value: overscan::Overscan,
+    persist: bool,
+) -> bool {
+    let Some(entry) = state.outputs.get(id) else {
+        return false;
+    };
+    let (output, identity, connector) = (
+        entry.output.clone(),
+        entry.identity.clone(),
+        entry.connector.clone(),
+    );
+    let value = value.clamped(mode_size(&output));
+
+    let overridden = state.config.output_rule(&connector, &identity).overscan.is_some();
+
+    if let Some(entry) = state.outputs.get_mut(id) {
+        entry.overscan = value;
+    }
+    if persist && !overridden {
+        state.outputs.save_overscan(&identity, value);
+    }
+
+    crate::backend::damage_all(state);
+    crate::ipc::emit(
+        state,
+        "output",
+        serde_json::json!({
+            "change": "overscan",
+            "id": id,
+            "top": value.top,
+            "bottom": value.bottom,
+            "left": value.left,
+            "right": value.right,
+            "persisted": persist && !overridden,
+        }),
+    );
+    !overridden
 }
 
 /// Position every output (config/persisted pins first, then left-to-right),

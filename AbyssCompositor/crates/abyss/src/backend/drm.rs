@@ -1017,6 +1017,23 @@ fn render_output(state: &mut AbyssState, index: usize) {
             fullscreen,
         ));
     }
+    // Overscan compensation (COMP-03 §2): scale the finished scene into the
+    // inset rect and leave the margins black. The markers go on afterwards so
+    // they stay in raw framebuffer pixels — they exist to show where the
+    // desktop's edge landed, so scaling them with it would defeat the point.
+    let overscan = crate::outputs::overscan_of(state, out_id);
+    let mode_size = crate::outputs::mode_size(&output);
+    let calibrating = state
+        .outputs
+        .get(out_id)
+        .map(|e| e.calibrating.is_some())
+        .unwrap_or(false);
+    let mut elements = crate::render::overscan::frame(elements, overscan, mode_size);
+    if calibrating {
+        crate::render::overscan::calibration_markers(overscan, mode_size, &mut elements);
+    }
+    let Some(drm) = state.drm.as_mut() else { return };
+
     let animating = state.borders.anim.running();
 
     // A surface covering the whole output is both the direct-scanout candidate
@@ -1032,7 +1049,9 @@ fn render_output(state: &mut AbyssState, index: usize) {
         .as_ref()
         .map(|s| state.sensitive.contains(s))
         .unwrap_or(false);
-    let flags = if state.config.render.direct_scanout && !redact {
+    // An inset output composites every frame by definition — a scanned-out
+    // client buffer would land at the panel's edge, outside the inset rect.
+    let flags = if state.config.render.direct_scanout && !redact && overscan.is_zero() {
         FrameFlags::DEFAULT
     } else {
         FrameFlags::empty()

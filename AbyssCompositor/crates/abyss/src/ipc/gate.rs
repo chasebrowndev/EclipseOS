@@ -65,6 +65,7 @@ pub const TABLE: &[Entry] = &[
     e("resize", Kind::Command, true),
     e("move_workspace_to_output", Kind::Command, true),
     e("set_output", Kind::Command, true),
+    e("calibrate_output", Kind::Command, true),
     // Agent lifecycle: the protocol itself is Phase 2 (COMP-08).
     e("get_agents", Kind::Privileged, false),
     e("pause_agent", Kind::Privileged, false),
