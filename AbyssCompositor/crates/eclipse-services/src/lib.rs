@@ -9,6 +9,7 @@
 //! the human, outside `abyss`; they hold no capability and enforce no policy.
 //! A compromised service can annoy the human, not escalate.
 
+pub mod apps;
 pub mod notifications;
 pub mod session;
 pub mod status;
