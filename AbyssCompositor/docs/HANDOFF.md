@@ -1,5 +1,49 @@
 # Session handoff
 
+## State as of 2026-09-11 (evening) — B4 is half landed, the launcher is next
+
+Branch `ci-attribution-display-name`. `HEAD` is `c9fab92`; all five gate
+commands are green at it. Still nothing pushed.
+
+Landed this session, on top of the notification server and the system-status
+watchers:
+
+- `eclipse-toasts` — the notification stack, its own layer surface.
+- `eclipse-center` (`2408781`) — the control center. Anchored top-right under
+  the bar, spawned by a keybind, exits when it is done. Its height is a
+  compile-time constant because a layer surface fixes its size before the boot
+  fn runs: all six session actions are always drawn, and the ones logind
+  refuses are `TEXT_TERTIARY` with no `mouse_area` at all, so they are inert to
+  the pointer as well as to the eye. A `Challenge` answer reads "asks first" on
+  the row — a polkit prompt appearing out of nowhere looks like a compromised
+  machine rather than one doing its job. A refusal is shown verbatim in
+  `color::DANGER`: restating a policy decision in our own words loses the only
+  information the human can act on.
+- `eclipse_services::apps` (`c9fab92`) — an in-house `.desktop` reader. No new
+  dependency. See the commit message for what it drops and why.
+
+**Next action: the launcher GUI.** `crates/eclipse-bar/src/launcher/{mod,app,
+view,main}.rs` as a fourth `[[bin]]` (`eclipse-launcher`) in that package,
+following the toast and center precedent exactly. Centred `Layer::Overlay`,
+`KeyboardInteractivity::Exclusive` (unlike the other two — a launcher must take
+the keyboard), a `text_input` filter over `apps::matches`/`apps::rank`, a result
+list, `iced::exit()` on launch or on dismiss, every colour and size from
+`eclipse_ui::tokens`. `apps::launch` already refuses a `Terminal=true` entry;
+the view has to say so rather than silently dropping the row.
+
+Still owed in B4 after that: an SNI tray host — pure zbus, no new dependency,
+but **blocked**, because our iced feature set omits `image` and SNI
+`IconPixmap` ARGB data therefore cannot be rendered; a tray of bare text labels
+is not worth shipping. Audio (`libpulse-binding`) and clipboard
+(`smithay-clipboard`) each need a new dependency, so **ask the owner first**.
+
+Unchanged and still owed: the branch/PR story (land PR #9 with only its
+attribution commit, move the DE commits onto `comp17-de-userland` off a freshly
+merged `main`, one PR citing `Implements COMP-17 / DP-2 / F-01 §4`), and visual
+verification of the bar, the toasts, the center and the viewer — which needs a
+human at the machine. `grim` reports the compositor has no screen-capture
+protocol, so none of it can be checked over SSH.
+
 ## State as of 2026-09-11 (later) — B3 and B6 are done, both run
 
 Branch `ci-attribution-display-name`. **Working tree clean.** `HEAD` is
