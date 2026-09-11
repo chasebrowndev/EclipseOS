@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["crates/abyss", "crates/eclipse-bar", "crates/eclipse-ctl", "crates/eclipse-ipc", "crates/eclipse-policy-viewer", "crates/eclipse-settings", "crates/eclipse-ui", "crates/wlcs-abyss"]
+# `cargo run -- --backend winit` is the documented dev loop (CLAUDE.md, and
+# docs/BUILDING.md). Once the workspace held more than one binary that line
+# became ambiguous; this keeps a bare `cargo run` meaning the compositor.
+# The gate passes `--workspace` explicitly, so it is unaffected.
+default-members = ["crates/abyss"]
 
 [workspace.package]
 version = "0.1.0"
