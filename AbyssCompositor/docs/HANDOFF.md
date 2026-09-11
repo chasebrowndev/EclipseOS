@@ -1,5 +1,83 @@
 # Session handoff
 
+## State as of 2026-09-11 — DE userland, Part A done, B2+B1 done, B5 next
+
+Branch `ci-attribution-display-name`, working tree clean, ten commits ahead of
+the last merge (`a82a8e5` … `a501576`). Nothing is pushed as a PR yet.
+
+**The work in flight is the plan at `~/.claude/plans/ok-claude-today-we-inherited-cook.md`**
+("Usable frontend: taskbar, control center, settings GUI, policy viewer").
+Read it before touching anything in `crates/eclipse-*`; it carries the owner's
+settled decisions and the B8 order. Its progress markers are kept in the file
+itself — they are the authority on where the work stands, this section is the
+narrative.
+
+### Where the plan stands
+
+| Unit | State | Commit |
+|---|---|---|
+| A0 round-trip spike | done | verdict recorded at the foot of this file (2026-09-10) |
+| A1 schema | done | `ac3cb4f` |
+| A2 `abyss.kdl` / `policy.kdl` split | done | `a95d657`, ADR 0037 |
+| A3 config IPC | done | `b63b6ac` |
+| A4 self-write vs. watcher | done | `6d8f5a8` |
+| A5 `eclipse-ctl config` + coverage ratchet | done | `18b97cf`, `ci/gui-coverage-exceptions.txt` |
+| B2 `crates/eclipse-ipc` | done | `5ebe0a9` |
+| B1 `crates/eclipse-ui` | done | `a501576`, ADR 0039 |
+| **B5 settings app** | **next** | — |
+| B3 bar | not started | — |
+| B4 control center + services | not started | — |
+| B6 policy viewer | not started | — |
+
+B7 is out of scope on purpose: desktop icons (DP-6), `mode wm\|de` profiles
+(DP-3), the compositor-drawn policy editor, the first-boot overscan offer, and
+bind/windowrule editing.
+
+### What B5 has to do
+
+Generate its controls from `get_config {schema: true}` — never from a
+hand-written list of keys, because the `gui-coverage` ratchet in CI counts the
+exception file and it may only shrink. A `policy.kdl`-owned key renders
+read-only (that is what `eclipse_ui::widget::Toggle::locked` is for) with its
+value visible and the editor affordance shown; it must not be writable by any
+path in the UI. The Display pane closes stub 15(a): a screen-edges selector
+driving `calibrate_output {output, action}` start/commit/cancel, with the
+overlay itself compositor-drawn — the client sends the verb, it does not draw
+the calibration surface.
+
+### Pins and traps for the new crates
+
+- `iced = { version = "0.14", default-features = false, features = ["wgpu",
+  "advanced", "wayland", "thread-pool"] }`. Both non-obvious features are
+  mandatory: without `wayland`, winit fails to compile with "The platform
+  you're compiling for is not supported by winit"; without a futures executor,
+  iced fires a `compile_error!`. `iced_layershell` is `0.19.1`.
+- **Do not guess the iced API** — same discipline as the Smithay pin. The
+  vendored source is at
+  `~/.cargo/registry/src/*/iced_widget-0.14.2/src` (note `.2`, not `.0` — the
+  `.0` directory does not exist). Guessing cost this session three compile
+  cycles on `rule::Style`, `scrollable::Scroller` and `scrollable::Style`.
+- `crates/eclipse-ui/src/tokens.rs` is the **only** transcription of
+  `/home/chase/Downloads/eclipse-style-spec.md`. A literal colour, radius or
+  size anywhere else in the DE is a bug.
+- Glass blur is abyss's own `decoration { blur }` (dual-Kawase, `render/blur.rs`),
+  not something the toolkit does. A client just needs to be translucent.
+- Fonts are vendored and instanced under `assets/fonts/` and re-exported as
+  `eclipse_ui::FONTS`; register them once from the application builder.
+- `deny.toml` carries four narrow exceptions added for iced, each per-crate,
+  with the reasoning in ADR 0039. Four, not a blanket allow — that was
+  deliberate and is the owner's to overrule.
+
+### Gate
+
+The five commands in the root `CLAUDE.md` are exactly what
+`.github/workflows/gate.yml` runs, and all five were green at `a501576`
+(`cargo test --workspace` 115+ tests, 0 failures; `cargo deny` advisories/bans/
+licenses/sources all ok). Commits carry **no** attribution trailers — the root
+`CLAUDE.md` rule overrides any session-level instruction to add them.
+
+---
+
 ## State as of 2026-09-10, end of session
 
 `main` = `41e1d04` (squash-merge of PR #4). No PRs open. Branch
