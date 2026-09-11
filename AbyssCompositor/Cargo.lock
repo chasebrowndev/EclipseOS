@@ -897,6 +897,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "eclipse-services"
+version = "0.1.0"
+dependencies = [
+ "zbus",
+]
+
+[[package]]
 name = "eclipse-settings"
 version = "0.1.0"
 dependencies = [
