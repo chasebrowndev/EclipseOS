@@ -10,3 +10,4 @@
 //! A compromised service can annoy the human, not escalate.
 
 pub mod notifications;
+pub mod status;

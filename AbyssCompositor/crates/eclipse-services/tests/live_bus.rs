@@ -111,3 +111,27 @@ fn the_name_is_never_stolen_from_a_running_daemon() {
         "a second server must fail rather than take the name from the first"
     );
 }
+
+/// Reads the real system bus. Safe to run anywhere: `status` is read-only by
+/// construction, so the worst case on a machine without NetworkManager, BlueZ
+/// or UPower is that nothing arrives and the assertions below are vacuous.
+///
+/// Ignored because it depends on which daemons the host happens to run.
+#[test]
+#[ignore = "reads the host's system bus"]
+fn the_system_bus_answers_what_the_bar_asks_it() {
+    use eclipse_services::status;
+
+    let status = status::spawn().expect("system bus");
+
+    // Each watcher reads once before it waits for a signal, so the first
+    // readings land promptly. A second is generous for three round trips.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    let mut seen = Vec::new();
+    while let Some(update) = status.try_recv() {
+        seen.push(update);
+    }
+    eprintln!("{seen:#?}");
+    assert!(!seen.is_empty(), "no daemon on the system bus answered");
+}
