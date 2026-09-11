@@ -190,8 +190,16 @@ jobs:
         run: |
           base=$(git merge-base "${{ github.event.pull_request.base.sha }}" HEAD)
           filter() { grep -vE '^\s*(#|$)' | sort -u; }
-          git show "$base:AbyssCompositor/ci/gui-coverage-exceptions.txt" 2>/dev/null \
-            | filter > /tmp/base.txt || : > /tmp/base.txt
+          # A base with no list at all is the bootstrap case: the PR that
+          # introduces the ratchet sets the first notch, and every later PR is
+          # measured against it. That is not the same as a base whose list is
+          # present but empty, where growth is a real violation.
+          if ! git cat-file -e "$base:AbyssCompositor/ci/gui-coverage-exceptions.txt" 2>/dev/null; then
+            echo "no exception list at the merge base; this PR sets the first notch:"
+            filter < ci/gui-coverage-exceptions.txt | sed 's/^/  + /'
+            exit 0
+          fi
+          git show "$base:AbyssCompositor/ci/gui-coverage-exceptions.txt" | filter > /tmp/base.txt
           filter < ci/gui-coverage-exceptions.txt > /tmp/head.txt
           echo "base: $(wc -l < /tmp/base.txt)  head: $(wc -l < /tmp/head.txt)"
           if [ "$(wc -l < /tmp/head.txt)" -gt "$(wc -l < /tmp/base.txt)" ]; then
