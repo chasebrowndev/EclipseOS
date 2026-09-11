@@ -210,6 +210,12 @@ fn get_outputs(state: &mut AbyssState, params: &Value) -> Reply {
     Ok(Value::Array(out))
 }
 
+/// Windows on the **active workspace of each output**, not every window the
+/// compositor holds. `state.space` only maps what is currently shown; a window
+/// moved to an inactive workspace leaves the list until that workspace is
+/// switched back to. The per-row `workspace` field therefore names where a
+/// visible window is, and is never a way to find a hidden one. The bar relies
+/// on exactly this — it renders the focused workspace and nothing else.
 fn get_windows(state: &mut AbyssState) -> Reply {
     state.ipc.gc();
     let windows: Vec<Window> = state.space.elements().cloned().collect();

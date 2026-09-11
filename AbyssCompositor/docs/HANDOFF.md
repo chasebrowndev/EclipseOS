@@ -70,19 +70,24 @@ screen capture protocol"*, so screencopy is not advertised at all. That is worth
 a look on its own: `capture.allow` is enforced, but there appears to be no
 protocol behind it yet to enforce against.
 
-### Two disagreements between the plan and the code — do not silently pick
+### Two disagreements between the plan and the code — both resolved
 
-1. **`get_config {file:"policy"}` does not return `DENIED`.** The plan and the
-   older handoff both assert it must. What it actually returns is the four
-   policy-owned keys with `"readable": false, "value": null, "source": null`.
-   No policy content leaks, so the security property holds — but "the method is
-   denied" and "the method enumerates the schema and withholds the values" are
-   different claims, and the docs assert the first. Decide which is intended and
-   fix the other.
-2. **`get_windows` lists only the active workspace.** Moving the viewer to
-   workspace 2 made `get_windows` return `[]`. That suits the bar, which scopes
-   to the focused workspace anyway, but nothing documents it, and a caller
-   expecting every window will be quietly wrong.
+1. **`get_config {file:"policy"}` does not return `DENIED`, and should not.**
+   The plan asserted it must. The code is the correct half: `config_rpc.rs`'s
+   module doc already states the rule — a policy key is *named* in `get_config`
+   output with `value: null, readable: false`, because a GUI that silently omits
+   a key cannot show the human a setting exists but is not theirs to change.
+   Reading a *specific* policy key is a structured denial naming the file
+   (`a_policy_key_is_denied_and_a_typo_is_not_found` locks that in, and
+   distinguishes it from a typo's `invalid_params`). No policy content leaks in
+   either shape. No repo doc ever claimed otherwise — the wrong assertion lived
+   only in the plan file.
+2. **`get_windows` lists only the active workspace, and that is now written
+   down.** `switch_workspace` unmaps the outgoing set from `state.space`, and
+   `get_windows` iterates `state.space.elements()`, so a window on an inactive
+   workspace is simply absent. The per-row `workspace` field made the opposite
+   read plausible. A doc comment on `get_windows` now says so explicitly, and
+   notes the bar depends on exactly this behaviour.
 
 ### One config change was made outside the repo
 
