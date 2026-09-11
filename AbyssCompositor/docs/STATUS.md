@@ -612,10 +612,16 @@ advisories bans licenses sources`; spec-citation check (F-07 §5).
 
 **Live and advisory:** TCB-touch warning (F-07 §4).
 
-Landing with the DE userland: a `gui-coverage` job asserting both
-`count(HEAD) <= count(merge-base)` and set-inclusion against
-`ci/gui-coverage-exceptions.txt`. The exception file exists (`18b97cf`); the
-job itself does not, and is owed before B5 merges.
+**Live and blocking on PRs:** the `gui-coverage` ratchet (`gate.yml:174`,
+landed `18b97cf`) — `ci/gui-coverage-exceptions.txt` may not grow and may not
+gain an entry even at an unchanged length, so a swap cannot smuggle one in.
+
+The other half of F-01 §4's coverage claim — every `schema::TABLE` path that is
+not a collection and not on the exception list has a rendered control — is
+**not** asserted anywhere, because there is no settings app to enumerate yet.
+It is owed with B5, and it belongs in that crate as a unit test over its own
+control registry rather than as a workflow step: a CI step cannot see the
+registry without linking the crate, and `cargo test --workspace` already runs.
 
 **Specified and absent.** Every one of these has a CI slot waiting and no
 suite to put in it:

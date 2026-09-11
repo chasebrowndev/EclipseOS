@@ -36,8 +36,12 @@ bind/windowrule editing.
 ### What B5 has to do
 
 Generate its controls from `get_config {schema: true}` — never from a
-hand-written list of keys, because the `gui-coverage` ratchet in CI counts the
-exception file and it may only shrink. A `policy.kdl`-owned key renders
+hand-written list of keys. The `gui-coverage` ratchet in CI (`gate.yml:174`)
+already stops `ci/gui-coverage-exceptions.txt` from growing; B5 owes the other
+half of that claim, a unit test in the settings crate walking `schema::TABLE`,
+subtracting `COLLECTIONS` and the exception file, and asserting every path
+left resolves to a rendered control. That test wants the crate's own control
+registry, so it belongs in `cargo test`, not in a workflow step. A `policy.kdl`-owned key renders
 read-only (that is what `eclipse_ui::widget::Toggle::locked` is for) with its
 value visible and the editor affordance shown; it must not be writable by any
 path in the UI. The Display pane closes stub 15(a): a screen-edges selector
