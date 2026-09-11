@@ -1,0 +1,11 @@
+[package]
+name = "eclipse-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Eclipse design system: tokens, type and widgets for the DE userland."
+
+[dependencies]
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
