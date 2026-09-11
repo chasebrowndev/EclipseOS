@@ -1,0 +1,12 @@
+[package]
+name = "eclipse-ipc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Client for the abyss human control socket (COMP-13 §2)."
+
+[dependencies]
+serde_json.workspace = true
+libc = "0.2"

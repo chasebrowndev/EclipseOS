@@ -427,6 +427,16 @@ dependencies = [
 name = "eclipse-ctl"
 version = "0.1.0"
 dependencies = [
+ "abyss",
+ "kdl",
+ "libc",
+ "serde_json",
+]
+
+[[package]]
+name = "eclipse-ipc"
+version = "0.1.0"
+dependencies = [
  "libc",
  "serde_json",
 ]
