@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The style spec, transcribed once.
+//! The style spec (`docs/STYLE.md`), transcribed once.
 //!
 //! Every colour, radius, size and weight the desktop uses lives here. The
 //! point is not tidiness: it is that "warm near-black, never blue-grey" and
