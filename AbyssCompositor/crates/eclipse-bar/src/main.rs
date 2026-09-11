@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! `eclipse-bar` — a layer surface anchored to the top edge.
 //!
-//! One of exactly two layer-shell clients in the DE (the other is the OSD).
+//! One of the DE's handful of layer-shell clients (the toast stack and the OSD
+//! are the others).
 //! Trusted UI is compositor-drawn and never comes through here.
 
 use eclipse_bar::{app, view, HEIGHT};

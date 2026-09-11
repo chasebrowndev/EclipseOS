@@ -18,6 +18,13 @@ path = "src/lib.rs"
 name = "eclipse-bar"
 path = "src/main.rs"
 
+# The notification stack is its own layer surface with its own lifetime, but it
+# shares the bar's tokens and its service layer, so it is a second binary here
+# rather than a second crate.
+[[bin]]
+name = "eclipse-toasts"
+path = "src/toasts/main.rs"
+
 [dependencies]
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
 iced_layershell = "0.19.1"

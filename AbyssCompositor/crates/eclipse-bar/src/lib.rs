@@ -10,6 +10,7 @@ pub mod app;
 pub mod clock;
 pub mod conn;
 pub mod model;
+pub mod toasts;
 pub mod view;
 
 /// Bar height in logical pixels, and therefore its exclusive zone. Matches the
