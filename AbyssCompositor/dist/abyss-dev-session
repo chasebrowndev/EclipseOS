@@ -1,0 +1,24 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Bare-metal dev session: run this from a plain TTY login, not from inside
+# another compositor. Same job as `abyss-session`, but pointed at this
+# checkout's debug build instead of /usr/bin, so nothing has to be installed
+# as root and the login screen is untouched.
+#
+# Ctrl+Alt+F1 goes back to the Hyprland session; input/mod.rs intercepts the
+# VT-switch keysyms before the lock check and before any bind lookup, so it
+# works even if the shell is wedged. Super+Shift+Q quits.
+set -eu
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+bin="$here/../target/debug"
+
+# Binds spawn through `/bin/sh -c` inheriting this environment, so target/debug
+# has to be on PATH for Super+R (eclipse-launcher) and Super+N to resolve.
+PATH="$bin:$PATH"
+export PATH
+
+export XDG_CURRENT_DESKTOP=Abyss
+export XDG_SESSION_TYPE=wayland
+export XDG_SESSION_DESKTOP=abyss
+
+exec "$bin/abyss" --backend drm --session --stats "$@"

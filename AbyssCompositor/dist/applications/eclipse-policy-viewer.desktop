@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Eclipse Policy
+Comment=What each application is permitted to do, and why
+Exec=eclipse-policy-viewer
+Categories=Settings;Security;
+Keywords=policy;capability;permission;audit;eclipse;

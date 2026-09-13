@@ -1,0 +1,11 @@
+# Installed to <data dir>/applications; the launcher's apps::scan() reads it
+# from there. Exec is the bare binary name on purpose: the dev session puts
+# target/debug on PATH, a real install puts /usr/bin on it, and the same file
+# works for both.
+[Desktop Entry]
+Type=Application
+Name=Eclipse Settings
+Comment=Compositor, input and appearance settings
+Exec=eclipse-settings
+Categories=Settings;DesktopSettings;
+Keywords=settings;preferences;config;eclipse;abyss;
