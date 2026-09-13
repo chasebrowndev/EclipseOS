@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Eclipse Control Center
+Comment=Audio, network, power and session controls
+Exec=eclipse-center
+Categories=Settings;System;
+Keywords=control;center;audio;network;power;eclipse;

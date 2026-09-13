@@ -9,4 +9,7 @@
 export XDG_CURRENT_DESKTOP=Abyss
 export XDG_SESSION_TYPE=wayland
 export XDG_SESSION_DESKTOP=abyss
-exec abyss --session "$@"
+# --backend drm is explicit rather than inferred: default_backend() picks DRM
+# only because WAYLAND_DISPLAY and DISPLAY are unset, and a greeter that leaks
+# either into the session would silently start a nested winit compositor.
+exec abyss --backend drm --session "$@"

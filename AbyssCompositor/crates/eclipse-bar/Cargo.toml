@@ -38,7 +38,9 @@ name = "eclipse-launcher"
 path = "src/launcher/main.rs"
 
 [dependencies]
-iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
+# `svg` and `image` are the bar's icon path: a freedesktop icon theme is
+# mostly SVG with a PNG tail, and the bar draws real application icons.
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "svg", "image"] }
 iced_layershell = "0.19.1"
 eclipse-ui = { path = "../eclipse-ui" }
 eclipse-ipc = { path = "../eclipse-ipc" }
@@ -49,3 +51,6 @@ serde_json.workspace = true
 # `clock.rs` formats wall-clock time through `localtime_r`, so that the bar
 # follows the user's zone and DST without carrying a time crate.
 libc = "0.2"
+# Icon-theme lookup (index.theme parsing, size/scale selection, inheritance).
+# Read-only and path-producing: it hands back a file, it never decodes one.
+freedesktop-icons = "0.4"

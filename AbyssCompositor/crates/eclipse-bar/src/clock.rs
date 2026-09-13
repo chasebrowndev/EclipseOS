@@ -6,28 +6,59 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
+use eclipse_ui::tokens::clock;
 
-/// `HH:MM` in the session's own zone.
+/// `11:15 PM` by default, `23:15` when the 12-hour default is turned off.
+///
+/// Which of the two is a matter of taste, so it is not decided here: the
+/// switch is `eclipse_ui::tokens::clock`, alongside the colours and the
+/// radii, and `docs/PROPOSEDFEATURES.md` has the whole token set coming from
+/// config with the compiled values as defaults. The bar reads the token; it
+/// never hardcodes a preference.
 pub fn time() -> String {
-    match local() {
-        Some(tm) => format!("{:02}:{:02}", tm.tm_hour, tm.tm_min),
-        None => "--:--".to_owned(),
+    let Some(tm) = local() else {
+        return "--:--".to_owned();
+    };
+    if !clock::HOUR_12 {
+        return format!("{:02}:{:02}", tm.tm_hour, tm.tm_min);
     }
+    let (hour, meridiem) = twelve(tm.tm_hour);
+    format!("{hour}:{:02} {meridiem}", tm.tm_min)
 }
 
-/// `Thu 11 Sep`.
+/// `9/12/26` by default — the date as a reading, not as a sentence. A bar
+/// cell is 74px wide and "Friday, September 12" is not a thing that fits in
+/// it; the spelled-out form is what a calendar drawer is for.
 pub fn date() -> String {
     let Some(tm) = local() else {
         return String::new();
     };
-    let day = DAYS.get(tm.tm_wday.clamp(0, 6) as usize).unwrap_or(&"");
-    let month = MONTHS.get(tm.tm_mon.clamp(0, 11) as usize).unwrap_or(&"");
-    format!("{day} {:02} {month}", tm.tm_mday)
+    if !clock::DATE_MDY {
+        let day = DAYS.get(tm.tm_wday.clamp(0, 6) as usize).unwrap_or(&"");
+        let month = MONTHS.get(tm.tm_mon.clamp(0, 11) as usize).unwrap_or(&"");
+        return format!("{day} {:02} {month}", tm.tm_mday);
+    }
+    // `tm_year` is years since 1900; the two-digit form is the last two of
+    // the calendar year, and it stays two digits past 2100.
+    let year = (tm.tm_year + 1900).rem_euclid(100);
+    format!("{}/{}/{:02}", tm.tm_mon + 1, tm.tm_mday, year)
 }
+
+/// Clock hour and meridiem from a 24-hour hour. Midnight and noon are the two
+/// cases a naive `% 12` gets wrong, and they are both `12`.
+fn twelve(hour24: i32) -> (i32, &'static str) {
+    let meridiem = if hour24 < 12 { "AM" } else { "PM" };
+    let hour = match hour24.rem_euclid(12) {
+        0 => 12,
+        h => h,
+    };
+    (hour, meridiem)
+}
+
+const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 fn local() -> Option<libc::tm> {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
@@ -44,18 +75,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_time_is_always_five_characters() {
-        let t = time();
-        assert_eq!(t.len(), 5, "{t}");
-        assert_eq!(&t[2..3], ":");
+    fn midnight_and_noon_are_twelve_and_not_zero() {
+        assert_eq!(twelve(0), (12, "AM"));
+        assert_eq!(twelve(12), (12, "PM"));
+        assert_eq!(twelve(11), (11, "AM"));
+        assert_eq!(twelve(23), (11, "PM"));
+        assert_eq!(twelve(13), (1, "PM"));
     }
 
     #[test]
-    fn the_date_names_a_real_day_and_month() {
+    fn the_time_reads_as_a_clock() {
+        let t = time();
+        let (hhmm, suffix) = match t.split_once(' ') {
+            Some((hhmm, m)) => (hhmm, Some(m)),
+            None => (t.as_str(), None),
+        };
+        let (h, m) = hhmm.split_once(':').expect("{t}");
+        let h: i32 = h.parse().expect("{t}");
+        let m: i32 = m.parse().expect("{t}");
+        assert!((0..60).contains(&m), "{t}");
+        if clock::HOUR_12 {
+            assert!((1..=12).contains(&h), "{t}");
+            assert!(matches!(suffix, Some("AM" | "PM")), "{t}");
+        } else {
+            assert!((0..24).contains(&h), "{t}");
+        }
+    }
+
+    /// `9/12/26`, not `Friday, September 12` — three numbers and two slashes.
+    #[test]
+    fn the_date_is_three_numbers() {
         let d = date();
-        let parts: Vec<&str> = d.split(' ').collect();
+        if !clock::DATE_MDY {
+            return;
+        }
+        let parts: Vec<&str> = d.split('/').collect();
         assert_eq!(parts.len(), 3, "{d}");
-        assert!(DAYS.contains(&parts[0]));
-        assert!(MONTHS.contains(&parts[2]));
+        let n: Vec<i32> = parts.iter().map(|p| p.parse().expect("{d}")).collect();
+        assert!((1..=12).contains(&n[0]), "{d}");
+        assert!((1..=31).contains(&n[1]), "{d}");
+        assert!((0..100).contains(&n[2]), "{d}");
     }
 }

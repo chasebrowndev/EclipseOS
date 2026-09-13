@@ -14,7 +14,9 @@ pub mod stats;
 
 use std::collections::HashMap;
 
-use smithay::backend::renderer::element::{default_primary_scanout_output_compare, RenderElementStates};
+use smithay::backend::renderer::element::{
+    default_primary_scanout_output_compare, Element, RenderElementStates,
+};
 use smithay::{
     backend::renderer::{
         element::{
@@ -52,9 +54,9 @@ smithay::backend::renderer::element::render_elements! {
     Blur=blur::BlurElement,
 }
 
-/// A window that wants a blurred backdrop: the window, the index in the element
-/// list directly below its surfaces, and the region it blurs.
-type BlurRequest = (Window, usize, Rectangle<i32, Physical>);
+/// A surface that wants a blurred backdrop: what it belongs to, the index in
+/// the element list directly below its surfaces, and the region it blurs.
+type BlurRequest = (blur::BlurKey, usize, Rectangle<i32, Physical>);
 
 /// Four solid quads (top, bottom, left, right) per window.
 type Border = [SolidColorBuffer; 4];
@@ -79,7 +81,6 @@ impl BorderStore {
     pub fn remove(&mut self, window: &Window) {
         self.borders.remove(window);
         self.dims.remove(window);
-        self.blur.forget(window);
     }
 }
 
@@ -112,27 +113,49 @@ pub fn collect_elements(
     let output_loc = space.output_geometry(output).map(|g| g.loc).unwrap_or_default();
     let mut elements: Vec<AbyssRenderElement> = Vec::new();
     // (window, index in `elements` directly below its surfaces, region).
+    // Filled front to back; `insert_blur` consumes it in reverse.
     let mut blur_requests: Vec<BlurRequest> = Vec::new();
 
-    let layers = |elements: &mut Vec<AbyssRenderElement>, which: &[Layer], renderer: &mut GlesRenderer| {
+    let blur_layers = config.decoration.blur.enabled;
+    let layers = |elements: &mut Vec<AbyssRenderElement>,
+                  requests: &mut Vec<BlurRequest>,
+                  which: &[Layer],
+                  renderer: &mut GlesRenderer| {
         let map = layer_map_for_output(output);
         for &layer in which {
             for surface in map.layers_on(layer).rev() {
                 let Some(geo) = crate::shell::layer_geometry(&map, surface) else {
                     continue;
                 };
-                elements.extend(
-                    surface
-                        .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
-                            renderer,
-                            // Layer geometry is already output-local.
-                            phys(geo.loc, scale),
-                            scale,
-                            1.0,
-                        )
-                        .into_iter()
-                        .map(AbyssRenderElement::Surface),
-                );
+                // Layer geometry is already output-local.
+                let loc = phys(geo.loc, scale);
+                let els = surface
+                    .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(renderer, loc, scale, 1.0);
+                // Vol 1 §5.2 asks for blur behind layer-shell too. A layer
+                // client declares its own translucency through the surface's
+                // opaque region; anything it leaves uncovered is glass and
+                // wants a backdrop. COMP-02 §9: opaque surfaces are skipped
+                // entirely, so a bar that paints a solid ground costs nothing.
+                if blur_layers {
+                    let region = Rectangle::new(loc, geo.size.to_f64().to_physical(scale).to_i32_round());
+                    let opaque: Vec<_> = els
+                        .iter()
+                        .flat_map(|e| {
+                            let at = e.geometry(scale).loc;
+                            e.opaque_regions(scale)
+                                .into_iter()
+                                .map(move |r| Rectangle::new(r.loc + at, r.size))
+                        })
+                        .collect();
+                    if blur::shows_through(region, opaque) {
+                        requests.push((
+                            blur::BlurKey::Layer(surface.clone()),
+                            elements.len() + els.len(),
+                            region,
+                        ));
+                    }
+                }
+                elements.extend(els.into_iter().map(AbyssRenderElement::Surface));
             }
         }
     };
@@ -160,7 +183,7 @@ pub fn collect_elements(
     } else {
         (&[Layer::Overlay, Layer::Top], &[Layer::Bottom, Layer::Background])
     };
-    layers(&mut elements, above, renderer);
+    layers(&mut elements, &mut blur_requests, above, renderer);
 
     // With no per-window effect configured (the default) the whole space goes
     // through smithay's one call at alpha 1.0, so damage tracking and direct
@@ -177,7 +200,7 @@ pub fn collect_elements(
         for req in &mut blurred {
             req.1 += base;
         }
-        blur_requests = blurred;
+        blur_requests.extend(blurred);
     } else {
         borders.dims.clear();
         match smithay::desktop::space::space_render_elements(renderer, [space], output, 1.0) {
@@ -189,14 +212,14 @@ pub fn collect_elements(
     elements.extend(border_elements(space, borders, output_loc, scale, config));
     elements.extend(shadow_elements(renderer, space, borders, output_loc, config));
 
-    layers(&mut elements, below, renderer);
+    layers(&mut elements, &mut blur_requests, below, renderer);
 
     insert_blur(renderer, output, borders, config, blur_requests, &mut elements);
 
     elements
 }
 
-/// Build and splice in one blurred backdrop per translucent window (COMP-02 §9).
+/// Build and splice in one blurred backdrop per translucent surface (COMP-02 §9).
 ///
 /// Requests arrive in the order the windows were drawn (front to back); they are
 /// consumed back to front so each insertion leaves the earlier indices — and the
@@ -216,11 +239,13 @@ fn insert_blur(
         return;
     }
     let scale = Scale::from(output.current_scale().fractional_scale());
-    for (window, index, region) in requests.into_iter().rev() {
+    let live: Vec<blur::BlurKey> = requests.iter().map(|(key, _, _)| key.clone()).collect();
+    store.blur.retain(&live);
+    for (key, index, region) in requests.into_iter().rev() {
         let behind = &elements[index..];
         if let Some(element) = store
             .blur
-            .element(renderer, output, &window, region, behind, cfg, scale)
+            .element(renderer, output, &key, region, behind, cfg, scale)
         {
             elements.insert(index, AbyssRenderElement::Blur(element));
         }
@@ -345,7 +370,7 @@ fn window_elements(
             if let Some(mut geo) = space.element_geometry(&window) {
                 geo.loc += store.anim.offset(&window);
                 blurred.push((
-                    window.clone(),
+                    blur::BlurKey::Window(window.clone()),
                     out.len(),
                     Rectangle::new(
                         phys(geo.loc - output_geo.loc, scale),

@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0b0906;font-family:'Instrument Sans',system-ui,sans-serif}
+a{color:#f2c33c}a:hover{color:#ffdb72}
+.dv-turn{padding:44px 48px 36px;border-bottom:1px solid rgba(255,255,255,.07);scroll-margin-top:16px}
+.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 22px}
+.dv-tid{font:600 10px 'JetBrains Mono',monospace;padding:3px 7px;background:#f2c33c;color:#111;border-radius:4px;text-decoration:none}
+.dv-tname{font:600 13px/1.2 'Instrument Sans',sans-serif;color:rgba(255,255,255,.9)}
+.dv-opts{display:flex;flex-wrap:wrap;gap:32px;align-items:flex-start}
+.dv-opt{flex:none;display:flex;flex-direction:column;gap:10px;scroll-margin-top:16px}
+.dv-oid{font:600 10.5px 'JetBrains Mono',monospace;padding:3px 7px;background:rgba(255,255,255,.09);color:rgba(255,255,255,.8);border-radius:5px;text-decoration:none}
+.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 11.5px/1.3 'Instrument Sans',sans-serif;color:rgba(255,255,255,.5)}
+.dv-opt:target .dv-oid{background:#f2c33c;color:#111}
+.dv-next{margin:26px 0 0;font:12px/1.6 'Instrument Sans',sans-serif;color:rgba(255,255,255,.42)}
+</style></helmet>
+
+<section class="dv-turn" id="t4">
+<div class="dv-thd"><a class="dv-tid" href="#t4">4</a><span class="dv-tname">Eclipse OS — settings panes</span></div>
+<div class="dv-opts">
+
+<div class="dv-opt" id="4a">
+<div class="dv-olabel"><a class="dv-oid" href="#4a">4a</a>Display · monitor arrangement, mode list, colour profile</div>
+<div style="width:1120px;height:720px;border-radius:16px;overflow:hidden;position:relative;background:#0b0906;border:1px solid rgba(255,255,255,.1);box-shadow:0 40px 90px -30px rgba(0,0,0,.9)">
+  <div style="position:relative;height:100%;display:flex;min-height:0">
+    <div style="width:214px;flex:none;padding:18px 12px;display:flex;flex-direction:column;gap:3px;background:rgba(0,0,0,.4);backdrop-filter:blur(30px);border-right:1px solid rgba(255,255,255,.06)">
+      <div style="font:600 14px 'Instrument Sans',sans-serif;color:#fff;padding:6px 11px 16px;letter-spacing:-.01em">Settings</div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Appearance</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Network</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px 9px 16px;border-radius:10px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);position:relative"><div style="position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:99px;background:#f2c33c"></div><div style="width:18px;height:18px;border-radius:6px;background:rgba(242,195,60,.3);border:1px solid rgba(242,195,60,.42)"></div><span style="font:500 13.5px 'Instrument Sans',sans-serif;color:#fff">Display</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Sound</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Notifications</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Power</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Privacy</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Storage</span></div>
+      <div style="flex:1"></div>
+      <div style="padding:12px;border-radius:11px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1)"><div style="font:400 10.5px/1.8 'JetBrains Mono',monospace;color:rgba(255,255,255,.45)">2 displays<br>compositor 60 fps</div></div>
+    </div>
+
+    <div style="flex:1;min-width:0;padding:26px 30px;display:flex;flex-direction:column;gap:18px">
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:20px">
+        <div>
+          <div style="font:600 24px 'Instrument Sans',sans-serif;color:#fff;letter-spacing:-.01em">Display</div>
+          <div style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.48);margin-top:5px">Arrangement, resolution and colour for <span style="color:#f2c33c">2 connected panels</span></div>
+        </div>
+        <div style="display:flex;gap:9px">
+          <div style="padding:7px 14px;border-radius:99px;border:1px solid rgba(255,255,255,.14);font:400 12px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.7)">Detect</div>
+          <div style="padding:7px 14px;border-radius:99px;background:rgba(242,195,60,.12);border:1px solid rgba(242,195,60,.32);font:500 12px 'Instrument Sans',sans-serif;color:#f2c33c">Mirror</div>
+        </div>
+      </div>
+
+      <div style="padding:20px;border-radius:14px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);backdrop-filter:blur(28px);box-shadow:inset 0 1px 0 rgba(255,255,255,.07)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <span style="font:500 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.82)">Arrangement</span>
+          <span style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4)">drag to reposition</span>
+        </div>
+        <div style="height:170px;border-radius:11px;background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.07);position:relative;overflow:hidden">
+          <div style="position:absolute;inset:0;background:repeating-linear-gradient(0deg,rgba(255,255,255,.04) 0 1px,transparent 1px 22px),repeating-linear-gradient(90deg,rgba(255,255,255,.04) 0 1px,transparent 1px 22px)"></div>
+          <div style="position:absolute;left:150px;top:22px;width:190px;height:126px;border-radius:6px;border:1.5px solid #f2c33c;background:rgba(242,195,60,.1);box-shadow:0 0 0 4px rgba(242,195,60,.12);display:flex;flex-direction:column;justify-content:space-between;padding:7px 9px">
+            <span style="font:500 11px 'JetBrains Mono',monospace;color:#f2c33c">DP-1</span>
+            <span style="font:400 10px 'JetBrains Mono',monospace;color:rgba(255,255,255,.55)">3440×1440</span>
+          </div>
+          <div style="position:absolute;left:356px;top:52px;width:118px;height:82px;border-radius:6px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.05);display:flex;flex-direction:column;justify-content:space-between;padding:6px 8px">
+            <span style="font:500 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.72)">HDMI-A-1</span>
+            <span style="font:400 10px 'JetBrains Mono',monospace;color:rgba(255,255,255,.45)">1920×1080</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="flex:1;min-height:0;display:flex;gap:16px">
+        <div style="flex:1.25;padding:6px 20px 10px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(28px);overflow:hidden">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 0 10px;border-bottom:1px solid rgba(255,255,255,.06)">
+            <span style="font:500 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.82)">Modes · DP-1</span>
+            <span style="font:400 11px 'JetBrains Mono',monospace;color:#f2c33c">VRR active</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:14px;padding:11px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+            <div style="width:11px;height:11px;border-radius:50%;border:1px solid #f2c33c;padding:2px;display:flex"><div style="flex:1;border-radius:50%;background:#f2c33c"></div></div>
+            <span style="flex:1;font:400 13px 'Instrument Sans',sans-serif;color:#fff">3440 × 1440</span>
+            <span style="font:400 11.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.6)">144 Hz</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:14px;padding:11px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+            <div style="width:11px;height:11px;border-radius:50%;border:1px solid rgba(255,255,255,.25)"></div>
+            <span style="flex:1;font:400 13px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.78)">3440 × 1440</span>
+            <span style="font:400 11.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.45)">120 Hz</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:14px;padding:11px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+            <div style="width:11px;height:11px;border-radius:50%;border:1px solid rgba(255,255,255,.25)"></div>
+            <span style="flex:1;font:400 13px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.78)">2560 × 1080</span>
+            <span style="font:400 11.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.45)">144 Hz</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:14px;padding:11px 0">
+            <div style="width:11px;height:11px;border-radius:50%;border:1px solid rgba(255,255,255,.25)"></div>
+            <span style="flex:1;font:400 13px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.78)">1920 × 1080</span>
+            <span style="font:400 11.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.45)">60 Hz</span>
+          </div>
+        </div>
+
+        <div style="flex:1;padding:18px 20px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(28px);display:flex;flex-direction:column;gap:16px">
+          <span style="font:500 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.82)">Colour</span>
+          <div>
+            <div style="display:flex;justify-content:space-between;font:400 11.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.5)"><span>brightness</span><span style="color:rgba(255,255,255,.8)">78%</span></div>
+            <div style="height:4px;border-radius:99px;background:rgba(255,255,255,.12);margin-top:9px;position:relative"><div style="position:absolute;inset:0 22% 0 0;background:#f2c33c;border-radius:99px"></div><div style="position:absolute;left:78%;top:-6px;width:16px;height:16px;border-radius:50%;background:#f2c33c;box-shadow:0 2px 8px rgba(0,0,0,.6)"></div></div>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;font:400 11.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.5)"><span>temperature</span><span style="color:rgba(255,255,255,.8)">5200 K</span></div>
+            <div style="height:4px;border-radius:99px;background:rgba(255,255,255,.12);margin-top:9px;position:relative"><div style="position:absolute;inset:0 55% 0 0;background:#f2c33c;border-radius:99px"></div><div style="position:absolute;left:45%;top:-6px;width:16px;height:16px;border-radius:50%;background:#f2c33c;box-shadow:0 2px 8px rgba(0,0,0,.6)"></div></div>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding-top:4px">
+            <div><div style="font:400 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.86)">Night shift</div><div style="font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4);margin-top:3px">21:00 – 06:30</div></div>
+            <div style="width:44px;height:25px;border-radius:99px;background:rgba(242,195,60,.85);padding:2.5px;display:flex;justify-content:flex-end"><div style="width:20px;height:20px;border-radius:50%;background:#0b0906"></div></div>
+          </div>
+          <div style="flex:1"></div>
+          <div style="padding:11px 13px;border-radius:11px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.07);font:400 10.5px/1.7 'JetBrains Mono',monospace;color:rgba(255,255,255,.45)">profile · sRGB<br>10-bit · calibrated 4d ago</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="dv-opt" id="4b">
+<div class="dv-olabel"><a class="dv-oid" href="#4b">4b</a>Sound · live meter, device list, per-app mix</div>
+<div style="width:1120px;height:720px;border-radius:16px;overflow:hidden;position:relative;background:#0b0906;border:1px solid rgba(255,255,255,.1);box-shadow:0 40px 90px -30px rgba(0,0,0,.9)">
+  <div style="position:relative;height:100%;display:flex;min-height:0">
+    <div style="width:214px;flex:none;padding:18px 12px;display:flex;flex-direction:column;gap:3px;background:rgba(0,0,0,.4);backdrop-filter:blur(30px);border-right:1px solid rgba(255,255,255,.06)">
+      <div style="font:600 14px 'Instrument Sans',sans-serif;color:#fff;padding:6px 11px 16px;letter-spacing:-.01em">Settings</div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Appearance</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Network</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Display</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px 9px 16px;border-radius:10px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);position:relative"><div style="position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:99px;background:#f2c33c"></div><div style="width:18px;height:18px;border-radius:6px;background:rgba(242,195,60,.3);border:1px solid rgba(242,195,60,.42)"></div><span style="font:500 13.5px 'Instrument Sans',sans-serif;color:#fff">Sound</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Notifications</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Power</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Privacy</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Storage</span></div>
+      <div style="flex:1"></div>
+      <div style="padding:12px;border-radius:11px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1)"><div style="font:400 10.5px/1.8 'JetBrains Mono',monospace;color:rgba(255,255,255,.45)">pipewire 1.0.4<br>48 kHz · 128 frames</div></div>
+    </div>
+
+    <div style="flex:1;min-width:0;padding:26px 30px;display:flex;flex-direction:column;gap:18px">
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:20px">
+        <div>
+          <div style="font:600 24px 'Instrument Sans',sans-serif;color:#fff;letter-spacing:-.01em">Sound</div>
+          <div style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.48);margin-top:5px">Output to <span style="color:#f2c33c">Bergen Studio 4</span> · balanced profile</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:11px;padding:7px 9px 7px 14px;border-radius:99px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.09)">
+          <span style="font:400 12px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.72)">Mute all</span>
+          <div style="width:40px;height:23px;border-radius:99px;background:rgba(255,255,255,.14);padding:2.5px;display:flex"><div style="width:18px;height:18px;border-radius:50%;background:rgba(255,255,255,.55)"></div></div>
+        </div>
+      </div>
+
+      <div style="padding:22px;border-radius:14px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);backdrop-filter:blur(28px);box-shadow:inset 0 1px 0 rgba(255,255,255,.07);display:flex;gap:26px;align-items:center">
+        <div style="flex:1">
+          <div style="display:flex;justify-content:space-between;align-items:baseline">
+            <span style="font:500 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.82)">Master volume</span>
+            <span style="font:500 20px 'JetBrains Mono',monospace;color:#fff">64<span style="font-size:12px;color:rgba(255,255,255,.45)">%</span></span>
+          </div>
+          <div style="height:6px;border-radius:99px;background:rgba(255,255,255,.12);margin-top:14px;position:relative"><div style="position:absolute;inset:0 36% 0 0;background:#f2c33c;border-radius:99px"></div><div style="position:absolute;left:64%;top:-6px;width:18px;height:18px;border-radius:50%;background:#f2c33c;box-shadow:0 2px 10px rgba(0,0,0,.7)"></div></div>
+          <div style="display:flex;justify-content:space-between;font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.35);margin-top:10px"><span>-∞</span><span>-12 dB</span><span>0 dB</span></div>
+        </div>
+        <div style="width:1px;height:70px;background:rgba(255,255,255,.09)"></div>
+        <div style="width:190px">
+          <div style="font:400 10px 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.38);margin-bottom:12px">Output level</div>
+          <div style="display:flex;align-items:flex-end;gap:3px;height:52px">
+            <div style="flex:1;height:36%;background:#f2c33c;border-radius:2px"></div>
+            <div style="flex:1;height:58%;background:#f2c33c;border-radius:2px"></div>
+            <div style="flex:1;height:44%;background:#f2c33c;border-radius:2px"></div>
+            <div style="flex:1;height:72%;background:#f2c33c;border-radius:2px"></div>
+            <div style="flex:1;height:90%;background:#f2c33c;border-radius:2px"></div>
+            <div style="flex:1;height:66%;background:rgba(242,195,60,.55);border-radius:2px"></div>
+            <div style="flex:1;height:48%;background:rgba(242,195,60,.55);border-radius:2px"></div>
+            <div style="flex:1;height:30%;background:rgba(255,255,255,.16);border-radius:2px"></div>
+            <div style="flex:1;height:22%;background:rgba(255,255,255,.16);border-radius:2px"></div>
+            <div style="flex:1;height:14%;background:rgba(255,255,255,.16);border-radius:2px"></div>
+          </div>
+        </div>
+      </div>
+
+      <div style="flex:1;min-height:0;display:flex;gap:16px">
+        <div style="flex:1;padding:6px 20px 10px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(28px);overflow:hidden">
+          <div style="padding:14px 0 10px;border-bottom:1px solid rgba(255,255,255,.06);font:500 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.82)">Output devices</div>
+          <div style="display:flex;align-items:center;gap:13px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+            <div style="width:11px;height:11px;border-radius:50%;border:1px solid #f2c33c;padding:2px;display:flex"><div style="flex:1;border-radius:50%;background:#f2c33c"></div></div>
+            <div style="flex:1"><div style="font:400 13px 'Instrument Sans',sans-serif;color:#fff">Bergen Studio 4</div><div style="font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4);margin-top:2px">usb · 2 ch · 48 kHz</div></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:13px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+            <div style="width:11px;height:11px;border-radius:50%;border:1px solid rgba(255,255,255,.25)"></div>
+            <div style="flex:1"><div style="font:400 13px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.8)">DP-1 · panel out</div><div style="font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4);margin-top:2px">hdmi · 2 ch</div></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:13px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+            <div style="width:11px;height:11px;border-radius:50%;border:1px solid rgba(255,255,255,.25)"></div>
+            <div style="flex:1"><div style="font:400 13px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.8)">Ora Buds</div><div style="font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4);margin-top:2px">bluetooth · 63% battery</div></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:13px;padding:12px 0">
+            <div style="width:11px;height:11px;border-radius:50%;border:1px solid rgba(255,255,255,.25)"></div>
+            <div style="flex:1"><div style="font:400 13px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.8)">Dummy output</div><div style="font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4);margin-top:2px">virtual sink</div></div>
+          </div>
+        </div>
+
+        <div style="flex:1;padding:6px 20px 10px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(28px);overflow:hidden">
+          <div style="padding:14px 0 10px;border-bottom:1px solid rgba(255,255,255,.06);display:flex;justify-content:space-between;align-items:center"><span style="font:500 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.82)">Application mix</span><span style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4)">3 streams</span></div>
+          <div style="padding:14px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+            <div style="display:flex;justify-content:space-between;font:400 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.88)"><span>Browser</span><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(255,255,255,.55)">82%</span></div>
+            <div style="height:4px;border-radius:99px;background:rgba(255,255,255,.1);margin-top:9px"><div style="width:82%;height:100%;background:#f2c33c;border-radius:99px"></div></div>
+          </div>
+          <div style="padding:14px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+            <div style="display:flex;justify-content:space-between;font:400 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.88)"><span>Music player</span><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(255,255,255,.55)">54%</span></div>
+            <div style="height:4px;border-radius:99px;background:rgba(255,255,255,.1);margin-top:9px"><div style="width:54%;height:100%;background:rgba(242,195,60,.7);border-radius:99px"></div></div>
+          </div>
+          <div style="padding:14px 0">
+            <div style="display:flex;justify-content:space-between;font:400 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.88)">
+              <span>System alerts</span><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:rgba(255,255,255,.35)">muted</span></div>
+            <div style="height:4px;border-radius:99px;background:rgba(255,255,255,.1);margin-top:9px"><div style="width:18%;height:100%;background:rgba(255,255,255,.2);border-radius:99px"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="dv-opt" id="4c">
+<div class="dv-olabel"><a class="dv-oid" href="#4c">4c</a>Notifications · focus schedule + per-app rules</div>
+<div style="width:1120px;height:720px;border-radius:16px;overflow:hidden;position:relative;background:#0b0906;border:1px solid rgba(255,255,255,.1);box-shadow:0 40px 90px -30px rgba(0,0,0,.9)">
+  <div style="position:relative;height:100%;display:flex;min-height:0">
+    <div style="width:214px;flex:none;padding:18px 12px;display:flex;flex-direction:column;gap:3px;background:rgba(0,0,0,.4);backdrop-filter:blur(30px);border-right:1px solid rgba(255,255,255,.06)">
+      <div style="font:600 14px 'Instrument Sans',sans-serif;color:#fff;padding:6px 11px 16px;letter-spacing:-.01em">Settings</div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Appearance</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Network</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Display</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Sound</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px 9px 16px;border-radius:10px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);position:relative"><div style="position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:99px;background:#f2c33c"></div><div style="width:18px;height:18px;border-radius:6px;background:rgba(242,195,60,.3);border:1px solid rgba(242,195,60,.42)"></div><span style="font:500 13.5px 'Instrument Sans',sans-serif;color:#fff">Notifications</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Power</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Privacy</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Storage</span></div>
+      <div style="flex:1"></div>
+      <div style="padding:12px;border-radius:11px;background:rgba(242,195,60,.09);border:1px solid rgba(242,195,60,.18)"><div style="font:500 11.5px 'Instrument Sans',sans-serif;color:#f2c33c">Focus on</div><div style="font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.5);margin-top:4px">until 17:30</div></div>
+    </div>
+
+    <div style="flex:1;min-width:0;padding:26px 30px;display:flex;flex-direction:column;gap:18px">
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:20px">
+        <div>
+          <div style="font:600 24px 'Instrument Sans',sans-serif;color:#fff;letter-spacing:-.01em">Notifications</div>
+          <div style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.48);margin-top:5px"><span style="color:#f2c33c">6 apps</span> may interrupt · 2 held in queue</div>
+        </div>
+        <div style="padding:7px 14px;border-radius:99px;border:1px solid rgba(255,255,255,.14);font:400 12px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.7)">Clear queue</div>
+      </div>
+
+      <div style="padding:20px 22px;border-radius:14px;background:rgba(242,195,60,.09);border:1px solid rgba(242,195,60,.24);backdrop-filter:blur(28px);box-shadow:inset 0 1px 0 rgba(255,255,255,.08);display:flex;align-items:center;gap:26px">
+        <div style="flex:1">
+          <div style="display:flex;align-items:center;gap:10px"><div style="width:8px;height:8px;border-radius:50%;background:#f2c33c"></div><span style="font:600 15px 'Instrument Sans',sans-serif;color:#fff">Focus · Deep work</span></div>
+          <div style="font:400 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.62);margin-top:8px">Only calls and calendar alarms get through. Everything else queues silently.</div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:center">
+          <div style="text-align:right"><div style="font:400 10px 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.4)">schedule</div><div style="font:500 15px 'JetBrains Mono',monospace;color:#fff;margin-top:5px">09:00–17:30</div></div>
+          <div style="width:44px;height:25px;border-radius:99px;background:#f2c33c;padding:2.5px;display:flex;justify-content:flex-end;margin-left:12px"><div style="width:20px;height:20px;border-radius:50%;background:#0b0906"></div></div>
+        </div>
+      </div>
+
+      <div style="flex:1;min-height:0;padding:6px 20px 10px;border-radius:14px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(28px);overflow:hidden">
+        <div style="display:flex;align-items:center;padding:14px 0 11px;border-bottom:1px solid rgba(255,255,255,.06)">
+          <span style="flex:1;font:500 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.82)">Per-app rules</span>
+          <span style="width:90px;text-align:center;font:400 10px 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.38)">banner</span>
+          <span style="width:90px;text-align:center;font:400 10px 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.38)">sound</span>
+          <span style="width:110px;text-align:right;font:400 10px 'JetBrains Mono',monospace;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.38)">bypass focus</span>
+        </div>
+        <div style="display:flex;align-items:center;padding:13px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+          <div style="flex:1;display:flex;align-items:center;gap:12px"><div style="width:24px;height:24px;border-radius:7px;background:rgba(255,255,255,.1)"></div><span style="font:400 13px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.9)">Calls</span></div>
+          <div style="width:90px;display:flex;justify-content:center"><div style="width:34px;height:19px;border-radius:99px;background:rgba(242,195,60,.85);padding:2px;display:flex;justify-content:flex-end"><div style="width:15px;height:15px;border-radius:50%;background:#0b0906"></div></div></div>
+          <div style="width:90px;display:flex;justify-content:center"><div style="width:34px;height:19px;border-radius:99px;background:rgba(242,195,60,.85);padding:2px;display:flex;justify-content:flex-end"><div style="width:15px;height:15px;border-radius:50%;background:#0b0906"></div></div></div>
+          <div style="width:110px;display:flex;justify-content:flex-end"><span style="font:500 11px 'JetBrains Mono',monospace;color:#f2c33c;padding:4px 10px;border-radius:99px;border:1px solid rgba(242,195,60,.3);background:rgba(242,195,60,.1)">allowed</span></div>
+        </div>
+        <div style="display:flex;align-items:center;padding:13px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+          <div style="flex:1;display:flex;align-items:center;gap:12px"><div style="width:24px;height:24px;border-radius:7px;background:rgba(255,255,255,.1)"></div><span style="font:400 13px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.9)">Calendar</span></div>
+          <div style="width:90px;display:flex;justify-content:center"><div style="width:34px;height:19px;border-radius:99px;background:rgba(242,195,60,.85);padding:2px;display:flex;justify-content:flex-end"><div style="width:15px;height:15px;border-radius:50%;background:#0b0906"></div></div></div>
+          <div style="width:90px;display:flex;justify-content:center"><div style="width:34px;height:19px;border-radius:99px;background:rgba(255,255,255,.13);padding:2px;display:flex"><div style="width:15px;height:15px;border-radius:50%;background:rgba(255,255,255,.5)"></div></div></div>
+          <div style="width:110px;display:flex;justify-content:flex-end"><span style="font:500 11px 'JetBrains Mono',monospace;color:#f2c33c;padding:4px 10px;border-radius:99px;border:1px solid rgba(242,195,60,.3);background:rgba(242,195,60,.1)">alarms</span></div>
+        </div>
+        <div style="display:flex;align-items:center;padding:13px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+          <div style="flex:1;display:flex;align-items:center;gap:12px"><div style="width:24px;height:24px;border-radius:7px;background:rgba(255,255,255,.1)"></div><span style="font:400 13px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.9)">Mail</span></div>
+          <div style="width:90px;display:flex;justify-content:center"><div style="width:34px;height:19px;border-radius:99px;background:rgba(242,195,60,.85);padding:2px;display:flex;justify-content:flex-end"><div style="width:15px;height:15px;border-radius:50%;background:#0b0906"></div></div></div>
+          <div style="width:90px;display:flex;justify-content:center"><div style="width:34px;height:19px;border-radius:99px;background:rgba(255,255,255,.13);padding:2px;display:flex"><div style="width:15px;height:15px;border-radius:50%;background:rgba(255,255,255,.5)"></div></div></div>
+          <div style="width:110px;display:flex;justify-content:flex-end"><span style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4)">queued</span></div>
+        </div>
+        <div style="display:flex;align-items:center;padding:13px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+          <div style="flex:1;display:flex;align-items:center;gap:12px"><div style="width:24px;height:24px;border-radius:7px;background:rgba(255,255,255,.1)"></div><span style="font:400 13px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.9)">Chat</span></div>
+          <div style="width:90px;display:flex;justify-content:center"><div style="width:34px;height:19px;border-radius:99px;background:rgba(242,195,60,.85);padding:2px;display:flex;justify-content:flex-end"><div style="width:15px;height:15px;border-radius:50%;background:#0b0906"></div></div></div>
+          <div style="width:90px;display:flex;justify-content:center"><div style="width:34px;height:19px;border-radius:99px;background:rgba(242,195,60,.85);padding:2px;display:flex;justify-content:flex-end"><div style="width:15px;height:15px;border-radius:50%;background:#0b0906"></div></div></div>
+          <div style="width:110px;display:flex;justify-content:flex-end"><span style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4)">queued</span></div>
+        </div>
+        <div style="display:flex;align-items:center;padding:13px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+          <div style="flex:1;display:flex;align-items:center;gap:12px"><div style="width:24px;height:24px;border-radius:7px;background:rgba(255,255,255,.1)"></div><span style="font:400 13px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.9)">Build server</span></div>
+          <div style="width:90px;display:flex;justify-content:center"><div style="width:34px;height:19px;border-radius:99px;background:rgba(255,255,255,.13);padding:2px;display:flex"><div style="width:15px;height:15px;border-radius:50%;background:rgba(255,255,255,.5)"></div></div></div>
+          <div style="width:90px;display:flex;justify-content:center"><div style="width:34px;height:19px;border-radius:99px;background:rgba(255,255,255,.13);padding:2px;display:flex"><div style="width:15px;height:15px;border-radius:50%;background:rgba(255,255,255,.5)"></div></div></div>
+          <div style="width:110px;display:flex;justify-content:flex-end"><span style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4)">off</span></div>
+        </div>
+        <div style="display:flex;align-items:center;padding:13px 0">
+          <div style="flex:1;display:flex;align-items:center;gap:12px"><div style="width:24px;height:24px;border-radius:7px;background:rgba(255,255,255,.1)"></div><span style="font:400 13px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.9)">Package updates</span></div>
+          <div style="width:90px;display:flex;justify-content:center"><div style="width:34px;height:19px;border-radius:99px;background:rgba(242,195,60,.85);padding:2px;display:flex;justify-content:flex-end"><div style="width:15px;height:15px;border-radius:50%;background:#0b0906"></div></div></div>
+          <div style="width:90px;display:flex;justify-content:center"><div style="width:34px;height:19px;border-radius:99px;background:rgba(255,255,255,.13);padding:2px;display:flex"><div style="width:15px;height:15px;border-radius:50%;background:rgba(255,255,255,.5)"></div></div></div>
+          <div style="width:110px;display:flex;justify-content:flex-end"><span style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4)">queued</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="dv-opt" id="4d">
+<div class="dv-olabel"><a class="dv-oid" href="#4d">4d</a>Power · charge state, 24h draw, profiles</div>
+<div style="width:1120px;height:720px;border-radius:16px;overflow:hidden;position:relative;background:#0b0906;border:1px solid rgba(255,255,255,.1);box-shadow:0 40px 90px -30px rgba(0,0,0,.9)">
+  <div style="position:relative;height:100%;display:flex;min-height:0">
+    <div style="width:214px;flex:none;padding:18px 12px;display:flex;flex-direction:column;gap:3px;background:rgba(0,0,0,.4);backdrop-filter:blur(30px);border-right:1px solid rgba(255,255,255,.06)">
+      <div style="font:600 14px 'Instrument Sans',sans-serif;color:#fff;padding:6px 11px 16px;letter-spacing:-.01em">Settings</div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Appearance</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Network</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Display</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Sound</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Notifications</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px 9px 16px;border-radius:10px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);position:relative"><div style="position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:99px;background:#f2c33c"></div><div style="width:18px;height:18px;border-radius:6px;background:rgba(242,195,60,.3);border:1px solid rgba(242,195,60,.42)"></div><span style="font:500 13.5px 'Instrument Sans',sans-serif;color:#fff">Power</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Privacy</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Storage</span></div>
+      <div style="flex:1"></div>
+      <div style="padding:12px;border-radius:11px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1)"><div style="font:400 10.5px/1.8 'JetBrains Mono',monospace;color:rgba(255,255,255,.45)">on battery<br>discharge 8.4 W</div></div>
+    </div>
+
+    <div style="flex:1;min-width:0;padding:26px 30px;display:flex;flex-direction:column;gap:18px">
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:20px">
+        <div>
+          <div style="font:600 24px 'Instrument Sans',sans-serif;color:#fff;letter-spacing:-.01em">Power</div>
+          <div style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.48);margin-top:5px">Battery, sleep and per-profile limits</div>
+        </div>
+        <div style="display:flex;gap:9px">
+          <div style="padding:7px 14px;border-radius:99px;border:1px solid rgba(255,255,255,.14);font:400 12px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.7)">Balanced</div>
+          <div style="padding:7px 14px;border-radius:99px;background:rgba(242,195,60,.12);border:1px solid rgba(242,195,60,.32);font:500 12px 'Instrument Sans',sans-serif;color:#f2c33c">Quiet</div>
+          <div style="padding:7px 14px;border-radius:99px;border:1px solid rgba(255,255,255,.14);font:400 12px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.7)">Performance</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:16px">
+        <div style="flex:1;padding:22px;border-radius:14px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);backdrop-filter:blur(28px);box-shadow:inset 0 1px 0 rgba(255,255,255,.07)">
+          <div style="display:flex;align-items:flex-end;justify-content:space-between">
+            <div>
+              <div style="font:400 10px 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.4)">charge</div>
+              <div style="font:600 38px/1 'Instrument Sans',sans-serif;color:#fff;margin-top:12px;letter-spacing:-.02em">68<span style="font-size:18px;color:rgba(255,255,255,.45)">%</span></div>
+            </div>
+            <div style="text-align:right"><div style="font:400 12.5px 'Instrument Sans',sans-serif;color:#f2c33c">4 h 12 m left</div><div style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.42);margin-top:5px">8.4 W draw</div></div>
+          </div>
+          <div style="height:10px;border-radius:99px;background:rgba(255,255,255,.1);margin-top:20px;overflow:hidden;position:relative">
+            <div style="width:68%;height:100%;background:#f2c33c;border-radius:99px"></div>
+            <div style="position:absolute;left:80%;top:0;bottom:0;width:1px;background:rgba(255,255,255,.35)"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.35);margin-top:9px"><span>0</span><span>charge limit 80%</span><span>100</span></div>
+        </div>
+        <div style="flex:1.2;padding:20px 22px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(28px);display:flex;flex-direction:column;gap:14px">
+          <div style="display:flex;justify-content:space-between;align-items:center"><span style="font:500 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.82)">Draw · last 24 h</span><span style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4)">peak 22 W</span></div>
+          <div style="flex:1;display:flex;align-items:flex-end;gap:4px;min-height:72px">
+            <div style="flex:1;height:22%;background:rgba(255,255,255,.13);border-radius:2px 2px 0 0"></div>
+            <div style="flex:1;height:18%;background:rgba(255,255,255,.13);border-radius:2px 2px 0 0"></div>
+            <div style="flex:1;height:15%;background:rgba(255,255,255,.13);border-radius:2px 2px 0 0"></div>
+            <div style="flex:1;height:30%;background:rgba(255,255,255,.13);border-radius:2px 2px 0 0"></div>
+            <div style="flex:1;height:52%;background:rgba(255,255,255,.13);border-radius:2px 2px 0 0"></div>
+            <div style="flex:1;height:64%;background:rgba(242,195,60,.55);border-radius:2px 2px 0 0"></div>
+            <div style="flex:1;height:88%;background:#f2c33c;border-radius:2px 2px 0 0"></div>
+            <div style="flex:1;height:74%;background:rgba(242,195,60,.55);border-radius:2px 2px 0 0"></div>
+            <div style="flex:1;height:58%;background:rgba(255,255,255,.13);border-radius:2px 2px 0 0"></div>
+            <div style="flex:1;height:46%;background:rgba(255,255,255,.13);border-radius:2px 2px 0 0"></div>
+            <div style="flex:1;height:38%;background:rgba(255,255,255,.13);border-radius:2px 2px 0 0"></div>
+            <div style="flex:1;height:26%;background:rgba(255,255,255,.13);border-radius:2px 2px 0 0"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.35)"><span>00:00</span><span>12:00</span><span>now</span></div>
+        </div>
+      </div>
+
+      <div style="flex:1;min-height:0;padding:6px 22px 10px;border-radius:14px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(28px);overflow:hidden">
+        <div style="display:flex;align-items:center;gap:16px;padding:16px 0;border-bottom:1px solid rgba(255,255,255,.06)">
+          <div style="flex:1"><div style="font:500 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.92)">Sleep display</div><div style="font:400 11.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.44);margin-top:3px">When idle on battery</div></div>
+          <div style="display:flex;align-items:center;gap:12px;padding:6px 13px;border-radius:9px;border:1px solid rgba(255,255,255,.14);min-width:130px;justify-content:space-between"><span style="font:400 12px 'JetBrains Mono',monospace;color:rgba(255,255,255,.86)">5 min</span><span style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.35)">▾</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;padding:16px 0;border-bottom:1px solid rgba(255,255,255,.06)">
+          <div style="flex:1"><div style="font:500 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.92)">Suspend system</div><div style="font:400 11.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.44);margin-top:3px">Suspend-then-hibernate after 2 h</div></div>
+          <div style="display:flex;align-items:center;gap:12px;padding:6px 13px;border-radius:9px;border:1px solid rgba(255,255,255,.14);min-width:130px;justify-content:space-between"><span style="font:400 12px 'JetBrains Mono',monospace;color:rgba(255,255,255,.86)">20 min</span><span style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.35)">▾</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;padding:16px 0;border-bottom:1px solid rgba(255,255,255,.06)">
+          <div style="flex:1"><div style="font:500 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.92)">Limit charge to 80%</div><div style="font:400 11.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.44);margin-top:3px">Extends cell lifespan when docked</div></div>
+          <div style="width:44px;height:25px;border-radius:99px;background:rgba(242,195,60,.85);padding:2.5px;display:flex;justify-content:flex-end"><div style="width:20px;height:20px;border-radius:50%;background:#0b0906"></div></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;padding:16px 0">
+          <div style="flex:1"><div style="font:500 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.92)">Dim keyboard backlight</div><div style="font:400 11.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.44);margin-top:3px">After 30 s without input</div></div>
+          <div style="width:44px;height:25px;border-radius:99px;background:rgba(255,255,255,.13);padding:2.5px;display:flex"><div style="width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,.5)"></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="dv-opt" id="4e">
+<div class="dv-olabel"><a class="dv-oid" href="#4e">4e</a>Privacy &amp; security · permission grid, disk encryption, access log</div>
+<div style="width:1120px;height:720px;border-radius:16px;overflow:hidden;position:relative;background:#0b0906;border:1px solid rgba(255,255,255,.1);box-shadow:0 40px 90px -30px rgba(0,0,0,.9)">
+  <div style="position:relative;height:100%;display:flex;min-height:0">
+    <div style="width:214px;flex:none;padding:18px 12px;display:flex;flex-direction:column;gap:3px;background:rgba(0,0,0,.4);backdrop-filter:blur(30px);border-right:1px solid rgba(255,255,255,.06)">
+      <div style="font:600 14px 'Instrument Sans',sans-serif;color:#fff;padding:6px 11px 16px;letter-spacing:-.01em">Settings</div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Appearance</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Network</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Display</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Sound</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Notifications</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Power</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px 9px 16px;border-radius:10px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);position:relative"><div style="position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:99px;background:#f2c33c"></div><div style="width:18px;height:18px;border-radius:6px;background:rgba(242,195,60,.3);border:1px solid rgba(242,195,60,.42)"></div><span style="font:500 13.5px 'Instrument Sans',sans-serif;color:#fff">Privacy</span></div>
+      <div style="display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:10px"><div style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.09)"></div><span style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.64)">Storage</span></div>
+      <div style="flex:1"></div>
+      <div style="padding:12px;border-radius:11px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1)"><div style="font:400 10.5px/1.8 'JetBrains Mono',monospace;color:rgba(255,255,255,.45)">firewall active<br>3 rules · 0 blocked today</div></div>
+    </div>
+
+    <div style="flex:1;min-width:0;padding:26px 30px;display:flex;flex-direction:column;gap:18px">
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:20px">
+        <div>
+          <div style="font:600 24px 'Instrument Sans',sans-serif;color:#fff;letter-spacing:-.01em">Privacy &amp; security</div>
+          <div style="font:400 13.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.48);margin-top:5px">Disk encrypted · <span style="color:#f2c33c">2 permissions need review</span></div>
+        </div>
+        <div style="padding:7px 14px;border-radius:99px;background:rgba(242,195,60,.12);border:1px solid rgba(242,195,60,.32);font:500 12px 'Instrument Sans',sans-serif;color:#f2c33c">Review now</div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px">
+        <div style="padding:16px;border-radius:13px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);backdrop-filter:blur(28px);box-shadow:inset 0 1px 0 rgba(255,255,255,.07)">
+          <div style="font:400 10px 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.4)">camera</div>
+          <div style="font:600 21px 'Instrument Sans',sans-serif;color:#fff;margin-top:10px">2 apps</div>
+          <div style="font:400 11px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.44);margin-top:4px">1 used today</div>
+        </div>
+        <div style="padding:16px;border-radius:13px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);backdrop-filter:blur(28px);box-shadow:inset 0 1px 0 rgba(255,255,255,.07)">
+          <div style="font:400 10px 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.4)">microphone</div>
+          <div style="font:600 21px 'Instrument Sans',sans-serif;color:#f2c33c;margin-top:10px">in use</div>
+          <div style="font:400 11px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.44);margin-top:4px">Meeting client</div>
+        </div>
+        <div style="padding:16px;border-radius:13px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);backdrop-filter:blur(28px);box-shadow:inset 0 1px 0 rgba(255,255,255,.07)">
+          <div style="font:400 10px 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.4)">location</div>
+          <div style="font:600 21px 'Instrument Sans',sans-serif;color:#fff;margin-top:10px">Off</div>
+          <div style="font:400 11px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.44);margin-top:4px">No providers</div>
+        </div>
+        <div style="padding:16px;border-radius:13px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);backdrop-filter:blur(28px);box-shadow:inset 0 1px 0 rgba(255,255,255,.07)">
+          <div style="font:400 10px 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:rgba(255,255,255,.4)">screen capture</div>
+          <div style="font:600 21px 'Instrument Sans',sans-serif;color:#fff;margin-top:10px">4 apps</div>
+          <div style="font:400 11px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.44);margin-top:4px">2 need review</div>
+        </div>
+      </div>
+
+      <div style="flex:1;min-height:0;display:flex;gap:16px">
+        <div style="flex:1.15;padding:6px 20px 10px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(28px);overflow:hidden">
+          <div style="padding:14px 0 11px;border-bottom:1px solid rgba(255,255,255,.06);display:flex;justify-content:space-between;align-items:center"><span style="font:500 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.82)">Recent access</span><span style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4)">last 24 h</span></div>
+          <div style="display:flex;align-items:center;gap:13px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+            <div style="width:7px;height:7px;border-radius:50%;background:#f2c33c"></div>
+            <div style="flex:1"><div style="font:400 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.9)">Meeting client</div><div style="font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4);margin-top:2px">microphone · camera</div></div>
+            <span style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.5)">now</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:13px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+            <div style="width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.22)"></div>
+            <div style="flex:1"><div style="font:400 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.9)">Screen recorder</div><div style="font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4);margin-top:2px">screen capture</div></div>
+            <span style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.5)">11:04</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:13px;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+            <div style="width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.22)"></div>
+            <div style="flex:1"><div style="font:400 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.9)">Browser</div><div style="font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4);margin-top:2px">clipboard read</div></div>
+            <span style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.5)">09:47</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:13px;padding:12px 0">
+            <div style="width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.22)"></div>
+            <div style="flex:1"><div style="font:400 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.9)">Backup agent</div><div style="font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4);margin-top:2px">full disk read</div></div>
+            <span style="font:400 11px 'JetBrains Mono',monospace;color:rgba(255,255,255,.5)">06:15</span>
+          </div>
+        </div>
+
+        <div style="flex:1;padding:18px 20px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(28px);display:flex;flex-direction:column;gap:15px">
+          <span style="font:500 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.82)">Device security</span>
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <div><div style="font:400 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.88)">Disk encryption</div><div style="font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4);margin-top:3px">luks2 · argon2id</div></div>
+            <span style="font:500 11px 'JetBrains Mono',monospace;color:#f2c33c;padding:4px 10px;border-radius:99px;border:1px solid rgba(242,195,60,.3);background:rgba(242,195,60,.1)">on</span>
+          </div>
+          <div style="height:1px;background:rgba(255,255,255,.07)"></div>
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <div><div style="font:400 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.88)">Secure boot</div><div style="font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4);margin-top:3px">own keys enrolled</div></div>
+            <span style="font:500 11px 'JetBrains Mono',monospace;color:#f2c33c;padding:4px 10px;border-radius:99px;border:1px solid rgba(242,195,60,.3);background:rgba(242,195,60,.1)">on</span>
+          </div>
+          <div style="height:1px;background:rgba(255,255,255,.07)"></div>
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <div><div style="font:400 12.5px 'Instrument Sans',sans-serif;color:rgba(255,255,255,.88)">Remote login</div><div style="font:400 10.5px 'JetBrains Mono',monospace;color:rgba(255,255,255,.4);margin-top:3px">ssh · keys only</div></div>
+            <div style="width:44px;height:25px;border-radius:99px;background:rgba(255,255,255,.13);padding:2.5px;display:flex"><div style="width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,.5)"></div></div>
+          </div>
+          <div style="flex:1"></div>
+          <div style="padding:12px 13px;border-radius:11px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.07);font:400 10.5px/1.7 'JetBrains Mono',monospace;color:rgba(255,255,255,.45)">recovery key saved<br>vault · 2 keys</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+</div>
+
+</section>
+
+</x-dc>
+</body>
+</html>

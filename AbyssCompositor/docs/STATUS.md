@@ -315,6 +315,20 @@ macros anywhere in the workspace.
     down into an inset rect and the margins are left black. The calibration
     overlay is compositor-drawn, not a layer-shell client, because trusted
     UI has to be.
+16. **DE panels are opaque, not glass.** `STYLE.md` §Palette asks for
+    `rgba(255,255,255,.035-.06)` over a `backdrop-filter: blur(28-56px)`.
+    A Wayland client cannot blur what is behind it, so the glass fill is only
+    half the effect and the other half has to come from the compositor —
+    but `decoration { blur }` splices its dual-Kawase chain in beneath a
+    translucent *window*, and layer surfaces are not in that path (and blur
+    is off by default besides). Shipped that way, every panel drew as a flat
+    4.5% white wash: grey on black, and unreadable over anything else.
+    `eclipse_ui::theme::panel` therefore paints `SURFACE_0` opaque today —
+    the secondary-surface colour `STYLE.md` itself names. The `GLASS` and
+    `GLASS_STRONG` tokens are kept, unused, for when this is undone.
+    *Unblocked by:* putting layer surfaces in the blur path, after which
+    `panel` goes back to `GLASS` and blur stops being opt-in. Owner's call,
+    deliberately deferred (2026-09-11) — opaque now, glass later.
 
 ---
 

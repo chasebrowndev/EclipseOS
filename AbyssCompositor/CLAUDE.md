@@ -4,6 +4,9 @@
 Governing specs: `ECLIPSEOS_SPECS_v2_VOL1.md` (and Vol 2). `docs/` is source of
 truth once code starts (F-07 §7). Read the spec section before implementing it.
 
+Don't read them by hand to answer one question — that is what the `spec-oracle`
+agent is for. See "Working style" below.
+
 ## Invariants (never violate; if a task seems to require it, stop and ask)
 - No ambient authority. Every operation requires a capability check.
 - Ratchet rule: classifier/`defer` may only tighten a decision, never grant.
@@ -61,6 +64,25 @@ The toolchain is pinned in `rust-toolchain.toml`; CI and dev must not drift.
 Same rule as the Smithay 0.7.0 pin: a bump is its own PR with its own
 justification.
 
+## Frontend is the frontend agent's job — always
+
+**The main agent never writes frontend.** Every single piece of user-facing UI
+— a new view, a redesign, a tweak to an existing one, anywhere under
+`crates/eclipse-ui/`, `crates/eclipse-bar/`, `crates/eclipse-settings/` or
+`crates/eclipse-policy-viewer/` — goes to the `eclipse-frontend` agent. It is
+the only thing here that produces usable frontend: it screenshots its own
+output and iterates against `docs/STYLE.md`, which is exactly the loop the main
+thread cannot run.
+
+This is not a guideline about effort or size. There is no change small enough
+to exempt: "just move this label" is a frontend change and it gets the agent.
+The main thread's role stays what it is elsewhere — brief the agent, wire up
+the result, run the gate, write the commit.
+
+Non-visual code in those same crates (IPC plumbing, model parsing, message
+flow) is still the main thread's. The line is whether it changes what the user
+sees.
+
 ## Working style — parallelize with subagents
 Spawn subagents freely and keep the main thread thin. This tree is large, the
 specs are long, and the expensive failure mode is a main context stuffed with
@@ -78,6 +100,13 @@ file dumps until it compacts mid-task and loses the plan.
 - **Keep integration in the main thread.** Workspace `Cargo.toml`, shared
   crates, `docs/`, and every commit are the parent's job. Agents produce
   source; the parent wires it up, runs the gate, and writes the message.
+- **Spec questions go to `spec-oracle`, not to grep.** "What does the spec
+  require for X", "which section governs this", "is this allowed" — ask the
+  oracle. The specs are two volumes plus `docs/` plus `decisions/`, and the
+  failure mode is reading half of Vol 1 into the main context to recover one
+  rule. It returns the rule and its citation, which is also exactly what a PR
+  body needs (`Implements COMP-08 §4`). Ask it **before** implementing a
+  spec'd behaviour, not after the review catches the drift.
 - The counterweight: **no subagent for a direct lookup.** One grep, one
   targeted read, one command runs inline — a cold agent re-derives context at
   full price to answer something a single call would have.

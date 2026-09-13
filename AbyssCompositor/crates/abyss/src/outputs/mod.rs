@@ -247,7 +247,7 @@ impl Outputs {
             .workspaces
             .iter()
             .map(|ws| {
-                ws.windows()
+                ws.all_windows()
                     .into_iter()
                     .chain(ws.pending.iter().cloned())
                     .collect()

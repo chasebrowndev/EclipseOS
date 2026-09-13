@@ -128,7 +128,7 @@ fn card(notification: &Notification) -> Element<'_, Message, Theme> {
             .width(Length::Fill)
             .height(Length::Fixed(card_height(notification)))
             .padding(space::CARD)
-            .style(eclipse_ui::theme::panel),
+            .style(eclipse_ui::theme::surface),
     )
     .on_press(Message::Dismiss(notification.id))
     .into()

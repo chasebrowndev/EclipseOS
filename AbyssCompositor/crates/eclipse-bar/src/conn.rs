@@ -93,6 +93,16 @@ impl Conn {
         self.call("close_window", json!({ "handle": handle }));
     }
 
+    /// Send a window away, or bring it back. Unlike the keybinds this names
+    /// the window directly, which is what a taskbar chip needs: once a window
+    /// is minimized it is by definition not the focused one.
+    pub fn set_minimized(&mut self, handle: u64, minimized: bool) {
+        self.call(
+            "set_minimized",
+            json!({ "handle": handle, "minimized": minimized }),
+        );
+    }
+
     /// `workspace` is the 1-based wire index, exactly as `get_workspaces`
     /// reported it.
     pub fn switch_workspace(&mut self, workspace: usize) {

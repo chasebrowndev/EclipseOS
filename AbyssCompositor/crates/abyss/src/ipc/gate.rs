@@ -60,6 +60,7 @@ pub const TABLE: &[Entry] = &[
     e("close_window", Kind::Command, true),
     e("move_to_workspace", Kind::Command, true),
     e("set_floating", Kind::Command, true),
+    e("set_minimized", Kind::Command, true),
     e("switch_workspace", Kind::Command, true),
     e("reload_config", Kind::Command, true),
     e("resize", Kind::Command, true),

@@ -60,7 +60,7 @@ pub fn output_of_window(state: &AbyssState, window: &Window) -> Option<u64> {
         .find(|e| {
             e.workspaces
                 .iter()
-                .any(|ws| ws.windows().contains(window) || ws.pending.contains(window))
+                .any(|ws| ws.all_windows().contains(window) || ws.pending.contains(window))
         })
         .map(|e| e.id)
 }
@@ -243,6 +243,11 @@ pub fn arrange(state: &mut AbyssState) {
         arrange_output(state, id);
     }
     refresh_reactive_popups(state);
+    // Layout changes are not driven by a client commit: an unmapped surface
+    // sends nothing, so without this the last composite stays on screen and a
+    // closed window or dismissed launcher goes on being visible until some
+    // other client happens to commit a frame.
+    crate::backend::damage_all(state);
 }
 
 /// Lay out one output's active workspace and remap it into the space.
@@ -1030,7 +1035,28 @@ pub fn popup_gone(state: &mut AbyssState, popup: &PopupSurface) {
 
 // ---------------------------------------------------------------- actions
 
+/// The layer surface that currently holds the keyboard, if any. A
+/// keyboard-exclusive layer surface — the launcher, a panel that has taken the
+/// keyboard — is what the human is typing into, and `state.focus` still names
+/// the toplevel underneath it, so anything that acts on "the focused window"
+/// has to ask this first.
+pub fn focused_layer(state: &AbyssState) -> Option<DesktopLayerSurface> {
+    let focused = state.seat.get_keyboard()?.current_focus()?;
+    state.outputs.iter().map(|e| e.output.clone()).find_map(|o| {
+        layer_map_for_output(&o)
+            .layer_for_surface(&focused, WindowSurfaceType::TOPLEVEL)
+            .cloned()
+    })
+}
+
 pub fn close_focused(state: &mut AbyssState) {
+    // While a layer surface has the keyboard it is what "close" means; closing
+    // the toplevel underneath instead would be a surprise. wlr-layer-shell has
+    // no close request, only `closed`: the client destroys the surface and goes.
+    if let Some(layer) = focused_layer(state) {
+        layer.layer_surface().send_close();
+        return;
+    }
     if let Some(w) = state.focus.clone() {
         match w.underlying_surface() {
             smithay::desktop::WindowSurface::Wayland(t) => t.send_close(),
@@ -1041,6 +1067,134 @@ pub fn close_focused(state: &mut AbyssState) {
             }
         }
     }
+}
+
+/// Send a window away without closing it (COMP-05 §4 `minimized`). It leaves
+/// the layout and the space entirely — nothing to draw, nothing to focus —
+/// but stays owned by the workspace it was on, so it comes back where it left.
+pub fn minimize_window(state: &mut AbyssState, window: &Window) {
+    let Some(id) = output_of_window(state, window) else {
+        return;
+    };
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    let Some(ws) = entry
+        .workspaces
+        .iter()
+        .position(|w| w.windows().iter().any(|w| w == window))
+    else {
+        // Already minimized, or not placed yet. Either way there is nothing
+        // to take out of the layout.
+        return;
+    };
+    let was_floating = entry.workspaces[ws]
+        .floating
+        .iter()
+        .find(|f| &f.window == window)
+        .map(|f| f.rect);
+    entry.workspaces[ws].remove(window);
+    entry.workspaces[ws].minimized.push(workspace::Minimized {
+        window: window.clone(),
+        was_floating,
+    });
+    state.space.unmap_elem(window);
+    // A minimized window is not activated; a client that draws a focus ring
+    // would otherwise keep drawing it in the taskbar's thumbnail.
+    if let smithay::desktop::WindowSurface::Wayland(t) = window.underlying_surface() {
+        t.with_pending_state(|s| {
+            s.states.unset(
+                smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated,
+            );
+        });
+        t.send_pending_configure();
+    }
+    if state.focus.as_ref() == Some(window) {
+        state.focus = None;
+    }
+    arrange(state);
+    refocus_topmost(state);
+    emit_minimized(state, window, true);
+}
+
+/// Bring a minimized window back to the layout it left and focus it.
+pub fn unminimize_window(state: &mut AbyssState, window: &Window) {
+    let Some(id) = output_of_window(state, window) else {
+        return;
+    };
+    let output = state.outputs.get(id).expect("just resolved").output.clone();
+    layer_map_for_output(&output).arrange();
+    let area = tiling_area(state, &output);
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    let Some(ws) = entry.workspaces.iter().position(|w| w.is_minimized(window)) else {
+        return;
+    };
+    let i = entry.workspaces[ws]
+        .minimized
+        .iter()
+        .position(|m| &m.window == window)
+        .expect("just resolved");
+    let restored = entry.workspaces[ws].minimized.remove(i);
+    match restored.was_floating {
+        Some(rect) => entry.workspaces[ws].floating.push(Floating {
+            window: window.clone(),
+            rect,
+        }),
+        None => entry.workspaces[ws].tiled.insert(window.clone(), None, area),
+    }
+    arrange(state);
+    // Restoring onto an inactive workspace must not steal the screen: the
+    // window is in the layout, but only a switch back will show it.
+    if state.outputs.get(id).is_some_and(|e| e.active == ws) {
+        focus_window(state, window);
+    }
+    emit_minimized(state, window, false);
+}
+
+fn emit_minimized(state: &mut AbyssState, window: &Window, minimized: bool) {
+    let handle = state.ipc.handle_for(window);
+    crate::ipc::emit(
+        state,
+        "window",
+        serde_json::json!({
+            "change": if minimized { "minimized" } else { "unminimized" },
+            "handle": handle,
+        }),
+    );
+}
+
+/// Is this window minimized anywhere?
+pub fn is_minimized(state: &AbyssState, window: &Window) -> bool {
+    state
+        .outputs
+        .iter()
+        .any(|e| e.workspaces.iter().any(|ws| ws.is_minimized(window)))
+}
+
+pub fn set_minimized(state: &mut AbyssState, window: &Window, value: bool) {
+    if value {
+        minimize_window(state, window);
+    } else {
+        unminimize_window(state, window);
+    }
+}
+
+/// Keybind form: send the focused window away.
+pub fn minimize_focused(state: &mut AbyssState) {
+    let Some(w) = state.focus.clone() else { return };
+    minimize_window(state, &w);
+}
+
+/// Keybind form: bring back the window most recently sent away on the active
+/// workspace. A minimized window holds no focus, so there is nothing for a
+/// focus-relative toggle to act on — this is the other half of the pair.
+pub fn unminimize_last(state: &mut AbyssState) {
+    let Some(id) = state.outputs.focused().map(|e| e.id) else {
+        return;
+    };
+    let entry = state.outputs.get(id).expect("just resolved");
+    let Some(window) = entry.workspace().minimized.last().map(|m| m.window.clone()) else {
+        return;
+    };
+    unminimize_window(state, &window);
 }
 
 pub fn toggle_floating(state: &mut AbyssState) {
