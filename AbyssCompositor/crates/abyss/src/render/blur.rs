@@ -39,7 +39,7 @@ use smithay::{
             Bind, Frame, Offscreen, Renderer, Texture,
         },
     },
-    desktop::Window,
+    desktop::{LayerSurface, Window},
     output::Output,
     utils::{Buffer as BufferCoords, Physical, Point, Rectangle, Scale, Size, Transform},
 };
@@ -175,8 +175,32 @@ impl RenderElement<GlesRenderer> for BlurElement {
     }
 }
 
-/// Per-window blur bookkeeping, kept alive between frames.
-struct WindowBlur {
+/// Does a surface covering `region` show anything through it?
+///
+/// COMP-02 §9: blur is "skipped entirely when the blurred surface is opaque".
+/// A client declares its opacity through the surface's opaque region, so what
+/// is left of `region` after subtracting `opaque` is exactly the glass. An
+/// empty region is never blurred.
+pub fn shows_through(
+    region: Rectangle<i32, Physical>,
+    opaque: impl IntoIterator<Item = Rectangle<i32, Physical>>,
+) -> bool {
+    !region.is_empty() && !region.subtract_rects(opaque).is_empty()
+}
+
+/// What a cached backdrop belongs to.
+///
+/// Windows and layer-shell surfaces both get blurred (Vol 1 §5.2: "background
+/// blur for transparent surfaces and layer-shell"), and both need their own
+/// damage history, so they share one keyed table.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BlurKey {
+    Window(Window),
+    Layer(LayerSurface),
+}
+
+/// Per-surface blur bookkeeping, kept alive between frames.
+struct SurfaceBlur {
     /// Damage of the backdrop behind this window, tracked across frames. Only
     /// ever queried (`damage_output`), never rendered through.
     damage: OutputDamageTracker,
@@ -200,21 +224,26 @@ pub struct BlurStore {
     /// own damage history is never consulted and it can be shared by every
     /// blurred window on the output.
     backdrop: Option<OutputDamageTracker>,
-    windows: HashMap<Window, WindowBlur>,
+    surfaces: HashMap<BlurKey, SurfaceBlur>,
 }
 
 impl std::fmt::Debug for BlurStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BlurStore")
             .field("levels", &self.chain.len())
-            .field("windows", &self.windows.len())
+            .field("surfaces", &self.surfaces.len())
             .finish()
     }
 }
 
 impl BlurStore {
-    pub fn forget(&mut self, window: &Window) {
-        self.windows.remove(window);
+    /// Drop every cached backdrop whose surface is not in `keep`.
+    ///
+    /// Called once a frame with exactly the surfaces that asked for blur, so a
+    /// window that closed — or simply stopped being translucent — does not
+    /// leave a texture behind.
+    pub fn retain(&mut self, keep: &[BlurKey]) {
+        self.surfaces.retain(|key, _| keep.contains(key));
     }
 
     /// Drop everything: called when blur is switched off so the textures do not
@@ -222,14 +251,14 @@ impl BlurStore {
     pub fn clear(&mut self) {
         self.chain.clear();
         self.chain_size = Size::default();
-        self.windows.clear();
+        self.surfaces.clear();
         self.backdrop = None;
     }
 
-    /// Build the blurred backdrop for one window.
+    /// Build the blurred backdrop for one surface.
     ///
     /// `behind` is the slice of the frame's element list that sits below the
-    /// window, in front-to-back order — exactly what the blur samples.
+    /// surface, in front-to-back order — exactly what the blur samples.
     /// Returns `None` when nothing needs redrawing *and* nothing is cached, or
     /// when any GL step failed (blur is an effect; a failure drops the effect,
     /// never the frame).
@@ -238,7 +267,7 @@ impl BlurStore {
         &mut self,
         renderer: &mut GlesRenderer,
         output: &Output,
-        window: &Window,
+        key: &BlurKey,
         region: Rectangle<i32, Physical>,
         behind: &[E],
         blur: &Blur,
@@ -255,14 +284,14 @@ impl BlurStore {
         self.ensure_programs(renderer)?;
         self.ensure_chain(renderer, fb_size, blur.passes.clamp(1, 6) as usize)?;
 
-        let entry = self.windows.entry(window.clone()).or_insert_with(|| WindowBlur {
+        let entry = self.surfaces.entry(key.clone()).or_insert_with(|| SurfaceBlur {
             damage: OutputDamageTracker::from_output(output),
             result: None,
             commit: CommitCounter::default(),
             id: Id::new(),
         });
 
-        // The invalidation rule: recompute only when damage behind this window
+        // The invalidation rule: recompute only when damage behind this surface
         // lands inside the region grown by the kernel radius.
         let dirty = {
             let (damage, _) = entry.damage.damage_output(1, behind).ok()?;
@@ -280,10 +309,10 @@ impl BlurStore {
                 up,
                 chain,
                 backdrop,
-                windows,
+                surfaces,
                 ..
             } = self;
-            let entry = windows.get_mut(window)?;
+            let entry = surfaces.get_mut(key)?;
             let tracker = backdrop.get_or_insert_with(|| OutputDamageTracker::from_output(output));
             match render_chain(
                 renderer,
@@ -306,7 +335,7 @@ impl BlurStore {
             }
         }
 
-        let entry = self.windows.get(window)?;
+        let entry = self.surfaces.get(key)?;
         let texture = entry.result.clone()?;
         // The texture is in output-local physical pixels; `src` selects the
         // part of it that sits under this window.
@@ -369,7 +398,7 @@ impl BlurStore {
             return Some(());
         }
         self.chain.clear();
-        self.windows.clear();
+        self.surfaces.clear();
         self.backdrop = None;
         for level in 0..=passes {
             let size = level_size(fb_size, level);
@@ -728,5 +757,30 @@ mod tests {
             let hi = a.max(b);
             assert!(lo < hi);
         }
+    }
+
+    #[test]
+    fn a_surface_with_no_opaque_region_shows_through() {
+        assert!(shows_through(r(0, 0, 100, 44), []));
+    }
+
+    #[test]
+    fn a_fully_opaque_surface_does_not() {
+        assert!(!shows_through(r(0, 0, 100, 44), [r(0, 0, 100, 44)]));
+    }
+
+    #[test]
+    fn a_partly_opaque_surface_still_does() {
+        assert!(shows_through(r(0, 0, 100, 44), [r(0, 0, 100, 43)]));
+    }
+
+    #[test]
+    fn an_oversized_opaque_region_covers_the_surface() {
+        assert!(!shows_through(r(10, 10, 20, 20), [r(0, 0, 100, 100)]));
+    }
+
+    #[test]
+    fn an_empty_surface_is_never_blurred() {
+        assert!(!shows_through(r(0, 0, 0, 44), []));
     }
 }

@@ -323,10 +323,16 @@ fn as_event(msg: &Value) -> Option<Event> {
     if msg.get("id").is_some() {
         return None;
     }
-    let kind = EventKind::parse(msg.get("method")?.as_str()?)?;
+    // The server's shape (`abyss::ipc::emit`): one `event` method whose
+    // params name the kind and carry its payload.
+    if msg.get("method")?.as_str()? != "event" {
+        return None;
+    }
+    let params = msg.get("params")?;
+    let kind = EventKind::parse(params.get("event")?.as_str()?)?;
     Some(Event {
         kind,
-        data: msg.get("params").cloned().unwrap_or(Value::Null),
+        data: params.get("data").cloned().unwrap_or(Value::Null),
     })
 }
 
@@ -384,12 +390,20 @@ mod tests {
     fn a_reply_is_not_mistaken_for_an_event() {
         let reply = json!({"jsonrpc": "2.0", "id": 7, "result": {}});
         assert!(as_event(&reply).is_none());
-        let ev = json!({"jsonrpc": "2.0", "method": "focus", "params": {"window": 3}});
-        assert_eq!(as_event(&ev).unwrap().kind, EventKind::Focus);
+        let ev = json!({"jsonrpc": "2.0", "method": "event",
+                        "params": {"event": "focus", "data": {"handle": 3}}});
+        let got = as_event(&ev).unwrap();
+        assert_eq!(got.kind, EventKind::Focus);
+        assert_eq!(got.data["handle"], 3);
         // A notification for something we do not model is ignored rather than
         // guessed at, so a server that grows a kind does not crash a bar.
-        let unknown = json!({"jsonrpc": "2.0", "method": "future-thing", "params": {}});
+        let unknown = json!({"jsonrpc": "2.0", "method": "event",
+                             "params": {"event": "future-thing", "data": {}}});
         assert!(as_event(&unknown).is_none());
+        // The kind is never the method name; that shape was a client-side
+        // invention and must not be accepted.
+        let wrong = json!({"jsonrpc": "2.0", "method": "focus", "params": {}});
+        assert!(as_event(&wrong).is_none());
     }
 
     #[test]

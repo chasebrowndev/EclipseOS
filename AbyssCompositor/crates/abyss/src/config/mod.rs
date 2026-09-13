@@ -694,12 +694,21 @@ fn m(logo: bool, shift: bool, ctrl: bool, alt: bool) -> Mods {
     }
 }
 
-/// Hyprland-ish defaults. `Super+Escape` is bound here and nowhere else: it is
-/// the trusted-UI override chord (COMP-04 §6), always present and not
-/// rebindable — `parse_bind` refuses any config that names it.
+/// The owner's Hyprland binds, key for key, so moving between the two
+/// compositors costs no relearning (`~/.config/hypr/hyprland.lua`). Where
+/// Hyprland spawns a Quickshell popup the equivalent here spawns our own
+/// binary; where abyss has no matching action at all — fullscreen, pseudo,
+/// the special workspace, the keybind cheatsheet, the dashboard, the overview
+/// — the bind is simply absent rather than approximated.
+///
+/// `Super+Escape` is bound here and nowhere else: it is the trusted-UI
+/// override chord (COMP-04 §6), always present and not rebindable —
+/// `parse_bind` refuses any config that names it.
 pub fn default_binds() -> Vec<Bind> {
     let sup = m(true, false, false, false);
     let sup_shift = m(true, true, false, false);
+    let sup_alt = m(true, false, false, true);
+    let none = m(false, false, false, false);
     let mut b = vec![
         Bind {
             mods: sup,
@@ -711,14 +720,40 @@ pub fn default_binds() -> Vec<Bind> {
             key: Keysym::space,
             action: Action::AgentAttention,
         },
+        // Applications.
         Bind {
             mods: sup,
-            key: Keysym::Return,
+            key: Keysym::q,
             action: Action::Spawn("kitty".into()),
         },
         Bind {
             mods: sup,
-            key: Keysym::q,
+            key: Keysym::e,
+            action: Action::Spawn("dolphin".into()),
+        },
+        Bind {
+            mods: sup,
+            key: Keysym::f,
+            action: Action::Spawn("firefox".into()),
+        },
+        // The desktop's own surfaces. Hyprland reaches these through
+        // `qs -c eclipse ipc call ui toggle ...`; ours are separate binaries,
+        // and each exits on Escape, so a second press of the bind is not a
+        // toggle. Only the two that exist are bound.
+        Bind {
+            mods: sup,
+            key: Keysym::r,
+            action: Action::Spawn("eclipse-launcher".into()),
+        },
+        Bind {
+            mods: sup,
+            key: Keysym::n,
+            action: Action::Spawn("eclipse-center".into()),
+        },
+        // Windows.
+        Bind {
+            mods: sup,
+            key: Keysym::c,
             action: Action::Close,
         },
         Bind {
@@ -726,55 +761,153 @@ pub fn default_binds() -> Vec<Bind> {
             key: Keysym::v,
             action: Action::ToggleFloating,
         },
-        Bind {
-            mods: sup,
-            key: Keysym::e,
-            action: Action::ToggleLayout,
-        },
+        // Minimize is a pair, not a toggle: a window that has been sent away
+        // holds no focus, so there is nothing for the same chord to act on.
         Bind {
             mods: sup,
             key: Keysym::h,
-            action: Action::Focus(Direction::Left),
-        },
-        Bind {
-            mods: sup,
-            key: Keysym::j,
-            action: Action::Focus(Direction::Down),
-        },
-        Bind {
-            mods: sup,
-            key: Keysym::k,
-            action: Action::Focus(Direction::Up),
-        },
-        Bind {
-            mods: sup,
-            key: Keysym::l,
-            action: Action::Focus(Direction::Right),
+            action: Action::Minimize,
         },
         Bind {
             mods: sup_shift,
             key: Keysym::H,
-            action: Action::Move(Direction::Left),
+            action: Action::Unminimize,
         },
         Bind {
-            mods: sup_shift,
-            key: Keysym::J,
-            action: Action::Move(Direction::Down),
-        },
-        Bind {
-            mods: sup_shift,
-            key: Keysym::K,
-            action: Action::Move(Direction::Up),
-        },
-        Bind {
-            mods: sup_shift,
-            key: Keysym::L,
-            action: Action::Move(Direction::Right),
+            mods: sup,
+            key: Keysym::j,
+            action: Action::ToggleLayout,
         },
         Bind {
             mods: sup_shift,
             key: Keysym::Q,
             action: Action::Quit,
+        },
+        // Focus. Hyprland binds the arrows and nothing else, so neither do we.
+        Bind {
+            mods: sup,
+            key: Keysym::Left,
+            action: Action::Focus(Direction::Left),
+        },
+        Bind {
+            mods: sup,
+            key: Keysym::Right,
+            action: Action::Focus(Direction::Right),
+        },
+        Bind {
+            mods: sup,
+            key: Keysym::Up,
+            action: Action::Focus(Direction::Up),
+        },
+        Bind {
+            mods: sup,
+            key: Keysym::Down,
+            action: Action::Focus(Direction::Down),
+        },
+        // Moving a window has no Hyprland bind to copy; Shift over the focus
+        // arrows is the obvious pair and collides with nothing.
+        Bind {
+            mods: sup_shift,
+            key: Keysym::Left,
+            action: Action::Move(Direction::Left),
+        },
+        Bind {
+            mods: sup_shift,
+            key: Keysym::Right,
+            action: Action::Move(Direction::Right),
+        },
+        Bind {
+            mods: sup_shift,
+            key: Keysym::Up,
+            action: Action::Move(Direction::Up),
+        },
+        Bind {
+            mods: sup_shift,
+            key: Keysym::Down,
+            action: Action::Move(Direction::Down),
+        },
+        // Session.
+        Bind {
+            mods: sup_shift,
+            key: Keysym::L,
+            action: Action::Spawn("loginctl lock-session".into()),
+        },
+        // Screenshot and screen recording, straight out of ~/.local/bin.
+        Bind {
+            mods: sup_shift,
+            key: Keysym::grave,
+            action: Action::Spawn("screenshot region".into()),
+        },
+        Bind {
+            mods: sup_shift,
+            key: Keysym::Print,
+            action: Action::Spawn("screenshot screen".into()),
+        },
+        Bind {
+            mods: sup,
+            key: Keysym::Print,
+            action: Action::Spawn("screenshot window".into()),
+        },
+        Bind {
+            mods: sup_alt,
+            key: Keysym::grave,
+            action: Action::Spawn("screenrecord region".into()),
+        },
+        Bind {
+            mods: sup_alt,
+            key: Keysym::Print,
+            action: Action::Spawn("screenrecord screen".into()),
+        },
+        // Media and brightness keys, unmodified, exactly as Hyprland has them.
+        Bind {
+            mods: none,
+            key: Keysym::XF86_AudioRaiseVolume,
+            action: Action::Spawn("wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 5%+".into()),
+        },
+        Bind {
+            mods: none,
+            key: Keysym::XF86_AudioLowerVolume,
+            action: Action::Spawn("wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-".into()),
+        },
+        Bind {
+            mods: none,
+            key: Keysym::XF86_AudioMute,
+            action: Action::Spawn("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle".into()),
+        },
+        Bind {
+            mods: none,
+            key: Keysym::XF86_AudioMicMute,
+            action: Action::Spawn("wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle".into()),
+        },
+        Bind {
+            mods: none,
+            key: Keysym::XF86_MonBrightnessUp,
+            action: Action::Spawn("brightnessctl -e4 -n2 set 5%+".into()),
+        },
+        Bind {
+            mods: none,
+            key: Keysym::XF86_MonBrightnessDown,
+            action: Action::Spawn("brightnessctl -e4 -n2 set 5%-".into()),
+        },
+        Bind {
+            mods: none,
+            key: Keysym::XF86_AudioNext,
+            action: Action::Spawn("playerctl next".into()),
+        },
+        Bind {
+            mods: none,
+            key: Keysym::XF86_AudioPrev,
+            action: Action::Spawn("playerctl previous".into()),
+        },
+        Bind {
+            mods: none,
+            key: Keysym::XF86_AudioPlay,
+            action: Action::Spawn("playerctl play-pause".into()),
+        },
+        Bind {
+            mods: none,
+            key: Keysym::XF86_AudioPause,
+            action: Action::Spawn("playerctl play-pause".into()),
         },
     ];
     const DIGITS: [Keysym; 10] = [
@@ -1892,6 +2025,8 @@ fn parse_action(node: &KdlNode) -> Result<Action, String> {
         "spawn" | "exec" => Action::Spawn(text().ok_or("spawn needs a command string")?),
         "close-window" | "killactive" => Action::Close,
         "toggle-floating" => Action::ToggleFloating,
+        "minimize" => Action::Minimize,
+        "unminimize" | "restore" => Action::Unminimize,
         "toggle-layout" => Action::ToggleLayout,
         "focus-left" => Action::Focus(Direction::Left),
         "focus-right" => Action::Focus(Direction::Right),

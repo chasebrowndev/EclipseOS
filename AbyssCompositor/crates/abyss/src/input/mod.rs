@@ -58,6 +58,10 @@ pub enum Action {
     Spawn(String),
     Close,
     ToggleFloating,
+    /// Send the focused window away (COMP-05 §4 `minimized`).
+    Minimize,
+    /// Bring back the last window sent away on the active workspace.
+    Unminimize,
     ToggleLayout,
     Focus(Direction),
     /// Swap with the neighbour in this direction (nudges a floating window).
@@ -155,6 +159,8 @@ impl AbyssState {
             Action::Spawn(cmd) => shell::spawn(&cmd),
             Action::Close => shell::close_focused(self),
             Action::ToggleFloating => shell::toggle_floating(self),
+            Action::Minimize => shell::minimize_focused(self),
+            Action::Unminimize => shell::unminimize_last(self),
             Action::ToggleLayout => shell::toggle_layout(self),
             Action::Focus(dir) => shell::focus_direction(self, dir),
             Action::Move(dir) => shell::move_direction(self, dir),
@@ -277,21 +283,8 @@ impl AbyssState {
         let under = self.surface_under(pos);
 
         // Focus-follows-mouse (decided 2026-09-05), config-gated.
-        if let Some(window) = self
-            .config
-            .general
-            .focus_follows_mouse
-            .then(|| self.space.element_under(pos).map(|(w, _)| w.clone()))
-            .flatten()
-        {
-            let keyboard = self.seat.get_keyboard().unwrap();
-            let target = window.toplevel().map(|t| t.wl_surface().clone());
-            if keyboard.current_focus() != target {
-                self.space.raise_element(&window, true);
-                self.focus = Some(window.clone());
-                keyboard.set_focus(self, target, serial);
-                crate::shell::arrange(self);
-            }
+        if self.config.general.focus_follows_mouse {
+            focus_window_under(self, pos, serial);
         }
 
         let new_focus = under.as_ref().map(|(s, _)| s.clone());
@@ -440,6 +433,16 @@ impl AbyssState {
             },
         );
         pointer.frame(self);
+        // Click-to-focus, the complement of focus-follows-mouse: the pointer
+        // can come to rest on a window that is not focused — a surface opened
+        // or closed under a still pointer, or a keyboard-exclusive layer
+        // surface that held the keyboard — and then no motion event is coming
+        // to fix it. A press says which window the human means. Not while a
+        // popup grab is up: there the press is the dismissal, handled below.
+        if pressed && self.popup_grabs.is_empty() {
+            let serial = SERIAL_COUNTER.next_serial();
+            focus_window_under(self, self.pointer_location, serial);
+        }
         // A press outside the grab dismisses it, and must be delivered first:
         // xdg-shell forbids `popup_done` preceding the button that caused it.
         if pressed && !self.popup_grabs.is_empty() {
@@ -468,6 +471,32 @@ impl AbyssState {
         pointer.axis(self, frame);
         pointer.frame(self);
     }
+}
+
+/// Give the keyboard to the toplevel under `pos`, raising it. A no-op when
+/// that window already has the focus, or when the pointer is over no window
+/// at all — an empty desktop is not a reason to take the keyboard away from
+/// whatever had it.
+fn focus_window_under(state: &mut AbyssState, pos: Point<f64, Logical>, serial: smithay::utils::Serial) {
+    // Never out from under a layer surface that has taken the keyboard. The
+    // launcher is keyboard-exclusive by construction; letting the pointer
+    // drifting across a toplevel behind it steal the focus is what made
+    // Escape, Super+C and typing all do nothing.
+    if crate::shell::focused_layer(state).is_some() {
+        return;
+    }
+    let Some(window) = state.space.element_under(pos).map(|(w, _)| w.clone()) else {
+        return;
+    };
+    let keyboard = state.seat.get_keyboard().unwrap();
+    let target = window.toplevel().map(|t| t.wl_surface().clone());
+    if keyboard.current_focus() == target {
+        return;
+    }
+    state.space.raise_element(&window, true);
+    state.focus = Some(window);
+    keyboard.set_focus(state, target, serial);
+    crate::shell::arrange(state);
 }
 
 /// Borrowed xkb settings from the `input` block (COMP-13 §1.2). Rules and model

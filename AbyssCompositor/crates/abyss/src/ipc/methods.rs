@@ -10,6 +10,7 @@
 //! of any kind (COMP-13 §2).
 
 use serde_json::{json, Map, Value};
+use smithay::reexports::wayland_server::Resource;
 use smithay::{desktop::Window, utils::IsAlive, wayland::compositor::with_states};
 
 use super::RpcError;
@@ -34,6 +35,7 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "close_window" => close_window(state, params),
         "move_to_workspace" => move_to_workspace(state, params),
         "set_floating" => set_floating(state, params),
+        "set_minimized" => set_minimized(state, params),
         "switch_workspace" => switch_workspace(state, params),
         "resize" => resize(state, params),
         "move_workspace_to_output" => move_workspace_to_output(state, params),
@@ -125,11 +127,19 @@ pub(crate) fn identity_of(window: &Window) -> (Option<String>, Option<String>) {
     })
 }
 
+/// The pid behind a window's client, if the surface still has one.
+fn pid_of(state: &AbyssState, window: &Window) -> Option<i32> {
+    crate::shell::window_surface(window)
+        .and_then(|s| s.client())
+        .and_then(|c| c.get_credentials(&state.display_handle).ok())
+        .map(|c| c.pid)
+}
+
 /// Where a window lives, as `(output id, 1-based workspace)`.
 fn location_of(state: &AbyssState, window: &Window) -> Option<(u64, usize)> {
     for entry in state.outputs.iter() {
         for (i, ws) in entry.workspaces.iter().enumerate() {
-            if ws.windows().iter().any(|w| w == window) {
+            if ws.all_windows().iter().any(|w| w == window) {
                 return Some((entry.id, i + 1));
             }
         }
@@ -210,15 +220,25 @@ fn get_outputs(state: &mut AbyssState, params: &Value) -> Reply {
     Ok(Value::Array(out))
 }
 
-/// Windows on the **active workspace of each output**, not every window the
-/// compositor holds. `state.space` only maps what is currently shown; a window
-/// moved to an inactive workspace leaves the list until that workspace is
-/// switched back to. The per-row `workspace` field therefore names where a
-/// visible window is, and is never a way to find a hidden one. The bar relies
-/// on exactly this — it renders the focused workspace and nothing else.
+/// Windows on the **active workspace of each output**, plus every window
+/// minimized anywhere. `state.space` only maps what is currently shown, so a
+/// window moved to an inactive workspace leaves the list until that workspace
+/// is switched back to; the per-row `workspace` field therefore names where a
+/// visible window is, and is never a way to find one hidden that way.
+///
+/// Minimized windows are the deliberate exception. A taskbar has to keep
+/// showing a chip for a window the human sent away — that chip is the only way
+/// back — so they are listed with `minimized: true` and no `focused`. The bar
+/// still renders one workspace and nothing else; it just knows which of that
+/// workspace's windows are on screen.
 fn get_windows(state: &mut AbyssState) -> Reply {
     state.ipc.gc();
-    let windows: Vec<Window> = state.space.elements().cloned().collect();
+    let mut windows: Vec<Window> = state.space.elements().cloned().collect();
+    for entry in state.outputs.iter() {
+        for ws in entry.workspaces.iter() {
+            windows.extend(ws.minimized.iter().map(|m| m.window.clone()));
+        }
+    }
     let mut out = Vec::new();
     for w in windows {
         let handle = state.ipc.handle_for(&w);
@@ -237,6 +257,12 @@ fn get_windows(state: &mut AbyssState) -> Reply {
             "output": output,
             "workspace": workspace,
             "floating": is_floating(state, &w),
+            "minimized": crate::shell::is_minimized(state, &w),
+            // The client's pid, so the owner's own shell can tie a window to
+            // the rest of the session's view of that process — a taskbar
+            // matching an audio stream to the window that plays it, say.
+            // Owner-only socket; never journalled (COMP-13 §2, ADR 0028).
+            "pid": pid_of(state, &w),
             "focused": state.focus.as_ref() == Some(&w),
             // The default class for anything not explicitly raised
             // (root invariant: default is `private`). `secret` and
@@ -362,6 +388,19 @@ fn close_window(state: &mut AbyssState, params: &Value) -> Reply {
             }
         }
     }
+    Ok(json!({"ok": true}))
+}
+
+/// Minimize or restore a window by handle (COMP-13 §2.1, `window.control`).
+///
+/// Unlike the focus-relative keybinds this addresses the window directly,
+/// which is what a taskbar chip needs: the window it names is by definition
+/// not the focused one once it has been sent away.
+fn set_minimized(state: &mut AbyssState, params: &Value) -> Reply {
+    let w = window_param(state, params)?;
+    let value = bool_param(params, "minimized")?;
+    crate::shell::set_minimized(state, &w, value);
+    crate::backend::damage_all(state);
     Ok(json!({"ok": true}))
 }
 

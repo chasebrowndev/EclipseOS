@@ -38,6 +38,14 @@ ignore = [
     # is limited to faces we ship. Revisit when cosmic-text moves to a
     # maintained parser, or if an advisory upgrades this to a vulnerability.
     "RUSTSEC-2026-0192",
+
+    # RUSTSEC-2026-0206 — `rustybuzz` is unmaintained (harfrust is the named
+    # successor). It is resvg's text shaper, and resvg is iced's `svg` feature,
+    # which is how eclipse-bar draws freedesktop icon themes (mostly SVG). The
+    # SVGs it shapes text from are icon-theme files on the local system, not
+    # attacker-supplied documents. Unmaintained, not vulnerable. Revisit when
+    # resvg moves to harfrust.
+    "RUSTSEC-2026-0206",
 ]
 
 # ---------------------------------------------------------------------------
@@ -69,6 +77,11 @@ allow = [
 exceptions = [
     { crate = "clipboard-win", allow = ["BSL-1.0"] },
     { crate = "error-code", allow = ["BSL-1.0"] },
+    # NCSA (permissive, OSI approved, AGPL-compatible) is allowed for this one
+    # crate rather than repo-wide. libfuzzer-sys reaches us only as rav1e's
+    # AVIF-encoder dependency under iced's `image` feature; we decode PNG icon
+    # files, never encode AVIF, so it is linked and never called.
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
 ]
 
 [[licenses.clarify]]
