@@ -119,6 +119,29 @@ After=graphical-session.target
 `abyss-session.target` is `BindsTo=graphical-session.target`, so starting it
 starts `graphical-session.target` and those services with it.
 
+### Development install
+
+`dist/install-session.sh` does all of the above against a checkout instead of
+against `/usr/bin`, so Abyss can be selected at the greeter while it is still
+being worked on:
+
+```
+cargo build --release --workspace --bins
+sudo ./dist/install-session.sh
+```
+
+It symlinks the release binaries into `/usr/local/bin`, installs the wrapper
+and the session entry with `Exec` repointed there, and writes the user units
+with `/usr/bin` rewritten to match. Because the binaries are symlinks and not
+copies, a rebuild is live at the next login and the installer does not have to
+be run again — which is the whole point of it, and also the reason it is not
+how a distribution should ship Abyss.
+
+The installed wrapper passes `--backend drm` explicitly. `default_backend()`
+would infer it, but only from `WAYLAND_DISPLAY` and `DISPLAY` both being unset;
+a greeter that leaked either into the session environment would silently get a
+nested `winit` compositor rather than a login session.
+
 ## Logs
 
 `abyss` logs through `tracing` to journald under the identifier `abyss`:
