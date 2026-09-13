@@ -88,6 +88,30 @@ impl App {
     }
 }
 
+/// Leave. `iced::exit()` alone does not end an `iced_layershell` process —
+/// the exit action is queued onto a loop that then sleeps waiting for a
+/// Wayland event that never comes, so the dead launcher stays mapped and,
+/// once the application it started takes focus, stops receiving the keys
+/// that would wake it. A launcher holds no unsaved state and owns no
+/// resource the compositor will not reclaim when the socket closes, so the
+/// honest move is to go. Under `cfg(test)` this would take the test harness
+/// with it, so there it is the plain action.
+fn quit() -> Task<Message> {
+    #[cfg(not(test))]
+    std::process::exit(0);
+    #[cfg(test)]
+    iced::exit()
+}
+
+/// Put the caret back in the filter field.
+///
+/// Any pointer press inside the pane takes focus off the `text_input`, and
+/// nothing gives it back on its own; every handler a press can reach returns
+/// this.
+fn refocus() -> Task<Message> {
+    iced::widget::operation::focus(INPUT_ID)
+}
+
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::Query(query) => {
@@ -103,9 +127,15 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Select(index) => {
             if index < app.matched.len() {
                 app.selected = index;
+                // The old refusal was about the row we just left.
+                app.problem = None;
             }
+            // A hover arrives from the pointer, which may have pressed on the
+            // way in and taken the caret out of the field with it.
+            return refocus();
         }
         Message::Move(delta) => {
+            app.problem = None;
             if app.matched.is_empty() {
                 return Task::none();
             }
@@ -121,11 +151,16 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             match apps::launch(entry) {
                 // The application is running; the launcher has nothing left
                 // to say.
-                Ok(()) => return iced::exit(),
+                Ok(()) => return quit(),
                 Err(error) => app.problem = Some(error.to_string()),
             }
+            // We are still here, so the human is still searching. A press on
+            // a row unfocuses the field, and a launcher whose prompt has
+            // stopped accepting keystrokes while still looking live is worse
+            // than one that closed.
+            return refocus();
         }
-        Message::Close => return iced::exit(),
+        Message::Close => return quit(),
         // `to_layer_message` injects the layer-control variants. The surface
         // is a fixed size for its whole short life and sends none of them.
         _ => {}
@@ -150,6 +185,11 @@ pub fn subscription(_app: &App) -> Subscription<Message> {
                 _ => None,
             }
         }
+        // The compositor asked us to go — Super+C, or anything else that
+        // closes a window. wlr-layer-shell's `closed` is not a request we may
+        // decline, and `iced_layershell` only tears down its own bookkeeping
+        // for it; leaving is our job.
+        iced::Event::Window(iced::window::Event::Closed) => Some(Message::Close),
         _ => None,
     })
 }
@@ -216,6 +256,17 @@ mod tests {
         let _ = update(&mut app, Message::Select(1));
         let _ = update(&mut app, Message::Query("firef".to_owned()));
         assert!(app.selected < app.matched.len());
+    }
+
+    /// A refusal is about one row. Moving off that row takes the refusal
+    /// with it, or it reads as a verdict on the row now selected.
+    #[test]
+    fn moving_off_a_refused_row_clears_the_refusal() {
+        let mut app = app(vec![entry("Btop", true), entry("Files", false)]);
+        let _ = update(&mut app, Message::Activate);
+        assert!(app.problem.is_some());
+        let _ = update(&mut app, Message::Move(1));
+        assert!(app.problem.is_none());
     }
 
     /// An injected layer variant must be a no-op, not a panic.

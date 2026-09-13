@@ -20,7 +20,7 @@ fn main() -> iced_layershell::Result {
     iced_layershell::disable_clipboard();
 
     let mut builder =
-        iced_layershell::build_pattern::application(app::App::new, namespace, app::update, view::view)
+        iced_layershell::build_pattern::daemon(app::App::new, namespace, app::update, view::view)
             .layer_settings(LayerShellSettings {
                 anchor: Anchor::Top | Anchor::Left | Anchor::Right,
                 layer: Layer::Top,
@@ -35,7 +35,7 @@ fn main() -> iced_layershell::Result {
                 ..Default::default()
             })
             .style(view::style)
-            .theme(|_: &app::App| eclipse_ui::theme::theme())
+            .theme(|_: &app::App, _: iced::window::Id| eclipse_ui::theme::theme())
             .subscription(app::subscription)
             .antialiasing(true);
     // Every face, registered once, before the surface exists.

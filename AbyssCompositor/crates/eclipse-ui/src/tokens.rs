@@ -43,12 +43,50 @@ pub mod color {
     /// compositor's blur underneath, not from this layer's opacity.
     pub const GLASS: Color = white(0.045);
     pub const GLASS_STRONG: Color = white(0.06);
+    /// The ground of a surface that floats over live wallpaper with the
+    /// compositor's blur behind it — a bar, a toast, the launcher.
+    ///
+    /// One warm translucent colour rather than a black scrim plus a white
+    /// lift, because a container has exactly one background and the two
+    /// layers composite to this. It is darker than [`GLASS`] on purpose: a
+    /// pane's glass sits over a known base, this sits over whatever the
+    /// wallpaper happens to be, and 11px mono has to stay legible on both.
+    pub const GLASS_DEEP: Color = Color {
+        a: 0.62,
+        ..rgb(0x17140f)
+    };
+    /// The ground under a floating sheet that must stay readable over any
+    /// wallpaper — a context menu, a tray drawer. Nearly opaque on purpose:
+    /// a menu is a mark rail, and a mark rail that lets the desktop through
+    /// is a mark rail you cannot read.
+    pub const MENU_GROUND: Color = rgb(0x17140f);
     pub const BORDER: Color = white(0.10);
     pub const BORDER_STRONG: Color = white(0.16);
     /// Hairline between rows in an inset list.
     pub const HAIRLINE: Color = white(0.055);
-    /// Top edge highlight, the one thing that reads as a light source.
+    /// Top edge highlight, the one thing that reads as a light source. `SOFT`
+    /// and `STRONG` are the ends of the spec's `.07–.2` inset range: soft on
+    /// a big calm surface, strong on a small chip that has to pop.
     pub const HIGHLIGHT: Color = white(0.12);
+    pub const HIGHLIGHT_SOFT: Color = white(0.07);
+    pub const HIGHLIGHT_STRONG: Color = white(0.20);
+
+    /// Hover and press over glass. Depth on a glass surface comes from a fill
+    /// *and* a border *and* a highlight moving together — a lone grey fill
+    /// swap reads as a slab dropped on the surface, which is the exact bug
+    /// this pair exists to avoid.
+    pub const LIFT: Color = white(0.08);
+    pub const LIFT_STRONG: Color = white(0.13);
+    /// The hover *fill* for a cell that already has an outline.
+    ///
+    /// [`LIFT`] is white(.08) and [`BORDER`] is white(.10): on a chip that
+    /// draws both, the fill arrives at almost exactly the outline's value and
+    /// the chip reads as one flat lighter slab instead of an outlined shape
+    /// with a wash inside it. A hover fill must stay clearly *under* the
+    /// outline it sits within — dimmer, and more transparent — so that the
+    /// outline keeps describing the shape and the fill only says "the pointer
+    /// is here".
+    pub const LIFT_SOFT: Color = white(0.035);
     /// Sidebar ground: darker than the panes it sits beside.
     pub const SIDEBAR: Color = Color {
         r: 0.0,
@@ -65,6 +103,10 @@ pub mod color {
     pub const ACCENT_TEXT: Color = rgb(0xf5cf5c);
     pub const ACCENT_FILL: Color = Color { a: 0.09, ..ACCENT };
     pub const ACCENT_BORDER: Color = Color { a: 0.28, ..ACCENT };
+    /// The faintest accent ground — a wash under a whole row, not a fill.
+    pub const ACCENT_WASH: Color = Color { a: 0.035, ..ACCENT };
+    /// The pressed/active accent ground, one step above [`ACCENT_FILL`].
+    pub const ACCENT_FILL_STRONG: Color = Color { a: 0.18, ..ACCENT };
 
     pub const TEXT: Color = white(1.0);
     pub const TEXT_SECONDARY: Color = white(0.64);
@@ -79,6 +121,14 @@ pub mod color {
     /// Status. Deliberately not red/green pairs from a generic palette — a
     /// desktop that only ever goes yellow needs its alarms to look unlike it.
     pub const DANGER: Color = rgb(0xe0553f);
+    /// The ground behind a destructive verb on hover.
+    pub const DANGER_FILL: Color = Color { a: 0.14, ..DANGER };
+    /// *Connected* — a link that is not merely up but carrying traffic to a
+    /// peer. A status colour beside [`DANGER`] and [`OK`], not a second
+    /// accent: it is never used for emphasis, selection or focus, only to say
+    /// a radio has a peer on the other end. Bluetooth reads
+    /// [`NEUTRAL`] off, [`ACCENT`] powered-but-idle, this connected.
+    pub const CONNECTED: Color = rgb(0x4f9fe0);
     pub const OK: Color = rgb(0x7fae5e);
 }
 
@@ -100,7 +150,24 @@ pub mod space {
     pub const BLOCK: f32 = 18.0;
     pub const CARD: f32 = 16.0;
     pub const ROW_Y: f32 = 11.0;
+    /// The accent bar that marks the current item at the left edge of a nav
+    /// item or a choice row. Three pixels, per the spec.
+    pub const BAR_W: f32 = 3.0;
     pub const SIDEBAR_W: f32 = 214.0;
+    /// The square a small indicator mark (signal bars, battery gauge) is
+    /// drawn into. Deliberately smaller than an icon: a mark reports a
+    /// magnitude, it does not identify anything.
+    pub const MARK: f32 = 11.0;
+    pub const MARK_BAR: f32 = 2.0;
+    pub const MARK_GAP: f32 = 1.0;
+    pub const MARK_CELL_W: f32 = 18.0;
+    pub const MARK_BORDER: f32 = 1.0;
+    /// A sidebar nav item's selected bar, and the placeholder square that
+    /// stands in for its icon.
+    pub const NAV_BAR_H: f32 = 18.0;
+    pub const NAV_GLYPH: f32 = 15.0;
+    /// One device-independent pixel: a border, a rule, an edge highlight.
+    pub const HAIRLINE: f32 = 1.0;
 }
 
 pub mod size {
@@ -112,6 +179,189 @@ pub mod size {
     /// Small uppercase section labels — mono, wide tracking.
     pub const MICRO: f32 = 10.0;
     pub const BIG_NUMBER: f32 = 32.0;
+    /// A single live line of input at hero scale — the launcher's query. Big
+    /// enough to be the block you look at, small enough to stay one line.
+    pub const PROMPT: f32 = 17.0;
+    /// The square an application icon is drawn into, on a bar or in a list.
+    pub const ICON: f32 = 20.0;
+}
+
+/// The taskbar's own metrics.
+///
+/// A bar is not a pane: it has no 26/30 content column and no 18px block gap,
+/// because its whole job is to be one dense row at an edge of the screen. So
+/// its geometry is its own module rather than a reuse of `space`, and it is
+/// still here rather than in the bar crate so that a second edge surface
+/// (a dock, a second monitor's bar) cannot drift from it.
+pub mod bar {
+    /// Bar height in logical pixels, and therefore its exclusive zone. Tall
+    /// enough for a two-line clock and an icon-led task button.
+    pub const HEIGHT: f32 = PILL_H + 2.0 * MARGIN_Y;
+    /// The thickness of an edge marker on the bar. The bar itself no longer
+    /// draws a rule top or bottom — see [`PILL_H`].
+    pub const HAIRLINE: f32 = 1.0;
+    /// The height of the bar's own sheet, inside the strip it reserves.
+    ///
+    /// The bar is a wide pill floating in the reserved strip, not a slab that
+    /// spans the screen between two rules. Two full-width hard lines are the
+    /// loudest thing that could possibly be drawn across the top of a desktop,
+    /// and `docs/STYLE.md` never asked for them: every surface it describes is
+    /// a rounded, bordered, softly-lit panel. The margins below are what turns
+    /// the strip into a frame around that panel.
+    pub const PILL_H: f32 = 40.0;
+    /// Air between the bar's sheet and the edges of the strip it reserves.
+    pub const MARGIN_X: f32 = 10.0;
+    pub const MARGIN_Y: f32 = 6.0;
+    /// The y of the bar sheet's bottom edge, in surface-local coordinates:
+    /// where a popup anchored *below a cell* begins.
+    pub const SHEET_BOTTOM: f32 = MARGIN_Y + PILL_H;
+    /// Padding at the far left and far right of the row.
+    pub const EDGE: f32 = 8.0;
+    /// Gap between two cells of the same zone.
+    pub const GAP: f32 = 4.0;
+    /// Gap between two zones.
+    pub const ZONE_GAP: f32 = 8.0;
+    /// Padding inside a clickable cell.
+    pub const CELL_X: f32 = 10.0;
+    /// A pager tile: a small rounded chip, one per workspace.
+    pub const PAGER_W: f32 = 24.0;
+    pub const PAGER_H: f32 = 24.0;
+
+    /// Radii, on the spec's inset-chip scale (9-11). A bar cell is a chip:
+    /// it is small, it sits on glass, and it is never a card. The bar's own
+    /// outline is a pill — [`RADIUS_SHEET`], half its height.
+    pub const RADIUS_SHEET: f32 = PILL_H / 2.0;
+    pub const RADIUS_CELL: f32 = 11.0;
+    pub const RADIUS_TILE: f32 = 9.0;
+    /// The rounded square a stand-in icon is drawn into, matching the
+    /// reference panes' 6px-on-18px placeholder squares.
+    pub const RADIUS_ICON: f32 = 6.0;
+    /// The square a tray mark (wifi, bluetooth) is drawn into. Smaller than
+    /// an application icon: a status mark reports a state, it does not
+    /// identify a program.
+    pub const MARK: f32 = 14.0;
+    /// Thickness of the launcher mark's ring.
+    pub const RING: f32 = 2.0;
+    /// Task buttons clamp between these. Past the minimum a button is
+    /// icon-only rather than overflowing the row.
+    pub const TASK_MIN: f32 = 34.0;
+    pub const TASK_MAX: f32 = 176.0;
+    /// Height of the ground a task button paints, inside the bar.
+    pub const TASK_H: f32 = 34.0;
+    /// The running/focused marker under a task button.
+    pub const MARKER: f32 = 2.0;
+
+    /// The condensation ladder's rungs, in per-chip logical pixels.
+    ///
+    /// The stage a chip draws at is *derived*: the strip divides the width the
+    /// fixed zones leave over among the windows that are on the workspace, and
+    /// the resulting per-chip width is looked up here. So the ladder is "what
+    /// fits" and never "how many are open" — opening a window on a 3440px
+    /// screen does not condense anything, and three on a 900px one does.
+    ///
+    /// - at or above [`TASK_FULL`] a chip shows its icon and its title;
+    /// - at or above [`TASK_NAME`] it shows its icon and its process name;
+    /// - at or above [`TASK_MIN`] it is the icon alone;
+    /// - below that it is [`TASK_BARE`]: a ground with its accent and nothing
+    ///   in it. That is the last resort and it is still a click target.
+    pub const TASK_FULL: f32 = 116.0;
+    pub const TASK_NAME: f32 = 68.0;
+    pub const TASK_BARE: f32 = 14.0;
+
+    /// Width of a fixed tray cell (mark plus its reading) and of the clock.
+    ///
+    /// Fixed, and not hugged to their content, because the task strip's width
+    /// is computed by subtracting the fixed zones from the bar: a tray that
+    /// changed width when the signal reading went from `9` to `100` would move
+    /// the ladder's rungs under the pointer.
+    pub const TRAY_CELL_W: f32 = 54.0;
+
+    /// Width of a tray cell that is a mark and nothing else.
+    ///
+    /// Some readings are not worth a number. A signal percentage is one: it
+    /// changes constantly, nobody acts on it, and a live digit beside a cone
+    /// that already shows the same magnitude is noise with a refresh rate. The
+    /// cone keeps the reading; the digits go.
+    pub const TRAY_MARK_W: f32 = 30.0;
+    /// The gap *inside* the tray. Much tighter than [`ZONE_GAP`], because the
+    /// tray's cells are one group and not three zones: the readings sit
+    /// shoulder to shoulder the way they do on Windows, and the wide gap is
+    /// spent on separating the tray from the task strip instead.
+    pub const TRAY_GAP: f32 = 2.0;
+    pub const CLOCK_W: f32 = 74.0;
+    /// The tray drawer's disclosure arrow — the only triangle on the row.
+    pub const ARROW_W: f32 = 20.0;
+    pub const ARROW: f32 = 7.0;
+    /// Stroke of the arrow's two legs.
+    pub const ARROW_STROKE: f32 = 1.5;
+    /// The `+N` cell drawn when not even [`TASK_BARE`] chips fit. A bar that
+    /// silently omits windows is lying; this is the one honest cell.
+    pub const OVERFLOW_W: f32 = 30.0;
+
+    /// Nominal advance of one character of the UI face at `size::BODY_SMALL`,
+    /// used to turn a chip's pixel width into a character budget.
+    ///
+    /// It is an approximation on purpose: iced has no eliding text widget and
+    /// the row must stay a pure function of the snapshot, so the label is cut
+    /// before layout. Erring a little narrow costs a character; erring wide
+    /// would cost the clipping this whole ladder exists to prevent.
+    pub const CHAR_W: f32 = 7.0;
+}
+
+/// A context menu: the mark rail that opens on a right-click.
+pub mod menu {
+    /// Width of the sheet, and the padding inside its border.
+    pub const W: f32 = 208.0;
+    pub const PAD: f32 = 6.0;
+    /// One verb row, and the padding inside it.
+    pub const ROW_H: f32 = 30.0;
+    pub const ROW_X: f32 = 8.0;
+    /// The square a row's leading mark occupies, and the gap after it.
+    pub const MARK: f32 = 16.0;
+    pub const MARK_GAP: f32 = 10.0;
+    /// The placeholder drawn when the host's icon theme has no such mark.
+    pub const MARK_INNER: f32 = 9.0;
+    pub const RADIUS_MARK: f32 = 3.0;
+    /// Corner radius of the sheet, and of a hovered row inside it.
+    pub const RADIUS: f32 = 12.0;
+    pub const RADIUS_ROW: f32 = 8.0;
+    /// A separator's own height, so a menu's pixel height — fixed at popup
+    /// creation — can be computed before layout.
+    pub const SEP_H: f32 = 9.0;
+}
+
+/// A tray drawer: the reading rail the disclosure arrow opens.
+pub mod drawer {
+    /// Drawer width. Wider than a context menu — it carries label/value rows
+    /// rather than single verbs — and still narrower than a pane.
+    pub const W: f32 = 248.0;
+    /// One reading row.
+    pub const ROW_H: f32 = 30.0;
+    /// The drawer's own heading strip, above the rows.
+    pub const HEAD_H: f32 = 24.0;
+    /// Padding inside the drawer's border.
+    pub const PAD: f32 = 8.0;
+    /// Padding inside a row.
+    pub const ROW_X: f32 = 8.0;
+    /// The square a row's leading mark occupies, and the gap after it.
+    pub const MARK: f32 = 16.0;
+    pub const MARK_GAP: f32 = 9.0;
+    /// Corner radius of a hovered row, on the inset-chip scale.
+    pub const RADIUS_ROW: f32 = 8.0;
+    /// Height of a row's magnitude meter, and the radius that makes it a
+    /// lozenge rather than a stick.
+    pub const METER_H: f32 = 4.0;
+    pub const RADIUS_METER: f32 = 2.0;
+}
+
+/// Clock format. Taste, not mechanism — these are the two knobs a config file
+/// will one day set, and until it exists they live here rather than as `if`s
+/// buried in the clock module.
+pub mod clock {
+    /// 12-hour time with a meridiem suffix (`11:15 PM`) rather than 23:15.
+    pub const HOUR_12: bool = true;
+    /// `m/d/y` (`9/12/26`) rather than ISO.
+    pub const DATE_MDY: bool = true;
 }
 
 /// UI type. Three weights, because the spec distinguishes 400/500/600 and a
@@ -176,4 +426,27 @@ mod tests {
         let byte = |f: f32| (f * 255.0).round() as u8;
         assert_eq!((byte(c.r), byte(c.g), byte(c.b)), (0xf2, 0xc3, 0x3c));
     }
+}
+
+/// Where a popup the bar owns comes from.
+///
+/// One named choice for every popup the bar has — the context menu and the
+/// tray drawers alike — rather than one decision per surface, so that a
+/// settings path can flip all of them together and so that the two behaviours
+/// cannot drift apart. It is a taste value and lives here for the same reason
+/// every other taste value does.
+pub mod popup {
+    /// The point a popup grows from.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Anchor {
+        /// Below the cell that was clicked, aligned to its edge. The popup
+        /// stays put while the pointer moves inside the cell, which is what
+        /// makes it read as belonging to the chip rather than to the click.
+        Cell,
+        /// At the pointer, wherever in the cell it happened to be.
+        Pointer,
+    }
+
+    /// The default: below the cell.
+    pub const ANCHOR: Anchor = Anchor::Cell;
 }

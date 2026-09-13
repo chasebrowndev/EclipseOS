@@ -39,6 +39,12 @@ pub struct Window {
     pub title: String,
     pub workspace: Option<usize>,
     pub focused: bool,
+    /// Sent away by the human. Still owned by its workspace, still listed,
+    /// just not on screen — the taskbar chip is the way back.
+    pub minimized: bool,
+    /// The client's pid, when the compositor could resolve one. Used to tie a
+    /// window to the audio streams that process owns.
+    pub pid: Option<i32>,
     pub trust: Trust,
 }
 
@@ -57,6 +63,23 @@ impl Window {
             return &self.app_id;
         }
         "window"
+    }
+
+    /// The chip's condensed label: the application, not the document.
+    ///
+    /// The second rung of the condensation ladder — `kitty`, never
+    /// `~/syncedprojects/… — zsh`. The `app_id` is what a window has in common
+    /// with the other windows of its program, so it is the part of the label
+    /// that stays useful once there is no room for the rest.
+    ///
+    /// A `secret` window answers with its placeholder here too: the trust
+    /// check is in [`Window::label`] and this defers to it rather than
+    /// reaching past it to a client-controlled string.
+    pub fn name(&self) -> &str {
+        if self.trust == Trust::Secret || self.app_id.is_empty() {
+            return self.label();
+        }
+        &self.app_id
     }
 }
 
@@ -106,6 +129,8 @@ pub fn parse_windows(v: &Value) -> Vec<Window> {
                         title: str_at(w, "title"),
                         workspace: w.get("workspace").and_then(Value::as_u64).map(|i| i as usize),
                         focused: w.get("focused").and_then(Value::as_bool).unwrap_or(false),
+                        minimized: w.get("minimized").and_then(Value::as_bool).unwrap_or(false),
+                        pid: w.get("pid").and_then(Value::as_i64).map(|p| p as i32),
                         trust: Trust::parse(w.get("trust").and_then(Value::as_str)),
                     })
                 })
@@ -157,6 +182,20 @@ mod tests {
              "floating": false, "focused": false, "trust": "private", "no_agent": false}
         ]));
         assert_eq!(wins[0].label(), "kitty");
+    }
+
+    /// The condensed rung names the program, and a protected window stays
+    /// protected all the way down the ladder.
+    #[test]
+    fn the_condensed_label_is_the_application() {
+        let wins = parse_windows(&json!([
+            {"handle": 1, "app_id": "kitty", "title": "~/syncedprojects/EclipseOS — zsh"},
+            {"handle": 2, "app_id": "org.x.Vault", "title": "seed", "trust": "secret"},
+            {"handle": 3, "app_id": "", "title": "scratch"}
+        ]));
+        assert_eq!(wins[0].name(), "kitty");
+        assert_eq!(wins[1].name(), "Protected window");
+        assert_eq!(wins[2].name(), "scratch");
     }
 
     #[test]

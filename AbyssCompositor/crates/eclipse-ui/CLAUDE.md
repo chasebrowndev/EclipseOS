@@ -5,9 +5,13 @@ Read the root `CLAUDE.md` first.
 - **Not TCB.** Nothing here is trusted; trusted UI is compositor-drawn
   (root invariants). A widget in this crate that would only make sense if it
   could be trusted belongs in `abyss/src/trusted_ui/` instead.
-- `/home/chase/Downloads/eclipse-style-spec.md` is the art direction and
-  `tokens.rs` is its only transcription. A literal colour, radius or size
-  anywhere else in the DE is a bug — add a token.
+- `docs/STYLE.md` is the art direction and `tokens.rs` is its only
+  transcription. A literal colour, radius or size anywhere else in the DE is a
+  bug — add a token.
+- `docs/COMPOSITION.md` is the other half: pane anatomy, the hero catalogue and
+  the accent ledger. Correct tokens with no hero block is how a pane ends up
+  looking generic. `docs/design/eclipse-panes.html` is the vendored reference
+  it was derived from.
 - Glass blur is the compositor's (`decoration { blur }`, dual-Kawase). This
   crate paints the translucent fill and border that sit *on* the blur; it
   never tries to blur anything itself.

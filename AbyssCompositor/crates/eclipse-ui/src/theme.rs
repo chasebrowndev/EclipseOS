@@ -12,7 +12,7 @@ use iced::{
     Background, Border, Color, Shadow, Theme, Vector,
 };
 
-use crate::tokens::{color, radius, size};
+use crate::tokens::{bar, color, radius, size, space};
 
 /// The theme every Eclipse binary runs.
 ///
@@ -33,18 +33,20 @@ pub fn theme() -> Theme {
     )
 }
 
-/// A glass panel: thin translucent fill, hairline border, soft outer shadow.
+/// A panel: the spec's glass — a thin white fill, a hairline border and a
+/// soft outer shadow.
 ///
-/// The blur behind it is the compositor's, from `decoration { blur }`. This
-/// only paints what sits on top, which is why the fill is so faint — at a
-/// higher alpha it would read as flat grey on a compositor with blur off,
-/// and that is the correct degradation.
+/// The fill is deliberately thin (`.045`, inside the spec's `.035–.06`). On a
+/// settings pane it composites over the warm base; on a layer surface it
+/// composites over the compositor's blur of whatever is behind. Depth is the
+/// border and the top edge highlight ([`crate::widget::lit`]) doing their
+/// job — never fill opacity, which is what turns glass back into grey paint.
 pub fn panel(_t: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(color::GLASS)),
         border: Border {
             color: color::BORDER,
-            width: 1.0,
+            width: space::HAIRLINE,
             radius: radius::CARD.into(),
         },
         shadow: Shadow {
@@ -54,6 +56,64 @@ pub fn panel(_t: &Theme) -> container::Style {
             },
             offset: Vector::new(0.0, 24.0),
             blur_radius: 70.0,
+        },
+        ..container::Style::default()
+    }
+}
+
+/// A surface that floats over live wallpaper: a toast card, the launcher
+/// sheet, the control centre. Distinct from [`panel`] because it has no
+/// window ground underneath it — only the compositor's blur — so it carries
+/// its own smoked-glass tint and a stronger border to hold an edge against
+/// an arbitrary photograph.
+pub fn surface(_t: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(color::GLASS_DEEP)),
+        border: Border {
+            color: color::BORDER_STRONG,
+            width: space::HAIRLINE,
+            radius: radius::CARD.into(),
+        },
+        shadow: Shadow {
+            color: Color {
+                a: 0.9,
+                ..Color::BLACK
+            },
+            offset: Vector::new(0.0, 28.0),
+            blur_radius: 80.0,
+        },
+        ..container::Style::default()
+    }
+}
+
+/// A context menu's ground.
+///
+/// [`surface`] with the transparency taken out of it. A menu is aimed at, not
+/// glanced at: the row under the pointer has to be the most definite thing on
+/// the screen for the moment it is open, and smoked glass over a paragraph of
+/// text is how a verb becomes unreadable. It keeps the surface's border and
+/// shadow, because it is still a sheet lying on the desktop.
+pub fn menu_surface(_t: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(color::MENU_GROUND)),
+        ..surface(_t)
+    }
+}
+
+/// The bar's ground: the same smoked glass as [`surface`], but square, with
+/// only its bottom edge drawn. A bar is an edge of the screen and not a
+/// floating sheet, so it has no radius and no shadow — the hairline under it
+/// and the highlight along its top are the whole of its depth.
+pub fn bar_ground(_t: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(color::GLASS_DEEP)),
+        // The faint end of the spec's border range, not the strong one: the
+        // bar's silhouette should be read from its shape, not announced by
+        // its outline.
+        border: Border {
+            color: color::HAIRLINE,
+            width: space::HAIRLINE,
+            radius: bar::RADIUS_SHEET.into(),
         },
         ..container::Style::default()
     }
@@ -277,6 +337,24 @@ pub fn eclipse_input(_t: &Theme, status: text_input::Status) -> text_input::Styl
             width: 1.0,
             radius: radius::INSET.into(),
         },
+        icon: color::TEXT_TERTIARY,
+        placeholder: color::TEXT_TERTIARY,
+        value: color::TEXT,
+        selection: Color {
+            a: 0.28,
+            ..color::ACCENT
+        },
+    }
+}
+
+/// A text field that is not a box: the band around it (see
+/// [`crate::widget::prompt_band`]) is already the visible container, and a
+/// second border inside it would be a card in a card. The selection tint is
+/// the only accent it carries, because a caret is furniture, not state.
+pub fn prompt_input(_t: &Theme, _status: text_input::Status) -> text_input::Style {
+    text_input::Style {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border::default(),
         icon: color::TEXT_TERTIARY,
         placeholder: color::TEXT_TERTIARY,
         value: color::TEXT,

@@ -63,7 +63,7 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
         .push(session(app))
         .push(problem(app));
 
-    container(parts::panel(body))
+    container(parts::surface(body))
         .width(Length::Fixed(WIDTH as f32))
         .padding(OUTER)
         .into()
