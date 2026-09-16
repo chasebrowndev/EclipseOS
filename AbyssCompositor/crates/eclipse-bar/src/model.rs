@@ -27,6 +27,11 @@ impl Trust {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     pub index: usize,
+    /// The numeric id of the output this workspace belongs to. Indices are
+    /// 1-based *within* an output, so two monitors both have a workspace 1 —
+    /// this is the only thing that tells the two rows apart, and the bar on
+    /// each monitor renders only the rows matching its own output.
+    pub output: u64,
     pub output_name: String,
     pub active: bool,
     pub windows: usize,
@@ -38,6 +43,10 @@ pub struct Window {
     pub app_id: String,
     pub title: String,
     pub workspace: Option<usize>,
+    /// The output the window's workspace lives on, when the compositor could
+    /// place it. Same job as [`Workspace::output`]: it is what lets a
+    /// per-output bar list only its own monitor's windows.
+    pub output: Option<u64>,
     pub focused: bool,
     /// Sent away by the human. Still owned by its workspace, still listed,
     /// just not on screen — the taskbar chip is the way back.
@@ -108,6 +117,7 @@ pub fn parse_workspaces(v: &Value) -> Vec<Workspace> {
             rows.iter()
                 .map(|w| Workspace {
                     index: w.get("index").and_then(Value::as_u64).unwrap_or(0) as usize,
+                    output: w.get("output").and_then(Value::as_u64).unwrap_or(0),
                     output_name: str_at(w, "output_name"),
                     active: w.get("active").and_then(Value::as_bool).unwrap_or(false),
                     windows: w.get("windows").and_then(Value::as_u64).unwrap_or(0) as usize,
@@ -128,6 +138,7 @@ pub fn parse_windows(v: &Value) -> Vec<Window> {
                         app_id: str_at(w, "app_id"),
                         title: str_at(w, "title"),
                         workspace: w.get("workspace").and_then(Value::as_u64).map(|i| i as usize),
+                        output: w.get("output").and_then(Value::as_u64),
                         focused: w.get("focused").and_then(Value::as_bool).unwrap_or(false),
                         minimized: w.get("minimized").and_then(Value::as_bool).unwrap_or(false),
                         pid: w.get("pid").and_then(Value::as_i64).map(|p| p as i32),

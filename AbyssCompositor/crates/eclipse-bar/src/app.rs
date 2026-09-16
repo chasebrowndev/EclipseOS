@@ -14,7 +14,7 @@ use iced_layershell::to_layer_message;
 use eclipse_services::status::{Battery, Bluetooth, Network, Update};
 use eclipse_ui::tokens::{self, bar};
 
-use crate::conn::Conn;
+use crate::conn::{BarConfig, Conn};
 use crate::icons::Icons;
 use crate::model::Snapshot;
 
@@ -120,6 +120,13 @@ pub enum Message {
     Launch,
     /// The system bus said something about network, bluetooth or battery.
     Status(Update),
+    /// The compositor's focused output changed. Carries the focused output's
+    /// numeric id, which is all the fold decision needs: this bar folds when
+    /// the id is not its own.
+    Focused(u64),
+    /// A configuration reload succeeded. The `bar.*` keys may have moved, so
+    /// re-read them; the event itself is payload-free by design.
+    Reconfigured,
 }
 
 pub struct App {
@@ -148,6 +155,18 @@ pub struct App {
     /// it and divides what is left. A bar that did not know its own width
     /// could only ever guess, which is how chips came to run off the end.
     pub width: f32,
+    /// The connector this bar is bound to (`DP-1`), from `--output`. Empty
+    /// when the bar was started without one — a single-output dev run — in
+    /// which case nothing is filtered out and nothing ever folds.
+    pub output_name: String,
+    /// The numeric id of that output, resolved once against `get_outputs`.
+    /// The compositor's workspace and window rows are keyed by this, not by
+    /// the connector, so it is what the views filter on.
+    pub output_id: u64,
+    /// The `bar.*` settings, re-read on every successful config reload.
+    pub bar: BarConfig,
+    /// Whether the bar is currently shrunk to `bar.fold_height`.
+    pub folded: bool,
 }
 
 impl Default for App {
@@ -160,6 +179,16 @@ impl App {
     pub fn new() -> Self {
         let mut conn = Conn::new();
         let snapshot = conn.snapshot();
+        // `App::new` is the daemon builder's `fn() -> App`, so the connector
+        // cannot be passed as an argument; `main` puts it here instead.
+        let output_name = std::env::var(crate::OUTPUT_ENV).unwrap_or_default();
+        let bar = conn.bar_config();
+        let (outputs, _) = conn.outputs();
+        let output_id = outputs
+            .iter()
+            .find(|(_, name)| *name == output_name)
+            .map(|(id, _)| *id)
+            .unwrap_or(0);
         let mut app = App {
             conn,
             snapshot,
@@ -171,6 +200,10 @@ impl App {
             cursor: iced::Point::ORIGIN,
             popup: None,
             width: 0.0,
+            output_name,
+            output_id,
+            bar,
+            folded: false,
         };
         app.icons.warm(&app.snapshot.windows);
         app
@@ -307,6 +340,19 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             return Task::none();
         }
+        // The pointer crossed to another monitor (or back). Folding is the
+        // only thing that reacts, and it is off by default.
+        Message::Focused(id) => return fold(app, id),
+        Message::Reconfigured => {
+            app.bar = app.conn.bar_config();
+            // A reload can turn folding off while this bar is folded; the
+            // current focus is re-read so the bar does not stay shrunk.
+            let (_, focused) = app.conn.outputs();
+            if let Some(focused) = focused {
+                return fold(app, focused);
+            }
+            return Task::none();
+        }
         // `to_layer_message` injects the layer-control variants. The bar never
         // sends one — it is anchored for its whole life — but the match must
         // still be total.
@@ -316,6 +362,33 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
     // changed, so all of them end the same way.
     refetch(app);
     Task::none()
+}
+
+/// Fold or unfold in response to `focused` being the compositor's live output.
+///
+/// The exclusive zone moves with the size: shrinking only the paint would
+/// leave the tiled windows below still avoiding a full-height bar, and the
+/// whole point of the setting is that they reclaim the space.
+fn fold(app: &mut App, focused: u64) -> Task<Message> {
+    let want = app.bar.fold_when_inactive && app.output_id != 0 && focused != app.output_id;
+    if want == app.folded {
+        return Task::none();
+    }
+    app.folded = want;
+    let Some(id) = app.main else {
+        return Task::none();
+    };
+    let height = if want { app.bar.fold_height } else { crate::HEIGHT };
+    Task::batch([
+        Task::done(Message::SizeChange {
+            id,
+            size: (0, height),
+        }),
+        Task::done(Message::ExclusiveZoneChange {
+            id,
+            zone_size: height as i32,
+        }),
+    ])
 }
 
 /// Re-read the three lists and re-resolve any icon we have not seen.
@@ -538,8 +611,21 @@ fn compositor() -> Subscription<Message> {
                     if let Some(c) = client.as_mut() {
                         loop {
                             match c.poll_event() {
-                                Ok(Some(_)) => {
-                                    if !send(&mut sender, Message::Refresh) {
+                                Ok(Some(event)) => {
+                                    // Two kinds carry a decision of their own;
+                                    // every other kind means "state moved",
+                                    // which is one refetch.
+                                    let message = match event.kind {
+                                        eclipse_ipc::EventKind::Output => event
+                                            .data
+                                            .get("focused")
+                                            .and_then(serde_json::Value::as_u64)
+                                            .map(Message::Focused)
+                                            .unwrap_or(Message::Refresh),
+                                        eclipse_ipc::EventKind::Config => Message::Reconfigured,
+                                        _ => Message::Refresh,
+                                    };
+                                    if !send(&mut sender, message) {
                                         return;
                                     }
                                 }
@@ -604,6 +690,7 @@ mod tests {
         let mut a = app();
         a.snapshot.workspaces.push(Workspace {
             index: 1,
+            output: 0,
             output_name: "DP-1".into(),
             active: true,
             windows: 0,
@@ -655,6 +742,7 @@ mod tests {
             app_id: "org.x.Vault".into(),
             title: "seed phrase".into(),
             workspace: Some(1),
+            output: Some(0),
             focused: true,
             minimized: false,
             pid: None,

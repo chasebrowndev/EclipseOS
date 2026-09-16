@@ -18,7 +18,26 @@ pub const KINDS: &[EventKind] = &[
     EventKind::Focus,
     EventKind::Output,
     EventKind::ConfigError,
+    EventKind::Config,
 ];
+
+/// What the bar reads out of `bar.*` once, at startup, and again on every
+/// `config` event. Defaults match the schema's own so a compositor that is
+/// not listening leaves the bar in its ordinary always-open state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BarConfig {
+    pub fold_when_inactive: bool,
+    pub fold_height: u32,
+}
+
+impl Default for BarConfig {
+    fn default() -> Self {
+        BarConfig {
+            fold_when_inactive: false,
+            fold_height: 4,
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct Conn {
@@ -105,6 +124,66 @@ impl Conn {
 
     /// `workspace` is the 1-based wire index, exactly as `get_workspaces`
     /// reported it.
+    /// Every output the compositor knows about, as `(id, connector)`, plus the
+    /// id of the focused one. The supervisor uses the list to decide how many
+    /// bars to run; a bound bar uses it once to learn its own id from the
+    /// connector name it was started with.
+    pub fn outputs(&mut self) -> (Vec<(u64, String)>, Option<u64>) {
+        self.ensure();
+        let Some(v) = self.call("get_outputs", json!({})) else {
+            return (Vec::new(), None);
+        };
+        let rows = v.as_array().cloned().unwrap_or_default();
+        let mut focused = None;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let Some(id) = row.get("id").and_then(Value::as_u64) else {
+                continue;
+            };
+            let name = row
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if row.get("focused").and_then(Value::as_bool).unwrap_or(false) {
+                focused = Some(id);
+            }
+            out.push((id, name));
+        }
+        (out, focused)
+    }
+
+    /// The two `bar.*` keys. A missing key keeps its default rather than
+    /// failing the fetch: an older compositor without the section must still
+    /// leave the bar usable.
+    pub fn bar_config(&mut self) -> BarConfig {
+        let mut cfg = BarConfig::default();
+        self.ensure();
+        let Some(v) = self.call("get_config", json!({ "schema": false })) else {
+            return cfg;
+        };
+        let Some(keys) = v.get("keys").and_then(Value::as_array) else {
+            return cfg;
+        };
+        for key in keys {
+            let value = key.get("value");
+            match key.get("path").and_then(Value::as_str) {
+                Some("bar.fold-when-inactive") => {
+                    if let Some(b) = value.and_then(Value::as_bool) {
+                        cfg.fold_when_inactive = b;
+                    }
+                }
+                Some("bar.fold-height") => {
+                    if let Some(h) = value.and_then(Value::as_u64) {
+                        cfg.fold_height = h as u32;
+                    }
+                }
+                _ => {}
+            }
+        }
+        cfg
+    }
+
     pub fn switch_workspace(&mut self, workspace: usize) {
         self.call("switch_workspace", json!({ "workspace": workspace }));
     }
