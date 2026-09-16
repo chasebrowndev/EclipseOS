@@ -36,7 +36,7 @@ JSON-RPC socket. `crates/wlcs-abyss` is the conformance shim. As of 2026-09-11
 there are two more, and they are the beginning of the DE userland (COMP-17,
 F-01 §4): `crates/eclipse-ipc` is the client half of COMP-13 — a blocking,
 calloop-friendly control-socket client with no async runtime — and
-`crates/eclipse-ui` is the Eclipse design system over `iced` 0.14, which is
+`EclipseDE/crates/eclipse-ui` is the Eclipse design system over `iced` 0.14, which is
 where every colour, radius and size in the DE is defined exactly once
 (ADR 0038 chose native Rust over Quickshell; ADR 0039 records the four narrow
 supply-chain exceptions iced cost). Neither is TCB. See
@@ -153,7 +153,7 @@ parallel one.
 | A5 `eclipse-ctl config` + coverage ratchet | **done** | `18b97cf`; `ci/gui-coverage-exceptions.txt` may only shrink |
 | `docs/CONFIG.md` | **done** | generated from the schema (`fab0eb3`) |
 | B2 `crates/eclipse-ipc` | **done** | `5ebe0a9`. Raw fd exposed, non-blocking, no async runtime — it drops into a calloop client loop |
-| B1 `crates/eclipse-ui` | **done** | `a501576`. `tokens.rs` (the style spec's only transcription), `theme.rs` (style fns over iced's stock widgets), `widget/` (the 44×25 toggle and the bar chart, written from scratch because the spec fixes their geometry), vendored instanced typefaces under `assets/fonts/` |
+| B1 `EclipseDE/crates/eclipse-ui` | **done** | `a501576`. `tokens.rs` (the style spec's only transcription), `theme.rs` (style fns over iced's stock widgets), `widget/` (the 44×25 toggle and the bar chart, written from scratch because the spec fixes their geometry), vendored instanced typefaces under `EclipseDE/assets/fonts/` |
 | B5 settings app | **done** | `770ff33`. Controls generated from `get_config {schema:true}`; `policy.kdl` keys read-only; the Display pane closes stub 15(a) by driving `calibrate_output` |
 | B3 bar | **done** | `3a6f7a5`. Workspaces, window list and clock on an `iced_layershell` layer surface; refreshed by `subscribe`, not polling. `wlr_foreign_toplevel_management` stays absent — verified 2026-09-11, `wayland-info` advertises no `foreign_toplevel` global with the bar running. Window text is `Window::label()`, so a `Trust::Secret` window reads "Protected window". Tray/audio/network/BT/battery/notification/media cells wait on B4 |
 | B4 control center + services | **in progress** | Landed: the notification server, system status (network/BT/battery), session control, the bar's status cells, the toast stack (`eclipse-toasts`), the control center (`eclipse-center`, `2408781`), the `.desktop` reader (`c9fab92`) and the launcher GUI over it (`eclipse-launcher`) — a centred overlay surface that takes the keyboard, filters as you type and refuses a terminal-only entry out loud. Owed: an SNI tray host (blocked — our iced feature set has no `image`, so `IconPixmap` cannot be drawn), audio (`libpulse-binding`) and clipboard (`smithay-clipboard`), both new dependencies and therefore an ask first |

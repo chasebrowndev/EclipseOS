@@ -77,7 +77,7 @@ watchers:
 - `eclipse_services::apps` (`c9fab92`) — an in-house `.desktop` reader. No new
   dependency. See the commit message for what it drops and why.
 
-**Next action: the launcher GUI.** `crates/eclipse-bar/src/launcher/{mod,app,
+**Next action: the launcher GUI.** `EclipseDE/crates/eclipse-bar/src/launcher/{mod,app,
 view,main}.rs` as a fourth `[[bin]]` (`eclipse-launcher`) in that package,
 following the toast and center precedent exactly. Centred `Layer::Overlay`,
 `KeyboardInteractivity::Exclusive` (unlike the other two — a launcher must take
@@ -216,7 +216,7 @@ change.
 ## State as of 2026-09-11 (late) — DE userland, B5 done, B3+B6 scaffolded and paused
 
 Branch `ci-attribution-display-name`. **Working tree: clean except two
-untracked directories, `crates/eclipse-bar/` and `crates/eclipse-policy-viewer/`
+untracked directories, `EclipseDE/crates/eclipse-bar/` and `EclipseDE/crates/eclipse-policy-viewer/`
 — deliberately left that way. **Superseded: both were finished and committed
 later the same day; see the entry at the top of this file.**
 `HEAD` is `770ff33` and all five gate commands are green at it. Nothing is
@@ -240,7 +240,7 @@ narrative.
 | A4 self-write vs. watcher | done | `6d8f5a8` |
 | A5 `eclipse-ctl config` + coverage ratchet | done | `18b97cf`, `ci/gui-coverage-exceptions.txt` |
 | B2 `crates/eclipse-ipc` | done | `5ebe0a9` |
-| B1 `crates/eclipse-ui` | done | `a501576`, ADR 0039 |
+| B1 `EclipseDE/crates/eclipse-ui` | done | `a501576`, ADR 0039 |
 | B5 settings app | **done** | `770ff33` |
 | B3 bar | done (later the same day) | `3a6f7a5` |
 | B4 control center + services | not started | — |
@@ -314,7 +314,7 @@ default-closed and stays closed.
 
 ### What B5 shipped
 
-`crates/eclipse-settings` at `770ff33`: `src/{app,conn,lib,main,output,pane,schema}.rs`
+`EclipseDE/crates/eclipse-settings` at `770ff33`: `src/{app,conn,lib,main,output,pane,schema}.rs`
 plus `tests/coverage.rs`, which owns the local half of the GUI-coverage ratchet.
 A plain `xdg_toplevel` — `iced::application(...).title(..).theme(..).subscription(..)
 .window_size((1100.0, 760.0)).antialiasing(true)` with a `for face in
@@ -331,7 +331,7 @@ with a live compositor.
   iced fires a `compile_error!`. `iced_layershell` is `0.19.1`.
 - **`iced::time::every` does not exist for us** — it is gated on `tokio`/`smol`
   and we enable only `thread-pool`. Every periodic job is a `std::thread` plus
-  `iced::stream::channel` and `try_send`. `crates/eclipse-settings/src/app.rs`
+  `iced::stream::channel` and `try_send`. `EclipseDE/crates/eclipse-settings/src/app.rs`
   `subscription()` is the working pattern; copy it rather than reinventing it.
 - **Do not guess the iced API** — same discipline as the Smithay pin. The
   vendored source is at
@@ -342,7 +342,7 @@ with a live compositor.
   `eclipse_ipc::connect()`. That mistake has already cost one compile cycle.
 - `eclipse_ui::widget::parts::segmented` takes `&'a [(T, &'a str)]` and does
   not fit a `Vec<String>` read off the wire; build the pill row by hand there.
-- `crates/eclipse-ui/src/tokens.rs` is the **only** transcription of
+- `EclipseDE/crates/eclipse-ui/src/tokens.rs` is the **only** transcription of
   `/home/chase/Downloads/eclipse-style-spec.md`. A literal colour, radius or
   size anywhere else in the DE is a bug.
 - Glass blur is abyss's own `decoration { blur }` (dual-Kawase, `render/blur.rs`),

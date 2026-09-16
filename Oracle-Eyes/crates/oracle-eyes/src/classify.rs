@@ -164,8 +164,7 @@ impl Gate {
 
     fn expire(&mut self, now_ms: u64) {
         let ttl = self.policy.dedup_ttl_ms;
-        self.seen
-            .retain(|_, seen| now_ms.saturating_sub(*seen) < ttl);
+        self.seen.retain(|_, seen| now_ms.saturating_sub(*seen) < ttl);
     }
 }
 
@@ -225,10 +224,7 @@ mod tests {
     fn skips_duplicate_within_ttl() {
         let mut g = gate();
         assert_eq!(g.consider(GOOD, 0.9, 0), Verdict::Ask);
-        assert_eq!(
-            g.consider(GOOD, 0.9, 60_000),
-            Verdict::Skip(Reason::Duplicate)
-        );
+        assert_eq!(g.consider(GOOD, 0.9, 60_000), Verdict::Skip(Reason::Duplicate));
     }
 
     #[test]
@@ -244,15 +240,9 @@ mod tests {
         let mut g = gate();
         assert_eq!(g.consider(GOOD, 0.9, 0), Verdict::Ask);
         // Touched just before it would age out…
-        assert_eq!(
-            g.consider(GOOD, 0.9, 299_000),
-            Verdict::Skip(Reason::Duplicate)
-        );
+        assert_eq!(g.consider(GOOD, 0.9, 299_000), Verdict::Skip(Reason::Duplicate));
         // …so past the original deadline it is still suppressed.
-        assert_eq!(
-            g.consider(GOOD, 0.9, 301_000),
-            Verdict::Skip(Reason::Duplicate)
-        );
+        assert_eq!(g.consider(GOOD, 0.9, 301_000), Verdict::Skip(Reason::Duplicate));
     }
 
     #[test]
@@ -268,10 +258,7 @@ mod tests {
     fn rate_limit_drops_rather_than_queues() {
         let mut g = gate();
         assert_eq!(g.consider(GOOD, 0.9, 0), Verdict::Ask);
-        assert_eq!(
-            g.consider(OTHER, 0.9, 500),
-            Verdict::Skip(Reason::RateLimited)
-        );
+        assert_eq!(g.consider(OTHER, 0.9, 500), Verdict::Skip(Reason::RateLimited));
         // If the drop had been queued, this third candidate would wait
         // behind OTHER. It does not: it is dispatched on its own, and OTHER
         // is simply gone.

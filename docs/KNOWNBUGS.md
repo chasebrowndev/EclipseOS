@@ -20,7 +20,7 @@ LAUNCH-01 through LAUNCH-04 were fixed on 2026-09-13 and removed from this file.
 At 285 matches the note column's clip edge meets the selected row's mono
 `.desktop` id with no visible gap: `Information about the Xfce Desktop Ex`
 followed by `xfce4-about` reads as one string.
-`crates/eclipse-bar/src/launcher/view.rs:221` already adds `space::CARD` of
+`EclipseDE/crates/eclipse-bar/src/launcher/view.rs:221` already adds `space::CARD` of
 right padding for exactly this reason, and at width 560 it is not enough for
 the longest comments. May simply be what clipping looks like.
 
@@ -32,9 +32,9 @@ the longest comments. May simply be what clipping looks like.
 succeed, occupying a fixed and scarce number of rows.
 
 `apps::entry` records `Terminal` off the `.desktop` file
-(`crates/eclipse-services/src/apps.rs:159`) because the indexer parses every
+(`EclipseDE/crates/eclipse-services/src/apps.rs:159`) because the indexer parses every
 key, and `apps::launch` refuses at the bottom
-(`crates/eclipse-services/src/apps.rs:275`) with `ErrorKind::Unsupported` and
+(`EclipseDE/crates/eclipse-services/src/apps.rs:275`) with `ErrorKind::Unsupported` and
 the message `entry wants a terminal`. The refusal is defensible on its own —
 its test, `a_terminal_entry_refuses_rather_than_disappearing`, argues correctly
 that spawning into no terminal leaves a process the human cannot see or reach —
@@ -65,7 +65,7 @@ return for genuinely broken entries (`entry has no command`), which is what it
 is actually good for.
 
 **Open, and the reason this is still a proposal:** the key placement.
-`crates/eclipse-bar` reads no configuration today — there is no `Config` in
+`EclipseDE/crates/eclipse-bar` reads no configuration today — there is no `Config` in
 `lib.rs` or `launcher/app.rs`. Putting the key in the abyss KDL config
 (COMP-13) means the launcher must fetch it over `eclipse-ipc`, which is new
 plumbing for the crate; the payoff is that `eclipse-settings/src/schema.rs`

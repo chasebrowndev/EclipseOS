@@ -89,10 +89,7 @@ pub fn redact(text: &str) -> String {
     // so a JWT is reported as a JWT rather than as a generic base64 run, and
     // the labeled-line rule runs after them so `token: eyJ…` keeps its label
     // instead of swallowing an already-placed marker.
-    let mut out = p
-        .pem
-        .replace_all(text, "[REDACTED:private_key]")
-        .into_owned();
+    let mut out = p.pem.replace_all(text, "[REDACTED:private_key]").into_owned();
     out = p
         .bearer
         .replace_all(&out, |c: &Captures| {
@@ -104,14 +101,8 @@ pub fn redact(text: &str) -> String {
         })
         .into_owned();
     out = p.jwt.replace_all(&out, "[REDACTED:jwt]").into_owned();
-    out = p
-        .openai
-        .replace_all(&out, "[REDACTED:api_key]")
-        .into_owned();
-    out = p
-        .github
-        .replace_all(&out, "[REDACTED:api_key]")
-        .into_owned();
+    out = p.openai.replace_all(&out, "[REDACTED:api_key]").into_owned();
+    out = p.github.replace_all(&out, "[REDACTED:api_key]").into_owned();
     out = p.aws.replace_all(&out, "[REDACTED:aws_key]").into_owned();
     out = p.slack.replace_all(&out, "[REDACTED:api_key]").into_owned();
     out = p
@@ -273,10 +264,7 @@ mod tests {
 
     #[test]
     fn card_pattern() {
-        assert_eq!(
-            redact("card 4111 1111 1111 1111 ok"),
-            "card [REDACTED:card] ok"
-        );
+        assert_eq!(redact("card 4111 1111 1111 1111 ok"), "card [REDACTED:card] ok");
         // Near-miss: same length, fails Luhn — an order number survives.
         let miss = "order 4111111111111112 ok";
         assert_eq!(redact(miss), miss);

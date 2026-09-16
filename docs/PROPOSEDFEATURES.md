@@ -50,7 +50,7 @@ defaults.
   detail in stages: full detail → process name only → icon only → (extreme,
   last resort) no icon. The bar never spills past its bounds.
 - **A Launcher settings pane.** The launcher
-  (`crates/eclipse-bar/src/launcher/main.rs`, spawned by `Super+R` —
+  (`EclipseDE/crates/eclipse-bar/src/launcher/main.rs`, spawned by `Super+R` —
   `crates/abyss/src/config/mod.rs`, `default_binds`) has no config keys at all
   today, so it has no tab in `eclipse-settings` either. It wants a `launcher.*`
   section in the schema table and its own pane alongside Taskbar once there is

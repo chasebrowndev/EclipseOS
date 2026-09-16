@@ -133,7 +133,7 @@ fn generate() -> String {
 
 #[test]
 fn config_doc_is_current() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/CONFIG.md");
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../docs/CONFIG.md");
     let want = generate();
     if std::env::var_os("UPDATE_CONFIG_DOC").is_some() {
         std::fs::write(path, &want).expect("write docs/CONFIG.md");

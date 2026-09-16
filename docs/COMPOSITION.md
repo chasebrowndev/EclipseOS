@@ -47,7 +47,7 @@ Each reference pane is distinguished almost entirely by its hero. Pick a
 Mapping to the code vocabulary: a magnitude is `big_value`, a history is
 `BarChart` (with `Highlight::Current` or `::Peak`), an exclusive choice is
 `segmented`, a boolean is `Toggle`. A spatial canvas or a status grid has no
-primitive yet — it gets **added to `crates/eclipse-ui/src/widget/parts.rs`**,
+primitive yet — it gets **added to `EclipseDE/crates/eclipse-ui/src/widget/parts.rs`**,
 never inlined in an app's `view.rs`.
 
 ## Rhythm

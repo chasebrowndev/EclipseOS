@@ -10,7 +10,7 @@ compositor `dlopen`s, talking to the host through a hand-rolled `#[repr(C)]`
 `HostVtable` of five `extern "C"` function pointers (capture, damage, draw,
 config, log).
 
-That collides with the first line of `AbyssCompositor/CLAUDE.md`: "No ambient
+That collides with the first line of `CLAUDE.md`: "No ambient
 authority. Every operation requires a capability check." A vtable handed to a
 loaded object *is* ambient authority — once the pointers are in its hands there
 is no gate left, no `check()` to fail closed, no per-call decision to audit, and

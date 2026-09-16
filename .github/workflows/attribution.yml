@@ -1,4 +1,4 @@
-# Enforces the attribution rule in AbyssCompositor/CLAUDE.md ("Commits & PRs"):
+# Enforces the attribution rule in CLAUDE.md ("Commits & PRs"):
 # every commit is authored by the repo owner, and no commit message carries an
 # agent co-author trailer or session link.
 #
@@ -95,7 +95,7 @@ jobs:
           if [ "$fail" -ne 0 ]; then
             echo
             echo "Commits must be authored by the repo owner with no agent attribution."
-            echo "See the 'Commits & PRs' section of AbyssCompositor/CLAUDE.md."
+            echo "See the 'Commits & PRs' section of CLAUDE.md."
             exit 1
           fi
           echo "checked $(echo "$commits" | wc -l) commit(s): clean"

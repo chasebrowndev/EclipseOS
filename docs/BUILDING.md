@@ -1,5 +1,28 @@
 # Building and running abyss
 
+## Three workspaces
+
+The repo root holds three cargo workspaces (ADR 0042), each with its own
+`Cargo.lock`, `deny.toml` and `target/`:
+
+| Workspace | Contents |
+|---|---|
+| `AbyssCompositor/` | `abyss`, `eclipse-ipc`, `eclipse-ctl`, `wlcs-abyss` |
+| `EclipseDE/` | `eclipse-ui`, `eclipse-bar`, `eclipse-settings`, `eclipse-policy-viewer`, `eclipse-services` |
+| `Oracle-Eyes/` | the out-of-process vision addon (ADR 0041) |
+
+Every `cargo` invocation below is run from inside one of them — `cargo build
+--workspace` at the repo root finds no manifest. To build everything:
+
+```
+for w in AbyssCompositor EclipseDE Oracle-Eyes; do
+  (cd $w && cargo build --workspace --all-targets) || echo "FAIL $w"
+done
+```
+
+`rust-toolchain.toml` and `rustfmt.toml` sit at the repo root only; both tools
+walk ancestors, so all three workspaces share one pin.
+
 ## Toolchain
 
 Rust **1.97.0**, pinned in `rust-toolchain.toml` — that exact channel is what
@@ -75,7 +98,7 @@ journalctl -t abyss -o json | jq 'select(.F_FPS)'
 
 ## Running wlcs locally
 
-The `conformance` job in `gate.yml` builds `crates/wlcs-abyss` as a cdylib and
+The `conformance` job in `gate.yml` builds `AbyssCompositor/crates/wlcs-abyss` as a cdylib and
 hands it to wlcs, which drives the headless backend in-process. `ci/wlcs-skip.txt`
 is a ratchet of the tests known to fail — entries may be removed, never added
 without justification. Locally you need wlcs itself installed; without it, the

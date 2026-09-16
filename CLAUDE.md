@@ -1,5 +1,22 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
-# abyss / EclipseOS — root invariants
+# EclipseOS — root invariants
+
+This directory is the root of everything: the specs, the ADRs, `docs/`, and
+three cargo workspaces (ADR 0042).
+
+```
+AbyssCompositor/   the compositor and the socket contract
+                   crates: abyss, eclipse-ipc, eclipse-ctl, wlcs-abyss
+EclipseDE/         the desktop userland (COMP-17, F-01 §4)
+                   crates: eclipse-ui, eclipse-bar, eclipse-settings,
+                           eclipse-policy-viewer, eclipse-services
+Oracle-Eyes/       the out-of-process vision addon (ADR 0041)
+```
+
+`rust-toolchain.toml` and `rustfmt.toml` sit here once; cargo and rustfmt both
+walk ancestors, so all three workspaces get the same pin. Each workspace has
+its own `Cargo.lock` and its own `deny.toml` — the DE pulls iced/wgpu, which
+has no business in the compositor's supply-chain surface.
 
 Governing specs: `ECLIPSEOS_SPECS_v2_VOL1.md` (and Vol 2). `docs/` is source of
 truth once code starts (F-07 §7). Read the spec section before implementing it.
@@ -46,18 +63,21 @@ This has already happened more than once.
 - Host pid 2245 is the host's own Xwayland under Hyprland. Leave it alone.
 
 ## Build / test / run
+The gate runs **per workspace** — `cd` into one first, or loop:
+
 ```
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo build --workspace --all-targets
-cargo test --workspace
-cargo deny check advisories bans licenses sources
-cargo run -- --backend winit    # nested under Hyprland for dev
+for w in AbyssCompositor EclipseDE Oracle-Eyes; do (cd $w \
+  && cargo fmt --all --check \
+  && cargo clippy --workspace --all-targets --all-features -- -D warnings \
+  && cargo build --workspace --all-targets \
+  && cargo test --workspace \
+  && cargo deny check advisories bans licenses sources) || echo "FAIL $w"; done
+
+cargo run --manifest-path AbyssCompositor/Cargo.toml -- --backend winit
 journalctl --user -t abyss -f  # logs (tracing → journald)
 ```
-The first five are exactly what CI runs (`../.github/workflows/gate.yml` — the
-workflows sit at the repository root, one level above this crate tree). If you
-change one, change both — a local gate that differs from CI is worse than no
+Those five commands are exactly what CI runs (`.github/workflows/gate.yml`,
+one job per workspace). If you change one, change both — a local gate that differs from CI is worse than no
 local gate.
 
 The toolchain is pinned in `rust-toolchain.toml`; CI and dev must not drift.
@@ -68,8 +88,7 @@ justification.
 
 **The main agent never writes frontend.** Every single piece of user-facing UI
 — a new view, a redesign, a tweak to an existing one, anywhere under
-`crates/eclipse-ui/`, `crates/eclipse-bar/`, `crates/eclipse-settings/` or
-`crates/eclipse-policy-viewer/` — goes to the `eclipse-frontend` agent. It is
+`EclipseDE/crates/{eclipse-ui,eclipse-bar,eclipse-settings,eclipse-policy-viewer}/` — goes to the `eclipse-frontend` agent. It is
 the only thing here that produces usable frontend: it screenshots its own
 output and iterates against `docs/STYLE.md`, which is exactly the loop the main
 thread cannot run.
@@ -85,9 +104,10 @@ sees.
 
 ## Backend crate work goes to the backend agent — same rule, mirrored
 
-Non-TCB work under `crates/abyss/src/{backend,outputs,input,shell,protocols,
-ipc,config,xwayland}/`, `crates/eclipse-ipc/`, `crates/eclipse-ctl/`, and
-`crates/eclipse-services/` goes to the `eclipse-backend` agent, not the main
+Non-TCB work under `AbyssCompositor/crates/abyss/src/{backend,outputs,input,
+shell,protocols,ipc,config,xwayland}/`, `AbyssCompositor/crates/eclipse-ipc/`,
+`AbyssCompositor/crates/eclipse-ctl/`, and `EclipseDE/crates/eclipse-services/`
+goes to the `eclipse-backend` agent, not the main
 thread. Same standard as frontend: no change too small to exempt. TCB paths
 (`policy/`, `trusted_ui/`, `audit/`, `render/capture.rs`) are never delegated
 to it — those stay with the main thread and owner review (F-07 §4).
@@ -142,20 +162,25 @@ file dumps until it compacts mid-task and loses the plan.
 
 ## Where things are
 ```
-crates/abyss/src/backend/     COMP-01  winit + DRM/udev behind one trait
-crates/abyss/src/render/      COMP-02  damage, scanout, sync, redaction
-crates/abyss/src/outputs/     COMP-03  hotplug, layout, virtual outputs
-crates/abyss/src/input/       COMP-04  seats, focus, injection, override chord
-crates/abyss/src/shell/       COMP-05  layouts, workspaces, rules, identity
-crates/abyss/src/protocols/standard/  COMP-06
-crates/abyss/src/protocols/agent/     COMP-08  eclipse_agent_v1
-crates/abyss/src/protocols/semantic/  COMP-09  eclipse_semantic_v1
-crates/abyss/src/trusted_ui/  COMP-10  prompts, indicator, emergency panel
-crates/abyss/src/policy/      COMP-11  enforcement table, check()
-crates/abyss/src/audit/       COMP-12  provenance emission
-crates/abyss/src/ipc/         COMP-13  human JSON-RPC socket
-crates/abyss/src/config/      COMP-13  KDL parse, validate, hot-reload
-crates/abyss/src/xwayland/    COMP-07
+AbyssCompositor/crates/abyss/src/backend/     COMP-01  winit + DRM/udev behind one trait
+AbyssCompositor/crates/abyss/src/render/      COMP-02  damage, scanout, sync, redaction
+AbyssCompositor/crates/abyss/src/outputs/     COMP-03  hotplug, layout, virtual outputs
+AbyssCompositor/crates/abyss/src/input/       COMP-04  seats, focus, injection, override chord
+AbyssCompositor/crates/abyss/src/shell/       COMP-05  layouts, workspaces, rules, identity
+AbyssCompositor/crates/abyss/src/protocols/standard/  COMP-06
+AbyssCompositor/crates/abyss/src/protocols/agent/     COMP-08  eclipse_agent_v1
+AbyssCompositor/crates/abyss/src/protocols/semantic/  COMP-09  eclipse_semantic_v1
+AbyssCompositor/crates/abyss/src/trusted_ui/  COMP-10  prompts, indicator, emergency panel
+AbyssCompositor/crates/abyss/src/policy/      COMP-11  enforcement table, check()
+AbyssCompositor/crates/abyss/src/audit/       COMP-12  provenance emission
+AbyssCompositor/crates/abyss/src/ipc/         COMP-13  human JSON-RPC socket
+AbyssCompositor/crates/abyss/src/config/      COMP-13  KDL parse, validate, hot-reload
+AbyssCompositor/crates/abyss/src/xwayland/    COMP-07
+EclipseDE/crates/eclipse-ui/         COMP-17  the design system (docs/STYLE.md)
+EclipseDE/crates/eclipse-bar/        COMP-17  bar, toasts, control center, launcher
+EclipseDE/crates/eclipse-settings/   COMP-17  the settings app
+EclipseDE/crates/eclipse-policy-viewer/ COMP-17
+EclipseDE/crates/eclipse-services/   COMP-17  notifications, status, session (no UI)
 decisions/                     ADRs (F-08 format)
 docs/ARCHITECTURE.md, docs/BUILDING.md
 ```

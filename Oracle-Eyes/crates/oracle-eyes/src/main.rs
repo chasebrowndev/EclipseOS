@@ -249,9 +249,6 @@ mod tests {
 
     #[test]
     fn a_zero_area_region_is_rejected_rather_than_captured() {
-        assert_eq!(
-            region_of(&json!({"region":{"x":0,"y":0,"w":0,"h":40}})),
-            None
-        );
+        assert_eq!(region_of(&json!({"region":{"x":0,"y":0,"w":0,"h":40}})), None);
     }
 }

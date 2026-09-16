@@ -158,9 +158,7 @@ pub fn apply_text(cfg: &mut Config, path: &Path, text: &str, errors: &mut Vec<Co
             let (off, message) = match e.diagnostics.first() {
                 Some(d) => (
                     d.span.offset(),
-                    d.message
-                        .clone()
-                        .unwrap_or_else(|| "invalid syntax".to_string()),
+                    d.message.clone().unwrap_or_else(|| "invalid syntax".to_string()),
                 ),
                 None => (0, e.to_string()),
             };

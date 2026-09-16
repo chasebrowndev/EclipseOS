@@ -80,10 +80,7 @@ impl Answerer {
     /// exclusive borrow makes a second overlapping call a compile error
     /// rather than something to remember.
     pub fn ask(&mut self, screen_text: &str, question: Option<&str>) -> Result<String, String> {
-        let raw = self.invoke(
-            &system_prompt(self.word_cap),
-            &user_prompt(screen_text, question),
-        )?;
+        let raw = self.invoke(&system_prompt(self.word_cap), &user_prompt(screen_text, question))?;
         let answer = parse_reply(&raw)?;
         Ok(clamp(&answer, self.word_cap, self.char_cap))
     }
@@ -212,13 +209,15 @@ pub fn user_prompt(screen_text: &str, question: Option<&str>) -> String {
         .map(str::trim)
         .filter(|q| !q.is_empty())
         .unwrap_or("What is this?");
-    format!("QUESTION: {q}\n\n--- BEGIN SCREEN TEXT (untrusted data) ---\n{screen_text}\n--- END SCREEN TEXT ---")
+    format!(
+        "QUESTION: {q}\n\n--- BEGIN SCREEN TEXT (untrusted data) ---\n{screen_text}\n--- END SCREEN TEXT ---"
+    )
 }
 
 /// Pull the answer out of one `--output-format json` result object.
 pub fn parse_reply(raw: &str) -> Result<String, String> {
-    let v: Value = serde_json::from_str(raw.trim())
-        .map_err(|e| format!("the model reply was not JSON: {e}"))?;
+    let v: Value =
+        serde_json::from_str(raw.trim()).map_err(|e| format!("the model reply was not JSON: {e}"))?;
     if v.get("is_error").and_then(Value::as_bool) == Some(true) {
         let detail = v
             .get("result")

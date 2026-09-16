@@ -196,12 +196,7 @@ fn buffer_to_logical(crop: PixRect, out: &OutputGeom) -> Region {
 /// Crop and convert in one pass: the source buffer is a whole output, and
 /// touching only the cropped rows keeps a 4K grab from copying 33 MB to throw
 /// most of it away.
-fn crop_convert(
-    src: &[u8],
-    src_stride: usize,
-    fmt: PixFmt,
-    crop: PixRect,
-) -> Result<Vec<u8>, String> {
+fn crop_convert(src: &[u8], src_stride: usize, fmt: PixFmt, crop: PixRect) -> Result<Vec<u8>, String> {
     let w = crop.w.max(0) as usize;
     let h = crop.h.max(0) as usize;
     let x = crop.x.max(0) as usize;
@@ -360,8 +355,8 @@ impl Capturer {
     /// decision it is, with the line the owner has to add — "fail visibly"
     /// means the user learns what to do, not just that something broke.
     pub fn connect() -> Result<Capturer, String> {
-        let conn = Connection::connect_to_env()
-            .map_err(|e| format!("cannot reach the Wayland display: {e}"))?;
+        let conn =
+            Connection::connect_to_env().map_err(|e| format!("cannot reach the Wayland display: {e}"))?;
         let (globals, mut queue): (GlobalList, EventQueue<State>) =
             registry_queue_init(&conn).map_err(|e| format!("wayland registry: {e}"))?;
         let qh = queue.handle();
@@ -398,14 +393,9 @@ impl Capturer {
         }
 
         let deadline = Instant::now() + SETUP_TIMEOUT;
-        pump(
-            &conn,
-            &mut queue,
-            &mut state,
-            deadline,
-            "output geometry",
-            |s| s.outputs.iter().all(|o| o.mode.is_some()),
-        )?;
+        pump(&conn, &mut queue, &mut state, deadline, "output geometry", |s| {
+            s.outputs.iter().all(|o| o.mode.is_some())
+        })?;
 
         Ok(Capturer {
             conn,
@@ -616,12 +606,7 @@ fn denied(what: &str) -> String {
 fn describe(geoms: &[OutputGeom]) -> String {
     geoms
         .iter()
-        .map(|g| {
-            format!(
-                "{}x{}+{}+{}",
-                g.logical.w, g.logical.h, g.logical.x, g.logical.y
-            )
-        })
+        .map(|g| format!("{}x{}+{}+{}", g.logical.w, g.logical.h, g.logical.x, g.logical.y))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -708,19 +693,14 @@ impl Dispatch<WlOutput, usize> for State {
             return;
         };
         match event {
-            wl_output::Event::Geometry {
-                x, y, transform, ..
-            } => {
+            wl_output::Event::Geometry { x, y, transform, .. } => {
                 out.geom_pos = Some((x, y));
                 if let WEnum::Value(t) = transform {
                     out.transform = t;
                 }
             }
             wl_output::Event::Mode {
-                flags,
-                width,
-                height,
-                ..
+                flags, width, height, ..
             } => {
                 // Only the current mode describes the capture buffer; the
                 // compositor may also list others.
@@ -826,14 +806,8 @@ mod tests {
 
     #[test]
     fn shm_names_map_to_memory_order() {
-        assert_eq!(
-            PixFmt::from_shm(wl_shm::Format::Xbgr8888),
-            Some(PixFmt::Rgba)
-        );
-        assert_eq!(
-            PixFmt::from_shm(wl_shm::Format::Argb8888),
-            Some(PixFmt::Bgra)
-        );
+        assert_eq!(PixFmt::from_shm(wl_shm::Format::Xbgr8888), Some(PixFmt::Rgba));
+        assert_eq!(PixFmt::from_shm(wl_shm::Format::Argb8888), Some(PixFmt::Bgra));
         assert_eq!(PixFmt::from_shm(wl_shm::Format::Rgb565), None);
     }
 

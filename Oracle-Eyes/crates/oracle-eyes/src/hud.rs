@@ -52,12 +52,7 @@ impl Hud {
     /// Show `text` at `anchor`, replacing whatever was there. Replacing in
     /// place rather than destroy-then-create keeps the panel from blinking
     /// between two answers about the same thing.
-    pub fn show(
-        &mut self,
-        c: &mut impl Control,
-        anchor: Anchor,
-        text: &str,
-    ) -> Result<u64, String> {
+    pub fn show(&mut self, c: &mut impl Control, anchor: Anchor, text: &str) -> Result<u64, String> {
         if let Some(id) = self.live {
             match c.call("annotation_update", json!({"id": id, "text": text})) {
                 Ok(_) => return Ok(id),
@@ -155,11 +150,7 @@ mod tests {
         hud.show(&mut c, A, "two").unwrap();
         assert_eq!(
             c.seen,
-            [
-                "annotation_create",
-                "annotation_update",
-                "annotation_create"
-            ]
+            ["annotation_create", "annotation_update", "annotation_create"]
         );
         assert_eq!(hud.live(), Some(2));
     }
