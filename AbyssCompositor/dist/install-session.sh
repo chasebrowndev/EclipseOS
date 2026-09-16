@@ -17,19 +17,26 @@ user="${SUDO_USER:-}"
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 bin="$here/../target/release"
+# The userland is its own workspace with its own target dir (ADR 0042).
+de_dist=$(CDPATH= cd -- "$here/../../EclipseDE/dist" && pwd)
+de_bin="$de_dist/../target/release"
 home=$(getent passwd "$user" | cut -d: -f6)
 
-for b in abyss eclipse-bar eclipse-toasts eclipse-center eclipse-launcher \
-         eclipse-settings eclipse-policy-viewer eclipse-ctl; do
+ABYSS_BINS='abyss eclipse-ctl'
+DE_BINS='eclipse-bar eclipse-toasts eclipse-center eclipse-launcher
+         eclipse-settings eclipse-policy-viewer'
+
+for b in $ABYSS_BINS; do
     [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
+done
+for b in $DE_BINS; do
+    [ -x "$de_bin/$b" ] || { echo "missing $de_bin/$b — cargo build --release --workspace --bins in EclipseDE" >&2; exit 1; }
 done
 
 # 1. Binaries. Symlinks, so the session always runs what was last built.
 install -d /usr/local/bin
-for b in abyss eclipse-bar eclipse-toasts eclipse-center eclipse-launcher \
-         eclipse-settings eclipse-policy-viewer eclipse-ctl; do
-    ln -sfn "$bin/$b" "/usr/local/bin/$b"
-done
+for b in $ABYSS_BINS; do ln -sfn "$bin/$b" "/usr/local/bin/$b"; done
+for b in $DE_BINS;    do ln -sfn "$de_bin/$b" "/usr/local/bin/$b"; done
 install -m 0755 "$here/abyss-session" /usr/local/bin/abyss-session
 
 # 2. The session entry the greeter lists. Exec is the wrapper, not the binary:
@@ -44,7 +51,7 @@ dest="$home/.config/systemd/user"
 install -d -o "$user" -g "$user" "$dest"
 install -m 0644 -o "$user" -g "$user" "$here/abyss-session.target" "$dest/abyss-session.target"
 for unit in eclipse-bar eclipse-toasts; do
-    sed 's|/usr/bin/|/usr/local/bin/|' "$here/$unit.service" > "$dest/$unit.service"
+    sed 's|/usr/bin/|/usr/local/bin/|' "$de_dist/$unit.service" > "$dest/$unit.service"
     chown "$user:$user" "$dest/$unit.service"
 done
 
@@ -52,7 +59,7 @@ done
 #    components, not applications, and deliberately have no entry.
 apps="$home/.local/share/applications"
 install -d -o "$user" -g "$user" "$apps"
-for f in "$here"/applications/*.desktop; do
+for f in "$de_dist"/applications/*.desktop; do
     install -m 0644 -o "$user" -g "$user" "$f" "$apps/"
 done
 
@@ -60,4 +67,4 @@ runuser -u "$user" -- systemctl --user daemon-reload
 runuser -u "$user" -- systemctl --user enable eclipse-bar.service eclipse-toasts.service
 
 echo "Abyss installed. Log out and pick 'Abyss' in the greeter session menu."
-echo "Binaries symlink to $bin — rebuild there and the next login picks it up."
+echo "Binaries symlink to $bin and $de_bin — rebuild there and the next login picks it up."

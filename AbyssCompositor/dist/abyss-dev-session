@@ -11,10 +11,12 @@
 set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 bin="$here/../target/debug"
+# The userland is its own workspace with its own target dir (ADR 0042).
+de_bin=$(CDPATH= cd -- "$here/../../EclipseDE" && pwd)/target/debug
 
-# Binds spawn through `/bin/sh -c` inheriting this environment, so target/debug
-# has to be on PATH for Super+R (eclipse-launcher) and Super+N to resolve.
-PATH="$bin:$PATH"
+# Binds spawn through `/bin/sh -c` inheriting this environment, so both debug
+# dirs have to be on PATH for Super+R (eclipse-launcher) and Super+N to resolve.
+PATH="$bin:$de_bin:$PATH"
 export PATH
 
 export XDG_CURRENT_DESKTOP=Abyss

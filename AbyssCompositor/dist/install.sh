@@ -26,8 +26,16 @@ set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$here/.." && pwd)
 
-BINS='abyss eclipse-bar eclipse-toasts eclipse-center eclipse-launcher
-      eclipse-settings eclipse-policy-viewer eclipse-ctl'
+# Two workspaces, two target dirs (ADR 0042): the compositor and its socket
+# client half build here, the userland builds in EclipseDE. One session still
+# comes out of one command.
+de=$(CDPATH= cd -- "$root/../EclipseDE" && pwd)
+de_dist="$de/dist"
+
+ABYSS_BINS='abyss eclipse-ctl'
+DE_BINS='eclipse-bar eclipse-toasts eclipse-center eclipse-launcher
+         eclipse-settings eclipse-policy-viewer'
+BINS="$ABYSS_BINS $DE_BINS"
 UNITS='eclipse-bar.service eclipse-toasts.service'
 
 do_deps=1 do_build=1 assume_yes=0 uninstall=0
@@ -69,6 +77,7 @@ fi
 [ "$(id -u)" -ne 0 ] || die "run me as your own user, not root — the build needs your cargo cache
              (the script calls sudo itself for the parts that need it)"
 [ -f "$root/Cargo.toml" ] || die "run me from a checkout: $root/Cargo.toml is missing"
+[ -f "$de/Cargo.toml" ] || die "run me from a full checkout: $de/Cargo.toml is missing"
 command -v sudo >/dev/null || die "sudo is required"
 
 user=$(id -un)
@@ -122,12 +131,18 @@ if [ "$do_build" -eq 1 ]; then
     # rust-toolchain.toml pins the channel; rustup honours it without a flag.
     say "building (this takes a few minutes on a cold cache)"
     ( cd "$root" && cargo build --release --workspace --bins )
+    ( cd "$de"   && cargo build --release --workspace --bins )
 fi
 
 bin="$root/target/release"
-for b in $BINS; do
+de_bin="$de/target/release"
+for b in $ABYSS_BINS; do
     [ -x "$bin/$b" ] || die "missing $bin/$b — drop --no-build, or run
-             cargo build --release --workspace --bins"
+             cargo build --release --workspace --bins in $root"
+done
+for b in $DE_BINS; do
+    [ -x "$de_bin/$b" ] || die "missing $de_bin/$b — drop --no-build, or run
+             cargo build --release --workspace --bins in $de"
 done
 
 # ------------------------------------------------------------------ install --
@@ -136,7 +151,9 @@ say "installing to /usr"
 
 # 1. Binaries. Real files: the checkout is not needed after this point.
 # shellcheck disable=SC2086
-sudo install -Dm 0755 -t /usr/bin $(for b in $BINS; do printf '%s ' "$bin/$b"; done)
+sudo install -Dm 0755 -t /usr/bin \
+    $(for b in $ABYSS_BINS; do printf '%s ' "$bin/$b"; done) \
+    $(for b in $DE_BINS;    do printf '%s ' "$de_bin/$b"; done)
 
 # 2. The login wrapper. It sets the environment that is knowable before the
 #    compositor runs; the systemd/D-Bus handoff happens inside abyss --session,
@@ -151,11 +168,11 @@ sudo install -Dm 0644 "$here/abyss.desktop" /usr/share/wayland-sessions/abyss.de
 # 4. User units, system-wide so every account on the box gets them. These are
 #    shipped pointing at /usr/bin, which is where step 1 put the binaries.
 sudo install -Dm 0644 -t /usr/lib/systemd/user \
-    "$here/abyss-session.target" "$here/eclipse-bar.service" "$here/eclipse-toasts.service"
+    "$here/abyss-session.target" "$de_dist/eclipse-bar.service" "$de_dist/eclipse-toasts.service"
 
 # 5. The apps a human launches. The bar, toasts and launcher are session
 #    components, not applications, and deliberately have no entry.
-sudo install -Dm 0644 -t /usr/share/applications "$here"/applications/*.desktop
+sudo install -Dm 0644 -t /usr/share/applications "$de_dist"/applications/*.desktop
 
 # ---------------------------------------------------------------- seat/perms --
 
