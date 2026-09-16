@@ -225,6 +225,7 @@ fn get_outputs(state: &mut AbyssState, params: &Value) -> Reply {
             "position": position.map(|p| json!({"x": p.x, "y": p.y})),
             "workspaces": entry.workspaces.len(),
             "active_workspace": entry.active + 1,
+            "overscan": overscan_json(entry.overscan),
         }));
     }
     Ok(Value::Array(out))
@@ -342,6 +343,7 @@ const EVENTS: &[&str] = &[
     "output",
     "agent-activity",
     "config-error",
+    "config",
     "keybind",
 ];
 
@@ -527,6 +529,50 @@ fn edge_px(raw: Option<i64>) -> Result<i32, RpcError> {
     }
 }
 
+/// `overscan` on the wire is either a single number for all four edges or an
+/// object with any subset of the edges; the omitted ones stay at zero, matching
+/// the config spelling exactly so the two front ends cannot drift.
+fn parse_overscan(
+    obj: &serde_json::Map<String, Value>,
+) -> Result<Option<crate::outputs::overscan::Overscan>, RpcError> {
+    match obj.get("overscan") {
+        None => Ok(None),
+        Some(Value::Number(n)) => {
+            let px = edge_px(n.as_i64())?;
+            Ok(Some(crate::outputs::overscan::Overscan::uniform(px)))
+        }
+        Some(Value::Object(o)) => {
+            for key in o.keys() {
+                if !["top", "bottom", "left", "right"].contains(&key.as_str()) {
+                    return Err(RpcError::invalid_params(&format!("unknown overscan edge: {key}")));
+                }
+            }
+            let mut v = crate::outputs::overscan::Overscan::default();
+            for (key, slot) in [
+                ("top", &mut v.top),
+                ("bottom", &mut v.bottom),
+                ("left", &mut v.left),
+                ("right", &mut v.right),
+            ] {
+                if let Some(raw) = o.get(key) {
+                    *slot = edge_px(raw.as_i64())?;
+                }
+            }
+            Ok(Some(v))
+        }
+        Some(_) => Err(RpcError::invalid_params(
+            "overscan must be a number or {top, bottom, left, right}",
+        )),
+    }
+}
+
+/// The reported shape of an output's overscan. Keyed exactly like the object
+/// form `set_output` accepts so a client can read a row and hand it straight
+/// back; always present, all-zero when there is no compensation.
+fn overscan_json(o: crate::outputs::overscan::Overscan) -> Value {
+    json!({"top": o.top, "right": o.right, "bottom": o.bottom, "left": o.left})
+}
+
 /// Output runtime configuration (COMP-13 §2.1): mode, scale, position,
 /// transform, enabled, vrr. Everything is parsed and checked first; the output
 /// is touched only once every field is known good, so a rejected request
@@ -612,40 +658,7 @@ fn set_output(state: &mut AbyssState, params: &Value) -> Reply {
         None => None,
         Some(_) => Some(bool_param(params, "vrr")?),
     };
-    // `overscan` is either a single number for all four edges or an object with
-    // any subset of the edges; the omitted ones stay at zero, matching the
-    // config spelling exactly so the two front ends cannot drift.
-    let overscan = match obj.get("overscan") {
-        None => None,
-        Some(Value::Number(n)) => {
-            let px = edge_px(n.as_i64())?;
-            Some(crate::outputs::overscan::Overscan::uniform(px))
-        }
-        Some(Value::Object(o)) => {
-            for key in o.keys() {
-                if !["top", "bottom", "left", "right"].contains(&key.as_str()) {
-                    return Err(RpcError::invalid_params(&format!("unknown overscan edge: {key}")));
-                }
-            }
-            let mut v = crate::outputs::overscan::Overscan::default();
-            for (key, slot) in [
-                ("top", &mut v.top),
-                ("bottom", &mut v.bottom),
-                ("left", &mut v.left),
-                ("right", &mut v.right),
-            ] {
-                if let Some(raw) = o.get(key) {
-                    *slot = edge_px(raw.as_i64())?;
-                }
-            }
-            Some(v)
-        }
-        Some(_) => {
-            return Err(RpcError::invalid_params(
-                "overscan must be a number or {top, bottom, left, right}",
-            ))
-        }
-    };
+    let overscan = parse_overscan(obj)?;
 
     // --- everything validated; hand off to the shared apply path.
     let change = crate::outputs::OutputChange {
@@ -811,5 +824,40 @@ mod tests {
         assert!(u64_param(&json!({"output": "1"}), "output").is_err());
         assert!(u64_param(&json!({}), "output").is_err());
         assert!(bool_param(&json!({"enabled": 1}), "enabled").is_err());
+    }
+
+    #[test]
+    fn overscan_round_trips_through_the_reported_row() {
+        // What `set_output` accepts is exactly what a `get_outputs` row
+        // reports, edge for edge, so eclipse-settings can read one and hand it
+        // straight back.
+        let written = json!({"top": 12, "right": 3, "bottom": 7, "left": 0});
+        let parsed = parse_overscan(json!({"overscan": written.clone()}).as_object().expect("object"))
+            .ok()
+            .flatten()
+            .expect("valid, present overscan");
+        assert_eq!(overscan_json(parsed), written);
+
+        // Always present, all-zero when nothing is calibrated.
+        assert_eq!(
+            overscan_json(crate::outputs::overscan::Overscan::default()),
+            json!({"top": 0, "right": 0, "bottom": 0, "left": 0})
+        );
+
+        // The uniform spelling reports as four equal edges.
+        let uniform = parse_overscan(json!({"overscan": 9}).as_object().expect("object"))
+            .ok()
+            .flatten()
+            .expect("valid, present overscan");
+        assert_eq!(
+            overscan_json(uniform),
+            json!({"top": 9, "right": 9, "bottom": 9, "left": 9})
+        );
+
+        assert!(matches!(
+            parse_overscan(json!({}).as_object().expect("object")),
+            Ok(None)
+        ));
+        assert!(parse_overscan(json!({"overscan": {"middle": 1}}).as_object().expect("object")).is_err());
     }
 }
