@@ -65,6 +65,7 @@ priority.
 | COMP-15 | Testing, fuzzing, client compat matrix | **DONE** | C-00 |
 | COMP-16 | Milestones & sequencing | **DONE** | C-00 |
 | COMP-17 | Desktop profiles: WM and DE interaction modes | planned (B-03) | C-00, COMP-13 |
+| COMP-18 | Annotation overlays: the untrusted compositor-drawn text pass | planned (ADR 0040/0041) | C-00, COMP-10, COMP-13 |
 
 ## Tier 2 — Security & Policy (`policyd`)
 
@@ -6621,6 +6622,132 @@ and must be re-decided explicitly rather than allowed to drift.**
    crates. Proposed: Quickshell first, revisit once the shape settles.
 2. Whether desktop icons are in v1 scope. They are the largest single piece of
    DE mode and the least security-relevant.
+
+---
+
+<!-- ===== FILE: COMP-18_ANNOTATION_OVERLAYS.md ===== -->
+
+# COMP-18 — Annotation Overlays (Draft v0.1)
+
+*Added 2026-09-15 for the Oracle-Eyes addon. See ADR 0040 and ADR 0041.*
+
+Depends on: C-00, COMP-10, COMP-13. Consumed by: Oracle-Eyes (`Oracle-Eyes/spec.md`).
+
+---
+
+## 1. Model
+
+An **annotation overlay** is a short run of compositor-drawn text pinned to a
+screen rectangle, requested over the control socket by an allowlisted local
+process. It is how an addon puts a label on the screen without becoming a
+client surface and without borrowing the authority of Trusted UI.
+
+The motivating consumer is Oracle-Eyes, which OCRs a region of the screen, asks
+a model about it, and shows the answer in place. Its input is therefore fully
+attacker-controlled, and every rule below follows from that.
+
+### 1.1 The annotation pass
+
+Annotations render in their own compositor pass, prepended by each backend
+alongside the capture indicator. The stacking order is fixed:
+
+```
+background / bottom layers
+windows
+top / overlay layers
+borders
+cursor
+→ annotation pass            (COMP-18, untrusted)
+→ trusted UI                 (COMP-10, trusted — always last)
+```
+
+**The annotation pass is not Trusted UI and must never be confused with it.**
+It carries no secret phrase, renders no prompt, and grants nothing. COMP-10's
+anti-spoof guarantee depends on Trusted UI remaining the final pass; a test
+asserts that it still is with annotations present.
+
+### 1.2 Capture invisibility
+
+Annotation elements are absent from every capture target, by construction
+rather than by policy: `capture_elements()` builds its own pass list from
+layers and windows and never sees backend-prepended elements (ADR 0030). This
+is load-bearing twice over — other clients' screenshots must not contain
+answers derived from a region the capturing client may not be allowed to read,
+and Oracle-Eyes must not OCR its own output and loop.
+
+### 1.3 The compositor owns presentation
+
+A caller supplies a rectangle and a string. Everything else — placement within
+or beside that rectangle, collision avoidance between overlays, eviction when
+too many are live, styling, and text sanitisation — is decided by the
+compositor, which is the only party that knows output geometry and the only
+party the caller cannot influence. **A caller must not be able to affect
+anything but the glyphs.**
+
+## 2. Text handling
+
+Rendering is the compositor's own minimal monospace glyph path (ADR 0009: no
+toolkit). Before any string is rasterised:
+
+- C0/C1 control characters and bidi overrides are stripped, not escaped.
+- Length is clamped to a configured maximum, truncated hard.
+- No markup, no escape sequence and no format specifier is interpreted; the
+  string is glyphs and nothing else.
+
+These mirror COMP-10 §3.2's rule for agent-supplied text and are tested the
+same way.
+
+## 3. Control-socket methods
+
+Four methods on the COMP-13 socket, all `Kind::Command`, owner-uid only, and
+present in the static fail-closed `TABLE` (`ipc/gate.rs`) — a name absent from
+that table does not exist:
+
+| Method | Effect |
+|---|---|
+| `annotation_create` | rectangle + text → overlay handle |
+| `annotation_update` | replace the text on an existing handle |
+| `annotation_destroy` | remove one overlay |
+| `annotation_clear` | remove every overlay owned by the caller |
+
+Overlay state is handle-keyed on `AbyssState`; there is no shared interior
+mutability (C-00 single-threaded core).
+
+Two event kinds are added to the existing `subscribe` stream:
+
+- `keybind` — a bound annotation action fired, carrying any selected rectangle.
+  Lets an addon own a hotkey without owning the seat.
+- `damage` — coalesced per-output damage rectangles. Deferred: DRM's damage
+  lives inside smithay's `DrmCompositor` rather than an `OutputDamageTracker`,
+  so this arrives after a poll-based consumer works.
+
+Capture is deliberately **not** a socket capability (COMP-13 §1, non-goals).
+Pixels travel the Wayland path, gated separately by
+`capture { allow "<comm>" }` in `policy.kdl`. An addon therefore holds two
+independently revocable capabilities, and "may draw but may no longer read" is
+a reachable state.
+
+## 4. Naming
+
+"Oracle" is a load-bearing security term in Volume 2 — S-02's **no policy
+oracle** rule, with a conformance test of its own. The Oracle-Eyes product name
+is unrelated and grants it nothing. Do not conflate the two in code, config
+keys or test names.
+
+## 5. Test Plan (into COMP-15)
+
+- Annotation elements are absent from `capture_elements()` output.
+- Trusted UI remains the last pass with a non-empty annotation set.
+- Sanitisation: control characters stripped, length clamped, markup inert.
+- Each `annotation_*` method is denied for a non-owner uid; an unlisted
+  `annotation_*` name returns method-not-found.
+- An annotation is not visible to an allowlisted screencopy client.
+
+## 6. Open Decisions
+
+1. Per-caller overlay quotas. One consumer today; the limit is global.
+2. Whether the `damage` event is worth its cost in the DRM backend, or whether
+   a poll is permanently good enough.
 
 ---
 

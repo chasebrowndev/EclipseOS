@@ -129,6 +129,69 @@ jobs:
           target/wlcs-build/wlcs target/debug/libwlcs_abyss.so \
             --gtest_filter="-${skip}"
 
+  oracle-eyes:
+    name: oracle-eyes build / fmt / clippy / test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The Oracle-Eyes addon (COMP-18, ADR 0041) is its own cargo workspace,
+    # not a member of Abyss's, so it needs its own gate rooted one directory
+    # over. `defaults` above points at AbyssCompositor; override it here.
+    defaults:
+      run:
+        working-directory: Oracle-Eyes
+    steps:
+      - uses: actions/checkout@v4
+
+      # The workspace does not exist until Phase 1. Skip cleanly rather than
+      # failing red on every push in the meantime; delete this step and the
+      # `if:` guards below once Oracle-Eyes/Cargo.toml lands.
+      - id: exists
+        run: test -f Cargo.toml && echo "yes=true" >> "$GITHUB_OUTPUT" || echo "yes=false" >> "$GITHUB_OUTPUT"
+
+      - if: steps.exists.outputs.yes == 'true'
+        name: system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev libxkbcommon-dev libtesseract-dev libleptonica-dev \
+            pkg-config
+
+      - if: steps.exists.outputs.yes == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - if: steps.exists.outputs.yes == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: Oracle-Eyes
+
+      - if: steps.exists.outputs.yes == 'true'
+        run: cargo fmt --all --check
+
+      - if: steps.exists.outputs.yes == 'true'
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - if: steps.exists.outputs.yes == 'true'
+        run: cargo build --workspace --all-targets
+
+      - if: steps.exists.outputs.yes == 'true'
+        run: cargo test --workspace
+
+  oracle-eyes-supply-chain:
+    name: oracle-eyes cargo-deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - id: exists
+        run: test -f Oracle-Eyes/Cargo.toml && echo "yes=true" >> "$GITHUB_OUTPUT" || echo "yes=false" >> "$GITHUB_OUTPUT"
+      - if: steps.exists.outputs.yes == 'true'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+          manifest-path: Oracle-Eyes/Cargo.toml
+
   supply-chain:
     name: cargo-deny
     runs-on: ubuntu-24.04
