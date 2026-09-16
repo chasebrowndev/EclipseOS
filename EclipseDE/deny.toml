@@ -1,0 +1,114 @@
+# cargo-deny configuration for the EclipseDE workspace — F-05 §9, F-07 §3,
+# ADR 0035 (interim supply-chain gate until S-12), ADR 0039 (the iced
+# exceptions below), ADR 0042 (why the DE has its own workspace and therefore
+# its own supply-chain surface).
+# Run: cargo deny check
+# Not installed by default: cargo install cargo-deny
+
+[graph]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# ---------------------------------------------------------------------------
+# Advisories — RustSec. Vulnerabilities and unmaintained crates fail the build.
+# ---------------------------------------------------------------------------
+[advisories]
+version = 2
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = [
+    # RUSTSEC-2026-0196 — `cgmath` is unmaintained. It is smithay's math crate
+    # and reaches this graph only through `eclipse-settings`'s dev-dependency
+    # on `abyss` (the schema coverage test). No DE binary links it. It is
+    # carried here for the same reason the compositor carries it, and leaves
+    # when smithay drops cgmath.
+    "RUSTSEC-2026-0196",
+
+    # RUSTSEC-2024-0436 — `paste` is no longer maintained. A proc-macro with no
+    # runtime surface, and on this platform it is never even compiled: it
+    # reaches the graph only through `metal`, which is a macOS-only dependency
+    # of wgpu-hal under iced. Unmaintained, not vulnerable. Revisit when wgpu
+    # drops it or when EclipseOS ever targets macOS, which is never.
+    "RUSTSEC-2024-0436",
+
+    # RUSTSEC-2026-0192 — `ttf-parser` is unmaintained. It is the font parser
+    # under fontdb/cosmic-text, which is iced's text stack; there is no way to
+    # draw text with iced 0.14 without it. It parses font files we vendor
+    # ourselves (`assets/fonts/`), not attacker-supplied ones, so the exposure
+    # is limited to faces we ship. Revisit when cosmic-text moves to a
+    # maintained parser, or if an advisory upgrades this to a vulnerability.
+    "RUSTSEC-2026-0192",
+
+    # RUSTSEC-2026-0206 — `rustybuzz` is unmaintained (harfrust is the named
+    # successor). It is resvg's text shaper, and resvg is iced's `svg` feature,
+    # which is how eclipse-bar draws freedesktop icon themes (mostly SVG). The
+    # SVGs it shapes text from are icon-theme files on the local system, not
+    # attacker-supplied documents. Unmaintained, not vulnerable. Revisit when
+    # resvg moves to harfrust.
+    "RUSTSEC-2026-0206",
+]
+
+# ---------------------------------------------------------------------------
+# Licences — must be compatible with AGPL-3.0-only distribution.
+# GPLv2-only is incompatible and is rejected by omission (F-05 §9).
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "AGPL-3.0-only",
+    "CC0-1.0",
+]
+# BSL-1.0 (Boost) is permissive and AGPL-compatible, but it is allowed here
+# only for the two Windows-only crates that carry it, rather than repo-wide:
+# a licence we accept for a crate that is never compiled on our target is not
+# a licence we have decided to accept in general. Both reach us through
+# `window_clipboard` under iced_winit, on the `cfg(windows)` branch.
+exceptions = [
+    { crate = "clipboard-win", allow = ["BSL-1.0"] },
+    { crate = "error-code", allow = ["BSL-1.0"] },
+    # NCSA (permissive, OSI approved, AGPL-compatible) is allowed for this one
+    # crate rather than repo-wide. libfuzzer-sys reaches us only as rav1e's
+    # AVIF-encoder dependency under iced's `image` feature; we decode PNG icon
+    # files, never encode AVIF, so it is linked and never called.
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
+]
+
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+# ---------------------------------------------------------------------------
+# Bans — wildcard version requirements are forbidden; supply chain is pinned.
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+deny = []
+skip = []
+skip-tree = []
+
+# ---------------------------------------------------------------------------
+# Sources — crates.io only. No git dependencies without an explicit exception.
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -43,7 +43,7 @@ path = "src/launcher/main.rs"
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "svg", "image"] }
 iced_layershell = "0.19.1"
 eclipse-ui = { path = "../eclipse-ui" }
-eclipse-ipc = { path = "../eclipse-ipc" }
+eclipse-ipc.workspace = true
 # The system-status watchers (ADR 0038). Read-only: the bar draws network,
 # bluetooth and battery, and can change none of them.
 eclipse-services = { path = "../eclipse-services" }

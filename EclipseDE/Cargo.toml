@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/eclipse-bar",
+  "crates/eclipse-policy-viewer",
+  "crates/eclipse-services",
+  "crates/eclipse-settings",
+  "crates/eclipse-ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+repository = "https://github.com/chasebrowndev/eclipseos"
+
+[workspace.dependencies]
+# One definition of the control protocol, shared across the tree boundary —
+# same reasoning as Oracle-Eyes (ADR 0041). The compositor owns the server
+# half of the COMP-13 socket, so the crate stays with it.
+eclipse-ipc = { path = "../AbyssCompositor/crates/eclipse-ipc" }
+serde_json = "1"
+kdl = "6"
+
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 4

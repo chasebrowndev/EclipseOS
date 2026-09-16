@@ -24,11 +24,11 @@ path = "src/main.rs"
 # futures executor, iced fires a compile_error!. See ADR 0039.
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
 eclipse-ui = { path = "../eclipse-ui" }
-eclipse-ipc = { path = "../eclipse-ipc" }
+eclipse-ipc.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
 # Only so `tests/coverage.rs` can walk the compositor's config schema and
 # assert this app renders a control for every key in it. Not linked into the
 # shipped binary.
-abyss = { path = "../abyss" }
+abyss = { path = "../../../AbyssCompositor/crates/abyss" }
