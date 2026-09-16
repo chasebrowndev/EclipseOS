@@ -342,6 +342,7 @@ const EVENTS: &[&str] = &[
     "output",
     "agent-activity",
     "config-error",
+    "keybind",
 ];
 
 fn subscribe(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {

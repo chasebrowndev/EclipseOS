@@ -2040,6 +2040,9 @@ fn parse_action(node: &KdlNode) -> Result<Action, String> {
         "move-to-workspace" => Action::MoveToWorkspace(workspace_arg(num())?),
         "agent-override" => Action::AgentOverride,
         "agent-attention" => Action::AgentAttention,
+        "annotation-select" => Action::AnnotationSelect,
+        "annotation-dismiss" => Action::AnnotationDismiss,
+        "annotation-expand" => Action::AnnotationExpand,
         "quit" | "exit" => Action::Quit,
         other => return Err(format!("unknown action '{other}'")),
     })
@@ -2572,6 +2575,29 @@ mod tests {
         let mut binds = Vec::new();
         cfg.apply(&doc, &mut binds);
         assert!(matches!(binds[0].action, crate::input::Action::AgentAttention));
+    }
+
+    #[test]
+    fn annotation_chords_parse_and_are_not_bound_by_default() {
+        use crate::input::Action;
+        for (name, want) in [
+            ("annotation-select", Action::AnnotationSelect),
+            ("annotation-dismiss", Action::AnnotationDismiss),
+            ("annotation-expand", Action::AnnotationExpand),
+        ] {
+            let doc: KdlDocument = format!("bind \"SUPER CTRL\" \"o\" {{ {name}; }}")
+                .parse()
+                .unwrap();
+            let mut cfg = Config::default();
+            let mut binds = Vec::new();
+            cfg.apply(&doc, &mut binds);
+            assert_eq!(binds[0].action, want, "{name}");
+        }
+        // The addon is optional, so its chords cost the default config nothing.
+        assert!(!default_binds().iter().any(|b| matches!(
+            b.action,
+            Action::AnnotationSelect | Action::AnnotationDismiss | Action::AnnotationExpand
+        )));
     }
 }
 

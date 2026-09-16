@@ -82,6 +82,12 @@ pub enum Action {
     /// Not bindable from config — the input filter synthesises it while a
     /// calibration session owns the seat.
     Calibrate(crate::outputs::calibrate::Step),
+    /// Chords an addon owns (COMP-18 §4). The compositor does not act on
+    /// these itself; it forwards the name on the `keybind` event stream, so
+    /// nothing happens when no addon is listening.
+    AnnotationSelect,
+    AnnotationDismiss,
+    AnnotationExpand,
 }
 
 /// A configured key binding.
@@ -171,6 +177,9 @@ impl AbyssState {
             Action::Calibrate(step) => {
                 crate::outputs::calibrate::apply(self, step);
             }
+            Action::AnnotationSelect => self.emit_keybind("annotation-select"),
+            Action::AnnotationDismiss => self.emit_keybind("annotation-dismiss"),
+            Action::AnnotationExpand => self.emit_keybind("annotation-expand"),
         }
     }
 
@@ -187,6 +196,13 @@ impl AbyssState {
     /// (COMP-04 §5), so injected keys can never reach here.
     fn agent_attention(&mut self) {
         tracing::warn!("agent attention chord pressed; no pending decision queue exists yet");
+    }
+
+    /// COMP-18 §4: forward a chord to whoever subscribed, and do nothing
+    /// else. The compositor learns no state from an addon being there, which
+    /// is what keeps Oracle-Eyes outside the TCB.
+    fn emit_keybind(&mut self, action: &str) {
+        crate::ipc::emit(self, "keybind", serde_json::json!({ "action": action }));
     }
 
     fn switch_vt(&mut self, vt: i32) {
