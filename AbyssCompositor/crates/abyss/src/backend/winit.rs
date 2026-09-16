@@ -265,6 +265,20 @@ fn redraw(
                     .unwrap_or_default(),
             ),
         );
+        // The region selector (COMP-18 §1.3) sits above the annotation pass
+        // it is about to feed, and below trusted UI like everything untrusted.
+        elements.splice(
+            0..0,
+            crate::render::select::selector_elements(
+                &state.region_select,
+                out,
+                state
+                    .space
+                    .output_geometry(out)
+                    .map(|g| g.loc)
+                    .unwrap_or_default(),
+            ),
+        );
         // Trusted UI, drawn on top of everything and never into a capture.
         elements.splice(
             0..0,

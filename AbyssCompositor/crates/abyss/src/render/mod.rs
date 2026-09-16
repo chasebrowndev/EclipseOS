@@ -12,6 +12,7 @@ pub mod cursor;
 pub mod effects;
 pub mod font;
 pub mod overscan;
+pub mod select;
 pub mod stats;
 pub mod text;
 
