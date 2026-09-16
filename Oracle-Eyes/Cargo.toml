@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/oracle-eyes"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+# Nothing here goes to crates.io: eclipse-ipc is a path dependency on the
+# sibling compositor workspace, which crates.io would reject anyway.
+publish = false
+repository = "https://github.com/chasebrowndev/eclipseos"
+
+[workspace.dependencies]
+# The compositor's own control-socket client (COMP-13 §2). A path dependency
+# on the sibling workspace rather than a copy: the protocol has exactly one
+# definition, and a drift between the two halves would show up as a runtime
+# refusal rather than a build error.
+eclipse-ipc = { path = "../AbyssCompositor/crates/eclipse-ipc" }
+serde_json = "1"
+libc = "0.2"
+
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 4
