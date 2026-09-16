@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use iced::widget::{column, pick_list, row, scrollable, slider, text_input, Column, Row, Space};
+use iced::widget::{column, pick_list, row, scrollable, text_input, Column, Row, Space};
 use iced::{Element, Length, Subscription, Task, Theme};
 use serde_json::{json, Value};
 
@@ -19,7 +19,7 @@ use eclipse_ui::theme;
 use eclipse_ui::tokens::space;
 use eclipse_ui::widget::{
     big_value, content, hairline, header, list_row, micro_label, panel, pill, sidebar, subtitle,
-    value as mono, Toggle,
+    value as mono, NumericSlider, Toggle,
 };
 
 use crate::conn::{Conn, Problem};
@@ -50,7 +50,55 @@ pub enum Message {
     InsetMoved(u64, Edge, f64),
     InsetReleased(u64),
     Calibrate(u64, &'static str),
+    NumberTyped(Num, String),
+    NumberCommitted(Num),
+    /// A click landed somewhere else: every open draft commits or reverts.
+    /// iced 0.14's `text_input` has no blur hook, so focus loss is observed
+    /// at the application level instead.
+    NumberBlur,
     Wire(EventKind, Value),
+}
+
+/// Which draggable number a typed draft belongs to. The three sites are not
+/// one keyspace — a schema key is a path, an output control is an id — so the
+/// draft map is keyed by the union rather than by a stringly-typed hybrid.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Num {
+    Key(String),
+    Inset(u64, Edge),
+    Scale(u64),
+}
+
+/// The value a [`Num`] is allowed to take: its slider's own range, and
+/// whether it reads as an integer.
+struct Span {
+    min: f64,
+    max: f64,
+    integral: bool,
+}
+
+/// Overscan is bounded here and nowhere else — the compositor's own clamp is
+/// a fraction of the mode (`outputs/overscan.rs`), so this is a UI bound.
+const INSET_MAX: f64 = 120.0;
+const SCALE_MIN: f64 = 0.5;
+const SCALE_MAX: f64 = 3.0;
+const SCALE_STEP: f64 = 0.05;
+
+impl Span {
+    fn format(&self, v: f64) -> String {
+        if self.integral {
+            format!("{}", v.round() as i64)
+        } else {
+            format!("{v:.2}")
+        }
+    }
+
+    /// Out of range is clamped, like a drag to the end of the track.
+    /// Unparseable is refused, and `None` is what refusal looks like.
+    fn parse(&self, text: &str) -> Option<f64> {
+        let v: f64 = text.trim().parse().ok()?;
+        v.is_finite().then(|| v.clamp(self.min, self.max))
+    }
 }
 
 pub struct App {
@@ -62,6 +110,9 @@ pub struct App {
     /// Drafts `validate_config` has rejected. Written on every keystroke so
     /// the field can say no before the user commits.
     invalid: HashSet<String>,
+    /// Text typed into a numeric entry, per control. Absent means "show the
+    /// value the slider is at".
+    nums: HashMap<Num, String>,
     /// Slider position while the knob is held. The write happens on release —
     /// a drag must not splice the KDL file once per pixel.
     live: HashMap<String, f64>,
@@ -88,6 +139,7 @@ impl App {
             drafts: HashMap::new(),
             invalid: HashSet::new(),
             live: HashMap::new(),
+            nums: HashMap::new(),
             outputs: Vec::new(),
             insets: HashMap::new(),
             scales: HashMap::new(),
@@ -108,6 +160,7 @@ impl App {
                 self.drafts.clear();
                 self.invalid.clear();
                 self.live.clear();
+                self.nums.clear();
             }
             Err(e) => self.banner = Some(e),
         }
@@ -136,11 +189,96 @@ impl App {
         }
     }
 
+    /// The range a typed draft is checked against: the same one its slider
+    /// spans, so typing and dragging cannot disagree.
+    fn span(&self, id: &Num) -> Option<Span> {
+        match id {
+            Num::Key(path) => match self.key(path).map(|k| &k.control) {
+                Some(Control::Slider { min, max, integral }) => Some(Span {
+                    min: *min,
+                    max: *max,
+                    integral: *integral,
+                }),
+                _ => None,
+            },
+            Num::Inset(..) => Some(Span {
+                min: 0.0,
+                max: INSET_MAX,
+                integral: true,
+            }),
+            Num::Scale(..) => Some(Span {
+                min: SCALE_MIN,
+                max: SCALE_MAX,
+                integral: false,
+            }),
+        }
+    }
+
+    /// What the control reads right now: the in-flight drag if there is one,
+    /// otherwise the compositor's value.
+    fn current(&self, id: &Num) -> Option<f64> {
+        match id {
+            Num::Key(path) => self
+                .live
+                .get(path)
+                .copied()
+                .or_else(|| self.key(path).map(Key::as_f64)),
+            Num::Inset(out, edge) => {
+                let o = self.outputs.iter().find(|o| o.id == *out)?;
+                Some(self.insets.get(out).copied().unwrap_or(o.overscan).get(*edge) as f64)
+            }
+            Num::Scale(out) => {
+                let o = self.outputs.iter().find(|o| o.id == *out)?;
+                Some(self.scales.get(out).copied().unwrap_or(o.scale))
+            }
+        }
+    }
+
+    /// Apply a committed draft. The write is the same one the slider's
+    /// release performs — a typed number is not a second code path.
+    fn commit_num(&mut self, id: &Num, value: f64) {
+        match id {
+            Num::Key(path) => {
+                let integral = matches!(
+                    self.key(path).map(|k| &k.control),
+                    Some(Control::Slider { integral: true, .. })
+                );
+                self.live.remove(path);
+                let json = if integral {
+                    json!(value.round() as i64)
+                } else {
+                    json!(value)
+                };
+                let path = path.clone();
+                self.write(&path, json);
+            }
+            Num::Inset(out, edge) => {
+                let base = self
+                    .outputs
+                    .iter()
+                    .find(|o| o.id == *out)
+                    .map(|o| o.overscan)
+                    .unwrap_or_default();
+                let inset = self.insets.entry(*out).or_insert(base);
+                inset.set(*edge, value.round() as i64);
+                let inset = *inset;
+                self.set_output(*out, "overscan", inset.to_json());
+                self.insets.remove(out);
+            }
+            Num::Scale(out) => {
+                self.scales.remove(out);
+                self.set_output(*out, "scale", json!(value));
+            }
+        }
+    }
+
     fn set_output(&mut self, id: u64, field: &str, v: Value) {
-        let Some(name) = self.outputs.iter().find(|o| o.id == id).map(|o| o.name.clone()) else {
+        // `output` is the numeric id from `get_outputs`, not the connector
+        // name: every handler parses it with `u64_param`.
+        if !self.outputs.iter().any(|o| o.id == id) {
             return;
-        };
-        match self.conn.call("set_output", json!({ "output": name, field: v })) {
+        }
+        match self.conn.call("set_output", json!({ "output": id, field: v })) {
             Ok(_) => {
                 self.banner = None;
                 self.reload();
@@ -200,6 +338,30 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             }
         }
 
+        Message::NumberTyped(id, text) => {
+            app.nums.insert(id, text);
+        }
+        Message::NumberCommitted(id) => {
+            if let Some(text) = app.nums.remove(&id) {
+                if let Some(v) = app.span(&id).and_then(|s| s.parse(&text)) {
+                    app.commit_num(&id, v);
+                }
+            }
+        }
+        Message::NumberBlur => {
+            // Take first: a write reloads, and a reload clears the map out
+            // from under an iteration over it.
+            for (id, text) in std::mem::take(&mut app.nums) {
+                let Some(span) = app.span(&id) else { continue };
+                // Unchanged text is not a write — a click inside the field
+                // must not splice the file.
+                match (span.parse(&text), app.current(&id)) {
+                    (Some(v), Some(now)) if (v - now).abs() > f64::EPSILON => app.commit_num(&id, v),
+                    _ => {}
+                }
+            }
+        }
+
         Message::OutputEnabled(id, on) => app.set_output(id, "enabled", Value::Bool(on)),
         Message::OutputScale(id, v) => {
             app.scales.insert(id, v);
@@ -217,19 +379,28 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::InsetReleased(id) => {
             if let Some(inset) = app.insets.get(&id).copied() {
                 app.set_output(id, "overscan", inset.to_json());
+                // The compositor's reading is the truth from here on; the
+                // draft would otherwise pin the row to a stale number.
+                app.insets.remove(&id);
             }
         }
         Message::Calibrate(id, action) => {
-            let Some(name) = app.outputs.iter().find(|o| o.id == id).map(|o| o.name.clone()) else {
+            if !app.outputs.iter().any(|o| o.id == id) {
                 return Task::none();
-            };
+            }
             match app
                 .conn
-                .call("calibrate_output", json!({ "output": name, "action": action }))
+                .call("calibrate_output", json!({ "output": id, "action": action }))
             {
                 Ok(_) => {
                     app.calibrating = (action == "start").then_some(id);
                     app.banner = None;
+                    // Commit and cancel both leave the compositor holding
+                    // overscan numbers this pane has never seen.
+                    if action != "start" {
+                        app.insets.remove(&id);
+                        app.reload();
+                    }
                 }
                 Err(e) => app.banner = Some(e),
             }
@@ -250,6 +421,20 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
 /// iced's `time::every` needs a tokio or smol backend and we enable neither,
 /// so the wait lives in a thread rather than in a futures timer.
 pub fn subscription(_app: &App) -> Subscription<Message> {
+    Subscription::batch([blur(), events()])
+}
+
+/// A press anywhere is the only focus-loss signal available: iced 0.14's
+/// `text_input` has no blur hook. `NumberBlur` is a no-op unless a draft is
+/// open and actually differs from the live value.
+fn blur() -> Subscription<Message> {
+    iced::event::listen_with(|event, _status, _window| match event {
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::NumberBlur),
+        _ => None,
+    })
+}
+
+fn events() -> Subscription<Message> {
     Subscription::run(|| {
         iced::stream::channel(32, async move |mut sender| {
             std::thread::spawn(move || {
@@ -395,25 +580,28 @@ fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Theme> {
 
         Control::Slider { min, max, integral } => {
             let current = app.live.get(&key.path).copied().unwrap_or_else(|| key.as_f64());
-            let shown = if *integral {
-                format!("{}", current.round() as i64)
-            } else {
-                format!("{current:.2}")
+            let span = Span {
+                min: *min,
+                max: *max,
+                integral: *integral,
             };
+            let id = Num::Key(key.path.clone());
+            let draft = app.nums.get(&id);
+            let shown = draft.cloned().unwrap_or_else(|| span.format(current));
+            let invalid = draft.is_some_and(|d| span.parse(d).is_none());
+            let typed = id.clone();
             let released = path.clone();
-            row![
-                slider(*min..=*max, current, move |v| Message::SliderMoved(
-                    path.clone(),
-                    v
-                ))
-                .step(if *integral { 1.0 } else { 0.01 })
-                .on_release(Message::SliderReleased(released))
-                .style(theme::eclipse_slider)
-                .width(Length::Fixed(180.0)),
-                mono(&shown),
-            ]
-            .spacing(10)
-            .align_y(iced::Alignment::Center)
+            NumericSlider::new(
+                *min..=*max,
+                current,
+                shown,
+                move |v| Message::SliderMoved(path.clone(), v),
+                move |t| Message::NumberTyped(typed.clone(), t),
+            )
+            .step(if *integral { 1.0 } else { 0.01 })
+            .on_release(Message::SliderReleased(released))
+            .on_commit(Message::NumberCommitted(id))
+            .invalid(invalid)
             .into()
         }
 
@@ -439,7 +627,7 @@ fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Theme> {
             let submit = path.clone();
             let input = text_input(key.default.as_str().unwrap_or(""), &shown)
                 .on_input(move |t| Message::Edited(path.clone(), t))
-                .width(Length::Fixed(220.0))
+                .width(Length::Fixed(space::FIELD_W))
                 .style(theme::eclipse_input);
             // A rejected draft has no commit path at all, rather than a
             // commit that fails after the fact.
@@ -456,6 +644,39 @@ fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Theme> {
     }
 }
 
+const INSET_SPAN: Span = Span {
+    min: 0.0,
+    max: INSET_MAX,
+    integral: true,
+};
+
+/// The scale control: one row's worth, lifted out because the output card's
+/// `column!` is already the widest expression in this file.
+fn scale_control(app: &App, id: u64, scale: f64) -> Element<'_, Message, Theme> {
+    let span = Span {
+        min: SCALE_MIN,
+        max: SCALE_MAX,
+        integral: false,
+    };
+    let num = Num::Scale(id);
+    let draft = app.nums.get(&num);
+    let shown = draft.cloned().unwrap_or_else(|| span.format(scale));
+    let invalid = draft.is_some_and(|d| span.parse(d).is_none());
+    let typed = num.clone();
+    NumericSlider::new(
+        SCALE_MIN..=SCALE_MAX,
+        scale,
+        shown,
+        move |v| Message::OutputScale(id, v),
+        move |t| Message::NumberTyped(typed.clone(), t),
+    )
+    .step(SCALE_STEP)
+    .on_release(Message::OutputScaleReleased(id))
+    .on_commit(Message::NumberCommitted(num))
+    .invalid(invalid)
+    .into()
+}
+
 /// Outputs. Modes are read-only — `get_outputs` reports the current mode, not
 /// the list of available ones — and the calibration overlay is drawn by the
 /// compositor (COMP-03 §1.1), so this pane sends verbs and shows numbers.
@@ -470,7 +691,7 @@ fn display_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
         .iter()
         .map(|o| {
             let scale = app.scales.get(&o.id).copied().unwrap_or(o.scale);
-            let inset = app.insets.get(&o.id).copied().unwrap_or_default();
+            let inset = app.insets.get(&o.id).copied().unwrap_or(o.overscan);
 
             let mut transforms = Row::new().spacing(6);
             for t in TRANSFORMS {
@@ -485,20 +706,25 @@ fn display_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
             for edge in Edge::ALL {
                 let edge = *edge;
                 let id = o.id;
+                let num = Num::Inset(id, edge);
+                let draft = app.nums.get(&num);
+                let current = inset.get(edge) as f64;
+                let shown = draft.cloned().unwrap_or_else(|| INSET_SPAN.format(current));
+                let invalid = draft.is_some_and(|d| INSET_SPAN.parse(d).is_none());
+                let typed = num.clone();
                 edges = edges.push(list_row(
                     edge.label(),
-                    row![
-                        slider(0.0..=200.0, inset.get(edge) as f64, move |v| {
-                            Message::InsetMoved(id, edge, v)
-                        })
-                        .step(1.0)
-                        .on_release(Message::InsetReleased(id))
-                        .style(theme::eclipse_slider)
-                        .width(Length::Fixed(180.0)),
-                        mono(&inset.get(edge).to_string()),
-                    ]
-                    .spacing(10)
-                    .align_y(iced::Alignment::Center),
+                    NumericSlider::new(
+                        0.0..=INSET_MAX,
+                        current,
+                        shown,
+                        move |v| Message::InsetMoved(id, edge, v),
+                        move |t| Message::NumberTyped(typed.clone(), t),
+                    )
+                    .step(1.0)
+                    .on_release(Message::InsetReleased(id))
+                    .on_commit(Message::NumberCommitted(num))
+                    .invalid(invalid),
                 ));
             }
 
@@ -532,17 +758,7 @@ fn display_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
                         }),
                     ),
                     list_row("transform", transforms),
-                    list_row(
-                        "scale",
-                        slider(0.5..=3.0, scale, {
-                            let id = o.id;
-                            move |v| Message::OutputScale(id, v)
-                        })
-                        .step(0.05)
-                        .on_release(Message::OutputScaleReleased(o.id))
-                        .style(theme::eclipse_slider)
-                        .width(Length::Fixed(180.0)),
-                    ),
+                    list_row("scale", scale_control(app, o.id, scale)),
                     hairline(),
                     micro_label("overscan"),
                     edges,
@@ -553,4 +769,49 @@ fn display_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
             .into()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SCALE: Span = Span {
+        min: SCALE_MIN,
+        max: SCALE_MAX,
+        integral: false,
+    };
+
+    #[test]
+    fn a_typed_number_is_clamped_to_the_sliders_range() {
+        assert_eq!(INSET_SPAN.parse("999"), Some(INSET_MAX));
+        assert_eq!(INSET_SPAN.parse("-4"), Some(0.0));
+        assert_eq!(SCALE.parse("9"), Some(SCALE_MAX));
+    }
+
+    #[test]
+    fn a_typed_number_that_does_not_parse_is_refused() {
+        for bad in ["", "  ", "2x", "nan", "inf", "--1"] {
+            assert_eq!(INSET_SPAN.parse(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn surrounding_space_is_not_a_refusal() {
+        assert_eq!(INSET_SPAN.parse(" 42 "), Some(42.0));
+    }
+
+    #[test]
+    fn a_reading_round_trips_through_the_entry() {
+        for v in [0.0, 1.0, 37.0, INSET_MAX] {
+            assert_eq!(INSET_SPAN.parse(&INSET_SPAN.format(v)), Some(v));
+        }
+        for v in [SCALE_MIN, 1.0, 1.25, SCALE_MAX] {
+            assert_eq!(SCALE.parse(&SCALE.format(v)), Some(v));
+        }
+    }
+
+    #[test]
+    fn the_overscan_bound_is_the_uis_own() {
+        assert_eq!(INSET_MAX, 120.0);
+    }
 }

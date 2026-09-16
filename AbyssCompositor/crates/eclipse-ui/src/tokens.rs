@@ -168,6 +168,15 @@ pub mod space {
     pub const NAV_GLYPH: f32 = 15.0;
     /// One device-independent pixel: a border, a rule, an edge highlight.
     pub const HAIRLINE: f32 = 1.0;
+    /// The drag track of a numeric control in a settings row.
+    pub const SLIDER_W: f32 = 180.0;
+    /// The typed-entry box beside that track: wide enough for a signed
+    /// four-digit reading, narrow enough that it reads as a readout.
+    pub const NUMBER_W: f32 = 64.0;
+    /// A free-text field in a settings row.
+    pub const FIELD_W: f32 = 220.0;
+    /// Between the two halves of one control (track and entry).
+    pub const CONTROL_GAP: f32 = 10.0;
 }
 
 pub mod size {

@@ -804,3 +804,105 @@ pub fn choice_row<'a, Message: 'a>(
         body.into()
     }
 }
+
+/// A draggable number that can also be typed: a slider and the entry box that
+/// shows its reading.
+///
+/// A widget and not two styled children because the pairing is the rule — the
+/// readout beside a slider is the only place the exact value is legible, and
+/// a readout you cannot type into is a control with a resolution limit set by
+/// how wide the track happens to be. Every draggable number in the desktop is
+/// built from this, so the commit contract (Enter applies, a draft that does
+/// not parse is refused and reverts) is written once.
+///
+/// The caller owns formatting and clamping: it passes the text to show and
+/// receives the text typed. This widget decides nothing about the value.
+pub struct NumericSlider<'a, Message> {
+    range: std::ops::RangeInclusive<f64>,
+    value: f64,
+    step: f64,
+    shown: String,
+    invalid: bool,
+    on_slide: Box<dyn Fn(f64) -> Message + 'a>,
+    on_release: Option<Message>,
+    on_type: Box<dyn Fn(String) -> Message + 'a>,
+    on_commit: Option<Message>,
+}
+
+impl<'a, Message: Clone + 'a> NumericSlider<'a, Message> {
+    pub fn new(
+        range: std::ops::RangeInclusive<f64>,
+        value: f64,
+        shown: impl Into<String>,
+        on_slide: impl Fn(f64) -> Message + 'a,
+        on_type: impl Fn(String) -> Message + 'a,
+    ) -> Self {
+        Self {
+            range,
+            value,
+            step: 1.0,
+            shown: shown.into(),
+            invalid: false,
+            on_slide: Box::new(on_slide),
+            on_release: None,
+            on_type: Box::new(on_type),
+            on_commit: None,
+        }
+    }
+
+    pub fn step(mut self, step: f64) -> Self {
+        self.step = step;
+        self
+    }
+
+    /// The write happens here, not on every pixel of the drag.
+    pub fn on_release(mut self, message: Message) -> Self {
+        self.on_release = Some(message);
+        self
+    }
+
+    pub fn on_commit(mut self, message: Message) -> Self {
+        self.on_commit = Some(message);
+        self
+    }
+
+    /// A draft that does not parse. It keeps no commit path at all, rather
+    /// than a commit that fails after the fact.
+    pub fn invalid(mut self, invalid: bool) -> Self {
+        self.invalid = invalid;
+        self
+    }
+}
+
+impl<'a, Message: Clone + 'a> From<NumericSlider<'a, Message>> for Element<'a, Message, Theme> {
+    fn from(n: NumericSlider<'a, Message>) -> Self {
+        let mut track = iced::widget::slider(n.range, n.value, n.on_slide)
+            .step(n.step)
+            .style(theme::eclipse_slider)
+            .width(Length::Fixed(space::SLIDER_W));
+        if let Some(release) = n.on_release {
+            track = track.on_release(release);
+        }
+
+        let mut entry = iced::widget::text_input("", &n.shown)
+            .on_input(n.on_type)
+            .font(font::DATA)
+            .size(size::MONO)
+            .padding(space::ROW_Y / 2.0)
+            .align_x(Alignment::End)
+            .width(Length::Fixed(space::NUMBER_W))
+            .style(if n.invalid {
+                theme::eclipse_input_invalid
+            } else {
+                theme::eclipse_input
+            });
+        if let (false, Some(commit)) = (n.invalid, n.on_commit) {
+            entry = entry.on_submit(commit);
+        }
+
+        row![track, entry]
+            .spacing(space::CONTROL_GAP)
+            .align_y(Alignment::Center)
+            .into()
+    }
+}
