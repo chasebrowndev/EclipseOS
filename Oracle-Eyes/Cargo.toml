@@ -20,6 +20,18 @@ repository = "https://github.com/chasebrowndev/eclipseos"
 eclipse-ipc = { path = "../AbyssCompositor/crates/eclipse-ipc" }
 serde_json = "1"
 libc = "0.2"
+# Config is KDL for the same reason the compositor's is: one syntax across
+# EclipseOS, and the owner edits both.
+kdl = "6"
+# Redaction patterns (spec §6). Linear-time by construction — the text being
+# matched is OCR of whatever an adversary put on screen.
+regex = { version = "1", default-features = false, features = [
+  "std",
+  "perf",
+  "unicode-case",
+] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 
 [profile.release]
 debug = 1
