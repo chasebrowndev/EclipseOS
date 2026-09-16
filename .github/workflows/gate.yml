@@ -10,13 +10,12 @@ concurrency:
   group: gate-${{ github.ref }}
   cancel-in-progress: true
 
-# The workflow files must sit at the repository root for GitHub to read
-# them; the cargo workspace lives one directory down. Every `run:` step is
-# therefore rooted at AbyssCompositor/, and each `uses:` action that touches
-# the filesystem is pointed there explicitly (actions ignore `defaults`).
-defaults:
-  run:
-    working-directory: AbyssCompositor
+# The repository root is the root: specs, docs and decisions live there, and
+# the three cargo workspaces (AbyssCompositor, EclipseDE, Oracle-Eyes) each sit
+# one directory down (ADR 0042). There is no workflow-level
+# `working-directory` — every job that needs one sets it itself, and each
+# `uses:` action that touches the filesystem is pointed at its workspace
+# explicitly (actions ignore `defaults`).
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,6 +27,9 @@ jobs:
     name: build / fmt / clippy / test
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: AbyssCompositor
     steps:
       - uses: actions/checkout@v4
 
@@ -69,6 +71,9 @@ jobs:
     # push to every branch bought nothing that the PR run does not.
     if: github.event_name == 'pull_request'
     timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: AbyssCompositor
     steps:
       - uses: actions/checkout@v4
 
@@ -192,6 +197,57 @@ jobs:
           command: check advisories bans licenses sources
           manifest-path: Oracle-Eyes/Cargo.toml
 
+  eclipse-de:
+    name: eclipse-de build / fmt / clippy / test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The Eclipse userland (COMP-17, ADR 0042) is its own cargo workspace: it
+    # pulls iced/wgpu/cosmic-text, which have nothing to do with the
+    # compositor's enforcement path, so it gates separately.
+    defaults:
+      run:
+        working-directory: EclipseDE
+    steps:
+      - uses: actions/checkout@v4
+
+      # iced's build deps: wayland + xkb for the shell surface, EGL/GLES for
+      # wgpu's GL backend, dbus for zbus under eclipse-services.
+      - name: system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev libxkbcommon-dev libegl-dev libgles2-mesa-dev \
+            libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: EclipseDE
+
+      - run: cargo fmt --all --check
+
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - run: cargo build --workspace --all-targets
+
+      - run: cargo test --workspace
+
+  eclipse-de-supply-chain:
+    name: eclipse-de cargo-deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # The DE carries its own deny.toml: the ADR 0039 iced exceptions belong
+      # to this graph, not the compositor's.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+          manifest-path: EclipseDE/Cargo.toml
+
   supply-chain:
     name: cargo-deny
     runs-on: ubuntu-24.04
@@ -239,6 +295,9 @@ jobs:
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
     timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: EclipseDE
     steps:
       - uses: actions/checkout@v4
         with:
@@ -257,12 +316,12 @@ jobs:
           # introduces the ratchet sets the first notch, and every later PR is
           # measured against it. That is not the same as a base whose list is
           # present but empty, where growth is a real violation.
-          if ! git cat-file -e "$base:AbyssCompositor/ci/gui-coverage-exceptions.txt" 2>/dev/null; then
+          if ! git cat-file -e "$base:EclipseDE/ci/gui-coverage-exceptions.txt" 2>/dev/null; then
             echo "no exception list at the merge base; this PR sets the first notch:"
             filter < ci/gui-coverage-exceptions.txt | sed 's/^/  + /'
             exit 0
           fi
-          git show "$base:AbyssCompositor/ci/gui-coverage-exceptions.txt" | filter > /tmp/base.txt
+          git show "$base:EclipseDE/ci/gui-coverage-exceptions.txt" | filter > /tmp/base.txt
           filter < ci/gui-coverage-exceptions.txt > /tmp/head.txt
           echo "base: $(wc -l < /tmp/base.txt)  head: $(wc -l < /tmp/head.txt)"
           if [ "$(wc -l < /tmp/head.txt)" -gt "$(wc -l < /tmp/base.txt)" ]; then
@@ -288,10 +347,6 @@ jobs:
       # This is what makes the spec->code trail auditable when work is
       # delegated to an agent rather than typed by hand.
       - name: check PR body
-        # No checkout in this job, so the workflow-level
-        # `working-directory: AbyssCompositor` would not exist yet and bash
-        # fails to start at all. Run from the workspace root.
-        working-directory: .
         env:
           BODY: ${{ github.event.pull_request.body }}
         run: |
