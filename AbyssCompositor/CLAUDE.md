@@ -83,6 +83,20 @@ Non-visual code in those same crates (IPC plumbing, model parsing, message
 flow) is still the main thread's. The line is whether it changes what the user
 sees.
 
+## Backend crate work goes to the backend agent — same rule, mirrored
+
+Non-TCB work under `crates/abyss/src/{backend,outputs,input,shell,protocols,
+ipc,config,xwayland}/`, `crates/eclipse-ipc/`, `crates/eclipse-ctl/`, and
+`crates/eclipse-services/` goes to the `eclipse-backend` agent, not the main
+thread. Same standard as frontend: no change too small to exempt. TCB paths
+(`policy/`, `trusted_ui/`, `audit/`, `render/capture.rs`) are never delegated
+to it — those stay with the main thread and owner review (F-07 §4).
+
+When a pane needs a new control-socket method, `eclipse-frontend` and
+`eclipse-backend` may negotiate the IPC contract directly via `SendMessage`
+when both are live in the same session, rather than routing through the main
+thread. See each agent's own `CLAUDE.md`-adjacent file for details.
+
 ## Working style — parallelize with subagents
 Spawn subagents freely and keep the main thread thin. This tree is large, the
 specs are long, and the expensive failure mode is a main context stuffed with
