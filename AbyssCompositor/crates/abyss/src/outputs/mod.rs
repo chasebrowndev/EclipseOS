@@ -162,10 +162,15 @@ impl Outputs {
         self.get(self.focused).or_else(|| self.entries.first())
     }
 
-    pub fn set_focused(&mut self, id: u64) {
-        if self.get(id).is_some() {
+    /// Focus an output by id. Returns true when the focused id actually
+    /// changed, so callers on the pointer-motion hot path can skip building an
+    /// event payload on the overwhelmingly common no-op.
+    pub fn set_focused(&mut self, id: u64) -> bool {
+        if self.get(id).is_some() && self.focused != id {
             self.focused = id;
+            return true;
         }
+        false
     }
 
     /// The first non-virtual output, else the first output — where orphaned

@@ -354,14 +354,23 @@ impl AbyssState {
         }
         // Pointer motion moves output focus, so a new window opens where the
         // human is looking (COMP-03 §3).
-        if let Some(id) = self
+        let under_output = self
             .space
             .output_under(pos)
             .next()
             .and_then(|o| self.outputs.by_output(o))
-            .map(|e| e.id)
-        {
-            self.outputs.set_focused(id);
+            .map(|e| e.id);
+        if let Some(id) = under_output {
+            if self.outputs.set_focused(id) {
+                // Only on a real transition: the unchanged path must not
+                // allocate, and this is pointer motion.
+                let name = self
+                    .outputs
+                    .get(id)
+                    .map(|e| e.connector.clone())
+                    .unwrap_or_default();
+                crate::ipc::emit(self, "output", serde_json::json!({ "focused": id, "name": name }));
+            }
         }
         let serial = SERIAL_COUNTER.next_serial();
         let under = self.surface_under(pos);

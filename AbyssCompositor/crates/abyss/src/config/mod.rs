@@ -208,6 +208,26 @@ impl Default for Render {
     }
 }
 
+/// `bar { ... }` (COMP-13 §1.1). The compositor does not draw the taskbar; it
+/// owns the setting so one config file describes the whole desktop and the
+/// bar reads it back over the control socket.
+#[derive(Debug, Clone)]
+pub struct Bar {
+    /// Shrink the taskbar to a thin strip on outputs the pointer is not on.
+    pub fold_when_inactive: bool,
+    /// Height in logical px of that folded strip.
+    pub fold_height: u32,
+}
+
+impl Default for Bar {
+    fn default() -> Self {
+        Self {
+            fold_when_inactive: false,
+            fold_height: 4,
+        }
+    }
+}
+
 /// `decoration { ... }` (COMP-13 §1.1, COMP-02 §9). Every effect here is off by
 /// default: the defaults below are the "no effect" values, so a config without a
 /// `decoration` block renders exactly as it did before milestone 9b and keeps
@@ -630,6 +650,7 @@ pub struct Source {
 pub struct Config {
     pub general: General,
     pub render: Render,
+    pub bar: Bar,
     pub decoration: Decoration,
     pub animations: Animations,
     pub clipboard: Clipboard,
@@ -665,6 +686,7 @@ impl Default for Config {
         Self {
             general: General::default(),
             render: Render::default(),
+            bar: Bar::default(),
             decoration: Decoration::default(),
             animations: Animations::default(),
             clipboard: Clipboard::default(),
@@ -683,6 +705,33 @@ impl Default for Config {
             cur: None,
         }
     }
+}
+
+/// Merge config binds over the built-in defaults (COMP-13 §1.1).
+///
+/// Config binds *extend* the defaults; they never replace the table. A config
+/// bind naming the same `(mods, key)` as a default replaces that default in
+/// place, and a later config file replaces an earlier one the same way — the
+/// result holds exactly one entry per chord, so `action_for`'s first-match
+/// lookup cannot be shadowed by a default sitting ahead of a user bind.
+///
+/// `Super+Escape` (COMP-04 §6) and `Super+space` (COMP-13 §1.1) can never be
+/// removed here: `parse_bind` refuses to produce them, so no config entry can
+/// match those defaults and the defaults always survive the merge.
+fn merge_binds(defaults: Vec<Bind>, from_file: Vec<Bind>) -> Vec<Bind> {
+    let mut out: Vec<Bind> = Vec::with_capacity(defaults.len() + from_file.len());
+    for b in from_file {
+        match out.iter_mut().find(|o| o.mods == b.mods && o.key == b.key) {
+            Some(slot) => *slot = b,
+            None => out.push(b),
+        }
+    }
+    for d in defaults {
+        if !out.iter().any(|o| o.mods == d.mods && o.key == d.key) {
+            out.push(d);
+        }
+    }
+    out
 }
 
 fn m(logo: bool, shift: bool, ctrl: bool, alt: bool) -> Mods {
@@ -1048,9 +1097,7 @@ impl Config {
             cfg.apply(&doc, &mut binds_from_file);
             cfg.cur = None;
         }
-        if !binds_from_file.is_empty() {
-            cfg.binds = binds_from_file;
-        }
+        cfg.binds = merge_binds(default_binds(), binds_from_file);
         if !any {
             tracing::info!("no config found, using built-in defaults");
         } else {
@@ -1203,6 +1250,7 @@ impl Config {
                 },
                 "workspace" => self.apply_workspace(node),
                 "render" => self.apply_render(node),
+                "bar" => self.apply_bar(node),
                 "clipboard" => self.apply_clipboard(node),
                 "capture" => self.apply_capture(node),
                 "xwayland" => self.apply_xwayland(node),
@@ -1268,6 +1316,22 @@ impl Config {
                     self.render.direct_scanout = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
                 }
                 _ => self.unknown_key(n, "render", "render node"),
+            }
+        }
+    }
+
+    fn apply_bar(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "fold-when-inactive" => {
+                    self.bar.fold_when_inactive = arg(n).and_then(KdlValue::as_bool).unwrap_or(false);
+                }
+                "fold-height" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) => self.bar.fold_height = v.clamp(2, 16) as u32,
+                    None => self.reject(n, "fold-height expects an integer"),
+                },
+                _ => self.unknown_key(n, "bar", "bar node"),
             }
         }
     }
@@ -2224,6 +2288,77 @@ mod tests {
         assert!(!cfg.errors.is_empty());
         assert_eq!(cfg.errors[0].file, f);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A config that declares binds extends the defaults; it does not replace
+    /// the table. The live regression this covers: a 3-bind user config left a
+    /// 3-bind table, dropping the Super+Escape override chord.
+    #[test]
+    fn config_binds_extend_defaults() {
+        let dir = std::env::temp_dir().join(format!("abyss-cfg-merge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("abyss.kdl");
+        std::fs::write(&f, "bind \"SUPER\" \"F1\" { quit; }\n").unwrap();
+        let cfg = Config::load(Some(&f));
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.binds.len(), default_binds().len() + 1);
+        assert!(cfg.binds.iter().any(|b| b.key == Keysym::F1));
+
+        // The two reserved chords survive any config (COMP-04 §6, COMP-13 §1.1).
+        let sup = m(true, false, false, false);
+        assert!(cfg
+            .binds
+            .iter()
+            .any(|b| b.mods == sup && b.key == Keysym::Escape && matches!(b.action, Action::AgentOverride)));
+        assert!(cfg
+            .binds
+            .iter()
+            .any(|b| b.mods == sup && b.key == Keysym::space && matches!(b.action, Action::AgentAttention)));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A config bind on a chord the defaults already use wins the lookup.
+    #[test]
+    fn config_bind_overrides_default_chord() {
+        let dir = std::env::temp_dir().join(format!("abyss-cfg-override-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("abyss.kdl");
+        std::fs::write(&f, "bind \"SUPER\" \"q\" { spawn \"alacritty\"; }\n").unwrap();
+        let cfg = Config::load(Some(&f));
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.binds.len(), default_binds().len(), "override, not addition");
+        let mods = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        match cfg.action_for(&mods, Keysym::q) {
+            Some(Action::Spawn(cmd)) => assert_eq!(cmd, "alacritty"),
+            other => panic!("expected the config spawn, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A later source replaces an earlier one for the same chord.
+    #[test]
+    fn later_config_bind_wins() {
+        let binds = merge_binds(
+            default_binds(),
+            vec![
+                Bind {
+                    mods: m(true, false, false, false),
+                    key: Keysym::F1,
+                    action: Action::Spawn("first".into()),
+                },
+                Bind {
+                    mods: m(true, false, false, false),
+                    key: Keysym::F1,
+                    action: Action::Spawn("second".into()),
+                },
+            ],
+        );
+        assert_eq!(binds.len(), default_binds().len() + 1);
+        let f1 = binds.iter().find(|b| b.key == Keysym::F1).unwrap();
+        assert!(matches!(&f1.action, Action::Spawn(c) if c == "second"));
     }
 
     #[test]

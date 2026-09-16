@@ -193,6 +193,23 @@ pub const TABLE: &[Key] = &[
         "Let the DRM backend hand buffers straight to a KMS plane. Composition \
        is forced anyway for any frame holding a sensitive surface.",
     ),
+    // bar
+    k(
+        "bar.fold-when-inactive",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Shrink the taskbar to a thin strip on outputs the pointer is not on.",
+    ),
+    k(
+        "bar.fold-height",
+        int(2, 16),
+        Int(4),
+        Abyss,
+        Live,
+        "Height in logical pixels of the folded taskbar strip.",
+    ),
     // decoration
     k(
         "decoration.rounding",
@@ -518,6 +535,8 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "general.col-active-border" => V::Color(c.general.col_active),
         "general.col-inactive-border" => V::Color(c.general.col_inactive),
         "render.direct-scanout" => V::Bool(c.render.direct_scanout),
+        "bar.fold-when-inactive" => V::Bool(c.bar.fold_when_inactive),
+        "bar.fold-height" => V::Int(c.bar.fold_height as i64),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.active-opacity" => V::Float(c.decoration.active_opacity as f64),
         "decoration.inactive-opacity" => V::Float(c.decoration.inactive_opacity as f64),
