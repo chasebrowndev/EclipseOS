@@ -67,6 +67,13 @@ pub const TABLE: &[Entry] = &[
     e("move_workspace_to_output", Kind::Command, true),
     e("set_output", Kind::Command, true),
     e("calibrate_output", Kind::Command, true),
+    // Annotation overlays (COMP-18 §3). Command and not Privileged: the pass
+    // is untrusted by construction, carries no phrase, and a caller can affect
+    // nothing but the glyphs inside a panel the compositor places.
+    e("annotation_create", Kind::Command, true),
+    e("annotation_update", Kind::Command, true),
+    e("annotation_destroy", Kind::Command, true),
+    e("annotation_clear", Kind::Command, true),
     // Config read/write (COMP-13 §1.4). `set_config_value` is Command and not
     // Privileged on purpose: it edits the same keys a human edits in a text
     // editor, and the file it may touch is decided by `CONFIG_FILES`, not by
@@ -247,6 +254,33 @@ mod tests {
                 matches!(check(&other, 1000, &cfg, entry.method), Decision::Deny(_)),
                 "{} allowed for a foreign uid",
                 entry.method
+            );
+        }
+    }
+
+    /// COMP-18 §3: the four annotation methods exist, are Commands, and are
+    /// closed to anyone but the owner. Anything adjacent that is not in the
+    /// table does not exist -- the pass has no other door.
+    #[test]
+    fn annotation_methods_are_owner_only_commands() {
+        let cfg = Config::default();
+        let other = Peer { uid: 1001, ..owner() };
+        for method in [
+            "annotation_create",
+            "annotation_update",
+            "annotation_destroy",
+            "annotation_clear",
+        ] {
+            let entry = TABLE.iter().find(|e| e.method == method).expect(method);
+            assert_eq!(entry.kind, Kind::Command, "{method}");
+            assert!(entry.implemented, "{method}");
+            assert_eq!(check(&owner(), 1000, &cfg, method), Decision::Allow);
+            assert!(matches!(check(&other, 1000, &cfg, method), Decision::Deny(_)));
+        }
+        for absent in ["annotation_list", "annotation_read", "annotation_get"] {
+            assert!(
+                matches!(check(&owner(), 1000, &cfg, absent), Decision::Deny(_)),
+                "{absent} must not exist"
             );
         }
     }

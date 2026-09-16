@@ -175,6 +175,8 @@ pub fn reload_now(state: &mut AbyssState) {
         return;
     }
     crate::config::apply_loaded(state, next);
+    // The reload took. Clients refetch rather than diff a payload.
+    crate::ipc::emit(state, "config", serde_json::json!({}));
 }
 
 /// True when every source on disk still holds exactly the bytes this process

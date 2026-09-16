@@ -49,6 +49,14 @@ defaults.
 - **Chip condensation is a ladder, not a mode.** As chips multiply they shed
   detail in stages: full detail → process name only → icon only → (extreme,
   last resort) no icon. The bar never spills past its bounds.
+- **A Launcher settings pane.** The launcher
+  (`crates/eclipse-bar/src/launcher/main.rs`, spawned by `Super+R` —
+  `crates/abyss/src/config/mod.rs`, `default_binds`) has no config keys at all
+  today, so it has no tab in `eclipse-settings` either. It wants a `launcher.*`
+  section in the schema table and its own pane alongside Taskbar once there is
+  something to put in it: result count, whether it searches paths as well as
+  desktop entries, where it anchors. Deferred deliberately — the Taskbar pane
+  shipped first because `bar.*` had real keys to expose.
 
 - **Wifi picker — blocked on an architecture decision.** The wifi applet is
   clickable and opens the Network drawer, but the drawer cannot yet scan, choose

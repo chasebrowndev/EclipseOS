@@ -226,6 +226,7 @@ mod tests {
             app_id: app_id.to_owned(),
             title: "t".into(),
             workspace: Some(1),
+            output: Some(0),
             focused: false,
             minimized: false,
             pid: None,

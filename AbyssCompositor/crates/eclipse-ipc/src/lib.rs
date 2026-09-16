@@ -44,6 +44,11 @@ pub enum EventKind {
     Output,
     AgentActivity,
     ConfigError,
+    /// A reload of the config succeeded; the payload is empty and clients
+    /// refetch what they care about (COMP-13 §1.2).
+    Config,
+    /// A chord the compositor forwards rather than acting on (COMP-18 §4).
+    Keybind,
 }
 
 impl EventKind {
@@ -54,6 +59,8 @@ impl EventKind {
         EventKind::Output,
         EventKind::AgentActivity,
         EventKind::ConfigError,
+        EventKind::Config,
+        EventKind::Keybind,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -64,6 +71,8 @@ impl EventKind {
             EventKind::Output => "output",
             EventKind::AgentActivity => "agent-activity",
             EventKind::ConfigError => "config-error",
+            EventKind::Config => "config",
+            EventKind::Keybind => "keybind",
         }
     }
 

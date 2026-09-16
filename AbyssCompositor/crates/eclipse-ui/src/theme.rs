@@ -347,6 +347,19 @@ pub fn eclipse_input(_t: &Theme, status: text_input::Status) -> text_input::Styl
     }
 }
 
+/// The same field while its text does not parse: a danger border and no
+/// commit path. The tint is deliberately not the accent — a rejected draft is
+/// not state, it is a refusal.
+pub fn eclipse_input_invalid(t: &Theme, status: text_input::Status) -> text_input::Style {
+    text_input::Style {
+        border: Border {
+            color: color::DANGER,
+            ..eclipse_input(t, status).border
+        },
+        ..eclipse_input(t, status)
+    }
+}
+
 /// A text field that is not a box: the band around it (see
 /// [`crate::widget::prompt_band`]) is already the visible container, and a
 /// second border inside it would be a card in a card. The selection tint is

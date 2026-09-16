@@ -15,6 +15,9 @@ pub struct Output {
     /// `WxH@R`, or `None` when the output is off.
     pub mode: Option<String>,
     pub position: Option<(i64, i64)>,
+    /// The overscan the compositor is applying right now, in physical pixels.
+    /// Absent (an older compositor, or none set) reads as all zeros.
+    pub overscan: Inset,
 }
 
 impl Output {
@@ -39,6 +42,7 @@ impl Output {
             position: v
                 .get("position")
                 .and_then(|p| Some((p.get("x")?.as_i64()?, p.get("y")?.as_i64()?))),
+            overscan: v.get("overscan").map(Inset::parse).unwrap_or_default(),
         })
     }
 
@@ -79,7 +83,7 @@ pub struct Inset {
     pub left: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Edge {
     Top,
     Right,
@@ -101,6 +105,18 @@ impl Edge {
 }
 
 impl Inset {
+    /// `{"top": N, "right": N, "bottom": N, "left": N}`, defensively: a
+    /// missing or malformed edge is zero, not a dropped output.
+    pub fn parse(v: &Value) -> Self {
+        let edge = |k: &str| v.get(k).and_then(Value::as_i64).unwrap_or(0).max(0);
+        Inset {
+            top: edge("top"),
+            right: edge("right"),
+            bottom: edge("bottom"),
+            left: edge("left"),
+        }
+    }
+
     pub fn get(self, edge: Edge) -> i64 {
         match edge {
             Edge::Top => self.top,
@@ -143,6 +159,20 @@ mod tests {
         .unwrap();
         assert_eq!(o.mode_display(), "—");
         assert_eq!(o.position_display(), "—");
+        assert_eq!(o.overscan, Inset::default());
+    }
+
+    #[test]
+    fn overscan_comes_from_the_compositor() {
+        let o = Output::parse(&json!({
+            "id": 1, "name": "DP-1", "enabled": true, "scale": 1.0,
+            "overscan": { "top": 12, "right": 8, "bottom": 12, "left": -4 }
+        }))
+        .unwrap();
+        assert_eq!(o.overscan.top, 12);
+        assert_eq!(o.overscan.right, 8);
+        // A negative edge is not an inset; it reads as none.
+        assert_eq!(o.overscan.left, 0);
     }
 
     #[test]

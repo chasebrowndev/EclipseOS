@@ -1,0 +1,25 @@
+# The Oracle-Eyes annotation daemon. Install to
+# ~/.config/systemd/user/oracle-eyes.service.
+#
+# Started by abyss-session.target, which `abyss --session` starts once its
+# Wayland socket exists and WAYLAND_DISPLAY has been imported into the user
+# manager — so this unit can rely on the variable being set.
+#
+# It needs two grants to do anything, both revocable without touching this
+# unit: `capture { allow "oracle-eyes" }` in policy.kdl, and the annotation
+# chords bound in abyss.kdl. With neither, it starts, connects and idles.
+[Unit]
+Description=Oracle-Eyes annotation daemon
+PartOf=graphical-session.target
+After=abyss-session.target
+Requisite=abyss-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/oracle-eyes
+Restart=on-failure
+RestartSec=2
+Slice=session.slice
+
+[Install]
+WantedBy=abyss-session.target

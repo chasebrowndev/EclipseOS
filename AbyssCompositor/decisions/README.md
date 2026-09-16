@@ -41,6 +41,12 @@ writing a new ADR that says so.
 | 0033 | [An explicit render-device that does not resolve refuses to start](0033-render-device-override-refuses-on-miss.md) | accepted |
 | 0034 | [Terminal emulator: keep the foot fork, extract the publisher as `cataclysm-pub`](0034-terminal-foot-fork-publisher-crate.md) | accepted |
 | 0035 | [Day-one CI: cloud-only gate, `cargo-deny` interim, mechanized review rules](0035-ci-harness-day-one.md) | accepted |
+| 0036 | [Config writes byte-splice the file; the KDL document model does not](0036-config-writes-byte-splice.md) | accepted |
+| 0037 | [The security surface moves to its own file, `policy.kdl`](0037-abyss-kdl-policy-kdl-split.md) | accepted |
+| 0038 | [The DE userland is native Rust, not Quickshell](0038-de-userland-is-native-rust.md) | accepted |
+| 0039 | [Supply-chain exceptions for the iced toolkit](0039-iced-supply-chain-exceptions.md) | accepted |
+| 0040 | [Annotation overlays are a compositor pass of their own, not trusted UI](0040-annotation-overlay-pass.md) | accepted |
+| 0041 | [Oracle-Eyes runs out of process, on two revocable capabilities](0041-oracle-eyes-out-of-process.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

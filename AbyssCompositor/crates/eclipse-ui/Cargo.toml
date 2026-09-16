@@ -8,4 +8,4 @@ repository.workspace = true
 description = "The Eclipse design system: tokens, type and widgets for the DE userland."
 
 [dependencies]
-iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "svg"] }

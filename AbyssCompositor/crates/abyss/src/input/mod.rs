@@ -82,6 +82,20 @@ pub enum Action {
     /// Not bindable from config — the input filter synthesises it while a
     /// calibration session owns the seat.
     Calibrate(crate::outputs::calibrate::Step),
+    /// One keypress consumed by the region selector (COMP-18 §1.3). Not
+    /// bindable from config — the input filter synthesises it while a
+    /// selection owns the seat.
+    RegionSelect(crate::render::select::SelectKey),
+    /// Chords an addon owns (COMP-18 §4). The compositor does not act on
+    /// these itself; it forwards the name on the `keybind` event stream, so
+    /// nothing happens when no addon is listening.
+    ///
+    /// `AnnotationSelect` is the exception: a rectangle is authority over what
+    /// gets read, so the compositor runs the selection itself (COMP-18 §1.3)
+    /// and forwards only the result.
+    AnnotationSelect,
+    AnnotationDismiss,
+    AnnotationExpand,
 }
 
 /// A configured key binding.
@@ -91,6 +105,11 @@ pub struct Bind {
     pub key: Keysym,
     pub action: Action,
 }
+
+/// `linux/input-event-codes.h`. The selector drags with left and cancels with
+/// right; every other button is swallowed.
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
 
 /// `XF86_Switch_VT_1` .. `XF86_Switch_VT_12`.
 const VT_SWITCH_FIRST: u32 = 0x1008_FE01;
@@ -140,6 +159,15 @@ impl AbyssState {
                 if let Some(step) = crate::outputs::calibrate::step_for(state, mods, sym) {
                     return FilterResult::Intercept(Action::Calibrate(step));
                 }
+                // So does the region selector: a modal grab that leaked a
+                // chord through would let the human act on the session while
+                // the screen says it is picking a rectangle.
+                if state.region_select.active() {
+                    let chord = matches!(state.config.action_for(mods, sym), Some(Action::AnnotationSelect));
+                    return FilterResult::Intercept(Action::RegionSelect(crate::render::select::key(
+                        sym, chord,
+                    )));
+                }
                 match state.config.action_for(mods, sym) {
                     Some(a) => FilterResult::Intercept(a.clone()),
                     None => FilterResult::Forward,
@@ -171,6 +199,10 @@ impl AbyssState {
             Action::Calibrate(step) => {
                 crate::outputs::calibrate::apply(self, step);
             }
+            Action::RegionSelect(key) => self.region_select_key(key),
+            Action::AnnotationSelect => self.region_select_start(),
+            Action::AnnotationDismiss => self.emit_keybind("annotation-dismiss"),
+            Action::AnnotationExpand => self.emit_keybind("annotation-expand"),
         }
     }
 
@@ -187,6 +219,49 @@ impl AbyssState {
     /// (COMP-04 §5), so injected keys can never reach here.
     fn agent_attention(&mut self) {
         tracing::warn!("agent attention chord pressed; no pending decision queue exists yet");
+    }
+
+    /// COMP-18 §4: forward a chord to whoever subscribed, and do nothing
+    /// else. The compositor learns no state from an addon being there, which
+    /// is what keeps Oracle-Eyes outside the TCB.
+    fn emit_keybind(&mut self, action: &str) {
+        crate::ipc::emit(self, "keybind", serde_json::json!({ "action": action }));
+    }
+
+    /// COMP-18 §1.3: enter modal region selection. The chord toggles, so the
+    /// same key that started it gets the human back out.
+    fn region_select_start(&mut self) {
+        if self.region_select.active() {
+            self.region_select.cancel();
+        } else {
+            self.region_select.start(self.pointer_location.to_i32_round());
+        }
+        crate::backend::damage_all(self);
+    }
+
+    fn region_select_key(&mut self, key: crate::render::select::SelectKey) {
+        use crate::render::select::SelectKey;
+        match key {
+            // Cancelling emits nothing at all: an addon must not be able to
+            // tell a refused selection from one that never started.
+            SelectKey::Cancel => {
+                self.region_select.cancel();
+                crate::backend::damage_all(self);
+            }
+            SelectKey::Ignored => {}
+        }
+    }
+
+    /// A pointer button while the selector owns the seat. No client sees it.
+    fn region_select_button(&mut self, pressed: bool) {
+        let pos = self.pointer_location.to_i32_round();
+        if pressed {
+            self.region_select.press(pos);
+        } else if let Some(rect) = self.region_select.release(pos) {
+            let payload = crate::render::select::payload(rect);
+            crate::ipc::emit(self, "keybind", payload);
+        }
+        crate::backend::damage_all(self);
     }
 
     fn switch_vt(&mut self, vt: i32) {
@@ -228,6 +303,15 @@ impl AbyssState {
     /// Shared tail for both relative and absolute motion.
     pub(crate) fn pointer_moved(&mut self, pos: Point<f64, Logical>, time: u32) {
         let pos = self.clamp_to_outputs(pos);
+        // The cursor is compositor-drawn, so it keeps moving during a
+        // selection; nothing under it hears about that until the drag commits.
+        if self.region_select.active() {
+            self.pointer_location = pos;
+            if self.region_select.motion(pos.to_i32_round()) {
+                crate::backend::damage_all(self);
+            }
+            return;
+        }
         let current = self.pointer_location;
         let pointer = self.seat.get_pointer().unwrap();
         let focus = pointer.current_focus();
@@ -270,14 +354,23 @@ impl AbyssState {
         }
         // Pointer motion moves output focus, so a new window opens where the
         // human is looking (COMP-03 §3).
-        if let Some(id) = self
+        let under_output = self
             .space
             .output_under(pos)
             .next()
             .and_then(|o| self.outputs.by_output(o))
-            .map(|e| e.id)
-        {
-            self.outputs.set_focused(id);
+            .map(|e| e.id);
+        if let Some(id) = under_output {
+            if self.outputs.set_focused(id) {
+                // Only on a real transition: the unchanged path must not
+                // allocate, and this is pointer motion.
+                let name = self
+                    .outputs
+                    .get(id)
+                    .map(|e| e.connector.clone())
+                    .unwrap_or_default();
+                crate::ipc::emit(self, "output", serde_json::json!({ "focused": id, "name": name }));
+            }
         }
         let serial = SERIAL_COUNTER.next_serial();
         let under = self.surface_under(pos);
@@ -419,6 +512,18 @@ impl AbyssState {
 
     fn on_pointer_button<B: InputBackend>(&mut self, event: B::PointerButtonEvent) {
         let pressed = event.state() == ButtonState::Pressed;
+        // The selector holds the pointer as well as the keyboard: a press that
+        // reached a client would focus or activate something behind the dim.
+        if self.region_select.active() {
+            match event.button_code() {
+                BTN_LEFT => self.region_select_button(pressed),
+                // Right-click cancels, the same as Escape: the pointer hand is
+                // already on the mouse, so make it reachable from there too.
+                BTN_RIGHT if pressed => self.region_select_key(crate::render::select::SelectKey::Cancel),
+                _ => {}
+            }
+            return;
+        }
         let pointer = self.seat.get_pointer().unwrap();
         pointer.button(
             self,

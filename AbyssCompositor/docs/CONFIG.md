@@ -38,6 +38,13 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | --- | --- | --- | --- | --- |
 | `render.direct-scanout` | bool | `#true` | live | Let the DRM backend hand buffers straight to a KMS plane. Composition is forced anyway for any frame holding a sensitive surface. |
 
+### `bar`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `bar.fold-when-inactive` | bool | `#false` | live | Shrink the taskbar to a thin strip on outputs the pointer is not on. |
+| `bar.fold-height` | int 2..16 | `4` | live | Height in logical pixels of the folded taskbar strip. |
+
 ### `decoration`
 
 | setting | type | default | reload | what it does |

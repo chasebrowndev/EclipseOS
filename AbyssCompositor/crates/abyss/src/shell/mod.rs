@@ -607,7 +607,7 @@ pub fn focus_window(state: &mut AbyssState, window: &Window) {
     state.focus = Some(window.clone());
     state.urgent.retain(|w| w != window);
     if let Some(id) = output_of_window(state, window) {
-        state.outputs.set_focused(id);
+        let _ = state.outputs.set_focused(id);
     }
     let keyboard = state.seat.get_keyboard().unwrap();
     keyboard.set_focus(state, Some(surface), SERIAL_COUNTER.next_serial());

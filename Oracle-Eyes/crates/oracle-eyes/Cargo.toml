@@ -1,0 +1,18 @@
+[package]
+name = "oracle-eyes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Screen annotation daemon for EclipseOS (COMP-18, ADR 0041)."
+publish.workspace = true
+
+[dependencies]
+eclipse-ipc.workspace = true
+serde_json.workspace = true
+libc.workspace = true
+kdl.workspace = true
+regex.workspace = true
+wayland-client.workspace = true
+wayland-protocols.workspace = true

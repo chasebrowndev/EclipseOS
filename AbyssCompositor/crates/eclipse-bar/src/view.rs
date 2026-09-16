@@ -174,7 +174,54 @@ pub fn view(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message,
         }
         _ => {}
     }
+    if app.folded {
+        return folded_row(app);
+    }
     bar_row(app)
+}
+
+/// The bar shrunk to a rule along the top of an output nobody is looking at.
+///
+/// A folded bar is a *state*, not a smaller bar: at `fold_height` (2..=16 px)
+/// there is no room for a cell, and a clock cut off at its waist reads as a
+/// bug. So the strip keeps only what makes the bar the bar — the smoked sheet
+/// of [`theme::bar_ground`], its lit top edge, and a dormant hairline along
+/// its bottom — and drops every zone.
+///
+/// Every part of it is `Fill` or a hairline, so the two pixels at the bottom
+/// of the setting's range are squeezed out of the glass and never out of a
+/// fixed child: the strip cannot overflow its own surface at any height.
+fn folded_row(app: &crate::app::App) -> Element<'_, Message, Theme> {
+    let edges = column![
+        Space::new().width(Length::Fill).height(Length::Fill),
+        parts::quad(
+            Length::Fill,
+            Length::Fixed(bar::HAIRLINE),
+            // Deliberately *not* the accent: a folded bar is by construction
+            // the output the pointer is not on, and the ledger's one live
+            // yellow belongs to a live value, never to the dormant head.
+            color::HIGHLIGHT_SOFT,
+            bar::RADIUS_SHEET,
+        ),
+    ];
+
+    let sheet = parts::lit(
+        container(edges)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(theme::bar_ground),
+        bar::RADIUS_SHEET,
+        color::HIGHLIGHT_SOFT,
+    );
+
+    // The horizontal inset is the unfolded bar's, so the strip is the same
+    // sheet seen edge-on rather than a second, wider object. There is no
+    // vertical margin: the surface *is* the sheet when it is this thin.
+    container(sheet)
+        .width(Length::Fill)
+        .height(Length::Fixed(app.bar.fold_height as f32))
+        .padding([0.0, bar::MARGIN_X])
+        .into()
 }
 
 fn bar_row(app: &crate::app::App) -> Element<'_, Message, Theme> {
@@ -182,7 +229,7 @@ fn bar_row(app: &crate::app::App) -> Element<'_, Message, Theme> {
 
     let bar_row = row![
         launcher_button(),
-        pager(snapshot),
+        pager(app),
         // The task strip is also the row's spacer: it takes exactly the space
         // the fixed zones leave, so tray and clock cannot be pushed off.
         tasks(app),
@@ -302,9 +349,9 @@ const MARK_DISC: f32 = 0.85;
 /// has focus", and marking one and not the other reads as an oversight. The
 /// two never compete for area — the tile is 24px, the chip is a strip — and
 /// nothing else on the row is allowed to join them.
-fn pager(snapshot: &Snapshot) -> Element<'_, Message, Theme> {
+fn pager(app: &crate::app::App) -> Element<'_, Message, Theme> {
     let mut r = Row::new().spacing(bar::GAP).align_y(Alignment::Center);
-    for ws in live_workspaces(snapshot) {
+    for ws in live_workspaces(&app.snapshot, app.output_id) {
         r = r.push(tile(ws));
     }
     r.into()
@@ -319,10 +366,42 @@ fn pager(snapshot: &Snapshot) -> Element<'_, Message, Theme> {
 /// which is why `snapshot.windows` is consulted and not only the wire's own
 /// count, whose meaning is the compositor's business and may not include
 /// them.
-pub fn live_workspaces(snapshot: &Snapshot) -> impl Iterator<Item = &Workspace> {
-    snapshot.workspaces.iter().filter(|ws| {
-        ws.active || ws.windows > 0 || snapshot.windows.iter().any(|w| w.workspace == Some(ws.index))
-    })
+pub fn live_workspaces(snapshot: &Snapshot, output: u64) -> impl Iterator<Item = &Workspace> {
+    snapshot
+        .workspaces
+        .iter()
+        .filter(move |ws| output == 0 || ws.output == output)
+        .filter(move |ws| {
+            ws.active || ws.windows > 0 || windows_on(snapshot, output).any(|w| w.workspace == Some(ws.index))
+        })
+}
+
+/// The windows this bar is allowed to speak for.
+///
+/// One `eclipse-bar` runs per monitor and the compositor's lists are the whole
+/// desktop's, so every live list on the row is filtered here first. `output ==
+/// 0` is the bar that was started without `--output` — a single-output dev run
+/// — and filters nothing, because on one monitor "every window" and "my
+/// windows" are the same set.
+fn windows_on(snapshot: &Snapshot, output: u64) -> impl Iterator<Item = &Window> {
+    snapshot
+        .windows
+        .iter()
+        .filter(move |w| output == 0 || w.output == Some(output))
+}
+
+/// The workspace the human is standing on *on this output*.
+///
+/// Workspace indices are 1-based per output, so the unfiltered `find` used to
+/// be able to answer with another monitor's row — and then this bar's task
+/// strip drew that monitor's windows.
+fn active_workspace(snapshot: &Snapshot, output: u64) -> Option<usize> {
+    snapshot
+        .workspaces
+        .iter()
+        .filter(|w| output == 0 || w.output == output)
+        .find(|w| w.active)
+        .map(|w| w.index)
 }
 
 fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
@@ -375,10 +454,8 @@ fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
 /// a model whose whole content is three flat lists.
 fn tasks(app: &crate::app::App) -> Element<'_, Message, Theme> {
     let snapshot = &app.snapshot;
-    let active = snapshot.workspaces.iter().find(|w| w.active).map(|w| w.index);
-    let on_workspace: Vec<&Window> = snapshot
-        .windows
-        .iter()
+    let active = active_workspace(snapshot, app.output_id);
+    let on_workspace: Vec<&Window> = windows_on(snapshot, app.output_id)
         .filter(|w| active.is_none() || w.workspace == active)
         .collect();
 
@@ -406,7 +483,7 @@ fn tasks(app: &crate::app::App) -> Element<'_, Message, Theme> {
 /// it — so the position of any one chip is arithmetic too, and a popup can be
 /// anchored under a chip without iced handing back a widget's bounds.
 fn strip_left(app: &crate::app::App) -> f32 {
-    let count = live_workspaces(&app.snapshot).count() as f32;
+    let count = live_workspaces(&app.snapshot, app.output_id).count() as f32;
     let pager = (count * bar::PAGER_W + (count - 1.0).max(0.0) * bar::GAP).max(0.0);
     bar::MARGIN_X + bar::EDGE + bar::TASK_MIN + bar::ZONE_GAP + pager + bar::ZONE_GAP
 }
@@ -418,10 +495,8 @@ fn strip_left(app: &crate::app::App) -> f32 {
 /// is no cell to hang a popup under and the caller falls back to the pointer.
 pub fn chip_span(app: &crate::app::App, handle: u64) -> Option<(f32, f32)> {
     let snapshot = &app.snapshot;
-    let active = snapshot.workspaces.iter().find(|w| w.active).map(|w| w.index);
-    let on_workspace: Vec<&Window> = snapshot
-        .windows
-        .iter()
+    let active = active_workspace(snapshot, app.output_id);
+    let on_workspace: Vec<&Window> = windows_on(snapshot, app.output_id)
         .filter(|w| active.is_none() || w.workspace == active)
         .collect();
     if on_workspace.is_empty() {
@@ -462,7 +537,7 @@ pub fn tray_span(app: &crate::app::App, drawer: crate::app::Drawer) -> Option<(f
 /// A bar that has not been told its width yet assumes the chips can have
 /// their cap; the first frame is the only one that ever runs on that guess.
 fn strip_room(app: &crate::app::App) -> f32 {
-    let count = live_workspaces(&app.snapshot).count() as f32;
+    let count = live_workspaces(&app.snapshot, app.output_id).count() as f32;
     let pager = (count * bar::PAGER_W + (count - 1.0).max(0.0) * bar::GAP).max(0.0);
     let fixed = bar::TASK_MIN + pager + tray_width(app) + bar::CLOCK_W;
     if app.width <= 0.0 {
@@ -1303,6 +1378,7 @@ mod tests {
     fn the_pager_keeps_occupied_and_current_workspaces_only() {
         let ws = |index: usize, active: bool, windows: usize| Workspace {
             index,
+            output: 0,
             output_name: String::new(),
             active,
             windows,
@@ -1314,6 +1390,7 @@ mod tests {
                 app_id: "kitty".into(),
                 title: "t".into(),
                 workspace: Some(4),
+                output: Some(0),
                 focused: false,
                 minimized: true,
                 pid: None,
@@ -1321,8 +1398,49 @@ mod tests {
             }],
             ..Snapshot::default()
         };
-        let live: Vec<usize> = live_workspaces(&snapshot).map(|w| w.index).collect();
+        let live: Vec<usize> = live_workspaces(&snapshot, 0).map(|w| w.index).collect();
         assert_eq!(live, vec![1, 3, 4]);
+    }
+
+    /// Each monitor runs its own bar and the compositor answers for all of
+    /// them, so a bar that did not filter drew the other monitor's pager —
+    /// and, because indices are per-output, drew duplicates of its own.
+    #[test]
+    fn a_bar_speaks_only_for_its_own_output() {
+        let ws = |index: usize, output: u64, active: bool, windows: usize| Workspace {
+            index,
+            output,
+            output_name: String::new(),
+            active,
+            windows,
+        };
+        let w = |handle: u64, output: u64, workspace: usize| Window {
+            handle,
+            app_id: "kitty".into(),
+            title: "t".into(),
+            workspace: Some(workspace),
+            output: Some(output),
+            focused: false,
+            minimized: false,
+            pid: None,
+            trust: crate::model::Trust::Private,
+        };
+        let snapshot = Snapshot {
+            workspaces: vec![ws(1, 7, false, 1), ws(2, 7, true, 1), ws(1, 9, true, 1)],
+            windows: vec![w(1, 7, 1), w(2, 7, 2), w(3, 9, 1)],
+            ..Snapshot::default()
+        };
+
+        let live: Vec<usize> = live_workspaces(&snapshot, 7).map(|w| w.index).collect();
+        assert_eq!(live, vec![1, 2]);
+        // The other monitor's active row must not be mistaken for ours.
+        assert_eq!(active_workspace(&snapshot, 7), Some(2));
+        assert_eq!(active_workspace(&snapshot, 9), Some(1));
+        let mine: Vec<u64> = windows_on(&snapshot, 7).map(|w| w.handle).collect();
+        assert_eq!(mine, vec![1, 2]);
+        // A bar with no --output is a single-monitor dev run: filter nothing.
+        assert_eq!(windows_on(&snapshot, 0).count(), 3);
+        assert_eq!(live_workspaces(&snapshot, 0).count(), 3);
     }
 
     #[test]
@@ -1343,6 +1461,7 @@ mod tests {
             app_id: "org.x.Vault".into(),
             title: "seed phrase correct horse".into(),
             workspace: Some(1),
+            output: Some(0),
             focused: true,
             minimized: false,
             pid: None,
@@ -1363,6 +1482,7 @@ mod tests {
             app_id: "kitty".into(),
             title: "t".into(),
             workspace: Some(workspace),
+            output: Some(0),
             focused: false,
             minimized: false,
             pid: None,
@@ -1373,6 +1493,7 @@ mod tests {
         app.snapshot = Snapshot {
             workspaces: vec![Workspace {
                 index: 1,
+                output: 0,
                 output_name: String::new(),
                 active: true,
                 windows: 3,

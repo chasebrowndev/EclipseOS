@@ -9,6 +9,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Appearance,
+    Taskbar,
     Display,
     Input,
     Session,
@@ -20,6 +21,7 @@ impl Pane {
     /// Sidebar order.
     pub const ALL: &'static [Pane] = &[
         Pane::Appearance,
+        Pane::Taskbar,
         Pane::Display,
         Pane::Input,
         Pane::Session,
@@ -30,6 +32,7 @@ impl Pane {
     pub fn title(self) -> &'static str {
         match self {
             Pane::Appearance => "Appearance",
+            Pane::Taskbar => "Taskbar",
             Pane::Display => "Display",
             Pane::Input => "Input",
             Pane::Session => "Session",
@@ -41,6 +44,7 @@ impl Pane {
     pub fn subtitle(self) -> &'static str {
         match self {
             Pane::Appearance => "Layout, borders, decoration and animation.",
+            Pane::Taskbar => "Bar placement and folding.",
             Pane::Display => "Outputs, modes and overscan calibration.",
             Pane::Input => "Keyboard, pointer and touchpad.",
             Pane::Session => "Idle, lock and power.",
@@ -69,6 +73,7 @@ pub fn pane_for(path: &str) -> Option<Pane> {
     let node = path.split('.').next().unwrap_or(path);
     match node {
         "general" | "decoration" | "animations" | "render" => Some(Pane::Appearance),
+        "bar" => Some(Pane::Taskbar),
         "input" => Some(Pane::Input),
         "idle" => Some(Pane::Session),
         "xwayland" => Some(Pane::System),

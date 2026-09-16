@@ -992,6 +992,21 @@ fn render_output(state: &mut AbyssState, index: usize) {
     let cursor_pos = state.pointer_location - output_loc.to_f64();
     // Trusted UI, above the cursor and never drawn into a capture target.
     let mut elements: Vec<AbyssRenderElement> = crate::render::capture::indicator(&output, capture_active);
+    // The region selector (COMP-18 §1.3): untrusted too, but above the
+    // annotation pass it is about to feed.
+    elements.extend(crate::render::select::selector_elements(
+        &state.region_select,
+        &output,
+        output_loc,
+    ));
+    // Annotations (COMP-18): untrusted, so below the indicator -- the list is
+    // front-to-back -- but above the cursor and above everything client-drawn.
+    elements.extend(crate::render::annotation::annotation_elements(
+        &mut drm.renderer,
+        &state.annotations,
+        &output,
+        output_loc,
+    ));
     elements.extend(crate::render::cursor::elements(
         &mut drm.renderer,
         &state.cursor_status,

@@ -424,6 +424,7 @@ fn readable(state: &mut AbyssState, id: u64, stream: &UnixStream) -> PostAction 
         .unwrap_or(true);
     if closed || dead {
         state.ipc.conns.retain(|c| c.id != id);
+        disown_annotations(state, id);
         tracing::info!(conn = id, "control client disconnected");
         return PostAction::Remove;
     }
@@ -565,6 +566,16 @@ fn reap(state: &mut AbyssState) {
             state.loop_handle.remove(t);
         }
         state.ipc.conns.retain(|c| c.id != id);
+        disown_annotations(state, id);
         tracing::info!(conn = id, "control client disconnected");
+    }
+}
+
+/// A caller that goes away leaves nothing on screen (COMP-18 §3). Annotations
+/// are owned by the connection that created them, not by a lease or a timeout,
+/// so the disconnect path is the whole lifetime story.
+fn disown_annotations(state: &mut AbyssState, id: u64) {
+    if state.annotations.clear_for(id) > 0 {
+        crate::backend::damage_all(state);
     }
 }
