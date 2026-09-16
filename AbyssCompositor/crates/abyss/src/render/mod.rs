@@ -5,12 +5,15 @@
 //! the stacking order lives here once, not per backend.
 
 pub mod anim;
+pub mod annotation;
 pub mod blur;
 pub mod capture;
 pub mod cursor;
 pub mod effects;
+pub mod font;
 pub mod overscan;
 pub mod stats;
+pub mod text;
 
 use std::collections::HashMap;
 

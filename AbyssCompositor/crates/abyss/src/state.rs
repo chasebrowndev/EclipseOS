@@ -156,6 +156,9 @@ pub struct AbyssState {
     pub touch_points: Vec<TouchPoint>,
     /// Per-window border quads, kept alive across frames.
     pub borders: crate::render::BorderStore,
+    /// Live annotation overlays (COMP-18). Untrusted text, drawn below trusted
+    /// UI and never into a capture target.
+    pub annotations: crate::render::annotation::AnnotationStore,
 
     /// Who set the current clipboard (COMP-06 §4). Never holds contents.
     pub clipboard: Option<crate::protocols::standard::data_device::ClipboardSource>,
@@ -461,6 +464,7 @@ impl AbyssState {
             focus: None,
             touch_points: Vec::new(),
             borders: crate::render::BorderStore::default(),
+            annotations: crate::render::annotation::AnnotationStore::default(),
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
             config,
             #[cfg(feature = "drm")]

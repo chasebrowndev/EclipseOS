@@ -250,6 +250,21 @@ fn redraw(
                 fullscreen,
             )
         };
+        // Annotations (COMP-18) go in first so the trusted indicator, spliced
+        // after them, stays ahead of them in this front-to-back list.
+        elements.splice(
+            0..0,
+            crate::render::annotation::annotation_elements(
+                renderer,
+                &state.annotations,
+                out,
+                state
+                    .space
+                    .output_geometry(out)
+                    .map(|g| g.loc)
+                    .unwrap_or_default(),
+            ),
+        );
         // Trusted UI, drawn on top of everything and never into a capture.
         elements.splice(
             0..0,

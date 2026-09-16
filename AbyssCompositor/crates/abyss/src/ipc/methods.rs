@@ -11,7 +11,11 @@
 
 use serde_json::{json, Map, Value};
 use smithay::reexports::wayland_server::Resource;
-use smithay::{desktop::Window, utils::IsAlive, wayland::compositor::with_states};
+use smithay::{
+    desktop::Window,
+    utils::{IsAlive, Logical, Rectangle},
+    wayland::compositor::with_states,
+};
 
 use super::RpcError;
 use crate::state::AbyssState;
@@ -42,6 +46,12 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "set_output" => set_output(state, params),
         "calibrate_output" => calibrate_output(state, params),
         "reload_config" => reload_config(state),
+        // Annotation overlays (COMP-18 §3). `conn` is the owner: a caller may
+        // address only the handles it created.
+        "annotation_create" => annotation_create(state, conn, params),
+        "annotation_update" => annotation_update(state, conn, params),
+        "annotation_destroy" => annotation_destroy(state, conn, params),
+        "annotation_clear" => annotation_clear(state, conn, params),
         // Config read/write (COMP-13 §1.4). The outer gate already returned
         // `Allow` to reach this line; `config_rpc` tightens onto it per file.
         "get_config" | "set_config_value" | "validate_config" => {
@@ -692,6 +702,77 @@ fn calibrate_output(state: &mut AbyssState, params: &Value) -> Reply {
             "unknown action {other:?}: expected start, commit or cancel"
         ))),
     }
+}
+
+// ----------------------------------------------------------- annotations
+//
+// COMP-18 §3. The caller sends a rectangle and a string and gets a handle.
+// Everything else -- sanitising, wrapping, styling, placement, eviction --
+// belongs to `render::annotation`, so that a caller can affect nothing but
+// the glyphs. These handlers therefore do parameter checking and nothing more.
+
+fn anchor_param(params: &Value) -> Result<Rectangle<i32, Logical>, RpcError> {
+    let obj = params_obj(params);
+    let mut v = [0i32; 4];
+    for (slot, name) in v.iter_mut().zip(["x", "y", "w", "h"]) {
+        *slot = obj
+            .get(name)
+            .and_then(Value::as_i64)
+            .and_then(|n| i32::try_from(n).ok())
+            .ok_or_else(|| RpcError::invalid_params(&format!("{name} must be an integer")))?;
+    }
+    if v[2] <= 0 || v[3] <= 0 {
+        return Err(RpcError::invalid_params("w and h must be positive"));
+    }
+    Ok(Rectangle::new((v[0], v[1]).into(), (v[2], v[3]).into()))
+}
+
+fn text_param(params: &Value) -> Result<&str, RpcError> {
+    params_obj(params)
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| RpcError::invalid_params("text must be a string"))
+}
+
+fn annotation_create(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {
+    only_keys(params, &["x", "y", "w", "h", "text"])?;
+    let anchor = anchor_param(params)?;
+    let text = text_param(params)?;
+    let Some(id) = state.annotations.create(conn, anchor, text) else {
+        return Err(RpcError::invalid_params("too many live annotations"));
+    };
+    crate::backend::damage_all(state);
+    Ok(json!({"ok": true, "id": id.0}))
+}
+
+fn annotation_update(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {
+    only_keys(params, &["id", "text"])?;
+    let id = crate::render::annotation::AnnotationId(u64_param(params, "id")?);
+    let text = text_param(params)?;
+    if !state.annotations.update(conn, id, text) {
+        return Err(RpcError::invalid_params("no such annotation"));
+    }
+    crate::backend::damage_all(state);
+    Ok(json!({"ok": true}))
+}
+
+fn annotation_destroy(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {
+    only_keys(params, &["id"])?;
+    let id = crate::render::annotation::AnnotationId(u64_param(params, "id")?);
+    if !state.annotations.destroy(conn, id) {
+        return Err(RpcError::invalid_params("no such annotation"));
+    }
+    crate::backend::damage_all(state);
+    Ok(json!({"ok": true}))
+}
+
+fn annotation_clear(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {
+    only_keys(params, &[])?;
+    let dropped = state.annotations.clear_for(conn);
+    if dropped > 0 {
+        crate::backend::damage_all(state);
+    }
+    Ok(json!({"ok": true, "dropped": dropped}))
 }
 
 #[cfg(test)]
