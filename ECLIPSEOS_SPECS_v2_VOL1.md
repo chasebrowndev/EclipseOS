@@ -1018,40 +1018,76 @@ targets achievable but not free. Therefore:
 
 ## 1. Repository shape
 
-**Monorepo**, Cargo workspace. The protocol crate is shared by four
+**Monorepo, several Cargo workspaces.** The protocol crate is shared by four
 components and cross-cutting changes are constant; separate repos would
-mean version-juggling for no benefit at this team size.
+mean version-juggling for no benefit at this team size. But a single workspace
+is not required to get that, and it costs something real: one `Cargo.lock` and
+one `deny.toml` mean the desktop userland's GUI stack (iced → wgpu,
+cosmic-text, a font shaper) shares an audited dependency graph with the
+compositor's enforcement path, which has no business seeing it. So the repo
+root carries the specs, the ADRs, `docs/`, the toolchain pins and CI, and each
+tree below it is its own workspace with its own lock file and dependency
+policy (ADR 0041, ADR 0042).
+
+Amended 2026-09-16 (ADR 0042) — previously this section specified a single
+workspace with `/Cargo.toml` at the root.
 
 ```
 /
-  Cargo.toml                  # workspace
   CLAUDE.md                   # root invariants + build/test commands
-  docs/                       # all specs (CHARTER, COMP-*, S-*, P-*, …)
+  ECLIPSEOS_SPECS_v2_VOL1.md, VOL2.md
+  docs/                       # architecture, status, style, config, handoff
   decisions/                  # ADRs (F-08 format)
-  .github/workflows/          # CI (F-07 §3)
-  deny.toml                   # dependency policy (interim; ADR 0035)
+  .github/workflows/          # CI (F-07 §3) — one gate job per workspace
   rust-toolchain.toml         # pinned toolchain; CI and dev must not drift
-  crates/
-    abyss/                   # compositor            [TCB]
-    policyd/                  # policy + audit        [TCB]
-    policy-eval/              # shared evaluator crate (linked by both)
-    agentd/                   # agent gateway
-    registryd/                # perception aggregation
-    proto-agent/              # eclipse_agent_v1 bindings (generated)
-    proto-semantic/           # eclipse_semantic_v1 bindings (generated)
-    audit/                    # audit store, hash chain, index, verify tool
-    sandbox/                  # grant → bwrap/Landlock/seccomp compiler
-    cataclysm-pub/            # semantic publisher, C ABI (ADR 0034)
-    sdk-rust/                 # agent SDK
-    sdk-python/               # agent SDK
-  tests/
-    golden/                   # S-02 golden decision suite
-    wlcs/                     # conformance harness
-    compat/                   # client compatibility matrix
-    redteam/                  # S-10 injection & escape corpus
-  fuzz/                       # cargo-fuzz targets
-  bench/                      # COMP-14 benchmarks
+  rustfmt.toml                # both tools walk ancestors: one copy serves all
+
+  AbyssCompositor/            # workspace — the compositor and its socket
+    Cargo.toml  Cargo.lock  deny.toml   # dependency policy (interim; ADR 0035)
+    crates/
+      abyss/                  # compositor            [TCB]
+      eclipse-ipc/            # COMP-13 client half of the control socket
+      eclipse-ctl/            # human CLI over that socket
+      wlcs-abyss/             # conformance shim
+      policyd/                # policy + audit        [TCB]   (planned)
+      policy-eval/            # shared evaluator crate (linked by both)
+      agentd/                 # agent gateway
+      registryd/              # perception aggregation
+      proto-agent/            # eclipse_agent_v1 bindings (generated)
+      proto-semantic/         # eclipse_semantic_v1 bindings (generated)
+      audit/                  # audit store, hash chain, index, verify tool
+      sandbox/                # grant → bwrap/Landlock/seccomp compiler
+      cataclysm-pub/          # semantic publisher, C ABI (ADR 0034)
+      sdk-rust/  sdk-python/  # agent SDKs
+    dist/                     # session units, desktop entry, install scripts
+    ci/wlcs-skip.txt
+    tests/
+      golden/                 # S-02 golden decision suite
+      wlcs/                   # conformance harness
+      compat/                 # client compatibility matrix
+      redteam/                # S-10 injection & escape corpus
+    fuzz/                     # cargo-fuzz targets
+    bench/                    # COMP-14 benchmarks
+
+  EclipseDE/                  # workspace — the desktop userland (COMP-17)
+    Cargo.toml  Cargo.lock  deny.toml
+    assets/fonts/  ci/  dist/
+    crates/
+      eclipse-ui/             # the design system over iced (ADR 0038)
+      eclipse-bar/            # bar, toasts, control center, launcher
+      eclipse-settings/       # the settings app
+      eclipse-policy-viewer/
+      eclipse-services/       # notifications, status, session (headless)
+
+  Oracle-Eyes/                # workspace — vision addon, out of process (ADR 0041)
 ```
+
+Cross-workspace edges are path dependencies and are deliberately few:
+`EclipseDE` and `Oracle-Eyes` both depend on
+`AbyssCompositor/crates/eclipse-ipc`, and `eclipse-settings` carries a
+dev-dependency on `abyss` so its schema coverage test is checked against the
+compositor's own table. Nothing in `AbyssCompositor/` depends on either of the
+other two trees — the compositor builds and runs with them absent.
 
 ## 2. Branching
 
@@ -2100,7 +2136,7 @@ Open:
 Depends on: COMPOSITOR.md (C-00), F-04. Consumed by: COMP-02..07, COMP-13,
 COMP-16, A-01.
 
-Crate: `crates/abyss`. TCB. Language: Rust. Foundation: Smithay.
+Crate: `AbyssCompositor/crates/abyss`. TCB. Language: Rust. Foundation: Smithay.
 Event loop: `calloop`.
 
 ---
