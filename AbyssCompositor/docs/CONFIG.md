@@ -44,6 +44,7 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | --- | --- | --- | --- | --- |
 | `bar.fold-when-inactive` | bool | `#false` | live | Shrink the taskbar to a thin strip on outputs the pointer is not on. |
 | `bar.fold-height` | int 2..16 | `4` | live | Height in logical pixels of the folded taskbar strip. |
+| `bar.position` | top \| bottom | `"top"` | restart | Which edge of every output the taskbar is anchored to. Takes effect the next time eclipse-bar starts, not on a live reload. |
 
 ### `decoration`
 
@@ -53,7 +54,7 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `decoration.active-opacity` | float 0..1 | `1` | live | Alpha applied to the focused window. |
 | `decoration.inactive-opacity` | float 0..1 | `1` | live | Alpha applied to every unfocused window. |
 | `decoration.dim-inactive` | float 0..1 | `0` | live | Strength of the darkening overlay on unfocused windows. |
-| `decoration.blur.enabled` | bool | `#false` | live | Dual-Kawase blur behind translucent windows. |
+| `decoration.blur.enabled` | bool | `#true` | live | Dual-Kawase blur behind translucent windows. |
 | `decoration.blur.size` | int 1..64 | `8` | live | Blur kernel offset. Larger is softer and costs more. |
 | `decoration.blur.passes` | int 1..6 | `2` | live | Down/up-sample pairs in the blur chain. |
 | `decoration.shadow.enabled` | bool | `#false` | live | Drop shadow behind windows. |

@@ -28,6 +28,17 @@ pub const KINDS: &[EventKind] = &[
 pub struct BarConfig {
     pub fold_when_inactive: bool,
     pub fold_height: u32,
+    pub position: BarPosition,
+}
+
+/// The edge the bar's layer surface anchors to. `bar.position` is
+/// `reload: restart` (COMP-13 §1.4) — the layer surface's anchor is set once
+/// in `main::bar` before the window exists, so this field is read at startup
+/// only and is not updated by `Config` events the way the fold keys are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarPosition {
+    Top,
+    Bottom,
 }
 
 impl Default for BarConfig {
@@ -35,6 +46,7 @@ impl Default for BarConfig {
         BarConfig {
             fold_when_inactive: false,
             fold_height: 4,
+            position: BarPosition::Top,
         }
     }
 }
@@ -178,6 +190,11 @@ impl Conn {
                         cfg.fold_height = h as u32;
                     }
                 }
+                Some("bar.position") => match value.and_then(Value::as_str) {
+                    Some("bottom") => cfg.position = BarPosition::Bottom,
+                    Some("top") => cfg.position = BarPosition::Top,
+                    _ => {}
+                },
                 _ => {}
             }
         }

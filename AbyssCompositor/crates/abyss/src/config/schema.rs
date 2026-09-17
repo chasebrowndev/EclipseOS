@@ -18,7 +18,7 @@
 //! 3. schema → defaults: [`get`] on a default `Config` returns exactly the
 //!    `default` column for every row.
 
-use super::{Config, LayoutKind};
+use super::{BarPosition, Config, LayoutKind};
 
 /// The type of a key's value, and whatever constrains it. A GUI maps this
 /// straight onto a control: `Bool` is a toggle, `Int{min,max}` a slider,
@@ -210,6 +210,15 @@ pub const TABLE: &[Key] = &[
         Live,
         "Height in logical pixels of the folded taskbar strip.",
     ),
+    k(
+        "bar.position",
+        Ty::Enum(&["top", "bottom"]),
+        Str("top"),
+        Abyss,
+        NeedsRestart,
+        "Which edge of every output the taskbar is anchored to. Takes effect \
+       the next time eclipse-bar starts, not on a live reload.",
+    ),
     // decoration
     k(
         "decoration.rounding",
@@ -246,7 +255,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.blur.enabled",
         Ty::Bool,
-        Bool(false),
+        Bool(true),
         Abyss,
         Live,
         "Dual-Kawase blur behind translucent windows.",
@@ -537,6 +546,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "render.direct-scanout" => V::Bool(c.render.direct_scanout),
         "bar.fold-when-inactive" => V::Bool(c.bar.fold_when_inactive),
         "bar.fold-height" => V::Int(c.bar.fold_height as i64),
+        "bar.position" => V::Str(position_name(c.bar.position).into()),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.active-opacity" => V::Float(c.decoration.active_opacity as f64),
         "decoration.inactive-opacity" => V::Float(c.decoration.inactive_opacity as f64),
@@ -581,6 +591,13 @@ fn layout_name(l: LayoutKind) -> &'static str {
     match l {
         LayoutKind::Dwindle => "dwindle",
         LayoutKind::Master => "master",
+    }
+}
+
+fn position_name(p: BarPosition) -> &'static str {
+    match p {
+        BarPosition::Top => "top",
+        BarPosition::Bottom => "bottom",
     }
 }
 
