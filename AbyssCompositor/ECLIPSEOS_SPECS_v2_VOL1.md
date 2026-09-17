@@ -5075,8 +5075,12 @@ Enforced by review and, where possible, by lint or test:
 ## 4. Measurement
 
 ### 4.1 Benchmarks (`bench/`)
-- Criterion microbenchmarks: `check()`, damage merge, tree serialize,
-  scope match, audit encode.
+- Microbenchmarks: `check()`, damage merge, tree serialize, scope match,
+  audit encode. Every budget in §2 is a percentile, so the harness retains
+  every sample and reports p50/p99/p99.9/max rather than a mean with a
+  confidence interval; it is hand-rolled rather than Criterion for that
+  reason and to keep §3's counting allocator meaningful
+  (decisions/0043-hand-rolled-bench-harness.md).
 - Headless frame benchmarks: synthetic scenes (1/10/50 windows, with and
   without effects) driven on the headless backend so they run without a
   GPU in cloud CI.
