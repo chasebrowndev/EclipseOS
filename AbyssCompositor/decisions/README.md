@@ -47,6 +47,13 @@ writing a new ADR that says so.
 | 0039 | [Supply-chain exceptions for the iced toolkit](0039-iced-supply-chain-exceptions.md) | accepted |
 | 0040 | [Annotation overlays are a compositor pass of their own, not trusted UI](0040-annotation-overlay-pass.md) | accepted |
 | 0041 | [Oracle-Eyes runs out of process, on two revocable capabilities](0041-oracle-eyes-out-of-process.md) | accepted |
+| 0042 | [Focused output is first-class; keyboard focus derives from it](0042-focused-output-and-pointer-focus.md) | accepted |
+| 0043 | [The benchmark harness is hand-rolled, not criterion](0043-hand-rolled-bench-harness.md) | accepted |
+| 0044 | [One canonical CBOR profile, hand-rolled, for grants, audit and sockets](0044-canonical-cbor-profile.md) | accepted |
+| 0045 | [Grants are COSE_Sign1 over canonical CBOR, Ed25519, embedded payload](0045-grant-signing-cose-sign1.md) | accepted |
+| 0046 | [The S-04 §4 audit store is the task/counter journal, built at milestone 10](0046-shared-audit-store-at-m10.md) | accepted |
+| 0047 | [The `policy-eval` API surface: what the two processes are allowed to share](0047-policy-eval-api-surface.md) | accepted |
+| 0048 | [A task's statement is journalled as a hash, and does not survive a restart](0048-task-statement-is-hashed-not-journalled.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

@@ -1,0 +1,12 @@
+[package]
+name = "policy-eval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared policy types, canonical CBOR, and grant verification (S-01 §4, ADR 0008)."
+
+[dependencies]
+blake3 = { version = "1.8.7", default-features = false, features = ["std"] }
+ed25519-dalek = "3.0.0"

@@ -37,9 +37,8 @@ new directory?
   [TCB], `agentd/`, `audit/`, `sandbox/`, `proto-agent/`, `proto-semantic/`,
   `registryd/`, `sdk-*/` — plus new modules under `crates/abyss/src/`
   (`policy/`, `audit/`, `trusted_ui/`, `protocols/agent/`, `protocols/semantic/`).
-  (Caveat: `docs/ARCHITECTURE.md` is itself stale — it predates the DE crates —
-  which is why Step 0a fixes it first. The layout *decision* stands; the doc's
-  inventory doesn't.)
+  (`docs/ARCHITECTURE.md` was stale here — it predated the DE crates — and Step 0a
+  fixed it; its inventory is current as of `1714a19`.)
   Only `brokerd` (m19), the egress proxy (m20) and `cataclysm` (m23) have no
   F-07 §1 slot yet; they are late in the phase and can take their slot when
   written.
@@ -63,8 +62,8 @@ Follow COMP-16's numbering for the first three, then **pull 16 forward ahead of
 13–15**. Rationale: 10/11/12 build the three spines (grants, socket, audit) and
 16 is the enforcement table that makes them mean anything. With 16 in place,
 13/14/15 are built against real `check()` calls instead of stubs that have to be
-rewritten. 16's own gate also needs the 9f benchmark harness, which is the one
-Phase 1 leftover worth landing first.
+rewritten. 16's own gate also needs the 9f benchmark harness, which
+landed in Step 0b (`1fcb767`) and is waiting for 16 to supply its subject.
 
 ## Agent assignments — who does what, decided
 
@@ -88,47 +87,36 @@ pass). 11 needs 10's grant format. 16 needs all three. 19/20/21 have no
 compositor dependency at all and are the natural `eclipse-backend` second front
 if you want one open.
 
-### Step 0a — cleanup pass
+## Step 0 — DONE. Both halves are on `main`; start at milestone 10.
 
-The tree is not in a state other agents can safely start writing into. Run this
-as **one `Explore` agent** (read-only sweep, reports findings) and have the main
-thread apply the fixes — the edits touch `docs/`, which is the parent's job and
-is never delegated. Brief:
+Nothing in Step 0 remains. A fresh session opening this file starts directly at
+the vertical slice **10 → 11 → 12 → 16** below.
 
-- **`EclipseDE/` is a phantom.** It holds only a stray `target/` — no
-  `Cargo.toml`, no crates — and shows as untracked `?? ../EclipseDE/`. The DE
-  crates (`eclipse-bar`, `eclipse-ui`, `eclipse-settings`,
-  `eclipse-policy-viewer`, `eclipse-services`) are all still in
-  `AbyssCompositor/crates/` and still in workspace `members`. Decide: delete the
-  empty dir, or `.gitignore` it. It must not stay as an untracked mystery that
-  the next agent interprets as a half-finished move. **Confirmed decision: the
-  DE is not moving; Phase 2 crates go in `AbyssCompositor/crates/`.**
-- **Reconcile `docs/ARCHITECTURE.md:12-35` against reality.** Its F-07 §1 block
-  lists only `abyss`, `eclipse-ctl`, `wlcs-abyss` as existing — six DE crates
-  have landed since and are absent from the layout and the module map. Bring the
-  doc current (docs are source of truth once code exists, F-07 §7). This is the
-  file that misled the plan above; it is the first thing to fix.
-- **Reconcile `docs/STATUS.md`** Phase 1 rows against the DE work in commits
-  9d274de / c46ff92 / deaf518.
-- **The working tree is dirty**: 17 modified files + 2 untracked
-  (`shell/focus.rs`, `decisions/0042-…`) on `comp04-m01-focus-rules`. Report what
-  the branch actually is and whether it's gate-clean; do not commit it.
-- Verify the gate runs green from a clean checkout, and that `Cargo.toml`
-  `members` matches what's on disk.
-- Report: anything else stale, orphaned, or contradicting between
-  `docs/`, `claude/*.md`, `decisions/` and the tree.
+**Step 0a — cleanup pass: landed.** PR #17, `1714a19`
+(`docs: reconcile the crate inventory and Phase 1 status with the tree`).
+`docs/ARCHITECTURE.md`'s F-07 §1 block and `docs/STATUS.md`'s Phase 1 rows now
+match the tree; the six DE crates are listed; `EclipseDE/` (a stray `target/`,
+no `Cargo.toml`) is gone. The DE is **not** moving — Phase 2 crates go in
+`AbyssCompositor/crates/`.
 
-Main thread then applies the doc fixes, deletes/ignores `EclipseDE/`, and lands
-one `docs:` commit via `pr-driver`. Nothing below starts until that is in.
+**Step 0b — clear the runway: landed.**
 
-### Step 0b — clear the runway (before any Phase 2 code)
-
-1. Land the uncommitted `comp04-m01-focus-rules` branch (focus rules, `shell/focus.rs`,
-   ADR 0042). It is unrelated to Phase 2 and should not straddle the boundary.
-2. Land **9f, the benchmark harness** (`bench/`) — milestone 16's gate requires
-   it (`≤50 µs p99 measured by the 9f harness`). Not optional.
-3. Leave 9c (CI wlcs run), 9d (node redaction, branch `comp02-m09d-node-redaction`),
-   9e as-is; 9d's tree source only arrives with milestone 22 anyway.
+1. `comp04-m01-focus-rules` — PR #14, `9240846`
+   (`feat(abyss): derive focus from a first-class focused output`). Focus rules,
+   `shell/focus.rs`, ADR 0042. Off the Phase 2 boundary.
+2. **9f, the benchmark harness** — PR #18, `1fcb767`
+   (`feat(bench): the COMP-14 benchmark harness`). `bench/` exists: a hand-rolled
+   sampler keeping every sample and reporting p50/p99/p99.9/max, all fourteen
+   COMP-14 §2.1/§2.1b budgets encoded as data, and §3's counting allocator so a
+   bench on a no-alloc path fails on its first allocation. ADR 0043; COMP-14
+   §4.1 amended away from Criterion. **Caveat for milestone 16:** none of §4.1's
+   five subjects can run yet — `check()` and scope match arrive with 16 itself,
+   audit encode with 12, tree serialize with 22. 16's gate
+   (`≤50 µs p99 measured by the 9f harness`) is now *mechanically closable*: the
+   harness is there, and 16 supplies the subject. COMP-14 §5's per-commit
+   baselines and the >10% regression gate are still owed, deliberately (ADR 0043).
+3. 9c (CI wlcs run), 9d (node redaction — since landed, PR #15 `be58a15`) and 9e
+   stay as they are. They do not block Phase 2.
 
 ### Milestone 10 — `policyd` skeleton, task store, grants
 Specs: **A-04 §6** (journaled task objects + counters), **S-01 §4** (grant format).

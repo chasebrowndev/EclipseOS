@@ -1,0 +1,22 @@
+[package]
+name = "policyd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Policy daemon: task store, grant issue and revoke, audit store (A-04, S-01 §4, S-04 §4)."
+# A system daemon, never published. `publish = false` also keeps `cargo deny`
+# from flagging our path dependencies, which it only exempts for unpublished
+# crates.
+publish = false
+
+[dependencies]
+policy-eval = { path = "../policy-eval" }
+blake3 = { version = "1.8.7", default-features = false, features = ["std"] }
+ed25519-dalek = "3.0.0"
+getrandom = "0.4.3"
+zstd = "0.14.0"
+anyhow.workspace = true
+tracing.workspace = true
+libc = "0.2"

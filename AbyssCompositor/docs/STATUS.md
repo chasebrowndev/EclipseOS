@@ -116,9 +116,9 @@ across 9d/17/22, 14→15, 15→16, 16→22, 17→24, 18→25. Milestones 10, 12,
 
 | # | Milestone | State | Evidence |
 |---|---|---|---|
-| 10 | `policyd` skeleton; task store; grant compilation, issue, revocation | **not started** | No `crates/policyd`. The task object (A-04) exists in no code. |
+| 10 | `policyd` skeleton; task store; grant compilation, issue, revocation | **landed** | `crates/policy-eval/` holds the canonical CBOR codec (ADR 0044), the A-04 task object and counters, and the grant type; `crates/policyd/` holds the S-04 §4 audit store (ADR 0046) and the task store that journals before it answers, issues COSE_Sign1 grants (ADR 0045) and revokes a closed task's grants in one record. The `task` record journals the statement as a BLAKE3 hash, never the text (ADR 0048). No socket — that is milestone 11. |
 | 11 | Privileged socket; `agentd` skeleton; grant verification; `list_toplevels` | **not started** | No `protocols/agent/`. `get_agents` answers "not implemented". |
-| 12 | Audit spine: append-only journal, req-id chaining, `trace` | **not started** | No `audit/`. |
+| 12 | Audit spine: append-only journal, req-id chaining, `trace` | **store landed early** | `policyd/src/audit.rs` is the S-04 §4 hash-chained store, built at milestone 10 per ADR 0046; it carries `task`, `grant_issued` and `grant_revoked` records. The remaining record kinds, req-id chaining, `trace` and `eclipse-audit verify` are still milestone 12's work. |
 | 13 | Agent seats; injection; focus arbitration; `agent-override` chord | **not started** | No agent seats. `type_text`/`click_at` are gated `implemented: false`. The `agent-override` bind reserved by COMP-13 §1.1 has no `Action` variant. |
 | 14 | Atomic batches, `click`, `wait_for`, dedupe, generations | **not started** | — |
 | 15 | Trusted UI: prompt, emergency panel, phrase | **indicator landed early** | `render::capture::indicator()` draws the compositor-drawn capture indicator (COMP-10 §3.6) in both backends, from milestone 8. No prompt, no emergency panel, no phrase, no `trusted_ui/`. |
