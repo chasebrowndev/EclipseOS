@@ -115,7 +115,17 @@ pub(crate) fn decide_pointer_focus<W: Clone + PartialEq>(ctx: &PointerFocusCtx<W
         return FocusAction::Window(w.clone());
     }
 
-    // 5. The pointer is over no output at all — a gap between monitors, or
+    // 5. Nothing has the keyboard, or something that is not a toplevel does —
+    //    an on-demand layer surface the human clicked, say. There is no window
+    //    focus to move and none to clear, so the empty-space rules below have
+    //    nothing to say: clearing here would take the keyboard away from a
+    //    layer surface that just earned it (wlcs
+    //    LayerSurfaceTest.takes_keyboard_focus_after_click_with_on_demand_*).
+    if ctx.focused.is_none() {
+        return FocusAction::Keep;
+    }
+
+    // 6. The pointer is over no output at all — a gap between monitors, or
     //    past the edge of every one. There is no output to move to, so there
     //    is nothing to decide: dragging the cursor through dead space must
     //    never defocus (it is the exact inverse of the stickiness rule below).
@@ -123,7 +133,7 @@ pub(crate) fn decide_pointer_focus<W: Clone + PartialEq>(ctx: &PointerFocusCtx<W
         return FocusAction::Keep;
     }
 
-    // 6. Empty space. On the focused window's own output this changes nothing
+    // 7. Empty space. On the focused window's own output this changes nothing
     //    — a gap on your own monitor never defocuses (Hyprland's feel).
     if ctx.pointer_output == ctx.focused_output {
         return FocusAction::Keep;
@@ -360,6 +370,19 @@ mod tests {
                     ..ctx()
                 },
                 FocusAction::Window(11),
+            ),
+            (
+                // An on-demand layer surface holds the keyboard after a click:
+                // no toplevel is focused, so empty space must not clear it.
+                "empty space with nothing focused keeps the keyboard where it is",
+                Ctx {
+                    pointer_output: Some(2),
+                    focused: None,
+                    focused_output: None,
+                    layer_interactivity: Some(KeyboardInteractivity::OnDemand),
+                    ..ctx()
+                },
+                FocusAction::Keep,
             ),
             (
                 "the already-focused window under the pointer is a no-op",
@@ -639,7 +662,28 @@ mod state_tests {
         assert_eq!(ctx.pointer_output, Some(h.b));
         assert_eq!(ctx.window_under, None);
         assert_eq!(ctx.pointer_output_focus_head, None);
-        assert_eq!(decide_pointer_focus(&ctx), FocusAction::Clear);
+        // Nothing is focused here (the harness has no windows), so the verdict
+        // is `Keep` — clearing nothing is not this rule's job. The pure table
+        // covers the with-a-window case; what matters here is that the gather
+        // saw the *other* output's empty workspace, not the focused one's.
+        assert_eq!(decide_pointer_focus(&ctx), FocusAction::Keep);
+        assert_eq!(
+            decide_pointer_focus(&PointerFocusCtx::<u32> {
+                pointer_output: ctx.pointer_output,
+                window_under: None,
+                focused: Some(10),
+                focused_output: Some(h.a),
+                layer_interactivity: None,
+                drag_active: ctx.drag_active,
+                prompt_grab_active: ctx.prompt_grab_active,
+                focus_follows_mouse_across_outputs: ctx.focus_follows_mouse_across_outputs,
+                unfocus_on_empty_workspace: ctx.unfocus_on_empty_workspace,
+                focus_follows_mouse_layers: ctx.focus_follows_mouse_layers,
+                refocus_on_scene_change: ctx.refocus_on_scene_change,
+                pointer_output_focus_head: None,
+            }),
+            FocusAction::Clear
+        );
         apply_focus(&mut h.state, FocusAction::Clear, FocusCause::Pointer);
         assert!(h.state.focus.is_none());
     }

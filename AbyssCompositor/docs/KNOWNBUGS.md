@@ -40,6 +40,7 @@ the notification view), or have the compositor refuse `shows_through` in a
 way that degrades to a flat but *intentionally styled* fill rather than
 leaving the client's own translucent color exposed unblurred. No one has
 committed to either yet.
+
 ---
 
 ## RAISE-01 — clicking a floating window does not raise it
