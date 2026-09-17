@@ -1,0 +1,20 @@
+[package]
+name = "abyss-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# The harness is a binary, not a `cargo bench` target. COMP-14 §2 states every
+# budget as a p99; `cargo bench`/criterion report a mean with a confidence
+# interval and discard tail outliers by design, which is the one statistic the
+# spec never asks for. See decisions/0043-hand-rolled-bench-harness.md.
+[lib]
+name = "abyss_bench"
+path = "src/lib.rs"
+
+[[bin]]
+name = "abyss-bench"
+path = "src/main.rs"
