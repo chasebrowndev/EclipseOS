@@ -104,6 +104,10 @@ impl OutputEntry {
     }
 }
 
+/// Sentinel `Outputs::focused` value meaning "no output is focused". Handles
+/// start at 1 and are never reused, so 0 can never name a real output.
+pub const NO_OUTPUT: u64 = 0;
+
 /// Windows rescued from an output that went away, grouped by workspace index.
 pub struct Removed {
     pub windows: Vec<Vec<Window>>,
@@ -156,10 +160,23 @@ impl Outputs {
         self.entries.iter().find(|e| e.output.owns(wl))
     }
 
-    /// The focused output, or the first one. `None` only when there are none at
-    /// all, which the fallback-output rule (§5) is meant to prevent.
+    /// The focused output, and only that. `None` means nothing is focused —
+    /// either no outputs exist at all, or the focused one just went away and
+    /// [`Outputs::repair_focus`] found nothing to move to.
+    ///
+    /// There is deliberately no fall-back to the first entry (ADR 0042): the
+    /// pointer-focus decision compares "output under the pointer" against
+    /// "output of the focused window", and a silent fall-back makes that
+    /// comparison report a same-output match that never happened. The id is
+    /// repaired explicitly on removal instead, so a dangling id cannot exist
+    /// for a caller to paper over.
     pub fn focused(&self) -> Option<&OutputEntry> {
-        self.get(self.focused).or_else(|| self.entries.first())
+        self.get(self.focused)
+    }
+
+    /// The focused output's id, or `None`. Sentinel-free view of `self.focused`.
+    pub fn focused_id(&self) -> Option<u64> {
+        self.focused().map(|e| e.id)
     }
 
     /// Focus an output by id. Returns true when the focused id actually
@@ -171,6 +188,25 @@ impl Outputs {
             return true;
         }
         false
+    }
+
+    /// Re-point `focused` at a live output when it no longer resolves to one.
+    ///
+    /// Returns `Some(new)` when the id actually moved — `Some(None)` meaning
+    /// "nothing is focused any more" — and `None` when it was already fine, so
+    /// the caller emits the `output` event exactly on a real transition, the
+    /// same contract as [`Outputs::set_focused`].
+    ///
+    /// The replacement is the lowest surviving id: deterministic, and the
+    /// oldest output is the one most likely to be the human's primary.
+    #[allow(clippy::option_option)]
+    pub fn repair_focus(&mut self) -> Option<Option<u64>> {
+        if self.get(self.focused).is_some() {
+            return None;
+        }
+        let next = self.entries.iter().map(|e| e.id).min();
+        self.focused = next.unwrap_or(NO_OUTPUT);
+        Some(next)
     }
 
     /// The first non-virtual output, else the first output — where orphaned
@@ -236,7 +272,7 @@ impl Outputs {
             overscan: overscan::Overscan::default(),
             calibrating: None,
         });
-        if self.focused == 0 {
+        if self.focused == NO_OUTPUT {
             self.focused = id;
         }
         id
@@ -259,9 +295,9 @@ impl Outputs {
             })
             .collect();
         self.stash.insert(entry.identity.clone(), windows.clone());
-        if self.focused == id {
-            self.focused = self.entries.first().map(|e| e.id).unwrap_or(0);
-        }
+        // Focus repair is *not* done here: it has an observable side effect
+        // (the `output` IPC event) and this method is pure state. `unregister`
+        // calls `repair_focus` and emits. See ADR 0042.
         Some(Removed { windows })
     }
 
@@ -725,6 +761,22 @@ pub fn unregister(state: &mut crate::state::AbyssState, id: u64) {
             }
         }
     }
+    // The focused id must never dangle: ADR 0042's pointer-focus decision
+    // compares it against the output under the pointer, and an id naming a
+    // departed output makes that comparison lie. Repair it explicitly and emit
+    // the same `output` event the pointer and keyboard focus paths emit, so
+    // eclipse-bar's per-output fold does not keep folding against a ghost.
+    if let Some(next) = state.outputs.repair_focus() {
+        let name = next
+            .and_then(|id| state.outputs.get(id))
+            .map(|e| e.connector.clone());
+        crate::ipc::emit(
+            state,
+            "output",
+            serde_json::json!({ "focused": next, "name": name }),
+        );
+        tracing::info!(?next, "focused output repaired after removal");
+    }
     if state
         .focus
         .as_ref()
@@ -766,6 +818,61 @@ mod tests {
         ] {
             assert_eq!(parse_transform(transform_name(t)), Some(t));
         }
+    }
+
+    /// Two-plus outputs with no DRM and no display: `virtual_output` is enough
+    /// for everything the focus bookkeeping touches.
+    fn outputs_with(n: usize) -> (Outputs, Vec<u64>) {
+        let mut outputs = Outputs {
+            next_id: 1,
+            ..Default::default()
+        };
+        let ids = (0..n)
+            .map(|i| {
+                let name = format!("virtual-{i}");
+                let (output, _) = virtual_output(&name, (800, 600));
+                outputs.add(name.clone(), name, output, OutputKind::Virtual, None)
+            })
+            .collect();
+        (outputs, ids)
+    }
+
+    #[test]
+    fn removing_the_focused_output_repairs_the_id() {
+        let (mut outputs, ids) = outputs_with(3);
+        assert!(outputs.set_focused(ids[1]));
+        outputs.remove(ids[1]);
+        // Dangling until repaired — that is exactly the state `focused()` must
+        // report honestly rather than papering over.
+        assert_eq!(outputs.focused_id(), None);
+        assert_eq!(outputs.repair_focus(), Some(Some(ids[0])));
+        assert_eq!(outputs.focused_id(), Some(ids[0]));
+    }
+
+    #[test]
+    fn removing_another_output_leaves_focus_alone() {
+        let (mut outputs, ids) = outputs_with(3);
+        assert!(outputs.set_focused(ids[2]));
+        outputs.remove(ids[0]);
+        assert_eq!(outputs.focused_id(), Some(ids[2]));
+        // Nothing to repair, so nothing is emitted.
+        assert_eq!(outputs.repair_focus(), None);
+        assert_eq!(outputs.focused_id(), Some(ids[2]));
+    }
+
+    #[test]
+    fn removing_the_last_output_leaves_nothing_focused() {
+        let (mut outputs, ids) = outputs_with(1);
+        assert_eq!(outputs.focused_id(), Some(ids[0]));
+        outputs.remove(ids[0]);
+        assert_eq!(outputs.repair_focus(), Some(None));
+        assert_eq!(outputs.focused_id(), None);
+        assert!(outputs.focused().is_none());
+        assert_eq!(outputs.focused, NO_OUTPUT);
+        // And the next output to arrive takes focus, as `add` promises.
+        let (output, _) = virtual_output("virtual-x", (800, 600));
+        let id = outputs.add("x".into(), "x".into(), output, OutputKind::Virtual, None);
+        assert_eq!(outputs.focused_id(), Some(id));
     }
 
     #[test]

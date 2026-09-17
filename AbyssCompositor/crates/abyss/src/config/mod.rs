@@ -40,6 +40,10 @@ pub struct General {
     pub border_size: i32,
     pub layout: LayoutKind,
     pub focus_follows_mouse: bool,
+    pub focus_follows_mouse_across_outputs: bool,
+    pub unfocus_on_empty_workspace: bool,
+    pub focus_follows_mouse_layers: bool,
+    pub refocus_on_scene_change: bool,
     pub col_active: [f32; 4],
     pub col_inactive: [f32; 4],
 }
@@ -52,6 +56,10 @@ impl Default for General {
             border_size: 2,
             layout: LayoutKind::Dwindle,
             focus_follows_mouse: true,
+            focus_follows_mouse_across_outputs: true,
+            unfocus_on_empty_workspace: true,
+            focus_follows_mouse_layers: true,
+            refocus_on_scene_change: true,
             // eclipse amber on near-black
             col_active: [0.91, 0.64, 0.24, 1.0],
             col_inactive: [0.09, 0.09, 0.09, 1.0],
@@ -1301,6 +1309,26 @@ impl Config {
                 "focus-follows-mouse" => {
                     if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
                         self.general.focus_follows_mouse = b;
+                    }
+                }
+                "focus-follows-mouse-across-outputs" => {
+                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
+                        self.general.focus_follows_mouse_across_outputs = b;
+                    }
+                }
+                "unfocus-on-empty-workspace" => {
+                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
+                        self.general.unfocus_on_empty_workspace = b;
+                    }
+                }
+                "focus-follows-mouse-layers" => {
+                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
+                        self.general.focus_follows_mouse_layers = b;
+                    }
+                }
+                "refocus-on-scene-change" => {
+                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
+                        self.general.refocus_on_scene_change = b;
                     }
                 }
                 "layout" => match arg(n).and_then(KdlValue::as_string) {

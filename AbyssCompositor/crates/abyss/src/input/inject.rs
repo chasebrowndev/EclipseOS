@@ -55,17 +55,13 @@ impl AbyssState {
         // Click-to-focus. Skipped under a grab (an active drag or popup grab
         // owns the focus) and under the lock screen, which sees no client.
         if pressed && !pointer.is_grabbed() && !self.lock.locked {
-            if let Some(window) = self
-                .space
-                .element_under(self.pointer_location)
-                .map(|(w, _)| w.clone())
-            {
-                self.space.raise_element(&window, true);
-                self.focus = Some(window.clone());
-                let target = window.toplevel().map(|t| t.wl_surface().clone());
-                self.seat.get_keyboard().unwrap().set_focus(self, target, serial);
-                crate::shell::arrange(self);
-            }
+            // The same entry point real input uses (ADR 0042): scripted input
+            // must exercise the focus rules, not a copy of them, or a focus
+            // bug passes WLCS and still ships.
+            let pos = self.pointer_location;
+            let action =
+                crate::shell::focus::decide_pointer_focus(&crate::shell::focus::pointer_focus_ctx(self, pos));
+            crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Click);
         }
         pointer.button(
             self,
@@ -119,13 +115,13 @@ impl AbyssState {
             self.surface_under(location)
         };
         if !self.lock.locked && !touch.is_grabbed() {
-            if let Some(window) = self.space.element_under(location).map(|(w, _)| w.clone()) {
-                self.space.raise_element(&window, true);
-                self.focus = Some(window.clone());
-                let target = window.toplevel().map(|t| t.wl_surface().clone());
-                self.seat.get_keyboard().unwrap().set_focus(self, target, serial);
-                crate::shell::arrange(self);
-            }
+            // As above: one focus path, shared with the pointer. The context is
+            // built at the touch point, not at `pointer_location` — touch has
+            // no cursor.
+            let action = crate::shell::focus::decide_pointer_focus(&crate::shell::focus::pointer_focus_ctx(
+                self, location,
+            ));
+            crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Touch);
         }
         if let Some((surface, _)) = &focus {
             if let Some(client) = smithay::reexports::wayland_server::Resource::client(surface) {

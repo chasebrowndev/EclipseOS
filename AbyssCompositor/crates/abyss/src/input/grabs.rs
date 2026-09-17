@@ -416,3 +416,28 @@ pub fn start_resize(
     pointer.set_grab(state, grab, serial, Focus::Clear);
     state.pointer_grab_active = true;
 }
+
+/// The single definition of "a drag is in flight" (COMP-05 §5).
+///
+/// Focus must not follow the mouse across an output boundary mid-drag, and a
+/// drag is more than this crate's own interactive move/resize: a client can
+/// hold the pointer itself (`wl_data_device.start_drag`, or any grab it
+/// installed), and a popup grab is a held-pointer interaction too.
+///
+/// Smithay `=0.7.0` does not expose "is a DnD grab active" as its own
+/// predicate — the DnD grab is just a `PointerGrab` it installs on the seat
+/// (`wayland/selection/data_device/dnd_grab.rs`), so it is observable only as
+/// `PointerHandle::is_grabbed`. The repo's own `ClientDndGrabHandler` tracking
+/// (`dnd_icon`, set in `started`, cleared in `dropped`) is checked too, since
+/// a touch-initiated DnD never touches the pointer grab at all.
+///
+/// Order matters: the two lock-free reads come first, because
+/// `PointerHandle::is_grabbed` takes the pointer's internal mutex — which
+/// smithay holds across a grab's own callbacks. Checking
+/// `pointer_grab_active` first short-circuits the one re-entrant case.
+pub fn drag_active(state: &AbyssState) -> bool {
+    if state.pointer_grab_active || !state.popup_grabs.is_empty() || state.dnd_icon.is_some() {
+        return true;
+    }
+    state.seat.get_pointer().is_some_and(|p| p.is_grabbed())
+}
