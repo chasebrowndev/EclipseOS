@@ -2155,6 +2155,7 @@ fn parse_action(node: &KdlNode) -> Result<Action, String> {
         "annotation-select" => Action::AnnotationSelect,
         "annotation-dismiss" => Action::AnnotationDismiss,
         "annotation-expand" => Action::AnnotationExpand,
+        "annotation-auto-toggle" => Action::AnnotationAutoToggle,
         "quit" | "exit" => Action::Quit,
         other => return Err(format!("unknown action '{other}'")),
     })
@@ -2778,6 +2779,7 @@ mod tests {
             ("annotation-select", Action::AnnotationSelect),
             ("annotation-dismiss", Action::AnnotationDismiss),
             ("annotation-expand", Action::AnnotationExpand),
+            ("annotation-auto-toggle", Action::AnnotationAutoToggle),
         ] {
             let doc: KdlDocument = format!("bind \"SUPER CTRL\" \"o\" {{ {name}; }}")
                 .parse()
@@ -2790,7 +2792,10 @@ mod tests {
         // The addon is optional, so its chords cost the default config nothing.
         assert!(!default_binds().iter().any(|b| matches!(
             b.action,
-            Action::AnnotationSelect | Action::AnnotationDismiss | Action::AnnotationExpand
+            Action::AnnotationSelect
+                | Action::AnnotationDismiss
+                | Action::AnnotationExpand
+                | Action::AnnotationAutoToggle
         )));
     }
 }

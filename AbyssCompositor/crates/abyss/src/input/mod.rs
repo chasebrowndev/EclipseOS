@@ -96,6 +96,7 @@ pub enum Action {
     AnnotationSelect,
     AnnotationDismiss,
     AnnotationExpand,
+    AnnotationAutoToggle,
 }
 
 /// A configured key binding.
@@ -203,6 +204,7 @@ impl AbyssState {
             Action::AnnotationSelect => self.region_select_start(),
             Action::AnnotationDismiss => self.emit_keybind("annotation-dismiss"),
             Action::AnnotationExpand => self.emit_keybind("annotation-expand"),
+            Action::AnnotationAutoToggle => self.emit_keybind("annotation-auto-toggle"),
         }
     }
 
