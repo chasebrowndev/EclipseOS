@@ -217,6 +217,17 @@ pub struct Bar {
     pub fold_when_inactive: bool,
     /// Height in logical px of that folded strip.
     pub fold_height: u32,
+    /// Which edge of every output the bar is anchored to. The layer surface's
+    /// anchor is chosen once, at surface creation (COMP-13 §1.1's `restart`
+    /// reload class), so a running bar keeps its old edge until relaunched.
+    pub position: BarPosition,
+}
+
+/// The edge `eclipse-bar`'s layer surface anchors to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarPosition {
+    Top,
+    Bottom,
 }
 
 impl Default for Bar {
@@ -224,6 +235,7 @@ impl Default for Bar {
         Self {
             fold_when_inactive: false,
             fold_height: 4,
+            position: BarPosition::Top,
         }
     }
 }
@@ -274,7 +286,7 @@ impl Decoration {
     }
 }
 
-/// `blur { enabled #false; size 8; passes 2 }`. Dual-Kawase (COMP-02 §9).
+/// `blur { enabled #true; size 8; passes 2 }`. Dual-Kawase (COMP-02 §9).
 #[derive(Debug, Clone)]
 pub struct Blur {
     pub enabled: bool,
@@ -285,7 +297,7 @@ pub struct Blur {
 impl Default for Blur {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             size: 8,
             passes: 2,
         }
@@ -1330,6 +1342,14 @@ impl Config {
                 "fold-height" => match arg(n).and_then(KdlValue::as_integer) {
                     Some(v) => self.bar.fold_height = v.clamp(2, 16) as u32,
                     None => self.reject(n, "fold-height expects an integer"),
+                },
+                "position" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("top") => self.bar.position = BarPosition::Top,
+                    Some("bottom") => self.bar.position = BarPosition::Bottom,
+                    other => self.reject(
+                        n,
+                        format!("unknown bar position, keeping default (other={:?})", other),
+                    ),
                 },
                 _ => self.unknown_key(n, "bar", "bar node"),
             }
@@ -2432,11 +2452,22 @@ mod tests {
     #[test]
     fn decoration_defaults_are_no_effect() {
         let cfg = Config::default();
+        // Geometry and opacity are untouched out of the box: nothing here
+        // changes where a window is or how solid it looks.
         assert!(!cfg.decoration.any_window_effect());
-        assert!(!cfg.decoration.blur.enabled && !cfg.decoration.shadow.enabled);
+        assert!(!cfg.decoration.shadow.enabled);
         assert_eq!(cfg.decoration.rounding, 0);
         // Animations off means no curve resolves even if one were parsed.
         assert!(!cfg.animations.enabled);
+    }
+
+    /// Blur is the one decoration that ships on: translucent surfaces get a
+    /// Dual-Kawase pass without being asked. It costs a render pass, so it is
+    /// called out here rather than folded into the no-effect test above --- if
+    /// this flips, the schema default column and `docs/CONFIG.md` flip with it.
+    #[test]
+    fn blur_ships_enabled() {
+        assert!(Config::default().decoration.blur.enabled);
     }
 
     #[test]

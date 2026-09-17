@@ -28,6 +28,15 @@ defaults.
 
 ## Taskbar
 
+- **Push the glass further.** `bar_ground` (`crates/eclipse-ui/src/theme.rs:107`)
+  is already meant to read as frosted glass over the compositor's dual-Kawase
+  blur (COMP-02 §9), but today it's a flat translucent `GLASS_DEEP` fill with
+  no blur-aware treatment of its own — no adjustable frost/tint balance, no
+  distinct look from the other `surface`-derived panels. Once `BLUR-01` lands
+  (blur-off fallback) this is the next layer: give the bar its own glass
+  identity — tint strength, edge highlight intensity, maybe a settings-exposed
+  frost amount — rather than reusing the same translucent constant every
+  `surface` uses.
 - **Clock → calendar drawer.** Clicking the time/date opens a full calendar
   panel, the way Windows does. The clock's own format (12-hour time,
   `m/d/y` date, both configurable per the rule above) is in flight; the drawer

@@ -57,10 +57,18 @@ fn bar(output: String) -> iced_layershell::Result {
     // Read back by `App::new`, which the builder calls with no arguments.
     std::env::set_var(OUTPUT_ENV, &output);
 
+    // `bar.position` is `reload: restart` — the layer surface's anchor is
+    // fixed for its whole life, so it is read once here, before the surface
+    // exists, rather than through the live `Conn` the running app holds.
+    let edge = match eclipse_bar::conn::Conn::new().bar_config().position {
+        eclipse_bar::conn::BarPosition::Top => Anchor::Top,
+        eclipse_bar::conn::BarPosition::Bottom => Anchor::Bottom,
+    };
+
     let mut builder =
         iced_layershell::build_pattern::daemon(app::App::new, namespace, app::update, view::view)
             .layer_settings(LayerShellSettings {
-                anchor: Anchor::Top | Anchor::Left | Anchor::Right,
+                anchor: edge | Anchor::Left | Anchor::Right,
                 layer: Layer::Top,
                 // Width 0 means "as wide as the output"; the height is also
                 // the exclusive zone, so a window opened afterwards starts

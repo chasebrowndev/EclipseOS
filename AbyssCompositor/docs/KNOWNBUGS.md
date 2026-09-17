@@ -13,6 +13,36 @@ LAUNCH-01 through LAUNCH-04 were fixed on 2026-09-13 and removed from this file.
 
 ---
 
+## BLUR-01 — the launcher and notification panels are unreadable with blur off
+
+**Severity: design.** Not a crash; a visual dependency between two independent
+config toggles that only one side knows about.
+
+The launcher and notification popups in `eclipse-bar` paint their panel
+background as a translucent dark fill (roughly `rgba(0,0,0,0.6)`), assuming
+the compositor's dual-Kawase backdrop (`crates/abyss/src/render/blur.rs`,
+COMP-02 §9) fills in behind them per `shows_through`
+(`crates/abyss/src/render/mod.rs:154`). With `decoration.blur.enabled` false —
+previously the shipped default in `crates/abyss/src/config/mod.rs:288`, now
+flipped to `true` — nothing renders behind the translucent fill, so the panel
+alpha-blends over whatever is underneath and reads as a flat dark rectangle,
+not the intended frosted-glass panel. Reproduce with blur off
+(`decoration { blur { enabled #false } }` in config): open the launcher or
+trigger a notification.
+
+Flipping the shipped default masks this for anyone who never touches the
+setting, but a user who turns blur off (perf, preference, unsupported GPU
+path) still gets a broken-looking panel with no visual cause pointing back to
+that toggle. **Proposed fix:** either give the launcher/notification panels a
+solid, non-blur-dependent fallback background when blur is off (frontend,
+`eclipse-frontend` territory — `crates/eclipse-bar/src/launcher/view.rs` and
+the notification view), or have the compositor refuse `shows_through` in a
+way that degrades to a flat but *intentionally styled* fill rather than
+leaving the client's own translucent color exposed unblurred. No one has
+committed to either yet.
+
+---
+
 ## LAUNCH-05 — a clipped note butts against the selected row's id
 
 **Severity: cosmetic. Uncertain whether in scope.**
