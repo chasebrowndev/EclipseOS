@@ -26,3 +26,8 @@ without the `seat.focus.human` capability, which is prompt-class.
 ## Revisit when
 Multi-output focus-follows-mouse proves annoying in daily use, or a client
 class breaks under it.
+
+## Amendments
+- 2026-09-16: ADR 0042 makes the focused output a first-class concept and
+  derives keyboard focus from it, discharging the cross-output, during-drag and
+  trusted-prompt consequences listed above. This decision is unchanged.

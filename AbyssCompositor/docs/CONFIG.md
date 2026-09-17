@@ -29,6 +29,10 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `general.border-size` | int 0..512 | `2` | live | Window border thickness, logical px. 0 disables borders. |
 | `general.layout` | dwindle \| master | `"dwindle"` | live | Default tiling layout for workspaces without their own. |
 | `general.focus-follows-mouse` | bool | `#true` | live | Move keyboard focus to the window under the pointer. |
+| `general.focus-follows-mouse-across-outputs` | bool | `#true` | live | Let pointer motion move focus to another output. Off keeps focus on the current output until you click. |
+| `general.unfocus-on-empty-workspace` | bool | `#true` | live | Clear keyboard focus when the pointer enters an output whose workspace has no focusable window. Off keeps the previous focus. |
+| `general.focus-follows-mouse-layers` | bool | `#true` | live | Let pointer motion take focus back from an on-demand layer surface such as the bar. Exclusive layer surfaces are never affected. |
+| `general.refocus-on-scene-change` | bool | `#true` | live | Re-evaluate focus when windows appear or disappear under a stationary pointer. |
 | `general.col-active-border` | colour `#rrggbb[aa]` | `#e8a33dff` | live | Border colour of the focused window. |
 | `general.col-inactive-border` | colour `#rrggbb[aa]` | `#161616ff` | live | Border colour of every unfocused window. |
 

@@ -375,9 +375,14 @@ impl AbyssState {
         let serial = SERIAL_COUNTER.next_serial();
         let under = self.surface_under(pos);
 
-        // Focus-follows-mouse (decided 2026-09-05), config-gated.
+        // Focus-follows-mouse (decided 2026-09-05), config-gated. The rules
+        // themselves live in one pure function (ADR 0042); this path only
+        // reads the context, then applies the verdict. Compute the action
+        // while the borrow is shared, then drop it before applying.
         if self.config.general.focus_follows_mouse {
-            focus_window_under(self, pos, serial);
+            let action =
+                crate::shell::focus::decide_pointer_focus(&crate::shell::focus::pointer_focus_ctx(self, pos));
+            crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Pointer);
         }
 
         let new_focus = under.as_ref().map(|(s, _)| s.clone());
@@ -407,7 +412,10 @@ impl AbyssState {
     /// stationary pointer: a window moved or resized, a subsurface slid
     /// under/out from under it, or an input region shrank away (COMP-04 §6).
     /// Device motion goes through `pointer_moved`; this is its scene-driven
-    /// twin and deliberately does not touch output or keyboard focus.
+    /// twin. It moves keyboard focus too when `general.refocus-on-scene-change`
+    /// is set (the default), so a window closing under a stationary cursor
+    /// hands focus to whatever is now underneath instead of leaving it stale
+    /// until the mouse is jiggled (ADR 0042).
     pub(crate) fn refresh_pointer_focus(&mut self) {
         if self.lock.locked {
             return;
@@ -418,6 +426,11 @@ impl AbyssState {
         // grab calls from inside its own `motion` callback, and smithay holds
         // the pointer's internal mutex across that callback. Re-entering
         // `PointerHandle::motion` there deadlocks the compositor thread.
+        //
+        // This reads like a redundant subset of `grabs::drag_active` and is
+        // not: that predicate calls `PointerHandle::is_grabbed`, which takes
+        // the very mutex smithay is holding on the re-entrant path. This bail
+        // must stay a plain flag read, and must stay first.
         if self.pointer_grab_active {
             return;
         }
@@ -431,6 +444,15 @@ impl AbyssState {
         if next == self.last_pointer_focus {
             return;
         }
+        // The scene changed under a stationary pointer, so re-derive keyboard
+        // focus from the same rules a real motion would use. Gated: with
+        // `refocus-on-scene-change` off, only pointer focus is refreshed.
+        let ctx = crate::shell::focus::pointer_focus_ctx(self, self.pointer_location);
+        if ctx.refocus_on_scene_change {
+            let action = crate::shell::focus::decide_pointer_focus(&ctx);
+            crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::WindowUnmap);
+        }
+
         let old_focus = self.last_pointer_focus.take().map(|(s, _)| s);
         let new_focus = next.as_ref().map(|(s, _)| s.clone());
         self.last_pointer_focus = next;
@@ -545,8 +567,10 @@ impl AbyssState {
         // to fix it. A press says which window the human means. Not while a
         // popup grab is up: there the press is the dismissal, handled below.
         if pressed && self.popup_grabs.is_empty() {
-            let serial = SERIAL_COUNTER.next_serial();
-            focus_window_under(self, self.pointer_location, serial);
+            let pos = self.pointer_location;
+            let action =
+                crate::shell::focus::decide_pointer_focus(&crate::shell::focus::pointer_focus_ctx(self, pos));
+            crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Click);
         }
         // A press outside the grab dismisses it, and must be delivered first:
         // xdg-shell forbids `popup_done` preceding the button that caused it.
@@ -576,32 +600,6 @@ impl AbyssState {
         pointer.axis(self, frame);
         pointer.frame(self);
     }
-}
-
-/// Give the keyboard to the toplevel under `pos`, raising it. A no-op when
-/// that window already has the focus, or when the pointer is over no window
-/// at all — an empty desktop is not a reason to take the keyboard away from
-/// whatever had it.
-fn focus_window_under(state: &mut AbyssState, pos: Point<f64, Logical>, serial: smithay::utils::Serial) {
-    // Never out from under a layer surface that has taken the keyboard. The
-    // launcher is keyboard-exclusive by construction; letting the pointer
-    // drifting across a toplevel behind it steal the focus is what made
-    // Escape, Super+C and typing all do nothing.
-    if crate::shell::focused_layer(state).is_some() {
-        return;
-    }
-    let Some(window) = state.space.element_under(pos).map(|(w, _)| w.clone()) else {
-        return;
-    };
-    let keyboard = state.seat.get_keyboard().unwrap();
-    let target = window.toplevel().map(|t| t.wl_surface().clone());
-    if keyboard.current_focus() == target {
-        return;
-    }
-    state.space.raise_element(&window, true);
-    state.focus = Some(window);
-    keyboard.set_focus(state, target, serial);
-    crate::shell::arrange(state);
 }
 
 /// Borrowed xkb settings from the `input` block (COMP-13 §1.2). Rules and model

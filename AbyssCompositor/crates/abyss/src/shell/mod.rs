@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Window management: placement, layout, workspaces, focus (COMP-05).
 
+pub mod focus;
 pub mod layout;
 pub mod rules;
 pub mod workspace;
+
+// The focus path lives in `focus`, but every existing call site says
+// `shell::focus_window` (ADR 0042 makes `focus::apply_focus` the path they all
+// grow into, one caller at a time).
+pub use focus::{focus_surface, focus_window, refocus_topmost};
 
 use smithay::{
     desktop::{
@@ -36,8 +42,10 @@ pub fn window_surface(window: &Window) -> Option<WlSurface> {
     }
 }
 
-/// The output that owns focus. Never `None` in practice: COMP-03 §5 guarantees
-/// a fallback output exists whenever there is no connector.
+/// The output that owns focus. `None` only when there is no output at all:
+/// `Outputs::add` adopts focus for the first entry and `unregister` calls
+/// `repair_focus`, so the focused id dangles nowhere in between (ADR 0042).
+/// Callers therefore treat `None` as "no display attached", not as "unknown".
 pub fn focused_output(state: &AbyssState) -> Option<Output> {
     state.outputs.focused().map(|e| e.output.clone())
 }
@@ -57,11 +65,7 @@ pub fn output_of_window(state: &AbyssState, window: &Window) -> Option<u64> {
     state
         .outputs
         .iter()
-        .find(|e| {
-            e.workspaces
-                .iter()
-                .any(|ws| ws.all_windows().contains(window) || ws.pending.contains(window))
-        })
+        .find(|e| e.workspaces.iter().any(|ws| ws.holds(window)))
         .map(|e| e.id)
 }
 
@@ -416,7 +420,13 @@ pub fn replace_window(state: &mut AbyssState, window: &Window, placement: &rules
 /// no output to place it on.
 fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement) -> bool {
     let window = window.clone();
+    // No focused output means no outputs at all — `add` adopts focus for the
+    // first entry and `unregister` repairs it, so there is no transient window
+    // where an id dangles (ADR 0042). `fallback_id()` would be `None` here too,
+    // so there is deliberately no fallback: there is genuinely nowhere to put
+    // the window. Say so, because the window is then dropped on the floor.
     let Some(mut id) = state.outputs.focused().map(|e| e.id) else {
+        tracing::warn!("no output to place a new window on; dropping it");
         return false;
     };
     // An `output` rule retargets the window before anything is computed from
@@ -584,62 +594,6 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     }
     arrange(state);
     refocus_topmost(state);
-}
-
-pub fn focus_window(state: &mut AbyssState, window: &Window) {
-    let Some(surface) = window_surface(window) else {
-        return;
-    };
-    // X11 focus is compositor-driven: activate, raise in the X stack, then
-    // let the keyboard follow (COMP-07 §1).
-    if let Some(x11) = window.x11_surface() {
-        x11.set_activated(true).ok();
-        if let Some(wm) = state.xwayland.wm.as_mut() {
-            let _ = wm.raise_window(x11);
-        }
-        let others: Vec<Window> = state.space.elements().filter(|w| *w != window).cloned().collect();
-        for w in others {
-            if let Some(other) = w.x11_surface() {
-                other.set_activated(false).ok();
-            }
-        }
-    }
-    state.focus = Some(window.clone());
-    state.urgent.retain(|w| w != window);
-    if let Some(id) = output_of_window(state, window) {
-        let _ = state.outputs.set_focused(id);
-    }
-    let keyboard = state.seat.get_keyboard().unwrap();
-    keyboard.set_focus(state, Some(surface), SERIAL_COUNTER.next_serial());
-    arrange(state);
-    let handle = state.ipc.handle_for(window);
-    crate::ipc::emit(state, "focus", serde_json::json!({"handle": handle}));
-}
-
-pub fn focus_surface(state: &mut AbyssState, surface: Option<WlSurface>) {
-    let keyboard = state.seat.get_keyboard().unwrap();
-    keyboard.set_focus(state, surface, SERIAL_COUNTER.next_serial());
-}
-
-pub fn refocus_topmost(state: &mut AbyssState) {
-    let here: Vec<Window> = state
-        .outputs
-        .focused()
-        .map(|e| e.workspace().windows())
-        .unwrap_or_default();
-    let top = state
-        .space
-        .elements()
-        .rfind(|w| here.contains(w))
-        .cloned()
-        .or_else(|| state.space.elements().next_back().cloned());
-    match top {
-        Some(w) => focus_window(state, &w),
-        None => {
-            state.focus = None;
-            focus_surface(state, None);
-        }
-    }
 }
 
 /// Topmost surface at `pos`, honouring the COMP-02 §4 stacking order:

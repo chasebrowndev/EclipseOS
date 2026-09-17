@@ -23,7 +23,9 @@ use crate::state::AbyssState;
 impl FractionalScaleHandler for AbyssState {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
         // The surface has no buffer yet, so it is on no output; answer with the
-        // focused output's scale and correct it on the first commit.
+        // focused output's scale and correct it on the first commit. With no
+        // output at all there is no scale to guess: stay silent and let the
+        // first commit answer (ADR 0042 made `focused()` strict).
         if let Some(output) = self.outputs.focused().map(|e| e.output.clone()) {
             send_scale(&surface, &output);
         }
