@@ -41,7 +41,7 @@ fn run() -> Result<(), String> {
         // override is still a working daemon.
         eprintln!("oracle-eyes: config: {e}");
     }
-    let auto = cfg.auto;
+    let mut auto = cfg.auto;
     let fail_ms = cfg.fail_indicator_ms;
     let poll_every = Duration::from_millis(cfg.settle_ms.max(1));
 
@@ -94,6 +94,14 @@ fn run() -> Result<(), String> {
                     None => Some(Err("select event carried no region".to_string())),
                 },
                 Some("annotation-expand") => Some(pipeline.expand()),
+                Some("annotation-auto-toggle") => {
+                    auto = !auto;
+                    eprintln!(
+                        "oracle-eyes: automatic mode {}",
+                        if auto { "on" } else { "off" }
+                    );
+                    None
+                }
                 Some("annotation-dismiss") => {
                     until = None;
                     if let Err(e) = hud.dismiss(&mut client) {
