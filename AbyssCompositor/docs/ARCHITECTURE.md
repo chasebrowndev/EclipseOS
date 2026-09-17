@@ -19,6 +19,12 @@ decisions/            ADRs (F-08 format)
 crates/
   abyss/             compositor                       [TCB]
   eclipse-ctl/        human CLI over the COMP-13 IPC socket
+  eclipse-ipc/        blocking client for the COMP-13 §2 socket, no async runtime
+  eclipse-ui/         DE design system: tokens, type, widgets over iced 0.14
+  eclipse-bar/        layer-shell panels — bar, toasts, center, launcher (DP-5)
+  eclipse-settings/   settings panes; every write via set_config_value (COMP-17 §3)
+  eclipse-policy-viewer/  read-only policy.kdl inspector, deliberately powerless
+  eclipse-services/   freedesktop notification server (ADR 0038), lib only
   wlcs-abyss/         wlcs conformance cdylib, drives the headless backend
   policyd/            policy + audit daemon            [TCB]   (not yet)
   policy-eval/        shared evaluator, linked by both [TCB]   (not yet)
@@ -34,9 +40,14 @@ fuzz/                 cargo-fuzz targets
 bench/                COMP-14 benchmarks
 ```
 
-Only `crates/abyss`, `crates/eclipse-ctl` and `crates/wlcs-abyss` exist today
-(see `docs/STATUS.md`). TCB crates get a line-by-line owner review
-on every change (F-07 §4).
+The nine crates above without a `(not yet)` marker exist today; everything
+marked `(not yet)` is Phase 2 or later (see `docs/STATUS.md`). All nine are
+`AGPL-3.0-only` via `license.workspace = true` — the Apache-2.0 half of the
+F-05 §3 split has no code yet. None of the six DE crates is TCB. TCB crates
+get a line-by-line owner review on every change (F-07 §4).
+
+The DE crates are members of this one workspace, not a separate tree; an
+`EclipseDE/` directory is not part of the layout.
 
 ## Licensing split (F-05 §3, ADR 0005)
 
