@@ -1,0 +1,89 @@
+# EclipseOS live/install medium package set (D-03 §2).
+#
+# Two jobs, deliberately not separated: this list is both what the live medium
+# boots with and what `install-eclipseos.sh` pacstraps onto the target. Keeping
+# one list means the thing you tried on the live ISO is the thing you installed.
+
+## boot and kernel (D-01 §2)
+linux
+linux-firmware
+linux-firmware-amdgpu
+amd-ucode
+mkinitcpio
+mkinitcpio-archiso
+mkinitcpio-nfs-utils
+base
+syslinux
+edk2-shell
+memtest86+-efi
+
+## filesystem and disk tools the installer needs
+e2fsprogs
+dosfstools
+exfatprogs
+btrfs-progs
+xfsprogs
+gptfdisk
+parted
+cryptsetup
+lvm2
+mdadm
+arch-install-scripts
+archinstall
+
+## base userland
+sudo
+which
+less
+nano
+micro
+man-db
+man-pages
+usbutils
+pciutils
+lsof
+htop
+rsync
+wget
+curl
+git
+openssh
+zsh
+
+## graphics stack (D-01 §1) — amdgpu is in-kernel, no DKMS
+mesa
+vulkan-radeon
+libva-mesa-driver
+libdrm
+libdisplay-info
+libxkbcommon
+wayland
+wayland-utils
+seatd
+libinput
+
+## services the DE consumes over D-Bus (D-01 §1)
+networkmanager
+bluez
+bluez-utils
+upower
+pipewire
+pipewire-pulse
+pipewire-alsa
+wireplumber
+alsa-utils
+polkit
+
+## greeter and session (D-01 §3)
+greetd
+greetd-regreet
+cage
+foot
+xdg-user-dirs
+xdg-utils
+noto-fonts
+noto-fonts-emoji
+ttf-jetbrains-mono-nerd
+
+## EclipseOS itself (D-01 §1) — pulls abyss, desktop and policyd
+eclipseos-meta

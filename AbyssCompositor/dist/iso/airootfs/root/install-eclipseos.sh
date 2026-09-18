@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# EclipseOS installer (D-03 §4). Deliberately small and readable: it partitions
+# one disk, pacstraps the same package set the live medium booted with, and
+# installs a bootloader. There is no setup system and no first-boot wizard --
+# the shipped defaults in /etc/eclipse are the configuration (D-01 §6).
+#
+# `archinstall` is also on the medium for anyone who wants the guided route.
+# This script exists because its JSON schema moves between releases and a
+# forty-line pacstrap does not.
+#
+# DESTRUCTIVE. It wipes the disk you name. It asks first, twice.
+set -euo pipefail
+
+die() { printf '\n!! %s\n' "$*" >&2; exit 1; }
+say() { printf '\n==> %s\n' "$*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+[[ -d /sys/firmware/efi ]] || die "UEFI boot required; this medium was booted in BIOS mode"
+
+# --- target disk -------------------------------------------------------------
+say "disks on this machine"
+lsblk -dpno NAME,SIZE,MODEL | grep -v loop
+
+read -rp $'\nfull path of the disk to install to (e.g. /dev/nvme0n1): ' DISK
+[[ -b $DISK ]] || die "$DISK is not a block device"
+
+read -rp "this ERASES everything on $DISK. type the disk path again to confirm: " CONFIRM
+[[ $CONFIRM == "$DISK" ]] || die "confirmation did not match; nothing was changed"
+
+read -rp $'\nhostname: ' HOSTNAME
+read -rp 'username (added to wheel): ' USERNAME
+[[ -n $HOSTNAME && -n $USERNAME ]] || die "hostname and username are both required"
+
+# nvme0n1 -> nvme0n1p1; sda -> sda1
+part() { [[ $DISK == *nvme* || $DISK == *mmcblk* ]] && echo "${DISK}p$1" || echo "${DISK}$1"; }
+ESP="$(part 1)"
+ROOT="$(part 2)"
+
+# --- partition ---------------------------------------------------------------
+say "partitioning $DISK"
+sgdisk --zap-all "$DISK"
+sgdisk -n1:0:+1G  -t1:ef00 -c1:EFI \
+       -n2:0:0    -t2:8304 -c2:eclipseos "$DISK"
+partprobe "$DISK"
+udevadm settle
+
+mkfs.fat -F32 -n ECLIPSE_ESP "$ESP"
+mkfs.ext4 -F -L eclipseos "$ROOT"
+
+mount "$ROOT" /mnt
+mount --mkdir "$ESP" /mnt/boot
+
+# --- base system -------------------------------------------------------------
+# The live medium's own package list, minus the archiso-only pieces. Installing
+# exactly what booted is the point: what you just tried is what you get.
+say "installing packages (this is the long part)"
+mapfile -t PKGS < <(grep -vE '^\s*(#|$)' /root/eclipseos-packages.txt)
+
+pacstrap -K /mnt "${PKGS[@]}"
+genfstab -U /mnt >>/mnt/etc/fstab
+
+# --- configure ---------------------------------------------------------------
+say "configuring the installed system"
+echo "$HOSTNAME" >/mnt/etc/hostname
+ln -sf /usr/share/zoneinfo/America/Chicago /mnt/etc/localtime
+sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /mnt/etc/locale.gen
+echo 'LANG=en_US.UTF-8' >/mnt/etc/locale.conf
+
+# The EclipseOS repo drop-in ships in eclipseos-meta; pacman.conf has to include
+# it (D-02). Adding the line here rather than in the package keeps the package
+# from editing a file it does not own.
+grep -q 'eclipseos.conf' /mnt/etc/pacman.conf ||
+  printf '\n# EclipseOS packages (D-02)\nInclude = /etc/pacman.d/eclipseos.conf\n' >>/mnt/etc/pacman.conf
+
+arch-chroot /mnt /bin/bash -euo pipefail <<CHROOT
+locale-gen
+hwclock --systohc
+mkinitcpio -P
+bootctl install
+
+useradd -m -G wheel -s /bin/bash "$USERNAME"
+echo '%wheel ALL=(ALL:ALL) ALL' >/etc/sudoers.d/10-wheel
+chmod 0440 /etc/sudoers.d/10-wheel
+
+# D-01 §5: no group management. A logind session on a seat is the whole
+# requirement; logind's ACL on the DRM node does the rest.
+
+systemctl enable greetd NetworkManager bluetooth systemd-timesyncd
+CHROOT
+
+# systemd-boot entry. amd_pstate=active is the Framework 13 AMD default worth
+# having from the first boot rather than discovering later (D-01 §2).
+ROOT_UUID="$(blkid -s UUID -o value "$ROOT")"
+cat >/mnt/boot/loader/loader.conf <<'LOADER'
+default eclipseos.conf
+timeout 2
+console-mode max
+editor no
+LOADER
+cat >/mnt/boot/loader/entries/eclipseos.conf <<ENTRY
+title   EclipseOS
+linux   /vmlinuz-linux
+initrd  /amd-ucode.img
+initrd  /initramfs-linux.img
+options root=UUID=$ROOT_UUID rw amd_pstate=active
+ENTRY
+
+say "set a password for root"
+arch-chroot /mnt passwd
+say "set a password for $USERNAME"
+arch-chroot /mnt passwd "$USERNAME"
+
+umount -R /mnt
+say "done. reboot, pick Abyss at the greeter."
