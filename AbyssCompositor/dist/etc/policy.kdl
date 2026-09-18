@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Shipped policy defaults — /etc/eclipse/policy.kdl. Owned by the image.
+//
+// This is a security default, not a convenience default, and it gets the same
+// line-by-line owner review as TCB code (F-07 §4). It ships empty: policy is
+// fail-closed, so an empty file denies everything that is not granted
+// elsewhere, and that is the correct starting position.
+//
+// It ships at all — rather than being omitted — so that the path, the owner and
+// the file mode are established before anything is at stake. An empty file with
+// the right ownership is easier to audit than a file that appears the first time
+// someone grants something.
+//
+// Keys that belong in abyss.kdl are refused here, and vice versa (ADR 0037).
+// There are deliberately no /etc/eclipse/policy.d/ drop-ins.

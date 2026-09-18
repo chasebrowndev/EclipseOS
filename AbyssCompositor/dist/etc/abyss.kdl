@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Shipped defaults — /etc/eclipse/abyss.kdl. Owned by the image (D-01 §4.1):
+// a package upgrade replaces this file wholesale and it is deliberately not
+// listed in backup=(), so it must stay pristine. Your changes belong in
+// ~/.config/eclipse/abyss.kdl, which is applied after this file.
+//
+// This file is nearly empty on purpose. A default that lives in a config file
+// is a default you have to delete to get back to; a default that lives in the
+// schema is one you never see. Everything abyss ships is in the schema.
+
+// The one exception: which terminal the default binding launches. The schema
+// cannot know what is installed on the machine, so the image answers it.
+bind "Super" "Return" { spawn "foot" }
