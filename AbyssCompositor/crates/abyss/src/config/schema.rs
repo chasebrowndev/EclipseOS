@@ -18,7 +18,7 @@
 //! 3. schema → defaults: [`get`] on a default `Config` returns exactly the
 //!    `default` column for every row.
 
-use super::{BarPosition, Config, LayoutKind};
+use super::{BarPosition, Config, FloatingPlacement, LayoutKind};
 
 /// The type of a key's value, and whatever constrains it. A GUI maps this
 /// straight onto a control: `Bool` is a toggle, `Int{min,max}` a slider,
@@ -158,6 +158,14 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Default tiling layout for workspaces without their own.",
+    ),
+    k(
+        "general.floating-placement",
+        Ty::Enum(&["centered", "pointer", "cascade"]),
+        Str("centered"),
+        Abyss,
+        Live,
+        "Where a new floating window lands when no window rule places it.",
     ),
     k(
         "general.focus-follows-mouse",
@@ -607,6 +615,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "general.gaps-out" => V::Int(c.general.gaps_out as i64),
         "general.border-size" => V::Int(c.general.border_size as i64),
         "general.layout" => V::Str(layout_name(c.general.layout).into()),
+        "general.floating-placement" => V::Str(floating_placement_name(c.general.floating_placement).into()),
         "general.focus-follows-mouse" => V::Bool(c.general.focus_follows_mouse),
         "general.focus-follows-mouse-across-outputs" => V::Bool(c.general.focus_follows_mouse_across_outputs),
         "general.unfocus-on-empty-workspace" => V::Bool(c.general.unfocus_on_empty_workspace),
@@ -666,6 +675,14 @@ fn layout_name(l: LayoutKind) -> &'static str {
     match l {
         LayoutKind::Dwindle => "dwindle",
         LayoutKind::Master => "master",
+    }
+}
+
+fn floating_placement_name(p: FloatingPlacement) -> &'static str {
+    match p {
+        FloatingPlacement::Centered => "centered",
+        FloatingPlacement::Pointer => "pointer",
+        FloatingPlacement::Cascade => "cascade",
     }
 }
 

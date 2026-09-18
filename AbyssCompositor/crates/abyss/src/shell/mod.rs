@@ -29,7 +29,10 @@ use smithay::{
 };
 
 use crate::{
-    config::LayoutKind, input::Direction, protocols::standard::fractional_scale, shell::workspace::Floating,
+    config::{FloatingPlacement, LayoutKind},
+    input::Direction,
+    protocols::standard::fractional_scale,
+    shell::workspace::Floating,
     state::AbyssState,
 };
 
@@ -458,6 +461,8 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
     let geometry = state.space.element_geometry(&window);
+    let mode = state.config.general.floating_placement;
+    let pointer = state.pointer_location;
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let ws = placement
         .workspace
@@ -470,22 +475,11 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
             .or_else(|| geometry.map(|g| g.size))
             .unwrap_or_else(|| Size::from((area.size.w / 2, area.size.h / 2)));
         // A `position` rule is relative to the output's tiling area, so the
-        // same rule lands in the same place on any output. Absent a rule, a
-        // new floating window opens under the pointer rather than centered —
-        // matching the owner's Hyprland muscle memory — clamped so it never
-        // spawns partially off the output the pointer is actually over.
+        // same rule lands in the same place on any output. Absent a rule,
+        // `general.floating-placement` decides.
         let loc: Point<i32, Logical> = match placement.position {
             Some((x, y)) => (area.loc.x + x, area.loc.y + y).into(),
-            None => {
-                let cursor: Point<i32, Logical> = state.pointer_location.to_i32_round();
-                let max_x = (area.loc.x + area.size.w - size.w).max(area.loc.x);
-                let max_y = (area.loc.y + area.size.h - size.h).max(area.loc.y);
-                (
-                    cursor.x.clamp(area.loc.x, max_x),
-                    cursor.y.clamp(area.loc.y, max_y),
-                )
-                    .into()
-            }
+            None => floating_origin(mode, area, size, pointer, entry.workspaces[ws].floating.len()),
         };
         let rect = Rectangle::new(loc, size);
         entry.workspaces[ws].floating.push(Floating {
@@ -1173,6 +1167,41 @@ pub fn unminimize_last(state: &mut AbyssState) {
     unminimize_window(state, &window);
 }
 
+/// Where a floating window lands when no `position` rule places it
+/// (COMP-05 §4). One helper so a newly-mapped floating window and
+/// `toggle-floating` cannot drift apart: `already` is how many windows are
+/// already floating on the workspace, which only `cascade` reads.
+pub(crate) fn floating_origin(
+    mode: FloatingPlacement,
+    area: Rectangle<i32, Logical>,
+    size: Size<i32, Logical>,
+    pointer: Point<f64, Logical>,
+    already: usize,
+) -> Point<i32, Logical> {
+    let max_x = (area.loc.x + area.size.w - size.w).max(area.loc.x);
+    let max_y = (area.loc.y + area.size.h - size.h).max(area.loc.y);
+    match mode {
+        FloatingPlacement::Centered => (
+            area.loc.x + (area.size.w - size.w).max(0) / 2,
+            area.loc.y + (area.size.h - size.h).max(0) / 2,
+        )
+            .into(),
+        FloatingPlacement::Pointer => {
+            let c: Point<i32, Logical> = pointer.to_i32_round();
+            (c.x.clamp(area.loc.x, max_x), c.y.clamp(area.loc.y, max_y)).into()
+        }
+        FloatingPlacement::Cascade => {
+            const STEP: i32 = 32;
+            // Wrap before the step would push the window off the area, so a
+            // long-lived workspace restarts the diagonal instead of piling
+            // every window into the bottom-right corner.
+            let room = ((max_x - area.loc.x).min(max_y - area.loc.y) / STEP).max(1);
+            let n = (already as i32 % room) * STEP;
+            (area.loc.x + n, area.loc.y + n).into()
+        }
+    }
+}
+
 pub fn toggle_floating(state: &mut AbyssState) {
     let Some(window) = state.focus.clone() else { return };
     let Some(id) = output_of_window(state, &window).or_else(|| state.outputs.focused().map(|e| e.id)) else {
@@ -1182,23 +1211,24 @@ pub fn toggle_floating(state: &mut AbyssState) {
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
     let geometry = state.space.element_geometry(&window);
+    let mode = state.config.general.floating_placement;
+    let pointer = state.pointer_location;
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let ws = entry.active;
     if entry.workspaces[ws].tiled.contains(&window) {
         let rect = geometry
             .unwrap_or_else(|| Rectangle::new(area.loc, Size::from((area.size.w / 2, area.size.h / 2))));
-        let centered = Rectangle::new(
-            (
-                area.loc.x + (area.size.w - rect.size.w).max(0) / 2,
-                area.loc.y + (area.size.h - rect.size.h).max(0) / 2,
-            )
-                .into(),
+        let loc = floating_origin(
+            mode,
+            area,
             rect.size,
+            pointer,
+            entry.workspaces[ws].floating.len(),
         );
         entry.workspaces[ws].tiled.remove(&window);
         entry.workspaces[ws].floating.push(Floating {
             window,
-            rect: centered,
+            rect: Rectangle::new(loc, rect.size),
         });
     } else if let Some(i) = entry.workspaces[ws]
         .floating
@@ -1846,5 +1876,48 @@ pub fn focus_layer_if_wanted(state: &mut AbyssState, surface: &WlSurface) {
     if wants {
         state.focus = None;
         focus_surface(state, Some(surface.clone()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn origin(mode: FloatingPlacement, pointer: (f64, f64), already: usize) -> (i32, i32) {
+        let area = Rectangle::new(Point::from((100, 50)), Size::from((800, 600)));
+        let size = Size::from((400, 300));
+        let p = floating_origin(mode, area, size, Point::from(pointer), already);
+        (p.x, p.y)
+    }
+
+    #[test]
+    fn centered_sits_in_the_middle_of_the_tiling_area() {
+        // Offset by the area's own origin, so it centres on the output the
+        // window belongs to and not on the compositor's global 0,0.
+        assert_eq!(
+            origin(FloatingPlacement::Centered, (0.0, 0.0), 0),
+            (100 + 200, 50 + 150)
+        );
+    }
+
+    #[test]
+    fn pointer_clamps_so_the_window_never_opens_partly_offscreen() {
+        assert_eq!(origin(FloatingPlacement::Pointer, (300.0, 200.0), 0), (300, 200));
+        // Past the far edge: pulled back so the whole window fits.
+        assert_eq!(
+            origin(FloatingPlacement::Pointer, (10_000.0, 10_000.0), 0),
+            (100 + 800 - 400, 50 + 600 - 300)
+        );
+        // Before the near edge (pointer on another output): pushed in.
+        assert_eq!(origin(FloatingPlacement::Pointer, (-500.0, -500.0), 0), (100, 50));
+    }
+
+    #[test]
+    fn cascade_steps_then_wraps_instead_of_piling_up() {
+        assert_eq!(origin(FloatingPlacement::Cascade, (0.0, 0.0), 0), (100, 50));
+        assert_eq!(origin(FloatingPlacement::Cascade, (0.0, 0.0), 1), (132, 82));
+        // Room is (min(400, 300) / 32) = 9 steps, so the tenth window restarts
+        // the diagonal rather than walking off the bottom-right.
+        assert_eq!(origin(FloatingPlacement::Cascade, (0.0, 0.0), 9), (100, 50));
     }
 }

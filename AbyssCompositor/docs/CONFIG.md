@@ -28,6 +28,7 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `general.gaps-out` | int 0..512 | `10` | live | Gap between the tiling area and the screen edge, logical px. |
 | `general.border-size` | int 0..512 | `2` | live | Window border thickness, logical px. 0 disables borders. |
 | `general.layout` | dwindle \| master | `"dwindle"` | live | Default tiling layout for workspaces without their own. |
+| `general.floating-placement` | centered \| pointer \| cascade | `"centered"` | live | Where a new floating window lands when no window rule places it. |
 | `general.focus-follows-mouse` | bool | `#true` | live | Move keyboard focus to the window under the pointer. |
 | `general.focus-follows-mouse-across-outputs` | bool | `#true` | live | Let pointer motion move focus to another output. Off keeps focus on the current output until you click. |
 | `general.unfocus-on-empty-workspace` | bool | `#true` | live | Clear keyboard focus when the pointer enters an output whose workspace has no focusable window. Off keeps the previous focus. |

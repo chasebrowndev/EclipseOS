@@ -27,6 +27,19 @@ use smithay::input::keyboard::{xkb, Keysym, ModifiersState};
 use crate::input::{Action, Bind, Direction, Mods};
 use crate::xwayland::security::{AppTrust, SeatCompat};
 
+/// Where a floating window lands when nothing else decides for it — no
+/// `position` window rule, no remembered rectangle (COMP-05 §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatingPlacement {
+    /// Centred in the output's tiling area.
+    Centered,
+    /// Top-left corner at the pointer, clamped to stay fully on the output.
+    Pointer,
+    /// Stepped down-right from the area's origin, one step per window already
+    /// floating here, wrapping before it runs off the edge.
+    Cascade,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutKind {
     Dwindle,
@@ -39,6 +52,7 @@ pub struct General {
     pub gaps_out: i32,
     pub border_size: i32,
     pub layout: LayoutKind,
+    pub floating_placement: FloatingPlacement,
     pub focus_follows_mouse: bool,
     pub focus_follows_mouse_across_outputs: bool,
     pub unfocus_on_empty_workspace: bool,
@@ -55,6 +69,7 @@ impl Default for General {
             gaps_out: 10,
             border_size: 2,
             layout: LayoutKind::Dwindle,
+            floating_placement: FloatingPlacement::Centered,
             focus_follows_mouse: true,
             focus_follows_mouse_across_outputs: true,
             unfocus_on_empty_workspace: true,
@@ -1365,6 +1380,12 @@ impl Config {
                     Some("dwindle") => self.general.layout = LayoutKind::Dwindle,
                     Some("master") => self.general.layout = LayoutKind::Master,
                     other => self.reject(n, format!("unknown layout {other:?}")),
+                },
+                "floating-placement" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("centered") => self.general.floating_placement = FloatingPlacement::Centered,
+                    Some("pointer") => self.general.floating_placement = FloatingPlacement::Pointer,
+                    Some("cascade") => self.general.floating_placement = FloatingPlacement::Cascade,
+                    other => self.reject(n, format!("unknown floating-placement {other:?}")),
                 },
                 "col-active-border" | "col-inactive-border" => {
                     match arg(n).and_then(KdlValue::as_string).and_then(parse_color) {
