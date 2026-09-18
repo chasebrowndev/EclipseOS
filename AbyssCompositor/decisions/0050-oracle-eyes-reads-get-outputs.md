@@ -1,4 +1,4 @@
-# 0042 — Oracle-Eyes may call `get_outputs`
+# 0050 — Oracle-Eyes may call `get_outputs`
 Status: accepted
 Date: 2026-09-18
 Deciders: chase (owner), Claude (advisory)

@@ -1,6 +1,6 @@
 # Abyss — implementation status
 
-Last updated: 2026-09-11 (late).
+Last updated: 2026-09-18.
 
 **Spec baseline: v2 + Appendix A applied (2026-09-08).** The amendment set
 that previously sat unapplied at the end of VOL2 is now merged inline;
@@ -53,11 +53,14 @@ are implemented and verified live on the socket. What is left in Phase 1 is
 blocked on hardware, or is 9c's CI gate, 9e's two missing fields and 9f's
 benchmark subjects; 9b (effects) is done and 9c has landed its backend but not
 its `wlcs` gate.
-Phase 2 (milestones 10–25, the agent protocol) has **no code at all** — the
-`trusted_ui/`, `policy/`, `audit/`, `protocols/agent/` and `protocols/semantic/`
-directories named in the root `CLAUDE.md` module map do not exist on disk. The
-one exception is frame-level capture redaction, which milestones 9d and 22
-specify but which landed early inside milestone 8.
+Phase 2 (milestones 10–25, the agent protocol) has started: milestone 10 landed
+on `comp16-m10-policyd` as `crates/policy-eval/` and `crates/policyd/` — the
+task store, grant issue/revocation and the S-04 §4 audit store. Inside
+`crates/abyss` itself Phase 2 is still absent: the `trusted_ui/`, `policy/`,
+`audit/`, `protocols/agent/` and `protocols/semantic/` directories named in the
+root `CLAUDE.md` module map do not exist on disk. Two things landed early —
+frame-level capture redaction (milestones 9d and 22, landed inside milestone 8)
+and the capture indicator (milestone 15, same).
 
 **The DRM backend now runs on real KMS.** On 2026-09-10 `abyss --backend drm`
 booted on this machine's own hardware (RTX 4060 Ti, `nvidia-open-dkms`), lit

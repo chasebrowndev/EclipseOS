@@ -54,7 +54,9 @@ writing a new ADR that says so.
 | 0046 | [The S-04 §4 audit store is the task/counter journal, built at milestone 10](0046-shared-audit-store-at-m10.md) | accepted |
 | 0047 | [The `policy-eval` API surface: what the two processes are allowed to share](0047-policy-eval-api-surface.md) | accepted |
 | 0048 | [A task's statement is journalled as a hash, and does not survive a restart](0048-task-statement-is-hashed-not-journalled.md) | accepted |
+| 0049 | [Outputs carry a number; Ctrl+Super+[N] moves a window to display N](0049-output-number-and-move-to-output.md) | accepted |
+| 0050 | [Oracle-Eyes may call `get_outputs`](0050-oracle-eyes-reads-get-outputs.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering
-stays stable. Write them up as they are touched.
+stays stable.
