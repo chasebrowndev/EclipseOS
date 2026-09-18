@@ -632,6 +632,57 @@ the tree:
 
 ---
 
+## Distribution — Tier 6
+
+`docs/design/D-01-base-system.md` is written (2026-09-18) — the first Tier 6
+document and the first thing in `docs/design/` that is not the pane mockup. It
+covers all six agenda items from `claude/OS_WORK.md`: base package set, kernel,
+init and systemd layout, filesystem layout, user and group model, shipped
+defaults.
+
+It is **written out of phase on purpose.** F-01 §8 makes phases sequential and
+distribution is Phase 6; the justification is in the document's own preamble —
+three of its decisions (where `policy.kdl` lives, the unit layout around
+`abyss-session.target`, the seat model) are ones abyss code accretes assumptions
+about every week they stay unmade. Every personal-scale answer in it is flagged
+as such, so the general-audience version is a diff and not a rewrite.
+
+Three answers worth having outside the document:
+
+- **The seat model is "nothing special."** A user needs a logind session on a
+  seat and nothing else. `video`/`input` group membership is not what makes
+  rootless KMS work — logind's ACL on the DRM node is. There is no `seat` group
+  on Arch; `OS_WORK.md`'s reference to one was a guess, and D-01 §5 retires it.
+  The 2026-09-10 root + `LIBSEAT_BACKEND=seatd` boot was an artifact of `openvt`
+  creating no logind session. The installer therefore does no group management.
+- **`/etc/eclipse` is owned by the image**, `~/.config/eclipse` and
+  `~/.local/state/eclipse` by the machine. The Eclipse packages deliberately do
+  not list the `/etc/eclipse` files in `backup=()`, so the later atomic scheme
+  is a no-op migration rather than a `.pacnew` cleanup.
+- **`policyd` is a user service**, not a system one — per-user state and a
+  per-user issuer key. `Restart=on-failure`, no `StartLimitBurst` escape (a
+  fail-closed TCB daemon crash-looping must make the session unusable, not
+  degraded), and no socket activation (COMP-11 `check()` is a hot path).
+
+| ID | State |
+|---|---|
+| D-01 | **written** 2026-09-18 |
+| D-02 | blocked on S-12; a reduced personal-scale version is next |
+| D-03 | **unblocked by D-01** — archiso profile + `archinstall` config |
+| D-04 | blocked on D-02 |
+| D-05 | blocked on `cataclysm` (P-04, defect 12) |
+| D-06 | blocked on F-04 |
+| D-07 | blocked on D-03 |
+| D-08 | blocked on F-02 |
+
+D-03 inherits D-01 §1 as `packages.x86_64`, §2 as `mkinitcpio.conf` plus the
+bootloader entry, §3 as the airootfs greetd overlay, §4 as the `/etc/eclipse`
+overlay, and §5 as "create a normal user and do nothing else." With no agent
+stack, it measures the honest half of the §7 gate: ISO to a working abyss
+session in under 30 minutes.
+
+---
+
 ## Open merges
 
 None. PR #6 (`fix(abyss): keep the scanout mode and the output mode in sync`,
