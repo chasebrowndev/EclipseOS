@@ -91,6 +91,11 @@ package_eclipseos-meta() {
   install -Dm0644 "$srcdir/$_src/dist/eclipseos.preset" \
     "$pkgdir/usr/lib/systemd/user-preset/50-eclipseos.preset"
 
+  # Pacman drop-in for the EclipseOS repo (D-02). /etc/pacman.conf must have
+  # `Include = /etc/pacman.d/eclipseos.conf`; the ISO's airootfs ships that.
+  install -Dm0644 "$srcdir/$_src/dist/pacman/eclipseos.conf" \
+    "$pkgdir/etc/pacman.d/eclipseos.conf"
+
   # Greeter. /etc/greetd is image-owned for the same reason as /etc/eclipse.
   # The wallpaper goes under /usr/share because the `greeter` user cannot read
   # any home directory.
