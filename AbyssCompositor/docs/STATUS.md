@@ -303,21 +303,26 @@ macros anywhere in the workspace.
 14. **No `crates/policyd`, `crates/agentd`, `crates/sandbox`** — the TCB crates
     named in the root `CLAUDE.md` do not exist. The module map in that file
     describes the intended end state, not the tree.
-15. **Overscan compensation has no frontend.** The backend is complete
-    (COMP-03 §2): `outputs/overscan.rs` (per-edge insets, clamping, the
-    inverse map), `render/overscan.rs` (the scale-and-pad wrap plus the
-    corner markers), the wrap wired into both `backend/drm.rs` and
+15. **Overscan compensation has no first-boot offer.** Everything else is
+    done. The backend (COMP-03 §2): `outputs/overscan.rs` (per-edge insets,
+    clamping, the inverse map), `render/overscan.rs` (the scale-and-pad wrap
+    plus the corner markers), the wrap wired into both `backend/drm.rs` and
     `backend/winit.rs`, the absolute-pointer inverse in `input/mod.rs`, the
     `calibrate.rs` seat-grabbing state machine, per-panel persistence keyed
     by EDID identity with the hand-written config winning over saved state,
     and both IPC methods (`set_output` with `overscan`, `calibrate_output`
     with `start`/`commit`/`cancel`) plus the `eclipse-ctl output ID overscan`
-    and `eclipse-ctl output ID calibrate` verbs. **What is missing is UI**,
-    and it is deliberately batched with the rest of the frontend work:
-    - a settings-GUI panel that can start calibration on *any* output the
-      user picks, including one plugged in long after first boot;
-    - a first-boot/setup step that *offers* calibration rather than forcing
-      it — the user's explicit call.
+    and `eclipse-ctl output ID calibrate` verbs. The frontend: the Display
+    pane in `eclipse-settings` shows the live insets, edits them against its
+    own UI bound (`app.rs`, `THE_UI_BOUND`), and drives calibration on any
+    output the user picks with Calibrate / Commit / Cancel
+    (`Message::Calibrate` -> `calibrate_output`), including an output plugged
+    in long after first boot. Confirmed working on hardware, 2026-09-18.
+    **What is left is the first-boot/setup step that *offers* calibration**
+    rather than forcing it — the user's explicit call, and still out of scope
+    by plan B7. Note that `ci/gui-coverage-exceptions.txt` still lists
+    `output`: that entry is now only about per-output modes, scale and
+    transform arriving as a collection node, not about overscan.
     Nothing is cropped by this feature at any point: the scene is scaled
     down into an inset rect and the margins are left black. The calibration
     overlay is compositor-drawn, not a layer-shell client, because trusted
@@ -448,12 +453,32 @@ Still deferred:
 
 In rough order:
 
-1. **Boot it from the greeter.** The compositor itself now starts on real KMS
-   and paints (2026-09-10), but only when launched by hand on a VT. The
-   session path — `dist/abyss.desktop` in `/usr/share/wayland-sessions/`,
-   `dist/abyss-session` in `/usr/bin/`, the target in the user's systemd
-   units, `abyss --session` doing the D-Bus/systemd handoff — has still never
-   executed end to end from greetd.
+1. **Boot it from the greeter.** The compositor starts on real KMS and paints
+   (2026-09-10). The session path is now fully *staged* on `mainframe`
+   (verified 2026-09-18): `dist/install-session.sh` has run, so
+   `/usr/share/wayland-sessions/abyss.desktop` exists with
+   `Exec=/usr/local/bin/abyss-session`, all eight binaries are symlinks into
+   `target/release`, and `abyss-session.target`, `eclipse-bar.service` and
+   `eclipse-toasts.service` are installed and enabled under
+   `~/.config/systemd/user/` (`oracle-eyes.service` is wanted by the target
+   too). `~/.config/eclipse/abyss.kdl` parses — a 4 s headless run stays up,
+   which is the closest thing to a config check the binary offers. Hyprland's
+   two session entries are still installed, so recovery is picking one from
+   the same menu.
+
+   **The seat question is answered, and the answer is "nothing special".**
+   The 2026-09-10 boot needed root and `LIBSEAT_BACKEND=seatd` only because
+   `openvt` produces no logind session. A real greeter login does:
+   `loginctl` shows `chase` on `seat0` at tty1, and logind puts an ACL
+   (`user:chase:rw-`) on `/dev/dri/card1`, so libseat's logind backend hands
+   over DRM master with no root, no `seat` group, and no seatd. Membership in
+   `video` and `input` is not what makes this work and there is no `seat`
+   group on Arch. That is the content of D-01 §5: *a user needs a logind
+   session on a seat, and nothing else.*
+
+   What has still never happened is the handoff itself — logging out and
+   picking Abyss at greetd. That is the one step that cannot be done from
+   inside the session doing the staging.
 2. **Milestone 3, 4 and 6 gates**, most of which want the same session as
    step 1 plus hardware this box does not have (a third panel, a dock, a lid).
 3. **Exercise the milestone 9a protocols against real clients** — the globals
@@ -607,25 +632,16 @@ the tree:
 
 ---
 
-## Open merge — PR #6
+## Open merges
 
-`fix(abyss): keep the scanout mode and the output mode in sync`
-(`comp16-output-identity-modeset` -> `main`) is **green and unmerged**.
-GitHub reports `MERGEABLE` / `mergeStateStatus: CLEAN`, with every check
-SUCCESS: gate build/fmt/clippy/test, cargo-deny, wlcs (headless), TCB touch
-check, spec-citation, owner-only authorship. It is the first CI run of the
-`conformance` job, so it is also the evidence for the wlcs row below.
+None. PR #6 (`fix(abyss): keep the scanout mode and the output mode in sync`,
+`comp16-output-identity-modeset` -> `main`) merged on 2026-09-11 with every
+check SUCCESS: gate build/fmt/clippy/test, cargo-deny, wlcs (headless), TCB
+touch check, spec-citation, owner-only authorship. That was the first CI run
+of the `conformance` job, and it is the evidence for the wlcs row below.
 
-It stays open only because the local Claude Code auto-mode classifier refuses
-to run `gh pr merge`. The repo owner merges it by hand:
-
-```
-cd /home/chase/syncedprojects/EclipseOS && gh pr merge 6 --merge
-```
-
-Deliberately **without** `--delete-branch`: `comp16-output-identity-modeset` is
-the local base of `comp03-overscan-compensation`. Once #6 lands, that branch
-rebases onto `main`, pushes, and opens its own PR citing COMP-03 §2.
+`comp03-overscan-compensation` followed it onto `main` and no longer exists as
+a branch; the COMP-03 §2 overscan work is landed and working on hardware.
 
 ---
 
@@ -657,7 +673,7 @@ suite to put in it:
 
 | Gate | Required by | Blocked on |
 |---|---|---|
-| `wlcs` headless conformance | COMP-15 §1 | harness and the blocking `conformance` job exist; the suite runs green off-CI (775 passed / 308 skipped / 0 failed at `ulimit -n 1024`, against 65 skip entries; of the skips only foreign-toplevel's 30 are a real gap, the rest being dead protocols and wlcs self-tests); the first CI run of the job is in flight on PR #6 and has not yet reported |
+| `wlcs` headless conformance | COMP-15 §1 | harness and the blocking `conformance` job exist; the suite runs green off-CI (775 passed / 308 skipped / 0 failed at `ulimit -n 1024`, against 65 skip entries; of the skips only foreign-toplevel's 30 are a real gap, the rest being dead protocols and wlcs self-tests); the first CI run of the job reported SUCCESS on PR #6 (merged 2026-09-11), so the job is proven green in CI as well as off it |
 | `cargo-fuzz` smoke | COMP-15 §3 | proto crates existing |
 | Redaction suite | COMP-15 §2 | suite does not exist |
 | Seat isolation, trusted UI, enforcement, scope leakage, audit completeness, X11 posture | COMP-15 §2 | suites do not exist |
