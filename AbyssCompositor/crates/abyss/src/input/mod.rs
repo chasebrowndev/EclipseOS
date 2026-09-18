@@ -70,6 +70,10 @@ pub enum Action {
     SwitchWorkspace(usize),
     /// 1-based workspace index.
     MoveToWorkspace(usize),
+    /// Move the focused window to display `number`'s currently active
+    /// workspace (ADR 0049). `number` is the compositor-assigned/configured
+    /// display number, not a workspace index or an output handle.
+    MoveToOutputWorkspace(u8),
     /// The override chord reserved by COMP-13 §1.1. Accepted and dispatched
     /// today so a config naming it is valid; it has nothing to revoke until
     /// agent seats exist (COMP-16 milestone 11).
@@ -195,6 +199,7 @@ impl AbyssState {
             Action::Move(dir) => shell::move_direction(self, dir),
             Action::SwitchWorkspace(n) => shell::switch_workspace(self, n),
             Action::MoveToWorkspace(n) => shell::move_to_workspace(self, n),
+            Action::MoveToOutputWorkspace(n) => shell::move_to_output_workspace(self, n),
             Action::AgentOverride => self.agent_override(),
             Action::AgentAttention => self.agent_attention(),
             Action::Calibrate(step) => {
