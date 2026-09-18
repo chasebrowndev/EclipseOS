@@ -74,6 +74,27 @@ wireplumber
 alsa-utils
 polkit
 
+## keyring handling (D-03 §5)
+# The installer imports the EclipseOS packaging key with pacman-key, which
+# shells out to gpg -- that is gnupg, not a pacman dependency.
+gnupg
+archlinux-keyring
+
+## networking on the medium and after it (D-03 §2)
+# iwd is what the live medium's enabled iwd.service and 20-wlan.network expect;
+# without it the Framework has no wifi at all and it has no ethernet port.
+# wpa_supplicant is NetworkManager's default backend on the installed system.
+# wireless-regdb keeps the radio inside its regulatory domain.
+iwd
+iw
+wireless-regdb
+wpa_supplicant
+# Framework 13 AMD audio is SOF; without this there are no output devices.
+sof-firmware
+# The panel is 2256x1504. The default console font is unreadable on it, and
+# this installer is a console program.
+terminus-font
+
 ## greeter and session (D-01 §3)
 greetd
 greetd-regreet

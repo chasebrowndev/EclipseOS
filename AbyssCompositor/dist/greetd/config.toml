@@ -1,7 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 #
 # EclipseOS — greetd configuration.
-# Install to: /etc/greetd/config.toml  (root:root 0644)
+# Install to: /etc/eclipse/greetd/config.toml  (root:root 0644)
+#
+# greetd reads /etc/greetd/config.toml by default and that file belongs to the
+# greetd package, so EclipseOS cannot own it. A systemd drop-in
+# (10-eclipseos.conf) points greetd at this file instead; regreet is pointed at
+# its siblings the same way. D-01 §6: /etc/eclipse is the configuration.
 #
 # The greeter runs regreet inside cage, a single-client kiosk compositor:
 #   -s   software rendering fallback off / no client-side decorations
@@ -14,5 +19,5 @@
 vt = 1
 
 [default_session]
-command = "cage -s -m last -- regreet"
+command = "cage -s -m last -- regreet --config /etc/eclipse/greetd/regreet.toml --style /etc/eclipse/greetd/regreet.css"
 user = "greeter"
