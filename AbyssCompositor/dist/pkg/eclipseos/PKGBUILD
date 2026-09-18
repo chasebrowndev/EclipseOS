@@ -16,6 +16,9 @@ pkgver=0.1.0
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
 arch=(x86_64)
+# zstd-sys compiles bundled C with makepkg CFLAGS; -flto=auto leaves GCC LTO
+# bytecode that rust-lld cannot resolve (undefined ZSTD_* in policyd).
+options=(!lto)
 url="https://github.com/chasebrowndev/EclipseOS"
 license=(AGPL-3.0-only)
 makedepends=(git rust cargo pkgconf)
@@ -23,7 +26,7 @@ depends=(wayland libxkbcommon libinput libdrm libdisplay-info mesa seatd)
 source=("git+https://github.com/chasebrowndev/EclipseOS.git#tag=v$pkgver")
 sha256sums=('SKIP')
 
-_src="$pkgbase/AbyssCompositor"
+_src="EclipseOS/AbyssCompositor"
 
 build() {
   cd "$_src"
@@ -75,6 +78,7 @@ package_eclipseos-policyd() {
 
 package_eclipseos-meta() {
   pkgdesc="EclipseOS base system (D-01 §1)"
+  arch=(any)  # config and dependencies only, no ELF
   depends=(eclipseos-abyss eclipseos-desktop eclipseos-policyd
            greetd greetd-regreet cage
            networkmanager bluez bluez-utils upower pipewire pipewire-pulse wireplumber
