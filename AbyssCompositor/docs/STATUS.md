@@ -1,6 +1,6 @@
 # Abyss — implementation status
 
-Last updated: 2026-09-11 (late).
+Last updated: 2026-09-18.
 
 **Spec baseline: v2 + Appendix A applied (2026-09-08).** The amendment set
 that previously sat unapplied at the end of VOL2 is now merged inline;
@@ -53,11 +53,14 @@ are implemented and verified live on the socket. What is left in Phase 1 is
 blocked on hardware, or is 9c's CI gate, 9e's two missing fields and 9f's
 benchmark subjects; 9b (effects) is done and 9c has landed its backend but not
 its `wlcs` gate.
-Phase 2 (milestones 10–25, the agent protocol) has **no code at all** — the
-`trusted_ui/`, `policy/`, `audit/`, `protocols/agent/` and `protocols/semantic/`
-directories named in the root `CLAUDE.md` module map do not exist on disk. The
-one exception is frame-level capture redaction, which milestones 9d and 22
-specify but which landed early inside milestone 8.
+Phase 2 (milestones 10–25, the agent protocol) has started: milestone 10 landed
+on `comp16-m10-policyd` as `crates/policy-eval/` and `crates/policyd/` — the
+task store, grant issue/revocation and the S-04 §4 audit store. Inside
+`crates/abyss` itself Phase 2 is still absent: the `trusted_ui/`, `policy/`,
+`audit/`, `protocols/agent/` and `protocols/semantic/` directories named in the
+root `CLAUDE.md` module map do not exist on disk. Two things landed early —
+frame-level capture redaction (milestones 9d and 22, landed inside milestone 8)
+and the capture indicator (milestone 15, same).
 
 **The DRM backend now runs on real KMS.** On 2026-09-10 `abyss --backend drm`
 booted on this machine's own hardware (RTX 4060 Ti, `nvidia-open-dkms`), lit
@@ -116,9 +119,9 @@ across 9d/17/22, 14→15, 15→16, 16→22, 17→24, 18→25. Milestones 10, 12,
 
 | # | Milestone | State | Evidence |
 |---|---|---|---|
-| 10 | `policyd` skeleton; task store; grant compilation, issue, revocation | **not started** | No `crates/policyd`. The task object (A-04) exists in no code. |
+| 10 | `policyd` skeleton; task store; grant compilation, issue, revocation | **landed** | `crates/policy-eval/` holds the canonical CBOR codec (ADR 0044), the A-04 task object and counters, and the grant type; `crates/policyd/` holds the S-04 §4 audit store (ADR 0046) and the task store that journals before it answers, issues COSE_Sign1 grants (ADR 0045) and revokes a closed task's grants in one record. The `task` record journals the statement as a BLAKE3 hash, never the text (ADR 0048). No socket — that is milestone 11. |
 | 11 | Privileged socket; `agentd` skeleton; grant verification; `list_toplevels` | **not started** | No `protocols/agent/`. `get_agents` answers "not implemented". |
-| 12 | Audit spine: append-only journal, req-id chaining, `trace` | **not started** | No `audit/`. |
+| 12 | Audit spine: append-only journal, req-id chaining, `trace` | **store landed early** | `policyd/src/audit.rs` is the S-04 §4 hash-chained store, built at milestone 10 per ADR 0046; it carries `task`, `grant_issued` and `grant_revoked` records. The remaining record kinds, req-id chaining, `trace` and `eclipse-audit verify` are still milestone 12's work. |
 | 13 | Agent seats; injection; focus arbitration; `agent-override` chord | **not started** | No agent seats. `type_text`/`click_at` are gated `implemented: false`. The `agent-override` bind reserved by COMP-13 §1.1 has no `Action` variant. |
 | 14 | Atomic batches, `click`, `wait_for`, dedupe, generations | **not started** | — |
 | 15 | Trusted UI: prompt, emergency panel, phrase | **indicator landed early** | `render::capture::indicator()` draws the compositor-drawn capture indicator (COMP-10 §3.6) in both backends, from milestone 8. No prompt, no emergency panel, no phrase, no `trusted_ui/`. |
@@ -300,21 +303,26 @@ macros anywhere in the workspace.
 14. **No `crates/policyd`, `crates/agentd`, `crates/sandbox`** — the TCB crates
     named in the root `CLAUDE.md` do not exist. The module map in that file
     describes the intended end state, not the tree.
-15. **Overscan compensation has no frontend.** The backend is complete
-    (COMP-03 §2): `outputs/overscan.rs` (per-edge insets, clamping, the
-    inverse map), `render/overscan.rs` (the scale-and-pad wrap plus the
-    corner markers), the wrap wired into both `backend/drm.rs` and
+15. **Overscan compensation has no first-boot offer.** Everything else is
+    done. The backend (COMP-03 §2): `outputs/overscan.rs` (per-edge insets,
+    clamping, the inverse map), `render/overscan.rs` (the scale-and-pad wrap
+    plus the corner markers), the wrap wired into both `backend/drm.rs` and
     `backend/winit.rs`, the absolute-pointer inverse in `input/mod.rs`, the
     `calibrate.rs` seat-grabbing state machine, per-panel persistence keyed
     by EDID identity with the hand-written config winning over saved state,
     and both IPC methods (`set_output` with `overscan`, `calibrate_output`
     with `start`/`commit`/`cancel`) plus the `eclipse-ctl output ID overscan`
-    and `eclipse-ctl output ID calibrate` verbs. **What is missing is UI**,
-    and it is deliberately batched with the rest of the frontend work:
-    - a settings-GUI panel that can start calibration on *any* output the
-      user picks, including one plugged in long after first boot;
-    - a first-boot/setup step that *offers* calibration rather than forcing
-      it — the user's explicit call.
+    and `eclipse-ctl output ID calibrate` verbs. The frontend: the Display
+    pane in `eclipse-settings` shows the live insets, edits them against its
+    own UI bound (`app.rs`, `THE_UI_BOUND`), and drives calibration on any
+    output the user picks with Calibrate / Commit / Cancel
+    (`Message::Calibrate` -> `calibrate_output`), including an output plugged
+    in long after first boot. Confirmed working on hardware, 2026-09-18.
+    **What is left is the first-boot/setup step that *offers* calibration**
+    rather than forcing it — the user's explicit call, and still out of scope
+    by plan B7. Note that `ci/gui-coverage-exceptions.txt` still lists
+    `output`: that entry is now only about per-output modes, scale and
+    transform arriving as a collection node, not about overscan.
     Nothing is cropped by this feature at any point: the scene is scaled
     down into an inset rect and the margins are left black. The calibration
     overlay is compositor-drawn, not a layer-shell client, because trusted
@@ -445,12 +453,32 @@ Still deferred:
 
 In rough order:
 
-1. **Boot it from the greeter.** The compositor itself now starts on real KMS
-   and paints (2026-09-10), but only when launched by hand on a VT. The
-   session path — `dist/abyss.desktop` in `/usr/share/wayland-sessions/`,
-   `dist/abyss-session` in `/usr/bin/`, the target in the user's systemd
-   units, `abyss --session` doing the D-Bus/systemd handoff — has still never
-   executed end to end from greetd.
+1. **Boot it from the greeter.** The compositor starts on real KMS and paints
+   (2026-09-10). The session path is now fully *staged* on `mainframe`
+   (verified 2026-09-18): `dist/install-session.sh` has run, so
+   `/usr/share/wayland-sessions/abyss.desktop` exists with
+   `Exec=/usr/local/bin/abyss-session`, all eight binaries are symlinks into
+   `target/release`, and `abyss-session.target`, `eclipse-bar.service` and
+   `eclipse-toasts.service` are installed and enabled under
+   `~/.config/systemd/user/` (`oracle-eyes.service` is wanted by the target
+   too). `~/.config/eclipse/abyss.kdl` parses — a 4 s headless run stays up,
+   which is the closest thing to a config check the binary offers. Hyprland's
+   two session entries are still installed, so recovery is picking one from
+   the same menu.
+
+   **The seat question is answered, and the answer is "nothing special".**
+   The 2026-09-10 boot needed root and `LIBSEAT_BACKEND=seatd` only because
+   `openvt` produces no logind session. A real greeter login does:
+   `loginctl` shows `chase` on `seat0` at tty1, and logind puts an ACL
+   (`user:chase:rw-`) on `/dev/dri/card1`, so libseat's logind backend hands
+   over DRM master with no root, no `seat` group, and no seatd. Membership in
+   `video` and `input` is not what makes this work and there is no `seat`
+   group on Arch. That is the content of D-01 §5: *a user needs a logind
+   session on a seat, and nothing else.*
+
+   What has still never happened is the handoff itself — logging out and
+   picking Abyss at greetd. That is the one step that cannot be done from
+   inside the session doing the staging.
 2. **Milestone 3, 4 and 6 gates**, most of which want the same session as
    step 1 plus hardware this box does not have (a third panel, a dock, a lid).
 3. **Exercise the milestone 9a protocols against real clients** — the globals
@@ -604,25 +632,78 @@ the tree:
 
 ---
 
-## Open merge — PR #6
+## Distribution — Tier 6
 
-`fix(abyss): keep the scanout mode and the output mode in sync`
-(`comp16-output-identity-modeset` -> `main`) is **green and unmerged**.
-GitHub reports `MERGEABLE` / `mergeStateStatus: CLEAN`, with every check
-SUCCESS: gate build/fmt/clippy/test, cargo-deny, wlcs (headless), TCB touch
-check, spec-citation, owner-only authorship. It is the first CI run of the
-`conformance` job, so it is also the evidence for the wlcs row below.
+`docs/design/D-01-base-system.md` is written (2026-09-18) — the first Tier 6
+document and the first thing in `docs/design/` that is not the pane mockup. It
+covers all six agenda items from `claude/OS_WORK.md`: base package set, kernel,
+init and systemd layout, filesystem layout, user and group model, shipped
+defaults.
 
-It stays open only because the local Claude Code auto-mode classifier refuses
-to run `gh pr merge`. The repo owner merges it by hand:
+It is **written out of phase on purpose.** F-01 §8 makes phases sequential and
+distribution is Phase 6; the justification is in the document's own preamble —
+three of its decisions (where `policy.kdl` lives, the unit layout around
+`abyss-session.target`, the seat model) are ones abyss code accretes assumptions
+about every week they stay unmade. Every personal-scale answer in it is flagged
+as such, so the general-audience version is a diff and not a rewrite.
 
-```
-cd /home/chase/syncedprojects/EclipseOS && gh pr merge 6 --merge
-```
+Three answers worth having outside the document:
 
-Deliberately **without** `--delete-branch`: `comp16-output-identity-modeset` is
-the local base of `comp03-overscan-compensation`. Once #6 lands, that branch
-rebases onto `main`, pushes, and opens its own PR citing COMP-03 §2.
+- **The seat model is "nothing special."** A user needs a logind session on a
+  seat and nothing else. `video`/`input` group membership is not what makes
+  rootless KMS work — logind's ACL on the DRM node is. There is no `seat` group
+  on Arch; `OS_WORK.md`'s reference to one was a guess, and D-01 §5 retires it.
+  The 2026-09-10 root + `LIBSEAT_BACKEND=seatd` boot was an artifact of `openvt`
+  creating no logind session. The installer therefore does no group management.
+- **`/etc/eclipse` is owned by the image**, `~/.config/eclipse` and
+  `~/.local/state/eclipse` by the machine. The Eclipse packages deliberately do
+  not list the `/etc/eclipse` files in `backup=()`, so the later atomic scheme
+  is a no-op migration rather than a `.pacnew` cleanup.
+- **`policyd` is a user service**, not a system one — per-user state and a
+  per-user issuer key. `Restart=on-failure`, no `StartLimitBurst` escape (a
+  fail-closed TCB daemon crash-looping must make the session unusable, not
+  degraded), and no socket activation (COMP-11 `check()` is a hot path).
+
+**D-01 §2 was amended the same day** when the ISO target changed. The first
+image is not built for `mainframe` (RTX 4060 Ti, `nvidia-open-dkms`) but for a
+**Framework 13 AMD Ryzen laptop**: `amdgpu` in-kernel, `amd-ucode`,
+`linux-firmware-amdgpu`, no DKMS, stock `mkinitcpio` with the `kms` hook kept,
+and no `nvidia-drm.modeset` bootloader parameter — which deletes the
+`backend/drm.rs:141` sharp edge from the ISO's critical path entirely. §2 now
+carries both machines in a table and says plainly which one D-03 builds for.
+F-04 still names NVIDIA as reference hardware; that is now a two-machine split
+rather than a single answer, and NVIDIA is the path that needs revalidating
+against an image rather than the one the image is made for.
+
+| ID | State |
+|---|---|
+| D-01 | **written** 2026-09-18; §2 amended same day for the AMD ISO target |
+| D-02 | blocked on S-12; a reduced personal-scale version is next |
+| D-03 | **unblocked by D-01** — archiso profile + `archinstall` config |
+| D-04 | blocked on D-02 |
+| D-05 | blocked on `cataclysm` (P-04, defect 12) |
+| D-06 | blocked on F-04 |
+| D-07 | blocked on D-03 |
+| D-08 | blocked on F-02 |
+
+D-03 inherits D-01 §1 as `packages.x86_64`, §2 as `mkinitcpio.conf` plus the
+bootloader entry, §3 as the airootfs greetd overlay, §4 as the `/etc/eclipse`
+overlay, and §5 as "create a normal user and do nothing else." With no agent
+stack, it measures the honest half of the §7 gate: ISO to a working abyss
+session in under 30 minutes.
+
+---
+
+## Open merges
+
+None. PR #6 (`fix(abyss): keep the scanout mode and the output mode in sync`,
+`comp16-output-identity-modeset` -> `main`) merged on 2026-09-11 with every
+check SUCCESS: gate build/fmt/clippy/test, cargo-deny, wlcs (headless), TCB
+touch check, spec-citation, owner-only authorship. That was the first CI run
+of the `conformance` job, and it is the evidence for the wlcs row below.
+
+`comp03-overscan-compensation` followed it onto `main` and no longer exists as
+a branch; the COMP-03 §2 overscan work is landed and working on hardware.
 
 ---
 
@@ -654,7 +735,7 @@ suite to put in it:
 
 | Gate | Required by | Blocked on |
 |---|---|---|
-| `wlcs` headless conformance | COMP-15 §1 | harness and the blocking `conformance` job exist; the suite runs green off-CI (775 passed / 308 skipped / 0 failed at `ulimit -n 1024`, against 65 skip entries; of the skips only foreign-toplevel's 30 are a real gap, the rest being dead protocols and wlcs self-tests); the first CI run of the job is in flight on PR #6 and has not yet reported |
+| `wlcs` headless conformance | COMP-15 §1 | harness and the blocking `conformance` job exist; the suite runs green off-CI (775 passed / 308 skipped / 0 failed at `ulimit -n 1024`, against 65 skip entries; of the skips only foreign-toplevel's 30 are a real gap, the rest being dead protocols and wlcs self-tests); the first CI run of the job reported SUCCESS on PR #6 (merged 2026-09-11), so the job is proven green in CI as well as off it |
 | `cargo-fuzz` smoke | COMP-15 §3 | proto crates existing |
 | Redaction suite | COMP-15 §2 | suite does not exist |
 | Seat isolation, trusted UI, enforcement, scope leakage, audit completeness, X11 posture | COMP-15 §2 | suites do not exist |

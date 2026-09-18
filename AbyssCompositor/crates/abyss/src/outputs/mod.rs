@@ -66,6 +66,12 @@ pub struct OutputEntry {
     pub overscan: overscan::Overscan,
     /// Set while the calibration overlay owns this output's input.
     pub calibrating: Option<Calibration>,
+    /// Stable, human-facing display number (ADR 0049). Assigned by connection
+    /// order the first time this output is seen this run, unless a config
+    /// `output { number N; }` override applies. Never reassigned on removal
+    /// of another output — a gap persists until restart. Purely positional
+    /// bookkeeping: never derived from or fed back into `identity`.
+    pub number: u8,
 }
 
 /// Live state of the on-screen overscan calibration (COMP-03 §2). The overlay
@@ -117,6 +123,8 @@ pub struct Removed {
 pub struct Outputs {
     entries: Vec<OutputEntry>,
     next_id: u64,
+    /// Next display number (ADR 0049) to hand out by connection order.
+    next_number: u8,
     focused: u64,
     persist: Persist,
     /// Windows parked while their output is unplugged, by identity.
@@ -127,8 +135,27 @@ impl Outputs {
     pub fn new() -> Self {
         Self {
             next_id: 1,
+            next_number: 1,
             persist: Persist::load(),
             ..Default::default()
+        }
+    }
+
+    /// Display number (ADR 0049) already in use by some other output, so a
+    /// config override never collides with the connection-order default.
+    fn number_taken(&self, number: u8) -> bool {
+        self.entries.iter().any(|e| e.number == number)
+    }
+
+    /// Apply an explicit config override for an output's display number
+    /// (ADR 0049), skipping it (with a warning) if already taken.
+    pub fn set_number(&mut self, id: u64, number: u8) {
+        if self.number_taken(number) {
+            tracing::warn!(id, number, "output number already in use, keeping default");
+            return;
+        }
+        if let Some(entry) = self.get_mut(id) {
+            entry.number = number;
         }
     }
 
@@ -240,6 +267,11 @@ impl Outputs {
         };
         let id = self.next_id;
         self.next_id += 1;
+        // ADR 0049: connection-order default. `next_number` only ever
+        // increases, so a mid-session disconnect leaves a gap rather than
+        // renumbering the outputs still attached.
+        let number = self.next_number;
+        self.next_number = self.next_number.saturating_add(1);
         let mut workspaces = workspace::new_set();
         // Bring back anything parked when this output was last unplugged.
         if let Some(parked) = self.stash.remove(&identity) {
@@ -260,6 +292,7 @@ impl Outputs {
         }
         self.entries.push(OutputEntry {
             id,
+            number,
             identity,
             connector,
             output,
@@ -552,6 +585,10 @@ fn apply_settings(state: &mut crate::state::AbyssState, id: u64) {
     let ident = entry.identity.clone();
     let rule = state.config.output_rule(&entry.connector, &entry.identity);
     let saved = state.outputs.saved_for(&entry.identity).cloned();
+
+    if let Some(number) = rule.number {
+        state.outputs.set_number(id, number);
+    }
 
     let enabled = rule
         .enabled

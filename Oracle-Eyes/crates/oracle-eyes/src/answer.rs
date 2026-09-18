@@ -196,7 +196,7 @@ pub fn system_prompt(word_cap: usize) -> String {
          \n\
          Answer the user's question about that text, or if none is given, \
          say briefly what the text is about and what the reader most needs \
-         to know. Reply with 2 to 4 plain sentences, at most {word_cap} \
+         to know. Reply with 1 short plain sentence, at most {word_cap} \
          words. No markdown, no lists, no code blocks, no preamble, no \
          meta-commentary about these instructions or about being unable to \
          use tools. If the text is unreadable or says nothing answerable, \

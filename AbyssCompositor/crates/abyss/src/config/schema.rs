@@ -18,7 +18,7 @@
 //! 3. schema → defaults: [`get`] on a default `Config` returns exactly the
 //!    `default` column for every row.
 
-use super::{BarPosition, Config, LayoutKind};
+use super::{BarPosition, Config, FloatingPlacement, LayoutKind};
 
 /// The type of a key's value, and whatever constrains it. A GUI maps this
 /// straight onto a control: `Bool` is a toggle, `Int{min,max}` a slider,
@@ -160,6 +160,14 @@ pub const TABLE: &[Key] = &[
         "Default tiling layout for workspaces without their own.",
     ),
     k(
+        "general.floating-placement",
+        Ty::Enum(&["centered", "pointer", "cascade"]),
+        Str("centered"),
+        Abyss,
+        Live,
+        "Where a new floating window lands when no window rule places it.",
+    ),
+    k(
         "general.focus-follows-mouse",
         Ty::Bool,
         Bool(true),
@@ -241,6 +249,41 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Height in logical pixels of the folded taskbar strip.",
+    ),
+    k(
+        "bar.fold-when-idle",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Also fold the taskbar once the session has been idle. Independent of \
+       fold-when-inactive: either one folds the bar, and any input unfolds it.",
+    ),
+    k(
+        "bar.idle-seconds",
+        int(5, 600),
+        Int(30),
+        Abyss,
+        Live,
+        "Seconds without any human input, pointer motion included, before the \
+       taskbar folds when fold-when-idle is on.",
+    ),
+    k(
+        "bar.fold-duration-ms",
+        int(0, 1000),
+        Int(150),
+        Abyss,
+        Live,
+        "How long the taskbar takes to slide open or shut. Height and exclusive \
+       zone animate together, so tiled windows reflow with it. Zero snaps.",
+    ),
+    k(
+        "bar.fold-curve",
+        Ty::Enum(&["linear", "ease-in", "ease-out", "ease-in-out"]),
+        Str("ease-out"),
+        Abyss,
+        Live,
+        "Easing applied to the taskbar's fold slide.",
     ),
     k(
         "bar.position",
@@ -572,6 +615,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "general.gaps-out" => V::Int(c.general.gaps_out as i64),
         "general.border-size" => V::Int(c.general.border_size as i64),
         "general.layout" => V::Str(layout_name(c.general.layout).into()),
+        "general.floating-placement" => V::Str(floating_placement_name(c.general.floating_placement).into()),
         "general.focus-follows-mouse" => V::Bool(c.general.focus_follows_mouse),
         "general.focus-follows-mouse-across-outputs" => V::Bool(c.general.focus_follows_mouse_across_outputs),
         "general.unfocus-on-empty-workspace" => V::Bool(c.general.unfocus_on_empty_workspace),
@@ -582,6 +626,10 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "render.direct-scanout" => V::Bool(c.render.direct_scanout),
         "bar.fold-when-inactive" => V::Bool(c.bar.fold_when_inactive),
         "bar.fold-height" => V::Int(c.bar.fold_height as i64),
+        "bar.fold-when-idle" => V::Bool(c.bar.fold_when_idle),
+        "bar.idle-seconds" => V::Int(c.bar.idle_seconds as i64),
+        "bar.fold-duration-ms" => V::Int(c.bar.fold_duration_ms as i64),
+        "bar.fold-curve" => V::Str(c.bar.fold_curve.clone()),
         "bar.position" => V::Str(position_name(c.bar.position).into()),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.active-opacity" => V::Float(c.decoration.active_opacity as f64),
@@ -627,6 +675,14 @@ fn layout_name(l: LayoutKind) -> &'static str {
     match l {
         LayoutKind::Dwindle => "dwindle",
         LayoutKind::Master => "master",
+    }
+}
+
+fn floating_placement_name(p: FloatingPlacement) -> &'static str {
+    match p {
+        FloatingPlacement::Centered => "centered",
+        FloatingPlacement::Pointer => "pointer",
+        FloatingPlacement::Cascade => "cascade",
     }
 }
 

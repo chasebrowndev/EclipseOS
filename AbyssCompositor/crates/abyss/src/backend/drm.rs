@@ -1003,7 +1003,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
     // front-to-back -- but above the cursor and above everything client-drawn.
     elements.extend(crate::render::annotation::annotation_elements(
         &mut drm.renderer,
-        &state.annotations,
+        &mut state.annotations,
         &output,
         output_loc,
     ));

@@ -528,6 +528,8 @@ impl RpcError {
 /// Broadcast one event to every subscriber that asked for its kind
 /// (COMP-13 §2.1 `subscribe`). Cheap when nobody is listening.
 pub fn emit(state: &mut AbyssState, kind: &str, params: Value) {
+    #[cfg(test)]
+    capture::record(kind, &params);
     if !state.ipc.conns.iter().any(|c| wants(c, kind)) {
         return;
     }
@@ -577,5 +579,27 @@ fn reap(state: &mut AbyssState) {
 fn disown_annotations(state: &mut AbyssState, id: u64) {
     if state.annotations.clear_for(id) > 0 {
         crate::backend::damage_all(state);
+    }
+}
+
+/// Test-only tap on the broadcast path. A unit test has no subscribed client,
+/// so `emit` would otherwise be indistinguishable from doing nothing; the emit
+/// *sites* are the thing several tests are actually about (ADR 0042 amendment).
+#[cfg(test)]
+pub mod capture {
+    use super::Value;
+    use std::cell::RefCell;
+
+    thread_local! {
+        static EVENTS: RefCell<Vec<(String, Value)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn record(kind: &str, params: &Value) {
+        EVENTS.with(|e| e.borrow_mut().push((kind.to_owned(), params.clone())));
+    }
+
+    /// Drain everything emitted on this thread since the last call.
+    pub fn take() -> Vec<(String, Value)> {
+        EVENTS.with(|e| std::mem::take(&mut *e.borrow_mut()))
     }
 }

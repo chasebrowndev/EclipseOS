@@ -35,7 +35,11 @@ pub struct Anchor {
 /// that is a change here and nowhere else.
 #[derive(Debug, Default)]
 pub struct Hud {
-    live: Option<u64>,
+    /// The live handle and the region it was created against. The anchor is
+    /// kept because `annotation_update` carries text only: a panel can be
+    /// re-worded in place but never moved, so an answer about somewhere else
+    /// has to be a new panel.
+    live: Option<(u64, Anchor)>,
 }
 
 impl Hud {
@@ -46,25 +50,38 @@ impl Hud {
     /// The handle currently on screen, if any.
     #[cfg(test)]
     pub fn live(&self) -> Option<u64> {
-        self.live
+        self.live.map(|(id, _)| id)
     }
 
-    /// Show `text` at `anchor`, replacing whatever was there. Replacing in
-    /// place rather than destroy-then-create keeps the panel from blinking
-    /// between two answers about the same thing.
+    /// Show `text` at `anchor`, replacing whatever was there. An answer about
+    /// the same region replaces the text in place, which keeps the panel from
+    /// blinking between two answers about one thing; an answer about a
+    /// different region gets a fresh panel there, because an annotation that
+    /// stayed put would be pointing at the wrong thing.
     pub fn show(
         &mut self,
         c: &mut impl Control,
         anchor: Anchor,
         text: &str,
     ) -> Result<u64, String> {
-        if let Some(id) = self.live {
-            match c.call("annotation_update", json!({"id": id, "text": text})) {
-                Ok(_) => return Ok(id),
-                // The compositor forgot it — we disconnected, or it restarted.
-                // Fall through and create a fresh one rather than going blind.
-                Err(_) => self.live = None,
+        match self.live {
+            Some((id, at)) if at == anchor => {
+                match c.call("annotation_update", json!({"id": id, "text": text})) {
+                    Ok(_) => return Ok(id),
+                    // The compositor forgot it — we disconnected, or it
+                    // restarted. Fall through and create a fresh one rather
+                    // than going blind.
+                    Err(_) => self.live = None,
+                }
             }
+            Some((id, _)) => {
+                // Moving is destroy-then-create. A failure here is not fatal:
+                // the compositor evicts on its own and a stale panel is worse
+                // than a duplicate call.
+                let _ = c.call("annotation_destroy", json!({"id": id}));
+                self.live = None;
+            }
+            None => {}
         }
         let reply = c.call(
             "annotation_create",
@@ -77,7 +94,7 @@ impl Hud {
             .get("id")
             .and_then(Value::as_u64)
             .ok_or_else(|| format!("annotation_create returned no handle: {reply}"))?;
-        self.live = Some(id);
+        self.live = Some((id, anchor));
         Ok(id)
     }
 
@@ -119,6 +136,11 @@ mod tests {
                         Err("no such annotation".into())
                     }
                 }
+                "annotation_destroy" => {
+                    let id = params["id"].as_u64().unwrap();
+                    self.known.retain(|k| *k != id);
+                    Ok(json!({"ok": true}))
+                }
                 "annotation_clear" => {
                     self.known.clear();
                     Ok(json!({"ok": true, "dropped": 0}))
@@ -143,6 +165,30 @@ mod tests {
         let second = hud.show(&mut c, A, "two").unwrap();
         assert_eq!(first, second, "the panel should not blink between answers");
         assert_eq!(c.seen, ["annotation_create", "annotation_update"]);
+    }
+
+    #[test]
+    fn an_answer_about_somewhere_else_moves_rather_than_staying_put() {
+        let mut c = Fake::default();
+        let mut hud = Hud::new();
+        let first = hud.show(&mut c, A, "one").unwrap();
+        let elsewhere = Anchor {
+            x: 900,
+            y: 600,
+            w: 100,
+            h: 40,
+        };
+        let second = hud.show(&mut c, elsewhere, "two").unwrap();
+        assert_ne!(first, second, "a moved panel is a new panel");
+        assert_eq!(
+            c.seen,
+            [
+                "annotation_create",
+                "annotation_destroy",
+                "annotation_create"
+            ],
+            "update carries text only, so it cannot follow the region"
+        );
     }
 
     #[test]

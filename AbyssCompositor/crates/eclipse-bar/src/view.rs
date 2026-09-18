@@ -174,8 +174,18 @@ pub fn view(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message,
         }
         _ => {}
     }
-    if app.folded {
-        return folded_row(app);
+    match app.fold.target {
+        // Hidden is *gone*, not thin: nothing is drawn, and the surface it
+        // still owns claims no exclusive zone, so a fullscreen video has the
+        // whole output.
+        crate::app::FoldTarget::Hidden => return Space::new().into(),
+        crate::app::FoldTarget::Folded => return folded_row(app),
+        crate::app::FoldTarget::Shown if app.fold.height < crate::HEIGHT => {
+            // Mid-slide back out: still the folded strip until there is room
+            // for a cell.
+            return folded_row(app);
+        }
+        crate::app::FoldTarget::Shown => {}
     }
     bar_row(app)
 }
@@ -219,7 +229,9 @@ fn folded_row(app: &crate::app::App) -> Element<'_, Message, Theme> {
     // vertical margin: the surface *is* the sheet when it is this thin.
     container(sheet)
         .width(Length::Fill)
-        .height(Length::Fixed(app.bar.fold_height as f32))
+        // The animated height, not the settled one: during a slide the strip
+        // must fill exactly the surface the compositor just sized.
+        .height(Length::Fixed(app.fold.height as f32))
         .padding([0.0, bar::MARGIN_X])
         .into()
 }

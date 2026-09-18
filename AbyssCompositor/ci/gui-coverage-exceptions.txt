@@ -21,8 +21,9 @@ windowrule
 
 # Output configuration is written by the Display pane, but per-output modes,
 # scale and transform arrive as a collection of `output` nodes with the same
-# node-editing problem as above. The Display pane closes stub 15(a) — overscan
-# — in B5; the rest of the node follows the bind/rule editor.
+# node-editing problem as above. The Display pane closed the overscan half of
+# stub 15 in B5 (insets plus calibrate/commit/cancel); the rest of the node
+# follows the bind/rule editor.
 output
 
 # Workspace pinning is a collection node for the same reason. No milestone of

@@ -10,6 +10,7 @@ to it yet, and an entry with no proposal is more honest than one with a guess.
 
 Found 2026-09-11 by `eclipse-ui-prober` against the recomposed launcher.
 LAUNCH-01 through LAUNCH-04 were fixed on 2026-09-13 and removed from this file.
+RAISE-01 was fixed on 2026-09-18 and removed.
 
 ---
 
@@ -40,31 +41,6 @@ the notification view), or have the compositor refuse `shows_through` in a
 way that degrades to a flat but *intentionally styled* fill rather than
 leaving the client's own translucent color exposed unblurred. No one has
 committed to either yet.
-
----
-
-## RAISE-01 — clicking a floating window does not raise it
-
-**Severity: functional.** Pre-existing; not introduced by the COMP-04 focus-rule
-work, which only made it easier to notice.
-
-Clicking a floating window focuses it but leaves it behind whatever was already
-on top. The click's `raise_element` does happen — it is then undone. Any
-relayout runs `arrange_output` (`crates/abyss/src/shell/mod.rs:262`), whose
-floating pass calls `state.space.raise_element(&w, false)` for every floating
-window in `Workspace::floating` order
-(`crates/abyss/src/shell/mod.rs:344`). That order is the insertion order of the
-vec, not a stacking order, so the last-inserted floating window ends up on top
-regardless of which one the human just clicked.
-
-Reproduce: open two overlapping floating windows, click the lower one — it takes
-keyboard focus, stays visually behind.
-
-**Proposed fix:** make `Workspace::floating` carry the stacking order — move a
-window to the end of the vec when it is focused — so `arrange_output`'s replay
-reproduces the click's raise instead of clobbering it. That is a change to what
-the layout owns, not to what the focus decision returns, so it belongs in its
-own PR against COMP-05 rather than riding along with the focus rules.
 
 ---
 

@@ -28,6 +28,7 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `general.gaps-out` | int 0..512 | `10` | live | Gap between the tiling area and the screen edge, logical px. |
 | `general.border-size` | int 0..512 | `2` | live | Window border thickness, logical px. 0 disables borders. |
 | `general.layout` | dwindle \| master | `"dwindle"` | live | Default tiling layout for workspaces without their own. |
+| `general.floating-placement` | centered \| pointer \| cascade | `"centered"` | live | Where a new floating window lands when no window rule places it. |
 | `general.focus-follows-mouse` | bool | `#true` | live | Move keyboard focus to the window under the pointer. |
 | `general.focus-follows-mouse-across-outputs` | bool | `#true` | live | Let pointer motion move focus to another output. Off keeps focus on the current output until you click. |
 | `general.unfocus-on-empty-workspace` | bool | `#true` | live | Clear keyboard focus when the pointer enters an output whose workspace has no focusable window. Off keeps the previous focus. |
@@ -48,6 +49,10 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | --- | --- | --- | --- | --- |
 | `bar.fold-when-inactive` | bool | `#false` | live | Shrink the taskbar to a thin strip on outputs the pointer is not on. |
 | `bar.fold-height` | int 2..16 | `4` | live | Height in logical pixels of the folded taskbar strip. |
+| `bar.fold-when-idle` | bool | `#false` | live | Also fold the taskbar once the session has been idle. Independent of fold-when-inactive: either one folds the bar, and any input unfolds it. |
+| `bar.idle-seconds` | int 5..600 | `30` | live | Seconds without any human input, pointer motion included, before the taskbar folds when fold-when-idle is on. |
+| `bar.fold-duration-ms` | int 0..1000 | `150` | live | How long the taskbar takes to slide open or shut. Height and exclusive zone animate together, so tiled windows reflow with it. Zero snaps. |
+| `bar.fold-curve` | linear \| ease-in \| ease-out \| ease-in-out | `"ease-out"` | live | Easing applied to the taskbar's fold slide. |
 | `bar.position` | top \| bottom | `"top"` | restart | Which edge of every output the taskbar is anchored to. Takes effect the next time eclipse-bar starts, not on a live reload. |
 
 ### `decoration`

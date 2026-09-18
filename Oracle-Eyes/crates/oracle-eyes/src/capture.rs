@@ -330,6 +330,9 @@ impl Default for OutputState {
 /// Per-grab session bookkeeping, reset before every capture.
 #[derive(Debug, Default)]
 struct SessionState {
+    /// The session `grab()` is currently waiting on. Events from any other
+    /// (already-destroyed) session are stale and discarded on arrival.
+    active: Option<ExtImageCopyCaptureSessionV1>,
     size: Option<(u32, u32)>,
     formats: Vec<wl_shm::Format>,
     done: bool,
@@ -492,6 +495,7 @@ impl Capturer {
             &self.qh,
             (),
         );
+        self.state.session.active = Some(session.clone());
         let result = self.grab_inner(&session, out, region, deadline);
 
         // Tear down in every path: a live session costs the compositor a
@@ -737,12 +741,21 @@ impl Dispatch<WlOutput, usize> for State {
 impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for State {
     fn event(
         state: &mut Self,
-        _: &ExtImageCopyCaptureSessionV1,
+        proxy: &ExtImageCopyCaptureSessionV1,
         event: ext_image_copy_capture_session_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        // A session already torn down by a prior `grab()` can still have
+        // events in flight (e.g. a trailing `Stopped` sent as the compositor
+        // tears it down). `state.session` is reset for the *next* session
+        // before that arrives, so an unscoped match here would corrupt the
+        // new grab's state with the old one's outcome. Only the session
+        // `grab()` is currently waiting on may write into it.
+        if state.session.active.as_ref() != Some(proxy) {
+            return;
+        }
         match event {
             ext_image_copy_capture_session_v1::Event::BufferSize { width, height } => {
                 state.session.size = Some((width, height))

@@ -256,7 +256,7 @@ fn redraw(
             0..0,
             crate::render::annotation::annotation_elements(
                 renderer,
-                &state.annotations,
+                &mut state.annotations,
                 out,
                 state
                     .space

@@ -33,7 +33,7 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Scale, Size, Transform},
 };
 
-use super::{text, AbyssRenderElement};
+use super::{curve, text, AbyssRenderElement};
 
 /// Text colour: eclipse amber, the same face the rest of the system uses.
 const FG: text::Rgba = [1.0, 0.72, 0.20, 1.0];
@@ -43,10 +43,29 @@ const BG: text::Rgba = [0.02, 0.02, 0.03, 0.82];
 /// Columns a panel wraps at. Fixed rather than derived from the anchor: a
 /// caller must not be able to choose a width that shoulders other content off
 /// the screen.
-const COLS: usize = 44;
+const COLS: usize = 30;
 
 /// Gap between the anchor rectangle and the panel drawn beside it.
 const GUTTER: i32 = 8;
+
+/// The band drawn around the region an annotation is about, and the leader
+/// that joins it to the panel. Deliberately the same amber as the region
+/// selector: "this is the bit in question" should read identically whether
+/// the compositor is asking or answering.
+const BAND: text::Rgba = [1.0, 0.72, 0.20, 0.9];
+/// Side of the square each corner bracket occupies, its corner radius and its
+/// stroke weight, in logical pixels. Brackets, not a ring: four marks that say
+/// "this much" while obscuring almost nothing of what they mark.
+const MARK_SIDE: i32 = 20;
+const MARK_RADIUS: i32 = 6;
+const MARK_THICK: i32 = 2;
+/// Weight of the line joining a marked region to its panel.
+const LEAD_THICK: i32 = 2;
+
+/// Glyph size, in device pixels per font pixel, on top of the output scale.
+/// The 5x7 font at 1:1 is unreadable at arm's length; at 3x it is a 15x21
+/// glyph, which is the smallest that reads comfortably on a 1x display.
+const TEXT_PX: usize = 3;
 
 /// Opaque handle to a live annotation. Handed back over the control socket;
 /// the caller can address only annotations it created.
@@ -76,6 +95,63 @@ pub struct Annotation {
 pub struct AnnotationStore {
     live: std::collections::BTreeMap<AnnotationId, Annotation>,
     next: u64,
+    /// The uploaded artwork for each live annotation, kept across frames.
+    /// `TextureBuffer::from_texture` mints a fresh element id and a zeroed
+    /// commit counter, so rebuilding it every frame would leave the damage
+    /// tracker unable to match an element to last frame's and force a repaint
+    /// of that region forever -- which is exactly the shimmer a displayed
+    /// panel used to have. Rebuilt only when [`ArtKey`] changes.
+    art: std::collections::BTreeMap<AnnotationId, Art>,
+}
+
+/// Everything that decides what an annotation looks like and where each piece
+/// of it lands. Cheap to compute every frame; the artwork behind it is not.
+type ArtKey = (
+    Vec<String>,
+    usize,
+    usize,
+    Rectangle<i32, Logical>,
+    Size<i32, Logical>,
+    Point<i32, Logical>,
+);
+
+/// One annotation's uploaded pieces, each with where it is drawn.
+type Parts = Vec<(Point<i32, Logical>, TextureBuffer<GlesTexture>)>;
+
+/// Where a leader's raster goes, how big it is, and its two endpoints within
+/// it -- all logical.
+type Leader = (
+    Point<i32, Logical>,
+    Size<i32, Logical>,
+    Point<i32, Logical>,
+    Point<i32, Logical>,
+);
+
+/// One annotation's uploaded pieces: the panel first, then its marker
+/// brackets and leader, each with the logical position it is drawn at.
+#[derive(Debug)]
+struct Art {
+    key: ArtKey,
+    parts: Parts,
+}
+
+/// Furthest a caller's rectangle may sit from the origin, and the largest it
+/// may be, in logical pixels. Well past any real output, but small enough that
+/// every `loc + size` below stays inside `i32`: the anchor is now drawn, not
+/// just used for placement, and an unprivileged socket caller must not be able
+/// to abort the compositor with an overflow. Clipping bounds the pixels; this
+/// bounds the arithmetic.
+const MAX_COORD: i32 = 1 << 20;
+
+/// Reduce a caller's rectangle at the door, the same way its text is.
+fn clamp_anchor(r: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    Rectangle::new(
+        Point::from((
+            r.loc.x.clamp(-MAX_COORD, MAX_COORD),
+            r.loc.y.clamp(-MAX_COORD, MAX_COORD),
+        )),
+        Size::from((r.size.w.clamp(0, MAX_COORD), r.size.h.clamp(0, MAX_COORD))),
+    )
 }
 
 /// Hard cap on live annotations. A caller that leaks handles degrades its own
@@ -100,7 +176,7 @@ impl AnnotationStore {
             id,
             Annotation {
                 owner,
-                anchor,
+                anchor: clamp_anchor(anchor),
                 lines: lines_for(text),
             },
         );
@@ -159,7 +235,7 @@ fn lines_for(s: &str) -> Vec<String> {
 /// global coordinates and are drawn output-local.
 pub fn annotation_elements(
     renderer: &mut GlesRenderer,
-    store: &AnnotationStore,
+    store: &mut AnnotationStore,
     output: &Output,
     output_loc: Point<i32, Logical>,
 ) -> Vec<AbyssRenderElement> {
@@ -173,26 +249,244 @@ pub fn annotation_elements(
     let scale = Scale::from(fractional);
     let logical: Size<i32, Logical> = mode.size.to_f64().to_logical(scale).to_i32_round();
     // Integer multiplier: the font is unhinted and unantialiased, so a
-    // fractional scale would only smear it.
-    let px = (fractional.round() as usize).max(1);
+    // fractional scale would only smear it. The curves are drawn at `dev`,
+    // the plain device-pixel ratio, where they do get antialiasing.
+    let dev = (fractional.round() as usize).max(1);
+    let px = dev * TEXT_PX;
+
+    // Split borrow: the live map is read while its art cache is written.
+    let AnnotationStore { live, art, .. } = store;
+    art.retain(|id, _| live.contains_key(id));
 
     let mut elements = Vec::new();
-    for (_, annotation) in store.iter() {
+    for (id, annotation) in live.iter() {
         if annotation.lines.is_empty() {
             continue;
         }
-        let raster = text::rasterize(&annotation.lines, px, FG, BG);
-        // The raster is already in physical pixels; its logical size is what
-        // placement works in.
-        let size: Size<i32, Logical> = (raster.w / px as i32, raster.h / px as i32).into();
-        let loc = place(annotation.anchor, size, logical, output_loc);
-        let Some(element) = upload(renderer, &raster, loc, px, scale) else {
-            // A failed upload drops this one panel rather than the frame.
-            continue;
-        };
-        elements.push(element);
+        let key: ArtKey = (
+            annotation.lines.clone(),
+            px,
+            dev,
+            annotation.anchor,
+            logical,
+            output_loc,
+        );
+        if art.get(id).map(|a| a.key != key).unwrap_or(true) {
+            // A failed upload drops this one annotation rather than the frame.
+            match build(
+                renderer,
+                annotation.anchor,
+                &annotation.lines,
+                px,
+                dev,
+                logical,
+                output_loc,
+            ) {
+                Some(parts) => {
+                    art.insert(*id, Art { key, parts });
+                }
+                None => {
+                    art.remove(id);
+                    continue;
+                }
+            }
+        }
+        let Some(a) = art.get(id) else { continue };
+        for (loc, buffer) in &a.parts {
+            elements.push(AbyssRenderElement::Texture(
+                TextureRenderElement::from_texture_buffer(
+                    loc.to_f64().to_physical(scale),
+                    buffer,
+                    None,
+                    None,
+                    None,
+                    Kind::Unspecified,
+                ),
+            ));
+        }
     }
     elements
+}
+
+/// Rasterise and upload one annotation: the panel, then -- when there is an
+/// honest region to point at -- four corner brackets and the line joining
+/// them to the panel. `None` if any upload fails.
+///
+/// The panel alone says *what*; the brackets and the leader say *about what*.
+/// All of it is in the same pass, so it inherits capture-invisibility and its
+/// place below trusted UI without anything new having to be true.
+fn build(
+    renderer: &mut GlesRenderer,
+    anchor: Rectangle<i32, Logical>,
+    lines: &[String],
+    px: usize,
+    dev: usize,
+    logical: Size<i32, Logical>,
+    output_loc: Point<i32, Logical>,
+) -> Option<Parts> {
+    let raster = text::rasterize(lines, px, FG, BG);
+    // The raster is already in physical pixels; its logical size is what
+    // placement works in.
+    let size: Size<i32, Logical> = (raster.w / px as i32, raster.h / px as i32).into();
+    let loc = place(anchor, size, logical, output_loc);
+    let mut parts = vec![(loc, upload(renderer, &raster, px)?)];
+
+    let region = drawable_region(Rectangle::new(anchor.loc - output_loc, anchor.size), logical);
+    // Nothing honest to point at: draw the glyphs and no marker.
+    let Some(region) = region else { return Some(parts) };
+
+    let side = MARK_SIDE.min(region.size.w).min(region.size.h).max(1);
+    let mark = bracket(side, dev);
+    for (at, fx, fy) in slots(region, side) {
+        let flipped = text::Raster {
+            w: mark.w,
+            h: mark.h,
+            px: flip(&mark.px, mark.w, mark.h, fx, fy),
+        };
+        parts.push((at, upload(renderer, &flipped, dev)?));
+    }
+    if let Some((at, span, a, b)) = leader(region, Rectangle::new(loc, size)) {
+        parts.push((at, upload(renderer, &line(span, a, b, dev), dev)?));
+    }
+    Some(parts)
+}
+
+/// A top-left corner bracket: a quarter-arc with a tangent arm along each
+/// edge, drawn into a `side`-square raster at `dev` device pixels per logical
+/// one. The other three corners are this one flipped, so the curve is
+/// rasterised once per annotation rather than four times.
+fn bracket(side: i32, dev: usize) -> text::Raster {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let n = (side.max(1) as usize) * dev;
+    let mut px = vec![0u8; n * n * 4];
+    let thick = (MARK_THICK as usize * dev) as f32;
+    let inset = thick * 0.5;
+    let radius = ((MARK_RADIUS as usize * dev) as f32).min(n as f32 - thick);
+    let c = inset + radius;
+    curve::stroke_arc(&mut px, n, n, c, c, radius, thick, PI, PI + FRAC_PI_2, BAND);
+    curve::stroke_line(&mut px, n, n, inset, c, inset, n as f32, thick, BAND);
+    curve::stroke_line(&mut px, n, n, c, inset, n as f32, inset, thick, BAND);
+    text::Raster {
+        w: n as i32,
+        h: n as i32,
+        px,
+    }
+}
+
+/// Mirror a raster in either axis. Premultiplied RGBA moves whole, so this is
+/// a pixel shuffle and nothing more.
+fn flip(src: &[u8], w: i32, h: i32, fx: bool, fy: bool) -> Vec<u8> {
+    let (w, h) = (w.max(0) as usize, h.max(0) as usize);
+    let mut out = vec![0u8; w * h * 4];
+    for y in 0..h {
+        let sy = if fy { h - 1 - y } else { y };
+        for x in 0..w {
+            let sx = if fx { w - 1 - x } else { x };
+            let (d, s) = ((y * w + x) * 4, (sy * w + sx) * 4);
+            out[d..d + 4].copy_from_slice(&src[s..s + 4]);
+        }
+    }
+    out
+}
+
+/// Where each corner bracket sits, and which axes its artwork is mirrored in:
+/// top-left, top-right, bottom-right, bottom-left.
+fn slots(r: Rectangle<i32, Logical>, side: i32) -> [(Point<i32, Logical>, bool, bool); 4] {
+    let (x0, y0) = (r.loc.x, r.loc.y);
+    let (x1, y1) = (r.loc.x + r.size.w - side, r.loc.y + r.size.h - side);
+    [
+        (Point::from((x0, y0)), false, false),
+        (Point::from((x1, y0)), true, false),
+        (Point::from((x1, y1)), true, true),
+        (Point::from((x0, y1)), false, true),
+    ]
+}
+
+/// The line joining a marked region to its panel: where its raster goes, how
+/// big it is, and its two endpoints within it, all in logical pixels.
+///
+/// Each end is the point of one rectangle nearest the other's centre, so the
+/// line leaves the region on the side the panel is actually on. `None` when
+/// the two are close enough to touch -- there is nothing to join.
+fn leader(r: Rectangle<i32, Logical>, panel: Rectangle<i32, Logical>) -> Option<Leader> {
+    if r.size.w <= 0 || r.size.h <= 0 || panel.size.w <= 0 || panel.size.h <= 0 {
+        return None;
+    }
+    let near = |b: Rectangle<i32, Logical>, to: Point<i32, Logical>| {
+        Point::from((
+            to.x.clamp(b.loc.x, b.loc.x + b.size.w),
+            to.y.clamp(b.loc.y, b.loc.y + b.size.h),
+        ))
+    };
+    let centre = |b: Rectangle<i32, Logical>| Point::from((b.loc.x + b.size.w / 2, b.loc.y + b.size.h / 2));
+    let a = near(r, centre(panel));
+    let b = near(panel, centre(r));
+    if (a.x - b.x).abs() < LEAD_THICK && (a.y - b.y).abs() < LEAD_THICK {
+        return None;
+    }
+    let pad = LEAD_THICK;
+    let at = Point::from((a.x.min(b.x) - pad, a.y.min(b.y) - pad));
+    let span = Size::from(((a.x - b.x).abs() + pad * 2, (a.y - b.y).abs() + pad * 2));
+    Some((at, span, a - at, b - at))
+}
+
+/// The leader's raster: one antialiased straight run, no elbow.
+fn line(
+    span: Size<i32, Logical>,
+    a: Point<i32, Logical>,
+    b: Point<i32, Logical>,
+    dev: usize,
+) -> text::Raster {
+    let (w, h) = ((span.w.max(1) as usize) * dev, (span.h.max(1) as usize) * dev);
+    let mut px = vec![0u8; w * h * 4];
+    let d = dev as f32;
+    curve::stroke_line(
+        &mut px,
+        w,
+        h,
+        a.x as f32 * d,
+        a.y as f32 * d,
+        b.x as f32 * d,
+        b.y as f32 * d,
+        (LEAD_THICK as usize * dev) as f32,
+        BAND,
+    );
+    text::Raster {
+        w: w as i32,
+        h: h as i32,
+        px,
+    }
+}
+
+/// What of a caller's region may actually be drawn.
+///
+/// `place` only ever used the anchor to position a panel it then clamped, so a
+/// silly rectangle cost a caller nothing but a badly-placed panel. The band and
+/// the leader *draw* it, and `annotation_create` takes any `i32` position and
+/// any positive size -- so without this a control-socket caller could outline
+/// the whole screen, or ring another client's UI, which is on-screen geometry
+/// of its choosing rather than glyphs. Capping the size at a third of the
+/// output per axis and clipping to the output leaves every real region
+/// untouched while taking that choice away. Returns `None` when nothing is
+/// left, in which case the panel is drawn unmarked.
+fn drawable_region(
+    r: Rectangle<i32, Logical>,
+    output: Size<i32, Logical>,
+) -> Option<Rectangle<i32, Logical>> {
+    if r.size.w <= 0 || r.size.h <= 0 {
+        return None;
+    }
+    // Clip first, then cap: the cap is on what is drawn, so a huge rectangle
+    // reaching onto the output keeps its visible corner rather than being
+    // trimmed off-screen and vanishing.
+    let on = r.intersection(Rectangle::new(Point::from((0, 0)), output))?;
+    Some(Rectangle::new(
+        on.loc,
+        Size::from((
+            on.size.w.min((output.w / 3).max(1)),
+            on.size.h.min((output.h / 3).max(1)),
+        )),
+    ))
 }
 
 /// Put the panel just below its anchor, nudged back on screen if it would fall
@@ -217,32 +511,26 @@ fn place(
     (x, y).into()
 }
 
-/// Upload a raster to a texture and wrap it as a render element.
+/// Upload a raster to a texture, ready to be drawn at buffer scale `bs`.
 ///
 /// `None` on any GL failure: an annotation is cosmetic and must never be able
 /// to take a frame down with it.
 fn upload(
     renderer: &mut GlesRenderer,
     raster: &text::Raster,
-    loc: Point<i32, Logical>,
-    px: usize,
-    scale: Scale<f64>,
-) -> Option<AbyssRenderElement> {
+    bs: usize,
+) -> Option<TextureBuffer<GlesTexture>> {
     // `Abgr8888` is RGBA in memory order on a little-endian host, which is how
     // `text::rasterize` lays the panel out.
     let texture: GlesTexture = renderer
         .import_memory(&raster.px, Fourcc::Abgr8888, (raster.w, raster.h).into(), false)
         .ok()?;
-    let buffer = TextureBuffer::from_texture(renderer, texture, px as i32, Transform::Normal, None);
-    Some(AbyssRenderElement::Texture(
-        TextureRenderElement::from_texture_buffer(
-            loc.to_f64().to_physical(scale),
-            &buffer,
-            None,
-            None,
-            None,
-            Kind::Unspecified,
-        ),
+    Some(TextureBuffer::from_texture(
+        renderer,
+        texture,
+        bs as i32,
+        Transform::Normal,
+        None,
     ))
 }
 
@@ -346,6 +634,71 @@ mod tests {
                 "{path} puts the annotation pass on the wrong side of trusted UI"
             );
         }
+    }
+
+    #[test]
+    fn the_brackets_never_overlap_on_a_tiny_region() {
+        let r = rect(10, 10, 3, 40);
+        let side = MARK_SIDE.min(r.size.w).min(r.size.h).max(1);
+        assert_eq!(side, 3);
+        let s = slots(r, side);
+        // Four distinct corners, each wholly inside the region.
+        for (p, _, _) in s {
+            assert!(p.x >= r.loc.x && p.x + side <= r.loc.x + r.size.w);
+            assert!(p.y >= r.loc.y && p.y + side <= r.loc.y + r.size.h);
+        }
+        assert_eq!(s[0].0, Point::from((10, 10)));
+        assert_eq!(s[2].0, Point::from((10, 47)));
+    }
+
+    #[test]
+    fn the_leader_only_exists_when_there_is_a_gap_to_cross() {
+        // Panel well below the region: a line, inside a box spanning the gap.
+        let (at, span, a, b) = leader(rect(100, 100, 40, 40), rect(100, 300, 200, 60)).unwrap();
+        assert!(span.w >= LEAD_THICK * 2 && span.h >= LEAD_THICK * 2);
+        assert_eq!(at + a, Point::from((140, 140)));
+        assert_eq!(at + b, Point::from((120, 300)));
+        // Touching: nothing to join.
+        assert!(leader(rect(0, 0, 40, 40), rect(0, 40, 40, 10)).is_none());
+        // Degenerate input is refused rather than drawn.
+        assert!(leader(rect(0, 0, 0, 0), rect(0, 300, 10, 10)).is_none());
+    }
+
+    #[test]
+    fn a_marker_cannot_be_made_to_frame_the_screen() {
+        let out: Size<i32, Logical> = (1920, 1080).into();
+        // A caller asking to outline everything gets a third of it, on-screen.
+        let r = drawable_region(rect(-500, -500, 9000, 9000), out).unwrap();
+        assert_eq!((r.loc.x, r.loc.y), (0, 0));
+        assert_eq!((r.size.w, r.size.h), (640, 360));
+        // A real OCR region is untouched.
+        let r = drawable_region(rect(300, 200, 400, 60), out).unwrap();
+        assert_eq!((r.loc.x, r.loc.y, r.size.w, r.size.h), (300, 200, 400, 60));
+        // Entirely off this output: nothing to draw.
+        assert!(drawable_region(rect(5000, 5000, 100, 100), out).is_none());
+    }
+
+    #[test]
+    fn an_absurd_anchor_is_reduced_at_the_door() {
+        // The anchor is drawn now, not just used for placement, so a socket
+        // caller must not be able to overflow the additions in `band`,
+        // `leader` and `place`.
+        let mut store = AnnotationStore::default();
+        let id = store
+            .create(
+                1,
+                Rectangle::new(
+                    Point::from((i32::MAX, i32::MIN)),
+                    Size::from((i32::MAX, i32::MAX)),
+                ),
+                "hi",
+            )
+            .unwrap();
+        let a = &store.live[&id];
+        assert_eq!(a.anchor.loc.x, MAX_COORD);
+        assert_eq!(a.anchor.loc.y, -MAX_COORD);
+        assert_eq!(a.anchor.size.w, MAX_COORD);
+        assert!(a.anchor.loc.x.checked_add(a.anchor.size.w).is_some());
     }
 
     #[test]

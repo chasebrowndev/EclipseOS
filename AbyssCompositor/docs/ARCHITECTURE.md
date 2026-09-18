@@ -26,13 +26,14 @@ crates/
   eclipse-policy-viewer/  read-only policy.kdl inspector, deliberately powerless
   eclipse-services/   freedesktop notification server (ADR 0038), lib only
   wlcs-abyss/         wlcs conformance cdylib, drives the headless backend
-  policyd/            policy + audit daemon            [TCB]   (not yet)
-  policy-eval/        shared evaluator, linked by both [TCB]   (not yet)
+  policyd/            policy + audit daemon            [TCB]
+  policy-eval/        shared evaluator, linked by both [TCB]
   agentd/             agent gateway                            (not yet)
   registryd/          perception aggregation                   (not yet)
   proto-agent/        eclipse_agent_v1 bindings (generated)    (not yet)
   proto-semantic/     eclipse_semantic_v1 bindings (generated) (not yet)
-  audit/              audit store, hash chain, verify tool     (not yet)
+  audit/              verify tool + retention; the store itself
+                      lives in policyd/src/audit.rs (ADR 0046)  (not yet)
   sandbox/            grant → bwrap/Landlock/seccomp compiler  (not yet)
   sdk-rust/ sdk-python/  agent SDKs (Apache-2.0)               (not yet)
 tests/{golden,wlcs,compat,redteam}/
@@ -40,8 +41,8 @@ fuzz/                 cargo-fuzz targets
 bench/                COMP-14 benchmarks
 ```
 
-The nine crates above without a `(not yet)` marker exist today; everything
-marked `(not yet)` is Phase 2 or later (see `docs/STATUS.md`). All nine are
+The eleven crates above without a `(not yet)` marker exist today; everything
+marked `(not yet)` is Phase 2 or later (see `docs/STATUS.md`). All eleven are
 `AGPL-3.0-only` via `license.workspace = true` — the Apache-2.0 half of the
 F-05 §3 split has no code yet. None of the six DE crates is TCB. TCB crates
 get a line-by-line owner review on every change (F-07 §4).

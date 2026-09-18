@@ -69,6 +69,9 @@ impl<T: PartialEq + Clone> FocusHistory<T> {
 #[derive(Debug, Default)]
 pub struct Workspace {
     pub tiled: Tree,
+    /// Floating windows, bottom of the stack first. `note_focused` moves the
+    /// focused window to the end; `shell::arrange_output` replays the order
+    /// into `Space::raise_element`, so the last entry is the topmost window.
     pub floating: Vec<Floating>,
     /// Set by `toggle-layout`; otherwise the config decides.
     pub layout: Option<LayoutKind>,
@@ -78,6 +81,15 @@ pub struct Workspace {
     /// Minimized windows, oldest first. Minimizing is per workspace, so a
     /// window sent away on workspace 3 comes back on workspace 3.
     pub minimized: Vec<Minimized>,
+    /// The tiling area `shell::arrange_output` last laid this workspace out
+    /// against. Floating rectangles are absolute and were computed against
+    /// this area, so they are only re-clamped when it actually changes (a
+    /// mode/scale change, a bar fold, an adopted window from a departed
+    /// output). `None` means "never arranged yet", which is also not a
+    /// change: a rectangle set before the first arrange was already computed
+    /// against the current area. Clamping unconditionally would drag a
+    /// window pinned by `place_at` off its exact position.
+    pub(crate) last_area: Option<Rectangle<i32, Logical>>,
     /// Per-workspace focus history, most recent first (COMP-05 §5, ADR 0042).
     /// Written only by `note_focused`, whose single caller is
     /// `shell::focus::focus_window` — the one place focus actually moves.
@@ -105,8 +117,26 @@ impl Workspace {
     }
 
     /// Record `w` as the most recently focused window here.
-    pub(crate) fn note_focused(&mut self, w: &Window) {
+    ///
+    /// With `raise`, also moves `w` to the end of `floating`, which is the
+    /// floating stacking order bottom-to-top: `shell::arrange_output` replays it
+    /// into `Space::raise_element`, so without this the click's raise is undone
+    /// by the next relayout and the window takes focus while staying behind
+    /// (RAISE-01). A tiled window is not in the vec and nothing moves.
+    ///
+    /// `raise` is false for passive focus changes — focus-follows-mouse and the
+    /// scene-change refresh — which must not restack; see `FocusCause::raises`.
+    pub(crate) fn note_focused(&mut self, w: &Window, raise: bool) {
         self.focus_history.note(w);
+        if raise {
+            self.raise_floating(w);
+        }
+    }
+
+    /// Move `w` to the top of the floating stack. No-op for a window that is
+    /// not floating here.
+    fn raise_floating(&mut self, w: &Window) {
+        raise_to_top(&mut self.floating, |f| &f.window == w);
     }
 
     /// Is `w` on screen here — tiled or floating, but not minimized? Allocation
@@ -148,6 +178,16 @@ impl Workspace {
 
 pub fn new_set() -> Vec<Workspace> {
     (0..COUNT).map(|_| Workspace::default()).collect()
+}
+
+/// Move the first matching element to the end of `v`. Generic only so the
+/// ordering can be unit-tested without a live `Window`; `Workspace` uses
+/// exactly one instantiation.
+fn raise_to_top<T>(v: &mut Vec<T>, matches: impl Fn(&T) -> bool) {
+    if let Some(i) = v.iter().position(matches) {
+        let e = v.remove(i);
+        v.push(e);
+    }
 }
 
 #[cfg(test)]
@@ -213,5 +253,23 @@ mod tests {
     #[test]
     fn empty_workspace_has_no_focus_head() {
         assert_eq!(Workspace::default().focus_head(), None);
+    }
+
+    #[test]
+    fn focusing_a_floating_window_moves_it_to_the_top_of_the_stack() {
+        // `Workspace::raise_floating` is the `&f.window == w` instantiation.
+        // The vec is bottom-to-top: `shell::arrange_output` replays it into
+        // `Space::raise_element`, so the last entry ends up frontmost (RAISE-01).
+        let mut v = vec![1, 2, 3];
+        raise_to_top(&mut v, |x| *x == 1);
+        assert_eq!(v, vec![2, 3, 1]);
+
+        // Already on top: order is unchanged, not rotated.
+        raise_to_top(&mut v, |x| *x == 1);
+        assert_eq!(v, vec![2, 3, 1]);
+
+        // A window that is not floating here moves nothing.
+        raise_to_top(&mut v, |x| *x == 9);
+        assert_eq!(v, vec![2, 3, 1]);
     }
 }

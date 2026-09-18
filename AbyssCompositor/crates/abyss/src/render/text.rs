@@ -15,6 +15,7 @@
 //! * nothing is interpreted. There is no markup, no colour escape, no
 //!   substitution. A `<b>` renders as four glyphs.
 
+use super::curve;
 use super::font::{ADVANCE, FIRST, FONT, GLYPH_H, GLYPH_W, LAST, LINE_H};
 
 /// Hard character cap, applied after sanitising and before wrapping.
@@ -115,8 +116,28 @@ pub struct Raster {
 /// Straight (non-premultiplied) RGBA, as written in config and in the source.
 pub type Rgba = [f32; 4];
 
-/// Padding between the panel edge and the text, in unscaled pixels.
-const PAD: usize = 4;
+/// Padding between the border and the text, in unscaled pixels. Wide enough
+/// that the corner radius never bites into a glyph.
+const PAD: usize = 8;
+
+/// The rule around the panel: one unscaled pixel, following a rounded outline.
+/// Nothing on this surface meets at a right angle.
+const BORDER: usize = 1;
+
+/// Corner radius of the panel silhouette, in unscaled pixels.
+const RADIUS: usize = 8;
+
+/// Heavier brackets at the four corners, drawn over the rule: a quarter-arc
+/// around the radius plus a short tangent arm along each edge.
+const CORNER: usize = 6;
+const BRACKET: usize = 2;
+
+/// The continuous rule sits under the brackets, so it is drawn faint -- the
+/// corners are what the eye should catch.
+const RULE_ALPHA: f32 = 0.35;
+
+/// Distance from the panel edge to the first glyph.
+const INSET: usize = BORDER + PAD;
 
 /// Rasterise `lines` into a panel. `scale` is an integer pixel multiplier --
 /// the font has no hinting and no antialiasing, so a fractional scale would
@@ -135,18 +156,23 @@ pub fn rasterize(lines: &[String], scale: usize, fg: Rgba, bg: Rgba) -> Raster {
     } else {
         lines.len() * LINE_H - (LINE_H - GLYPH_H)
     };
-    let w = (text_w + PAD * 2) * scale;
-    let h = (text_h + PAD * 2) * scale;
+    // Unscaled panel extent. Everything below is laid out in these
+    // coordinates and multiplied by `scale` at the last moment, which keeps
+    // `w` and `h` exact multiples of it -- the annotation pass divides by the
+    // same number to get a logical size back.
+    let uw = text_w + INSET * 2;
+    let uh = text_h + INSET * 2;
+    let w = uw * scale;
+    let h = uh * scale;
     let mut px = vec![0u8; w * h * 4];
 
-    let bg8 = premul(bg);
-    for chunk in px.chunks_exact_mut(4) {
-        chunk.copy_from_slice(&bg8);
-    }
+    curve::fill_round_rect(&mut px, w, h, (RADIUS * scale) as f32, bg);
     let fg8 = premul(fg);
 
+    frame(&mut px, w, h, scale, fg);
+
     for (row, line) in lines.iter().enumerate() {
-        let oy = PAD + row * LINE_H;
+        let oy = INSET + row * LINE_H;
         for (col, ch) in line.bytes().enumerate() {
             // `sanitize` guarantees this, but the font index must not be able
             // to depend on caller data even if a future path skips it.
@@ -154,7 +180,7 @@ pub fn rasterize(lines: &[String], scale: usize, fg: Rgba, bg: Rgba) -> Raster {
                 continue;
             }
             let glyph = &FONT[(ch - FIRST) as usize];
-            let ox = PAD + col * ADVANCE;
+            let ox = INSET + col * ADVANCE;
             for (gy, bits) in glyph.iter().enumerate() {
                 for gx in 0..GLYPH_W {
                     if bits & (1 << (GLYPH_W - 1 - gx)) == 0 {
@@ -173,6 +199,72 @@ pub fn rasterize(lines: &[String], scale: usize, fg: Rgba, bg: Rgba) -> Raster {
     }
 }
 
+/// The panel edge: a faint rounded rule all the way round, with a heavier
+/// bracket at each corner -- a quarter-arc plus two tangent arms. Drawn in the
+/// text colour before the glyphs, so a panel reads as a cut-out rather than as
+/// text floating on a dark wash.
+///
+/// Geometry is in device pixels here, not unscaled ones: curves want the full
+/// resolution, unlike the glyphs. Every stroke is clipped to the buffer, so a
+/// panel too small to hold a bracket simply gets less of one.
+fn frame(px: &mut [u8], w: usize, h: usize, scale: usize, color: Rgba) {
+    use std::f32::consts::{FRAC_PI_2, PI, TAU};
+    if w == 0 || h == 0 {
+        return;
+    }
+    let thick = (BRACKET * scale) as f32;
+    let inset = thick * 0.5;
+    let radius = (RADIUS * scale) as f32;
+    // Half the panel in each axis, so opposite corners can meet but never
+    // overrun each other.
+    let arm = ((CORNER * scale) as f32).min(w as f32 * 0.5).min(h as f32 * 0.5);
+    let dim = [color[0], color[1], color[2], color[3] * RULE_ALPHA];
+    curve::stroke_round_rect(px, w, h, inset, radius, (BORDER * scale) as f32, dim);
+
+    let (l, t) = (inset, inset);
+    let (r, b) = (w as f32 - inset, h as f32 - inset);
+    // centre, arc span, vertical arm, horizontal arm.
+    let corners = [
+        (
+            l + radius,
+            t + radius,
+            PI,
+            PI + FRAC_PI_2,
+            (l, t + radius + arm),
+            (l + radius + arm, t),
+        ),
+        (
+            r - radius,
+            t + radius,
+            PI + FRAC_PI_2,
+            TAU,
+            (r, t + radius + arm),
+            (r - radius - arm, t),
+        ),
+        (
+            r - radius,
+            b - radius,
+            0.0,
+            FRAC_PI_2,
+            (r, b - radius - arm),
+            (r - radius - arm, b),
+        ),
+        (
+            l + radius,
+            b - radius,
+            FRAC_PI_2,
+            PI,
+            (l, b - radius - arm),
+            (l + radius + arm, b),
+        ),
+    ];
+    for (cx, cy, a0, a1, v, hz) in corners {
+        curve::stroke_arc(px, w, h, cx, cy, radius, thick, a0, a1, color);
+        curve::stroke_line(px, w, h, v.0, cy, v.0, v.1, thick, color);
+        curve::stroke_line(px, w, h, cx, hz.1, hz.0, hz.1, thick, color);
+    }
+}
+
 /// One scaled font pixel: a `scale`x`scale` block of solid colour.
 fn blit(px: &mut [u8], w: usize, x: usize, y: usize, scale: usize, color: [u8; 4]) {
     for dy in 0..scale {
@@ -186,7 +278,7 @@ fn blit(px: &mut [u8], w: usize, x: usize, y: usize, scale: usize, color: [u8; 4
 
 /// Straight float RGBA to premultiplied bytes, which is what the GL texture
 /// and every `TextureRenderElement` downstream of it expect.
-fn premul(c: Rgba) -> [u8; 4] {
+pub(super) fn premul(c: Rgba) -> [u8; 4] {
     let a = c[3].clamp(0.0, 1.0);
     let f = |v: f32| (v.clamp(0.0, 1.0) * a * 255.0).round() as u8;
     [f(c[0]), f(c[1]), f(c[2]), (a * 255.0).round() as u8]
@@ -241,14 +333,33 @@ mod tests {
         let lines = wrap(&sanitize(&line), 32);
         let r = rasterize(&lines, 2, [1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0]);
         assert_eq!(r.px.len(), (r.w * r.h * 4) as usize);
-        // Space is blank by design; everything else must put ink down.
+        // Space is blank by design; everything else must put ink down. The
+        // panel's own border is ink too, so compare against the blank panel
+        // rather than asking for any opaque pixel at all -- otherwise the
+        // frame alone would satisfy this and hide a missing glyph.
+        let blank = rasterize(&[" ".to_string()], 1, [1.0, 1.0, 1.0, 1.0], [0.0; 4]);
         for b in FIRST + 1..=LAST {
             let r = rasterize(&[(b as char).to_string()], 1, [1.0, 1.0, 1.0, 1.0], [0.0; 4]);
-            assert!(
-                r.px.chunks_exact(4).any(|p| p[3] != 0),
-                "no ink for {:?}",
-                b as char
+            assert_eq!((r.w, r.h), (blank.w, blank.h), "geometry moved");
+            assert!(r.px != blank.px, "no ink for {:?}", b as char);
+        }
+    }
+
+    #[test]
+    fn the_raster_stays_an_exact_multiple_of_its_scale() {
+        // `annotation_elements` recovers a logical size by dividing by the
+        // same scale it passes in, and hands it to `TextureBuffer` as the
+        // buffer scale. A remainder here is a panel that drifts by a pixel.
+        for scale in [1usize, 2, 3, 6] {
+            let r = rasterize(
+                &["hello".to_string(), "world".to_string()],
+                scale,
+                [1.0, 1.0, 1.0, 1.0],
+                [0.0, 0.0, 0.0, 1.0],
             );
+            assert_eq!(r.w as usize % scale, 0, "width at {scale}x");
+            assert_eq!(r.h as usize % scale, 0, "height at {scale}x");
+            assert_eq!(r.px.len(), (r.w * r.h * 4) as usize);
         }
     }
 

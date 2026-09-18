@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# EclipseOS — ReGreet configuration.
+# Install to: /etc/greetd/regreet.toml  (root:root 0644)
+#
+# Styling lives entirely in /etc/greetd/regreet.css, which is hand-written and
+# self-contained — it is NOT generated from any theme tool and must not be
+# regenerated from a user's home directory.
+
+[background]
+# Ships as dist/greetd/wallpaper.png.
+# Install to: /usr/share/backgrounds/eclipseos/greeter.png  (world-readable;
+# the `greeter` user has no access to /home).
+path = "/usr/share/backgrounds/eclipseos/greeter.png"
+fit = "Cover"
+
+[appearance]
+# The first sentence anyone reads of this OS. The CSS renders it as tracked
+# micro-caps beneath the wordmark, not as a friendly salutation.
+greeting_msg = "ECLIPSE OS  ·  ABYSS COMPOSITOR  ·  SELECT A SESSION AND AUTHENTICATE"
+
+[GTK]
+application_prefer_dark_theme = true
+cursor_theme_name = "Adwaita"
+font_name = "JetBrainsMono Nerd Font 11"
+
+[commands]
+reboot = [ "systemctl", "reboot" ]
+poweroff = [ "systemctl", "poweroff" ]

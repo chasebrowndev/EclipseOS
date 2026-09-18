@@ -1,0 +1,8 @@
+# Installed to /usr/lib/systemd/user-preset/50-eclipseos.preset.
+#
+# The session's own services are enabled by preset rather than by a post_install
+# `systemctl --user enable`, which cannot know which users exist and runs as the
+# wrong one anyway (D-01 §3.2).
+enable eclipse-bar.service
+enable eclipse-toasts.service
+enable policyd.service

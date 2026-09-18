@@ -27,6 +27,19 @@ use smithay::input::keyboard::{xkb, Keysym, ModifiersState};
 use crate::input::{Action, Bind, Direction, Mods};
 use crate::xwayland::security::{AppTrust, SeatCompat};
 
+/// Where a floating window lands when nothing else decides for it — no
+/// `position` window rule, no remembered rectangle (COMP-05 §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatingPlacement {
+    /// Centred in the output's tiling area.
+    Centered,
+    /// Top-left corner at the pointer, clamped to stay fully on the output.
+    Pointer,
+    /// Stepped down-right from the area's origin, one step per window already
+    /// floating here, wrapping before it runs off the edge.
+    Cascade,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutKind {
     Dwindle,
@@ -39,6 +52,7 @@ pub struct General {
     pub gaps_out: i32,
     pub border_size: i32,
     pub layout: LayoutKind,
+    pub floating_placement: FloatingPlacement,
     pub focus_follows_mouse: bool,
     pub focus_follows_mouse_across_outputs: bool,
     pub unfocus_on_empty_workspace: bool,
@@ -55,6 +69,7 @@ impl Default for General {
             gaps_out: 10,
             border_size: 2,
             layout: LayoutKind::Dwindle,
+            floating_placement: FloatingPlacement::Centered,
             focus_follows_mouse: true,
             focus_follows_mouse_across_outputs: true,
             unfocus_on_empty_workspace: true,
@@ -199,6 +214,10 @@ pub struct OutputRule {
     /// `off` | `suspend` | `ignore` — what a lid-close does to this output
     /// (COMP-01 §4.1). Only meaningful on an internal panel.
     pub lid_close: Option<String>,
+    /// Explicit display number override (ADR 0049). Falls back to connection
+    /// order when unset. Display-facing only — never derived from or fed
+    /// back into identity (ADR 0023).
+    pub number: Option<u8>,
 }
 
 /// `render { ... }` (COMP-02 §2).
@@ -225,6 +244,18 @@ pub struct Bar {
     pub fold_when_inactive: bool,
     /// Height in logical px of that folded strip.
     pub fold_height: u32,
+    /// Also fold once the session has been idle for [`Self::idle_seconds`].
+    /// Independent of [`Self::fold_when_inactive`]: both may hold at once, and
+    /// either one folds.
+    pub fold_when_idle: bool,
+    /// Seconds without any human input that count as idle, for the bar alone.
+    /// The `idle` block's own timeouts are unrelated and far longer.
+    pub idle_seconds: u32,
+    /// How long the fold slide takes. Height and exclusive zone animate together
+    /// so tiled windows reflow with the bar; zero snaps.
+    pub fold_duration_ms: u32,
+    /// Easing for that slide, one of `ANIMATION_CURVES`.
+    pub fold_curve: String,
     /// Which edge of every output the bar is anchored to. The layer surface's
     /// anchor is chosen once, at surface creation (COMP-13 §1.1's `restart`
     /// reload class), so a running bar keeps its old edge until relaunched.
@@ -243,6 +274,10 @@ impl Default for Bar {
         Self {
             fold_when_inactive: false,
             fold_height: 4,
+            fold_when_idle: false,
+            idle_seconds: 30,
+            fold_duration_ms: 150,
+            fold_curve: "ease-out".to_owned(),
             position: BarPosition::Top,
         }
     }
@@ -777,6 +812,7 @@ pub fn default_binds() -> Vec<Bind> {
     let sup = m(true, false, false, false);
     let sup_shift = m(true, true, false, false);
     let sup_alt = m(true, false, false, true);
+    let sup_ctrl = m(true, false, true, false);
     let none = m(false, false, false, false);
     let mut b = vec![
         Bind {
@@ -1020,6 +1056,15 @@ pub fn default_binds() -> Vec<Bind> {
             mods: sup_shift,
             key: SHIFTED[i],
             action: Action::MoveToWorkspace(i + 1),
+        });
+        // Ctrl+Super+[1-9,0] (ADR 0049): move the focused window to display
+        // (i + 1)'s currently active workspace. `DIGITS[9]` is the `0` key,
+        // giving display 10, the same "0 wraps to the tenth slot" convention
+        // `MoveToWorkspace` already uses above.
+        b.push(Bind {
+            mods: sup_ctrl,
+            key: *key,
+            action: Action::MoveToOutputWorkspace((i + 1) as u8),
         });
     }
     b
@@ -1336,6 +1381,12 @@ impl Config {
                     Some("master") => self.general.layout = LayoutKind::Master,
                     other => self.reject(n, format!("unknown layout {other:?}")),
                 },
+                "floating-placement" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("centered") => self.general.floating_placement = FloatingPlacement::Centered,
+                    Some("pointer") => self.general.floating_placement = FloatingPlacement::Pointer,
+                    Some("cascade") => self.general.floating_placement = FloatingPlacement::Cascade,
+                    other => self.reject(n, format!("unknown floating-placement {other:?}")),
+                },
                 "col-active-border" | "col-inactive-border" => {
                     match arg(n).and_then(KdlValue::as_string).and_then(parse_color) {
                         Some(c) if name.starts_with("col-active") => self.general.col_active = c,
@@ -1370,6 +1421,26 @@ impl Config {
                 "fold-height" => match arg(n).and_then(KdlValue::as_integer) {
                     Some(v) => self.bar.fold_height = v.clamp(2, 16) as u32,
                     None => self.reject(n, "fold-height expects an integer"),
+                },
+                "fold-when-idle" => {
+                    self.bar.fold_when_idle = arg(n).and_then(KdlValue::as_bool).unwrap_or(false);
+                }
+                "idle-seconds" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) => self.bar.idle_seconds = v.clamp(5, 600) as u32,
+                    None => self.reject(n, "idle-seconds expects an integer"),
+                },
+                "fold-duration-ms" => match arg(n).and_then(parse_duration_ms) {
+                    Some(v) => self.bar.fold_duration_ms = v.min(1000),
+                    None => self.reject(n, "fold-duration-ms expects a duration"),
+                },
+                "fold-curve" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(c) if ANIMATION_CURVES.contains(&c) => {
+                        self.bar.fold_curve = c.to_owned();
+                    }
+                    other => self.reject(
+                        n,
+                        format!("unknown bar fold-curve, keeping default (other={:?})", other),
+                    ),
                 },
                 "position" => match arg(n).and_then(KdlValue::as_string) {
                     Some("top") => self.bar.position = BarPosition::Top,
@@ -1947,6 +2018,10 @@ impl Config {
                     }
                 }
                 "vrr" | "adaptive-sync" => rule.vrr = arg(n).and_then(KdlValue::as_bool).or(Some(true)),
+                "number" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (1..=255).contains(&v) => rule.number = Some(v as u8),
+                    _ => self.reject(n, "output number must be between 1 and 255"),
+                },
                 other => self.reject(n, format!("unknown output key {other:?}")),
             }
         }
@@ -1969,6 +2044,7 @@ impl Config {
             out.lid_close = r.lid_close.clone().or(out.lid_close);
             out.vrr = r.vrr.or(out.vrr);
             out.overscan = r.overscan.or(out.overscan);
+            out.number = r.number.or(out.number);
         }
         out
     }
@@ -2150,11 +2226,13 @@ fn parse_action(node: &KdlNode) -> Result<Action, String> {
         "move-down" => Action::Move(Direction::Down),
         "workspace" => Action::SwitchWorkspace(workspace_arg(num())?),
         "move-to-workspace" => Action::MoveToWorkspace(workspace_arg(num())?),
+        "move-to-output" => Action::MoveToOutputWorkspace(output_number_arg(num())?),
         "agent-override" => Action::AgentOverride,
         "agent-attention" => Action::AgentAttention,
         "annotation-select" => Action::AnnotationSelect,
         "annotation-dismiss" => Action::AnnotationDismiss,
         "annotation-expand" => Action::AnnotationExpand,
+        "annotation-auto-toggle" => Action::AnnotationAutoToggle,
         "quit" | "exit" => Action::Quit,
         other => return Err(format!("unknown action '{other}'")),
     })
@@ -2164,6 +2242,18 @@ fn workspace_arg(n: Option<i128>) -> Result<usize, String> {
     match n {
         Some(v) if (1..=10).contains(&v) => Ok(v as usize),
         _ => Err("workspace number must be 1..=10".into()),
+    }
+}
+
+/// Display number for `move-to-output` (ADR 0049). Wider range than
+/// `workspace_arg`'s 1..=10: this matches an output's configured/assigned
+/// `number` (also 1..=255, see `OutputRule::number`), not a workspace index —
+/// the default binds only ever go up to 10, but a config override is free to
+/// name a higher display number.
+fn output_number_arg(n: Option<i128>) -> Result<u8, String> {
+    match n {
+        Some(v) if (1..=255).contains(&v) => Ok(v as u8),
+        _ => Err("output number must be 1..=255".into()),
     }
 }
 
@@ -2778,6 +2868,7 @@ mod tests {
             ("annotation-select", Action::AnnotationSelect),
             ("annotation-dismiss", Action::AnnotationDismiss),
             ("annotation-expand", Action::AnnotationExpand),
+            ("annotation-auto-toggle", Action::AnnotationAutoToggle),
         ] {
             let doc: KdlDocument = format!("bind \"SUPER CTRL\" \"o\" {{ {name}; }}")
                 .parse()
@@ -2790,7 +2881,10 @@ mod tests {
         // The addon is optional, so its chords cost the default config nothing.
         assert!(!default_binds().iter().any(|b| matches!(
             b.action,
-            Action::AnnotationSelect | Action::AnnotationDismiss | Action::AnnotationExpand
+            Action::AnnotationSelect
+                | Action::AnnotationDismiss
+                | Action::AnnotationExpand
+                | Action::AnnotationAutoToggle
         )));
     }
 }

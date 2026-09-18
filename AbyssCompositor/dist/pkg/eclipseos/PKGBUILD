@@ -1,0 +1,98 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Maintainer: chase <chase.brown.dev@gmail.com>
+#
+# EclipseOS split package. Implements D-01 §1.1: four packages out of one
+# source build, because a per-package PKGBUILD would run `cargo build
+# --release --workspace` four times over the same tree.
+#
+# The binary lists below are enumerated by binary, not by crate, on purpose:
+# eclipse-bar declares eclipse-toasts, eclipse-center and eclipse-launcher as
+# extra [[bin]] targets (D-01 §1.1). Iterating crate directories silently ships
+# three fewer binaries than the DE needs.
+
+pkgbase=eclipseos
+pkgname=(eclipseos-abyss eclipseos-desktop eclipseos-policyd eclipseos-meta)
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="EclipseOS — agent-first Wayland desktop"
+arch=(x86_64)
+url="https://github.com/chasebrowndev/EclipseOS"
+license=(AGPL-3.0-only)
+makedepends=(git rust cargo pkgconf)
+depends=(wayland libxkbcommon libinput libdrm libdisplay-info mesa seatd)
+source=("git+https://github.com/chasebrowndev/EclipseOS.git#tag=v$pkgver")
+sha256sums=('SKIP')
+
+_src="$pkgbase/AbyssCompositor"
+
+build() {
+  cd "$_src"
+  cargo build --release --workspace --bins --locked
+}
+
+check() {
+  cd "$_src"
+  cargo test --workspace --release --locked
+}
+
+_bin() { install -Dm0755 "$srcdir/$_src/target/release/$1" "$pkgdir/usr/bin/$1"; }
+_unit() { install -Dm0644 "$srcdir/$_src/dist/$1" "$pkgdir/usr/lib/systemd/user/$1"; }
+
+package_eclipseos-abyss() {
+  pkgdesc="EclipseOS compositor (abyss) and its control client"
+  depends=(wayland libxkbcommon libinput libdrm libdisplay-info mesa)
+  optdepends=('seatd: fallback seat management when logind is unavailable (D-01 §5.3)')
+  provides=(abyss)
+
+  for b in abyss eclipse-ctl; do _bin "$b"; done
+  install -Dm0755 "$srcdir/$_src/dist/abyss-session" "$pkgdir/usr/bin/abyss-session"
+  install -Dm0644 "$srcdir/$_src/dist/abyss.desktop" \
+    "$pkgdir/usr/share/wayland-sessions/abyss.desktop"
+  _unit abyss-session.target
+}
+
+package_eclipseos-desktop() {
+  pkgdesc="EclipseOS desktop shell: bar, launcher, settings, notifications"
+  depends=(eclipseos-abyss wayland libxkbcommon mesa networkmanager bluez bluez-utils upower)
+
+  # Enumerated by binary: four of these come out of the eclipse-bar crate.
+  for b in eclipse-bar eclipse-toasts eclipse-center eclipse-launcher \
+           eclipse-settings eclipse-policy-viewer; do _bin "$b"; done
+  _unit eclipse-bar.service
+  _unit eclipse-toasts.service
+  for d in "$srcdir/$_src"/dist/applications/*.desktop; do
+    install -Dm0644 "$d" "$pkgdir/usr/share/applications/$(basename "$d")"
+  done
+}
+
+package_eclipseos-policyd() {
+  pkgdesc="EclipseOS policy daemon"
+  depends=(eclipseos-abyss)
+
+  _bin policyd
+  _unit policyd.service
+}
+
+package_eclipseos-meta() {
+  pkgdesc="EclipseOS base system (D-01 §1)"
+  depends=(eclipseos-abyss eclipseos-desktop eclipseos-policyd
+           greetd greetd-regreet cage
+           networkmanager bluez bluez-utils upower pipewire pipewire-pulse wireplumber
+           foot xdg-user-dirs)
+  # /etc/eclipse is image-owned (D-01 §4.1): deliberately NOT in backup(), so
+  # pacman overwrites rather than leaving .pacnew, and the later atomic scheme
+  # is a no-op migration.
+  install -Dm0644 "$srcdir/$_src/dist/etc/abyss.kdl"  "$pkgdir/etc/eclipse/abyss.kdl"
+  install -Dm0644 "$srcdir/$_src/dist/etc/policy.kdl" "$pkgdir/etc/eclipse/policy.kdl"
+  install -Dm0644 "$srcdir/$_src/dist/eclipseos.preset" \
+    "$pkgdir/usr/lib/systemd/user-preset/50-eclipseos.preset"
+
+  # Greeter. /etc/greetd is image-owned for the same reason as /etc/eclipse.
+  # The wallpaper goes under /usr/share because the `greeter` user cannot read
+  # any home directory.
+  install -Dm0644 "$srcdir/$_src/dist/greetd/config.toml"  "$pkgdir/etc/greetd/config.toml"
+  install -Dm0644 "$srcdir/$_src/dist/greetd/regreet.toml" "$pkgdir/etc/greetd/regreet.toml"
+  install -Dm0644 "$srcdir/$_src/dist/greetd/regreet.css"  "$pkgdir/etc/greetd/regreet.css"
+  install -Dm0644 "$srcdir/$_src/dist/greetd/wallpaper.png" \
+    "$pkgdir/usr/share/backgrounds/eclipseos/greeter.png"
+}
