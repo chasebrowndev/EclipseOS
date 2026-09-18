@@ -112,7 +112,8 @@ fn run() -> Result<(), String> {
                 _ => None,
             };
             if let Some(result) = outcome {
-                until = present(&mut hud, &mut client, result, fail_ms);
+                let near = pipeline.last_region();
+                until = present(&mut hud, &mut client, result, near, fail_ms);
             }
         }
 
@@ -136,7 +137,9 @@ fn run() -> Result<(), String> {
                     match pipeline.auto(region, ms_since_epoch()) {
                         // The gate declined. That is the common case.
                         Ok(None) => {}
-                        Ok(Some(a)) => until = present(&mut hud, &mut client, Ok(a), fail_ms),
+                        Ok(Some(a)) => {
+                            until = present(&mut hud, &mut client, Ok(a), Some(region), fail_ms)
+                        }
                         // Automatic mode is unprompted, so its failures are
                         // logged, not thrown on screen — the user did not ask
                         // for anything and should not be told it failed.
@@ -154,13 +157,18 @@ fn present(
     hud: &mut Hud,
     client: &mut Client,
     result: Result<Answer, String>,
+    near: Option<Region>,
     fail_ms: u64,
 ) -> Option<Instant> {
     let (anchor, text, hold) = match result {
         Ok(a) => (a.anchor, a.text, a.hold_ms),
         Err(e) => {
             eprintln!("oracle-eyes: {e}");
-            (FAIL_ANCHOR, format!("no answer — {e}"), fail_ms)
+            // A failure belongs beside the thing that was asked about, same
+            // as an answer would. Only a failure with no region at all —
+            // a malformed chord — falls back to the corner.
+            let anchor = near.map(anchor_of).unwrap_or(FAIL_ANCHOR);
+            (anchor, format!("no answer — {e}"), fail_ms)
         }
     };
     match hud.show(client, anchor, &text) {
@@ -182,6 +190,18 @@ const FAIL_ANCHOR: Anchor = Anchor {
     w: 480,
     h: 96,
 };
+
+/// The region a message is about, as the compositor wants it. Same mapping
+/// the pipeline uses for an answer, so a failure lands exactly where the
+/// answer would have.
+fn anchor_of(r: Region) -> Anchor {
+    Anchor {
+        x: r.x,
+        y: r.y,
+        w: r.w,
+        h: r.h,
+    }
+}
 
 fn region_of(data: &serde_json::Value) -> Option<Region> {
     let r = data.get("region")?;

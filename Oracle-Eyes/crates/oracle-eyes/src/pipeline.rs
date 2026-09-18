@@ -57,6 +57,12 @@ impl Pipeline {
         }
     }
 
+    /// The region the last question was about, so a failure can be reported
+    /// next to whatever the user pointed at rather than in a corner.
+    pub fn last_region(&self) -> Option<Region> {
+        self.last
+    }
+
     /// Every output the compositor showed us, for automatic mode.
     pub fn output_regions(&mut self) -> Vec<Region> {
         match self.capturer() {
@@ -96,8 +102,11 @@ impl Pipeline {
     /// explained. No gate — an explicit request is never rate limited or
     /// deduplicated, because the user asking twice means they meant it.
     pub fn select(&mut self, region: Region) -> Result<Answer, String> {
-        let (text, _) = self.read(region)?;
+        // Recorded before the read, not after: a select that fails still told
+        // us where the user was looking, and that is where the failure has to
+        // be reported.
         self.last = Some(region);
+        let (text, _) = self.read(region)?;
         let reply = self.answerer.ask(&text, None)?;
         Ok(self.dress(region, reply))
     }
