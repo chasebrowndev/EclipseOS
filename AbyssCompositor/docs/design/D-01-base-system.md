@@ -103,14 +103,56 @@ build, a signing story and a rollback surface for zero function.
 This is the only rollback that exists before the atomic scheme (D-04), and it is
 worth an extra 150 MB.
 
-### 2.1 NVIDIA
+### 2.1 Two reference machines, and which one the ISO is built for
 
-F-04 makes NVIDIA the reference hardware: `nvidia-open-dkms` plus
-`nvidia-utils`, and `linux-headers`/`linux-lts-headers` for DKMS.
+F-04 named NVIDIA as the reference hardware because that is what the owner's
+desktop (`mainframe`, RTX 4060 Ti) has. **The first ISO is not built for that
+machine.** Its target is a Framework 13 AMD Ryzen laptop, which is a fully open
+stack: `amdgpu` is in-kernel, there is no DKMS, no out-of-tree module, and no
+`nvidia-drm.modeset` to get wrong.
+
+So there are two reference machines, and they are not symmetric:
+
+| | Framework 13 AMD (Ryzen 7040 / AI 300) | mainframe (RTX 4060 Ti) |
+|---|---|---|
+| Role | **ISO target.** What D-03 builds and what gets installed. | Development box. Never installed from the ISO. |
+| Driver | `amdgpu`, in-kernel | `nvidia-open-dkms` + `nvidia-utils` |
+| Extra packages | `amd-ucode`, `linux-firmware-amdgpu` | `linux-headers`, `linux-lts-headers` for DKMS |
+| Bootloader params | none beyond stock | `nvidia-drm.modeset=1`, set explicitly |
+| `mkinitcpio` | stock, `kms` hook kept | `MODULES=(nvidia …)`, `kms` hook removed |
+| Rebuild on kernel upgrade | no | yes, DKMS |
+
+The AMD path is the simpler one in every row, and that is the point: the first
+image should not also be the first DKMS image. The NVIDIA arrangement below is
+recorded because `mainframe` still runs it and because D-03 will eventually need
+a second profile, not because the first ISO uses it.
+
+### 2.2 The AMD path (the ISO)
+
+`amd-ucode` for microcode, `linux-firmware-amdgpu` for the GPU firmware blobs,
+and `mesa` for the userspace driver. Nothing else. `mkinitcpio` stays stock with
+the `kms` hook in place, so `amdgpu` loads in early userspace and the boot is
+flicker-free straight through to greetd.
+
+Framework-specific: nothing is required for the first image. The laptop's
+quirks that matter to a compositor — panel scale, the ambient light sensor, the
+fingerprint reader — are either handled by `abyss.kdl` defaults (scale) or are
+not wired to anything yet. No `framework-` packages, no `fw-ectool`, no DKMS
+modules. If that changes it is D-06's business, not the base system's.
+
+**What this removes from the critical path:** the entire §2.3 sharp edge below.
+On `amdgpu` there is no module parameter the image has to set, so the failure
+mode where a wrong bootloader entry produces a black screen with no explanation
+does not exist on the ISO target.
+
+### 2.3 The NVIDIA path (mainframe only, not in the first ISO)
+
+`nvidia-open-dkms` plus `nvidia-utils`, and `linux-headers`/`linux-lts-headers`
+for DKMS.
 
 `nvidia-drm.modeset=1` is required. On current `nvidia-open-dkms` it defaults on,
-but the image sets it explicitly in the bootloader entry rather than inheriting a
-default that upstream may flip.
+but an image that ships this path must set it explicitly in the bootloader entry
+rather than inherit a default that upstream may flip.
 
 **The sharp edge:** abyss's guard at `crates/abyss/src/backend/drm.rs:141` tries
 to read the parameter and cannot — `/sys/module/nvidia_drm/parameters/modeset`
@@ -118,19 +160,19 @@ is readable, but the guard's failure mode as a normal user is that it cannot
 distinguish "off" from "unreadable" and proceeds. That is correct behaviour for
 a compositor (refusing to start because it could not read a sysfs file would be
 worse) but it means **the image, not the compositor, is responsible for the
-parameter being right.** D-03's bootloader configuration owns it, and the ISO
-must fail loudly at install time if `nvidia-drm.modeset` is not set, because the
-symptom otherwise is a black screen with no explanation.
+parameter being right.** An NVIDIA profile in D-03 owns it and must fail loudly
+at install time if the parameter is not set.
 
-Intel and AMD need no packages beyond `mesa`; F-04 tests Intel and validates AMD
-before any release beyond the owner.
+For this path only, `mkinitcpio` carries `MODULES=(nvidia nvidia_modeset
+nvidia_uvm nvidia_drm)` and the `kms` hook comes **out**, which is the standard
+Arch NVIDIA arrangement.
 
-### 2.2 Firmware and early KMS
+### 2.4 Firmware
 
-`linux-firmware`. `mkinitcpio` with the stock `kms` hook for Intel/AMD; for the
-NVIDIA path the modules go in `MODULES=(nvidia nvidia_modeset nvidia_uvm
-nvidia_drm)` and the `kms` hook comes **out**, which is the standard Arch NVIDIA
-arrangement and the one place D-03's `mkinitcpio.conf` is not stock.
+`linux-firmware` on every path, plus `linux-firmware-amdgpu` on the AMD one.
+Intel needs nothing beyond `mesa` and stock firmware. F-04's "validates AMD
+before release" line is overtaken by events: AMD is now the machine the release
+is built for, and NVIDIA is the one that needs revalidating against the ISO.
 
 ---
 

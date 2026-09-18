@@ -664,9 +664,20 @@ Three answers worth having outside the document:
   fail-closed TCB daemon crash-looping must make the session unusable, not
   degraded), and no socket activation (COMP-11 `check()` is a hot path).
 
+**D-01 §2 was amended the same day** when the ISO target changed. The first
+image is not built for `mainframe` (RTX 4060 Ti, `nvidia-open-dkms`) but for a
+**Framework 13 AMD Ryzen laptop**: `amdgpu` in-kernel, `amd-ucode`,
+`linux-firmware-amdgpu`, no DKMS, stock `mkinitcpio` with the `kms` hook kept,
+and no `nvidia-drm.modeset` bootloader parameter — which deletes the
+`backend/drm.rs:141` sharp edge from the ISO's critical path entirely. §2 now
+carries both machines in a table and says plainly which one D-03 builds for.
+F-04 still names NVIDIA as reference hardware; that is now a two-machine split
+rather than a single answer, and NVIDIA is the path that needs revalidating
+against an image rather than the one the image is made for.
+
 | ID | State |
 |---|---|
-| D-01 | **written** 2026-09-18 |
+| D-01 | **written** 2026-09-18; §2 amended same day for the AMD ISO target |
 | D-02 | blocked on S-12; a reduced personal-scale version is next |
 | D-03 | **unblocked by D-01** — archiso profile + `archinstall` config |
 | D-04 | blocked on D-02 |
