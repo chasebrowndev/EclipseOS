@@ -28,7 +28,43 @@ pub const KINDS: &[EventKind] = &[
 pub struct BarConfig {
     pub fold_when_inactive: bool,
     pub fold_height: u32,
+    /// Fold after `idle_seconds` without input. Independent of
+    /// `fold_when_inactive`: either one folds, both may hold at once.
+    pub fold_when_idle: bool,
+    pub idle_seconds: u32,
+    /// Slide duration for height and exclusive zone together; zero snaps.
+    pub fold_duration_ms: u32,
+    pub fold_curve: FoldCurve,
     pub position: BarPosition,
+}
+
+/// `bar.fold-curve`, kept as an enum so `BarConfig` stays `Copy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldCurve {
+    Linear,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+}
+
+impl FoldCurve {
+    /// Ease `t` in `0.0..=1.0`. Matches the compositor's `ANIMATION_CURVES`
+    /// vocabulary; the shapes are the usual quadratics.
+    pub fn ease(self, t: f32) -> f32 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            FoldCurve::Linear => t,
+            FoldCurve::EaseIn => t * t,
+            FoldCurve::EaseOut => t * (2.0 - t),
+            FoldCurve::EaseInOut => {
+                if t < 0.5 {
+                    2.0 * t * t
+                } else {
+                    -1.0 + (4.0 - 2.0 * t) * t
+                }
+            }
+        }
+    }
 }
 
 /// The edge the bar's layer surface anchors to. `bar.position` is
@@ -46,6 +82,10 @@ impl Default for BarConfig {
         BarConfig {
             fold_when_inactive: false,
             fold_height: 4,
+            fold_when_idle: false,
+            idle_seconds: 30,
+            fold_duration_ms: 150,
+            fold_curve: FoldCurve::EaseOut,
             position: BarPosition::Top,
         }
     }
@@ -190,6 +230,28 @@ impl Conn {
                         cfg.fold_height = h as u32;
                     }
                 }
+                Some("bar.fold-when-idle") => {
+                    if let Some(b) = value.and_then(Value::as_bool) {
+                        cfg.fold_when_idle = b;
+                    }
+                }
+                Some("bar.idle-seconds") => {
+                    if let Some(s) = value.and_then(Value::as_u64) {
+                        cfg.idle_seconds = s as u32;
+                    }
+                }
+                Some("bar.fold-duration-ms") => {
+                    if let Some(d) = value.and_then(Value::as_u64) {
+                        cfg.fold_duration_ms = d as u32;
+                    }
+                }
+                Some("bar.fold-curve") => match value.and_then(Value::as_str) {
+                    Some("linear") => cfg.fold_curve = FoldCurve::Linear,
+                    Some("ease-in") => cfg.fold_curve = FoldCurve::EaseIn,
+                    Some("ease-out") => cfg.fold_curve = FoldCurve::EaseOut,
+                    Some("ease-in-out") => cfg.fold_curve = FoldCurve::EaseInOut,
+                    _ => {}
+                },
                 Some("bar.position") => match value.and_then(Value::as_str) {
                     Some("bottom") => cfg.position = BarPosition::Bottom,
                     Some("top") => cfg.position = BarPosition::Top,

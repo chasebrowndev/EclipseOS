@@ -287,6 +287,20 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
                 f.rect = full_area;
             } else if maximized.contains_key(&f.window) {
                 f.rect = max_area;
+            } else {
+                // A plain floating window keeps whatever absolute rectangle it
+                // was last given, but that rectangle was computed against a
+                // possibly different `area` — a mode/scale change, a
+                // reconfigured layout, or a monitor swap under a stashed
+                // window (`OutputRegistry::add`/`remove`) can all leave it
+                // stale. Re-clamp on every arrange so it never drifts
+                // off-screen; this mirrors the pointer-spawn clamp in
+                // `install` below, including the `.max()` guard for a window
+                // wider/taller than the output itself.
+                let max_x = (area.loc.x + area.size.w - f.rect.size.w).max(area.loc.x);
+                let max_y = (area.loc.y + area.size.h - f.rect.size.h).max(area.loc.y);
+                f.rect.loc.x = f.rect.loc.x.clamp(area.loc.x, max_x);
+                f.rect.loc.y = f.rect.loc.y.clamp(area.loc.y, max_y);
             }
         }
     }
@@ -456,14 +470,22 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
             .or_else(|| geometry.map(|g| g.size))
             .unwrap_or_else(|| Size::from((area.size.w / 2, area.size.h / 2)));
         // A `position` rule is relative to the output's tiling area, so the
-        // same rule lands in the same place on any output.
-        let loc = match placement.position {
+        // same rule lands in the same place on any output. Absent a rule, a
+        // new floating window opens under the pointer rather than centered —
+        // matching the owner's Hyprland muscle memory — clamped so it never
+        // spawns partially off the output the pointer is actually over.
+        let loc: Point<i32, Logical> = match placement.position {
             Some((x, y)) => (area.loc.x + x, area.loc.y + y).into(),
-            None => (
-                area.loc.x + (area.size.w - size.w).max(0) / 2,
-                area.loc.y + (area.size.h - size.h).max(0) / 2,
-            )
-                .into(),
+            None => {
+                let cursor: Point<i32, Logical> = state.pointer_location.to_i32_round();
+                let max_x = (area.loc.x + area.size.w - size.w).max(area.loc.x);
+                let max_y = (area.loc.y + area.size.h - size.h).max(area.loc.y);
+                (
+                    cursor.x.clamp(area.loc.x, max_x),
+                    cursor.y.clamp(area.loc.y, max_y),
+                )
+                    .into()
+            }
         };
         let rect = Rectangle::new(loc, size);
         entry.workspaces[ws].floating.push(Floating {
@@ -1381,6 +1403,9 @@ pub fn fullscreen_toplevel(
     });
     surface.send_configure();
     arrange(state);
+    // eclipse-bar hides outright under fullscreen rather than folding, and it
+    // has no view of the window stack to work that out for itself.
+    focus::emit_output_state(state, id);
 }
 
 /// A client's `xdg_toplevel.unset_fullscreen`: restore whatever placement the
@@ -1445,6 +1470,8 @@ pub fn unfullscreen_toplevel(
     });
     surface.send_configure();
     arrange(state);
+    // Symmetric with `fullscreen_toplevel`: the bar comes back out of hiding.
+    focus::emit_output_state(state, id);
 }
 
 pub fn toggle_layout(state: &mut AbyssState) {
@@ -1584,6 +1611,10 @@ pub fn switch_workspace(state: &mut AbyssState, idx: usize) {
         "workspace",
         serde_json::json!({"change": "switched", "output": id, "workspace": idx}),
     );
+    // The new workspace may hold a fullscreen window, or none at all. Either
+    // way `focus_window` above saw no output transition and emitted nothing, so
+    // restate it here or eclipse-bar folds against the old workspace.
+    focus::emit_output_state(state, id);
     tracing::info!(workspace = idx, "workspace switched");
 }
 
@@ -1613,6 +1644,49 @@ pub fn move_to_workspace(state: &mut AbyssState, idx: usize) {
     arrange(state);
     refocus_topmost(state);
     tracing::info!(workspace = idx, "window moved to workspace");
+}
+
+/// Move the focused window to display `number`'s currently active workspace
+/// (ADR 0049). Composes "set output" (COMP-05 §5.1) with a read of the target
+/// output's own active-workspace index — the per-output equivalent of ADR
+/// 0042's workspace focus history, since a *workspace*, not a window, is what
+/// needs recovering here. A no-op, loudly, when nothing has that number.
+pub fn move_to_output_workspace(state: &mut AbyssState, number: u8) {
+    let Some(target_id) = state.outputs.iter().find(|e| e.number == number).map(|e| e.id) else {
+        tracing::warn!(number, "move-to-output-workspace: no output with that number");
+        return;
+    };
+    let Some(window) = state.focus.clone() else { return };
+    let Some(source_id) = output_of_window(state, &window) else {
+        return;
+    };
+    let target_entry = state.outputs.get(target_id).expect("just resolved");
+    let target_ws = target_entry.active;
+    if source_id == target_id {
+        // Already on this output; folding into `move_to_workspace` would just
+        // duplicate the same-workspace short-circuit it already has.
+        move_to_workspace(state, target_ws + 1);
+        return;
+    }
+    let source_entry = state.outputs.get(source_id).expect("just resolved");
+    let source_active = source_entry.active;
+    let target_output = target_entry.output.clone();
+    layer_map_for_output(&target_output).arrange();
+    let area = tiling_area(state, &target_output);
+
+    let source_entry = state.outputs.get_mut(source_id).expect("just resolved");
+    source_entry.workspaces[source_active].remove(&window);
+    state.space.unmap_elem(&window);
+
+    let target_entry = state.outputs.get_mut(target_id).expect("just resolved");
+    target_entry.workspaces[target_ws]
+        .tiled
+        .insert(window, None, area);
+
+    state.focus = None;
+    arrange(state);
+    refocus_topmost(state);
+    tracing::info!(number, workspace = target_ws + 1, "window moved to output");
 }
 
 /// Resize one window to an absolute logical size (COMP-13 §2.1).

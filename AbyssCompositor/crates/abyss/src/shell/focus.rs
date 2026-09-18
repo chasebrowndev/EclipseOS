@@ -236,16 +236,7 @@ pub fn focus_window(state: &mut AbyssState, window: &Window) {
             // path: eclipse-bar's fold logic keys off this "output" event, and
             // keyboard/alt-tab focus changes must drive it too, not just the
             // pointer crossing an output boundary.
-            let name = state
-                .outputs
-                .get(id)
-                .map(|e| e.connector.clone())
-                .unwrap_or_default();
-            crate::ipc::emit(
-                state,
-                "output",
-                serde_json::json!({ "focused": id, "name": name }),
-            );
+            emit_output_state(state, id);
         }
     }
     let keyboard = state.seat.get_keyboard().unwrap();
@@ -253,6 +244,44 @@ pub fn focus_window(state: &mut AbyssState, window: &Window) {
     arrange(state);
     let handle = state.ipc.handle_for(window);
     crate::ipc::emit(state, "focus", serde_json::json!({ "handle": handle }));
+}
+
+/// Restate the whole of what `eclipse-bar` folds on, for output `id` (ADR 0042).
+///
+/// `focused` and `name` are the original payload. `fullscreen` and `idle` were
+/// added because the bar cannot see either: it has no input access and no view
+/// of the window stack, so the three inputs to its fold decision have to arrive
+/// together or it folds on a stale one.
+///
+/// Emitted on every transition that changes one of them, not only on a focus
+/// change — a workspace switch that lands on an empty workspace clears focus
+/// without ever reaching [`focus_window`], and used to leave the bar folded.
+pub fn emit_output_state(state: &mut AbyssState, id: u64) {
+    let Some(entry) = state.outputs.get(id) else {
+        return;
+    };
+    let name = entry.connector.clone();
+    let output = entry.output.clone();
+    let fullscreen = crate::shell::output_has_fullscreen(state, &output);
+    let idle = state.idle.bar_idle();
+    crate::ipc::emit(
+        state,
+        "output",
+        serde_json::json!({
+            "focused": id,
+            "name": name,
+            "fullscreen": fullscreen,
+            "idle": idle,
+        }),
+    );
+}
+
+/// Restate the focused output, if there is one. The idle and fullscreen paths
+/// know something changed but not which output the bar cares about.
+pub fn emit_focused_output_state(state: &mut AbyssState) {
+    if let Some(id) = state.outputs.focused().map(|e| e.id) {
+        emit_output_state(state, id);
+    }
 }
 
 pub fn focus_surface(state: &mut AbyssState, surface: Option<WlSurface>) {
@@ -278,7 +307,14 @@ pub fn refocus_topmost(state: &mut AbyssState) {
         Some(w) => FocusAction::Window(w),
         None => FocusAction::Clear,
     };
+    let cleared = matches!(action, FocusAction::Clear);
     apply_focus(state, action, FocusCause::WindowUnmap);
+    if cleared {
+        // `Clear` never reaches `focus_window`, so nothing above restated the
+        // output. Switching to an empty workspace used to leave eclipse-bar
+        // folded with no event to unfold it.
+        emit_focused_output_state(state);
+    }
 }
 
 #[cfg(test)]
@@ -719,5 +755,53 @@ mod state_tests {
         let ctx = pointer_focus_ctx(&h.state, inside(&h, h.b));
         assert!(!ctx.unfocus_on_empty_workspace);
         assert_eq!(decide_pointer_focus(&ctx), FocusAction::Keep);
+    }
+    /// The emit sites the bar's fold depends on (ADR 0042 amendment). Without
+    /// these the bar's fold state goes stale: defect 4 was a workspace switch
+    /// onto an empty workspace that told the bar nothing at all.
+    fn outputs_emitted() -> Vec<serde_json::Value> {
+        crate::ipc::capture::take()
+            .into_iter()
+            .filter(|(kind, _)| kind == "output")
+            .map(|(_, data)| data)
+            .collect()
+    }
+
+    #[test]
+    fn switching_to_an_empty_workspace_still_restates_the_output() {
+        let mut h = harness();
+        h.state.outputs.set_focused(h.a);
+        let _ = outputs_emitted();
+        crate::shell::switch_workspace(&mut h.state, 3);
+        let events = outputs_emitted();
+        assert!(!events.is_empty(), "a workspace switch must emit `output`");
+        let last = events.last().expect("event");
+        assert_eq!(last["focused"].as_u64(), Some(h.a));
+        // The three fold inputs all travel together.
+        assert!(last.get("name").is_some());
+        assert_eq!(last["fullscreen"].as_bool(), Some(false));
+        assert_eq!(last["idle"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn the_idle_latch_is_reported_to_the_bar() {
+        let mut h = harness();
+        h.state.outputs.set_focused(h.a);
+        h.state.config.bar.fold_when_idle = true;
+        h.state.config.bar.idle_seconds = 0;
+        let _ = outputs_emitted();
+        // One tick past the (zero) threshold flips the latch and says so.
+        crate::input::idle::tick_for_test(&mut h.state);
+        let events = outputs_emitted();
+        assert_eq!(
+            events.last().map(|e| e["idle"].as_bool()),
+            Some(Some(true)),
+            "the idle flip must reach the bar"
+        );
+
+        // And any input takes it straight back.
+        crate::input::idle::on_activity(&mut h.state);
+        let events = outputs_emitted();
+        assert_eq!(events.last().map(|e| e["idle"].as_bool()), Some(Some(false)));
     }
 }

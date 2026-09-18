@@ -75,3 +75,33 @@ workspace has nothing focusable.
 Alt-tab cycling or a workspace-per-output model needs focus history to be
 global rather than per-workspace, or a spec revision closes VOL1:4383
 differently.
+
+## Amendment (2026-09-18) — the `output` event carries the whole fold input
+
+The per-output fold above was under-served by an event that said only *which*
+output is focused, and that fired only on `set_focused` transitions. eclipse-bar
+folds on three inputs, not one, so the event now carries all three and fires
+wherever any of them changes.
+
+Payload, emitted by `shell::focus::emit_output_state`:
+
+| field | meaning |
+|---|---|
+| `focused` | the focused output id (unchanged, still load-bearing) |
+| `name` | its connector (unchanged) |
+| `fullscreen` | `output_has_fullscreen` for *that* output — the bar hides entirely, surrendering its exclusive zone, so a fullscreen video gets the whole display |
+| `idle` | the session is past `bar.idle-seconds` — `IdleTracker`'s `bar_idle` latch |
+
+New emit sites, beyond `focus_window`:
+
+- `refocus_topmost`'s `FocusAction::Clear` branch — switching to an empty
+  workspace previously short-circuited before `set_focused` and emitted nothing,
+  so the bar's fold state went stale.
+- `switch_workspace`, unconditionally.
+- `fullscreen_toplevel` / `unfullscreen_toplevel`.
+- `IdleTracker::tick` and `on_activity`, on each flip of the `bar_idle` latch.
+  The idle timer is therefore armed unconditionally: `bar.fold-when-idle` is
+  `Live`, so arming it from startup config would strand a later reload.
+
+Adding fields to an event is compatible — a bar that does not read them keeps
+the original behaviour.

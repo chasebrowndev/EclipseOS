@@ -120,10 +120,17 @@ pub enum Message {
     Launch,
     /// The system bus said something about network, bluetooth or battery.
     Status(Update),
-    /// The compositor's focused output changed. Carries the focused output's
-    /// numeric id, which is all the fold decision needs: this bar folds when
-    /// the id is not its own.
-    Focused(u64),
+    /// The compositor restated the focused output (ADR 0042). Everything the
+    /// fold decision takes is here: the bar can see neither input nor the
+    /// window stack, so idleness and fullscreen have to be told to it.
+    OutputState {
+        focused: u64,
+        fullscreen: bool,
+        idle: bool,
+    },
+    /// One frame of the fold slide. Only sent while an animation, or a fold
+    /// waiting out its grace window, is live.
+    FoldTick,
     /// A configuration reload succeeded. The `bar.*` keys may have moved, so
     /// re-read them; the event itself is payload-free by design.
     Reconfigured,
@@ -165,8 +172,94 @@ pub struct App {
     pub output_id: u64,
     /// The `bar.*` settings, re-read on every successful config reload.
     pub bar: BarConfig,
-    /// Whether the bar is currently shrunk to `bar.fold_height`.
-    pub folded: bool,
+    /// The last `output` event's payload, kept because the fold decision is
+    /// recomputed on ticks and reloads, not only when the event arrives.
+    pub focused_output: u64,
+    pub fullscreen: bool,
+    pub idle: bool,
+    /// Where the bar is between shown, folded and hidden.
+    pub fold: FoldState,
+}
+
+/// What the bar should be right now.
+///
+/// `Hidden` is not "folded further": a folded bar is still a bar and still
+/// reserves its sliver, while a hidden one claims no exclusive zone at all so
+/// a fullscreen video owns the whole output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldTarget {
+    Shown,
+    Folded,
+    Hidden,
+}
+
+/// The fold state machine: a committed target, an in-flight slide, and a
+/// decision still waiting out its grace window.
+pub struct FoldState {
+    pub target: FoldTarget,
+    /// Current surface height in logical pixels — what the view draws into and
+    /// what the exclusive zone is set from, so the two can never disagree.
+    pub height: u32,
+    from_h: u32,
+    to_h: u32,
+    started: Option<std::time::Instant>,
+    /// A fold decided but not yet committed, and when it was first seen. Only
+    /// ever a fold: unfolding is immediate, because that is the direction a
+    /// human is waiting on.
+    pending: Option<(FoldTarget, std::time::Instant)>,
+}
+
+impl Default for FoldState {
+    fn default() -> Self {
+        FoldState {
+            target: FoldTarget::Shown,
+            height: crate::HEIGHT,
+            from_h: crate::HEIGHT,
+            to_h: crate::HEIGHT,
+            started: None,
+            pending: None,
+        }
+    }
+}
+
+impl FoldState {
+    /// True while something still needs a tick: an unfinished slide, or a fold
+    /// sitting out its grace. Drives whether the tick subscription exists at
+    /// all, so a settled bar costs no wakeups.
+    pub fn animating(&self) -> bool {
+        self.started.is_some() || self.pending.is_some()
+    }
+}
+
+/// How long a fold decision has to hold before it is committed. Unfolds skip
+/// this entirely. Long enough to swallow the double event of a pointer
+/// crossing an output boundary, short enough not to read as lag.
+const FOLD_GRACE: std::time::Duration = std::time::Duration::from_millis(120);
+
+/// A fold frame. The slide is short, so this is a paint rate, not a poll rate.
+const FOLD_TICK: std::time::Duration = std::time::Duration::from_millis(16);
+
+/// A hidden bar still owns a surface; layer-shell has no zero-height one. One
+/// transparent pixel with no exclusive zone is the closest thing to gone.
+const HIDDEN_HEIGHT: u32 = 1;
+
+/// The pure half of the fold decision: no `App`, no clock, no socket.
+///
+/// `output_id == 0` is the single-output dev run (no `--output`), which never
+/// folds. `fullscreen` is reported for the *focused* output, so it only hides
+/// this bar when this bar is on it.
+pub fn decide(bar: &BarConfig, output_id: u64, focused: u64, fullscreen: bool, idle: bool) -> FoldTarget {
+    if output_id == 0 {
+        return FoldTarget::Shown;
+    }
+    if fullscreen && focused == output_id {
+        return FoldTarget::Hidden;
+    }
+    let inactive = bar.fold_when_inactive && focused != output_id;
+    if inactive || (bar.fold_when_idle && idle) {
+        return FoldTarget::Folded;
+    }
+    FoldTarget::Shown
 }
 
 impl Default for App {
@@ -203,7 +296,10 @@ impl App {
             output_name,
             output_id,
             bar,
-            folded: false,
+            focused_output: 0,
+            fullscreen: false,
+            idle: false,
+            fold: FoldState::default(),
         };
         app.icons.warm(&app.snapshot.windows);
         app
@@ -340,18 +436,32 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             return Task::none();
         }
-        // The pointer crossed to another monitor (or back). Folding is the
-        // only thing that reacts, and it is off by default.
-        Message::Focused(id) => return fold(app, id),
+        // Focus moved, a window went fullscreen, or the session went idle or
+        // stopped being idle. All three are one event and one decision.
+        Message::OutputState {
+            focused,
+            fullscreen,
+            idle,
+        } => {
+            app.focused_output = focused;
+            app.fullscreen = fullscreen;
+            app.idle = idle;
+            // Outputs are hotplugged and renumbered; an id resolved once at
+            // startup goes stale and strands the bar folded forever.
+            resolve_output(app);
+            return fold(app);
+        }
+        Message::FoldTick => return fold(app),
         Message::Reconfigured => {
             app.bar = app.conn.bar_config();
-            // A reload can turn folding off while this bar is folded; the
-            // current focus is re-read so the bar does not stay shrunk.
+            // A reload can turn folding off while this bar is folded, so the
+            // decision is re-run rather than left until the next event.
+            resolve_output(app);
             let (_, focused) = app.conn.outputs();
             if let Some(focused) = focused {
-                return fold(app, focused);
+                app.focused_output = focused;
             }
-            return Task::none();
+            return fold(app);
         }
         // `to_layer_message` injects the layer-control variants. The bar never
         // sends one — it is anchored for its whole life — but the match must
@@ -364,31 +474,126 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
     Task::none()
 }
 
-/// Fold or unfold in response to `focused` being the compositor's live output.
+/// Re-resolve this bar's numeric output id against the compositor's live list.
 ///
-/// The exclusive zone moves with the size: shrinking only the paint would
-/// leave the tiled windows below still avoiding a full-height bar, and the
-/// whole point of the setting is that they reclaim the space.
-fn fold(app: &mut App, focused: u64) -> Task<Message> {
-    let want = app.bar.fold_when_inactive && app.output_id != 0 && focused != app.output_id;
-    if want == app.folded {
+/// Cheap (one socket round trip) and done on every `output` event: the id is
+/// what every view filters on, and a stale one is indistinguishable from "this
+/// bar's output is never focused".
+fn resolve_output(app: &mut App) {
+    if app.output_name.is_empty() {
+        return;
+    }
+    let (outputs, _) = app.conn.outputs();
+    if let Some((id, _)) = outputs.iter().find(|(_, name)| *name == app.output_name) {
+        app.output_id = *id;
+    }
+}
+
+/// The height a target settles at.
+fn target_height(bar: &BarConfig, target: FoldTarget) -> u32 {
+    match target {
+        FoldTarget::Shown => crate::HEIGHT,
+        FoldTarget::Folded => bar.fold_height,
+        FoldTarget::Hidden => HIDDEN_HEIGHT,
+    }
+}
+
+/// Run the state machine one step: decide, apply hysteresis, advance the
+/// slide, and push the surface if the height moved.
+///
+/// The exclusive zone moves with the size on every frame, not just at the
+/// ends: shrinking only the paint would leave tiled windows avoiding a
+/// full-height bar, and reflowing only at the end is the jump the user saw.
+fn fold(app: &mut App) -> Task<Message> {
+    let now = std::time::Instant::now();
+    let want = decide(
+        &app.bar,
+        app.output_id,
+        app.focused_output,
+        app.fullscreen,
+        app.idle,
+    );
+
+    if want != app.fold.target {
+        // Unfolding is immediate; folding waits out `FOLD_GRACE` with the
+        // decision unchanged, which is what kills the two-bar flicker when the
+        // pointer crosses an output boundary.
+        let immediate = want == FoldTarget::Shown;
+        match app.fold.pending {
+            Some((pending, since)) if pending == want => {
+                if immediate || now.duration_since(since) >= FOLD_GRACE {
+                    commit(app, want, now);
+                }
+            }
+            _ => {
+                if immediate {
+                    app.fold.pending = None;
+                    commit(app, want, now);
+                } else {
+                    app.fold.pending = Some((want, now));
+                }
+            }
+        }
+    } else {
+        app.fold.pending = None;
+    }
+
+    let before = app.fold.height;
+    advance(app, now);
+    if app.fold.height == before {
         return Task::none();
     }
-    app.folded = want;
     let Some(id) = app.main else {
         return Task::none();
     };
-    let height = if want { app.bar.fold_height } else { crate::HEIGHT };
+    let height = app.fold.height;
+    // A hidden bar reserves nothing; every other state reserves exactly what
+    // it draws.
+    let zone = if app.fold.target == FoldTarget::Hidden && height == app.fold.to_h {
+        0
+    } else {
+        height as i32
+    };
     Task::batch([
         Task::done(Message::SizeChange {
             id,
             size: (0, height),
         }),
-        Task::done(Message::ExclusiveZoneChange {
-            id,
-            zone_size: height as i32,
-        }),
+        Task::done(Message::ExclusiveZoneChange { id, zone_size: zone }),
     ])
+}
+
+/// Accept a new target and start the slide toward it from wherever the bar
+/// currently is — a reversal mid-slide does not jump back to the old end.
+fn commit(app: &mut App, target: FoldTarget, now: std::time::Instant) {
+    app.fold.pending = None;
+    app.fold.target = target;
+    app.fold.from_h = app.fold.height;
+    app.fold.to_h = target_height(&app.bar, target);
+    app.fold.started = if app.bar.fold_duration_ms == 0 || app.fold.from_h == app.fold.to_h {
+        None
+    } else {
+        Some(now)
+    };
+}
+
+/// Interpolate one frame. Lands exactly on `to_h`, never past it.
+fn advance(app: &mut App, now: std::time::Instant) {
+    let Some(started) = app.fold.started else {
+        app.fold.height = app.fold.to_h;
+        return;
+    };
+    let dur = app.bar.fold_duration_ms.max(1) as f32;
+    let t = now.duration_since(started).as_secs_f32() * 1000.0 / dur;
+    if t >= 1.0 {
+        app.fold.started = None;
+        app.fold.height = app.fold.to_h;
+        return;
+    }
+    let eased = app.bar.fold_curve.ease(t);
+    let from = app.fold.from_h as f32;
+    let to = app.fold.to_h as f32;
+    app.fold.height = (from + (to - from) * eased).round() as u32;
 }
 
 /// Re-read the three lists and re-resolve any icon we have not seen.
@@ -558,8 +763,28 @@ fn new_instance(app_id: Option<String>) {
 /// `iced::time::every` is not in our feature set, and would not help here
 /// anyway: the same thread that blocks on the socket is the one that has to
 /// notice the minute roll over.
-pub fn subscription(_app: &App) -> Subscription<Message> {
-    Subscription::batch([pointer(), surfaces(), compositor()])
+pub fn subscription(app: &App) -> Subscription<Message> {
+    let mut subs = vec![pointer(), surfaces(), compositor()];
+    // Only while something is actually moving: a settled bar has no ticker at
+    // all, so the idle cost of the animation is zero.
+    if app.fold.animating() {
+        subs.push(fold_ticks());
+    }
+    Subscription::batch(subs)
+}
+
+/// A frame clock for the fold slide, alive only while [`FoldState::animating`].
+fn fold_ticks() -> Subscription<Message> {
+    Subscription::run(|| {
+        iced::stream::channel(8, async move |mut sender| {
+            std::thread::spawn(move || loop {
+                std::thread::sleep(FOLD_TICK);
+                if !send(&mut sender, Message::FoldTick) {
+                    return;
+                }
+            });
+        })
+    })
 }
 
 /// Where the pointer is, and on which surface. The only source of the popup's
@@ -620,7 +845,19 @@ fn compositor() -> Subscription<Message> {
                                             .data
                                             .get("focused")
                                             .and_then(serde_json::Value::as_u64)
-                                            .map(Message::Focused)
+                                            .map(|focused| Message::OutputState {
+                                                focused,
+                                                fullscreen: event
+                                                    .data
+                                                    .get("fullscreen")
+                                                    .and_then(serde_json::Value::as_bool)
+                                                    .unwrap_or(false),
+                                                idle: event
+                                                    .data
+                                                    .get("idle")
+                                                    .and_then(serde_json::Value::as_bool)
+                                                    .unwrap_or(false),
+                                            })
                                             .unwrap_or(Message::Refresh),
                                         eclipse_ipc::EventKind::Config => Message::Reconfigured,
                                         _ => Message::Refresh,
@@ -749,5 +986,168 @@ mod tests {
             trust: Trust::Secret,
         };
         assert_eq!(w.label(), "Protected window");
+    }
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use super::*;
+    use crate::conn::{BarConfig, FoldCurve};
+
+    fn cfg(inactive: bool, idle: bool) -> BarConfig {
+        BarConfig {
+            fold_when_inactive: inactive,
+            fold_when_idle: idle,
+            ..BarConfig::default()
+        }
+    }
+
+    /// The whole decision table. `Hidden` wins over everything; the two fold
+    /// sources are independent and may hold at once.
+    #[test]
+    fn the_decision_table_is_exhaustive_and_hidden_always_wins() {
+        for &here in &[true, false] {
+            for &idle in &[true, false] {
+                for &fullscreen in &[true, false] {
+                    for &w_inactive in &[true, false] {
+                        for &w_idle in &[true, false] {
+                            let focused = if here { 7 } else { 9 };
+                            let got = decide(&cfg(w_inactive, w_idle), 7, focused, fullscreen, idle);
+                            let want = if fullscreen && here {
+                                FoldTarget::Hidden
+                            } else if (w_inactive && !here) || (w_idle && idle) {
+                                FoldTarget::Folded
+                            } else {
+                                FoldTarget::Shown
+                            };
+                            assert_eq!(
+                                got, want,
+                                "here={here} idle={idle} fs={fullscreen} \
+                                 w_inactive={w_inactive} w_idle={w_idle}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// An unresolved output id means "single-output dev run": never fold, even
+    /// under a configuration that would otherwise fold everything.
+    #[test]
+    fn an_unresolved_output_never_folds() {
+        assert_eq!(decide(&cfg(true, true), 0, 9, true, true), FoldTarget::Shown);
+    }
+
+    /// A fullscreen window on the *other* output is none of this bar's business.
+    #[test]
+    fn fullscreen_elsewhere_does_not_hide_this_bar() {
+        assert_eq!(decide(&cfg(false, false), 7, 9, true, false), FoldTarget::Shown);
+    }
+
+    fn folding_app() -> App {
+        let mut a = App::new();
+        a.bar = cfg(true, false);
+        a.output_id = 7;
+        a.focused_output = 7;
+        a.fold = FoldState::default();
+        a
+    }
+
+    /// Hysteresis: a fold that reverses inside the grace window commits nothing.
+    #[test]
+    fn a_fold_that_reverses_inside_the_grace_window_never_happens() {
+        let mut a = folding_app();
+        a.focused_output = 9;
+        let _ = fold(&mut a);
+        assert_eq!(a.fold.target, FoldTarget::Shown, "fold is only pending");
+        assert!(a.fold.pending.is_some());
+
+        a.focused_output = 7;
+        let _ = fold(&mut a);
+        assert_eq!(a.fold.target, FoldTarget::Shown);
+        assert!(a.fold.pending.is_none(), "the pending fold is dropped");
+        assert_eq!(a.fold.height, crate::HEIGHT, "the height never moved");
+    }
+
+    /// The other direction has no grace at all: the human is already reaching
+    /// for the bar.
+    #[test]
+    fn unfolding_is_immediate() {
+        let mut a = folding_app();
+        a.bar.fold_duration_ms = 0;
+        a.focused_output = 9;
+        let then = std::time::Instant::now() - FOLD_GRACE * 2;
+        a.fold.pending = Some((FoldTarget::Folded, then));
+        let _ = fold(&mut a);
+        assert_eq!(a.fold.target, FoldTarget::Folded);
+
+        a.focused_output = 7;
+        let _ = fold(&mut a);
+        assert_eq!(a.fold.target, FoldTarget::Shown);
+        assert_eq!(a.fold.height, crate::HEIGHT);
+    }
+
+    /// The slide is monotonic and lands exactly on `to_h` — never one pixel
+    /// short, which would leave a permanent sliver of exclusive zone.
+    #[test]
+    fn the_slide_is_monotonic_and_lands_exactly() {
+        for curve in [
+            FoldCurve::Linear,
+            FoldCurve::EaseIn,
+            FoldCurve::EaseOut,
+            FoldCurve::EaseInOut,
+        ] {
+            let mut a = folding_app();
+            a.bar.fold_curve = curve;
+            let started = std::time::Instant::now();
+            commit(&mut a, FoldTarget::Folded, started);
+            assert!(a.fold.started.is_some(), "{curve:?} animates");
+
+            let mut last = a.fold.height;
+            for step in 1..=10u32 {
+                advance(
+                    &mut a,
+                    started + std::time::Duration::from_millis(step as u64 * 15),
+                );
+                assert!(a.fold.height <= last, "{curve:?} step {step} went back up");
+                last = a.fold.height;
+            }
+            assert_eq!(a.fold.height, a.fold.to_h, "{curve:?} lands on to_h");
+            assert!(!a.fold.animating(), "{curve:?} settles");
+        }
+    }
+
+    /// Zero duration means snap: no animation frames, no tick subscription.
+    #[test]
+    fn a_zero_duration_snaps() {
+        let mut a = folding_app();
+        a.bar.fold_duration_ms = 0;
+        commit(&mut a, FoldTarget::Folded, std::time::Instant::now());
+        advance(&mut a, std::time::Instant::now());
+        assert_eq!(a.fold.height, a.bar.fold_height);
+        assert!(!a.fold.animating());
+    }
+
+    /// `Hidden` gives the zone up entirely; `Folded` keeps its sliver.
+    #[test]
+    fn hidden_surrenders_the_exclusive_zone() {
+        let bar = BarConfig::default();
+        assert_eq!(target_height(&bar, FoldTarget::Hidden), HIDDEN_HEIGHT);
+        assert_eq!(target_height(&bar, FoldTarget::Folded), bar.fold_height);
+        assert_eq!(target_height(&bar, FoldTarget::Shown), crate::HEIGHT);
+    }
+
+    /// Defect 3: the id was resolved once in `App::new` and never again, so a
+    /// hotplug left the bar folded forever. It must re-resolve by name.
+    #[test]
+    fn an_output_id_is_re_resolved_by_name() {
+        let mut a = App::new();
+        a.output_name = "DP-99".to_owned();
+        a.output_id = 4;
+        // No compositor in the test environment, so `outputs()` is empty and
+        // the stale id must survive rather than being zeroed.
+        resolve_output(&mut a);
+        assert_eq!(a.output_id, 4);
     }
 }
