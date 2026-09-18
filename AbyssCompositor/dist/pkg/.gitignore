@@ -1,0 +1,6 @@
+# makepkg byproducts: checkout, staging root, and built packages.
+*/src/
+*/pkg/
+*/EclipseOS/
+*.pkg.tar.zst
+*.log
