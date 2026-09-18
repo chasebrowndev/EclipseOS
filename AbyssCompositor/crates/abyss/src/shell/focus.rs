@@ -48,6 +48,21 @@ pub enum FocusCause {
     Ipc,
 }
 
+impl FocusCause {
+    /// Does focus from this cause also restack the window to the front?
+    ///
+    /// RAISE-01 raises on focus so a *click* cannot leave a window focused but
+    /// behind. Passive causes must not: focus-follows-mouse (`Pointer`) and the
+    /// scene-change refresh (`WindowUnmap`, `AbyssState::refresh_pointer_focus`)
+    /// move focus without the user asking for a restack, and raising there
+    /// rewrites the stacking order under a stationary pointer — which then hides
+    /// any window later moved beneath the raised one, since the hit test still
+    /// resolves the raised window and pointer focus never re-evaluates.
+    fn raises(self) -> bool {
+        !matches!(self, FocusCause::Pointer | FocusCause::WindowUnmap)
+    }
+}
+
 /// Everything [`decide_pointer_focus`] is allowed to look at. Deliberately
 /// plain data: no `&AbyssState`, no smithay handles beyond the window type.
 #[derive(Debug, Clone)]
@@ -189,7 +204,7 @@ pub fn apply_focus(state: &mut AbyssState, action: FocusAction, cause: FocusCaus
         FocusAction::Keep => {}
         FocusAction::Window(w) => {
             tracing::debug!(?cause, "focus moves to a window");
-            focus_window(state, &w);
+            focus_window_raising(state, &w, cause.raises());
         }
         FocusAction::Clear => {
             tracing::debug!(?cause, "focus cleared");
@@ -201,6 +216,13 @@ pub fn apply_focus(state: &mut AbyssState, action: FocusAction, cause: FocusCaus
 }
 
 pub fn focus_window(state: &mut AbyssState, window: &Window) {
+    focus_window_raising(state, window, true);
+}
+
+/// [`focus_window`], with the RAISE-01 restack made optional. `raise = false`
+/// records the focus history and moves keyboard focus but leaves the floating
+/// stacking order alone; see [`FocusCause::raises`].
+pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool) {
     let Some(surface) = window_surface(window) else {
         return;
     };
@@ -208,8 +230,10 @@ pub fn focus_window(state: &mut AbyssState, window: &Window) {
     // let the keyboard follow (COMP-07 §1).
     if let Some(x11) = window.x11_surface() {
         x11.set_activated(true).ok();
-        if let Some(wm) = state.xwayland.wm.as_mut() {
-            let _ = wm.raise_window(x11);
+        if raise {
+            if let Some(wm) = state.xwayland.wm.as_mut() {
+                let _ = wm.raise_window(x11);
+            }
         }
         let others: Vec<Window> = state.space.elements().filter(|w| *w != window).cloned().collect();
         for w in others {
@@ -228,7 +252,7 @@ pub fn focus_window(state: &mut AbyssState, window: &Window) {
         // hand back a window from the wrong workspace.
         if let Some(entry) = state.outputs.get_mut(id) {
             if let Some(ws) = entry.workspaces.iter_mut().find(|ws| ws.holds(window)) {
-                ws.note_focused(window);
+                ws.note_focused(window, raise);
             }
         }
         if state.outputs.set_focused(id) {
@@ -803,5 +827,26 @@ mod state_tests {
         crate::input::idle::on_activity(&mut h.state);
         let events = outputs_emitted();
         assert_eq!(events.last().map(|e| e["idle"].as_bool()), Some(Some(false)));
+    }
+
+    /// RAISE-01 raises on an explicit focus, never on a passive one. Passive
+    /// raising restacked a window under a stationary pointer, so a window later
+    /// moved beneath it never got the pointer (wlcs
+    /// `surface_moves_over_surface_under_pointer`).
+    #[test]
+    fn only_explicit_focus_causes_raise() {
+        for cause in [
+            FocusCause::Click,
+            FocusCause::Touch,
+            FocusCause::Keybind,
+            FocusCause::WindowMap,
+            FocusCause::WorkspaceSwitch,
+            FocusCause::Ipc,
+        ] {
+            assert!(cause.raises(), "{cause:?} should raise");
+        }
+        for cause in [FocusCause::Pointer, FocusCause::WindowUnmap] {
+            assert!(!cause.raises(), "{cause:?} must not raise");
+        }
     }
 }

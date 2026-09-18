@@ -118,14 +118,19 @@ impl Workspace {
 
     /// Record `w` as the most recently focused window here.
     ///
-    /// Also moves `w` to the end of `floating`, which is the floating stacking
-    /// order bottom-to-top: `shell::arrange_output` replays it into
-    /// `Space::raise_element`, so without this the click's raise is undone by
-    /// the next relayout and the window takes focus while staying behind
+    /// With `raise`, also moves `w` to the end of `floating`, which is the
+    /// floating stacking order bottom-to-top: `shell::arrange_output` replays it
+    /// into `Space::raise_element`, so without this the click's raise is undone
+    /// by the next relayout and the window takes focus while staying behind
     /// (RAISE-01). A tiled window is not in the vec and nothing moves.
-    pub(crate) fn note_focused(&mut self, w: &Window) {
+    ///
+    /// `raise` is false for passive focus changes — focus-follows-mouse and the
+    /// scene-change refresh — which must not restack; see `FocusCause::raises`.
+    pub(crate) fn note_focused(&mut self, w: &Window, raise: bool) {
         self.focus_history.note(w);
-        self.raise_floating(w);
+        if raise {
+            self.raise_floating(w);
+        }
     }
 
     /// Move `w` to the top of the floating stack. No-op for a window that is
