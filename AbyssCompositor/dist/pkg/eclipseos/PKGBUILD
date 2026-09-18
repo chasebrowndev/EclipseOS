@@ -78,6 +78,7 @@ package_eclipseos-policyd() {
 
 package_eclipseos-meta() {
   pkgdesc="EclipseOS base system (D-01 §1)"
+  arch=(any)  # config and dependencies only, no ELF
   depends=(eclipseos-abyss eclipseos-desktop eclipseos-policyd
            greetd greetd-regreet cage
            networkmanager bluez bluez-utils upower pipewire pipewire-pulse wireplumber
