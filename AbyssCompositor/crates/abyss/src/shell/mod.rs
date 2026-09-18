@@ -283,6 +283,14 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         #[allow(clippy::mutable_key_type)]
         let fullscreen = &state.fullscreen;
         let entry = state.outputs.get_mut(id).expect("checked above");
+        // A floating rectangle is absolute and was computed against the area
+        // in force when it was set, so it is only stale when that area moved
+        // or resized under it. Re-clamping on every pass instead would fight
+        // `place_at`, which pins a window to an exact rectangle that may
+        // legitimately hang off the tiling area (a client-driven move, a
+        // negative coordinate, a window under the bar).
+        let area_changed = entry.workspaces[ws].last_area.is_some_and(|prev| prev != area);
+        entry.workspaces[ws].last_area = Some(area);
         for f in entry.workspaces[ws].floating.iter_mut() {
             // Fullscreen wins over maximized: a maximized window that then goes
             // fullscreen keeps its `maximized` entry so unfullscreen can restore it.
@@ -290,16 +298,13 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
                 f.rect = full_area;
             } else if maximized.contains_key(&f.window) {
                 f.rect = max_area;
-            } else {
-                // A plain floating window keeps whatever absolute rectangle it
-                // was last given, but that rectangle was computed against a
-                // possibly different `area` — a mode/scale change, a
-                // reconfigured layout, or a monitor swap under a stashed
-                // window (`OutputRegistry::add`/`remove`) can all leave it
-                // stale. Re-clamp on every arrange so it never drifts
-                // off-screen; this mirrors the pointer-spawn clamp in
-                // `install` below, including the `.max()` guard for a window
-                // wider/taller than the output itself.
+            } else if area_changed {
+                // The area moved or resized under this window — a mode/scale
+                // change, a bar fold, a reconfigured layout, or a monitor swap
+                // under a stashed window (`OutputRegistry::add`/`remove`).
+                // Re-clamp so it never drifts off-screen; this mirrors the
+                // pointer-spawn clamp in `install` below, including the
+                // `.max()` guard for a window wider/taller than the output.
                 let max_x = (area.loc.x + area.size.w - f.rect.size.w).max(area.loc.x);
                 let max_y = (area.loc.y + area.size.h - f.rect.size.h).max(area.loc.y);
                 f.rect.loc.x = f.rect.loc.x.clamp(area.loc.x, max_x);

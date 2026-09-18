@@ -81,6 +81,15 @@ pub struct Workspace {
     /// Minimized windows, oldest first. Minimizing is per workspace, so a
     /// window sent away on workspace 3 comes back on workspace 3.
     pub minimized: Vec<Minimized>,
+    /// The tiling area `shell::arrange_output` last laid this workspace out
+    /// against. Floating rectangles are absolute and were computed against
+    /// this area, so they are only re-clamped when it actually changes (a
+    /// mode/scale change, a bar fold, an adopted window from a departed
+    /// output). `None` means "never arranged yet", which is also not a
+    /// change: a rectangle set before the first arrange was already computed
+    /// against the current area. Clamping unconditionally would drag a
+    /// window pinned by `place_at` off its exact position.
+    pub(crate) last_area: Option<Rectangle<i32, Logical>>,
     /// Per-workspace focus history, most recent first (COMP-05 §5, ADR 0042).
     /// Written only by `note_focused`, whose single caller is
     /// `shell::focus::focus_window` — the one place focus actually moves.
