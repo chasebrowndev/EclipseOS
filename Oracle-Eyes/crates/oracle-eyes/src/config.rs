@@ -65,6 +65,14 @@ pub struct Config {
     pub dedup_ttl_ms: u64,
     /// Words before a `?` for the fast path to fire (§3.3).
     pub fast_path_min_words: usize,
+    /// Automatic mode's triviality floor: fewer words than this is not a topic.
+    pub auto_min_words: usize,
+    /// OCR mean-confidence floor for automatic mode, 0.0–1.0.
+    pub auto_min_confidence: f32,
+    /// Shingle-set overlap at or above which two reads of a region are the
+    /// same screen, 0.0–1.0. Below 1.0 on purpose: an exact match let one
+    /// character of OCR noise buy another model call.
+    pub dedup_similarity: f32,
     /// The model call's ceiling. Not in the §5 table, but hardcoding it
     /// would make the one unbounded wait in the pipeline unconfigurable.
     pub answer_timeout_ms: u64,
@@ -97,6 +105,9 @@ impl Default for Config {
             rate_limit_ms: 3000,
             dedup_ttl_ms: 5 * 60 * 1000,
             fast_path_min_words: 3,
+            auto_min_words: 4,
+            auto_min_confidence: 0.55,
+            dedup_similarity: 0.8,
             answer_timeout_ms: 30000,
             word_cap: 30,
             char_cap: 220,
@@ -227,6 +238,9 @@ fn query_key(w: &mut Walk<'_>, node: &KdlNode, key: &str, cfg: &mut Config) -> b
         "dedup_ttl_ms" => w.set_ms(node, &mut cfg.dedup_ttl_ms),
         "timeout_ms" => w.set_ms(node, &mut cfg.answer_timeout_ms),
         "fast_path_min_words" => w.set_count(node, &mut cfg.fast_path_min_words),
+        "auto_min_words" => w.set_count(node, &mut cfg.auto_min_words),
+        "auto_min_confidence" => w.set_fraction(node, &mut cfg.auto_min_confidence),
+        "dedup_similarity" => w.set_fraction(node, &mut cfg.dedup_similarity),
         _ => return false,
     }
     true
@@ -294,6 +308,28 @@ impl Walk<'_> {
         if let Some(v) = self.integer(node) {
             *slot = v as usize;
         }
+    }
+
+    /// A proportion, 0.0–1.0. Out-of-range is refused rather than clamped: a
+    /// similarity of 80 is someone meaning percent, and silently reading it as
+    /// "never a duplicate" is the failure this whole change exists to remove.
+    fn set_fraction(&mut self, node: &KdlNode, slot: &mut f32) {
+        let Some(v) = self.first(node) else { return };
+        // `1` and `0` are integers in KDL, but they are perfectly good ends of
+        // the range, so accept either spelling.
+        let raw = match (v.as_float(), v.as_integer()) {
+            (Some(f), _) => f,
+            (None, Some(i)) => i as f64,
+            (None, None) => {
+                self.reject(node, "value must be a number between 0 and 1");
+                return;
+            }
+        };
+        if !(0.0..=1.0).contains(&raw) {
+            self.reject(node, "value must be between 0 and 1");
+            return;
+        }
+        *slot = raw as f32;
     }
 
     fn integer(&mut self, node: &KdlNode) -> Option<u64> {

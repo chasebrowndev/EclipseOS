@@ -10,6 +10,7 @@ mod answer;
 mod capture;
 mod classify;
 mod config;
+mod focus;
 mod frame;
 mod hud;
 mod ocr;
@@ -58,11 +59,16 @@ fn run() -> Result<(), String> {
     let mut hud = Hud::new();
     // When the current annotation has outstayed its welcome.
     let mut until: Option<Instant> = None;
-    // Automatic mode walks the outputs one per tick rather than capturing
-    // the whole desktop at once; a screen's worth of OCR per tick is the
-    // cost we are trying not to pay.
+    // Automatic mode reads one output per tick rather than the whole desktop;
+    // a screen's worth of OCR per tick is the cost we are trying not to pay.
+    // Normally that output is the focused one (ADR 0042). The round-robin
+    // cursor is only the fallback for when the compositor will not say.
     let mut next_output = 0usize;
     let mut next_tick = Instant::now() + poll_every;
+    // The gate's TTL and rate limit are durations, so they need a clock that
+    // only moves forward. Wall clock stepped by NTP either suppressed every
+    // answer for the length of the step or expired the whole dedup table.
+    let started = Instant::now();
 
     loop {
         let now = Instant::now();
@@ -127,23 +133,35 @@ fn run() -> Result<(), String> {
 
         if auto && now >= next_tick {
             next_tick = now + poll_every;
-            let regions = pipeline.output_regions();
+            // The screen the user is actually facing. Reading every output in
+            // turn meant two thirds of the answers were about a monitor nobody
+            // was looking at, and they all queued for the same display slot.
+            // If the compositor will not say, fall back to the old round-robin
+            // rather than fixing on one screen forever.
+            let focused = focus::focused_output(&mut client);
+            let regions = match focused {
+                Some(r) => vec![r],
+                None => pipeline.output_regions(),
+            };
             if !regions.is_empty() {
                 let region = regions[next_output % regions.len()];
                 next_output = next_output.wrapping_add(1);
                 // Nothing on screen means nothing to look at: automatic mode
                 // never interrupts an answer the user is still reading.
                 if until.is_none() {
-                    match pipeline.auto(region, ms_since_epoch()) {
+                    match pipeline.auto(region, elapsed_ms(started)) {
                         // The gate declined. That is the common case.
                         Ok(None) => {}
                         Ok(Some(a)) => {
                             until = present(&mut hud, &mut client, Ok(a), Some(region), fail_ms)
                         }
-                        // Automatic mode is unprompted, so its failures are
-                        // logged, not thrown on screen — the user did not ask
-                        // for anything and should not be told it failed.
-                        Err(e) => eprintln!("oracle-eyes: auto: {e}"),
+                        // Fail visibly (spec §2.1). Automatic mode is
+                        // unprompted, but a capture or OCR failure that only
+                        // ever reaches the journal is silent degradation:
+                        // auto looks like it is working and is not.
+                        Err(e) => {
+                            until = present(&mut hud, &mut client, Err(e), Some(region), fail_ms)
+                        }
                     }
                 }
             }
@@ -218,11 +236,12 @@ fn region_of(data: &serde_json::Value) -> Option<Region> {
     })
 }
 
-fn ms_since_epoch() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+/// Milliseconds since the daemon started. The gate measures durations — a
+/// dedup TTL and a rate limit — so it needs a clock that cannot step. Wall
+/// clock could, and an NTP correction either froze every answer for the length
+/// of the step or emptied the dedup table in one tick.
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis() as u64
 }
 
 /// Block until the socket has something, or `timeout` elapses. `None` waits

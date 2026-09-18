@@ -29,8 +29,9 @@ Exactly two capabilities, granted and revoked independently:
    Absent, it reads nothing.
 2. **Control** — the COMP-13 socket at `$XDG_RUNTIME_DIR/eclipse/abyss.sock`,
    owner-uid only, restricted to `annotation_create` / `annotation_update` /
-   `annotation_destroy` / `annotation_clear` and the `keybind` (later `damage`)
-   event kinds.
+   `annotation_destroy` / `annotation_clear`, the read-only `get_outputs` query
+   (ADR 0042 — automatic mode annotates the focused screen; no compositor change,
+   no `TABLE` change), and the `keybind` (later `damage`) event kinds.
 
 Anything else is a new capability and needs an ADR. Do not add one casually —
 see the injection note below.
