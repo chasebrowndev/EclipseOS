@@ -1,0 +1,379 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/*
+ * EclipseOS — login greeter.
+ * Install to: /etc/greetd/regreet.css   (root:root 0644)
+ *
+ * Written from scratch against docs/STYLE.md. It shares nothing with, and
+ * depends on nothing from, any theme generator: every value below is a
+ * literal, because the greeter runs as the `greeter` user, which cannot read
+ * /home, and the ISO cannot ship a generator living in someone's dotfiles.
+ *
+ * The screen is one glass card floating on a blurred amber corona:
+ *
+ *     clock                44px, light, white — the one large numeral
+ *     masthead             mono micro-caps: what this OS is
+ *   ╭──────────────────────────────────────────────╮  translucent glass,
+ *   │  user      [ chase              ▾ ] [ ✎ ]    │  22px radius, light
+ *   │  session   [ Abyss              ▾ ] [ ✎ ]    │  inner edge, deep
+ *   │                              [  Login  ]     │  diffuse shadow
+ *   ╰──────────────────────────────────────────────╯
+ *     ( Reboot )  ( Power Off )   ghost glass pills
+ *
+ * GTK4 has no backdrop-filter, so the blur behind the glass is baked into the
+ * shipped wallpaper. The glass itself is a low-alpha white fill plus an inset
+ * top highlight, which is what makes a translucent surface read as glass.
+ *
+ * ACCENT LEDGER — one live yellow: the SELECTED SESSION. This ISO exists so
+ * that "Abyss" is in that list, so the session field is the accented state and
+ * Login is the accented action. Everything else is white at 1.0 / .64 / .40.
+ * The accent appears as a soft glow, never as a hard edge on black.
+ */
+
+/* ── palette, literal (docs/STYLE.md) ─────────────────────────────────── */
+@define-color base        #0b0906;               /* warm near-black ground  */
+@define-color raised      rgba(28, 25, 19, 0.94); /* popovers               */
+@define-color accent      #f2c33c;
+@define-color accent_text #f5cf5c;
+@define-color ink         #ffffff;
+@define-color ink_2       rgba(255, 255, 255, 0.64);
+@define-color ink_3       rgba(255, 255, 255, 0.40);
+@define-color glass       rgba(255, 255, 255, 0.055);
+@define-color glass_hi    rgba(255, 255, 255, 0.09);
+@define-color edge        rgba(255, 255, 255, 0.14);
+@define-color edge_soft   rgba(255, 255, 255, 0.09);
+@define-color danger      #ff6b4a;
+
+/* ── reset ────────────────────────────────────────────────────────────── */
+/* The stock GTK theme paints opaque grey surfaces behind the clock, the
+   message area and every container. All of that has to disappear before the
+   glass can read; this file then paints back, explicitly, the four surfaces
+   that exist: card, field, pill, popover. */
+* {
+    font-family: "Inter", "JetBrains Mono", "JetBrainsMono Nerd Font", sans-serif;
+    font-size: 13px;
+    outline: none;
+    text-shadow: none;
+    -gtk-icon-style: symbolic;
+}
+
+window * {
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    box-shadow: none;
+}
+
+window,
+window.background {
+    background-color: @base;
+    color: @ink;
+}
+
+/* ── clock ────────────────────────────────────────────────────────────── */
+/* regreet's clock is the first label of the window and carries no class, so
+   it is addressed positionally. Nothing else on screen is this large. */
+frame > label:first-child,
+label.large-title,
+label.title-1,
+label.clock,
+#clock {
+    color: @ink;
+    font-size: 44px;
+    font-weight: 300;
+    letter-spacing: -0.01em;
+    margin: 0 0 4px 0;
+    padding: 0;
+}
+
+/* ── masthead + field captions ────────────────────────────────────────── */
+label {
+    font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
+    color: @ink_2;
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    margin: 0;
+}
+
+/* ── the glass card ───────────────────────────────────────────────────── */
+/* Painted on the form grid rather than on the frame: the frame stretches edge
+   to edge, and a full-bleed band is not a card. The grid is sized by its
+   content, so the glass is exactly as wide as the form. */
+grid {
+    background-color: @glass;
+    border: 1px solid @edge;
+    border-radius: 24px;
+    padding: 28px 30px;
+    margin: 16px 0 20px 0;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16),
+                inset 0 0 120px rgba(242, 195, 60, 0.04),
+                0 34px 84px -22px rgba(0, 0, 0, 0.92);
+}
+
+frame,
+frame > border {
+    background-color: transparent;
+    border: none;
+    padding: 0;
+}
+
+/* ── fields ───────────────────────────────────────────────────────────── */
+entry,
+entry text,
+password,
+spinbutton,
+combobox button,
+combobox entry {
+    background-color: rgba(255, 255, 255, 0.05);
+    color: @ink;
+    border: 1px solid @edge_soft;
+    border-radius: 14px;
+    padding: 11px 16px;
+    min-height: 24px;
+    caret-color: @accent;
+    font-size: 13px;
+    letter-spacing: 0.01em;
+    transition: background-color 220ms cubic-bezier(0.16, 1, 0.3, 1),
+                border-color 220ms cubic-bezier(0.16, 1, 0.3, 1),
+                box-shadow 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+entry:hover,
+combobox button:hover {
+    background-color: @glass_hi;
+    border-color: @edge;
+}
+
+/* Focus: a soft accent bloom, not a ring. */
+entry:focus,
+entry:focus-within,
+combobox button:focus,
+combobox button:focus-within {
+    border-color: rgba(242, 195, 60, 0.45);
+    background-color: rgba(242, 195, 60, 0.08);
+    box-shadow: 0 0 0 4px rgba(242, 195, 60, 0.12),
+                0 10px 30px -14px rgba(242, 195, 60, 0.55);
+}
+
+entry placeholder,
+entry:disabled,
+label:disabled {
+    color: @ink_3;
+}
+
+entry image,
+button image {
+    color: @ink_2;
+    -gtk-icon-size: 15px;
+}
+
+/* ── accent: the session field ────────────────────────────────────────── */
+/* User and session are both comboboxes; only session is yellow. regreet lays
+   the form out as [caption, combo, edit-button] rows with user first, so the
+   session combo is the grid's fifth child. */
+combobox {
+    color: @ink;
+}
+
+grid > combobox:nth-child(5) button,
+combobox.session button {
+    color: @accent_text;
+    background-color: rgba(242, 195, 60, 0.10);
+    border: 1px solid rgba(242, 195, 60, 0.30);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12),
+                0 12px 34px -18px rgba(242, 195, 60, 0.65);
+}
+
+grid > combobox:nth-child(5) button:hover,
+combobox.session button:hover {
+    background-color: rgba(242, 195, 60, 0.15);
+    border-color: rgba(242, 195, 60, 0.42);
+}
+
+grid > combobox:nth-child(5) arrow,
+combobox.session arrow {
+    color: @accent;
+}
+
+combobox arrow,
+combobox button arrow {
+    color: @ink_2;
+    min-width: 14px;
+    min-height: 14px;
+}
+
+/* ── the session list ─────────────────────────────────────────────────── */
+popover,
+popover > contents,
+popover > arrow,
+popover.background,
+popover.menu,
+menu,
+.popup {
+    background-color: @raised;
+    border: 1px solid @edge;
+    border-radius: 18px;
+    color: @ink;
+    padding: 6px;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12),
+                0 30px 74px -20px rgba(0, 0, 0, 0.92);
+}
+
+popover modelbutton,
+popover cellview,
+menuitem,
+listview > row,
+row {
+    color: @ink_2;
+    border-radius: 12px;
+    padding: 4px 12px;
+    min-height: 26px;
+    transition: background-color 180ms cubic-bezier(0.16, 1, 0.3, 1),
+                color 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+popover modelbutton:hover,
+menuitem:hover,
+listview > row:hover,
+row:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+    color: @ink;
+}
+
+popover modelbutton:checked,
+popover modelbutton:selected,
+listview > row:selected,
+row:selected,
+row:selected label,
+listview > row:selected label {
+    background-color: rgba(242, 195, 60, 0.14);
+    color: @accent_text;
+}
+
+/* ── pills ────────────────────────────────────────────────────────────── */
+button,
+button.text-button,
+button.image-button {
+    background-color: @glass;
+    color: @ink_2;
+    border: 1px solid @edge_soft;
+    border-radius: 999px;
+    padding: 11px 26px;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    min-height: 22px;
+    min-width: 22px;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    transition: background-color 220ms cubic-bezier(0.16, 1, 0.3, 1),
+                color 220ms cubic-bezier(0.16, 1, 0.3, 1),
+                border-color 220ms cubic-bezier(0.16, 1, 0.3, 1),
+                box-shadow 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+button:hover {
+    background-color: @glass_hi;
+    color: @ink;
+    border-color: @edge;
+}
+
+button:focus {
+    border-color: rgba(242, 195, 60, 0.45);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12),
+                0 0 0 4px rgba(242, 195, 60, 0.12);
+}
+
+button:active,
+button:checked {
+    background-color: rgba(255, 255, 255, 0.15);
+    color: @ink;
+}
+
+/* The round icon buttons beside each field. */
+button.image-button {
+    padding: 11px;
+}
+
+/* The primary action — the only filled control on the screen. */
+button.suggested-action,
+button.default,
+grid > button.text-button {
+    background-color: @accent;
+    color: #0b0906;
+    border: 1px solid rgba(242, 195, 60, 0.70);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38),
+                0 14px 32px -18px rgba(242, 195, 60, 0.55);
+}
+
+button.suggested-action:hover,
+button.default:hover,
+grid > button.text-button:hover {
+    background-color: @accent_text;
+    color: @base;
+}
+
+button.suggested-action label,
+button.default label,
+grid > button.text-button label {
+    color: #0b0906;
+    font-family: "Inter", sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+}
+
+/* …but the per-field edit buttons inside the grid stay ghost glass. */
+grid > button.image-button,
+grid button.image-button {
+    background-color: @glass;
+    color: @ink_2;
+    border: 1px solid @edge_soft;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+grid > button.image-button:hover,
+grid button.image-button:hover {
+    background-color: @glass_hi;
+    color: @ink;
+}
+
+button:disabled {
+    background-color: rgba(255, 255, 255, 0.03);
+    color: @ink_3;
+    border-color: @edge_soft;
+    box-shadow: none;
+}
+
+/* ── failure ──────────────────────────────────────────────────────────── */
+label.error,
+.error,
+infobar label {
+    color: @danger;
+    letter-spacing: 0.02em;
+    font-size: 12px;
+}
+
+infobar,
+infobar.error,
+revealer > infobar {
+    background-color: transparent;
+    border: none;
+    border-radius: 16px;
+    color: @danger;
+    padding: 4px 18px;
+    box-shadow: none;
+}
+
+tooltip,
+tooltip.background {
+    background-color: @raised;
+    border: 1px solid @edge;
+    border-radius: 14px;
+    color: @ink;
+}
+
+selection {
+    background-color: rgba(242, 195, 60, 0.30);
+    color: @ink;
+}

@@ -86,4 +86,13 @@ package_eclipseos-meta() {
   install -Dm0644 "$srcdir/$_src/dist/etc/policy.kdl" "$pkgdir/etc/eclipse/policy.kdl"
   install -Dm0644 "$srcdir/$_src/dist/eclipseos.preset" \
     "$pkgdir/usr/lib/systemd/user-preset/50-eclipseos.preset"
+
+  # Greeter. /etc/greetd is image-owned for the same reason as /etc/eclipse.
+  # The wallpaper goes under /usr/share because the `greeter` user cannot read
+  # any home directory.
+  install -Dm0644 "$srcdir/$_src/dist/greetd/config.toml"  "$pkgdir/etc/greetd/config.toml"
+  install -Dm0644 "$srcdir/$_src/dist/greetd/regreet.toml" "$pkgdir/etc/greetd/regreet.toml"
+  install -Dm0644 "$srcdir/$_src/dist/greetd/regreet.css"  "$pkgdir/etc/greetd/regreet.css"
+  install -Dm0644 "$srcdir/$_src/dist/greetd/wallpaper.png" \
+    "$pkgdir/usr/share/backgrounds/eclipseos/greeter.png"
 }

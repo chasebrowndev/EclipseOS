@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# EclipseOS — greetd configuration.
+# Install to: /etc/greetd/config.toml  (root:root 0644)
+#
+# The greeter runs regreet inside cage, a single-client kiosk compositor:
+#   -s   software rendering fallback off / no client-side decorations
+#   -m last  use the last-connected output
+# The default session command and the `greeter` user are load-bearing and must
+# not change: greetd drops to `greeter` before exec, and that user cannot read
+# /home, so every asset the greeter shows lives under /usr/share or /etc.
+
+[terminal]
+vt = 1
+
+[default_session]
+command = "cage -s -m last -- regreet"
+user = "greeter"
