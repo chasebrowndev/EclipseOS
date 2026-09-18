@@ -115,8 +115,20 @@ pub struct Raster {
 /// Straight (non-premultiplied) RGBA, as written in config and in the source.
 pub type Rgba = [f32; 4];
 
-/// Padding between the panel edge and the text, in unscaled pixels.
+/// Padding between the border and the text, in unscaled pixels.
 const PAD: usize = 4;
+
+/// Hard single-pixel rule around the panel. No bevel, no rounding, no glow --
+/// the eclipse face is a sharp edge or it is nothing.
+const BORDER: usize = 1;
+
+/// Heavier brackets at the four corners, drawn over the rule. How far each
+/// arm runs along its edge, and how thick it is.
+const CORNER: usize = 6;
+const BRACKET: usize = 2;
+
+/// Distance from the panel edge to the first glyph.
+const INSET: usize = BORDER + PAD;
 
 /// Rasterise `lines` into a panel. `scale` is an integer pixel multiplier --
 /// the font has no hinting and no antialiasing, so a fractional scale would
@@ -135,8 +147,14 @@ pub fn rasterize(lines: &[String], scale: usize, fg: Rgba, bg: Rgba) -> Raster {
     } else {
         lines.len() * LINE_H - (LINE_H - GLYPH_H)
     };
-    let w = (text_w + PAD * 2) * scale;
-    let h = (text_h + PAD * 2) * scale;
+    // Unscaled panel extent. Everything below is laid out in these
+    // coordinates and multiplied by `scale` at the last moment, which keeps
+    // `w` and `h` exact multiples of it -- the annotation pass divides by the
+    // same number to get a logical size back.
+    let uw = text_w + INSET * 2;
+    let uh = text_h + INSET * 2;
+    let w = uw * scale;
+    let h = uh * scale;
     let mut px = vec![0u8; w * h * 4];
 
     let bg8 = premul(bg);
@@ -145,8 +163,10 @@ pub fn rasterize(lines: &[String], scale: usize, fg: Rgba, bg: Rgba) -> Raster {
     }
     let fg8 = premul(fg);
 
+    frame(&mut px, w, uw, uh, scale, fg8);
+
     for (row, line) in lines.iter().enumerate() {
-        let oy = PAD + row * LINE_H;
+        let oy = INSET + row * LINE_H;
         for (col, ch) in line.bytes().enumerate() {
             // `sanitize` guarantees this, but the font index must not be able
             // to depend on caller data even if a future path skips it.
@@ -154,7 +174,7 @@ pub fn rasterize(lines: &[String], scale: usize, fg: Rgba, bg: Rgba) -> Raster {
                 continue;
             }
             let glyph = &FONT[(ch - FIRST) as usize];
-            let ox = PAD + col * ADVANCE;
+            let ox = INSET + col * ADVANCE;
             for (gy, bits) in glyph.iter().enumerate() {
                 for gx in 0..GLYPH_W {
                     if bits & (1 << (GLYPH_W - 1 - gx)) == 0 {
@@ -170,6 +190,46 @@ pub fn rasterize(lines: &[String], scale: usize, fg: Rgba, bg: Rgba) -> Raster {
         w: w as i32,
         h: h as i32,
         px,
+    }
+}
+
+/// The panel edge: a hard one-pixel rule all the way round, with a heavier
+/// bracket at each corner. Drawn in the text colour before the glyphs, so a
+/// panel reads as a cut-out rather than as text floating on a dark wash.
+///
+/// `uw`/`uh` are the unscaled panel extent; everything here is clamped to
+/// them, so a panel too small to hold a bracket simply gets less of one
+/// rather than writing outside the buffer.
+fn frame(px: &mut [u8], w: usize, uw: usize, uh: usize, scale: usize, color: [u8; 4]) {
+    if uw == 0 || uh == 0 {
+        return;
+    }
+    let b = BORDER.min(uw).min(uh);
+    let rect = |px: &mut [u8], x: usize, y: usize, rw: usize, rh: usize| {
+        for yy in y..(y + rh).min(uh) {
+            for xx in x..(x + rw).min(uw) {
+                blit(px, w, xx * scale, yy * scale, scale, color);
+            }
+        }
+    };
+    rect(px, 0, 0, uw, b);
+    rect(px, 0, uh - b, uw, b);
+    rect(px, 0, 0, b, uh);
+    rect(px, uw - b, 0, b, uh);
+
+    // Brackets. Half the panel is the limit in each axis so opposite corners
+    // can meet but never overrun each other.
+    let t = BRACKET.min(uw / 2).min(uh / 2);
+    let arm_w = CORNER.min(uw / 2);
+    let arm_h = CORNER.min(uh / 2);
+    if t == 0 || arm_w == 0 || arm_h == 0 {
+        return;
+    }
+    for (x, y) in [(0, 0), (uw - arm_w, 0), (0, uh - t), (uw - arm_w, uh - t)] {
+        rect(px, x, y, arm_w, t);
+    }
+    for (x, y) in [(0, 0), (uw - t, 0), (0, uh - arm_h), (uw - t, uh - arm_h)] {
+        rect(px, x, y, t, arm_h);
     }
 }
 
@@ -241,14 +301,15 @@ mod tests {
         let lines = wrap(&sanitize(&line), 32);
         let r = rasterize(&lines, 2, [1.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 0.0]);
         assert_eq!(r.px.len(), (r.w * r.h * 4) as usize);
-        // Space is blank by design; everything else must put ink down.
+        // Space is blank by design; everything else must put ink down. The
+        // panel's own border is ink too, so compare against the blank panel
+        // rather than asking for any opaque pixel at all -- otherwise the
+        // frame alone would satisfy this and hide a missing glyph.
+        let blank = rasterize(&[" ".to_string()], 1, [1.0, 1.0, 1.0, 1.0], [0.0; 4]);
         for b in FIRST + 1..=LAST {
             let r = rasterize(&[(b as char).to_string()], 1, [1.0, 1.0, 1.0, 1.0], [0.0; 4]);
-            assert!(
-                r.px.chunks_exact(4).any(|p| p[3] != 0),
-                "no ink for {:?}",
-                b as char
-            );
+            assert_eq!((r.w, r.h), (blank.w, blank.h), "geometry moved");
+            assert!(r.px != blank.px, "no ink for {:?}", b as char);
         }
     }
 

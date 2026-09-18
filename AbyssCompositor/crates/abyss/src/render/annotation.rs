@@ -23,6 +23,7 @@ use smithay::{
     backend::allocator::Fourcc,
     backend::renderer::{
         element::{
+            solid::{SolidColorBuffer, SolidColorRenderElement},
             texture::{TextureBuffer, TextureRenderElement},
             Kind,
         },
@@ -30,7 +31,7 @@ use smithay::{
         ImportMem,
     },
     output::Output,
-    utils::{Logical, Point, Rectangle, Scale, Size, Transform},
+    utils::{Logical, Physical, Point, Rectangle, Scale, Size, Transform},
 };
 
 use super::{text, AbyssRenderElement};
@@ -47,6 +48,15 @@ const COLS: usize = 44;
 
 /// Gap between the anchor rectangle and the panel drawn beside it.
 const GUTTER: i32 = 8;
+
+/// The band drawn around the region an annotation is about, and the leader
+/// that joins it to the panel. Deliberately the same amber as the region
+/// selector: "this is the bit in question" should read identically whether
+/// the compositor is asking or answering.
+const BAND: [f32; 4] = [1.0, 0.72, 0.20, 1.0];
+const BAND_ALPHA: f32 = 0.9;
+const BAND_THICK: i32 = 2;
+const LEAD_THICK: i32 = 2;
 
 /// Opaque handle to a live annotation. Handed back over the control socket;
 /// the caller can address only annotations it created.
@@ -76,6 +86,32 @@ pub struct Annotation {
 pub struct AnnotationStore {
     live: std::collections::BTreeMap<AnnotationId, Annotation>,
     next: u64,
+    /// The band and leader buffers for each live annotation, kept across
+    /// frames. `SolidColorBuffer::new` mints a fresh element id and a zeroed
+    /// commit counter, so rebuilding them every frame would leave the damage
+    /// tracker unable to match an element to last frame's and force a repaint
+    /// of those regions forever. Same reason `super` caches its dim and
+    /// border buffers per window.
+    quads: std::collections::BTreeMap<AnnotationId, Vec<SolidColorBuffer>>,
+}
+
+/// Furthest a caller's rectangle may sit from the origin, and the largest it
+/// may be, in logical pixels. Well past any real output, but small enough that
+/// every `loc + size` below stays inside `i32`: the anchor is now drawn, not
+/// just used for placement, and an unprivileged socket caller must not be able
+/// to abort the compositor with an overflow. Clipping bounds the pixels; this
+/// bounds the arithmetic.
+const MAX_COORD: i32 = 1 << 20;
+
+/// Reduce a caller's rectangle at the door, the same way its text is.
+fn clamp_anchor(r: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    Rectangle::new(
+        Point::from((
+            r.loc.x.clamp(-MAX_COORD, MAX_COORD),
+            r.loc.y.clamp(-MAX_COORD, MAX_COORD),
+        )),
+        Size::from((r.size.w.clamp(0, MAX_COORD), r.size.h.clamp(0, MAX_COORD))),
+    )
 }
 
 /// Hard cap on live annotations. A caller that leaks handles degrades its own
@@ -100,7 +136,7 @@ impl AnnotationStore {
             id,
             Annotation {
                 owner,
-                anchor,
+                anchor: clamp_anchor(anchor),
                 lines: lines_for(text),
             },
         );
@@ -159,7 +195,7 @@ fn lines_for(s: &str) -> Vec<String> {
 /// global coordinates and are drawn output-local.
 pub fn annotation_elements(
     renderer: &mut GlesRenderer,
-    store: &AnnotationStore,
+    store: &mut AnnotationStore,
     output: &Output,
     output_loc: Point<i32, Logical>,
 ) -> Vec<AbyssRenderElement> {
@@ -176,8 +212,12 @@ pub fn annotation_elements(
     // fractional scale would only smear it.
     let px = (fractional.round() as usize).max(1);
 
+    // Split borrow: the live map is read while its quad cache is written.
+    let AnnotationStore { live, quads, .. } = store;
+    quads.retain(|id, _| live.contains_key(id));
+
     let mut elements = Vec::new();
-    for (_, annotation) in store.iter() {
+    for (id, annotation) in live.iter() {
         if annotation.lines.is_empty() {
             continue;
         }
@@ -191,8 +231,148 @@ pub fn annotation_elements(
             continue;
         };
         elements.push(element);
+
+        // The panel alone says *what*; the band and the leader say *about
+        // what*. Both are plain solid quads in the same pass, so they inherit
+        // its capture-invisibility and its place below trusted UI without
+        // anything new having to be true.
+        let bounds = Rectangle::new(Point::from((0, 0)), logical);
+        let panel = Rectangle::new(loc, size);
+        let Some(region) = drawable_region(
+            Rectangle::new(annotation.anchor.loc - output_loc, annotation.anchor.size),
+            logical,
+        ) else {
+            // Nothing honest to point at: draw the glyphs and no marker.
+            continue;
+        };
+        let slots = quads.entry(*id).or_default();
+        // Index-by-index: a rect that clips entirely away keeps its slot, so a
+        // quad's buffer is the same one it had last frame and the damage
+        // tracker can match it.
+        for (i, (l, s)) in leader(region, panel).into_iter().chain(band(region)).enumerate() {
+            if slots.len() <= i {
+                slots.push(SolidColorBuffer::new(Size::from((0, 0)), BAND));
+            }
+            quad(l, s, scale, bounds, &mut slots[i], &mut elements);
+        }
     }
     elements
+}
+
+/// What of a caller's region may actually be drawn.
+///
+/// `place` only ever used the anchor to position a panel it then clamped, so a
+/// silly rectangle cost a caller nothing but a badly-placed panel. The band and
+/// the leader *draw* it, and `annotation_create` takes any `i32` position and
+/// any positive size -- so without this a control-socket caller could outline
+/// the whole screen, or ring another client's UI, which is on-screen geometry
+/// of its choosing rather than glyphs. Capping the size at a third of the
+/// output per axis and clipping to the output leaves every real region
+/// untouched while taking that choice away. Returns `None` when nothing is
+/// left, in which case the panel is drawn unmarked.
+fn drawable_region(
+    r: Rectangle<i32, Logical>,
+    output: Size<i32, Logical>,
+) -> Option<Rectangle<i32, Logical>> {
+    if r.size.w <= 0 || r.size.h <= 0 {
+        return None;
+    }
+    // Clip first, then cap: the cap is on what is drawn, so a huge rectangle
+    // reaching onto the output keeps its visible corner rather than being
+    // trimmed off-screen and vanishing.
+    let on = r.intersection(Rectangle::new(Point::from((0, 0)), output))?;
+    Some(Rectangle::new(
+        on.loc,
+        Size::from((
+            on.size.w.min((output.w / 3).max(1)),
+            on.size.h.min((output.h / 3).max(1)),
+        )),
+    ))
+}
+
+/// One solid amber quad, clipped to the output. Anything with nothing left
+/// after the clip is dropped rather than drawn off the edge.
+fn quad(
+    loc: Point<i32, Logical>,
+    size: Size<i32, Logical>,
+    scale: Scale<f64>,
+    bounds: Rectangle<i32, Logical>,
+    buffer: &mut SolidColorBuffer,
+    out: &mut Vec<AbyssRenderElement>,
+) {
+    if size.w <= 0 || size.h <= 0 {
+        return;
+    }
+    let Some(r) = Rectangle::new(loc, size).intersection(bounds) else {
+        return;
+    };
+    buffer.update(r.size, BAND);
+    let phys: Point<i32, Physical> = r.loc.to_f64().to_physical(scale).to_i32_round();
+    out.push(AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
+        buffer,
+        phys,
+        scale,
+        BAND_ALPHA,
+        Kind::Unspecified,
+    )));
+}
+
+/// The four edges of the band around the annotated region, as unclipped
+/// logical rectangles. Thickness is clamped to the region so a tiny anchor
+/// gets a thinner band rather than two overlapping ones.
+fn band(r: Rectangle<i32, Logical>) -> Vec<(Point<i32, Logical>, Size<i32, Logical>)> {
+    if r.size.w <= 0 || r.size.h <= 0 {
+        return Vec::new();
+    }
+    let t = BAND_THICK.min(r.size.w).min(r.size.h);
+    vec![
+        (r.loc, Size::from((r.size.w, t))),
+        (
+            Point::from((r.loc.x, r.loc.y + r.size.h - t)),
+            Size::from((r.size.w, t)),
+        ),
+        (r.loc, Size::from((t, r.size.h))),
+        (
+            Point::from((r.loc.x + r.size.w - t, r.loc.y)),
+            Size::from((t, r.size.h)),
+        ),
+    ]
+}
+
+/// The elbow joining the region to its panel: a drop from the region's centre
+/// line to the panel's near edge, then a run along that edge to the panel's
+/// centre. The run sits on the panel's edge, so a gap shorter than the line's
+/// own thickness leaves it overlapping the region by a pixel or two. Empty when the two overlap vertically -- there is no honest route
+/// between them, and a line drawn across the region would obscure the very
+/// thing it is pointing at.
+fn leader(
+    r: Rectangle<i32, Logical>,
+    panel: Rectangle<i32, Logical>,
+) -> Vec<(Point<i32, Logical>, Size<i32, Logical>)> {
+    if r.size.w <= 0 || r.size.h <= 0 || panel.size.w <= 0 || panel.size.h <= 0 {
+        return Vec::new();
+    }
+    let t = LEAD_THICK;
+    let below = panel.loc.y >= r.loc.y + r.size.h;
+    let (y0, y1) = if below {
+        (r.loc.y + r.size.h, panel.loc.y)
+    } else if panel.loc.y + panel.size.h <= r.loc.y {
+        (panel.loc.y + panel.size.h, r.loc.y)
+    } else {
+        return Vec::new();
+    };
+    if y1 <= y0 {
+        return Vec::new();
+    }
+    let rx = r.loc.x + r.size.w / 2;
+    let px = panel.loc.x + panel.size.w / 2;
+    vec![
+        (Point::from((rx - t / 2, y0)), Size::from((t, y1 - y0))),
+        (
+            Point::from((rx.min(px), if below { y1 - t } else { y0 })),
+            Size::from(((rx - px).abs() + t, t)),
+        ),
+    ]
 }
 
 /// Put the panel just below its anchor, nudged back on screen if it would fall
@@ -346,6 +526,71 @@ mod tests {
                 "{path} puts the annotation pass on the wrong side of trusted UI"
             );
         }
+    }
+
+    #[test]
+    fn the_band_never_inverts_on_a_tiny_region() {
+        // A one-pixel anchor still gets four edges, each at most as thick as
+        // the region itself -- never a negative or overlapping quad.
+        let edges = band(rect(10, 10, 1, 1));
+        assert_eq!(edges.len(), 4);
+        for (_, s) in edges {
+            assert!(s.w > 0 && s.h > 0);
+            assert!(s.w <= 1 || s.h <= 1);
+        }
+        assert!(band(rect(0, 0, 0, 40)).is_empty());
+    }
+
+    #[test]
+    fn the_leader_only_exists_when_there_is_a_gap_to_cross() {
+        let region = rect(100, 100, 40, 20);
+        // Panel below: a drop and a run, entirely inside the gap.
+        let segs = leader(region, rect(300, 160, 200, 80));
+        assert_eq!(segs.len(), 2);
+        let (l, s) = segs[0];
+        assert_eq!((l.y, s.h), (120, 40), "the drop spans exactly the gutter");
+        // Panel overlapping the region vertically: nothing, rather than a
+        // line drawn across the thing being pointed at.
+        assert!(leader(region, rect(300, 110, 200, 80)).is_empty());
+        // Panel above works the same way, mirrored.
+        assert_eq!(leader(region, rect(300, 0, 200, 80)).len(), 2);
+    }
+
+    #[test]
+    fn a_marker_cannot_be_made_to_frame_the_screen() {
+        let out: Size<i32, Logical> = (1920, 1080).into();
+        // A caller asking to outline everything gets a third of it, on-screen.
+        let r = drawable_region(rect(-500, -500, 9000, 9000), out).unwrap();
+        assert_eq!((r.loc.x, r.loc.y), (0, 0));
+        assert_eq!((r.size.w, r.size.h), (640, 360));
+        // A real OCR region is untouched.
+        let r = drawable_region(rect(300, 200, 400, 60), out).unwrap();
+        assert_eq!((r.loc.x, r.loc.y, r.size.w, r.size.h), (300, 200, 400, 60));
+        // Entirely off this output: nothing to draw.
+        assert!(drawable_region(rect(5000, 5000, 100, 100), out).is_none());
+    }
+
+    #[test]
+    fn an_absurd_anchor_is_reduced_at_the_door() {
+        // The anchor is drawn now, not just used for placement, so a socket
+        // caller must not be able to overflow the additions in `band`,
+        // `leader` and `place`.
+        let mut store = AnnotationStore::default();
+        let id = store
+            .create(
+                1,
+                Rectangle::new(
+                    Point::from((i32::MAX, i32::MIN)),
+                    Size::from((i32::MAX, i32::MAX)),
+                ),
+                "hi",
+            )
+            .unwrap();
+        let a = &store.live[&id];
+        assert_eq!(a.anchor.loc.x, MAX_COORD);
+        assert_eq!(a.anchor.loc.y, -MAX_COORD);
+        assert_eq!(a.anchor.size.w, MAX_COORD);
+        assert!(a.anchor.loc.x.checked_add(a.anchor.size.w).is_some());
     }
 
     #[test]
