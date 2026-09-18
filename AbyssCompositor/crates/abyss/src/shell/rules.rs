@@ -113,10 +113,19 @@ pub fn reevaluate(state: &mut AbyssState, window: &Window) -> Option<Placement> 
 
 fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> Placement {
     let mut placement = Placement::default();
+    let facts = Facts::gather(state, window);
+    // A dialog/utility window (xdg_toplevel with a parent, or an X11 window
+    // carrying WM_TRANSIENT_FOR / a non-Normal window type) floats by
+    // default — nothing declares this via windowrule today, so without this
+    // every "Save As", preferences or confirmation popup would tile like a
+    // primary window (COMP-05 §4 default is otherwise silent on this case).
+    // An explicit `tile`/`float` rule below still overrides it.
+    if placing {
+        placement.float = facts.is_dialog;
+    }
     if state.config.window_rules.is_empty() {
         return placement;
     }
-    let facts = Facts::gather(state, window);
     // Identity arrives after the first commit for most clients; until it does,
     // a placement pass would match on empty strings. Hold the marker back so
     // the caller retries once the client has named itself.
@@ -211,6 +220,12 @@ struct Facts {
     output_connector: String,
     output_identity: String,
     workspace: i32,
+    /// True for a window that identifies itself as a dialog/utility rather
+    /// than a primary toplevel: an xdg_toplevel with `parent` set, or an X11
+    /// window carrying `WM_TRANSIENT_FOR` or a non-`Normal`
+    /// `_NET_WM_WINDOW_TYPE`. Nothing here is trusted for anything but the
+    /// default float/tile choice — an untrusted client can always claim it.
+    is_dialog: bool,
 }
 
 impl Facts {
@@ -223,6 +238,22 @@ impl Facts {
         let entry = crate::shell::output_of_window(state, window)
             .and_then(|id| state.outputs.get(id))
             .or_else(|| state.outputs.focused());
+        let is_dialog = if let Some(toplevel) = window.toplevel() {
+            toplevel.parent().is_some()
+        } else if let Some(x11) = window.x11_surface() {
+            x11.is_transient_for().is_some()
+                || matches!(
+                    x11.window_type(),
+                    Some(
+                        smithay::xwayland::xwm::WmWindowType::Dialog
+                            | smithay::xwayland::xwm::WmWindowType::Utility
+                            | smithay::xwayland::xwm::WmWindowType::Toolbar
+                            | smithay::xwayland::xwm::WmWindowType::Splash
+                    )
+                )
+        } else {
+            false
+        };
         Self {
             cgroup: pid.map(cgroup_of).unwrap_or_default(),
             app_id: app_id.unwrap_or_default(),
@@ -232,6 +263,7 @@ impl Facts {
             output_connector: entry.map(|e| e.connector.clone()).unwrap_or_default(),
             output_identity: entry.map(|e| e.identity.clone()).unwrap_or_default(),
             workspace: entry.map(|e| e.active as i32 + 1).unwrap_or(1),
+            is_dialog,
         }
     }
 
