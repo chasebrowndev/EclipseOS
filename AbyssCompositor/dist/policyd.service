@@ -17,8 +17,12 @@ Description=Eclipse policy daemon
 PartOf=graphical-session.target
 Before=abyss-session.target
 
+# Type=simple, not notify: policyd does not sd_notify READY=1 yet — it has no
+# socket to be ready on until milestone 11 — and under Type=notify systemd
+# fails the unit on every start, which takes the bar and toasts down with the
+# target. Revisit when the agent socket lands.
 [Service]
-Type=notify
+Type=simple
 ExecStart=/usr/bin/policyd
 Restart=on-failure
 RestartSec=1

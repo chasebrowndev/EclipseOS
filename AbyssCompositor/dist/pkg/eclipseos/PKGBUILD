@@ -40,6 +40,13 @@ check() {
 
 _bin() { install -Dm0755 "$srcdir/$_src/target/release/$1" "$pkgdir/usr/bin/$1"; }
 _unit() { install -Dm0644 "$srcdir/$_src/dist/$1" "$pkgdir/usr/lib/systemd/user/$1"; }
+# Enable a user unit for every user, image-side. A user-preset only takes effect
+# when someone runs `systemctl --user preset-all`, which nothing does for an
+# account that already exists — the bar shipped "enabled" and never started.
+_want() {
+  install -d "$pkgdir/usr/lib/systemd/user/abyss-session.target.wants"
+  ln -sf "../$1" "$pkgdir/usr/lib/systemd/user/abyss-session.target.wants/$1"
+}
 
 package_eclipseos-abyss() {
   pkgdesc="EclipseOS compositor (abyss) and its control client"
@@ -66,6 +73,8 @@ package_eclipseos-desktop() {
            eclipse-settings eclipse-policy-viewer; do _bin "$b"; done
   _unit eclipse-bar.service
   _unit eclipse-toasts.service
+  _want eclipse-bar.service
+  _want eclipse-toasts.service
   for d in "$srcdir/$_src"/dist/applications/*.desktop; do
     install -Dm0644 "$d" "$pkgdir/usr/share/applications/$(basename "$d")"
   done
@@ -77,6 +86,7 @@ package_eclipseos-policyd() {
 
   _bin policyd
   _unit policyd.service
+  _want policyd.service
 }
 
 package_eclipseos-meta() {
@@ -91,8 +101,6 @@ package_eclipseos-meta() {
   # is a no-op migration.
   install -Dm0644 "$srcdir/$_src/dist/etc/abyss.kdl"  "$pkgdir/etc/eclipse/abyss.kdl"
   install -Dm0644 "$srcdir/$_src/dist/etc/policy.kdl" "$pkgdir/etc/eclipse/policy.kdl"
-  install -Dm0644 "$srcdir/$_src/dist/eclipseos.preset" \
-    "$pkgdir/usr/lib/systemd/user-preset/50-eclipseos.preset"
 
   # Pacman drop-in for the EclipseOS repo (D-02). /etc/pacman.conf must have
   # `Include = /etc/pacman.d/eclipseos.conf`; the ISO's airootfs ships that.
