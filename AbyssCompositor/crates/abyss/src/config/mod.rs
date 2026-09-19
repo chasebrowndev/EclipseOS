@@ -825,21 +825,26 @@ pub fn default_binds() -> Vec<Bind> {
             key: Keysym::space,
             action: Action::AgentAttention,
         },
-        // Applications.
+        // Applications. Every shipped bind names a binary EclipseOS installs:
+        // a default pointing at something that is not there spawns, dies
+        // silently, and reads to the user as a dead keybind (this is exactly
+        // what kitty, dolphin and firefox did on the first real install).
+        // Terminal is Super+Q and Super+Return both, the two chords people
+        // reach for; anything else belongs in the user's own config.
         Bind {
             mods: sup,
             key: Keysym::q,
-            action: Action::Spawn("kitty".into()),
+            action: Action::Spawn("foot".into()),
+        },
+        Bind {
+            mods: sup,
+            key: Keysym::Return,
+            action: Action::Spawn("foot".into()),
         },
         Bind {
             mods: sup,
             key: Keysym::e,
-            action: Action::Spawn("dolphin".into()),
-        },
-        Bind {
-            mods: sup,
-            key: Keysym::f,
-            action: Action::Spawn("firefox".into()),
+            action: Action::Spawn("eclipse-launcher".into()),
         },
         // The desktop's own surfaces. Hyprland reaches these through
         // `qs -c eclipse ipc call ui toggle ...`; ours are separate binaries,
@@ -2181,7 +2186,7 @@ fn parse_keysym(s: &str) -> Result<Keysym, String> {
     }
 }
 
-/// `bind "SUPER" "Return" { spawn "kitty"; }`
+/// `bind "SUPER" "Return" { spawn "foot"; }`
 fn parse_bind(node: &KdlNode) -> Result<Bind, String> {
     let a = args(node);
     let (mods, key) = match a.len() {

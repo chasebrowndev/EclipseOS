@@ -77,6 +77,17 @@ rm -f /root/eclipseos-packaging.asc
 systemctl enable greetd
 CHROOT
 
+# --- boot menu branding -------------------------------------------------------
+# archinstall writes its own limine.conf and names every entry "Arch Linux".
+# The machine is EclipseOS by the time this script is done, so the boot menu
+# should say so. Only the entry titles are touched -- paths, cmdline and the
+# rest are archinstall's and are none of our business.
+for conf in /mnt/boot/limine.conf /mnt/boot/limine/limine.conf /mnt/boot/EFI/limine/limine.conf; do
+  [[ -f $conf ]] || continue
+  say "branding the boot menu in ${conf#/mnt}"
+  sed -i -E 's,^(/+)Arch Linux,\1EclipseOS,' "$conf"
+done
+
 say "done. reboot and pick Abyss at the greeter."
 say "if the greeter does not come up: Ctrl+Alt+F2, then"
 say "  journalctl -u greetd -b"

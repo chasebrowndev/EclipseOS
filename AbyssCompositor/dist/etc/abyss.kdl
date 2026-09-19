@@ -8,6 +8,7 @@
 // is a default you have to delete to get back to; a default that lives in the
 // schema is one you never see. Everything abyss ships is in the schema.
 
-// The one exception: which terminal the default binding launches. The schema
-// cannot know what is installed on the machine, so the image answers it.
-bind "Super" "Return" { spawn "foot" }
+// It is empty on purpose, with no exceptions left: the terminal bind used to
+// live here on the theory that the schema cannot know what is installed, but
+// eclipseos-meta installs foot, so the schema can and does know. A default
+// stated in two places is a default that drifts.

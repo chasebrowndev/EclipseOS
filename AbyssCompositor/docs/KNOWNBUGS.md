@@ -107,6 +107,88 @@ IPC work and does not appear in settings at all.
 
 ---
 
+# First real-hardware install — Framework 13, 2026-09-19
+
+Everything below was found taking the 2026.09.19 ISO from boot medium to a
+working session on the owner's Framework 13 (AMD, eDP 2880x1920@120). All five
+were fixed the same day; they are recorded because every one of them was
+invisible to CI, to the nested winit backend, and to a dev session on chase-pc,
+and the next new machine will find the next batch the same way.
+
+## HW-01 — abyss died at startup when Xwayland was not installed — FIXED
+
+Selecting Abyss at the greeter bounced straight back to the greeter.
+`journalctl -b -t abyss` ended at `spawning XWayland instance` with no error:
+smithay's `XWayland::spawn` failure path panics in the child reaper
+(`wait() should either return Ok or panic`) rather than returning `Err`, so the
+`Err` arm in `crates/abyss/src/xwayland/mod.rs` that is written to degrade
+gracefully never ran. `xorg-xwayland` was in no package list — not the PKGBUILD
+depends, not `packages.x86_64` — so no installed system had it.
+
+Fixed: `xorg-xwayland` is a hard dependency of `eclipseos-abyss` and is listed
+on the medium; `xwayland::start` checks `PATH` before spawning and takes the
+degrade path itself. **The lesson is the general one:** a dependency that only
+the dev box happens to have is not a dependency the image has.
+
+## HW-02 — the bar, toasts and policyd never started — FIXED
+
+An installed session ran abyss and nothing else. The units shipped "enabled"
+via a systemd **user**-preset (`/usr/lib/systemd/user-preset/50-eclipseos.preset`),
+and a user-preset only takes effect when somebody runs
+`systemctl --user preset-all` — which nothing does for an account that already
+exists. `systemctl --user is-enabled eclipse-bar.service` said `disabled` on a
+fresh install.
+
+Fixed: the packages ship `abyss-session.target.wants/` symlinks instead, which
+enable the units image-side for every user; the preset file is gone.
+
+## HW-03 — policyd crash-looped into the start limit — FIXED
+
+`policyd.service` is `Type=notify`, but policyd never sends `READY=1` — it has
+no socket to be ready on until milestone 11 — so systemd declared every start a
+protocol failure, restarted it, and hit `start-limit-hit`. Fixed by
+`Type=simple` until the agent socket lands. Note that policyd still exits
+immediately by design; that is the stub, not a fault.
+
+## HW-04 — every shipped app keybind was dead — FIXED
+
+Super+Q, Super+E and Super+F spawned `kitty`, `dolphin` and `firefox`. EclipseOS
+installs none of the three, so the spawn succeeded, the child died instantly,
+and the binds read as broken input handling. They were not: the journal showed
+`spawning` for each press, and Super+1..n logged `workspace switched` every
+time — invisible only because there were no windows and the bar was not running
+(HW-02).
+
+Fixed: `default_binds()` now names only binaries the image installs (foot,
+eclipse-launcher). **Rule going forward: a shipped bind must name a binary in
+`eclipseos-meta`'s dependency closure.** Nothing enforces that yet — a test
+that walks `default_binds()` against the package list would.
+
+## HW-05 — the boot menu said "Arch Linux" — FIXED
+
+On the archinstall route, archinstall writes `limine.conf` and titles every
+entry `Arch Linux`; `eclipseos-postinstall.sh` never touched it, so a finished
+EclipseOS install booted through a menu naming a different distribution. Our
+own `install-eclipseos.sh` was always correct. Fixed: the postinstall script
+rewrites the entry titles (titles only — paths and cmdline stay archinstall's).
+
+## Still open from this install
+
+- **Boot is visually Arch, not EclipseOS.** Kernel messages and the Arch
+  plymouth-less boot are what the user sees between firmware and the greeter.
+  Tracked as a wanted feature, not a bug — see "Boot splash" in
+  `PROPOSEDFEATURES.md`.
+- **`eclipseos-postinstall.sh` mounts the root partition plainly**, so an
+  archinstall btrfs subvolume layout lands in the top-level subvolume and the
+  install goes to the wrong place. Only ext4 has been walked through.
+- **The installed system has no way in without a screen.** `tailscale` is in no
+  EclipseOS package set; it was installed by hand on the Framework, and it is
+  the only reason any of the above could be diagnosed remotely rather than read
+  off a photographed screen. Worth deciding whether a headless-debuggable image
+  is the default.
+
+---
+
 ## Probing notes for this pane
 
 Two traps that produced a clean-looking false negative before they were caught:
