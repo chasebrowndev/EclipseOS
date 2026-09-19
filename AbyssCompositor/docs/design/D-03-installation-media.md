@@ -58,7 +58,7 @@ Framework 13 AMD choices and why:
 
 | Package | Why, and what it replaces |
 |---|---|
-| `amd-ucode` | The only microcode image on the medium. Intel's is not shipped, and the GRUB entry hardcodes `initrd /amd-ucode.img` to match. |
+| `amd-ucode` | The only microcode image on the medium. Intel's is not shipped, and the Limine entry adds it as a `module_path` ahead of the initramfs. |
 | `linux-firmware-amdgpu` | Split out of `linux-firmware` upstream; without it amdgpu does not come up on this generation. Named explicitly rather than relied on as a transitive pull. |
 | `vulkan-radeon` + `mesa` + `libva-mesa-driver` | The RADV path. `amdvlk` is not installed — two Vulkan ICDs on one system is a loader-ordering problem, not a choice worth offering. |
 | *(no DKMS anything)* | amdgpu is in-tree. There is no out-of-tree module, so there is no `dkms`, no headers package, and **no kernel-upgrade step that can fail after reboot**. This is the single biggest reason the target hardware is AMD; it is a property of the install, not a preference. |
@@ -123,10 +123,11 @@ run by hand from the live root shell. Flow:
 7. Append `Include = /etc/pacman.d/eclipseos.conf` to `/mnt/etc/pacman.conf`
    if absent (D-02 §5). The *drop-in* ships in `eclipseos-meta`; the `Include`
    line is added here so that no package edits a file it does not own.
-8. In `arch-chroot`: `mkinitcpio -P`, `grub-install --removable`,
+8. In `arch-chroot`: `mkinitcpio -P`; then Limine's stub is copied to
+   the ESP's removable fallback path, with a pacman hook to keep it current,
    `useradd -m -G wheel`, a `%wheel` sudoers drop-in at 0440,
-   `systemctl enable greetd NetworkManager bluetooth systemd-timesyncd`.
-9. A GRUB config with `root=UUID=… rw amd_pstate=active`.
+   `systemctl enable greetd NetworkManager iwd bluetooth systemd-timesyncd`.
+9. A Limine config with `root=UUID=… rw amd_pstate=active`.
    `amd_pstate=active` is on from first boot rather than discovered later.
 10. `passwd` for root and the new user, `umount -R /mnt`.
 

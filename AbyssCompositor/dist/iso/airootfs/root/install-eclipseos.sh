@@ -173,10 +173,6 @@ fi
 locale-gen
 hwclock --systohc
 mkinitcpio -P
-# GRUB, not systemd-boot. The same firmware that refused systemd-boot's stub
-# on the install medium would refuse it on the internal disk, and that failure
-# only shows up after a full pacstrap. See dist/iso/profiledef.sh.
-grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=EclipseOS --removable
 
 useradd -m -G wheel -s /bin/bash "$USERNAME"
 echo '%wheel ALL=(ALL:ALL) ALL' >/etc/sudoers.d/10-wheel
@@ -188,18 +184,54 @@ chmod 0440 /etc/sudoers.d/10-wheel
 systemctl enable greetd NetworkManager iwd bluetooth systemd-timesyncd
 CHROOT
 
-# GRUB config. amd_pstate=active is the Framework 13 AMD default worth having
-# from the first boot rather than discovering later (D-01 §2).
+# --- bootloader ---------------------------------------------------------------
+# Limine. Not systemd-boot -- this firmware refused its stub on the install
+# medium and there is no reason to expect better from the internal disk -- and
+# not GRUB, whose generated config is a script nobody reads and whose failures
+# are correspondingly hard to read. Limine's UEFI install is two files: the
+# stub at the removable fallback path, which needs no NVRAM entry to be found,
+# and a config that says exactly what it does.
+say "installing Limine"
+install -Dm0644 /mnt/usr/share/limine/BOOTX64.EFI /mnt/boot/EFI/BOOT/BOOTX64.EFI
+
+# The ESP is mounted at /boot, so the kernel and initramfs sit at the root of
+# the volume Limine boots from -- that is what `boot():/` resolves to.
+# amd_pstate=active is the Framework 13 AMD default worth having from the first
+# boot rather than discovering later (D-01 §2).
 ROOT_UUID="$(blkid -s UUID -o value "$ROOT")"
-cat >/mnt/etc/default/grub <<GRUBCFG
-GRUB_DEFAULT=0
-GRUB_TIMEOUT=2
-GRUB_DISTRIBUTOR="EclipseOS"
-GRUB_CMDLINE_LINUX_DEFAULT="rw amd_pstate=active"
-GRUB_CMDLINE_LINUX="root=UUID=$ROOT_UUID"
-GRUB_DISABLE_RECOVERY=true
-GRUBCFG
-arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+UCODE=""
+[[ -f /mnt/boot/amd-ucode.img ]] && UCODE="module_path: boot():/amd-ucode.img"
+cat >/mnt/boot/limine.conf <<LIMINE
+timeout: 2
+
+/EclipseOS
+    protocol: linux
+    path: boot():/vmlinuz-linux
+    cmdline: root=UUID=$ROOT_UUID rw amd_pstate=active
+    $UCODE
+    module_path: boot():/initramfs-linux.img
+
+/EclipseOS (fallback initramfs)
+    protocol: linux
+    path: boot():/vmlinuz-linux
+    cmdline: root=UUID=$ROOT_UUID rw
+    module_path: boot():/initramfs-linux-fallback.img
+LIMINE
+
+# Nothing else refreshes the copy on the ESP, so a `limine` upgrade would leave
+# the machine booting last release's stub indefinitely.
+install -Dm0644 /dev/stdin /mnt/etc/pacman.d/hooks/95-limine-esp.hook <<'HOOK'
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Target = usr/share/limine/BOOTX64.EFI
+
+[Action]
+Description = Copying the Limine stub to the ESP...
+When = PostTransaction
+Exec = /usr/bin/install -Dm0644 /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/BOOTX64.EFI
+HOOK
 
 say "set a password for root"
 arch-chroot /mnt passwd

@@ -11,10 +11,10 @@ linux-firmware-amdgpu
 amd-ucode
 mkinitcpio
 base
-# GRUB rather than systemd-boot: a Framework 13 refused systemd-boot's stub
+# Limine rather than systemd-boot: a Framework 13 refused systemd-boot's stub
 # outright, and an unbootable internal disk is a worse place to find that out
-# than a USB stick. See dist/iso/profiledef.sh.
-grub
+# than a USB stick. install-eclipseos.sh copies its stub to the ESP by hand.
+limine
 efibootmgr
 
 ## filesystem and disk tools the installer needs
