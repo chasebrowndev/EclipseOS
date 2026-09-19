@@ -1176,7 +1176,17 @@ fn render_output(state: &mut AbyssState, index: usize) {
     crate::render::send_frames(&state.space, &output, time);
     state.space.refresh();
     state.popups.cleanup();
-    let _ = state.display_handle.flush_clients();
+    // Deliberately no `flush_clients()` here. `render_output` is reachable
+    // from inside a client request: a destructor request such as
+    // `xdg_toplevel.destroy` runs `toplevel_destroyed` -> `unmap_window` ->
+    // `arrange` -> `damage_all` -> `schedule_render` -> here, all while
+    // libwayland is still dispatching that request. `wl_display_flush_clients`
+    // destroys any client whose socket write fails, and a client that closed
+    // its socket right after sending `destroy` does fail. That frees the very
+    // `wl_resource` libwayland is about to destroy itself when the request
+    // returns, and the second destructor runs on a freed `ResourceUserData`.
+    // The event loop flushes after every dispatch round, which is both safe
+    // and soon enough; see the `run` callback above.
 }
 
 /// Turn adaptive sync on or off for one output at runtime (COMP-13 §2.1).
