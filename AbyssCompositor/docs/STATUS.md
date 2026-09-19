@@ -692,12 +692,12 @@ not the gate.
 | ID | State |
 |---|---|
 | D-01 | **written** 2026-09-18; §2 amended same day for the AMD ISO target; its packaging builds clean (see above) |
-| D-02 | blocked on S-12; a reduced personal-scale version is next |
-| D-03 | **unblocked by D-01** — archiso profile + `archinstall` config |
-| D-04 | blocked on D-02 |
+| D-02 | **written** 2026-09-18 — a signed pacman repo at personal scale; built and consumed for real (see below) |
+| D-03 | **written** 2026-09-18 — archiso profile + a hand-written installer; an ISO has been built from it |
+| D-04 | **unblocked by D-02**; not started |
 | D-05 | blocked on `cataclysm` (P-04, defect 12) |
 | D-06 | blocked on F-04 |
-| D-07 | blocked on D-03 |
+| D-07 | **unblocked by D-03** |
 | D-08 | blocked on F-02 |
 
 D-03 inherits D-01 §1 as `packages.x86_64`, §2 as `mkinitcpio.conf` plus the
@@ -719,12 +719,28 @@ of the `conformance` job, and it is the evidence for the wlcs row below.
 `comp03-overscan-compensation` followed it onto `main` and no longer exists as
 a branch; the COMP-03 §2 overscan work is landed and working on hardware.
 
-Two more have landed since. **PR #19** merged as `ce2e86f` — the `policyd`
+Four more have landed since. **PR #19** merged as `ce2e86f` — the `policyd`
 store, the COMP-05/COMP-18 work, and the first distribution packaging per D-01.
 **PR #20** merged as `2e7824a`, a follow-up that fixes the PKGBUILD so it
-actually builds. `v0.1.0` is tagged on `main` and pushed: the first release tag
-this repo has ever carried. It marks a point in the history, not a claim about
-readiness — nothing in the Phase 1 exit gate moved because of it.
+actually builds. **PR #21** merged as `1f12c03` — the signed pacman repo (D-02)
+and the archiso profile and installer (D-03), landed as one batch. **PR #22**
+merged as `ee4de8d`, the fallout from the first real `mkarchiso` runs.
+
+`v0.1.0` is tagged on `main` and pushed, and has been force-moved twice as the
+packaging fixes landed — it now points at `ee4de8d`. It marks a point in the
+history, not a claim about readiness; nothing in the Phase 1 exit gate moved
+because of it.
+
+**An ISO exists.** `mkarchiso` produced a 1.7G image from the D-03 profile,
+carrying the four signed EclipseOS packages, the packaging key, and an
+installer that prechecks connectivity before it touches a disk. What PR #22
+fixed is what that first build taught: `TrustAll` does not import a key, so
+the key has to be added on the build host, on the live medium and in the
+installed chroot; a laptop with no ethernet port needs `iwd` on the medium;
+the greeter config had to move to `/etc/eclipse/greetd` with a systemd drop-in
+because `/etc/greetd/config.toml` is owned by the `greetd` package. The image
+has **not** been booted on hardware yet — that is the next step, and until it
+happens "an ISO builds" is all this paragraph claims.
 
 ---
 
