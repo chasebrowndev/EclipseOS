@@ -126,3 +126,54 @@ pub fn output_vrr(state: &AbyssState, id: u64) -> bool {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// A backend may only flush clients from its event-loop callback.
+    ///
+    /// `wl_display_flush_clients` destroys any client whose socket write
+    /// fails. Called from the event loop that is safe, but every backend also
+    /// has render paths reachable from inside a client request — a destructor
+    /// request reaches `render_output` via `toplevel_destroyed` ->
+    /// `unmap_window` -> `arrange` -> `damage_all` -> `schedule_render`.
+    /// Destroying a client there frees the `wl_resource` that libwayland is
+    /// about to destroy when the request returns, and the resulting second
+    /// destructor call faults on freed `ResourceUserData`. That crash took a
+    /// live session down on 2026-09-18.
+    #[test]
+    fn backends_only_flush_clients_from_the_event_loop() {
+        for (src, path) in [
+            (include_str!("drm.rs"), "drm.rs"),
+            (include_str!("winit.rs"), "winit.rs"),
+            (include_str!("headless.rs"), "headless.rs"),
+        ] {
+            // Match the method, not one spelling of the receiver: rustfmt
+            // will break `state.display_handle` onto its own line as soon as
+            // the expression grows. Comments are skipped so that the one in
+            // `drm.rs` explaining the absent call does not count as a site.
+            let lines: Vec<&str> = src.lines().collect();
+            let sites: Vec<usize> = lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.contains(".flush_clients") && !l.trim_start().starts_with("//"))
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(
+                sites.len(),
+                1,
+                "{path}: expected exactly one flush_clients call, found {}; \
+                 flushing outside the event loop can destroy a client mid-dispatch",
+                sites.len()
+            );
+            let at = sites[0];
+            let before = lines[at.saturating_sub(4)..at].join("\n");
+            assert!(
+                before.contains("event_loop"),
+                "{path}:{}: flush_clients is not inside the event-loop callback; \
+                 wl_display_flush_clients may destroy a client synchronously, \
+                 which is a use-after-free if a request is being dispatched",
+                at + 1
+            );
+        }
+    }
+}
