@@ -172,6 +172,23 @@ EclipseOS install booted through a menu naming a different distribution. Our
 own `install-eclipseos.sh` was always correct. Fixed: the postinstall script
 rewrites the entry titles (titles only — paths and cmdline stay archinstall's).
 
+## HW-06 — eclipse-settings could not save: "permission denied (os error 13)" — FIXED
+
+Changing anything in eclipse-settings (rounding, taskbar behaviour, …) failed
+with EACCES. `config_rpc::target_path` picked the *last loaded source* with the
+key's owner as the write target. A fresh install has no
+`~/.config/eclipse/abyss.kdl`, and a file that does not exist (or fails to
+parse) is never pushed onto `Config::sources` — so the only Abyss source was
+root-owned `/etc/eclipse/abyss.kdl`, and a write from a normal session was
+refused by the kernel.
+
+Fixed: writes target the user tier — the last user-owned source if there is
+one, otherwise `$XDG_CONFIG_HOME/eclipse/abyss.kdl`, created on first write.
+`--config` still names the file to edit. This is also the explanation for the
+earlier, separately confusing observation that `eclipse-ctl reload` listed only
+the two `/etc` files in `sources` while a user config existed: at that moment
+the user file had a syntax error, and a source that fails to parse is skipped.
+
 ## Still open from this install
 
 - **Boot is visually Arch, not EclipseOS.** Kernel messages and the Arch

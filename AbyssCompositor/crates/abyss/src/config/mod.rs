@@ -2078,6 +2078,15 @@ impl Config {
 /// shadowed. There are deliberately no `policy.d/` drop-ins: the security
 /// surface is one file per directory, so "what is the policy here" has one
 /// answer a human can read.
+/// `$XDG_CONFIG_HOME` (or `$HOME/.config`), the tier a normal user can write.
+/// `None` when neither is set, which is the case for a daemon with no home.
+#[must_use]
+pub fn user_config_base() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+}
+
 fn search_path() -> Vec<Source> {
     let abyss = |p: PathBuf| Source {
         path: p,
@@ -2091,10 +2100,9 @@ fn search_path() -> Vec<Source> {
         abyss(PathBuf::from("/etc/eclipse/abyss.kdl")),
         policy(PathBuf::from("/etc/eclipse/policy.kdl")),
     ];
-    let cfg_home = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
-    let Some(base) = cfg_home else { return out };
+    let Some(base) = user_config_base() else {
+        return out;
+    };
     out.push(abyss(base.join("eclipse/abyss.kdl")));
     if let Ok(dir) = std::fs::read_dir(base.join("eclipse/abyss.d")) {
         let mut drop_ins: Vec<PathBuf> = dir
