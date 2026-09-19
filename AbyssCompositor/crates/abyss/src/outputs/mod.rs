@@ -551,6 +551,48 @@ pub fn scale_from(f: f64) -> Scale {
     }
 }
 
+/// The scale to use for a panel nobody has configured (COMP-03 §1).
+///
+/// A HiDPI laptop at scale 1 is a desktop nobody can read, and "edit a config
+/// file first" is not an answer for a machine that is meant to install without
+/// a terminal — the owner's Framework 13 (2880x1920 on a 13.5" panel, ~257
+/// DPI) came up at 1.0 and was unusable. So the default is derived from the
+/// panel instead of assumed.
+///
+/// The thresholds are integer steps at 192 and 384 DPI (2x and 4x of the
+/// traditional 96), which is the same shape GNOME and KDE use and lands the
+/// common cases where people expect: 1080p/24" and 4K/27" stay at 1, a modern
+/// laptop panel goes to 2. Fractional scales are deliberately not guessed —
+/// they cost a blit and a round of client rescaling, so they stay something a
+/// human asks for.
+///
+/// Returns `None` when the EDID gives no usable physical size (0x0 is common
+/// on projectors and virtual connectors) or when the numbers imply something
+/// absurd, in which case the caller keeps scale 1.
+pub fn auto_scale(physical_mm: (i32, i32), mode_px: (i32, i32)) -> Option<f64> {
+    let (mm_w, px_w) = (physical_mm.0, mode_px.0);
+    if mm_w <= 0 || px_w <= 0 {
+        return None;
+    }
+    // Under ~100mm wide is not a panel anyone is sitting in front of; it is a
+    // connector reporting nonsense, and dividing by it invents a huge DPI.
+    if mm_w < 100 {
+        return None;
+    }
+    let dpi = f64::from(px_w) * 25.4 / f64::from(mm_w);
+    let scale = match dpi {
+        d if d >= 384.0 => 3.0,
+        d if d >= 192.0 => 2.0,
+        _ => return None,
+    };
+    // A scaled desktop smaller than 1024 logical pixels wide is worse than a
+    // small one: panels stop fitting. Refuse rather than produce that.
+    if f64::from(px_w) / scale < 1024.0 {
+        return None;
+    }
+    Some(scale)
+}
+
 /// Bring an output into the compositor: apply config and the persisted layout,
 /// map it into the space, re-run the global arrangement (COMP-03 §3).
 pub fn register(
@@ -574,6 +616,24 @@ pub fn register(
     );
     tracing::info!(id, %identity, %connector, "output added");
     id
+}
+
+/// Re-apply every output's config rule to the outputs that already exist.
+///
+/// Called on config reload (COMP-13): `apply_settings` otherwise runs only
+/// when an output is added, so editing `output "eDP-1" { scale 2.0 }` and
+/// reloading changed nothing until the connector was replugged or the session
+/// restarted. Rules are declarative and `apply_settings` is idempotent, so
+/// running it again over the live set is the whole fix.
+///
+/// One asymmetry is deliberate: an output already disabled by an earlier
+/// config is not re-enabled here, because `apply_settings` treats "enabled"
+/// as the absence of a refusal rather than a state to drive.
+pub fn reapply_settings(state: &mut crate::state::AbyssState) {
+    let ids: Vec<u64> = state.outputs.iter().map(|e| e.id).collect();
+    for id in ids {
+        apply_settings(state, id);
+    }
 }
 
 /// Config first, then the remembered layout for this exact output set.
@@ -621,9 +681,20 @@ fn apply_settings(state: &mut crate::state::AbyssState, id: u64) {
                         .find(|m| m.size.w == w && m.size.h == h)
                 })
         });
+    // Config, then what this output was last set to, then the panel's own
+    // DPI. The derived value is last so it never argues with a human.
     let scale = rule
         .scale
         .or(saved.as_ref().and_then(|s| s.scale))
+        .or_else(|| {
+            let phys = output.physical_properties().size;
+            let px = mode_size(&output);
+            let auto = auto_scale((phys.w, phys.h), (px.w, px.h));
+            if let Some(s) = auto {
+                tracing::info!(id, scale = s, "scale derived from panel DPI");
+            }
+            auto
+        })
         .map(scale_from);
     let transform = rule
         .transform
@@ -839,6 +910,34 @@ mod tests {
     fn identity_falls_back_to_connector() {
         assert_eq!(identity(None, "DP-3"), "DP-3");
         assert_eq!(identity(Some(&[0u8; 4]), "DP-3"), "DP-3");
+    }
+
+    /// The cases the thresholds exist to get right, named by the hardware
+    /// they came from rather than by the numbers.
+    #[test]
+    fn auto_scale_matches_the_panels_it_was_written_for() {
+        // Framework 13, 2880x1920 on 13.5" (~257 DPI) — the panel that
+        // prompted this: unreadable at 1.0.
+        assert_eq!(auto_scale((285, 190), (2880, 1920)), Some(2.0));
+        // 1080p 24" (~92 DPI) and 4K 27" (~163 DPI) both stay at 1: neither is
+        // a 2x panel, and guessing a fractional scale is not this function's
+        // job.
+        assert_eq!(auto_scale((531, 299), (1920, 1080)), None);
+        assert_eq!(auto_scale((597, 336), (3840, 2160)), None);
+        // 5K 27" (~218 DPI) is over the line.
+        assert_eq!(auto_scale((597, 336), (5120, 2880)), Some(2.0));
+    }
+
+    #[test]
+    fn auto_scale_refuses_nonsense_edid() {
+        // Projectors and virtual connectors report 0x0.
+        assert_eq!(auto_scale((0, 0), (1920, 1080)), None);
+        assert_eq!(auto_scale((-1, -1), (1920, 1080)), None);
+        assert_eq!(auto_scale((285, 190), (0, 0)), None);
+        // A "panel" 5cm wide is a lie; without the guard this reports 975 DPI.
+        assert_eq!(auto_scale((50, 30), (1920, 1080)), None);
+        // High DPI but tiny: scaling it would leave under 1024 logical px.
+        assert_eq!(auto_scale((110, 70), (1280, 800)), None);
     }
 
     #[test]
