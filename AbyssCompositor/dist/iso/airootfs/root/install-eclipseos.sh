@@ -43,8 +43,22 @@ fi
 say "disks on this machine"
 lsblk -dpno NAME,SIZE,MODEL | grep -v loop
 
+# No disks at all is a firmware problem, not a typo. Laptops that ship with
+# the SATA/NVMe controller in RAID or Intel VMD mode hide the drive from Linux
+# entirely, and the error people hit downstream is a confusing "not a block
+# device" on a path they read off the machine's own sticker.
+if [[ -z "$(lsblk -dpno NAME | grep -v loop)" ]]; then
+  die "no disks visible. If this machine has an NVMe drive, its firmware is \
+probably set to RAID/Intel VMD -- switch the SATA/NVMe mode to AHCI/NVMe in \
+the BIOS and boot this medium again."
+fi
+
 read -rp $'\nfull path of the disk to install to (e.g. /dev/nvme0n1): ' DISK
-[[ -b $DISK ]] || die "$DISK is not a block device"
+DISK="${DISK//[[:space:]]/}"
+# "nvme0n1" is what the list reads like at a glance, and it is what people
+# type. Accept it rather than failing on a missing /dev/.
+[[ $DISK == /* ]] || DISK="/dev/$DISK"
+[[ -b $DISK ]] || die "$DISK is not a block device. Pick one of the paths listed above."
 
 read -rp "this ERASES everything on $DISK. type the disk path again to confirm: " CONFIRM
 [[ $CONFIRM == "$DISK" ]] || die "confirmation did not match; nothing was changed"
@@ -112,7 +126,28 @@ genfstab -U /mnt >>/mnt/etc/fstab
 # --- configure ---------------------------------------------------------------
 say "configuring the installed system"
 echo "$HOSTNAME" >/mnt/etc/hostname
-ln -sf /usr/share/zoneinfo/America/Chicago /mnt/etc/localtime
+# Asked, not assumed. A wrong timezone is silent -- it looks like the clock is
+# just wrong -- and it is the sort of thing nobody goes back to fix.
+read -rp $'timezone [America/New_York]: ' TZ
+TZ="${TZ//[[:space:]]/}"
+TZ="${TZ:-America/New_York}"
+[[ -f /usr/share/zoneinfo/$TZ ]] || die "$TZ is not a timezone. See: timedatectl list-timezones"
+ln -sf "/usr/share/zoneinfo/$TZ" /mnt/etc/localtime
+
+# The live medium's wifi lives in iwd; the installed system runs NetworkManager
+# and would boot with no saved networks at all. Carry them over.
+if [[ -d /var/lib/iwd ]] && compgen -G '/var/lib/iwd/*.psk' >/dev/null; then
+  install -dm0700 /mnt/var/lib/iwd
+  cp -a /var/lib/iwd/*.psk /mnt/var/lib/iwd/
+  # Those files are iwd's, and NetworkManager only reads them when iwd is its
+  # backend -- with the default wpa_supplicant backend they are dead weight and
+  # the laptop boots with no known networks.
+  install -Dm0644 /dev/stdin /mnt/etc/NetworkManager/conf.d/wifi-backend.conf <<'NMCONF'
+[device]
+wifi.backend=iwd
+NMCONF
+  say "carried $(compgen -G '/var/lib/iwd/*.psk' | wc -l) saved wifi network(s) over"
+fi
 sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /mnt/etc/locale.gen
 echo 'LANG=en_US.UTF-8' >/mnt/etc/locale.conf
 
@@ -138,7 +173,10 @@ fi
 locale-gen
 hwclock --systohc
 mkinitcpio -P
-bootctl install
+# GRUB, not systemd-boot. The same firmware that refused systemd-boot's stub
+# on the install medium would refuse it on the internal disk, and that failure
+# only shows up after a full pacstrap. See dist/iso/profiledef.sh.
+grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=EclipseOS --removable
 
 useradd -m -G wheel -s /bin/bash "$USERNAME"
 echo '%wheel ALL=(ALL:ALL) ALL' >/etc/sudoers.d/10-wheel
@@ -147,25 +185,21 @@ chmod 0440 /etc/sudoers.d/10-wheel
 # D-01 §5: no group management. A logind session on a seat is the whole
 # requirement; logind's ACL on the DRM node does the rest.
 
-systemctl enable greetd NetworkManager bluetooth systemd-timesyncd
+systemctl enable greetd NetworkManager iwd bluetooth systemd-timesyncd
 CHROOT
 
-# systemd-boot entry. amd_pstate=active is the Framework 13 AMD default worth
-# having from the first boot rather than discovering later (D-01 §2).
+# GRUB config. amd_pstate=active is the Framework 13 AMD default worth having
+# from the first boot rather than discovering later (D-01 §2).
 ROOT_UUID="$(blkid -s UUID -o value "$ROOT")"
-cat >/mnt/boot/loader/loader.conf <<'LOADER'
-default eclipseos.conf
-timeout 2
-console-mode max
-editor no
-LOADER
-cat >/mnt/boot/loader/entries/eclipseos.conf <<ENTRY
-title   EclipseOS
-linux   /vmlinuz-linux
-initrd  /amd-ucode.img
-initrd  /initramfs-linux.img
-options root=UUID=$ROOT_UUID rw amd_pstate=active
-ENTRY
+cat >/mnt/etc/default/grub <<GRUBCFG
+GRUB_DEFAULT=0
+GRUB_TIMEOUT=2
+GRUB_DISTRIBUTOR="EclipseOS"
+GRUB_CMDLINE_LINUX_DEFAULT="rw amd_pstate=active"
+GRUB_CMDLINE_LINUX="root=UUID=$ROOT_UUID"
+GRUB_DISABLE_RECOVERY=true
+GRUBCFG
+arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
 
 say "set a password for root"
 arch-chroot /mnt passwd

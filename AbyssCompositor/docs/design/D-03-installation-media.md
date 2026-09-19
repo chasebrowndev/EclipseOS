@@ -17,7 +17,7 @@ hidden.
 `dist/iso/` is a copy of upstream archiso's `releng` profile with a rebrand and
 two removals. Starting from `releng` rather than `baseline` is deliberate: the
 live networking (iwd + `systemd-networkd` + `systemd-resolved`), the `.zlogin`
-boot flow, the syslinux/systemd-boot menus and the mkinitcpio archiso hooks are
+boot flow, the syslinux/GRUB menus and the mkinitcpio archiso hooks are
 all things this project has no reason to reimplement and every reason to keep
 matching upstream.
 
@@ -58,7 +58,7 @@ Framework 13 AMD choices and why:
 
 | Package | Why, and what it replaces |
 |---|---|
-| `amd-ucode` | The only microcode image on the medium. Intel's is not shipped, and the systemd-boot entry hardcodes `initrd /amd-ucode.img` to match. |
+| `amd-ucode` | The only microcode image on the medium. Intel's is not shipped, and the GRUB entry hardcodes `initrd /amd-ucode.img` to match. |
 | `linux-firmware-amdgpu` | Split out of `linux-firmware` upstream; without it amdgpu does not come up on this generation. Named explicitly rather than relied on as a transitive pull. |
 | `vulkan-radeon` + `mesa` + `libva-mesa-driver` | The RADV path. `amdvlk` is not installed — two Vulkan ICDs on one system is a loader-ordering problem, not a choice worth offering. |
 | *(no DKMS anything)* | amdgpu is in-tree. There is no out-of-tree module, so there is no `dkms`, no headers package, and **no kernel-upgrade step that can fail after reboot**. This is the single biggest reason the target hardware is AMD; it is a property of the install, not a preference. |
@@ -123,10 +123,10 @@ run by hand from the live root shell. Flow:
 7. Append `Include = /etc/pacman.d/eclipseos.conf` to `/mnt/etc/pacman.conf`
    if absent (D-02 §5). The *drop-in* ships in `eclipseos-meta`; the `Include`
    line is added here so that no package edits a file it does not own.
-8. In `arch-chroot`: `mkinitcpio -P`, `bootctl install`,
+8. In `arch-chroot`: `mkinitcpio -P`, `grub-install --removable`,
    `useradd -m -G wheel`, a `%wheel` sudoers drop-in at 0440,
    `systemctl enable greetd NetworkManager bluetooth systemd-timesyncd`.
-9. A systemd-boot entry with `root=UUID=… rw amd_pstate=active`.
+9. A GRUB config with `root=UUID=… rw amd_pstate=active`.
    `amd_pstate=active` is on from first boot rather than discovered later.
 10. `passwd` for root and the new user, `umount -R /mnt`.
 

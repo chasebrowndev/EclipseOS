@@ -11,6 +11,11 @@ linux-firmware-amdgpu
 amd-ucode
 mkinitcpio
 base
+# GRUB rather than systemd-boot: a Framework 13 refused systemd-boot's stub
+# outright, and an unbootable internal disk is a worse place to find that out
+# than a USB stick. See dist/iso/profiledef.sh.
+grub
+efibootmgr
 
 ## filesystem and disk tools the installer needs
 e2fsprogs
@@ -81,3 +86,6 @@ ttf-jetbrains-mono-nerd
 
 ## EclipseOS itself (D-01 §1) — pulls abyss, desktop and policyd
 eclipseos-meta
+
+# NetworkManager runs on iwd here so the live medium's saved wifi carries over.
+iwd
