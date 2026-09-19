@@ -233,6 +233,15 @@ When = PostTransaction
 Exec = /usr/bin/install -Dm0644 /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/BOOTX64.EFI
 HOOK
 
+# The medium's database is unsigned -- it is rebuilt at bake time by a root
+# build that does not hold the packaging secret key -- but the drop-in the
+# installed system uses is `DatabaseRequired` against the signed tailnet copy.
+# Leaving the medium's db in the sync cache means every later pacman run
+# validates that stale unsigned file and fails with "missing required
+# signature", including the first `pacman -S` the owner ever types. Drop it so
+# the first `-Sy` fetches the signed one.
+rm -f /mnt/var/lib/pacman/sync/eclipseos.db*
+
 say "set a password for root"
 arch-chroot /mnt passwd
 say "set a password for $USERNAME"

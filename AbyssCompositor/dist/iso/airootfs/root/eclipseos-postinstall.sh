@@ -77,6 +77,15 @@ rm -f /root/eclipseos-packaging.asc
 systemctl enable greetd
 CHROOT
 
+# The medium's database is unsigned -- it is rebuilt at bake time by a root
+# build that does not hold the packaging secret key -- but the drop-in the
+# installed system uses is `DatabaseRequired` against the signed tailnet copy.
+# Leaving the medium's db in the sync cache means every later pacman run
+# validates that stale unsigned file and fails with "missing required
+# signature", including the first `pacman -S` the owner ever types. Drop it so
+# the first `-Sy` fetches the signed one.
+rm -f /mnt/var/lib/pacman/sync/eclipseos.db*
+
 say "done. reboot and pick Abyss at the greeter."
 say "if the greeter does not come up: Ctrl+Alt+F2, then"
 say "  journalctl -u greetd -b"
