@@ -96,12 +96,17 @@ package_eclipseos-meta() {
   install -Dm0644 "$srcdir/$_src/dist/pacman/eclipseos.conf" \
     "$pkgdir/etc/pacman.d/eclipseos.conf"
 
-  # Greeter. /etc/greetd is image-owned for the same reason as /etc/eclipse.
+  # Greeter. These live under /etc/eclipse, not /etc/greetd: config.toml and
+  # regreet.toml there are owned by the greetd and greetd-regreet packages and
+  # pacman refuses to co-own a file. The drop-in below points greetd at this
+  # copy, and config.toml passes regreet --config/--style for its siblings.
   # The wallpaper goes under /usr/share because the `greeter` user cannot read
   # any home directory.
-  install -Dm0644 "$srcdir/$_src/dist/greetd/config.toml"  "$pkgdir/etc/greetd/config.toml"
-  install -Dm0644 "$srcdir/$_src/dist/greetd/regreet.toml" "$pkgdir/etc/greetd/regreet.toml"
-  install -Dm0644 "$srcdir/$_src/dist/greetd/regreet.css"  "$pkgdir/etc/greetd/regreet.css"
+  install -Dm0644 "$srcdir/$_src/dist/greetd/config.toml"  "$pkgdir/etc/eclipse/greetd/config.toml"
+  install -Dm0644 "$srcdir/$_src/dist/greetd/regreet.toml" "$pkgdir/etc/eclipse/greetd/regreet.toml"
+  install -Dm0644 "$srcdir/$_src/dist/greetd/regreet.css"  "$pkgdir/etc/eclipse/greetd/regreet.css"
+  install -Dm0644 "$srcdir/$_src/dist/greetd/10-eclipseos.conf" \
+    "$pkgdir/usr/lib/systemd/system/greetd.service.d/10-eclipseos.conf"
   install -Dm0644 "$srcdir/$_src/dist/greetd/wallpaper.png" \
     "$pkgdir/usr/share/backgrounds/eclipseos/greeter.png"
 }

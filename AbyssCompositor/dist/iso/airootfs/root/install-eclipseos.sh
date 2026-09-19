@@ -19,6 +19,26 @@ say() { printf '\n==> %s\n' "$*"; }
 [[ $EUID -eq 0 ]] || die "run as root"
 [[ -d /sys/firmware/efi ]] || die "UEFI boot required; this medium was booted in BIOS mode"
 
+# The EclipseOS packages ride on this medium, but Arch's own do not. Check
+# before touching the disk rather than half an hour into a partitioned one.
+if ! curl -fsS --max-time 10 -o /dev/null https://geo.mirror.pkgbuild.com/lastupdate; then
+  cat >&2 <<'NET'
+
+!! no internet. The EclipseOS packages are on this medium, but the Arch base
+   system is not, so the install needs a connection.
+
+   wifi:      iwctl
+                station wlan0 scan
+                station wlan0 get-networks
+                station wlan0 connect <SSID>
+                exit
+   ethernet:  plug it in; systemd-networkd takes DHCP on its own
+
+   then run this script again.
+NET
+  exit 1
+fi
+
 # --- target disk -------------------------------------------------------------
 say "disks on this machine"
 lsblk -dpno NAME,SIZE,MODEL | grep -v loop
@@ -58,7 +78,35 @@ mount --mkdir "$ESP" /mnt/boot
 say "installing packages (this is the long part)"
 mapfile -t PKGS < <(grep -vE '^\s*(#|$)' /root/eclipseos-packages.txt)
 
-pacstrap -K /mnt "${PKGS[@]}"
+# The EclipseOS packages come off the medium itself, not the tailnet: this
+# laptop is not on the tailnet until NetworkManager exists, which is one of
+# the packages. Arch's own packages still come from the mirrors, so the
+# install needs the network -- it just does not need chase-pc.
+# The installed system gets the tailnet drop-in instead, further down.
+KEYID="$(gpg --show-keys --with-colons /root/eclipseos-packaging.asc 2>/dev/null |
+         awk -F: '/^fpr:/{print $10; exit}')"
+PACCONF=/root/eclipseos-install-pacman.conf
+cp /etc/pacman.conf "$PACCONF"
+if [[ -d /root/eclipseos-repo ]]; then
+  # The packages are signed by the EclipseOS packaging key. TrustAll is not
+  # enough on its own -- pacman cannot verify against a key it does not hold,
+  # so import it here and again into the installed system further down.
+  pacman-key --add /root/eclipseos-packaging.asc
+  pacman-key --lsign-key "$KEYID"
+  cat >>"$PACCONF" <<'REPO'
+
+# Baked into the install medium by dist/iso/build-iso.sh (D-03). The database
+# here is unsigned (rebuilt at bake time); the packages in it are signed.
+[eclipseos]
+SigLevel = PackageRequired DatabaseOptional
+Server = file:///root/eclipseos-repo
+REPO
+else
+  say "WARNING: /root/eclipseos-repo is missing -- this medium was built"
+  say "         without the EclipseOS packages. Falling back to the tailnet."
+fi
+
+pacstrap -K -C "$PACCONF" /mnt "${PKGS[@]}"
 genfstab -U /mnt >>/mnt/etc/fstab
 
 # --- configure ---------------------------------------------------------------
@@ -71,10 +119,22 @@ echo 'LANG=en_US.UTF-8' >/mnt/etc/locale.conf
 # The EclipseOS repo drop-in ships in eclipseos-meta; pacman.conf has to include
 # it (D-02). Adding the line here rather than in the package keeps the package
 # from editing a file it does not own.
+# The installed system's drop-in is `Required DatabaseRequired` over the
+# tailnet, so its own keyring needs the packaging key too or the first
+# `pacman -Syu` fails the same way the ISO build did.
+if [[ -f /root/eclipseos-packaging.asc ]]; then
+  install -Dm0644 /root/eclipseos-packaging.asc /mnt/root/eclipseos-packaging.asc
+fi
+
 grep -q 'eclipseos.conf' /mnt/etc/pacman.conf ||
   printf '\n# EclipseOS packages (D-02)\nInclude = /etc/pacman.d/eclipseos.conf\n' >>/mnt/etc/pacman.conf
 
 arch-chroot /mnt /bin/bash -euo pipefail <<CHROOT
+if [[ -f /root/eclipseos-packaging.asc ]]; then
+  pacman-key --add /root/eclipseos-packaging.asc
+  pacman-key --lsign-key "$KEYID"
+  rm -f /root/eclipseos-packaging.asc
+fi
 locale-gen
 hwclock --systohc
 mkinitcpio -P
