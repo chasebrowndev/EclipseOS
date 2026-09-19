@@ -95,14 +95,24 @@ impl OutputEntry {
     }
 
     /// The state worth remembering for next time.
+    ///
+    /// A scale that only matches what `auto_scale` would derive anyway is not
+    /// worth remembering, and remembering it does harm: the saved layout beats
+    /// the derived default, so a machine that ran abyss once would be pinned
+    /// to whatever the default was that day and could never pick up a better
+    /// one. Only a scale that departs from the derived value is a decision.
     fn saved(&self, position: Point<i32, Logical>) -> SavedOutput {
         let mode = self
             .output
             .current_mode()
             .map(|m| (m.size.w, m.size.h, m.refresh));
+        let scale = self.output.current_scale().fractional_scale();
+        let phys = self.output.physical_properties().size;
+        let px = mode_size(&self.output);
+        let derived = auto_scale((phys.w, phys.h), (px.w, px.h)).unwrap_or(1.0);
         SavedOutput {
             position: Some((position.x, position.y)),
-            scale: Some(self.output.current_scale().fractional_scale()),
+            scale: (scale != derived).then_some(scale),
             mode,
             transform: Some(transform_name(self.output.current_transform()).to_string()),
             enabled: Some(self.enabled),
