@@ -11,7 +11,10 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="${ECLIPSEOS_REPO_ROOT:-${SUDO_USER:+/home/$SUDO_USER}/.local/share/eclipseos/repo}"
+# Whose repo to bake. SUDO_USER is unset under systemd-run and in a root
+# shell, so fall back to the owner of this checkout rather than to root's home.
+_owner="${SUDO_USER:-$(stat -c %U "${BASH_SOURCE[0]}")}"
+REPO_ROOT="${ECLIPSEOS_REPO_ROOT:-$(getent passwd "$_owner" | cut -d: -f6)/.local/share/eclipseos/repo}"
 WORK="${ECLIPSEOS_ISO_WORK:-/var/tmp/eclipseos-work}"
 OUT="${ECLIPSEOS_ISO_OUT:-/var/tmp/eclipseos-out}"
 
@@ -50,6 +53,11 @@ fi
 
 # The medium carries the key so the installer can verify what it pacstraps.
 cp -a "$KEYFILE" "$here/airootfs/root/eclipseos-packaging.asc"
+
+# A `build-repo.sh local` rebuild keeps the same pkgver-pkgrel, so pacman's
+# cache holds a file with the right name and the wrong checksum. Drop the
+# EclipseOS packages from it; they are one repo build away at any time.
+rm -f /var/cache/pacman/pkg/eclipseos-*.pkg.tar.zst{,.sig}
 
 echo "==> mkarchiso"
 rm -rf "$WORK"

@@ -10,7 +10,12 @@
 # touches ~/.gnupg.
 set -euo pipefail
 
-TAG="${1:?usage: build-repo.sh <tag>}"
+# `build-repo.sh local` builds from this working tree's HEAD instead of a
+# pushed tag. Packaging bugs only surface under mkarchiso, and making every
+# one-line fix wait on a tag -- which means a PR, which means the full gate
+# and wlcs -- is minutes of CI per character. Iterate with `local`, then build
+# the real tag once when it works.
+TAG="${1:?usage: build-repo.sh <tag>|local}"
 REPO_NAME=eclipseos
 REPO_ROOT="${ECLIPSEOS_REPO_ROOT:-$HOME/.local/share/eclipseos/repo}"
 export GNUPGHOME="${ECLIPSEOS_GNUPGHOME:-$HOME/.local/share/eclipseos/gnupg}"
@@ -18,6 +23,7 @@ KEY_UID="EclipseOS Packaging <packaging@eclipseos.invalid>"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 build_dir="$here/../pkg/eclipseos"
+repo_top="$(git -C "$here" rev-parse --show-toplevel)"
 
 # --- packaging key -----------------------------------------------------------
 mkdir -p "$GNUPGHOME"
@@ -36,7 +42,8 @@ echo "==> signing key $KEY_ID"
   # cargo target/ dir; deleting it turns every run into a cold release build
   # (~30 min). makepkg re-fetches the tag into the existing checkout itself.
   rm -rf pkg
-  sed -i "s/^pkgver=.*/pkgver=${TAG#v}/" PKGBUILD
+  [[ "$TAG" == local ]] ||
+    sed -i "s/^pkgver=.*/pkgver=${TAG#v}/" PKGBUILD
 
   # makepkg will not re-checkout an srcdir that already exists, so a moved or
   # newer tag would silently build the previous one. Reset the existing
@@ -44,10 +51,18 @@ echo "==> signing key $KEY_ID"
   # target/ and makes a repeat build incremental instead of a cold ~30 min.
   extract=()
   if [[ -d src/EclipseOS/.git ]]; then
-    git -C src/EclipseOS fetch --tags --force ../../EclipseOS
-    git -C src/EclipseOS checkout -f --detach "refs/tags/$TAG"
+    if [[ "$TAG" == local ]]; then
+      git -C src/EclipseOS fetch --force "$repo_top" HEAD
+      git -C src/EclipseOS checkout -f --detach FETCH_HEAD
+    else
+      git -C src/EclipseOS fetch --tags --force ../../EclipseOS
+      git -C src/EclipseOS checkout -f --detach "refs/tags/$TAG"
+    fi
     git -C src/EclipseOS clean -fd -e target
     extract=(--noextract)
+  elif [[ "$TAG" == local ]]; then
+    echo "local mode needs an existing checkout; run once against a tag first" >&2
+    exit 1
   fi
   # check() is `cargo test --workspace --release`, which is most of the runtime
   # and is already a required CI check on every push. Opt back in with
