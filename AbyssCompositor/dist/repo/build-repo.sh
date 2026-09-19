@@ -55,7 +55,7 @@ echo "==> signing key $KEY_ID"
       git -C src/EclipseOS fetch --force "$repo_top" HEAD
       git -C src/EclipseOS checkout -f --detach FETCH_HEAD
     else
-      git -C src/EclipseOS fetch --tags --force ../../EclipseOS
+      git -C src/EclipseOS fetch --tags --force "$repo_top"
       git -C src/EclipseOS checkout -f --detach "refs/tags/$TAG"
     fi
     git -C src/EclipseOS clean -fd -e target
