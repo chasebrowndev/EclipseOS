@@ -87,6 +87,38 @@ defaults.
   hardcodes PulseAudio/PipeWire's CLI. A proper audio service belongs in the
   userland crates.
 
+## Install and boot
+
+- **A first-class GUI installer — no command line, ever.** The CLI
+  `install-eclipseos.sh` and the archinstall + `eclipseos-postinstall.sh`
+  route are both explicitly temporary. The shipped installer is a graphical
+  one, and a user must be able to go from boot medium to a working desktop
+  without ever seeing a terminal. That is the bar: not "a TUI with nice
+  colours", not "a GUI for the common case with a shell for the rest" — the
+  full path, disks and all.
+
+  What it has to cover before the CLI scripts can be deleted: disk selection
+  and partitioning, including dual-boot and reusing an existing ESP, which the
+  script refuses today (it wipes one whole disk); filesystem choice with btrfs
+  first-class, since D-04's snapshot story wants it; LUKS; swap or zram;
+  timezone, locale, `vconsole`, keymap; user and password creation; wifi,
+  carried from the live medium; and the bootloader install. It should be an
+  `iced` app in the DE's own visual language, run by the live medium's own
+  compositor rather than by a second stack — the medium already boots abyss,
+  so the installer is another pane, not another environment.
+
+  Forking archinstall was considered and rejected: it inherits upstream churn,
+  it is Python where the DE is Rust/iced, and GPL-3.0-only would permanently
+  pin that component. It stays as an escape hatch until the GUI lands.
+
+- **A boot splash of our own.** Between firmware and the greeter the machine
+  currently shows the stock Arch boot — kernel messages, Arch branding, no sign
+  it is EclipseOS. That is the last place another distribution's identity shows
+  through, and it should be an EclipseOS splash instead: quiet boot, our mark,
+  handed off cleanly to the greeter with no flicker or VT flash between them.
+  The greeter and the boot menu are already branded (D-03), so this is the
+  remaining gap in the same story.
+
 ---
 
 ## Known bugs that are really missing features

@@ -1588,6 +1588,7 @@ pub fn move_direction(state: &mut AbyssState, dir: Direction) {
             Direction::Down => r.loc.y += STEP,
         }
         arrange(state);
+        warp_pointer_to(state, &from);
         return;
     }
     let Some(target) = neighbour(state, &from, dir) else {
@@ -1597,7 +1598,31 @@ pub fn move_direction(state: &mut AbyssState, dir: Direction) {
     if entry.workspaces[ws].tiled.contains(&target) {
         entry.workspaces[ws].tiled.swap(&from, &target);
         arrange(state);
+        warp_pointer_to(state, &from);
     }
+}
+
+/// Put the pointer in the middle of `window`, unless the human turned that off
+/// (`general.cursor-follows-moved-window`).
+///
+/// A keybind that moves a window to another workspace or display otherwise
+/// leaves the cursor sitting on whatever is now under it, which both loses the
+/// pointer and hands focus-follows-mouse a stale answer the moment the mouse
+/// twitches. Warping goes through `pointer_moved`, the same path real motion
+/// takes, so enter/leave, constraints and cursor-shape all stay consistent.
+pub fn warp_pointer_to(state: &mut AbyssState, window: &Window) {
+    if !state.config.general.cursor_follows_moved_window {
+        return;
+    }
+    let Some(geo) = state.space.element_geometry(window) else {
+        return;
+    };
+    let centre = Point::<f64, Logical>::from((
+        geo.loc.x as f64 + geo.size.w as f64 / 2.0,
+        geo.loc.y as f64 + geo.size.h as f64 / 2.0,
+    ));
+    let time = state.start_time.elapsed().as_millis() as u32;
+    state.pointer_moved(centre, time);
 }
 
 /// 1-based workspace index.
@@ -1674,11 +1699,18 @@ pub fn move_to_workspace(state: &mut AbyssState, idx: usize) {
     entry.workspaces[active].remove(&window);
     state.space.unmap_elem(&window);
     let entry = state.outputs.get_mut(id).expect("just resolved");
-    entry.workspaces[target].tiled.insert(window, None, area);
+    entry.workspaces[target].tiled.insert(window.clone(), None, area);
     state.focus = None;
     arrange(state);
     refocus_topmost(state);
     tracing::info!(workspace = idx, "window moved to workspace");
+    // Following the window is the default: a move you cannot see is hard to
+    // tell from a move that did not happen.
+    if state.config.general.follow_window_to_workspace {
+        switch_workspace(state, idx);
+        focus::focus_window(state, &window);
+        warp_pointer_to(state, &window);
+    }
 }
 
 /// Move the focused window to display `number`'s currently active workspace
@@ -1716,12 +1748,20 @@ pub fn move_to_output_workspace(state: &mut AbyssState, number: u8) {
     let target_entry = state.outputs.get_mut(target_id).expect("just resolved");
     target_entry.workspaces[target_ws]
         .tiled
-        .insert(window, None, area);
+        .insert(window.clone(), None, area);
 
     state.focus = None;
     arrange(state);
     refocus_topmost(state);
     tracing::info!(number, workspace = target_ws + 1, "window moved to output");
+    // Same rule across displays: focus moves to the target output and the
+    // pointer goes with the window, so the next keystroke lands where the
+    // human is looking.
+    if state.config.general.follow_window_to_workspace {
+        state.outputs.set_focused(target_id);
+        focus::focus_window(state, &window);
+        warp_pointer_to(state, &window);
+    }
 }
 
 /// Resize one window to an absolute logical size (COMP-13 §2.1).

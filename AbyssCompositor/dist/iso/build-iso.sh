@@ -35,10 +35,6 @@ for p in "$REPO_ROOT"/x86_64/*.pkg.tar.zst; do
   [[ "$(basename "$p")" == *-debug-* ]] && continue
   cp -a "$p" "$p.sig" "$baked/" 2>/dev/null || cp -a "$p" "$baked/"
 done
-# The database has to match what was actually copied, so rebuild it here
-# rather than copying the one that indexes the debug package too.
-repo-add -q "$baked/eclipseos.db.tar.zst" "$baked"/*.pkg.tar.zst
-
 # TrustAll only relaxes the web-of-trust requirement; a key pacman has never
 # seen still fails verification outright. The build host has to actually hold
 # the packaging key to read a repo-add --sign database.
@@ -50,6 +46,28 @@ if ! pacman-key --list-keys "$KEYID" >/dev/null 2>&1; then
   pacman-key --add "$KEYFILE"
   pacman-key --lsign-key "$KEYID"
 fi
+
+# The database has to match what was actually copied, so rebuild it here
+# rather than copying the one that indexes the debug package too.
+#
+# It has to be *signed*, not just rebuilt. The drop-in the installed system
+# ships is `DatabaseRequired`, and pacstrap leaves this database behind in
+# /var/lib/pacman/sync -- so an unsigned one here means the first `pacman -S`
+# the owner ever types on the new machine dies with "missing required
+# signature". Deleting it instead is not the fix: pacman fails a transaction
+# outright when a configured repo has no database at all, which strands a
+# laptop that is not yet on the tailnet.
+#
+# This runs as root, and the packaging key is passphraseless in the owner's
+# keyring, so point GPG at it for this one command rather than expecting root
+# to have its own.
+_gnupg="$(getent passwd "$_owner" | cut -d: -f6)/.local/share/eclipseos/gnupg"
+[[ -d "$_gnupg" ]] || {
+  echo "no packaging keyring at $_gnupg -- run dist/repo/build-repo.sh first" >&2
+  exit 1
+}
+GNUPGHOME="$_gnupg" repo-add -q --sign --key "$KEYID" \
+  "$baked/eclipseos.db.tar.zst" "$baked"/*.pkg.tar.zst
 
 # The medium carries the key so the installer can verify what it pacstraps.
 cp -a "$KEYFILE" "$here/airootfs/root/eclipseos-packaging.asc"

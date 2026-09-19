@@ -58,6 +58,12 @@ pub struct General {
     pub unfocus_on_empty_workspace: bool,
     pub focus_follows_mouse_layers: bool,
     pub refocus_on_scene_change: bool,
+    /// Warp the pointer onto a window a keybind just moved, so the cursor is
+    /// never left behind on the workspace or display the window came from.
+    pub cursor_follows_moved_window: bool,
+    /// Follow a window sent to another workspace or display, rather than
+    /// staying put and watching it leave.
+    pub follow_window_to_workspace: bool,
     pub col_active: [f32; 4],
     pub col_inactive: [f32; 4],
 }
@@ -75,6 +81,8 @@ impl Default for General {
             unfocus_on_empty_workspace: true,
             focus_follows_mouse_layers: true,
             refocus_on_scene_change: true,
+            cursor_follows_moved_window: true,
+            follow_window_to_workspace: true,
             // eclipse amber on near-black
             col_active: [0.91, 0.64, 0.24, 1.0],
             col_inactive: [0.09, 0.09, 0.09, 1.0],
@@ -579,6 +587,7 @@ pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
         .clipboard_allow
         .set(state.config.clipboard.data_control_allow.clone());
     crate::input::apply_config(state);
+    crate::outputs::reapply_settings(state);
     crate::outputs::relayout(state);
     crate::shell::arrange(state);
     crate::backend::damage_all(state);
@@ -825,21 +834,26 @@ pub fn default_binds() -> Vec<Bind> {
             key: Keysym::space,
             action: Action::AgentAttention,
         },
-        // Applications.
+        // Applications. Every shipped bind names a binary EclipseOS installs:
+        // a default pointing at something that is not there spawns, dies
+        // silently, and reads to the user as a dead keybind (this is exactly
+        // what kitty, dolphin and firefox did on the first real install).
+        // Terminal is Super+Q and Super+Return both, the two chords people
+        // reach for; anything else belongs in the user's own config.
         Bind {
             mods: sup,
             key: Keysym::q,
-            action: Action::Spawn("kitty".into()),
+            action: Action::Spawn("foot".into()),
+        },
+        Bind {
+            mods: sup,
+            key: Keysym::Return,
+            action: Action::Spawn("foot".into()),
         },
         Bind {
             mods: sup,
             key: Keysym::e,
-            action: Action::Spawn("dolphin".into()),
-        },
-        Bind {
-            mods: sup,
-            key: Keysym::f,
-            action: Action::Spawn("firefox".into()),
+            action: Action::Spawn("eclipse-launcher".into()),
         },
         // The desktop's own surfaces. Hyprland reaches these through
         // `qs -c eclipse ipc call ui toggle ...`; ours are separate binaries,
@@ -1359,6 +1373,16 @@ impl Config {
                 "focus-follows-mouse-across-outputs" => {
                     if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
                         self.general.focus_follows_mouse_across_outputs = b;
+                    }
+                }
+                "cursor-follows-moved-window" => {
+                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
+                        self.general.cursor_follows_moved_window = b;
+                    }
+                }
+                "follow-window-to-workspace" => {
+                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
+                        self.general.follow_window_to_workspace = b;
                     }
                 }
                 "unfocus-on-empty-workspace" => {
@@ -2072,6 +2096,15 @@ impl Config {
 /// shadowed. There are deliberately no `policy.d/` drop-ins: the security
 /// surface is one file per directory, so "what is the policy here" has one
 /// answer a human can read.
+/// `$XDG_CONFIG_HOME` (or `$HOME/.config`), the tier a normal user can write.
+/// `None` when neither is set, which is the case for a daemon with no home.
+#[must_use]
+pub fn user_config_base() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+}
+
 fn search_path() -> Vec<Source> {
     let abyss = |p: PathBuf| Source {
         path: p,
@@ -2085,10 +2118,9 @@ fn search_path() -> Vec<Source> {
         abyss(PathBuf::from("/etc/eclipse/abyss.kdl")),
         policy(PathBuf::from("/etc/eclipse/policy.kdl")),
     ];
-    let cfg_home = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
-    let Some(base) = cfg_home else { return out };
+    let Some(base) = user_config_base() else {
+        return out;
+    };
     out.push(abyss(base.join("eclipse/abyss.kdl")));
     if let Ok(dir) = std::fs::read_dir(base.join("eclipse/abyss.d")) {
         let mut drop_ins: Vec<PathBuf> = dir
@@ -2181,7 +2213,7 @@ fn parse_keysym(s: &str) -> Result<Keysym, String> {
     }
 }
 
-/// `bind "SUPER" "Return" { spawn "kitty"; }`
+/// `bind "SUPER" "Return" { spawn "foot"; }`
 fn parse_bind(node: &KdlNode) -> Result<Bind, String> {
     let a = args(node);
     let (mods, key) = match a.len() {
@@ -2804,6 +2836,27 @@ mod tests {
         assert_eq!(binds.len(), 1);
         assert!(matches!(binds[0].action, Action::Spawn(ref c) if c == "foot"));
         assert!(binds[0].mods.shift && binds[0].mods.logo);
+    }
+
+    /// Both follow behaviours are on out of the box and both can be turned
+    /// off: a move you cannot see reads as a move that did not happen, but
+    /// someone who wants the cursor to stay put must be able to say so.
+    #[test]
+    fn the_follow_behaviours_default_on_and_parse_off() {
+        let d = General::default();
+        assert!(d.cursor_follows_moved_window);
+        assert!(d.follow_window_to_workspace);
+
+        let doc: KdlDocument = r#"
+            general { cursor-follows-moved-window #false; follow-window-to-workspace #false }
+        "#
+        .parse()
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert!(!cfg.general.cursor_follows_moved_window);
+        assert!(!cfg.general.follow_window_to_workspace);
     }
 
     #[test]

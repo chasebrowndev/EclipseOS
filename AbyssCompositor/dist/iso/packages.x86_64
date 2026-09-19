@@ -99,6 +99,9 @@ terminus-font
 greetd
 greetd-regreet
 cage
+# abyss spawns the X server at startup (COMP-07); listed explicitly so it is
+# also on the medium for an offline install, not only pulled as a dependency.
+xorg-xwayland
 foot
 xdg-user-dirs
 xdg-utils
