@@ -189,6 +189,25 @@ earlier, separately confusing observation that `eclipse-ctl reload` listed only
 the two `/etc` files in `sources` while a user config existed: at that moment
 the user file had a syntax error, and a source that fails to parse is skipped.
 
+## HW-07 — no wifi after boot; NetworkManager never autoconnects — FIXED
+
+The laptop came up with wlan0 `disconnected` and stayed there until someone
+connected by hand. NetworkManager is configured with `wifi.backend=iwd` (the
+live medium's saved networks are iwd's, so the installed system reads them
+with the same backend), but nothing orders NM behind iwd: both start at once,
+NM loses the race, logs
+
+    iwd-manager: IWD device named wlan0 is not a Wifi device
+
+parks the device as unmanaged, and once it settles back to `disconnected` it
+never retries autoconnect. On the archinstall route `iwd.service` was also left
+disabled outright -- it was only alive because NM D-Bus-activated it, which is
+exactly the timing that loses the race.
+
+Fixed in both install routes: write a `NetworkManager.service.d/10-iwd-first.conf`
+drop-in (`Wants=`/`After=iwd.service`) whenever the iwd backend is configured,
+and enable `iwd.service` rather than relying on D-Bus activation.
+
 ## Still open from this install
 
 - **Boot is visually Arch, not EclipseOS.** Kernel messages and the Arch

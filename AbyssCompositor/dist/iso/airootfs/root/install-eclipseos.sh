@@ -146,6 +146,15 @@ if [[ -d /var/lib/iwd ]] && compgen -G '/var/lib/iwd/*.psk' >/dev/null; then
 [device]
 wifi.backend=iwd
 NMCONF
+  # NetworkManager and iwd both start on their own, and when NM wins the race it
+  # logs "IWD device named wlan0 is not a Wifi device", parks the device and
+  # never autoconnects -- the laptop boots with no network until someone picks
+  # the network by hand. Order NM after iwd and pull iwd in with it.
+  install -Dm0644 /dev/stdin "/mnt/etc/systemd/system/NetworkManager.service.d/10-iwd-first.conf" <<'NMORDER'
+[Unit]
+Wants=iwd.service
+After=iwd.service
+NMORDER
   say "carried $(compgen -G '/var/lib/iwd/*.psk' | wc -l) saved wifi network(s) over"
 fi
 sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /mnt/etc/locale.gen

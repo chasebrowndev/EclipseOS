@@ -77,6 +77,22 @@ rm -f /root/eclipseos-packaging.asc
 systemctl enable greetd
 CHROOT
 
+# --- wifi ---------------------------------------------------------------------
+# archinstall can leave NetworkManager configured with the iwd backend while
+# iwd.service itself is disabled, and NM starting before iwd owns the device
+# means the machine boots with no wifi until someone connects by hand. If the
+# iwd backend is configured, make sure iwd is enabled and NM is ordered behind
+# it.
+if grep -rqs 'wifi.backend *= *iwd' /mnt/etc/NetworkManager/conf.d/; then
+  say "ordering NetworkManager behind iwd"
+  install -Dm0644 /dev/stdin /mnt/etc/systemd/system/NetworkManager.service.d/10-iwd-first.conf <<'NMORDER'
+[Unit]
+Wants=iwd.service
+After=iwd.service
+NMORDER
+  arch-chroot /mnt systemctl enable iwd
+fi
+
 # --- boot menu branding -------------------------------------------------------
 # archinstall writes its own limine.conf and names every entry "Arch Linux".
 # The machine is EclipseOS by the time this script is done, so the boot menu
