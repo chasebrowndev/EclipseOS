@@ -12,7 +12,7 @@
 
 pkgbase=eclipseos
 pkgname=(eclipseos-abyss eclipseos-desktop eclipseos-policyd eclipseos-meta)
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
 arch=(x86_64)
@@ -43,7 +43,10 @@ _unit() { install -Dm0644 "$srcdir/$_src/dist/$1" "$pkgdir/usr/lib/systemd/user/
 
 package_eclipseos-abyss() {
   pkgdesc="EclipseOS compositor (abyss) and its control client"
-  depends=(wayland libxkbcommon libinput libdrm libdisplay-info mesa)
+  # xorg-xwayland is a hard dependency, not optional: abyss spawns the X server
+  # at startup for the COMP-07 X11 trust domain. Without it the session dies
+  # before it lights an output.
+  depends=(wayland libxkbcommon libinput libdrm libdisplay-info mesa xorg-xwayland)
   optdepends=('seatd: fallback seat management when logind is unavailable (D-01 §5.3)')
   provides=(abyss)
 
