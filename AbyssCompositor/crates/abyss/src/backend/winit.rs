@@ -292,7 +292,8 @@ fn redraw(
             .map(|e| (e.overscan, e.calibrating.is_some()))
             .unwrap_or_default();
         let mode_size = crate::outputs::mode_size(out);
-        let mut elements = crate::render::overscan::frame(elements, overscan, mode_size);
+        let scale = smithay::utils::Scale::from(out.current_scale().fractional_scale());
+        let mut elements = crate::render::overscan::frame(elements, overscan, mode_size, scale);
         if calibrating {
             crate::render::overscan::calibration_markers(overscan, mode_size, &mut elements);
         }

@@ -13,6 +13,7 @@ pub mod curve;
 pub mod effects;
 pub mod font;
 pub mod overscan;
+pub mod sanitize;
 pub mod select;
 pub mod stats;
 pub mod text;

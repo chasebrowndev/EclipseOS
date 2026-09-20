@@ -84,6 +84,9 @@ pub struct DrmOutput {
     pub compositor: AbyssDrmCompositor,
     /// Set while a re-render timer is armed, so we never stack timers.
     retry_armed: bool,
+    /// Frames in a row that could not be rendered or queued. Sets the retry
+    /// delay ([`retry_delay`]) and returns to zero once a frame is queued.
+    commit_failures: u32,
     /// A frame is queued and we are waiting for its VBlank.
     frame_pending: bool,
     /// Content changed since the last composite; render at the next chance.
@@ -450,6 +453,7 @@ fn add_connector(
             output,
             compositor,
             retry_armed: false,
+            commit_failures: 0,
             frame_pending: false,
             needs_render: true,
             feedback,
@@ -777,6 +781,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
                             tracing::error!(?err, "resetting compositor state");
                         }
                         o.retry_armed = false;
+                        o.commit_failures = 0;
                         o.frame_pending = false;
                         o.needs_render = true;
                     }
@@ -954,6 +959,18 @@ pub fn render(state: &mut AbyssState) {
     service_captures(state);
 }
 
+/// How long to wait before re-rendering after `failures` frames in a row that
+/// could not be rendered or queued: 16 ms (about one frame at 60 Hz), doubling
+/// with each further failure, capped at a second. A transient failure is
+/// retried at once; one the kernel refuses every time settles at a wakeup a
+/// second instead of sixty.
+fn retry_delay(failures: u32) -> Duration {
+    const BASE_MS: u64 = 16;
+    const CAP_MS: u64 = 1000;
+    let doublings = failures.saturating_sub(1).min(6);
+    Duration::from_millis((BASE_MS << doublings).min(CAP_MS))
+}
+
 /// Composite and page-flip one output. A no-op when the session is inactive.
 fn render_output(state: &mut AbyssState, index: usize) {
     let capture_active = state.capture_active();
@@ -1043,7 +1060,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
         .get(out_id)
         .map(|e| e.calibrating.is_some())
         .unwrap_or(false);
-    let mut elements = crate::render::overscan::frame(elements, overscan, mode_size);
+    let mut elements = crate::render::overscan::frame(elements, overscan, mode_size, scale);
     if calibrating {
         crate::render::overscan::calibration_markers(overscan, mode_size, &mut elements);
     }
@@ -1114,7 +1131,8 @@ fn render_output(state: &mut AbyssState, index: usize) {
         match drm.outputs[index].compositor.queue_frame(Some(presentation)) {
             Ok(()) => queued = true,
             Err(err) => {
-                tracing::warn!(?err, "queueing frame");
+                let failures = drm.outputs[index].commit_failures.saturating_add(1);
+                tracing::warn!(?err, failures, "queueing frame");
                 failed = true;
             }
         }
@@ -1140,29 +1158,33 @@ fn render_output(state: &mut AbyssState, index: usize) {
     // clears itself the frame the last move finishes (COMP-02 §9).
     entry.needs_render = animating;
     entry.frame_pending = queued;
+    if queued {
+        entry.commit_failures = 0;
+    } else if failed {
+        entry.commit_failures = entry.commit_failures.saturating_add(1);
+    }
     let arm = !queued && !entry.retry_armed && failed;
     if arm {
-        // The frame had damage but could not be queued: retry shortly. Never
-        // re-arm for an empty frame — an idle render_frame spin pushes empty
-        // entries into the damage tracker's history while the swapchain slot
-        // ages stand still, which desynchronises the two and leaves stale
-        // content on screen.
+        // The frame had damage but could not be queued: retry shortly, backing
+        // off while it keeps failing so a commit the kernel refuses every time
+        // costs a wakeup a second instead of sixty. Never re-arm for an empty
+        // frame — an idle render_frame spin pushes empty entries into the
+        // damage tracker's history while the swapchain slot ages stand still,
+        // which desynchronises the two and leaves stale content on screen.
         entry.retry_armed = true;
+        let delay = retry_delay(entry.commit_failures);
         let handle = drm.loop_handle.clone();
-        if let Err(err) = handle.insert_source(
-            Timer::from_duration(Duration::from_millis(16)),
-            move |_, _, state| {
-                let i = state.drm.as_mut().and_then(|drm| {
-                    let i = drm.index_of_crtc(crtc)?;
-                    drm.outputs[i].retry_armed = false;
-                    Some(i)
-                });
-                if let Some(i) = i {
-                    render_output(state, i);
-                }
-                TimeoutAction::Drop
-            },
-        ) {
+        if let Err(err) = handle.insert_source(Timer::from_duration(delay), move |_, _, state| {
+            let i = state.drm.as_mut().and_then(|drm| {
+                let i = drm.index_of_crtc(crtc)?;
+                drm.outputs[i].retry_armed = false;
+                Some(i)
+            });
+            if let Some(i) = i {
+                render_output(state, i);
+            }
+            TimeoutAction::Drop
+        }) {
             tracing::warn!(?err, "arming re-render timer");
             if let Some(drm) = state.drm.as_mut() {
                 if let Some(i) = drm.index_of_crtc(crtc) {
@@ -1308,5 +1330,33 @@ pub fn set_power(state: &mut AbyssState, id: u64, on: bool) {
         tracing::warn!(?err, id, "powering output off");
     } else {
         drm.outputs[index].frame_pending = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_first_retry_is_one_frame_away() {
+        assert_eq!(retry_delay(1), Duration::from_millis(16));
+    }
+
+    #[test]
+    fn retries_back_off_by_doubling() {
+        let ms: Vec<u128> = (1..=6).map(|n| retry_delay(n).as_millis()).collect();
+        assert_eq!(ms, [16, 32, 64, 128, 256, 512]);
+    }
+
+    #[test]
+    fn a_refused_commit_settles_at_one_wakeup_a_second() {
+        assert_eq!(retry_delay(7), Duration::from_millis(1000));
+        assert_eq!(retry_delay(1_000), Duration::from_millis(1000));
+        assert_eq!(retry_delay(u32::MAX), Duration::from_millis(1000));
+    }
+
+    #[test]
+    fn zero_failures_is_treated_like_the_first() {
+        assert_eq!(retry_delay(0), retry_delay(1));
     }
 }
