@@ -56,8 +56,26 @@ for f in "$here"/applications/*.desktop; do
     install -m 0644 -o "$user" -g "$user" "$f" "$apps/"
 done
 
-runuser -u "$user" -- systemctl --user daemon-reload
-runuser -u "$user" -- systemctl --user enable eclipse-bar.service eclipse-toasts.service eclipse-screensaver.service
+# 5. Reload and enable the user units. sudo drops XDG_RUNTIME_DIR and the bus
+#    address, so a bare `runuser -u ... systemctl --user` has no bus to reach
+#    and, under `set -e`, ended the installer after every file was in place. Hand
+#    it the user's own runtime directory. A user with no running systemd
+#    instance (installing from a bare TTY) is not a failure: the units are
+#    already written and are read when their manager next starts.
+uid=$(id -u "$user")
+rt="/run/user/$uid"
+units="eclipse-bar.service eclipse-toasts.service eclipse-screensaver.service"
+if [ -S "$rt/bus" ]; then
+    as_user() {
+        runuser -u "$user" -- env XDG_RUNTIME_DIR="$rt" DBUS_SESSION_BUS_ADDRESS="unix:path=$rt/bus" "$@"
+    }
+    as_user systemctl --user daemon-reload
+    # shellcheck disable=SC2086 # $units is a list of unit names on purpose
+    as_user systemctl --user enable $units
+else
+    echo "No systemd user session for $user right now: the units are installed but not enabled." >&2
+    echo "Once logged in, as $user: systemctl --user daemon-reload && systemctl --user enable $units" >&2
+fi
 
 echo "Abyss installed. Log out and pick 'Abyss' in the greeter session menu."
 echo "Binaries symlink to $bin — rebuild there and the next login picks it up."
