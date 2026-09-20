@@ -84,8 +84,8 @@ pub struct DrmOutput {
     pub compositor: AbyssDrmCompositor,
     /// Set while a re-render timer is armed, so we never stack timers.
     retry_armed: bool,
-    /// Frames in a row that could not be rendered or queued. Sets the retry
-    /// delay ([`retry_delay`]) and returns to zero once a frame is queued.
+    /// Frames in a row that could not be rendered or queued. Only throttles the
+    /// log ([`log_failure_now`]); it returns to zero once a frame is queued.
     commit_failures: u32,
     /// A frame is queued and we are waiting for its VBlank.
     frame_pending: bool,
@@ -959,16 +959,21 @@ pub fn render(state: &mut AbyssState) {
     service_captures(state);
 }
 
-/// How long to wait before re-rendering after `failures` frames in a row that
-/// could not be rendered or queued: 16 ms (about one frame at 60 Hz), doubling
-/// with each further failure, capped at a second. A transient failure is
-/// retried at once; one the kernel refuses every time settles at a wakeup a
-/// second instead of sixty.
-fn retry_delay(failures: u32) -> Duration {
-    const BASE_MS: u64 = 16;
-    const CAP_MS: u64 = 1000;
-    let doublings = failures.saturating_sub(1).min(6);
-    Duration::from_millis((BASE_MS << doublings).min(CAP_MS))
+/// How long to wait before re-rendering a frame that could not be queued: about
+/// one frame at 60 Hz.
+///
+/// Deliberately not backed off. A refused commit usually clears on its own —
+/// the next frame carries different damage and goes through — so the retry is
+/// what gets the screen updating again, and stretching it stretches the stall
+/// (it was tried, with a one second cap, and made the lag worse). What a run of
+/// failures must not do is flood the log; see [`log_failure_now`].
+const RETRY_DELAY: Duration = Duration::from_millis(16);
+
+/// Whether the `failures`-th consecutive failed frame should be logged: the
+/// first, then each time the run length reaches a power of two (1, 2, 4, 8 …).
+/// A commit the kernel keeps refusing would otherwise log every retry.
+fn log_failure_now(failures: u32) -> bool {
+    failures.is_power_of_two()
 }
 
 /// Composite and page-flip one output. A no-op when the session is inactive.
@@ -1132,7 +1137,9 @@ fn render_output(state: &mut AbyssState, index: usize) {
             Ok(()) => queued = true,
             Err(err) => {
                 let failures = drm.outputs[index].commit_failures.saturating_add(1);
-                tracing::warn!(?err, failures, "queueing frame");
+                if log_failure_now(failures) {
+                    tracing::warn!(?err, failures, "queueing frame");
+                }
                 failed = true;
             }
         }
@@ -1165,16 +1172,14 @@ fn render_output(state: &mut AbyssState, index: usize) {
     }
     let arm = !queued && !entry.retry_armed && failed;
     if arm {
-        // The frame had damage but could not be queued: retry shortly, backing
-        // off while it keeps failing so a commit the kernel refuses every time
-        // costs a wakeup a second instead of sixty. Never re-arm for an empty
-        // frame — an idle render_frame spin pushes empty entries into the
-        // damage tracker's history while the swapchain slot ages stand still,
-        // which desynchronises the two and leaves stale content on screen.
+        // The frame had damage but could not be queued: retry within a frame
+        // ([`RETRY_DELAY`], not backed off). Never re-arm for an empty frame —
+        // an idle render_frame spin pushes empty entries into the damage
+        // tracker's history while the swapchain slot ages stand still, which
+        // desynchronises the two and leaves stale content on screen.
         entry.retry_armed = true;
-        let delay = retry_delay(entry.commit_failures);
         let handle = drm.loop_handle.clone();
-        if let Err(err) = handle.insert_source(Timer::from_duration(delay), move |_, _, state| {
+        if let Err(err) = handle.insert_source(Timer::from_duration(RETRY_DELAY), move |_, _, state| {
             let i = state.drm.as_mut().and_then(|drm| {
                 let i = drm.index_of_crtc(crtc)?;
                 drm.outputs[i].retry_armed = false;
@@ -1338,25 +1343,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_first_retry_is_one_frame_away() {
-        assert_eq!(retry_delay(1), Duration::from_millis(16));
+    fn a_failed_frame_is_retried_within_one_frame() {
+        // A refused commit clears on its own; the retry must not be the slow part.
+        assert!(RETRY_DELAY <= Duration::from_millis(17));
     }
 
     #[test]
-    fn retries_back_off_by_doubling() {
-        let ms: Vec<u128> = (1..=6).map(|n| retry_delay(n).as_millis()).collect();
-        assert_eq!(ms, [16, 32, 64, 128, 256, 512]);
+    fn a_run_of_failures_is_logged_at_powers_of_two() {
+        let logged: Vec<u32> = (1..=20).filter(|n| log_failure_now(*n)).collect();
+        assert_eq!(logged, [1, 2, 4, 8, 16]);
     }
 
     #[test]
-    fn a_refused_commit_settles_at_one_wakeup_a_second() {
-        assert_eq!(retry_delay(7), Duration::from_millis(1000));
-        assert_eq!(retry_delay(1_000), Duration::from_millis(1000));
-        assert_eq!(retry_delay(u32::MAX), Duration::from_millis(1000));
-    }
-
-    #[test]
-    fn zero_failures_is_treated_like_the_first() {
-        assert_eq!(retry_delay(0), retry_delay(1));
+    fn a_counter_that_never_reset_still_logs_rarely() {
+        assert!(log_failure_now(1 << 20));
+        assert!(!log_failure_now((1 << 20) + 1));
+        assert!(!log_failure_now(0));
     }
 }
