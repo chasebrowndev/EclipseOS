@@ -983,6 +983,42 @@ fn needs_full_redraw(empty: bool, failed: bool) -> bool {
     empty || failed
 }
 
+/// Consecutive refused frames after which an output stops using KMS planes for
+/// its next frame.
+const PLANE_FALLBACK_AFTER: u32 = 3;
+
+/// The [`FrameFlags`] for a frame, given how many frames in a row were refused.
+/// A commit that keeps failing despite the full redraw is being poisoned by a
+/// plane-assigned element the compositor cannot see inside, so composite
+/// everything onto the primary plane instead: its damage is the output's own,
+/// built from rectangles the damage tracker has already clamped.
+fn frame_flags_for(failures: u32, base: FrameFlags) -> FrameFlags {
+    if failures >= PLANE_FALLBACK_AFTER {
+        FrameFlags::empty()
+    } else {
+        base
+    }
+}
+
+/// One line per element: id, geometry, source and how many damage rectangles it
+/// reports. Only built for a frame that follows a refusal.
+fn describe_elements(elements: &[crate::render::overscan::OutputElement], scale: Scale<f64>) -> String {
+    use smithay::backend::renderer::element::Element;
+    elements
+        .iter()
+        .map(|e| {
+            format!(
+                "{:?} geo={:?} src={:?} damage={}",
+                e.id(),
+                e.geometry(scale),
+                e.src(),
+                e.damage_since(scale, None).len(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// Composite and page-flip one output. A no-op when the session is inactive.
 fn render_output(state: &mut AbyssState, index: usize) {
     let capture_active = state.capture_active();
@@ -1095,11 +1131,19 @@ fn render_output(state: &mut AbyssState, index: usize) {
         .unwrap_or(false);
     // An inset output composites every frame by definition — a scanned-out
     // client buffer would land at the panel's edge, outside the inset rect.
-    let flags = if state.config.render.direct_scanout && !redact && overscan.is_zero() {
+    let base_flags = if state.config.render.direct_scanout && !redact && overscan.is_zero() {
         FrameFlags::DEFAULT
     } else {
         FrameFlags::empty()
     };
+    let prior_failures = drm.outputs[index].commit_failures;
+    let flags = frame_flags_for(prior_failures, base_flags);
+    // A retry after a refusal is the moment worth describing: the elements are
+    // still in hand, and one line names whichever fed the kernel a bad rectangle.
+    let diagnostic = log_failure_now(prior_failures.saturating_add(1))
+        .then_some(prior_failures)
+        .filter(|failures| *failures > 0)
+        .map(|_| describe_elements(&elements, scale));
 
     let compositor = &mut drm.outputs[index].compositor;
     // COMP-03 §8: adaptive sync only while a surface covers the whole output;
@@ -1145,7 +1189,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
             Err(err) => {
                 let failures = drm.outputs[index].commit_failures.saturating_add(1);
                 if log_failure_now(failures) {
-                    tracing::warn!(?err, failures, "queueing frame");
+                    tracing::warn!(?err, failures, elements = diagnostic.as_deref(), "queueing frame");
                 }
                 failed = true;
             }
@@ -1381,6 +1425,23 @@ mod tests {
         assert!(needs_full_redraw(false, true));
         assert!(needs_full_redraw(true, false));
         assert!(!needs_full_redraw(false, false));
+    }
+
+    #[test]
+    fn repeated_refusals_drop_plane_assignment_and_a_success_restores_it() {
+        assert_eq!(frame_flags_for(0, FrameFlags::DEFAULT), FrameFlags::DEFAULT);
+        assert_eq!(
+            frame_flags_for(PLANE_FALLBACK_AFTER - 1, FrameFlags::DEFAULT),
+            FrameFlags::DEFAULT
+        );
+        assert_eq!(
+            frame_flags_for(PLANE_FALLBACK_AFTER, FrameFlags::DEFAULT),
+            FrameFlags::empty()
+        );
+        assert_eq!(
+            frame_flags_for(PLANE_FALLBACK_AFTER, FrameFlags::empty()),
+            FrameFlags::empty()
+        );
     }
 
     #[test]

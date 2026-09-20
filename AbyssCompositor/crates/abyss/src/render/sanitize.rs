@@ -30,6 +30,11 @@
 //! one). [`crate::backend::drm`] handles that residue by redrawing in full
 //! after a refused commit, rather than resubmitting the rejected blob.
 //!
+//! Beyond empties, [`Sanitized`] confines damage and opaque regions to the
+//! element's own bounds, and [`has_area`] rejects an element whose source
+//! rectangle is zero-size or non-finite: `DrmCompositor` scales damage by
+//! `src / geometry`, so such a source zeroes every rectangle it reports.
+//!
 //! [`Sanitized`] changes nothing else: every other method delegates, including
 //! `underlying_storage`, so plane assignment and direct scanout still see the
 //! wrapped element exactly as they did.
@@ -43,9 +48,30 @@ use smithay::{
     utils::{Buffer as BufferCoords, Physical, Point, Rectangle, Scale, Transform},
 };
 
-/// An element that covers at least one pixel at `scale`.
+/// An element that covers at least one pixel at `scale` and samples a source
+/// region with positive, finite extent. `DrmCompositor` scales every damage
+/// rectangle by `src / geometry` when it builds the kernel blob, so a zero-size
+/// source collapses all of an element's damage to nothing.
 pub fn has_area<E: Element>(element: &E, scale: Scale<f64>) -> bool {
+    let src = element.src().size;
     !element.geometry(scale).is_empty()
+        && src.w.is_finite()
+        && src.h.is_finite()
+        && src.w > 0.0
+        && src.h > 0.0
+}
+
+/// Confine `rects` to `bounds` and drop what is left empty. An exclusive
+/// overlap test lets a zero-height rectangle inside a taller one through
+/// [`Rectangle::intersection`], hence the explicit emptiness check.
+fn confined(
+    rects: impl IntoIterator<Item = Rectangle<i32, Physical>>,
+    bounds: Rectangle<i32, Physical>,
+) -> impl Iterator<Item = Rectangle<i32, Physical>> {
+    rects
+        .into_iter()
+        .filter_map(move |rect| rect.intersection(bounds))
+        .filter(|rect| !rect.is_empty())
 }
 
 /// Wraps an element so its damage never contains an empty rectangle.
@@ -84,19 +110,13 @@ impl<E: Element> Element for Sanitized<E> {
     }
 
     fn damage_since(&self, scale: Scale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
-        self.0
-            .damage_since(scale, commit)
-            .into_iter()
-            .filter(|rect| !rect.is_empty())
-            .collect()
+        let bounds = Rectangle::from_size(self.0.geometry(scale).size);
+        confined(self.0.damage_since(scale, commit), bounds).collect()
     }
 
     fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
-        self.0
-            .opaque_regions(scale)
-            .into_iter()
-            .filter(|rect| !rect.is_empty())
-            .collect()
+        let bounds = Rectangle::from_size(self.0.geometry(scale).size);
+        confined(self.0.opaque_regions(scale), bounds).collect()
     }
 
     fn alpha(&self) -> f32 {
@@ -186,6 +206,87 @@ mod tests {
         assert_eq!(wrapped.geometry(one()), geo);
         assert_eq!(wrapped.current_commit(), commit);
         assert_eq!(wrapped.kind(), Kind::Unspecified);
+    }
+
+    /// An element whose source, damage and opaque regions are whatever the
+    /// test says, including shapes a real element should never report.
+    struct Probe {
+        id: Id,
+        src: Rectangle<f64, BufferCoords>,
+        damage: Vec<Rectangle<i32, Physical>>,
+        opaque: Vec<Rectangle<i32, Physical>>,
+    }
+
+    impl Probe {
+        fn new(src_w: f64, src_h: f64) -> Self {
+            Self {
+                id: Id::new(),
+                src: Rectangle::from_size((src_w, src_h).into()),
+                damage: Vec::new(),
+                opaque: Vec::new(),
+            }
+        }
+    }
+
+    impl Element for Probe {
+        fn id(&self) -> &Id {
+            &self.id
+        }
+        fn current_commit(&self) -> CommitCounter {
+            CommitCounter::default()
+        }
+        fn src(&self) -> Rectangle<f64, BufferCoords> {
+            self.src
+        }
+        fn geometry(&self, _: Scale<f64>) -> Rectangle<i32, Physical> {
+            Rectangle::new((40, 298).into(), (100, 50).into())
+        }
+        fn damage_since(&self, _: Scale<f64>, _: Option<CommitCounter>) -> DamageSet<i32, Physical> {
+            self.damage.iter().copied().collect()
+        }
+        fn opaque_regions(&self, _: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+            self.opaque.iter().copied().collect()
+        }
+    }
+
+    fn r(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Physical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn a_zero_or_infinite_source_is_not_an_element_with_area() {
+        assert!(has_area(&Probe::new(100.0, 50.0), one()));
+        assert!(!has_area(&Probe::new(100.0, 0.0), one()));
+        assert!(!has_area(&Probe::new(0.0, 50.0), one()));
+        assert!(!has_area(&Probe::new(100.0, f64::INFINITY), one()));
+    }
+
+    #[test]
+    fn damage_is_clamped_to_the_element_and_malformed_rects_are_dropped() {
+        let mut probe = Probe::new(100.0, 50.0);
+        probe.damage = vec![
+            r(10, 10, 20, 20),   // fine
+            r(90, 40, 50, 50),   // sticks out of the 100x50 element: clamped
+            r(10, 25, 80, 0),    // zero height inside the element
+            r(0, 0, 0, 30),      // zero width
+            r(500, 500, 10, 10), // entirely outside
+        ];
+        let damage = Sanitized::new(probe).damage_since(one(), None);
+        assert_eq!(
+            damage.iter().copied().collect::<Vec<_>>(),
+            [r(10, 10, 20, 20), r(90, 40, 10, 10)]
+        );
+    }
+
+    #[test]
+    fn opaque_regions_get_the_same_treatment() {
+        let mut probe = Probe::new(100.0, 50.0);
+        probe.opaque = vec![r(0, 0, 100, 50), r(0, 10, 100, 0), r(80, 0, 100, 10)];
+        let opaque = Sanitized::new(probe).opaque_regions(one());
+        assert_eq!(
+            opaque.iter().copied().collect::<Vec<_>>(),
+            [r(0, 0, 100, 50), r(80, 0, 20, 10)]
+        );
     }
 
     #[test]
