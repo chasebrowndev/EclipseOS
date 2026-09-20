@@ -10,13 +10,25 @@
 //! and the backend retries forever. It showed up on a workspace holding a
 //! Firefox window, whose surface tree can carry a zero-height piece.
 //!
-//! An empty rectangle reaches the tracker two ways, and each has a guard here:
+//! An empty rectangle reaches the tracker three ways, and each has a guard
+//! here:
 //!
 //! * an element reports one from [`Element::damage_since`] — [`Sanitized`]
-//!   filters it out; and
+//!   filters it out;
 //! * an element's own geometry is empty, which the tracker uses as damage when
 //!   the element appears or moves — [`has_area`] lets the caller drop it, and
-//!   an element with no area draws nothing anyway.
+//!   an element with no area draws nothing anyway; and
+//! * an element reports one from [`Element::opaque_regions`]. The tracker
+//!   carries those to the next frame and damages whatever stopped being
+//!   opaque, which puts the rectangle back into the damage it reports. An
+//!   empty region hides nothing, so dropping it changes no occlusion.
+//!
+//! These cover what an element hands the tracker, which is all a compositor
+//! controls: the tracker composes its own rectangles too, and only clamps them
+//! to the output, where a degenerate one inside the output survives
+//! ([`Rectangle::overlaps`] is true for a zero-height rectangle within a taller
+//! one). [`crate::backend::drm`] handles that residue by redrawing in full
+//! after a refused commit, rather than resubmitting the rejected blob.
 //!
 //! [`Sanitized`] changes nothing else: every other method delegates, including
 //! `underlying_storage`, so plane assignment and direct scanout still see the
@@ -80,7 +92,11 @@ impl<E: Element> Element for Sanitized<E> {
     }
 
     fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
-        self.0.opaque_regions(scale)
+        self.0
+            .opaque_regions(scale)
+            .into_iter()
+            .filter(|rect| !rect.is_empty())
+            .collect()
     }
 
     fn alpha(&self) -> f32 {
@@ -149,6 +165,16 @@ mod tests {
         let damage = wrapped.damage_since(one(), None);
         assert_eq!(damage.len(), 1);
         assert_eq!(damage[0], Rectangle::from_size((300, 4).into()));
+    }
+
+    #[test]
+    fn an_empty_opaque_region_is_dropped_and_a_real_one_kept() {
+        // The tracker damages whatever stopped being opaque, so an empty
+        // region here comes back as an empty damage rectangle a frame later.
+        let flat = Sanitized::new(solid(40, 298, 2800, 0));
+        assert!(flat.opaque_regions(one()).is_empty());
+        let real = Sanitized::new(solid(40, 298, 2800, 4));
+        assert_eq!(real.opaque_regions(one()).len(), 1);
     }
 
     #[test]

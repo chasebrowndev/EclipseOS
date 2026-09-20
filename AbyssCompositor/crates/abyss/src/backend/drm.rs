@@ -976,6 +976,13 @@ fn log_failure_now(failures: u32) -> bool {
     failures.is_power_of_two()
 }
 
+/// Whether the frame after this one has to redraw the whole output instead of
+/// only what changed. True for a discarded empty frame and for a refused one;
+/// the call site says why each needs it.
+fn needs_full_redraw(empty: bool, failed: bool) -> bool {
+    empty || failed
+}
+
 /// Composite and page-flip one output. A no-op when the session is inactive.
 fn render_output(state: &mut AbyssState, index: usize) {
     let capture_active = state.capture_active();
@@ -1150,12 +1157,24 @@ fn render_output(state: &mut AbyssState, index: usize) {
     let Some(drm) = state.drm.as_mut() else { return };
     let compositor = &mut drm.outputs[index].compositor;
 
-    if empty {
+    if needs_full_redraw(empty, failed) {
         // An empty frame is discarded rather than submitted, but the damage
         // tracker still recorded it. That desynchronises the damage history
         // from the swapchain slot ages, and every later frame then restores
         // the wrong regions (stale content, cursor trails). Clearing the ages
         // forces the next frame to be a full redraw, which resyncs both.
+        //
+        // A refused frame needs the same redraw, for a different reason. The
+        // `FB_DAMAGE_CLIPS` blob lives in the plane's pending config, and a
+        // frame with no fresh damage reuses the previous config wholesale. So
+        // a blob the kernel rejects — one degenerate rectangle is enough, and
+        // it rejects the whole commit — is latched: the retry re-renders,
+        // finds nothing newly damaged, resubmits the same blob and is refused
+        // again, at [`RETRY_DELAY`], for as long as the screen holds still.
+        // Measured on eDP-1: 448 consecutive refusals over eight seconds, one
+        // `invalid damage clip 40 298 2840 298` every time. A full redraw
+        // forces a fresh blob, so a bad one costs a frame instead of the
+        // display (COMP-02 §4).
         compositor.reset_buffer_ages();
     }
 
@@ -1352,6 +1371,16 @@ mod tests {
     fn a_run_of_failures_is_logged_at_powers_of_two() {
         let logged: Vec<u32> = (1..=20).filter(|n| log_failure_now(*n)).collect();
         assert_eq!(logged, [1, 2, 4, 8, 16]);
+    }
+
+    #[test]
+    fn a_refused_frame_redraws_in_full_so_the_retry_carries_new_damage() {
+        // Without this the retry finds nothing newly damaged, reuses the plane
+        // config holding the blob the kernel just rejected, and is refused
+        // again every RETRY_DELAY until something else on screen moves.
+        assert!(needs_full_redraw(false, true));
+        assert!(needs_full_redraw(true, false));
+        assert!(!needs_full_redraw(false, false));
     }
 
     #[test]
