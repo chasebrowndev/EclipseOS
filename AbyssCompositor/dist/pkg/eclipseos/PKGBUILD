@@ -70,11 +70,13 @@ package_eclipseos-desktop() {
 
   # Enumerated by binary: four of these come out of the eclipse-bar crate.
   for b in eclipse-bar eclipse-toasts eclipse-center eclipse-launcher \
-           eclipse-settings eclipse-policy-viewer; do _bin "$b"; done
+           eclipse-settings eclipse-policy-viewer eclipse-screensaver; do _bin "$b"; done
   _unit eclipse-bar.service
   _unit eclipse-toasts.service
+  _unit eclipse-screensaver.service
   _want eclipse-bar.service
   _want eclipse-toasts.service
+  _want eclipse-screensaver.service
   for d in "$srcdir/$_src"/dist/applications/*.desktop; do
     install -Dm0644 "$d" "$pkgdir/usr/share/applications/$(basename "$d")"
   done

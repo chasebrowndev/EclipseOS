@@ -20,14 +20,14 @@ bin="$here/../target/release"
 home=$(getent passwd "$user" | cut -d: -f6)
 
 for b in abyss eclipse-bar eclipse-toasts eclipse-center eclipse-launcher \
-         eclipse-settings eclipse-policy-viewer eclipse-ctl; do
+         eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver; do
     [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
 done
 
 # 1. Binaries. Symlinks, so the session always runs what was last built.
 install -d /usr/local/bin
 for b in abyss eclipse-bar eclipse-toasts eclipse-center eclipse-launcher \
-         eclipse-settings eclipse-policy-viewer eclipse-ctl; do
+         eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver; do
     ln -sfn "$bin/$b" "/usr/local/bin/$b"
 done
 install -m 0755 "$here/abyss-session" /usr/local/bin/abyss-session
@@ -43,7 +43,7 @@ sed -i 's|^Exec=.*|Exec=/usr/local/bin/abyss-session|' /usr/share/wayland-sessio
 dest="$home/.config/systemd/user"
 install -d -o "$user" -g "$user" "$dest"
 install -m 0644 -o "$user" -g "$user" "$here/abyss-session.target" "$dest/abyss-session.target"
-for unit in eclipse-bar eclipse-toasts; do
+for unit in eclipse-bar eclipse-toasts eclipse-screensaver; do
     sed 's|/usr/bin/|/usr/local/bin/|' "$here/$unit.service" > "$dest/$unit.service"
     chown "$user:$user" "$dest/$unit.service"
 done
@@ -57,7 +57,7 @@ for f in "$here"/applications/*.desktop; do
 done
 
 runuser -u "$user" -- systemctl --user daemon-reload
-runuser -u "$user" -- systemctl --user enable eclipse-bar.service eclipse-toasts.service
+runuser -u "$user" -- systemctl --user enable eclipse-bar.service eclipse-toasts.service eclipse-screensaver.service
 
 echo "Abyss installed. Log out and pick 'Abyss' in the greeter session menu."
 echo "Binaries symlink to $bin — rebuild there and the next login picks it up."

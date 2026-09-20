@@ -27,8 +27,8 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$here/.." && pwd)
 
 BINS='abyss eclipse-bar eclipse-toasts eclipse-center eclipse-launcher
-      eclipse-settings eclipse-policy-viewer eclipse-ctl'
-UNITS='eclipse-bar.service eclipse-toasts.service'
+      eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver'
+UNITS='eclipse-bar.service eclipse-toasts.service eclipse-screensaver.service'
 
 do_deps=1 do_build=1 assume_yes=0 uninstall=0
 for arg in "$@"; do
@@ -151,7 +151,8 @@ sudo install -Dm 0644 "$here/abyss.desktop" /usr/share/wayland-sessions/abyss.de
 # 4. User units, system-wide so every account on the box gets them. These are
 #    shipped pointing at /usr/bin, which is where step 1 put the binaries.
 sudo install -Dm 0644 -t /usr/lib/systemd/user \
-    "$here/abyss-session.target" "$here/eclipse-bar.service" "$here/eclipse-toasts.service"
+    "$here/abyss-session.target" "$here/eclipse-bar.service" "$here/eclipse-toasts.service" \
+    "$here/eclipse-screensaver.service"
 
 # 5. The apps a human launches. The bar, toasts and launcher are session
 #    components, not applications, and deliberately have no entry.

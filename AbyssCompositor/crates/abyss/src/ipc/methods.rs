@@ -52,6 +52,8 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "annotation_update" => annotation_update(state, conn, params),
         "annotation_destroy" => annotation_destroy(state, conn, params),
         "annotation_clear" => annotation_clear(state, conn, params),
+        // Idle inhibit held by the calling connection (ADR 0051).
+        "set_idle_inhibit" => set_idle_inhibit(state, conn, params),
         // Config read/write (COMP-13 §1.4). The outer gate already returned
         // `Allow` to reach this line; `config_rpc` tightens onto it per file.
         "get_config" | "set_config_value" | "validate_config" => {
@@ -787,6 +789,15 @@ fn annotation_clear(state: &mut AbyssState, conn: u64, params: &Value) -> Reply 
         crate::backend::damage_all(state);
     }
     Ok(json!({"ok": true, "dropped": dropped}))
+}
+
+/// Hold or release an idle inhibit on behalf of the calling connection. The
+/// caller states the level; the compositor drops it if the connection dies.
+fn set_idle_inhibit(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {
+    only_keys(params, &["inhibit"])?;
+    let inhibit = bool_param(params, "inhibit")?;
+    state.idle.set_conn_inhibit(conn, inhibit);
+    Ok(json!({"ok": true, "inhibit": inhibit}))
 }
 
 #[cfg(test)]

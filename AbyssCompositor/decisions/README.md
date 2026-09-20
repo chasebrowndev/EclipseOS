@@ -56,6 +56,7 @@ writing a new ADR that says so.
 | 0048 | [A task's statement is journalled as a hash, and does not survive a restart](0048-task-statement-is-hashed-not-journalled.md) | accepted |
 | 0049 | [Outputs carry a number; Ctrl+Super+[N] moves a window to display N](0049-output-number-and-move-to-output.md) | accepted |
 | 0050 | [Oracle-Eyes may call `get_outputs`](0050-oracle-eyes-reads-get-outputs.md) | accepted |
+| 0051 | [An `org.freedesktop.ScreenSaver` service bridges D-Bus idle inhibits to the compositor](0051-screensaver-service-bridges-idle-inhibit.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

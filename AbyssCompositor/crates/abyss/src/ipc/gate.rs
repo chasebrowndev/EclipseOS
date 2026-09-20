@@ -74,6 +74,10 @@ pub const TABLE: &[Entry] = &[
     e("annotation_update", Kind::Command, true),
     e("annotation_destroy", Kind::Command, true),
     e("annotation_clear", Kind::Command, true),
+    // Idle inhibit on behalf of a D-Bus client (ADR 0051). Command and not
+    // Privileged: it can only keep the screen on, which any client can already
+    // do with `zwp_idle_inhibit_v1`, and it lapses with the connection.
+    e("set_idle_inhibit", Kind::Command, true),
     // Config read/write (COMP-13 §1.4). `set_config_value` is Command and not
     // Privileged on purpose: it edits the same keys a human edits in a text
     // editor, and the file it may touch is decided by `CONFIG_FILES`, not by
@@ -283,6 +287,23 @@ mod tests {
                 "{absent} must not exist"
             );
         }
+    }
+
+    #[test]
+    fn set_idle_inhibit_is_an_owner_only_command() {
+        let cfg = Config::default();
+        let other = Peer { uid: 1001, ..owner() };
+        let entry = TABLE
+            .iter()
+            .find(|e| e.method == "set_idle_inhibit")
+            .expect("row");
+        assert_eq!(entry.kind, Kind::Command);
+        assert!(entry.implemented);
+        assert_eq!(check(&owner(), 1000, &cfg, "set_idle_inhibit"), Decision::Allow);
+        assert!(matches!(
+            check(&other, 1000, &cfg, "set_idle_inhibit"),
+            Decision::Deny(_)
+        ));
     }
 
     #[test]

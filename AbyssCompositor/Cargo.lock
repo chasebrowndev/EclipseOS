@@ -1176,6 +1176,8 @@ dependencies = [
 name = "eclipse-services"
 version = "0.1.0"
 dependencies = [
+ "eclipse-ipc",
+ "serde_json",
  "zbus",
 ]
 
