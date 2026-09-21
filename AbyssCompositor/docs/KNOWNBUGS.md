@@ -14,6 +14,39 @@ RAISE-01 was fixed on 2026-09-18 and removed.
 
 ---
 
+## BLUR-02 — a 1px dark line appears across a translucent window on eDP-1
+
+**Severity: visual.** Cosmetic, persistent until the window redraws.
+
+Found 2026-09-21. A thin dark horizontal line, one pixel high, starts
+partway across a translucent kitty window and runs to its right edge. Not a
+dead pixel (checked in the BIOS).
+
+**Confirmed:**
+- Only on eDP-1 (2880x1920, scale 2.0), not on DP-3 (scale 1.0).
+- Gone with `decoration { blur { enabled #false } }` plus `eclipse-ctl reload`.
+- Absent from `grim` screenshots and from region selection, so the fault is in
+  what the live output frame shows, not in the composed scene.
+- No `invalid damage clip` or `queueing frame` in the journal, so it is not a
+  refused DRM commit.
+
+**Root cause: not identified.** Suspects in `BlurStore::element`
+(`crates/abyss/src/render/blur.rs`, the `src`/`size` block near the end of the
+function), all unverified:
+- `src` is `region / scale` (logical) but the texture is in output-local
+  physical pixels with buffer scale 1, so at scale 2.0 the sampled rectangle
+  differs from the region. This would explain why it only shows at 2.0.
+- `size` is rounded on its own instead of derived from `region.size`, so the
+  element geometry can differ from the blur region by a pixel.
+- The result texture is static and refreshes only when `invalidates()` fires,
+  so a missed invalidation leaves a stale strip.
+
+**Proposed fix:** none. Blur is due for a major rework; the rework should
+cover the three points above and add a test that element geometry equals the
+region at scales 1.5 and 2.0. Workaround: disable blur.
+
+---
+
 ## BLUR-01 — the launcher and notification panels are unreadable with blur off
 
 **Severity: design.** Not a crash; a visual dependency between two independent
