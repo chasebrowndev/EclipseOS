@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The Eclipse bar.
+//! Hyperion, the Eclipse taskbar. Users see it as "the taskbar"; Hyperion is
+//! the internal name.
 //!
 //! A layer surface that lists windows over the control socket and acts over
 //! it too. `wlr_foreign_toplevel_management` is deliberately absent from the
@@ -8,13 +9,10 @@
 
 pub mod app;
 pub mod audio;
-pub mod center;
 pub mod clock;
 pub mod conn;
 pub mod icons;
-pub mod launcher;
 pub mod model;
-pub mod toasts;
 pub mod view;
 
 /// Bar height in logical pixels, and therefore its exclusive zone.
@@ -26,4 +24,4 @@ pub const HEIGHT: u32 = eclipse_ui::tokens::bar::HEIGHT as u32;
 /// How `main` tells [`app::App::new`] which connector this process is bound
 /// to. The daemon builder takes a bare `fn() -> App`, so there is nowhere to
 /// pass it as an argument; the supervisor sets it on each child instead.
-pub const OUTPUT_ENV: &str = "ECLIPSE_BAR_OUTPUT";
+pub const OUTPUT_ENV: &str = "HYPERION_OUTPUT";

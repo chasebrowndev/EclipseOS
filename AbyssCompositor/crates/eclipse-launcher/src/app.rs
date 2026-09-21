@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn an_injected_layer_variant_is_a_no_op() {
         let mut app = app(Vec::new());
-        let _ = update(&mut app, Message::SizeChange((crate::launcher::WIDTH, 100)));
+        let _ = update(&mut app, Message::SizeChange((crate::WIDTH, 100)));
         assert!(app.problem.is_none());
     }
 }

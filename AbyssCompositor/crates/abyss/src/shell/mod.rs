@@ -1438,7 +1438,7 @@ pub fn fullscreen_toplevel(
     });
     surface.send_configure();
     arrange(state);
-    // eclipse-bar hides outright under fullscreen rather than folding, and it
+    // hyperion hides outright under fullscreen rather than folding, and it
     // has no view of the window stack to work that out for itself.
     focus::emit_output_state(state, id);
 }
@@ -1673,7 +1673,7 @@ pub fn switch_workspace(state: &mut AbyssState, idx: usize) {
     );
     // The new workspace may hold a fullscreen window, or none at all. Either
     // way `focus_window` above saw no output transition and emitted nothing, so
-    // restate it here or eclipse-bar folds against the old workspace.
+    // restate it here or hyperion folds against the old workspace.
     focus::emit_output_state(state, id);
     tracing::info!(workspace = idx, "workspace switched");
 }

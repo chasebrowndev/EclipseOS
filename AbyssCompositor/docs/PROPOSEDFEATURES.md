@@ -59,7 +59,7 @@ defaults.
   detail in stages: full detail → process name only → icon only → (extreme,
   last resort) no icon. The bar never spills past its bounds.
 - **A Launcher settings pane.** The launcher
-  (`crates/eclipse-bar/src/launcher/main.rs`, spawned by `Super+R` —
+  (`crates/eclipse-launcher/src/main.rs`, spawned by `Super+R` —
   `crates/abyss/src/config/mod.rs`, `default_binds`) has no config keys at all
   today, so it has no tab in `eclipse-settings` either. It wants a `launcher.*`
   section in the schema table and its own pane alongside Taskbar once there is
@@ -75,13 +75,13 @@ defaults.
   in a service, not on a view's draw path. Second, the passphrase field: a
   `password`-role value may never be delivered, logged or stored, and trusted UI
   is compositor-drawn, never a layer-shell client. So the secret cannot simply
-  be typed into `eclipse-bar`. The two honest shapes are a compositor-drawn
+  be typed into the taskbar (`hyperion`). The two honest shapes are a compositor-drawn
   trusted prompt for the secret alone, or the bar handing off to an external
   picker entirely. Pick one before anyone writes the drawer's second half.
 
 ## Window management
 
-- **Per-window mute needs a real audio abstraction.** `eclipse-bar/src/audio.rs`
+- **Per-window mute needs a real audio abstraction.** `hyperion/src/audio.rs`
   shells out to `pactl -f json list sink-inputs` and joins on pid (or any
   descendant pid). That works, but it puts a subprocess on a UI path and it
   hardcodes PulseAudio/PipeWire's CLI. A proper audio service belongs in the

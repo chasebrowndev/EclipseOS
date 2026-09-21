@@ -68,8 +68,9 @@ justification.
 
 **The main agent never writes frontend.** Every single piece of user-facing UI
 — a new view, a redesign, a tweak to an existing one, anywhere under
-`crates/eclipse-ui/`, `crates/eclipse-bar/`, `crates/eclipse-settings/` or
-`crates/eclipse-policy-viewer/` — goes to the `eclipse-frontend` agent. It is
+`crates/eclipse-ui/`, `crates/hyperion/`, `crates/eclipse-toasts/`,
+`crates/eclipse-center/`, `crates/eclipse-launcher/`, `crates/eclipse-settings/`
+or `crates/eclipse-policy-viewer/` — goes to the `eclipse-frontend` agent. It is
 the only thing here that produces usable frontend: it screenshots its own
 output and iterates against `docs/STYLE.md`, which is exactly the loop the main
 thread cannot run.

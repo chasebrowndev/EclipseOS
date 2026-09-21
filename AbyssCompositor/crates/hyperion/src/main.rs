@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `eclipse-bar` — a layer surface anchored to the top edge.
+//! `hyperion` — the taskbar, a layer surface anchored to the top edge.
 //!
 //! One of the DE's handful of layer-shell clients (the toast stack and the OSD
 //! are the others).
@@ -19,12 +19,12 @@
 //! to show its own monitor's workspaces. One process per output is the only
 //! shape where that question has an answer.
 
-use eclipse_bar::{app, view, HEIGHT, OUTPUT_ENV};
+use hyperion::{app, view, HEIGHT, OUTPUT_ENV};
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
 use iced_layershell::settings::{LayerShellSettings, StartMode};
 
 fn namespace() -> String {
-    "eclipse-bar".to_owned()
+    "hyperion".to_owned()
 }
 
 fn main() -> iced_layershell::Result {
@@ -33,7 +33,7 @@ fn main() -> iced_layershell::Result {
         Some("--output") => match args.next() {
             Some(name) => bar(name),
             None => {
-                eprintln!("eclipse-bar: --output needs a connector name");
+                eprintln!("hyperion: --output needs a connector name");
                 std::process::exit(2);
             }
         },
@@ -42,7 +42,7 @@ fn main() -> iced_layershell::Result {
             Ok(())
         }
         Some(other) => {
-            eprintln!("eclipse-bar: unknown argument {other:?} (expected --output <NAME>)");
+            eprintln!("hyperion: unknown argument {other:?} (expected --output <NAME>)");
             std::process::exit(2);
         }
     }
@@ -60,9 +60,9 @@ fn bar(output: String) -> iced_layershell::Result {
     // `bar.position` is `reload: restart` — the layer surface's anchor is
     // fixed for its whole life, so it is read once here, before the surface
     // exists, rather than through the live `Conn` the running app holds.
-    let edge = match eclipse_bar::conn::Conn::new().bar_config().position {
-        eclipse_bar::conn::BarPosition::Top => Anchor::Top,
-        eclipse_bar::conn::BarPosition::Bottom => Anchor::Bottom,
+    let edge = match hyperion::conn::Conn::new().bar_config().position {
+        hyperion::conn::BarPosition::Top => Anchor::Top,
+        hyperion::conn::BarPosition::Bottom => Anchor::Bottom,
     };
 
     let mut builder =
@@ -104,9 +104,9 @@ fn bar(output: String) -> iced_layershell::Result {
 fn supervise() {
     use std::collections::HashMap;
 
-    let mut conn = eclipse_bar::conn::Conn::new();
+    let mut conn = hyperion::conn::Conn::new();
     let mut children: HashMap<String, std::process::Child> = HashMap::new();
-    let exe = std::env::current_exe().unwrap_or_else(|_| "eclipse-bar".into());
+    let exe = std::env::current_exe().unwrap_or_else(|_| "hyperion".into());
     // The supervisor holds the subscription itself: an output event is the
     // one thing that means the set of monitors may have moved.
     let mut client = None;
@@ -128,7 +128,7 @@ fn supervise() {
                     Ok(child) => {
                         children.insert(name.clone(), child);
                     }
-                    Err(e) => eprintln!("eclipse-bar: cannot start a bar on {name}: {e}"),
+                    Err(e) => eprintln!("hyperion: cannot start a bar on {name}: {e}"),
                 }
             }
             children.retain(|name, child| {

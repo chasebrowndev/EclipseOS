@@ -1,17 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Maintainer: chase <chase.brown.dev@gmail.com>
 #
-# EclipseOS split package. Implements D-01 §1.1: four packages out of one
+# EclipseOS split package. Implements D-01 §1.1: every package out of one
 # source build, because a per-package PKGBUILD would run `cargo build
-# --release --workspace` four times over the same tree.
+# --release --workspace` once per package over the same tree.
 #
-# The binary lists below are enumerated by binary, not by crate, on purpose:
-# eclipse-bar declares eclipse-toasts, eclipse-center and eclipse-launcher as
-# extra [[bin]] targets (D-01 §1.1). Iterating crate directories silently ships
-# three fewer binaries than the DE needs.
+# Each swappable DE component is its own package (ADR 0052): the taskbar,
+# toasts, notification center and launcher install independently, so a user
+# can run our toasts under another bar, or another bar under abyss.
 
 pkgbase=eclipseos
-pkgname=(eclipseos-abyss eclipseos-desktop eclipseos-policyd eclipseos-meta)
+pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-center
+         eclipseos-launcher eclipseos-desktop eclipseos-policyd eclipseos-meta)
 pkgver=0.1.1
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
@@ -40,6 +40,7 @@ check() {
 
 _bin() { install -Dm0755 "$srcdir/$_src/target/release/$1" "$pkgdir/usr/bin/$1"; }
 _unit() { install -Dm0644 "$srcdir/$_src/dist/$1" "$pkgdir/usr/lib/systemd/user/$1"; }
+_app() { install -Dm0644 "$srcdir/$_src/dist/applications/$1" "$pkgdir/usr/share/applications/$1"; }
 # Enable a user unit for every user, image-side. A user-preset only takes effect
 # when someone runs `systemctl --user preset-all`, which nothing does for an
 # account that already exists — the bar shipped "enabled" and never started.
@@ -64,22 +65,52 @@ package_eclipseos-abyss() {
   _unit abyss-session.target
 }
 
-package_eclipseos-desktop() {
-  pkgdesc="EclipseOS desktop shell: bar, launcher, settings, notifications"
+package_eclipseos-hyperion() {
+  pkgdesc="EclipseOS taskbar (hyperion)"
+  # The only DE component that talks to abyss directly (control socket).
   depends=(eclipseos-abyss wayland libxkbcommon mesa networkmanager bluez bluez-utils upower)
 
-  # Enumerated by binary: four of these come out of the eclipse-bar crate.
-  for b in eclipse-bar eclipse-toasts eclipse-center eclipse-launcher \
-           eclipse-settings eclipse-policy-viewer eclipse-screensaver; do _bin "$b"; done
-  _unit eclipse-bar.service
+  _bin hyperion
+  _unit hyperion.service
+  _want hyperion.service
+}
+
+package_eclipseos-toasts() {
+  pkgdesc="EclipseOS notification toasts"
+  # No abyss dependency: any layer-shell compositor will do. The session-target
+  # link is inert without abyss-session.target; elsewhere, start the unit or
+  # binary yourself.
+  depends=(wayland libxkbcommon mesa)
+
+  _bin eclipse-toasts
   _unit eclipse-toasts.service
-  _unit eclipse-screensaver.service
-  _want eclipse-bar.service
   _want eclipse-toasts.service
+}
+
+package_eclipseos-center() {
+  pkgdesc="EclipseOS notification and status center"
+  depends=(wayland libxkbcommon mesa networkmanager bluez upower)
+
+  _bin eclipse-center
+  _app eclipse-center.desktop
+}
+
+package_eclipseos-launcher() {
+  pkgdesc="EclipseOS application launcher"
+  depends=(wayland libxkbcommon mesa)
+
+  _bin eclipse-launcher
+}
+
+package_eclipseos-desktop() {
+  pkgdesc="EclipseOS desktop apps: settings, policy viewer, screensaver"
+  depends=(eclipseos-abyss wayland libxkbcommon mesa)
+
+  for b in eclipse-settings eclipse-policy-viewer eclipse-screensaver; do _bin "$b"; done
+  _unit eclipse-screensaver.service
   _want eclipse-screensaver.service
-  for d in "$srcdir/$_src"/dist/applications/*.desktop; do
-    install -Dm0644 "$d" "$pkgdir/usr/share/applications/$(basename "$d")"
-  done
+  _app eclipse-settings.desktop
+  _app eclipse-policy-viewer.desktop
 }
 
 package_eclipseos-policyd() {
@@ -94,7 +125,8 @@ package_eclipseos-policyd() {
 package_eclipseos-meta() {
   pkgdesc="EclipseOS base system (D-01 §1)"
   arch=(any)  # config and dependencies only, no ELF
-  depends=(eclipseos-abyss eclipseos-desktop eclipseos-policyd
+  depends=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-center
+           eclipseos-launcher eclipseos-desktop eclipseos-policyd
            greetd greetd-regreet cage
            networkmanager bluez bluez-utils upower pipewire pipewire-pulse wireplumber
            foot xdg-user-dirs)

@@ -30,8 +30,8 @@ use eclipse_services::apps::Entry;
 use eclipse_ui::tokens::{color, font, size, space};
 use eclipse_ui::widget as parts;
 
-use crate::launcher::app::{App, Message, INPUT_ID};
-use crate::launcher::{MAX_ROWS, WIDTH};
+use crate::app::{App, Message, INPUT_ID};
+use crate::{MAX_ROWS, WIDTH};
 
 /// Padding between the panel and the edge of its surface.
 const OUTER: f32 = 10.0;

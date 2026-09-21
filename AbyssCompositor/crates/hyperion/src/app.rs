@@ -337,7 +337,7 @@ fn launch() {
         Ok(child) => *slot = Some(child),
         // The bar cannot narrate this in a 44px row, but it must not swallow
         // it either: stderr is the bar's journal unit.
-        Err(e) => eprintln!("eclipse-bar: cannot start {LAUNCHER}: {e}"),
+        Err(e) => eprintln!("hyperion: cannot start {LAUNCHER}: {e}"),
     }
 }
 
@@ -750,11 +750,11 @@ fn new_instance(app_id: Option<String>) {
     let wanted = format!("{app_id}.desktop");
     let entries = eclipse_services::apps::scan();
     let Some(entry) = entries.iter().find(|e| e.id.eq_ignore_ascii_case(&wanted)) else {
-        eprintln!("eclipse-bar: no desktop entry for {app_id}");
+        eprintln!("hyperion: no desktop entry for {app_id}");
         return;
     };
     if let Err(e) = eclipse_services::apps::launch(entry) {
-        eprintln!("eclipse-bar: cannot start {}: {e}", entry.id);
+        eprintln!("hyperion: cannot start {}: {e}", entry.id);
     }
 }
 

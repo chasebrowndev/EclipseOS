@@ -11,11 +11,12 @@ use iced::widget::{container, mouse_area, row, text, Column, Space};
 use iced::{Alignment, Color, Element, Length, Theme};
 
 use eclipse_services::session::{Action, Availability};
+use eclipse_services::status::{Battery, Bluetooth, Charge, Network};
 use eclipse_ui::tokens::{color, font, size, space};
 use eclipse_ui::widget as parts;
 
-use crate::center::app::{App, Message, ACTIONS};
-use crate::center::WIDTH;
+use crate::app::{App, Message, ACTIONS};
+use crate::WIDTH;
 
 /// Padding between the panel and the edge of its surface.
 const OUTER: f32 = 10.0;
@@ -71,17 +72,17 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
 
 /// The same three readings the bar draws, in words rather than in a cell.
 fn status(app: &App) -> Element<'_, Message, Theme> {
-    let battery_low = app.battery.is_some_and(|b| {
-        b.percent <= crate::view::LOW && b.state == eclipse_services::status::Charge::Discharging
-    });
+    let battery_low = app
+        .battery
+        .is_some_and(|b| b.percent <= LOW && b.state == eclipse_services::status::Charge::Discharging);
     let rows = vec![
-        reading("Network", crate::view::network_text(&app.network), false),
+        reading("Network", network_text(&app.network), false),
         reading(
             "Bluetooth",
             // The bar hides a powered-down adapter because a bar cell is
             // scarce. Here there is room for the answer, and "off" is an
             // answer the human opened this panel to get.
-            crate::view::bluetooth_text(app.bluetooth).unwrap_or_else(|| "off".to_owned()),
+            bluetooth_text(app.bluetooth).unwrap_or_else(|| "off".to_owned()),
             false,
         ),
         reading("Battery", battery_text(app), battery_low),
@@ -92,8 +93,7 @@ fn status(app: &App) -> Element<'_, Message, Theme> {
 /// `None` is a machine with no battery, not a flat one, and the panel says so
 /// rather than drawing a percentage it does not have.
 fn battery_text(app: &App) -> String {
-    app.battery
-        .map_or_else(|| "none".to_owned(), crate::view::battery_text)
+    app.battery.map_or_else(|| "none".to_owned(), charge_text)
 }
 
 fn reading(label: &str, value: String, warn: bool) -> Element<'static, Message, Theme> {
@@ -247,9 +247,80 @@ pub fn style(_app: &App, theme: &Theme) -> iced::theme::Style {
     }
 }
 
+// ------------------------------------------------------------ readings
+// The same wording the taskbar uses, kept here so this panel ships without it.
+
+/// Percentage at or below which a discharging battery is drawn as a warning.
+const LOW: u8 = 15;
+
+/// Signal strength is shown as a number beside the bars, not instead of them:
+/// "49" is a reading the bars cannot give, and the bars are a comparison the
+/// number cannot.
+fn network_text(network: &Network) -> String {
+    match network {
+        Network::Offline => "offline".to_owned(),
+        Network::Wired { .. } => "wired".to_owned(),
+        Network::Wifi { strength, .. } => format!("{strength}"),
+        Network::Other { .. } => "net".to_owned(),
+    }
+}
+
+/// A powered-down adapter draws nothing. Bluetooth being off is the ordinary
+/// state on most machines and is not news.
+fn bluetooth_text(bluetooth: Bluetooth) -> Option<String> {
+    if !bluetooth.powered {
+        return None;
+    }
+    Some(match bluetooth.connected {
+        0 => "bt".to_owned(),
+        n => format!("bt {n}"),
+    })
+}
+
+/// Charging is a leading `+`, discharging bare, full the word. Time remaining
+/// is deliberately absent: it is the least trustworthy number UPower reports.
+fn charge_text(battery: Battery) -> String {
+    match battery.state {
+        Charge::Charging => format!("+{}%", battery.percent),
+        Charge::Full => "full".to_owned(),
+        Charge::Discharging | Charge::Unknown => format!("{}%", battery.percent),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reading is a word, not a blank: offline says so.
+    #[test]
+    fn an_offline_link_still_says_something() {
+        assert_eq!(network_text(&Network::Offline), "offline");
+        let wifi = Network::Wifi {
+            id: "House".into(),
+            strength: 49,
+        };
+        assert_eq!(network_text(&wifi), "49");
+    }
+
+    /// An adapter that is off is the normal case and must not take up a cell.
+    #[test]
+    fn a_powered_down_adapter_draws_nothing() {
+        assert_eq!(
+            bluetooth_text(Bluetooth {
+                powered: false,
+                connected: 0,
+            }),
+            None
+        );
+        assert_eq!(
+            bluetooth_text(Bluetooth {
+                powered: true,
+                connected: 2,
+            })
+            .as_deref(),
+            Some("bt 2")
+        );
+    }
 
     /// The surface has to be tall enough for every row it draws, or the last
     /// one is clipped off the bottom of the screen.

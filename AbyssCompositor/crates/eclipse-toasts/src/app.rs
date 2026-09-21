@@ -152,7 +152,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         _ => return Task::none(),
     }
 
-    let wanted = crate::toasts::view::height(app.drawn());
+    let wanted = crate::view::height(app.drawn());
     if wanted == app.height {
         return Task::none();
     }
@@ -160,7 +160,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
     // The surface is only as tall as what it holds. An empty stack shrinks to a
     // pixel rather than leaving an invisible sheet over the corner of the
     // screen swallowing the human's clicks.
-    Task::done(Message::SizeChange((crate::toasts::WIDTH, wanted)))
+    Task::done(Message::SizeChange((crate::WIDTH, wanted)))
 }
 
 /// One thread, one tick. The bus handle lives on `App` because the human's
@@ -272,6 +272,6 @@ mod tests {
     #[test]
     fn an_empty_stack_asks_for_no_room() {
         let a = app();
-        assert_eq!(crate::toasts::view::height(a.drawn()), 1);
+        assert_eq!(crate::view::height(a.drawn()), 1);
     }
 }

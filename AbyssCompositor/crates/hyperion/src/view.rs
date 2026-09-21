@@ -390,7 +390,7 @@ pub fn live_workspaces(snapshot: &Snapshot, output: u64) -> impl Iterator<Item =
 
 /// The windows this bar is allowed to speak for.
 ///
-/// One `eclipse-bar` runs per monitor and the compositor's lists are the whole
+/// One `hyperion` runs per monitor and the compositor's lists are the whole
 /// desktop's, so every live list on the row is filtered here first. `output ==
 /// 0` is the bar that was started without `--output` — a single-output dev run
 /// — and filters nothing, because on one monitor "every window" and "my
@@ -1143,30 +1143,6 @@ pub(crate) fn network_strength(network: &Network) -> u8 {
     }
 }
 
-/// Signal strength is shown as a number beside the bars, not instead of them:
-/// "49" is a reading the bars cannot give, and the bars are a comparison the
-/// number cannot.
-pub(crate) fn network_text(network: &Network) -> String {
-    match network {
-        Network::Offline => "offline".to_owned(),
-        Network::Wired { .. } => "wired".to_owned(),
-        Network::Wifi { strength, .. } => format!("{strength}"),
-        Network::Other { .. } => "net".to_owned(),
-    }
-}
-
-/// A powered-down adapter draws nothing. Bluetooth being off is the ordinary
-/// state on most machines and is not news.
-pub(crate) fn bluetooth_text(bluetooth: Bluetooth) -> Option<String> {
-    if !bluetooth.powered {
-        return None;
-    }
-    Some(match bluetooth.connected {
-        0 => "bt".to_owned(),
-        n => format!("bt {n}"),
-    })
-}
-
 /// Charging is a leading `+`, discharging bare, full the word. Time remaining
 /// is deliberately absent: it is the least trustworthy number UPower reports.
 pub(crate) fn battery_text(battery: Battery) -> String {
@@ -1243,7 +1219,6 @@ mod tests {
     /// on a bar and only one of them is worth telling the human about.
     #[test]
     fn an_offline_link_still_says_something() {
-        assert_eq!(network_text(&Network::Offline), "offline");
         assert_eq!(network_strength(&Network::Offline), 0);
     }
 
@@ -1253,28 +1228,7 @@ mod tests {
             id: "House".into(),
             strength: 49,
         };
-        assert_eq!(network_text(&wifi), "49");
         assert_eq!(network_strength(&wifi), 49);
-    }
-
-    /// An adapter that is off is the normal case and must not take up a cell.
-    #[test]
-    fn a_powered_down_adapter_draws_nothing() {
-        assert_eq!(
-            bluetooth_text(Bluetooth {
-                powered: false,
-                connected: 0,
-            }),
-            None
-        );
-        assert_eq!(
-            bluetooth_text(Bluetooth {
-                powered: true,
-                connected: 2,
-            })
-            .as_deref(),
-            Some("bt 2")
-        );
     }
 
     #[test]

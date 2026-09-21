@@ -6,7 +6,7 @@
 //! Nothing here is trusted UI — a notification is client-supplied text, and
 //! anything the compositor has to vouch for it draws itself.
 
-use eclipse_bar::toasts::{app, view, WIDTH};
+use eclipse_toasts::{app, view, WIDTH};
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
 use iced_layershell::settings::LayerShellSettings;
 
@@ -15,7 +15,7 @@ fn namespace() -> String {
 }
 
 /// Gap between the bar's bottom edge and the first card.
-const TOP_MARGIN: i32 = eclipse_bar::HEIGHT as i32 + 4;
+const TOP_MARGIN: i32 = eclipse_ui::tokens::bar::HEIGHT as i32 + 4;
 /// Gap between the cards and the right edge of the output.
 const RIGHT_MARGIN: i32 = 4;
 

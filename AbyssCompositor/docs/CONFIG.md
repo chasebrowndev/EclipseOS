@@ -55,7 +55,7 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `bar.idle-seconds` | int 5..600 | `30` | live | Seconds without any human input, pointer motion included, before the taskbar folds when fold-when-idle is on. |
 | `bar.fold-duration-ms` | int 0..1000 | `150` | live | How long the taskbar takes to slide open or shut. Height and exclusive zone animate together, so tiled windows reflow with it. Zero snaps. |
 | `bar.fold-curve` | linear \| ease-in \| ease-out \| ease-in-out | `"ease-out"` | live | Easing applied to the taskbar's fold slide. |
-| `bar.position` | top \| bottom | `"top"` | restart | Which edge of every output the taskbar is anchored to. Takes effect the next time eclipse-bar starts, not on a live reload. |
+| `bar.position` | top \| bottom | `"top"` | restart | Which edge of every output the taskbar is anchored to. Takes effect the next time the taskbar starts, not on a live reload. |
 
 ### `decoration`
 

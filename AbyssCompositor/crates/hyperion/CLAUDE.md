@@ -1,14 +1,18 @@
-# eclipse-bar — the bar, toasts, control centre and launcher
+# hyperion — the taskbar
 
-Read the root `CLAUDE.md` first. Governing spec: COMP-17 (DP-5).
+Internal name only: users see it as "the taskbar", and every user-facing
+string says so. Toasts, the control center and the launcher are their own
+crates (`eclipse-toasts`, `eclipse-center`, `eclipse-launcher`) and must
+never depend on this one (ADR 0052).
 
-- **Not TCB.** Four layer-shell clients (`eclipse-bar`, `eclipse-toasts`,
-  `eclipse-center`, `eclipse-launcher`), all ordinary Wayland clients with no
-  authority of their own. Anything here that would only be safe if it could be
+Read the root `CLAUDE.md` first. Governing spec: DP-4 (`claude/DESKTOP_PROFILES_PLAN.md`), ADR 0038.
+
+- **Not TCB.** An ordinary layer-shell Wayland client with no authority of
+  its own. Anything here that would only be safe if it could be
   trusted belongs in `abyss/src/trusted_ui/` instead — trusted UI is
   compositor-drawn, never a layer-shell client (root invariant).
-- **They run under any layer-shell host**, Hyprland included; abyss is not
-  required to develop against them. `conn.rs` is fail-soft — `Conn::ensure()`
+- **It runs under any layer-shell host**, Hyprland included; abyss is not
+  required to develop against it. `conn.rs` is fail-soft — `Conn::ensure()`
   leaves `client: None` and retries, so the UI renders with empty live data
   when nothing is listening. That is the screenshot loop's enabling fact, and
   it must stay true.

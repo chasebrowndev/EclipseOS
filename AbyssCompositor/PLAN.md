@@ -28,7 +28,7 @@ new directory?
   work. `policyd` and `agentd` are daemons, so they read as 'OS', but they are
   Tier 2–3 and sequenced as Phase 2 milestones. They are the product; the distro
   is the wrapper."* Phase 2 = **Tier 2–3 system services + TCB modules inside
-  `abyss`**. Distribution is Tier 6 / Phase 6. The DE (`eclipse-bar`,
+  `abyss`**. Distribution is Tier 6 / Phase 6. The DE (`hyperion`,
   `eclipse-settings`, `eclipse-policy-viewer`, `EclipseDE/`) is untouched by
   Phase 2 except as a later consumer.
 - **New dir?** **No.** F-07 §1, recorded in `docs/ARCHITECTURE.md:12-35`, already

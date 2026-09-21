@@ -38,17 +38,20 @@ Four packages, split so the repo can move pieces independently (D-02, and
 | Package | Contents | License |
 |---|---|---|
 | `eclipseos-abyss` | `abyss`, `eclipse-ctl`, the session entry, `abyss-session`, the user units | AGPL-3.0-only |
-| `eclipseos-desktop` | `eclipse-bar`, `eclipse-settings`, `eclipse-center`, `eclipse-launcher`, `eclipse-policy-viewer`, `eclipse-toasts`, their `.desktop` files and user units | AGPL-3.0-only |
+| `eclipseos-hyperion` | `hyperion` (the taskbar) and `hyperion.service` | AGPL-3.0-only |
+| `eclipseos-toasts` | `eclipse-toasts` and its user unit | AGPL-3.0-only |
+| `eclipseos-center` | `eclipse-center` and its `.desktop` file | AGPL-3.0-only |
+| `eclipseos-launcher` | `eclipse-launcher` | AGPL-3.0-only |
+| `eclipseos-desktop` | `eclipse-settings`, `eclipse-policy-viewer`, `eclipse-screensaver`, their `.desktop` files and user units | AGPL-3.0-only |
 | `eclipseos-policyd` | `policyd` and its system/user unit | AGPL-3.0-only |
-| `eclipseos-meta` | Depends on the three above plus §1.2; ships the pacman drop-in and `/etc/eclipse` defaults | AGPL-3.0-only |
+| `eclipseos-meta` | Depends on every package above plus §1.2; ships the pacman drop-in and `/etc/eclipse` defaults | AGPL-3.0-only |
 
-**Four of the six desktop binaries come out of one crate.** `eclipse-bar`
-declares `eclipse-toasts`, `eclipse-center` and `eclipse-launcher` as extra
-`[[bin]]` targets (`crates/eclipse-bar/Cargo.toml`) because they share its
-tokens and its service layer; there is no `crates/eclipse-center` and there
-never will be. A PKGBUILD that iterates crate directories will silently ship
-three fewer binaries than the DE needs, so `eclipseos-desktop` enumerates
-binaries, not crates.
+**One crate, one package per swappable component** (ADR 0052). The taskbar
+(`crates/hyperion`), toasts, center and launcher were once four `[[bin]]`
+targets of one crate and shipped as one package; they are now separate crates
+and separate packages, so a user can install our toasts under another bar, or
+another bar under abyss. None of them depends on another; they share only
+`eclipse-ui` and `eclipse-services`.
 
 `eclipse-ipc`, `eclipse-ui`, `eclipse-services` and `policy-eval` are libraries
 and ship inside their consumers; they are not separately packaged. `Oracle-Eyes`
@@ -186,7 +189,7 @@ greetd (system) ──► abyss-session (user login shell of the session)
                            └─ session::import() → systemd user manager
                                 └─ graphical-session.target
                                      └─ abyss-session.target
-                                          ├─ eclipse-bar.service
+                                          ├─ hyperion.service
                                           ├─ eclipse-toasts.service
                                           └─ (Phase 2: agentd, brokerd)
 ```
@@ -210,7 +213,7 @@ The line is the TCB boundary, not convenience.
 - **System units**: nothing today. `policyd` is the first candidate and is
   decided in §3.4.
 
-`eclipse-bar.service` and `eclipse-toasts.service` are `WantedBy=abyss-session.target`
+`hyperion.service` and `eclipse-toasts.service` are `WantedBy=abyss-session.target`
 and enabled by the package via a `systemd-user.preset`, not by a post-install
 `systemctl --user enable` (which cannot run for a user who does not exist yet at
 install time).

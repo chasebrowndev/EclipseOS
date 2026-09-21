@@ -270,7 +270,7 @@ pub struct Bar {
     pub position: BarPosition,
 }
 
-/// The edge `eclipse-bar`'s layer surface anchors to.
+/// The edge `hyperion`'s layer surface anchors to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarPosition {
     Top,

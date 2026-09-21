@@ -308,7 +308,7 @@ pub const TABLE: &[Key] = &[
         Abyss,
         NeedsRestart,
         "Which edge of every output the taskbar is anchored to. Takes effect \
-       the next time eclipse-bar starts, not on a live reload.",
+       the next time the taskbar starts, not on a live reload.",
     ),
     // decoration
     k(

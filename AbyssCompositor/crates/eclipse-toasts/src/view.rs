@@ -12,8 +12,8 @@ use iced::{Alignment, Color, Element, Length, Theme};
 use eclipse_services::notifications::{Notification, Urgency};
 use eclipse_ui::tokens::{color, font, size, space};
 
-use crate::toasts::app::{Message, Toast};
-use crate::toasts::WIDTH;
+use crate::app::{Message, Toast};
+use crate::WIDTH;
 
 /// Space between cards, and around the stack.
 const GAP: f32 = 10.0;
@@ -54,7 +54,7 @@ pub fn height(drawn: &[Toast]) -> u32 {
     (cards + gaps).ceil() as u32
 }
 
-pub fn view(app: &crate::toasts::app::App) -> Element<'_, Message, Theme> {
+pub fn view(app: &crate::app::App) -> Element<'_, Message, Theme> {
     let mut stack = Column::new().spacing(GAP).padding(GAP);
     for toast in app.drawn() {
         stack = stack.push(card(&toast.notification));
@@ -152,7 +152,7 @@ fn button<'a>(id: u32, key: &str, label: &str) -> Element<'a, Message, Theme> {
 
 /// The stack draws itself; the surface behind it is nothing at all, so the
 /// cards float over whatever is on screen rather than sitting on a sheet.
-pub fn style(_app: &crate::toasts::app::App, theme: &Theme) -> iced::theme::Style {
+pub fn style(_app: &crate::app::App, theme: &Theme) -> iced::theme::Style {
     iced::theme::Style {
         background_color: Color::TRANSPARENT,
         text_color: theme.palette().text,

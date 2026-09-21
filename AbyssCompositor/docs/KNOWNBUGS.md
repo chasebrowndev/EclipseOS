@@ -52,7 +52,7 @@ region at scales 1.5 and 2.0. Workaround: disable blur.
 **Severity: design.** Not a crash; a visual dependency between two independent
 config toggles that only one side knows about.
 
-The launcher and notification popups in `eclipse-bar` paint their panel
+The launcher and notification popups (`eclipse-launcher`, `eclipse-toasts`) paint their panel
 background as a translucent dark fill (roughly `rgba(0,0,0,0.6)`), assuming
 the compositor's dual-Kawase backdrop (`crates/abyss/src/render/blur.rs`,
 COMP-02 §9) fills in behind them per `shows_through`
@@ -69,7 +69,7 @@ setting, but a user who turns blur off (perf, preference, unsupported GPU
 path) still gets a broken-looking panel with no visual cause pointing back to
 that toggle. **Proposed fix:** either give the launcher/notification panels a
 solid, non-blur-dependent fallback background when blur is off (frontend,
-`eclipse-frontend` territory — `crates/eclipse-bar/src/launcher/view.rs` and
+`eclipse-frontend` territory — `crates/eclipse-launcher/src/view.rs` and
 the notification view), or have the compositor refuse `shows_through` in a
 way that degrades to a flat but *intentionally styled* fill rather than
 leaving the client's own translucent color exposed unblurred. No one has
@@ -84,7 +84,7 @@ committed to either yet.
 At 285 matches the note column's clip edge meets the selected row's mono
 `.desktop` id with no visible gap: `Information about the Xfce Desktop Ex`
 followed by `xfce4-about` reads as one string.
-`crates/eclipse-bar/src/launcher/view.rs:221` already adds `space::CARD` of
+`crates/eclipse-launcher/src/view.rs:221` already adds `space::CARD` of
 right padding for exactly this reason, and at width 560 it is not enough for
 the longest comments. May simply be what clipping looks like.
 
@@ -129,8 +129,8 @@ return for genuinely broken entries (`entry has no command`), which is what it
 is actually good for.
 
 **Open, and the reason this is still a proposal:** the key placement.
-`crates/eclipse-bar` reads no configuration today — there is no `Config` in
-`lib.rs` or `launcher/app.rs`. Putting the key in the abyss KDL config
+`crates/eclipse-launcher` reads no configuration today — there is no `Config` in
+`lib.rs` or `app.rs`. Putting the key in the abyss KDL config
 (COMP-13) means the launcher must fetch it over `eclipse-ipc`, which is new
 plumbing for the crate; the payoff is that `eclipse-settings/src/schema.rs`
 builds its controls from `get_config {schema: true}` with no hand-written key

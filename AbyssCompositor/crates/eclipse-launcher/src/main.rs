@@ -8,7 +8,7 @@
 //! and spawns a child of itself, and when that is refused the refusal is shown
 //! rather than worked around.
 
-use eclipse_bar::launcher::{app, view, WIDTH};
+use eclipse_launcher::{app, view, WIDTH};
 use iced::Task;
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
 use iced_layershell::settings::LayerShellSettings;

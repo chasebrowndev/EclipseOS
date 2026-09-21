@@ -1,0 +1,25 @@
+[package]
+name = "eclipse-toasts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Eclipse notification stack: a layer surface that draws what eclipse-services::notifications holds."
+# Its own crate and its own package so it installs without the taskbar
+# (ADR 0052): a Quickshell user can run this and nothing else of ours.
+publish = false
+
+[lib]
+name = "eclipse_toasts"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eclipse-toasts"
+path = "src/main.rs"
+
+[dependencies]
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
+iced_layershell = "0.19.1"
+eclipse-ui = { path = "../eclipse-ui" }
+eclipse-services = { path = "../eclipse-services" }

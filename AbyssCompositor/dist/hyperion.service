@@ -1,17 +1,17 @@
-# The Eclipse panel. Install to ~/.config/systemd/user/eclipse-bar.service.
+# Hyperion, the Eclipse taskbar. Install to ~/.config/systemd/user/hyperion.service.
 #
 # Started by abyss-session.target, which `abyss --session` starts once its
 # Wayland socket exists and WAYLAND_DISPLAY has been imported into the user
 # manager — so this unit can rely on the variable being set.
 [Unit]
-Description=Eclipse panel
+Description=Eclipse taskbar (hyperion)
 PartOf=graphical-session.target
 After=abyss-session.target
 Requisite=abyss-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/eclipse-bar
+ExecStart=/usr/bin/hyperion
 Restart=on-failure
 RestartSec=2
 Slice=session.slice
