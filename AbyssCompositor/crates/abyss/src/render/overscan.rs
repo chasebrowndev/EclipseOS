@@ -12,11 +12,13 @@
 //!    wrap, in raw framebuffer coordinates, because their whole job is to show
 //!    the human where the desktop's edge now sits.
 //!
-//! The wrap is conditional, not unconditional: `DrmCompositor` inspects element
-//! types to assign KMS planes, so an always-on wrapper would cost direct
-//! scanout on every output including the ones with no overscan at all. An
-//! output with zero overscan takes the [`OutputElement::Plain`] path and is
-//! bit-for-bit what it was before this feature existed.
+//! The rescale wrap is conditional, not unconditional: `DrmCompositor` inspects
+//! element types to assign KMS planes, so an always-on rescale would cost
+//! direct scanout on every output including the ones with no overscan at all.
+//! An output with zero overscan takes the [`OutputElement::Plain`] path, whose
+//! only difference from a bare element is [`Sanitized`] — it delegates
+//! `underlying_storage` and everything else, and drops empty damage rectangles
+//! the kernel would reject (see [`super::sanitize`]).
 
 use smithay::{
     backend::renderer::{
@@ -27,17 +29,20 @@ use smithay::{
         },
         gles::GlesRenderer,
     },
-    utils::{Physical, Point, Rectangle, Size},
+    utils::{Physical, Point, Rectangle, Scale, Size},
 };
 
 use crate::outputs::overscan::Overscan;
 
-use super::AbyssRenderElement;
+use super::{
+    sanitize::{has_area, Sanitized},
+    AbyssRenderElement,
+};
 
 smithay::backend::renderer::element::render_elements! {
     pub OutputElement<=GlesRenderer>;
-    Plain=AbyssRenderElement,
-    Framed=RescaleRenderElement<RelocateRenderElement<AbyssRenderElement>>,
+    Plain=Sanitized<AbyssRenderElement>,
+    Framed=Sanitized<RescaleRenderElement<RelocateRenderElement<AbyssRenderElement>>>,
 }
 
 /// Colour of the calibration markers: the same amber the trusted UI uses, at
@@ -57,30 +62,38 @@ const MARKER_LEN: i32 = 64;
 const MARKER_THICK: i32 = 4;
 
 /// Wrap a frame's elements for an output. `size` is the output's current mode
-/// in physical pixels; `overscan` is the already-clamped effective value.
+/// in physical pixels; `overscan` is the already-clamped effective value;
+/// `scale` is the output scale the elements were built at.
+///
+/// Elements that cover no pixel are dropped: they draw nothing, and the damage
+/// tracker would still report their empty geometry as damage, which the kernel
+/// rejects (see [`super::sanitize`]).
 pub fn frame(
     elements: Vec<AbyssRenderElement>,
     overscan: Overscan,
     size: Size<i32, Physical>,
+    scale: Scale<f64>,
 ) -> Vec<OutputElement> {
+    let elements = elements.into_iter().filter(|element| has_area(element, scale));
     if overscan.is_zero() {
-        return elements.into_iter().map(OutputElement::Plain).collect();
+        return elements
+            .map(|element| OutputElement::Plain(Sanitized::new(element)))
+            .collect();
     }
     let rect = overscan.inset(size);
     let (sx, sy) = overscan.scale(size);
     elements
-        .into_iter()
         .map(|element| {
             // Scale about the framebuffer origin, then push the whole scaled
             // scene down-right by the top-left inset. Order matters: relocate
             // is the inner wrap so the rescale applies to the desktop's own
             // coordinates rather than to the already-offset ones.
             let placed = RelocateRenderElement::from_element(element, rect.loc, Relocate::Relative);
-            OutputElement::Framed(RescaleRenderElement::from_element(
+            OutputElement::Framed(Sanitized::new(RescaleRenderElement::from_element(
                 placed,
                 Point::from((0, 0)),
                 (sx, sy),
-            ))
+            )))
         })
         .collect()
 }
@@ -115,9 +128,9 @@ pub fn calibration_markers(overscan: Overscan, size: Size<i32, Physical>, out: &
 
     for (i, (x, y, w, h)) in bars.into_iter().enumerate() {
         let geo = Rectangle::new((x, y).into(), (w, h).into());
-        out.push(OutputElement::Plain(AbyssRenderElement::Solid(
+        out.push(OutputElement::Plain(Sanitized::new(AbyssRenderElement::Solid(
             SolidColorRenderElement::new(marker_ids()[i].clone(), geo, 0, MARKER, Kind::Unspecified),
-        )));
+        ))));
     }
 }
 
@@ -125,10 +138,49 @@ pub fn calibration_markers(overscan: Overscan, size: Size<i32, Physical>, out: &
 mod tests {
     use super::*;
 
+    fn solid(w: i32, h: i32) -> AbyssRenderElement {
+        AbyssRenderElement::Solid(SolidColorRenderElement::new(
+            smithay::backend::renderer::element::Id::new(),
+            Rectangle::new((40, 298).into(), (w, h).into()),
+            0,
+            MARKER,
+            Kind::Unspecified,
+        ))
+    }
+
     #[test]
     fn zero_overscan_keeps_every_element_plain() {
-        let out = frame(Vec::new(), Overscan::default(), (1920, 1080).into());
+        let out = frame(
+            Vec::new(),
+            Overscan::default(),
+            (1920, 1080).into(),
+            Scale::from(1.0),
+        );
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn elements_with_no_area_never_reach_the_compositor() {
+        // The zero-height strip the kernel rejected, between two real elements.
+        let elements = vec![solid(100, 50), solid(2800, 0), solid(0, 50), solid(10, 10)];
+        let out = frame(
+            elements,
+            Overscan::default(),
+            (2880, 1920).into(),
+            Scale::from(2.0),
+        );
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn dropping_empty_elements_applies_under_overscan_too() {
+        let out = frame(
+            vec![solid(2800, 0), solid(100, 50)],
+            Overscan::uniform(30),
+            (2880, 1920).into(),
+            Scale::from(2.0),
+        );
+        assert_eq!(out.len(), 1);
     }
 
     #[test]

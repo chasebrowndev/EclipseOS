@@ -5,4 +5,5 @@
 # wrong one anyway (D-01 §3.2).
 enable eclipse-bar.service
 enable eclipse-toasts.service
+enable eclipse-screensaver.service
 enable policyd.service

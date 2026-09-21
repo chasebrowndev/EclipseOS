@@ -25,6 +25,10 @@ pub struct IdleTracker {
     last_activity: Instant,
     /// Surfaces holding a `zwp_idle_inhibitor_v1`.
     inhibitors: Vec<WlSurface>,
+    /// Control-socket connections holding an idle inhibit (`set_idle_inhibit`).
+    /// Owned by the connection, like an annotation: the disconnect path is the
+    /// whole lifetime story, so a crashed holder cannot pin the screen on.
+    conn_inhibitors: Vec<u64>,
     /// Outputs are currently powered off by the DPMS timeout.
     dpms_off: bool,
     /// The lock command has already been run for this idle period.
@@ -39,6 +43,7 @@ impl Default for IdleTracker {
         Self {
             last_activity: Instant::now(),
             inhibitors: Vec::new(),
+            conn_inhibitors: Vec::new(),
             dpms_off: false,
             lock_spawned: false,
             bar_idle: false,
@@ -67,6 +72,20 @@ impl IdleTracker {
 
     pub fn remove_inhibitor(&mut self, surface: &WlSurface) {
         self.inhibitors.retain(|s| s != surface);
+    }
+
+    /// Set or clear the idle inhibit held by a control-socket connection.
+    /// Idempotent both ways: the caller states the level, not an edge.
+    pub fn set_conn_inhibit(&mut self, conn: u64, inhibit: bool) {
+        self.conn_inhibitors.retain(|c| *c != conn);
+        if inhibit {
+            self.conn_inhibitors.push(conn);
+        }
+    }
+
+    /// A connection went away; whatever it held goes with it.
+    pub fn clear_conn_inhibit(&mut self, conn: u64) {
+        self.conn_inhibitors.retain(|c| *c != conn);
     }
 }
 
@@ -105,9 +124,14 @@ pub fn on_activity(state: &mut AbyssState) {
     }
 }
 
-/// True while a client holds an inhibitor on a surface that is actually mapped;
-/// dead or unmapped inhibitors are ignored, as the protocol requires.
+/// True while a client holds an inhibitor on a surface that is actually mapped
+/// (dead or unmapped inhibitors are ignored, as the protocol requires), or a
+/// control-socket connection holds one on behalf of a client with no Wayland
+/// surface to hang it on -- the `org.freedesktop.ScreenSaver` bridge.
 fn inhibited(state: &mut AbyssState) -> bool {
+    if !state.idle.conn_inhibitors.is_empty() {
+        return true;
+    }
     state.idle.inhibitors.retain(|s| s.is_alive());
     let inhibitors = std::mem::take(&mut state.idle.inhibitors);
     let held = inhibitors.iter().any(|s| {
@@ -167,4 +191,25 @@ fn tick(state: &mut AbyssState) {
 #[cfg(test)]
 pub fn tick_for_test(state: &mut AbyssState) {
     tick(state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IdleTracker;
+
+    #[test]
+    fn a_connection_holds_one_inhibit_at_a_time_and_releases_it() {
+        let mut idle = IdleTracker::default();
+        idle.set_conn_inhibit(7, true);
+        idle.set_conn_inhibit(7, true);
+        assert_eq!(idle.conn_inhibitors, [7], "setting the level twice is one hold");
+        idle.set_conn_inhibit(9, true);
+        idle.set_conn_inhibit(7, false);
+        assert_eq!(idle.conn_inhibitors, [9]);
+        idle.clear_conn_inhibit(9);
+        assert!(
+            idle.conn_inhibitors.is_empty(),
+            "a dead connection releases its hold"
+        );
+    }
 }

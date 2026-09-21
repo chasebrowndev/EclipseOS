@@ -1,0 +1,22 @@
+# The Eclipse screensaver service: owns org.freedesktop.ScreenSaver so a playing
+# video keeps the display on (ADR 0051). Installed to
+# /usr/lib/systemd/user/eclipse-screensaver.service.
+#
+# Started by abyss-session.target, after which the control socket exists. If it
+# cannot take the bus name it exits non-zero and is retried; the session is not
+# affected either way -- the display just times out as it would without it.
+[Unit]
+Description=Eclipse screensaver (idle inhibit) service
+PartOf=graphical-session.target
+After=abyss-session.target
+Requisite=abyss-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/eclipse-screensaver
+Restart=on-failure
+RestartSec=5
+Slice=session.slice
+
+[Install]
+WantedBy=abyss-session.target

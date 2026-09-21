@@ -12,7 +12,7 @@
 
 pkgbase=eclipseos
 pkgname=(eclipseos-abyss eclipseos-desktop eclipseos-policyd eclipseos-meta)
-pkgver=0.1.0
+pkgver=0.1.1
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
 arch=(x86_64)
@@ -40,10 +40,20 @@ check() {
 
 _bin() { install -Dm0755 "$srcdir/$_src/target/release/$1" "$pkgdir/usr/bin/$1"; }
 _unit() { install -Dm0644 "$srcdir/$_src/dist/$1" "$pkgdir/usr/lib/systemd/user/$1"; }
+# Enable a user unit for every user, image-side. A user-preset only takes effect
+# when someone runs `systemctl --user preset-all`, which nothing does for an
+# account that already exists — the bar shipped "enabled" and never started.
+_want() {
+  install -d "$pkgdir/usr/lib/systemd/user/abyss-session.target.wants"
+  ln -sf "../$1" "$pkgdir/usr/lib/systemd/user/abyss-session.target.wants/$1"
+}
 
 package_eclipseos-abyss() {
   pkgdesc="EclipseOS compositor (abyss) and its control client"
-  depends=(wayland libxkbcommon libinput libdrm libdisplay-info mesa)
+  # xorg-xwayland is a hard dependency, not optional: abyss spawns the X server
+  # at startup for the COMP-07 X11 trust domain. Without it the session dies
+  # before it lights an output.
+  depends=(wayland libxkbcommon libinput libdrm libdisplay-info mesa xorg-xwayland)
   optdepends=('seatd: fallback seat management when logind is unavailable (D-01 §5.3)')
   provides=(abyss)
 
@@ -60,9 +70,13 @@ package_eclipseos-desktop() {
 
   # Enumerated by binary: four of these come out of the eclipse-bar crate.
   for b in eclipse-bar eclipse-toasts eclipse-center eclipse-launcher \
-           eclipse-settings eclipse-policy-viewer; do _bin "$b"; done
+           eclipse-settings eclipse-policy-viewer eclipse-screensaver; do _bin "$b"; done
   _unit eclipse-bar.service
   _unit eclipse-toasts.service
+  _unit eclipse-screensaver.service
+  _want eclipse-bar.service
+  _want eclipse-toasts.service
+  _want eclipse-screensaver.service
   for d in "$srcdir/$_src"/dist/applications/*.desktop; do
     install -Dm0644 "$d" "$pkgdir/usr/share/applications/$(basename "$d")"
   done
@@ -74,6 +88,7 @@ package_eclipseos-policyd() {
 
   _bin policyd
   _unit policyd.service
+  _want policyd.service
 }
 
 package_eclipseos-meta() {
@@ -88,8 +103,6 @@ package_eclipseos-meta() {
   # is a no-op migration.
   install -Dm0644 "$srcdir/$_src/dist/etc/abyss.kdl"  "$pkgdir/etc/eclipse/abyss.kdl"
   install -Dm0644 "$srcdir/$_src/dist/etc/policy.kdl" "$pkgdir/etc/eclipse/policy.kdl"
-  install -Dm0644 "$srcdir/$_src/dist/eclipseos.preset" \
-    "$pkgdir/usr/lib/systemd/user-preset/50-eclipseos.preset"
 
   # Pacman drop-in for the EclipseOS repo (D-02). /etc/pacman.conf must have
   # `Include = /etc/pacman.d/eclipseos.conf`; the ISO's airootfs ships that.

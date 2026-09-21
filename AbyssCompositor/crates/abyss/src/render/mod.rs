@@ -13,6 +13,7 @@ pub mod curve;
 pub mod effects;
 pub mod font;
 pub mod overscan;
+pub mod sanitize;
 pub mod select;
 pub mod stats;
 pub mod text;
@@ -54,6 +55,9 @@ smithay::backend::renderer::element::render_elements! {
     Surface=WaylandSurfaceRenderElement<GlesRenderer>,
     Solid=SolidColorRenderElement,
     Texture=smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>,
+    // Memory-backed, so `DrmCompositor` can scan it out on a plane (a texture
+    // element has no underlying storage and never can). Used by the cursor.
+    Memory=smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<GlesRenderer>,
     Rounded=effects::RoundedElement,
     Shader=smithay::backend::renderer::gles::element::PixelShaderElement,
     Blur=blur::BlurElement,

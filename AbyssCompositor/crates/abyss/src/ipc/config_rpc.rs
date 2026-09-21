@@ -145,9 +145,32 @@ fn default_json(d: &schema::Dv) -> Value {
     }
 }
 
-/// The file on disk a key would be written to: the *last* source with that
-/// owner, which is the one whose value wins.
+/// The file on disk a key would be written to.
+///
+/// A settings write comes from a human in a normal session, who cannot write
+/// `/etc/eclipse` — so the target is the user tier, even when no file exists
+/// there yet (`write_atomically` creates it). Only the last *user-owned*
+/// source is considered, so a drop-in that would shadow the write still wins
+/// the target. `--config` names the file to edit and overrides all of it.
 fn target_path(cfg: &Config, owner: schema::Owner) -> Option<std::path::PathBuf> {
+    if owner == schema::Owner::Abyss {
+        if let Some(p) = &cfg.explicit {
+            return Some(p.clone());
+        }
+    }
+    let base = crate::config::user_config_base();
+    if let Some(base) = &base {
+        let user = cfg
+            .sources
+            .iter()
+            .rev()
+            .find(|s| s.owner == owner && s.path.starts_with(base))
+            .map(|s| s.path.clone());
+        return Some(user.unwrap_or_else(|| match owner {
+            schema::Owner::Abyss => base.join("eclipse/abyss.kdl"),
+            schema::Owner::Policy => base.join("eclipse/policy.kdl"),
+        }));
+    }
     cfg.sources
         .iter()
         .rev()
@@ -493,5 +516,30 @@ mod tests {
         // A6: lists are not writable in v1 and say so, rather than silently
         // writing a one-element list.
         assert!(coerce(&json!(["x"]), &schema::Ty::StrList).is_err());
+    }
+
+    /// A settings write from a normal session must never target `/etc`: the
+    /// user cannot write it, and the whole point of the user tier is that it
+    /// overrides the system one anyway.
+    #[test]
+    fn writes_land_in_the_user_tier_not_etc() {
+        let Some(base) = crate::config::user_config_base() else {
+            return; // no HOME in this environment; nothing to assert
+        };
+        let mut cfg = Config::default();
+        cfg.sources.push(crate::config::Source {
+            path: std::path::PathBuf::from("/etc/eclipse/abyss.kdl"),
+            owner: schema::Owner::Abyss,
+        });
+        assert_eq!(
+            target_path(&cfg, schema::Owner::Abyss),
+            Some(base.join("eclipse/abyss.kdl"))
+        );
+        // `--config` names the file to edit and wins over the search path.
+        cfg.explicit = Some(std::path::PathBuf::from("/tmp/explicit.kdl"));
+        assert_eq!(
+            target_path(&cfg, schema::Owner::Abyss),
+            Some(std::path::PathBuf::from("/tmp/explicit.kdl"))
+        );
     }
 }

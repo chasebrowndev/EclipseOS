@@ -11,5 +11,6 @@
 
 pub mod apps;
 pub mod notifications;
+pub mod screensaver;
 pub mod session;
 pub mod status;

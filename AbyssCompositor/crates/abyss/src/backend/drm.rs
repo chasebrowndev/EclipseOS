@@ -84,6 +84,9 @@ pub struct DrmOutput {
     pub compositor: AbyssDrmCompositor,
     /// Set while a re-render timer is armed, so we never stack timers.
     retry_armed: bool,
+    /// Frames in a row that could not be rendered or queued. Only throttles the
+    /// log ([`log_failure_now`]); it returns to zero once a frame is queued.
+    commit_failures: u32,
     /// A frame is queued and we are waiting for its VBlank.
     frame_pending: bool,
     /// Content changed since the last composite; render at the next chance.
@@ -450,6 +453,7 @@ fn add_connector(
             output,
             compositor,
             retry_armed: false,
+            commit_failures: 0,
             frame_pending: false,
             needs_render: true,
             feedback,
@@ -777,6 +781,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
                             tracing::error!(?err, "resetting compositor state");
                         }
                         o.retry_armed = false;
+                        o.commit_failures = 0;
                         o.frame_pending = false;
                         o.needs_render = true;
                     }
@@ -954,6 +959,66 @@ pub fn render(state: &mut AbyssState) {
     service_captures(state);
 }
 
+/// How long to wait before re-rendering a frame that could not be queued: about
+/// one frame at 60 Hz.
+///
+/// Deliberately not backed off. A refused commit usually clears on its own —
+/// the next frame carries different damage and goes through — so the retry is
+/// what gets the screen updating again, and stretching it stretches the stall
+/// (it was tried, with a one second cap, and made the lag worse). What a run of
+/// failures must not do is flood the log; see [`log_failure_now`].
+const RETRY_DELAY: Duration = Duration::from_millis(16);
+
+/// Whether the `failures`-th consecutive failed frame should be logged: the
+/// first, then each time the run length reaches a power of two (1, 2, 4, 8 …).
+/// A commit the kernel keeps refusing would otherwise log every retry.
+fn log_failure_now(failures: u32) -> bool {
+    failures.is_power_of_two()
+}
+
+/// Whether the frame after this one has to redraw the whole output instead of
+/// only what changed. True for a discarded empty frame and for a refused one;
+/// the call site says why each needs it.
+fn needs_full_redraw(empty: bool, failed: bool) -> bool {
+    empty || failed
+}
+
+/// Consecutive refused frames after which an output stops using KMS planes for
+/// its next frame.
+const PLANE_FALLBACK_AFTER: u32 = 3;
+
+/// The [`FrameFlags`] for a frame, given how many frames in a row were refused.
+/// A commit that keeps failing despite the full redraw is being poisoned by a
+/// plane-assigned element the compositor cannot see inside, so composite
+/// everything onto the primary plane instead: its damage is the output's own,
+/// built from rectangles the damage tracker has already clamped.
+fn frame_flags_for(failures: u32, base: FrameFlags) -> FrameFlags {
+    if failures >= PLANE_FALLBACK_AFTER {
+        FrameFlags::empty()
+    } else {
+        base
+    }
+}
+
+/// One line per element: id, geometry, source and how many damage rectangles it
+/// reports. Only built for a frame that follows a refusal.
+fn describe_elements(elements: &[crate::render::overscan::OutputElement], scale: Scale<f64>) -> String {
+    use smithay::backend::renderer::element::Element;
+    elements
+        .iter()
+        .map(|e| {
+            format!(
+                "{:?} geo={:?} src={:?} damage={}",
+                e.id(),
+                e.geometry(scale),
+                e.src(),
+                e.damage_since(scale, None).len(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// Composite and page-flip one output. A no-op when the session is inactive.
 fn render_output(state: &mut AbyssState, index: usize) {
     let capture_active = state.capture_active();
@@ -1043,7 +1108,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
         .get(out_id)
         .map(|e| e.calibrating.is_some())
         .unwrap_or(false);
-    let mut elements = crate::render::overscan::frame(elements, overscan, mode_size);
+    let mut elements = crate::render::overscan::frame(elements, overscan, mode_size, scale);
     if calibrating {
         crate::render::overscan::calibration_markers(overscan, mode_size, &mut elements);
     }
@@ -1066,11 +1131,19 @@ fn render_output(state: &mut AbyssState, index: usize) {
         .unwrap_or(false);
     // An inset output composites every frame by definition — a scanned-out
     // client buffer would land at the panel's edge, outside the inset rect.
-    let flags = if state.config.render.direct_scanout && !redact && overscan.is_zero() {
+    let base_flags = if state.config.render.direct_scanout && !redact && overscan.is_zero() {
         FrameFlags::DEFAULT
     } else {
         FrameFlags::empty()
     };
+    let prior_failures = drm.outputs[index].commit_failures;
+    let flags = frame_flags_for(prior_failures, base_flags);
+    // A retry after a refusal is the moment worth describing: the elements are
+    // still in hand, and one line names whichever fed the kernel a bad rectangle.
+    let diagnostic = log_failure_now(prior_failures.saturating_add(1))
+        .then_some(prior_failures)
+        .filter(|failures| *failures > 0)
+        .map(|_| describe_elements(&elements, scale));
 
     let compositor = &mut drm.outputs[index].compositor;
     // COMP-03 §8: adaptive sync only while a surface covers the whole output;
@@ -1114,7 +1187,10 @@ fn render_output(state: &mut AbyssState, index: usize) {
         match drm.outputs[index].compositor.queue_frame(Some(presentation)) {
             Ok(()) => queued = true,
             Err(err) => {
-                tracing::warn!(?err, "queueing frame");
+                let failures = drm.outputs[index].commit_failures.saturating_add(1);
+                if log_failure_now(failures) {
+                    tracing::warn!(?err, failures, elements = diagnostic.as_deref(), "queueing frame");
+                }
                 failed = true;
             }
         }
@@ -1125,12 +1201,24 @@ fn render_output(state: &mut AbyssState, index: usize) {
     let Some(drm) = state.drm.as_mut() else { return };
     let compositor = &mut drm.outputs[index].compositor;
 
-    if empty {
+    if needs_full_redraw(empty, failed) {
         // An empty frame is discarded rather than submitted, but the damage
         // tracker still recorded it. That desynchronises the damage history
         // from the swapchain slot ages, and every later frame then restores
         // the wrong regions (stale content, cursor trails). Clearing the ages
         // forces the next frame to be a full redraw, which resyncs both.
+        //
+        // A refused frame needs the same redraw, for a different reason. The
+        // `FB_DAMAGE_CLIPS` blob lives in the plane's pending config, and a
+        // frame with no fresh damage reuses the previous config wholesale. So
+        // a blob the kernel rejects — one degenerate rectangle is enough, and
+        // it rejects the whole commit — is latched: the retry re-renders,
+        // finds nothing newly damaged, resubmits the same blob and is refused
+        // again, at [`RETRY_DELAY`], for as long as the screen holds still.
+        // Measured on eDP-1: 448 consecutive refusals over eight seconds, one
+        // `invalid damage clip 40 298 2840 298` every time. A full redraw
+        // forces a fresh blob, so a bad one costs a frame instead of the
+        // display (COMP-02 §4).
         compositor.reset_buffer_ages();
     }
 
@@ -1140,29 +1228,31 @@ fn render_output(state: &mut AbyssState, index: usize) {
     // clears itself the frame the last move finishes (COMP-02 §9).
     entry.needs_render = animating;
     entry.frame_pending = queued;
+    if queued {
+        entry.commit_failures = 0;
+    } else if failed {
+        entry.commit_failures = entry.commit_failures.saturating_add(1);
+    }
     let arm = !queued && !entry.retry_armed && failed;
     if arm {
-        // The frame had damage but could not be queued: retry shortly. Never
-        // re-arm for an empty frame — an idle render_frame spin pushes empty
-        // entries into the damage tracker's history while the swapchain slot
-        // ages stand still, which desynchronises the two and leaves stale
-        // content on screen.
+        // The frame had damage but could not be queued: retry within a frame
+        // ([`RETRY_DELAY`], not backed off). Never re-arm for an empty frame —
+        // an idle render_frame spin pushes empty entries into the damage
+        // tracker's history while the swapchain slot ages stand still, which
+        // desynchronises the two and leaves stale content on screen.
         entry.retry_armed = true;
         let handle = drm.loop_handle.clone();
-        if let Err(err) = handle.insert_source(
-            Timer::from_duration(Duration::from_millis(16)),
-            move |_, _, state| {
-                let i = state.drm.as_mut().and_then(|drm| {
-                    let i = drm.index_of_crtc(crtc)?;
-                    drm.outputs[i].retry_armed = false;
-                    Some(i)
-                });
-                if let Some(i) = i {
-                    render_output(state, i);
-                }
-                TimeoutAction::Drop
-            },
-        ) {
+        if let Err(err) = handle.insert_source(Timer::from_duration(RETRY_DELAY), move |_, _, state| {
+            let i = state.drm.as_mut().and_then(|drm| {
+                let i = drm.index_of_crtc(crtc)?;
+                drm.outputs[i].retry_armed = false;
+                Some(i)
+            });
+            if let Some(i) = i {
+                render_output(state, i);
+            }
+            TimeoutAction::Drop
+        }) {
             tracing::warn!(?err, "arming re-render timer");
             if let Some(drm) = state.drm.as_mut() {
                 if let Some(i) = drm.index_of_crtc(crtc) {
@@ -1308,5 +1398,56 @@ pub fn set_power(state: &mut AbyssState, id: u64, on: bool) {
         tracing::warn!(?err, id, "powering output off");
     } else {
         drm.outputs[index].frame_pending = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_frame_is_retried_within_one_frame() {
+        // A refused commit clears on its own; the retry must not be the slow part.
+        assert!(RETRY_DELAY <= Duration::from_millis(17));
+    }
+
+    #[test]
+    fn a_run_of_failures_is_logged_at_powers_of_two() {
+        let logged: Vec<u32> = (1..=20).filter(|n| log_failure_now(*n)).collect();
+        assert_eq!(logged, [1, 2, 4, 8, 16]);
+    }
+
+    #[test]
+    fn a_refused_frame_redraws_in_full_so_the_retry_carries_new_damage() {
+        // Without this the retry finds nothing newly damaged, reuses the plane
+        // config holding the blob the kernel just rejected, and is refused
+        // again every RETRY_DELAY until something else on screen moves.
+        assert!(needs_full_redraw(false, true));
+        assert!(needs_full_redraw(true, false));
+        assert!(!needs_full_redraw(false, false));
+    }
+
+    #[test]
+    fn repeated_refusals_drop_plane_assignment_and_a_success_restores_it() {
+        assert_eq!(frame_flags_for(0, FrameFlags::DEFAULT), FrameFlags::DEFAULT);
+        assert_eq!(
+            frame_flags_for(PLANE_FALLBACK_AFTER - 1, FrameFlags::DEFAULT),
+            FrameFlags::DEFAULT
+        );
+        assert_eq!(
+            frame_flags_for(PLANE_FALLBACK_AFTER, FrameFlags::DEFAULT),
+            FrameFlags::empty()
+        );
+        assert_eq!(
+            frame_flags_for(PLANE_FALLBACK_AFTER, FrameFlags::empty()),
+            FrameFlags::empty()
+        );
+    }
+
+    #[test]
+    fn a_counter_that_never_reset_still_logs_rarely() {
+        assert!(log_failure_now(1 << 20));
+        assert!(!log_failure_now((1 << 20) + 1));
+        assert!(!log_failure_now(0));
     }
 }

@@ -43,6 +43,15 @@ pub fn start(state: &mut AbyssState) -> bool {
         return false;
     }
 
+    // smithay spawns `Xwayland` from $PATH and its failure path panics inside
+    // the child reaper ("wait() should either return Ok or panic") rather than
+    // returning Err, which kills the compositor outright on a system where the
+    // X server is simply not installed. Check first and degrade as designed.
+    if !xwayland_on_path() {
+        tracing::warn!("Xwayland not found in PATH; continuing without X11 support");
+        return false;
+    }
+
     let res = XWayland::spawn(
         &state.display_handle,
         None,
@@ -165,3 +174,11 @@ impl XWaylandShellHandler for AbyssState {
 }
 
 smithay::delegate_xwayland_shell!(AbyssState);
+
+/// Whether an executable `Xwayland` exists on `PATH`.
+fn xwayland_on_path() -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| std::fs::metadata(dir.join("Xwayland")).is_ok_and(|m| m.is_file()))
+}

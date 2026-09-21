@@ -20,14 +20,14 @@ bin="$here/../target/release"
 home=$(getent passwd "$user" | cut -d: -f6)
 
 for b in abyss eclipse-bar eclipse-toasts eclipse-center eclipse-launcher \
-         eclipse-settings eclipse-policy-viewer eclipse-ctl; do
+         eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver; do
     [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
 done
 
 # 1. Binaries. Symlinks, so the session always runs what was last built.
 install -d /usr/local/bin
 for b in abyss eclipse-bar eclipse-toasts eclipse-center eclipse-launcher \
-         eclipse-settings eclipse-policy-viewer eclipse-ctl; do
+         eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver; do
     ln -sfn "$bin/$b" "/usr/local/bin/$b"
 done
 install -m 0755 "$here/abyss-session" /usr/local/bin/abyss-session
@@ -43,7 +43,7 @@ sed -i 's|^Exec=.*|Exec=/usr/local/bin/abyss-session|' /usr/share/wayland-sessio
 dest="$home/.config/systemd/user"
 install -d -o "$user" -g "$user" "$dest"
 install -m 0644 -o "$user" -g "$user" "$here/abyss-session.target" "$dest/abyss-session.target"
-for unit in eclipse-bar eclipse-toasts; do
+for unit in eclipse-bar eclipse-toasts eclipse-screensaver; do
     sed 's|/usr/bin/|/usr/local/bin/|' "$here/$unit.service" > "$dest/$unit.service"
     chown "$user:$user" "$dest/$unit.service"
 done
@@ -56,8 +56,26 @@ for f in "$here"/applications/*.desktop; do
     install -m 0644 -o "$user" -g "$user" "$f" "$apps/"
 done
 
-runuser -u "$user" -- systemctl --user daemon-reload
-runuser -u "$user" -- systemctl --user enable eclipse-bar.service eclipse-toasts.service
+# 5. Reload and enable the user units. sudo drops XDG_RUNTIME_DIR and the bus
+#    address, so a bare `runuser -u ... systemctl --user` has no bus to reach
+#    and, under `set -e`, ended the installer after every file was in place. Hand
+#    it the user's own runtime directory. A user with no running systemd
+#    instance (installing from a bare TTY) is not a failure: the units are
+#    already written and are read when their manager next starts.
+uid=$(id -u "$user")
+rt="/run/user/$uid"
+units="eclipse-bar.service eclipse-toasts.service eclipse-screensaver.service"
+if [ -S "$rt/bus" ]; then
+    as_user() {
+        runuser -u "$user" -- env XDG_RUNTIME_DIR="$rt" DBUS_SESSION_BUS_ADDRESS="unix:path=$rt/bus" "$@"
+    }
+    as_user systemctl --user daemon-reload
+    # shellcheck disable=SC2086 # $units is a list of unit names on purpose
+    as_user systemctl --user enable $units
+else
+    echo "No systemd user session for $user right now: the units are installed but not enabled." >&2
+    echo "Once logged in, as $user: systemctl --user daemon-reload && systemctl --user enable $units" >&2
+fi
 
 echo "Abyss installed. Log out and pick 'Abyss' in the greeter session menu."
 echo "Binaries symlink to $bin — rebuild there and the next login picks it up."

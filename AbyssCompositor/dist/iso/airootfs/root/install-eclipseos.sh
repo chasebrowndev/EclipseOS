@@ -43,8 +43,22 @@ fi
 say "disks on this machine"
 lsblk -dpno NAME,SIZE,MODEL | grep -v loop
 
+# No disks at all is a firmware problem, not a typo. Laptops that ship with
+# the SATA/NVMe controller in RAID or Intel VMD mode hide the drive from Linux
+# entirely, and the error people hit downstream is a confusing "not a block
+# device" on a path they read off the machine's own sticker.
+if [[ -z "$(lsblk -dpno NAME | grep -v loop)" ]]; then
+  die "no disks visible. If this machine has an NVMe drive, its firmware is \
+probably set to RAID/Intel VMD -- switch the SATA/NVMe mode to AHCI/NVMe in \
+the BIOS and boot this medium again."
+fi
+
 read -rp $'\nfull path of the disk to install to (e.g. /dev/nvme0n1): ' DISK
-[[ -b $DISK ]] || die "$DISK is not a block device"
+DISK="${DISK//[[:space:]]/}"
+# "nvme0n1" is what the list reads like at a glance, and it is what people
+# type. Accept it rather than failing on a missing /dev/.
+[[ $DISK == /* ]] || DISK="/dev/$DISK"
+[[ -b $DISK ]] || die "$DISK is not a block device. Pick one of the paths listed above."
 
 read -rp "this ERASES everything on $DISK. type the disk path again to confirm: " CONFIRM
 [[ $CONFIRM == "$DISK" ]] || die "confirmation did not match; nothing was changed"
@@ -112,7 +126,37 @@ genfstab -U /mnt >>/mnt/etc/fstab
 # --- configure ---------------------------------------------------------------
 say "configuring the installed system"
 echo "$HOSTNAME" >/mnt/etc/hostname
-ln -sf /usr/share/zoneinfo/America/Chicago /mnt/etc/localtime
+# Asked, not assumed. A wrong timezone is silent -- it looks like the clock is
+# just wrong -- and it is the sort of thing nobody goes back to fix.
+read -rp $'timezone [America/New_York]: ' TZ
+TZ="${TZ//[[:space:]]/}"
+TZ="${TZ:-America/New_York}"
+[[ -f /usr/share/zoneinfo/$TZ ]] || die "$TZ is not a timezone. See: timedatectl list-timezones"
+ln -sf "/usr/share/zoneinfo/$TZ" /mnt/etc/localtime
+
+# The live medium's wifi lives in iwd; the installed system runs NetworkManager
+# and would boot with no saved networks at all. Carry them over.
+if [[ -d /var/lib/iwd ]] && compgen -G '/var/lib/iwd/*.psk' >/dev/null; then
+  install -dm0700 /mnt/var/lib/iwd
+  cp -a /var/lib/iwd/*.psk /mnt/var/lib/iwd/
+  # Those files are iwd's, and NetworkManager only reads them when iwd is its
+  # backend -- with the default wpa_supplicant backend they are dead weight and
+  # the laptop boots with no known networks.
+  install -Dm0644 /dev/stdin /mnt/etc/NetworkManager/conf.d/wifi-backend.conf <<'NMCONF'
+[device]
+wifi.backend=iwd
+NMCONF
+  # NetworkManager and iwd both start on their own, and when NM wins the race it
+  # logs "IWD device named wlan0 is not a Wifi device", parks the device and
+  # never autoconnects -- the laptop boots with no network until someone picks
+  # the network by hand. Order NM after iwd and pull iwd in with it.
+  install -Dm0644 /dev/stdin "/mnt/etc/systemd/system/NetworkManager.service.d/10-iwd-first.conf" <<'NMORDER'
+[Unit]
+Wants=iwd.service
+After=iwd.service
+NMORDER
+  say "carried $(compgen -G '/var/lib/iwd/*.psk' | wc -l) saved wifi network(s) over"
+fi
 sed -i 's/^#en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /mnt/etc/locale.gen
 echo 'LANG=en_US.UTF-8' >/mnt/etc/locale.conf
 
@@ -138,7 +182,6 @@ fi
 locale-gen
 hwclock --systohc
 mkinitcpio -P
-bootctl install
 
 useradd -m -G wheel -s /bin/bash "$USERNAME"
 echo '%wheel ALL=(ALL:ALL) ALL' >/etc/sudoers.d/10-wheel
@@ -147,25 +190,57 @@ chmod 0440 /etc/sudoers.d/10-wheel
 # D-01 §5: no group management. A logind session on a seat is the whole
 # requirement; logind's ACL on the DRM node does the rest.
 
-systemctl enable greetd NetworkManager bluetooth systemd-timesyncd
+systemctl enable greetd NetworkManager iwd bluetooth systemd-timesyncd
 CHROOT
 
-# systemd-boot entry. amd_pstate=active is the Framework 13 AMD default worth
-# having from the first boot rather than discovering later (D-01 §2).
+# --- bootloader ---------------------------------------------------------------
+# Limine. Not systemd-boot -- this firmware refused its stub on the install
+# medium and there is no reason to expect better from the internal disk -- and
+# not GRUB, whose generated config is a script nobody reads and whose failures
+# are correspondingly hard to read. Limine's UEFI install is two files: the
+# stub at the removable fallback path, which needs no NVRAM entry to be found,
+# and a config that says exactly what it does.
+say "installing Limine"
+install -Dm0644 /mnt/usr/share/limine/BOOTX64.EFI /mnt/boot/EFI/BOOT/BOOTX64.EFI
+
+# The ESP is mounted at /boot, so the kernel and initramfs sit at the root of
+# the volume Limine boots from -- that is what `boot():/` resolves to.
+# amd_pstate=active is the Framework 13 AMD default worth having from the first
+# boot rather than discovering later (D-01 §2).
 ROOT_UUID="$(blkid -s UUID -o value "$ROOT")"
-cat >/mnt/boot/loader/loader.conf <<'LOADER'
-default eclipseos.conf
-timeout 2
-console-mode max
-editor no
-LOADER
-cat >/mnt/boot/loader/entries/eclipseos.conf <<ENTRY
-title   EclipseOS
-linux   /vmlinuz-linux
-initrd  /amd-ucode.img
-initrd  /initramfs-linux.img
-options root=UUID=$ROOT_UUID rw amd_pstate=active
-ENTRY
+UCODE=""
+[[ -f /mnt/boot/amd-ucode.img ]] && UCODE="module_path: boot():/amd-ucode.img"
+cat >/mnt/boot/limine.conf <<LIMINE
+timeout: 2
+
+/EclipseOS
+    protocol: linux
+    path: boot():/vmlinuz-linux
+    cmdline: root=UUID=$ROOT_UUID rw amd_pstate=active
+    $UCODE
+    module_path: boot():/initramfs-linux.img
+
+/EclipseOS (fallback initramfs)
+    protocol: linux
+    path: boot():/vmlinuz-linux
+    cmdline: root=UUID=$ROOT_UUID rw
+    module_path: boot():/initramfs-linux-fallback.img
+LIMINE
+
+# Nothing else refreshes the copy on the ESP, so a `limine` upgrade would leave
+# the machine booting last release's stub indefinitely.
+install -Dm0644 /dev/stdin /mnt/etc/pacman.d/hooks/95-limine-esp.hook <<'HOOK'
+[Trigger]
+Type = Path
+Operation = Install
+Operation = Upgrade
+Target = usr/share/limine/BOOTX64.EFI
+
+[Action]
+Description = Copying the Limine stub to the ESP...
+When = PostTransaction
+Exec = /usr/bin/install -Dm0644 /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/BOOTX64.EFI
+HOOK
 
 say "set a password for root"
 arch-chroot /mnt passwd

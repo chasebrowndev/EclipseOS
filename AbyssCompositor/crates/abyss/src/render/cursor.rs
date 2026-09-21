@@ -7,12 +7,15 @@
 //! drawable whatever the user's theme directory happens to contain.
 
 use smithay::{
-    backend::renderer::{
-        element::{
-            texture::{TextureBuffer, TextureRenderElement},
-            Kind,
+    backend::{
+        allocator::Fourcc,
+        renderer::{
+            element::{
+                memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+                Kind,
+            },
+            gles::GlesRenderer,
         },
-        gles::{GlesRenderer, GlesTexture},
     },
     input::pointer::{CursorImageStatus, CursorImageSurfaceData},
     utils::{Physical, Point, Scale, Transform},
@@ -66,9 +69,17 @@ fn arrow_pixels() -> Vec<u8> {
     out
 }
 
-/// The arrow texture, uploaded once and kept for the life of the renderer.
+/// The largest cursor plane any KMS driver exposes is at least this big; the
+/// arrow must fit or `DrmCompositor` composites it instead of scanning it out.
+const MIN_CURSOR_PLANE: i32 = 64;
+const _: () = assert!(ARROW_W <= MIN_CURSOR_PLANE && ARROW_H <= MIN_CURSOR_PLANE);
+
+/// The arrow, built once and kept for the life of the renderer. It is a
+/// memory buffer rather than a texture on purpose: smithay only scans an
+/// element out on a plane when it has underlying storage (COMP-02 §5), and a
+/// texture element has none, so the arrow would always be composited.
 #[derive(Default)]
-pub struct Fallback(Option<TextureBuffer<GlesTexture>>);
+pub struct Fallback(Option<MemoryRenderBuffer>);
 
 impl std::fmt::Debug for Fallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -77,26 +88,17 @@ impl std::fmt::Debug for Fallback {
 }
 
 impl Fallback {
-    fn get(&mut self, renderer: &mut GlesRenderer) -> Option<&TextureBuffer<GlesTexture>> {
-        if self.0.is_none() {
-            match TextureBuffer::from_memory(
-                renderer,
+    fn get(&mut self) -> &MemoryRenderBuffer {
+        self.0.get_or_insert_with(|| {
+            MemoryRenderBuffer::from_slice(
                 &arrow_pixels(),
-                smithay::backend::allocator::Fourcc::Argb8888,
+                Fourcc::Argb8888,
                 (ARROW_W, ARROW_H),
-                false,
                 1,
                 Transform::Normal,
                 None,
-            ) {
-                Ok(buffer) => self.0 = Some(buffer),
-                Err(err) => {
-                    tracing::error!(?err, "uploading the built-in cursor");
-                    return None;
-                }
-            }
-        }
-        self.0.as_ref()
+            )
+        })
     }
 }
 
@@ -137,20 +139,55 @@ pub fn elements(
         // Named shapes all get the arrow for now; the shape is advisory and a
         // wrong-looking pointer is better than no pointer at all.
         CursorImageStatus::Named(_) => {
-            let Some(buffer) = fallback.get(renderer) else {
-                return Vec::new();
-            };
             let pos: Point<i32, Physical> = location.to_physical_precise_round(scale);
-            vec![AbyssRenderElement::Texture(
-                TextureRenderElement::from_texture_buffer(
-                    pos.to_f64(),
-                    buffer,
-                    None,
-                    None,
-                    None,
-                    Kind::Cursor,
-                ),
-            )]
+            match MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                pos.to_f64(),
+                fallback.get(),
+                None,
+                None,
+                None,
+                Kind::Cursor,
+            ) {
+                Ok(element) => vec![AbyssRenderElement::Memory(element)],
+                Err(err) => {
+                    tracing::error!(?err, "uploading the built-in cursor");
+                    Vec::new()
+                }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrow_pixels_are_argb8888_sized_to_the_arrow() {
+        assert_eq!(arrow_pixels().len(), (ARROW_W * ARROW_H * 4) as usize);
+    }
+
+    #[test]
+    fn arrow_has_an_opaque_tip_and_clear_corner() {
+        let px = arrow_pixels();
+        let at = |x: usize, y: usize| &px[(y * ARROW_W as usize + x) * 4..][..4];
+        assert_eq!(at(0, 0), OUTLINE, "the hotspot pixel is the outline");
+        assert_eq!(
+            at(ARROW_W as usize - 1, 0),
+            [0, 0, 0, 0],
+            "the far corner is clear"
+        );
+    }
+
+    #[test]
+    fn fallback_builds_once_and_reuses_the_buffer() {
+        let mut fallback = Fallback::default();
+        let first: *const MemoryRenderBuffer = fallback.get();
+        let second: *const MemoryRenderBuffer = fallback.get();
+        assert!(
+            std::ptr::eq(first, second),
+            "one buffer, so the texture upload is cached"
+        );
     }
 }

@@ -31,6 +31,8 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `general.floating-placement` | centered \| pointer \| cascade | `"centered"` | live | Where a new floating window lands when no window rule places it. |
 | `general.focus-follows-mouse` | bool | `#true` | live | Move keyboard focus to the window under the pointer. |
 | `general.focus-follows-mouse-across-outputs` | bool | `#true` | live | Let pointer motion move focus to another output. Off keeps focus on the current output until you click. |
+| `general.cursor-follows-moved-window` | bool | `#true` | live | Move the pointer onto a window when a keybind moves it, instead of leaving the cursor behind. |
+| `general.follow-window-to-workspace` | bool | `#true` | live | Follow a window sent to another workspace or display, instead of staying where you are. |
 | `general.unfocus-on-empty-workspace` | bool | `#true` | live | Clear keyboard focus when the pointer enters an output whose workspace has no focusable window. Off keeps the previous focus. |
 | `general.focus-follows-mouse-layers` | bool | `#true` | live | Let pointer motion take focus back from an on-demand layer surface such as the bar. Exclusive layer surfaces are never affected. |
 | `general.refocus-on-scene-change` | bool | `#true` | live | Re-evaluate focus when windows appear or disappear under a stationary pointer. |

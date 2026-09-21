@@ -577,6 +577,8 @@ fn reap(state: &mut AbyssState) {
 /// are owned by the connection that created them, not by a lease or a timeout,
 /// so the disconnect path is the whole lifetime story.
 fn disown_annotations(state: &mut AbyssState, id: u64) {
+    // Same story for an idle inhibit: it is the connection's, and it ends here.
+    state.idle.clear_conn_inhibit(id);
     if state.annotations.clear_for(id) > 0 {
         crate::backend::damage_all(state);
     }

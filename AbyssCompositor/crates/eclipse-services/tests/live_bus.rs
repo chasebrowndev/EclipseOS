@@ -159,3 +159,55 @@ fn logind_says_what_it_would_allow() {
         eprintln!("{action:?}: {:?}", session.availability(action));
     }
 }
+
+/// The whole point of `org.freedesktop.ScreenSaver`: a client asks the bus to
+/// keep the screen on, the level goes up, and when the client leaves the bus
+/// without asking to release, it goes back down.
+#[test]
+#[ignore = "needs dbus-daemon; spawns a private bus"]
+fn an_inhibit_holds_until_the_client_leaves_the_bus() {
+    use eclipse_services::screensaver;
+    use std::sync::mpsc;
+
+    let (_bus, address) = private_bus();
+    // SAFETY: single-threaded, before any bus connection is made.
+    unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &address) };
+
+    let (tx, levels) = mpsc::channel();
+    let _service = screensaver::spawn_with(tx).expect("owns the name");
+
+    let client = zbus::blocking::Connection::session().expect("client connection");
+    macro_rules! call {
+        ($method:expr, $body:expr) => {
+            client.call_method(
+                Some("org.freedesktop.ScreenSaver"),
+                "/org/freedesktop/ScreenSaver",
+                Some("org.freedesktop.ScreenSaver"),
+                $method,
+                $body,
+            )
+        };
+    }
+
+    let cookie: u32 = call!("Inhibit", &("firefox", "video"))
+        .expect("Inhibit")
+        .body()
+        .deserialize()
+        .expect("a cookie");
+    assert_ne!(cookie, 0);
+    assert_eq!(levels.recv_timeout(Duration::from_secs(5)), Ok(true));
+
+    // Explicit release, then a second inhibit that is never released.
+    call!("UnInhibit", &(cookie,)).expect("UnInhibit");
+    assert_eq!(levels.recv_timeout(Duration::from_secs(5)), Ok(false));
+    call!("Inhibit", &("firefox", "video")).expect("Inhibit again");
+    assert_eq!(levels.recv_timeout(Duration::from_secs(5)), Ok(true));
+
+    // Closing the connection is what a crashed or closed browser looks like.
+    drop(client);
+    assert_eq!(
+        levels.recv_timeout(Duration::from_secs(5)),
+        Ok(false),
+        "a vanished client must not pin the screen on"
+    );
+}
