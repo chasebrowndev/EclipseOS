@@ -308,7 +308,28 @@ pub const TABLE: &[Key] = &[
         Abyss,
         NeedsRestart,
         "Which edge of every output the taskbar is anchored to. Takes effect \
-       the next time eclipse-bar starts, not on a live reload.",
+       the next time the taskbar starts, not on a live reload.",
+    ),
+    k(
+        "bar.tray.pinned",
+        Ty::StrList,
+        Null,
+        Abyss,
+        Live,
+        "Tray ids shown on the taskbar itself, in this order. Built-in applets \
+       are network, bluetooth, battery and volume; a StatusNotifierItem app \
+       goes by its own id. Unset means the taskbar's built-in order; an \
+       empty list pins nothing. Anything neither pinned nor hidden sits in \
+       the overflow drawer.",
+    ),
+    k(
+        "bar.tray.hidden",
+        Ty::StrList,
+        EmptyList,
+        Abyss,
+        Live,
+        "Tray ids never shown, on the taskbar or in its overflow drawer. \
+       Hidden wins over pinned when an id is in both.",
     ),
     // decoration
     k(
@@ -602,6 +623,7 @@ pub const RULE_ACTIONS: &[(&str, Owner)] = &[
     ("position", Abyss),
     ("output", Abyss),
     ("opacity", Abyss),
+    ("blur", Abyss),
     ("workspace", Abyss),
     ("no-focus-steal", Abyss),
     ("idle-inhibit", Abyss),
@@ -649,6 +671,8 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.fold-duration-ms" => V::Int(c.bar.fold_duration_ms as i64),
         "bar.fold-curve" => V::Str(c.bar.fold_curve.clone()),
         "bar.position" => V::Str(position_name(c.bar.position).into()),
+        "bar.tray.pinned" => c.bar.tray.pinned.as_deref().map_or(V::Null, list),
+        "bar.tray.hidden" => list(&c.bar.tray.hidden),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.active-opacity" => V::Float(c.decoration.active_opacity as f64),
         "decoration.inactive-opacity" => V::Float(c.decoration.inactive_opacity as f64),

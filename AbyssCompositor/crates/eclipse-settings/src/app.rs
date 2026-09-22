@@ -6,26 +6,34 @@
 //! bespoke pane is Display, which is not schema keys at all but outputs
 //! (COMP-03 §1.1) — and even there the calibration overlay is the
 //! compositor's; this pane only sends the verbs and shows the numbers.
+//! Network is the other: the status service's readings, not config
+//! (`network.rs`). Taskbar is schema keys plus one hero — the tray lanes,
+//! which are the control for the two `bar.tray.*` lists.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use iced::widget::{column, pick_list, row, scrollable, text_input, Column, Row, Space};
-use iced::{Element, Length, Subscription, Task, Theme};
+use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use serde_json::{json, Value};
 
 use eclipse_ipc::EventKind;
 use eclipse_ui::theme;
 use eclipse_ui::tokens::space;
 use eclipse_ui::widget::{
-    big_value, content, hairline, header, list_row, micro_label, panel, pill, sidebar, subtitle,
-    value as mono, NumericSlider, Toggle,
+    big_value, chip, content, hairline, header, lane, list_row, micro_label, panel, pill, sidebar,
+    status_chip, subtitle, value as mono, NumericSlider, Toggle,
 };
 
 use crate::conn::{Conn, Problem};
+use crate::network::{self, Net};
 use crate::output::{Edge, Inset, Output};
 use crate::pane::{group_for, pane_for, Pane};
 use crate::schema::{Control, Row as Key};
+use crate::tray::{Lane, Tray};
+
+const TRAY_PINNED: &str = "bar.tray.pinned";
+const TRAY_HIDDEN: &str = "bar.tray.hidden";
 
 /// How often the event thread checks the socket. `poll_event` never blocks and
 /// we have no futures timer backend (only `thread-pool` is enabled), so the
@@ -57,6 +65,19 @@ pub enum Message {
     /// at the application level instead.
     NumberBlur,
     Wire(EventKind, Value),
+    /// The Network pane's feed connected; its action handle.
+    NetReady(network::Handle),
+    NetDown(String),
+    Net(eclipse_services::status::Event),
+    ForgetWifi(String),
+    ForgetDevice(String),
+    /// Select a tray entry, or clear the selection if it is the one selected.
+    TraySelect(String),
+    TrayMove(String, Lane),
+    /// Move a pinned entry one place: `true` later, `false` earlier.
+    TrayShift(String, bool),
+    /// The live tray ids from `tray::feed`; `None` when it could not start.
+    TrayLive(Option<Vec<String>>),
 }
 
 /// Which draggable number a typed draft belongs to. The three sites are not
@@ -122,6 +143,12 @@ pub struct App {
     calibrating: Option<u64>,
     banner: Option<Problem>,
     restart_pending: bool,
+    net: Net,
+    /// The tray entry the move pills act on.
+    tray_sel: Option<String>,
+    /// The running status-notifier items, while the Taskbar pane shows.
+    /// `None` is not heard from yet; `Some(None)` is the feed failing.
+    tray_live: Option<Option<Vec<String>>>,
 }
 
 impl Default for App {
@@ -132,10 +159,15 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
+        Self::with_pane(Pane::Appearance)
+    }
+
+    /// Open on `pane` — `eclipse-settings network` from the taskbar.
+    pub fn with_pane(pane: Pane) -> Self {
         let mut app = App {
             conn: Conn::new(),
             rows: Vec::new(),
-            pane: Pane::Appearance,
+            pane,
             drafts: HashMap::new(),
             invalid: HashSet::new(),
             live: HashMap::new(),
@@ -146,7 +178,16 @@ impl App {
             calibrating: None,
             banner: None,
             restart_pending: false,
+            net: Net::default(),
+            tray_sel: None,
+            tray_live: None,
         };
+        // Debug builds only: open with a tray entry selected, so the selected
+        // state can be screenshotted without pointer injection.
+        #[cfg(debug_assertions)]
+        {
+            app.tray_sel = std::env::var("SETTINGS_PREVIEW_TRAY_SEL").ok();
+        }
         app.reload();
         app
     }
@@ -175,6 +216,16 @@ impl App {
 
     fn key(&self, path: &str) -> Option<&Key> {
         self.rows.iter().find(|r| r.path == path)
+    }
+
+    /// The two tray lists as the compositor last reported them.
+    fn tray(&self) -> Tray {
+        let v = |p| self.key(p).map(|k| k.value.clone()).unwrap_or(Value::Null);
+        let mut t = Tray::from_values(&v(TRAY_PINNED), &v(TRAY_HIDDEN));
+        if let Some(Some(live)) = &self.tray_live {
+            t.live = live.clone();
+        }
+        t
     }
 
     /// Write one scalar and fold the outcome into the banner.
@@ -413,6 +464,32 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             EventKind::ConfigError => app.banner = Some(Problem::from_config_error(&data)),
             _ => {}
         },
+
+        Message::NetReady(h) => app.net.ready(h),
+        Message::NetDown(why) => app.net.down(why),
+        Message::Net(ev) => app.net.apply(ev),
+        Message::ForgetWifi(ssid) => app.net.forget_wifi(ssid),
+        Message::ForgetDevice(addr) => app.net.forget_device(addr),
+
+        Message::TraySelect(id) => {
+            app.tray_sel = (app.tray_sel.as_deref() != Some(id.as_str())).then_some(id);
+        }
+        Message::TrayMove(id, to) => {
+            // The selection stays on the entry, so a second move is one click.
+            let w = app.tray().moved(&id, to);
+            if let Some(p) = w.pinned {
+                app.write(TRAY_PINNED, json!(p));
+            }
+            if let Some(h) = w.hidden {
+                app.write(TRAY_HIDDEN, json!(h));
+            }
+        }
+        Message::TrayShift(id, later) => {
+            if let Some(p) = app.tray().shifted(&id, later) {
+                app.write(TRAY_PINNED, json!(p));
+            }
+        }
+        Message::TrayLive(live) => app.tray_live = Some(live),
     }
     Task::none()
 }
@@ -420,8 +497,16 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
 /// A second connection on its own thread, forwarding events into the runtime.
 /// iced's `time::every` needs a tokio or smol backend and we enable neither,
 /// so the wait lives in a thread rather than in a futures timer.
-pub fn subscription(_app: &App) -> Subscription<Message> {
-    Subscription::batch([blur(), events()])
+pub fn subscription(app: &App) -> Subscription<Message> {
+    let mut subs = vec![blur(), events()];
+    // The status feed runs only while its pane is showing.
+    if app.pane == Pane::Network {
+        subs.push(network::feed());
+    }
+    if app.pane == Pane::Taskbar {
+        subs.push(crate::tray::feed());
+    }
+    Subscription::batch(subs)
 }
 
 /// A press anywhere is the only focus-loss signal available: iced 0.14's
@@ -491,19 +576,42 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
         footer.push(("restart", "required".into()));
     }
 
+    let mut controls = vec![pill("Reload", false, Message::Reload)];
+    match app.pane {
+        Pane::Network => {
+            let (state, measure) = app.net.chip();
+            controls.push(status_chip(&state, &measure));
+        }
+        Pane::Taskbar => {
+            let t = app.tray();
+            controls.push(status_chip(
+                &format!("{} in taskbar", t.taskbar().len()),
+                &format!(
+                    "{} overflow · {} hidden",
+                    t.in_lane(Lane::Overflow).len(),
+                    t.in_lane(Lane::Hidden).len()
+                ),
+            ));
+        }
+        _ => {}
+    }
     let mut blocks = vec![header(
         app.pane.title(),
         subtitle(app.pane.subtitle(), "", ""),
-        vec![pill("Reload", false, Message::Reload)],
+        controls,
     )];
     if let Some(problem) = &app.banner {
         blocks.push(banner(problem));
     }
-    blocks.extend(if app.pane.is_bespoke() {
-        display_pane(app)
-    } else {
-        schema_pane(app)
-    });
+    match app.pane {
+        Pane::Display => blocks.extend(display_pane(app)),
+        Pane::Network => blocks.extend(network::blocks(&app.net)),
+        Pane::Taskbar => {
+            blocks.push(tray_hero(app));
+            blocks.extend(schema_pane(app));
+        }
+        _ => blocks.extend(schema_pane(app)),
+    }
 
     row![
         sidebar(nav, footer),
@@ -539,7 +647,10 @@ fn banner(problem: &Problem) -> Element<'_, Message, Theme> {
 /// Every schema key this pane claims, grouped by node, in schema order.
 fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
     let mut groups: Vec<(&str, Vec<Element<'_, Message, Theme>>)> = Vec::new();
-    for key in app.rows.iter().filter(|k| pane_for(&k.path) == Some(app.pane)) {
+    // The tray lists are drawn by `tray_hero`, their control; listing them
+    // again here as read-only text would be the same setting twice.
+    let shown = |k: &&Key| pane_for(&k.path) == Some(app.pane) && !k.path.starts_with("bar.tray.");
+    for key in app.rows.iter().filter(shown) {
         let group = group_for(&key.path);
         let rows = match groups.iter_mut().find(|(g, _)| *g == group) {
             Some((_, rows)) => rows,
@@ -561,6 +672,130 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
             panel(col).into()
         })
         .collect()
+}
+
+/// The tray, as three lanes of chips: the hero of the Taskbar pane.
+///
+/// Select a chip, then move it. Pinned chips carry their position, and the
+/// taskbar lane is the order the bar draws them in. Accent ledger: the one
+/// yellow is the selected chip; every move pill is unaccented.
+///
+/// The chips are the built-ins, the status-notifier items running now, and
+/// any id the two lists name whose app is not running. The caption counts
+/// the running ones, so an app that is missing from the lanes is plainly
+/// not running rather than silently dropped.
+fn tray_hero(app: &App) -> Element<'_, Message, Theme> {
+    let t = app.tray();
+    let sel = app.tray_sel.as_deref();
+    let chips = |ids: &[String], ordinal: bool| -> Vec<Element<'_, Message, Theme>> {
+        ids.iter()
+            .enumerate()
+            .map(|(i, id)| {
+                chip(
+                    ordinal.then_some(i + 1),
+                    id,
+                    sel == Some(id.as_str()),
+                    Message::TraySelect(id.clone()),
+                )
+            })
+            .collect()
+    };
+    let pinned = t.taskbar();
+    let overflow = t.in_lane(Lane::Overflow);
+    let hidden = t.in_lane(Lane::Hidden);
+
+    let caption = row![
+        micro_label("tray"),
+        Space::new().width(Length::Fill),
+        iced::widget::text(match &app.tray_live {
+            None => "reading tray".to_owned(),
+            Some(None) => "tray unreachable".to_owned(),
+            Some(Some(live)) => match live.len() {
+                1 => "1 app running".to_owned(),
+                n => format!("{n} apps running"),
+            },
+        })
+        .font(eclipse_ui::tokens::font::DATA)
+        .size(eclipse_ui::tokens::size::MICRO)
+        .style(theme::text_tertiary),
+    ]
+    .align_y(Alignment::Center);
+
+    let actions: Element<'_, Message, Theme> = match sel {
+        None => iced::widget::text("nothing selected · select an entry, then move it")
+            .size(eclipse_ui::tokens::size::BODY_SMALL)
+            .style(theme::text_tertiary)
+            .into(),
+        Some(id) => {
+            let at = t.lane_of(id);
+            // Where the entry comes from, so a pinned app that is not
+            // running reads as that, not as a chip that does nothing.
+            let origin = if crate::tray::BUILTINS.contains(&id) {
+                "built-in"
+            } else if t.live.iter().any(|l| l == id) {
+                "running"
+            } else {
+                "not running"
+            };
+            let mut r = Row::new()
+                .push(mono(id))
+                .push(
+                    iced::widget::text(origin)
+                        .font(eclipse_ui::tokens::font::DATA)
+                        .size(eclipse_ui::tokens::size::MICRO)
+                        .style(theme::text_tertiary),
+                )
+                .push(Space::new().width(Length::Fill))
+                .spacing(space::CONTROL_GAP)
+                .align_y(Alignment::Center);
+            if at == Lane::Taskbar {
+                if t.shifted(id, false).is_some() {
+                    r = r.push(pill("Earlier", false, Message::TrayShift(id.to_owned(), false)));
+                }
+                if t.shifted(id, true).is_some() {
+                    r = r.push(pill("Later", false, Message::TrayShift(id.to_owned(), true)));
+                }
+            }
+            for (to, label) in [
+                (Lane::Taskbar, "To taskbar"),
+                (Lane::Overflow, "To overflow"),
+                (Lane::Hidden, "Hide"),
+            ] {
+                if at != to {
+                    r = r.push(pill(label, false, Message::TrayMove(id.to_owned(), to)));
+                }
+            }
+            r.into()
+        }
+    };
+
+    panel(
+        column![
+            caption,
+            lane(
+                "taskbar",
+                &format!("{} pinned", pinned.len()),
+                chips(&pinned, true)
+            ),
+            row![
+                lane(
+                    "overflow",
+                    &format!("{} in drawer", overflow.len()),
+                    chips(&overflow, false)
+                ),
+                lane(
+                    "hidden",
+                    &format!("{} hidden", hidden.len()),
+                    chips(&hidden, false)
+                ),
+            ]
+            .spacing(space::BLOCK),
+            hairline(),
+            actions,
+        ]
+        .spacing(space::ROW_Y),
+    )
+    .into()
 }
 
 /// The one place a schema type becomes a widget.

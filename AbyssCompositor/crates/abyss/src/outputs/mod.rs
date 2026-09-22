@@ -883,7 +883,7 @@ pub fn unregister(state: &mut crate::state::AbyssState, id: u64) {
     // compares it against the output under the pointer, and an id naming a
     // departed output makes that comparison lie. Repair it explicitly and emit
     // the same `output` event the pointer and keyboard focus paths emit, so
-    // eclipse-bar's per-output fold does not keep folding against a ghost.
+    // hyperion's per-output fold does not keep folding against a ghost.
     if let Some(next) = state.outputs.repair_focus() {
         let name = next
             .and_then(|id| state.outputs.get(id))

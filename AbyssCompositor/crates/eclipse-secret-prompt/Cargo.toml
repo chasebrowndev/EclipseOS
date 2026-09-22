@@ -1,0 +1,30 @@
+[package]
+name = "eclipse-secret-prompt"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Asks for one secret (a wifi passphrase, a Bluetooth PIN), hands it to the service, and exits."
+# Its own process so the secret never passes through the taskbar (ADR 0053),
+# and its own crate so anyone replacing the taskbar can reuse it (ADR 0052).
+publish = false
+
+[lib]
+name = "eclipse_secret_prompt"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eclipse-secret-prompt"
+path = "src/main.rs"
+
+[dependencies]
+# Pinned to match eclipse-ui exactly (ADR 0039). A plain xdg_toplevel, so no
+# iced_layershell: windowrules, and with them the `secret` sensitivity class,
+# only match toplevels.
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
+eclipse-ui = { path = "../eclipse-ui" }
+# The join (wifi) and the NetworkManager round trip behind it.
+eclipse-services = { path = "../eclipse-services" }
+# The pairing door on the session bus. Same version eclipse-services pins.
+zbus = "5.19"

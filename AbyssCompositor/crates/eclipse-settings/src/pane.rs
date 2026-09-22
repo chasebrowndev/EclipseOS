@@ -11,6 +11,7 @@ pub enum Pane {
     Appearance,
     Taskbar,
     Display,
+    Network,
     Input,
     Session,
     System,
@@ -23,6 +24,7 @@ impl Pane {
         Pane::Appearance,
         Pane::Taskbar,
         Pane::Display,
+        Pane::Network,
         Pane::Input,
         Pane::Session,
         Pane::System,
@@ -34,6 +36,7 @@ impl Pane {
             Pane::Appearance => "Appearance",
             Pane::Taskbar => "Taskbar",
             Pane::Display => "Display",
+            Pane::Network => "Network",
             Pane::Input => "Input",
             Pane::Session => "Session",
             Pane::System => "System",
@@ -44,8 +47,9 @@ impl Pane {
     pub fn subtitle(self) -> &'static str {
         match self {
             Pane::Appearance => "Layout, borders, decoration and animation.",
-            Pane::Taskbar => "Bar placement and folding.",
+            Pane::Taskbar => "Bar placement, folding and the tray.",
             Pane::Display => "Outputs, modes and overscan calibration.",
+            Pane::Network => "The wifi link, saved networks and paired devices.",
             Pane::Input => "Keyboard, pointer and touchpad.",
             Pane::Session => "Idle, lock and power.",
             Pane::System => "Xwayland and the render device.",
@@ -55,7 +59,16 @@ impl Pane {
 
     /// Panes whose content is not a list of schema keys.
     pub fn is_bespoke(self) -> bool {
-        matches!(self, Pane::Display)
+        matches!(self, Pane::Display | Pane::Network)
+    }
+
+    /// The pane named on the command line — its title, any case. The taskbar
+    /// opens `eclipse-settings network` from its drawers.
+    pub fn from_arg(arg: &str) -> Option<Pane> {
+        Pane::ALL
+            .iter()
+            .copied()
+            .find(|p| p.title().eq_ignore_ascii_case(arg))
     }
 }
 

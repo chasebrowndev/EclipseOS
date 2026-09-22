@@ -61,26 +61,64 @@ impl std::error::Error for EditError {}
 /// key already holds is byte-identical to the input — a slider dragged back to
 /// where it started must not churn the file.
 pub fn set_value(text: &str, path: &str, value: &KdlValue) -> Result<String, EditError> {
+    splice(text, path, &value.to_string(), Shape::Scalar)
+}
+
+/// Set a list-valued key — one node carrying every item as a positional
+/// argument, `pinned "network" "battery"` — to exactly `values`, in order.
+///
+/// Same contract as [`set_value`]: one run of bytes changes, the run being
+/// the node's arguments (from the first to the last), so a comment after them
+/// on the same line survives. An empty list leaves the bare node, which the
+/// parser reads as "explicitly empty" — not the same as deleting the key.
+///
+/// A node carrying a property (`key=value`) or a child block is refused: the
+/// argument run would not be contiguous, and guessing would rewrite bytes the
+/// human wrote.
+pub fn set_list(text: &str, path: &str, values: &[KdlValue]) -> Result<String, EditError> {
+    let rendered: Vec<String> = values.iter().map(ToString::to_string).collect();
+    splice(text, path, &rendered.join(" "), Shape::List)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    Scalar,
+    List,
+}
+
+fn splice(text: &str, path: &str, rendered: &str, shape: Shape) -> Result<String, EditError> {
     let parts: Vec<&str> = path.split('.').filter(|s| !s.is_empty()).collect();
     if parts.is_empty() || parts.len() != path.split('.').count() {
         return Err(EditError::BadPath(path.to_string()));
     }
     let doc: KdlDocument = text.parse().map_err(|e| EditError::Parse(format!("{e}")))?;
 
-    let rendered = value.to_string();
     match resolve(text, &doc, &parts) {
-        // The key is present: splice over its value.
-        Resolved::Value(span) => {
-            if text[span.0..span.1] == rendered {
+        // The key is present: splice over its value(s).
+        Resolved::Node(node) => {
+            let not_a_value = || EditError::NotAValue(parts.join("."));
+            let (span, replacement) = match shape {
+                Shape::Scalar => (value_span(node).ok_or_else(not_a_value)?, rendered.to_string()),
+                Shape::List => match list_span(node).ok_or_else(not_a_value)? {
+                    // Emptying: take the separating blanks too, so the bare
+                    // node keeps no trailing space.
+                    (name_end, _, end) if rendered.is_empty() => ((name_end, end), String::new()),
+                    // No arguments yet: the new run brings its own space.
+                    (name_end, first, end) if first == end => ((name_end, end), format!(" {rendered}")),
+                    // Replace first..last value, keeping the human's spacing
+                    // after the name.
+                    (_, first, end) => ((first, end), rendered.to_string()),
+                },
+            };
+            if text[span.0..span.1] == replacement {
                 return Ok(text.to_string());
             }
-            let mut out = String::with_capacity(text.len() + rendered.len());
+            let mut out = String::with_capacity(text.len() + replacement.len());
             out.push_str(&text[..span.0]);
-            out.push_str(&rendered);
+            out.push_str(&replacement);
             out.push_str(&text[span.1..]);
             Ok(out)
         }
-        Resolved::Block(path) => Err(EditError::NotAValue(path)),
         // The key is absent: insert it, plus whichever enclosing blocks are
         // missing, at the end of the deepest block that does exist.
         Resolved::Missing {
@@ -99,8 +137,10 @@ pub fn set_value(text: &str, path: &str, value: &KdlValue) -> Result<String, Edi
             body.push_str(&indent);
             body.push_str(&inner);
             body.push_str(parts[parts.len() - 1]);
-            body.push(' ');
-            body.push_str(&rendered);
+            if !rendered.is_empty() {
+                body.push(' ');
+                body.push_str(rendered);
+            }
             body.push('\n');
             for i in (0..parts.len() - 1 - depth).rev() {
                 body.push_str(&indent);
@@ -119,11 +159,10 @@ pub fn set_value(text: &str, path: &str, value: &KdlValue) -> Result<String, Edi
     }
 }
 
-enum Resolved {
-    /// Byte range of the existing value's source text.
-    Value((usize, usize)),
-    /// The path names a node with children and no value.
-    Block(String),
+enum Resolved<'a> {
+    /// The node the path names; the caller decides which bytes of it to
+    /// replace.
+    Node(&'a KdlNode),
     /// Insert `parts[depth..]` at byte `insert_at`, with `indent` leading each
     /// new line.
     Missing {
@@ -133,7 +172,7 @@ enum Resolved {
     },
 }
 
-fn resolve(text: &str, doc: &KdlDocument, parts: &[&str]) -> Resolved {
+fn resolve<'a>(text: &str, doc: &'a KdlDocument, parts: &[&str]) -> Resolved<'a> {
     // Later definitions win, matching the parser: it applies nodes in file
     // order, so the last one is the value in effect.
     let mut cur = doc;
@@ -157,11 +196,7 @@ fn resolve(text: &str, doc: &KdlDocument, parts: &[&str]) -> Resolved {
     }
 
     if depth == parts.len() {
-        let node = node.expect("depth advanced");
-        return match value_span(node) {
-            Some(span) => Resolved::Value(span),
-            None => Resolved::Block(parts.join(".")),
-        };
+        return Resolved::Node(node.expect("depth advanced"));
     }
 
     // `cur` is the deepest block that exists. Insert at the end of it, taking
@@ -185,10 +220,29 @@ fn resolve(text: &str, doc: &KdlDocument, parts: &[&str]) -> Resolved {
 /// immediately after the value, so the value is the tail of the span — which
 /// is what lets a property (`key=value`) be edited without touching its key.
 fn value_span(node: &KdlNode) -> Option<(usize, usize)> {
-    let entry = node.entries().iter().find(|e| e.name().is_none())?;
+    value_span_of(node.entries().iter().find(|e| e.name().is_none())?)
+}
+
+fn value_span_of(entry: &kdl::KdlEntry) -> Option<(usize, usize)> {
     let repr_len = entry.format()?.value_repr.len();
     let end = entry.span().offset() + entry.span().len();
     Some((end.checked_sub(repr_len)?, end))
+}
+
+/// Where a list node's arguments sit, as `(name_end, first_value, end)`:
+/// the end of the node's name, where the first argument's value starts, and
+/// where the last one ends. With no arguments all three are `name_end`.
+fn list_span(node: &KdlNode) -> Option<(usize, usize, usize)> {
+    if node.children().is_some() || node.entries().iter().any(|e| e.name().is_some()) {
+        return None;
+    }
+    let name_end = node.name().span().offset() + node.name().span().len();
+    let (Some(first), Some(last)) = (node.entries().first(), node.entries().last()) else {
+        return Some((name_end, name_end, name_end));
+    };
+    let first_value = value_span_of(first)?.0;
+    let end = last.span().offset() + last.span().len();
+    Some((name_end, first_value, end))
 }
 
 fn line_end(text: &str, node: &KdlNode) -> usize {
@@ -334,6 +388,78 @@ misc {
         assert!(matches!(
             set_value("general {", "general.x", &KdlValue::Integer(1)),
             Err(EditError::Parse(_))
+        ));
+    }
+
+    fn strs(v: &[&str]) -> Vec<KdlValue> {
+        v.iter().map(|s| KdlValue::String((*s).to_string())).collect()
+    }
+
+    #[test]
+    fn a_list_replaces_only_its_arguments() {
+        let text = "bar {\n    tray {\n        pinned   \"network\" \"battery\" // mine\n    }\n}\n";
+        let out = set_list(text, "bar.tray.pinned", &strs(&["volume", "network"])).unwrap();
+        assert_eq!(
+            out,
+            "bar {\n    tray {\n        pinned   volume network // mine\n    }\n}\n"
+        );
+        assert_eq!(diff_runs(text, &out), 1);
+        // Same list again: byte-identical.
+        assert_eq!(
+            set_list(&out, "bar.tray.pinned", &strs(&["volume", "network"])).unwrap(),
+            out
+        );
+    }
+
+    #[test]
+    fn a_list_empties_to_a_bare_node_and_refills() {
+        let text = "bar {\n    tray {\n        hidden a b\n    }\n}\n";
+        let empty = set_list(text, "bar.tray.hidden", &[]).unwrap();
+        assert_eq!(empty, "bar {\n    tray {\n        hidden\n    }\n}\n");
+        let back = set_list(&empty, "bar.tray.hidden", &strs(&["a", "b"])).unwrap();
+        assert_eq!(back, text);
+        back.parse::<KdlDocument>().unwrap();
+    }
+
+    #[test]
+    fn a_missing_list_is_inserted_with_its_blocks() {
+        let out = set_list(
+            "bar {\n    position \"top\"\n}\n",
+            "bar.tray.pinned",
+            &strs(&["network"]),
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "bar {\n    position \"top\"\n    tray {\n        pinned network\n    }\n}\n"
+        );
+        let bare = set_list("", "bar.tray.hidden", &[]).unwrap();
+        assert_eq!(bare, "bar {\n    tray {\n        hidden\n    }\n}\n");
+    }
+
+    /// kdl renders a string as a bare identifier when it can, and quotes it
+    /// when it must — an id that looks like a keyword or number survives.
+    #[test]
+    fn a_list_quotes_what_needs_quoting() {
+        let out = set_list("", "pinned", &strs(&["true", "1x", "a b", "org.kde.x"])).unwrap();
+        let doc: KdlDocument = out.parse().unwrap();
+        let got: Vec<_> = doc.nodes()[0]
+            .entries()
+            .iter()
+            .map(|e| e.value().as_string().unwrap().to_string())
+            .collect();
+        assert_eq!(got, ["true", "1x", "a b", "org.kde.x"]);
+    }
+
+    #[test]
+    fn a_list_with_a_property_or_block_is_refused() {
+        assert!(matches!(
+            set_list("pinned \"a\" x=1\n", "pinned", &strs(&["b"])),
+            Err(EditError::NotAValue(_))
+        ));
+        assert!(matches!(
+            set_list("pinned { a }\n", "pinned", &strs(&["b"])),
+            Err(EditError::NotAValue(_))
         ));
     }
 }

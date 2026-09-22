@@ -22,6 +22,11 @@ use crate::xwayland::security::{AppTrust, SeatCompat};
 /// Per-window opacity set by a matched `opacity` rule, read by the renderer.
 pub struct RuleOpacity(pub Cell<f32>);
 
+/// Per-window blur override set by a matched `blur` rule, read by the
+/// renderer. Only changes the on/off decision; an opaque window still never
+/// blurs (see `render::window_elements`).
+pub struct RuleBlur(pub Cell<bool>);
+
 /// Trust class pinned by an `app-trust` rule (COMP-05 §4). Consumed once
 /// COMP-08 gates agent actions on it.
 pub struct RuleTrust(pub Cell<AppTrust>);
@@ -29,10 +34,15 @@ pub struct RuleTrust(pub Cell<AppTrust>);
 /// Seat concurrency pinned by a `seat-compat` rule (COMP-04 §8).
 pub struct RuleSeat(pub Cell<SeatCompat>);
 
-/// Marker that a window has had its one placement pass with a known identity.
-/// A client's `app_id`/`title` are usually still empty at map time, so the
-/// placement actions get one deferred retry on the first commit that carries
-/// an identity; after that placement is frozen (module comment).
+/// Marker that a window's placement is final. An xdg_toplevel is created
+/// before the client has sent any of its state — `app_id`, `title`,
+/// `set_parent`, min/max size — so placement is re-decided on each commit
+/// until the window settles, and never after: at the first commit whose
+/// placement differs from the default (it is re-installed exactly once), or
+/// at the first commit carrying a buffer (the map) once any rule has an
+/// identity to match on. An X11 window has set its properties before it asks
+/// to be mapped, so it settles at [`apply`] unless a rule still waits on a
+/// name.
 pub struct Placed;
 
 /// Marker for `windowrule "no-agent"`: the window is absent from every agent's
@@ -66,6 +76,17 @@ pub fn any_opacity_override<'a>(mut windows: impl Iterator<Item = &'a Window>) -
     windows.any(|w| w.user_data().get::<RuleOpacity>().is_some())
 }
 
+/// The blur override a matched rule pinned on this window, if any.
+pub fn blur_of(window: &Window) -> Option<bool> {
+    window.user_data().get::<RuleBlur>().map(|b| b.0.get())
+}
+
+/// Whether any window carries a blur override, i.e. whether the renderer has
+/// to take the per-window path even with default decoration.
+pub fn any_blur_override<'a>(mut windows: impl Iterator<Item = &'a Window>) -> bool {
+    windows.any(|w| w.user_data().get::<RuleBlur>().is_some())
+}
+
 /// The trust class a matched rule pinned on this window, if any.
 #[allow(dead_code)] // consumed when COMP-08 gates on app trust
 pub fn trust_of(window: &Window) -> Option<AppTrust> {
@@ -86,32 +107,48 @@ pub fn hidden_from_agents(window: &Window) -> bool {
 
 /// Evaluate every rule against a newly mapped window.
 pub fn apply(state: &mut AbyssState, window: &Window) -> Placement {
-    evaluate(state, window, true)
+    let (placement, named) = evaluate(state, window, true);
+    if window.toplevel().is_none() && (state.config.window_rules.is_empty() || named) {
+        window.user_data().insert_if_missing(|| Placed);
+    }
+    placement
 }
 
 /// Re-evaluate after a commit. Property actions always re-apply; placement is
-/// returned only for the one deferred pass described on [`Placed`], and the
+/// returned at most once, while the window settles (see [`Placed`]), and the
 /// caller then has to re-install the window.
 #[must_use]
 pub fn reevaluate(state: &mut AbyssState, window: &Window) -> Option<Placement> {
-    if state.config.window_rules.is_empty() {
-        return None;
-    }
+    let rules = !state.config.window_rules.is_empty();
     if window.user_data().get::<Placed>().is_some() {
-        evaluate(state, window, false);
+        if rules {
+            evaluate(state, window, false);
+        }
         return None;
     }
-    let placement = evaluate(state, window, true);
-    if placement == Placement::default() {
-        return None;
+    let (placement, named) = evaluate(state, window, true);
+    let mapped = window
+        .toplevel()
+        .is_none_or(|t| super::has_buffer(t.wl_surface()));
+    let changed = placement != Placement::default();
+    if settles(changed, mapped, rules, named) {
+        window.user_data().insert_if_missing(|| Placed);
     }
-    // A rule matched on something other than identity (pid, cgroup); freeze
-    // placement here too, or the window would be re-installed on every commit.
-    window.user_data().insert_if_missing(|| Placed);
-    Some(placement)
+    changed.then_some(placement)
 }
 
-fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> Placement {
+/// Whether a window's placement freezes on this commit (see [`Placed`]).
+/// `changed`: this pass moves it off the default tiled placement it was
+/// installed with, so the caller re-installs it now and never again.
+/// Otherwise it waits for the map, and past it for a name when rules exist.
+/// A client that pins its size or sets a parent only after its initial commit
+/// is therefore still floated, provided it does so before its first buffer.
+fn settles(changed: bool, mapped: bool, rules: bool, named: bool) -> bool {
+    changed || (mapped && (named || !rules))
+}
+
+/// Returns the placement and whether the window has named itself yet.
+fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> (Placement, bool) {
     let mut placement = Placement::default();
     let facts = Facts::gather(state, window);
     // A dialog/utility window (xdg_toplevel with a parent, or an X11 window
@@ -119,18 +156,18 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> Placement
     // default — nothing declares this via windowrule today, so without this
     // every "Save As", preferences or confirmation popup would tile like a
     // primary window (COMP-05 §4 default is otherwise silent on this case).
+    // A fixed-size xdg_toplevel (committed min == max, both non-zero) floats
+    // for the same reason: tiling would stretch a window that has said it
+    // cannot be resized — the secret prompt is one of these.
     // An explicit `tile`/`float` rule below still overrides it.
     if placing {
         placement.float = facts.is_dialog;
     }
+    // Identity arrives after the first commit for some clients; until it
+    // does, a placement pass matches on empty strings and the caller retries.
+    let named = !(facts.app_id.is_empty() && facts.title.is_empty());
     if state.config.window_rules.is_empty() {
-        return placement;
-    }
-    // Identity arrives after the first commit for most clients; until it does,
-    // a placement pass would match on empty strings. Hold the marker back so
-    // the caller retries once the client has named itself.
-    if placing && !(facts.app_id.is_empty() && facts.title.is_empty()) {
-        window.user_data().insert_if_missing(|| Placed);
+        return (placement, named);
     }
     // Rules apply in file order, so a later rule wins on the same property.
     for i in 0..state.config.window_rules.len() {
@@ -195,6 +232,13 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> Placement
                     window.user_data().insert_if_missing(|| RuleOpacity(Cell::new(v)));
                 }
             }
+            RuleAction::Blur(v) => {
+                if let Some(b) = window.user_data().get::<RuleBlur>() {
+                    b.0.set(v);
+                } else {
+                    window.user_data().insert_if_missing(|| RuleBlur(Cell::new(v)));
+                }
+            }
             RuleAction::NoAgent => {
                 window.user_data().insert_if_missing(|| NoAgent);
             }
@@ -207,7 +251,7 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> Placement
             }
         }
     }
-    placement
+    (placement, named)
 }
 
 /// Everything a matcher can ask about a window, read once.
@@ -223,8 +267,10 @@ struct Facts {
     /// True for a window that identifies itself as a dialog/utility rather
     /// than a primary toplevel: an xdg_toplevel with `parent` set, or an X11
     /// window carrying `WM_TRANSIENT_FOR` or a non-`Normal`
-    /// `_NET_WM_WINDOW_TYPE`. Nothing here is trusted for anything but the
-    /// default float/tile choice — an untrusted client can always claim it.
+    /// `_NET_WM_WINDOW_TYPE`, or an xdg_toplevel whose committed min and max
+    /// size are equal and non-zero (see [`fixed_size`]). Nothing here is
+    /// trusted for anything but the default float/tile choice — an untrusted
+    /// client can always claim it.
     is_dialog: bool,
 }
 
@@ -240,6 +286,13 @@ impl Facts {
             .or_else(|| state.outputs.focused());
         let is_dialog = if let Some(toplevel) = window.toplevel() {
             toplevel.parent().is_some()
+                || smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+                    let mut guard = states
+                        .cached_state
+                        .get::<smithay::wayland::shell::xdg::SurfaceCachedState>();
+                    let d = guard.current();
+                    fixed_size(d.min_size, d.max_size)
+                })
         } else if let Some(x11) = window.x11_surface() {
             x11.is_transient_for().is_some()
                 || matches!(
@@ -309,6 +362,16 @@ impl Facts {
     }
 }
 
+/// True when a toplevel has pinned its size: `min_size == max_size` with
+/// both axes non-zero. Zero means "unconstrained" on that axis (xdg-shell), so
+/// a zeroed pair is an ordinary resizable window, not a fixed one.
+fn fixed_size(
+    min: smithay::utils::Size<i32, smithay::utils::Logical>,
+    max: smithay::utils::Size<i32, smithay::utils::Logical>,
+) -> bool {
+    min == max && min.w > 0 && min.h > 0
+}
+
 /// The client's cgroup path, or empty when the kernel will not say. Read once
 /// per evaluation, off the input hot path.
 fn cgroup_of(pid: i32) -> String {
@@ -321,4 +384,46 @@ fn cgroup_of(pid: i32) -> String {
                 .to_owned()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fixed_size, settles};
+    use smithay::utils::{Logical, Size};
+
+    fn size(w: i32, h: i32) -> Size<i32, Logical> {
+        Size::from((w, h))
+    }
+
+    #[test]
+    fn only_an_equal_non_zero_min_max_is_fixed() {
+        assert!(fixed_size(size(420, 180), size(420, 180)));
+        // Unconstrained on both axes: an ordinary window.
+        assert!(!fixed_size(size(0, 0), size(0, 0)));
+        // Pinned on one axis only is still resizable on the other.
+        assert!(!fixed_size(size(420, 0), size(420, 0)));
+        assert!(!fixed_size(size(0, 180), size(0, 180)));
+        // A range, however narrow, is resizable.
+        assert!(!fixed_size(size(400, 180), size(420, 180)));
+        // Only a minimum.
+        assert!(!fixed_size(size(420, 180), size(0, 0)));
+    }
+
+    #[test]
+    fn placement_settles_once_and_not_before_the_map() {
+        // (changed, mapped, rules, named)
+        // A client that pins its size after its bufferless initial commit:
+        // nothing to do yet, and the window must not freeze tiled.
+        assert!(!settles(false, false, false, true));
+        assert!(!settles(false, false, true, true));
+        // It becomes fixed-size before its first buffer: floated, and frozen.
+        assert!(settles(true, false, false, true));
+        // Mapped as an ordinary window: frozen tiled, no re-check per commit.
+        assert!(settles(false, true, false, false));
+        assert!(settles(false, true, true, true));
+        // Mapped with rules but still nameless: wait for the name.
+        assert!(!settles(false, true, true, false));
+        // A rule that matched on something other than identity still freezes.
+        assert!(settles(true, true, true, false));
+    }
 }

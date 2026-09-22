@@ -108,6 +108,8 @@ pub fn invalidates(
 pub struct BlurElement {
     inner: TextureRenderElement<GlesTexture>,
     commit: CommitCounter,
+    program: Option<GlesTexProgram>,
+    uniforms: Vec<Uniform<'static>>,
 }
 
 impl Element for BlurElement {
@@ -167,7 +169,15 @@ impl RenderElement<GlesRenderer> for BlurElement {
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), GlesError> {
-        RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions)
+        if let Some(program) = &self.program {
+            frame.override_default_tex_program(program.clone(), self.uniforms.clone());
+            let res =
+                RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions);
+            frame.clear_tex_program_override();
+            res
+        } else {
+            RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions)
+        }
     }
 
     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
@@ -272,6 +282,7 @@ impl BlurStore {
         behind: &[E],
         blur: &Blur,
         scale: Scale<f64>,
+        rounding: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
     ) -> Option<BlurElement>
     where
         E: Element + RenderElement<GlesRenderer>,
@@ -337,12 +348,23 @@ impl BlurStore {
 
         let entry = self.surfaces.get(key)?;
         let texture = entry.result.clone()?;
-        // The texture is in output-local physical pixels; `src` selects the
-        // part of it that sits under this window.
+        // The chain texture is exactly `fb_size` (output physical pixels), and
+        // `from_static_texture` is built below with a literal `texture_scale`
+        // of 1, so `Element::src()` hands this rectangle straight to the GPU
+        // with no further scaling. It must therefore already be in the
+        // texture's own buffer space — i.e. `region` unscaled. Dividing by
+        // `scale` here (as before) under-sampled the backdrop at scale != 1.0,
+        // which is exactly the BLUR-02 offset bleed.
         let src = Rectangle::<f64, smithay::utils::Logical>::new(
-            (region.loc.x as f64 / scale.x, region.loc.y as f64 / scale.y).into(),
-            (region.size.w as f64 / scale.x, region.size.h as f64 / scale.y).into(),
+            (region.loc.x as f64, region.loc.y as f64).into(),
+            (region.size.w as f64, region.size.h as f64).into(),
         );
+        // `size` is different: it is the on-screen (logical) footprint, and
+        // `Element::geometry(scale)` re-multiplies it by the *live* scale
+        // every frame, so it has to be pre-divided here or the element would
+        // paint at double size. This asymmetry — buffer-space `src` vs.
+        // logical `size` — is the load-bearing part of this fix, not a
+        // leftover to "fix" together with `src`.
         let size = Size::<i32, smithay::utils::Logical>::from((
             (region.size.w as f64 / scale.x).round() as i32,
             (region.size.h as f64 / scale.y).round() as i32,
@@ -360,9 +382,15 @@ impl BlurStore {
             None,
             Kind::Unspecified,
         );
+        let (program, uniforms) = match rounding {
+            Some((program, uniforms)) => (Some(program), uniforms),
+            None => (None, Vec::new()),
+        };
         Some(BlurElement {
             inner,
             commit: entry.commit,
+            program,
+            uniforms,
         })
     }
 

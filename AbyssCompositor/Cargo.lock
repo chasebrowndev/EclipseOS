@@ -1132,17 +1132,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "eclipse-bar"
+name = "eclipse-center"
 version = "0.1.0"
 dependencies = [
- "eclipse-ipc",
  "eclipse-services",
  "eclipse-ui",
- "freedesktop-icons",
  "iced",
  "iced_layershell",
- "libc",
- "serde_json",
 ]
 
 [[package]]
@@ -1164,12 +1160,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "eclipse-launcher"
+version = "0.1.0"
+dependencies = [
+ "eclipse-services",
+ "eclipse-ui",
+ "iced",
+ "iced_layershell",
+]
+
+[[package]]
 name = "eclipse-policy-viewer"
 version = "0.1.0"
 dependencies = [
  "eclipse-ui",
  "iced",
  "kdl",
+]
+
+[[package]]
+name = "eclipse-secret-prompt"
+version = "0.1.0"
+dependencies = [
+ "eclipse-services",
+ "eclipse-ui",
+ "iced",
+ "zbus",
 ]
 
 [[package]]
@@ -1187,9 +1203,20 @@ version = "0.1.0"
 dependencies = [
  "abyss",
  "eclipse-ipc",
+ "eclipse-services",
  "eclipse-ui",
  "iced",
  "serde_json",
+]
+
+[[package]]
+name = "eclipse-toasts"
+version = "0.1.0"
+dependencies = [
+ "eclipse-services",
+ "eclipse-ui",
+ "iced",
+ "iced_layershell",
 ]
 
 [[package]]
@@ -1889,6 +1916,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17"
 dependencies = [
  "typenum",
+]
+
+[[package]]
+name = "hyperion"
+version = "0.1.0"
+dependencies = [
+ "eclipse-ipc",
+ "eclipse-services",
+ "eclipse-ui",
+ "freedesktop-icons",
+ "iced",
+ "iced_layershell",
+ "libc",
+ "serde_json",
 ]
 
 [[package]]

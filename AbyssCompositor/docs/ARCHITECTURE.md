@@ -21,7 +21,10 @@ crates/
   eclipse-ctl/        human CLI over the COMP-13 IPC socket
   eclipse-ipc/        blocking client for the COMP-13 §2 socket, no async runtime
   eclipse-ui/         DE design system: tokens, type, widgets over iced 0.14
-  eclipse-bar/        layer-shell panels — bar, toasts, center, launcher (DP-5)
+  hyperion/           the taskbar (internal name; users see "taskbar") (DP-4)
+  eclipse-toasts/     notification toasts, layer-shell (DP-5)
+  eclipse-center/     notification + status center, layer-shell (DP-5)
+  eclipse-launcher/   application launcher, layer-shell (DP-5)
   eclipse-settings/   settings panes; every write via set_config_value (COMP-17 §3)
   eclipse-policy-viewer/  read-only policy.kdl inspector, deliberately powerless
   eclipse-services/   freedesktop notification server (ADR 0038), lib only

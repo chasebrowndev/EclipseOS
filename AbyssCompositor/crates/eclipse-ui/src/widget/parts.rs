@@ -266,12 +266,27 @@ pub fn drawer_sheet<'a, Message: 'a>(
     heading: &str,
     rows: Vec<Element<'a, Message, Theme>>,
 ) -> Element<'a, Message, Theme> {
-    let mut col = Column::new().push(
-        container(micro_label(heading))
-            .height(Length::Fixed(drawer::HEAD_H))
-            .align_y(Alignment::Center)
-            .padding([0.0, drawer::ROW_X]),
-    );
+    drawer_frame(drawer_sheet_head(heading), rows)
+}
+
+/// The plain heading strip of a [`drawer_sheet`], for a caller that assembles
+/// the sheet through [`drawer_frame`] itself. [`drawer::HEAD_H`] tall.
+pub fn drawer_sheet_head<'a, Message: 'a>(heading: &str) -> Element<'a, Message, Theme> {
+    container(micro_label(heading))
+        .height(Length::Fixed(drawer::HEAD_H))
+        .align_y(Alignment::Center)
+        .padding([0.0, drawer::ROW_X])
+        .into()
+}
+
+/// [`drawer_sheet`] with a head the caller builds — a [`drawer_switch_head`]
+/// rather than a bare label. The glass, padding and edge highlight are still
+/// decided once, here.
+pub fn drawer_frame<'a, Message: 'a>(
+    head: Element<'a, Message, Theme>,
+    rows: Vec<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    let mut col = Column::new().push(head);
     for r in rows {
         col = col.push(r);
     }
@@ -330,6 +345,209 @@ pub fn drawer_row<'a, Message: 'a>(
     .into()
 }
 
+/// A radio drawer's heading: its label at the left and the radio's on/off
+/// [`crate::widget::Toggle`] at the right.
+///
+/// A widget because the head is the drawer's one control and both radio
+/// drawers (wi-fi, bluetooth) must put it in the same place at the same
+/// height — [`drawer::HEAD_SWITCH_H`], which the popup's size arithmetic
+/// also reads. The toggle's lit track is the drawer's one yellow.
+pub fn drawer_switch_head<'a, Message: 'a>(
+    heading: &str,
+    toggle: impl Into<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    container(
+        row![
+            micro_label(heading),
+            Space::new().width(Length::Fill),
+            toggle.into()
+        ]
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(drawer::HEAD_SWITCH_H))
+    .align_y(Alignment::Center)
+    .padding([0.0, drawer::ROW_X])
+    .into()
+}
+
+/// The hero row of a radio drawer: the one network or device the radio is
+/// on, two lines tall, with the verb that ends it at the right.
+///
+/// A widget because it is the drawer's hero and must not share a silhouette
+/// with the rows under it: taller ([`drawer::CURRENT_H`]), a larger mark, a
+/// semibold name over a mono state line. Built from [`drawer_row`] it would
+/// read as the first item of the list, which is the exact failure the
+/// composition rules exist to stop.
+pub fn drawer_current<'a, Message: Clone + 'a>(
+    mark: Element<'a, Message, Theme>,
+    name: &str,
+    state: &str,
+    state_tint: Color,
+    action: Option<(&str, Message)>,
+) -> Element<'a, Message, Theme> {
+    let lines = column![
+        text(name.to_string())
+            .font(font::UI_SEMIBOLD)
+            .size(size::BODY)
+            .color(color::TEXT),
+        text(state.to_string())
+            .font(font::DATA)
+            .size(size::MICRO)
+            .color(state_tint),
+    ]
+    .spacing(drawer::LINE_GAP);
+    // The larger mark eats into its own gap, not the name's position: the
+    // name stays on the list's gridline (`ROW_X + MARK + MARK_GAP`) so the
+    // choices below hang off it.
+    let mut r = row![
+        container(mark)
+            .width(Length::Fixed(drawer::CURRENT_MARK))
+            .height(Length::Fixed(drawer::CURRENT_MARK))
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
+        Space::new().width(Length::Fixed(
+            drawer::MARK + drawer::MARK_GAP - drawer::CURRENT_MARK
+        )),
+        lines,
+        Space::new().width(Length::Fill),
+    ]
+    .align_y(Alignment::Center);
+    if let Some((label, msg)) = action {
+        r = r.push(
+            button(
+                text(label.to_string())
+                    .font(font::UI_MEDIUM)
+                    .size(size::BODY_SMALL)
+                    .color(color::TEXT_SECONDARY),
+            )
+            .padding([space::ROW_Y / 2.0, drawer::ROW_X])
+            .style(drawer_lift)
+            .on_press(msg),
+        );
+    }
+    container(r)
+        .width(Length::Fill)
+        .height(Length::Fixed(drawer::CURRENT_H))
+        .align_y(Alignment::Center)
+        .padding([0.0, drawer::ROW_X])
+        .into()
+}
+
+/// One pickable row of a drawer: a mark, a name, an optional trailing mark,
+/// and a ground that lifts under the pointer.
+///
+/// A widget rather than a [`drawer_row`] because this row is a *choice* — a
+/// click on it does something — and a pickable row that does not answer the
+/// pointer reads as a picture of one. It is the same fixed [`drawer::ROW_H`]
+/// so the popup arithmetic still holds, and the name sits on the same
+/// gridline as the hero row's so the list hangs off the hero.
+pub fn drawer_choice<'a, Message: Clone + 'a>(
+    mark: Element<'a, Message, Theme>,
+    label: &str,
+    trailing: Option<Element<'a, Message, Theme>>,
+    on_press: Option<Message>,
+) -> Element<'a, Message, Theme> {
+    let mut r = row![
+        container(mark)
+            .width(Length::Fixed(drawer::MARK))
+            .height(Length::Fixed(drawer::MARK))
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
+        text(label.to_string())
+            .font(font::UI)
+            .size(size::BODY_SMALL)
+            .color(color::TEXT),
+        Space::new().width(Length::Fill),
+    ]
+    .spacing(drawer::MARK_GAP)
+    .align_y(Alignment::Center);
+    if let Some(t) = trailing {
+        r = r.push(t);
+    }
+    let face = container(r)
+        .height(Length::Fill)
+        .align_y(Alignment::Center)
+        .padding([0.0, drawer::ROW_X]);
+    let b = button(face)
+        .width(Length::Fill)
+        .height(Length::Fixed(drawer::ROW_H))
+        .padding(0)
+        .style(drawer_lift);
+    match on_press {
+        Some(m) => b.on_press(m).into(),
+        None => b.into(),
+    }
+}
+
+/// The drawer's way out to the full pane: a quiet label and an arrow, on a
+/// row that lifts under the pointer.
+///
+/// A widget because every drawer ends in one ("Network settings",
+/// "Bluetooth settings") and they must read as the same exit — secondary
+/// ink, never a mark, so it is not taken for one more item of the list.
+pub fn drawer_link<'a, Message: Clone + 'a>(label: &str, on_press: Message) -> Element<'a, Message, Theme> {
+    let face = container(
+        row![
+            text(label.to_string())
+                .font(font::UI_MEDIUM)
+                .size(size::BODY_SMALL)
+                .color(color::TEXT_SECONDARY),
+            Space::new().width(Length::Fill),
+            text("\u{2192}")
+                .font(font::DATA)
+                .size(size::MONO)
+                .color(color::TEXT_TERTIARY),
+        ]
+        .align_y(Alignment::Center),
+    )
+    .height(Length::Fill)
+    .align_y(Alignment::Center)
+    .padding([0.0, drawer::ROW_X]);
+    button(face)
+        .width(Length::Fill)
+        .height(Length::Fixed(drawer::ROW_H))
+        .padding(0)
+        .style(drawer_lift)
+        .on_press(on_press)
+        .into()
+}
+
+/// A drawer row that says why the list is empty — "off", "searching…".
+///
+/// A widget because an empty drawer that shows nothing reads as broken, and
+/// the note must take exactly one [`drawer::ROW_H`] so the popup that was
+/// sized for it does not clip. Mono and tertiary: it is a state, not an item.
+pub fn drawer_note<'a, Message: 'a>(note: &str) -> Element<'a, Message, Theme> {
+    container(
+        text(note.to_string())
+            .font(font::DATA)
+            .size(size::MONO)
+            .color(color::TEXT_TERTIARY),
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(drawer::ROW_H))
+    .align_y(Alignment::Center)
+    .padding([0.0, drawer::ROW_X + drawer::MARK + drawer::MARK_GAP])
+    .into()
+}
+
+/// A drawer row's ground: nothing at rest, a flat white lift under the
+/// pointer. Never the accent — a hover is not a state.
+fn drawer_lift(_t: &Theme, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Hovered => color::LIFT,
+        button::Status::Pressed => color::LIFT_STRONG,
+        _ => Color::TRANSPARENT,
+    };
+    button::Style {
+        background: Some(iced::Background::Color(background)),
+        text_color: color::TEXT,
+        border: iced::border::rounded(drawer::RADIUS_ROW),
+        ..button::Style::default()
+    }
+}
+
 /// A symbolic icon-theme glyph, recoloured and squared off.
 ///
 /// A widget because tinting is the whole point and it is easy to get wrong: a
@@ -369,10 +587,17 @@ pub fn glyph<'a, Message: 'a>(
     side: f32,
     tint: Color,
 ) -> Element<'a, Message, Theme> {
+    // iced's svg colour filter replaces each pixel's RGB and keeps the art's
+    // own alpha — the tint's alpha is dropped. The ink ramp (`TEXT_SECONDARY`,
+    // `TEXT_TERTIARY`) *is* alpha, so without this every mark drew at full
+    // white regardless of the ink it was given.
     svg(svg::Handle::from_path(path))
         .width(Length::Fixed(side))
         .height(Length::Fixed(side))
-        .style(move |_t: &Theme, _s: svg::Status| svg::Style { color: Some(tint) })
+        .opacity(tint.a)
+        .style(move |_t: &Theme, _s: svg::Status| svg::Style {
+            color: Some(Color::from_rgb(tint.r, tint.g, tint.b)),
+        })
         .into()
 }
 
@@ -711,17 +936,21 @@ pub fn big_value<'a, Message: 'a>(number: &str, unit: &str, accented: bool) -> E
 /// that shows only the state, or only the number, is the thing this exists to
 /// stop. It is deliberately colourless: the chip reports, it does not mark
 /// state, so it never spends the pane's yellow.
+// A chip never wraps: it sits beside a subtitle that is free to, and a
+// state split over two lines reads as two states.
 pub fn status_chip<'a, Message: 'a>(state: &str, measure: &str) -> Element<'a, Message, Theme> {
     container(
         column![
             text(state.to_string())
                 .font(font::DATA_MEDIUM)
                 .size(size::MICRO)
-                .style(theme::text_secondary),
+                .style(theme::text_secondary)
+                .wrapping(text::Wrapping::None),
             text(measure.to_string())
                 .font(font::DATA)
                 .size(size::MICRO)
-                .style(theme::text_tertiary),
+                .style(theme::text_tertiary)
+                .wrapping(text::Wrapping::None),
         ]
         .spacing(3)
         .align_x(Alignment::End),
@@ -766,6 +995,84 @@ pub fn prompt_band<'a, Message: 'a>(
             },
             ..container::Style::default()
         })
+        .into()
+}
+
+/// One object on a spatial canvas: a mono name, with its position in an
+/// ordered lane as a tertiary ordinal before it.
+///
+/// A widget and not a [`pill`] because a pill is a verb and this is a noun —
+/// on a canvas the two sit side by side (the chips, and the pills that move
+/// them), and they must not be mistaken for each other. Squarer corners and a
+/// mono face are what keep them apart. `selected` is the canvas's one yellow.
+pub fn chip<'a, Message: Clone + 'a>(
+    ordinal: Option<usize>,
+    label: &str,
+    selected: bool,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
+    let mut r = Row::new()
+        .spacing(space::CHIP_ORDINAL_GAP)
+        .align_y(Alignment::Center);
+    if let Some(n) = ordinal {
+        r = r.push(
+            text(n.to_string())
+                .font(font::DATA)
+                .size(size::MICRO)
+                .style(if selected {
+                    theme::text_accent
+                } else {
+                    theme::text_tertiary
+                }),
+        );
+    }
+    r = r.push(text(label.to_string()).font(font::DATA_MEDIUM).size(size::MONO));
+    button(r)
+        .padding([space::CHIP_Y, space::CHIP_X])
+        .on_press(on_press)
+        .style(theme::chip(selected))
+        .into()
+}
+
+/// One region of a spatial canvas: a caption and a count over the chips that
+/// live there, wrapping, on the inset ground.
+///
+/// A widget because a canvas is a hero shape (COMPOSITION.md) and there was
+/// no primitive for one. The lane keeps its height when it empties, so the
+/// canvas does not jump under the pointer when the last chip leaves.
+pub fn lane<'a, Message: 'a>(
+    label: &str,
+    measure: &str,
+    chips: Vec<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    let head = row![
+        micro_label(label),
+        Space::new().width(Length::Fill),
+        text(measure.to_string())
+            .font(font::DATA)
+            .size(size::MICRO)
+            .style(theme::text_tertiary),
+    ]
+    .align_y(Alignment::Center);
+
+    let body: Element<'a, Message, Theme> = if chips.is_empty() {
+        text("empty")
+            .font(font::DATA)
+            .size(size::MONO)
+            .style(theme::text_tertiary)
+            .into()
+    } else {
+        Row::with_children(chips)
+            .spacing(space::CHIP_GAP)
+            .wrap()
+            .vertical_spacing(space::CHIP_GAP)
+            .into()
+    };
+
+    let body = row![Space::new().height(space::CHIP_H), body].align_y(Alignment::Center);
+    inset(column![head, body].spacing(space::ROW_Y))
+        .padding([space::ROW_Y, space::CARD])
+        .height(Length::Shrink)
         .into()
 }
 

@@ -59,7 +59,7 @@ defaults.
   detail in stages: full detail → process name only → icon only → (extreme,
   last resort) no icon. The bar never spills past its bounds.
 - **A Launcher settings pane.** The launcher
-  (`crates/eclipse-bar/src/launcher/main.rs`, spawned by `Super+R` —
+  (`crates/eclipse-launcher/src/main.rs`, spawned by `Super+R` —
   `crates/abyss/src/config/mod.rs`, `default_binds`) has no config keys at all
   today, so it has no tab in `eclipse-settings` either. It wants a `launcher.*`
   section in the schema table and its own pane alongside Taskbar once there is
@@ -67,21 +67,18 @@ defaults.
   desktop entries, where it anchors. Deferred deliberately — the Taskbar pane
   shipped first because `bar.*` had real keys to expose.
 
-- **Wifi picker — blocked on an architecture decision.** The wifi applet is
-  clickable and opens the Network drawer, but the drawer cannot yet scan, choose
-  a network, or take a passphrase: `eclipse-services::status` is a read-only
-  feed with no action path. Building it means two things the invariants govern.
-  First, a new process-spawning path (`nmcli`, or iwd directly) — that belongs
-  in a service, not on a view's draw path. Second, the passphrase field: a
-  `password`-role value may never be delivered, logged or stored, and trusted UI
-  is compositor-drawn, never a layer-shell client. So the secret cannot simply
-  be typed into `eclipse-bar`. The two honest shapes are a compositor-drawn
-  trusted prompt for the secret alone, or the bar handing off to an external
-  picker entirely. Pick one before anyone writes the drawer's second half.
+- **Wifi and bluetooth pickers — decided and built (ADR 0053).** The drawers
+  scan, join, disconnect, pair and connect through the `eclipse-services::status`
+  action path. Passphrases and PINs go through `eclipse-secret-prompt`, a separate
+  toplevel whose whole surface is `secret`. What is left:
+  - **`Pairing.Answer` is not authenticated.** Any process running as the same
+    user can answer a pairing request on the session bus while its prompt is
+    open (answers sent early are refused). That is the same trust level as the
+    user's own session, but it should be narrowed to the prompt's own connection.
 
 ## Window management
 
-- **Per-window mute needs a real audio abstraction.** `eclipse-bar/src/audio.rs`
+- **Per-window mute needs a real audio abstraction.** `hyperion/src/audio.rs`
   shells out to `pactl -f json list sink-inputs` and joins on pid (or any
   descendant pid). That works, but it puts a subprocess on a UI path and it
   hardcodes PulseAudio/PipeWire's CLI. A proper audio service belongs in the
@@ -128,3 +125,11 @@ chip width cap is defeated by iced's `Row` handing `Fill` children exact
 `min == max` limits, so chips run past `TASK_MAX`. The fix and the condensation
 ladder above are the same piece of work — chip widths have to be computed from
 the known bar width either way.
+
+Found 2026-09-22 while screenshot-verifying chip expansion, out of scope for
+that change and not diagnosed: closing a window leaves a permanent ghost
+entry in `get_windows` (`app_id: null, title: null, minimized: true`, handle
+changes each query), and `get_windows`/`get_workspaces` can disagree — stale
+nonzero per-workspace counts survive after windows are killed by pid instead
+of via `close_window`. Likely bookkeeping in `crates/abyss/src/shell/workspace.rs`.
+Needs `eclipse-backend` to reproduce and fix.

@@ -41,7 +41,7 @@ ignore = [
 
     # RUSTSEC-2026-0206 — `rustybuzz` is unmaintained (harfrust is the named
     # successor). It is resvg's text shaper, and resvg is iced's `svg` feature,
-    # which is how eclipse-bar draws freedesktop icon themes (mostly SVG). The
+    # which is how hyperion draws freedesktop icon themes (mostly SVG). The
     # SVGs it shapes text from are icon-theme files on the local system, not
     # attacker-supplied documents. Unmaintained, not vulnerable. Revisit when
     # resvg moves to harfrust.

@@ -55,7 +55,9 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `bar.idle-seconds` | int 5..600 | `30` | live | Seconds without any human input, pointer motion included, before the taskbar folds when fold-when-idle is on. |
 | `bar.fold-duration-ms` | int 0..1000 | `150` | live | How long the taskbar takes to slide open or shut. Height and exclusive zone animate together, so tiled windows reflow with it. Zero snaps. |
 | `bar.fold-curve` | linear \| ease-in \| ease-out \| ease-in-out | `"ease-out"` | live | Easing applied to the taskbar's fold slide. |
-| `bar.position` | top \| bottom | `"top"` | restart | Which edge of every output the taskbar is anchored to. Takes effect the next time eclipse-bar starts, not on a live reload. |
+| `bar.position` | top \| bottom | `"top"` | restart | Which edge of every output the taskbar is anchored to. Takes effect the next time the taskbar starts, not on a live reload. |
+| `bar.tray.pinned` | list of strings | _unset_ | live | Tray ids shown on the taskbar itself, in this order. Built-in applets are network, bluetooth, battery and volume; a StatusNotifierItem app goes by its own id. Unset means the taskbar's built-in order; an empty list pins nothing. Anything neither pinned nor hidden sits in the overflow drawer. |
+| `bar.tray.hidden` | list of strings | _empty_ | live | Tray ids never shown, on the taskbar or in its overflow drawer. Hidden wins over pinned when an id is in both. |
 
 ### `decoration`
 
@@ -137,6 +139,7 @@ A rule matched against windows at map time. Its *action* decides the owning file
 | `position` | `abyss.kdl` |
 | `output` | `abyss.kdl` |
 | `opacity` | `abyss.kdl` |
+| `blur` | `abyss.kdl` |
 | `workspace` | `abyss.kdl` |
 | `no-focus-steal` | `abyss.kdl` |
 | `idle-inhibit` | `abyss.kdl` |

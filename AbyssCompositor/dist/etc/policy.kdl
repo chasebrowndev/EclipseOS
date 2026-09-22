@@ -2,9 +2,10 @@
 // Shipped policy defaults — /etc/eclipse/policy.kdl. Owned by the image.
 //
 // This is a security default, not a convenience default, and it gets the same
-// line-by-line owner review as TCB code (F-07 §4). It ships empty: policy is
-// fail-closed, so an empty file denies everything that is not granted
-// elsewhere, and that is the correct starting position.
+// line-by-line owner review as TCB code (F-07 §4). It grants nothing: policy
+// is fail-closed, so everything not granted elsewhere is denied, and that is
+// the correct starting position. What it does carry only tightens — a
+// sensitivity class can be raised by a rule, never lowered.
 //
 // It ships at all — rather than being omitted — so that the path, the owner and
 // the file mode are established before anything is at stake. An empty file with
@@ -13,3 +14,11 @@
 //
 // Keys that belong in abyss.kdl are refused here, and vice versa (ADR 0037).
 // There are deliberately no /etc/eclipse/policy.d/ drop-ins.
+
+// The network/bluetooth secret prompt is an ordinary client, not trusted UI
+// (COMP-10 §3 lists authority surfaces; a wifi passphrase is not one). It is
+// an authentication surface, so the whole surface is `secret` (S-05 §2): no
+// capture, no direct scanout. The app cannot declare this itself until
+// COMP-09 lands, so the image does it here. Anchored — matchers are unanchored
+// regexes, and `eclipse-secret-prompt-foo` must not inherit the class.
+windowrule "sensitivity secret" { app-id "^eclipse-secret-prompt$"; }

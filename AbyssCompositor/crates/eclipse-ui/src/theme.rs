@@ -221,6 +221,32 @@ pub fn pill(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
     }
 }
 
+/// A chip on a spatial canvas: an object, not a verb. `selected` is the
+/// pane's one yellow when a canvas is its hero.
+pub fn chip(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_t, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: Some(Background::Color(match (selected, hovered) {
+                (true, _) => color::ACCENT_FILL,
+                (false, true) => color::LIFT,
+                (false, false) => color::LIFT_SOFT,
+            })),
+            text_color: if selected { color::ACCENT_TEXT } else { color::TEXT },
+            border: Border {
+                color: if selected {
+                    color::ACCENT_BORDER
+                } else {
+                    color::BORDER
+                },
+                width: 1.0,
+                radius: radius::CHIP.into(),
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
 /// A destructive action. Never accented — see the note on [`color::DANGER`].
 pub fn danger(_t: &Theme, status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);

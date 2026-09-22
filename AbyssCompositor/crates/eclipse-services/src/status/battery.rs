@@ -4,9 +4,9 @@
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
-use zbus::blocking::{Connection, Proxy};
+use zbus::blocking::Connection;
 
-use super::{watch_service, Update};
+use super::{signal_rule, watch_system, Update};
 
 const UPOWER: &str = "org.freedesktop.UPower";
 /// UPower's own composite of every battery in the machine. Reading this rather
@@ -48,19 +48,19 @@ pub struct Battery {
     pub remaining: Option<Duration>,
 }
 
-pub(super) fn watch(connection: &Connection, updates: Sender<Update>) {
-    watch_service(
-        "eclipse-battery",
-        connection,
+/// Only the display device's own property changes: UPower also reports every
+/// mouse and headset battery, and none of those move this reading.
+pub(super) fn watch(updates: Sender<Update>) {
+    let rule = signal_rule(
         UPOWER,
-        read,
-        Update::Battery,
-        updates,
+        Some(DISPLAY_DEVICE),
+        Some("org.freedesktop.DBus.Properties"),
     );
+    watch_system("eclipse-battery", rule, read, Update::Battery, updates);
 }
 
 fn read(connection: &Connection) -> Option<Battery> {
-    let device = Proxy::new(connection, UPOWER, DISPLAY_DEVICE, DEVICE).ok()?;
+    let device = super::uncached(connection, UPOWER, DISPLAY_DEVICE, DEVICE)?;
     if device.get_property::<u32>("Type").ok()? != TYPE_BATTERY {
         return None;
     }

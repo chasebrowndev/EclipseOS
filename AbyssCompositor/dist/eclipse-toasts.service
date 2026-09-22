@@ -1,4 +1,4 @@
-# The Eclipse notification toasts. Install to ~/.config/systemd/user/eclipse-bar.service.
+# The Eclipse notification toasts. Install to ~/.config/systemd/user/eclipse-toasts.service.
 #
 # Started by abyss-session.target, which `abyss --session` starts once its
 # Wayland socket exists and WAYLAND_DISPLAY has been imported into the user

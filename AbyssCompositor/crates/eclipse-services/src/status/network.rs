@@ -6,10 +6,10 @@ use std::sync::mpsc::Sender;
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::OwnedObjectPath;
 
-use super::{watch_service, Update};
+use super::{signal_rule, watch_system, Update};
 
-const NM: &str = "org.freedesktop.NetworkManager";
-const NM_PATH: &str = "/org/freedesktop/NetworkManager";
+pub(super) const NM: &str = "org.freedesktop.NetworkManager";
+pub(super) const NM_PATH: &str = "/org/freedesktop/NetworkManager";
 
 /// What the bar draws. There is no "connecting" state on purpose: a bar that
 /// flickers through three shapes on every roam is worse than one that shows
@@ -32,8 +32,11 @@ pub enum Network {
     },
 }
 
-pub(super) fn watch(connection: &Connection, updates: Sender<Update>) {
-    watch_service("eclipse-net", connection, NM, read, Update::Network, updates);
+/// Everything NetworkManager says: the primary connection moves on one object
+/// and the strength on another, and the debounce folds the burst into one read.
+pub(super) fn watch(updates: Sender<Update>) {
+    let rule = signal_rule(NM, None, None);
+    watch_system("eclipse-net", rule, read, Update::Network, updates);
 }
 
 fn read(connection: &Connection) -> Network {
@@ -99,6 +102,6 @@ fn wifi_strength(connection: &Connection, active: &Proxy<'_>) -> Option<u8> {
     None
 }
 
-fn proxy<'a>(connection: &Connection, path: &'a str, interface: &'a str) -> Option<Proxy<'a>> {
-    Proxy::new(connection, NM, path, interface).ok()
+pub(super) fn proxy<'a>(connection: &Connection, path: &'a str, interface: &'a str) -> Option<Proxy<'a>> {
+    super::uncached(connection, NM, path, interface)
 }

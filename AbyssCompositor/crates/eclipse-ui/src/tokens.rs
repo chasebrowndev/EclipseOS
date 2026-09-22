@@ -138,6 +138,8 @@ pub mod radius {
     pub const INSET: f32 = 10.0;
     /// Anything fully round: pills, toggles, knobs.
     pub const PILL: f32 = 99.0;
+    /// A canvas chip: squarer than a pill, so an object never reads as a verb.
+    pub const CHIP: f32 = 6.0;
     /// Bar-chart caps.
     pub const BAR: f32 = 2.5;
 }
@@ -177,6 +179,18 @@ pub mod space {
     pub const FIELD_W: f32 = 220.0;
     /// Between the two halves of one control (track and entry).
     pub const CONTROL_GAP: f32 = 10.0;
+    /// A hero's level bar: half the content column, so the reading beside it
+    /// keeps the other half.
+    pub const HERO_METER_W: f32 = 360.0;
+    /// A canvas chip's padding, and the gap between chips in a lane.
+    pub const CHIP_Y: f32 = 5.0;
+    pub const CHIP_X: f32 = 10.0;
+    pub const CHIP_GAP: f32 = 6.0;
+    /// Between a chip's ordinal and its name.
+    pub const CHIP_ORDINAL_GAP: f32 = 7.0;
+    /// One row of chips. An empty lane keeps it, so moving the last chip
+    /// out does not collapse the canvas under the pointer.
+    pub const CHIP_H: f32 = 28.0;
 }
 
 pub mod size {
@@ -301,6 +315,15 @@ pub mod bar {
     /// The tray drawer's disclosure arrow — the only triangle on the row.
     pub const ARROW_W: f32 = 20.0;
     pub const ARROW: f32 = 7.0;
+    /// The air between the last tray cell and the arrow.
+    ///
+    /// Wider than the [`ZONE_GAP`] on the arrow's other side on purpose: the
+    /// clock centres a short string in [`CLOCK_W`], so it already carries
+    /// about a zone gap of empty box on its left edge, where a tray cell's ink
+    /// runs almost to its box. Equal *boxes* put the chevron visibly against
+    /// the battery; this puts it midway between the two readings the eye
+    /// actually measures from.
+    pub const ARROW_LEAD: f32 = 2.0 * ZONE_GAP;
     /// Stroke of the arrow's two legs.
     pub const ARROW_STROKE: f32 = 1.5;
     /// The `+N` cell drawn when not even [`TASK_BARE`] chips fit. A bar that
@@ -331,6 +354,10 @@ pub mod menu {
     /// The placeholder drawn when the host's icon theme has no such mark.
     pub const MARK_INNER: f32 = 9.0;
     pub const RADIUS_MARK: f32 = 3.0;
+    /// A checkable entry's tick box: square, so on (filled) and off (a
+    /// hairline frame) are one shape and never read as the rounded
+    /// icon placeholder.
+    pub const RADIUS_TICK: f32 = 0.0;
     /// Corner radius of the sheet, and of a hovered row inside it.
     pub const RADIUS: f32 = 12.0;
     pub const RADIUS_ROW: f32 = 8.0;
@@ -361,6 +388,31 @@ pub mod drawer {
     /// lozenge rather than a stick.
     pub const METER_H: f32 = 4.0;
     pub const RADIUS_METER: f32 = 2.0;
+    /// The heading strip of a radio drawer, which carries the 25px on/off
+    /// toggle beside its label and so cannot be the bare [`HEAD_H`].
+    pub const HEAD_SWITCH_H: f32 = 36.0;
+    /// The drawer's hero row: the one thing it is connected to, two lines
+    /// tall so it cannot be mistaken for a member of the list beneath it.
+    pub const CURRENT_H: f32 = 48.0;
+    /// The larger mark that leads the hero row.
+    pub const CURRENT_MARK: f32 = 20.0;
+    /// How many list rows a drawer shows before it stops growing. A popup is
+    /// sized once at creation, so a room full of access points must not be
+    /// allowed to push the sheet off the bottom of a laptop panel.
+    pub const MAX_ROWS: usize = 8;
+    /// Air between the two lines of the hero row.
+    pub const LINE_GAP: f32 = 2.0;
+}
+
+/// The secret prompt: one field in a fixed-size toplevel. Fixed because
+/// abyss floats a toplevel whose min and max size agree (ADR 0053), and a
+/// password box has nothing to show a user who resizes it.
+pub mod secret {
+    pub const W: f32 = 404.0;
+    /// Tall enough for heading, band and a pill row at `PANE_Y` padding.
+    pub const H: f32 = 228.0;
+    /// Air between the heading's kind label and the target's name.
+    pub const TITLE_GAP: f32 = 4.0;
 }
 
 /// Clock format. Taste, not mechanism — these are the two knobs a config file

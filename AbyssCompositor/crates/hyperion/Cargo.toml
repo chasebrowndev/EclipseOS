@@ -1,0 +1,37 @@
+[package]
+name = "hyperion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Hyperion, the Eclipse taskbar: a layer surface that lists windows over Wayland and acts over the control socket."
+# An application, not a library — and it keeps cargo-deny's wildcard check off
+# our path dependencies, which it only exempts for unpublished crates.
+publish = false
+
+[lib]
+name = "hyperion"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hyperion"
+path = "src/main.rs"
+
+[dependencies]
+# `svg` and `image` are the bar's icon path: a freedesktop icon theme is
+# mostly SVG with a PNG tail, and the bar draws real application icons.
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "svg", "image"] }
+iced_layershell = "0.19.1"
+eclipse-ui = { path = "../eclipse-ui" }
+eclipse-ipc = { path = "../eclipse-ipc" }
+# The system-status watchers (ADR 0038), the wifi/bluetooth actions the drawers
+# send and the SNI tray host (ADR 0053). Secrets never pass through the bar.
+eclipse-services = { path = "../eclipse-services" }
+serde_json.workspace = true
+# `clock.rs` formats wall-clock time through `localtime_r`, so that the bar
+# follows the user's zone and DST without carrying a time crate.
+libc = "0.2"
+# Icon-theme lookup (index.theme parsing, size/scale selection, inheritance).
+# Read-only and path-producing: it hands back a file, it never decodes one.
+freedesktop-icons = "0.4"

@@ -257,7 +257,7 @@ pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool
         }
         if state.outputs.set_focused(id) {
             // Only on a real transition, mirroring input/mod.rs's pointer-motion
-            // path: eclipse-bar's fold logic keys off this "output" event, and
+            // path: hyperion's fold logic keys off this "output" event, and
             // keyboard/alt-tab focus changes must drive it too, not just the
             // pointer crossing an output boundary.
             emit_output_state(state, id);
@@ -270,7 +270,7 @@ pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool
     crate::ipc::emit(state, "focus", serde_json::json!({ "handle": handle }));
 }
 
-/// Restate the whole of what `eclipse-bar` folds on, for output `id` (ADR 0042).
+/// Restate the whole of what `hyperion` folds on, for output `id` (ADR 0042).
 ///
 /// `focused` and `name` are the original payload. `fullscreen` and `idle` were
 /// added because the bar cannot see either: it has no input access and no view
@@ -335,7 +335,7 @@ pub fn refocus_topmost(state: &mut AbyssState) {
     apply_focus(state, action, FocusCause::WindowUnmap);
     if cleared {
         // `Clear` never reaches `focus_window`, so nothing above restated the
-        // output. Switching to an empty workspace used to leave eclipse-bar
+        // output. Switching to an empty workspace used to leave hyperion
         // folded with no event to unfold it.
         emit_focused_output_state(state);
     }

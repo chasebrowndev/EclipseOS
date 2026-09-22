@@ -44,7 +44,10 @@ use smithay::{
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Physical, Point, Rectangle, Scale},
-    wayland::{dmabuf::DmabufFeedback, shell::wlr_layer::Layer},
+    wayland::{
+        dmabuf::DmabufFeedback,
+        shell::wlr_layer::{Anchor, Layer},
+    },
 };
 
 use crate::config::Config;
@@ -202,6 +205,7 @@ pub fn collect_elements(
         || config.decoration.any_window_effect()
         || borders.anim.fading()
         || crate::shell::rules::any_opacity_override(space.elements())
+        || crate::shell::rules::any_blur_override(space.elements())
     {
         let base = elements.len();
         let (window_els, mut blurred) = window_elements(renderer, space, borders, output, config, focus);
@@ -247,14 +251,70 @@ fn insert_blur(
         store.blur.clear();
         return;
     }
+    let deco = &config.decoration;
     let scale = Scale::from(output.current_scale().fractional_scale());
     let live: Vec<blur::BlurKey> = requests.iter().map(|(key, _, _)| key.clone()).collect();
     store.blur.retain(&live);
+
+    // Same framebuffer-space mask as `window_elements`: needs the output's own
+    // height and the sense of its vertical axis (COMP-02 §9).
+    let fb_height = match (output.current_transform(), output.current_mode()) {
+        (smithay::utils::Transform::Normal, Some(mode)) => Some((mode.size.h, false)),
+        (smithay::utils::Transform::Flipped180, Some(mode)) => Some((mode.size.h, true)),
+        _ => None,
+    };
+
     for (key, index, region) in requests.into_iter().rev() {
+        // A toplevel reuses the radius its own corners are drawn with. A
+        // layer-shell surface anchored to three-plus edges, or to both edges
+        // of an axis, is edge-to-edge (the hyperion taskbar) and stays square;
+        // fewer/adjacent anchors (launcher, toasts, notification centre) get
+        // the same radius as a window.
+        let radius = match &key {
+            blur::BlurKey::Window(_) => deco.rounding,
+            blur::BlurKey::Layer(surface) => {
+                let anchor = surface.cached_state().anchor;
+                let opposite_pair = (anchor.contains(Anchor::LEFT) && anchor.contains(Anchor::RIGHT))
+                    || (anchor.contains(Anchor::TOP) && anchor.contains(Anchor::BOTTOM));
+                let edges = [Anchor::LEFT, Anchor::RIGHT, Anchor::TOP, Anchor::BOTTOM]
+                    .into_iter()
+                    .filter(|edge| anchor.contains(*edge))
+                    .count();
+                if edges >= 3 || opposite_pair {
+                    0
+                } else {
+                    deco.rounding
+                }
+            }
+        };
+
+        let rounding = (radius > 0)
+            .then_some(())
+            .and(fb_height)
+            .and_then(|(fb_height, flip_y)| {
+                if store.rounded.is_none() {
+                    match effects::compile_rounded(renderer) {
+                        Ok(program) => store.rounded = Some(program),
+                        Err(err) => {
+                            tracing::warn!(
+                                ?err,
+                                "compiling the rounded-corner shader; blur rounding disabled"
+                            )
+                        }
+                    }
+                }
+                store.rounded.clone().map(|program| {
+                    let scaled_radius = radius as f64 * scale.x.max(scale.y);
+                    let uniforms =
+                        effects::rounding_uniforms(region, fb_height, flip_y, scaled_radius as f32);
+                    (program, uniforms)
+                })
+            });
+
         let behind = &elements[index..];
         if let Some(element) = store
             .blur
-            .element(renderer, output, &key, region, behind, cfg, scale)
+            .element(renderer, output, &key, region, behind, cfg, scale, rounding)
         {
             elements.insert(index, AbyssRenderElement::Blur(element));
         }
@@ -374,8 +434,12 @@ fn window_elements(
         }
 
         // Blur samples what shows through the window's alpha, so a window drawn
-        // at full opacity gets no backdrop pass at all.
-        if config.decoration.blur.enabled && alpha < 1.0 {
+        // at full opacity gets no backdrop pass at all. A matched `windowrule
+        // "blur …"` overrides the global default, but never bypasses the
+        // alpha gate above: an opaque window is never blurred.
+        let blur_wanted =
+            alpha < 1.0 && crate::shell::rules::blur_of(&window).unwrap_or(config.decoration.blur.enabled);
+        if blur_wanted {
             if let Some(mut geo) = space.element_geometry(&window) {
                 geo.loc += store.anim.offset(&window);
                 blurred.push((
