@@ -8,7 +8,7 @@
 
 use smithay::{
     desktop::Window,
-    utils::{Logical, Rectangle, Size},
+    utils::{Logical, Point, Rectangle, Size},
 };
 
 pub type NodeId = u32;
@@ -124,8 +124,17 @@ impl Tree {
 
     /// Insert `window` by splitting the leaf holding `near` (or the last leaf).
     /// The split runs along the longer dimension of that leaf's current
-    /// rectangle — COMP-05 §11 open question 2, resolved as proposed.
-    pub fn insert(&mut self, window: Window, near: Option<&Window>, area: Rectangle<i32, Logical>) {
+    /// rectangle — COMP-05 §11 open question 2, resolved as proposed. Which
+    /// half `window` lands on is decided by `pointer`'s position within that
+    /// rectangle, so a window spawned in the top-right of a portrait leaf
+    /// lands above the existing window rather than always below it.
+    pub fn insert(
+        &mut self,
+        window: Window,
+        near: Option<&Window>,
+        area: Rectangle<i32, Logical>,
+        pointer: Point<f64, Logical>,
+    ) {
         if self.root == NIL {
             self.root = self.alloc(Node {
                 parent: NIL,
@@ -144,17 +153,23 @@ impl Tree {
             .map(|(_, _, r)| r)
             .unwrap_or(area);
         let side_by_side = rect.size.w >= rect.size.h;
+        let new_first = new_leaf_first(rect, side_by_side, pointer);
 
         let parent = self.get(target).map(|n| n.parent).unwrap_or(NIL);
         let new_leaf = self.alloc(Node {
             parent: NIL,
             kind: Kind::Leaf(window),
         });
+        let (a, b) = if new_first {
+            (new_leaf, target)
+        } else {
+            (target, new_leaf)
+        };
         let split = self.alloc(Node {
             parent,
             kind: Kind::Split {
-                a: target,
-                b: new_leaf,
+                a,
+                b,
                 side_by_side,
                 ratio: 0.5,
             },
@@ -381,6 +396,17 @@ impl Tree {
     }
 }
 
+/// Whether the newly inserted leaf takes the first (`a`) slot of a split of
+/// `rect`, given where the pointer sits inside it. On the exact midpoint the
+/// existing window keeps first place — pre-fix behavior, unchanged.
+fn new_leaf_first(rect: Rectangle<i32, Logical>, side_by_side: bool, pointer: Point<f64, Logical>) -> bool {
+    if side_by_side {
+        pointer.x < rect.loc.x as f64 + rect.size.w as f64 / 2.0
+    } else {
+        pointer.y < rect.loc.y as f64 + rect.size.h as f64 / 2.0
+    }
+}
+
 fn split_rect(
     r: Rectangle<i32, Logical>,
     side_by_side: bool,
@@ -407,5 +433,52 @@ fn split_rect(
                 Size::from((r.size.w, second)),
             ),
         )
+    }
+}
+
+// `Tree::insert` itself takes a real `Window`, which smithay only hands out
+// through a live client's `xdg_toplevel` handshake (see the precedent and
+// rationale in `shell::focus`'s `state_tests` module) — out of reach for a
+// unit test here. `new_leaf_first` is the pointer-vs-rect decision that was
+// the actual bug (the split always put the new leaf in `b`, i.e. bottom or
+// right, regardless of where the pointer was), so it is what gets covered.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new((x, y).into(), Size::from((w, h)))
+    }
+
+    #[test]
+    fn portrait_split_top_half_puts_the_new_window_first() {
+        let target = rect(0, 0, 200, 800);
+        assert!(new_leaf_first(target, false, (50.0, 100.0).into()));
+    }
+
+    #[test]
+    fn portrait_split_bottom_half_leaves_the_target_first() {
+        let target = rect(0, 0, 200, 800);
+        assert!(!new_leaf_first(target, false, (50.0, 700.0).into()));
+    }
+
+    #[test]
+    fn landscape_split_left_half_puts_the_new_window_first() {
+        let target = rect(0, 0, 800, 200);
+        assert!(new_leaf_first(target, true, (100.0, 50.0).into()));
+    }
+
+    #[test]
+    fn landscape_split_right_half_leaves_the_target_first() {
+        let target = rect(0, 0, 800, 200);
+        assert!(!new_leaf_first(target, true, (700.0, 50.0).into()));
+    }
+
+    #[test]
+    fn exact_midpoint_keeps_the_target_first() {
+        let target = rect(0, 0, 200, 800);
+        assert!(!new_leaf_first(target, false, (100.0, 400.0).into()));
+        let target = rect(0, 0, 800, 200);
+        assert!(!new_leaf_first(target, true, (400.0, 100.0).into()));
     }
 }

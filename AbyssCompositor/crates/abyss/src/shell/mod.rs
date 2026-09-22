@@ -274,6 +274,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
     // A fullscreen toplevel takes the whole output, exclusive zones included, so
     // it tracks the raw geometry rather than the usable area (COMP-05 §4).
     let full_area = state.space.output_geometry(&output).unwrap_or_default();
+    let pointer = state.pointer_location;
     {
         // `Window` hashes by its stable `ObjectId`; the interior mutability
         // clippy flags lives in fields that take no part in `Hash`/`Eq`, so
@@ -320,7 +321,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
     };
     for w in pending {
         let entry = state.outputs.get_mut(id).expect("checked above");
-        entry.workspaces[ws].tiled.insert(w, None, area);
+        entry.workspaces[ws].tiled.insert(w, None, area, pointer);
     }
 
     let entry = state.outputs.get(id).expect("checked above");
@@ -498,7 +499,7 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
             .filter(|w| entry.workspaces[ws].tiled.contains(w));
         entry.workspaces[ws]
             .tiled
-            .insert(window.clone(), near.as_ref(), area);
+            .insert(window.clone(), near.as_ref(), area, pointer);
     }
     // A no-focus-steal window is mapped where the rule put it but never takes
     // the focus; the human is told it wants attention (COMP-05 §5).
@@ -1098,6 +1099,7 @@ pub fn unminimize_window(state: &mut AbyssState, window: &Window) {
     let output = state.outputs.get(id).expect("just resolved").output.clone();
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
+    let pointer = state.pointer_location;
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let Some(ws) = entry.workspaces.iter().position(|w| w.is_minimized(window)) else {
         return;
@@ -1113,7 +1115,9 @@ pub fn unminimize_window(state: &mut AbyssState, window: &Window) {
             window: window.clone(),
             rect,
         }),
-        None => entry.workspaces[ws].tiled.insert(window.clone(), None, area),
+        None => entry.workspaces[ws]
+            .tiled
+            .insert(window.clone(), None, area, pointer),
     }
     arrange(state);
     // Restoring onto an inactive workspace must not steal the screen: the
@@ -1241,7 +1245,7 @@ pub fn toggle_floating(state: &mut AbyssState) {
         .position(|f| f.window == window)
     {
         entry.workspaces[ws].floating.remove(i);
-        entry.workspaces[ws].tiled.insert(window, None, area);
+        entry.workspaces[ws].tiled.insert(window, None, area, pointer);
     }
     arrange(state);
 }
@@ -1320,6 +1324,7 @@ pub fn unmaximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::s
     let output = state.outputs.get(id).expect("just resolved").output.clone();
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
+    let pointer = state.pointer_location;
 
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let ws = entry.active;
@@ -1339,7 +1344,9 @@ pub fn unmaximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::s
             rect.size
         }
         None => {
-            entry.workspaces[ws].tiled.insert(window.clone(), None, area);
+            entry.workspaces[ws]
+                .tiled
+                .insert(window.clone(), None, area, pointer);
             area.size
         }
     };
@@ -1473,6 +1480,7 @@ pub fn unfullscreen_toplevel(
     let area = tiling_area(state, &output);
     let still_maximized = state.maximized.contains_key(&window);
     let max_area = usable_area(state, &output);
+    let pointer = state.pointer_location;
 
     detach_from_layout(state, id, &window);
     let entry = state.outputs.get_mut(id).expect("just resolved");
@@ -1493,7 +1501,9 @@ pub fn unfullscreen_toplevel(
                 rect.size
             }
             None => {
-                entry.workspaces[ws].tiled.insert(window.clone(), None, area);
+                entry.workspaces[ws]
+                    .tiled
+                    .insert(window.clone(), None, area, pointer);
                 area.size
             }
         }
@@ -1694,12 +1704,15 @@ pub fn move_to_workspace(state: &mut AbyssState, idx: usize) {
     let output = entry.output.clone();
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
+    let pointer = state.pointer_location;
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let active = entry.active;
     entry.workspaces[active].remove(&window);
     state.space.unmap_elem(&window);
     let entry = state.outputs.get_mut(id).expect("just resolved");
-    entry.workspaces[target].tiled.insert(window.clone(), None, area);
+    entry.workspaces[target]
+        .tiled
+        .insert(window.clone(), None, area, pointer);
     state.focus = None;
     arrange(state);
     refocus_topmost(state);
@@ -1740,6 +1753,7 @@ pub fn move_to_output_workspace(state: &mut AbyssState, number: u8) {
     let target_output = target_entry.output.clone();
     layer_map_for_output(&target_output).arrange();
     let area = tiling_area(state, &target_output);
+    let pointer = state.pointer_location;
 
     let source_entry = state.outputs.get_mut(source_id).expect("just resolved");
     source_entry.workspaces[source_active].remove(&window);
@@ -1748,7 +1762,7 @@ pub fn move_to_output_workspace(state: &mut AbyssState, number: u8) {
     let target_entry = state.outputs.get_mut(target_id).expect("just resolved");
     target_entry.workspaces[target_ws]
         .tiled
-        .insert(window.clone(), None, area);
+        .insert(window.clone(), None, area, pointer);
 
     state.focus = None;
     arrange(state);
@@ -1882,9 +1896,10 @@ pub fn move_workspace_to_output(
     }
     layer_map_for_output(&dst_output).arrange();
     let area = tiling_area(state, &dst_output);
+    let pointer = state.pointer_location;
     let dst = state.outputs.get_mut(to).expect("checked above");
     for w in tiled.into_iter().chain(pending) {
-        dst.workspaces[target].tiled.insert(w, None, area);
+        dst.workspaces[target].tiled.insert(w, None, area, pointer);
     }
     for mut f in floating {
         // The rectangle is in global logical coordinates, so carry it across
