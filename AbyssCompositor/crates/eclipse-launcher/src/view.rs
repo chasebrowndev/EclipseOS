@@ -236,12 +236,15 @@ fn entry_row(entry: &Entry, index: usize, selected: bool) -> Element<'static, Me
 
     let line = row![
         container(name).width(Length::Fixed(NAME_W)).clip(true),
-        // The note is clipped, so the gap to the identifier has to be real
-        // padding: two strings that meet at a clip edge read as one string.
-        container(note)
+        // The gap to the identifier has to be real padding: two strings that
+        // meet at a clip edge read as one string. The clip has to sit on the
+        // inner box, inset by that padding — a clip on the outer, padded
+        // container clips at its full width, which is the same edge the
+        // identifier starts at, so an unwrapped text node overflows straight
+        // through the padding before the clip ever stops it.
+        container(container(note).width(Length::Fill).clip(true))
             .width(Length::Fill)
-            .padding(iced::Padding::ZERO.right(space::CARD))
-            .clip(true),
+            .padding(iced::Padding::ZERO.right(space::CARD)),
         tail,
     ]
     .align_y(Alignment::Center);
