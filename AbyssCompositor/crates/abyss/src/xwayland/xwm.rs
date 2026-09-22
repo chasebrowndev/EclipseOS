@@ -53,11 +53,10 @@ fn x11_has_focus(state: &AbyssState) -> bool {
 }
 
 fn window_for(state: &AbyssState, surface: &X11Surface) -> Option<Window> {
-    state
-        .space
-        .elements()
+    // Not `space`: see `shell::owned_windows`.
+    shell::owned_windows(state)
+        .into_iter()
         .find(|w| w.x11_surface() == Some(surface))
-        .cloned()
 }
 
 impl XwmHandler for AbyssState {
@@ -246,11 +245,9 @@ impl XwmHandler for AbyssState {
 
     fn disconnected(&mut self, _xwm: XwmId) {
         tracing::info!("xwayland disconnected; tearing down the X11 domain");
-        let stale: Vec<Window> = self
-            .space
-            .elements()
+        let stale: Vec<Window> = shell::owned_windows(self)
+            .into_iter()
             .filter(|w| w.x11_surface().is_some())
-            .cloned()
             .collect();
         for w in stale {
             shell::unmap_window(self, &w);

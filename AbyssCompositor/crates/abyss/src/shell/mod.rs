@@ -11,6 +11,8 @@ pub mod workspace;
 // grow into, one caller at a time).
 pub use focus::{focus_surface, focus_window, refocus_topmost};
 
+use std::cell::Cell;
+
 use smithay::{
     desktop::{
         find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, LayerMap,
@@ -531,6 +533,28 @@ pub fn window_for_surface(state: &AbyssState, surface: &WlSurface) -> Option<Win
         .cloned()
 }
 
+/// Every window the shell holds, each once: whatever is mapped in the space
+/// (override-redirect X11 windows included) plus every workspace's tiled,
+/// floating, minimized and pending windows.
+///
+/// `space` alone only holds the *active* workspaces. Teardown must search this
+/// instead: a window destroyed while on a hidden workspace or minimized is not
+/// in the space, and resolving it there leaves its leaf in the layout tree,
+/// which then reserves an empty tile once that workspace is shown again.
+pub fn owned_windows(state: &AbyssState) -> Vec<Window> {
+    let mut out: Vec<Window> = state.space.elements().cloned().collect();
+    for entry in state.outputs.iter() {
+        for ws in entry.workspaces.iter() {
+            for w in ws.all_windows().into_iter().chain(ws.pending.iter().cloned()) {
+                if !out.contains(&w) {
+                    out.push(w);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// COMP-05 §5: the fallback when a focus request is refused. The window stays
 /// where it is; the human is told it wants attention and decides.
 pub fn mark_urgent(state: &mut AbyssState, window: &Window) {
@@ -780,10 +804,148 @@ fn has_buffer(surface: &WlSurface) -> bool {
         .unwrap_or(false)
 }
 
+/// Per-surface xdg_toplevel map tracking, kept in the surface's data map so a
+/// toplevel that unmapped (and so owns no `Window` any more) is still
+/// recognised when it commits again.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ToplevelMap {
+    /// A buffer has been committed since the last (re)map.
+    had_buffer: bool,
+    /// Unmapped by a null-buffer commit; the next commit re-runs placement.
+    unmapped: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MapTransition {
+    /// The toplevel had a buffer and just committed without one.
+    Unmapped,
+    /// First commit after an unmap: the client restarts the initial
+    /// commit/configure sequence, so the window is placed again.
+    Remap,
+}
+
+impl ToplevelMap {
+    fn step(&mut self, buffer: bool) -> Option<MapTransition> {
+        if self.unmapped {
+            *self = Self {
+                had_buffer: buffer,
+                unmapped: false,
+            };
+            return Some(MapTransition::Remap);
+        }
+        if buffer {
+            self.had_buffer = true;
+            None
+        } else if self.had_buffer {
+            *self = Self {
+                had_buffer: false,
+                unmapped: true,
+            };
+            Some(MapTransition::Unmapped)
+        } else {
+            None
+        }
+    }
+}
+
+/// Forget any unmap bookkeeping on `surface`. Called when a fresh
+/// `xdg_toplevel` takes the surface, which is placed by `new_toplevel`; a
+/// stale `unmapped` flag would otherwise place it a second time.
+pub fn reset_toplevel_map(surface: &WlSurface) {
+    with_states(surface, |states| {
+        if let Some(m) = states.data_map.get::<Cell<ToplevelMap>>() {
+            m.set(ToplevelMap::default());
+        }
+    });
+}
+
+/// Advance `surface`'s map tracking for this commit. Cheap and allocation
+/// free: a role lookup, then one data-map lookup for xdg toplevels only.
+fn toplevel_transition(surface: &WlSurface) -> Option<MapTransition> {
+    if smithay::wayland::compositor::get_role(surface)
+        != Some(smithay::wayland::shell::xdg::XDG_TOPLEVEL_ROLE)
+    {
+        return None;
+    }
+    let buffer = has_buffer(surface);
+    with_states(surface, |states| {
+        // Single-threaded core: a `Cell`, no lock. Boxed once per surface.
+        states
+            .data_map
+            .insert_if_missing(|| Cell::new(ToplevelMap::default()));
+        let cell = states.data_map.get::<Cell<ToplevelMap>>()?;
+        let mut m = cell.get();
+        let t = m.step(buffer);
+        cell.set(m);
+        t
+    })
+}
+
+/// xdg-shell: attaching a null buffer unmaps the toplevel. Release its tile
+/// (the sibling takes the space) and drop the `Window`; the client may remap
+/// it later, which `remap_toplevel` treats as a new window.
+fn unmap_toplevel(state: &mut AbyssState, surface: &WlSurface) {
+    let window = window_for_surface(state, surface).or_else(|| {
+        // Rare path: on a hidden workspace or minimized, so not in `space`.
+        owned_windows(state)
+            .into_iter()
+            .find(|w| w.toplevel().map(|t| t.wl_surface() == surface).unwrap_or(false))
+    });
+    let Some(window) = window else { return };
+    tracing::debug!("xdg_toplevel unmapped by null buffer; releasing its tile");
+    if let Some(t) = window.toplevel() {
+        // smithay's own reset runs in a post-commit hook that reads the
+        // buffer state before `on_commit_buffer_handler` updates it, so it
+        // lags one commit behind; the remap must not wait on it.
+        t.reset_initial_configure_sent();
+    }
+    unmap_window(state, &window);
+}
+
+/// The first commit after an unmap: place the toplevel as a new window and
+/// send it the fresh initial configure the protocol requires.
+fn remap_toplevel(state: &mut AbyssState, surface: &WlSurface) {
+    let Some(toplevel) = state
+        .xdg_shell_state
+        .toplevel_surfaces()
+        .iter()
+        .find(|t| t.wl_surface() == surface)
+        .cloned()
+    else {
+        return;
+    };
+    // Never place a window twice.
+    if owned_windows(state)
+        .iter()
+        .any(|w| w.toplevel().map(|t| t == &toplevel).unwrap_or(false))
+    {
+        return;
+    }
+    tracing::debug!("xdg_toplevel remapping; placing it again");
+    popup_grab_dismiss(state);
+    toplevel.with_pending_state(|s| {
+        s.states
+            .set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated);
+    });
+    place_new_window(state, Window::new_wayland_window(toplevel.clone()));
+    if !toplevel.is_initial_configure_sent() {
+        toplevel.send_configure();
+    }
+}
+
 /// Send the initial configure for toplevels, layer surfaces and popups, and
 /// keep the layer map arranged.
 pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
     state.popups.commit(surface);
+
+    match toplevel_transition(surface) {
+        Some(MapTransition::Unmapped) => {
+            unmap_toplevel(state, surface);
+            return;
+        }
+        Some(MapTransition::Remap) => remap_toplevel(state, surface),
+        None => {}
+    }
 
     let mapped = state
         .space
@@ -1019,6 +1181,7 @@ pub fn popup_gone(state: &mut AbyssState, popup: &PopupSurface) {
 /// has to ask this first.
 pub fn focused_layer(state: &AbyssState) -> Option<DesktopLayerSurface> {
     let focused = state.seat.get_keyboard()?.current_focus()?;
+    let focused = smithay::wayland::seat::WaylandFocus::wl_surface(&focused)?;
     state.outputs.iter().map(|e| e.output.clone()).find_map(|o| {
         layer_map_for_output(&o)
             .layer_for_surface(&focused, WindowSurfaceType::TOPLEVEL)
@@ -1181,7 +1344,6 @@ pub fn unminimize_last(state: &mut AbyssState) {
 /// (COMP-05 §4). One helper so a newly-mapped floating window and
 /// `toggle-floating` cannot drift apart: `already` is how many windows are
 /// already floating on the workspace, which only `cascade` reads.
-    let focused = smithay::wayland::seat::WaylandFocus::wl_surface(&focused)?;
 pub(crate) fn floating_origin(
     mode: FloatingPlacement,
     area: Rectangle<i32, Logical>,
@@ -1944,6 +2106,31 @@ pub fn focus_layer_if_wanted(state: &mut AbyssState, surface: &WlSurface) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn null_buffer_unmaps_then_next_commit_remaps() {
+        let mut m = ToplevelMap::default();
+        // Initial commit (no buffer), then the map commit.
+        assert_eq!(m.step(false), None);
+        assert_eq!(m.step(true), None);
+        assert_eq!(m.step(true), None);
+        // Null-buffer commit unmaps, exactly once.
+        assert_eq!(m.step(false), Some(MapTransition::Unmapped));
+        // The client's fresh initial commit re-places it, exactly once.
+        assert_eq!(m.step(false), Some(MapTransition::Remap));
+        assert_eq!(m.step(false), None);
+        assert_eq!(m.step(true), None);
+        // And it can unmap again.
+        assert_eq!(m.step(false), Some(MapTransition::Unmapped));
+    }
+
+    #[test]
+    fn never_mapped_toplevel_is_not_unmapped() {
+        let mut m = ToplevelMap::default();
+        for _ in 0..3 {
+            assert_eq!(m.step(false), None);
+        }
+    }
 
     fn origin(mode: FloatingPlacement, pointer: (f64, f64), already: usize) -> (i32, i32) {
         let area = Rectangle::new(Point::from((100, 50)), Size::from((800, 600)));

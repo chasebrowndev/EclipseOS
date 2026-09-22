@@ -286,6 +286,9 @@ impl Outputs {
         // Bring back anything parked when this output was last unplugged.
         if let Some(parked) = self.stash.remove(&identity) {
             for (i, mut wins) in parked.into_iter().enumerate() {
+                // A window closed while this output was away is dead; bringing
+                // it back would tile an empty slot.
+                wins.retain(smithay::utils::IsAlive::alive);
                 // They may have been re-homed onto the fallback while this
                 // output was away; take them back rather than duplicating.
                 for w in &wins {
