@@ -257,6 +257,10 @@ pub struct Bar {
     pub fold_when_inactive: bool,
     /// Height in logical px of that folded strip.
     pub fold_height: u32,
+    /// Corner radius in logical px for the taskbar's own blur backdrop. The
+    /// bar draws a pill at a different radius than every other pane's glass
+    /// content, so it gets its own key instead of sharing `decoration.rounding`.
+    pub rounding: u32,
     /// Also fold once the session has been idle for [`Self::idle_seconds`].
     /// Independent of [`Self::fold_when_inactive`]: both may hold at once, and
     /// either one folds.
@@ -303,6 +307,7 @@ impl Default for Bar {
         Self {
             fold_when_inactive: false,
             fold_height: 4,
+            rounding: 20,
             fold_when_idle: false,
             idle_seconds: 30,
             fold_duration_ms: 150,
@@ -322,7 +327,9 @@ impl Default for Bar {
 /// `rounding` is drawn as a fragment-shader mask.
 #[derive(Debug, Clone)]
 pub struct Decoration {
-    /// Corner radius in logical pixels; 0 disables.
+    /// Corner radius in logical pixels; 0 disables. Matches eclipse-ui's
+    /// `tokens::radius::CARD` (13px) so the compositor-drawn blur backdrop
+    /// lines up with the client-drawn glass content on top of it.
     pub rounding: i32,
     /// Alpha applied to the focused window, 0.0..=1.0.
     pub active_opacity: f32,
@@ -337,7 +344,7 @@ pub struct Decoration {
 impl Default for Decoration {
     fn default() -> Self {
         Self {
-            rounding: 0,
+            rounding: 13,
             active_opacity: 1.0,
             inactive_opacity: 1.0,
             dim_inactive: 0.0,
@@ -1471,6 +1478,10 @@ impl Config {
                 "fold-height" => match arg(n).and_then(KdlValue::as_integer) {
                     Some(v) => self.bar.fold_height = v.clamp(2, 16) as u32,
                     None => self.reject(n, "fold-height expects an integer"),
+                },
+                "rounding" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) => self.bar.rounding = v.clamp(0, 64) as u32,
+                    None => self.reject(n, "rounding expects an integer"),
                 },
                 "fold-when-idle" => {
                     self.bar.fold_when_idle = arg(n).and_then(KdlValue::as_bool).unwrap_or(false);
@@ -2691,13 +2702,18 @@ mod tests {
     }
 
     #[test]
-    fn decoration_defaults_are_no_effect() {
+    fn decoration_defaults_round_but_are_otherwise_no_effect() {
         let cfg = Config::default();
-        // Geometry and opacity are untouched out of the box: nothing here
-        // changes where a window is or how solid it looks.
-        assert!(!cfg.decoration.any_window_effect());
+        // Rounding ships on (13px) to match eclipse-ui's client-drawn glass
+        // radius, so any_window_effect() is already true out of the box.
+        // Opacity and dim are still untouched: nothing here changes how solid
+        // a window looks.
+        assert!(cfg.decoration.any_window_effect());
         assert!(!cfg.decoration.shadow.enabled);
-        assert_eq!(cfg.decoration.rounding, 0);
+        assert_eq!(cfg.decoration.rounding, 13);
+        assert_eq!(cfg.decoration.active_opacity, 1.0);
+        assert_eq!(cfg.decoration.inactive_opacity, 1.0);
+        assert_eq!(cfg.decoration.dim_inactive, 0.0);
         // Animations off means no curve resolves even if one were parsed.
         assert!(!cfg.animations.enabled);
     }
@@ -2732,7 +2748,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.apply(&doc, &mut Vec::new());
         // Every bad value keeps its default rather than half-applying.
-        assert_eq!(cfg.decoration.rounding, 0);
+        assert_eq!(cfg.decoration.rounding, 13);
         assert_eq!(cfg.decoration.active_opacity, 1.0);
         assert_eq!(cfg.decoration.inactive_opacity, 1.0);
         assert!(cfg.animations.curves.is_empty());

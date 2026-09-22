@@ -331,11 +331,19 @@ pub const TABLE: &[Key] = &[
         "Tray ids never shown, on the taskbar or in its overflow drawer. \
        Hidden wins over pinned when an id is in both.",
     ),
+    k(
+        "bar.rounding",
+        int(0, 512),
+        Int(20),
+        Abyss,
+        Live,
+        "Corner radius in logical px for the taskbar's own blur backdrop.",
+    ),
     // decoration
     k(
         "decoration.rounding",
         int(0, 512),
-        Int(0),
+        Int(13),
         Abyss,
         Live,
         "Corner radius in logical px; 0 disables.",
@@ -683,6 +691,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.position" => V::Str(position_name(c.bar.position).into()),
         "bar.tray.pinned" => c.bar.tray.pinned.as_deref().map_or(V::Null, list),
         "bar.tray.hidden" => list(&c.bar.tray.hidden),
+        "bar.rounding" => V::Int(c.bar.rounding as i64),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.active-opacity" => V::Float(c.decoration.active_opacity as f64),
         "decoration.inactive-opacity" => V::Float(c.decoration.inactive_opacity as f64),
