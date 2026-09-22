@@ -214,7 +214,14 @@ impl Sink {
     }
 
     /// Report success: the protocol-specific metadata, then `ready`.
-    fn ready(&self, region: Rectangle<i32, Physical>, with_damage: bool, now: std::time::Duration) {
+    /// `transform` is the one [`copy_one`] rendered through.
+    fn ready(
+        &self,
+        region: Rectangle<i32, Physical>,
+        transform: Transform,
+        with_damage: bool,
+        now: std::time::Duration,
+    ) {
         let (w, h) = (region.size.w.max(0) as u32, region.size.h.max(0) as u32);
         let secs = now.as_secs();
         let (hi, lo, nsec) = (
@@ -231,7 +238,10 @@ impl Sink {
             }
             Sink::Ext(f) => {
                 // The order the protocol requires: metadata, then ready.
-                f.transform(wl_output::Transform::Normal);
+                // The transform actually applied to the contents, so a client
+                // can undo it. Claiming `Normal` hands winit's `Flipped180`
+                // frame out upside down, and a rotated output's sideways.
+                f.transform(wire_transform(transform));
                 f.damage(0, 0, region.size.w, region.size.h);
                 f.presentation_time(hi, lo, nsec);
                 f.ready();
@@ -552,9 +562,9 @@ pub fn service(state: &mut AbyssState, renderer: &mut GlesRenderer) {
             continue;
         }
         match copy_one(state, renderer, &p) {
-            Ok(()) => {
+            Ok(transform) => {
                 let now = std::time::Duration::from(state.clock.now());
-                p.sink.ready(p.region, p.with_damage, now);
+                p.sink.ready(p.region, transform, p.with_damage, now);
                 state.capture_seen = Some(std::time::Instant::now());
             }
             Err(e) => {
@@ -565,7 +575,8 @@ pub fn service(state: &mut AbyssState, renderer: &mut GlesRenderer) {
     }
 }
 
-fn copy_one(state: &AbyssState, renderer: &mut GlesRenderer, p: &Pending) -> anyhow::Result<()> {
+/// Returns the output transform the contents were rendered through.
+fn copy_one(state: &AbyssState, renderer: &mut GlesRenderer, p: &Pending) -> anyhow::Result<Transform> {
     let Some(entry) = state.outputs.get(p.output_id) else {
         anyhow::bail!("output gone");
     };
@@ -594,7 +605,8 @@ fn copy_one(state: &AbyssState, renderer: &mut GlesRenderer, p: &Pending) -> any
 
     // Render through the output's own transform so a capture is oriented the way
     // the user sees the screen, not the way the GPU happens to store it.
-    let fb_size = output.current_transform().transform_size(mode.size);
+    let transform = output.current_transform();
+    let fb_size = transform.transform_size(mode.size);
     let mut target: smithay::backend::renderer::gles::GlesTexture = Offscreen::create_buffer(
         renderer,
         FORMAT,
@@ -614,7 +626,21 @@ fn copy_one(state: &AbyssState, renderer: &mut GlesRenderer, p: &Pending) -> any
         let pixels = ExportMem::map_texture(renderer, &mapping)?;
         write_shm(&p.buffer, p.region, pixels)?;
     }
-    Ok(())
+    Ok(transform)
+}
+
+/// Smithay only converts wire → internal; this is the other direction.
+fn wire_transform(t: Transform) -> wl_output::Transform {
+    match t {
+        Transform::Normal => wl_output::Transform::Normal,
+        Transform::_90 => wl_output::Transform::_90,
+        Transform::_180 => wl_output::Transform::_180,
+        Transform::_270 => wl_output::Transform::_270,
+        Transform::Flipped => wl_output::Transform::Flipped,
+        Transform::Flipped90 => wl_output::Transform::Flipped90,
+        Transform::Flipped180 => wl_output::Transform::Flipped180,
+        Transform::Flipped270 => wl_output::Transform::Flipped270,
+    }
 }
 
 /// Copy the readback into the client's shm buffer. The buffer was validated
@@ -662,6 +688,23 @@ mod tests {
         SemanticTree::Present {
             generation,
             secret: secret.to_vec(),
+        }
+    }
+
+    #[test]
+    fn wire_transform_round_trips() {
+        use smithay::utils::Transform;
+        for t in [
+            Transform::Normal,
+            Transform::_90,
+            Transform::_180,
+            Transform::_270,
+            Transform::Flipped,
+            Transform::Flipped90,
+            Transform::Flipped180,
+            Transform::Flipped270,
+        ] {
+            assert_eq!(Transform::from(super::wire_transform(t)), t);
         }
     }
 
