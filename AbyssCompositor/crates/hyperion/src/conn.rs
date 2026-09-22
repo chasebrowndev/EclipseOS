@@ -38,6 +38,15 @@ pub struct BarConfig {
     pub position: BarPosition,
 }
 
+/// Where each tray entry lives. `pinned: None` is "unset" — the taskbar's own
+/// built-in order — which is not the same thing as an empty list, which pins
+/// nothing and sends everything to the overflow drawer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrayConfig {
+    pub pinned: Option<Vec<String>>,
+    pub hidden: Vec<String>,
+}
+
 /// `bar.fold-curve`, kept as an enum so `BarConfig` stays `Copy`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FoldCurve {
@@ -257,6 +266,35 @@ impl Conn {
                     Some("top") => cfg.position = BarPosition::Top,
                     _ => {}
                 },
+                _ => {}
+            }
+        }
+        cfg
+    }
+
+    /// `bar.tray.pinned` and `bar.tray.hidden`. Separate from [`bar_config`]
+    /// because `BarConfig` is `Copy` and these are lists; same fail-soft rule —
+    /// a compositor without the keys leaves the built-in order.
+    ///
+    /// [`bar_config`]: Conn::bar_config
+    pub fn tray_config(&mut self) -> TrayConfig {
+        let mut cfg = TrayConfig::default();
+        self.ensure();
+        let Some(v) = self.call("get_config", json!({ "schema": false })) else {
+            return cfg;
+        };
+        let Some(keys) = v.get("keys").and_then(Value::as_array) else {
+            return cfg;
+        };
+        let strings = |v: &Value| -> Option<Vec<String>> {
+            v.as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        };
+        for key in keys {
+            let value = key.get("value");
+            match key.get("path").and_then(Value::as_str) {
+                Some("bar.tray.pinned") => cfg.pinned = value.and_then(strings),
+                Some("bar.tray.hidden") => cfg.hidden = value.and_then(strings).unwrap_or_default(),
                 _ => {}
             }
         }

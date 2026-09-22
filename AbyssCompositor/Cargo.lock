@@ -1179,6 +1179,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "eclipse-secret-prompt"
+version = "0.1.0"
+dependencies = [
+ "eclipse-services",
+ "eclipse-ui",
+ "iced",
+ "zbus",
+]
+
+[[package]]
 name = "eclipse-services"
 version = "0.1.0"
 dependencies = [
@@ -1193,6 +1203,7 @@ version = "0.1.0"
 dependencies = [
  "abyss",
  "eclipse-ipc",
+ "eclipse-services",
  "eclipse-ui",
  "iced",
  "serde_json",

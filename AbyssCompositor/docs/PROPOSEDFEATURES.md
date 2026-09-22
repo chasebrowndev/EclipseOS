@@ -67,17 +67,14 @@ defaults.
   desktop entries, where it anchors. Deferred deliberately — the Taskbar pane
   shipped first because `bar.*` had real keys to expose.
 
-- **Wifi picker — blocked on an architecture decision.** The wifi applet is
-  clickable and opens the Network drawer, but the drawer cannot yet scan, choose
-  a network, or take a passphrase: `eclipse-services::status` is a read-only
-  feed with no action path. Building it means two things the invariants govern.
-  First, a new process-spawning path (`nmcli`, or iwd directly) — that belongs
-  in a service, not on a view's draw path. Second, the passphrase field: a
-  `password`-role value may never be delivered, logged or stored, and trusted UI
-  is compositor-drawn, never a layer-shell client. So the secret cannot simply
-  be typed into the taskbar (`hyperion`). The two honest shapes are a compositor-drawn
-  trusted prompt for the secret alone, or the bar handing off to an external
-  picker entirely. Pick one before anyone writes the drawer's second half.
+- **Wifi and bluetooth pickers — decided and built (ADR 0053).** The drawers
+  scan, join, disconnect, pair and connect through the `eclipse-services::status`
+  action path. Passphrases and PINs go through `eclipse-secret-prompt`, a separate
+  toplevel whose whole surface is `secret`. What is left:
+  - **`Pairing.Answer` is not authenticated.** Any process running as the same
+    user can answer a pairing request on the session bus while its prompt is
+    open (answers sent early are refused). That is the same trust level as the
+    user's own session, but it should be narrowed to the prompt's own connection.
 
 ## Window management
 

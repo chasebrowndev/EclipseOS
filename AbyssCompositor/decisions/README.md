@@ -58,6 +58,7 @@ writing a new ADR that says so.
 | 0050 | [Oracle-Eyes may call `get_outputs`](0050-oracle-eyes-reads-get-outputs.md) | accepted |
 | 0051 | [An `org.freedesktop.ScreenSaver` service bridges D-Bus idle inhibits to the compositor](0051-screensaver-service-bridges-idle-inhibit.md) | accepted |
 | 0052 | [One crate and one package per swappable DE component](0052-one-crate-per-swappable-de-component.md) | accepted |
+| 0053 | [The status service gains actions; secrets go through their own prompt process](0053-status-actions-and-secret-prompt.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

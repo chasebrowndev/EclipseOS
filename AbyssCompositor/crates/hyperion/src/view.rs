@@ -56,7 +56,7 @@ use iced::{Alignment, Color, Element, Length, Theme};
 
 use eclipse_services::status::{Battery, Bluetooth, Charge, Network};
 use eclipse_ui::theme;
-use eclipse_ui::tokens::{bar, color, drawer, font, menu, radius, size};
+use eclipse_ui::tokens::{bar, color, drawer, font, menu, radius, size, space};
 use eclipse_ui::widget as parts;
 
 use crate::app::Message;
@@ -123,6 +123,46 @@ pub fn ladder(avail: f32, count: usize) -> (f32, Detail, usize) {
     (bar::TASK_BARE, Detail::Bare, shown.min(count))
 }
 
+/// The strip's genuine slack, handed out to the chips that can use it.
+///
+/// `ladder` gives every shown chip the same floor on purpose — that uniform
+/// share is what keeps the strip a grid — but dividing `avail` evenly rarely
+/// uses every pixel of it, and a title that would have fit whole in that
+/// leftover room still dropped to its process name for no reason but that the
+/// room went undrawn. This is a second, later pass over that leftover alone:
+/// a chip's own floor is never taken from it, only the strip's genuine
+/// surplus is up for grabs, so `ladder`'s no-overflow guarantee still holds
+/// for the total.
+///
+/// Several chips can want the same slack at once, so the order they are
+/// offered it in has to be fixed rather than incidental: non-minimized
+/// windows first (an accent chip earns the room a put-away one has no state
+/// left to show off), then left-to-right by original position. Anything else
+/// would make which chip grows depend on iteration order or timing.
+fn expand(windows: &[&Window], base_width: f32, avail: f32) -> Vec<f32> {
+    let shown = windows.len();
+    if shown == 0 {
+        return Vec::new();
+    }
+    let gaps = (shown - 1) as f32 * bar::GAP;
+    let mut remaining = (avail - shown as f32 * base_width - gaps).max(0.0);
+
+    let mut order: Vec<usize> = (0..shown).collect();
+    order.sort_by_key(|&i| (windows[i].minimized, i));
+
+    let mut widths = vec![base_width; shown];
+    for i in order {
+        if remaining <= 0.0 {
+            break;
+        }
+        let want = (whole_width(windows[i].label()) - base_width).max(0.0);
+        let take = want.min(remaining);
+        widths[i] += take;
+        remaining -= take;
+    }
+    widths
+}
+
 /// The rung one chip can actually draw at, given the rung the strip's width
 /// bought and the words this particular window wants to say.
 ///
@@ -159,6 +199,16 @@ fn budget(width: f32, detail: Detail) -> usize {
     ((text / bar::CHAR_W).floor().max(0.0) as usize).min(TITLE_CHARS)
 }
 
+/// The pixel width a chip needs to show `label` whole, with no [`TITLE_CHARS`]
+/// ceiling and no [`bar::TASK_MAX`] cap — the mirror image of [`budget`]'s
+/// icon-and-padding arithmetic, run in reverse from a character count instead
+/// of a width. `budget` answers "how much text fits a width"; this answers
+/// "how much width a label needs", which is the question [`expand`] has to ask
+/// before it can hand a chip more than its uniform floor.
+fn whole_width(label: &str) -> f32 {
+    size::ICON + 2.0 * bar::GAP + 2.0 * bar::CELL_X + label.chars().count() as f32 * bar::CHAR_W
+}
+
 /// The bar, or the one popup over it.
 ///
 /// `iced_layershell`'s daemon pattern draws every surface through one function,
@@ -169,7 +219,8 @@ pub fn view(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message,
         Some(popup) if popup.id == id => {
             return match &popup.kind {
                 crate::app::Kind::Menu { handle, items } => context_menu(*handle, items),
-                crate::app::Kind::Drawer(drawer) => drawer_view(app, *drawer),
+                crate::app::Kind::Drawer { which, .. } => drawer_view(app, *which),
+                crate::app::Kind::TrayMenu { id, entries } => tray_menu(id, entries),
             };
         }
         _ => {}
@@ -475,11 +526,13 @@ fn tasks(app: &crate::app::App) -> Element<'_, Message, Theme> {
         return Space::new().width(Length::Fill).into();
     }
 
-    let (width, detail, shown) = ladder(strip_room(app), on_workspace.len());
+    let avail = strip_room(app);
+    let (base_width, detail, shown) = ladder(avail, on_workspace.len());
     let hidden = on_workspace.len() - shown;
+    let widths = expand(&on_workspace[..shown], base_width, avail);
 
     let mut r = Row::new().spacing(bar::GAP).align_y(Alignment::Center);
-    for w in on_workspace.into_iter().take(shown) {
+    for (w, width) in on_workspace.into_iter().take(shown).zip(widths) {
         r = r.push(task_button(w, app.icons.for_window(w), width, detail));
     }
     if hidden > 0 {
@@ -529,13 +582,23 @@ pub fn tray_span(app: &crate::app::App, drawer: crate::app::Drawer) -> Option<(f
         return None;
     }
     let right = app.width - bar::MARGIN_X - bar::EDGE - bar::CLOCK_W - bar::ZONE_GAP;
-    Some(match drawer {
-        crate::app::Drawer::Overflow => (right - bar::ARROW_W, right),
-        crate::app::Drawer::Network => {
-            let left = right - tray_width(app);
-            (left, left + bar::TRAY_MARK_W)
+    let arrow = (right - bar::ARROW_W, right);
+    let wanted = match drawer {
+        crate::app::Drawer::Overflow => return Some(arrow),
+        crate::app::Drawer::Network => Entry::Network,
+        crate::app::Drawer::Bluetooth => Entry::Bluetooth,
+    };
+    // A drawer whose applet is not pinned opened from the overflow, so it
+    // hangs off the arrow that leads to it.
+    let (pinned, _) = tray_entries(app);
+    let mut left = right - tray_width(app);
+    for entry in pinned {
+        if entry == wanted {
+            return Some((left, left + entry_width(entry)));
         }
-    })
+        left += entry_width(entry) + bar::TRAY_GAP;
+    }
+    Some(arrow)
 }
 
 /// The pixels the task strip has to itself: the bar, less every zone whose
@@ -588,8 +651,15 @@ fn task_button<'a>(w: &'a Window, icon: Icon, width: f32, detail: Detail) -> Ele
     } else {
         (color::TEXT_SECONDARY, font::UI)
     };
-    // The width came from the strip; the rung is this chip's own business.
-    let detail = rung(w.label(), w.name(), width, detail);
+    // The width came from the strip; the rung is this chip's own business —
+    // unless `expand` already gave this chip enough room to show its title
+    // whole, in which case the ladder's rung (chosen for the *floor* every
+    // chip shares) no longer applies to it.
+    let detail = if width >= whole_width(w.label()) {
+        Detail::Full
+    } else {
+        rung(w.label(), w.name(), width, detail)
+    };
     let mut face_row = Row::new().spacing(bar::GAP + bar::GAP).align_y(Alignment::Center);
     if detail != Detail::Bare {
         face_row = face_row.push(icon_view(icon));
@@ -857,77 +927,185 @@ pub(crate) fn elide(label: &str, max: usize) -> String {
 
 // -------------------------------------------------------------------- tray
 
-/// Network, bluetooth and battery, in that order, to the left of the clock.
+/// One thing the tray can show. The built-ins are the status feed's readings;
+/// `Item` is a StatusNotifierItem, by its index in `app.radios.tray`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Entry {
+    Network,
+    Bluetooth,
+    Battery,
+    Item(usize),
+}
+
+/// What the tray pins when `bar.tray.pinned` is unset: the two readings that
+/// earned the bar before the tray was configurable. Bluetooth starts in the
+/// overflow, where it always lived.
+const DEFAULT_PINNED: [&str; 2] = ["network", "battery"];
+
+/// Split every entry the bar can show into `(pinned, overflow)`.
 ///
-/// Each is a mark plus a number rather than a bare word: the DE ships no Nerd
-/// Font (a glyph would render as a box on the machine it is supposed to
-/// inform), so the marks are drawn from quads by `eclipse_ui` — a wifi cone
-/// and a battery gauge, both of which show a *magnitude* a word cannot.
-/// A cell that has nothing to say draws nothing at all — an empty gap is
-/// honest, a zero is not.
-fn tray(app: &crate::app::App) -> Element<'_, Message, Theme> {
-    let mut r = Row::new().spacing(bar::TRAY_GAP).align_y(Alignment::Center);
-
-    let live = app.network != Network::Offline;
-    // No reading beside the cone. A signal percentage is a number no ordinary
-    // person acts on, and it ticks: a digit that changes on its own drags the
-    // eye to the one corner of the bar that had nothing to report. The cone
-    // already carries the magnitude. The exact figure lives in the drawer, one
-    // click away, for the times it actually matters.
-    r = r.push(applet(
-        network_mark(&app.network, bar::MARK),
-        None,
-        if live {
-            color::TEXT_SECONDARY
-        } else {
-            color::TEXT_TERTIARY
-        },
-        Some(Message::Open(crate::app::Drawer::Network)),
-    ));
-
-    if let Some(battery) = app.battery {
-        // Low and not charging is the one status the human has to act on, so
-        // it is the one status allowed to leave the neutral palette.
-        let tint = if battery.percent <= LOW && battery.state == Charge::Discharging {
-            color::DANGER
-        } else {
-            color::TEXT_SECONDARY
-        };
-        r = r.push(applet(
-            parts::battery_gauge(battery.percent, tint),
-            Some(battery_text(battery)),
-            tint,
-            None,
-        ));
+/// Pinned follows `bar.tray.pinned` order; the overflow takes what is left in
+/// the canonical order (network, bluetooth, battery, then items as they
+/// arrived). `bar.tray.hidden` wins over both. An entry with nothing to report
+/// — a machine with no battery — is in neither: a pinned id is a wish, not a
+/// promise to draw an empty cell.
+///
+/// `volume` is a valid id in the config and is deliberately absent here: the
+/// status feed carries no volume, and a cell that cannot read or set it would
+/// be a picture of a control.
+pub(crate) fn tray_entries(app: &crate::app::App) -> (Vec<Entry>, Vec<Entry>) {
+    let mut all: Vec<(String, Entry)> = vec![
+        ("network".to_owned(), Entry::Network),
+        ("bluetooth".to_owned(), Entry::Bluetooth),
+    ];
+    if app.battery.is_some() {
+        all.push(("battery".to_owned(), Entry::Battery));
     }
+    for (i, item) in app.radios.tray.iter().enumerate() {
+        all.push((item.id.clone(), Entry::Item(i)));
+    }
+    all.retain(|(id, _)| !app.tray.hidden.iter().any(|h| h == id));
 
+    let wanted: Vec<&str> = match &app.tray.pinned {
+        Some(ids) => ids.iter().map(String::as_str).collect(),
+        None => DEFAULT_PINNED.to_vec(),
+    };
+    let mut pinned = Vec::new();
+    for id in wanted {
+        if let Some((_, e)) = all.iter().find(|(have, _)| have == id) {
+            if !pinned.contains(e) {
+                pinned.push(*e);
+            }
+        }
+    }
+    let overflow = all
+        .into_iter()
+        .map(|(_, e)| e)
+        .filter(|e| !pinned.contains(e))
+        .collect();
+    (pinned, overflow)
+}
+
+/// The bar width one pinned entry takes: a mark alone is the narrow cell, the
+/// battery's reading the wide one.
+fn entry_width(entry: Entry) -> f32 {
+    match entry {
+        Entry::Battery => bar::TRAY_CELL_W,
+        _ => bar::TRAY_MARK_W,
+    }
+}
+
+/// The pinned tray entries and the disclosure arrow, to the left of the clock.
+///
+/// Each is a mark plus, where it earns one, a number rather than a bare word:
+/// the DE ships no Nerd Font (a glyph would render as a box on the machine it
+/// is supposed to inform), so the marks are the icon theme's symbolic art and
+/// a drawn battery gauge — both of which show a *magnitude* a word cannot.
+/// Which entries are here, and in what order, is `bar.tray.pinned`; the rest
+/// sit behind the arrow.
+fn tray(app: &crate::app::App) -> Element<'_, Message, Theme> {
+    let (pinned, _) = tray_entries(app);
+    let mut r = Row::new().spacing(bar::TRAY_GAP).align_y(Alignment::Center);
+    for entry in &pinned {
+        r = r.push(tray_cell(app, *entry));
+    }
     // The arrow closes the tray rather than leading it: reading order runs
-    // outward from the task strip — the two live readings first, then the
-    // door to the ones that did not earn permanent space, then the clock at
-    // the screen's corner where every desktop puts it.
-    r = r.push(disclosure());
+    // outward from the task strip — the pinned readings first, then the door
+    // to the ones that did not earn permanent space, then the clock at the
+    // screen's corner where every desktop puts it. The arrow is set off from
+    // the cells by its own lead, not the tray's shoulder-to-shoulder gap, so
+    // it sits centred between the last reading and the clock. With nothing
+    // pinned it is the tray, alone, and owes no lead to anything.
+    if pinned.is_empty() {
+        return disclosure();
+    }
+    row![r, disclosure()]
+        .spacing(bar::ARROW_LEAD)
+        .align_y(Alignment::Center)
+        .into()
+}
 
-    r.into()
+fn tray_cell(app: &crate::app::App, entry: Entry) -> Element<'_, Message, Theme> {
+    match entry {
+        Entry::Network => {
+            let live = app.network != Network::Offline;
+            // No reading beside the cone. A signal percentage is a number no
+            // ordinary person acts on, and it ticks: a digit that changes on
+            // its own drags the eye to the one corner of the bar that had
+            // nothing to report. The cone already carries the magnitude.
+            applet(
+                network_mark(&app.network, bar::MARK),
+                None,
+                if live {
+                    color::TEXT_SECONDARY
+                } else {
+                    color::TEXT_TERTIARY
+                },
+                Some(Message::Open(crate::app::Drawer::Network)),
+            )
+        }
+        Entry::Bluetooth => applet(
+            bluetooth_mark(app.bluetooth, bar::MARK),
+            None,
+            color::TEXT_SECONDARY,
+            Some(Message::Open(crate::app::Drawer::Bluetooth)),
+        ),
+        Entry::Battery => {
+            let Some(battery) = app.battery else {
+                return Space::new().into();
+            };
+            // Low and not charging is the one status the human has to act on,
+            // so it is the one status allowed to leave the neutral palette.
+            let tint = if battery.percent <= LOW && battery.state == Charge::Discharging {
+                color::DANGER
+            } else {
+                color::TEXT_SECONDARY
+            };
+            applet(
+                parts::battery_gauge(battery.percent, tint),
+                Some(battery_text(battery)),
+                tint,
+                None,
+            )
+        }
+        Entry::Item(i) => {
+            let Some(item) = app.radios.tray.get(i) else {
+                return Space::new().into();
+            };
+            // An application's tray art is recoloured to the tray's ink like
+            // every other mark: a row of vendor-coloured logos is the one
+            // place a desktop loses its own palette to its guests.
+            mouse_area(applet(
+                tray_mark(&item.icon, bar::MARK, color::TEXT_SECONDARY),
+                None,
+                color::TEXT_SECONDARY,
+                Some(Message::TrayActivate(item.address.clone())),
+            ))
+            .on_right_press(Message::TrayMenu(item.address.clone()))
+            .into()
+        }
+    }
 }
 
 /// The width [`tray`] will occupy. Fixed, and known before layout, because
-/// the task strip's ladder is arithmetic on what the fixed zones leave.
+/// the task strip's ladder is arithmetic on what the fixed zones leave. This
+/// has to agree with `tray` exactly or every popup anchored off the tray
+/// drifts.
 fn tray_width(app: &crate::app::App) -> f32 {
-    // The network cell is a mark with no reading beside it, so it is the
-    // narrow width — see `bar::TRAY_MARK_W`. This has to agree with `tray`
-    // exactly or every popup anchored off the tray drifts.
-    let mut w = bar::ARROW_W + bar::TRAY_GAP + bar::TRAY_MARK_W;
-    if app.battery.is_some() {
-        w += bar::TRAY_GAP + bar::TRAY_CELL_W;
+    let (pinned, _) = tray_entries(app);
+    if pinned.is_empty() {
+        return bar::ARROW_W;
     }
-    w
+    let cells: f32 = pinned.iter().map(|e| entry_width(*e)).sum();
+    let gaps = (pinned.len() - 1) as f32 * bar::TRAY_GAP;
+    cells + gaps + bar::ARROW_LEAD + bar::ARROW_W
 }
 
 /// The arrow that opens the tray drawer.
 ///
-/// The drawer behind it is a *container*, not bluetooth's popup: bluetooth is
-/// simply its first tenant, and the next applet that does not earn permanent
-/// bar space moves in beside it without a second popup path being written.
+/// The drawer behind it is a *container*, not any one applet's popup: every
+/// entry that is neither pinned nor hidden lives there, so an applet that
+/// loses its bar space moves in without a second popup path being written.
 fn disclosure() -> Element<'static, Message, Theme> {
     button(
         container(parts::chevron(
@@ -992,94 +1170,501 @@ fn applet<'a>(
 /// renegotiated from the layout pass.
 pub const DRAWER_W: u32 = drawer::W as u32;
 
-/// How many rows a drawer draws. `app::open_drawer` sizes the surface from
-/// this and the view must agree with it exactly, or the sheet clips its own
-/// last row — the same contract [`menu_height`] has.
-pub fn drawer_rows(which: crate::app::Drawer) -> usize {
-    match which {
-        // Link, then strength.
-        crate::app::Drawer::Network => 2,
-        // Bluetooth, the drawer's first and so far only tenant.
-        crate::app::Drawer::Overflow => 1,
+/// A drawer under construction: its head, its rows, and the height they add
+/// up to, kept together so the arithmetic that sizes the popup and the column
+/// that fills it are one computation and cannot disagree.
+struct Sheet {
+    head: Element<'static, Message, Theme>,
+    rows: Vec<Element<'static, Message, Theme>>,
+    height: f32,
+}
+
+impl Sheet {
+    fn new(head: Element<'static, Message, Theme>, head_h: f32) -> Self {
+        Self {
+            head,
+            rows: Vec::new(),
+            height: head_h + 2.0 * drawer::PAD,
+        }
+    }
+
+    fn row(&mut self, row: Element<'static, Message, Theme>) {
+        self.rows.push(row);
+        self.height += drawer::ROW_H;
+    }
+
+    fn current(&mut self, row: Element<'static, Message, Theme>) {
+        self.rows.push(row);
+        self.height += drawer::CURRENT_H;
+    }
+
+    fn rule(&mut self) {
+        self.rows.push(parts::menu_separator());
+        self.height += menu::SEP_H;
     }
 }
 
-/// The popup height that fits `rows`.
-pub fn drawer_height(rows: usize) -> u32 {
-    (rows as f32 * drawer::ROW_H + drawer::HEAD_H + 2.0 * drawer::PAD).ceil() as u32
+/// The popup height `which` needs right now. `app::open_drawer` sizes the
+/// surface from this and `app::reflow` reopens it when it changes; both read
+/// the same [`Sheet`] the view draws.
+pub fn drawer_height(app: &crate::app::App, which: crate::app::Drawer) -> u32 {
+    sheet(app, which).height.ceil() as u32
 }
 
-/// A tray drawer: a heading strip over a label/value rail.
+fn sheet(app: &crate::app::App, which: crate::app::Drawer) -> Sheet {
+    match which {
+        crate::app::Drawer::Network => wifi_sheet(app),
+        crate::app::Drawer::Bluetooth => bluetooth_sheet(app),
+        crate::app::Drawer::Overflow => overflow_sheet(app),
+    }
+}
+
+/// A tray drawer.
 ///
 /// ## Shape
 ///
-/// Not a menu and not a pane. The context menu is a **mark rail** — verbs read
-/// down their icons — and a drawer is a **reading rail**: label left, value
-/// right, on a right-hand gridline, which is the silhouette of a settings
-/// sheet and cannot be mistaken for the menu that opens from the same bar two
-/// hundred pixels away.
+/// Not a menu and not a pane. The two radio drawers share one anatomy, top to
+/// bottom, and no two neighbours in it share a silhouette:
+///
+/// 1. **Switch head** — the micro label and the radio's toggle, on a strip
+///    taller than a row.
+/// 2. **Hero** — what the radio is on *now*, two lines tall with a larger
+///    mark and its own Disconnect, so it cannot be read as the first item of
+///    the list under it.
+/// 3. **Choices** — a flat list of names, one line each, nothing on them but
+///    a lock where joining needs a secret. No strength, band or rate: those
+///    are Settings → Network's, and a list that ranks itself by signal is a
+///    list that reorders under the pointer.
+/// 4. **The way out** — a quiet link to the full pane, behind a hairline.
+///
+/// The overflow drawer is the plain heading over a mark rail of whatever the
+/// tray did not pin, each with its reading at the right.
 ///
 /// ## The accent ledger
 ///
-/// One yellow, and it is the live reading: the connected link, the connected
-/// adapter. A drawer whose subject is off or absent has no yellow at all,
-/// which is itself the fastest thing to read on it.
-///
-/// ## TODO (not this crate's to build)
-///
-/// Every row here is a *reading*. `eclipse-services::status` is a one-way
-/// feed — `Network`, `Bluetooth { powered, connected }`, `Battery` — and
-/// `conn.rs` speaks only to the compositor's control socket, so there is no
-/// path for connect / scan / forget, or for powering an adapter on. The rows
-/// are built to take a press the day one exists; until then they do not
-/// pretend to. Wiring that data path is the main thread's job.
+/// - **Wi-fi, bluetooth:** the one yellow is the switch's lit track — the
+///   radio being on is the drawer's live state. Whatever it is connected to
+///   is [`color::CONNECTED`] blue, the same hue the bar uses for a linked
+///   device, and never the accent: that is why the drawers draw their own
+///   glyphs through [`network_glyph`] instead of the bar's `network_mark` and
+///   `bluetooth_mark`, which spend yellow on a full-bar signal and an idle
+///   adapter.
+/// - **Overflow:** no yellow at all. It is a shelf of other applets' doors;
+///   the state behind each one is that applet's drawer's to colour.
 fn drawer_view(app: &crate::app::App, which: crate::app::Drawer) -> Element<'static, Message, Theme> {
-    let (heading, rows) = match which {
-        crate::app::Drawer::Network => ("network", network_rows(app)),
-        crate::app::Drawer::Overflow => ("tray", overflow_rows(app)),
-    };
-    parts::drawer_sheet(heading, rows)
+    let Sheet { head, rows, .. } = sheet(app, which);
+    parts::drawer_frame(head, rows)
 }
 
-fn network_rows(app: &crate::app::App) -> Vec<Element<'static, Message, Theme>> {
-    let live = app.network != Network::Offline;
-    let strength = network_strength(&app.network);
-    let link = match &app.network {
-        Network::Offline => "offline".to_owned(),
-        Network::Wired { .. } => "wired".to_owned(),
-        Network::Wifi { id, .. } => elide(id, DRAWER_CHARS),
-        Network::Other { .. } => "connected".to_owned(),
-    };
-    let signal = if live {
-        format!("{strength}%")
+fn wifi_sheet(app: &crate::app::App) -> Sheet {
+    let on = app.radios.wifi_enabled;
+    let mut s = Sheet::new(
+        parts::drawer_switch_head("wi-fi", parts::Toggle::new(on, Message::WifiEnable)),
+        drawer::HEAD_SWITCH_H,
+    );
+    if !on {
+        s.row(parts::drawer_note("off"));
     } else {
-        "—".to_owned()
-    };
-    vec![
-        parts::drawer_row(network_mark(&app.network, drawer::MARK), "Link", &link, live),
-        parts::drawer_row(
-            parts::meter_bar(drawer::MARK, f32::from(strength) / 100.0, color::TEXT_SECONDARY),
-            "Signal",
-            &signal,
-            false,
-        ),
-    ]
+        // The service's list says which network is active; before it has
+        // answered, the status feed's link id is the same fact.
+        let current = app
+            .radios
+            .active_network()
+            .map(|n| n.ssid.clone())
+            .or(match &app.network {
+                Network::Wifi { id, .. } => Some(id.clone()),
+                _ => None,
+            });
+        if let Some(ssid) = &current {
+            s.current(parts::drawer_current(
+                parts::mark(
+                    crate::icons::symbolic(network_glyph(&app.network)),
+                    drawer::CURRENT_MARK,
+                    color::CONNECTED,
+                ),
+                &elide(ssid, DRAWER_CHARS),
+                "connected",
+                color::CONNECTED,
+                Some(("Disconnect", Message::WifiDisconnect)),
+            ));
+        }
+        let others: Vec<_> = app
+            .radios
+            .networks
+            .iter()
+            .filter(|n| Some(&n.ssid) != current.as_ref())
+            .take(drawer::MAX_ROWS)
+            .collect();
+        if current.is_some() && !others.is_empty() {
+            s.rule();
+        }
+        for n in others {
+            // A lock and nothing else: whether joining will ask for a secret
+            // is the only thing about a stranger's network the drawer owes
+            // the human before they click it.
+            let lock = n.secured.then(|| {
+                parts::mark(
+                    crate::icons::symbolic("network-wireless-encrypted"),
+                    drawer::MARK,
+                    color::TEXT_TERTIARY,
+                )
+            });
+            s.row(parts::drawer_choice(
+                blank_mark(),
+                &elide(&n.ssid, DRAWER_CHARS),
+                lock,
+                Some(Message::WifiConnect(n.ssid.clone())),
+            ));
+        }
+        if current.is_none() && app.radios.networks.is_empty() {
+            s.row(parts::drawer_note("searching\u{2026}"));
+        }
+    }
+    s.rule();
+    s.row(parts::drawer_link(
+        "Network settings",
+        Message::OpenSettings("network"),
+    ));
+    s
 }
 
-fn overflow_rows(app: &crate::app::App) -> Vec<Element<'static, Message, Theme>> {
-    let bt = app.bluetooth;
-    let live = bt.powered && bt.connected > 0;
-    let reading = match (bt.powered, bt.connected) {
-        (false, _) => "off".to_owned(),
-        (true, 0) => "on".to_owned(),
-        (true, n) => format!("{n} connected"),
+fn bluetooth_sheet(app: &crate::app::App) -> Sheet {
+    let on = app.bluetooth.powered;
+    let mut s = Sheet::new(
+        parts::drawer_switch_head("bluetooth", parts::Toggle::new(on, Message::BtPower)),
+        drawer::HEAD_SWITCH_H,
+    );
+    if !on {
+        s.row(parts::drawer_note("off"));
+    } else {
+        let devices = &app.radios.devices;
+        let connected: Vec<_> = devices.iter().filter(|d| d.connected).collect();
+        let paired: Vec<_> = devices
+            .iter()
+            .filter(|d| d.paired && !d.connected)
+            .take(drawer::MAX_ROWS)
+            .collect();
+        for d in &connected {
+            s.current(parts::drawer_current(
+                device_mark(d.kind, drawer::CURRENT_MARK, color::CONNECTED),
+                &elide(&d.name, DRAWER_CHARS),
+                "connected",
+                color::CONNECTED,
+                Some(("Disconnect", Message::BtDisconnect(d.addr.clone()))),
+            ));
+        }
+        if !connected.is_empty() && !paired.is_empty() {
+            s.rule();
+        }
+        for d in &paired {
+            s.row(parts::drawer_choice(
+                device_mark(d.kind, drawer::MARK, color::TEXT_SECONDARY),
+                &elide(&d.name, DRAWER_CHARS),
+                None,
+                Some(Message::BtConnect(d.addr.clone())),
+            ));
+        }
+        if connected.is_empty() && paired.is_empty() {
+            s.row(parts::drawer_note("no paired devices"));
+        }
+        s.rule();
+        // Discovery is a verb on the list rather than a second switch: it
+        // runs for as long as the human is looking, and a toggle would claim
+        // it is a setting that stays on.
+        let scanning = app.radios.scanning;
+        s.row(parts::drawer_choice(
+            parts::mark(
+                crate::icons::symbolic("view-refresh"),
+                drawer::MARK,
+                color::TEXT_SECONDARY,
+            ),
+            if scanning {
+                "Stop scanning"
+            } else {
+                "Scan for devices"
+            },
+            None,
+            Some(Message::BtScan),
+        ));
+        if scanning {
+            let nearby: Vec<_> = devices
+                .iter()
+                .filter(|d| !d.paired)
+                .take(drawer::MAX_ROWS)
+                .collect();
+            for d in &nearby {
+                s.row(parts::drawer_choice(
+                    device_mark(d.kind, drawer::MARK, color::TEXT_TERTIARY),
+                    &elide(&d.name, DRAWER_CHARS),
+                    None,
+                    Some(Message::BtConnect(d.addr.clone())),
+                ));
+            }
+            if nearby.is_empty() {
+                s.row(parts::drawer_note("searching\u{2026}"));
+            }
+        }
+    }
+    s.rule();
+    s.row(parts::drawer_link(
+        "Bluetooth settings",
+        Message::OpenSettings("network"),
+    ));
+    s
+}
+
+fn overflow_sheet(app: &crate::app::App) -> Sheet {
+    let mut s = Sheet::new(parts::drawer_sheet_head("tray"), drawer::HEAD_H);
+    let (_, overflow) = tray_entries(app);
+    if overflow.is_empty() {
+        s.row(parts::drawer_note("nothing here"));
+    }
+    for entry in overflow {
+        s.row(overflow_row(app, entry));
+    }
+    s
+}
+
+/// One entry of the overflow: the applet's mark, its name, its reading, and
+/// the door to its own drawer. All neutral — see [`drawer_view`]'s ledger.
+fn overflow_row(app: &crate::app::App, entry: Entry) -> Element<'static, Message, Theme> {
+    let reading = |r: String| -> Option<Element<'static, Message, Theme>> {
+        Some(
+            text(r)
+                .font(font::DATA)
+                .size(size::MONO)
+                .color(color::TEXT_SECONDARY)
+                .into(),
+        )
     };
-    vec![parts::drawer_row(
-        bluetooth_mark(bt, drawer::MARK),
-        "Bluetooth",
-        &reading,
-        live,
-    )]
+    match entry {
+        Entry::Network => {
+            let r = match &app.network {
+                Network::Offline => "offline".to_owned(),
+                Network::Wired { .. } => "wired".to_owned(),
+                Network::Wifi { strength, .. } => format!("{strength}%"),
+                Network::Other { .. } => "on".to_owned(),
+            };
+            parts::drawer_choice(
+                parts::mark(
+                    crate::icons::symbolic(network_glyph(&app.network)),
+                    drawer::MARK,
+                    color::TEXT_SECONDARY,
+                ),
+                "Network",
+                reading(r),
+                Some(Message::Open(crate::app::Drawer::Network)),
+            )
+        }
+        Entry::Bluetooth => {
+            let bt = app.bluetooth;
+            let r = match (bt.powered, bt.connected) {
+                (false, _) => "off".to_owned(),
+                (true, 0) => "on".to_owned(),
+                (true, n) => format!("{n} connected"),
+            };
+            parts::drawer_choice(
+                parts::mark(
+                    crate::icons::symbolic(bluetooth_glyph(bt)),
+                    drawer::MARK,
+                    color::TEXT_SECONDARY,
+                ),
+                "Bluetooth",
+                reading(r),
+                Some(Message::Open(crate::app::Drawer::Bluetooth)),
+            )
+        }
+        Entry::Battery => {
+            let r = app.battery.map(battery_text).unwrap_or_default();
+            let pct = app.battery.map_or(0, |b| b.percent);
+            // No press: the battery has no drawer, and a row that lifts and
+            // then does nothing is the lie `applet` already refuses to tell.
+            parts::drawer_choice(
+                parts::battery_gauge(pct, color::TEXT_SECONDARY),
+                "Battery",
+                reading(r),
+                None,
+            )
+        }
+        Entry::Item(i) => {
+            let Some(item) = app.radios.tray.get(i) else {
+                return Space::new().into();
+            };
+            mouse_area(parts::drawer_choice(
+                tray_mark(&item.icon, drawer::MARK, color::TEXT_SECONDARY),
+                &elide(&item.title, DRAWER_CHARS),
+                None,
+                Some(Message::TrayActivate(item.address.clone())),
+            ))
+            .on_right_press(Message::TrayMenu(item.address.clone()))
+            .into()
+        }
+    }
+}
+
+/// A tray item's art at `side`, in `tint`'s ink. An SVG is recoloured by
+/// `parts::mark`; pixels were silhouetted when the item arrived, so here they
+/// only take the ink's alpha — the same arithmetic `parts::glyph` applies.
+/// The handle is cloned, not built: its id is what keeps the texture cached.
+fn tray_mark(icon: &crate::radio::TrayIcon, side: f32, tint: Color) -> Element<'static, Message, Theme> {
+    use crate::radio::TrayIcon;
+    match icon {
+        TrayIcon::Svg(path) => parts::mark(Some(path.clone()), side, tint),
+        TrayIcon::Image(handle) => image(handle.clone())
+            .width(Length::Fixed(side))
+            .height(Length::Fixed(side))
+            .opacity(tint.a)
+            .into(),
+        TrayIcon::None => parts::mark(None, side, tint),
+    }
+}
+
+/// The empty square a list row keeps where its mark would be, so its name
+/// sits on the same gridline as the rows that do have one.
+fn blank_mark() -> Element<'static, Message, Theme> {
+    Space::new()
+        .width(Length::Fixed(drawer::MARK))
+        .height(Length::Fixed(drawer::MARK))
+        .into()
+}
+
+/// A bluetooth device's mark, by what the device is.
+fn device_mark(kind: crate::radio::BtKind, side: f32, tint: Color) -> Element<'static, Message, Theme> {
+    use crate::radio::BtKind;
+    let name = match kind {
+        BtKind::Audio => "audio-headphones",
+        BtKind::Input => "input-mouse",
+        BtKind::Phone => "phone",
+        BtKind::Other => "bluetooth-active",
+    };
+    parts::mark(crate::icons::symbolic(name), side, tint)
+}
+
+/// A tray item's own menu: its entries, in its order, on the context menu's
+/// glass. The same rows and the same zero-yellow ledger as [`context_menu`]
+/// — it is a menu, and a second menu style on one bar would be two.
+fn tray_menu(id: &str, entries: &[crate::radio::MenuEntry]) -> Element<'static, Message, Theme> {
+    use eclipse_services::tray::MenuKind;
+    // One checkable entry gives every item row the mark column, so the labels
+    // stay on one gridline whether or not a given row is ticked.
+    let marks = entries.iter().any(|e| e.checked.is_some());
+    let mut rows = Column::new();
+    for e in entries {
+        rows = rows.push(match e.kind {
+            MenuKind::Separator => parts::menu_separator(),
+            // A submenu's title: the drawers' micro heading, never a button,
+            // so it cannot lift under the pointer and look pressable.
+            MenuKind::Header => container(parts::micro_label(&e.label))
+                .height(Length::Fixed(menu::ROW_H))
+                .align_y(Alignment::Center)
+                .padding([0.0, menu::ROW_X])
+                .into(),
+            MenuKind::Item => tray_menu_row(id, e, marks),
+        });
+    }
+    parts::lit(
+        container(rows)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(menu::PAD)
+            .style(theme::menu_surface),
+        radius::CARD,
+        color::HIGHLIGHT,
+    )
+}
+
+/// One pressable line of a tray menu, with its tick column when the menu has
+/// one. Zero yellow: an on checkbox is state, not the one live value.
+fn tray_menu_row(id: &str, e: &crate::radio::MenuEntry, marks: bool) -> Element<'static, Message, Theme> {
+    let ink = if e.enabled {
+        color::TEXT
+    } else {
+        color::TEXT_TERTIARY
+    };
+    let mut line = Row::new().spacing(menu::MARK_GAP).align_y(Alignment::Center);
+    if marks {
+        line = line.push(tick(e.checked, ink));
+    }
+    line = line.push(
+        text(e.label.clone())
+            .size(size::BODY_SMALL)
+            .font(font::UI_MEDIUM)
+            .color(ink),
+    );
+    let face = container(line)
+        .height(Length::Fill)
+        .align_y(Alignment::Center)
+        .padding([0.0, menu::ROW_X]);
+    let b = button(face)
+        .width(Length::Fill)
+        .height(Length::Fixed(menu::ROW_H))
+        .padding(0)
+        .style(menu_row_style(false));
+    if e.enabled {
+        b.on_press(Message::TrayMenuClick(id.to_owned(), e.id)).into()
+    } else {
+        b.into()
+    }
+}
+
+/// A row's [`menu::MARK`] cell: a hard square of the row's ink when on, the
+/// same square as a hairline frame when off, and empty on a row that is not
+/// checkable at all — it only holds the gridline. Drawn,
+/// not an icon-theme glyph: a missing `object-select` would fall back to the
+/// placeholder square, and "no icon" and "on" must not look alike.
+fn tick(checked: Option<bool>, ink: Color) -> Element<'static, Message, Theme> {
+    let cell = Length::Fixed(menu::MARK);
+    let inner = menu::MARK_INNER;
+    let body: Element<'static, Message, Theme> = match checked {
+        Some(true) => parts::edge_quad(Length::Fixed(inner), Length::Fixed(inner), ink),
+        Some(false) => parts::outline(
+            inner,
+            inner,
+            space::HAIRLINE,
+            color::TEXT_TERTIARY,
+            menu::RADIUS_TICK,
+        ),
+        None => Space::new().into(),
+    };
+    container(body)
+        .width(cell)
+        .height(cell)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// The popup height that fits a tray item's menu, by the same arithmetic
+/// [`tray_menu`] draws: a rule is [`menu::SEP_H`], every other line a row.
+pub fn tray_menu_height(entries: &[crate::radio::MenuEntry]) -> u32 {
+    use eclipse_services::tray::MenuKind;
+    let lines: f32 = entries
+        .iter()
+        .map(|e| match e.kind {
+            MenuKind::Separator => menu::SEP_H,
+            MenuKind::Item | MenuKind::Header => menu::ROW_H,
+        })
+        .sum();
+    (lines + 2.0 * menu::PAD).ceil() as u32
+}
+
+/// The icon-theme name for a link's state: the signal cone at its rung, or
+/// the plain *connected* glyph where there is no magnitude.
+///
+/// Name only, no tint — the bar and the drawers colour the same glyph by
+/// different ledgers.
+fn network_glyph(network: &Network) -> &'static str {
+    match network {
+        Network::Offline => "network-wireless-offline",
+        Network::Wired { .. } | Network::Other { .. } => "network-wireless-connected",
+        Network::Wifi { strength, .. } => match strength {
+            0..=10 => "network-wireless-signal-none",
+            11..=35 => "network-wireless-signal-weak",
+            36..=60 => "network-wireless-signal-ok",
+            61..=80 => "network-wireless-signal-good",
+            _ => "network-wireless-signal-excellent",
+        },
+    }
 }
 
 /// The network mark: the platform's own signal cone, tinted.
@@ -1091,24 +1676,24 @@ fn overflow_rows(app: &crate::app::App) -> Vec<Element<'static, Message, Theme>>
 /// the machine; a wired or unknown link gets the plain *connected* glyph
 /// because there is no magnitude to report for it.
 fn network_mark(network: &Network, side: f32) -> Element<'static, Message, Theme> {
-    let (name, tint) = match network {
-        Network::Offline => ("network-wireless-offline", color::TEXT_TERTIARY),
-        Network::Wired { .. } | Network::Other { .. } => {
-            ("network-wireless-connected", color::TEXT_SECONDARY)
-        }
+    let tint = match network {
+        Network::Offline => color::TEXT_TERTIARY,
         // Accent at full bars and nowhere else. A link is either as good as it
         // gets or it is merely working, and only the first is worth a colour:
         // tinting every usable signal would spend the row's one yellow on a
         // reading that is true almost all the time and therefore says nothing.
-        Network::Wifi { strength, .. } => match strength {
-            0..=10 => ("network-wireless-signal-none", color::TEXT_SECONDARY),
-            11..=35 => ("network-wireless-signal-weak", color::TEXT_SECONDARY),
-            36..=60 => ("network-wireless-signal-ok", color::TEXT_SECONDARY),
-            61..=80 => ("network-wireless-signal-good", color::TEXT_SECONDARY),
-            _ => ("network-wireless-signal-excellent", color::ACCENT),
-        },
+        Network::Wifi { strength, .. } if *strength > 80 => color::ACCENT,
+        _ => color::TEXT_SECONDARY,
     };
-    parts::mark(crate::icons::symbolic(name), side, tint)
+    parts::mark(crate::icons::symbolic(network_glyph(network)), side, tint)
+}
+
+fn bluetooth_glyph(bt: Bluetooth) -> &'static str {
+    match (bt.powered, bt.connected) {
+        (false, _) => "bluetooth-disabled",
+        (true, 0) => "bluetooth-disconnected",
+        (true, _) => "bluetooth-active",
+    }
 }
 
 /// The bluetooth mark: the theme's own rune, in one of three hues.
@@ -1119,12 +1704,12 @@ fn network_mark(network: &Network, side: f32) -> Element<'static, Message, Theme
 /// changes with it so the state survives for anyone who cannot tell the hues
 /// apart.
 fn bluetooth_mark(bt: Bluetooth, side: f32) -> Element<'static, Message, Theme> {
-    let (name, tint) = match (bt.powered, bt.connected) {
-        (false, _) => ("bluetooth-disabled", color::NEUTRAL),
-        (true, 0) => ("bluetooth-disconnected", color::ACCENT),
-        (true, _) => ("bluetooth-active", color::CONNECTED),
+    let tint = match (bt.powered, bt.connected) {
+        (false, _) => color::NEUTRAL,
+        (true, 0) => color::ACCENT,
+        (true, _) => color::CONNECTED,
     };
-    parts::mark(crate::icons::symbolic(name), side, tint)
+    parts::mark(crate::icons::symbolic(bluetooth_glyph(bt)), side, tint)
 }
 
 /// How much of a network's name a drawer row will show.
@@ -1132,16 +1717,6 @@ const DRAWER_CHARS: usize = 14;
 
 /// Percentage at or below which a discharging battery is drawn as a warning.
 pub(crate) const LOW: u8 = 15;
-
-/// What the signal bars are lit from. A wired link is full strength — it is
-/// not a guess, a cable either carries or it does not.
-pub(crate) fn network_strength(network: &Network) -> u8 {
-    match network {
-        Network::Offline => 0,
-        Network::Wired { .. } | Network::Other { .. } => 100,
-        Network::Wifi { strength, .. } => *strength,
-    }
-}
 
 /// Charging is a leading `+`, discharging bare, full the word. Time remaining
 /// is deliberately absent: it is the least trustworthy number UPower reports.
@@ -1214,21 +1789,33 @@ pub fn style(_app: &crate::app::App, theme: &Theme) -> iced::theme::Style {
 mod tests {
     use super::*;
 
-    /// The cell is a reading, not a guess: offline says so in a word rather
-    /// than disappearing, because a missing cell and a dead link look the same
-    /// on a bar and only one of them is worth telling the human about.
+    /// The popup is sized before layout, so the sum has to be the drawing.
+    #[test]
+    fn a_tray_menu_is_as_tall_as_its_lines() {
+        use eclipse_services::tray::MenuKind;
+        let entries = crate::radio::preview_menu();
+        let rows = entries.iter().filter(|e| e.kind != MenuKind::Separator).count() as f32;
+        let rules = entries.len() as f32 - rows;
+        let want = (rows * menu::ROW_H + rules * menu::SEP_H + 2.0 * menu::PAD).ceil() as u32;
+        assert_eq!(tray_menu_height(&entries), want);
+        assert_eq!(tray_menu_height(&entries), 210);
+    }
+
+    /// The cell is a reading, not a guess: offline has its own glyph rather
+    /// than the weakest rung, because a dead link and a faint one look the
+    /// same on a bar and only one of them is worth telling the human about.
     #[test]
     fn an_offline_link_still_says_something() {
-        assert_eq!(network_strength(&Network::Offline), 0);
+        assert_eq!(network_glyph(&Network::Offline), "network-wireless-offline");
     }
 
     #[test]
-    fn wifi_reports_its_strength() {
+    fn wifi_reports_its_rung() {
         let wifi = Network::Wifi {
             id: "House".into(),
             strength: 49,
         };
-        assert_eq!(network_strength(&wifi), 49);
+        assert_eq!(network_glyph(&wifi), "network-wireless-signal-ok");
     }
 
     #[test]
@@ -1337,6 +1924,90 @@ mod tests {
         let (_, detail, shown) = ladder(120.0, 30);
         assert_eq!(detail, Detail::Bare);
         assert!(shown < 30);
+    }
+
+    /// A test-only window fixture for the expansion tests: only `title` and
+    /// `minimized` vary, everything else is filler no chip logic reads.
+    fn expand_fixture(handle: u64, title: &str, minimized: bool) -> Window {
+        Window {
+            handle,
+            app_id: "kitty".into(),
+            title: title.into(),
+            workspace: Some(1),
+            output: Some(0),
+            focused: false,
+            minimized,
+            pid: None,
+            trust: crate::model::Trust::Private,
+        }
+    }
+
+    /// A roomy strip's genuine slack lets a long title through whole — past
+    /// both the 18-char clamp and `TASK_MAX` — while a short-titled neighbour,
+    /// which was never using its own share, keeps exactly the floor.
+    #[test]
+    fn a_long_title_expands_past_the_cap_when_room_allows() {
+        let long = expand_fixture(1, "a title much longer than eighteen characters wide", false);
+        let short = expand_fixture(2, "short", false);
+        let windows = [&long, &short];
+        let base_width = bar::TASK_MAX;
+        let avail = whole_width(long.label()) + base_width + bar::GAP + 400.0;
+
+        let widths = expand(&windows, base_width, avail);
+
+        assert!(widths[0] >= whole_width(long.label()));
+        assert_eq!(widths[1], base_width);
+    }
+
+    /// Two windows both want more than the strip has spare; the one that is
+    /// up wins the room over the one that has been sent away.
+    #[test]
+    fn expansion_favours_the_window_that_is_up() {
+        let away = expand_fixture(1, "a title much longer than eighteen characters wide", true);
+        let up = expand_fixture(2, "a title much longer than eighteen characters wide", false);
+        let windows = [&away, &up];
+        let base_width = bar::TASK_MAX;
+        let want = whole_width(away.label()) - base_width;
+        // Just enough surplus for one of the two, not both.
+        let avail = 2.0 * base_width + bar::GAP + want;
+
+        let widths = expand(&windows, base_width, avail);
+
+        assert_eq!(widths[0], base_width, "the minimized chip yields its priority");
+        assert!(widths[1] > base_width, "the chip that is up is satisfied first");
+    }
+
+    /// With two non-minimized windows tied on state, the left one — the lower
+    /// original index — is offered the slack first, so the outcome never
+    /// depends on iteration order.
+    #[test]
+    fn expansion_prefers_the_left_window_among_equals() {
+        let left = expand_fixture(1, "a title much longer than eighteen characters wide", false);
+        let right = expand_fixture(2, "a title much longer than eighteen characters wide", false);
+        let windows = [&left, &right];
+        let base_width = bar::TASK_MAX;
+        let want = whole_width(left.label()) - base_width;
+        let avail = 2.0 * base_width + bar::GAP + want;
+
+        let widths = expand(&windows, base_width, avail);
+
+        assert!(widths[0] > base_width, "the left chip is satisfied first");
+        assert_eq!(widths[1], base_width, "no slack is left for the right chip");
+    }
+
+    /// A packed strip has no slack to give: every chip stays at the floor
+    /// `ladder` already gave it, exactly as it did before expansion existed.
+    #[test]
+    fn a_packed_strip_leaves_every_chip_at_its_floor() {
+        let a = expand_fixture(1, "a title much longer than eighteen characters wide", false);
+        let b = expand_fixture(2, "another quite long title past the character cap", false);
+        let windows = [&a, &b];
+        let base_width = bar::TASK_MAX;
+        let avail = 2.0 * base_width + bar::GAP;
+
+        let widths = expand(&windows, base_width, avail);
+
+        assert_eq!(widths, vec![base_width, base_width]);
     }
 
     /// A workspace with only minimized windows still has windows on it.
@@ -1481,5 +2152,30 @@ mod tests {
         let tray = tray_span(&app, crate::app::Drawer::Overflow).expect("sized bar");
         assert!(tray.1 <= app.width - bar::MARGIN_X - bar::EDGE);
         assert!(tray.0 > chip_span(&app, 3).expect("chip 3 is drawn").1);
+    }
+
+    /// Hidden beats pinned, pinned keeps its own order, and a drawer whose
+    /// applet is not on the bar hangs off the arrow that leads to it.
+    #[test]
+    fn the_tray_follows_its_config() {
+        let mut app = crate::app::App::new();
+        app.width = 1440.0;
+        app.battery = None;
+        app.tray.pinned = Some(vec!["bluetooth".into(), "network".into()]);
+        app.tray.hidden = vec!["network".into()];
+        let (pinned, overflow) = tray_entries(&app);
+        assert_eq!(pinned, vec![Entry::Bluetooth]);
+        assert!(overflow.is_empty());
+
+        let arrow = tray_span(&app, crate::app::Drawer::Overflow).expect("sized bar");
+        let bt = tray_span(&app, crate::app::Drawer::Bluetooth).expect("sized bar");
+        assert!(bt.1 < arrow.0);
+        assert_eq!(tray_span(&app, crate::app::Drawer::Network), Some(arrow));
+
+        // Unset pins network and battery; bluetooth waits in the overflow.
+        app.tray = crate::conn::TrayConfig::default();
+        let (pinned, overflow) = tray_entries(&app);
+        assert_eq!(pinned, vec![Entry::Network]);
+        assert_eq!(overflow, vec![Entry::Bluetooth]);
     }
 }

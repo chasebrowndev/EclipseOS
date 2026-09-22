@@ -268,6 +268,22 @@ pub struct Bar {
     /// anchor is chosen once, at surface creation (COMP-13 §1.1's `restart`
     /// reload class), so a running bar keeps its old edge until relaunched.
     pub position: BarPosition,
+    /// `tray { ... }`: which applets and StatusNotifierItems the bar shows.
+    pub tray: BarTray,
+}
+
+/// `bar { tray { pinned …; hidden … } }`. Ids only — the compositor neither
+/// knows nor checks which applets or tray items exist; the bar resolves them.
+/// Built-in applet ids are `network`, `bluetooth`, `battery`, `volume`; a
+/// StatusNotifierItem is named by its own `Id` property.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BarTray {
+    /// Ids on the bar itself, in display order. `None` (no `pinned` node)
+    /// leaves the order to the bar; `Some(vec![])` pins nothing.
+    pub pinned: Option<Vec<String>>,
+    /// Ids shown nowhere. Wins over `pinned`. Anything in neither list goes
+    /// to the overflow drawer.
+    pub hidden: Vec<String>,
 }
 
 /// The edge `hyperion`'s layer surface anchors to.
@@ -287,6 +303,7 @@ impl Default for Bar {
             fold_duration_ms: 150,
             fold_curve: "ease-out".to_owned(),
             position: BarPosition::Top,
+            tray: BarTray::default(),
         }
     }
 }
@@ -1474,7 +1491,37 @@ impl Config {
                         format!("unknown bar position, keeping default (other={:?})", other),
                     ),
                 },
+                "tray" => self.apply_bar_tray(n),
                 _ => self.unknown_key(n, "bar", "bar node"),
+            }
+        }
+    }
+
+    fn apply_bar_tray(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        let mut seen_pinned = false;
+        let mut seen_hidden = false;
+        for n in children.nodes() {
+            match n.name().value() {
+                "pinned" => {
+                    if seen_pinned {
+                        self.reject(
+                            n,
+                            "repeated pinned replaces the previous one; list every id on a single node",
+                        );
+                    }
+                    self.bar.tray.pinned = Some(names(n, &mut seen_pinned));
+                }
+                "hidden" => {
+                    if seen_hidden {
+                        self.reject(
+                            n,
+                            "repeated hidden replaces the previous one; list every id on a single node",
+                        );
+                    }
+                    self.bar.tray.hidden = names(n, &mut seen_hidden);
+                }
+                _ => self.unknown_key(n, "bar.tray", "bar tray node"),
             }
         }
     }
@@ -2418,6 +2465,27 @@ mod tests {
         // Nothing close enough: no suggestion rather than a misleading one.
         let m = err("general {\n    quux 4\n}\n");
         assert!(!m.contains("did you mean"), "{m}");
+    }
+
+    /// `bar.tray`: an absent `pinned` is "the bar decides", a bare one pins
+    /// nothing, and order is kept exactly as written.
+    #[test]
+    fn bar_tray_lists_keep_order_and_unset_differs_from_empty() {
+        fn tray(text: &str) -> BarTray {
+            let doc: KdlDocument = text.parse().unwrap();
+            let mut cfg = Config::default();
+            cfg.apply(&doc, &mut Vec::new());
+            assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+            cfg.bar.tray
+        }
+        assert_eq!(tray("bar { position top }\n"), BarTray::default());
+        assert_eq!(tray("bar { tray { pinned } }\n").pinned, Some(vec![]));
+        let t = tray("bar { tray { pinned volume \"org.kde.x\" network; hidden battery } }\n");
+        assert_eq!(
+            t.pinned.as_deref(),
+            Some(&["volume".to_string(), "org.kde.x".into(), "network".into()][..])
+        );
+        assert_eq!(t.hidden, ["battery"]);
     }
 
     /// A tab-indented line keeps its tabs in the caret gutter so the run still

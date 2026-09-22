@@ -427,9 +427,10 @@ pub fn place_new_window(state: &mut AbyssState, window: Window) {
     );
 }
 
-/// Re-run placement once a client has finally named itself, so rules that match
-/// on `app-id`/`title` still land (see `rules::Placed`). The window keeps its
-/// handle and its identity — only where it sits changes.
+/// Re-run placement once a window has settled (see `rules::Placed`), so rules
+/// that match on `app-id`/`title` and the dialog/fixed-size float default
+/// still land. The window keeps its handle and its identity — only where it
+/// sits changes.
 pub fn replace_window(state: &mut AbyssState, window: &Window, placement: &rules::Placement) {
     for entry in state.outputs.iter_mut() {
         for ws in entry.workspaces.iter_mut() {

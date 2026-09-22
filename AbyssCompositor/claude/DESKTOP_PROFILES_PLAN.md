@@ -218,11 +218,14 @@ toggle destructive and people will not touch it twice.
 **Gate:** flip the key, hot-reload, watch the session change shape without a
 restart.
 
-## DP-4 — DE furniture, on Quickshell *(distribution work — OS-2)*
+## DP-4 — DE furniture, native Rust *(distribution work — OS-2)*
 
-Taskbar with a real window list, tray, clock, launcher, notifications. Built by
-extending the existing `eclipse` Quickshell config; native Rust crates are a
-later question, deliberately deferred until the shape has settled.
+Taskbar with a real window list, tray, clock, launcher, notifications. It began
+as an extension of the `eclipse` Quickshell config. ADR 0038 moved it to native
+Rust/iced, and ADR 0052 split it into one crate per component: `hyperion` (the
+taskbar; users see "taskbar"), `eclipse-toasts`, `eclipse-center`,
+`eclipse-launcher`. Each is its own package, so any one of them can run under a
+third-party bar or shell.
 
 **This is D-05 default-userland work, not compositor work.** It is tracked as
 OS-2 in `claude/OS_WORK.md`, which carries the implementation notes. It appears

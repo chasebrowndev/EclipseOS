@@ -3,9 +3,16 @@
 //! bar and the OSD are.
 
 use eclipse_settings::app::{self, App};
+use eclipse_settings::pane::Pane;
 
 fn main() -> iced::Result {
-    let mut builder = iced::application(App::new, app::update, app::view)
+    // `eclipse-settings [pane]`: the taskbar's drawers open `network`. An
+    // unknown name opens the default pane rather than refusing to start.
+    let pane = std::env::args()
+        .nth(1)
+        .and_then(|a| Pane::from_arg(&a))
+        .unwrap_or(Pane::Appearance);
+    let mut builder = iced::application(move || App::with_pane(pane), app::update, app::view)
         .title("Eclipse Settings")
         .theme(|_: &App| eclipse_ui::theme::theme())
         .subscription(app::subscription)

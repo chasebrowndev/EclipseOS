@@ -25,6 +25,9 @@ path = "src/main.rs"
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
 eclipse-ui = { path = "../eclipse-ui" }
 eclipse-ipc = { path = "../eclipse-ipc" }
+# The Network pane reads the link and forgets profiles and devices through the
+# status service's action handle.
+eclipse-services = { path = "../eclipse-services" }
 serde_json.workspace = true
 
 [dev-dependencies]

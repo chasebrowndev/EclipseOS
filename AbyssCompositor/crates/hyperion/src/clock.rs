@@ -60,9 +60,19 @@ const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
+// POSIX, but not bound by the `libc` crate.
+unsafe extern "C" {
+    fn tzset();
+}
+
 fn local() -> Option<libc::tm> {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let t = libc::time_t::try_from(secs).ok()?;
+    // `localtime_r` does not re-read the zone; glibc caches it from the first
+    // call. `tzset` re-stats /etc/localtime (TZ unset), so a zone change made
+    // while the bar runs shows on the next tick instead of after a restart.
+    // SAFETY: no arguments; it only refreshes libc's own zone state.
+    unsafe { tzset() };
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     // SAFETY: `t` is a valid time_t and `tm` is a live, owned, zeroed struct;
     // `localtime_r` is the reentrant form and writes only through the pointer.

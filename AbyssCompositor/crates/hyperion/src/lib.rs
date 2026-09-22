@@ -13,6 +13,7 @@ pub mod clock;
 pub mod conn;
 pub mod icons;
 pub mod model;
+pub mod radio;
 pub mod view;
 
 /// Bar height in logical pixels, and therefore its exclusive zone.

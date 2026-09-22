@@ -155,6 +155,24 @@ pub fn symbolic(name: &str) -> Option<PathBuf> {
         .or_else(|| lookup(name))
 }
 
+/// A tray item's icon: the app's own `IconThemePath` first (apps that ship
+/// their icons beside the binary), then the theme, which also takes the
+/// absolute paths some apps (Electron) put in `IconName`.
+pub fn tray(name: &str, theme_path: &str) -> Option<PathBuf> {
+    if name.is_empty() {
+        return None;
+    }
+    if !theme_path.is_empty() {
+        for ext in ["svg", "png"] {
+            let path = std::path::Path::new(theme_path).join(format!("{name}.{ext}"));
+            if path.exists() {
+                return Some(path);
+            }
+        }
+    }
+    lookup(name)
+}
+
 /// An `Icon=` value may itself be an absolute path rather than a theme name;
 /// the spec allows both, and a surprising number of entries use the path.
 fn lookup(name: &str) -> Option<PathBuf> {

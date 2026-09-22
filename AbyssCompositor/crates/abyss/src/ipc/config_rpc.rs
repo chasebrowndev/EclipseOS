@@ -273,7 +273,7 @@ fn set_config_value(state: &mut AbyssState, outer: Decision, params: &Value) -> 
     let raw = obj(params)
         .get("value")
         .ok_or_else(|| RpcError::invalid_params("value is required"))?;
-    let kdl = coerce(raw, &key.ty)?;
+    let edit = coerce_edit(raw, &key.ty)?;
     let dry_run = obj(params)
         .get("dry_run")
         .and_then(Value::as_bool)
@@ -286,8 +286,9 @@ fn set_config_value(state: &mut AbyssState, outer: Decision, params: &Value) -> 
         .ok_or_else(|| RpcError::invalid_params("no config file on the search path to write to"))?;
 
     let before = std::fs::read_to_string(&target).unwrap_or_default();
-    let after =
-        edit::set_value(&before, &path, &kdl).map_err(|e| RpcError::invalid_params(&format!("{e}")))?;
+    let after = edit
+        .apply(&before, &path)
+        .map_err(|e| RpcError::invalid_params(&format!("{e}")))?;
 
     if dry_run {
         return Ok(json!({
@@ -345,6 +346,43 @@ pub fn hash(text: &str) -> u64 {
     h.finish()
 }
 
+/// A checked value, ready to splice: one argument, or a whole list node.
+enum Edit {
+    Value(kdl::KdlValue),
+    List(Vec<kdl::KdlValue>),
+}
+
+impl Edit {
+    fn apply(&self, text: &str, path: &str) -> Result<String, edit::EditError> {
+        match self {
+            Self::Value(v) => edit::set_value(text, path, v),
+            Self::List(vs) => edit::set_list(text, path, vs),
+        }
+    }
+}
+
+fn coerce_edit(raw: &Value, ty: &schema::Ty) -> Result<Edit, RpcError> {
+    match ty {
+        schema::Ty::StrList => coerce_list(raw).map(Edit::List),
+        _ => coerce(raw, ty).map(Edit::Value),
+    }
+}
+
+/// JSON array of strings → the arguments of one list node. Anything else in
+/// the array is refused outright rather than stringified.
+fn coerce_list(raw: &Value) -> Result<Vec<kdl::KdlValue>, RpcError> {
+    let bad = || RpcError::invalid_params("value must be an array of strings");
+    raw.as_array()
+        .ok_or_else(bad)?
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .map(|s| kdl::KdlValue::String(s.to_owned()))
+                .ok_or_else(bad)
+        })
+        .collect()
+}
+
 /// JSON value → KDL value, checked against the key's type and range here
 /// rather than by the caller. The client sends what the human typed; the
 /// constraint lives with the schema, in one place.
@@ -389,10 +427,9 @@ fn coerce(raw: &Value, ty: &schema::Ty) -> Result<kdl::KdlValue, RpcError> {
             }
             kdl::KdlValue::String(format!("#{hex}"))
         }
-        // A list is many arguments on one node, which the single-value splice
-        // in `edit.rs` cannot express. A6: lists start on the GUI-coverage
-        // exception list and get their own verb later.
-        StrList => return Err(RpcError::not_implemented("list-valued keys are not writable yet")),
+        // A list is many arguments on one node: `coerce_edit` routes it to
+        // `coerce_list` and `edit::set_list`, never through here.
+        StrList => return Err(RpcError::invalid_params("value must be an array of strings")),
     })
 }
 
@@ -432,8 +469,7 @@ fn validate_config(state: &mut AbyssState, outer: Decision, params: &Value) -> R
     let text = match (str_param(params, "path"), proposed) {
         (Some(path), Some(raw)) => {
             let key = lookup_key(path)?;
-            let kdl = coerce(raw, &key.ty)?;
-            match edit::set_value(&text, path, &kdl) {
+            match coerce_edit(raw, &key.ty)?.apply(&text, path) {
                 Ok(t) => t,
                 Err(e) => {
                     return Ok(json!({
@@ -513,9 +549,15 @@ mod tests {
         assert!(coerce(&json!("c"), &ty).is_err());
         assert!(coerce(&json!("#ff8800"), &schema::Ty::Color).is_ok());
         assert!(coerce(&json!("#ff88"), &schema::Ty::Color).is_err());
-        // A6: lists are not writable in v1 and say so, rather than silently
-        // writing a one-element list.
+        // A list is a JSON array of strings, spliced as one node; a scalar or
+        // a mixed array is refused, never stringified.
         assert!(coerce(&json!(["x"]), &schema::Ty::StrList).is_err());
+        assert!(
+            matches!(coerce_edit(&json!(["a", "b"]), &schema::Ty::StrList), Ok(Edit::List(v)) if v.len() == 2)
+        );
+        assert!(coerce_edit(&json!([]), &schema::Ty::StrList).is_ok());
+        assert!(coerce_edit(&json!("a"), &schema::Ty::StrList).is_err());
+        assert!(coerce_edit(&json!(["a", 1]), &schema::Ty::StrList).is_err());
     }
 
     /// A settings write from a normal session must never target `/etc`: the

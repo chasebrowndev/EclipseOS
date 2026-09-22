@@ -53,14 +53,16 @@ pub enum Item {
 /// Which tray applet a drawer is showing.
 ///
 /// The drawer is a *container*, not one applet's popup: `Overflow` is the
-/// general tray drawer — the home for applets that have not earned permanent
-/// bar space, with bluetooth as its first tenant — and `Network` is the wifi
-/// applet's own. Adding a tenant is a variant plus a row builder, never a new
-/// popup path.
+/// general tray drawer — the home for every tray entry that is neither pinned
+/// to the bar nor hidden — and `Network` and `Bluetooth` are the two radios'
+/// own. Adding a tenant is a variant plus a body builder, never a new popup
+/// path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Drawer {
     /// The wifi applet, opened from the signal cell.
     Network,
+    /// The bluetooth applet.
+    Bluetooth,
     /// The tray overflow, opened from the disclosure arrow.
     Overflow,
 }
@@ -70,8 +72,15 @@ pub enum Drawer {
 pub enum Kind {
     /// A window's right-click menu.
     Menu { handle: u64, items: Vec<Item> },
-    /// A tray drawer.
-    Drawer(Drawer),
+    /// A tray drawer, and the height its surface was created at. The view
+    /// draws from live data; when that data would need a different height the
+    /// drawer is reopened at the new one rather than clipped (see [`reflow`]).
+    Drawer { which: Drawer, height: u32 },
+    /// A StatusNotifierItem's own menu, fetched once when it opened.
+    TrayMenu {
+        id: String,
+        entries: Vec<crate::radio::MenuEntry>,
+    },
 }
 
 /// The one open popup. One at a time, as on any desktop: opening a second
@@ -134,6 +143,30 @@ pub enum Message {
     /// A configuration reload succeeded. The `bar.*` keys may have moved, so
     /// re-read them; the event itself is payload-free by design.
     Reconfigured,
+    /// The wi-fi drawer's switch.
+    WifiEnable(bool),
+    /// A network row was clicked. A secured network with no saved profile
+    /// hands off to `eclipse-secret-prompt` instead of joining.
+    WifiConnect(String),
+    /// The current network's Disconnect.
+    WifiDisconnect,
+    /// The bluetooth drawer's switch.
+    BtPower(bool),
+    /// Start or stop discovery.
+    BtScan,
+    /// A device row was clicked: connect a paired device, pair a new one.
+    BtConnect(String),
+    BtDisconnect(String),
+    /// A drawer's way out: start Settings on the named pane.
+    OpenSettings(&'static str),
+    /// A tray item was left-clicked.
+    TrayActivate(String),
+    /// A tray item was right-clicked: open its own menu.
+    TrayMenu(String),
+    /// A line of a tray item's menu was picked.
+    TrayMenuClick(String, i32),
+    /// The wifi, bluetooth or tray service said something.
+    Radio(crate::radio::Feed),
 }
 
 pub struct App {
@@ -179,6 +212,27 @@ pub struct App {
     pub idle: bool,
     /// Where the bar is between shown, folded and hidden.
     pub fold: FoldState,
+    /// Radio lists and tray items — what the drawers draw beyond the one-line
+    /// status feed. See [`crate::radio`].
+    pub radios: crate::radio::Radios,
+    /// The tray item whose menu a right-click asked for. The entries arrive
+    /// later; they open a sheet only if this still names the item, so a menu
+    /// that answers after the user moved on never pops up.
+    pub pending_menu: Option<String>,
+    /// `bar.tray.*`: which tray entries are pinned, in what order, and which
+    /// are hidden.
+    pub tray: crate::conn::TrayConfig,
+    /// Debug builds only: the popup `HYPERION_PREVIEW` asked for, opened on
+    /// the first event that names the bar's surface. Always `None` in release.
+    pub preview: Option<Preview>,
+}
+
+/// A popup a debug preview opens by itself, since nothing can click.
+#[derive(Debug, Clone)]
+pub enum Preview {
+    Drawer(Drawer),
+    /// A tray item's menu: the item's address and the fixture entries.
+    TrayMenu(String, Vec<crate::radio::MenuEntry>),
 }
 
 /// What the bar should be right now.
@@ -276,6 +330,7 @@ impl App {
         // cannot be passed as an argument; `main` puts it here instead.
         let output_name = std::env::var(crate::OUTPUT_ENV).unwrap_or_default();
         let bar = conn.bar_config();
+        let tray = conn.tray_config();
         let (outputs, _) = conn.outputs();
         let output_id = outputs
             .iter()
@@ -300,8 +355,14 @@ impl App {
             fullscreen: false,
             idle: false,
             fold: FoldState::default(),
+            radios: crate::radio::Radios::default(),
+            pending_menu: None,
+            tray,
+            preview: None,
         };
         app.icons.warm(&app.snapshot.windows);
+        #[cfg(debug_assertions)]
+        preview(&mut app);
         app
     }
 }
@@ -316,28 +377,91 @@ impl App {
 /// One launcher at a time: the child is kept so a second click on a launcher
 /// that is still up does nothing rather than stacking a second window, and so
 /// a launcher that has since exited is reaped instead of left a zombie.
+///
+/// The same holds for every sibling the bar starts — Settings from a drawer's
+/// link, the secret prompt from a secured network — so the slot is keyed by
+/// binary: one of each, never two password prompts stacked.
 #[cfg(not(test))]
-fn launch() {
+fn spawn_once(bin: &'static str, args: &[&str]) {
+    use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
 
-    static CHILD: OnceLock<Mutex<Option<std::process::Child>>> = OnceLock::new();
-    let mut slot = match CHILD.get_or_init(|| Mutex::new(None)).lock() {
-        Ok(slot) => slot,
+    static CHILDREN: OnceLock<Mutex<HashMap<&'static str, std::process::Child>>> = OnceLock::new();
+    let mut slots = match CHILDREN.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        Ok(slots) => slots,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if let Some(child) = slot.as_mut() {
+    if let Some(child) = slots.get_mut(bin) {
         match child.try_wait() {
-            // Still up. The launcher is already the user's answer.
+            // Still up. That window is already the user's answer.
             Ok(None) => return,
             // Exited: reaped by this very call, so the slot is free again.
-            Ok(Some(_)) | Err(_) => *slot = None,
+            Ok(Some(_)) | Err(_) => {
+                slots.remove(bin);
+            }
         }
     }
-    match std::process::Command::new(LAUNCHER).spawn() {
-        Ok(child) => *slot = Some(child),
+    match std::process::Command::new(bin).args(args).spawn() {
+        Ok(child) => {
+            slots.insert(bin, child);
+        }
         // The bar cannot narrate this in a 44px row, but it must not swallow
-        // it either: stderr is the bar's journal unit.
-        Err(e) => eprintln!("hyperion: cannot start {LAUNCHER}: {e}"),
+        // it either: stderr is the bar's journal unit. Only the binary is
+        // named — the arguments may carry an SSID.
+        Err(e) => eprintln!("hyperion: cannot start {bin}: {e}"),
+    }
+}
+
+#[cfg(test)]
+fn spawn_once(_bin: &'static str, _args: &[&str]) {}
+
+/// The Settings binary a drawer's link starts, with the pane as its argument.
+pub const SETTINGS: &str = "eclipse-settings";
+
+/// The password prompt: a separate process whose whole surface is `secret`
+/// (ADR 0053), so the passphrase never passes through the bar.
+pub const SECRET_PROMPT: &str = "eclipse-secret-prompt";
+
+/// `HYPERION_PREVIEW=network|bluetooth|overflow|traymenu|bar` fills the radios and the
+/// tray with a fixture and, for a drawer, opens it as soon as the bar has a
+/// surface — so a drawer can be screenshotted on a machine with no service
+/// behind it and no way to click. Debug builds only.
+#[cfg(debug_assertions)]
+fn preview(app: &mut App) {
+    let Ok(which) = std::env::var("HYPERION_PREVIEW") else {
+        return;
+    };
+    app.radios = crate::radio::Radios::preview();
+    app.network = Network::Wifi {
+        id: "abyss-5g".to_owned(),
+        strength: 82,
+    };
+    app.bluetooth = Bluetooth {
+        powered: true,
+        connected: 1,
+    };
+    app.preview = match which.as_str() {
+        "network" => Some(Preview::Drawer(Drawer::Network)),
+        "bluetooth" => Some(Preview::Drawer(Drawer::Bluetooth)),
+        "overflow" => Some(Preview::Drawer(Drawer::Overflow)),
+        "traymenu" => Some(Preview::TrayMenu(
+            "org.syncthing".to_owned(),
+            crate::radio::preview_menu(),
+        )),
+        _ => None,
+    };
+    if which == "bar" {
+        app.tray.pinned = Some(
+            [
+                "org.syncthing",
+                "com.vendor.app",
+                "bluetooth",
+                "network",
+                "battery",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+        );
     }
 }
 
@@ -380,7 +504,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             return dismiss;
         }
         Message::Menu(handle) => return open_menu(app, handle),
-        Message::Open(drawer) => return open_drawer(app, drawer),
+        Message::Open(drawer) => return open_drawer(app, drawer, true),
         Message::Mute(handle, mute) => {
             let dismiss = dismiss(app);
             #[cfg(not(test))]
@@ -417,13 +541,19 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Sized(id, width) => {
             if app.popup.as_ref().map(|p| p.id) != Some(id) {
                 app.width = width;
+                if let Some(which) = app.preview.take() {
+                    app.main = Some(id);
+                    return match which {
+                        Preview::Drawer(drawer) => open_drawer(app, drawer, false),
+                        Preview::TrayMenu(item, entries) => show_tray_menu(app, item, entries),
+                    };
+                }
             }
             return Task::none();
         }
         // Nothing on the socket changed, so this one does not refetch.
         Message::Launch => {
-            #[cfg(not(test))]
-            launch();
+            spawn_once(LAUNCHER, &[]);
             return Task::none();
         }
         // The system bus is not the compositor: fold the reading in and stop,
@@ -434,7 +564,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                 Update::Bluetooth(bluetooth) => app.bluetooth = bluetooth,
                 Update::Battery(battery) => app.battery = battery,
             }
-            return Task::none();
+            return reflow(app);
         }
         // Focus moved, a window went fullscreen, or the session went idle or
         // stopped being idle. All three are one event and one decision.
@@ -454,6 +584,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::FoldTick => return fold(app),
         Message::Reconfigured => {
             app.bar = app.conn.bar_config();
+            app.tray = app.conn.tray_config();
             // A reload can turn folding off while this bar is folded, so the
             // decision is re-run rather than left until the next event.
             resolve_output(app);
@@ -463,6 +594,76 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             return fold(app);
         }
+        // The radio verbs. Each is an action on the service and nothing else:
+        // the drawer redraws from the `Update` the service answers with, not
+        // from a guess. The two switches are the exception — a toggle that
+        // springs back until the bus answers reads as broken — and are set
+        // here and corrected by the next reading if the radio disagrees.
+        Message::WifiEnable(on) => {
+            app.radios.wifi_enabled = on;
+            crate::radio::actions::set_wifi_enabled(on);
+            return reflow(app);
+        }
+        Message::WifiConnect(ssid) => {
+            let needs_secret = app.radios.network(&ssid).is_some_and(|n| n.secured && !n.known);
+            if needs_secret {
+                // The bar never sees the passphrase: the prompt asks for it
+                // and hands it straight to the service.
+                let dismiss = dismiss(app);
+                spawn_once(SECRET_PROMPT, &["wifi", &ssid]);
+                return dismiss;
+            }
+            crate::radio::actions::connect(&ssid);
+            return Task::none();
+        }
+        Message::WifiDisconnect => {
+            crate::radio::actions::disconnect();
+            return Task::none();
+        }
+        Message::BtPower(on) => {
+            app.bluetooth.powered = on;
+            if !on {
+                app.radios.scanning = false;
+            }
+            crate::radio::actions::set_bt_powered(on);
+            return reflow(app);
+        }
+        Message::BtScan => {
+            app.radios.scanning = !app.radios.scanning;
+            crate::radio::actions::discover(app.radios.scanning);
+            return reflow(app);
+        }
+        Message::BtConnect(addr) => {
+            let paired = app.radios.devices.iter().any(|d| d.addr == addr && d.paired);
+            if paired {
+                crate::radio::actions::bt_connect(&addr);
+            } else {
+                crate::radio::actions::pair(&addr);
+            }
+            return Task::none();
+        }
+        Message::BtDisconnect(addr) => {
+            crate::radio::actions::bt_disconnect(&addr);
+            return Task::none();
+        }
+        Message::OpenSettings(pane) => {
+            let dismiss = dismiss(app);
+            spawn_once(SETTINGS, &[pane]);
+            return dismiss;
+        }
+        Message::TrayActivate(id) => {
+            let dismiss = dismiss(app);
+            let (x, y) = (app.cursor.x as i32, app.cursor.y as i32);
+            crate::radio::actions::tray_activate(&id, x, y);
+            return dismiss;
+        }
+        Message::TrayMenu(id) => return open_tray_menu(app, id),
+        Message::TrayMenuClick(id, entry) => {
+            let dismiss = dismiss(app);
+            crate::radio::actions::tray_menu_click(&id, entry);
+            return dismiss;
+        }
+        Message::Radio(feed) => return radio(app, feed),
         // `to_layer_message` injects the layer-control variants. The bar never
         // sends one — it is anchored for its whole life — but the match must
         // still be total.
@@ -609,6 +810,7 @@ fn window(app: &App, handle: u64) -> Option<&crate::model::Window> {
 /// Close the open menu, if there is one. `RemoveWindow` is the macro's own
 /// name for closing a surface it created.
 fn dismiss(app: &mut App) -> Task<Message> {
+    app.pending_menu = None;
     match app.popup.take() {
         Some(popup) => Task::done(Message::RemoveWindow(popup.id)),
         None => Task::none(),
@@ -711,19 +913,26 @@ fn open_menu(app: &mut App, handle: u64) -> Task<Message> {
 /// Clicking the applet whose drawer is already open closes it and opens
 /// nothing: an applet button is a toggle, the way a tray is on every other
 /// desktop.
-fn open_drawer(app: &mut App, drawer: Drawer) -> Task<Message> {
-    let same = matches!(app.popup.as_ref().map(|p| &p.kind), Some(Kind::Drawer(d)) if *d == drawer);
+///
+/// `toggle` is false when the drawer is being *re*opened at a new height by
+/// [`reflow`], which must never read as a second click.
+fn open_drawer(app: &mut App, drawer: Drawer, toggle: bool) -> Task<Message> {
+    let same = matches!(
+        app.popup.as_ref().map(|p| &p.kind),
+        Some(Kind::Drawer { which, .. }) if *which == drawer
+    );
     let closed = dismiss(app);
-    if same {
+    if same && toggle {
         return closed;
     }
     let Some(parent) = app.main else {
         return closed;
     };
-    let size = (
-        crate::view::DRAWER_W,
-        crate::view::drawer_height(crate::view::drawer_rows(drawer)),
-    );
+    if drawer == Drawer::Network && toggle {
+        crate::radio::actions::scan();
+    }
+    let height = crate::view::drawer_height(app, drawer);
+    let size = (crate::view::DRAWER_W, height);
     // Gravity down-and-*left*: the tray lives at the right end of the bar, so
     // a drawer growing to the right would hang off the edge of the screen —
     // which is also why it hangs from the cell's right edge and not its left.
@@ -732,9 +941,92 @@ fn open_drawer(app: &mut App, drawer: Drawer) -> Task<Message> {
     let (id, open) = Message::popup_open(settings);
     app.popup = Some(Popup {
         id,
-        kind: Kind::Drawer(drawer),
+        kind: Kind::Drawer {
+            which: drawer,
+            height,
+        },
     });
     Task::batch([closed, open])
+}
+
+/// Keep an open drawer's surface the height its content now needs.
+///
+/// A popup's size is fixed when it is created, so a scan that finds three more
+/// networks cannot grow the sheet in place. The drawer is closed and reopened
+/// at the new height instead — one frame of churn, against a sheet that would
+/// otherwise clip its own link row or hang empty glass under it.
+fn reflow(app: &mut App) -> Task<Message> {
+    let Some(Popup {
+        kind: Kind::Drawer { which, height },
+        ..
+    }) = app.popup.as_ref()
+    else {
+        return Task::none();
+    };
+    let which = *which;
+    if crate::view::drawer_height(app, which) == *height {
+        return Task::none();
+    }
+    open_drawer(app, which, false)
+}
+
+/// Ask for a tray item's own menu. It opens in [`radio`], when the entries
+/// arrive.
+fn open_tray_menu(app: &mut App, id: String) -> Task<Message> {
+    let closed = dismiss(app);
+    crate::radio::actions::tray_menu(&id);
+    app.pending_menu = Some(id);
+    closed
+}
+
+/// Open a tray item's menu under the pointer.
+///
+/// An item with no menu opens nothing: an empty sheet is a worse answer to a
+/// right-click than no sheet.
+fn show_tray_menu(app: &mut App, id: String, entries: Vec<crate::radio::MenuEntry>) -> Task<Message> {
+    let Some(parent) = app.main else {
+        return Task::none();
+    };
+    if entries.is_empty() {
+        return Task::none();
+    }
+    let size = (crate::view::MENU_W, crate::view::tray_menu_height(&entries));
+    let rect = anchor(app, None, Edge::Right);
+    let settings = IcedNewPopupSettings::new(parent, size, rect).gravity(PopupGravity::BottomLeft);
+    let (id_, open) = Message::popup_open(settings);
+    app.popup = Some(Popup {
+        id: id_,
+        kind: Kind::TrayMenu { id, entries },
+    });
+    open
+}
+
+/// Fold one service report into the model.
+fn radio(app: &mut App, feed: crate::radio::Feed) -> Task<Message> {
+    use crate::radio::Feed;
+    match feed {
+        Feed::WifiEnabled(on) => app.radios.wifi_enabled = on,
+        Feed::Networks(networks) => app.radios.networks = networks,
+        Feed::Devices(devices) => app.radios.devices = devices,
+        Feed::Scanning(on) => app.radios.scanning = on,
+        // A preview's fixture tray is the thing being screenshotted: the
+        // session's live items would replace it on their first update.
+        Feed::Tray(_) if cfg!(debug_assertions) && std::env::var_os("HYPERION_PREVIEW").is_some() => {}
+        Feed::Tray(items) => app.radios.tray = items,
+        Feed::NeedsSecret(ssid) => {
+            let dismiss = dismiss(app);
+            spawn_once(SECRET_PROMPT, &["wifi", &ssid]);
+            return dismiss;
+        }
+        Feed::Menu { item, entries } => {
+            if app.pending_menu.as_deref() != Some(item.as_str()) {
+                return Task::none();
+            }
+            let closed = dismiss(app);
+            return Task::batch([closed, show_tray_menu(app, item, entries)]);
+        }
+    }
+    reflow(app)
 }
 
 /// Start a second copy of the application a window belongs to.
@@ -819,6 +1111,9 @@ fn compositor() -> Subscription<Message> {
                 // without a system bus simply never sends a status message;
                 // the compositor half of this thread is unaffected.
                 let status = eclipse_services::status::spawn().ok();
+                // Wifi, bluetooth and the tray: the services behind the
+                // drawers' actions, whose answers come back here.
+                let feeds = crate::radio::take_feeds();
                 let mut minute = String::new();
                 loop {
                     if client.is_none() {
@@ -877,6 +1172,13 @@ fn compositor() -> Subscription<Message> {
                     if let Some(status) = status.as_ref() {
                         while let Some(update) = status.try_recv() {
                             if !send(&mut sender, Message::Status(update)) {
+                                return;
+                            }
+                        }
+                    }
+                    if let Some(feeds) = feeds.as_ref() {
+                        for feed in feeds.drain() {
+                            if !send(&mut sender, Message::Radio(feed)) {
                                 return;
                             }
                         }

@@ -11,6 +11,8 @@
 
 pub mod app;
 pub mod conn;
+pub mod network;
 pub mod output;
 pub mod pane;
 pub mod schema;
+pub mod tray;
