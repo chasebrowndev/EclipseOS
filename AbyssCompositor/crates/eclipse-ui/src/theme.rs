@@ -66,9 +66,18 @@ pub fn panel(_t: &Theme) -> container::Style {
 /// window ground underneath it — only the compositor's blur — so it carries
 /// its own smoked-glass tint and a stronger border to hold an edge against
 /// an arbitrary photograph.
+///
+/// The background is [`color::GLASS_DEEP_BACKED`], not `GLASS_DEEP` itself:
+/// the compositor's blur-backdrop decision is geometric and compositor-side
+/// only (`shows_through` in `abyss/src/render/mod.rs`), so this client is
+/// never told whether it is about to happen. `GLASS_DEEP` alone has nothing
+/// opaque under it when blur is off or degrades, and reads as a broken
+/// translucent smear (BLUR-01). The backed token is `GLASS_DEEP` pre-composited
+/// over an opaque token, so the panel reads the same intentional solid glass
+/// either way.
 pub fn surface(_t: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(color::GLASS_DEEP)),
+        background: Some(Background::Color(color::GLASS_DEEP_BACKED)),
         border: Border {
             color: color::BORDER_STRONG,
             width: space::HAIRLINE,
