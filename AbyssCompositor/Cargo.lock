@@ -1163,10 +1163,12 @@ dependencies = [
 name = "eclipse-launcher"
 version = "0.1.0"
 dependencies = [
+ "eclipse-ipc",
  "eclipse-services",
  "eclipse-ui",
  "iced",
  "iced_layershell",
+ "serde_json",
 ]
 
 [[package]]
