@@ -254,11 +254,16 @@ pub mod bar {
     /// the strip into a frame around that panel.
     pub const PILL_H: f32 = 40.0;
     /// Air between the bar's sheet and the edges of the strip it reserves.
+    ///
+    /// Applied as layer-shell margin, never as padding inside the surface:
+    /// the compositor blurs the whole surface at `bar.rounding`, so any air
+    /// drawn inside it shows as a blurred rim around the pill.
     pub const MARGIN_X: f32 = 10.0;
     pub const MARGIN_Y: f32 = 6.0;
     /// The y of the bar sheet's bottom edge, in surface-local coordinates:
-    /// where a popup anchored *below a cell* begins.
-    pub const SHEET_BOTTOM: f32 = MARGIN_Y + PILL_H;
+    /// where a popup anchored *below a cell* begins. The sheet fills its
+    /// surface, so this is the sheet's own height.
+    pub const SHEET_BOTTOM: f32 = PILL_H;
     /// Padding at the far left and far right of the row.
     pub const EDGE: f32 = 8.0;
     /// Gap between two cells of the same zone.

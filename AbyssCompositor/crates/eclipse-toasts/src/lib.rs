@@ -12,6 +12,7 @@
 //! capability and can grant none.
 
 pub mod app;
+pub mod conn;
 pub mod view;
 
 /// Width of the stack's surface, including its outer padding.

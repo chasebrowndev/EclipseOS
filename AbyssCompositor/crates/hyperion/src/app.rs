@@ -14,7 +14,7 @@ use iced_layershell::to_layer_message;
 use eclipse_services::status::{Battery, Bluetooth, Network, Update};
 use eclipse_ui::tokens::{self, bar};
 
-use crate::conn::{BarConfig, Conn};
+use crate::conn::{BarConfig, BarPosition, Conn};
 use crate::icons::Icons;
 use crate::model::Snapshot;
 
@@ -205,6 +205,11 @@ pub struct App {
     pub output_id: u64,
     /// The `bar.*` settings, re-read on every successful config reload.
     pub bar: BarConfig,
+    /// The edge the surface is anchored to, fixed at startup like the anchor
+    /// itself (`bar.position` is `reload: restart`). The float gap is a
+    /// layer-shell margin on this edge, so it must not follow a reload that
+    /// the anchor did not.
+    pub edge: BarPosition,
     /// The last `output` event's payload, kept because the fold decision is
     /// recomputed on ticks and reloads, not only when the event arrives.
     pub focused_output: u64,
@@ -225,6 +230,18 @@ pub struct App {
     /// Debug builds only: the popup `HYPERION_PREVIEW` asked for, opened on
     /// the first event that names the bar's surface. Always `None` in release.
     pub preview: Option<Preview>,
+    /// The bar sheet's own glass radius, live-synced to `bar.rounding`
+    /// (BLUR-06) — distinct from [`menu_radius`] because the bar's corner is
+    /// its own setting, not `decoration.rounding`.
+    ///
+    /// [`menu_radius`]: App::menu_radius
+    pub bar_radius: f32,
+    /// Every popup's glass radius (a context menu, the tray menu, a drawer),
+    /// live-synced to `decoration.rounding` (BLUR-06) — the same value the
+    /// rest of the desktop's glass uses, kept apart from [`bar_radius`].
+    ///
+    /// [`bar_radius`]: App::bar_radius
+    pub menu_radius: f32,
 }
 
 /// A popup a debug preview opens by itself, since nothing can click.
@@ -276,7 +293,54 @@ impl Default for FoldState {
     }
 }
 
+/// What the bar's layer surface is asked for: its height, its exclusive zone
+/// and its layer-shell margin `(top, right, bottom, left)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Geometry {
+    pub height: u32,
+    pub zone: i32,
+    pub margin: (i32, i32, i32, i32),
+}
+
 impl FoldState {
+    /// True when the full pill is drawn: shown, and the slide has landed.
+    /// Anything else is the folded strip, whatever its height.
+    pub fn pill(&self) -> bool {
+        self.target == FoldTarget::Shown && self.height == crate::HEIGHT
+    }
+
+    /// The surface this state needs, anchored to `edge`.
+    ///
+    /// The drawn sheet fills its surface exactly: the compositor blurs the
+    /// whole surface at `bar.rounding`, and any air left inside it would show
+    /// as a blurred rim around the pill. So the float gap is layer-shell
+    /// margin — `MARGIN_X` on both sides always, and `MARGIN_Y` on the
+    /// anchored edge only while the pill is up (the folded strip sits flush
+    /// against the edge, as it always has).
+    ///
+    /// wlr-layer-shell adds the anchored edge's margin to the exclusive zone
+    /// (abyss: `shell::accumulate_non_exclusive_zone`), so the zone asked for
+    /// is the reserved strip less that margin, and tiled windows keep exactly
+    /// the gap they had. A hidden bar reserves nothing.
+    pub fn geometry(&self, edge: BarPosition) -> Geometry {
+        let side = bar::MARGIN_X as i32;
+        let (height, air) = if self.pill() {
+            (bar::PILL_H as u32, bar::MARGIN_Y as i32)
+        } else {
+            (self.height, 0)
+        };
+        let zone = if self.target == FoldTarget::Hidden && self.height == self.to_h {
+            0
+        } else {
+            height as i32 + air
+        };
+        let margin = match edge {
+            BarPosition::Top => (air, side, 0, side),
+            BarPosition::Bottom => (0, side, air, side),
+        };
+        Geometry { height, zone, margin }
+    }
+
     /// True while something still needs a tick: an unfinished slide, or a fold
     /// sitting out its grace. Drives whether the tick subscription exists at
     /// all, so a settled bar costs no wakeups.
@@ -331,6 +395,12 @@ impl App {
         let output_name = std::env::var(crate::OUTPUT_ENV).unwrap_or_default();
         let bar = conn.bar_config();
         let tray = conn.tray_config();
+        let bar_radius = conn
+            .glass_radius("bar.rounding")
+            .unwrap_or(eclipse_ui::tokens::bar::RADIUS_SHEET);
+        let menu_radius = conn
+            .glass_radius("decoration.rounding")
+            .unwrap_or(eclipse_ui::tokens::radius::CARD);
         let (outputs, _) = conn.outputs();
         let output_id = outputs
             .iter()
@@ -350,6 +420,7 @@ impl App {
             width: 0.0,
             output_name,
             output_id,
+            edge: bar.position,
             bar,
             focused_output: 0,
             fullscreen: false,
@@ -359,6 +430,8 @@ impl App {
             pending_menu: None,
             tray,
             preview: None,
+            bar_radius,
+            menu_radius,
         };
         app.icons.warm(&app.snapshot.windows);
         #[cfg(debug_assertions)]
@@ -541,8 +614,11 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Sized(id, width) => {
             if app.popup.as_ref().map(|p| p.id) != Some(id) {
                 app.width = width;
+                // The bar's own surface. Learned here and not only from the
+                // pointer: a bar the pointer never crossed (an inactive
+                // output) must still be able to push its fold geometry.
+                app.main = Some(id);
                 if let Some(which) = app.preview.take() {
-                    app.main = Some(id);
                     return match which {
                         Preview::Drawer(drawer) => open_drawer(app, drawer, false),
                         Preview::TrayMenu(item, entries) => show_tray_menu(app, item, entries),
@@ -585,6 +661,12 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Reconfigured => {
             app.bar = app.conn.bar_config();
             app.tray = app.conn.tray_config();
+            if let Some(radius) = app.conn.glass_radius("bar.rounding") {
+                app.bar_radius = radius;
+            }
+            if let Some(radius) = app.conn.glass_radius("decoration.rounding") {
+                app.menu_radius = radius;
+            }
             // A reload can turn folding off while this bar is folded, so the
             // decision is re-run rather than left until the next event.
             resolve_output(app);
@@ -739,28 +821,31 @@ fn fold(app: &mut App) -> Task<Message> {
         app.fold.pending = None;
     }
 
-    let before = app.fold.height;
+    // Compared as a whole geometry, not a height: committing a fold swaps
+    // the pill for the strip (dropping the edge margin) before the height
+    // has moved at all.
+    let before = app.fold.geometry(app.edge);
     advance(app, now);
-    if app.fold.height == before {
+    let after = app.fold.geometry(app.edge);
+    if after == before {
         return Task::none();
     }
     let Some(id) = app.main else {
         return Task::none();
     };
-    let height = app.fold.height;
-    // A hidden bar reserves nothing; every other state reserves exactly what
-    // it draws.
-    let zone = if app.fold.target == FoldTarget::Hidden && height == app.fold.to_h {
-        0
-    } else {
-        height as i32
-    };
     Task::batch([
         Task::done(Message::SizeChange {
             id,
-            size: (0, height),
+            size: (0, after.height),
         }),
-        Task::done(Message::ExclusiveZoneChange { id, zone_size: zone }),
+        Task::done(Message::MarginChange {
+            id,
+            margin: after.margin,
+        }),
+        Task::done(Message::ExclusiveZoneChange {
+            id,
+            zone_size: after.zone,
+        }),
     ])
 }
 
@@ -1433,6 +1518,38 @@ mod fold_tests {
         advance(&mut a, std::time::Instant::now());
         assert_eq!(a.fold.height, a.bar.fold_height);
         assert!(!a.fold.animating());
+    }
+
+    /// The pill fills its surface and the float gap is margin, yet the strip
+    /// a tiled window avoids is still the full `HEIGHT`: the compositor adds
+    /// the anchored edge's margin to the zone. A folded strip sits flush.
+    #[test]
+    fn the_gap_is_margin_and_the_reserved_strip_is_unchanged() {
+        let shown = FoldState::default();
+        let g = shown.geometry(BarPosition::Top);
+        assert_eq!(g.height, bar::PILL_H as u32);
+        assert_eq!(
+            g.margin,
+            (
+                bar::MARGIN_Y as i32,
+                bar::MARGIN_X as i32,
+                0,
+                bar::MARGIN_X as i32
+            )
+        );
+        assert_eq!(g.zone + g.margin.0, crate::HEIGHT as i32);
+        let g = shown.geometry(BarPosition::Bottom);
+        assert_eq!(g.margin.0, 0);
+        assert_eq!(g.zone + g.margin.2, crate::HEIGHT as i32);
+
+        let mut a = folding_app();
+        a.bar.fold_duration_ms = 0;
+        commit(&mut a, FoldTarget::Folded, std::time::Instant::now());
+        advance(&mut a, std::time::Instant::now());
+        let g = a.fold.geometry(BarPosition::Top);
+        assert_eq!(g.height, a.bar.fold_height);
+        assert_eq!(g.zone, a.bar.fold_height as i32);
+        assert_eq!((g.margin.0, g.margin.2), (0, 0));
     }
 
     /// `Hidden` gives the zone up entirely; `Folded` keeps its sliver.

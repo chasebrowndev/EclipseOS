@@ -1135,6 +1135,7 @@ dependencies = [
 name = "eclipse-center"
 version = "0.1.0"
 dependencies = [
+ "eclipse-ipc",
  "eclipse-services",
  "eclipse-ui",
  "iced",
@@ -1175,6 +1176,7 @@ dependencies = [
 name = "eclipse-policy-viewer"
 version = "0.1.0"
 dependencies = [
+ "eclipse-ipc",
  "eclipse-ui",
  "iced",
  "kdl",
@@ -1215,6 +1217,7 @@ dependencies = [
 name = "eclipse-toasts"
 version = "0.1.0"
 dependencies = [
+ "eclipse-ipc",
  "eclipse-services",
  "eclipse-ui",
  "iced",
@@ -1225,7 +1228,9 @@ dependencies = [
 name = "eclipse-ui"
 version = "0.1.0"
 dependencies = [
+ "eclipse-ipc",
  "iced",
+ "serde_json",
 ]
 
 [[package]]

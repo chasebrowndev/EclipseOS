@@ -12,7 +12,7 @@ use iced::{
     Background, Border, Color, Shadow, Theme, Vector,
 };
 
-use crate::tokens::{bar, color, radius, size, space};
+use crate::tokens::{color, radius, size, space};
 
 /// The theme every Eclipse binary runs.
 ///
@@ -41,13 +41,19 @@ pub fn theme() -> Theme {
 /// composites over the compositor's blur of whatever is behind. Depth is the
 /// border and the top edge highlight ([`crate::widget::lit`]) doing their
 /// job — never fill opacity, which is what turns glass back into grey paint.
-pub fn panel(_t: &Theme) -> container::Style {
-    container::Style {
+///
+/// `radius` is a parameter rather than [`radius::CARD`] baked in, because the
+/// glass this fn draws has to live-sync to the compositor's own
+/// `decoration.rounding` (`eclipse_ui::ipc::fetch_config_radius`) — a caller
+/// with no live value yet still passes `radius::CARD` explicitly, so the
+/// fallback stays visible at the call site instead of hiding in here.
+pub fn panel(radius: f32) -> impl Fn(&Theme) -> container::Style {
+    move |_t: &Theme| container::Style {
         background: Some(Background::Color(color::GLASS)),
         border: Border {
             color: color::BORDER,
             width: space::HAIRLINE,
-            radius: radius::CARD.into(),
+            radius: radius.into(),
         },
         shadow: Shadow {
             color: Color {
@@ -75,13 +81,13 @@ pub fn panel(_t: &Theme) -> container::Style {
 /// translucent smear (BLUR-01). The backed token is `GLASS_DEEP` pre-composited
 /// over an opaque token, so the panel reads the same intentional solid glass
 /// either way.
-pub fn surface(_t: &Theme) -> container::Style {
-    container::Style {
+pub fn surface(radius: f32) -> impl Fn(&Theme) -> container::Style {
+    move |_t: &Theme| container::Style {
         background: Some(Background::Color(color::GLASS_DEEP_BACKED)),
         border: Border {
             color: color::BORDER_STRONG,
             width: space::HAIRLINE,
-            radius: radius::CARD.into(),
+            radius: radius.into(),
         },
         shadow: Shadow {
             color: Color {
@@ -102,19 +108,21 @@ pub fn surface(_t: &Theme) -> container::Style {
 /// the screen for the moment it is open, and smoked glass over a paragraph of
 /// text is how a verb becomes unreadable. It keeps the surface's border and
 /// shadow, because it is still a sheet lying on the desktop.
-pub fn menu_surface(_t: &Theme) -> container::Style {
-    container::Style {
+pub fn menu_surface(radius: f32) -> impl Fn(&Theme) -> container::Style {
+    move |t: &Theme| container::Style {
         background: Some(Background::Color(color::MENU_GROUND)),
-        ..surface(_t)
+        ..surface(radius)(t)
     }
 }
 
-/// The bar's ground: the same smoked glass as [`surface`], but square, with
-/// only its bottom edge drawn. A bar is an edge of the screen and not a
-/// floating sheet, so it has no radius and no shadow — the hairline under it
-/// and the highlight along its top are the whole of its depth.
-pub fn bar_ground(_t: &Theme) -> container::Style {
-    container::Style {
+/// The bar's ground: the same smoked glass as [`surface`], with no shadow of
+/// its own — a bar is an edge of the screen and not a floating sheet, so the
+/// hairline border and the highlight along its top are the whole of its
+/// depth. `radius` live-syncs to the compositor's `bar.rounding`, kept apart
+/// from [`panel`]/[`surface`]'s `decoration.rounding` because the bar sheet's
+/// corner is its own setting (COMP-13 §1.2).
+pub fn bar_ground(radius: f32) -> impl Fn(&Theme) -> container::Style {
+    move |_t: &Theme| container::Style {
         background: Some(Background::Color(color::GLASS_DEEP)),
         // The faint end of the spec's border range, not the strong one: the
         // bar's silhouette should be read from its shape, not announced by
@@ -122,7 +130,7 @@ pub fn bar_ground(_t: &Theme) -> container::Style {
         border: Border {
             color: color::HAIRLINE,
             width: space::HAIRLINE,
-            radius: bar::RADIUS_SHEET.into(),
+            radius: radius.into(),
         },
         ..container::Style::default()
     }

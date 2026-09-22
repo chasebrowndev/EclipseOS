@@ -19,7 +19,7 @@
 //! to show its own monitor's workspaces. One process per output is the only
 //! shape where that question has an answer.
 
-use hyperion::{app, view, HEIGHT, OUTPUT_ENV};
+use hyperion::{app, view, OUTPUT_ENV};
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
 use iced_layershell::settings::{LayerShellSettings, StartMode};
 
@@ -60,21 +60,28 @@ fn bar(output: String) -> iced_layershell::Result {
     // `bar.position` is `reload: restart` — the layer surface's anchor is
     // fixed for its whole life, so it is read once here, before the surface
     // exists, rather than through the live `Conn` the running app holds.
-    let edge = match hyperion::conn::Conn::new().bar_config().position {
+    let position = hyperion::conn::Conn::new().bar_config().position;
+    let edge = match position {
         hyperion::conn::BarPosition::Top => Anchor::Top,
         hyperion::conn::BarPosition::Bottom => Anchor::Bottom,
     };
+    // The same geometry every fold step asks for, so the first frame and a
+    // settled unfold cannot disagree.
+    let geometry = app::FoldState::default().geometry(position);
 
     let mut builder =
         iced_layershell::build_pattern::daemon(app::App::new, namespace, app::update, view::view)
             .layer_settings(LayerShellSettings {
                 anchor: edge | Anchor::Left | Anchor::Right,
                 layer: Layer::Top,
-                // Width 0 means "as wide as the output"; the height is also
-                // the exclusive zone, so a window opened afterwards starts
-                // below the bar rather than under it.
-                size: Some((0, HEIGHT)),
-                exclusive_zone: HEIGHT as i32,
+                // Width 0 means "as wide as the output, less the side
+                // margins". The pill fills the surface and the float gap is
+                // margin (see `FoldState::geometry`); the zone plus the edge
+                // margin is the full strip, so a window opened afterwards
+                // starts below the bar rather than under it.
+                size: Some((0, geometry.height)),
+                margin: geometry.margin,
+                exclusive_zone: geometry.zone,
                 // The bar is pointer-driven. It must never take the keyboard
                 // away from the window the human is typing into.
                 keyboard_interactivity: KeyboardInteractivity::None,

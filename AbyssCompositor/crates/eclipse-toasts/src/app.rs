@@ -58,6 +58,10 @@ pub struct App {
     /// The surface height last asked for, so a tick that changes nothing does
     /// not ask the compositor to resize to the size it already has.
     height: u32,
+    /// The card's glass radius, read once from `decoration.rounding` at
+    /// startup (BLUR-06). `crate::conn::fetch_glass_radius` is fail-soft, so
+    /// this falls back to the compile-time token when nothing answers.
+    pub glass_radius: f32,
 }
 
 impl Default for App {
@@ -72,6 +76,7 @@ impl App {
             service: eclipse_services::notifications::spawn().ok(),
             toasts: Vec::new(),
             height: 1,
+            glass_radius: crate::conn::fetch_glass_radius().unwrap_or(eclipse_ui::tokens::radius::CARD),
         }
     }
 
@@ -207,6 +212,7 @@ mod tests {
             service: None,
             toasts: Vec::new(),
             height: 1,
+            glass_radius: eclipse_ui::tokens::radius::CARD,
         }
     }
 

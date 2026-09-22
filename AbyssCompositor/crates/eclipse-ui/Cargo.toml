@@ -6,6 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The Eclipse design system: tokens, type and widgets for the DE userland."
+# Not published on its own (it is every pane's path dependency, not a public
+# crate yet); keeps cargo-deny's wildcard check off the `eclipse-ipc` path
+# dependency below, same as every other DE-side crate.
+publish = false
 
 [dependencies]
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "svg"] }
+eclipse-ipc = { path = "../eclipse-ipc" }
+serde_json.workspace = true

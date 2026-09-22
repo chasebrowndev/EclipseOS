@@ -55,6 +55,10 @@ pub struct App {
     /// logind's own refusal, shown verbatim. We do not translate it: a policy
     /// decision explained in our words instead of its own is a worse answer.
     pub problem: Option<String>,
+    /// The panel's glass radius, read once from `decoration.rounding` at
+    /// startup (BLUR-06). `crate::conn::fetch_glass_radius` is fail-soft, so
+    /// this falls back to the compile-time token when nothing answers.
+    pub glass_radius: f32,
 }
 
 impl Default for App {
@@ -77,6 +81,7 @@ impl App {
             bluetooth: Bluetooth::default(),
             battery: None,
             problem: None,
+            glass_radius: crate::conn::fetch_glass_radius().unwrap_or(eclipse_ui::tokens::radius::CARD),
         }
     }
 }
@@ -147,6 +152,7 @@ mod tests {
             bluetooth: Bluetooth::default(),
             battery: None,
             problem: None,
+            glass_radius: eclipse_ui::tokens::radius::CARD,
         };
         let _ = update(&mut app, Message::Perform(Action::PowerOff));
         assert!(app.problem.is_some());

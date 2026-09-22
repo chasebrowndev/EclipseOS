@@ -80,7 +80,7 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
         .push(results(app))
         .push(footer(app));
 
-    container(parts::surface(body))
+    container(parts::surface(app.glass_radius, body))
         .width(Length::Fixed(WIDTH as f32))
         .padding(OUTER)
         .into()

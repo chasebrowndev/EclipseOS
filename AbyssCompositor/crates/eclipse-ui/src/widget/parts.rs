@@ -14,12 +14,17 @@ use crate::theme;
 use crate::tokens::{color, drawer, font, menu, radius, size, space};
 
 /// A glass panel. The one container every block on a pane sits in.
+///
+/// `radius` is the caller's live-synced glass radius (`decoration.rounding`),
+/// or [`radius::CARD`] before the first fetch answers — see
+/// `eclipse_ui::ipc::fetch_config_radius`.
 pub fn panel<'a, Message: 'a>(
+    radius: f32,
     content: impl Into<Element<'a, Message, Theme>>,
 ) -> container::Container<'a, Message, Theme> {
     container(content)
         .padding(space::CARD)
-        .style(theme::panel)
+        .style(theme::panel(radius))
         .width(Length::Fill)
 }
 
@@ -263,10 +268,11 @@ pub fn meter_bar<'a, Message: 'a>(width: f32, fraction: f32, fill: Color) -> Ele
 /// — a menu is verbs on a mark rail, a drawer is readings on a label/value
 /// rail — which is what keeps the two from reading as the same popup.
 pub fn drawer_sheet<'a, Message: 'a>(
+    radius: f32,
     heading: &str,
     rows: Vec<Element<'a, Message, Theme>>,
 ) -> Element<'a, Message, Theme> {
-    drawer_frame(drawer_sheet_head(heading), rows)
+    drawer_frame(radius, drawer_sheet_head(heading), rows)
 }
 
 /// The plain heading strip of a [`drawer_sheet`], for a caller that assembles
@@ -283,6 +289,7 @@ pub fn drawer_sheet_head<'a, Message: 'a>(heading: &str) -> Element<'a, Message,
 /// rather than a bare label. The glass, padding and edge highlight are still
 /// decided once, here.
 pub fn drawer_frame<'a, Message: 'a>(
+    radius: f32,
     head: Element<'a, Message, Theme>,
     rows: Vec<Element<'a, Message, Theme>>,
 ) -> Element<'a, Message, Theme> {
@@ -295,8 +302,8 @@ pub fn drawer_frame<'a, Message: 'a>(
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(drawer::PAD)
-            .style(theme::menu_surface),
-        radius::CARD,
+            .style(theme::menu_surface(radius)),
+        radius,
         color::HIGHLIGHT,
     )
 }
@@ -656,15 +663,20 @@ pub fn lit<'a, Message: 'a>(
 /// [`crate::theme::surface`], its border, and the [`lit`] top edge — and a
 /// caller that assembled two of the three would get the flat grey slab the
 /// style spec exists to prevent.
+///
+/// `radius` feeds both the container's own border radius and [`lit`]'s top
+/// edge, so the two can never drift apart — see [`panel`] for where the value
+/// itself comes from.
 pub fn surface<'a, Message: 'a>(
+    radius: f32,
     content: impl Into<Element<'a, Message, Theme>>,
 ) -> Element<'a, Message, Theme> {
     lit(
         container(content)
             .padding(space::CARD)
             .width(Length::Fill)
-            .style(crate::theme::surface),
-        radius::CARD,
+            .style(crate::theme::surface(radius)),
+        radius,
         color::HIGHLIGHT,
     )
 }

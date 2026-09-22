@@ -48,6 +48,10 @@ pub struct App {
     /// and `Terminal=true` entries are dropped from `entries` rather than
     /// shown and then refused.
     term: Option<String>,
+    /// The band's glass radius, read once from `decoration.rounding` at
+    /// startup (BLUR-06). `crate::conn::fetch_glass_radius` is fail-soft, so
+    /// this falls back to the compile-time token when nothing answers.
+    pub glass_radius: f32,
 }
 
 impl Default for App {
@@ -59,6 +63,7 @@ impl Default for App {
 impl App {
     pub fn new() -> Self {
         let term = crate::conn::fetch_terminal_command();
+        let glass_radius = crate::conn::fetch_glass_radius().unwrap_or(eclipse_ui::tokens::radius::CARD);
         let mut app = App {
             entries: apps::scan(term.as_deref()),
             query: String::new(),
@@ -66,6 +71,7 @@ impl App {
             selected: 0,
             problem: None,
             term,
+            glass_radius,
         };
         app.refilter();
         app
@@ -224,6 +230,7 @@ mod tests {
             selected: 0,
             problem: None,
             term: None,
+            glass_radius: eclipse_ui::tokens::radius::CARD,
         };
         app.refilter();
         app

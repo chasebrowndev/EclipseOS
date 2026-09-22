@@ -304,4 +304,17 @@ impl Conn {
     pub fn switch_workspace(&mut self, workspace: usize) {
         self.call("switch_workspace", json!({ "workspace": workspace }));
     }
+
+    /// A live compositor-config radius, fail-soft the same way as
+    /// [`bar_config`]/[`tray_config`]: `None` on any failure, so the caller
+    /// keeps whatever value it already had rather than resetting to a
+    /// hardcoded token on a transient drop.
+    ///
+    /// [`bar_config`]: Conn::bar_config
+    /// [`tray_config`]: Conn::tray_config
+    pub fn glass_radius(&mut self, path: &str) -> Option<f32> {
+        self.ensure();
+        let client = self.client.as_mut()?;
+        eclipse_ui::ipc::fetch_config_radius(client, path)
+    }
 }

@@ -19,12 +19,12 @@ use crate::read::{Allowlist, FileState, Policy, Rule};
 /// not a thing a layer-shell client may do.
 const READ_ONLY: &str = "Read-only. Editing policy happens in the compositor-drawn policy editor, not here.";
 
-pub fn view(policy: &Policy) -> Element<'_, Message, Theme> {
+pub fn view(policy: &Policy, radius: f32) -> Element<'_, Message, Theme> {
     let body = column![
-        files(policy),
-        capture(policy),
-        data_control(policy),
-        rules(policy),
+        files(policy, radius),
+        capture(policy, radius),
+        data_control(policy, radius),
+        rules(policy, radius),
     ]
     .spacing(space::BLOCK);
 
@@ -64,6 +64,7 @@ fn section<'a>(
     heading: &str,
     explanation: &str,
     blocks: Vec<Element<'a, Message, Theme>>,
+    radius: f32,
 ) -> Element<'a, Message, Theme> {
     let mut col = Column::new()
         .spacing(space::ROW_Y)
@@ -72,12 +73,12 @@ fn section<'a>(
     for b in blocks {
         col = col.push(b);
     }
-    panel(col.push(hairline()).push(note(READ_ONLY))).into()
+    panel(radius, col.push(hairline()).push(note(READ_ONLY))).into()
 }
 
 /// Which files were read. A missing `/etc/eclipse/policy.kdl` is normal; a
 /// malformed one is not, and the reader has to be told which file and why.
-fn files(policy: &Policy) -> Element<'_, Message, Theme> {
+fn files(policy: &Policy, radius: f32) -> Element<'_, Message, Theme> {
     let rows = policy
         .files
         .iter()
@@ -97,6 +98,7 @@ fn files(policy: &Policy) -> Element<'_, Message, Theme> {
         "Read from disk in this order; a later file replaces an earlier one. \
          The compositor is never asked — the control socket refuses to serve policy.",
         vec![inset_list("SEARCH PATH", rows)],
+        radius,
     )
 }
 
@@ -118,7 +120,7 @@ fn permits(list: &Allowlist, what: &str) -> String {
     }
 }
 
-fn capture(policy: &Policy) -> Element<'_, Message, Theme> {
+fn capture(policy: &Policy, radius: f32) -> Element<'_, Message, Theme> {
     let scripted = match &policy.scripted_input {
         Some((true, src)) => list_row(
             "The control socket may synthesise human input.",
@@ -154,10 +156,11 @@ fn capture(policy: &Policy) -> Element<'_, Message, Theme> {
             ),
             inset_list("MISC.SCRIPTED-INPUT", vec![scripted]),
         ],
+        radius,
     )
 }
 
-fn data_control(policy: &Policy) -> Element<'_, Message, Theme> {
+fn data_control(policy: &Policy, radius: f32) -> Element<'_, Message, Theme> {
     section(
         "Clipboard data control",
         "Process names allowed to bind zwlr_data_control_manager_v1. Data control \
@@ -172,6 +175,7 @@ fn data_control(policy: &Policy) -> Element<'_, Message, Theme> {
                 allow_rows(&policy.data_control_allow),
             ),
         ],
+        radius,
     )
 }
 
@@ -186,7 +190,7 @@ fn matchers(rule: &Rule) -> String {
         .join(", ")
 }
 
-fn rules(policy: &Policy) -> Element<'_, Message, Theme> {
+fn rules(policy: &Policy, radius: f32) -> Element<'_, Message, Theme> {
     let rows: Vec<Element<'_, Message, Theme>> = if policy.rules.is_empty() {
         vec![list_row(
             "No window carries a policy-owned rule; every window is private and untrusted.",
@@ -217,6 +221,7 @@ fn rules(policy: &Policy) -> Element<'_, Message, Theme> {
             }),
             inset_list("WINDOWRULE", rows),
         ],
+        radius,
     )
 }
 
