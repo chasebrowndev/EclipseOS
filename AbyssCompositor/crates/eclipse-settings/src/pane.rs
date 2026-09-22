@@ -80,6 +80,7 @@ impl Pane {
 pub fn pane_for(path: &str) -> Option<Pane> {
     match path {
         "misc.render-device" => return Some(Pane::System),
+        "misc.terminal-command" => return Some(Pane::System),
         "misc.scripted-input" => return Some(Pane::Privacy),
         _ => {}
     }

@@ -1040,12 +1040,16 @@ fn radio(app: &mut App, feed: crate::radio::Feed) -> Task<Message> {
 fn new_instance(app_id: Option<String>) {
     let Some(app_id) = app_id else { return };
     let wanted = format!("{app_id}.desktop");
-    let entries = eclipse_services::apps::scan();
+    // No terminal command sourced here: a second instance is started without
+    // asking the compositor anything, same as before `misc.terminal-command`
+    // existed, so a `Terminal=true` entry still does not relaunch from the
+    // taskbar (TERM-01 only changes what `eclipse-launcher` offers to run).
+    let entries = eclipse_services::apps::scan(None);
     let Some(entry) = entries.iter().find(|e| e.id.eq_ignore_ascii_case(&wanted)) else {
         eprintln!("hyperion: no desktop entry for {app_id}");
         return;
     };
-    if let Err(e) = eclipse_services::apps::launch(entry) {
+    if let Err(e) = eclipse_services::apps::launch(entry, None) {
         eprintln!("hyperion: cannot start {}: {e}", entry.id);
     }
 }

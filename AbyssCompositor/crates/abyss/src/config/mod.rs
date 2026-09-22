@@ -201,6 +201,11 @@ pub struct Misc {
     /// Restart-only (COMP-13 §1.2) — the CLI flag and `ECLIPSE_RENDER_DEVICE`
     /// both override it.
     pub render_device: Option<String>,
+    /// `terminal-command`: the terminal emulator used to launch
+    /// `Terminal=true` `.desktop` entries (`$term -e <argv>`). Unset (the
+    /// default) means those entries are dropped from the app index rather
+    /// than shown and then refused (TERM-01).
+    pub terminal_command: Option<String>,
 }
 
 /// One `output "<pattern>" { .. }` block (COMP-13 §4). Config wins over the
@@ -2003,6 +2008,10 @@ impl Config {
                     Some("auto") => self.misc.render_device = None,
                     Some(v) => self.misc.render_device = Some(v.to_owned()),
                     None => self.reject(n, "render-device needs a string"),
+                },
+                "terminal-command" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(c) => self.misc.terminal_command = Some(c.to_owned()),
+                    None => self.reject(n, "terminal-command needs a string argument"),
                 },
                 // Restart-only knobs (COMP-13 §1.2); parsed elsewhere or not yet.
                 "xwayland" => {}

@@ -113,6 +113,7 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `misc.render-device` | string | _unset_ | restart | `auto`, a /dev/dri/… path, or `pci:DDDD:BB:DD.F`. The CLI flag and ECLIPSE_RENDER_DEVICE both override it. |
+| `misc.terminal-command` | string | _unset_ | live | Terminal emulator used to launch `Terminal=true` .desktop entries (`$term -e <argv>`). Unset: those entries are dropped from the app index rather than shown and refused. |
 
 ### `bind`
 

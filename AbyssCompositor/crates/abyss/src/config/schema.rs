@@ -525,6 +525,16 @@ pub const TABLE: &[Key] = &[
         "`auto`, a /dev/dri/… path, or `pci:DDDD:BB:DD.F`. The CLI flag and \
        ECLIPSE_RENDER_DEVICE both override it.",
     ),
+    k(
+        "misc.terminal-command",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Terminal emulator used to launch `Terminal=true` .desktop entries \
+       (`$term -e <argv>`). Unset: those entries are dropped from the app \
+       index rather than shown and refused.",
+    ),
     // --- policy-owned: the security surface -------------------------------
     k(
         "misc.scripted-input",
@@ -705,6 +715,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "input.touchpad.tap-to-click" => V::Bool(c.input.touchpad.tap_to_click),
         "input.touchpad.dwt" => V::Bool(c.input.touchpad.dwt),
         "misc.render-device" => s(&c.misc.render_device),
+        "misc.terminal-command" => s(&c.misc.terminal_command),
         "misc.scripted-input" => V::Bool(c.misc.scripted_input),
         "clipboard.data-control-allow" => list(&c.clipboard.data_control_allow),
         "capture.allow" => list(&c.capture.allow),
