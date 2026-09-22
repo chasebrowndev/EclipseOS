@@ -1181,6 +1181,7 @@ pub fn unminimize_last(state: &mut AbyssState) {
 /// (COMP-05 §4). One helper so a newly-mapped floating window and
 /// `toggle-floating` cannot drift apart: `already` is how many windows are
 /// already floating on the workspace, which only `cascade` reads.
+    let focused = smithay::wayland::seat::WaylandFocus::wl_surface(&focused)?;
 pub(crate) fn floating_origin(
     mode: FloatingPlacement,
     area: Rectangle<i32, Logical>,

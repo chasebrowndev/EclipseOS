@@ -61,6 +61,9 @@ impl AbyssState {
             .seat
             .get_keyboard()
             .and_then(|k| k.current_focus())
+            .and_then(|f| {
+                smithay::wayland::seat::WaylandFocus::wl_surface(&f).map(std::borrow::Cow::into_owned)
+            })
             .or_else(|| {
                 self.focus
                     .as_ref()

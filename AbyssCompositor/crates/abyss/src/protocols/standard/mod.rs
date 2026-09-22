@@ -25,7 +25,7 @@ mod pointer_extra;
 mod presentation;
 mod primary_selection;
 pub mod screencopy;
-mod seat;
+pub mod seat;
 mod security_context;
 pub mod session_lock;
 mod shm;

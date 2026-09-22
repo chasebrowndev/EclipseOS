@@ -16,6 +16,7 @@ use smithay::{
 };
 
 use crate::{
+    protocols::standard::seat::KeyboardFocusTarget,
     shell::{arrange, output_of_window, window_surface},
     state::AbyssState,
 };
@@ -263,8 +264,14 @@ pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool
             emit_output_state(state, id);
         }
     }
+    // An X11 window is focused as its `X11Surface` so enter/leave set and
+    // clear the X input focus; see `KeyboardFocusTarget`.
+    let target = match window.x11_surface() {
+        Some(x11) => KeyboardFocusTarget::X11(x11.clone()),
+        None => KeyboardFocusTarget::Wl(surface),
+    };
     let keyboard = state.seat.get_keyboard().unwrap();
-    keyboard.set_focus(state, Some(surface), SERIAL_COUNTER.next_serial());
+    keyboard.set_focus(state, Some(target), SERIAL_COUNTER.next_serial());
     arrange(state);
     let handle = state.ipc.handle_for(window);
     crate::ipc::emit(state, "focus", serde_json::json!({ "handle": handle }));
@@ -310,7 +317,7 @@ pub fn emit_focused_output_state(state: &mut AbyssState) {
 
 pub fn focus_surface(state: &mut AbyssState, surface: Option<WlSurface>) {
     let keyboard = state.seat.get_keyboard().unwrap();
-    keyboard.set_focus(state, surface, SERIAL_COUNTER.next_serial());
+    keyboard.set_focus(state, surface.map(Into::into), SERIAL_COUNTER.next_serial());
 }
 
 /// Re-derive focus for the focused output after the scene changed under it
