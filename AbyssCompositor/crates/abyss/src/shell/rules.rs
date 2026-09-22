@@ -156,10 +156,10 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> (Placemen
     // default — nothing declares this via windowrule today, so without this
     // every "Save As", preferences or confirmation popup would tile like a
     // primary window (COMP-05 §4 default is otherwise silent on this case).
-    // A fixed-size xdg_toplevel (committed min == max, both non-zero) floats
-    // for the same reason: tiling would stretch a window that has said it
-    // cannot be resized — the secret prompt is one of these.
-    // An explicit `tile`/`float` rule below still overrides it.
+    // A fixed-size xdg_toplevel (min == max, both non-zero, once it has a
+    // buffer) floats for the same reason: tiling would stretch a window
+    // that has said it cannot be resized — the secret prompt is one of
+    // these. An explicit `tile`/`float` rule below still overrides it.
     if placing {
         placement.float = facts.is_dialog;
     }
@@ -267,10 +267,13 @@ struct Facts {
     /// True for a window that identifies itself as a dialog/utility rather
     /// than a primary toplevel: an xdg_toplevel with `parent` set, or an X11
     /// window carrying `WM_TRANSIENT_FOR` or a non-`Normal`
-    /// `_NET_WM_WINDOW_TYPE`, or an xdg_toplevel whose committed min and max
-    /// size are equal and non-zero (see [`fixed_size`]). Nothing here is
-    /// trusted for anything but the default float/tile choice — an untrusted
-    /// client can always claim it.
+    /// `_NET_WM_WINDOW_TYPE`, or an xdg_toplevel that, once it has a buffer,
+    /// has equal non-zero min and max size (see [`fixed_size`]). The size
+    /// check is gated on a committed buffer so a client's pre-map size
+    /// hints (some toolkits briefly clamp min==max to a not-yet-final
+    /// natural size while probing layout) never false-positive. Nothing
+    /// here is trusted for anything but the default float/tile choice — an
+    /// untrusted client can always claim it.
     is_dialog: bool,
 }
 
@@ -285,14 +288,26 @@ impl Facts {
             .and_then(|id| state.outputs.get(id))
             .or_else(|| state.outputs.focused());
         let is_dialog = if let Some(toplevel) = window.toplevel() {
+            // The fixed-size signal only means anything once the client has
+            // put actual content on the surface: a toplevel with no buffer
+            // yet is still mid-handshake, and some clients (Firefox's GTK
+            // backend among them) briefly clamp min==max to their
+            // not-yet-final natural size while probing layout, before ever
+            // committing a buffer. Gating on `has_buffer` skips that
+            // placeholder state without weakening the check for a window
+            // that has truly pinned its size by the time it maps — min/max
+            // are double-buffered together with the buffer attach, so a
+            // genuinely fixed-size window (e.g. the secret prompt) still
+            // reads `fixed_size == true` on the very commit that maps it.
             toplevel.parent().is_some()
-                || smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
-                    let mut guard = states
-                        .cached_state
-                        .get::<smithay::wayland::shell::xdg::SurfaceCachedState>();
-                    let d = guard.current();
-                    fixed_size(d.min_size, d.max_size)
-                })
+                || (super::has_buffer(toplevel.wl_surface())
+                    && smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+                        let mut guard = states
+                            .cached_state
+                            .get::<smithay::wayland::shell::xdg::SurfaceCachedState>();
+                        let d = guard.current();
+                        fixed_size(d.min_size, d.max_size)
+                    }))
         } else if let Some(x11) = window.x11_surface() {
             x11.is_transient_for().is_some()
                 || matches!(
