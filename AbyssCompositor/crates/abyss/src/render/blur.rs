@@ -108,6 +108,8 @@ pub fn invalidates(
 pub struct BlurElement {
     inner: TextureRenderElement<GlesTexture>,
     commit: CommitCounter,
+    program: Option<GlesTexProgram>,
+    uniforms: Vec<Uniform<'static>>,
 }
 
 impl Element for BlurElement {
@@ -167,7 +169,15 @@ impl RenderElement<GlesRenderer> for BlurElement {
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), GlesError> {
-        RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions)
+        if let Some(program) = &self.program {
+            frame.override_default_tex_program(program.clone(), self.uniforms.clone());
+            let res =
+                RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions);
+            frame.clear_tex_program_override();
+            res
+        } else {
+            RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions)
+        }
     }
 
     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
@@ -272,6 +282,7 @@ impl BlurStore {
         behind: &[E],
         blur: &Blur,
         scale: Scale<f64>,
+        rounding: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
     ) -> Option<BlurElement>
     where
         E: Element + RenderElement<GlesRenderer>,
@@ -371,9 +382,15 @@ impl BlurStore {
             None,
             Kind::Unspecified,
         );
+        let (program, uniforms) = match rounding {
+            Some((program, uniforms)) => (Some(program), uniforms),
+            None => (None, Vec::new()),
+        };
         Some(BlurElement {
             inner,
             commit: entry.commit,
+            program,
+            uniforms,
         })
     }
 

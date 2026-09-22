@@ -479,6 +479,10 @@ pub enum RuleAction {
     /// does not speak `zwp_idle_inhibit_manager_v1` itself.
     IdleInhibit,
     Opacity(f32),
+    /// Force blur on/off for this window, overriding `decoration.blur.enabled`.
+    /// Still gated by translucency at render time — an opaque window never
+    /// blurs even with `blur true`.
+    Blur(bool),
     /// Raise-only: `secret` or `private`. `public` is refused at parse time
     /// because a rule may never lower a sensitivity class.
     Sensitivity(String),
@@ -1877,6 +1881,16 @@ impl Config {
                     self.reject(
                         node,
                         format!("windowrule opacity must be 0.0..=1.0 (action={})", action),
+                    );
+                    return;
+                }
+            },
+            ("blur", Some(p)) => match p.parse::<bool>() {
+                Ok(v) => RuleAction::Blur(v),
+                _ => {
+                    self.reject(
+                        node,
+                        format!("windowrule blur must be true or false (action={})", action),
                     );
                     return;
                 }

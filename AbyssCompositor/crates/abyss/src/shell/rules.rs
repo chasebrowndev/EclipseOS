@@ -22,6 +22,11 @@ use crate::xwayland::security::{AppTrust, SeatCompat};
 /// Per-window opacity set by a matched `opacity` rule, read by the renderer.
 pub struct RuleOpacity(pub Cell<f32>);
 
+/// Per-window blur override set by a matched `blur` rule, read by the
+/// renderer. Only changes the on/off decision; an opaque window still never
+/// blurs (see `render::window_elements`).
+pub struct RuleBlur(pub Cell<bool>);
+
 /// Trust class pinned by an `app-trust` rule (COMP-05 §4). Consumed once
 /// COMP-08 gates agent actions on it.
 pub struct RuleTrust(pub Cell<AppTrust>);
@@ -69,6 +74,17 @@ pub fn opacity_of(window: &Window) -> Option<f32> {
 /// has to take the per-window path even with default decoration.
 pub fn any_opacity_override<'a>(mut windows: impl Iterator<Item = &'a Window>) -> bool {
     windows.any(|w| w.user_data().get::<RuleOpacity>().is_some())
+}
+
+/// The blur override a matched rule pinned on this window, if any.
+pub fn blur_of(window: &Window) -> Option<bool> {
+    window.user_data().get::<RuleBlur>().map(|b| b.0.get())
+}
+
+/// Whether any window carries a blur override, i.e. whether the renderer has
+/// to take the per-window path even with default decoration.
+pub fn any_blur_override<'a>(mut windows: impl Iterator<Item = &'a Window>) -> bool {
+    windows.any(|w| w.user_data().get::<RuleBlur>().is_some())
 }
 
 /// The trust class a matched rule pinned on this window, if any.
@@ -214,6 +230,13 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> (Placemen
                     o.0.set(v);
                 } else {
                     window.user_data().insert_if_missing(|| RuleOpacity(Cell::new(v)));
+                }
+            }
+            RuleAction::Blur(v) => {
+                if let Some(b) = window.user_data().get::<RuleBlur>() {
+                    b.0.set(v);
+                } else {
+                    window.user_data().insert_if_missing(|| RuleBlur(Cell::new(v)));
                 }
             }
             RuleAction::NoAgent => {

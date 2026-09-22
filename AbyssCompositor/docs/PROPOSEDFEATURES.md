@@ -125,3 +125,11 @@ chip width cap is defeated by iced's `Row` handing `Fill` children exact
 `min == max` limits, so chips run past `TASK_MAX`. The fix and the condensation
 ladder above are the same piece of work — chip widths have to be computed from
 the known bar width either way.
+
+Found 2026-09-22 while screenshot-verifying chip expansion, out of scope for
+that change and not diagnosed: closing a window leaves a permanent ghost
+entry in `get_windows` (`app_id: null, title: null, minimized: true`, handle
+changes each query), and `get_windows`/`get_workspaces` can disagree — stale
+nonzero per-workspace counts survive after windows are killed by pid instead
+of via `close_window`. Likely bookkeeping in `crates/abyss/src/shell/workspace.rs`.
+Needs `eclipse-backend` to reproduce and fix.

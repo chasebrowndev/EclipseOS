@@ -139,6 +139,7 @@ A rule matched against windows at map time. Its *action* decides the owning file
 | `position` | `abyss.kdl` |
 | `output` | `abyss.kdl` |
 | `opacity` | `abyss.kdl` |
+| `blur` | `abyss.kdl` |
 | `workspace` | `abyss.kdl` |
 | `no-focus-steal` | `abyss.kdl` |
 | `idle-inhibit` | `abyss.kdl` |

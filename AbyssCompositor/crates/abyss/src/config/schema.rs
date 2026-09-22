@@ -623,6 +623,7 @@ pub const RULE_ACTIONS: &[(&str, Owner)] = &[
     ("position", Abyss),
     ("output", Abyss),
     ("opacity", Abyss),
+    ("blur", Abyss),
     ("workspace", Abyss),
     ("no-focus-steal", Abyss),
     ("idle-inhibit", Abyss),
