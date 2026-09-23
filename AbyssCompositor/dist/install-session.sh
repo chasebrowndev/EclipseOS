@@ -20,14 +20,14 @@ bin="$here/../target/release"
 home=$(getent passwd "$user" | cut -d: -f6)
 
 for b in abyss hyperion eclipse-toasts eclipse-center eclipse-launcher \
-         eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver; do
+         eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt; do
     [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
 done
 
 # 1. Binaries. Symlinks, so the session always runs what was last built.
 install -d /usr/local/bin
 for b in abyss hyperion eclipse-toasts eclipse-center eclipse-launcher \
-         eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver; do
+         eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt; do
     ln -sfn "$bin/$b" "/usr/local/bin/$b"
 done
 install -m 0755 "$here/abyss-session" /usr/local/bin/abyss-session

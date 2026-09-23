@@ -190,7 +190,6 @@ The distribution path (D-01..D-03), all under `dist/`:
   The packages enable them image-side by shipping
   `/usr/lib/systemd/user/abyss-session.target.wants/` symlinks (`_want` in the
   PKGBUILD); a user-preset would never be applied for an existing account.
-  `dist/eclipseos.preset` is left over from that approach and is not installed.
 - **`dist/repo/`** — `build-repo.sh <tag>|local` builds, signs with a dedicated
   packaging key in its own keyring, and `repo-add`s into
   `~/.local/share/eclipseos/repo`; `serve.sh` serves it on the tailnet address

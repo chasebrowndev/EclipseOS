@@ -71,6 +71,8 @@ package_eclipseos-hyperion() {
   depends=(eclipseos-abyss wayland libxkbcommon mesa networkmanager bluez bluez-utils upower)
 
   _bin hyperion
+  # Spawned by name from PATH for wifi passphrases and pairing PINs (ADR 0053).
+  _bin eclipse-secret-prompt
   _unit hyperion.service
   _want hyperion.service
 }
