@@ -12,7 +12,11 @@
 
 use std::fmt::Write as _;
 
-use abyss::config::schema::{Collection, Dv, Key, Owner, Reload, Ty, COLLECTIONS, RULE_ACTIONS, TABLE};
+use abyss::config::schema::{
+    rule_owner, Collection, Dv, Form, Key, Owner, Reload, Ty, ANIMATIONS, ANIMATION_CURVES,
+    ANIMATION_DEFAULT_CURVE, ANIMATION_DEFAULT_MS, ANIMATION_MAX_MS, BIND_ACTIONS, COLLECTIONS, LID_CLOSE,
+    OUTPUT_KEYS, OUTPUT_TRANSFORMS, REFUSED_MATCHERS, RULE_ACTION_FORMS, RULE_MATCHERS, TABLE,
+};
 
 fn ty(t: &Ty) -> String {
     match t {
@@ -71,15 +75,99 @@ fn section(out: &mut String, keys: &[&Key]) {
     out.push('\n');
 }
 
+fn ticks(vs: &[&str]) -> String {
+    vs.iter().map(|v| format!("`{v}`")).collect::<Vec<_>>().join(", ")
+}
+
+/// `name args` for each name, with `|` escaped for a table cell.
+fn syntax(f: &Form) -> String {
+    f.names
+        .iter()
+        .map(|n| {
+            let s = if f.args.is_empty() {
+                n.to_string()
+            } else {
+                format!("{n} {}", f.args)
+            };
+            format!("`{}`", s.replace('|', "\\|"))
+        })
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+fn examples(f: &Form) -> String {
+    f.examples
+        .iter()
+        .map(|e| format!("`{}`", e.replace('|', "\\|")))
+        .collect::<Vec<_>>()
+        .join("<br>")
+}
+
+fn forms(out: &mut String, head: &str, fs: &[Form]) {
+    let _ = writeln!(out, "| {head} | example | what it does |\n| --- | --- | --- |");
+    for f in fs {
+        let _ = writeln!(out, "| {} | {} | {} |", syntax(f), examples(f), f.doc);
+    }
+    out.push('\n');
+}
+
+fn animations(out: &mut String) {
+    let _ = writeln!(
+        out,
+        "Each animation is off until named in an `animation` node inside `animations {{ }}`, and \
+         `animations.enabled` gates them all: `animation \"<name>\" duration=… curve=…`. \
+         `duration` is milliseconds, as an integer or a string with a unit (`\"150ms\"`, `\"2s\"`), \
+         at most {}s, default `{ANIMATION_DEFAULT_MS}`; a longer one drops the node. `curve` is one of \
+         {}, default `{ANIMATION_DEFAULT_CURVE}`.\n",
+        ANIMATION_MAX_MS / 1000,
+        ticks(ANIMATION_CURVES),
+    );
+    let _ = writeln!(out, "| name | example | what it does |\n| --- | --- | --- |");
+    for f in ANIMATIONS {
+        let _ = writeln!(out, "| `{}` | {} | {} |", f.names[0], examples(f), f.doc);
+    }
+    out.push('\n');
+}
+
 fn collections(out: &mut String, cs: &[&Collection]) {
     for c in cs {
         let _ = writeln!(out, "### `{}`\n\n{}\n", c.node, c.doc);
-        if c.node == "windowrule" {
-            out.push_str("| action | file |\n| --- | --- |\n");
-            for (a, o) in RULE_ACTIONS {
-                let _ = writeln!(out, "| `{a}` | `{}` |", file(*o));
+        match c.node {
+            "bind" => forms(out, "action", BIND_ACTIONS),
+            "output" => {
+                forms(out, "key", OUTPUT_KEYS);
+                let _ = writeln!(
+                    out,
+                    "`<transform>` is one of {}; `0` is an alias of `normal`. `<lid-close>` is one of {}.\n",
+                    ticks(OUTPUT_TRANSFORMS),
+                    ticks(LID_CLOSE),
+                );
             }
-            out.push('\n');
+            "windowrule" => {
+                out.push_str("Matchers, all of which must match. A rule with none is refused.\n\n");
+                forms(out, "matcher", RULE_MATCHERS);
+                for (m, why) in REFUSED_MATCHERS {
+                    let _ = writeln!(out, "`{m}` is refused and drops its rule: {why}.\n");
+                }
+                out.push_str(
+                    "Actions. The action and its argument are one string: \
+                     `windowrule \"size 800x600\" { app-id \"mpv\"; }`.\n\n",
+                );
+                out.push_str("| action | file | example | what it does |\n| --- | --- | --- | --- |\n");
+                for f in RULE_ACTION_FORMS {
+                    let owner = rule_owner(f.names[0]).expect("every rule action form has an owner");
+                    let _ = writeln!(
+                        out,
+                        "| {} | `{}` | {} | {} |",
+                        syntax(f),
+                        file(owner),
+                        examples(f),
+                        f.doc
+                    );
+                }
+                out.push('\n');
+            }
+            _ => {}
         }
     }
 }
@@ -122,6 +210,9 @@ fn generate() -> String {
                 .collect();
             let _ = writeln!(out, "### `{node}`\n");
             section(&mut out, &keys);
+            if node == "animations" {
+                animations(&mut out);
+            }
         }
         let cs: Vec<&Collection> = COLLECTIONS.iter().filter(|c| c.owner == owner).collect();
         if !cs.is_empty() {

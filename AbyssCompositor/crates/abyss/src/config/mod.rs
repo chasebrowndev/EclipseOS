@@ -539,10 +539,10 @@ fn parse_pair(source: &str, sep: char) -> Option<(i32, i32)> {
     Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
 }
 
-/// Animation names and easing curves accepted by `animations`. Unknown values
-/// are rejected at parse time rather than silently ignored at render time.
-const ANIMATION_NAMES: [&str; 4] = ["windows", "workspaces", "fade", "border"];
-const ANIMATION_CURVES: [&str; 4] = ["linear", "ease-in", "ease-out", "ease-in-out"];
+// Animation names and easing curves live in `schema` (ANIMATIONS,
+// ANIMATION_CURVES). Unknown values are rejected at parse time rather than
+// silently ignored at render time.
+use schema::ANIMATION_CURVES;
 
 /// `input { ... }` (COMP-13 §1.2, COMP-04). Keyboard settings are pushed to the
 /// seat on reload; pointer settings are applied per libinput device as it
@@ -1822,14 +1822,14 @@ impl Config {
             self.reject(node, "animation node needs a name argument");
             return;
         };
-        if !ANIMATION_NAMES.contains(&name) {
+        if schema::find(schema::ANIMATIONS, name).is_none() {
             self.reject(node, format!("unknown animation name {name:?}"));
             return;
         }
         let mut anim = Animation {
             name: name.to_owned(),
-            duration_ms: 150,
-            curve: "ease-out".to_owned(),
+            duration_ms: schema::ANIMATION_DEFAULT_MS,
+            curve: schema::ANIMATION_DEFAULT_CURVE.to_owned(),
         };
         for e in node.entries() {
             let Some(key) = e.name().map(|k| k.value().to_owned()) else {
@@ -1837,7 +1837,7 @@ impl Config {
             };
             match key.as_str() {
                 "duration" => match parse_duration_ms(e.value()) {
-                    Some(ms) if ms <= 10_000 => anim.duration_ms = ms,
+                    Some(ms) if ms <= schema::ANIMATION_MAX_MS => anim.duration_ms = ms,
                     _ => {
                         self.reject(
                             node,
@@ -1977,6 +1977,16 @@ impl Config {
         };
         for n in children.nodes() {
             let name = n.name().value();
+            if schema::find(schema::RULE_MATCHERS, name).is_none() {
+                match schema::REFUSED_MATCHERS.iter().find(|(m, _)| *m == name) {
+                    Some((_, why)) => self.reject(
+                        n,
+                        format!("refused windowrule matcher (matcher={}): {}", name, why),
+                    ),
+                    None => self.reject(n, format!("unimplemented windowrule matcher (matcher={})", name)),
+                }
+                return;
+            }
             match name {
                 "app-id" | "title" => {
                     let Some(pat) = arg(n).and_then(KdlValue::as_string).and_then(Pattern::parse) else {
@@ -2103,6 +2113,10 @@ impl Config {
         };
         for n in children.nodes() {
             let name = n.name().value();
+            if schema::find(schema::OUTPUT_KEYS, name).is_none() {
+                self.reject(n, format!("unknown output key {name:?}"));
+                continue;
+            }
             match name {
                 "mode" => match arg(n)
                     .and_then(KdlValue::as_string)
@@ -2136,7 +2150,7 @@ impl Config {
                     None => rule.enabled = Some(name == "enabled"),
                 },
                 "lid-close" => match arg(n).and_then(KdlValue::as_string) {
-                    Some(v @ ("off" | "suspend" | "ignore")) => rule.lid_close = Some(v.to_owned()),
+                    Some(v) if schema::LID_CLOSE.contains(&v) => rule.lid_close = Some(v.to_owned()),
                     _ => self.reject(n, "output lid-close must be off, suspend or ignore"),
                 },
                 // `overscan 30` for all four edges, or any subset of
@@ -2400,7 +2414,11 @@ fn parse_action(node: &KdlNode) -> Result<Action, String> {
     let a = args(node);
     let text = || a.first().and_then(|v| v.as_string()).map(str::to_owned);
     let num = || a.first().and_then(|v| v.as_integer());
-    Ok(match node.name().value() {
+    let name = node.name().value();
+    if schema::find(schema::BIND_ACTIONS, name).is_none() {
+        return Err(format!("unknown action '{name}'"));
+    }
+    Ok(match name {
         "spawn" | "exec" => Action::Spawn(text().ok_or("spawn needs a command string")?),
         "close-window" | "killactive" => Action::Close,
         "toggle-floating" => Action::ToggleFloating,

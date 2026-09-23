@@ -64,11 +64,11 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
-| `decoration.rounding` | int 0..512 | `13` | live | Corner radius in logical px; 0 disables. |
+| `decoration.rounding` | int 0..512 | `13` | live | Corner radius in logical px; 0 disables. Also rounds the blur backdrop behind a layer-shell surface, except one that spans an output edge to edge (three anchors, or two opposite ones, with no positive exclusive zone), which stays square; the taskbar uses `bar.rounding`. |
 | `decoration.active-opacity` | float 0..1 | `1` | live | Alpha applied to the focused window. |
 | `decoration.inactive-opacity` | float 0..1 | `1` | live | Alpha applied to every unfocused window. |
 | `decoration.dim-inactive` | float 0..1 | `0` | live | Strength of the darkening overlay on unfocused windows. |
-| `decoration.blur.enabled` | bool | `#true` | live | Dual-Kawase blur behind translucent windows. |
+| `decoration.blur.enabled` | bool | `#true` | live | Dual-Kawase blur behind translucent windows and layer-shell surfaces. A layer blurs only where its opaque region leaves it uncovered. |
 | `decoration.blur.size` | int 1..64 | `8` | live | Blur kernel offset. Larger is softer and costs more. |
 | `decoration.blur.passes` | int 1..6 | `2` | live | Down/up-sample pairs in the blur chain. |
 | `decoration.shadow.enabled` | bool | `#false` | live | Drop shadow behind windows. |
@@ -79,6 +79,15 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `animations.enabled` | bool | `#false` | live | Master switch for geometry animations. |
+
+Each animation is off until named in an `animation` node inside `animations { }`, and `animations.enabled` gates them all: `animation "<name>" duration=… curve=…`. `duration` is milliseconds, as an integer or a string with a unit (`"150ms"`, `"2s"`), at most 10s, default `150`; a longer one drops the node. `curve` is one of `linear`, `ease-in`, `ease-out`, `ease-in-out`, default `ease-out`.
+
+| name | example | what it does |
+| --- | --- | --- |
+| `windows` | `animation "windows" duration="150ms" curve="ease-out"` | A tiled or floating window sliding to its new position. |
+| `workspaces` | `animation "workspaces" duration=200` | The arriving workspace's windows sliding in from the side the switch came from. |
+| `fade` | `animation "fade" duration="1s" curve="linear"` | A newly mapped window fading in from zero alpha. |
+| `border` | `animation "border" curve="ease-in-out"` | A border crossfading between its active and inactive colour when focus changes. |
 
 ### `xwayland`
 
@@ -118,7 +127,36 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 
 ### `bind`
 
-A key binding.
+A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPER SHIFT" "Return" { spawn "foot"; }`. `Super+Escape` and `Super+space` are reserved and cannot be bound.
+
+| action | example | what it does |
+| --- | --- | --- |
+| `spawn <command>` / `exec <command>` | `spawn "foot"` | Run a command. |
+| `close-window` / `killactive` | `close-window` | Ask the focused window to close. |
+| `toggle-floating` | `toggle-floating` | Float or tile the focused window. |
+| `minimize` | `minimize` | Send the focused window away. |
+| `unminimize` / `restore` | `unminimize` | Bring back the last window sent away on the active workspace. |
+| `toggle-layout` | `toggle-layout` | Switch the workspace between dwindle and master. |
+| `focus-left` | `focus-left` | Focus the neighbour to the left. |
+| `focus-right` | `focus-right` | Focus the neighbour to the right. |
+| `focus-up` | `focus-up` | Focus the neighbour above. |
+| `focus-down` | `focus-down` | Focus the neighbour below. |
+| `move-left` | `move-left` | Swap with the neighbour to the left (nudges a floating window). |
+| `move-right` | `move-right` | Swap with the neighbour to the right. |
+| `move-up` | `move-up` | Swap with the neighbour above. |
+| `move-down` | `move-down` | Swap with the neighbour below. |
+| `workspace <1..10>` | `workspace 3` | Switch to a workspace. |
+| `workspace-next` | `workspace-next` | The workspace after the active one on the focused output. |
+| `workspace-prev` | `workspace-prev` | The workspace before the active one on the focused output. |
+| `move-to-workspace <1..10>` | `move-to-workspace 3` | Send the focused window to a workspace. |
+| `move-to-output <1..255>` | `move-to-output 2` | Send the focused window to display `number`'s active workspace. |
+| `agent-override` | `agent-override` | The reserved override chord (COMP-13 §1.1). Nothing to revoke until agent seats exist. |
+| `agent-attention` | `agent-attention` | The pending-decision-queue chord (COMP-10 §3.10). The queue arrives with the trusted UI. |
+| `annotation-select` | `annotation-select` | Start a region selection (COMP-18 §1.3). |
+| `annotation-dismiss` | `annotation-dismiss` | Forwarded to the annotation addon on the `keybind` event stream. |
+| `annotation-expand` | `annotation-expand` | Forwarded to the annotation addon. |
+| `annotation-auto-toggle` | `annotation-auto-toggle` | Forwarded to the annotation addon. |
+| `quit` / `exit` | `quit` | Exit the compositor. |
 
 ### `gesture`
 
@@ -126,7 +164,21 @@ A touchpad swipe binding: `gesture "swipe" <fingers> "<direction>" { <action>; }
 
 ### `output`
 
-Per-output mode, position, scale, overscan.
+Per-output settings: `output "<glob>" { … }`. The glob (`*` only) matches the connector name or the persistent identity; later blocks override earlier ones key by key.
+
+| key | example | what it does |
+| --- | --- | --- |
+| `mode "<W>x<H>[@<refresh>]"` | `mode "1920x1080@60"`<br>`mode "2560x1440"` | Mode to set. Refresh in Hz or mHz. |
+| `position <x> <y>` | `position 1920 0` | Top-left corner in the global layout, logical px. |
+| `scale <float>` | `scale 1.5`<br>`scale 2` | Scale factor, positive. |
+| `transform "<transform>"` | `transform "90"`<br>`transform "flipped-270"` | Rotation and flip. |
+| `overscan <px> \| top= bottom= left= right=` | `overscan 30`<br>`overscan top=20 left=40` | Per-edge inset in physical px for a panel that crops the signal. Bare applies to all four edges. Wins over saved calibration. |
+| `enabled [<bool>]` / `disabled [<bool>]` | `enabled`<br>`disabled`<br>`enabled #false` | Turn the output on or off. Bare `disabled` is off. |
+| `lid-close "<lid-close>"` | `lid-close "suspend"`<br>`lid-close "ignore"`<br>`lid-close "off"` | On an internal panel: `off` turns the panel off (never the last output), `suspend` runs `systemctl suspend`, `ignore` does nothing. |
+| `vrr [<bool>]` / `adaptive-sync [<bool>]` | `vrr`<br>`adaptive-sync #false` | Variable refresh rate. Bare means `#true`. |
+| `number <1..255>` | `number 2` | Display number used by `move-to-output` (ADR 0049). Defaults to connection order. |
+
+`<transform>` is one of `normal`, `90`, `180`, `270`, `flipped`, `flipped-90`, `flipped-180`, `flipped-270`; `0` is an alias of `normal`. `<lid-close>` is one of `off`, `suspend`, `ignore`.
 
 ### `workspace`
 
@@ -134,25 +186,41 @@ Per-workspace layout override.
 
 ### `windowrule`
 
-A rule matched against windows at map time. Its *action* decides the owning file — see RULE_ACTIONS.
+A rule matched against windows at map time. Its *action* decides the owning file.
 
-| action | file |
-| --- | --- |
-| `float` | `abyss.kdl` |
-| `tile` | `abyss.kdl` |
-| `fullscreen` | `abyss.kdl` |
-| `size` | `abyss.kdl` |
-| `position` | `abyss.kdl` |
-| `output` | `abyss.kdl` |
-| `opacity` | `abyss.kdl` |
-| `blur` | `abyss.kdl` |
-| `workspace` | `abyss.kdl` |
-| `no-focus-steal` | `abyss.kdl` |
-| `idle-inhibit` | `abyss.kdl` |
-| `sensitivity` | `policy.kdl` |
-| `app-trust` | `policy.kdl` |
-| `seat-compat` | `policy.kdl` |
-| `no-agent` | `policy.kdl` |
+Matchers, all of which must match. A rule with none is refused.
+
+| matcher | example | what it does |
+| --- | --- | --- |
+| `app-id "<regex>"` | `app-id "pavucontrol\|org.gnome.Calculator"` | Regex against the xdg-shell app id. |
+| `title "<regex>"` | `title "^Picture-in-Picture$"` | Regex against the window title. |
+| `pid <int>` | `pid 4242` | The client's process id, positive. |
+| `xwayland [<bool>]` | `xwayland`<br>`xwayland #false` | Whether the window is an X11 client. Bare means `#true`. |
+| `output "<glob>"` | `output "DP-*"` | Glob (`*` only) against the connector or persistent identity of the output the window is on. |
+| `cgroup "<regex>"` | `cgroup "app-firefox"` | Regex against the client's cgroup path from `/proc/<pid>/cgroup`. |
+| `workspace <1..10>` | `workspace 3` | The active workspace number of the window's output. |
+
+`launching-principal` is refused and drops its rule: needs COMP-08 launch tracking, which does not exist yet.
+
+Actions. The action and its argument are one string: `windowrule "size 800x600" { app-id "mpv"; }`.
+
+| action | file | example | what it does |
+| --- | --- | --- | --- |
+| `float` | `abyss.kdl` | `float` | Map floating. |
+| `tile` | `abyss.kdl` | `tile` | Map tiled, overriding the default float of a dialog or fixed-size window. |
+| `fullscreen` | `abyss.kdl` | `fullscreen` | Map fullscreen, after every other placement rule. |
+| `size <W>x<H>` | `abyss.kdl` | `size 800x600` | Floating size in logical px. Implies `float`. |
+| `position <X>,<Y>` | `abyss.kdl` | `position 100,-40` | Floating position in logical px. Implies `float`. |
+| `output <glob>` | `abyss.kdl` | `output HDMI-A-1` | Map on the output whose connector or identity matches. |
+| `opacity <0.0..1.0>` | `abyss.kdl` | `opacity 0.85` | Alpha for this window, replacing `decoration.active-opacity`/`inactive-opacity`. |
+| `blur true \| false` | `abyss.kdl` | `blur true`<br>`blur false` | Force blur on or off, overriding `decoration.blur.enabled`. An opaque window never blurs. |
+| `workspace <1..10>` | `abyss.kdl` | `workspace 2` | Map on this workspace. |
+| `no-focus-steal` | `abyss.kdl` | `no-focus-steal` | Do not take keyboard focus on map. |
+| `idle-inhibit` | `abyss.kdl` | `idle-inhibit` | Hold the idle timers off while the window is mapped. |
+| `sensitivity secret \| private` | `policy.kdl` | `sensitivity secret`<br>`sensitivity private` | Raise the capture sensitivity class. Raise-only: `public` is refused. |
+| `app-trust standard \| trusted` | `policy.kdl` | `app-trust standard`<br>`app-trust trusted` | Trust level (COMP-07 §2). Clamped to `standard` for X11 windows. |
+| `seat-compat lock \| multi` | `policy.kdl` | `seat-compat lock`<br>`seat-compat multi` | Seat concurrency (COMP-07 §6). Clamped to `lock` for X11 windows. |
+| `no-agent` | `policy.kdl` | `no-agent` | Hide the window from agents. |
 
 ## `policy.kdl`
 
