@@ -13,7 +13,7 @@ LAUNCH-01 through LAUNCH-04 were fixed on 2026-09-13 and removed from this file.
 RAISE-01 was fixed on 2026-09-18 and removed.
 BLUR-01, LAUNCH-05, and TERM-01 were fixed on 2026-09-22 and removed.
 HW-01 through HW-07 (the first Framework install, 2026-09-19) and PKG-01/PKG-02
-(updating a live install, 2026-09-22) were fixed and removed on 2026-09-23; the
+(updating a live install, 2026-09-22), PKG-03 and CFG-01 were fixed and removed on 2026-09-23; the
 rules they left behind are kept below. The full write-ups are in git history
 (this file at `20d8e3a`) and `docs/handoff/2026-09-19-greeter-to-abyss.md`.
 
@@ -69,8 +69,7 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
   `default_binds()` against the package list would.
 - **User units are enabled by `abyss-session.target.wants/` symlinks the
   packages ship** (was HW-02), not by a user-preset, which only takes effect
-  on `systemctl --user preset-all`. `dist/eclipseos.preset` is still in the
-  tree but nothing installs it; it is dead.
+  on `systemctl --user preset-all`.
 - **A dependency only the dev box has is not a dependency the image has**
   (was HW-01, `xorg-xwayland`).
 
@@ -93,40 +92,33 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
 
 # Packaging
 
-## PKG-03 — `eclipse-secret-prompt` is never installed
+## PKG-04 — four default binds spawn binaries no package installs
 
-**Severity: correctness.** On a packaged or `install-session.sh` system,
-joining a wifi network that needs a passphrase, or pairing a Bluetooth device
-that asks for a PIN, cannot start the prompt.
+**Severity: correctness.** Breaks the HW-04 rule above. `default_binds()`
+spawns `screenshot` and `screenrecord` (straight out of `~/.local/bin`),
+`brightnessctl` and `playerctl`; none is in any `package_*` function or in
+`eclipseos-meta`'s depends. On a packaged system those keys do nothing.
+`default_bind_spawns_name_shipped_binaries` (`crates/abyss/src/config/mod.rs`)
+carries them in a `NOT_YET_SHIPPED` list and fails once one stops being
+spawned, so the list only shrinks.
 
-`hyperion` spawns the prompt by name from `PATH`
-(`crates/hyperion/src/main.rs:262`, `app.rs:497` `SECRET_PROMPT`), per
-ADR 0052/0053. The binary builds, but nothing puts it on `PATH`: it is in no
-`package_*` function of `dist/pkg/eclipseos/PKGBUILD`, and neither
-`dist/install.sh` nor `dist/install-session.sh` links it. Only a dev session
-with `target/*/` on `PATH` has it. `dist/etc/policy.kdl` already carries the
-`sensitivity secret` windowrule for `^eclipse-secret-prompt$`, so the policy
-side is ready.
-
-**Proposed fix:** install `/usr/bin/eclipse-secret-prompt` from the
-`eclipseos-hyperion` package (the only spawner; ADR 0052's one-package-per-
-component rule would also admit its own package), and add it to both
-install scripts' binary lists.
+**Proposed fix:** add `brightnessctl` and `playerctl` to `eclipseos-meta`
+depends; ship the screenshot/screenrecord scripts or drop those binds.
 
 ---
 
-## CFG-01 — `misc { xwayland … }` is accepted and ignored
+## TILE-01 — nothing crops a tiled window to its tile
 
-**Severity: correctness (fail-open parse).** `apply_misc` has an empty
-`"xwayland" => {}` arm (`crates/abyss/src/config/mod.rs:2064`). A config that
-disables X11 the old way (`misc { xwayland #false }`) parses without error and
-X11 stays on. The real key is the `xwayland { enable … }` node (COMP-13 §1.1,
-amended C-05).
+**Severity: visual. Needs live verification.** Electron clients (Discord,
+Spotify) advertise a min width wider than a half tile. The layout used to
+configure them at that min, so they drew under their neighbour; tiled windows
+now ignore min_size (`clamp_size`, `crates/abyss/src/shell/mod.rs`). But a
+client that ignores the configure still draws past its tile: `window_elements`
+(`render/mod.rs`) renders each window unclipped at its mapped location, and the
+shell keeps no tile rectangle render could crop to.
 
-**Proposed fix:** delete the arm so the key is refused like any other unknown
-`misc` child, with a hint pointing at `xwayland { enable }`.
-
----
+**Proposed fix:** only if Discord/Spotify still bleed after the min_size change
+— store the tile rect per tiled window and wrap its elements in a crop.
 
 ## Probing notes for the launcher
 

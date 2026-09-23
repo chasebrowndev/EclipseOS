@@ -39,22 +39,14 @@ defaults.
   frost amount — rather than reusing the same translucent constant every
   `surface` uses.
 - **Clock → calendar drawer.** Clicking the time/date opens a full calendar
-  panel, the way Windows does. Not built: `crates/hyperion/src/view.rs:1761`
-  carries the `TODO`. The clock's own formats exist — 12-hour time and `m/d/y`
-  date — but only as compile-time consts (`eclipse_ui::tokens::clock::HOUR_12`,
-  `DATE_MDY`, `tokens.rs:449`, `:451`); making them settings is the rule above.
+  panel, the way Windows does. Not built: `crates/hyperion/src/view.rs` carries
+  the `TODO`. The clock formats shipped as `bar.clock.hour-12` and
+  `bar.clock.date-mdy` (2026-09-23).
 - **Sustained hover shows the full detail.** Resting the pointer on a chip pops
   the detail the ladder dropped — full title and path, whatever the chip itself
   had to shed. It goes away as soon as the pointer moves again. This is the
   escape hatch that lets the ladder be aggressive: no rung has to preserve
   legibility that a hover can recover.
-- **Popup anchor is a setting.** A chip's context menu can appear either at the
-  click point or below the chip, and which one is the user's choice, not ours.
-  Below-the-chip is the default; the click-point behaviour stays implemented and
-  becomes the other value of the setting. Same rule for every popup the bar owns
-  — the drawers included — so the anchor is one setting, not one per surface.
-  Today it is the compile-time `eclipse_ui::tokens::popup::ANCHOR`
-  (`tokens.rs:538`).
 - **A Launcher settings pane.** The launcher
   (`crates/eclipse-launcher/src/main.rs`, spawned by `Super+E` and `Super+R` —
   `crates/abyss/src/config/mod.rs`, `default_binds`) has no `launcher.*` keys;
@@ -127,7 +119,8 @@ defaults.
 
 See `docs/KNOWNBUGS.md` for defects.
 
-Shipped and removed 2026-09-23: the **tray drawer** (the SNI tray, `360b704`)
+Shipped and removed 2026-09-23: **popup anchor as a setting**
+(`bar.popup-anchor`), the **tray drawer** (the SNI tray, `360b704`)
 and the **chip condensation ladder** together with the `TASK_MAX` width-cap bug
 it fixed (`ladder()` in `crates/hyperion/src/view.rs`, `c46ff92`).
 
@@ -170,9 +163,8 @@ first, then where the code goes, then the COMP-16 milestone.
   (autostart set, default binds, panel) that explicit config overrides. Does
   not exist; was out of scope by DE plan B7. `config/mod.rs`, `config/schema.rs`.
   *Phase 1, DE userland.*
-- **Taskbar clock: calendar drawer and configurable formats.** See Taskbar
-  above; `crates/hyperion/src/view.rs:1761`, `crates/hyperion/src/clock.rs`,
-  `eclipse_ui::tokens::clock`. *Phase 1, DE userland.*
+- **Taskbar clock: calendar drawer.** See Taskbar above;
+  `crates/hyperion/src/view.rs`. *Phase 1, DE userland.*
 - **Re-verify, don't write:** `BLUR-02` (`KNOWNBUGS.md`, against `107b5de`)
   and the ghost-window entry above (against `8f76207`).
 - **Manual gates** (COMP-16 table; `docs/STATUS.md` "Deferred hardware
