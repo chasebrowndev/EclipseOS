@@ -6631,9 +6631,10 @@ and must be re-decided explicitly rather than allowed to drift.**
 
 <!-- ===== FILE: COMP-18_ANNOTATION_OVERLAYS.md ===== -->
 
-# COMP-18 — Annotation Overlays (Draft v0.1)
+# COMP-18 — Annotation Overlays (Draft v0.2)
 
-*Added 2026-09-15 for the Oracle-Eyes addon. See ADR 0040 and ADR 0041.*
+*Added 2026-09-15 for the Oracle-Eyes addon. See ADR 0040 and ADR 0041.
+Amended 2026-09-22: titles and the pick marker (§3.1, ADR 0054).*
 
 Depends on: C-00, COMP-10, COMP-13. Consumed by: Oracle-Eyes (`Oracle-Eyes/spec.md`).
 
@@ -6681,12 +6682,15 @@ and Oracle-Eyes must not OCR its own output and loop.
 
 ### 1.3 The compositor owns presentation
 
-A caller supplies a rectangle and a string. Everything else — placement within
-or beside that rectangle, collision avoidance between overlays, eviction when
-too many are live, styling, and text sanitisation — is decided by the
-compositor, which is the only party that knows output geometry and the only
-party the caller cannot influence. **A caller must not be able to affect
-anything but the glyphs.**
+A caller supplies a rectangle and a string — optionally split into a title and
+a body, and optionally with one *pick* inside the rectangle (§3.1). Everything
+else — placement within or beside that rectangle, the panel's width,
+collision avoidance between overlays, eviction when too many are live,
+styling, and text sanitisation — is decided by the compositor, which is the
+only party that knows output geometry and the only party the caller cannot
+influence. **A caller must not be able to affect anything but the glyphs**,
+with the single bounded exception of the pick: which of the rectangles
+*inside* its own region gets marked.
 
 ## 2. Text handling
 
@@ -6709,8 +6713,8 @@ that table does not exist:
 
 | Method | Effect |
 |---|---|
-| `annotation_create` | rectangle + text → overlay handle |
-| `annotation_update` | replace the text on an existing handle |
+| `annotation_create` | rectangle + text (+ optional `title`, `pick`) → overlay handle |
+| `annotation_update` | replace the title and text on an existing handle |
 | `annotation_destroy` | remove one overlay |
 | `annotation_clear` | remove every overlay owned by the caller |
 
@@ -6724,6 +6728,26 @@ Two event kinds are added to the existing `subscribe` stream:
 - `damage` — coalesced per-output damage rectangles. Deferred: DRM's damage
   lives inside smithay's `DrmCompositor` rather than an `OutputDamageTracker`,
   so this arrives after a poll-based consumer works.
+
+### 3.1 Titles and the pick marker
+
+`title` is an optional string, reduced as in §2 and additionally to one line
+and a hard character cap. The compositor draws it as the panel's header; the
+caller chooses no styling. It exists because §2 strips newlines, so "first
+line is the header" cannot be a convention in the text.
+
+`pick` is an optional `{x, y, w, h, label}` on `annotation_create` only.
+`label` is one or two ASCII letters or digits, or the call is rejected. The
+rectangle is clamped like the anchor and must lie **wholly inside it**, or the
+pick is silently dropped and the overlay is drawn without it. The compositor
+marks the pick — a wash over it, a bar down its left edge and a chip carrying
+the label, repeated in the panel's header — so a multiple-choice answer can
+point at the option it names. A pick only ever marks geometry inside a region
+the caller was already allowed to bracket, plus the marker's fixed furniture
+(a 2 px wash overhang, and the bar and chip at most 35 px to the pick's left,
+ADR 0054); it is the caller's claim, drawn in
+the untrusted pass, and is capture-invisible like the rest of it (§1.2).
+Moving a pick is a new overlay: `annotation_update` cannot change it.
 
 Capture is deliberately **not** a socket capability (COMP-13 §1, non-goals).
 Pixels travel the Wayland path, gated separately by
@@ -6743,6 +6767,9 @@ keys or test names.
 - Annotation elements are absent from `capture_elements()` output.
 - Trusted UI remains the last pass with a non-empty annotation set.
 - Sanitisation: control characters stripped, length clamped, markup inert.
+- A pick outside its anchor is dropped; a malformed pick label is rejected.
+- Placement never covers the anchor, never leaves the output, and keeps
+  overlays clear of each other when there is room.
 - Each `annotation_*` method is denied for a non-owner uid; an unlisted
   `annotation_*` name returns method-not-found.
 - An annotation is not visible to an allowlisted screencopy client.

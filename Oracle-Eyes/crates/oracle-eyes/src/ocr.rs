@@ -47,62 +47,100 @@ pub trait Ocr {
     fn recognise(&mut self, frame: &Frame) -> Result<Vec<Word>, String>;
 }
 
-/// Rebuild something a model can read. Joining everything with spaces loses
-/// the difference between a heading and the sentence under it, and the model
-/// is the only consumer that cares, so breaks are restored here rather than
-/// being carried through [`Word`].
+/// One reconstructed line of text, with the logical rectangle its words cover.
+/// Numbered from 1 in reading order: the model refers to lines by `id`, and
+/// the daemon maps an id back to `rect` — the model never supplies geometry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Line {
+    pub id: usize,
+    pub text: String,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    /// More than half a line of blank space sits above this one: a paragraph
+    /// or a different block on the page.
+    pub para: bool,
+}
+
+impl Line {
+    fn start(id: usize, w: &Word, para: bool) -> Line {
+        Line {
+            id,
+            text: w.text.clone(),
+            x: w.x,
+            y: w.y,
+            w: w.w,
+            h: w.h,
+            para,
+        }
+    }
+
+    fn push(&mut self, w: &Word) {
+        self.text.push(' ');
+        self.text.push_str(&w.text);
+        let (x1, y1) = (
+            (self.x + self.w).max(w.x + w.w),
+            (self.y + self.h).max(w.y + w.h),
+        );
+        self.x = self.x.min(w.x);
+        self.y = self.y.min(w.y);
+        self.w = x1 - self.x;
+        self.h = y1 - self.y;
+    }
+}
+
+/// Group words into lines. Joining everything with spaces loses the
+/// difference between a heading and the sentence under it, and the model is
+/// the only consumer that cares, so breaks are restored here rather than being
+/// carried through [`Word`].
 ///
 /// The rule is geometric because it has to work for any engine (§7): a word
 /// whose vertical midpoint leaves the current line's band, or which starts to
 /// the left of where the line began, opens a new line; if more than half a
-/// line's worth of blank space sits between the two, it opens a blank line
-/// instead, which is what a paragraph or a separate block looks like from here.
-pub fn text_of(words: &[Word]) -> String {
-    let mut out = String::new();
-    let mut line_top = 0i32;
-    let mut line_bottom = 0i32;
-    let mut line_left = 0i32;
-    let mut first = true;
+/// line's worth of blank space sits between the two, the new line is marked
+/// as starting a paragraph.
+pub fn lines_of(words: &[Word]) -> Vec<Line> {
+    let mut lines: Vec<Line> = Vec::new();
+    // The current line's band and left edge. Kept apart from the line's rect
+    // because the rect's left edge is the same thing, but the band is only
+    // stretched by same-line words, never reset by them.
+    let (mut top, mut bottom, mut left) = (0i32, 0i32, 0i32);
 
     for w in words {
-        if first {
-            line_top = w.y;
-            line_bottom = w.y + w.h;
-            line_left = w.x;
-            out.push_str(&w.text);
-            first = false;
+        let Some(cur) = lines.last_mut() else {
+            lines.push(Line::start(1, w, false));
+            (top, bottom, left) = (w.y, w.y + w.h, w.x);
             continue;
-        }
-
+        };
         let mid = w.y + w.h / 2;
-        let height = (line_bottom - line_top).max(1);
-        let same_line = mid >= line_top && mid < line_bottom && w.x >= line_left;
-
-        if same_line {
-            out.push(' ');
-        } else if w.y - line_bottom > height / 2 {
-            // A gap of more than half a line's worth of empty space below the
-            // previous line: a paragraph or a different block on the page.
-            out.push_str("\n\n");
-            line_top = w.y;
-            line_bottom = w.y + w.h;
-            line_left = w.x;
+        let height = (bottom - top).max(1);
+        if mid >= top && mid < bottom && w.x >= left {
+            // Tall glyphs (parentheses, capitals) stretch the band so the
+            // rest of the line keeps matching it.
+            top = top.min(w.y);
+            bottom = bottom.max(w.y + w.h);
+            cur.push(w);
         } else {
-            out.push('\n');
-            line_top = w.y;
-            line_bottom = w.y + w.h;
-            line_left = w.x;
+            let para = w.y - bottom > height / 2;
+            let id = cur.id + 1;
+            lines.push(Line::start(id, w, para));
+            (top, bottom, left) = (w.y, w.y + w.h, w.x);
         }
-
-        if same_line {
-            // Tall glyphs (parentheses, capitals) stretch the band so the rest
-            // of the line keeps matching it.
-            line_top = line_top.min(w.y);
-            line_bottom = line_bottom.max(w.y + w.h);
-        }
-        out.push_str(&w.text);
     }
+    lines
+}
 
+#[cfg(test)]
+/// The lines as plain text, a blank line between paragraphs.
+pub fn text_of(words: &[Word]) -> String {
+    let mut out = String::new();
+    for (i, l) in lines_of(words).iter().enumerate() {
+        if i > 0 {
+            out.push_str(if l.para { "\n\n" } else { "\n" });
+        }
+        out.push_str(&l.text);
+    }
     out
 }
 
@@ -229,6 +267,11 @@ fn encode_ppm(frame: &Frame) -> Vec<u8> {
 /// Rows that do not parse are skipped rather than failing the whole capture:
 /// the alternative is one malformed line costing the user an answer.
 fn parse_tsv(tsv: &str, frame: &Frame) -> Vec<Word> {
+    // The buffer-to-logical ratio, from the frame itself: `origin` is the
+    // logical rect the pixels cover and `width`/`height` are the pixels. This
+    // is the same ratio `capture` cropped with, fractional scales included.
+    let sx = f64::from(frame.origin.w.max(1)) / f64::from(frame.width.max(1));
+    let sy = f64::from(frame.origin.h.max(1)) / f64::from(frame.height.max(1));
     let mut words = Vec::new();
     for line in tsv.lines() {
         // `splitn(12)` so a recognised word containing a tab — Tesseract does
@@ -251,16 +294,18 @@ fn parse_tsv(tsv: &str, frame: &Frame) -> Vec<Word> {
             continue;
         }
 
-        // Frame-relative to screen-absolute. Callers anchor annotations on
-        // these boxes, and the compositor only speaks logical screen
-        // coordinates; doing it anywhere else means every caller repeating it.
+        // Frame-relative physical pixels to screen-absolute logical ones.
+        // Callers anchor annotations on these boxes, and the compositor only
+        // speaks logical coordinates; doing it anywhere else means every
+        // caller repeating it. Adding physical offsets to a logical origin put
+        // every box twice as far out on a scale-2 output.
         words.push(Word {
             text: text.to_string(),
             conf,
-            x: frame.origin.x + left,
-            y: frame.origin.y + top,
-            w,
-            h,
+            x: frame.origin.x + (f64::from(left) * sx).round() as i32,
+            y: frame.origin.y + (f64::from(top) * sy).round() as i32,
+            w: (f64::from(w) * sx).round().max(1.0) as i32,
+            h: (f64::from(h) * sy).round().max(1.0) as i32,
         });
     }
     words
@@ -351,6 +396,45 @@ mod tests {
     }
 
     #[test]
+    fn a_scale_two_frame_maps_boxes_back_to_logical_pixels() {
+        let tsv = format!("{HEADER}\n5\t1\t1\t1\t1\t1\t200\t100\t60\t24\t90\thi\n");
+        let f = Frame {
+            width: 2000,
+            height: 1000,
+            stride: 8000,
+            pixels: Vec::new(),
+            origin: Region {
+                x: 1920,
+                y: 0,
+                w: 1000,
+                h: 500,
+            },
+        };
+        let got = parse_tsv(&tsv, &f);
+        assert_eq!(got[0], at("hi", 2020, 50, 30, 12));
+    }
+
+    #[test]
+    fn a_fractional_scale_frame_maps_boxes_back_to_logical_pixels() {
+        // 1.5x: 300 physical pixels cover 200 logical ones.
+        let tsv = format!("{HEADER}\n5\t1\t1\t1\t1\t1\t150\t30\t45\t15\t90\thi\n");
+        let f = Frame {
+            width: 300,
+            height: 300,
+            stride: 1200,
+            pixels: Vec::new(),
+            origin: Region {
+                x: 0,
+                y: 0,
+                w: 200,
+                h: 200,
+            },
+        };
+        let got = parse_tsv(&tsv, &f);
+        assert_eq!(got[0], at("hi", 100, 20, 30, 10));
+    }
+
+    #[test]
     fn skips_container_rows_negative_conf_and_blank_text() {
         let tsv = format!(
             "{HEADER}\n\
@@ -407,6 +491,23 @@ mod tests {
             at("Footer", 0, 90, 50, 10),
         ];
         assert_eq!(text_of(&words), "What is this?\nIt depends.\n\nFooter");
+    }
+
+    #[test]
+    fn lines_carry_ids_and_the_rect_of_their_words() {
+        let words = vec![
+            at("What", 0, 2, 40, 10),
+            at("is", 45, 0, 15, 12),
+            at("It", 0, 14, 15, 10),
+            at("Footer", 0, 90, 50, 10),
+        ];
+        let l = lines_of(&words);
+        assert_eq!(l.len(), 3);
+        assert_eq!((l[0].id, l[0].x, l[0].y, l[0].w, l[0].h), (1, 0, 0, 60, 12));
+        assert_eq!(l[0].text, "What is");
+        assert!(!l[1].para);
+        assert!(l[2].para);
+        assert_eq!(l[2].id, 3);
     }
 
     #[test]

@@ -30,6 +30,58 @@ pub struct Anchor {
     pub h: i32,
 }
 
+impl From<crate::frame::Region> for Anchor {
+    fn from(r: crate::frame::Region) -> Anchor {
+        Anchor {
+            x: r.x,
+            y: r.y,
+            w: r.w,
+            h: r.h,
+        }
+    }
+}
+
+/// The option a multiple-choice answer picked: a label and the rect OCR
+/// measured for it (ADR 0054). The compositor draws it only inside the
+/// anchor, so it can never point anywhere the anchor does not already.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pick {
+    pub label: String,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+/// What goes in the panel. `title` is the headline, drawn as the panel's
+/// header; empty means a body-only panel. Styling is the compositor's.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Panel {
+    pub title: String,
+    pub text: String,
+    pub pick: Option<Pick>,
+}
+
+impl Panel {
+    /// A panel that says something went wrong. The compositor decides what
+    /// that looks like; we only say it is one.
+    pub fn failure(why: &str) -> Panel {
+        Panel {
+            title: "no answer".to_string(),
+            text: why.to_string(),
+            pick: None,
+        }
+    }
+
+    fn params(&self) -> Value {
+        let mut p = json!({"text": self.text});
+        if !self.title.is_empty() {
+            p["title"] = json!(self.title);
+        }
+        p
+    }
+}
+
 /// At most one annotation is on screen at a time in Phase 1. Automatic mode
 /// (spec §2.2) will hold several; the compositor already owns eviction, so
 /// that is a change here and nowhere else.
@@ -39,7 +91,7 @@ pub struct Hud {
     /// kept because `annotation_update` carries text only: a panel can be
     /// re-worded in place but never moved, so an answer about somewhere else
     /// has to be a new panel.
-    live: Option<(u64, Anchor)>,
+    live: Option<(u64, Anchor, Option<Pick>)>,
 }
 
 impl Hud {
@@ -50,51 +102,55 @@ impl Hud {
     /// The handle currently on screen, if any.
     #[cfg(test)]
     pub fn live(&self) -> Option<u64> {
-        self.live.map(|(id, _)| id)
+        self.live.as_ref().map(|(id, _, _)| *id)
     }
 
-    /// Show `text` at `anchor`, replacing whatever was there. An answer about
-    /// the same region replaces the text in place, which keeps the panel from
-    /// blinking between two answers about one thing; an answer about a
-    /// different region gets a fresh panel there, because an annotation that
-    /// stayed put would be pointing at the wrong thing.
+    /// Show `panel` at `anchor`, replacing whatever was there. An answer
+    /// about the same region with the same pick replaces the text in place,
+    /// which keeps the panel from blinking between two answers about one
+    /// thing; anything else gets a fresh panel, because `annotation_update`
+    /// carries text only and a panel that stayed put would be pointing at the
+    /// wrong thing.
     pub fn show(
         &mut self,
         c: &mut impl Control,
         anchor: Anchor,
-        text: &str,
+        panel: &Panel,
     ) -> Result<u64, String> {
-        match self.live {
-            Some((id, at)) if at == anchor => {
-                match c.call("annotation_update", json!({"id": id, "text": text})) {
-                    Ok(_) => return Ok(id),
-                    // The compositor forgot it — we disconnected, or it
-                    // restarted. Fall through and create a fresh one rather
-                    // than going blind.
-                    Err(_) => self.live = None,
+        match self.live.take() {
+            Some((id, at, pick)) if at == anchor && pick == panel.pick => {
+                let mut p = panel.params();
+                p["id"] = json!(id);
+                if c.call("annotation_update", p).is_ok() {
+                    self.live = Some((id, at, pick));
+                    return Ok(id);
                 }
+                // The compositor forgot it — we disconnected, or it
+                // restarted. Fall through and create a fresh one rather than
+                // going blind.
             }
-            Some((id, _)) => {
+            Some((id, _, _)) => {
                 // Moving is destroy-then-create. A failure here is not fatal:
                 // the compositor evicts on its own and a stale panel is worse
                 // than a duplicate call.
                 let _ = c.call("annotation_destroy", json!({"id": id}));
-                self.live = None;
             }
             None => {}
         }
-        let reply = c.call(
-            "annotation_create",
-            json!({
-                "x": anchor.x, "y": anchor.y, "w": anchor.w, "h": anchor.h,
-                "text": text,
-            }),
-        )?;
+        let mut p = panel.params();
+        p["x"] = json!(anchor.x);
+        p["y"] = json!(anchor.y);
+        p["w"] = json!(anchor.w);
+        p["h"] = json!(anchor.h);
+        if let Some(k) = &panel.pick {
+            p["pick"] = json!({"x": k.x, "y": k.y, "w": k.w, "h": k.h, "label": k.label});
+        }
+        let reply = c.call("annotation_create", p)?;
         let id = reply
             .get("id")
             .and_then(Value::as_u64)
             .ok_or_else(|| format!("annotation_create returned no handle: {reply}"))?;
-        self.live = Some((id, anchor));
+        self.live = Some((id, anchor, panel.pick.clone()));
         Ok(id)
     }
 
@@ -117,6 +173,8 @@ mod tests {
         seen: Vec<String>,
         /// Handles the compositor still knows about.
         known: Vec<u64>,
+        /// The params of the last create.
+        last: Option<Value>,
     }
 
     impl Control for Fake {
@@ -124,6 +182,7 @@ mod tests {
             self.seen.push(method.to_owned());
             match method {
                 "annotation_create" => {
+                    self.last = Some(params);
                     self.next += 1;
                     self.known.push(self.next);
                     Ok(json!({"ok": true, "id": self.next}))
@@ -150,6 +209,13 @@ mod tests {
         }
     }
 
+    fn p(text: &str) -> Panel {
+        Panel {
+            text: text.into(),
+            ..Panel::default()
+        }
+    }
+
     const A: Anchor = Anchor {
         x: 10,
         y: 10,
@@ -161,8 +227,8 @@ mod tests {
     fn a_second_answer_replaces_the_first_in_place() {
         let mut c = Fake::default();
         let mut hud = Hud::new();
-        let first = hud.show(&mut c, A, "one").unwrap();
-        let second = hud.show(&mut c, A, "two").unwrap();
+        let first = hud.show(&mut c, A, &p("one")).unwrap();
+        let second = hud.show(&mut c, A, &p("two")).unwrap();
         assert_eq!(first, second, "the panel should not blink between answers");
         assert_eq!(c.seen, ["annotation_create", "annotation_update"]);
     }
@@ -171,14 +237,14 @@ mod tests {
     fn an_answer_about_somewhere_else_moves_rather_than_staying_put() {
         let mut c = Fake::default();
         let mut hud = Hud::new();
-        let first = hud.show(&mut c, A, "one").unwrap();
+        let first = hud.show(&mut c, A, &p("one")).unwrap();
         let elsewhere = Anchor {
             x: 900,
             y: 600,
             w: 100,
             h: 40,
         };
-        let second = hud.show(&mut c, elsewhere, "two").unwrap();
+        let second = hud.show(&mut c, elsewhere, &p("two")).unwrap();
         assert_ne!(first, second, "a moved panel is a new panel");
         assert_eq!(
             c.seen,
@@ -195,10 +261,10 @@ mod tests {
     fn a_forgotten_handle_is_recreated_not_lost() {
         let mut c = Fake::default();
         let mut hud = Hud::new();
-        hud.show(&mut c, A, "one").unwrap();
+        hud.show(&mut c, A, &p("one")).unwrap();
         // The compositor restarted: it no longer knows the handle.
         c.known.clear();
-        hud.show(&mut c, A, "two").unwrap();
+        hud.show(&mut c, A, &p("two")).unwrap();
         assert_eq!(
             c.seen,
             [
@@ -208,6 +274,44 @@ mod tests {
             ]
         );
         assert_eq!(hud.live(), Some(2));
+    }
+
+    #[test]
+    fn a_different_pick_is_a_new_panel_and_is_sent() {
+        let mut c = Fake::default();
+        let mut hud = Hud::new();
+        hud.show(&mut c, A, &p("one")).unwrap();
+        let picked = Panel {
+            title: "Jupiter".into(),
+            text: "".into(),
+            pick: Some(Pick {
+                label: "B".into(),
+                x: 12,
+                y: 30,
+                w: 60,
+                h: 10,
+            }),
+        };
+        hud.show(&mut c, A, &picked).unwrap();
+        assert_eq!(
+            c.seen,
+            [
+                "annotation_create",
+                "annotation_destroy",
+                "annotation_create"
+            ]
+        );
+        let sent = c.last.clone().unwrap();
+        assert_eq!(sent["pick"]["label"], "B");
+        assert_eq!(sent["title"], "Jupiter");
+    }
+
+    #[test]
+    fn an_empty_title_is_not_sent() {
+        let mut c = Fake::default();
+        let mut hud = Hud::new();
+        hud.show(&mut c, A, &p("x")).unwrap();
+        assert!(c.last.unwrap().get("title").is_none());
     }
 
     #[test]
@@ -222,9 +326,9 @@ mod tests {
     fn dismiss_forgets_the_handle_so_the_next_answer_is_a_fresh_panel() {
         let mut c = Fake::default();
         let mut hud = Hud::new();
-        hud.show(&mut c, A, "one").unwrap();
+        hud.show(&mut c, A, &p("one")).unwrap();
         hud.dismiss(&mut c).unwrap();
-        hud.show(&mut c, A, "two").unwrap();
+        hud.show(&mut c, A, &p("two")).unwrap();
         assert_eq!(
             c.seen,
             ["annotation_create", "annotation_clear", "annotation_create"]

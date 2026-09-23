@@ -11,7 +11,7 @@ workspace.
 
 | Question | Source |
 |---|---|
-| What Oracle-Eyes does | `spec.md` (Draft v0.5) |
+| What Oracle-Eyes does | `spec.md` (Draft v0.6) |
 | What the compositor owes it | `../AbyssCompositor/ECLIPSEOS_SPECS_v2_VOL1.md`, **COMP-18** |
 | Why it is not Trusted UI | `../AbyssCompositor/decisions/0040-annotation-overlay-pass.md` |
 | Why it is out of process | `../AbyssCompositor/decisions/0041-oracle-eyes-out-of-process.md` |
@@ -29,7 +29,8 @@ Exactly two capabilities, granted and revoked independently:
    Absent, it reads nothing.
 2. **Control** — the COMP-13 socket at `$XDG_RUNTIME_DIR/eclipse/abyss.sock`,
    owner-uid only, restricted to `annotation_create` / `annotation_update` /
-   `annotation_destroy` / `annotation_clear`, the read-only `get_outputs` query
+   `annotation_destroy` / `annotation_clear` (with the optional `title` and
+   in-anchor `pick` of ADR 0054), the read-only `get_outputs` query
    (ADR 0050 — automatic mode annotates the focused screen; no compositor change,
    no `TABLE` change), and the `keybind` (later `damage`) event kinds.
 
@@ -48,9 +49,14 @@ see the injection note below.
   disabled, one turn, a system prompt framing input as untrusted data, and a
   reply that can do nothing but become clamped glyphs in an untrusted pass.
   Weigh every proposed feature against this.
-- **The compositor owns presentation.** Send a rectangle and a string. Placement,
-  collision avoidance, eviction, styling and sanitisation are its job. Never try
-  to route around that — a caller must be able to affect nothing but the glyphs.
+- **The compositor owns presentation.** Send a rectangle, a title, a string and
+  at most one pick inside the rectangle. Placement, width, collision avoidance,
+  eviction, styling and sanitisation are its job. Never try to route around
+  that — a caller must be able to affect nothing but the glyphs and which of its
+  own option rectangles is marked.
+- **The model's reply is a selector, never geometry.** It may name line ids and
+  option labels that were sent to it; every rectangle comes from OCR. Validate
+  every id against what was sent and drop the rest.
 - **Never OCR your own output.** The annotation pass is excluded from capture by
   construction; do not build any path that reintroduces it.
 - **Redaction is best-effort and must be described that way.** The regex pass

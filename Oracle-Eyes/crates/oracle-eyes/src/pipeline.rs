@@ -12,20 +12,42 @@
 //! from the user's seat; one that starts and says so on the first chord has
 //! not.
 
-use crate::answer::Answerer;
+use crate::answer::{Answerer, Confidence, Reply};
 use crate::capture::Capturer;
+use crate::choice::{self, Choice};
 use crate::classify::{Gate, Verdict};
 use crate::config::Config;
 use crate::frame::Region;
-use crate::hud::Anchor;
-use crate::ocr::{self, Ocr, Tesseract, Word};
+use crate::hud::{Anchor, Panel, Pick};
+use crate::ocr::{self, Line, Ocr, Tesseract, Word};
 use crate::redact;
 
 /// What one pass produced, and how long it earned on screen.
 pub struct Answer {
     pub anchor: Anchor,
-    pub text: String,
+    pub panel: Panel,
     pub hold_ms: u64,
+}
+
+/// One read of the screen: redacted lines, the options among them, OCR's
+/// confidence, and the rect the pixels actually came from.
+struct Read {
+    lines: Vec<Line>,
+    options: Vec<Choice>,
+    conf: f32,
+    origin: Region,
+}
+
+/// Which fallback anchor a pass uses when the model named no lines.
+#[derive(Clone, Copy)]
+enum Fallback {
+    /// Everything read: the user pointed at it, so all of it is in question.
+    All,
+    /// The largest paragraph: automatic mode read a whole screen, and
+    /// bracketing the whole screen marks nothing.
+    Densest,
+    /// A rect the caller already knows is the subject.
+    Region(Region),
 }
 
 pub struct Pipeline {
@@ -90,13 +112,11 @@ impl Pipeline {
         Ok(self.ocr.as_mut().expect("just built"))
     }
 
-    /// Read `region` and return what it says, already redacted, along with
-    /// OCR's mean confidence over the words it found and the rectangle the
-    /// pixels actually came from. The third value is not the second copy of
-    /// the argument: `grab` clamps to the owning output, so the rect read can
-    /// be smaller than the rect asked for, and it is the read one an answer
-    /// has to be anchored on.
-    fn read(&mut self, region: Region) -> Result<(String, f32, Region), String> {
+    /// Read `region`: its lines, already redacted, and the options among
+    /// them. `origin` is not a second copy of the argument: `grab` clamps to
+    /// the owning output, so the rect read can be smaller than the rect asked
+    /// for, and it is the read one an answer has to be anchored inside.
+    fn read(&mut self, region: Region) -> Result<Read, String> {
         let frame = self.capturer()?.grab(region)?;
         let origin = frame.origin;
         let words = self.ocr()?.recognise(&frame)?;
@@ -105,11 +125,19 @@ impl Pipeline {
             // model about nothing spends a query to be told nothing.
             return Err("no readable text in that region".to_string());
         }
-        Ok((
-            redact::redact(&ocr::text_of(&words)),
-            mean_conf(&words),
+        // Redacted per line: every rule is line-local, and the model sees
+        // nothing but these lines.
+        let mut lines = ocr::lines_of(&words);
+        for l in &mut lines {
+            l.text = redact::redact(&l.text);
+        }
+        let options = choice::detect(&lines);
+        Ok(Read {
+            lines,
+            options,
+            conf: mean_conf(&words),
             origin,
-        ))
+        })
     }
 
     /// The logical rect of the output `region` sits on, by centre containment.
@@ -130,9 +158,9 @@ impl Pipeline {
         // us where the user was looking, and that is where the failure has to
         // be reported.
         self.last = Some(region);
-        let (text, _, origin) = self.read(region)?;
-        let reply = self.answerer.ask(&text, None)?;
-        Ok(self.dress(origin, reply))
+        let read = self.read(region)?;
+        let reply = self.answerer.ask(&read.lines, &read.options, None)?;
+        Ok(self.dress(&read, reply, Fallback::All))
     }
 
     /// Expand (§3.6): the same question with more of the screen around it.
@@ -144,53 +172,195 @@ impl Pipeline {
             .ok_or_else(|| "nothing to expand — select a region first".to_string())?;
         let bounds = self.owning_output(region);
         let wider = widen(region, bounds);
-        let (text, _, _) = self.read(wider)?;
+        let read = self.read(wider)?;
         self.last = Some(wider);
-        let reply = self.answerer.ask(&text, None)?;
-        // Anchor on the original selection: the answer is still about what
-        // the user pointed at, even though we read more to produce it.
-        Ok(self.dress(region, reply))
+        let reply = self.answerer.ask(&read.lines, &read.options, None)?;
+        // The anchor comes from the lines the answer is about, which can now
+        // lie in the wider read. Without any, fall back to the original
+        // selection: the answer is still about what the user pointed at.
+        Ok(self.dress(&read, reply, Fallback::Region(region)))
     }
 
     /// Automatic mode (§2.2): one unprompted pass over `region`. Returns
     /// `Ok(None)` when the gate declined, which is the common case and not
     /// an error.
     pub fn auto(&mut self, region: Region, now_ms: u64) -> Result<Option<Answer>, String> {
-        let (text, conf, origin) = self.read(region)?;
+        let read = self.read(region)?;
+        let text: Vec<&str> = read.lines.iter().map(|l| l.text.as_str()).collect();
         // Scoped by where it was read, not just what it said. Oracle-Eyes has
         // no output id of any kind, so the output's own geometry is the
         // identity: without it, the same page open on two monitors is one
         // duplicate and the second monitor is suppressed forever.
-        match self.gate.consider(scope_of(origin), &text, conf, now_ms) {
+        match self
+            .gate
+            .consider(scope_of(read.origin), &text.join("\n"), read.conf, now_ms)
+        {
             Verdict::Skip(_) => Ok(None),
             Verdict::Ask => {
-                let reply = self.answerer.ask(&text, None)?;
-                Ok(Some(self.dress(origin, reply)))
+                let reply = self.answerer.ask(&read.lines, &read.options, None)?;
+                Ok(Some(self.dress(&read, reply, Fallback::Densest)))
             }
         }
     }
 
-    /// Attach the §2.2 display time: long enough to read, bounded at both
-    /// ends so a one-word answer does not flash and a long one does not
+    /// Turn a validated reply into something to draw: where, what, and for
+    /// how long. The §2.2 display time is long enough to read, bounded at
+    /// both ends so a one-word answer does not flash and a long one does not
     /// camp on the screen.
-    fn dress(&self, region: Region, text: String) -> Answer {
-        let words = text.split_whitespace().count() as u64;
+    fn dress(&self, read: &Read, reply: Reply, fallback: Fallback) -> Answer {
+        let pick = reply
+            .choice
+            .as_ref()
+            .and_then(|c| read.options.iter().find(|o| o.label == *c));
+        let anchor = anchor_for(read, &reply.focus, pick.is_some(), fallback);
+        let mut detail = reply.detail;
+        if reply.confidence == Some(Confidence::Low) {
+            detail = if detail.is_empty() {
+                "low confidence".to_string()
+            } else {
+                format!("{detail} (low confidence)")
+            };
+        }
+        let words =
+            (reply.headline.split_whitespace().count() + detail.split_whitespace().count()) as u64;
         let hold = self
             .cfg
             .min_display_ms
             .max(words.saturating_mul(self.cfg.ms_per_word))
             .min(self.cfg.max_display_ms);
         Answer {
-            anchor: Anchor {
-                x: region.x,
-                y: region.y,
-                w: region.w,
-                h: region.h,
+            anchor: anchor.into(),
+            panel: Panel {
+                title: reply.headline,
+                text: detail,
+                pick: pick.map(|o| Pick {
+                    label: o.label.clone(),
+                    x: o.x,
+                    y: o.y,
+                    w: o.w,
+                    h: o.h,
+                }),
             },
-            text,
             hold_ms: hold,
         }
     }
+}
+
+/// Margin around the text an anchor brackets, so the marks sit just outside
+/// the glyphs rather than on them.
+const ANCHOR_PAD: i32 = 6;
+
+fn rect_of_line(l: &Line) -> Region {
+    Region {
+        x: l.x,
+        y: l.y,
+        w: l.w,
+        h: l.h,
+    }
+}
+
+fn rect_of_choice(c: &Choice) -> Region {
+    Region {
+        x: c.x,
+        y: c.y,
+        w: c.w,
+        h: c.h,
+    }
+}
+
+/// The smallest rect covering all of `rs`, or an empty one at the origin.
+fn bounds_of(rs: impl Iterator<Item = Region>) -> Region {
+    rs.reduce(|a, b| {
+        let (x1, y1) = ((a.x + a.w).max(b.x + b.w), (a.y + a.h).max(b.y + b.h));
+        let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+        Region {
+            x,
+            y,
+            w: x1 - x,
+            h: y1 - y,
+        }
+    })
+    .unwrap_or(Region {
+        x: 0,
+        y: 0,
+        w: 0,
+        h: 0,
+    })
+}
+
+/// Grow `r` by [`ANCHOR_PAD`], never past the rect that was actually read.
+fn pad(r: Region, within: Region) -> Region {
+    let x = (r.x - ANCHOR_PAD).max(within.x);
+    let y = (r.y - ANCHOR_PAD).max(within.y);
+    let x1 = (r.x + r.w + ANCHOR_PAD).min(within.x + within.w);
+    let y1 = (r.y + r.h + ANCHOR_PAD).min(within.y + within.h);
+    Region {
+        x,
+        y,
+        w: (x1 - x).max(1),
+        h: (y1 - y).max(1),
+    }
+}
+
+/// What the answer is about, as a rect measured from OCR. A pick widens it to
+/// the whole question — stem and every option — because the compositor only
+/// draws a pick inside its anchor, and "B out of these" needs the these.
+fn anchor_for(read: &Read, focus: &[usize], picked: bool, fallback: Fallback) -> Region {
+    let named = read
+        .lines
+        .iter()
+        .filter(|l| focus.contains(&l.id))
+        .map(rect_of_line);
+    let r = if picked {
+        let first = read.options.first().map(|o| o.line).unwrap_or(1);
+        // The stem: the lines just above the first option, back to the last
+        // paragraph break.
+        let stem_start = read
+            .lines
+            .iter()
+            .filter(|l| l.id <= first && l.para)
+            .map(|l| l.id)
+            .max()
+            .unwrap_or(1);
+        let stem = read
+            .lines
+            .iter()
+            .filter(|l| l.id >= stem_start && l.id < first)
+            .map(rect_of_line);
+        bounds_of(
+            named
+                .chain(stem)
+                .chain(read.options.iter().map(rect_of_choice)),
+        )
+    } else if !focus.is_empty() {
+        bounds_of(named)
+    } else {
+        match fallback {
+            Fallback::All => bounds_of(read.lines.iter().map(rect_of_line)),
+            Fallback::Densest => bounds_of(densest(&read.lines).iter().map(rect_of_line)),
+            // Already the user's own rect: no pad, no clamp to the read.
+            Fallback::Region(r) => return r,
+        }
+    };
+    pad(r, read.origin)
+}
+
+/// The paragraph with the most text in it.
+fn densest(lines: &[Line]) -> &[Line] {
+    let mut best = &lines[..0];
+    let mut best_len = 0;
+    let mut start = 0;
+    for i in 1..=lines.len() {
+        if i == lines.len() || lines[i].para {
+            let block = &lines[start..i];
+            let len: usize = block.iter().map(|l| l.text.len()).sum();
+            if len > best_len {
+                (best, best_len) = (block, len);
+            }
+            start = i;
+        }
+    }
+    best
 }
 
 /// Mean OCR confidence as a proportion, 0.0–1.0. Tesseract's TSV reports
@@ -348,19 +518,136 @@ mod tests {
         assert_eq!(scope_of(a), scope_of(a));
     }
 
+    fn line(id: usize, x: i32, y: i32, w: i32, para: bool, text: &str) -> Line {
+        Line {
+            id,
+            text: text.into(),
+            x,
+            y,
+            w,
+            h: 16,
+            para,
+        }
+    }
+
+    fn screen() -> Region {
+        Region {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        }
+    }
+
+    fn reply(headline: &str, detail: &str, focus: &[usize], choice: Option<&str>) -> Reply {
+        Reply {
+            headline: headline.into(),
+            detail: detail.into(),
+            focus: focus.to_vec(),
+            choice: choice.map(Into::into),
+            confidence: Some(Confidence::High),
+        }
+    }
+
+    fn read_of(lines: Vec<Line>) -> Read {
+        let options = choice::detect(&lines);
+        Read {
+            lines,
+            options,
+            conf: 0.9,
+            origin: screen(),
+        }
+    }
+
     #[test]
     fn display_time_is_bounded_at_both_ends() {
         let p = Pipeline::new(Config::default());
-        let r = Region {
-            x: 0,
-            y: 0,
-            w: 10,
-            h: 10,
-        };
-        let short = p.dress(r, "yes".to_string());
+        let r = read_of(vec![line(1, 10, 10, 100, false, "x")]);
+        let short = p.dress(&r, reply("yes", "", &[], None), Fallback::All);
         assert_eq!(short.hold_ms, p.cfg.min_display_ms);
-        let long = p.dress(r, "word ".repeat(1000));
+        let long = p.dress(
+            &r,
+            reply("", &"word ".repeat(1000), &[], None),
+            Fallback::All,
+        );
         assert_eq!(long.hold_ms, p.cfg.max_display_ms);
+    }
+
+    #[test]
+    fn the_anchor_hugs_the_named_lines_not_the_capture() {
+        let r = read_of(vec![
+            line(1, 100, 100, 300, false, "nav"),
+            line(2, 400, 500, 200, true, "the bit"),
+            line(3, 400, 520, 250, false, "in question"),
+        ]);
+        let a = anchor_for(&r, &[2, 3], false, Fallback::Densest);
+        assert_eq!(
+            a,
+            Region {
+                x: 394,
+                y: 494,
+                w: 262,
+                h: 48
+            }
+        );
+    }
+
+    #[test]
+    fn automatic_mode_without_focus_brackets_the_densest_paragraph() {
+        let r = read_of(vec![
+            line(1, 0, 0, 50, false, "Menu"),
+            line(
+                2,
+                300,
+                400,
+                600,
+                true,
+                "a long paragraph of real prose that matters",
+            ),
+            line(3, 300, 420, 600, false, "and its second line goes on"),
+            line(4, 0, 1000, 60, true, "footer"),
+        ]);
+        let a = anchor_for(&r, &[], false, Fallback::Densest);
+        assert_eq!((a.x, a.y), (294, 394));
+        assert_eq!(a.h, 16 + 20 + 12);
+        assert!(a.w < screen().w / 2, "never the whole screen");
+    }
+
+    #[test]
+    fn a_pick_anchors_on_the_whole_question_and_carries_the_option_rect() {
+        let p = Pipeline::new(Config::default());
+        let r = read_of(vec![
+            line(1, 0, 0, 80, false, "unrelated"),
+            line(2, 100, 200, 300, true, "Largest planet?"),
+            line(3, 100, 220, 120, false, "A) Mars"),
+            line(4, 100, 240, 140, false, "B) Jupiter"),
+        ]);
+        let a = p.dress(&r, reply("Jupiter", "", &[4], Some("B")), Fallback::All);
+        assert_eq!((a.anchor.x, a.anchor.y), (94, 194), "stem to last option");
+        assert_eq!(a.anchor.h, 56 + 12);
+        let pick = a.panel.pick.expect("picked");
+        assert_eq!((pick.label.as_str(), pick.x, pick.y), ("B", 100, 240));
+    }
+
+    #[test]
+    fn expand_falls_back_to_the_users_own_region() {
+        let r = read_of(vec![line(1, 10, 10, 100, false, "x")]);
+        let mine = Region {
+            x: 5,
+            y: 5,
+            w: 50,
+            h: 50,
+        };
+        assert_eq!(anchor_for(&r, &[], false, Fallback::Region(mine)), mine);
+    }
+
+    #[test]
+    fn low_confidence_is_said_out_loud() {
+        let p = Pipeline::new(Config::default());
+        let r = read_of(vec![line(1, 10, 10, 100, false, "x")]);
+        let mut rep = reply("Maybe", "", &[], None);
+        rep.confidence = Some(Confidence::Low);
+        assert_eq!(p.dress(&r, rep, Fallback::All).panel.text, "low confidence");
     }
 
     #[test]

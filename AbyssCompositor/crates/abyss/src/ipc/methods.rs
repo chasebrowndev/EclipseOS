@@ -722,12 +722,16 @@ fn calibrate_output(state: &mut AbyssState, params: &Value) -> Reply {
 
 // ----------------------------------------------------------- annotations
 //
-// COMP-18 §3. The caller sends a rectangle and a string and gets a handle.
-// Everything else -- sanitising, wrapping, styling, placement, eviction --
-// belongs to `render::annotation`, so that a caller can affect nothing but
-// the glyphs. These handlers therefore do parameter checking and nothing more.
+// COMP-18 §3, ADR 0054. The caller sends a rectangle, a body, an optional
+// one-line title and an optional pick (a labelled sub-rectangle marking the
+// suggested option) and gets a handle. Everything else -- sanitising,
+// wrapping, styling, placement, eviction, clamping the pick and dropping one
+// that is not wholly inside the anchor -- belongs to `render::annotation`, so
+// that a caller can affect nothing but the glyphs and one highlight within
+// its own anchor. These handlers therefore do parameter checking and nothing
+// more: a pick outside the anchor is not an IPC error, it is simply not drawn.
 
-fn anchor_param(params: &Value) -> Result<Rectangle<i32, Logical>, RpcError> {
+fn rect_param(params: &Value) -> Result<Rectangle<i32, Logical>, RpcError> {
     let obj = params_obj(params);
     let mut v = [0i32; 4];
     for (slot, name) in v.iter_mut().zip(["x", "y", "w", "h"]) {
@@ -750,11 +754,65 @@ fn text_param(params: &Value) -> Result<&str, RpcError> {
         .ok_or_else(|| RpcError::invalid_params("text must be a string"))
 }
 
+/// Optional title; absent means empty.
+fn title_param(params: &Value) -> Result<&str, RpcError> {
+    match params_obj(params).get("title") {
+        None => Ok(""),
+        Some(v) => v
+            .as_str()
+            .ok_or_else(|| RpcError::invalid_params("title must be a string")),
+    }
+}
+
+/// Optional pick `{x, y, w, h, label}`; absent or `null` means none. Unknown
+/// keys inside it are refused, same as at the top level.
+fn pick_param(params: &Value) -> Result<Option<crate::render::annotation::Pick>, RpcError> {
+    let pick = match params_obj(params).get("pick") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(p @ Value::Object(_)) => p,
+        Some(_) => return Err(RpcError::invalid_params("pick must be an object")),
+    };
+    only_keys(pick, &["x", "y", "w", "h", "label"])
+        .map_err(|_| RpcError::invalid_params("pick takes only x, y, w, h and label"))?;
+    let rect = rect_param(pick)
+        .map_err(|_| RpcError::invalid_params("pick.x/y/w/h must be integers with w and h positive"))?;
+    let label = params_obj(pick)
+        .get("label")
+        .and_then(Value::as_str)
+        .and_then(crate::render::annotation::pick_label)
+        .ok_or_else(|| RpcError::invalid_params("pick.label must be 1-2 ASCII letters or digits"))?;
+    Ok(Some(crate::render::annotation::Pick { rect, label }))
+}
+
+type CreateParams<'a> = (
+    Rectangle<i32, Logical>,
+    &'a str,
+    &'a str,
+    Option<crate::render::annotation::Pick>,
+);
+
+fn create_params(params: &Value) -> Result<CreateParams<'_>, RpcError> {
+    only_keys(params, &["x", "y", "w", "h", "text", "title", "pick"])?;
+    Ok((
+        rect_param(params)?,
+        title_param(params)?,
+        text_param(params)?,
+        pick_param(params)?,
+    ))
+}
+
+fn update_params(params: &Value) -> Result<(u64, &str, &str), RpcError> {
+    only_keys(params, &["id", "text", "title"])?;
+    Ok((
+        u64_param(params, "id")?,
+        title_param(params)?,
+        text_param(params)?,
+    ))
+}
+
 fn annotation_create(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {
-    only_keys(params, &["x", "y", "w", "h", "text"])?;
-    let anchor = anchor_param(params)?;
-    let text = text_param(params)?;
-    let Some(id) = state.annotations.create(conn, anchor, text) else {
+    let (anchor, title, text, pick) = create_params(params)?;
+    let Some(id) = state.annotations.create(conn, anchor, title, text, pick) else {
         return Err(RpcError::invalid_params("too many live annotations"));
     };
     crate::backend::damage_all(state);
@@ -762,10 +820,10 @@ fn annotation_create(state: &mut AbyssState, conn: u64, params: &Value) -> Reply
 }
 
 fn annotation_update(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {
-    only_keys(params, &["id", "text"])?;
-    let id = crate::render::annotation::AnnotationId(u64_param(params, "id")?);
-    let text = text_param(params)?;
-    if !state.annotations.update(conn, id, text) {
+    // An update replaces the title too: omitting it clears it.
+    let (id, title, text) = update_params(params)?;
+    let id = crate::render::annotation::AnnotationId(id);
+    if !state.annotations.update(conn, id, title, text) {
         return Err(RpcError::invalid_params("no such annotation"));
     }
     crate::backend::damage_all(state);
@@ -870,5 +928,88 @@ mod tests {
             Ok(None)
         ));
         assert!(parse_overscan(json!({"overscan": {"middle": 1}}).as_object().expect("object")).is_err());
+    }
+
+    #[test]
+    fn annotation_title_is_optional_but_must_be_a_string() {
+        let base = json!({"x": 0, "y": 0, "w": 100, "h": 50, "text": "body"});
+        let (_, title, text, pick) = create_params(&base).unwrap_or_else(|_| panic!("no title: rejected"));
+        assert_eq!((title, text), ("", "body"));
+        assert!(pick.is_none());
+
+        let mut p = base.clone();
+        p["title"] = json!("Q3");
+        assert_eq!(
+            create_params(&p).unwrap_or_else(|_| panic!("titled: rejected")).1,
+            "Q3"
+        );
+
+        p["title"] = json!(7);
+        assert!(create_params(&p).is_err());
+    }
+
+    #[test]
+    fn annotation_pick_is_validated_at_the_door() {
+        let with_pick = |pick: Value| json!({"x": 0, "y": 0, "w": 100, "h": 50, "text": "t", "pick": pick});
+        let ok = create_params(&with_pick(json!({"x": 1, "y": 2, "w": 3, "h": 4, "label": "b2"})))
+            .unwrap_or_else(|_| panic!("valid pick: rejected"))
+            .3
+            .expect("pick present");
+        assert_eq!(ok.label, "B2");
+        assert_eq!(ok.rect, Rectangle::new((1, 2).into(), (3, 4).into()));
+
+        // `null` is absent.
+        assert!(create_params(&with_pick(Value::Null))
+            .unwrap_or_else(|_| panic!("null pick: rejected"))
+            .3
+            .is_none());
+
+        for bad in [
+            json!({"x": 1, "y": 2, "w": 3, "h": 4, "label": "ABC"}),
+            json!({"x": 1, "y": 2, "w": 3, "h": 4, "label": "\u{e9}"}),
+            json!({"x": 1, "y": 2, "w": 3, "h": 4, "label": ""}),
+            json!({"x": 1, "y": 2, "w": 3, "h": 4, "label": 1}),
+            json!({"x": 1, "y": 2, "w": 3, "h": 4}),
+            json!({"x": 1, "y": 2, "w": 3, "h": 4, "label": "A", "colour": "red"}),
+            json!({"x": 1, "y": 2, "w": 0, "h": 4, "label": "A"}),
+            json!({"x": "1", "y": 2, "w": 3, "h": 4, "label": "A"}),
+            json!("A"),
+            json!([1, 2, 3, 4]),
+        ] {
+            assert!(create_params(&with_pick(bad.clone())).is_err(), "{bad} accepted");
+        }
+    }
+
+    #[test]
+    fn annotation_pick_outside_anchor_is_accepted_then_dropped_by_the_store() {
+        let p = json!({
+            "x": 0, "y": 0, "w": 100, "h": 50, "text": "t",
+            "pick": {"x": 500, "y": 500, "w": 10, "h": 10, "label": "A"},
+        });
+        let (anchor, title, text, pick) =
+            create_params(&p).unwrap_or_else(|_| panic!("IPC accepts it: rejected"));
+        assert!(pick.is_some());
+        let mut store = crate::render::annotation::AnnotationStore::default();
+        let id = store.create(1, anchor, title, text, pick).expect("created");
+        let (_, a) = store.iter().find(|(k, _)| **k == id).expect("live");
+        assert!(a.pick.is_none());
+    }
+
+    #[test]
+    fn annotation_update_without_title_clears_it() {
+        let anchor = Rectangle::new((0, 0).into(), (100, 50).into());
+        let mut store = crate::render::annotation::AnnotationStore::default();
+        let id = store.create(1, anchor, "Old", "t", None).expect("created");
+
+        let p = json!({"id": id.0, "text": "new"});
+        let (raw, title, text) = update_params(&p).unwrap_or_else(|_| panic!("no title is fine: rejected"));
+        assert_eq!(title, "");
+        let rid = crate::render::annotation::AnnotationId(raw);
+        assert!(store.update(1, rid, title, text));
+        let (_, a) = store.iter().find(|(k, _)| **k == rid).expect("live");
+        assert!(a.title.is_empty());
+
+        assert!(update_params(&json!({"id": 1, "text": "t", "title": false})).is_err());
+        assert!(update_params(&json!({"id": 1, "text": "t", "pick": null})).is_err());
     }
 }
