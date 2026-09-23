@@ -14,12 +14,12 @@
 use smithay::backend::renderer::{
     element::{surface::WaylandSurfaceRenderElement, Element, Id, Kind, RenderElement, UnderlyingStorage},
     gles::{
-        element::PixelShaderElement, GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram,
-        Uniform, UniformName, UniformType,
+        GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, Uniform, UniformName,
+        UniformType,
     },
     utils::{CommitCounter, DamageSet, OpaqueRegions},
 };
-use smithay::utils::{Buffer as BufferCoords, Logical, Physical, Point, Rectangle, Scale, Transform};
+use smithay::utils::{Buffer as BufferCoords, Physical, Point, Rectangle, Scale, Transform};
 
 /// Mirrors smithay's built-in `texture.frag`, with a rounded-box mask applied
 /// to the final colour. `win_rect` is the window's rectangle in `gl_FragCoord`
@@ -270,26 +270,16 @@ pub fn compile_shadow(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, G
     )
 }
 
-/// One drop-shadow element for `area` (the window rect grown by `range`).
-pub fn shadow_element(
-    program: GlesPixelProgram,
-    area: Rectangle<i32, Logical>,
-    range: f32,
-    radius: f32,
-) -> PixelShaderElement {
-    PixelShaderElement::new(
-        program,
-        area,
-        None,
-        1.0,
-        vec![
-            // Premultiplied, so the colour carries its own alpha.
-            Uniform::new("shadow_color", [0.0, 0.0, 0.0, SHADOW_ALPHA]),
-            Uniform::new("blur", range),
-            Uniform::new("radius", radius),
-        ],
-        Kind::Unspecified,
-    )
+/// Uniforms for one drop shadow over its area (the bordered rect grown by
+/// `range`): `range` is how far it reaches and `radius` the corner radius it
+/// hugs, both logical.
+pub fn shadow_uniforms(range: f32, radius: f32) -> Vec<Uniform<'static>> {
+    vec![
+        // Premultiplied, so the colour carries its own alpha.
+        Uniform::new("shadow_color", [0.0, 0.0, 0.0, SHADOW_ALPHA]),
+        Uniform::new("blur", range),
+        Uniform::new("radius", radius),
+    ]
 }
 
 const BORDER_SRC: &str = r#"

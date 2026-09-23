@@ -91,6 +91,10 @@ pub struct BorderStore {
     /// between frames so its damage is tracked; the last-applied colour,
     /// radius, width and scale are kept to skip no-op uniform updates.
     rings: HashMap<Window, (PixelShaderElement, [f32; 7])>,
+    /// One drop shadow per window when shadows are on, kept alive between
+    /// frames for the same reason; the last-applied range and radius are kept
+    /// to skip no-op uniform updates.
+    shadows: HashMap<Window, (PixelShaderElement, [f32; 2])>,
     /// Blur chain, programs and per-window backdrops (COMP-02 §9).
     blur: blur::BlurStore,
 }
@@ -99,6 +103,7 @@ impl BorderStore {
     pub fn remove(&mut self, window: &Window) {
         self.borders.remove(window);
         self.rings.remove(window);
+        self.shadows.remove(window);
         self.dims.remove(window);
     }
 }
@@ -387,7 +392,7 @@ fn window_elements(
     }
     let rounding = fb_height.zip(store.rounded.clone());
     let border = border_frame(renderer, store, output_geo.loc, scale, output, config, &live);
-    let shadow = shadow_program(renderer, store, config);
+    let shadow = shadow_program(renderer, store, config, &live);
 
     // `space.elements()` is bottom-to-top; frames are collected front-to-back.
     for window in live.into_iter().rev() {
@@ -465,7 +470,7 @@ fn window_elements(
             push_border(store, frame, &window, geo, config, out);
         }
         if let Some(program) = &shadow {
-            out.push(shadow_element(program, geo, output_geo.loc, config));
+            push_shadow(store, program, &window, geo, output_geo.loc, config, out);
         }
 
         // Blur samples what shows through the window's alpha, so a window drawn
@@ -490,17 +495,21 @@ fn window_elements(
     }
 }
 
-/// The drop-shadow program when shadows are on, compiled on first use
-/// (COMP-02 §9); `None` draws no shadows.
+/// The drop-shadow program when shadows are on, compiled on first use, with
+/// the stored shadows of windows that are gone dropped (COMP-02 §9); `None`
+/// draws no shadows.
 fn shadow_program(
     renderer: &mut GlesRenderer,
     store: &mut BorderStore,
     config: &Config,
+    live: &[Window],
 ) -> Option<smithay::backend::renderer::gles::GlesPixelProgram> {
     let shadow = &config.decoration.shadow;
     if !shadow.enabled || shadow.range <= 0 {
+        store.shadows.clear();
         return None;
     }
+    store.shadows.retain(|w, _| live.contains(w));
     if store.shadow.is_none() {
         match effects::compile_shadow(renderer) {
             Ok(program) => store.shadow = Some(program),
@@ -513,14 +522,15 @@ fn shadow_program(
     store.shadow.clone()
 }
 
-/// One drop shadow around a window at `geo` (global, animation offset already
-/// applied), grown from its bordered rect (COMP-02 §9).
-fn shadow_element(
-    program: &smithay::backend::renderer::gles::GlesPixelProgram,
+/// Where one window's drop shadow goes and what it is shaded with: its
+/// output-local area, grown from the bordered rect by `range`, and its
+/// `[range, radius]` uniforms. `geo` is global with the animation offset
+/// applied (COMP-02 §9).
+fn shadow_geometry(
     geo: Rectangle<i32, Logical>,
     output_loc: Point<i32, Logical>,
     config: &Config,
-) -> AbyssRenderElement {
+) -> (Rectangle<i32, Logical>, [f32; 2]) {
     // The shadow sits outside the border, so it grows from the bordered rect.
     let inset = config.general.border_size;
     let range = config.decoration.shadow.range;
@@ -538,12 +548,36 @@ fn shadow_element(
             .into(),
         (geo.size.w + 2 * (inset + range), geo.size.h + 2 * (inset + range)).into(),
     );
-    AbyssRenderElement::Shader(effects::shadow_element(
-        program.clone(),
-        area,
-        range as f32,
-        radius as f32,
-    ))
+    (area, [range as f32, radius as f32])
+}
+
+/// One window's drop shadow. The stored element is reused so its Id, and with
+/// it damage tracking, is stable across frames: `resize` only bumps its commit
+/// when the area actually changes, and the uniforms are only replaced when
+/// range or radius do.
+fn push_shadow(
+    store: &mut BorderStore,
+    program: &smithay::backend::renderer::gles::GlesPixelProgram,
+    window: &Window,
+    geo: Rectangle<i32, Logical>,
+    output_loc: Point<i32, Logical>,
+    config: &Config,
+    out: &mut Vec<AbyssRenderElement>,
+) {
+    let (area, params) = shadow_geometry(geo, output_loc, config);
+    let uniforms = || effects::shadow_uniforms(params[0], params[1]);
+    let (element, applied) = store.shadows.entry(window.clone()).or_insert_with(|| {
+        (
+            PixelShaderElement::new(program.clone(), area, None, 1.0, uniforms(), Kind::Unspecified),
+            params,
+        )
+    });
+    element.resize(area, None);
+    if *applied != params {
+        element.update_uniforms(uniforms());
+        *applied = params;
+    }
+    out.push(AbyssRenderElement::Shader(element.clone()));
 }
 
 /// Per-frame border state shared by every window on one output.
@@ -819,5 +853,52 @@ pub fn send_dmabuf_feedback(
     let map = layer_map_for_output(output);
     for layer in map.layers() {
         layer.send_dmabuf_feedback(output, surface_primary_scanout_output, select);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(rounding: i32, border: i32, range: i32) -> Config {
+        let mut cfg = Config::default();
+        cfg.decoration.rounding = rounding;
+        cfg.general.border_size = border;
+        cfg.decoration.shadow.range = range;
+        cfg
+    }
+
+    #[test]
+    fn shadow_hugs_the_bordered_rect() {
+        let geo = Rectangle::new((100, 50).into(), (300, 200).into());
+        let (area, params) = shadow_geometry(geo, (40, 0).into(), &config(13, 6, 20));
+        assert_eq!(area, Rectangle::new((34, 24).into(), (352, 252).into()));
+        assert_eq!(params, [20.0, 19.0]);
+        let (_, params) = shadow_geometry(geo, (40, 0).into(), &config(0, 6, 20));
+        assert_eq!(params, [20.0, 0.0], "square windows keep a square shadow");
+    }
+
+    #[test]
+    fn shadow_is_only_rebuilt_when_its_inputs_change() {
+        let geo = Rectangle::new((100, 50).into(), (300, 200).into());
+        let at = |geo, output: (i32, i32), cfg: &Config| shadow_geometry(geo, output.into(), cfg);
+        let base = config(13, 6, 20);
+        let same = at(geo, (0, 0), &base);
+        // A static window: nothing changes, so `resize` and `update_uniforms`
+        // are both no-ops and the stored element keeps its commit.
+        assert_eq!(at(geo, (0, 0), &config(13, 6, 20)), same);
+
+        let moved = Rectangle::new((101, 50).into(), (300, 200).into());
+        let resized = Rectangle::new((100, 50).into(), (300, 201).into());
+        for (what, got) in [
+            ("move", at(moved, (0, 0), &base)),
+            ("resize", at(resized, (0, 0), &base)),
+            ("output", at(geo, (0, 1), &base)),
+            ("rounding", at(geo, (0, 0), &config(8, 6, 20))),
+            ("border", at(geo, (0, 0), &config(13, 3, 20))),
+            ("range", at(geo, (0, 0), &config(13, 6, 40))),
+        ] {
+            assert_ne!(got, same, "{what} must update the shadow");
+        }
     }
 }
