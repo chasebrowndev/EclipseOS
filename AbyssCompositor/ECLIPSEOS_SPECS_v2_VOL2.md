@@ -433,7 +433,7 @@ Three, plus the implicit `human`:
 |---|---|---|
 | `untrusted` | Anything rendering third-party content the owner did not author: web pages by default, cross-origin frames **always**, documents from downloads, unsigned/unknown binaries, Flatpaks not on the owner's list, anything an agent launched that is not on the trusted list. | Content originating here can never be above `untrusted` in a provenance chain (S-07 §3). Rules commonly `defer`/`prompt` when it reaches a shell or an irreversible action. |
 | `standard` | **Default.** Owner-installed applications from the distro repos. | No special treatment. |
-| `trusted` | The owner's own terminal, editor, EclipseOS components (`eclipse-*`), explicitly listed apps. | Eligible to be the origin of instructions an agent may act on with fewer prompts, where a rule says so. |
+| `trusted` | The owner's own terminal, editor, EclipseOS components (`hyperion` and the `eclipse-*` binaries: `eclipse-toasts`, `eclipse-center`, `eclipse-launcher`, `eclipse-settings`, `eclipse-policy-viewer`, `eclipse-secret-prompt`, …) *(amended C-07, 2026-09-23; these are candidates an owner rule may list, never matched implicitly by name or app_id)*, explicitly listed apps. | Eligible to be the origin of instructions an agent may act on with fewer prompts, where a rule says so. |
 
 Assignment is by owner `trust` rules only (S-02 §3). There is **no**
 runtime promotion path in v1 — the trusted-UI prompt cannot offer "trust

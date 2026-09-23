@@ -1,4 +1,15 @@
-# Vendored design reference
+# Design documents
+
+Tier 6 documents (Vol 1 planning index):
+
+| ID | Document | Status |
+|---|---|---|
+| D-01 | [Base system](D-01-base-system.md) | written 2026-09-18 |
+| D-02 | [Package repository and signing](D-02-package-repository.md) | written 2026-09-18, reduced |
+| D-03 | [Installation media and installer](D-03-installation-media.md) | written 2026-09-18 |
+| D-05 | [Default userland](D-05-userland.md) | written 2026-09-23, partial (no terminal, no portal) |
+
+## Vendored design reference
 
 `eclipse-panes.html` is a copy of the Claude Design canvas for the Eclipse
 panes. It ships its own `./support.js`, which is **not** vendored and is not
