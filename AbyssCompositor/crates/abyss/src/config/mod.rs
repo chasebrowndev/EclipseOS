@@ -2675,11 +2675,13 @@ mod tests {
             "eclipse-center",   // eclipseos-center
             "wpctl",            // meta depends: wireplumber
             "loginctl",         // systemd, via the Arch base every image has
+            "brightnessctl",    // meta depends: brightnessctl
+            "playerctl",        // meta depends: playerctl
         ];
         // Spawned by `default_binds()` but in no package the image installs.
         // Each is a live HW-04 violation; drop the entry once the binary ships
         // (or the bind goes) and this test holds the line from then on.
-        const NOT_YET_SHIPPED: &[&str] = &["screenshot", "screenrecord", "brightnessctl", "playerctl"];
+        const NOT_YET_SHIPPED: &[&str] = &["screenshot", "screenrecord"];
 
         let mut seen_unshipped = Vec::new();
         for bind in default_binds() {

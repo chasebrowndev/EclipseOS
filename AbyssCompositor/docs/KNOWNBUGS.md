@@ -92,18 +92,17 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
 
 # Packaging
 
-## PKG-04 — four default binds spawn binaries no package installs
+## PKG-04 — the screenshot binds spawn scripts no package installs
 
 **Severity: correctness.** Breaks the HW-04 rule above. `default_binds()`
-spawns `screenshot` and `screenrecord` (straight out of `~/.local/bin`),
-`brightnessctl` and `playerctl`; none is in any `package_*` function or in
-`eclipseos-meta`'s depends. On a packaged system those keys do nothing.
+spawns `screenshot` and `screenrecord` straight out of `~/.local/bin`; neither
+is in any `package_*` function. On a packaged system those keys do nothing.
 `default_bind_spawns_name_shipped_binaries` (`crates/abyss/src/config/mod.rs`)
 carries them in a `NOT_YET_SHIPPED` list and fails once one stops being
-spawned, so the list only shrinks.
+spawned, so the list only shrinks. (`brightnessctl` and `playerctl` were the
+other two; they are `eclipseos-meta` depends as of 2026-09-23.)
 
-**Proposed fix:** add `brightnessctl` and `playerctl` to `eclipseos-meta`
-depends; ship the screenshot/screenrecord scripts or drop those binds.
+**Proposed fix:** ship the scripts in a package, or drop the binds.
 
 ---
 

@@ -131,7 +131,7 @@ package_eclipseos-meta() {
            eclipseos-launcher eclipseos-desktop eclipseos-policyd
            greetd greetd-regreet cage
            networkmanager bluez bluez-utils upower pipewire pipewire-pulse wireplumber
-           foot xdg-user-dirs)
+           foot xdg-user-dirs brightnessctl playerctl)
   # /etc/eclipse is image-owned (D-01 §4.1): deliberately NOT in backup(), so
   # pacman overwrites rather than leaving .pacnew, and the later atomic scheme
   # is a no-op migration.
