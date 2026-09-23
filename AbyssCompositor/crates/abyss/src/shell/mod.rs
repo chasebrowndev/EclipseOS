@@ -1045,8 +1045,15 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
         .cloned();
     if let Some(window) = mapped {
         // Title and app_id can change at any commit; the foreign-toplevel list
-        // has no other notification path for them.
-        crate::protocols::standard::foreign_toplevel::window_updated(&window);
+        // has no other notification path for them. The bar hears it over IPC.
+        if crate::protocols::standard::foreign_toplevel::window_updated(&window) {
+            let handle = state.ipc.handle_for(&window);
+            crate::ipc::emit(
+                state,
+                "window",
+                serde_json::json!({"change": "title", "handle": handle}),
+            );
+        }
         // Title-matching rules are re-evaluated on title change (COMP-05 §4).
         if let Some(placement) = rules::reevaluate(state, &window) {
             replace_window(state, &window, &placement);

@@ -23,9 +23,10 @@ use crate::model::Snapshot;
 /// the button and the chord are one path and cannot drift.
 pub const LAUNCHER: &str = "eclipse-launcher";
 
-/// How long the event thread sleeps between passes. Short enough that the
-/// clock's minute boundary is never more than this late, long enough that an
-/// idle bar costs nothing.
+/// The longest the event thread waits between passes when the compositor is
+/// quiet. Short enough that the clock's minute boundary is never more than
+/// this late, long enough that an idle bar costs nothing. A compositor event
+/// ends the wait at once.
 const POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// How long the event thread waits out a full channel before offering the
@@ -555,6 +556,26 @@ fn send(sender: &mut iced::futures::channel::mpsc::Sender<Message>, message: Mes
             }
             Err(_) => return false,
         }
+    }
+}
+
+/// Sleep until the compositor has something to say, or `POLL` passes. Without
+/// a connection there is nothing to wake on, so it is a plain sleep.
+fn wait(client: Option<&eclipse_ipc::Client>) {
+    let Some(c) = client else {
+        std::thread::sleep(POLL);
+        return;
+    };
+    let mut fd = libc::pollfd {
+        fd: c.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one valid pollfd on the stack, count 1; the fd outlives the call.
+    let n = unsafe { libc::poll(&mut fd, 1, POLL.as_millis() as libc::c_int) };
+    if n < 0 {
+        // EINTR or worse: do not spin.
+        std::thread::sleep(BACKPRESSURE);
     }
 }
 
@@ -1218,6 +1239,9 @@ fn compositor() -> Subscription<Message> {
                         }
                     }
                     if let Some(c) = client.as_mut() {
+                        // A workspace switch or a new window arrives as a burst
+                        // of events; the whole burst is one refetch, not one each.
+                        let mut dirty = false;
                         loop {
                             match c.poll_event() {
                                 Ok(Some(event)) => {
@@ -1246,7 +1270,9 @@ fn compositor() -> Subscription<Message> {
                                         eclipse_ipc::EventKind::Config => Message::Reconfigured,
                                         _ => Message::Refresh,
                                     };
-                                    if !send(&mut sender, message) {
+                                    if matches!(message, Message::Refresh) {
+                                        dirty = true;
+                                    } else if !send(&mut sender, message) {
                                         return;
                                     }
                                 }
@@ -1256,6 +1282,9 @@ fn compositor() -> Subscription<Message> {
                                     break;
                                 }
                             }
+                        }
+                        if dirty && !send(&mut sender, Message::Refresh) {
+                            return;
                         }
                     }
                     if let Some(status) = status.as_ref() {
@@ -1279,7 +1308,7 @@ fn compositor() -> Subscription<Message> {
                             return;
                         }
                     }
-                    std::thread::sleep(POLL);
+                    wait(client.as_ref());
                 }
             });
         })
