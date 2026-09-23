@@ -16,5 +16,6 @@ Read the root `CLAUDE.md` first. Governing spec: COMP-17 (DP-5), B6.
   never as granting everything.
 - No literal colour, radius or size: `eclipse_ui::tokens` only. `view.rs` is
   currently a stack of uniform panels with no hero block — see
-  `docs/COMPOSITION.md`; this is a known composition bug, not the house style.
+  `docs/COMPOSITION.md`; this is a known composition bug, not the house style
+  (re-checked 2026-09-23: still true).
 - Every `.rs` starts with `// SPDX-License-Identifier: AGPL-3.0-only`.

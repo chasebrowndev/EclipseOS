@@ -39,6 +39,11 @@ sudo apt-get install -y libseat-dev libinput-dev libwayland-dev \
   libdisplay-info-dev pkg-config
 ```
 
+No C library is needed for D-Bus: `eclipse-services` uses `zbus` (pure Rust,
+already in the tree via `iced_layershell`). At runtime it wants a session bus,
+and the status cells want NetworkManager, BlueZ and UPower on the system bus;
+each degrades to "unavailable" without its daemon.
+
 For a real DRM session, `seatd.service` must be running (or logind present) and
 your user must be able to open the seat.
 
@@ -53,7 +58,8 @@ cargo fmt --check
 
 ## Run
 
-During development, run nested inside your existing session (Hyprland works):
+During development, run nested inside your existing session (the dev host runs
+abyss itself; any Wayland session with a host compositor works):
 
 ```
 cargo run -- --backend winit
@@ -94,7 +100,8 @@ the user bus and to `systemd --user`, then starts `abyss-session.target`; on
 exit it stops that target again. Every one of those calls is best effort: a
 box without systemd or D-Bus still gets a compositor, just no user services.
 
-Install the three files in `dist/`:
+Install the three files in `dist/` (or use one of the scripts under
+"Development install" / "Packaging" below, which do this and more):
 
 | From | To |
 |---|---|
@@ -137,10 +144,62 @@ copies, a rebuild is live at the next login and the installer does not have to
 be run again — which is the whole point of it, and also the reason it is not
 how a distribution should ship Abyss.
 
+It also enables `hyperion`, `eclipse-toasts` and
+`eclipse-screensaver`. `dist/install.sh` is the non-symlink variant: it builds
+from a fresh clone as your user, installs real binaries into `/usr/bin` and the
+units into `/usr/lib/systemd/user`, and enables the same three units. Neither
+script installs `eclipse-secret-prompt` yet (`KNOWNBUGS.md` PKG-03).
+
+**Check for pacman-installed packages first.** A machine that ever had the
+`eclipseos-*` packages installed keeps their binaries and enabled units, and a
+source install lands *beside* them rather than replacing them — two taskbars
+was the symptom last time (2026-09-22). Before a from-source install:
+
+```
+pacman -Qq | grep '^eclipseos-'
+```
+
+If that prints anything, decide which install you want. Removing
+`eclipseos-desktop` forces `eclipseos-meta` out with it, and `-meta` owns the
+greetd config — reinstate it (or `pacman -S eclipseos-meta`) before rebooting,
+or the next boot drops to a text greeter.
+
 The installed wrapper passes `--backend drm` explicitly. `default_backend()`
 would infer it, but only from `WAYLAND_DISPLAY` and `DISPLAY` both being unset;
 a greeter that leaked either into the session environment would silently get a
 nested `winit` compositor rather than a login session.
+
+## Packaging
+
+The distribution path (D-01..D-03), all under `dist/`:
+
+- **`dist/pkg/eclipseos/PKGBUILD`** — split package, built from the pushed
+  `v$pkgver` tag (`pkgver=0.1.1`). One package per swappable component
+  (ADR 0052): `eclipseos-abyss` (abyss, eclipse-ctl, the session wrapper,
+  desktop entry and target; hard-depends on `xorg-xwayland`),
+  `-hyperion`, `-toasts`, `-center`, `-launcher`, `-desktop` (settings, policy
+  viewer, `eclipse-screensaver`), `-policyd`, and `-meta`, which depends on all
+  of them plus greetd/regreet/cage, NetworkManager, BlueZ, UPower, PipeWire
+  and foot, and ships `/etc/eclipse/{abyss,policy}.kdl`, the greetd config under
+  `/etc/eclipse/greetd` and its `greetd.service.d` drop-in.
+- **User units.** `hyperion.service`, `eclipse-toasts.service`,
+  `eclipse-screensaver.service` and `policyd.service` are all
+  `PartOf=graphical-session.target`; the three GUI-side units are
+  `After=`/`Requisite=abyss-session.target`, and `policyd` is
+  `Before=abyss-session.target` so abyss still paints without it.
+  The packages enable them image-side by shipping
+  `/usr/lib/systemd/user/abyss-session.target.wants/` symlinks (`_want` in the
+  PKGBUILD); a user-preset would never be applied for an existing account.
+  `dist/eclipseos.preset` is left over from that approach and is not installed.
+- **`dist/repo/`** — `build-repo.sh <tag>|local` builds, signs with a dedicated
+  packaging key in its own keyring, and `repo-add`s into
+  `~/.local/share/eclipseos/repo`; `serve.sh` serves it on the tailnet address
+  only (D-02).
+- **`dist/iso/`** — `sudo ./build-iso.sh` bakes the signed packages and key
+  into the archiso profile and runs `mkarchiso` (D-03). The medium carries its
+  own copy of the repo, so the resulting ISO installs anywhere.
+
+Not packaged yet: `eclipse-secret-prompt` (PKG-03).
 
 ## Logs
 
@@ -185,15 +244,18 @@ under a `timeout`, as root, with `LIBSEAT_BACKEND=seatd`). Wrapping the run in
 `timeout -s TERM 60` is worth doing on a first attempt: it bounds the damage if
 the compositor wedges while holding DRM master.
 
-Preconditions: `seatd.service` active *or* logind (libseat prefers logind, in
-which case the `seat` group is not needed — `video` and `input` are). On
+Preconditions: `seatd.service` active *or* a logind session on the seat
+(libseat prefers logind, which ACLs the DRM node to the session user — no
+`seat`, `video` or `input` group needed; D-01 §5). `openvt` produces no logind
+session, which is why the 2026-09-10 run used root and seatd. On
 NVIDIA, `nvidia-drm.modeset=1`; recent `nvidia-open-dkms` defaults it on, and
 if the host compositor is running at all, modeset is on.
 
 **Have an out-of-band recovery path before the first attempt.** A compositor
 that wedges while holding DRM master can make the VT switch back fail, leaving
 a black screen with the desktop still alive underneath. `ssh` in from another
-machine and `pkill -x abyss` recovers it without a power cycle; there is no
+machine and `kill` the test compositor's pid recovers it without a power cycle
+(not `pkill -x abyss` if the host session is itself abyss); there is no
 recovery from the keyboard once the console is wedged.
 
 ## Testing DRM in a VM

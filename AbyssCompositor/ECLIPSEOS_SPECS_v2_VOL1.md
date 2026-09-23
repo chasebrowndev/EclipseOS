@@ -64,8 +64,8 @@ priority.
 | COMP-14 | Performance targets & benchmarking | **DONE** | F-04 |
 | COMP-15 | Testing, fuzzing, client compat matrix | **DONE** | C-00 |
 | COMP-16 | Milestones & sequencing | **DONE** | C-00 |
-| COMP-17 | Desktop profiles: WM and DE interaction modes | planned (B-03) | C-00, COMP-13 |
-| COMP-18 | Annotation overlays: the untrusted compositor-drawn text pass | planned (ADR 0040/0041) | C-00, COMP-10, COMP-13 |
+| COMP-17 | Desktop profiles: WM and DE interaction modes | Draft v0.1 *(amended C-08, 2026-09-23)* | C-00, COMP-13 |
+| COMP-18 | Annotation overlays: the untrusted compositor-drawn text pass | Draft v0.2 (ADR 0040/0041) *(amended C-08, 2026-09-23)* | C-00, COMP-10, COMP-13 |
 
 ## Tier 2 — Security & Policy (`policyd`)
 
@@ -131,11 +131,11 @@ than silently restating it.* | | |
 
 | ID | Document | Status | Depends on |
 |---|---|---|---|
-| D-01 | Base package set, kernel config & patches, init/systemd layout | planned | F-01 |
-| D-02 | Package repository: build infra, signing, mirrors | planned | F-07, S-12 |
-| D-03 | ISO build (archiso) & installer | planned | D-01 |
+| D-01 | Base package set, kernel config & patches, init/systemd layout | written, `docs/design/D-01-base-system.md` *(amended C-08, 2026-09-23)* | F-01 |
+| D-02 | Package repository: build infra, signing, mirrors | written, `docs/design/D-02-package-repository.md` *(amended C-08, 2026-09-23)* | F-07, S-12 |
+| D-03 | ISO build (archiso) & installer | written, `docs/design/D-03-installation-media.md` *(amended C-08, 2026-09-23)* | D-01 |
 | D-04 | Update strategy: rolling vs snapshots, atomic updates, rollback | planned | D-02 |
-| D-05 | Default userland: bar, launcher, terminal (`cataclysm`, P-04), portal, notifications, **settings GUI** | planned; **bar pulled forward into Phase 1** (B-08) | C-00, P-04, COMP-17 |
+| D-05 | Default userland: bar, launcher, terminal (`cataclysm`, P-04), portal, notifications, **settings GUI** | planned; **bar pulled forward into Phase 1** (B-08). *(amended C-06, 2026-09-23)* Native Rust/iced (ADR 0038), one crate per swappable component (ADR 0052): bar `hyperion`, `eclipse-toasts`, `eclipse-center`, `eclipse-launcher`, `eclipse-settings`, `eclipse-policy-viewer`, `eclipse-secret-prompt` (ADR 0053) | C-00, P-04, COMP-17 |
 | D-06 | Hardware support matrix, GPU drivers, firmware | planned | F-04 |
 | D-07 | First-run experience & agent onboarding | planned | D-03 |
 | D-08 | Telemetry & crash reporting (opt-in; privacy stance) | planned | F-02 |
@@ -157,7 +157,7 @@ than silently restating it.* | | |
 
 | ID | Document | Depends on |
 |---|---|---|
-| Z-01 | Native desktop environment / shell | v1 ship |
+| Z-01 | Native desktop environment / shell *(amended C-06, 2026-09-23)* partly pulled forward by ADR 0038: the D-05 userland is native Rust) | v1 ship |
 | Z-02 | Cross-agent scene grants (agent *groups* superseded by A-04 §10 task nesting) | A-03 in use |
 | Z-03 | Multi-user & enterprise deployment | v1 ship |
 | Z-04 | Remote agents (network MCP) & fleet management | S-09 |
@@ -310,8 +310,10 @@ model that cannot be talked past.
   installer polish remains deferred, but see B-01's open decision 2.
 - Multi-user or enterprise deployment. v1 is single-user: the owner.
   **Open (B-01 decision 1):** this sits in tension with the configurability
-  commitment in §4, which implies users beyond the owner. Settle before COMP-17
-  is written — it determines how much of D-05 and D-07 is v1 scope.
+  commitment in §4, which implies users beyond the owner. ~~Settle before COMP-17
+  is written~~ Settle before COMP-17 leaves draft *(amended C-08, 2026-09-23)* —
+  COMP-17 is written, Draft v0.1, and the decision is still open. It
+  determines how much of D-05 and D-07 is v1 scope.
 - Training foundation models. We fine-tune small models at most, and only
   after we have real data.
 
@@ -957,6 +959,13 @@ Decided 2026-09-05.
 All COMP-14 performance targets are measured on this machine. A number
 without this machine attached to it is not a target.
 
+*(added C-09, 2026-09-23)* This is the **performance** reference, not the
+install target. D-03 (`docs/design/D-03-installation-media.md`) builds its
+first ISO for one Framework 13 AMD laptop. The two roles are distinct: F-04
+fixes where COMP-14 numbers are measured; D-03 fixes what the image boots on.
+Whether the Framework also becomes a performance reference (an AMD/laptop
+column in COMP-14) is left open (Appendix C).
+
 ## 2. GPU strategy: NVIDIA-first
 
 Rationale: designing against the most constrained target beats retrofitting
@@ -1150,16 +1159,30 @@ and the value is the reminder, not the barrier.
 Root file states invariants; per-crate files state local context. Root
 content:
 
+*(amended C-08, 2026-09-23)* The invariant list below is synced with the
+root `AbyssCompositor/CLAUDE.md` as it stands.
+
 ```markdown
 # Invariants (never violate; if a task seems to require it, stop and ask)
 - No ambient authority. Every operation requires a capability check.
 - Ratchet rule: classifier/defer may only tighten a decision, never grant.
-- No state mutation before `check()` returns Allow.
-- App-declared sensitivity may only raise a class, never lower it.
+- No state mutation before `check()` returns Allow. Policy is fail-closed:
+  unknown request, missing table entry, or an unavailable `policyd` = deny.
+- App-declared sensitivity may only raise a class, never lower it. Default
+  class is `private`.
 - `password`-role values are never delivered, logged, or stored.
-- Human input is never logged by content.
-- Specs in docs/ are authoritative. If code and spec disagree, that is a
-  bug in one of them — do not silently pick.
+- Human input is never logged by content (keystrokes, clipboard, IME).
+- Single-threaded core. One `calloop` loop owns `AbyssState`. No locks on
+  the hot path; blocking work goes to a pool and returns by channel.
+- Handle-based state. No `Rc<RefCell<_>>` graph — plain structs owned by
+  `AbyssState`, children referenced by `u64` handle/index.
+- Backends live behind the backend trait (`backend/`). Nothing outside it
+  may touch winit, DRM, libinput or GBM types directly.
+- Trusted UI is compositor-drawn, never a layer-shell client.
+- No allocation in the input-delivery or policy-check hot paths.
+- SPDX header on every source file: AGPL-3.0-only (system crates) or
+  Apache-2.0 (protocol crates, SDKs — F-05 §3).
+- Specs and code disagreeing is a bug in one of them — do not silently pick.
 
 # Build / test  (exactly what CI runs — .github/workflows/gate.yml)
 cargo fmt --all --check
@@ -1573,7 +1596,11 @@ implemented via Smithay's helpers or our own renderer path.
 
 ### 1.4 Crash resilience
 - Compositor state snapshot (outputs, workspaces, toplevel → workspace
-  mapping) written on change to `$XDG_RUNTIME_DIR/abyss/state`.
+  mapping) written on change to ~~`$XDG_RUNTIME_DIR/abyss/state`~~
+  `$XDG_RUNTIME_DIR/eclipse/state` *(amended C-09, 2026-09-23: matches COMP-01
+  §7 and the code's runtime namespace, `$XDG_RUNTIME_DIR/eclipse/abyss.sock`.
+  No snapshot is written yet; runtime vs state dir stays open, COMP-01 §12
+  item 2)*.
 - On restart, clients are gone (Wayland limitation), but layout is restored
   so re-launched apps land where they were.
 - Panic handler: log, dump state, attempt to switch VT so the machine is not
@@ -1748,6 +1775,13 @@ bar/launcher/notifier via layer-shell and the human IPC (§13). No native
 DE, no DE-mode IPC. The compositor should not preclude a shell process
 later — keep the human IPC surface clean and the config schema
 machine-readable — but no work is spent on it now.
+
+*(amended C-06, 2026-09-23)* Superseded in part. B-03 added a DE mode
+(COMP-17), and ADR 0038 pulled part of Z-01 forward: the default userland is
+native Rust (iced), one crate per swappable component (ADR 0052) — `hyperion`
+(bar), `eclipse-toasts`, `eclipse-center`, `eclipse-launcher`,
+`eclipse-settings`, `eclipse-policy-viewer`, `eclipse-secret-prompt`. They are
+ordinary Wayland clients of the human IPC; none is trusted UI (§10).
 
 ---
 
@@ -2071,7 +2105,9 @@ Decided 2026-09-04:
 - Policy enforced in-process from a compiled table; `defer` path only for
   explicitly marked requests, fail-closed (§11).
 - Trusted UI is compositor-drawn, never a layer-shell client (§10).
-- WM mode only; no DE (§5.5).
+- ~~WM mode only; no DE (§5.5).~~ *(amended C-06, 2026-09-23)* WM and DE
+  modes (COMP-17); the DE userland is native Rust, pulled forward by ADR 0038
+  (§5.5).
 - Hyprland-style: dwindle default, master alternative, Hyprland-class
   visuals as Phase 1 stretch (§5.1).
 - Config format: **KDL** with Hyprland-like block structure. hyprlang is
@@ -2384,9 +2420,11 @@ is testable without a GPU (F-07 §3).
 
 ## 12. Open Decisions
 
-1. Whether `abyss` should refuse to start if the config names a
+1. ~~Whether `abyss` should refuse to start if the config names a
    `render_device` that does not exist, or fall back to auto-selection with
-   a warning. Proposed: refuse — silent fallback hides typos.
+   a warning. Proposed: refuse — silent fallback hides typos.~~ **Resolved by
+   ADR 0033** *(amended C-08, 2026-09-23)*: an explicit `render-device` that does
+   not resolve refuses to start.
 2. Snapshot location: `$XDG_RUNTIME_DIR` (lost on reboot) vs
    `$XDG_STATE_HOME` (survives). Proposed: state dir for layout, runtime
    dir for volatile focus state.
@@ -2487,6 +2525,16 @@ tiled/floating toplevels in stacking order (with per-surface effects),
 top layer-shell, fullscreen override, overlay layer-shell, drag icon,
 cursor (if not on a plane), **TrustedUI last, always**.
 
+*(amended C-02, 2026-09-23)* As built (`render/`, `backend/`), bottom to top:
+background and bottom layer-shell; per toplevel in stacking order: blur
+backdrop, shadow, border, surface tree (rounded mask), dim overlay; top
+layer-shell; overlay layer-shell; input-method popup; cursor;
+**annotation pass** (COMP-18 §1.1); region selector; **TrustedUI last,
+always**. A fullscreen toplevel that owns its output is drawn above the top
+layer, not above overlay. While the session is locked the lock surfaces replace
+everything below TrustedUI. A translucent layer surface gets its blur
+backdrop directly beneath it (§9). The drag icon is not yet drawn (code owed).
+
 Trusted UI is a pass, not a client surface, and nothing can be scheduled
 after it (COMP-10, T9).
 
@@ -2583,7 +2631,11 @@ surface never contributes a pixel without `capture.secret`.
 
 ## 9. Effects (milestone 9b)
 
-All optional, all off by default until 9b, all designed for now:
+~~All optional, all off by default until 9b, all designed for now:~~
+*(amended C-01, 2026-09-23)* All optional and all built (9b is at parity).
+Defaults (`config/schema.rs`): **blur on** (`decoration.blur`, size 8, 2
+passes), **rounding 13**, border 2; shadows, dim-inactive and animations off;
+active and inactive opacity 1.0.
 
 | Effect | Implementation | Cost note |
 |---|---|---|
@@ -2593,6 +2645,16 @@ All optional, all off by default until 9b, all designed for now:
 | Dim inactive | Colour multiply in the surface pass | Negligible |
 | Blur | Dual-Kawase downsample/upsample, N passes on the region behind translucent surfaces | Expensive; expands damage by kernel radius; disables direct scanout; skipped entirely when the blurred surface is opaque |
 | Animations | Interpolated geometry driven by the frame clock | Forces repaint while running; must not extend past the animation |
+
+*(added C-01, 2026-09-23)* Blur applies only behind a translucent surface.
+A toplevel is translucent when its alpha (`active-opacity` /
+`inactive-opacity`, or an `opacity` rule) is below 1.0; a `blur` rule
+(COMP-05 §4) overrides the global switch for that window but never blurs an
+opaque one. Layer-shell surfaces get a backdrop wherever their opaque region
+leaves glass. Rounding applies to that backdrop: `decoration.rounding` by
+default; a layer anchored to three edges or to an opposite pair stays square,
+unless it holds a positive exclusive zone (the bar), which uses
+`bar.rounding`. The COMP-14 §6 shedding order is unchanged.
 
 Animations are geometry-only in v1. **They must not affect what an agent
 sees**: `scene`/`get_tree` geometry reports the *target* geometry, not the
@@ -2928,10 +2990,29 @@ libinput event → session filter (paused during VT switch)
 - Per-device config (COMP-13): accel profile and speed, natural scroll,
   tap-to-click, tap-and-drag, disable-while-typing, click method, scroll
   method, calibration.
+  *(amended C-03, 2026-09-23)* As built the settings are global, not
+  per-device: `input { accel-profile "flat"|"adaptive"; touchpad {
+  natural-scroll; tap-to-click; dwt } }`, applied to every libinput device
+  that supports them. Click method is fixed to clickfinger. **Code owed:**
+  accel speed, tap-and-drag, configurable click method, scroll method,
+  touchscreen/tablet calibration, per-device overrides.
 - **Touchpad gestures are required, not optional** (laptops are a target,
   COMP-01 §4.1): 3/4-finger swipe and pinch, delivered to
   `zwp_pointer_gestures` for clients and bindable for compositor actions
   (workspace switch, overview).
+  *(amended C-03, 2026-09-23)* Only **swipe** is bindable:
+  `gesture "swipe" 3|4 "left"|"right"|"up"|"down" { action }`; defaults are
+  3-finger left → `workspace-next`, right → `workspace-prev`. A bound finger
+  count belongs to the compositor for the whole swipe, claimed at begin; the
+  direction is decided at end past a 100 px threshold. Unbound swipes, pinch
+  and hold pass through to clients over `zwp_pointer_gestures`. Fails closed:
+  under the session lock no gesture reaches a client or runs an action; an
+  active region selector claims every swipe and drops pinch and hold.
+- *(added C-03, 2026-09-23)* Touchscreen and tablet tools map absolute
+  coordinates onto the output under the pointer, else the focused output,
+  corrected for overscan (COMP-03 §1.1). Touch is delivered as `wl_touch`,
+  tablets over `zwp_tablet_v2`. The lid switch drives COMP-01 lid handling;
+  the tablet-mode switch is logged only.
 - Keymap via xkbcommon; per-seat layout; runtime switch; layout-per-window
   optional.
 - `pointer_constraints` + `relative_pointer` for games and CAD.
@@ -3157,6 +3238,20 @@ Layout is a trait; two implementations plus floating in v1.
 - Resize by keyboard (adjust split ratio) and mouse (drag borders).
 - Fullscreen: two modes — real fullscreen (client informed) and "maximize
   to output" (client not informed), as Hyprland distinguishes.
+  *(amended C-04, 2026-09-23)* As built, maximize is the client's
+  `xdg_toplevel.set_maximized`, and the client is informed. The window
+  becomes floating and fills the output's usable area (the output minus
+  layer-shell exclusive zones), with no gap and no border, recomputed on every
+  arrange. `unset_maximized` restores its prior floating rect, or its tile.
+  One exception: a request from a tiled window that has no buffer yet (a
+  restored session state, e.g. Firefox) is ignored — it keeps its tile and is
+  configured without `Maximized`. Fullscreen takes the full output and wins
+  over maximized; leaving fullscreen returns to maximized. There is no
+  maximize or fullscreen bind action yet (code owed).
+- *(added C-04, 2026-09-23)* Default placement floats dialogs (an xdg parent,
+  an X11 transient, or a dialog/utility/toolbar/splash window type) and
+  fixed-size toplevels (min == max, both non-zero, judged once a buffer
+  exists; ADR 0053). An explicit `float` or `tile` rule overrides either.
 
 ### 3.2 Agent workspaces — untiled
 - Each toplevel gets its requested size; placed non-overlapping on a
@@ -3197,6 +3292,15 @@ Matchers: `app-id`, `title` (regex), `pid`, `cgroup`,
 `launching-principal`, `output`, `workspace`, `xwayland`.
 Actions: float/tile, size, position, workspace, output, opacity, fullscreen,
 sensitivity, app-trust, seat-compat, no-agent, no-focus-steal, idle-inhibit.
+
+*(amended C-04, 2026-09-23)* As built (`RULE_ACTIONS`, `config/schema.rs`):
+actions add **`blur true|false`**, a per-window override of
+`decoration.blur.enabled` that never blurs an opaque window (COMP-02 §9).
+`sensitivity` (raise-only: `private`, `secret`), `app-trust` (`standard`,
+`trusted`), `seat-compat` and `no-agent` are policy-owned and live in
+`policy.kdl`; the rest live in `abyss.kdl` (ADR 0037). `output` matches by
+glob. `launching-principal` is refused as a config error until COMP-08
+launch tracking exists (code owed).
 
 `no-agent` is worth calling out: it removes a window from every agent's
 scene entirely — not merely redacted, but absent from `list_toplevels`,
@@ -4701,24 +4805,38 @@ bind "SUPER" "Return"  { spawn "foot" }
 bind "SUPER" "Q"       { close-window }
 bind "SUPER" "1"       { workspace 1 }
 bind "SUPER+SHIFT" "1" { move-to-workspace 1 }
-// reserved, not rebindable to nothing:
-bind "SUPER" "Escape"  { agent-override }
+// reserved, compositor-owned, refused by the parser if bound (C-05):
+//   SUPER+Escape → agent-override    SUPER+space → agent-attention (COMP-10 §3.9)
 
 windowrule "float"              { app-id "pavucontrol" }
+
+xwayland { enable #true }       // (amended C-05: a node, not `misc.xwayland`)
+
+misc {
+    render-device "auto"           // or "pci:0000:01:00.0"
+}
+```
+
+*(amended C-05, 2026-09-23)* The example above is `abyss.kdl` only. Keys that
+widen or narrow what anything may see or do are policy-owned and live in
+`policy.kdl`; each file refuses the other's keys (ADR 0037):
+
+```kdl
+// policy.kdl
 windowrule "sensitivity secret" { app-id "org.keepassxc.KeePassXC" }
 windowrule "no-agent"           { app-id "org.signal.Signal" }
 
-agents {
-    enabled true
-    trusted-ui-phrase-set true     // the phrase itself lives in a 0600 file
-    indicator "per-output"
-    virtual-keyboard-allowlist "wtype" "squeekboard"
-}
+capture   { allow "grim" "xdg-desktop-portal-wlr"; redact-app-id "bitwarden" }
+clipboard { data-control-allow "wl-paste" }
+misc      { scripted-input #false }  // §2.2
 
-misc {
-    xwayland true
-    render-device "auto"           // or "pci:0000:01:00.0"
-}
+// Phase 2, not parsed today (an unknown node is an error):
+// agents {
+//     enabled true
+//     trusted-ui-phrase-set true     // the phrase itself lives in a 0600 file
+//     indicator "per-output"
+//     virtual-keyboard-allowlist "wtype" "squeekboard"
+// }
 ```
 
 ### 1.2 Semantics
@@ -4796,10 +4914,13 @@ comments breaks CHARTER §4's promise that files remain the source of truth and
 stay hand-editable, and would make the two mechanisms rivals rather than one
 path with two front ends.
 
-> **VERIFY.** Whether the `kdl` v2 document model can round-trip comments and
+> ~~**VERIFY.** Whether the `kdl` v2 document model can round-trip comments and
 > formatting is unverified and gates this section. If it cannot, §1.4 as
 > written cannot be built and CHARTER §4 needs a different mechanism. Run the
-> spike before relying on this.
+> spike before relying on this.~~ **Resolved by ADR 0036** *(amended C-08,
+> 2026-09-23)*: writes never re-serialize the document. `set_value` parses only to
+> find the value's byte span and splices the new literal in; every other byte
+> is copied through. A write of the value already held is byte-identical.
 
 ### 1.5 Terminal/GUI parity *(added B-09, 2026-09-10)*
 
@@ -4905,11 +5026,35 @@ grant manipulation.
 | `dump_state` | full state tree as JSON, debug |
 | `subscribe` | event stream: workspace, window, focus, output, agent-activity, config-error |
 
+*(amended C-05, 2026-09-23)* As built (`ipc/gate.rs` `TABLE`), the table
+above gains:
+
+| Method | Returns / does |
+|---|---|
+| `get_outputs` | fields: id, name, identity, virtual, enabled, powered, focused, scale, transform, mode, position, workspaces, active_workspace, overscan. Oracle-Eyes reads it (ADR 0050) |
+| `resize` | window op, per ADR 0031 |
+| `set_minimized` | window op |
+| `calibrate_output` | overscan calibration (COMP-03 §1.1) |
+| `annotation_create` / `annotation_update` / `annotation_destroy` / `annotation_clear` | untrusted overlay pass (COMP-18 §3); a Command, not Privileged |
+| `set_idle_inhibit` | idle inhibit on behalf of a D-Bus client, lapses with the connection (ADR 0051) |
+| `get_config` / `validate_config` / `set_config_value` | the §1.4 write API; which file a write may touch is decided by the file, not the method kind |
+| `unsubscribe` | ends a `subscribe` stream |
+
+`subscribe` also carries `config` and `keybind` events, and `window` carries
+`change: "title"` on a title change and `change: "resized"` on a resize.
+`get_agents`, `pause_agent`, `resume_agent`, `terminate_agent`,
+`revoke_grants` (Privileged) and `type_text`, `click_at` (§2.2) are gated but
+not implemented. **Move-to-output (ADR 0049) is not a socket method**: it is
+the bind action `move-to-output N`, against `output "<glob>" { number N }`
+in `abyss.kdl` (default: connection order).
+
 ### 2.2 Scripted input (the `wtype` replacement)
 
 `type_text` and `click_at` exist here, guarded by:
 - socket ownership (uid check on connect),
-- a config toggle `misc { scripted-input false }`, default **off**,
+- a config toggle `misc { scripted-input #false }`, default **off**,
+  *(amended C-05, 2026-09-23)* policy-owned: it lives in `policy.kdl` and is
+  refused in `abyss.kdl` (ADR 0037),
 - a trusted-UI indicator while a scripted-input session is active,
 - an audit record per call attributed to `human:script`.
 
@@ -4944,7 +5089,7 @@ unit, so a random user process cannot impersonate a daemon.
 - Assert the phrase file is never read by config parsing or dumped by
   `dump_state`.
 - IPC: assert a non-owner uid is rejected; assert `type_text` fails with
-  `scripted-input false`.
+  `scripted-input #false`.
 - Assert `get_windows` over IPC respects `no-agent` only for agents, not
   for the human (the human sees everything).
 - Fuzz the JSON-RPC parser and the KDL parser.
@@ -5398,10 +5543,10 @@ all twelve block every push by spec, so they cannot all land last.
 | # | Milestone | Owner | Exit gate | Class |
 |---|---|---|---|---|
 | 10 | `policyd` skeleton; task store; grant compilation, issue, revocation, expiry | A-04, S-01 §4 | closing a task revokes every grant naming it in one operation; a second `active`/`paused`/`draining` task per principal is rejected; counters survive a `policyd` restart; a grant whose `expires` exceeds its task's `deadline` is rejected at issue | CI |
-| 11 | Privileged socket; `agentd` skeleton; grant verification; `list_toplevels`, `get_toplevel`, `hit_test` | COMP-08 §4, A-01 | **scope leakage suite** green: a window outside `scene.list` scope never appears in listings, hit tests, events, captures or `wait_for` results; `no-agent` windows absent for every agent; a normal client on `wayland-N` cannot bind agent globals; socket mode is 0600 | CI |
+| 11 | Privileged socket; `agentd` skeleton; grant verification; `list_toplevels`, `get_toplevel`, `hit_test` | ~~COMP-08 §4~~ COMP-08 §1, §3 *(amended C-08, 2026-09-23)*, A-01 | **scope leakage suite** green: a window outside `scene.list` scope never appears in listings, hit tests, events, captures or `wait_for` results; `no-agent` windows absent for every agent; a normal client on `wayland-N` cannot bind agent globals; socket mode is 0600 | CI |
 | 12 | Audit spine: append-only journal, req-id chaining, `trace` | COMP-12 | chain reconstruction over synthetic records; no human keystroke content anywhere; capture records contain no pixels | CI |
-| 13 | Agent seats; key/pointer/text injection; focus arbitration; `agent-override` chord | COMP-04 §8, §9, COMP-13 §1.1 | **seat isolation** and **X11 posture** suites green: human events never appear on an agent seat under property-tested load; stuck agent modifiers never reach the human; agent seats hold no compositor bindings; X11 `secret` classification refused and logged; `seat_compat=lock` forced and not overridable | CI |
-| 14 | Atomic batches; `click`; `wait_for`; dedupe; generations | COMP-08 §7 | batches abort cleanly on focus loss with no partial application; dedupe replays without re-executing; `stale_generation` fires on a changed tree | CI |
+| 13 | Agent seats; key/pointer/text injection; focus arbitration; `agent-override` chord | ~~COMP-04 §8, §9~~ COMP-04 §1, §3, §6, §7, §8, COMP-08 §4 *(amended C-08, 2026-09-23)*, COMP-13 §1.1 | **seat isolation** and **X11 posture** suites green: human events never appear on an agent seat under property-tested load; stuck agent modifiers never reach the human; agent seats hold no compositor bindings; X11 `secret` classification refused and logged; `seat_compat=lock` forced and not overridable | CI |
+| 14 | Atomic batches; `click`; `wait_for`; dedupe; generations | ~~COMP-08 §7~~ COMP-04 §4, COMP-08 §2.2, §3, §4 *(amended C-08, 2026-09-23)* | batches abort cleanly on focus loss with no partial application; dedupe replays without re-executing; `stale_generation` fires on a changed tree | CI |
 | 15 | Trusted UI: prompt, emergency panel, phrase (the indicator landed early in milestone 8) | COMP-10 | **trusted UI suite** green: no client renders above it, shows the phrase, or takes the grab; agent seats cannot focus, answer or dismiss a prompt, including via an Enter synthesized to the prompt opening | CI |
 | 16 | Policy table enforcement; prompt and defer paths | COMP-11 | **enforcement suite** and the F-07 §3 golden decision suite green: no state mutation on any denied path under fault injection at each step of COMP-08 §10; defer never widens; parked prompts re-validate; unsigned and rolled-back tables rejected; ≤50 µs p99 measured by the 9f harness | CI |
 | 17 | Policy-driven sensitivity classes; classification races | S-05, COMP-11 | **classification races suite** green (S-05 §9): the raise/downgrade harness, the title-flicker attack, and an in-flight read spanning a raise. Retires the manual sensitivity flag | CI |
@@ -6613,6 +6758,10 @@ DE mode is a configuration profile over D-05 default userland, not a native
 shell. **If DE mode later grows native components, that is Z-01 arriving early
 and must be re-decided explicitly rather than allowed to drift.**
 
+*(amended C-06, 2026-09-23)* Re-decided explicitly: ADR 0038 makes the D-05
+userland native Rust and says so — it pulls part of Z-01 forward. What remains
+deferred under Z-01 is the rest of a native shell beyond the D-05 components.
+
 ## 5. Test Plan (into COMP-15)
 
 - Flip `mode`, hot-reload, confirm the session changes shape without a restart
@@ -6622,8 +6771,10 @@ and must be re-decided explicitly rather than allowed to drift.**
 
 ## 6. Open Decisions
 
-1. Whether DE mode's default userland is Quickshell configuration or native
-   crates. Proposed: Quickshell first, revisit once the shape settles.
+1. ~~Whether DE mode's default userland is Quickshell configuration or native
+   crates. Proposed: Quickshell first, revisit once the shape settles.~~
+   **Resolved by ADR 0038** *(amended C-06, 2026-09-23)*: native Rust (iced),
+   no Quickshell.
 2. Whether desktop icons are in v1 scope. They are the largest single piece of
    DE mode and the least security-relevant.
 
@@ -6819,15 +6970,20 @@ now recorded in COMP-03 §1.1 rather than left to be rediscovered.
    incoherent at the seam. Affects D-03 and D-07.
 3. **Does §7 gain a configurability gate?** Proposed in B-02: *a user can reach
    a working configuration without editing a file.* Not written.
-4. **Does Z-01 move?** Retained as post-v1 on the reading that Quickshell
-   userland is not a native shell. COMP-17 §4 says when to revisit.
+4. ~~**Does Z-01 move?** Retained as post-v1 on the reading that Quickshell
+   userland is not a native shell. COMP-17 §4 says when to revisit.~~
+   **Resolved by ADR 0038** (C-06): the userland is native Rust, so part of
+   Z-01 moved forward. The rest of Z-01 stays post-v1.
 
 ## Blocking verification
 
-**COMP-13 §1.4 rests on an unverified assumption.** If the `kdl` v2 document
+~~**COMP-13 §1.4 rests on an unverified assumption.** If the `kdl` v2 document
 model cannot round-trip comments and formatting, the write API as specified
 cannot be built and CHARTER §4 needs a different mechanism. The section carries
-a VERIFY marker. Run the spike before building against it.
+a VERIFY marker. Run the spike before building against it.~~
+**Resolved by ADR 0036** (C-08): writes byte-splice the file and never
+re-serialize the document, so round-trip fidelity does not depend on the
+document model. The VERIFY marker is struck.
 
 ## A numbering discrepancy noticed while applying this appendix
 
@@ -6840,6 +6996,57 @@ carries pre-v0.2 milestone numbers while STATUS carries post-v0.2 ones.
 silently renumbering a spec is exactly the failure the root `CLAUDE.md`
 forbids. B-07 is written against COMP-10 section numbers rather than milestone
 numbers so that it is correct either way. Someone should reconcile the two.
+
+**Resolved** (C-08, 2026-09-23): the COMP-16 table inline in this volume is
+now v0.2 — it lists **15** as trusted UI and **16** as policy-table
+enforcement, and Phase 2 carries the "Renumbered at v0.2" note. Volume and
+STATUS agree; nothing was renumbered by this appendix.
+
+---
+
+# Appendix C — amendment record, 2026-09-23
+
+**Applied inline to this volume (and, for C-07, Volume 2) on 2026-09-23.**
+Source: an owner ruling of 2026-09-23, scoped to this resync only (not a
+standing rule; F-07 §7 is unchanged) — the behaviour
+built since Appendix B was deliberate, so where this volume and the code
+disagreed, the text was changed to match the code. Every change was checked
+against source before it was written. Nothing was renumbered.
+
+| ID | Target | Change | Applied |
+|---|---|---|---|
+| C-01 | COMP-02 §9 | Effects ratified as built: blur on and rounding 13 by default; shadow, dim, animations off. Blur only behind translucent surfaces; layer-shell surfaces get blur and rounding (edge-to-edge layers square, the bar uses `bar.rounding`). COMP-14 §6 shedding order unchanged | yes |
+| C-02 | COMP-02 §4 | Layer order as built: per-window blur/shadow/border/dim, IME popup, annotation pass (COMP-18 §1.1), region selector, TrustedUI last. Drag icon recorded as not yet drawn | yes |
+| C-03 | COMP-04 §2 | Bindable gestures are 3/4-finger swipe only; a bound finger count is the compositor's; pinch and hold pass through. Touch and tablet as built. Device settings global; accel speed, tap-and-drag, click method, scroll method, calibration, per-device overrides moved to code owed | yes |
+| C-04 | COMP-05 §3.1, §4 | `blur` rule action; policy-owned actions in `policy.kdl`; `launching-principal` refused until COMP-08. Dialogs and fixed-size toplevels float by default (ADR 0053). Maximize semantics as built | yes |
+| C-05 | COMP-13 §1.1, §2.1, §2.2 | Example split into `abyss.kdl` and `policy.kdl` (ADR 0037); `agents {}` marked Phase 2; reserved SUPER+space added; `xwayland` is a node. Method table gains `annotation_*`, `set_idle_inhibit`, `set_minimized`, `calibrate_output`, config methods, `unsubscribe`; `config`/`keybind` events and the `window` title change; move-to-output recorded as a bind action (ADR 0049). `scripted-input` is policy-owned | yes |
+| C-06 | Planning index D-05, Z-01; C-00 §5.5, §17; COMP-17 §4, §6; Appendix B open decision 4 | Native Rust userland (ADR 0038), one crate per component (ADR 0052/0053): `hyperion` and the `eclipse-*` panes. COMP-17 open decision 1 and Appendix B open decision 4 resolved | yes |
+| C-07 | Vol 2 S-05 §6 | The `trusted` row names `hyperion` and the `eclipse-*` binaries | yes |
+| C-08 | COMP-01 §12; COMP-13 §1.4; F-01 §3; planning index; COMP-16 M11, M13, M14; F-07 §6; Appendix B | Struck what ADRs resolved: render-device refusal (ADR 0033), the §1.4 VERIFY (ADR 0036). F-01 §3 deadline moved to "before COMP-17 leaves draft". Index: COMP-17 Draft v0.1, COMP-18 Draft v0.2, D-01..03 written. COMP-16 citations corrected to the sections that specify each milestone. F-07 §6 invariants synced with root `CLAUDE.md`. Appendix B numbering note resolved (COMP-16 is v0.2 inline) | yes |
+| C-09 | C-00 §1.4; COMP-13 §1.1; F-04 §1 | Snapshot path uses the `eclipse/` runtime namespace (matches COMP-01 §7 and the code). Agent-attention is SUPER+space, reserved, as the parser enforces. F-04 clarified as the performance reference, distinct from the D-03 install target. Conflicts with no code to decide them are listed below | yes |
+| — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
+
+## Open decisions this appendix leaves standing
+
+1. **Agent socket name.** C-00 §1.3 and §8.1 and the COMP-08 preamble say `abyss-agent-N`;
+   COMP-01 §5 and COMP-13 §3 say `$XDG_RUNTIME_DIR/eclipse/abyss-agent.sock`. No
+   agent socket exists in code yet.
+2. **`unsupported` status.** COMP-04 §3 and COMP-08 §12 open decision 1 use
+   it; the COMP-08 §2.1 status table (0–25) has no such code. Nothing in code
+   decides it.
+3. **Where the personal phrase is stored.** COMP-10 §2 says the compositor's
+   config; COMP-13 §1.2 says a separate `$XDG_CONFIG_HOME/eclipse/phrase`,
+   mode 0600. No phrase code exists.
+4. **Snapshot directory.** C-00 §1.4 now agrees with COMP-01 §7 on the path,
+   but runtime dir vs state dir (COMP-01 §12 item 2) is still open. No
+   snapshot is written today; output layout already persists to
+   `$XDG_STATE_HOME/eclipse/outputs.kdl`.
+5. **What agent-attention opens.** COMP-10 §3.9 says the policy editor; code
+   comments call it the pending-decision queue and cite a COMP-10 §3.10 that
+   does not exist. The chord is reserved; neither target is built.
+6. **Framework 13 as a performance reference.** F-04 and D-03 are
+   reconciled as different roles (C-09), but whether COMP-14 gains an
+   AMD/laptop measurement column is not decided.
 
 ---
 

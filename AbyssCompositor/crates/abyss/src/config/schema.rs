@@ -295,7 +295,7 @@ pub const TABLE: &[Key] = &[
     ),
     k(
         "bar.fold-curve",
-        Ty::Enum(&["linear", "ease-in", "ease-out", "ease-in-out"]),
+        Ty::Enum(ANIMATION_CURVES),
         Str("ease-out"),
         Abyss,
         Live,
@@ -346,7 +346,10 @@ pub const TABLE: &[Key] = &[
         Int(13),
         Abyss,
         Live,
-        "Corner radius in logical px; 0 disables.",
+        "Corner radius in logical px; 0 disables. Also rounds the blur backdrop \
+       behind a layer-shell surface, except one that spans an output edge to \
+       edge (three anchors, or two opposite ones, with no positive exclusive \
+       zone), which stays square; the taskbar uses `bar.rounding`.",
     ),
     k(
         "decoration.active-opacity",
@@ -378,7 +381,8 @@ pub const TABLE: &[Key] = &[
         Bool(true),
         Abyss,
         Live,
-        "Dual-Kawase blur behind translucent windows.",
+        "Dual-Kawase blur behind translucent windows and layer-shell surfaces. \
+       A layer blurs only where its opaque region leaves it uncovered.",
     ),
     k(
         "decoration.blur.size",
@@ -621,11 +625,11 @@ pub struct Collection {
 }
 
 pub const COLLECTIONS: &[Collection] = &[
-    Collection { node: "bind", owner: Abyss, doc: "A key binding." },
+    Collection { node: "bind", owner: Abyss, doc: "A key binding: `bind [\"<modifiers>\"] \"<keysym>\" { <action>; }`, e.g. `bind \"SUPER SHIFT\" \"Return\" { spawn \"foot\"; }`. `Super+Escape` and `Super+space` are reserved and cannot be bound." },
     Collection { node: "gesture", owner: Abyss, doc: "A touchpad swipe binding: `gesture \"swipe\" <fingers> \"<direction>\" { <action>; }`. `fingers` is 3 or 4, `direction` is `left`, `right`, `up` or `down`, and the action is anything `bind` accepts. A bound finger count is the compositor's for the whole swipe; unbound swipes, pinches and holds reach the app. Defaults: 3-finger `left` runs `workspace-next`, 3-finger `right` runs `workspace-prev`. A `gesture` for the same fingers and direction replaces the default." },
-    Collection { node: "output", owner: Abyss, doc: "Per-output mode, position, scale, overscan." },
+    Collection { node: "output", owner: Abyss, doc: "Per-output settings: `output \"<glob>\" { … }`. The glob (`*` only) matches the connector name or the persistent identity; later blocks override earlier ones key by key." },
     Collection { node: "workspace", owner: Abyss, doc: "Per-workspace layout override." },
-    Collection { node: "windowrule", owner: Abyss, doc: "A rule matched against windows at map time. Its *action* decides the owning file — see RULE_ACTIONS." },
+    Collection { node: "windowrule", owner: Abyss, doc: "A rule matched against windows at map time. Its *action* decides the owning file." },
 ];
 
 /// `windowrule` is the one construct whose criticality is mixed: `float` is
@@ -655,6 +659,379 @@ pub const RULE_ACTIONS: &[(&str, Owner)] = &[
 pub fn rule_owner(action: &str) -> Option<Owner> {
     RULE_ACTIONS.iter().find(|(a, _)| *a == action).map(|(_, o)| *o)
 }
+
+/// One sub-node or argument form a construct accepts. `names[0]` is canonical,
+/// the rest are aliases; `args` is the argument syntax as a human writes it;
+/// every entry in `examples` is fed through `Config::apply` by the tests below,
+/// so the syntax `docs/CONFIG.md` shows is syntax the parser takes.
+///
+/// The parser looks a name up here before dispatching on it, so a form it
+/// handles but this list omits is refused rather than silently undocumented.
+#[derive(Debug, Clone, Copy)]
+pub struct Form {
+    pub names: &'static [&'static str],
+    pub args: &'static str,
+    pub examples: &'static [&'static str],
+    pub doc: &'static str,
+}
+
+const fn form(
+    names: &'static [&'static str],
+    args: &'static str,
+    examples: &'static [&'static str],
+    doc: &'static str,
+) -> Form {
+    Form {
+        names,
+        args,
+        examples,
+        doc,
+    }
+}
+
+/// The form in `forms` answering to `name`, alias or not.
+pub fn find(forms: &'static [Form], name: &str) -> Option<&'static Form> {
+    forms.iter().find(|f| f.names.contains(&name))
+}
+
+/// Easing curves, shared by `animations` and `bar.fold-curve`.
+pub const ANIMATION_CURVES: &[&str] = &["linear", "ease-in", "ease-out", "ease-in-out"];
+pub const ANIMATION_DEFAULT_CURVE: &str = "ease-out";
+pub const ANIMATION_DEFAULT_MS: u32 = 150;
+/// A longer `duration` is refused, not clamped.
+pub const ANIMATION_MAX_MS: u32 = 10_000;
+
+/// `animations { animation "<name>" duration=… curve=… }` (COMP-02 §9). Each
+/// animation is off until named; an unknown name drops its node.
+pub const ANIMATIONS: &[Form] = &[
+    form(
+        &["windows"],
+        "",
+        &[r#"animation "windows" duration="150ms" curve="ease-out""#],
+        "A tiled or floating window sliding to its new position.",
+    ),
+    form(
+        &["workspaces"],
+        "",
+        &[r#"animation "workspaces" duration=200"#],
+        "The arriving workspace's windows sliding in from the side the switch came from.",
+    ),
+    form(
+        &["fade"],
+        "",
+        &[r#"animation "fade" duration="1s" curve="linear""#],
+        "A newly mapped window fading in from zero alpha.",
+    ),
+    form(
+        &["border"],
+        "",
+        &[r#"animation "border" curve="ease-in-out""#],
+        "A border crossfading between its active and inactive colour when focus changes.",
+    ),
+];
+
+/// `windowrule` matchers (COMP-05 §4). All given matchers must match; a rule
+/// with none is refused, since it would hit every window.
+pub const RULE_MATCHERS: &[Form] = &[
+    form(
+        &["app-id"],
+        "\"<regex>\"",
+        &[r#"app-id "pavucontrol|org.gnome.Calculator""#],
+        "Regex against the xdg-shell app id.",
+    ),
+    form(
+        &["title"],
+        "\"<regex>\"",
+        &[r#"title "^Picture-in-Picture$""#],
+        "Regex against the window title.",
+    ),
+    form(
+        &["pid"],
+        "<int>",
+        &["pid 4242"],
+        "The client's process id, positive.",
+    ),
+    form(
+        &["xwayland"],
+        "[<bool>]",
+        &["xwayland", "xwayland #false"],
+        "Whether the window is an X11 client. Bare means `#true`.",
+    ),
+    form(
+        &["output"],
+        "\"<glob>\"",
+        &[r#"output "DP-*""#],
+        "Glob (`*` only) against the connector or persistent identity of the output the window is on.",
+    ),
+    form(
+        &["cgroup"],
+        "\"<regex>\"",
+        &[r#"cgroup "app-firefox""#],
+        "Regex against the client's cgroup path from `/proc/<pid>/cgroup`.",
+    ),
+    form(
+        &["workspace"],
+        "<1..10>",
+        &["workspace 3"],
+        "The active workspace number of the window's output.",
+    ),
+];
+
+/// Matchers COMP-05 §4 names that this build refuses, with the reason. The
+/// whole rule is dropped, so it never applies to more windows than written.
+pub const REFUSED_MATCHERS: &[(&str, &str)] = &[(
+    "launching-principal",
+    "needs COMP-08 launch tracking, which does not exist yet",
+)];
+
+/// Argument syntax of every [`RULE_ACTIONS`] entry. The action and its argument
+/// are one string: `windowrule "size 800x600" { … }`.
+pub const RULE_ACTION_FORMS: &[Form] = &[
+    form(&["float"], "", &["float"], "Map floating."),
+    form(
+        &["tile"],
+        "",
+        &["tile"],
+        "Map tiled, overriding the default float of a dialog or fixed-size window.",
+    ),
+    form(
+        &["fullscreen"],
+        "",
+        &["fullscreen"],
+        "Map fullscreen, after every other placement rule.",
+    ),
+    form(
+        &["size"],
+        "<W>x<H>",
+        &["size 800x600"],
+        "Floating size in logical px. Implies `float`.",
+    ),
+    form(
+        &["position"],
+        "<X>,<Y>",
+        &["position 100,-40"],
+        "Floating position in logical px. Implies `float`.",
+    ),
+    form(
+        &["output"],
+        "<glob>",
+        &["output HDMI-A-1"],
+        "Map on the output whose connector or identity matches.",
+    ),
+    form(
+        &["opacity"],
+        "<0.0..1.0>",
+        &["opacity 0.85"],
+        "Alpha for this window, replacing `decoration.active-opacity`/`inactive-opacity`.",
+    ),
+    form(
+        &["blur"],
+        "true | false",
+        &["blur true", "blur false"],
+        "Force blur on or off, overriding `decoration.blur.enabled`. An opaque window never blurs.",
+    ),
+    form(
+        &["workspace"],
+        "<1..10>",
+        &["workspace 2"],
+        "Map on this workspace.",
+    ),
+    form(
+        &["no-focus-steal"],
+        "",
+        &["no-focus-steal"],
+        "Do not take keyboard focus on map.",
+    ),
+    form(
+        &["idle-inhibit"],
+        "",
+        &["idle-inhibit"],
+        "Hold the idle timers off while the window is mapped.",
+    ),
+    form(
+        &["sensitivity"],
+        "secret | private",
+        &["sensitivity secret", "sensitivity private"],
+        "Raise the capture sensitivity class. Raise-only: `public` is refused.",
+    ),
+    form(
+        &["app-trust"],
+        "standard | trusted",
+        &["app-trust standard", "app-trust trusted"],
+        "Trust level (COMP-07 §2). Clamped to `standard` for X11 windows.",
+    ),
+    form(
+        &["seat-compat"],
+        "lock | multi",
+        &["seat-compat lock", "seat-compat multi"],
+        "Seat concurrency (COMP-07 §6). Clamped to `lock` for X11 windows.",
+    ),
+    form(&["no-agent"], "", &["no-agent"], "Hide the window from agents."),
+];
+
+/// Values `output … { lid-close … }` takes.
+pub const LID_CLOSE: &[&str] = &["off", "suspend", "ignore"];
+/// Values `output … { transform … }` takes; `0` is an alias of `normal`.
+pub const OUTPUT_TRANSFORMS: &[&str] = &[
+    "normal",
+    "90",
+    "180",
+    "270",
+    "flipped",
+    "flipped-90",
+    "flipped-180",
+    "flipped-270",
+];
+
+/// Sub-keys of `output "<glob>" { … }` (COMP-03). The glob matches the
+/// connector or the persistent identity; later blocks override earlier ones
+/// key by key.
+pub const OUTPUT_KEYS: &[Form] = &[
+    form(&["mode"], "\"<W>x<H>[@<refresh>]\"", &[r#"mode "1920x1080@60""#, r#"mode "2560x1440""#], "Mode to set. Refresh in Hz or mHz."),
+    form(&["position"], "<x> <y>", &["position 1920 0"], "Top-left corner in the global layout, logical px."),
+    form(&["scale"], "<float>", &["scale 1.5", "scale 2"], "Scale factor, positive."),
+    form(&["transform"], "\"<transform>\"", &[r#"transform "90""#, r#"transform "flipped-270""#], "Rotation and flip."),
+    form(&["overscan"], "<px> | top= bottom= left= right=", &["overscan 30", "overscan top=20 left=40"], "Per-edge inset in physical px for a panel that crops the signal. Bare applies to all four edges. Wins over saved calibration."),
+    form(&["enabled", "disabled"], "[<bool>]", &["enabled", "disabled", "enabled #false"], "Turn the output on or off. Bare `disabled` is off."),
+    form(&["lid-close"], "\"<lid-close>\"", &[r#"lid-close "suspend""#, r#"lid-close "ignore""#, r#"lid-close "off""#], "On an internal panel: `off` turns the panel off (never the last output), `suspend` runs `systemctl suspend`, `ignore` does nothing."),
+    form(&["vrr", "adaptive-sync"], "[<bool>]", &["vrr", "adaptive-sync #false"], "Variable refresh rate. Bare means `#true`."),
+    form(&["number"], "<1..255>", &["number 2"], "Display number used by `move-to-output` (ADR 0049). Defaults to connection order."),
+];
+
+/// Actions a `bind` or `gesture` block accepts (COMP-13 §3).
+pub const BIND_ACTIONS: &[Form] = &[
+    form(
+        &["spawn", "exec"],
+        "<command>",
+        &[r#"spawn "foot""#],
+        "Run a command.",
+    ),
+    form(
+        &["close-window", "killactive"],
+        "",
+        &["close-window"],
+        "Ask the focused window to close.",
+    ),
+    form(
+        &["toggle-floating"],
+        "",
+        &["toggle-floating"],
+        "Float or tile the focused window.",
+    ),
+    form(&["minimize"], "", &["minimize"], "Send the focused window away."),
+    form(
+        &["unminimize", "restore"],
+        "",
+        &["unminimize"],
+        "Bring back the last window sent away on the active workspace.",
+    ),
+    form(
+        &["toggle-layout"],
+        "",
+        &["toggle-layout"],
+        "Switch the workspace between dwindle and master.",
+    ),
+    form(
+        &["focus-left"],
+        "",
+        &["focus-left"],
+        "Focus the neighbour to the left.",
+    ),
+    form(
+        &["focus-right"],
+        "",
+        &["focus-right"],
+        "Focus the neighbour to the right.",
+    ),
+    form(&["focus-up"], "", &["focus-up"], "Focus the neighbour above."),
+    form(&["focus-down"], "", &["focus-down"], "Focus the neighbour below."),
+    form(
+        &["move-left"],
+        "",
+        &["move-left"],
+        "Swap with the neighbour to the left (nudges a floating window).",
+    ),
+    form(
+        &["move-right"],
+        "",
+        &["move-right"],
+        "Swap with the neighbour to the right.",
+    ),
+    form(&["move-up"], "", &["move-up"], "Swap with the neighbour above."),
+    form(
+        &["move-down"],
+        "",
+        &["move-down"],
+        "Swap with the neighbour below.",
+    ),
+    form(
+        &["workspace"],
+        "<1..10>",
+        &["workspace 3"],
+        "Switch to a workspace.",
+    ),
+    form(
+        &["workspace-next"],
+        "",
+        &["workspace-next"],
+        "The workspace after the active one on the focused output.",
+    ),
+    form(
+        &["workspace-prev"],
+        "",
+        &["workspace-prev"],
+        "The workspace before the active one on the focused output.",
+    ),
+    form(
+        &["move-to-workspace"],
+        "<1..10>",
+        &["move-to-workspace 3"],
+        "Send the focused window to a workspace.",
+    ),
+    form(
+        &["move-to-output"],
+        "<1..255>",
+        &["move-to-output 2"],
+        "Send the focused window to display `number`'s active workspace.",
+    ),
+    form(
+        &["agent-override"],
+        "",
+        &["agent-override"],
+        "The reserved override chord (COMP-13 §1.1). Nothing to revoke until agent seats exist.",
+    ),
+    form(
+        &["agent-attention"],
+        "",
+        &["agent-attention"],
+        "The pending-decision-queue chord (COMP-10 §3.10). The queue arrives with the trusted UI.",
+    ),
+    form(
+        &["annotation-select"],
+        "",
+        &["annotation-select"],
+        "Start a region selection (COMP-18 §1.3).",
+    ),
+    form(
+        &["annotation-dismiss"],
+        "",
+        &["annotation-dismiss"],
+        "Forwarded to the annotation addon on the `keybind` event stream.",
+    ),
+    form(
+        &["annotation-expand"],
+        "",
+        &["annotation-expand"],
+        "Forwarded to the annotation addon.",
+    ),
+    form(
+        &["annotation-auto-toggle"],
+        "",
+        &["annotation-auto-toggle"],
+        "Forwarded to the annotation addon.",
+    ),
+    form(&["quit", "exit"], "", &["quit"], "Exit the compositor."),
+];
 
 /// Read a key back out of a live `Config`. `None` means the path is not in the
 /// schema at all; `Some(Value::Null)` means it is a key that is currently unset.
@@ -898,6 +1275,116 @@ mod tests {
         }
         for (a, _) in RULE_ACTIONS {
             assert!(seen.insert(a), "rule action collides with a key path: {a}");
+        }
+    }
+
+    fn accepts(text: &str) -> Config {
+        let doc: KdlDocument = text.parse().unwrap_or_else(|e| panic!("{text}: {e}"));
+        let mut cfg = Config::default();
+        let mut binds = Vec::new();
+        cfg.apply(&doc, &mut binds);
+        assert!(cfg.errors.is_empty(), "parser rejected {text}: {:#?}", cfg.errors);
+        cfg
+    }
+
+    /// Every documented form is one the parser takes: each example, wrapped in
+    /// its construct, parses with no error and produces what it should.
+    #[test]
+    fn every_documented_form_parses() {
+        for f in ANIMATIONS {
+            for ex in f.examples {
+                let cfg = accepts(&format!("animations {{ enabled #true; {ex}; }}"));
+                assert!(cfg.animations.get(f.names[0]).is_some(), "{ex}");
+            }
+        }
+        for f in RULE_MATCHERS {
+            for ex in f.examples {
+                assert!(ex.starts_with(f.names[0]), "{ex}");
+                let cfg = accepts(&format!("windowrule \"float\" {{ {ex}; }}"));
+                assert_eq!(cfg.window_rules.len(), 1, "{ex}");
+            }
+        }
+        for f in RULE_ACTION_FORMS {
+            for ex in f.examples {
+                assert!(ex.starts_with(f.names[0]), "{ex}");
+                let cfg = accepts(&format!("windowrule \"{ex}\" {{ app-id \"a\"; }}"));
+                assert_eq!(cfg.window_rules.len(), 1, "{ex}");
+            }
+        }
+        for f in OUTPUT_KEYS {
+            for ex in f.examples {
+                assert!(f.names.iter().any(|n| ex.starts_with(n)), "{ex}");
+                let cfg = accepts(&format!("output \"DP-1\" {{ {ex}; }}"));
+                assert_eq!(cfg.outputs.len(), 1, "{ex}");
+            }
+        }
+        for t in OUTPUT_TRANSFORMS {
+            accepts(&format!("output \"DP-1\" {{ transform \"{t}\"; }}"));
+        }
+        for v in LID_CLOSE {
+            accepts(&format!("output \"DP-1\" {{ lid-close \"{v}\"; }}"));
+        }
+        for f in BIND_ACTIONS {
+            let arg = f.examples[0]
+                .strip_prefix(f.names[0])
+                .expect("example starts with its name");
+            for name in f.names {
+                let text = format!("bind \"SUPER\" \"F9\" {{ {name}{arg}; }}");
+                let doc: KdlDocument = text.parse().unwrap();
+                let mut cfg = Config::default();
+                let mut binds = Vec::new();
+                cfg.apply(&doc, &mut binds);
+                assert!(cfg.errors.is_empty(), "{text}: {:#?}", cfg.errors);
+                assert!(
+                    binds
+                        .iter()
+                        .any(|b| b.key == smithay::input::keyboard::Keysym::F9),
+                    "{text}"
+                );
+            }
+        }
+    }
+
+    /// Every transform the output layer can name is documented.
+    #[test]
+    fn output_transforms_are_complete() {
+        use smithay::utils::Transform;
+        for t in [
+            Transform::Normal,
+            Transform::_90,
+            Transform::_180,
+            Transform::_270,
+            Transform::Flipped,
+            Transform::Flipped90,
+            Transform::Flipped180,
+            Transform::Flipped270,
+        ] {
+            assert!(OUTPUT_TRANSFORMS.contains(&crate::outputs::transform_name(t)));
+        }
+    }
+
+    /// Every rule action has exactly one syntax entry, in the same order.
+    #[test]
+    fn rule_action_forms_cover_rule_actions() {
+        let forms: Vec<_> = RULE_ACTION_FORMS.iter().map(|f| f.names[0]).collect();
+        let actions: Vec<_> = RULE_ACTIONS.iter().map(|(a, _)| *a).collect();
+        assert_eq!(forms, actions);
+    }
+
+    /// A refused matcher is refused, and says why.
+    #[test]
+    fn refused_matchers_drop_their_rule_with_the_reason() {
+        for (m, why) in REFUSED_MATCHERS {
+            assert!(find(RULE_MATCHERS, m).is_none());
+            let doc: KdlDocument = format!("windowrule \"float\" {{ {m} \"x\"; }}").parse().unwrap();
+            let mut cfg = Config::default();
+            cfg.apply(&doc, &mut Vec::new());
+            assert!(cfg.window_rules.is_empty());
+            assert!(
+                cfg.errors.iter().any(|e| e.message.contains(why)),
+                "{:#?}",
+                cfg.errors
+            );
         }
     }
 

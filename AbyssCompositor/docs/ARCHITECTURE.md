@@ -6,8 +6,8 @@ Smithay `=0.7.0` used as a library, not a fork of an existing compositor
 (ADR 0002).
 
 Authoritative specs: `C-00 COMPOSITOR` and `COMP-01`..`COMP-16` in the spec
-bundle. Where this document and a spec disagree, the spec wins and this
-document is the bug.
+bundle. Once code exists, `docs/` and the code are the source of truth
+(F-07 §7); where they and a spec disagree, amend the spec (Appendix B, C).
 
 ## Workspace layout (F-07 §1)
 
@@ -27,7 +27,9 @@ crates/
   eclipse-launcher/   application launcher, layer-shell (DP-5)
   eclipse-settings/   settings panes; every write via set_config_value (COMP-17 §3)
   eclipse-policy-viewer/  read-only policy.kdl inspector, deliberately powerless
-  eclipse-services/   freedesktop notification server (ADR 0038), lib only
+  eclipse-secret-prompt/  one-shot wifi passphrase / Bluetooth PIN prompt (ADR 0053)
+  eclipse-services/   D-Bus services: notifications, tray, status, session (ADR 0038);
+                      lib plus the eclipse-screensaver bin (ADR 0051)
   wlcs-abyss/         wlcs conformance cdylib, drives the headless backend
   policyd/            policy + audit daemon            [TCB]
   policy-eval/        shared evaluator, linked by both [TCB]
@@ -39,15 +41,19 @@ crates/
                       lives in policyd/src/audit.rs (ADR 0046)  (not yet)
   sandbox/            grant → bwrap/Landlock/seccomp compiler  (not yet)
   sdk-rust/ sdk-python/  agent SDKs (Apache-2.0)               (not yet)
-tests/{golden,wlcs,compat,redteam}/
-fuzz/                 cargo-fuzz targets
-bench/                COMP-14 benchmarks
+tests/{golden,wlcs,compat,redteam}/                            (not yet)
+fuzz/                 cargo-fuzz targets                       (not yet)
+bench/                COMP-14 benchmarks: the M9f frame-time harness
+ci/                   wlcs skip list, GUI-coverage exceptions
+dist/                 session scripts, user units, PKGBUILD, repo, ISO
 ```
 
-The eleven crates above without a `(not yet)` marker exist today; everything
-marked `(not yet)` is Phase 2 or later (see `docs/STATUS.md`). All eleven are
-`AGPL-3.0-only` via `license.workspace = true` — the Apache-2.0 half of the
-F-05 §3 split has no code yet. None of the six DE crates is TCB. TCB crates
+The fifteen crates above without a `(not yet)` marker exist today (plus
+`bench/`, the sixteenth workspace member); everything marked `(not yet)` is
+Phase 2 or later (see `docs/STATUS.md`). All of them are `AGPL-3.0-only` via
+`license.workspace = true` — the Apache-2.0 half of the F-05 §3 split has no
+code yet. None of the DE crates (`eclipse-ui` through `eclipse-services`) is
+TCB. TCB crates
 get a line-by-line owner review on every change (F-07 §4).
 
 The DE crates are members of this one workspace, not a separate tree; an
@@ -76,19 +82,19 @@ SPDX header naming which.
 | Module | Spec | Responsibility |
 |---|---|---|
 | `backend/` | COMP-01 | Session, devices, presentation, behind one trait. `winit.rs` for nested dev; `drm.rs` (DRM/udev/libinput) for real sessions;
-`headless.rs` (COMP-01 §10) for wlcs and tests, with no display or input hardware at all. Nothing outside this module names a backend type. |
-| `render/` | COMP-02 | Damage tracking, composition, direct scanout, explicit sync, fractional scaling, capture redaction, effects. |
-| `outputs/` | COMP-03 | Output discovery and hotplug, layout, persistence, virtual outputs for agent workspaces, DPMS/power. |
-| `input/` | COMP-04 | Seats (one human, one per agent), libinput plumbing, xkb, focus arbitration, agent injection, atomic batches, the reserved override chord, keybindings. |
-| `shell/` | COMP-05 | Window management: dwindle/master layouts, workspaces, window rules, app identity, launch and cgroup principal mapping. |
+`headless.rs` (COMP-01 §10) for wlcs and tests, with no display or input hardware at all; `gpu.rs` ranks DRM devices deterministically (COMP-01 §4). Nothing outside this module names a backend type — except `input::configure_device`, which takes a libinput `Device` (drm feature only) and is called from `drm.rs`. |
+| `render/` | COMP-02 | Damage tracking, composition, direct scanout, explicit sync, fractional scaling, capture redaction, blur and effects, FB damage-clip sanitising (`sanitize.rs`), COMP-18 annotations and the region selector. |
+| `outputs/` | COMP-03 | Output discovery and hotplug, layout, EDID, overscan calibration, persistence, DPMS/power. Virtual outputs for agent workspaces are not yet (M24). |
+| `input/` | COMP-04 | The human seat: xkb, keybindings, pointer, touch, tablet, touchpad swipe gestures, move/resize grabs, idle, and synthetic injection (`inject.rs`, used by wlcs and IPC). The override and attention chords parse and dispatch but are stubs until agent seats exist (M11); agent seats and atomic batches are not yet. |
+| `shell/` | COMP-05 | Window management: dwindle/master layouts, workspaces, window rules (matching on app id, title, cgroup), focus. |
 | `protocols/standard/` | COMP-06 | `wl_compositor`, `wl_shm`, `xdg_shell`, seat, selection/clipboard, layer-shell, dmabuf, session lock, idle, and the rest of the support matrix. |
-| `protocols/agent/` | COMP-08 | `eclipse_agent_v1` server side, on the privileged socket only. Every request crosses `policy::check()` first. |
-| `protocols/semantic/` | COMP-09 | `eclipse_semantic_v1` server side: semantic tree publication and change notification. |
-| `trusted_ui/` | COMP-10 | Compositor-drawn consent prompts, agent-activity indicator, emergency panel. Never a client (ADR 0009). |
-| `policy/` | COMP-11 | The compiled enforcement table and `check()`. Fail-closed; no state mutation before `Allow`; `defer` may only tighten. |
-| `audit/` | COMP-12 | Audit and provenance event emission. Never records human input by content. |
-| `ipc/` | COMP-13 | Human JSON-RPC socket — the bar, the launcher, `eclipse-ctl`. Unprivileged, human-principal only. |
-| `config/` | COMP-13 | KDL parse, validate, hot-reload (ADR 0016). A bad config never takes down a live session. |
+| `protocols/agent/` (not yet) | COMP-08 | `eclipse_agent_v1` server side, on the privileged socket only. Every request crosses `policy::check()` first. |
+| `protocols/semantic/` (not yet) | COMP-09 | `eclipse_semantic_v1` server side: semantic tree publication and change notification. |
+| `trusted_ui/` (not yet) | COMP-10 | Compositor-drawn consent prompts, agent-activity indicator, emergency panel. Never a client (ADR 0009). |
+| `policy/` (not yet) | COMP-11 | The compiled enforcement table and `check()`; today a stub in `state.rs`. Fail-closed; no state mutation before `Allow`; `defer` may only tighten. |
+| `audit/` (not yet) | COMP-12 | Audit and provenance event emission. Never records human input by content. |
+| `ipc/` | COMP-13 | Human JSON-RPC socket and its gate table — the taskbar, the launcher, settings, `eclipse-ctl`. Unprivileged, human-principal only. |
+| `config/` | COMP-13 | KDL parse, validate, hot-reload (ADR 0016), in-place edit for `set_config_value`. A bad config never takes down a live session. |
 | `xwayland/` | COMP-07 | X11 client support, window identity mapping, scaling. |
 | `state.rs` | COMP-01 | `AbyssState` itself: the single owner of everything above. |
 

@@ -8,7 +8,7 @@ Owner wants Ctrl+Super+[N] to move the focused window to display N's currently
 active workspace. Neither COMP-03 nor COMP-05 defines a numbering scheme for
 outputs (confirmed via spec-oracle) — ADR 0023 only covers *identity*
 (EDID/connector, for layout persistence across reboots), not a small stable
-integer for human-facing keybinds. COMP-05 §5.1 already lists "set output" as
+integer for human-facing keybinds. C-00 §5.3 (and COMP-05 §7) already lists "set output" as
 a spec'd per-window operation; composing it with the target output's current
 active workspace into one action is new ground.
 
@@ -36,7 +36,7 @@ identity-collision case entirely since numbering is positional/config-driven,
 not identity-derived.
 
 The new action (`Action::MoveToOutputWorkspace(u8)` or similar) composes the
-already-spec'd "set output" primitive (COMP-05 §5.1) with a read of the
+already-spec'd "set output" primitive (C-00 §5.3, COMP-05 §7) with a read of the
 target `OutputEntry`'s own `active` workspace index to land on its current
 workspace, rather than introducing a new persisted-focus concept.
 
