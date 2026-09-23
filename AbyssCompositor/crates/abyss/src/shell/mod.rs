@@ -813,6 +813,19 @@ struct ToplevelMap {
     had_buffer: bool,
     /// Unmapped by a null-buffer commit; the next commit re-runs placement.
     unmapped: bool,
+    /// Where the window floated when it unmapped, handed to the remap.
+    placement: Option<Remembered>,
+}
+
+/// A floating window's placement at the moment it unmapped: the output and
+/// workspace it sat on and its stored (outer) rectangle. A remap puts it back
+/// exactly there rather than placing it as a new window; a tiled window keeps
+/// no memory and simply re-tiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Remembered {
+    output: u64,
+    workspace: usize,
+    rect: Rectangle<i32, Logical>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -820,18 +833,21 @@ enum MapTransition {
     /// The toplevel had a buffer and just committed without one.
     Unmapped,
     /// First commit after an unmap: the client restarts the initial
-    /// commit/configure sequence, so the window is placed again.
-    Remap,
+    /// commit/configure sequence, so the window is placed again — where it
+    /// was, if it floated.
+    Remap(Option<Remembered>),
 }
 
 impl ToplevelMap {
     fn step(&mut self, buffer: bool) -> Option<MapTransition> {
         if self.unmapped {
+            let placement = self.placement.take();
             *self = Self {
                 had_buffer: buffer,
                 unmapped: false,
+                placement: None,
             };
-            return Some(MapTransition::Remap);
+            return Some(MapTransition::Remap(placement));
         }
         if buffer {
             self.had_buffer = true;
@@ -840,6 +856,7 @@ impl ToplevelMap {
             *self = Self {
                 had_buffer: false,
                 unmapped: true,
+                placement: None,
             };
             Some(MapTransition::Unmapped)
         } else {
@@ -883,7 +900,8 @@ fn toplevel_transition(surface: &WlSurface) -> Option<MapTransition> {
 
 /// xdg-shell: attaching a null buffer unmaps the toplevel. Release its tile
 /// (the sibling takes the space) and drop the `Window`; the client may remap
-/// it later, which `remap_toplevel` treats as a new window.
+/// it later. A floating window's placement is remembered on the surface so
+/// `remap_toplevel` can put it back; a tiled one re-tiles.
 fn unmap_toplevel(state: &mut AbyssState, surface: &WlSurface) {
     let window = window_for_surface(state, surface).or_else(|| {
         // Rare path: on a hidden workspace or minimized, so not in `space`.
@@ -899,12 +917,42 @@ fn unmap_toplevel(state: &mut AbyssState, surface: &WlSurface) {
         // lags one commit behind; the remap must not wait on it.
         t.reset_initial_configure_sent();
     }
+    let placement = floating_placement(state, &window);
+    with_states(surface, |states| {
+        if let Some(cell) = states.data_map.get::<Cell<ToplevelMap>>() {
+            let mut m = cell.get();
+            m.placement = placement;
+            cell.set(m);
+        }
+    });
     unmap_window(state, &window);
 }
 
-/// The first commit after an unmap: place the toplevel as a new window and
-/// send it the fresh initial configure the protocol requires.
-fn remap_toplevel(state: &mut AbyssState, surface: &WlSurface) {
+/// Where `window` floats, if it does. A maximized or fullscreen window's
+/// rectangle is derived from its output on every arrange, not placed, so it
+/// has nothing to remember.
+fn floating_placement(state: &AbyssState, window: &Window) -> Option<Remembered> {
+    if state.maximized.contains_key(window) || state.fullscreen.contains_key(window) {
+        return None;
+    }
+    state.outputs.iter().find_map(|entry| {
+        entry.workspaces.iter().enumerate().find_map(|(workspace, ws)| {
+            ws.floating
+                .iter()
+                .find(|f| &f.window == window)
+                .map(|f| Remembered {
+                    output: entry.id,
+                    workspace,
+                    rect: f.rect,
+                })
+        })
+    })
+}
+
+/// The first commit after an unmap: place the toplevel again and send it the
+/// fresh initial configure the protocol requires. A window that floated goes
+/// back to the rectangle it left; anything else is placed as a new window.
+fn remap_toplevel(state: &mut AbyssState, surface: &WlSurface, placement: Option<Remembered>) {
     let Some(toplevel) = state
         .xdg_shell_state
         .toplevel_surfaces()
@@ -921,16 +969,59 @@ fn remap_toplevel(state: &mut AbyssState, surface: &WlSurface) {
     {
         return;
     }
-    tracing::debug!("xdg_toplevel remapping; placing it again");
+    tracing::debug!(restored = placement.is_some(), "xdg_toplevel remapping");
     popup_grab_dismiss(state);
     toplevel.with_pending_state(|s| {
         s.states
             .set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated);
     });
-    place_new_window(state, Window::new_wayland_window(toplevel.clone()));
+    let window = Window::new_wayland_window(toplevel.clone());
+    // The commit handler only refreshes windows it already found in the
+    // space, which this one was not. A remap commit usually carries the
+    // buffer, so without this the window would be placed with an empty
+    // bounding box and take no input until its next commit.
+    window.on_commit();
+    match placement {
+        Some(p) if restore_floating(state, &window, p) => {}
+        _ => place_new_window(state, window),
+    }
     if !toplevel.is_initial_configure_sent() {
         toplevel.send_configure();
     }
+}
+
+/// Put a remapped window back on the output and workspace it floated on, at
+/// the rectangle it left. False when that output or workspace is gone, and
+/// the caller places it as a new window instead.
+fn restore_floating(state: &mut AbyssState, window: &Window, p: Remembered) -> bool {
+    let Some(ws) = state
+        .outputs
+        .get_mut(p.output)
+        .and_then(|e| e.workspaces.get_mut(p.workspace))
+    else {
+        return false;
+    };
+    ws.floating.push(Floating {
+        window: window.clone(),
+        rect: p.rect,
+    });
+    // Same bookkeeping as `place_new_window`, minus the placement decision.
+    crate::render::capture::mark_sensitive(state, window);
+    crate::protocols::standard::foreign_toplevel::window_mapped(state, window);
+    // Property rules (opacity, blur, trust) still apply to the new `Window`,
+    // but its placement is final: a settle pass must not move it again.
+    let _ = rules::apply(state, window);
+    window.user_data().insert_if_missing(|| rules::Placed);
+    state.focus = Some(window.clone());
+    arrange(state);
+    focus_window(state, window);
+    let handle = state.ipc.handle_for(window);
+    crate::ipc::emit(
+        state,
+        "window",
+        serde_json::json!({"change": "opened", "handle": handle}),
+    );
+    true
 }
 
 /// Send the initial configure for toplevels, layer surfaces and popups, and
@@ -943,7 +1034,7 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
             unmap_toplevel(state, surface);
             return;
         }
-        Some(MapTransition::Remap) => remap_toplevel(state, surface),
+        Some(MapTransition::Remap(placement)) => remap_toplevel(state, surface, placement),
         None => {}
     }
 
@@ -2117,11 +2208,32 @@ mod tests {
         // Null-buffer commit unmaps, exactly once.
         assert_eq!(m.step(false), Some(MapTransition::Unmapped));
         // The client's fresh initial commit re-places it, exactly once.
-        assert_eq!(m.step(false), Some(MapTransition::Remap));
+        assert_eq!(m.step(false), Some(MapTransition::Remap(None)));
         assert_eq!(m.step(false), None);
         assert_eq!(m.step(true), None);
         // And it can unmap again.
         assert_eq!(m.step(false), Some(MapTransition::Unmapped));
+    }
+
+    #[test]
+    fn remap_returns_the_remembered_placement_once() {
+        let r = Remembered {
+            output: 7,
+            workspace: 2,
+            rect: Rectangle::new(Point::from((196, 45)), Size::from((104, 104))),
+        };
+        let mut m = ToplevelMap::default();
+        assert_eq!(m.step(true), None);
+        assert_eq!(m.step(false), Some(MapTransition::Unmapped));
+        // `unmap_toplevel` records where the window floated...
+        m.placement = Some(r);
+        // ...and the remap commit, buffer attached or not, hands it back.
+        assert_eq!(m.step(true), Some(MapTransition::Remap(Some(r))));
+        assert_eq!(m.placement, None);
+        // A later unmap that recorded nothing (the window tiled) does not
+        // resurrect the old rectangle.
+        assert_eq!(m.step(false), Some(MapTransition::Unmapped));
+        assert_eq!(m.step(false), Some(MapTransition::Remap(None)));
     }
 
     #[test]
