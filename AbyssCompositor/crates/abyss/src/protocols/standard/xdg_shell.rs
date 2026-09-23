@@ -19,6 +19,9 @@ impl XdgShellHandler for AbyssState {
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         // A new toplevel breaks an active popup grab (COMP-06 §4).
         crate::shell::popup_grab_dismiss(self);
+        // A surface can take a new xdg_toplevel after its old one died; stale
+        // unmap tracking from that one would place this window twice.
+        crate::shell::reset_toplevel_map(surface.wl_surface());
         surface.with_pending_state(|s| {
             s.states.set(xdg_toplevel::State::Activated);
         });
@@ -27,11 +30,11 @@ impl XdgShellHandler for AbyssState {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        let found = self
-            .space
-            .elements()
-            .find(|w| w.toplevel().map(|t| t == &surface).unwrap_or(false))
-            .cloned();
+        // Not `space`: a window on a hidden workspace or minimized is not
+        // mapped there, and missing it leaves a dead tile in the layout.
+        let found = crate::shell::owned_windows(self)
+            .into_iter()
+            .find(|w| w.toplevel().map(|t| t == &surface).unwrap_or(false));
         if let Some(w) = found {
             crate::shell::unmap_window(self, &w);
         } else {

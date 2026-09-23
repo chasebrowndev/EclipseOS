@@ -56,7 +56,7 @@ use iced::{Alignment, Color, Element, Length, Theme};
 
 use eclipse_services::status::{Battery, Bluetooth, Charge, Network};
 use eclipse_ui::theme;
-use eclipse_ui::tokens::{bar, color, drawer, font, menu, radius, size, space};
+use eclipse_ui::tokens::{bar, color, drawer, font, menu, size, space};
 use eclipse_ui::widget as parts;
 
 use crate::app::Message;
@@ -218,9 +218,9 @@ pub fn view(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message,
     match app.popup.as_ref() {
         Some(popup) if popup.id == id => {
             return match &popup.kind {
-                crate::app::Kind::Menu { handle, items } => context_menu(*handle, items),
+                crate::app::Kind::Menu { handle, items } => context_menu(*handle, items, app.menu_radius),
                 crate::app::Kind::Drawer { which, .. } => drawer_view(app, *which),
-                crate::app::Kind::TrayMenu { id, entries } => tray_menu(id, entries),
+                crate::app::Kind::TrayMenu { id, entries } => tray_menu(id, entries, app.menu_radius),
             };
         }
         _ => {}
@@ -230,13 +230,12 @@ pub fn view(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message,
         // still owns claims no exclusive zone, so a fullscreen video has the
         // whole output.
         crate::app::FoldTarget::Hidden => return Space::new().into(),
-        crate::app::FoldTarget::Folded => return folded_row(app),
-        crate::app::FoldTarget::Shown if app.fold.height < crate::HEIGHT => {
-            // Mid-slide back out: still the folded strip until there is room
-            // for a cell.
-            return folded_row(app);
-        }
-        crate::app::FoldTarget::Shown => {}
+        // Folded, or mid-slide back out: still the folded strip until there
+        // is room for a cell. `pill` is the same test the surface geometry
+        // uses, so the view and the surface cannot disagree about which one
+        // is up.
+        _ if !app.fold.pill() => return folded_row(app),
+        _ => {}
     }
     bar_row(app)
 }
@@ -262,7 +261,7 @@ fn folded_row(app: &crate::app::App) -> Element<'_, Message, Theme> {
             // the output the pointer is not on, and the ledger's one live
             // yellow belongs to a live value, never to the dormant head.
             color::HIGHLIGHT_SOFT,
-            bar::RADIUS_SHEET,
+            app.bar_radius,
         ),
     ];
 
@@ -270,20 +269,19 @@ fn folded_row(app: &crate::app::App) -> Element<'_, Message, Theme> {
         container(edges)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(theme::bar_ground),
-        bar::RADIUS_SHEET,
+            .style(theme::bar_ground(app.bar_radius)),
+        app.bar_radius,
         color::HIGHLIGHT_SOFT,
     );
 
-    // The horizontal inset is the unfolded bar's, so the strip is the same
-    // sheet seen edge-on rather than a second, wider object. There is no
-    // vertical margin: the surface *is* the sheet when it is this thin.
+    // The horizontal inset is the unfolded bar's layer-shell margin, so the
+    // strip is the same sheet seen edge-on rather than a second, wider
+    // object. The surface *is* the sheet.
     container(sheet)
         .width(Length::Fill)
         // The animated height, not the settled one: during a slide the strip
         // must fill exactly the surface the compositor just sized.
         .height(Length::Fixed(app.fold.height as f32))
-        .padding([0.0, bar::MARGIN_X])
         .into()
 }
 
@@ -311,16 +309,18 @@ fn bar_row(app: &crate::app::App) -> Element<'_, Message, Theme> {
     // faintest of the spec's own top-highlight range and a hairline border,
     // which is the difference between glass and a grey rectangle; it is not a
     // licence to frost the whole bar.
-    let body = parts::lit(
-        container(bar_row).width(Length::Fill).style(theme::bar_ground),
-        bar::RADIUS_SHEET,
+    //
+    // The pill fills its surface edge to edge. The compositor blurs the whole
+    // surface at `bar.rounding`, so the float gap around the pill is
+    // layer-shell margin (`FoldState::geometry`) and never padding in here —
+    // padding is how a blurred rim came to show outside the pill.
+    parts::lit(
+        container(bar_row)
+            .width(Length::Fill)
+            .style(theme::bar_ground(app.bar_radius)),
+        app.bar_radius,
         color::HIGHLIGHT_SOFT,
-    );
-
-    container(body)
-        .padding([bar::MARGIN_Y, bar::MARGIN_X])
-        .width(Length::Fill)
-        .into()
+    )
 }
 
 /// The ground under a bar cell: a chip on glass.
@@ -550,7 +550,7 @@ fn tasks(app: &crate::app::App) -> Element<'_, Message, Theme> {
 fn strip_left(app: &crate::app::App) -> f32 {
     let count = live_workspaces(&app.snapshot, app.output_id).count() as f32;
     let pager = (count * bar::PAGER_W + (count - 1.0).max(0.0) * bar::GAP).max(0.0);
-    bar::MARGIN_X + bar::EDGE + bar::TASK_MIN + bar::ZONE_GAP + pager + bar::ZONE_GAP
+    bar::EDGE + bar::TASK_MIN + bar::ZONE_GAP + pager + bar::ZONE_GAP
 }
 
 /// The horizontal span of the chip a window is drawn as: `(left, right)`.
@@ -581,7 +581,7 @@ pub fn tray_span(app: &crate::app::App, drawer: crate::app::Drawer) -> Option<(f
     if app.width <= 0.0 {
         return None;
     }
-    let right = app.width - bar::MARGIN_X - bar::EDGE - bar::CLOCK_W - bar::ZONE_GAP;
+    let right = app.width - bar::EDGE - bar::CLOCK_W - bar::ZONE_GAP;
     let arrow = (right - bar::ARROW_W, right);
     let wanted = match drawer {
         crate::app::Drawer::Overflow => return Some(arrow),
@@ -618,7 +618,7 @@ fn strip_room(app: &crate::app::App) -> f32 {
     if app.width <= 0.0 {
         return bar::TASK_MAX * app.snapshot.windows.len().max(1) as f32;
     }
-    (app.width - 2.0 * (bar::EDGE + bar::MARGIN_X) - 4.0 * bar::ZONE_GAP - fixed).max(0.0)
+    (app.width - 2.0 * bar::EDGE - 4.0 * bar::ZONE_GAP - fixed).max(0.0)
 }
 
 /// The tail of a strip that ran out of room: `+3`, in the neutral ink.
@@ -760,7 +760,7 @@ fn separators(items: &[crate::app::Item]) -> usize {
 /// it, so spending the accent on a hover or a heading would be decoration —
 /// exactly what the style spec forbids. The pointer is answered with a white
 /// lift, `Close` with a red one, and that is all the colour the menu owns.
-fn context_menu(handle: u64, items: &[crate::app::Item]) -> Element<'static, Message, Theme> {
+fn context_menu(handle: u64, items: &[crate::app::Item], radius: f32) -> Element<'static, Message, Theme> {
     let mut rows = Column::new();
     for item in items {
         if matches!(item, crate::app::Item::Close) && separators(items) > 0 {
@@ -776,8 +776,8 @@ fn context_menu(handle: u64, items: &[crate::app::Item]) -> Element<'static, Mes
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(menu::PAD)
-            .style(theme::menu_surface),
-        radius::CARD,
+            .style(theme::menu_surface(radius)),
+        radius,
         color::HIGHLIGHT,
     )
 }
@@ -1253,7 +1253,7 @@ fn sheet(app: &crate::app::App, which: crate::app::Drawer) -> Sheet {
 ///   the state behind each one is that applet's drawer's to colour.
 fn drawer_view(app: &crate::app::App, which: crate::app::Drawer) -> Element<'static, Message, Theme> {
     let Sheet { head, rows, .. } = sheet(app, which);
-    parts::drawer_frame(head, rows)
+    parts::drawer_frame(app.menu_radius, head, rows)
 }
 
 fn wifi_sheet(app: &crate::app::App) -> Sheet {
@@ -1543,7 +1543,7 @@ fn device_mark(kind: crate::radio::BtKind, side: f32, tint: Color) -> Element<'s
 /// A tray item's own menu: its entries, in its order, on the context menu's
 /// glass. The same rows and the same zero-yellow ledger as [`context_menu`]
 /// — it is a menu, and a second menu style on one bar would be two.
-fn tray_menu(id: &str, entries: &[crate::radio::MenuEntry]) -> Element<'static, Message, Theme> {
+fn tray_menu(id: &str, entries: &[crate::radio::MenuEntry], radius: f32) -> Element<'static, Message, Theme> {
     use eclipse_services::tray::MenuKind;
     // One checkable entry gives every item row the mark column, so the labels
     // stay on one gridline whether or not a given row is ticked.
@@ -1567,8 +1567,8 @@ fn tray_menu(id: &str, entries: &[crate::radio::MenuEntry]) -> Element<'static, 
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(menu::PAD)
-            .style(theme::menu_surface),
-        radius::CARD,
+            .style(theme::menu_surface(radius)),
+        radius,
         color::HIGHLIGHT,
     )
 }
@@ -2141,7 +2141,7 @@ mod tests {
 
         let first = chip_span(&app, 1).expect("chip 1 is drawn");
         let second = chip_span(&app, 2).expect("chip 2 is drawn");
-        assert!(first.0 >= bar::MARGIN_X + bar::EDGE);
+        assert!(first.0 >= bar::EDGE);
         assert!(first.1 < second.0);
         assert!((second.0 - first.0 - (first.1 - first.0) - bar::GAP).abs() < 0.01);
         assert!(second.1 < app.width);
@@ -2150,7 +2150,7 @@ mod tests {
 
         // The tray is measured inward from the right edge and stays there.
         let tray = tray_span(&app, crate::app::Drawer::Overflow).expect("sized bar");
-        assert!(tray.1 <= app.width - bar::MARGIN_X - bar::EDGE);
+        assert!(tray.1 <= app.width - bar::EDGE);
         assert!(tray.0 > chip_span(&app, 3).expect("chip 3 is drawn").1);
     }
 

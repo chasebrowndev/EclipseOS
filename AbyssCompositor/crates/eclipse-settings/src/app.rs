@@ -149,6 +149,11 @@ pub struct App {
     /// The running status-notifier items, while the Taskbar pane shows.
     /// `None` is not heard from yet; `Some(None)` is the feed failing.
     tray_live: Option<Option<Vec<String>>>,
+    /// Every panel's glass radius, live-synced to `decoration.rounding`
+    /// (BLUR-06): read once at startup and refetched on every `Config` event,
+    /// so a live-reload can never leave this pane's glass drifted from the
+    /// compositor's blur backdrop behind it.
+    glass_radius: f32,
 }
 
 impl Default for App {
@@ -164,8 +169,10 @@ impl App {
 
     /// Open on `pane` — `eclipse-settings network` from the taskbar.
     pub fn with_pane(pane: Pane) -> Self {
+        let mut conn = Conn::new();
+        let glass_radius = conn.glass_radius().unwrap_or(eclipse_ui::tokens::radius::CARD);
         let mut app = App {
-            conn: Conn::new(),
+            conn,
             rows: Vec::new(),
             pane,
             drafts: HashMap::new(),
@@ -181,6 +188,7 @@ impl App {
             net: Net::default(),
             tray_sel: None,
             tray_live: None,
+            glass_radius,
         };
         // Debug builds only: open with a tray entry selected, so the selected
         // state can be screenshotted without pointer injection.
@@ -462,6 +470,13 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             // across an event.
             EventKind::Output => app.reload(),
             EventKind::ConfigError => app.banner = Some(Problem::from_config_error(&data)),
+            // A reload succeeded; re-read the one key this pane keeps live
+            // between fetches rather than re-deriving from `rows` (BLUR-06).
+            EventKind::Config => {
+                if let Some(radius) = app.conn.glass_radius() {
+                    app.glass_radius = radius;
+                }
+            }
             _ => {}
         },
 
@@ -527,7 +542,9 @@ fn events() -> Subscription<Message> {
                 loop {
                     if client.is_none() {
                         if let Ok(mut c) = eclipse_ipc::Client::connect() {
-                            if c.subscribe(&[EventKind::Output, EventKind::ConfigError]).is_ok() {
+                            if c.subscribe(&[EventKind::Output, EventKind::ConfigError, EventKind::Config])
+                                .is_ok()
+                            {
                                 client = Some(c);
                             }
                         }
@@ -601,11 +618,11 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
         controls,
     )];
     if let Some(problem) = &app.banner {
-        blocks.push(banner(problem));
+        blocks.push(banner(problem, app.glass_radius));
     }
     match app.pane {
         Pane::Display => blocks.extend(display_pane(app)),
-        Pane::Network => blocks.extend(network::blocks(&app.net)),
+        Pane::Network => blocks.extend(network::blocks(&app.net, app.glass_radius)),
         Pane::Taskbar => {
             blocks.push(tray_hero(app));
             blocks.extend(schema_pane(app));
@@ -624,8 +641,9 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
 
 /// The two error shapes every DE app renders identically: a denial and a
 /// config error. Neither is ever swallowed.
-fn banner(problem: &Problem) -> Element<'_, Message, Theme> {
+fn banner(problem: &Problem, radius: f32) -> Element<'_, Message, Theme> {
     panel(
+        radius,
         column![
             row![
                 mono(&problem.headline()),
@@ -669,7 +687,7 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
             for r in rows {
                 col = col.push(r);
             }
-            panel(col).into()
+            panel(app.glass_radius, col).into()
         })
         .collect()
 }
@@ -770,6 +788,7 @@ fn tray_hero(app: &App) -> Element<'_, Message, Theme> {
     };
 
     panel(
+        app.glass_radius,
         column![
             caption,
             lane(
@@ -919,7 +938,7 @@ fn display_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
     const TRANSFORMS: &[&str] = &["normal", "90", "180", "270"];
 
     if app.outputs.is_empty() {
-        return vec![panel(mono("no outputs")).into()];
+        return vec![panel(app.glass_radius, mono("no outputs")).into()];
     }
 
     app.outputs
@@ -975,6 +994,7 @@ fn display_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
             .spacing(6);
 
             panel(
+                app.glass_radius,
                 column![
                     row![
                         micro_label(&o.name),

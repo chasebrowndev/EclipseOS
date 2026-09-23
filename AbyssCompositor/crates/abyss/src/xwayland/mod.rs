@@ -170,6 +170,15 @@ impl XWaylandShellHandler for AbyssState {
             class = surface.class(),
             "x11 surface associated with a wl_surface"
         );
+        // `place_new_window` names an X11 window as focused at map time, but
+        // the keyboard cannot follow until the wl_surface exists, so
+        // `focus_window` bailed. Finish the move now that it does.
+        let pending = self.focus.clone().filter(|w| w.x11_surface() == Some(&surface));
+        if let Some(window) = pending {
+            if !self.lock.locked {
+                crate::shell::focus_window(self, &window);
+            }
+        }
     }
 }
 

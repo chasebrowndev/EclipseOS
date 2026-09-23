@@ -127,7 +127,7 @@ impl SessionLockHandler for AbyssState {
         // Input goes to the locker and nowhere else.
         if let Some(keyboard) = self.seat.get_keyboard() {
             if keyboard.current_focus().is_none() {
-                keyboard.set_focus(self, Some(wl), SERIAL_COUNTER.next_serial());
+                keyboard.set_focus(self, Some(wl.into()), SERIAL_COUNTER.next_serial());
             }
         }
         crate::backend::damage_all(self);

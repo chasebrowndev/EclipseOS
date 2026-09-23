@@ -58,12 +58,13 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `bar.position` | top \| bottom | `"top"` | restart | Which edge of every output the taskbar is anchored to. Takes effect the next time the taskbar starts, not on a live reload. |
 | `bar.tray.pinned` | list of strings | _unset_ | live | Tray ids shown on the taskbar itself, in this order. Built-in applets are network, bluetooth, battery and volume; a StatusNotifierItem app goes by its own id. Unset means the taskbar's built-in order; an empty list pins nothing. Anything neither pinned nor hidden sits in the overflow drawer. |
 | `bar.tray.hidden` | list of strings | _empty_ | live | Tray ids never shown, on the taskbar or in its overflow drawer. Hidden wins over pinned when an id is in both. |
+| `bar.rounding` | int 0..512 | `20` | live | Corner radius in logical px for the taskbar's own blur backdrop. |
 
 ### `decoration`
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
-| `decoration.rounding` | int 0..512 | `0` | live | Corner radius in logical px; 0 disables. |
+| `decoration.rounding` | int 0..512 | `13` | live | Corner radius in logical px; 0 disables. |
 | `decoration.active-opacity` | float 0..1 | `1` | live | Alpha applied to the focused window. |
 | `decoration.inactive-opacity` | float 0..1 | `1` | live | Alpha applied to every unfocused window. |
 | `decoration.dim-inactive` | float 0..1 | `0` | live | Strength of the darkening overlay on unfocused windows. |
@@ -113,6 +114,7 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `misc.render-device` | string | _unset_ | restart | `auto`, a /dev/dri/… path, or `pci:DDDD:BB:DD.F`. The CLI flag and ECLIPSE_RENDER_DEVICE both override it. |
+| `misc.terminal-command` | string | _unset_ | live | Terminal emulator used to launch `Terminal=true` .desktop entries (`$term -e <argv>`). Unset: those entries are dropped from the app index rather than shown and refused. |
 
 ### `bind`
 

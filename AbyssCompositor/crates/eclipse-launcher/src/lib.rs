@@ -2,6 +2,7 @@
 //! The application launcher: type, pick, run.
 
 pub mod app;
+pub mod conn;
 pub mod view;
 
 /// Width of the launcher's surface, including its outer padding.

@@ -126,9 +126,11 @@ impl Conn {
     pub fn reconnect(&mut self) {
         match eclipse_ipc::Client::connect() {
             Ok(mut client) => {
-                // Output hot-plug (COMP-03) and config errors from someone
-                // else editing the file under us both land as events.
-                let _ = client.subscribe(&[EventKind::Output, EventKind::ConfigError]);
+                // Output hot-plug (COMP-03), config errors from someone else
+                // editing the file under us, and a live reload succeeding
+                // (BLUR-06's glass radius rides on the last one) all land as
+                // events.
+                let _ = client.subscribe(&[EventKind::Output, EventKind::ConfigError, EventKind::Config]);
                 self.client = Some(client);
                 self.problem = None;
             }
@@ -213,6 +215,14 @@ impl Conn {
             Some(v) => Problem::from_config_error(v),
             None => Problem::Other("the value was rejected".into()),
         })
+    }
+
+    /// The compositor's live glass-corner radius (`decoration.rounding`,
+    /// BLUR-06). `None` on any failure — no connection, no such key — so the
+    /// caller keeps whatever value it already had.
+    pub fn glass_radius(&mut self) -> Option<f32> {
+        let client = self.client.as_mut()?;
+        eclipse_ui::ipc::fetch_config_radius(client, "decoration.rounding")
     }
 
     /// Write one scalar. Returns whether the change needs a restart to apply.

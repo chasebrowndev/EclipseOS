@@ -62,10 +62,14 @@ pub fn search_path() -> Vec<PathBuf> {
 /// An id found in an earlier directory wins: that is what lets a human shadow
 /// a system entry with one of their own, which is the whole point of the
 /// precedence order.
-pub fn scan() -> Vec<Entry> {
+///
+/// `term` is the configured terminal emulator command (`misc.terminal-command`,
+/// COMP-13), if any. Unset, `Terminal=true` entries are dropped rather than
+/// indexed and then refused at launch (TERM-01).
+pub fn scan(term: Option<&str>) -> Vec<Entry> {
     let mut found: BTreeMap<String, Entry> = BTreeMap::new();
     for dir in search_path() {
-        collect(&dir, &dir, &mut found);
+        collect(&dir, &dir, &mut found, term);
     }
     let mut entries: Vec<Entry> = found.into_values().collect();
     // Case-insensitive, so "Files" and "firefox" sort where a human looks for
@@ -76,7 +80,7 @@ pub fn scan() -> Vec<Entry> {
 
 /// Walks one data directory. Subdirectories are part of the id (`kde-foo.desktop`
 /// lives at `kde/foo.desktop`), so the root is carried down to build it.
-fn collect(root: &Path, dir: &Path, found: &mut BTreeMap<String, Entry>) {
+fn collect(root: &Path, dir: &Path, found: &mut BTreeMap<String, Entry>, term: Option<&str>) {
     let Ok(read) = std::fs::read_dir(dir) else {
         // A data dir that does not exist is the ordinary case, not an error.
         return;
@@ -84,7 +88,7 @@ fn collect(root: &Path, dir: &Path, found: &mut BTreeMap<String, Entry>) {
     for item in read.flatten() {
         let path = item.path();
         if path.is_dir() {
-            collect(root, &path, found);
+            collect(root, &path, found, term);
             continue;
         }
         if path.extension().is_none_or(|e| e != "desktop") {
@@ -100,7 +104,7 @@ fn collect(root: &Path, dir: &Path, found: &mut BTreeMap<String, Entry>) {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        if let Some(entry) = parse(&id, &text) {
+        if let Some(entry) = parse(&id, &text, term) {
             found.insert(id, entry);
         }
     }
@@ -108,9 +112,10 @@ fn collect(root: &Path, dir: &Path, found: &mut BTreeMap<String, Entry>) {
 
 /// Parses the `[Desktop Entry]` group. Returns `None` for anything that is not
 /// a launchable, visible application — a link, a hidden entry, a `NoDisplay`
-/// service, one whose `TryExec` is not on the system, or one with no `Exec` at
-/// all. A launcher that lists those is a launcher whose rows do nothing.
-pub fn parse(id: &str, text: &str) -> Option<Entry> {
+/// service, one whose `TryExec` is not on the system, a `Terminal=true` entry
+/// with no terminal configured (TERM-01), or one with no `Exec` at all. A
+/// launcher that lists those is a launcher whose rows do nothing.
+pub fn parse(id: &str, text: &str, term: Option<&str>) -> Option<Entry> {
     let mut in_group = false;
     let mut keys: BTreeMap<&str, &str> = BTreeMap::new();
     for line in text.lines() {
@@ -146,6 +151,10 @@ pub fn parse(id: &str, text: &str) -> Option<Entry> {
             return None;
         }
     }
+    let terminal = truthy(keys.get("Terminal"));
+    if terminal && term.is_none() {
+        return None;
+    }
     let name = (*keys.get("Name")?).to_owned();
     let argv = argv(keys.get("Exec")?);
     if argv.is_empty() {
@@ -156,7 +165,7 @@ pub fn parse(id: &str, text: &str) -> Option<Entry> {
         name,
         comment: keys.get("Comment").map(|c| (*c).to_owned()),
         argv,
-        terminal: truthy(keys.get("Terminal")),
+        terminal,
         keywords: keys
             .get("Keywords")
             .map(|k| {
@@ -271,22 +280,37 @@ pub fn rank(entry: &Entry, query: &str) -> u8 {
 /// exiting — which it does immediately after — does not take the application
 /// with it. Nothing of ours is passed down: no capability, no socket, no
 /// inherited stdin.
-pub fn launch(entry: &Entry) -> std::io::Result<()> {
-    if entry.terminal {
-        // We do not own a terminal and will not guess at one. Saying so is
-        // better than spawning a windowless process the human never sees.
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "entry wants a terminal",
-        ));
-    }
-    let (program, args) = entry
-        .argv
-        .split_first()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "entry has no command"))?;
-    std::process::Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::null())
+///
+/// `term` is the configured terminal emulator command (`misc.terminal-command`,
+/// COMP-13). A `Terminal=true` entry launches as `$term -e <argv>`; without one
+/// configured, launch refuses rather than spawning a windowless process the
+/// human cannot see or reach. `parse` already drops such entries when no
+/// terminal is configured, so this is a defensive fallback, not the normal path.
+pub fn launch(entry: &Entry, term: Option<&str>) -> std::io::Result<()> {
+    let mut cmd = if entry.terminal {
+        let Some(term) = term else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "entry wants a terminal",
+            ));
+        };
+        let mut cmd = std::process::Command::new(term);
+        cmd.arg("-e").args(&entry.argv);
+        cmd
+    } else {
+        let (program, args) = entry
+            .argv
+            .split_first()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "entry has no command"))?;
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
+        cmd
+    };
+    use std::os::unix::process::CommandExt;
+    // The child must not inherit our controlling terminal or process group,
+    // so the launcher exiting doesn't take the application with it.
+    cmd.process_group(0);
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -298,7 +322,11 @@ mod tests {
     use super::*;
 
     fn entry(text: &str) -> Option<Entry> {
-        parse("test.desktop", text)
+        parse("test.desktop", text, None)
+    }
+
+    fn entry_with_term(text: &str, term: &str) -> Option<Entry> {
+        parse("test.desktop", text, Some(term))
     }
 
     #[test]
@@ -369,13 +397,34 @@ mod tests {
         assert!(rank(&files, "fil") > rank(&profiler, "fil"));
     }
 
-    /// Spawning a terminal application into no terminal at all leaves a
-    /// process the human cannot see or reach.
+    /// Without a configured terminal, `Terminal=true` entries never reach the
+    /// index at all (TERM-01) — they must not occupy a launcher row that can
+    /// never succeed.
     #[test]
-    fn a_terminal_entry_refuses_rather_than_disappearing() {
-        let e = entry("[Desktop Entry]\nName=Top\nExec=top\nTerminal=true\n").unwrap();
+    fn a_terminal_entry_is_dropped_without_a_configured_terminal() {
+        assert!(entry("[Desktop Entry]\nName=Top\nExec=top\nTerminal=true\n").is_none());
+    }
+
+    /// With a configured terminal, the entry is indexed and launches wrapped
+    /// in it.
+    #[test]
+    fn a_terminal_entry_launches_through_the_configured_terminal() {
+        // "true" rather than a real terminal emulator: guaranteed present in
+        // any test environment, and `spawn` only cares that the program exists.
+        let e = entry_with_term("[Desktop Entry]\nName=Top\nExec=top\nTerminal=true\n", "true").unwrap();
         assert!(e.terminal);
-        assert!(launch(&e).is_err());
+        assert_eq!(e.argv, ["top"]);
+        assert!(launch(&e, Some("true")).is_ok());
+    }
+
+    /// Defensive fallback: an `Entry` built with `terminal: true` but launched
+    /// with no terminal configured refuses rather than spawning a process the
+    /// human cannot see or reach. Not normally reachable once `parse` drops
+    /// such entries at index time.
+    #[test]
+    fn a_terminal_entry_refuses_without_a_terminal_at_launch() {
+        let e = entry_with_term("[Desktop Entry]\nName=Top\nExec=top\nTerminal=true\n", "true").unwrap();
+        assert!(launch(&e, None).is_err());
     }
 
     /// The user's own directory comes before the system ones, or shadowing an

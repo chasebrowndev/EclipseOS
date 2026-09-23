@@ -43,6 +43,15 @@ pub struct App {
     /// `launch`'s own refusal — a terminal-only entry, or a failed spawn —
     /// shown as it came. Restating it in our words would be a worse answer.
     pub problem: Option<String>,
+    /// `misc.terminal-command`, read once at startup (TERM-01). `None` means
+    /// no terminal is configured — same as the socket being unreachable —
+    /// and `Terminal=true` entries are dropped from `entries` rather than
+    /// shown and then refused.
+    term: Option<String>,
+    /// The band's glass radius, read once from `decoration.rounding` at
+    /// startup (BLUR-06). `crate::conn::fetch_glass_radius` is fail-soft, so
+    /// this falls back to the compile-time token when nothing answers.
+    pub glass_radius: f32,
 }
 
 impl Default for App {
@@ -53,12 +62,16 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
+        let term = crate::conn::fetch_terminal_command();
+        let glass_radius = crate::conn::fetch_glass_radius().unwrap_or(eclipse_ui::tokens::radius::CARD);
         let mut app = App {
-            entries: apps::scan(),
+            entries: apps::scan(term.as_deref()),
             query: String::new(),
             matched: Vec::new(),
             selected: 0,
             problem: None,
+            term,
+            glass_radius,
         };
         app.refilter();
         app
@@ -148,7 +161,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             let Some(entry) = app.current() else {
                 return Task::none();
             };
-            match apps::launch(entry) {
+            match apps::launch(entry, app.term.as_deref()) {
                 // The application is running; the launcher has nothing left
                 // to say.
                 Ok(()) => return quit(),
@@ -216,6 +229,8 @@ mod tests {
             matched: Vec::new(),
             selected: 0,
             problem: None,
+            term: None,
+            glass_radius: eclipse_ui::tokens::radius::CARD,
         };
         app.refilter();
         app

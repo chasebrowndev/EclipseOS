@@ -325,6 +325,16 @@ impl BlurStore {
             } = self;
             let entry = surfaces.get_mut(key)?;
             let tracker = backdrop.get_or_insert_with(|| OutputDamageTracker::from_output(output));
+            // The backdrop is drawn with the output's own transform (so the
+            // `gl_FragCoord` rounding masks of the elements behind still line
+            // up), which under `Flipped180` (winit) stores it bottom row
+            // first. The result is sampled back as a `Normal` texture, so the
+            // last pass flips it upright; otherwise every window would blur
+            // the vertical mirror image of what is behind it.
+            let orient = match crate::render::effects::fb_y_mirrored(output.current_transform()) {
+                Some(true) => Transform::Flipped180,
+                _ => Transform::Normal,
+            };
             match render_chain(
                 renderer,
                 tracker,
@@ -334,6 +344,7 @@ impl BlurStore {
                 behind,
                 blur,
                 entry.result.take(),
+                orient,
             ) {
                 Ok(texture) => {
                     entry.result = Some(texture);
@@ -469,6 +480,7 @@ fn render_chain<E>(
     behind: &[E],
     blur: &Blur,
     reuse: Option<GlesTexture>,
+    orient: Transform,
 ) -> Result<GlesTexture, GlesError>
 where
     E: Element + RenderElement<GlesRenderer>,
@@ -493,14 +505,14 @@ where
     // 2. Downsample.
     for level in 1..=passes {
         let (src, dst) = split_pair(chain, level - 1, level);
-        blit(renderer, src, dst, down, offset)?;
+        blit(renderer, src, dst, down, offset, Transform::Normal)?;
     }
 
     // 3. Upsample. The last step writes into the per-window result texture so
     //    the element can hold it while the chain is reused for the next window.
     for level in (1..passes).rev() {
         let (src, dst) = split_pair(chain, level + 1, level);
-        blit(renderer, src, dst, up, offset)?;
+        blit(renderer, src, dst, up, offset, Transform::Normal)?;
     }
     let mut result = match reuse {
         Some(t)
@@ -519,7 +531,7 @@ where
     };
     {
         let src = chain[1.min(passes)].clone();
-        blit(renderer, &src, &mut result, up, offset)?;
+        blit(renderer, &src, &mut result, up, offset, orient)?;
     }
     Ok(result)
 }
@@ -536,13 +548,15 @@ fn split_pair(chain: &mut [GlesTexture], src: usize, dst: usize) -> (&GlesTextur
     }
 }
 
-/// One Kawase pass: draw the whole of `src` over the whole of `dst`.
+/// One Kawase pass: draw the whole of `src` over the whole of `dst`, sampling
+/// `src` under `transform` (`Normal` except for the final, upright-ing pass).
 fn blit(
     renderer: &mut GlesRenderer,
     src: &GlesTexture,
     dst: &mut GlesTexture,
     program: &GlesTexProgram,
     offset: f32,
+    transform: Transform,
 ) -> Result<(), GlesError> {
     let src_size = src.size();
     let dst_size = dst.size();
@@ -559,7 +573,7 @@ fn blit(
         dest,
         &[dest],
         &[],
-        Transform::Normal,
+        transform,
         1.0,
         Some(program),
         &uniforms,

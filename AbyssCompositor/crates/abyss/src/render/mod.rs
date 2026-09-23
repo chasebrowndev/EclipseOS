@@ -30,7 +30,7 @@ use smithay::{
             surface::WaylandSurfaceRenderElement,
             AsRenderElements, Kind,
         },
-        gles::GlesRenderer,
+        gles::{element::PixelShaderElement, GlesRenderer},
     },
     desktop::{
         layer_map_for_output,
@@ -46,7 +46,7 @@ use smithay::{
     utils::{Logical, Physical, Point, Rectangle, Scale},
     wayland::{
         dmabuf::DmabufFeedback,
-        shell::wlr_layer::{Anchor, Layer},
+        shell::wlr_layer::{Anchor, ExclusiveZone, Layer},
     },
 };
 
@@ -85,6 +85,12 @@ pub struct BorderStore {
     rounded: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     /// Drop-shadow pixel program, compiled on the first frame that shadows.
     shadow: Option<smithay::backend::renderer::gles::GlesPixelProgram>,
+    /// Rounded border-ring program, compiled on the first frame that rounds.
+    ring: Option<smithay::backend::renderer::gles::GlesPixelProgram>,
+    /// One rounded border ring per window when rounding is on, kept alive
+    /// between frames so its damage is tracked; the last-applied colour,
+    /// radius, width and scale are kept to skip no-op uniform updates.
+    rings: HashMap<Window, (PixelShaderElement, [f32; 7])>,
     /// Blur chain, programs and per-window backdrops (COMP-02 §9).
     blur: blur::BlurStore,
 }
@@ -92,6 +98,7 @@ pub struct BorderStore {
 impl BorderStore {
     pub fn remove(&mut self, window: &Window) {
         self.borders.remove(window);
+        self.rings.remove(window);
         self.dims.remove(window);
     }
 }
@@ -103,7 +110,8 @@ fn phys(p: Point<i32, Logical>, scale: Scale<f64>) -> Point<i32, Physical> {
 /// Collect one frame's elements, front to back.
 ///
 /// Order (topmost first) follows COMP-02 §4: overlay layer surfaces, top layer
-/// surfaces, toplevels, their borders, then bottom and background layers.
+/// surfaces, toplevels (each followed by its own border, shadow and blurred
+/// backdrop), then bottom and background layers.
 /// Trusted UI is prepended by the caller once COMP-10 lands.
 ///
 /// `fullscreen` says a fullscreen toplevel owns this output, which drops the
@@ -197,33 +205,22 @@ pub fn collect_elements(
     };
     layers(&mut elements, &mut blur_requests, above, renderer);
 
-    // With no per-window effect configured (the default) the whole space goes
-    // through smithay's one call at alpha 1.0, so damage tracking and direct
-    // scanout are exactly what they were before milestone 9b (COMP-02 §9).
+    // Toplevels go one window at a time so each one's border and shadow stack
+    // directly under its own surfaces rather than under the whole window stack
+    // (COMP-02 §9). With no effect configured every surface is still emitted
+    // unwrapped at alpha 1.0, so damage tracking and direct scanout are what
+    // `space_render_elements` gave.
     borders.anim.sync(space, config, focus);
-    if borders.anim.running()
-        || config.decoration.any_window_effect()
-        || borders.anim.fading()
-        || crate::shell::rules::any_opacity_override(space.elements())
-        || crate::shell::rules::any_blur_override(space.elements())
-    {
-        let base = elements.len();
-        let (window_els, mut blurred) = window_elements(renderer, space, borders, output, config, focus);
-        elements.extend(window_els);
-        for req in &mut blurred {
-            req.1 += base;
-        }
-        blur_requests.extend(blurred);
-    } else {
-        borders.dims.clear();
-        match smithay::desktop::space::space_render_elements(renderer, [space], output, 1.0) {
-            Ok(space_elements) => elements.extend(space_elements.into_iter().map(AbyssRenderElement::Space)),
-            Err(err) => tracing::warn!(?err, "collecting space elements"),
-        }
-    }
-
-    elements.extend(border_elements(space, borders, output_loc, scale, config));
-    elements.extend(shadow_elements(renderer, space, borders, output_loc, config));
+    window_elements(
+        renderer,
+        space,
+        borders,
+        output,
+        config,
+        focus,
+        &mut elements,
+        &mut blur_requests,
+    );
 
     layers(&mut elements, &mut blur_requests, below, renderer);
 
@@ -258,30 +255,49 @@ fn insert_blur(
 
     // Same framebuffer-space mask as `window_elements`: needs the output's own
     // height and the sense of its vertical axis (COMP-02 §9).
-    let fb_height = match (output.current_transform(), output.current_mode()) {
-        (smithay::utils::Transform::Normal, Some(mode)) => Some((mode.size.h, false)),
-        (smithay::utils::Transform::Flipped180, Some(mode)) => Some((mode.size.h, true)),
-        _ => None,
-    };
+    let fb_height = effects::fb_y_mirrored(output.current_transform())
+        .zip(output.current_mode())
+        .map(|(mirrored, mode)| (mode.size.h, mirrored));
 
     for (key, index, region) in requests.into_iter().rev() {
         // A toplevel reuses the radius its own corners are drawn with. A
         // layer-shell surface anchored to three-plus edges, or to both edges
-        // of an axis, is edge-to-edge (the hyperion taskbar) and stays square;
-        // fewer/adjacent anchors (launcher, toasts, notification centre) get
-        // the same radius as a window.
+        // of an axis, usually spans that axis corner-to-corner; fewer/adjacent
+        // anchors (launcher, toasts, notification centre) get the same radius
+        // as a window.
+        //
+        // "Usually" because a 3-edge/opposite-pair anchor alone isn't proof of
+        // a flush slab: wlr-layer-shell's own `exclusive-zone` semantics carry
+        // that distinction already. `ExclusiveZone::DontCare` (or no
+        // reservation at all) means "extend it all the way to the edges it is
+        // anchored to" in the protocol's own words — a genuine flush edge, so
+        // it stays square. A *positive* exclusive zone instead asks the
+        // compositor to reserve a bounded strip, which is what a taskbar does
+        // — hyperion anchors top+left+right for layout (`size: (0, HEIGHT)`
+        // stretches it edge to edge) but reserves only `HEIGHT` px and draws a
+        // floating rounded pill inset within that strip, not a flush bar. No
+        // other layer client anchors 3+ edges with a positive exclusive zone
+        // today, so this shape structurally identifies the bar without a
+        // namespace/app-id check, and gets its own radius since its content
+        // draws at a different radius than every other pane's.
         let radius = match &key {
             blur::BlurKey::Window(_) => deco.rounding,
             blur::BlurKey::Layer(surface) => {
-                let anchor = surface.cached_state().anchor;
+                let state = surface.cached_state();
+                let anchor = state.anchor;
                 let opposite_pair = (anchor.contains(Anchor::LEFT) && anchor.contains(Anchor::RIGHT))
                     || (anchor.contains(Anchor::TOP) && anchor.contains(Anchor::BOTTOM));
                 let edges = [Anchor::LEFT, Anchor::RIGHT, Anchor::TOP, Anchor::BOTTOM]
                     .into_iter()
                     .filter(|edge| anchor.contains(*edge))
                     .count();
+                let bounded_strip = matches!(state.exclusive_zone, ExclusiveZone::Exclusive(z) if z > 0);
                 if edges >= 3 || opposite_pair {
-                    0
+                    if bounded_strip {
+                        config.bar.rounding as i32
+                    } else {
+                        0
+                    }
                 } else {
                     deco.rounding
                 }
@@ -291,7 +307,7 @@ fn insert_blur(
         let rounding = (radius > 0)
             .then_some(())
             .and(fb_height)
-            .and_then(|(fb_height, flip_y)| {
+            .and_then(|(fb_height, mirrored)| {
                 if store.rounded.is_none() {
                     match effects::compile_rounded(renderer) {
                         Ok(program) => store.rounded = Some(program),
@@ -306,7 +322,7 @@ fn insert_blur(
                 store.rounded.clone().map(|program| {
                     let scaled_radius = radius as f64 * scale.x.max(scale.y);
                     let uniforms =
-                        effects::rounding_uniforms(region, fb_height, flip_y, scaled_radius as f32);
+                        effects::rounding_uniforms(region, fb_height, mirrored, scaled_radius as f32);
                     (program, uniforms)
                 })
             });
@@ -322,12 +338,18 @@ fn insert_blur(
 }
 
 /// Per-window toplevel elements, front to back, with `decoration` opacity and
-/// `dim-inactive` applied (COMP-02 §9).
+/// `dim-inactive` applied (COMP-02 §9), pushed straight onto `out`.
 ///
-/// This mirrors what `space_render_elements` does for toplevels, but one window
-/// at a time so each can carry its own alpha. Any surface drawn at less than
-/// full alpha cannot go to a scanout plane; the caller only takes this path when
-/// an effect is actually configured.
+/// Each window contributes, topmost first: its dim overlay, its surfaces, its
+/// border, its drop shadow, and — spliced in afterwards by `insert_blur` at the
+/// index recorded in `blurred` — its blurred backdrop. A window's decorations
+/// therefore stack directly under its own surfaces and above every window
+/// further back, and its backdrop samples only what lies behind the window,
+/// never its own border or shadow.
+///
+/// Any surface drawn at less than full alpha cannot go to a scanout plane; with
+/// no effect configured every surface goes out unwrapped at alpha 1.0.
+#[allow(clippy::too_many_arguments)]
 fn window_elements(
     renderer: &mut GlesRenderer,
     space: &Space<Window>,
@@ -335,30 +357,28 @@ fn window_elements(
     output: &Output,
     config: &Config,
     focus: Option<&Window>,
-) -> (Vec<AbyssRenderElement>, Vec<BlurRequest>) {
+    out: &mut Vec<AbyssRenderElement>,
+    blurred: &mut Vec<BlurRequest>,
+) {
     let Some(output_geo) = space.output_geometry(output) else {
-        return (Vec::new(), Vec::new());
+        return;
     };
     let scale = Scale::from(output.current_scale().fractional_scale());
     let deco = &config.decoration;
     let live: Vec<Window> = space.elements().cloned().collect();
-    store.dims.retain(|w, _| live.contains(w));
+    if deco.dim_inactive > 0.0 {
+        store.dims.retain(|w, _| live.contains(w));
+    } else {
+        store.dims.clear();
+    }
 
-    // Rounding masks in framebuffer space, so it needs the output's own height
-    // and the sense of its vertical axis. `Normal` puts the physical origin at
-    // the top-left and GL's at the bottom-left; `Flipped180` (what the winit
-    // backend uses) already mirrors vertically, so the two coincide. A rotated
-    // output keeps square corners rather than drawing the mask in the wrong
-    // place (COMP-02 §9).
-    let fb_height = match (
-        deco.rounding > 0,
-        output.current_transform(),
-        output.current_mode(),
-    ) {
-        (true, smithay::utils::Transform::Normal, Some(mode)) => Some((mode.size.h, false)),
-        (true, smithay::utils::Transform::Flipped180, Some(mode)) => Some((mode.size.h, true)),
-        _ => None,
-    };
+    // Rounding masks in framebuffer (`gl_FragCoord`) space, so it needs the
+    // output's own height and the sense of its vertical axis under the output
+    // transform; see `effects::fb_y_mirrored` (COMP-02 §9).
+    let fb_height = effects::fb_y_mirrored(output.current_transform())
+        .zip(output.current_mode())
+        .filter(|_| deco.rounding > 0)
+        .map(|(mirrored, mode)| (mode.size.h, mirrored));
     if fb_height.is_some() && store.rounded.is_none() {
         match effects::compile_rounded(renderer) {
             Ok(program) => store.rounded = Some(program),
@@ -366,14 +386,18 @@ fn window_elements(
         }
     }
     let rounding = fb_height.zip(store.rounded.clone());
+    let border = border_frame(renderer, store, output_geo.loc, scale, output, config, &live);
+    let shadow = shadow_program(renderer, store, config);
 
-    let mut out = Vec::new();
-    let mut blurred: Vec<BlurRequest> = Vec::new();
     // `space.elements()` is bottom-to-top; frames are collected front-to-back.
     for window in live.into_iter().rev() {
         let Some(loc) = space.element_location(&window) else {
             continue;
         };
+        let geo = space.element_geometry(&window).map(|mut geo| {
+            geo.loc += store.anim.offset(&window);
+            geo
+        });
         let active = focus == Some(&window);
         // A matched `windowrule "opacity …"` overrides the global pair.
         let alpha = crate::shell::rules::opacity_of(&window).unwrap_or(if active {
@@ -385,8 +409,7 @@ fn window_elements(
         // The dim overlay belongs above this window but below the ones in
         // front of it, so it is pushed just before the window's own surfaces.
         if !active && deco.dim_inactive > 0.0 {
-            if let Some(mut geo) = space.element_geometry(&window) {
-                geo.loc += store.anim.offset(&window);
+            if let Some(geo) = geo {
                 let color = [0.0, 0.0, 0.0, deco.dim_inactive * alpha];
                 let buffer = store
                     .dims
@@ -413,15 +436,14 @@ fn window_elements(
 
         // Every surface of one window is masked by the same rectangle, so a
         // window with subsurfaces rounds as a single shape.
-        match (&rounding, space.element_geometry(&window)) {
-            (Some(((fb_height, flip_y), program)), Some(mut geo)) => {
-                geo.loc += store.anim.offset(&window);
+        match (&rounding, geo) {
+            (Some(((fb_height, mirrored), program)), Some(geo)) => {
                 let rect = Rectangle::new(
                     phys(geo.loc - output_geo.loc, scale),
                     geo.size.to_f64().to_physical(scale).to_i32_round(),
                 );
                 let radius = deco.rounding as f64 * scale.x.max(scale.y);
-                let uniforms = effects::rounding_uniforms(rect, *fb_height, *flip_y, radius as f32);
+                let uniforms = effects::rounding_uniforms(rect, *fb_height, *mirrored, radius as f32);
                 out.extend(surfaces.into_iter().map(|surface| {
                     AbyssRenderElement::Rounded(effects::RoundedElement::new(
                         surface,
@@ -433,145 +455,242 @@ fn window_elements(
             _ => out.extend(surfaces.into_iter().map(AbyssRenderElement::Surface)),
         }
 
+        let Some(geo) = geo else {
+            continue;
+        };
+        // Border then shadow, both directly under this window's surfaces. The
+        // ring's inner edge is the exact complement of the window's rounded
+        // mask, so it never covers window content from below either.
+        if let Some(frame) = &border {
+            push_border(store, frame, &window, geo, config, out);
+        }
+        if let Some(program) = &shadow {
+            out.push(shadow_element(program, geo, output_geo.loc, config));
+        }
+
         // Blur samples what shows through the window's alpha, so a window drawn
         // at full opacity gets no backdrop pass at all. A matched `windowrule
         // "blur …"` overrides the global default, but never bypasses the
-        // alpha gate above: an opaque window is never blurred.
+        // alpha gate above: an opaque window is never blurred. The backdrop
+        // goes below the window's own border and shadow, so neither is
+        // smeared into it; it covers the window rect only, which the ring
+        // does not overlap.
         let blur_wanted =
             alpha < 1.0 && crate::shell::rules::blur_of(&window).unwrap_or(config.decoration.blur.enabled);
         if blur_wanted {
-            if let Some(mut geo) = space.element_geometry(&window) {
-                geo.loc += store.anim.offset(&window);
-                blurred.push((
-                    blur::BlurKey::Window(window.clone()),
-                    out.len(),
-                    Rectangle::new(
-                        phys(geo.loc - output_geo.loc, scale),
-                        geo.size.to_f64().to_physical(scale).to_i32_round(),
-                    ),
-                ));
-            }
+            blurred.push((
+                blur::BlurKey::Window(window.clone()),
+                out.len(),
+                Rectangle::new(
+                    phys(geo.loc - output_geo.loc, scale),
+                    geo.size.to_f64().to_physical(scale).to_i32_round(),
+                ),
+            ));
         }
     }
-    (out, blurred)
 }
 
-/// One drop shadow behind each window, below the borders (COMP-02 §9).
-fn shadow_elements(
+/// The drop-shadow program when shadows are on, compiled on first use
+/// (COMP-02 §9); `None` draws no shadows.
+fn shadow_program(
     renderer: &mut GlesRenderer,
-    space: &Space<Window>,
     store: &mut BorderStore,
-    output_loc: Point<i32, Logical>,
     config: &Config,
-) -> Vec<AbyssRenderElement> {
+) -> Option<smithay::backend::renderer::gles::GlesPixelProgram> {
     let shadow = &config.decoration.shadow;
     if !shadow.enabled || shadow.range <= 0 {
-        return Vec::new();
+        return None;
     }
     if store.shadow.is_none() {
         match effects::compile_shadow(renderer) {
             Ok(program) => store.shadow = Some(program),
             Err(err) => {
                 tracing::warn!(?err, "compiling the shadow shader; shadows disabled");
-                return Vec::new();
+                return None;
             }
         }
     }
-    let Some(program) = store.shadow.clone() else {
-        return Vec::new();
-    };
-
-    // The shadow sits outside the border, so it grows from the bordered rect.
-    let inset = config.general.border_size;
-    let range = shadow.range;
-    let mut out = Vec::new();
-    for window in space.elements() {
-        let Some(mut geo) = space.element_geometry(window) else {
-            continue;
-        };
-        geo.loc += store.anim.offset(window);
-        let area = Rectangle::new(
-            (
-                geo.loc.x - output_loc.x - inset - range,
-                geo.loc.y - output_loc.y - inset - range,
-            )
-                .into(),
-            (geo.size.w + 2 * (inset + range), geo.size.h + 2 * (inset + range)).into(),
-        );
-        out.push(AbyssRenderElement::Shader(effects::shadow_element(
-            program.clone(),
-            area,
-            range as f32,
-            config.decoration.rounding as f32,
-        )));
-    }
-    out
+    store.shadow.clone()
 }
 
-fn border_elements(
-    space: &Space<Window>,
+/// One drop shadow around a window at `geo` (global, animation offset already
+/// applied), grown from its bordered rect (COMP-02 §9).
+fn shadow_element(
+    program: &smithay::backend::renderer::gles::GlesPixelProgram,
+    geo: Rectangle<i32, Logical>,
+    output_loc: Point<i32, Logical>,
+    config: &Config,
+) -> AbyssRenderElement {
+    // The shadow sits outside the border, so it grows from the bordered rect.
+    let inset = config.general.border_size;
+    let range = config.decoration.shadow.range;
+    // It hugs the border ring's outer edge, whose radius is the window's plus
+    // the border width (see `push_border`); square stays square.
+    let radius = match config.decoration.rounding {
+        r if r > 0 => r + inset.max(0),
+        _ => 0,
+    };
+    let area = Rectangle::new(
+        (
+            geo.loc.x - output_loc.x - inset - range,
+            geo.loc.y - output_loc.y - inset - range,
+        )
+            .into(),
+        (geo.size.w + 2 * (inset + range), geo.size.h + 2 * (inset + range)).into(),
+    );
+    AbyssRenderElement::Shader(effects::shadow_element(
+        program.clone(),
+        area,
+        range as f32,
+        radius as f32,
+    ))
+}
+
+/// Per-frame border state shared by every window on one output.
+struct BorderFrame {
+    width: i32,
+    radius: i32,
+    output_loc: Point<i32, Logical>,
+    scale: Scale<f64>,
+    /// The ring program when the window is rounded; `None` draws four quads.
+    ring: Option<smithay::backend::renderer::gles::GlesPixelProgram>,
+}
+
+/// Set up this frame's borders and drop the stored ones of windows that are
+/// gone; `None` when `border-size` is off (COMP-02 §9).
+fn border_frame(
+    renderer: &mut GlesRenderer,
     store: &mut BorderStore,
     output_loc: Point<i32, Logical>,
     scale: Scale<f64>,
+    output: &Output,
     config: &Config,
-) -> Vec<AbyssRenderElement> {
+    live: &[Window],
+) -> Option<BorderFrame> {
     let width = config.general.border_size;
     if width <= 0 {
         store.borders.clear();
-        return Vec::new();
+        store.rings.clear();
+        return None;
     }
-    let live: Vec<Window> = space.elements().cloned().collect();
     store.borders.retain(|w, _| live.contains(w));
+    store.rings.retain(|w, _| live.contains(w));
 
-    let mut out = Vec::new();
-    for window in live {
-        let Some(mut geo) = space.element_geometry(&window) else {
-            continue;
-        };
-        geo.loc += store.anim.offset(&window);
-        // The `border` animation crossfades this on focus change; with the
-        // animation off it is the focused/unfocused colour outright.
-        let color = store
-            .anim
-            .border_color(&window, config.general.col_active, config.general.col_inactive);
-        // Outer rect: the tile, with the window inset by `width` on every side.
-        let outer = Rectangle::new(
-            // Window geometry is global; elements are output-local.
-            (geo.loc.x - width - output_loc.x, geo.loc.y - width - output_loc.y).into(),
-            (geo.size.w + 2 * width, geo.size.h + 2 * width).into(),
-        );
-        let quads = [
-            // top, bottom, left, right
-            Rectangle::new(outer.loc, (outer.size.w, width).into()),
-            Rectangle::new(
-                (outer.loc.x, outer.loc.y + outer.size.h - width).into(),
-                (outer.size.w, width).into(),
-            ),
-            Rectangle::new(
-                (outer.loc.x, outer.loc.y + width).into(),
-                (width, (outer.size.h - 2 * width).max(0)).into(),
-            ),
-            Rectangle::new(
-                (outer.loc.x + outer.size.w - width, outer.loc.y + width).into(),
-                (width, (outer.size.h - 2 * width).max(0)).into(),
-            ),
-        ];
-        let buffers = store
-            .borders
-            .entry(window)
-            .or_insert_with(|| std::array::from_fn(|i| SolidColorBuffer::new(quads[i].size, color)));
-        for (buffer, quad) in buffers.iter_mut().zip(quads) {
-            buffer.update(quad.size, color);
-            out.push(AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
-                buffer,
-                phys(quad.loc, scale),
-                scale,
-                1.0,
-                Kind::Unspecified,
-            )));
+    // The ring only exists where `window_elements` actually rounds the window:
+    // same radius, and the same fallback to square corners on an output whose
+    // transform the mask does not handle (`effects::fb_y_mirrored`), so the
+    // border and the window it frames never disagree.
+    let radius = config.decoration.rounding;
+    let rounds = radius > 0
+        && effects::fb_y_mirrored(output.current_transform()).is_some()
+        && output.current_mode().is_some();
+    if rounds && store.ring.is_none() {
+        match effects::compile_border(renderer) {
+            Ok(program) => store.ring = Some(program),
+            Err(err) => tracing::warn!(?err, "compiling the border-ring shader; square borders"),
         }
     }
-    out
+    let ring = store.ring.clone().filter(|_| rounds);
+    if ring.is_some() {
+        store.borders.clear();
+    } else {
+        store.rings.clear();
+    }
+    Some(BorderFrame {
+        width,
+        radius,
+        output_loc,
+        scale,
+        ring,
+    })
+}
+
+/// One window's border: a single ring whose inner edge follows the window's
+/// rounded corners, or four solid quads (COMP-02 §9). `geo` is global with the
+/// animation offset applied. The stored element is reused so its Id, and with
+/// it damage tracking, is stable across frames.
+fn push_border(
+    store: &mut BorderStore,
+    frame: &BorderFrame,
+    window: &Window,
+    geo: Rectangle<i32, Logical>,
+    config: &Config,
+    out: &mut Vec<AbyssRenderElement>,
+) {
+    let BorderFrame {
+        width,
+        radius,
+        output_loc,
+        scale,
+        ref ring,
+    } = *frame;
+    // The `border` animation crossfades this on focus change; with the
+    // animation off it is the focused/unfocused colour outright.
+    let color = store
+        .anim
+        .border_color(window, config.general.col_active, config.general.col_inactive);
+    // Outer rect: the tile, with the window inset by `width` on every side.
+    let outer = Rectangle::new(
+        // Window geometry is global; elements are output-local.
+        (geo.loc.x - width - output_loc.x, geo.loc.y - width - output_loc.y).into(),
+        (geo.size.w + 2 * width, geo.size.h + 2 * width).into(),
+    );
+    if let Some(program) = ring {
+        let [r, g, b, a] = color;
+        let params = [
+            r,
+            g,
+            b,
+            a,
+            radius as f32,
+            width as f32,
+            scale.x.max(scale.y) as f32,
+        ];
+        let uniforms = || effects::border_uniforms(color, params[4], params[5], params[6]);
+        let (element, applied) = store.rings.entry(window.clone()).or_insert_with(|| {
+            (
+                PixelShaderElement::new(program.clone(), outer, None, 1.0, uniforms(), Kind::Unspecified),
+                params,
+            )
+        });
+        element.resize(outer, None);
+        if *applied != params {
+            element.update_uniforms(uniforms());
+            *applied = params;
+        }
+        out.push(AbyssRenderElement::Shader(element.clone()));
+        return;
+    }
+    let quads = [
+        // top, bottom, left, right
+        Rectangle::new(outer.loc, (outer.size.w, width).into()),
+        Rectangle::new(
+            (outer.loc.x, outer.loc.y + outer.size.h - width).into(),
+            (outer.size.w, width).into(),
+        ),
+        Rectangle::new(
+            (outer.loc.x, outer.loc.y + width).into(),
+            (width, (outer.size.h - 2 * width).max(0)).into(),
+        ),
+        Rectangle::new(
+            (outer.loc.x + outer.size.w - width, outer.loc.y + width).into(),
+            (width, (outer.size.h - 2 * width).max(0)).into(),
+        ),
+    ];
+    let buffers = store
+        .borders
+        .entry(window.clone())
+        .or_insert_with(|| std::array::from_fn(|i| SolidColorBuffer::new(quads[i].size, color)));
+    for (buffer, quad) in buffers.iter_mut().zip(quads) {
+        buffer.update(quad.size, color);
+        out.push(AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
+            buffer,
+            phys(quad.loc, scale),
+            scale,
+            1.0,
+            Kind::Unspecified,
+        )));
+    }
 }
 
 /// Send frame callbacks to everything that was just drawn.

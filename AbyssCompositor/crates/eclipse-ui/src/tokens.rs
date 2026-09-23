@@ -29,6 +29,23 @@ const fn white(a: f32) -> Color {
     }
 }
 
+/// `fg` composited over an opaque `bg` (Porter-Duff "over", assuming
+/// `bg.a == 1.0`). Used once, for [`color::GLASS_DEEP_BACKED`]: a floating
+/// surface's translucent tint is meant to sit over the compositor's blur
+/// backdrop, but that backdrop is a purely compositor-side decision the
+/// client is never told about (BLUR-01), so when it is off there is nothing
+/// behind the tint. Pre-compositing it over an opaque token here gives the
+/// same tint a floor that holds regardless.
+const fn over_opaque(fg: Color, bg: Color) -> Color {
+    let keep = 1.0 - fg.a;
+    Color {
+        r: fg.r * fg.a + bg.r * keep,
+        g: fg.g * fg.a + bg.g * keep,
+        b: fg.b * fg.a + bg.b * keep,
+        a: 1.0,
+    }
+}
+
 pub mod color {
     use super::{rgb, white, Color};
 
@@ -55,6 +72,10 @@ pub mod color {
         a: 0.62,
         ..rgb(0x17140f)
     };
+    /// [`GLASS_DEEP`], pre-composited over [`SURFACE_1`] so the result is
+    /// opaque. Use this, not `GLASS_DEEP` directly, for a surface's own
+    /// background — see the note on [`super::over_opaque`] (BLUR-01).
+    pub const GLASS_DEEP_BACKED: Color = super::over_opaque(GLASS_DEEP, SURFACE_1);
     /// The ground under a floating sheet that must stay readable over any
     /// wallpaper — a context menu, a tray drawer. Nearly opaque on purpose:
     /// a menu is a mark rail, and a mark rail that lets the desktop through
@@ -233,11 +254,16 @@ pub mod bar {
     /// the strip into a frame around that panel.
     pub const PILL_H: f32 = 40.0;
     /// Air between the bar's sheet and the edges of the strip it reserves.
+    ///
+    /// Applied as layer-shell margin, never as padding inside the surface:
+    /// the compositor blurs the whole surface at `bar.rounding`, so any air
+    /// drawn inside it shows as a blurred rim around the pill.
     pub const MARGIN_X: f32 = 10.0;
     pub const MARGIN_Y: f32 = 6.0;
     /// The y of the bar sheet's bottom edge, in surface-local coordinates:
-    /// where a popup anchored *below a cell* begins.
-    pub const SHEET_BOTTOM: f32 = MARGIN_Y + PILL_H;
+    /// where a popup anchored *below a cell* begins. The sheet fills its
+    /// surface, so this is the sheet's own height.
+    pub const SHEET_BOTTOM: f32 = PILL_H;
     /// Padding at the far left and far right of the row.
     pub const EDGE: f32 = 8.0;
     /// Gap between two cells of the same zone.

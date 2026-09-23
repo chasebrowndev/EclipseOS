@@ -11,6 +11,7 @@ to it yet, and an entry with no proposal is more honest than one with a guess.
 Found 2026-09-11 by `eclipse-ui-prober` against the recomposed launcher.
 LAUNCH-01 through LAUNCH-04 were fixed on 2026-09-13 and removed from this file.
 RAISE-01 was fixed on 2026-09-18 and removed.
+BLUR-01, LAUNCH-05, and TERM-01 were fixed on 2026-09-22 and removed.
 
 ---
 
@@ -44,99 +45,6 @@ function), all unverified:
 **Proposed fix:** none. Blur is due for a major rework; the rework should
 cover the three points above and add a test that element geometry equals the
 region at scales 1.5 and 2.0. Workaround: disable blur.
-
----
-
-## BLUR-01 — the launcher and notification panels are unreadable with blur off
-
-**Severity: design.** Not a crash; a visual dependency between two independent
-config toggles that only one side knows about.
-
-The launcher and notification popups (`eclipse-launcher`, `eclipse-toasts`) paint their panel
-background as a translucent dark fill (roughly `rgba(0,0,0,0.6)`), assuming
-the compositor's dual-Kawase backdrop (`crates/abyss/src/render/blur.rs`,
-COMP-02 §9) fills in behind them per `shows_through`
-(`crates/abyss/src/render/mod.rs:154`). With `decoration.blur.enabled` false —
-previously the shipped default in `crates/abyss/src/config/mod.rs:288`, now
-flipped to `true` — nothing renders behind the translucent fill, so the panel
-alpha-blends over whatever is underneath and reads as a flat dark rectangle,
-not the intended frosted-glass panel. Reproduce with blur off
-(`decoration { blur { enabled #false } }` in config): open the launcher or
-trigger a notification.
-
-Flipping the shipped default masks this for anyone who never touches the
-setting, but a user who turns blur off (perf, preference, unsupported GPU
-path) still gets a broken-looking panel with no visual cause pointing back to
-that toggle. **Proposed fix:** either give the launcher/notification panels a
-solid, non-blur-dependent fallback background when blur is off (frontend,
-`eclipse-frontend` territory — `crates/eclipse-launcher/src/view.rs` and
-the notification view), or have the compositor refuse `shows_through` in a
-way that degrades to a flat but *intentionally styled* fill rather than
-leaving the client's own translucent color exposed unblurred. No one has
-committed to either yet.
-
----
-
-## LAUNCH-05 — a clipped note butts against the selected row's id
-
-**Severity: cosmetic. Uncertain whether in scope.**
-
-At 285 matches the note column's clip edge meets the selected row's mono
-`.desktop` id with no visible gap: `Information about the Xfce Desktop Ex`
-followed by `xfce4-about` reads as one string.
-`crates/eclipse-launcher/src/view.rs:221` already adds `space::CARD` of
-right padding for exactly this reason, and at width 560 it is not enough for
-the longest comments. May simply be what clipping looks like.
-
----
-
-## TERM-01 — `Terminal=true` entries are indexed, shown, and then refused
-
-**Severity: design.** Not a crash; a category of result that cannot ever
-succeed, occupying a fixed and scarce number of rows.
-
-`apps::entry` records `Terminal` off the `.desktop` file
-(`crates/eclipse-services/src/apps.rs:159`) because the indexer parses every
-key, and `apps::launch` refuses at the bottom
-(`crates/eclipse-services/src/apps.rs:275`) with `ErrorKind::Unsupported` and
-the message `entry wants a terminal`. The refusal is defensible on its own —
-its test, `a_terminal_entry_refuses_rather_than_disappearing`, argues correctly
-that spawning into no terminal leaves a process the human cannot see or reach —
-but it is a runtime apology for something that should never have been indexed.
-
-The launcher draws 8 rows and the index holds 285 entries, so every `htop` /
-`btop` / `ncspot` row is a slot a launchable application did not get — the
-scroll fix made the rows reachable, not useful.
-
-**Proposed fix — one config key naming a terminal emulator command, unset by
-default:**
-
-- **Unset (the default):** `Terminal=true` entries are dropped during indexing.
-  They never reach `matched`, never occupy a row, and need no note and no tint.
-- **Set:** they launch through it (`$term -e <argv>`) and render as ordinary
-  rows with no special casing at all.
-
-A command rather than a `show_terminal_apps` bool: a bool would put the rows
-back and still refuse to launch them, making the lie configurable. Naming the
-emulator is what makes them work, and "is the key set" is then the visibility
-rule for free. The cost is that it is a string key, so `eclipse-settings`
-renders it as a text field rather than a toggle.
-
-What this removes: the greyed row state, the "needs a terminal" note, the
-`ErrorKind::Unsupported` branch, and the terminal-row tint rules the
-LAUNCH-04 fix added. `apps::launch` keeps its error
-return for genuinely broken entries (`entry has no command`), which is what it
-is actually good for.
-
-**Open, and the reason this is still a proposal:** the key placement.
-`crates/eclipse-launcher` reads no configuration today — there is no `Config` in
-`lib.rs` or `app.rs`. Putting the key in the abyss KDL config
-(COMP-13) means the launcher must fetch it over `eclipse-ipc`, which is new
-plumbing for the crate; the payoff is that `eclipse-settings/src/schema.rs`
-builds its controls from `get_config {schema: true}` with no hand-written key
-list, so the settings control appears on its own and `tests/coverage.rs`
-enforces that it can be rendered. Keeping it local to the launcher skips the
-IPC work and does not appear in settings at all.
 
 ---
 
@@ -255,6 +163,86 @@ and enable `iwd.service` rather than relying on D-Bus activation.
   the only reason any of the above could be diagnosed remotely rather than read
   off a photographed screen. Worth deciding whether a headless-debuggable image
   is the default.
+
+---
+
+# Updating a live install to a new build — 2026-09-22
+
+Two connected incidents from taking a running desktop from a stale
+independently-`pacman`-installed build to a fresh `cargo build --release` +
+`install-session.sh` checkout. Both are process/packaging traps, not crate
+bugs, but the second one cost real diagnostic time and the mechanism is worth
+keeping on record.
+
+## PKG-01 — a stale `eclipseos-desktop`/`eclipseos-meta` pacman install fights the source build — FIXED
+
+**Severity: correctness.** Two taskbars rendered at once after a rebuild.
+
+The machine had `eclipseos-desktop` and `eclipseos-meta` installed via pacman
+from before commit `0eddb2b` (the hyperion rename/split). Their payload
+included the old-named `eclipse-bar.service` / `/usr/local/bin/eclipse-bar`,
+enabled independently of the git checkout. Building and installing the
+current source (`hyperion.service` / `/usr/local/bin/hyperion`) added the new
+bar alongside the old one instead of replacing it — nothing in
+`install-session.sh` knows to disable units it didn't itself enable, and
+pacman-owned files aren't touched by a source install at all. Both bars ran
+and painted, hence "two bars."
+
+Fixed by `sudo pacman -R eclipseos-desktop eclipseos-meta` to remove the
+pacman-owned copy entirely, leaving only the source-installed
+`hyperion.service`. `pacman -R eclipseos-desktop` alone refused
+(`eclipseos-meta` depends on it), which is what forced both packages out
+together — see PKG-02 for what that dependency pairing actually cost.
+
+**Lesson:** a machine that has ever had the pacman packages installed is not
+the same machine as one built purely from source, and `install-session.sh`
+does not reconcile the two. Worth a check in the installer (or a note in
+`docs/BUILDING.md`) that flags pacman-owned `eclipseos-*` packages before a
+from-source install proceeds.
+
+## PKG-02 — removing `eclipseos-desktop` cascade-removed `eclipseos-meta`, which silently deleted the graphical greeter — FIXED (pending reboot verification)
+
+**Severity: correctness, high blast radius.** No graphical login after the
+next reboot; degrades to a plain-text `agreety` shell prompt with no error
+pointing at the cause.
+
+`eclipseos-meta` is not just metadata about the desktop packages — it also
+owns the entire greeter chain: a systemd drop-in
+(`/usr/lib/systemd/system/greetd.service.d/10-eclipseos.conf`) that points
+`greetd` at an EclipseOS-specific config via `--config`, plus the config tree
+itself (`/etc/eclipse/greetd/{config.toml,regreet.toml,regreet.css}`) and the
+greeter background. `pacman -R eclipseos-desktop` alone fails because
+`eclipseos-meta` depends on it (PKG-01), so removing the stale desktop
+package forces `eclipseos-meta` out too — deleting the drop-in and the config
+tree as an unrelated side effect of fixing the two-bars bug. `greetd` then
+fell back to its own package-default `/etc/greetd/config.toml`
+(`agreety --cmd /bin/sh`), which was never touched and is still on disk,
+so nothing about *that* file looked wrong.
+
+**What made this hard to diagnose:** no pacman hook or scriptlet announced
+the change, and the obvious suspect file
+(`/etc/greetd/config.toml`) never changed — its mtime predates the whole
+session. The actual mechanism (`greetd -c/--config`, set via a systemd
+drop-in, both owned by `eclipseos-meta` rather than `eclipseos-desktop`) only
+surfaced by reading `greetd --help` and cross-referencing
+`pacman -Qlp /var/cache/pacman/pkg/eclipseos-{desktop,meta}-*.pkg.tar.zst`
+against the still-present package cache archives — the packages were gone
+from the system but their manifests and contents were still recoverable from
+`/var/cache/pacman/pkg/`.
+
+**Fix applied:** restored only `eclipseos-meta`'s files
+(`etc/eclipse/greetd/`, the systemd drop-in, and the greeter background) from
+the cached `.pkg.tar.zst` via `bsdtar -xpf ... -C /`, followed by
+`systemctl daemon-reload` — deliberately *not* a `pacman -S` reinstall, which
+would have pulled `eclipseos-desktop` back in as a hard dependency and risked
+resurrecting the old `eclipse-bar.service` from PKG-01.
+
+**Lesson:** `eclipseos-meta` bundling the greeter (login-critical, needed by
+everyone) with desktop package metadata (replaced wholesale by the hyperion
+split) means removing either one for an unrelated reason can silently take
+the other down. Worth considering whether the greeter drop-in/config belongs
+in its own package with no dependency edge to `eclipseos-desktop`, so a
+desktop package swap can never touch login.
 
 ---
 

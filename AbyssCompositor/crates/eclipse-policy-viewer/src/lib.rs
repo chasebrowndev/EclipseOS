@@ -6,5 +6,6 @@
 //! be able to widen an allowlist, so there is no edit path here to add later.
 
 pub mod app;
+pub mod conn;
 pub mod read;
 pub mod view;

@@ -19,4 +19,5 @@ path = "src/main.rs"
 [dependencies]
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
 eclipse-ui = { path = "../eclipse-ui" }
+eclipse-ipc = { path = "../eclipse-ipc" }
 kdl.workspace = true

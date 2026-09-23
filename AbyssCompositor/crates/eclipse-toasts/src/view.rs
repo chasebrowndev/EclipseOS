@@ -57,12 +57,12 @@ pub fn height(drawn: &[Toast]) -> u32 {
 pub fn view(app: &crate::app::App) -> Element<'_, Message, Theme> {
     let mut stack = Column::new().spacing(GAP).padding(GAP);
     for toast in app.drawn() {
-        stack = stack.push(card(&toast.notification));
+        stack = stack.push(card(&toast.notification, app.glass_radius));
     }
     container(stack).width(Length::Fixed(WIDTH as f32)).into()
 }
 
-fn card(notification: &Notification) -> Element<'_, Message, Theme> {
+fn card(notification: &Notification, radius: f32) -> Element<'_, Message, Theme> {
     let mut body = Column::new();
 
     // Critical is the one thing allowed off the neutral palette here, for the
@@ -128,7 +128,7 @@ fn card(notification: &Notification) -> Element<'_, Message, Theme> {
             .width(Length::Fill)
             .height(Length::Fixed(card_height(notification)))
             .padding(space::CARD)
-            .style(eclipse_ui::theme::surface),
+            .style(eclipse_ui::theme::surface(radius)),
     )
     .on_press(Message::Dismiss(notification.id))
     .into()

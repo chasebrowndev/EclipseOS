@@ -331,11 +331,19 @@ pub const TABLE: &[Key] = &[
         "Tray ids never shown, on the taskbar or in its overflow drawer. \
        Hidden wins over pinned when an id is in both.",
     ),
+    k(
+        "bar.rounding",
+        int(0, 512),
+        Int(20),
+        Abyss,
+        Live,
+        "Corner radius in logical px for the taskbar's own blur backdrop.",
+    ),
     // decoration
     k(
         "decoration.rounding",
         int(0, 512),
-        Int(0),
+        Int(13),
         Abyss,
         Live,
         "Corner radius in logical px; 0 disables.",
@@ -525,6 +533,16 @@ pub const TABLE: &[Key] = &[
         "`auto`, a /dev/dri/… path, or `pci:DDDD:BB:DD.F`. The CLI flag and \
        ECLIPSE_RENDER_DEVICE both override it.",
     ),
+    k(
+        "misc.terminal-command",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Terminal emulator used to launch `Terminal=true` .desktop entries \
+       (`$term -e <argv>`). Unset: those entries are dropped from the app \
+       index rather than shown and refused.",
+    ),
     // --- policy-owned: the security surface -------------------------------
     k(
         "misc.scripted-input",
@@ -673,6 +691,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.position" => V::Str(position_name(c.bar.position).into()),
         "bar.tray.pinned" => c.bar.tray.pinned.as_deref().map_or(V::Null, list),
         "bar.tray.hidden" => list(&c.bar.tray.hidden),
+        "bar.rounding" => V::Int(c.bar.rounding as i64),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.active-opacity" => V::Float(c.decoration.active_opacity as f64),
         "decoration.inactive-opacity" => V::Float(c.decoration.inactive_opacity as f64),
@@ -705,6 +724,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "input.touchpad.tap-to-click" => V::Bool(c.input.touchpad.tap_to_click),
         "input.touchpad.dwt" => V::Bool(c.input.touchpad.dwt),
         "misc.render-device" => s(&c.misc.render_device),
+        "misc.terminal-command" => s(&c.misc.terminal_command),
         "misc.scripted-input" => V::Bool(c.misc.scripted_input),
         "clipboard.data-control-allow" => list(&c.clipboard.data_control_allow),
         "capture.allow" => list(&c.capture.allow),
