@@ -7,6 +7,7 @@
 //! because the compositor did.
 
 use eclipse_ipc::{Client, Error, EventKind};
+use eclipse_ui::tokens::popup::Anchor;
 use serde_json::{json, Value};
 
 use crate::model::{parse_focused, parse_windows, parse_workspaces, Snapshot};
@@ -36,6 +37,13 @@ pub struct BarConfig {
     pub fold_duration_ms: u32,
     pub fold_curve: FoldCurve,
     pub position: BarPosition,
+    /// `bar.clock.hour-12`: `11:15 PM` rather than `23:15`.
+    pub hour_12: bool,
+    /// `bar.clock.date-mdy`: `9/12/26` rather than ISO `2026-09-12`.
+    pub date_mdy: bool,
+    /// `bar.popup-anchor`: where every popup the bar owns grows from — the
+    /// context menu and the tray drawers alike, one setting for all of them.
+    pub popup_anchor: Anchor,
 }
 
 /// Where each tray entry lives. `pinned: None` is "unset" — the taskbar's own
@@ -96,6 +104,9 @@ impl Default for BarConfig {
             fold_duration_ms: 150,
             fold_curve: FoldCurve::EaseOut,
             position: BarPosition::Top,
+            hour_12: eclipse_ui::tokens::clock::HOUR_12,
+            date_mdy: eclipse_ui::tokens::clock::DATE_MDY,
+            popup_anchor: eclipse_ui::tokens::popup::ANCHOR,
         }
     }
 }
@@ -161,7 +172,6 @@ impl Conn {
             workspaces,
             windows,
             focused,
-            clock: crate::clock::time(),
         }
     }
 
@@ -214,7 +224,7 @@ impl Conn {
         (out, focused)
     }
 
-    /// The two `bar.*` keys. A missing key keeps its default rather than
+    /// The scalar `bar.*` keys. A missing key keeps its default rather than
     /// failing the fetch: an older compositor without the section must still
     /// leave the bar usable.
     pub fn bar_config(&mut self) -> BarConfig {
@@ -264,6 +274,21 @@ impl Conn {
                 Some("bar.position") => match value.and_then(Value::as_str) {
                     Some("bottom") => cfg.position = BarPosition::Bottom,
                     Some("top") => cfg.position = BarPosition::Top,
+                    _ => {}
+                },
+                Some("bar.clock.hour-12") => {
+                    if let Some(b) = value.and_then(Value::as_bool) {
+                        cfg.hour_12 = b;
+                    }
+                }
+                Some("bar.clock.date-mdy") => {
+                    if let Some(b) = value.and_then(Value::as_bool) {
+                        cfg.date_mdy = b;
+                    }
+                }
+                Some("bar.popup-anchor") => match value.and_then(Value::as_str) {
+                    Some("cell") => cfg.popup_anchor = Anchor::Cell,
+                    Some("pointer") => cfg.popup_anchor = Anchor::Pointer,
                     _ => {}
                 },
                 _ => {}

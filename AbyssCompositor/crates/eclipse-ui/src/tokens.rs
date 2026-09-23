@@ -200,6 +200,8 @@ pub mod space {
     pub const FIELD_W: f32 = 220.0;
     /// Between the two halves of one control (track and entry).
     pub const CONTROL_GAP: f32 = 10.0;
+    /// Between the pills of one segmented choice.
+    pub const PILL_GAP: f32 = 6.0;
     /// A hero's level bar: half the content column, so the reading beside it
     /// keeps the other half.
     pub const HERO_METER_W: f32 = 360.0;
@@ -441,9 +443,9 @@ pub mod secret {
     pub const TITLE_GAP: f32 = 4.0;
 }
 
-/// Clock format. Taste, not mechanism — these are the two knobs a config file
-/// will one day set, and until it exists they live here rather than as `if`s
-/// buried in the clock module.
+/// Clock format defaults. Taste, not mechanism: the live values are
+/// `bar.clock.hour-12` and `bar.clock.date-mdy` in `abyss.kdl`, and these are
+/// what the bar uses when the keys are unset or the compositor is not there.
 pub mod clock {
     /// 12-hour time with a meridiem suffix (`11:15 PM`) rather than 23:15.
     pub const HOUR_12: bool = true;
@@ -534,6 +536,8 @@ pub mod popup {
         Pointer,
     }
 
-    /// The default: below the cell.
+    /// The default: below the cell. The live value is `bar.popup-anchor`
+    /// (`"cell"` / `"pointer"`); this is what applies when it is unset or the
+    /// compositor is not there.
     pub const ANCHOR: Anchor = Anchor::Cell;
 }

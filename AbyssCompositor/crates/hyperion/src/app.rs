@@ -946,19 +946,11 @@ fn items(app: &App, handle: u64) -> Vec<Item> {
     items
 }
 
-/// Open the context menu for a window, under the pointer.
-///
-/// The anchor rectangle is the pointer itself, in the *parent's* local
-/// coordinates: a one-pixel box at the tracked cursor, so the menu grows out
-/// of the tip rather than dropping off the bar's bottom edge. The gravity
-/// pushes it down and to the right from there, because the bar is anchored to
-/// the top of the screen. A missing parent means no event has named the bar's
-/// surface yet, which cannot happen after a click — but it is not worth a
-/// panic.
-/// The rectangle a popup grows from, honouring [`tokens::popup::ANCHOR`].
+/// The rectangle a popup grows from, honouring `bar.popup-anchor`
+/// ([`BarConfig::popup_anchor`], defaulting to [`tokens::popup::ANCHOR`]).
 ///
 /// One function for every popup the bar owns, so that the context menu and the
-/// tray drawers cannot drift apart, and so that flipping the token flips all
+/// tray drawers cannot drift apart, and so that flipping the setting flips all
 /// of them. `span` is the clicked cell's horizontal extent and `edge` picks
 /// which end of it the popup hangs from — the end the popup's gravity grows
 /// *away* from, so the sheet stays on screen.
@@ -968,7 +960,7 @@ fn items(app: &App, handle: u64) -> Vec<Item> {
 /// business and differs between compositors. Popup *size* is still fixed at
 /// creation; this only moves it.
 fn anchor(app: &App, span: Option<(f32, f32)>, edge: Edge) -> (i32, i32, i32, i32) {
-    let point = match (tokens::popup::ANCHOR, span) {
+    let point = match (app.bar.popup_anchor, span) {
         (tokens::popup::Anchor::Cell, Some((left, right))) => {
             let x = match edge {
                 Edge::Left => left,
@@ -1301,7 +1293,9 @@ fn compositor() -> Subscription<Message> {
                             }
                         }
                     }
-                    let now = crate::clock::time();
+                    // Only the minute rollover matters here, so the format
+                    // is whichever; the view formats per `bar.clock.*`.
+                    let now = crate::clock::time(false);
                     if now != minute {
                         minute = now;
                         if !send(&mut sender, Message::Refresh) {

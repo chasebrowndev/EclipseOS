@@ -861,9 +861,13 @@ fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Theme> {
 
         Control::Segmented(values) => {
             let current = key.value.as_str().unwrap_or_default().to_string();
-            let mut r = Row::new().spacing(6);
+            let mut r = Row::new().spacing(space::PILL_GAP);
             for v in values {
-                r = r.push(pill(v, *v == current, Message::Chose(path.clone(), v.clone())));
+                r = r.push(pill(
+                    crate::schema::value_label(v),
+                    *v == current,
+                    Message::Chose(path.clone(), v.clone()),
+                ));
             }
             r.into()
         }

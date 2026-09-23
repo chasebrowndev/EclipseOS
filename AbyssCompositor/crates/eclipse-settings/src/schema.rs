@@ -85,6 +85,22 @@ pub fn control_for(ty: &str, constraints: &Value) -> Option<Control> {
     }
 }
 
+/// How an enum value reads on its pill. The wire spelling is a config token
+/// (`cell`), right for `abyss.kdl` and wrong for a person, so the few that do
+/// not read as themselves get a display form here. Keyed on the value, not on
+/// a key path: this is not a key list, and a value with no entry — every value
+/// the compositor grows later — reads as itself.
+pub fn value_label(value: &str) -> &str {
+    match value {
+        // `bar.popup-anchor`: the chip is what the user clicked, so "cell"
+        // is named after it. `pointer` reads the same way for
+        // `floating-placement`, which shares the spelling.
+        "cell" => "below chip",
+        "pointer" => "at pointer",
+        other => other,
+    }
+}
+
 /// One row of `{"keys": [...]}`.
 #[derive(Debug, Clone)]
 pub struct Row {
@@ -186,6 +202,13 @@ mod tests {
             control_for("enum", &json!({ "values": many })),
             Some(Control::Dropdown(_))
         ));
+    }
+
+    #[test]
+    fn enum_values_read_as_words_or_as_themselves() {
+        assert_eq!(value_label("cell"), "below chip");
+        assert_eq!(value_label("pointer"), "at pointer");
+        assert_eq!(value_label("ease-out"), "ease-out");
     }
 
     #[test]

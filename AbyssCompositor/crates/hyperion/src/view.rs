@@ -295,7 +295,7 @@ fn bar_row(app: &crate::app::App) -> Element<'_, Message, Theme> {
         // the fixed zones leave, so tray and clock cannot be pushed off.
         tasks(app),
         tray(app),
-        clock(snapshot),
+        clock(snapshot, &app.bar),
     ]
     .spacing(bar::ZONE_GAP)
     .padding([0.0, bar::EDGE])
@@ -1734,23 +1734,18 @@ pub(crate) fn battery_text(battery: Battery) -> String {
 /// which is what makes the right end read as an end. It is also the one place
 /// the bar admits the compositor is gone — a disconnected bar dims its clock
 /// rather than freezing it.
-fn clock(snapshot: &Snapshot) -> Element<'_, Message, Theme> {
+fn clock<'a>(snapshot: &'a Snapshot, bar: &crate::conn::BarConfig) -> Element<'a, Message, Theme> {
     let tint = if snapshot.connected {
         color::TEXT
     } else {
         color::TEXT_TERTIARY
     };
-    let time = if snapshot.clock.is_empty() {
-        crate::clock::time()
-    } else {
-        snapshot.clock.clone()
-    };
     let stack = column![
-        text(time)
+        text(crate::clock::time(bar.hour_12))
             .size(size::BODY_SMALL)
             .font(font::DATA_MEDIUM)
             .color(tint),
-        text(crate::clock::date())
+        text(crate::clock::date(bar.date_mdy))
             .size(size::MICRO)
             .font(font::DATA)
             .color(color::TEXT_TERTIARY),
