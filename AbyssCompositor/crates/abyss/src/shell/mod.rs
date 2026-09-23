@@ -1943,6 +1943,19 @@ pub fn switch_workspace(state: &mut AbyssState, idx: usize) {
     tracing::info!(workspace = idx, "workspace switched");
 }
 
+/// Switch the focused output to the workspace `step` away from its active one.
+/// Clamped to 1..=10, not wrapped: a swipe past the last workspace does nothing
+/// rather than jumping to the far end.
+pub fn switch_workspace_relative(state: &mut AbyssState, step: isize) {
+    let Some(active) = state.outputs.focused().map(|e| e.active) else {
+        return;
+    };
+    let target = active as isize + 1 + step;
+    if (1..=workspace::COUNT as isize).contains(&target) {
+        switch_workspace(state, target as usize);
+    }
+}
+
 pub fn move_to_workspace(state: &mut AbyssState, idx: usize) {
     if !(1..=workspace::COUNT).contains(&idx) {
         return;

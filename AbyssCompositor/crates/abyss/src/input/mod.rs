@@ -4,16 +4,23 @@
 
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent, KeyState,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, Switch, SwitchState,
-        SwitchToggleEvent,
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent, GestureEndEvent,
+        GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _, InputBackend, InputEvent, KeyState,
+        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, ProximityState, Switch,
+        SwitchState, SwitchToggleEvent, TabletToolButtonEvent, TabletToolEvent, TabletToolProximityEvent,
+        TabletToolTipEvent, TabletToolTipState, TouchEvent, TouchSlot,
     },
     input::{
         keyboard::{FilterResult, Keysym, ModifiersState},
-        pointer::{AxisFrame, ButtonEvent, MotionEvent},
+        pointer::{
+            AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
+            GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
+            GestureSwipeUpdateEvent, MotionEvent,
+        },
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Point, SERIAL_COUNTER},
+    utils::{Logical, Point, Size, SERIAL_COUNTER},
+    wayland::tablet_manager::{TabletDescriptor, TabletSeatTrait},
 };
 
 use crate::state::AbyssState;
@@ -68,6 +75,9 @@ pub enum Action {
     Move(Direction),
     /// 1-based workspace index.
     SwitchWorkspace(usize),
+    /// The workspace after / before the active one on the focused output.
+    WorkspaceNext,
+    WorkspacePrev,
     /// 1-based workspace index.
     MoveToWorkspace(usize),
     /// Move the focused window to display `number`'s currently active
@@ -111,6 +121,49 @@ pub struct Bind {
     pub action: Action,
 }
 
+/// A configured touchpad swipe binding (COMP-04 §2): `fingers` moving in
+/// `direction` runs `action` instead of reaching the app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GestureBind {
+    pub fingers: u32,
+    pub direction: Direction,
+    pub action: Action,
+}
+
+/// A swipe the compositor has claimed at begin. Only the deltas are kept, so
+/// the update path adds two floats and allocates nothing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GestureCapture {
+    pub fingers: u32,
+    pub dx: f64,
+    pub dy: f64,
+}
+
+/// Distance, in libinput's touchpad-scaled pointer units, a claimed swipe has
+/// to travel along its dominant axis before it counts. Below it the swipe was
+/// a hesitation, not a command, and nothing runs.
+pub const SWIPE_THRESHOLD: f64 = 100.0;
+
+/// The direction a finished swipe went: whichever axis moved furthest, if it
+/// moved at least `threshold`. Screen coordinates, so `dy > 0` is down.
+pub fn swipe_direction(dx: f64, dy: f64, threshold: f64) -> Option<Direction> {
+    let (ax, ay) = (dx.abs(), dy.abs());
+    if ax.max(ay) < threshold {
+        return None;
+    }
+    Some(if ax >= ay {
+        if dx < 0.0 {
+            Direction::Left
+        } else {
+            Direction::Right
+        }
+    } else if dy < 0.0 {
+        Direction::Up
+    } else {
+        Direction::Down
+    })
+}
+
 /// `linux/input-event-codes.h`. The selector drags with left and cancels with
 /// right; every other button is swallowed.
 const BTN_LEFT: u32 = 0x110;
@@ -131,7 +184,41 @@ impl AbyssState {
             InputEvent::PointerButton { event } => self.on_pointer_button::<B>(event),
             InputEvent::PointerAxis { event } => self.on_pointer_axis::<B>(event),
             InputEvent::SwitchToggle { event } => self.on_switch::<B>(event),
-            _ => {}
+            InputEvent::TouchDown { event } => self.on_touch_down::<B>(event),
+            InputEvent::TouchMotion { event } => self.on_touch_motion::<B>(event),
+            InputEvent::TouchUp { event } => {
+                self.inject_touch_up(slot_id(event.slot()), event.time_msec());
+            }
+            InputEvent::TouchCancel { .. } => self.on_touch_cancel(),
+            InputEvent::TouchFrame { .. } => {
+                if let Some(touch) = self.seat.get_touch() {
+                    touch.frame(self);
+                }
+            }
+            InputEvent::GestureSwipeBegin { event } => {
+                self.on_swipe_begin(event.fingers(), event.time_msec())
+            }
+            InputEvent::GestureSwipeUpdate { event } => {
+                self.on_swipe_update(event.delta(), event.time_msec());
+            }
+            InputEvent::GestureSwipeEnd { event } => self.on_swipe_end(event.cancelled(), event.time_msec()),
+            InputEvent::GesturePinchBegin { event } => {
+                self.on_pinch_begin(event.fingers(), event.time_msec())
+            }
+            InputEvent::GesturePinchUpdate { event } => self.on_pinch_update(&GesturePinchUpdateEvent {
+                time: event.time_msec(),
+                delta: event.delta(),
+                scale: event.scale(),
+                rotation: event.rotation(),
+            }),
+            InputEvent::GesturePinchEnd { event } => self.on_pinch_end(event.cancelled(), event.time_msec()),
+            InputEvent::GestureHoldBegin { event } => self.on_hold_begin(event.fingers(), event.time_msec()),
+            InputEvent::GestureHoldEnd { event } => self.on_hold_end(event.cancelled(), event.time_msec()),
+            InputEvent::TabletToolProximity { event } => self.on_tablet_proximity::<B>(event),
+            InputEvent::TabletToolAxis { event } => self.on_tablet_axis::<B>(&event),
+            InputEvent::TabletToolTip { event } => self.on_tablet_tip::<B>(event),
+            InputEvent::TabletToolButton { event } => self.on_tablet_button::<B>(event),
+            InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } | InputEvent::Special(_) => {}
         }
     }
 
@@ -198,6 +285,8 @@ impl AbyssState {
             Action::Focus(dir) => shell::focus_direction(self, dir),
             Action::Move(dir) => shell::move_direction(self, dir),
             Action::SwitchWorkspace(n) => shell::switch_workspace(self, n),
+            Action::WorkspaceNext => shell::switch_workspace_relative(self, 1),
+            Action::WorkspacePrev => shell::switch_workspace_relative(self, -1),
             Action::MoveToWorkspace(n) => shell::move_to_workspace(self, n),
             Action::MoveToOutputWorkspace(n) => shell::move_to_output_workspace(self, n),
             Action::AgentOverride => self.agent_override(),
@@ -508,6 +597,20 @@ impl AbyssState {
     }
 
     fn on_pointer_motion_absolute<B: InputBackend>(&mut self, event: B::PointerMotionAbsoluteEvent) {
+        if let Some(pos) = self.absolute_to_global(|size| event.position_transformed(size)) {
+            self.pointer_moved(pos, event.time_msec());
+        }
+    }
+
+    /// Map an absolute device position into global coordinates. `local` turns
+    /// the chosen output's logical size into an output-local position — the
+    /// device's own `position_transformed`. Shared by the absolute pointer,
+    /// touch and the tablet tool, so all three pick the same output and get
+    /// the same overscan correction.
+    fn absolute_to_global(
+        &self,
+        local: impl FnOnce(Size<i32, Logical>) -> Point<f64, Logical>,
+    ) -> Option<Point<f64, Logical>> {
         // Absolute devices are output-relative; use the output the pointer is
         // already on, else the focused one.
         let output = self
@@ -516,10 +619,8 @@ impl AbyssState {
             .next()
             .cloned()
             .or_else(|| self.outputs.focused().map(|e| e.output.clone()));
-        let Some(output) = output else { return };
-        let Some(geometry) = self.space.output_geometry(&output) else {
-            return;
-        };
+        let output = output?;
+        let geometry = self.space.output_geometry(&output)?;
         // The event lands where the *panel* was touched; with overscan the
         // desktop is painted into an inset rect, so invert that map or the
         // pointer sits off by the margin (COMP-03 §2).
@@ -528,15 +629,319 @@ impl AbyssState {
             .by_output(&output)
             .map(|e| e.overscan)
             .unwrap_or_default();
-        let mut local = event.position_transformed(geometry.size);
+        let mut local = local(geometry.size);
         if !overscan.is_zero() {
             let (w, h) = (geometry.size.w.max(1) as f64, geometry.size.h.max(1) as f64);
             let unit = Point::<f64, Logical>::from((local.x / w, local.y / h));
             let unit = overscan.untransform_unit(unit, crate::outputs::mode_size(&output));
             local = (unit.x * w, unit.y * h).into();
         }
-        let pos = local + geometry.loc.to_f64();
-        self.pointer_moved(pos, event.time_msec());
+        Some(local + geometry.loc.to_f64())
+    }
+
+    /// The selector owns the seat (COMP-18 §1.3), so a touch cannot start or
+    /// steer anything behind the dim. Up, cancel and frame still pass, so a
+    /// point already down when the selection began is released normally.
+    fn on_touch_down<B: InputBackend>(&mut self, event: B::TouchDownEvent) {
+        if self.region_select.active() {
+            return;
+        }
+        if let Some(pos) = self.absolute_to_global(|size| event.position_transformed(size)) {
+            self.inject_touch_down(slot_id(event.slot()), pos, event.time_msec());
+        }
+    }
+
+    fn on_touch_motion<B: InputBackend>(&mut self, event: B::TouchMotionEvent) {
+        if self.region_select.active() {
+            return;
+        }
+        if let Some(pos) = self.absolute_to_global(|size| event.position_transformed(size)) {
+            self.inject_touch_motion(slot_id(event.slot()), pos, event.time_msec());
+        }
+    }
+
+    /// libinput gave up on the sequence (a palm, or another grab took over).
+    /// Every point is gone at once, so the down-time bookkeeping goes too.
+    pub(crate) fn on_touch_cancel(&mut self) {
+        self.touch_points.clear();
+        if let Some(touch) = self.seat.get_touch() {
+            touch.cancel(self);
+        }
+    }
+
+    /// Touchpad swipe begin (COMP-04 §2). Who owns the swipe is decided here,
+    /// once: a bound finger count is the compositor's from begin to end, and
+    /// an unbound one is the app's, so no client ever sees half a gesture. The
+    /// region selector claims every swipe, bound or not, for the same reason
+    /// it swallows buttons.
+    fn on_swipe_begin(&mut self, fingers: u32, time: u32) {
+        // Nothing behind the lock sees a gesture, and none runs an action.
+        if self.lock.locked {
+            self.gesture_capture = None;
+            return;
+        }
+        if self.region_select.active() || self.config.gesture_bound(fingers) {
+            self.gesture_capture = Some(GestureCapture {
+                fingers,
+                dx: 0.0,
+                dy: 0.0,
+            });
+            return;
+        }
+        self.gesture_capture = None;
+        let pointer = self.seat.get_pointer().unwrap();
+        pointer.gesture_swipe_begin(
+            self,
+            &GestureSwipeBeginEvent {
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+                fingers,
+            },
+        );
+        pointer.frame(self);
+    }
+
+    fn on_swipe_update(&mut self, delta: Point<f64, Logical>, time: u32) {
+        if let Some(capture) = self.gesture_capture.as_mut() {
+            capture.dx += delta.x;
+            capture.dy += delta.y;
+            return;
+        }
+        if self.lock.locked || self.region_select.active() {
+            return;
+        }
+        let pointer = self.seat.get_pointer().unwrap();
+        pointer.gesture_swipe_update(self, &GestureSwipeUpdateEvent { time, delta });
+        pointer.frame(self);
+    }
+
+    fn on_swipe_end(&mut self, cancelled: bool, time: u32) {
+        if let Some(capture) = self.gesture_capture.take() {
+            // Re-checked at end: the lock or a selection may have come up
+            // while the fingers were moving.
+            if cancelled || self.lock.locked || self.region_select.active() {
+                return;
+            }
+            let action = swipe_direction(capture.dx, capture.dy, SWIPE_THRESHOLD)
+                .and_then(|dir| self.config.gesture_for(capture.fingers, dir))
+                .cloned();
+            if let Some(action) = action {
+                self.run_action(action);
+            }
+            return;
+        }
+        // An app's swipe always gets its end, even under a selection, so it is
+        // never left mid-gesture. Not under the lock: that fails closed.
+        if self.lock.locked {
+            return;
+        }
+        let pointer = self.seat.get_pointer().unwrap();
+        pointer.gesture_swipe_end(
+            self,
+            &GestureSwipeEndEvent {
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+                cancelled,
+            },
+        );
+        pointer.frame(self);
+    }
+
+    /// Pinch and hold are never bound (the spec binds swipes only); they go
+    /// to the pointer focus, except under the lock or a selection. That is
+    /// decided at begin and remembered, like a swipe's claim, so a gesture
+    /// dropped at begin has its end dropped too: no client sees an end
+    /// without a begin.
+    fn gesture_dropped_at_begin(&mut self) -> bool {
+        self.gesture_dropped = self.lock.locked || self.region_select.active();
+        self.gesture_dropped
+    }
+
+    /// The end of a pinch or hold is forwarded only if its begin was, and
+    /// never under the lock (which fails closed even mid-gesture).
+    fn gesture_end_dropped(&mut self) -> bool {
+        std::mem::take(&mut self.gesture_dropped) || self.lock.locked
+    }
+
+    fn on_pinch_begin(&mut self, fingers: u32, time: u32) {
+        if self.gesture_dropped_at_begin() {
+            return;
+        }
+        let pointer = self.seat.get_pointer().unwrap();
+        pointer.gesture_pinch_begin(
+            self,
+            &GesturePinchBeginEvent {
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+                fingers,
+            },
+        );
+        pointer.frame(self);
+    }
+
+    fn on_pinch_update(&mut self, event: &GesturePinchUpdateEvent) {
+        if self.gesture_dropped || self.lock.locked || self.region_select.active() {
+            return;
+        }
+        let pointer = self.seat.get_pointer().unwrap();
+        pointer.gesture_pinch_update(self, event);
+        pointer.frame(self);
+    }
+
+    fn on_pinch_end(&mut self, cancelled: bool, time: u32) {
+        if self.gesture_end_dropped() {
+            return;
+        }
+        let pointer = self.seat.get_pointer().unwrap();
+        pointer.gesture_pinch_end(
+            self,
+            &GesturePinchEndEvent {
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+                cancelled,
+            },
+        );
+        pointer.frame(self);
+    }
+
+    fn on_hold_begin(&mut self, fingers: u32, time: u32) {
+        if self.gesture_dropped_at_begin() {
+            return;
+        }
+        let pointer = self.seat.get_pointer().unwrap();
+        pointer.gesture_hold_begin(
+            self,
+            &GestureHoldBeginEvent {
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+                fingers,
+            },
+        );
+        pointer.frame(self);
+    }
+
+    fn on_hold_end(&mut self, cancelled: bool, time: u32) {
+        if self.gesture_end_dropped() {
+            return;
+        }
+        let pointer = self.seat.get_pointer().unwrap();
+        pointer.gesture_hold_end(
+            self,
+            &GestureHoldEndEvent {
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+                cancelled,
+            },
+        );
+        pointer.frame(self);
+    }
+
+    /// The surface a tablet tool at `pos` talks to. `None` under the lock or
+    /// a selection, which smithay turns into a proximity-out: the tool fails
+    /// closed exactly like the pointer.
+    fn tablet_focus(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+        if self.lock.locked || self.region_select.active() {
+            return None;
+        }
+        self.surface_under(pos)
+    }
+
+    /// Tool in or out of proximity (COMP-06 §1). The tool is added to the
+    /// tablet seat on first sight; smithay keeps it, so later proximity-ins
+    /// find the existing handle. The tablet is resolved here, once, and kept
+    /// for the axis events that follow.
+    fn on_tablet_proximity<B: InputBackend>(&mut self, event: B::TabletToolProximityEvent) {
+        let tablet_seat = self.seat.tablet_seat();
+        let time = event.time_msec();
+        if event.state() == ProximityState::Out {
+            if let Some(tool) = tablet_seat.get_tool(&event.tool()) {
+                tool.proximity_out(time);
+            }
+            self.tablet_in_use = None;
+            return;
+        }
+        let dh = self.display_handle.clone();
+        tablet_seat.add_tool::<AbyssState>(self, &dh, &event.tool());
+        self.tablet_in_use = tablet_seat.get_tablet(&TabletDescriptor::from(&event.device()));
+        // Proximity-in carries a position; deliver it as the first motion,
+        // which is also what sends `proximity_in` to the surface under it.
+        self.on_tablet_axis::<B>(&event);
+    }
+
+    /// Motion plus whichever axes changed. The cursor follows the stylus: it
+    /// is compositor-drawn, and the pointer path is what moves it (and applies
+    /// the lock and the selector to it).
+    fn on_tablet_axis<B: InputBackend>(&mut self, event: &impl TabletToolEvent<B>) {
+        let Some(pos) = self.absolute_to_global(|size| event.position_transformed(size)) else {
+            return;
+        };
+        let time = event.time_msec();
+        self.pointer_moved(pos, time);
+        let pos = self.pointer_location;
+        let Some(tablet) = self.tablet_in_use.clone() else {
+            return;
+        };
+        let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) else {
+            return;
+        };
+        if event.pressure_has_changed() {
+            tool.pressure(event.pressure());
+        }
+        if event.distance_has_changed() {
+            tool.distance(event.distance());
+        }
+        if event.tilt_has_changed() {
+            tool.tilt(event.tilt());
+        }
+        if event.slider_has_changed() {
+            tool.slider_position(event.slider_position());
+        }
+        if event.rotation_has_changed() {
+            tool.rotation(event.rotation());
+        }
+        if event.wheel_has_changed() {
+            tool.wheel(event.wheel_delta(), event.wheel_delta_discrete());
+        }
+        let focus = self.tablet_focus(pos);
+        tool.motion(pos, focus, &tablet, SERIAL_COUNTER.next_serial(), time);
+    }
+
+    /// Tip down is the stylus's click: it focuses and raises what it lands on,
+    /// through the same focus path as the pointer.
+    fn on_tablet_tip<B: InputBackend>(&mut self, event: B::TabletToolTipEvent) {
+        // The tool's focus may predate the lock or selection if it has not
+        // moved since; refuse rather than deliver to it.
+        if self.lock.locked || self.region_select.active() {
+            return;
+        }
+        let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) else {
+            return;
+        };
+        match event.tip_state() {
+            TabletToolTipState::Down => {
+                let pos = self.pointer_location;
+                let action = crate::shell::focus::decide_pointer_focus(
+                    &crate::shell::focus::pointer_focus_ctx(self, pos),
+                );
+                crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Click);
+                tool.tip_down(SERIAL_COUNTER.next_serial(), event.time_msec());
+            }
+            TabletToolTipState::Up => tool.tip_up(event.time_msec()),
+        }
+    }
+
+    fn on_tablet_button<B: InputBackend>(&mut self, event: B::TabletToolButtonEvent) {
+        if self.lock.locked || self.region_select.active() {
+            return;
+        }
+        if let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) {
+            tool.button(
+                event.button(),
+                event.button_state(),
+                SERIAL_COUNTER.next_serial(),
+                event.time_msec(),
+            );
+        }
     }
 
     fn on_pointer_button<B: InputBackend>(&mut self, event: B::PointerButtonEvent) {
@@ -609,6 +1014,12 @@ impl AbyssState {
     }
 }
 
+/// A libinput slot as the id `wl_touch` carries. A single-touch device has
+/// no slot at all; it is the only point, so it is point 0.
+fn slot_id(slot: TouchSlot) -> u32 {
+    u32::try_from(i32::from(slot)).unwrap_or(0)
+}
+
 /// Borrowed xkb settings from the `input` block (COMP-13 §1.2). Rules and model
 /// stay at the xkb defaults; the spec exposes neither.
 pub fn xkb_config(input: &crate::config::Input) -> smithay::input::keyboard::XkbConfig<'_> {
@@ -658,5 +1069,231 @@ pub fn configure_device(device: &mut smithay::reexports::input::Device, input: &
         if device.config_scroll_methods().contains(&ScrollMethod::TwoFinger) {
             let _ = device.config_scroll_set_natural_scroll_enabled(input.touchpad.natural_scroll);
         }
+    }
+}
+
+/// The swipe path end to end, through `process_input_event` on a live state:
+/// a fake backend stands in for libinput, which is the only thing that can
+/// produce a real swipe.
+#[cfg(test)]
+mod gesture_tests {
+    use smithay::backend::input::{
+        Device, DeviceCapability, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
+        GesturePinchEndEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
+        UnusedEvent,
+    };
+
+    use super::*;
+    use crate::shell::focus::state_tests::harness;
+
+    struct Fake;
+
+    #[derive(PartialEq, Eq, Hash)]
+    struct Pad;
+
+    impl Device for Pad {
+        fn id(&self) -> String {
+            "pad".into()
+        }
+        fn name(&self) -> String {
+            "pad".into()
+        }
+        fn has_capability(&self, _: DeviceCapability) -> bool {
+            false
+        }
+        fn usb_id(&self) -> Option<(u32, u32)> {
+            None
+        }
+        fn syspath(&self) -> Option<std::path::PathBuf> {
+            None
+        }
+    }
+
+    struct Begin(u32);
+    struct Update(f64, f64);
+    struct End(bool);
+
+    macro_rules! event {
+        ($($t:ty),*) => {$(
+            impl Event<Fake> for $t {
+                fn time(&self) -> u64 {
+                    0
+                }
+                fn device(&self) -> Pad {
+                    Pad
+                }
+            }
+        )*};
+    }
+    event!(Begin, Update, End);
+
+    impl GestureBeginEvent<Fake> for Begin {
+        fn fingers(&self) -> u32 {
+            self.0
+        }
+    }
+    impl GestureSwipeBeginEvent<Fake> for Begin {}
+    impl GestureSwipeUpdateEvent<Fake> for Update {
+        fn delta_x(&self) -> f64 {
+            self.0
+        }
+        fn delta_y(&self) -> f64 {
+            self.1
+        }
+    }
+    impl GestureEndEvent<Fake> for End {
+        fn cancelled(&self) -> bool {
+            self.0
+        }
+    }
+    impl GestureSwipeEndEvent<Fake> for End {}
+    impl GesturePinchBeginEvent<Fake> for Begin {}
+    impl GesturePinchEndEvent<Fake> for End {}
+    impl GestureHoldBeginEvent<Fake> for Begin {}
+    impl GestureHoldEndEvent<Fake> for End {}
+
+    impl InputBackend for Fake {
+        type Device = Pad;
+        type KeyboardKeyEvent = UnusedEvent;
+        type PointerAxisEvent = UnusedEvent;
+        type PointerButtonEvent = UnusedEvent;
+        type PointerMotionEvent = UnusedEvent;
+        type PointerMotionAbsoluteEvent = UnusedEvent;
+        type GestureSwipeBeginEvent = Begin;
+        type GestureSwipeUpdateEvent = Update;
+        type GestureSwipeEndEvent = End;
+        type GesturePinchBeginEvent = Begin;
+        type GesturePinchUpdateEvent = UnusedEvent;
+        type GesturePinchEndEvent = End;
+        type GestureHoldBeginEvent = Begin;
+        type GestureHoldEndEvent = End;
+        type TouchDownEvent = UnusedEvent;
+        type TouchUpEvent = UnusedEvent;
+        type TouchMotionEvent = UnusedEvent;
+        type TouchCancelEvent = UnusedEvent;
+        type TouchFrameEvent = UnusedEvent;
+        type TabletToolAxisEvent = UnusedEvent;
+        type TabletToolProximityEvent = UnusedEvent;
+        type TabletToolTipEvent = UnusedEvent;
+        type TabletToolButtonEvent = UnusedEvent;
+        type SwitchToggleEvent = UnusedEvent;
+        type SpecialEvent = ();
+    }
+
+    /// Two updates, so the capture has to accumulate rather than keep the last.
+    fn swipe(state: &mut AbyssState, fingers: u32, dx: f64, cancelled: bool) {
+        state.process_input_event::<Fake>(InputEvent::GestureSwipeBegin {
+            event: Begin(fingers),
+        });
+        state.process_input_event::<Fake>(InputEvent::GestureSwipeUpdate {
+            event: Update(dx / 2.0, 0.0),
+        });
+        state.process_input_event::<Fake>(InputEvent::GestureSwipeUpdate {
+            event: Update(dx / 2.0, 0.0),
+        });
+        state.process_input_event::<Fake>(InputEvent::GestureSwipeEnd {
+            event: End(cancelled),
+        });
+    }
+
+    fn active(state: &AbyssState) -> usize {
+        state.outputs.focused().expect("focused output").active
+    }
+
+    #[test]
+    fn a_bound_swipe_switches_workspace_and_is_never_forwarded() {
+        let mut h = harness();
+        let s = &mut h.state;
+        let far = SWIPE_THRESHOLD * 1.5;
+        assert_eq!(active(s), 0);
+
+        // Fingers left: the next workspace. Right: back.
+        swipe(s, 3, -far, false);
+        assert_eq!(active(s), 1);
+        swipe(s, 3, far, false);
+        assert_eq!(active(s), 0);
+        // Clamped at the first workspace, not wrapped to the last.
+        swipe(s, 3, far, false);
+        assert_eq!(active(s), 0);
+
+        // Short of the threshold, or cancelled: nothing runs.
+        swipe(s, 3, -(SWIPE_THRESHOLD - 1.0), false);
+        swipe(s, 3, -far, true);
+        assert_eq!(active(s), 0);
+
+        // The capture is taken at begin and cleared at end.
+        s.process_input_event::<Fake>(InputEvent::GestureSwipeBegin { event: Begin(3) });
+        assert!(s.gesture_capture.is_some());
+        s.process_input_event::<Fake>(InputEvent::GestureSwipeEnd { event: End(false) });
+        assert!(s.gesture_capture.is_none());
+
+        // An unbound finger count belongs to the app.
+        s.process_input_event::<Fake>(InputEvent::GestureSwipeBegin { event: Begin(4) });
+        assert!(s.gesture_capture.is_none());
+        s.process_input_event::<Fake>(InputEvent::GestureSwipeEnd { event: End(false) });
+        assert_eq!(active(s), 0);
+    }
+
+    #[test]
+    fn no_swipe_acts_under_the_lock() {
+        let mut h = harness();
+        let s = &mut h.state;
+        s.lock.locked = true;
+        swipe(s, 3, -SWIPE_THRESHOLD * 2.0, false);
+        assert_eq!(active(s), 0);
+        assert!(s.gesture_capture.is_none());
+
+        // The lock coming up mid-swipe cancels the action too.
+        s.lock.locked = false;
+        s.process_input_event::<Fake>(InputEvent::GestureSwipeBegin { event: Begin(3) });
+        s.process_input_event::<Fake>(InputEvent::GestureSwipeUpdate {
+            event: Update(-SWIPE_THRESHOLD * 2.0, 0.0),
+        });
+        s.lock.locked = true;
+        s.process_input_event::<Fake>(InputEvent::GestureSwipeEnd { event: End(false) });
+        assert_eq!(active(s), 0);
+    }
+
+    /// A pinch or hold dropped at begin has its end dropped too, even if the
+    /// selection that dropped it is gone by then: no end without a begin.
+    #[test]
+    fn a_pinch_or_hold_dropped_at_begin_drops_its_end() {
+        let mut h = harness();
+        let s = &mut h.state;
+        for hold in [false, true] {
+            s.region_select.start((0, 0).into());
+            if hold {
+                s.process_input_event::<Fake>(InputEvent::GestureHoldBegin { event: Begin(2) });
+            } else {
+                s.process_input_event::<Fake>(InputEvent::GesturePinchBegin { event: Begin(2) });
+            }
+            assert!(s.gesture_dropped);
+            s.region_select.cancel();
+            assert!(s.gesture_end_dropped(), "the matching end is dropped");
+            assert!(!s.gesture_dropped, "and the claim is spent");
+            // The next one, begun with nothing in the way, is forwarded whole.
+            s.process_input_event::<Fake>(InputEvent::GesturePinchBegin { event: Begin(2) });
+            assert!(!s.gesture_dropped);
+            s.process_input_event::<Fake>(InputEvent::GesturePinchEnd { event: End(false) });
+        }
+    }
+
+    /// A finger down before the lock must not keep driving the app behind
+    /// it: locking cancels the touch sequence, which releases smithay's grab
+    /// holding the point to its down-time surface.
+    #[test]
+    fn locking_cancels_a_touch_already_down() {
+        let mut h = harness();
+        let s = &mut h.state;
+        let at = s.pointer_location;
+        s.inject_touch_down(0, at, 0);
+        let touch = s.seat.get_touch().expect("touch capability");
+        assert!(touch.is_grabbed(), "a point down holds the touch grab");
+        s.engage_lock();
+        assert!(!touch.is_grabbed(), "the lock cancelled the sequence");
+        assert!(s.touch_points.is_empty());
+        // Motion after the lock reaches nothing: no grab, and focus is `None`.
+        s.inject_touch_motion(0, at, 1);
+        assert!(!touch.is_grabbed());
     }
 }

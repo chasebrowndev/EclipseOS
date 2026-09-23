@@ -5,6 +5,8 @@
 //! the compositor already owns, so binding it grants nothing. Individual tablets
 //! are advertised from the libinput device-added path (COMP-04); until a tablet
 //! is plugged in the seat is simply empty, which is what the protocol expects.
+//! A tool is added on its first proximity-in, and its events are routed from
+//! `input/mod.rs`. Pads (`zwp_tablet_pad_v2`) are not advertised yet.
 //!
 //! The one callback is a client asking to replace the stylus cursor image; it is
 //! handled the same way `SeatHandler::cursor_image` is — the compositor draws the

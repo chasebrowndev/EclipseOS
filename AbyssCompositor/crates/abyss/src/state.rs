@@ -154,6 +154,16 @@ pub struct AbyssState {
     /// `up` for, and `wl_touch.cancel` is not a substitute (it carries no id).
     /// So the down-time target is kept here and released explicitly.
     pub touch_points: Vec<TouchPoint>,
+    /// A touchpad swipe claimed by a gesture binding, from begin to end
+    /// (COMP-04 §2). While set, the swipe's events do not reach any client.
+    pub gesture_capture: Option<crate::input::GestureCapture>,
+    /// The pinch or hold in progress was dropped at begin (lock or region
+    /// select), so its end is dropped too.
+    pub gesture_dropped: bool,
+    /// The tablet the tool in proximity is on, resolved once at proximity-in:
+    /// building its descriptor allocates, and axis events arrive at the
+    /// tablet's report rate (COMP-06 §1).
+    pub tablet_in_use: Option<smithay::wayland::tablet_manager::TabletHandle>,
     /// Per-window border quads, kept alive across frames.
     pub borders: crate::render::BorderStore,
     /// Live annotation overlays (COMP-18). Untrusted text, drawn below trusted
@@ -466,6 +476,9 @@ impl AbyssState {
             outputs: crate::outputs::Outputs::new(),
             focus: None,
             touch_points: Vec::new(),
+            gesture_capture: None,
+            gesture_dropped: false,
+            tablet_in_use: None,
             borders: crate::render::BorderStore::default(),
             annotations: crate::render::annotation::AnnotationStore::default(),
             region_select: crate::render::select::RegionSelect::default(),

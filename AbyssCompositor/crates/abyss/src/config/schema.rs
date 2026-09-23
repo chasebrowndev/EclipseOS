@@ -622,6 +622,7 @@ pub struct Collection {
 
 pub const COLLECTIONS: &[Collection] = &[
     Collection { node: "bind", owner: Abyss, doc: "A key binding." },
+    Collection { node: "gesture", owner: Abyss, doc: "A touchpad swipe binding: `gesture \"swipe\" <fingers> \"<direction>\" { <action>; }`. `fingers` is 3 or 4, `direction` is `left`, `right`, `up` or `down`, and the action is anything `bind` accepts. A bound finger count is the compositor's for the whole swipe; unbound swipes, pinches and holds reach the app. Defaults: 3-finger `left` runs `workspace-next`, 3-finger `right` runs `workspace-prev`. A `gesture` for the same fingers and direction replaces the default." },
     Collection { node: "output", owner: Abyss, doc: "Per-output mode, position, scale, overscan." },
     Collection { node: "workspace", owner: Abyss, doc: "Per-workspace layout override." },
     Collection { node: "windowrule", owner: Abyss, doc: "A rule matched against windows at map time. Its *action* decides the owning file — see RULE_ACTIONS." },

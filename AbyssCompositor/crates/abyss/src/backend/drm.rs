@@ -50,6 +50,7 @@ use smithay::{
         drm_syncobj::{supports_syncobj_eventfd, DrmSyncobjState},
         presentation::Refresh,
         socket::ListeningSocketSource,
+        tablet_manager::{TabletDescriptor, TabletSeatTrait},
     },
 };
 
@@ -745,11 +746,35 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
                 InputEvent::DeviceAdded { device } => {
                     let mut device = device.clone();
                     crate::input::configure_device(&mut device, &state.config.input);
+                    // Advertise a tablet on the seat as it appears (COMP-06
+                    // §1), so a client learns of it before the first stroke.
+                    // Fully qualified: libinput's inherent `has_capability`
+                    // takes its own enum and would shadow the trait method.
+                    if smithay::backend::input::Device::has_capability(
+                        &device,
+                        smithay::backend::input::DeviceCapability::TabletTool,
+                    ) {
+                        let dh = state.display_handle.clone();
+                        state
+                            .seat
+                            .tablet_seat()
+                            .add_tablet::<AbyssState>(&dh, &TabletDescriptor::from(&device));
+                    }
                     if let Some(drm) = state.drm.as_mut() {
                         drm.input_devices.push(device);
                     }
                 }
                 InputEvent::DeviceRemoved { device } => {
+                    if smithay::backend::input::Device::has_capability(
+                        device,
+                        smithay::backend::input::DeviceCapability::TabletTool,
+                    ) {
+                        state
+                            .seat
+                            .tablet_seat()
+                            .remove_tablet(&TabletDescriptor::from(device));
+                        state.tablet_in_use = None;
+                    }
                     if let Some(drm) = state.drm.as_mut() {
                         drm.input_devices.retain(|d| d != device);
                     }
