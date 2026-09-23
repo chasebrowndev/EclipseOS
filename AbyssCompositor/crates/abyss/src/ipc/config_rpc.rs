@@ -317,6 +317,10 @@ fn set_config_value(state: &mut AbyssState, outer: Decision, params: &Value) -> 
     // `apply_loaded` records the on-disk hashes, which is what stops the
     // inotify event this write just caused from reloading an identical config.
     crate::config::apply_loaded(state, next);
+    // The inotify reload this write triggers is suppressed by that hash check,
+    // so it will not emit `config`; subscribers (the bar, Settings) hear about
+    // a socket-driven change only from here. Same event as `watch::reload_now`.
+    crate::ipc::emit(state, "config", json!({}));
 
     Ok(json!({
         "file": target.display().to_string(),
@@ -563,6 +567,43 @@ mod tests {
     /// A settings write from a normal session must never target `/etc`: the
     /// user cannot write it, and the whole point of the user tier is that it
     /// overrides the system one anyway.
+    /// A write over the socket is announced on `config` itself: the inotify
+    /// reload it causes is suppressed by the hash check and emits nothing, so
+    /// without this the bar and Settings never hear of the change.
+    #[test]
+    fn a_successful_set_emits_config() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let dir = std::env::temp_dir().join(format!("abyss-set-emit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+        std::fs::write(&file, "bar {\n    rounding 20\n}\n").unwrap();
+        h.state.config.explicit = Some(file.clone());
+        crate::ipc::capture::take();
+
+        let ok = set_config_value(
+            &mut h.state,
+            Decision::Allow,
+            &json!({"path": "bar.popup-anchor", "value": "pointer"}),
+        );
+        let events = crate::ipc::capture::take();
+        assert!(ok.is_ok(), "{:?}", ok.err().map(|e| e.message));
+        assert_eq!(
+            events.iter().filter(|(k, _)| k == "config").count(),
+            1,
+            "{events:?}"
+        );
+
+        // A refused value changes nothing and announces nothing.
+        let bad = set_config_value(
+            &mut h.state,
+            Decision::Allow,
+            &json!({"path": "bar.popup-anchor", "value": "corner"}),
+        );
+        assert!(bad.is_err());
+        assert!(crate::ipc::capture::take().iter().all(|(k, _)| k != "config"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn writes_land_in_the_user_tier_not_etc() {
         let Some(base) = crate::config::user_config_base() else {

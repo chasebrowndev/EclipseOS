@@ -18,7 +18,7 @@
 //! 3. schema → defaults: [`get`] on a default `Config` returns exactly the
 //!    `default` column for every row.
 
-use super::{BarPosition, Config, FloatingPlacement, LayoutKind};
+use super::{BarPopupAnchor, BarPosition, Config, FloatingPlacement, LayoutKind};
 
 /// The type of a key's value, and whatever constrains it. A GUI maps this
 /// straight onto a control: `Bool` is a toggle, `Int{min,max}` a slider,
@@ -338,6 +338,32 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Corner radius in logical px for the taskbar's own blur backdrop.",
+    ),
+    k(
+        "bar.clock.hour-12",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Show the taskbar clock in 12-hour time with AM/PM; off is 24-hour.",
+    ),
+    k(
+        "bar.clock.date-mdy",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Write the taskbar date month/day/year; off is ISO year-month-day \
+       (2026-09-23).",
+    ),
+    k(
+        "bar.popup-anchor",
+        Ty::Enum(&["cell", "pointer"]),
+        Str("cell"),
+        Abyss,
+        Live,
+        "Where taskbar popups open: under the cell that was clicked, or at \
+       the pointer.",
     ),
     // decoration
     k(
@@ -1070,6 +1096,15 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.tray.pinned" => c.bar.tray.pinned.as_deref().map_or(V::Null, list),
         "bar.tray.hidden" => list(&c.bar.tray.hidden),
         "bar.rounding" => V::Int(c.bar.rounding as i64),
+        "bar.clock.hour-12" => V::Bool(c.bar.clock.hour_12),
+        "bar.clock.date-mdy" => V::Bool(c.bar.clock.date_mdy),
+        "bar.popup-anchor" => V::Str(
+            match c.bar.popup_anchor {
+                BarPopupAnchor::Cell => "cell",
+                BarPopupAnchor::Pointer => "pointer",
+            }
+            .into(),
+        ),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.active-opacity" => V::Float(c.decoration.active_opacity as f64),
         "decoration.inactive-opacity" => V::Float(c.decoration.inactive_opacity as f64),

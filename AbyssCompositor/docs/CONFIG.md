@@ -59,6 +59,9 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `bar.tray.pinned` | list of strings | _unset_ | live | Tray ids shown on the taskbar itself, in this order. Built-in applets are network, bluetooth, battery and volume; a StatusNotifierItem app goes by its own id. Unset means the taskbar's built-in order; an empty list pins nothing. Anything neither pinned nor hidden sits in the overflow drawer. |
 | `bar.tray.hidden` | list of strings | _empty_ | live | Tray ids never shown, on the taskbar or in its overflow drawer. Hidden wins over pinned when an id is in both. |
 | `bar.rounding` | int 0..512 | `20` | live | Corner radius in logical px for the taskbar's own blur backdrop. |
+| `bar.clock.hour-12` | bool | `#true` | live | Show the taskbar clock in 12-hour time with AM/PM; off is 24-hour. |
+| `bar.clock.date-mdy` | bool | `#true` | live | Write the taskbar date month/day/year; off is ISO year-month-day (2026-09-23). |
+| `bar.popup-anchor` | cell \| pointer | `"cell"` | live | Where taskbar popups open: under the cell that was clicked, or at the pointer. |
 
 ### `decoration`
 

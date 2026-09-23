@@ -279,6 +279,37 @@ pub struct Bar {
     pub position: BarPosition,
     /// `tray { ... }`: which applets and StatusNotifierItems the bar shows.
     pub tray: BarTray,
+    /// `clock { ... }`: how the bar's clock cell formats time and date.
+    pub clock: BarClock,
+    /// Where the bar's popups open: under the cell that was clicked, or at
+    /// the pointer.
+    pub popup_anchor: BarPopupAnchor,
+}
+
+/// `bar { clock { hour-12 …; date-mdy … } }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BarClock {
+    /// 12-hour clock with AM/PM; false is 24-hour.
+    pub hour_12: bool,
+    /// Month/day/year date order; false is day/month/year.
+    pub date_mdy: bool,
+}
+
+impl Default for BarClock {
+    fn default() -> Self {
+        Self {
+            hour_12: true,
+            date_mdy: true,
+        }
+    }
+}
+
+/// `bar { popup-anchor "cell" | "pointer" }`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BarPopupAnchor {
+    #[default]
+    Cell,
+    Pointer,
 }
 
 /// `bar { tray { pinned …; hidden … } }`. Ids only — the compositor neither
@@ -314,6 +345,8 @@ impl Default for Bar {
             fold_curve: "ease-out".to_owned(),
             position: BarPosition::Top,
             tray: BarTray::default(),
+            clock: BarClock::default(),
+            popup_anchor: BarPopupAnchor::Cell,
         }
     }
 }
@@ -1547,8 +1580,35 @@ impl Config {
                     ),
                 },
                 "tray" => self.apply_bar_tray(n),
+                "clock" => self.apply_bar_clock(n),
+                "popup-anchor" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("cell") => self.bar.popup_anchor = BarPopupAnchor::Cell,
+                    Some("pointer") => self.bar.popup_anchor = BarPopupAnchor::Pointer,
+                    other => self.reject(
+                        n,
+                        format!(
+                            "bar popup-anchor must be \"cell\" or \"pointer\", keeping default (other={:?})",
+                            other
+                        ),
+                    ),
+                },
                 _ => self.unknown_key(n, "bar", "bar node"),
             }
+        }
+    }
+
+    fn apply_bar_clock(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let slot = match n.name().value() {
+                "hour-12" => &mut self.bar.clock.hour_12,
+                "date-mdy" => &mut self.bar.clock.date_mdy,
+                _ => {
+                    self.unknown_key(n, "bar.clock", "bar clock node");
+                    continue;
+                }
+            };
+            *slot = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
         }
     }
 
@@ -2069,8 +2129,11 @@ impl Config {
                     Some(c) => self.misc.terminal_command = Some(c.to_owned()),
                     None => self.reject(n, "terminal-command needs a string argument"),
                 },
-                // Restart-only knobs (COMP-13 §1.2); parsed elsewhere or not yet.
-                "xwayland" => {}
+                // COMP-13 §1.1 (amended C-05): X11 is its own top-level node.
+                "xwayland" => self.reject(
+                    n,
+                    "misc.xwayland is not a key; use the top-level `xwayland { enable #false }` node",
+                ),
                 _ => self.unknown_key(n, "misc", "misc key"),
             }
         }
@@ -2597,6 +2660,108 @@ mod tests {
         // Nothing close enough: no suggestion rather than a misleading one.
         let m = err("general {\n    quux 4\n}\n");
         assert!(!m.contains("did you mean"), "{m}");
+    }
+
+    /// HW-04 rule: every shipped bind spawns a binary in `eclipseos-meta`'s
+    /// dependency closure, or it reads to the user as a dead keybind.
+    #[test]
+    fn default_bind_spawns_name_shipped_binaries() {
+        // Mirrors `dist/pkg/eclipseos/PKGBUILD`: the `eclipseos-*` split
+        // packages' `_bin`s plus `eclipseos-meta`'s `depends`. Change the two
+        // together.
+        const SHIPPED: &[&str] = &[
+            "foot",             // meta depends: foot
+            "eclipse-launcher", // eclipseos-launcher
+            "eclipse-center",   // eclipseos-center
+            "wpctl",            // meta depends: wireplumber
+            "loginctl",         // systemd, via the Arch base every image has
+        ];
+        // Spawned by `default_binds()` but in no package the image installs.
+        // Each is a live HW-04 violation; drop the entry once the binary ships
+        // (or the bind goes) and this test holds the line from then on.
+        const NOT_YET_SHIPPED: &[&str] = &["screenshot", "screenrecord", "brightnessctl", "playerctl"];
+
+        let mut seen_unshipped = Vec::new();
+        for bind in default_binds() {
+            let Action::Spawn(cmd) = &bind.action else {
+                continue;
+            };
+            let argv0 = cmd.split_whitespace().next().unwrap_or_default();
+            if let Some(name) = NOT_YET_SHIPPED.iter().find(|n| **n == argv0) {
+                seen_unshipped.push(*name);
+                continue;
+            }
+            assert!(
+                SHIPPED.contains(&argv0),
+                "default bind {:?}+{:?} spawns {argv0:?}, which no EclipseOS package installs",
+                bind.mods,
+                bind.key
+            );
+        }
+        for name in NOT_YET_SHIPPED {
+            assert!(
+                seen_unshipped.contains(name),
+                "{name:?} is no longer spawned by a default bind; drop it from NOT_YET_SHIPPED"
+            );
+        }
+    }
+
+    /// CFG-01: `misc { xwayland … }` was accepted and ignored; it is an error
+    /// that points at the real node (COMP-13 §1.1, amended C-05).
+    #[test]
+    fn misc_xwayland_is_rejected_with_a_hint() {
+        let doc: KdlDocument = "misc {\n    xwayland #false\n}\n".parse().unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        let m = &cfg.errors[0].message;
+        assert!(m.contains("xwayland { enable"), "{m}");
+        assert!(cfg.xwayland.enable, "the misc key must not disable X11");
+    }
+
+    /// `bar.clock.*` and `bar.popup-anchor`: defaults, parse, and a bad
+    /// anchor rejected without moving off the default.
+    #[test]
+    fn bar_clock_and_popup_anchor_parse() {
+        fn cfg(text: &str) -> Config {
+            let doc: KdlDocument = text.parse().unwrap();
+            let mut cfg = Config::default();
+            cfg.apply(&doc, &mut Vec::new());
+            cfg
+        }
+        let d = Config::default();
+        assert_eq!(
+            d.bar.clock,
+            BarClock {
+                hour_12: true,
+                date_mdy: true
+            }
+        );
+        assert_eq!(d.bar.popup_anchor, BarPopupAnchor::Cell);
+
+        let c =
+            cfg("bar {\n    clock { hour-12 #false; date-mdy #false }\n    popup-anchor \"pointer\"\n}\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert_eq!(
+            c.bar.clock,
+            BarClock {
+                hour_12: false,
+                date_mdy: false
+            }
+        );
+        assert_eq!(c.bar.popup_anchor, BarPopupAnchor::Pointer);
+
+        let c = cfg("bar { popup-anchor \"corner\" }\n");
+        assert_eq!(c.errors.len(), 1);
+        assert!(
+            c.errors[0].message.contains("\"cell\" or \"pointer\""),
+            "{}",
+            c.errors[0].message
+        );
+        assert_eq!(c.bar.popup_anchor, BarPopupAnchor::Cell);
+
+        let c = cfg("bar { clock { hour-24 #true } }\n");
+        assert_eq!(c.errors.len(), 1, "{:?}", c.errors);
     }
 
     /// `bar.tray`: an absent `pinned` is "the bar decides", a bare one pins
