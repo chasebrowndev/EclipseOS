@@ -907,7 +907,6 @@ fn m(logo: bool, shift: bool, ctrl: bool, alt: bool) -> Mods {
 pub fn default_binds() -> Vec<Bind> {
     let sup = m(true, false, false, false);
     let sup_shift = m(true, true, false, false);
-    let sup_alt = m(true, false, false, true);
     let sup_ctrl = m(true, false, true, false);
     let none = m(false, false, false, false);
     let mut b = vec![
@@ -1037,32 +1036,6 @@ pub fn default_binds() -> Vec<Bind> {
             mods: sup_shift,
             key: Keysym::L,
             action: Action::Spawn("loginctl lock-session".into()),
-        },
-        // Screenshot and screen recording, straight out of ~/.local/bin.
-        Bind {
-            mods: sup_shift,
-            key: Keysym::grave,
-            action: Action::Spawn("screenshot region".into()),
-        },
-        Bind {
-            mods: sup_shift,
-            key: Keysym::Print,
-            action: Action::Spawn("screenshot screen".into()),
-        },
-        Bind {
-            mods: sup,
-            key: Keysym::Print,
-            action: Action::Spawn("screenshot window".into()),
-        },
-        Bind {
-            mods: sup_alt,
-            key: Keysym::grave,
-            action: Action::Spawn("screenrecord region".into()),
-        },
-        Bind {
-            mods: sup_alt,
-            key: Keysym::Print,
-            action: Action::Spawn("screenrecord screen".into()),
         },
         // Media and brightness keys, unmodified, exactly as Hyprland has them.
         Bind {
@@ -2678,32 +2651,16 @@ mod tests {
             "brightnessctl",    // meta depends: brightnessctl
             "playerctl",        // meta depends: playerctl
         ];
-        // Spawned by `default_binds()` but in no package the image installs.
-        // Each is a live HW-04 violation; drop the entry once the binary ships
-        // (or the bind goes) and this test holds the line from then on.
-        const NOT_YET_SHIPPED: &[&str] = &["screenshot", "screenrecord"];
-
-        let mut seen_unshipped = Vec::new();
         for bind in default_binds() {
             let Action::Spawn(cmd) = &bind.action else {
                 continue;
             };
             let argv0 = cmd.split_whitespace().next().unwrap_or_default();
-            if let Some(name) = NOT_YET_SHIPPED.iter().find(|n| **n == argv0) {
-                seen_unshipped.push(*name);
-                continue;
-            }
             assert!(
                 SHIPPED.contains(&argv0),
                 "default bind {:?}+{:?} spawns {argv0:?}, which no EclipseOS package installs",
                 bind.mods,
                 bind.key
-            );
-        }
-        for name in NOT_YET_SHIPPED {
-            assert!(
-                seen_unshipped.contains(name),
-                "{name:?} is no longer spawned by a default bind; drop it from NOT_YET_SHIPPED"
             );
         }
     }

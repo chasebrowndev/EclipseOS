@@ -13,7 +13,7 @@ LAUNCH-01 through LAUNCH-04 were fixed on 2026-09-13 and removed from this file.
 RAISE-01 was fixed on 2026-09-18 and removed.
 BLUR-01, LAUNCH-05, and TERM-01 were fixed on 2026-09-22 and removed.
 HW-01 through HW-07 (the first Framework install, 2026-09-19) and PKG-01/PKG-02
-(updating a live install, 2026-09-22), PKG-03 and CFG-01 were fixed and removed on 2026-09-23; the
+(updating a live install, 2026-09-22), PKG-03, PKG-04 and CFG-01 were fixed and removed on 2026-09-23; the
 rules they left behind are kept below. The full write-ups are in git history
 (this file at `20d8e3a`) and `docs/handoff/2026-09-19-greeter-to-abyss.md`.
 
@@ -87,22 +87,6 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
   the only reason any of the above could be diagnosed remotely rather than read
   off a photographed screen. Worth deciding whether a headless-debuggable image
   is the default.
-
----
-
-# Packaging
-
-## PKG-04 — the screenshot binds spawn scripts no package installs
-
-**Severity: correctness.** Breaks the HW-04 rule above. `default_binds()`
-spawns `screenshot` and `screenrecord` straight out of `~/.local/bin`; neither
-is in any `package_*` function. On a packaged system those keys do nothing.
-`default_bind_spawns_name_shipped_binaries` (`crates/abyss/src/config/mod.rs`)
-carries them in a `NOT_YET_SHIPPED` list and fails once one stops being
-spawned, so the list only shrinks. (`brightnessctl` and `playerctl` were the
-other two; they are `eclipseos-meta` depends as of 2026-09-23.)
-
-**Proposed fix:** ship the scripts in a package, or drop the binds.
 
 ---
 
