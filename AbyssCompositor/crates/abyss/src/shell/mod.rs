@@ -1515,8 +1515,8 @@ pub fn toggle_floating(state: &mut AbyssState) {
 /// A client's `xdg_toplevel.set_maximized` (COMP-05 §4): fill the output's
 /// usable area, i.e. shrunk by any layer-shell exclusive zone, with no gap or
 /// border — the raw protocol contract, not abyss's own tiling style.
-/// Policy: only a floating window maximizes. A tiled window stays in its tile
-/// and is re-sent its current state, without `Maximized`.
+/// Policy: a startup request from a not-yet-mapped tiled window (e.g. a restored
+/// session state) is ignored and it keeps its tile; later requests are honoured.
 pub fn maximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::shell::xdg::ToplevelSurface) {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
 
@@ -1540,7 +1540,7 @@ pub fn maximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::she
 
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let ws = entry.active;
-    if entry.workspaces[ws].tiled.contains(&window) {
+    if entry.workspaces[ws].tiled.contains(&window) && !has_buffer(surface.wl_surface()) {
         // xdg-shell still owes the client a configure for the request.
         surface.with_pending_state(|s| s.states.unset(State::Maximized));
         surface.send_configure();
