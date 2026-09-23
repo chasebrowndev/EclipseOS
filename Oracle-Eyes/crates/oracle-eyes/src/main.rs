@@ -8,6 +8,7 @@
 
 mod answer;
 mod capture;
+mod choice;
 mod classify;
 mod config;
 mod focus;
@@ -22,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use eclipse_ipc::{Client, EventKind};
 use frame::Region;
-use hud::{Anchor, Hud};
+use hud::{Anchor, Hud, Panel};
 use pipeline::{Answer, Pipeline};
 
 fn main() -> ExitCode {
@@ -178,18 +179,18 @@ fn present(
     near: Option<Region>,
     fail_ms: u64,
 ) -> Option<Instant> {
-    let (anchor, text, hold) = match result {
-        Ok(a) => (a.anchor, a.text, a.hold_ms),
+    let (anchor, panel, hold) = match result {
+        Ok(a) => (a.anchor, a.panel, a.hold_ms),
         Err(e) => {
             eprintln!("oracle-eyes: {e}");
             // A failure belongs beside the thing that was asked about, same
             // as an answer would. Only a failure with no region at all —
             // a malformed chord — falls back to the corner.
-            let anchor = near.map(anchor_of).unwrap_or(FAIL_ANCHOR);
-            (anchor, format!("no answer — {e}"), fail_ms)
+            let anchor = near.map(Anchor::from).unwrap_or(FAIL_ANCHOR);
+            (anchor, Panel::failure(&e), fail_ms)
         }
     };
-    match hud.show(client, anchor, &text) {
+    match hud.show(client, anchor, &panel) {
         Ok(_) => Some(Instant::now() + Duration::from_millis(hold)),
         Err(e) => {
             // If the compositor will not draw for us there is nowhere left
@@ -208,18 +209,6 @@ const FAIL_ANCHOR: Anchor = Anchor {
     w: 480,
     h: 96,
 };
-
-/// The region a message is about, as the compositor wants it. Same mapping
-/// the pipeline uses for an answer, so a failure lands exactly where the
-/// answer would have.
-fn anchor_of(r: Region) -> Anchor {
-    Anchor {
-        x: r.x,
-        y: r.y,
-        w: r.w,
-        h: r.h,
-    }
-}
 
 fn region_of(data: &serde_json::Value) -> Option<Region> {
     let r = data.get("region")?;

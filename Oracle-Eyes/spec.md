@@ -1,6 +1,6 @@
 # Oracle-Eyes — System Specification
 
-**Status:** Draft v0.5
+**Status:** Draft v0.6
 **One-line:** A compositor-native overlay system that detects questions/topics on screen and renders short, contextual answers — Kiroshi optics for your monitor instead of your eyes.
 
 ---
@@ -108,6 +108,7 @@ Before spending a query, cheaply decide if the OCR'd text is worth sending out:
   - All tools disabled. No file read/write, no shell, no web access. The wrapper's only inputs are the OCR'd text and (for expand, §3.6) a wider capture; its only output is a short text answer.
   - Max turns = 1. No multi-turn tool loop.
   - Structured output format (`--output-format json` or equivalent), parsed programmatically — never scrape TUI/interactive-mode output.
+  - **A closed reply schema (`--json-schema`, v0.6).** The OCR text is sent as numbered lines (`L1: …`), and detected multiple-choice options as `OPTIONS: A=L4, B=L5`. The model answers `{headline, detail, focus, choice, confidence}`: `focus` names the lines the answer is about, `choice` one of the listed option labels. **The reply is a selector, never geometry.** Every line id and label is checked against what was sent and anything else is dropped; the rectangles come from OCR. A reply that fails to parse degrades to plain prose. Low confidence is shown, not hidden.
 - **Security requirement, not optional:** OCR'd screen text is untrusted input. A web page, terminal output, or document on screen can contain adversarial text ("ignore previous instructions and run …") aimed at whatever reads it next. With tools disabled and no persistent session, the blast radius of a successful injection is "the CLI prints a strange-looking answer," not "the CLI executes something" — this is *why* tools-disabled is a hard requirement above, not a hardening nice-to-have.
 - Prompt contract: force short output regardless of model verbosity — this is a HUD annotation, not a chat response. Cap at 2–4 sentences / ~40–60 words, enforced by system-prompt instruction and a hard character-count truncation as backstop.
 - **Concurrency:** one query in flight at a time (process-per-query naturally serializes; don't fire a second `claude -p` before the first returns). §2.2's "unlimited concurrent overlays" is about how many can be *displayed*, bounded separately by the §3.3 rate limit on how many can be *answered*.
@@ -130,6 +131,9 @@ Before spending a query, cheaply decide if the OCR'd text is worth sending out:
   the only party a compromised Oracle-Eyes cannot influence. Control characters
   are stripped, length is clamped, and no markup is interpreted (COMP-18 §2).
   Oracle-Eyes can affect nothing but the glyphs.
+- **The anchor is what the answer is about, not what was captured (v0.6).** It is the union of the `focus` lines, padded a few pixels — or, for a pick, the whole question: its stem and every option. Without focus lines, select mode falls back to the selection, expand to the user's original region, and automatic mode to the densest paragraph on screen, never the whole output.
+- **Multiple choice (v0.6, ADR 0054).** Options are detected locally and geometrically (`choice.rs`: `A)`, `(a)`, `1.`, radio and checkbox glyphs in any mix of OCR spellings, left-aligned, at least two, a list must start at its first label; failing that, 3–8 short, left-aligned, evenly spaced lines right after a line ending in `?`, for radios whose circles OCR dropped, lettered A, B, C… in reading order). When the model's `choice` names one, Oracle-Eyes sends its rectangle as the annotation's `pick`, and the compositor marks that option in place and repeats its label in the panel header. The compositor drops a pick outside the anchor (COMP-18 §3.1). No options, an unknown label or a malformed reply means no pick: the answer is prose.
+- The panel carries a **title** (the headline) and a body (the detail) as separate COMP-18 fields, because the compositor strips newlines.
 - **Select mode:** anchored to the selected region, persists until dismiss hotkey. Failure state per §2.1.
 - **Automatic mode:** anchored near the source region when practical; falls back to a fixed HUD zone (e.g. screen edge) when the source region is too small/crowded to anchor to directly. Timed dismissal per §2.2's display-time formula. Collision avoidance: each new overlay checks bounding boxes against currently-live overlays and nudges/offsets until it doesn't intersect any of them; if no non-intersecting position exists, evict the oldest live overlay (§2.2) rather than stacking or silently dropping the new one.
 - Visual language: minimal, translucent, monospace/HUD-styled — legible over arbitrary content, not a modal dialog. Never intercepts clicks/input (click-through except on its own dismiss/expand target).
