@@ -1,6 +1,7 @@
 # Abyss — implementation status
 
-Last updated: 2026-09-18.
+Last updated: 2026-09-23 (doc resync against `20d8e3a`: counts, line refs and
+file sizes below were recounted from the tree that day).
 
 **Spec baseline: v2 + Appendix A applied (2026-09-08).** The amendment set
 that previously sat unapplied at the end of VOL2 is now merged inline;
@@ -27,20 +28,25 @@ largest unknown this document has carried since it was written.
 `abyss` is the EclipseOS Wayland compositor: one crate, `crates/abyss`, built
 on Smithay `=0.7.0` as a library (ADR 0002). A single `calloop` loop owns
 `AbyssState`; there is no lock on the hot path and no `Rc<RefCell<_>>` scene
-graph — children are `u64` handles into plain structs. Two backends sit behind
-the `Backend` trait in `backend/`: `winit` (nested, the dev path) and `drm`
-(KMS/udev/libinput/libseat/GBM/EGL/GLES).
+graph — children are `u64` handles into plain structs. Three backends sit
+behind the `Backend` trait in `backend/`: `winit` (nested, the dev path),
+`drm` (KMS/udev/libinput/libseat/GBM/EGL/GLES) and `headless` (wlcs, tests);
+`gpu.rs` ranks DRM devices.
 
-Four crates sit around it. `crates/eclipse-ctl` is the human CLI over the
-JSON-RPC socket. `crates/wlcs-abyss` is the conformance shim. As of 2026-09-11
-there are two more, and they are the beginning of the DE userland (COMP-17,
-F-01 §4): `crates/eclipse-ipc` is the client half of COMP-13 — a blocking,
-calloop-friendly control-socket client with no async runtime — and
-`crates/eclipse-ui` is the Eclipse design system over `iced` 0.14, which is
-where every colour, radius and size in the DE is defined exactly once
-(ADR 0038 chose native Rust over Quickshell; ADR 0039 records the four narrow
-supply-chain exceptions iced cost). Neither is TCB. See
-`docs/HANDOFF.md` for where that work stands and what comes next.
+Fourteen crates sit around it (fifteen in all, plus `bench/`).
+`crates/eclipse-ctl` is the human CLI over the JSON-RPC socket;
+`crates/wlcs-abyss` is the conformance shim; `crates/policyd` and
+`crates/policy-eval` are milestone 10 (TCB). The rest are the DE userland
+(COMP-17, F-01 §4), none of it TCB: `eclipse-ipc` (the client half of COMP-13,
+blocking, no async runtime), `eclipse-ui` (the design system over `iced` 0.14,
+where every colour, radius and size is defined once — ADR 0038 chose native
+Rust; ADR 0039 records the supply-chain exceptions iced cost), `hyperion` (the
+taskbar), `eclipse-toasts`, `eclipse-center`, `eclipse-launcher`,
+`eclipse-settings`, `eclipse-policy-viewer`, `eclipse-secret-prompt`
+(ADR 0053) and `eclipse-services` (D-Bus services plus the
+`eclipse-screensaver` bin, ADR 0051). Oracle-Eyes, the COMP-18 addon, is a
+separate cargo workspace beside this one (`../Oracle-Eyes/`). See
+`docs/HANDOFF.md` for where the work stands and what comes next.
 
 Phase 1 of COMP-16 is substantially built: milestones 1–9b all have code,
 seven of them are exercised, three carry hardware gates that have never been
@@ -93,18 +99,18 @@ event, which has no source to fire from until milestone 11 lands.
 
 | # | Milestone | State | Evidence / what the gate needs |
 |---|---|---|---|
-| 1 | winit backend; one xdg toplevel; keyboard + pointer; quit binding | **done** | `backend/winit.rs`, `protocols/standard/xdg_shell.rs`, `input/`. Gate run: terminal clients open, type and close cleanly nested under Hyprland (`WAYLAND_DISPLAY=wayland-1 ./target/debug/abyss --backend winit`). |
-| 2 | Config (KDL), dwindle + master layouts, workspaces, floating, bindings, layer-shell | **done** | `config/mod.rs` (1027 lines, inotify hot-reload, ADR 0016), `shell/` layouts, `protocols/standard/layer_shell.rs`. Gate run nested: layer-shell bar + launcher + notifier clients run; layouts usable by hand. Config blocks `decoration`, `animations`, `input` and `xwayland` all parse and validate; `decoration` and `animations` now apply in full (milestone 9b), `windowrule` applies except `launching-principal` (stub 7), and `xwayland` is still parsed and ignored. |
+| 1 | winit backend; one xdg toplevel; keyboard + pointer; quit binding | **done** | `backend/winit.rs`, `protocols/standard/xdg_shell.rs`, `input/`. Gate run: terminal clients open, type and close cleanly nested under the host session (`./target/debug/abyss --backend winit`). |
+| 2 | Config (KDL), dwindle + master layouts, workspaces, floating, bindings, layer-shell | **done** | `config/mod.rs` (3344 lines, inotify hot-reload, ADR 0016), `shell/` layouts, `protocols/standard/layer_shell.rs`. Gate run nested: layer-shell bar + launcher + notifier clients run; layouts usable by hand. Config blocks `decoration`, `animations`, `input` and `xwayland` all parse and validate; `decoration` and `animations` now apply in full (milestone 9b), `windowrule` applies except `launching-principal` (stub 7), and `xwayland` is honoured (`enable` gates the spawn, `scaling-client` is applied; `xwayland/mod.rs:41`, `:127`). |
 | 3 | DRM backend, multi-output, hotplug, fractional scale, output persistence | **runs on real KMS; gate partially met** | `backend/drm.rs`, `outputs/` (hotplug, layout, persistence), `protocols/standard/fractional_scale.rs`. **Booted on real KMS 2026-09-10**: two connectors, each on its own native mode (HDMI-A-1 1360x768 on crtc 198/plane 52; DP-3 1280x720 on crtc 390/plane 244), a kitty client rendered and typed into, `grim` capture 2640x768. Multi-output composition and per-output modeset are therefore verified. **Still unmet:** three physical monitors, a hotplug event, and a dock/undock cycle restoring a saved layout — this box has two panels and no dock. |
-| 4 | dmabuf + explicit sync + direct scanout + VRR; damage tracking complete | **code complete, gate never run** | `protocols/standard/dmabuf.rs`, `drm_syncobj.rs` (registered only when the driver reports `supports_syncobj_eventfd`, else a warning and no global), `render/` damage + `scanout_candidate` (`backend/drm.rs:856`), VRR via `VrrSupport::Supported` + per-output `vrr` config. Gate needs Firefox and mpv on real KMS and the COMP-14 frame benchmarks, which have never been collected. The 2026-09-10 KMS boot produced the first real frame timings from any backend (`--stats`: 465 frames, ~1 fps idle rising to 38.1 fps under input, render p50 ~500 us, submit p50 ~166 us) — that is the damage tracker and the submit path behaving, not a COMP-14 measurement, and direct scanout was not confirmed taken. |
+| 4 | dmabuf + explicit sync + direct scanout + VRR; damage tracking complete | **code complete, gate never run** | `protocols/standard/dmabuf.rs`, `drm_syncobj.rs` (registered only when the driver reports `supports_syncobj_eventfd`, else a warning and no global), `render/` damage + `scanout_candidate` (defined `render/mod.rs:821`, called `backend/drm.rs:1146`), VRR via `VrrSupport::Supported` + per-output `vrr` config. Gate needs Firefox and mpv on real KMS and the COMP-14 frame benchmarks, which have never been collected. The 2026-09-10 KMS boot produced the first real frame timings from any backend (`--stats`: 465 frames, ~1 fps idle rising to 38.1 fps under input, render p50 ~500 us, submit p50 ~166 us) — that is the damage tracker and the submit path behaving, not a COMP-14 measurement, and direct scanout was not confirmed taken. |
 | 5 | Clipboard, primary selection, data-control, DnD, IME | **done** | `data_device.rs`, `primary_selection.rs`, `data_control.rs` (allowlisted per ADR 0027), `text_input.rs`, `input_method.rs`. Gate run nested: copy/paste across clients including primary; `wl-clipboard` via data-control honours the allowlist. |
 | 6 | Session lock, idle, DPMS, power, lid | **code complete, gate never run** | `session_lock.rs`, `idle_notify.rs`, `idle_inhibit.rs`, `output_power.rs`, `outputs/power.rs`. Lock/unlock is exercised nested; suspend/resume and lid handling need real hardware. `lid-close "suspend"` now spawns `systemctl suspend` (`outputs/power.rs`), untested for want of a lid. |
-| 7 | XWayland | **done, with two spec deviations** | `xwayland/mod.rs` (167 lines) + `xwayland_shell.rs`; rootless, one untrusted trust domain (ADR 0026). Gate run nested with X11 clients. Deviations: started **eagerly at compositor start**, not lazily, and without `-noTouchPointerEmulation` / MIT-SHM off — smithay 0.7.0's `XWayland::spawn` exposes no lazy entry point and no flag parameter (verified in the vendored source, `src/xwayland/xserver.rs:112`). Both are blocked upstream, not oversights. |
-| 8 | Screen sharing via xdg-desktop-portal | **partial** | Two capture protocols behind **one shared fail-closed gate**: `zwlr_screencopy_v1` (`screencopy.rs`) and `ext_image_copy_capture_v1` + `ext_image_capture_source_v1` (`image_copy_capture.rs`), ADRs 0027/0029/0030. Measured against `xdg-desktop-portal-wlr` 0.8.3: 60 frames in 1.18 s. Frame-level redaction verified across 860,343 pixels of a redacted surface, all exactly opaque black. Remaining for the gate: an actual video call. Cursor capture is refused (session answered `stopped`/`leave`, `image_copy_capture.rs:333`). |
-| 9 | Human IPC, `eclipse-ctl`, metrics | **done (Phase 1 scope)** | `ipc/` (JSON-RPC 2.0 line-delimited over `$XDG_RUNTIME_DIR/eclipse/abyss.sock`, `SO_PEERCRED` owner-uid gating, ADR 0028), `ipc/gate.rs` authorisation table, `ipc/methods.rs` (24 dispatch arms) plus `ipc/config_rpc.rs` (5 more, the COMP-13 §3 config surface), `crates/eclipse-ctl` (859 lines across `main.rs` and `migrate.rs`, with a `schema_drift` integration test). 7 of the 33 gate rows are deliberately `implemented: false` — all Phase 2 surface, listed below and asserted by the `phase_two_rows_stay_unimplemented` test. `gate.rs` also carries a second table, `CONFIG_FILES`, naming the four files the config methods may touch, for the same no-ambient-authority reason. Gate "waybar driven by our IPC" is fully met: `eclipse-ctl watch` streams workspace/window/output/focus events, and `ext_foreign_toplevel_list` shipped with milestone 9a, so a bar does enumerate windows it does not own — `eclipse-bar` does exactly that (`conn.rs` `get_windows` → `model.rs` `parse_windows` → `methods.rs`). |
-| 9a | COMP-06 §1 protocol completeness | **done** | All fifteen protocols implemented and confirmed advertised on a live socket: `xdg_decoration`, `xdg_activation`, `wp_single_pixel_buffer`, `zwp_pointer_constraints`, `zwp_relative_pointer`, `zwp_pointer_gestures`, `ext_foreign_toplevel_list`, `wp_security_context`, `zwp_tablet_v2`, `wlr_output_management` (v4), `xdg_foreign` (exporter+importer v2), `wlr_gamma_control`, `content_type`, `wp_alpha_modifier`, `cursor_shape`. Smithay 0.7 has no module for `wlr_output_management` or `wlr_gamma_control`, so those two are hand-written dispatch following `output_power.rs`. Output configuration from the wlr protocol and from the human IPC now share one apply path (`outputs::apply_change`), so the COMP-03 §4 "never disable the last enabled output" refusal cannot be routed around. Real libinput input now reaches `zwp_pointer_gestures` and `zwp_tablet_v2`, and touchscreens reach `wl_touch` (COMP-04 §2, COMP-01 §4.1). Swipes can be bound with the `gesture` config node; the default is 3-finger left/right for `workspace-next`/`workspace-prev`. Tablet tools are added at first proximity-in. Pads (`zwp_tablet_pad`) are not advertised; that is the spec's "full tablet protocol later". Smithay 0.7.0 hardcodes `zwp_tablet_manager_v2` at **v1**, while COMP-06 §1 asks for v2; closing that gap needs a Smithay bump. The swipe path is unit-tested through a fake backend. Touchscreen and tablet have not been checked on hardware yet. Remaining gate items are behavioural, not code: a third-party bar listing windows, mouse-look in a Proton game. |
-| 9b | *(stretch)* animations, rounding, shadows, dim, blur | **done** | Borders, `active-opacity`/`inactive-opacity`, `dim-inactive`, `rounding` and `shadow` draw (`render/mod.rs`, `render/effects.rs`); rounding is a fragment-shader mask in framebuffer space and the shadow an SDF pixel shader over the grown window rect, both confirmed visually under the winit backend. The `windows` animation interpolates window position from the frame clock (`render/anim.rs`), also confirmed visually, as are `fade` (a newly mapped window's alpha ramps from zero; there is no fade-out, since a closing window is out of the space before the next frame) and `border` (the border colour crossfades on focus change). `workspaces` slides the arriving workspace's windows in from the edge the switch came from (there is no outgoing half — the old workspace's windows are unmapped before the frame is drawn), also confirmed visually. `blur` is a dual-Kawase chain (`render/blur.rs`): the element list below a translucent window is rendered into an offscreen buffer, downsampled `passes` times and upsampled back, and the result spliced in directly beneath that window's surfaces; it is skipped entirely for opaque windows, and any enabled effect (blur included) disqualifies direct scanout. Every effect is off by default, so an unconfigured frame is still the single `space_render_elements` call — damage tracking and direct scanout unchanged. Rounding a window necessarily makes it non-opaque, so a rounded window cannot take a scanout plane; that is inherent, not a regression. |
-| 9c | `headless` backend (COMP-01 §10) | **done** | `backend/headless.rs` runs: EGL device (hardware render node, else Mesa software), offscreen GLES target, synthetic 60 Hz frame clock, no KMS and no host display server. `abyss --backend headless [--size WxH]` serves a real socket and composites for real, so redaction and pixel comparisons have something to assert on. The conformance harness now exists too: `abyss` is a lib + bin, `backend::headless::run_wlcs` drives a compositor from a `WlcsEvent` channel, `input/inject.rs` feeds synthetic pointer events through abyss's own focus and clamping path (COMP-04 §6), and `crates/wlcs-abyss` is a `cdylib` exporting `wlcs_server_integration` (verified with `nm -D`). `gate.yml` has a blocking `conformance` job that builds MirServer/wlcs at the pinned SHA and runs it against the library, skipping only what `ci/wlcs-skip.txt` lists. The suite has now been executed end to end against the library: **RC=0, 555 passed, 319 skipped, 0 failed**, at the CI-default `ulimit -n 1024` and with no raised limit. Getting there required fixing a per-compositor fd leak: a `DisplayHandle` stored in a global’s user data or bind filter is owned by the `Display`, forming a strong reference cycle, so the backend `Arc` never dropped and every fd it owned (epoll, two eventfds, timerfd, the seat’s keymap memfd) leaked — about five per test. wlcs builds one compositor per test inside one process, so the run exhausted the fd table and SIGSEGV’d around test 165. Bind-time code now holds a `WeakDh` (`Weak<DisplayHandle>`) upgraded through an `Arc<DisplayHandle>` owned by `AbyssState`, fail-closed: a handle that no longer upgrades reads as unknown client identity, i.e. a denial. The `conformance` job has since run the suite on CI’s llvmpipe runner and is **green in CI**, not only on a local test box, which is the condition this milestone closed on. **Touch has since landed and the suite is at RC=0, 743 passed, 319 skipped, 0 failed against 85 skip entries** (`ci/wlcs-skip.txt`, down from 273 — the ratchet only ever loosens). What group 1 (≈170 touch tests) had been called a harness gap really was one, not a COMP-04 fault — `create_touch()` returns `None`, the wlcs FFI passes a null `WlcsTouch*`, and wlcs’s own `Touch::Impl` constructor dereferences it before any event is sent (confirmed empirically: a single touch case run with no skip filter exits 139/SIGSEGV at `[ RUN ]`, before any assertion or compositor code). Closing it took `WlcsEvent::TouchDown/TouchMove/TouchUp`, `Seat::add_touch()`, `inject_touch_*` in `input/inject.rs`, and a real `create_touch()`, plus two non-obvious fixes. First, **wlcs touch coordinates are plain pixels, not 24.8 fixed point**: `include/wlcs/touch.h` declares the hooks as taking `wl_fixed_t` but `src/in_process_server.cpp:271` passes ints, so dividing by 256 put every touch at (0.35, 0.05) and 12 `TouchTest`s missed every surface. The pointer hooks really are fixed point. Second, **a `wl_touch.up` cannot be routed through a destroyed surface**: smithay's `for_each_focused_touch` matches `wl_touch` instances by the focus surface's client, and by the time `CompositorHandler::destroyed` runs the surface is already dead and `Resource::client()` returns `None`, so the event is dropped silently (`wl_touch.cancel` is not a substitute — it carries no id, and wlcs registers no cancel listener). `AbyssState.touch_points` therefore records the `Client` alongside the surface at down time and `release_touch_on` sends `up`+`frame` straight to that client's `wl_touch`, then clears smithay's slot state through the normal `up` path. 168 of the 170 pass; the 2 that do not are the touch twins of `input_seen_by_subsurface_after_parent_unmapped_and_remapped`, whose pointer cases fail identically, so they are rehomed with those. The 319 skips are wlcs declining to run tests whose extensions we do not advertise, and only **42** of them are worth chasing: 244 are `wl_shell`/`zxdg_shell_v6` (dead protocols), 5 `gtk_primary_selection` (superseded), 4 are wlcs’s own `SelfTest`, 24 are the touch gap above — leaving foreign-toplevel (30) and `zwlr_virtual_pointer_v1` (12) as the only genuine unimplemented protocols. 120 of the 244 hide behind numeric `*InputCombinations` names that `Combine()` flattens to a bare integer; decoding `(index / 2) % 6` against `SurfaceBuilder::all_surface_types()` puts all 120 on `WlShellSurfaceBuilder` or `XdgV6SurfaceBuilder`, so they are not the input-region gap the suite names imply. Foreign-toplevel is in fact implemented and wired — `protocols/standard/foreign_toplevel.rs` implements `ForeignToplevelListHandler` for `AbyssState`, is delegated through `smithay::delegate_foreign_toplevel_list!`, and is fed from the single map funnel in `shell/mod.rs` — and it is unconditional: COMP-06 §1 requires it outright (“taskbars; read by registryd”) and COMP-06 §3 gates only the capture protocols. The capability check that belongs near this protocol is the *agent* one — COMP-08 §10 / COMP-11 §3 map toplevel enumeration to `scene.list` — which governs the agent path, not ordinary Wayland clients. A 20-test bloc then came out in one fix: `Space` positions an element by the origin of its *window geometry*, and a toplevel that never calls `xdg_surface.set_window_geometry` derives that geometry from the bounding box of its whole surface tree, so a client attaching a subsurface that extends left of or above its root silently moves its own geometry origin — and with it the whole window, by up to the subsurface offset. The window jumped +100px after placement, so hit-testing *and* rendering were displaced, which is why the failures looked like input-region and focus-tree bugs across three unrelated suites (`input_seen_by_subsurface_after_parent_unmapped_and_remapped`, `input_seen_by_second_surface_after_drag_off_first_and_up`, and 12 `RegionSurfaceInputCombinations.input_not_seen_after_leaving_region` cases). `AbyssState.geo_loc` now records each element's last-seen `Window::geometry().loc` and `shell::reanchor` (called from `CompositorHandler::commit`) shifts the stored floating rect by any delta, holding `render_location` — the surface origin — constant. Suite: **RC=0, 743 passed, 0 failed against 85 skip entries**. `zwlr_virtual_pointer_v1` then closed the smaller of the two remaining protocol gaps: smithay 0.7 has no module for it, so `protocols/standard/virtual_pointer.rs` writes the dispatches out against the wlr bindings smithay re-exports, following `output_power.rs`. The protocol is frame-batched by design — motion, buttons and axis state queue and nothing is delivered until `frame` — so each device carries a pending batch in `AbyssState.virtual_pointer` (the resource's user data is `&`-only in `Dispatch::request`, so the batch cannot live there), and `frame` replays it through the existing `inject_pointer_*` entry points, keeping idle activity, click-to-focus, cursor clamping and lock suppression. Two details were not guessable: discrete scroll steps must be stored as `discrete * 120` because smithay re-divides by 120 for the legacy `wl_pointer.axis_discrete` event (`wayland/seat/pointer.rs:150`), and `motion_absolute`'s output geometry has to be resolved *before* the pending batch is mutably borrowed or `state` is borrowed twice. Suite: **RC=0, 755 passed, 308 skipped, 0 failed against the same 85 skip entries** — the 12 tests were wlcs skips, not skip-list entries, so the ratchet did not move; foreign-toplevel (30) is now the only genuine unimplemented protocol left. A second bloc of 20 then came out for the same reason the first did — one missing path, not one bug per suite. `pointer_moved` was the *only* code that delivered `wl_pointer` focus, so focus was re-evaluated on device motion and never on a change of scene: a stationary pointer never learned that a window had moved or resized under it, that a subsurface had slid under or out from under it, or that `wl_surface.set_input_region` had shrunk away from beneath it. `AbyssState::refresh_pointer_focus` is the scene-driven twin — hit-test the current pointer location and deliver `motion`+`frame` only when the (surface, rounded surface-relative position) pair actually changed. That guard is load-bearing rather than an optimisation: smithay's `PointerInnerHandle::motion` forwards a same-focus refresh as an unconditional `wl_pointer.motion` (`wayland/seat/pointer.rs:95`), so an unguarded refresh on every commit would spam every strict listener in the suite and turn passing tests red. It is called from `CompositorHandler::commit` — committed state only, which is exactly why `subsurface_does_not_move_when_parent_not_committed` correctly sees nothing — and from `shell::place_at`, deliberately *not* from `arrange`, since `pointer_moved` itself calls `arrange` via focus-follows-mouse and would re-enter motion delivery mid-flight. It changes neither output nor keyboard focus; those are human-motion behaviours, and driving keyboard focus from a commit hook invites recursion. Retired 12 `RegionSurfaceInputCombinations`, 4 `SubsurfaceTest` and 4 `ClientSurfaceEventsTest` entries. Suite: **RC=0, 775 passed, 308 skipped, 0 failed against 65 skip entries**. |
+| 7 | XWayland | **done, with two spec deviations** | `xwayland/mod.rs` (193 lines) + `xwayland_shell.rs`; rootless, one untrusted trust domain (ADR 0026). Gate run nested with X11 clients. Deviations: started **eagerly at compositor start**, not lazily, and without `-noTouchPointerEmulation` / MIT-SHM off — smithay 0.7.0's `XWayland::spawn` exposes no lazy entry point and no flag parameter (verified in the vendored source, `src/xwayland/xserver.rs:112`). Both are blocked upstream, not oversights. |
+| 8 | Screen sharing via xdg-desktop-portal | **partial** | Two capture protocols behind **one shared fail-closed gate**: `zwlr_screencopy_v1` (`screencopy.rs`) and `ext_image_copy_capture_v1` + `ext_image_capture_source_v1` (`image_copy_capture.rs`), ADRs 0027/0029/0030. Measured against `xdg-desktop-portal-wlr` 0.8.3: 60 frames in 1.18 s. Frame-level redaction verified across 860,343 pixels of a redacted surface, all exactly opaque black. Remaining for the gate: an actual video call. Cursor capture is refused (session answered `stopped`/`leave`, `image_copy_capture.rs:329`; the inert `CursorSessionData` is at `:344`). |
+| 9 | Human IPC, `eclipse-ctl`, metrics | **done (Phase 1 scope)** | `ipc/` (JSON-RPC 2.0 line-delimited over `$XDG_RUNTIME_DIR/eclipse/abyss.sock`, `SO_PEERCRED` owner-uid gating, ADR 0028), `ipc/gate.rs` authorisation table, `ipc/methods.rs` (24 per-method dispatch arms plus one arm forwarding `get_config`/`set_config_value`/`validate_config` to `ipc/config_rpc.rs`, the COMP-13 §3 config surface — 27 implemented methods), `crates/eclipse-ctl` (859 lines across `main.rs` and `migrate.rs`, with a `schema_drift` integration test). 7 of the 34 gate rows are deliberately `implemented: false` — all Phase 2 surface, listed below and asserted by the `phase_two_rows_stay_unimplemented` test. `gate.rs` also carries a second table, `CONFIG_FILES`, naming the four files the config methods may touch, for the same no-ambient-authority reason. Gate "waybar driven by our IPC" is fully met: `eclipse-ctl watch` streams workspace/window/output/focus events, and `ext_foreign_toplevel_list` shipped with milestone 9a, so a bar does enumerate windows it does not own — `hyperion`, the taskbar, does exactly that over `get_windows` and the `subscribe` event stream, and since `429040a` it wakes on compositor events rather than polling and follows `title` changes. |
+| 9a | COMP-06 §1 protocol completeness | **done** | All fifteen protocols implemented and confirmed advertised on a live socket: `xdg_decoration`, `xdg_activation`, `wp_single_pixel_buffer`, `zwp_pointer_constraints`, `zwp_relative_pointer`, `zwp_pointer_gestures`, `ext_foreign_toplevel_list`, `wp_security_context`, `zwp_tablet_v2`, `wlr_output_management` (v4), `xdg_foreign` (exporter+importer v2), `wlr_gamma_control`, `content_type`, `wp_alpha_modifier`, `cursor_shape`. Smithay 0.7 has no module for `wlr_output_management` or `wlr_gamma_control`, so those two are hand-written dispatch following `output_power.rs`. Output configuration from the wlr protocol and from the human IPC now share one apply path (`outputs::apply_change`), so the COMP-03 §4 "never disable the last enabled output" refusal cannot be routed around. Real libinput input now reaches `zwp_pointer_gestures` and `zwp_tablet_v2`, and touchscreens reach `wl_touch` (COMP-04 §2, COMP-01 §4.1; `31785c3`, on `bar-live-updates`, not yet merged). Swipes can be bound with the `gesture` config node; the default is 3-finger left/right for `workspace-next`/`workspace-prev`. Tablet tools are added at first proximity-in. Pads (`zwp_tablet_pad`) are not advertised; that is the spec's "full tablet protocol later". Smithay 0.7.0 hardcodes `zwp_tablet_manager_v2` at **v1**, while COMP-06 §1 asks for v2; closing that gap needs a Smithay bump. The swipe path is unit-tested through a fake backend. Touchscreen and tablet have not been checked on hardware yet. Remaining gate items are behavioural, not code: a third-party bar listing windows, mouse-look in a Proton game. |
+| 9b | *(stretch)* animations, rounding, shadows, dim, blur | **done** | Borders, `active-opacity`/`inactive-opacity`, `dim-inactive`, `rounding` and `shadow` draw (`render/mod.rs`, `render/effects.rs`); rounding is a fragment-shader mask in framebuffer space and the shadow an SDF pixel shader over the grown window rect, both confirmed visually under the winit backend. The `windows` animation interpolates window position from the frame clock (`render/anim.rs`), also confirmed visually, as are `fade` (a newly mapped window's alpha ramps from zero; there is no fade-out, since a closing window is out of the space before the next frame) and `border` (the border colour crossfades on focus change). `workspaces` slides the arriving workspace's windows in from the edge the switch came from (there is no outgoing half — the old workspace's windows are unmapped before the frame is drawn), also confirmed visually. `blur` is a dual-Kawase chain (`render/blur.rs`): the element list below a translucent window is rendered into an offscreen buffer, downsampled `passes` times and upsampled back, and the result spliced in directly beneath that window's surfaces; it is skipped entirely for opaque windows, and any enabled effect (blur included) disqualifies direct scanout. Defaults: `rounding 13` and `blur` are **on** (`blur_ships_enabled`), and blur covers layer-shell surfaces as well as windows (`render/blur.rs`, `BlurKey::Layer`), with a per-window `blur` windowrule override; shadow and every animation are off. Blur is still skipped for an opaque surface, so an opaque unrounded window keeps its scanout path. Rounding a window necessarily makes it non-opaque, so a rounded window cannot take a scanout plane; that is inherent, not a regression. |
+| 9c | `headless` backend (COMP-01 §10) | **done** | `backend/headless.rs` runs: EGL device (hardware render node, else Mesa software), offscreen GLES target, synthetic 60 Hz frame clock, no KMS and no host display server. `abyss --backend headless [--size WxH]` serves a real socket and composites for real, so redaction and pixel comparisons have something to assert on. The conformance harness now exists too: `abyss` is a lib + bin, `backend::headless::run_wlcs` drives a compositor from a `WlcsEvent` channel, `input/inject.rs` feeds synthetic pointer events through abyss's own focus and clamping path (COMP-04 §6), and `crates/wlcs-abyss` is a `cdylib` exporting `wlcs_server_integration` (verified with `nm -D`). `gate.yml` has a blocking `conformance` job that builds MirServer/wlcs at the pinned SHA and runs it against the library, skipping only what `ci/wlcs-skip.txt` lists. The suite has now been executed end to end against the library: **RC=0, 555 passed, 319 skipped, 0 failed**, at the CI-default `ulimit -n 1024` and with no raised limit. Getting there required fixing a per-compositor fd leak: a `DisplayHandle` stored in a global’s user data or bind filter is owned by the `Display`, forming a strong reference cycle, so the backend `Arc` never dropped and every fd it owned (epoll, two eventfds, timerfd, the seat’s keymap memfd) leaked — about five per test. wlcs builds one compositor per test inside one process, so the run exhausted the fd table and SIGSEGV’d around test 165. Bind-time code now holds a `WeakDh` (`Weak<DisplayHandle>`) upgraded through an `Arc<DisplayHandle>` owned by `AbyssState`, fail-closed: a handle that no longer upgrades reads as unknown client identity, i.e. a denial. The `conformance` job has since run the suite on CI’s llvmpipe runner and is **green in CI**, not only on a local test box, which is the condition this milestone closed on. **Touch has since landed and the suite is at RC=0, 743 passed, 319 skipped, 0 failed against 85 skip entries** (`ci/wlcs-skip.txt`, down from 273 — the ratchet only ever loosens). What group 1 (≈170 touch tests) had been called a harness gap really was one, not a COMP-04 fault — `create_touch()` returns `None`, the wlcs FFI passes a null `WlcsTouch*`, and wlcs’s own `Touch::Impl` constructor dereferences it before any event is sent (confirmed empirically: a single touch case run with no skip filter exits 139/SIGSEGV at `[ RUN ]`, before any assertion or compositor code). Closing it took `WlcsEvent::TouchDown/TouchMove/TouchUp`, `Seat::add_touch()`, `inject_touch_*` in `input/inject.rs`, and a real `create_touch()`, plus two non-obvious fixes. First, **wlcs touch coordinates are plain pixels, not 24.8 fixed point**: `include/wlcs/touch.h` declares the hooks as taking `wl_fixed_t` but `src/in_process_server.cpp:271` passes ints, so dividing by 256 put every touch at (0.35, 0.05) and 12 `TouchTest`s missed every surface. The pointer hooks really are fixed point. Second, **a `wl_touch.up` cannot be routed through a destroyed surface**: smithay's `for_each_focused_touch` matches `wl_touch` instances by the focus surface's client, and by the time `CompositorHandler::destroyed` runs the surface is already dead and `Resource::client()` returns `None`, so the event is dropped silently (`wl_touch.cancel` is not a substitute — it carries no id, and wlcs registers no cancel listener). `AbyssState.touch_points` therefore records the `Client` alongside the surface at down time and `release_touch_on` sends `up`+`frame` straight to that client's `wl_touch`, then clears smithay's slot state through the normal `up` path. 168 of the 170 pass; the 2 that do not are the touch twins of `input_seen_by_subsurface_after_parent_unmapped_and_remapped`, whose pointer cases fail identically, so they are rehomed with those. The 319 skips are wlcs declining to run tests whose extensions we do not advertise, and only **42** of them are worth chasing: 244 are `wl_shell`/`zxdg_shell_v6` (dead protocols), 5 `gtk_primary_selection` (superseded), 4 are wlcs’s own `SelfTest`, 24 are the touch gap above — leaving foreign-toplevel (30) and `zwlr_virtual_pointer_v1` (12) as the only genuine unimplemented protocols. *(2026-09-23: the foreign-toplevel 30 exercise the wlr variant, `zwlr_foreign_toplevel_management_v1`, which is deliberately absent — see B3 below; abyss ships `ext_foreign_toplevel_list`. They are a skip by design, not a gap.)* 120 of the 244 hide behind numeric `*InputCombinations` names that `Combine()` flattens to a bare integer; decoding `(index / 2) % 6` against `SurfaceBuilder::all_surface_types()` puts all 120 on `WlShellSurfaceBuilder` or `XdgV6SurfaceBuilder`, so they are not the input-region gap the suite names imply. Foreign-toplevel is in fact implemented and wired — `protocols/standard/foreign_toplevel.rs` implements `ForeignToplevelListHandler` for `AbyssState`, is delegated through `smithay::delegate_foreign_toplevel_list!`, and is fed from the single map funnel in `shell/mod.rs` — and it is unconditional: COMP-06 §1 requires it outright (“taskbars; read by registryd”) and COMP-06 §3 gates only the capture protocols. The capability check that belongs near this protocol is the *agent* one — COMP-08 §10 / COMP-11 §3 map toplevel enumeration to `scene.list` — which governs the agent path, not ordinary Wayland clients. A 20-test bloc then came out in one fix: `Space` positions an element by the origin of its *window geometry*, and a toplevel that never calls `xdg_surface.set_window_geometry` derives that geometry from the bounding box of its whole surface tree, so a client attaching a subsurface that extends left of or above its root silently moves its own geometry origin — and with it the whole window, by up to the subsurface offset. The window jumped +100px after placement, so hit-testing *and* rendering were displaced, which is why the failures looked like input-region and focus-tree bugs across three unrelated suites (`input_seen_by_subsurface_after_parent_unmapped_and_remapped`, `input_seen_by_second_surface_after_drag_off_first_and_up`, and 12 `RegionSurfaceInputCombinations.input_not_seen_after_leaving_region` cases). `AbyssState.geo_loc` now records each element's last-seen `Window::geometry().loc` and `shell::reanchor` (called from `CompositorHandler::commit`) shifts the stored floating rect by any delta, holding `render_location` — the surface origin — constant. Suite: **RC=0, 743 passed, 0 failed against 85 skip entries**. `zwlr_virtual_pointer_v1` then closed the smaller of the two remaining protocol gaps: smithay 0.7 has no module for it, so `protocols/standard/virtual_pointer.rs` writes the dispatches out against the wlr bindings smithay re-exports, following `output_power.rs`. The protocol is frame-batched by design — motion, buttons and axis state queue and nothing is delivered until `frame` — so each device carries a pending batch in `AbyssState.virtual_pointer` (the resource's user data is `&`-only in `Dispatch::request`, so the batch cannot live there), and `frame` replays it through the existing `inject_pointer_*` entry points, keeping idle activity, click-to-focus, cursor clamping and lock suppression. Two details were not guessable: discrete scroll steps must be stored as `discrete * 120` because smithay re-divides by 120 for the legacy `wl_pointer.axis_discrete` event (`wayland/seat/pointer.rs:150`), and `motion_absolute`'s output geometry has to be resolved *before* the pending batch is mutably borrowed or `state` is borrowed twice. Suite: **RC=0, 755 passed, 308 skipped, 0 failed against the same 85 skip entries** — the 12 tests were wlcs skips, not skip-list entries, so the ratchet did not move; foreign-toplevel (30) is now the only genuine unimplemented protocol left. A second bloc of 20 then came out for the same reason the first did — one missing path, not one bug per suite. `pointer_moved` was the *only* code that delivered `wl_pointer` focus, so focus was re-evaluated on device motion and never on a change of scene: a stationary pointer never learned that a window had moved or resized under it, that a subsurface had slid under or out from under it, or that `wl_surface.set_input_region` had shrunk away from beneath it. `AbyssState::refresh_pointer_focus` is the scene-driven twin — hit-test the current pointer location and deliver `motion`+`frame` only when the (surface, rounded surface-relative position) pair actually changed. That guard is load-bearing rather than an optimisation: smithay's `PointerInnerHandle::motion` forwards a same-focus refresh as an unconditional `wl_pointer.motion` (`wayland/seat/pointer.rs:95`), so an unguarded refresh on every commit would spam every strict listener in the suite and turn passing tests red. It is called from `CompositorHandler::commit` — committed state only, which is exactly why `subsurface_does_not_move_when_parent_not_committed` correctly sees nothing — and from `shell::place_at`, deliberately *not* from `arrange`, since `pointer_moved` itself calls `arrange` via focus-follows-mouse and would re-enter motion delivery mid-flight. It changes neither output nor keyboard focus; those are human-motion behaviours, and driving keyboard focus from a commit hook invites recursion. Retired 12 `RegionSurfaceInputCombinations`, 4 `SubsurfaceTest` and 4 `ClientSurfaceEventsTest` entries. Suite: **RC=0, 775 passed, 308 skipped, 0 failed against 65 skip entries**. |
 | 9d | Node-level redaction, fail-closed on stale/absent tree | **landed; blocked on a tree source** | `render/capture.rs` carries the node path: `resolve_nodes` is the fail-closed resolver (COMP-02 §7 amended by VOL2 §A-10) — a stale or absent tree with a known `secret` node redacts the *whole* surface, and `Absent` is deliberately distinct from `Present` with an empty node list; node rectangles are mapped surface-local → compositor-logical and clipped. Tests drive it from a synthetic tree. What is still missing is the tree *source*: COMP-09 / `protocols/semantic/` does not exist (milestone 22), so today every surface honestly answers "no tree, no secret node known". |
 | 9e | Window-rules engine; `class_source`, `irreversible_capable` | **partially landed** | `shell/rules.rs` matches at map time and re-evaluates on commit; all COMP-05 §4 actions and matchers apply except the `launching-principal` matcher (stub 7). Neither `class_source` nor `irreversible_capable` exists in `shell/`. |
 | 9f | Benchmark harness (COMP-14 §2 + A-14 budgets) | **harness landed, no subjects** | `bench/` exists: a hand-rolled sampler that keeps every sample and reports p50/p99/p99.9/max against the COMP-14 §2.1/§2.1b table encoded as data, plus the counting allocator §3 requires, exiting non-zero on a budget miss (ADR 0043). None of the five subjects §4.1 names can run yet — `check()` and scope match need milestone 16, audit encode 12, tree serialize 22. What runs today is the harness's own timer floor. The §5 baseline/regression machinery is still owed. |
@@ -123,11 +129,11 @@ across 9d/17/22, 14→15, 15→16, 16→22, 17→24, 18→25. Milestones 10, 12,
 | 10 | `policyd` skeleton; task store; grant compilation, issue, revocation | **landed** | `crates/policy-eval/` holds the canonical CBOR codec (ADR 0044), the A-04 task object and counters, and the grant type; `crates/policyd/` holds the S-04 §4 audit store (ADR 0046) and the task store that journals before it answers, issues COSE_Sign1 grants (ADR 0045) and revokes a closed task's grants in one record. The `task` record journals the statement as a BLAKE3 hash, never the text (ADR 0048). No socket — that is milestone 11. |
 | 11 | Privileged socket; `agentd` skeleton; grant verification; `list_toplevels` | **not started** | No `protocols/agent/`. `get_agents` answers "not implemented". |
 | 12 | Audit spine: append-only journal, req-id chaining, `trace` | **store landed early** | `policyd/src/audit.rs` is the S-04 §4 hash-chained store, built at milestone 10 per ADR 0046; it carries `task`, `grant_issued` and `grant_revoked` records. The remaining record kinds, req-id chaining, `trace` and `eclipse-audit verify` are still milestone 12's work. |
-| 13 | Agent seats; injection; focus arbitration; `agent-override` chord | **not started** | No agent seats. `type_text`/`click_at` are gated `implemented: false`. The `agent-override` bind reserved by COMP-13 §1.1 has no `Action` variant. |
+| 13 | Agent seats; injection; focus arbitration; `agent-override` chord | **not started** | No agent seats. `type_text`/`click_at` are gated `implemented: false`. The `agent-override` chord has an `Action::AgentOverride` variant and a default bind (Super+Escape) that only logs (stub 9). |
 | 14 | Atomic batches, `click`, `wait_for`, dedupe, generations | **not started** | — |
 | 15 | Trusted UI: prompt, emergency panel, phrase | **indicator landed early** | `render::capture::indicator()` draws the compositor-drawn capture indicator (COMP-10 §3.6) in both backends, from milestone 8. No prompt, no emergency panel, no phrase, no `trusted_ui/`. |
 | 16 | Policy table enforcement; prompt and defer paths | **not started** | No `policy/`. The IPC gate in `ipc/gate.rs` is a separate, narrower mechanism (COMP-13 §2) and must not be mistaken for COMP-11's enforcement table. |
-| 17 | Policy-driven sensitivity classes; classification races | **not started** | Sensitivity is a manual flag on the surface (`state.rs:110`, "Stub until the policy engine"); nothing classifies automatically. |
+| 17 | Policy-driven sensitivity classes; classification races | **not started** | Sensitivity is a manual flag on the surface (`state.rs:218`, "Stub until the policy engine"); nothing classifies automatically. |
 | 18 | Provenance chain; irreversible matcher | **not started** | Blocked on F-03 (defect 13) for the S-07 §5 `stamper` enum. |
 | 19 | `brokerd` | **not started** | Does not exist in any repo. |
 | 20 | Per-agent egress proxy; netns + pasta; stub resolver | **not started** | Does not exist in any repo. |
@@ -144,16 +150,16 @@ across 9d/17/22, 14→15, 15→16, 16→22, 17→24, 18→25. Milestones 10, 12,
 
 Started 2026-09-11 against the plan at
 `~/.claude/plans/ok-claude-today-we-inherited-cook.md`, which holds the owner's
-settled decisions and the build order. This is the human-facing surface abyss
-has never had: today everything the user sees is a Quickshell/QML config living
-outside the repo at `~/.config/quickshell/eclipse/`. Appendix B's F-01 §4
+settled decisions and the build order. Before it, everything the user saw was
+a Quickshell/QML config outside the repo; that is retired, and every pane is
+now a crate in this workspace. Appendix B's F-01 §4
 requires every setting to be reachable from a GUI, with the files still the
 source of truth and the GUI writing only through the COMP-13 §1.4 API — never a
 parallel one.
 
 | Unit | State | Evidence |
 |---|---|---|
-| A0 KDL round-trip spike | **done** | verdict at the foot of `docs/HANDOFF.md`: byte-splice edits round-trip, the `value_repr` trap is real and is handled |
+| A0 KDL round-trip spike | **done** | verdict at the foot of `docs/handoff/2026-09-11.md`: byte-splice edits round-trip, the `value_repr` trap is real and is handled |
 | A1 declarative schema | **done** | `config/schema.rs`, three-sided anti-drift over `schema::KEYS` (`ac3cb4f`) |
 | A2 `abyss.kdl` / `policy.kdl` split | **done** | `a95d657`, ADR 0037. Ownership is refused in both directions at parse time, naming the other file |
 | A3 config over the socket | **done** | `ipc/config_rpc.rs`, per-file gate rows, `Policy` rows default-closed (`b63b6ac`) |
@@ -163,8 +169,8 @@ parallel one.
 | B2 `crates/eclipse-ipc` | **done** | `5ebe0a9`. Raw fd exposed, non-blocking, no async runtime — it drops into a calloop client loop |
 | B1 `crates/eclipse-ui` | **done** | `a501576`. `tokens.rs` (the style spec's only transcription), `theme.rs` (style fns over iced's stock widgets), `widget/` (the 44×25 toggle and the bar chart, written from scratch because the spec fixes their geometry), vendored instanced typefaces under `assets/fonts/` |
 | B5 settings app | **done** | `770ff33`. Controls generated from `get_config {schema:true}`; `policy.kdl` keys read-only; the Display pane closes stub 15(a) by driving `calibrate_output` |
-| B3 bar | **done** | `3a6f7a5`. Workspaces, window list and clock on an `iced_layershell` layer surface; refreshed by `subscribe`, not polling. `wlr_foreign_toplevel_management` stays absent — verified 2026-09-11, `wayland-info` advertises no `foreign_toplevel` global with the bar running. Window text is `Window::label()`, so a `Trust::Secret` window reads "Protected window". Tray/audio/network/BT/battery/notification/media cells wait on B4 |
-| B4 control center + services | **in progress** | Landed: the notification server, system status (network/BT/battery), session control, the bar's status cells, the toast stack (`eclipse-toasts`), the control center (`eclipse-center`, `2408781`), the `.desktop` reader (`c9fab92`) and the launcher GUI over it (`eclipse-launcher`) — a centred overlay surface that takes the keyboard, filters as you type and refuses a terminal-only entry out loud. Owed: an SNI tray host (blocked — our iced feature set has no `image`, so `IconPixmap` cannot be drawn), audio (`libpulse-binding`) and clipboard (`smithay-clipboard`), both new dependencies and therefore an ask first |
+| B3 taskbar (`hyperion`) | **done** | `3a6f7a5`; renamed from `eclipse-bar` and split so toasts, center and launcher are their own crates (`0eddb2b`, ADR 0052). Chips condense through a ladder (full → name → icon → bare, then `+N`; `c46ff92`). Workspaces, window list and clock on an `iced_layershell` layer surface; refreshed by `subscribe`, not polling. `wlr_foreign_toplevel_management` stays absent — verified 2026-09-11, `wayland-info` advertises no `foreign_toplevel` global with the bar running. Window text is `Window::label()`, so a `Trust::Secret` window reads "Protected window". Tray/audio/network/BT/battery/notification cells arrived with B4 |
+| B4 control center + services | **in progress** | Landed: the notification server, system status (network/BT/battery), session control, the bar's status cells, the toast stack (`eclipse-toasts`), the control center (`eclipse-center`, `2408781`), the `.desktop` reader (`c9fab92`) and the launcher GUI over it (`eclipse-launcher`) — a centred overlay surface that takes the keyboard, filters as you type and refuses a terminal-only entry out loud. Since landed (`360b704`, ADR 0053): the SNI tray (watcher + host, dbusmenu flattened), wifi/Bluetooth pickers and status actions, and `eclipse-secret-prompt` for passphrases and PINs; the `org.freedesktop.ScreenSaver` bridge (`eclipse-screensaver`, ADR 0051); and the launcher now reads `misc.terminal-command` and hides `Terminal=true` entries unless one is configured (`654ad79`, `ee5f76a`). Owed: clipboard history (`smithay-clipboard`, a new dependency and therefore an ask first). Audio is a `pactl` shell-out in `hyperion/src/audio.rs`, not `libpulse-binding` |
 | B6 policy viewer | **done** | `1a5d506`. A plain `xdg_toplevel` reading `policy.kdl` off disk, never over the socket — `Policy/Read` stays closed. An empty allowlist renders as a sentence saying every client is denied, never a blank list. The policy-owned set is restated locally with a mirroring test rather than linking `abyss`; no `tests/coverage.rs` (that ratchet is settings-specific) |
 
 Out of scope by decision (plan B7): desktop icons (DP-6), `mode wm|de`
@@ -173,7 +179,8 @@ the first-boot overscan offer, and bind/windowrule editing.
 
 The toolkit is iced 0.14 + `iced_layershell` 0.19.1, all Rust, in house — no
 Quickshell and no QML (ADR 0038). Blur under a translucent client is abyss's
-own `decoration { blur }`, not the toolkit's.
+own `decoration { blur }`, not the toolkit's, and the panes read the
+compositor's corner radius over `get_config` (`eclipse_ui::ipc::fetch_config_radius`, `6d85517`).
 
 ---
 
@@ -182,21 +189,22 @@ own `decoration { blur }`, not the toolkit's.
 | Spec | Where the code is | State |
 |---|---|---|
 | COMP-01 backends | `crates/abyss/src/backend/{mod,winit,drm,gpu}.rs` | winit exercised; headless exercised by wlcs; DRM verified on real KMS 2026-09-10 (two outputs, native modes, live client). `mod.rs` holds the trait; nothing outside it touches winit/DRM/libinput/GBM types. `gpu.rs` is §4's device ranking, unit-tested over synthetic candidates and observable live with `abyss --list-gpus`. |
-| COMP-02 render | `crates/abyss/src/render/{mod,capture}.rs` | Damage tracking, direct-scanout candidate selection, frame-level redaction, capture indicator. Region-level redaction absent. |
-| COMP-03 outputs | `crates/abyss/src/outputs/{mod,power}.rs` | Hotplug, layout, persistence, per-output rules (mode/position/scale/transform/enabled/vrr/lid-close). No virtual outputs. |
-| COMP-04 input | `crates/abyss/src/input/mod.rs` (657 lines) | One human seat, keyboard/pointer, VT-switch intercept, bindings. `input/inject.rs` exists but is the wlcs synthetic-event path, not COMP-04 §6 agent injection. No agent seats, no override chord. |
+| COMP-02 render | `crates/abyss/src/render/` (14 modules) | Damage tracking, direct-scanout candidate selection, frame-level and node-level redaction (`capture.rs`), capture indicator, blur and effects, animations. `sanitize.rs` drops empty rectangles from `FB_DAMAGE_CLIPS` before a DRM commit — the kernel refuses the whole commit with `EINVAL` ("invalid damage clip") on one (COMP-02 §4). |
+| COMP-03 outputs | `crates/abyss/src/outputs/{mod,power,edid,overscan,calibrate,persist}.rs` | Hotplug, layout, EDID identity, overscan calibration, persistence, per-output rules (mode/position/scale/transform/enabled/vrr/lid-close). No virtual outputs (COMP-03 §6, milestone 24). |
+| COMP-04 input | `crates/abyss/src/input/{mod,grabs,idle,inject}.rs` (`mod.rs` 1299 lines) | One human seat: keyboard, pointer, touch, tablet tools, touchpad swipe gestures (`gesture` binds), VT-switch intercept, bindings, move/resize grabs. Device config is global (`accel-profile`, touchpad natural-scroll/tap/dwt); per-device settings, accel speed, tap-and-drag, click/scroll method and calibration are not there (COMP-04 §2). `input/inject.rs` is the wlcs/IPC synthetic-event path, not COMP-04 §6 agent injection. No agent seats; the override chord is bound but inert (stub 9). |
 | COMP-05 shell | `crates/abyss/src/shell/mod.rs` | dwindle + master, workspaces, floating, focus. App identity is a `/proc` stopgap (`data_control.rs:14` TODO) — the provenance record is Phase 2. Window rules match at map time and re-evaluate on commit (`shell/rules.rs`); see milestone 9e for what is still missing. |
-| COMP-06 standard protocols | `crates/abyss/src/protocols/standard/` (20 modules) | compositor, data_control, data_device, dmabuf, drm_syncobj, fractional_scale, idle_inhibit, idle_notify, image_copy_capture, input_method, layer_shell, output_power, presentation, primary_selection, screencopy, seat, session_lock, shm, text_input, xdg_shell. See spec gaps for what COMP-06 §1 lists and this set lacks. |
-| COMP-07 XWayland | `crates/abyss/src/xwayland/mod.rs` | Rootless, eager start. |
+| COMP-06 standard protocols | `crates/abyss/src/protocols/standard/` (32 modules) | activation, compositor, data_control, data_device, decoration, dmabuf, drm_syncobj, foreign, foreign_toplevel, fractional_scale, gamma_control, idle_inhibit, idle_notify, image_copy_capture, input_method, layer_shell, output_management, output_power, pointer_constraints, pointer_extra, presentation, primary_selection, screencopy, seat, security_context, session_lock, shm, surface_extra, tablet, text_input, virtual_pointer, xdg_shell. |
+| COMP-07 XWayland | `crates/abyss/src/xwayland/{mod,xwm,security}.rs` | Rootless, eager start; the `xwayland` config block is honoured. |
 | COMP-08 agent protocol | — | Does not exist. |
 | COMP-09 semantic protocol | — | Does not exist. |
 | COMP-10 trusted UI | `render/capture.rs::indicator` only | Indicator done; prompts/panel/phrase absent. |
-| COMP-11 policy | — | Does not exist. |
-| COMP-12 audit | — | Does not exist. |
+| COMP-11 policy | `crates/policy-eval`, `crates/policyd` | Milestone 10: task store, grant issue/revoke (see the Phase 2 table). No in-compositor `policy/` and no `check()`; sensitivity is a manual stub (`state.rs:218`). |
+| COMP-12 audit | `crates/policyd/src/audit.rs` | The S-04 §4 store, landed early at milestone 10 (ADR 0046). No in-compositor `audit/`, no provenance emission. |
 | COMP-13 human IPC + config | `crates/abyss/src/ipc/`, `crates/abyss/src/config/`, `crates/eclipse-ctl`, `crates/eclipse-ipc` | Socket, gate table, event stream, KDL parse + hot-reload, plus (2026-09-11) the §1.4 write API: byte-splice in-place edits, a declarative schema over every key, per-file gate rows after the `policy.kdl` split, `eclipse-ctl config` verbs, and `crates/eclipse-ipc` as the client half. |
 | COMP-14 performance | `bench/` | The harness exists (milestone 9f, ADR 0043): a sampler that keeps every sample and reports p50/p99/p99.9/max, the §2.1/§2.1b budget table as data, and §3's counting allocator so a bench on a no-alloc path fails on its first allocation. Nothing real is plugged into it yet — §4.1's five subjects arrive with the milestones that create them — so the frame budgets milestone 4's gate cites are still unmeasured. §5's per-commit baselines and the >10% regression gate are unbuilt. `--stats` remains a live-run diagnostic, separate from the harness. |
-| COMP-15 testing | `cargo test --workspace`, `.github/workflows/gate.yml` | 128 tests, all passing, now enforced by CI. Unit-level. Zero of the twelve COMP-15 §2 security suites exist. No compat matrix. |
+| COMP-15 testing | `cargo test --workspace`, `.github/workflows/gate.yml` | 516 `#[test]` functions across the workspace (abyss 276, hyperion 59, eclipse-services 47, policy-eval 30, eclipse-settings 26, policyd 15, the rest under 15 each), enforced by CI. Unit-level. Zero of the twelve COMP-15 §2 security suites exist. No compat matrix. |
 | COMP-16 milestones | this file | — |
+| COMP-18 annotations | `crates/abyss/src/render/{annotation,select}.rs`, `ipc/methods.rs` | Compositor-drawn annotation pass (above clients and cursor, below trusted UI) and region selector; `annotation_create/update/destroy/clear` gate rows; titles and a pick marker (ADR 0040, ADR 0054). The consumer is Oracle-Eyes (`../Oracle-Eyes/`, ADR 0041; `get_outputs` allowed by ADR 0050). |
 
 ---
 
@@ -209,24 +217,24 @@ macros anywhere in the workspace.
 1. **7 IPC gate rows are `implemented: false`** — `get_agents`, `pause_agent`,
    `resume_agent`, `terminate_agent`, `revoke_grants`, `type_text`,
    `click_at` (`ipc/gate.rs`). They answer
-   `"{method} is specified but not implemented yet"` (`ipc/mod.rs:484`).
+   `"{method} is specified but not implemented yet"` (`ipc/mod.rs:486`).
    Deliberate: all are Phase 2 surface, and the test
    `phase_two_rows_stay_unimplemented` pins the exact list so it cannot drift.
    *Unblocked by:* milestones 11–13.
-2. **Sensitivity flag is manual** (`state.rs:110`, "Stub until the policy
+2. **Sensitivity flag is manual** (`state.rs:218`, "Stub until the policy
    engine"). Surfaces can be flagged sensitive and are then redacted, but
    nothing classifies them automatically. *Unblocked by:* milestone 17.
 3. **App identity is a `/proc` read** (`protocols/standard/data_control.rs:14`,
    `TODO(COMP-05)`) — to be replaced by the app identity/provenance record.
    *Unblocked by:* COMP-05 §6 provenance work in Phase 2.
-4. **Cursor capture refused** (`image_copy_capture.rs:333`) — a session asking
+4. **Cursor capture refused** (`image_copy_capture.rs:329`; `CursorSessionData` at `:344` never produces a frame) — a session asking
    for cursor capture is handed back stopped. Matches the `capture.cursor`
    default of `no`; a real implementation waits on the capability model.
 5. **DRM cursor has no xcursor theme** (`render/cursor.rs`) — client-set
    cursor surfaces composite correctly at their hotspot, but named
    `wp_cursor_shape_v1` shapes all fall back to one built-in amber arrow
    rather than loading the user's theme.
-6. **Effects all draw; `xwayland` config block still ignored**: `decoration` and `animations` now parse
+6. **Effects all draw** *(the `xwayland` block is now honoured — `enable` and `scaling-client`, `xwayland/mod.rs:41`, `:127`)*: `decoration` and `animations` now parse
    and validate in full (`config/mod.rs`), and `active-opacity` /
    `inactive-opacity` / `dim-inactive` / `rounding` render (`render/mod.rs`,
    `window_elements`; the rounded-corner mask itself is
@@ -244,15 +252,13 @@ macros anywhere in the workspace.
    `workspaces` slides an arriving workspace in through the same store.
    `blur` is a dual-Kawase down/upsample chain (`render/blur.rs`) spliced in
    beneath each translucent window; every 9b effect now draws. Agents see target
-   geometry, never an interpolated value (COMP-08's rule). All are off by default, so
-   the default frame path is the single `space_render_elements` call it was
-   before — damage and direct scanout unchanged. `xwayland` is still parsed and
-   ignored. *Unblocked by:* nothing for the effects themselves — 9b is done; the
-   `xwayland` block waits on COMP-07 work.
+   geometry, never an interpolated value (COMP-08's rule). Rounding (13) and
+   blur now ship **on**; shadow and animations stay off. *Closed* — kept for
+   the record.
 7. **`windowrule` is complete except `launching-principal`**
    (COMP-05 §4). `shell/rules.rs` matches at map time and re-evaluates on every
    commit; `float`, `tile`, `workspace N`, `size WxH`, `position X,Y`,
-   `output NAME`, `opacity F`, `fullscreen`, `sensitivity secret|private` (raise-only),
+   `output NAME`, `opacity F`, `blur true|false`, `fullscreen`, `sensitivity secret|private` (raise-only),
    `app-trust`, `seat-compat`, `idle-inhibit`, `no-focus-steal` and `no-agent`
    all parse and apply. `no-agent`, `app-trust` and `seat-compat` set state
    nothing reads yet — COMP-08 `list_toplevels` and the COMP-04 §8 focus locks
@@ -301,9 +307,9 @@ macros anywhere in the workspace.
     COMP-08 `eclipse_agent_v1` lands (Phase 2, milestone 11): the event has no
     source to fire from until an agent client can attach, so there is nothing
     to implement before then. Nothing else blocks it.
-14. **No `crates/policyd`, `crates/agentd`, `crates/sandbox`** — the TCB crates
-    named in the root `CLAUDE.md` do not exist. The module map in that file
-    describes the intended end state, not the tree.
+14. **No `crates/agentd`, `crates/sandbox`** — `crates/policyd` and
+    `crates/policy-eval` exist since milestone 10; the other TCB crates do not.
+    The root `CLAUDE.md` map marks the absent `abyss` modules "(not yet)".
 15. **Overscan compensation has no first-boot offer.** Everything else is
     done. The backend (COMP-03 §2): `outputs/overscan.rs` (per-edge insets,
     clamping, the inverse map), `render/overscan.rs` (the scale-and-pad wrap
@@ -328,7 +334,10 @@ macros anywhere in the workspace.
     down into an inset rect and the margins are left black. The calibration
     overlay is compositor-drawn, not a layer-shell client, because trusted
     UI has to be.
-16. **DE panels are opaque, not glass.** `STYLE.md` §Palette asks for
+16. **~~DE panels are opaque, not glass.~~ Resolved** — layer surfaces are in
+    the blur path (`BlurKey::Layer`), blur ships on, and `theme::panel` paints
+    `GLASS` again, over a `GLASS_DEEP` backdrop when blur is off (`c0545f3`,
+    `6d85517`). Original entry: `STYLE.md` §Palette asks for
     `rgba(255,255,255,.035-.06)` over a `backdrop-filter: blur(28-56px)`.
     A Wayland client cannot blur what is behind it, so the glass fill is only
     half the effect and the other half has to come from the compositor —
@@ -349,6 +358,13 @@ macros anywhere in the workspace.
     fail-closed stale/absent arm are landing on
     `comp02-m09d-node-redaction`, driven in tests from a synthetic tree,
     while the real source waits on COMP-09. *Unblocked by:* milestone 22.
+18. **Trusted-UI prompt grab** (`shell/focus.rs:188`, `TODO(step 6: trusted
+    UI)`) — `prompt_grab_active` is always false, so nothing yet holds focus
+    for a compositor-drawn prompt. *Unblocked by:* milestone 15.
+19. **Clock calendar drawer** (`hyperion/src/view.rs:1761`, `TODO`) — the
+    taskbar clock opens nothing on click; clock format is compile-time
+    (`eclipse_ui::tokens::clock::{HOUR_12, DATE_MDY}`). See
+    `PROPOSEDFEATURES.md`.
 
 ---
 
@@ -439,7 +455,7 @@ Still deferred:
   open/close (this machine has no lid; needs different hardware or a synthetic
   ACPI event).
 - **VRR** — `vrr_capable`/`vrr_enabled` paths have never seen a VRR panel.
-- **NVIDIA modeset refusal** — `check_nvidia_modeset` (`backend/drm.rs:141`)
+- **NVIDIA modeset refusal** — `check_nvidia_modeset` (`backend/drm.rs:139`)
   reads `/sys/module/nvidia_drm/parameters/modeset` and refuses to start when
   it is `N` (F-04 §2). The refusal path is untested on the failing
   configuration.
@@ -458,14 +474,14 @@ In rough order:
    (2026-09-10). The session path is now fully *staged* on `mainframe`
    (verified 2026-09-18): `dist/install-session.sh` has run, so
    `/usr/share/wayland-sessions/abyss.desktop` exists with
-   `Exec=/usr/local/bin/abyss-session`, all eight binaries are symlinks into
-   `target/release`, and `abyss-session.target`, `eclipse-bar.service` and
-   `eclipse-toasts.service` are installed and enabled under
-   `~/.config/systemd/user/` (`oracle-eyes.service` is wanted by the target
-   too). `~/.config/eclipse/abyss.kdl` parses — a 4 s headless run stays up,
-   which is the closest thing to a config check the binary offers. Hyprland's
-   two session entries are still installed, so recovery is picking one from
-   the same menu.
+   `Exec=/usr/local/bin/abyss-session`, the binaries are symlinks into
+   `target/release`, and `abyss-session.target`, `hyperion.service`,
+   `eclipse-toasts.service` and `eclipse-screensaver.service` are installed
+   and enabled under `~/.config/systemd/user/` (`oracle-eyes.service` is
+   wanted by the target too). `eclipse-ctl config validate` checks
+   `~/.config/eclipse/abyss.kdl`. *(2026-09-23: the dev host now runs abyss as
+   its session, and the 2026-09-19 Framework install reached a working
+   session from greetd — see `docs/handoff/2026-09-19-greeter-to-abyss.md`.)*
 
    **The seat question is answered, and the answer is "nothing special".**
    The 2026-09-10 boot needed root and `LIBSEAT_BACKEND=seatd` only because
@@ -477,8 +493,8 @@ In rough order:
    group on Arch. That is the content of D-01 §5: *a user needs a logind
    session on a seat, and nothing else.*
 
-   **Outstanding manual verification: nobody has logged out and selected the
-   Abyss session at greetd.** Every part of the path is staged and every part
+   **Superseded 2026-09-19: the Framework install logged in to Abyss from
+   greetd.** Kept for the record: Every part of the path is staged and every part
    of it is plausible, and none of that is the same as having done it. It is
    the one step that cannot be run from inside the session doing the staging,
    it requires a human at the machine, and until someone does it this line
@@ -601,12 +617,12 @@ the tree:
    surface. `render/capture.rs` implements surface-level redaction only.
    Previously this was a milestone 13 item; it is now a requirement of a
    Phase 1 document, which makes the gap visible against COMP-02 rather than
-   only against COMP-16. COMP-16 v0.2 sequences it as milestone 9d. The code is not wrong, but the document it is
-   measured against changed underneath it.
+   only against COMP-16. COMP-16 v0.2 sequences it as milestone 9d. *(2026-09-23: closed — 9d's node-level path has
+   landed in `render/capture.rs`; only the tree source is owed, stub 17.)*
 9. **COMP-05 §1 `Toplevel` gains two fields** (A-12):
    `irreversible_capable: bool` and `class_source: u8`. Neither exists in
-   `shell/`. `irreversible_capable` is rule-derived and therefore blocked on
-   the window-rules engine, which parses and does nothing today.
+   `crates/` at all. The window-rules engine they depend on now applies
+   (milestone 9e), so nothing blocks them; they are the rest of 9e.
 10. **COMP-15 §2's twelve blocking suites do not exist.** Twelve, not ten:
     redaction, seat isolation, trusted UI, enforcement, scope leakage, audit
     completeness, X11 posture, classification races, irreversible matching,
@@ -695,7 +711,7 @@ not the gate.
 | D-02 | **written** 2026-09-18 — a signed pacman repo at personal scale; built and consumed for real (see below) |
 | D-03 | **written** 2026-09-18 — archiso profile + a hand-written installer; an ISO has been built from it |
 | D-04 | **unblocked by D-02**; not started |
-| D-05 | blocked on `cataclysm` (P-04, defect 12) |
+| D-05 | **written** 2026-09-23 (`docs/design/D-05-userland.md`); partial — no terminal (`cataclysm`) and no portal yet |
 | D-06 | blocked on F-04 |
 | D-07 | **unblocked by D-03** |
 | D-08 | blocked on F-02 |
@@ -710,7 +726,25 @@ session in under 30 minutes.
 
 ## Open merges
 
-None. PR #6 (`fix(abyss): keep the scanout mode and the output mode in sync`,
+**As of 2026-09-23: PR #32** (`bar-live-updates`, "Taskbar live updates,
+touch/tablet/gesture input, maximize policy") is open: `31785c3` (touchpad
+swipe gestures, touch and tablet input), `a006d2e` and `20d8e3a` (only
+floating windows honour `xdg_toplevel.set_maximized`; a maximize from an
+unmapped tiled window is ignored), `429040a` (hyperion wakes on compositor
+events and follows `title` changes). Local `main` also carries `aa8a4f7`
+(keep a tiled window tiled on a client maximize request), which is not on
+`origin/main`.
+
+Merged since the paragraphs below: **#23**–**#25** (2026-09-19: STATUS for
+D-02/D-03, a DRM re-entrant flush fix, repo tag fetch), **#27** (2026-09-21:
+install-session under sudo, DRM commit and damage-clip fixes, the BLUR-02
+write-up), **#28** (2026-09-22: the hyperion split, status actions, the SNI
+tray, the secret prompt, blur windowrules), **#29**, **#30** and **#31**
+(2026-09-23: rounded glass/borders/blur radius sync, the shadow cache,
+Oracle-Eyes multiple-choice picks and the annotation pick marker). **#26**
+(Limine on the installed system) was closed unmerged.
+
+History: PR #6 (`fix(abyss): keep the scanout mode and the output mode in sync`,
 `comp16-output-identity-modeset` -> `main`) merged on 2026-09-11 with every
 check SUCCESS: gate build/fmt/clippy/test, cargo-deny, wlcs (headless), TCB
 touch check, spec-citation, owner-only authorship. That was the first CI run
@@ -751,7 +785,7 @@ ADR 0035). The `gate` job is a required status check.
 
 **Live and blocking:** `cargo fmt --all --check`; `cargo clippy --workspace
 --all-targets --all-features -- -D warnings`; `cargo build --workspace
---all-targets`; `cargo test --workspace` (128 tests); `cargo deny check
+--all-targets`; `cargo test --workspace` (516 `#[test]` functions); `cargo deny check
 advisories bans licenses sources`; spec-citation check (F-07 §5).
 
 **Live and advisory:** TCB-touch warning (F-07 §4).
@@ -762,10 +796,10 @@ gain an entry even at an unchanged length, so a swap cannot smuggle one in.
 
 The other half of F-01 §4's coverage claim — every `schema::TABLE` path that is
 not a collection and not on the exception list has a rendered control — is
-**not** asserted anywhere, because there is no settings app to enumerate yet.
-It is owed with B5, and it belongs in that crate as a unit test over its own
-control registry rather than as a workflow step: a CI step cannot see the
-registry without linking the crate, and `cargo test --workspace` already runs.
+asserted by `crates/eclipse-settings/tests/coverage.rs`, a test over the
+settings app's own control registry rather than a workflow step (a CI step
+cannot see the registry without linking the crate, and `cargo test
+--workspace` already runs).
 
 **Specified and absent.** Every one of these has a CI slot waiting and no
 suite to put in it:
@@ -777,11 +811,11 @@ suite to put in it:
 | Redaction suite | COMP-15 §2 | suite does not exist |
 | Seat isolation, trusted UI, enforcement, scope leakage, audit completeness, X11 posture | COMP-15 §2 | suites do not exist |
 | S-05 race harness, S-06 matcher corpus, S-07 algebra, S-08 broker, S-09 leak matrix | COMP-15 §2 (A-15) | suites do not exist |
-| Benchmark regression gate | COMP-14 §5 | milestone 9f — no benchmark harness (defect 11) |
+| Benchmark regression gate | COMP-14 §5 | the 9f harness exists (`bench/`); its §4.1 subjects and the §5 baseline machinery do not |
 | Golden decision suite | F-07 §3 | S-02 implemented |
 | Red team (S-10) | F-07 §3 | S-01..S-07 implemented |
 | Client compat matrix | F-07 §3 | self-hosted runner |
 
-The 128 tests are unit-level. Nothing in the security suite of COMP-15 §2 is
+The 516 tests are unit-level. Nothing in the security suite of COMP-15 §2 is
 asserted by anything today; redaction was verified by hand, once. **The
 presence of CI must not be read as coverage.**

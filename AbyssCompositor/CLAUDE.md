@@ -35,15 +35,17 @@ vendored source:
 Version bumps are their own PR with its own ADR if behavior changes.
 
 ## Killing test processes (read this before any cleanup line)
-`kitty` is the terminal hosting the interactive session. **Never `pkill`/`killall`
-kitty, zsh, claude, Xwayland or quickshell** — that kills the session you are
-running in, mid-command, and looks like a mysterious external SIGKILL (exit 137).
-This has already happened more than once.
+The dev host runs abyss itself, and the interactive session lives in a
+terminal on it (`foot` or `kitty`). **Never `pkill`/`killall` the terminal,
+shells (zsh), claude, Xwayland or the running abyss session** — that kills the
+session you are running in, mid-command, and looks like a mysterious external
+SIGKILL (exit 137). This has already happened more than once.
 
-- Kill only our own binary, by exact name: `pkill -x abyss`. Never `pkill -f`.
-- Kill a spawned test client by the pid you captured when you spawned it
-  (`kitty ... & pid=$!` then `kill $pid`), never by process name.
-- Host pid 2245 is the host's own Xwayland under Hyprland. Leave it alone.
+- Kill a spawned test process by the pid you captured when you spawned it
+  (`./target/debug/abyss ... & pid=$!` then `kill $pid`), never by process
+  name. `pkill -x abyss` is **not** safe on a host whose session is abyss.
+- Never `pkill -f`.
+- Xwayland on the host belongs to the host session. Leave it alone.
 
 ## Build / test / run
 ```
@@ -52,7 +54,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo build --workspace --all-targets
 cargo test --workspace
 cargo deny check advisories bans licenses sources
-cargo run -- --backend winit    # nested under Hyprland for dev
+cargo run -- --backend winit    # nested window under the host session (abyss)
 journalctl --user -t abyss -f  # logs (tracing → journald)
 ```
 The first five are exactly what CI runs (`../.github/workflows/gate.yml` — the
@@ -69,8 +71,8 @@ justification.
 **The main agent never writes frontend.** Every single piece of user-facing UI
 — a new view, a redesign, a tweak to an existing one, anywhere under
 `crates/eclipse-ui/`, `crates/hyperion/`, `crates/eclipse-toasts/`,
-`crates/eclipse-center/`, `crates/eclipse-launcher/`, `crates/eclipse-settings/`
-or `crates/eclipse-policy-viewer/` — goes to the `eclipse-frontend` agent. It is
+`crates/eclipse-center/`, `crates/eclipse-launcher/`, `crates/eclipse-settings/`,
+`crates/eclipse-policy-viewer/` or `crates/eclipse-secret-prompt/` — goes to the `eclipse-frontend` agent. It is
 the only thing here that produces usable frontend: it screenshots its own
 output and iterates against `docs/STYLE.md`, which is exactly the loop the main
 thread cannot run.
@@ -143,22 +145,35 @@ file dumps until it compacts mid-task and loses the plan.
 
 ## Where things are
 ```
-crates/abyss/src/backend/     COMP-01  winit + DRM/udev behind one trait
-crates/abyss/src/render/      COMP-02  damage, scanout, sync, redaction
-crates/abyss/src/outputs/     COMP-03  hotplug, layout, virtual outputs
-crates/abyss/src/input/       COMP-04  seats, focus, injection, override chord
-crates/abyss/src/shell/       COMP-05  layouts, workspaces, rules, identity
+crates/abyss/src/backend/     COMP-01  winit, DRM/udev, headless, gpu.rs, behind one trait
+crates/abyss/src/render/      COMP-02  damage, scanout, sync, blur, redaction, annotations
+crates/abyss/src/outputs/     COMP-03  hotplug, layout, EDID, calibration, power
+crates/abyss/src/input/       COMP-04  keyboard, pointer, touch, tablet, gestures, injection
+crates/abyss/src/shell/       COMP-05  layouts, workspaces, rules, focus
 crates/abyss/src/protocols/standard/  COMP-06
-crates/abyss/src/protocols/agent/     COMP-08  eclipse_agent_v1
-crates/abyss/src/protocols/semantic/  COMP-09  eclipse_semantic_v1
-crates/abyss/src/trusted_ui/  COMP-10  prompts, indicator, emergency panel
-crates/abyss/src/policy/      COMP-11  enforcement table, check()
-crates/abyss/src/audit/       COMP-12  provenance emission
-crates/abyss/src/ipc/         COMP-13  human JSON-RPC socket
-crates/abyss/src/config/      COMP-13  KDL parse, validate, hot-reload
+crates/abyss/src/protocols/agent/     COMP-08  eclipse_agent_v1       (not yet)
+crates/abyss/src/protocols/semantic/  COMP-09  eclipse_semantic_v1    (not yet)
+crates/abyss/src/trusted_ui/  COMP-10  prompts, indicator, emergency panel  (not yet)
+crates/abyss/src/policy/      COMP-11  enforcement table, check()     (not yet; stub in state.rs)
+crates/abyss/src/audit/       COMP-12  provenance emission            (not yet)
+crates/abyss/src/ipc/         COMP-13  human JSON-RPC socket, gate table
+crates/abyss/src/config/      COMP-13  KDL parse, validate, hot-reload, edit
 crates/abyss/src/xwayland/    COMP-07
+crates/policyd/, crates/policy-eval/   A-04, S-01 §4, S-04 §4  policy daemon + shared types (TCB)
+crates/eclipse-ipc/           control-socket client + types
+crates/eclipse-ctl/           CLI over the control socket, config migrate
+crates/wlcs-abyss/            WLCS conformance shim
+crates/eclipse-services/      D-Bus services: notifications, tray, status, screensaver
+crates/eclipse-ui/            shared iced theme/tokens/widgets
+crates/{hyperion,eclipse-toasts,eclipse-center,eclipse-launcher,
+        eclipse-settings,eclipse-policy-viewer,eclipse-secret-prompt}/  DE panes
+bench/                         COMP-16 M9f frame-time harness
+ci/                            wlcs skip list, GUI-coverage exceptions
+dist/                          session, units, PKGBUILD, repo, ISO, /etc defaults
 decisions/                     ADRs (F-08 format)
-docs/ARCHITECTURE.md, docs/BUILDING.md
+docs/ARCHITECTURE.md, BUILDING.md, STATUS.md, KNOWNBUGS.md,
+     PROPOSEDFEATURES.md, HANDOFF.md (+ handoff/ archive), CONFIG.md,
+     STYLE.md, COMPOSITION.md, design/ (D-NN)
 ```
 Per-crate `CLAUDE.md` names the governing spec, local invariants, and whether
 the crate is TCB.

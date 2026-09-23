@@ -12,9 +12,14 @@ Read the root `CLAUDE.md` first.
   the accent ledger. Correct tokens with no hero block is how a pane ends up
   looking generic. `docs/design/eclipse-panes.html` is the vendored reference
   it was derived from.
-- Glass blur is the compositor's (`decoration { blur }`, dual-Kawase). This
-  crate paints the translucent fill and border that sit *on* the blur; it
-  never tries to blur anything itself.
+- Glass blur is the compositor's (`decoration { blur }`, dual-Kawase, on by
+  default, applied to layer-shell surfaces as well as windows). This crate
+  paints the translucent fill and border that sit *on* the blur; it never
+  tries to blur anything itself.
+- Corner radius follows the compositor: `ipc::fetch_config_radius` reads
+  `decoration.rounding` (or `bar.rounding` for the taskbar) over `get_config`,
+  and `theme::{panel, surface, menu_surface, bar_ground}` take that radius.
+  This is why the crate depends on `eclipse-ipc`.
 - Accent discipline: one live yellow per pane. Widgets take their accent from
   the theme, so a pane that looks wrong is a pane using two accent widgets,
   not a widget to restyle.

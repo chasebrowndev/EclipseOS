@@ -1,6 +1,13 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Handoff — 2026-09-19: EclipseOS installs and boots; abyss bounces to the greeter
 
+> **Resolved — see HW-01.** The bounce was abyss dying while spawning
+> Xwayland on a system with no `xorg-xwayland`. Fixed the same day:
+> `xorg-xwayland` is a hard dependency of `eclipseos-abyss`, and
+> `xwayland::start` checks `PATH` before spawning. HW-01 has since been
+> removed from `docs/KNOWNBUGS.md` as fixed (2026-09-23); its write-up is in
+> git history. Everything below is the original, unresolved-at-the-time text.
+
 ## The one open bug
 
 **EclipseOS is installed on the owner's Framework 13 and boots to the greeter.

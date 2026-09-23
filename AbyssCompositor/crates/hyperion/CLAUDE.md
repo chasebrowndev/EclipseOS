@@ -18,8 +18,8 @@ Read the root `CLAUDE.md` first. Governing spec: DP-4 (`claude/DESKTOP_PROFILES_
   it must stay true.
 - **Never fail silently.** `DENIED (-32000)` and the `ConfigError` object
   render the same way here as in `eclipse-settings`.
-- **Human input is never logged by content** (root invariant) — the launcher's
-  query box included. No tracing of what was typed.
+- **Human input is never logged by content** (root invariant). No tracing of
+  what was typed.
 - No literal colour, radius or size: `eclipse_ui::tokens` is the only source,
   and `eclipse_ui::widget` is the composition vocabulary. See
   `docs/STYLE.md` and `docs/COMPOSITION.md` before writing a view.

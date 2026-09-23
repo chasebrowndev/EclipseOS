@@ -15,7 +15,7 @@ writing a new ADR that says so.
 | 0007 | [Agent seats default, compat lock fallback](0007-agent-seats-default.md) | accepted |
 | 0008 | [Policy in-process from a compiled table; defer is tighten-only](0008-policy-in-process-table.md) | accepted |
 | 0009 | [Trusted UI compositor-drawn, never layer-shell](0009-trusted-ui-compositor-drawn.md) | accepted |
-| 0010 | WM mode only, no DE in v1 | accepted (not yet written up) |
+| 0010 | WM mode only, no DE in v1 | superseded by 0038 |
 | 0011 | Hyprland-style human UX; agent workspaces untiled | accepted (not yet written up) |
 | 0012 | Default sensitivity private; app-declared class raise-only | accepted (not yet written up) |
 | 0013 | Human keystrokes never logged by content | accepted (not yet written up) |
