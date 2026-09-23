@@ -155,41 +155,46 @@ fn shrink(r: Rectangle<i32, Logical>, by: i32) -> Rectangle<i32, Logical> {
     )
 }
 
-/// Clamp against the client's advertised min/max, loosely: a max smaller than
-/// the tile wins, a min larger than the tile wins.
-fn clamp_size(window: &Window, mut size: Size<i32, Logical>) -> Size<i32, Logical> {
+/// Clamp against the client's advertised min/max. A max smaller than the area
+/// always wins. A min larger than the area wins only for floating windows: a
+/// tiled window is held to its tile, so a large advertised min (Electron apps
+/// ask for ~940 logical px) cannot push it under its neighbour.
+fn clamp_size(window: &Window, size: Size<i32, Logical>, tiled: bool) -> Size<i32, Logical> {
     let Some(toplevel) = window.toplevel() else {
-        if let Some(x11) = window.x11_surface() {
-            let (min, max) = (x11.min_size(), x11.max_size());
-            if let Some(max) = max {
-                if max.w > 0 {
-                    size.w = size.w.min(max.w);
-                }
-                if max.h > 0 {
-                    size.h = size.h.min(max.h);
-                }
-            }
-            if let Some(min) = min {
-                size.w = size.w.max(min.w);
-                size.h = size.h.max(min.h);
-            }
-            size.w = size.w.max(1);
-            size.h = size.h.max(1);
-        }
-        return size;
+        let Some(x11) = window.x11_surface() else {
+            return size;
+        };
+        let min = x11.min_size().unwrap_or_default();
+        let max = x11.max_size().unwrap_or_default();
+        return clamp_to(size, min, max, tiled);
     };
     with_states(toplevel.wl_surface(), |states| {
         let mut guard = states.cached_state.get::<SurfaceCachedState>();
         let d = *guard.current();
-        if d.max_size.w > 0 {
-            size.w = size.w.min(d.max_size.w);
-        }
-        if d.max_size.h > 0 {
-            size.h = size.h.min(d.max_size.h);
-        }
-        size.w = size.w.max(d.min_size.w).max(1);
-        size.h = size.h.max(d.min_size.h).max(1);
-    });
+        clamp_to(size, d.min_size, d.max_size, tiled)
+    })
+}
+
+/// Pure min/max clamp behind [`clamp_size`]. A zero max component means
+/// "unbounded"; `min` is ignored when `tiled`.
+fn clamp_to(
+    mut size: Size<i32, Logical>,
+    min: Size<i32, Logical>,
+    max: Size<i32, Logical>,
+    tiled: bool,
+) -> Size<i32, Logical> {
+    if max.w > 0 {
+        size.w = size.w.min(max.w);
+    }
+    if max.h > 0 {
+        size.h = size.h.min(max.h);
+    }
+    if !tiled {
+        size.w = size.w.max(min.w);
+        size.h = size.h.max(min.h);
+    }
+    size.w = size.w.max(1);
+    size.h = size.h.max(1);
     size
 }
 
@@ -347,7 +352,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
 
     for (w, rect) in tiled {
         let inner = shrink(rect, border);
-        let size = clamp_size(&w, inner.size);
+        let size = clamp_size(&w, inner.size, true);
         configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
         fractional_scale::update_window_scale(&w, &output);
         state.space.map_element(w, inner.loc, false);
@@ -359,7 +364,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         } else {
             shrink(rect, border)
         };
-        let size = clamp_size(&w, inner.size);
+        let size = clamp_size(&w, inner.size, false);
         configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
         fractional_scale::update_window_scale(&w, &output);
         state.space.map_element(w.clone(), inner.loc, false);
@@ -2229,6 +2234,18 @@ pub fn focus_layer_if_wanted(state: &mut AbyssState, surface: &WlSurface) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiled_ignores_min_floating_honours_it() {
+        let tile = Size::<i32, Logical>::from((720, 800));
+        let min = Size::from((940, 500));
+        let none = Size::from((0, 0));
+        assert_eq!(clamp_to(tile, min, none, true), tile);
+        assert_eq!(clamp_to(tile, min, none, false), Size::from((940, 800)));
+        // max still wins for tiled windows.
+        let max = Size::from((600, 0));
+        assert_eq!(clamp_to(tile, min, max, true), Size::from((600, 800)));
+    }
 
     #[test]
     fn null_buffer_unmaps_then_next_commit_remaps() {
