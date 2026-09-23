@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use kdl::{KdlDocument, KdlNode, KdlValue};
 use smithay::input::keyboard::{xkb, Keysym, ModifiersState};
 
-use crate::input::{Action, Bind, Direction, Mods};
+use crate::input::{Action, Bind, Direction, GestureBind, Mods};
 use crate::xwayland::security::{AppTrust, SeatCompat};
 
 /// Where a floating window lands when nothing else decides for it — no
@@ -757,6 +757,9 @@ pub struct Config {
     pub misc: Misc,
     pub input: Input,
     pub binds: Vec<Bind>,
+    /// Touchpad swipe bindings, one per `(fingers, direction)`: the defaults
+    /// with every `gesture` node merged over them.
+    pub gesture_binds: Vec<GestureBind>,
     /// Per-workspace layout overrides, indexed 1..=10.
     pub workspace_layout: [Option<LayoutKind>; 10],
     /// `output` blocks in file order; the last match wins.
@@ -793,6 +796,7 @@ impl Default for Config {
             misc: Misc::default(),
             input: Input::default(),
             binds: default_binds(),
+            gesture_binds: default_gesture_binds(),
             workspace_layout: Default::default(),
             outputs: Vec::new(),
             window_rules: Vec::new(),
@@ -829,6 +833,23 @@ fn merge_binds(defaults: Vec<Bind>, from_file: Vec<Bind>) -> Vec<Bind> {
         }
     }
     out
+}
+
+/// The owner's Hyprland workspace swipe: three fingers moving left bring in
+/// the next workspace, the way dragging a page left reveals the one after it.
+pub fn default_gesture_binds() -> Vec<GestureBind> {
+    vec![
+        GestureBind {
+            fingers: 3,
+            direction: Direction::Left,
+            action: Action::WorkspaceNext,
+        },
+        GestureBind {
+            fingers: 3,
+            direction: Direction::Right,
+            action: Action::WorkspacePrev,
+        },
+    ]
 }
 
 fn m(logo: bool, shift: bool, ctrl: bool, alt: bool) -> Mods {
@@ -1359,6 +1380,20 @@ impl Config {
                 "bind" => match parse_bind(node) {
                     Ok(b) => binds.push(b),
                     Err(e) => self.reject(node, format!("ignoring bind (error={})", e)),
+                },
+                // Same merge rule as `merge_binds`, applied as each node
+                // arrives: a later entry for the same `(fingers, direction)`
+                // replaces the earlier one (default or file) in place.
+                "gesture" => match parse_gesture(node) {
+                    Ok(g) => match self
+                        .gesture_binds
+                        .iter_mut()
+                        .find(|o| o.fingers == g.fingers && o.direction == g.direction)
+                    {
+                        Some(slot) => *slot = g,
+                        None => self.gesture_binds.push(g),
+                    },
+                    Err(e) => self.reject(node, format!("ignoring gesture (error={})", e)),
                 },
                 "workspace" => self.apply_workspace(node),
                 "render" => self.apply_render(node),
@@ -2168,6 +2203,19 @@ impl Config {
             .find(|b| b.key == key && b.mods.matches(mods))
             .map(|b| &b.action)
     }
+
+    /// Whether any `fingers`-finger swipe is bound. Asked at swipe begin,
+    /// before the direction is known, to decide who owns the whole swipe.
+    pub fn gesture_bound(&self, fingers: u32) -> bool {
+        self.gesture_binds.iter().any(|g| g.fingers == fingers)
+    }
+
+    pub fn gesture_for(&self, fingers: u32, direction: Direction) -> Option<&Action> {
+        self.gesture_binds
+            .iter()
+            .find(|g| g.fingers == fingers && g.direction == direction)
+            .map(|g| &g.action)
+    }
 }
 
 /// Every file that may contribute, in apply order.
@@ -2318,6 +2366,36 @@ fn parse_bind(node: &KdlNode) -> Result<Bind, String> {
     Ok(Bind { mods, key, action })
 }
 
+/// `gesture "swipe" 3 "left" { workspace-next; }`
+fn parse_gesture(node: &KdlNode) -> Result<GestureBind, String> {
+    let a = args(node);
+    let [kind, fingers, direction] = a[..] else {
+        return Err("gesture takes \"swipe\" fingers direction { action }".into());
+    };
+    if kind.as_string() != Some("swipe") {
+        return Err("only \"swipe\" gestures can be bound".into());
+    }
+    let fingers = match fingers.as_integer() {
+        Some(n @ (3 | 4)) => n as u32,
+        _ => return Err("gesture fingers must be 3 or 4".into()),
+    };
+    let direction = match direction.as_string() {
+        Some("left") => Direction::Left,
+        Some("right") => Direction::Right,
+        Some("up") => Direction::Up,
+        Some("down") => Direction::Down,
+        _ => return Err("gesture direction must be left, right, up or down".into()),
+    };
+    let children = node.children().ok_or("gesture needs an action block")?;
+    let action_node = children.nodes().first().ok_or("gesture action block is empty")?;
+    let action = parse_action(action_node)?;
+    Ok(GestureBind {
+        fingers,
+        direction,
+        action,
+    })
+}
+
 fn parse_action(node: &KdlNode) -> Result<Action, String> {
     let a = args(node);
     let text = || a.first().and_then(|v| v.as_string()).map(str::to_owned);
@@ -2338,6 +2416,8 @@ fn parse_action(node: &KdlNode) -> Result<Action, String> {
         "move-up" => Action::Move(Direction::Up),
         "move-down" => Action::Move(Direction::Down),
         "workspace" => Action::SwitchWorkspace(workspace_arg(num())?),
+        "workspace-next" => Action::WorkspaceNext,
+        "workspace-prev" => Action::WorkspacePrev,
         "move-to-workspace" => Action::MoveToWorkspace(workspace_arg(num())?),
         "move-to-output" => Action::MoveToOutputWorkspace(output_number_arg(num())?),
         "agent-override" => Action::AgentOverride,
@@ -3046,6 +3126,94 @@ mod tests {
                 | Action::AnnotationExpand
                 | Action::AnnotationAutoToggle
         )));
+    }
+
+    fn gestures(text: &str) -> Config {
+        let doc: KdlDocument = text.parse().unwrap();
+        let mut cfg = Config {
+            cur: Some((abyss_src("a.kdl"), text.to_owned())),
+            ..Config::default()
+        };
+        cfg.apply(&doc, &mut Vec::new());
+        cfg
+    }
+
+    #[test]
+    fn gesture_node_parses() {
+        use crate::input::Action;
+        let cfg = gestures("gesture \"swipe\" 4 \"up\" { spawn \"foot\"; }\n");
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(
+            cfg.gesture_for(4, Direction::Up),
+            Some(&Action::Spawn("foot".into()))
+        );
+        assert!(cfg.gesture_bound(4));
+        // Additive: the defaults are still there.
+        assert_eq!(cfg.gesture_binds.len(), default_gesture_binds().len() + 1);
+        assert_eq!(cfg.gesture_for(3, Direction::Left), Some(&Action::WorkspaceNext));
+        assert_eq!(cfg.gesture_for(3, Direction::Right), Some(&Action::WorkspacePrev));
+        assert!(!cfg.gesture_bound(5));
+    }
+
+    #[test]
+    fn gesture_rejects_bad_fingers_kind_and_direction() {
+        for bad in [
+            "gesture \"swipe\" 2 \"left\" { workspace-next; }",
+            "gesture \"swipe\" 5 \"left\" { workspace-next; }",
+            "gesture \"swipe\" \"3\" \"left\" { workspace-next; }",
+            "gesture \"swipe\" 3 \"sideways\" { workspace-next; }",
+            "gesture \"pinch\" 3 \"left\" { workspace-next; }",
+            "gesture \"swipe\" 3 { workspace-next; }",
+            "gesture \"swipe\" 3 \"left\"",
+            "gesture \"swipe\" 3 \"left\" { no-such-action; }",
+        ] {
+            let cfg = gestures(bad);
+            assert_eq!(cfg.errors.len(), 1, "{bad}: {:?}", cfg.errors);
+            assert_eq!(cfg.gesture_binds, default_gesture_binds(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn config_gesture_overrides_the_default() {
+        use crate::input::Action;
+        let cfg = gestures(
+            "gesture \"swipe\" 3 \"left\" { workspace-prev; }\ngesture \"swipe\" 3 \"left\" { toggle-layout; }\n",
+        );
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(
+            cfg.gesture_binds.len(),
+            default_gesture_binds().len(),
+            "override, not addition"
+        );
+        // The later entry wins, the same as a later file over an earlier one.
+        assert_eq!(cfg.gesture_for(3, Direction::Left), Some(&Action::ToggleLayout));
+        assert_eq!(cfg.gesture_for(3, Direction::Right), Some(&Action::WorkspacePrev));
+    }
+
+    #[test]
+    fn workspace_step_actions_parse() {
+        use crate::input::Action;
+        let doc: KdlDocument =
+            "bind \"SUPER\" \"n\" { workspace-next; }\nbind \"SUPER\" \"p\" { workspace-prev; }"
+                .parse()
+                .unwrap();
+        let mut binds = Vec::new();
+        Config::default().apply(&doc, &mut binds);
+        assert_eq!(binds[0].action, Action::WorkspaceNext);
+        assert_eq!(binds[1].action, Action::WorkspacePrev);
+    }
+
+    #[test]
+    fn swipe_direction_takes_the_dominant_axis_past_the_threshold() {
+        use crate::input::{swipe_direction, SWIPE_THRESHOLD};
+        let t = SWIPE_THRESHOLD;
+        assert_eq!(swipe_direction(-t, 0.0, t), Some(Direction::Left));
+        assert_eq!(swipe_direction(t * 2.0, t, t), Some(Direction::Right));
+        assert_eq!(swipe_direction(10.0, -t * 1.5, t), Some(Direction::Up));
+        assert_eq!(swipe_direction(-t, t * 1.1, t), Some(Direction::Down));
+        // Short of the threshold on both axes: nothing, however diagonal.
+        assert_eq!(swipe_direction(t - 1.0, -(t - 1.0), t), None);
+        assert_eq!(swipe_direction(0.0, 0.0, t), None);
     }
 }
 

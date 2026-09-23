@@ -1045,8 +1045,15 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
         .cloned();
     if let Some(window) = mapped {
         // Title and app_id can change at any commit; the foreign-toplevel list
-        // has no other notification path for them.
-        crate::protocols::standard::foreign_toplevel::window_updated(&window);
+        // has no other notification path for them. The bar hears it over IPC.
+        if crate::protocols::standard::foreign_toplevel::window_updated(&window) {
+            let handle = state.ipc.handle_for(&window);
+            crate::ipc::emit(
+                state,
+                "window",
+                serde_json::json!({"change": "title", "handle": handle}),
+            );
+        }
         // Title-matching rules are re-evaluated on title change (COMP-05 §4).
         if let Some(placement) = rules::reevaluate(state, &window) {
             replace_window(state, &window, &placement);
@@ -1508,6 +1515,8 @@ pub fn toggle_floating(state: &mut AbyssState) {
 /// A client's `xdg_toplevel.set_maximized` (COMP-05 §4): fill the output's
 /// usable area, i.e. shrunk by any layer-shell exclusive zone, with no gap or
 /// border — the raw protocol contract, not abyss's own tiling style.
+/// Policy: a startup request from a not-yet-mapped tiled window (e.g. a restored
+/// session state) is ignored and it keeps its tile; later requests are honoured.
 pub fn maximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::shell::xdg::ToplevelSurface) {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
 
@@ -1531,6 +1540,12 @@ pub fn maximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::she
 
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let ws = entry.active;
+    if entry.workspaces[ws].tiled.contains(&window) && !has_buffer(surface.wl_surface()) {
+        // xdg-shell still owes the client a configure for the request.
+        surface.with_pending_state(|s| s.states.unset(State::Maximized));
+        surface.send_configure();
+        return;
+    }
     let restore = if let Some(i) = entry.workspaces[ws]
         .floating
         .iter()
@@ -1569,6 +1584,10 @@ pub fn unmaximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::s
         return;
     };
     let Some(restore) = state.maximized.remove(&window) else {
+        // Never maximized (e.g. a tiled window): nothing to restore, but the
+        // request is still answered with a configure.
+        surface.with_pending_state(|s| s.states.unset(State::Maximized));
+        surface.send_configure();
         return;
     };
     let Some(id) = output_of_window(state, &window).or_else(|| state.outputs.focused().map(|e| e.id)) else {
@@ -1941,6 +1960,19 @@ pub fn switch_workspace(state: &mut AbyssState, idx: usize) {
     // restate it here or hyperion folds against the old workspace.
     focus::emit_output_state(state, id);
     tracing::info!(workspace = idx, "workspace switched");
+}
+
+/// Switch the focused output to the workspace `step` away from its active one.
+/// Clamped to 1..=10, not wrapped: a swipe past the last workspace does nothing
+/// rather than jumping to the far end.
+pub fn switch_workspace_relative(state: &mut AbyssState, step: isize) {
+    let Some(active) = state.outputs.focused().map(|e| e.active) else {
+        return;
+    };
+    let target = active as isize + 1 + step;
+    if (1..=workspace::COUNT as isize).contains(&target) {
+        switch_workspace(state, target as usize);
+    }
 }
 
 pub fn move_to_workspace(state: &mut AbyssState, idx: usize) {

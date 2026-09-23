@@ -43,18 +43,19 @@ pub fn window_mapped(state: &mut AbyssState, window: &Window) {
 }
 
 /// Push a title/app_id change. Smithay drops unchanged values, so this is cheap
-/// enough to call on every commit.
-pub fn window_updated(window: &Window) {
+/// enough to call on every commit. Returns whether anything changed.
+pub fn window_updated(window: &Window) -> bool {
     let Some(handle) = window.user_data().get::<ForeignToplevelHandle>() else {
-        return;
+        return false;
     };
     let (title, app_id) = identity(window);
     if handle.title() == title && handle.app_id() == app_id {
-        return;
+        return false;
     }
     handle.send_title(&title);
     handle.send_app_id(&app_id);
     handle.send_done();
+    true
 }
 
 /// The window is gone for good — not merely off the visible workspace.

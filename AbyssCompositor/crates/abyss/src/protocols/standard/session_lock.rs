@@ -87,19 +87,32 @@ pub fn logical_size(output: &Output) -> Size<i32, Logical> {
         .to_i32_round()
 }
 
-impl SessionLockHandler for AbyssState {
-    fn lock_state(&mut self) -> &mut SessionLockManagerState {
-        &mut self.session_lock_state
-    }
-
-    fn lock(&mut self, confirmation: SessionLocker) {
+impl AbyssState {
+    /// Everything `lock` does before confirming. Split out because smithay's
+    /// `SessionLocker` cannot be built outside a real client, and this is the
+    /// half that has to be tested.
+    pub(crate) fn engage_lock(&mut self) {
         self.lock.locked = true;
         tracing::info!("session locked");
         // Nothing behind the lock may keep focus, even for one frame.
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
         }
+        // Touch too: smithay's touch grab keeps a point bound to the surface
+        // it came down on, so a finger already down would go on driving the
+        // app behind the lock. Cancel the sequence outright.
+        self.on_touch_cancel();
         crate::backend::damage_all(self);
+    }
+}
+
+impl SessionLockHandler for AbyssState {
+    fn lock_state(&mut self) -> &mut SessionLockManagerState {
+        &mut self.session_lock_state
+    }
+
+    fn lock(&mut self, confirmation: SessionLocker) {
+        self.engage_lock();
         confirmation.lock();
     }
 

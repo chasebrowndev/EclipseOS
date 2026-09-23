@@ -295,7 +295,8 @@ The bar's control-socket surface, verified against `crates/abyss/src/ipc/`:
 - `focus_window {handle}`, `close_window {handle}`, `switch_workspace
   {workspace}`, `set_floating {floating, handle}`, `move_to_workspace
   {workspace, handle?}`. Workspace indices are **1-based on the wire**.
-- Events: `window {change: opened|closed|urgent, handle}`, `workspace
+- Events: `window {change: opened|closed|urgent|title, handle}`
+  (`title` fires on a title or app_id change of a mapped window), `workspace
   {change: switched, output, workspace}`, `focus {handle}`, `output
   {change: changed, id}`, `config-error {errors}`.
 - Every one of those has an `implemented: true` row in `ipc/gate.rs`. A method

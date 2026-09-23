@@ -604,7 +604,7 @@ mod tests {
 /// (smithay filters on `bbox()`), which needs a real client. Those cases are
 /// the conformance harness's job (COMP-15 §1), not this module's.
 #[cfg(test)]
-mod state_tests {
+pub(crate) mod state_tests {
     use super::*;
     use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
     use smithay::reexports::calloop::EventLoop;
@@ -615,10 +615,11 @@ mod state_tests {
     const W: i32 = 800;
     const H: i32 = 600;
 
-    struct Harness {
-        state: AbyssState,
-        a: u64,
-        b: u64,
+    /// Shared with `input`'s gesture tests, which need the same live state.
+    pub(crate) struct Harness {
+        pub(crate) state: AbyssState,
+        pub(crate) a: u64,
+        pub(crate) b: u64,
         // Dropped last; the state borrows nothing from them but the loop owns
         // the sources the state registered.
         _loop: EventLoop<'static, AbyssState>,
@@ -637,7 +638,7 @@ mod state_tests {
         )
     }
 
-    fn harness() -> Harness {
+    pub(crate) fn harness() -> Harness {
         // `ListeningSocketSource` needs somewhere to bind; a CI runner may have
         // no XDG_RUNTIME_DIR at all. `cargo test` runs tests on several threads,
         // so the set_var is done exactly once, before any harness proceeds.
