@@ -61,6 +61,7 @@ writing a new ADR that says so.
 | 0053 | [The status service gains actions; secrets go through their own prompt process](0053-status-actions-and-secret-prompt.md) | accepted |
 | 0054 | [Annotations gain a title and a pick marker](0054-annotation-pick-marker.md) | accepted |
 | 0055 | [Oracle-Eyes publishes a status beacon for the taskbar eye](0055-oracle-eyes-status-beacon.md) | accepted |
+| 0056 | [Small listed layer surfaces are omitted from capture](0056-capture-hide-layer.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

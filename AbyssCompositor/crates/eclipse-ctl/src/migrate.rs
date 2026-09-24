@@ -30,6 +30,7 @@ const POLICY_KEYS: &[&str] = &[
     "clipboard.data-control-allow",
     "capture.allow",
     "capture.redact-app-id",
+    "capture.hide-layer",
 ];
 
 /// `windowrule` actions the schema marks `Owner::Policy`

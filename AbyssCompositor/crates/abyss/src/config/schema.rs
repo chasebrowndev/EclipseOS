@@ -365,6 +365,16 @@ pub const TABLE: &[Key] = &[
         "Where taskbar popups open: under the cell that was clicked, or at \
        the pointer.",
     ),
+    k(
+        "bar.eye",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Show the Oracle-Eyes status eye on the taskbar's eclipse mark. The \
+       compositor only stores this; the taskbar reads Oracle-Eyes' own status \
+       socket (ADR 0055).",
+    ),
     // decoration
     k(
         "decoration.rounding",
@@ -608,6 +618,17 @@ pub const TABLE: &[Key] = &[
         Live,
         "app_ids whose windows are `secret`: never composited into a capture \
        target, only a solid placeholder (COMP-02 §7).",
+    ),
+    k(
+        "capture.hide-layer",
+        Ty::StrList,
+        EmptyList,
+        Policy,
+        Live,
+        "exe:namespace pairs whose layer surfaces are omitted from every \
+       capture: shown on screen, absent from screenshots and screen shares, \
+       with whatever is beneath showing instead. Only surfaces up to 64x64 \
+       logical px qualify (ADR 0056). Empty hides nothing.",
     ),
 ];
 
@@ -1098,6 +1119,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.rounding" => V::Int(c.bar.rounding as i64),
         "bar.clock.hour-12" => V::Bool(c.bar.clock.hour_12),
         "bar.clock.date-mdy" => V::Bool(c.bar.clock.date_mdy),
+        "bar.eye" => V::Bool(c.bar.eye),
         "bar.popup-anchor" => V::Str(
             match c.bar.popup_anchor {
                 BarPopupAnchor::Cell => "cell",
@@ -1142,6 +1164,13 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "clipboard.data-control-allow" => list(&c.clipboard.data_control_allow),
         "capture.allow" => list(&c.capture.allow),
         "capture.redact-app-id" => list(&c.capture.redact_app_id),
+        "capture.hide-layer" => V::List(
+            c.capture
+                .hide_layer
+                .iter()
+                .map(|(exe, ns)| format!("{exe}:{ns}"))
+                .collect(),
+        ),
         _ => return None,
     })
 }
@@ -1440,6 +1469,7 @@ mod tests {
                 "clipboard.data-control-allow",
                 "capture.allow",
                 "capture.redact-app-id",
+                "capture.hide-layer",
             ]
         );
         let rules: Vec<_> = RULE_ACTIONS

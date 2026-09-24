@@ -441,6 +441,11 @@ fn layer_elements(
                 continue;
             };
             let wl = surface.wl_surface();
+            if omitted_layer(state, surface.namespace(), wl, geo.size) {
+                // Not a redaction: nothing of it reaches the target, so there
+                // is nothing to cover, and what lies beneath shows instead.
+                continue;
+            }
             // Layer surfaces carry no `app_id`, so only the sensitive set and
             // the node path can raise them.
             let (tree, generation, secret_known) = semantics_for(state, Some(wl));
@@ -489,6 +494,58 @@ fn layer_elements(
             );
         }
     }
+}
+
+/// The largest layer surface `capture.hide-layer` may omit, per side, in
+/// logical px (ADR 0056). A surface that can hide from every capture could
+/// be a convincing fake dialog that leaves no trace in a screenshot; one
+/// icon's worth cannot.
+pub const HIDE_LAYER_MAX: i32 = 64;
+
+/// Is this layer surface one the owner listed in `capture.hide-layer`?
+///
+/// The namespace is the client's own claim, so it only counts alongside the
+/// client's executable (the ADR 0022 stopgap identity, same as
+/// `capture.allow`). The cheap namespace test runs first, so the `/proc`
+/// lookup only ever happens for a surface that already claims a listed name.
+fn omitted_layer(
+    state: &AbyssState,
+    namespace: &str,
+    wl: &WlSurface,
+    size: smithay::utils::Size<i32, Logical>,
+) -> bool {
+    let entries = &state.config.capture.hide_layer;
+    if !entries.iter().any(|(_, ns)| ns == namespace) {
+        return false;
+    }
+    let exe = wl
+        .client()
+        .and_then(|c| crate::protocols::standard::data_control::client_name(&state.display_handle, &c));
+    let omit = hide_layer(entries, exe.as_deref(), namespace, size);
+    if !omit {
+        tracing::debug!(
+            namespace,
+            ?exe,
+            w = size.w,
+            h = size.h,
+            "hide-layer claim refused"
+        );
+    }
+    omit
+}
+
+/// The pure half of [`omitted_layer`]: an unknown executable never matches,
+/// and an oversized surface is captured like any other.
+pub fn hide_layer(
+    entries: &[(String, String)],
+    exe: Option<&str>,
+    namespace: &str,
+    size: smithay::utils::Size<i32, Logical>,
+) -> bool {
+    let Some(exe) = exe else { return false };
+    size.w <= HIDE_LAYER_MAX
+        && size.h <= HIDE_LAYER_MAX
+        && entries.iter().any(|(e, ns)| e == exe && ns == namespace)
 }
 
 /// One opaque quad per redaction rectangle, front-to-back order preserved.
@@ -677,7 +734,10 @@ fn write_shm(buffer: &WlBuffer, region: Rectangle<i32, Physical>, pixels: &[u8])
 
 #[cfg(test)]
 mod tests {
-    use super::{is_sensitive, node_rects, resolve_nodes, NodeVerdict, RedactReason, SemanticTree};
+    use super::{
+        hide_layer, is_sensitive, node_rects, resolve_nodes, NodeVerdict, RedactReason, SemanticTree,
+        HIDE_LAYER_MAX,
+    };
     use smithay::utils::{Logical, Rectangle};
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
@@ -872,5 +932,41 @@ mod tests {
             node_rects(&[rect(10, 10, 0, 40)], geo.loc, geo),
             (vec![geo], RedactReason::NodesOutOfBounds)
         );
+    }
+
+    fn eye() -> Vec<(String, String)> {
+        vec![("hyperion".into(), "eclipse-eye".into())]
+    }
+
+    #[test]
+    fn a_listed_small_layer_is_omitted() {
+        assert!(hide_layer(
+            &eye(),
+            Some("hyperion"),
+            "eclipse-eye",
+            (24, 24).into()
+        ));
+        let edge = (HIDE_LAYER_MAX, HIDE_LAYER_MAX).into();
+        assert!(hide_layer(&eye(), Some("hyperion"), "eclipse-eye", edge));
+    }
+
+    #[test]
+    fn the_namespace_alone_hides_nothing() {
+        assert!(!hide_layer(&eye(), Some("evil"), "eclipse-eye", (24, 24).into()));
+        assert!(!hide_layer(&eye(), None, "eclipse-eye", (24, 24).into()));
+        assert!(!hide_layer(&eye(), Some("hyperion"), "hyperion", (24, 24).into()));
+    }
+
+    #[test]
+    fn an_oversized_layer_is_captured_even_when_listed() {
+        let wide = (HIDE_LAYER_MAX + 1, 24).into();
+        let tall = (24, HIDE_LAYER_MAX + 1).into();
+        assert!(!hide_layer(&eye(), Some("hyperion"), "eclipse-eye", wide));
+        assert!(!hide_layer(&eye(), Some("hyperion"), "eclipse-eye", tall));
+    }
+
+    #[test]
+    fn an_empty_list_hides_nothing() {
+        assert!(!hide_layer(&[], Some("hyperion"), "eclipse-eye", (24, 24).into()));
     }
 }

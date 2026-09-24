@@ -22,3 +22,6 @@
 // COMP-09 lands, so the image does it here. Anchored — matchers are unanchored
 // regexes, and `eclipse-secret-prompt-foo` must not inherit the class.
 windowrule "sensitivity secret" { app-id "^eclipse-secret-prompt$"; }
+
+// The taskbar's Oracle-Eyes eye is on-screen only; captures see the static eclipse.
+capture { hide-layer "hyperion:eclipse-eye"; }

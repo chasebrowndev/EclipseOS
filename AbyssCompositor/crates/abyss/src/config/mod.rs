@@ -153,6 +153,11 @@ pub struct Capture {
     /// `app_id`s whose windows are `secret`: never composited into a capture
     /// target, only a solid placeholder (COMP-02 §7).
     pub redact_app_id: Vec<String>,
+    /// `(exe basename, layer-shell namespace)` pairs whose layer surfaces are
+    /// omitted from every capture: shown on screen, absent from screenshots
+    /// and screen shares. Only surfaces up to 64x64 logical px qualify
+    /// (ADR 0056); that bound is enforced by the consumer.
+    pub hide_layer: Vec<(String, String)>,
 }
 
 /// `xwayland { ... }` (COMP-07 §4, §7 open decision 2).
@@ -284,6 +289,9 @@ pub struct Bar {
     /// Where the bar's popups open: under the cell that was clicked, or at
     /// the pointer.
     pub popup_anchor: BarPopupAnchor,
+    /// `eye`: whether the taskbar draws its status eye on the eclipse mark.
+    /// Stored only; the taskbar sources the eye's state itself (ADR 0055).
+    pub eye: bool,
 }
 
 /// `bar { clock { hour-12 …; date-mdy … } }`.
@@ -347,6 +355,7 @@ impl Default for Bar {
             tray: BarTray::default(),
             clock: BarClock::default(),
             popup_anchor: BarPopupAnchor::Cell,
+            eye: true,
         }
     }
 }
@@ -1554,6 +1563,9 @@ impl Config {
                 },
                 "tray" => self.apply_bar_tray(n),
                 "clock" => self.apply_bar_clock(n),
+                "eye" => {
+                    self.bar.eye = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
+                }
                 "popup-anchor" => match arg(n).and_then(KdlValue::as_string) {
                     Some("cell") => self.bar.popup_anchor = BarPopupAnchor::Cell,
                     Some("pointer") => self.bar.popup_anchor = BarPopupAnchor::Pointer,
@@ -1634,6 +1646,7 @@ impl Config {
         let Some(children) = node.children() else { return };
         let mut seen_allow = false;
         let mut seen_redact = false;
+        let mut seen_hide = false;
         for n in children.nodes() {
             match n.name().value() {
                 "allow" => {
@@ -1650,6 +1663,27 @@ impl Config {
                         self.reject(n, "repeated redact-app-id replaces the previous one; list every name on a single node");
                     }
                     self.capture.redact_app_id = names(n, &mut seen_redact);
+                }
+                "hide-layer" => {
+                    if seen_hide {
+                        self.reject(
+                            n,
+                            "repeated hide-layer replaces the previous one; list every pair on a single node",
+                        );
+                    }
+                    seen_hide = true;
+                    let mut pairs = Vec::new();
+                    for v in args(n) {
+                        let pair = v
+                            .as_string()
+                            .and_then(|a| a.split_once(':'))
+                            .filter(|(exe, ns)| !exe.is_empty() && !ns.is_empty());
+                        match pair {
+                            Some((exe, ns)) => pairs.push((exe.to_string(), ns.to_string())),
+                            None => self.reject(n, format!("hide-layer entry {v} must be \"exe:namespace\" with both parts non-empty")),
+                        }
+                    }
+                    self.capture.hide_layer = pairs;
                 }
                 _ => self.unknown_key(n, "capture", "capture node"),
             }
@@ -2723,6 +2757,24 @@ mod tests {
         assert_eq!(c.errors.len(), 1, "{:?}", c.errors);
     }
 
+    /// `bar.eye`: on by default, a bare node is on, `#false` turns it off.
+    #[test]
+    fn bar_eye_parses() {
+        fn cfg(text: &str) -> Config {
+            let doc: KdlDocument = text.parse().unwrap();
+            let mut cfg = Config::default();
+            cfg.apply(&doc, &mut Vec::new());
+            cfg
+        }
+        assert!(Config::default().bar.eye);
+        let c = cfg("bar { eye #false }\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert!(!c.bar.eye);
+        let c = cfg("bar { eye }\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert!(c.bar.eye);
+    }
+
     /// `bar.tray`: an absent `pinned` is "the bar decides", a bare one pins
     /// nothing, and order is kept exactly as written.
     #[test]
@@ -3193,6 +3245,70 @@ mod tests {
         let cfg = Config::default();
         assert!(cfg.capture.allow.is_empty());
         assert!(cfg.capture.redact_app_id.is_empty());
+        assert!(cfg.capture.hide_layer.is_empty());
+    }
+
+    #[test]
+    fn parses_capture_hide_layer() {
+        let doc: KdlDocument = r#"
+            capture { hide-layer "hyperion:eclipse-eye" "foo:ns:with:colons" }
+        "#
+        .parse()
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(
+            cfg.capture.hide_layer,
+            [
+                ("hyperion".to_string(), "eclipse-eye".to_string()),
+                ("foo".to_string(), "ns:with:colons".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_hide_layer_entries_are_rejected_and_dropped() {
+        let doc: KdlDocument = r#"
+            capture { hide-layer "hyperion:eclipse-eye" "nocolon" ":ns" "exe:" 7 }
+        "#
+        .parse()
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.errors.len(), 4, "{:?}", cfg.errors);
+        assert_eq!(
+            cfg.capture.hide_layer,
+            [("hyperion".to_string(), "eclipse-eye".to_string())]
+        );
+    }
+
+    #[test]
+    fn shipped_policy_hides_the_taskbar_eye() {
+        let text = include_str!("../../../../dist/etc/policy.kdl");
+        let doc: KdlDocument = text.parse().unwrap();
+        let mut cfg = Config {
+            cur: Some((policy_src("/etc/eclipse/policy.kdl"), text.to_owned())),
+            ..Config::default()
+        };
+        cfg.apply(&doc, &mut Vec::new());
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(
+            cfg.capture.hide_layer,
+            [("hyperion".to_string(), "eclipse-eye".to_string())]
+        );
+    }
+
+    #[test]
+    fn repeated_hide_layer_is_rejected() {
+        let doc: KdlDocument = r#"
+            capture { hide-layer "a:b"; hide-layer "c:d" }
+        "#
+        .parse()
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
     }
 
     #[test]

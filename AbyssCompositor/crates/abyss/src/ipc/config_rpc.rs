@@ -604,6 +604,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `bar.eye` is served as a plain JSON bool, default `true`, and a write
+    /// round-trips to `false` in the user file.
+    #[test]
+    fn bar_eye_is_served_as_a_bool() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let dir = std::env::temp_dir().join(format!("abyss-bar-eye-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+        std::fs::write(&file, "bar {\n    rounding 20\n}\n").unwrap();
+        h.state.config.explicit = Some(file.clone());
+
+        let got = get_config(&mut h.state, Decision::Allow, &json!({"path": "bar.eye"}))
+            .ok()
+            .expect("bar.eye is readable");
+        let row = &got["keys"][0];
+        assert_eq!(row["path"], "bar.eye");
+        assert_eq!(row["value"], json!(true));
+        assert_eq!(row["default"], json!(true));
+
+        let ok = set_config_value(
+            &mut h.state,
+            Decision::Allow,
+            &json!({"path": "bar.eye", "value": false}),
+        );
+        assert!(ok.is_ok(), "{:?}", ok.err().map(|e| e.message));
+        let got = get_config(&mut h.state, Decision::Allow, &json!({"path": "bar.eye"}))
+            .ok()
+            .expect("bar.eye is readable");
+        assert_eq!(got["keys"][0]["value"], json!(false));
+        assert!(std::fs::read_to_string(&file).unwrap().contains("eye #false"));
+
+        assert!(set_config_value(
+            &mut h.state,
+            Decision::Allow,
+            &json!({"path": "bar.eye", "value": "yes"}),
+        )
+        .is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn writes_land_in_the_user_tier_not_etc() {
         let Some(base) = crate::config::user_config_base() else {

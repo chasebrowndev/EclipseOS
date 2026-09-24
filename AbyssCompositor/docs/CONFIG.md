@@ -62,6 +62,7 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `bar.clock.hour-12` | bool | `#true` | live | Show the taskbar clock in 12-hour time with AM/PM; off is 24-hour. |
 | `bar.clock.date-mdy` | bool | `#true` | live | Write the taskbar date month/day/year; off is ISO year-month-day (2026-09-23). |
 | `bar.popup-anchor` | cell \| pointer | `"cell"` | live | Where taskbar popups open: under the cell that was clicked, or at the pointer. |
+| `bar.eye` | bool | `#true` | live | Show the Oracle-Eyes status eye on the taskbar's eclipse mark. The compositor only stores this; the taskbar reads Oracle-Eyes' own status socket (ADR 0055). |
 
 ### `decoration`
 
@@ -247,4 +248,5 @@ Read-only over the socket. A GUI shows these; it cannot change them.
 | --- | --- | --- | --- | --- |
 | `capture.allow` | list of strings | _empty_ | live | Process names allowed to bind zwlr_screencopy_manager_v1. Empty denies everyone. |
 | `capture.redact-app-id` | list of strings | _empty_ | live | app_ids whose windows are `secret`: never composited into a capture target, only a solid placeholder (COMP-02 §7). |
+| `capture.hide-layer` | list of strings | _empty_ | live | exe:namespace pairs whose layer surfaces are omitted from every capture: shown on screen, absent from screenshots and screen shares, with whatever is beneath showing instead. Only surfaces up to 64x64 logical px qualify (ADR 0056). Empty hides nothing. |
 
