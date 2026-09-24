@@ -2873,31 +2873,51 @@ mod tests {
     }
 
     /// HW-04 rule: every shipped bind spawns a binary in `eclipseos-meta`'s
-    /// dependency closure, or it reads to the user as a dead keybind.
+    /// dependency closure, or it reads to the user as a dead keybind. The
+    /// closure is read from `dist/pkg/eclipseos/PKGBUILD`, so it cannot drift.
     #[test]
     fn default_bind_spawns_name_shipped_binaries() {
-        // Mirrors `dist/pkg/eclipseos/PKGBUILD`: the `eclipseos-*` split
-        // packages' `_bin`s plus `eclipseos-meta`'s `depends`. Change the two
-        // together.
-        const SHIPPED: &[&str] = &[
-            "foot",             // meta depends: foot
-            "eclipse-launcher", // eclipseos-launcher
-            "eclipse-center",   // eclipseos-center
-            "wpctl",            // meta depends: wireplumber
-            "loginctl",         // systemd, via the Arch base every image has
-            "brightnessctl",    // meta depends: brightnessctl
-            "playerctl",        // meta depends: playerctl
+        let pkgbuild = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../dist/pkg/eclipseos/PKGBUILD"
+        ))
+        .expect("PKGBUILD readable");
+        // Binaries the split packages install: `_bin NAME` and
+        // `for b in A B; do _bin "$b"; done`.
+        let mut ours: Vec<&str> = Vec::new();
+        for line in pkgbuild.lines().map(str::trim) {
+            if let Some(names) = line.strip_prefix("for b in ") {
+                ours.extend(names.split(';').next().unwrap_or_default().split_whitespace());
+            } else if let Some(name) = line.strip_prefix("_bin ") {
+                ours.push(name.split_whitespace().next().unwrap_or_default());
+            }
+        }
+        // `eclipseos-meta`'s `depends=( … )`.
+        let meta = &pkgbuild[pkgbuild.find("package_eclipseos-meta()").expect("meta package")..];
+        let depends = &meta[meta.find("depends=(").expect("meta depends") + 9..];
+        let depends: Vec<&str> = depends[..depends.find(')').unwrap()].split_whitespace().collect();
+        // Third-party binaries: (argv0, providing package). `base` is the
+        // Arch base every image has.
+        const EXTERNAL: &[(&str, &str)] = &[
+            ("foot", "foot"),
+            ("wpctl", "wireplumber"),
+            ("brightnessctl", "brightnessctl"),
+            ("playerctl", "playerctl"),
+            ("loginctl", "base"),
         ];
         for bind in default_binds() {
             let Action::Spawn(cmd) = &bind.action else {
                 continue;
             };
             let argv0 = cmd.split_whitespace().next().unwrap_or_default();
+            let shipped = ours.contains(&argv0)
+                || EXTERNAL
+                    .iter()
+                    .any(|(bin, pkg)| *bin == argv0 && (*pkg == "base" || depends.contains(pkg)));
             assert!(
-                SHIPPED.contains(&argv0),
+                shipped,
                 "default bind {:?}+{:?} spawns {argv0:?}, which no EclipseOS package installs",
-                bind.mods,
-                bind.key
+                bind.mods, bind.key
             );
         }
     }
