@@ -29,7 +29,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-journald.workspace = true
 anyhow.workspace = true
-thiserror.workspace = true
 xkbcommon.workspace = true
 libc = "0.2"
 kdl.workspace = true

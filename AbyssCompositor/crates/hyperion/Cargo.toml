@@ -22,7 +22,7 @@ path = "src/main.rs"
 # `svg` and `image` are the bar's icon path: a freedesktop icon theme is
 # mostly SVG with a PNG tail, and the bar draws real application icons.
 # `canvas` draws the eclipse mark as an eye: a disc with an even-odd pupil.
-iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "svg", "image", "canvas"] }
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "svg", "image-without-codecs", "canvas"] }
 iced_layershell = "0.19.1"
 eclipse-ui = { path = "../eclipse-ui" }
 eclipse-ipc = { path = "../eclipse-ipc" }
@@ -36,3 +36,6 @@ libc = "0.2"
 # Icon-theme lookup (index.theme parsing, size/scale selection, inheritance).
 # Read-only and path-producing: it hands back a file, it never decodes one.
 freedesktop-icons = "0.4"
+# PNG only: iced's `image` feature enables every codec (rav1e, exr, tiff...);
+# `image-without-codecs` plus this unifies to just the PNG decoder.
+image = { version = "0.25", default-features = false, features = ["png"] }
