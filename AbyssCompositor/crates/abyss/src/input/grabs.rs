@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Interactive move and resize pointer grabs (COMP-04 §3, COMP-05 §3).
+//! Interactive move and resize grabs (COMP-04 §3, COMP-05 §3).
 //!
 //! A client asks for these through `xdg_toplevel.move` / `xdg_toplevel.resize`.
 //! While a grab is active the pointer focus is cleared, so the client sees a
 //! `wl_pointer.leave` and stops reacting to the drag itself; every motion is
 //! turned into a new window geometry instead. The grab ends when the button
 //! that started it is released.
+//!
+//! The same requests arrive with a `wl_touch.down` serial when a CSD client's
+//! titlebar is dragged by finger. Those get a touch grab instead: motion of the
+//! starting slot drives the window, and lifting that finger (or a cancel) ends
+//! it.
 
 use smithay::{
     backend::input::ButtonState,
@@ -15,6 +20,10 @@ use smithay::{
         GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
         GestureSwipeUpdateEvent, GrabStartData, MotionEvent, PointerGrab, PointerInnerHandle,
         RelativeMotionEvent,
+    },
+    input::touch::{
+        DownEvent, GrabStartData as TouchGrabStartData, MotionEvent as TouchMotionEvent, OrientationEvent,
+        ShapeEvent, TouchGrab, TouchInnerHandle, UpEvent,
     },
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
@@ -45,6 +54,80 @@ pub fn start_data(
     Some(start_data)
 }
 
+/// The touch twin of [`start_data`]: the serial must be the live `wl_touch.down`
+/// that opened the current touch sequence, and that down must have landed on a
+/// surface of the requesting client. Anything else is refused.
+pub fn touch_start_data(
+    state: &AbyssState,
+    surface: &WlSurface,
+    serial: Serial,
+) -> Option<TouchGrabStartData<AbyssState>> {
+    let touch = state.seat.get_touch()?;
+    if !touch.has_grab(serial) {
+        return None;
+    }
+    let start_data = touch.grab_start_data()?;
+    let (focus, _) = start_data.focus.as_ref()?;
+    if !focus.id().same_client_as(&surface.id()) {
+        return None;
+    }
+    Some(start_data)
+}
+
+/// Place `window` at `initial_location` shifted by `delta` (move grabs).
+fn place_moved(
+    data: &mut AbyssState,
+    window: &Window,
+    initial_location: Point<i32, Logical>,
+    delta: Point<f64, Logical>,
+) {
+    let loc = initial_location.to_f64() + delta;
+    let size = data
+        .space
+        .element_geometry(window)
+        .map(|g| g.size)
+        .unwrap_or_default();
+    crate::shell::place_at(data, &window.clone(), Rectangle::new(loc.to_i32_round(), size));
+}
+
+/// `initial` with `edges` dragged by `delta`; the opposite edges stay put and
+/// the size never drops below 1x1.
+pub fn resized_rect(
+    initial: Rectangle<i32, Logical>,
+    edges: xdg_toplevel::ResizeEdge,
+    delta: Point<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let (mut x, mut y) = (initial.loc.x, initial.loc.y);
+    let (mut w, mut h) = (initial.size.w, initial.size.h);
+    use xdg_toplevel::ResizeEdge as E;
+    let (top, bottom, left, right) = match edges {
+        E::Top => (true, false, false, false),
+        E::Bottom => (false, true, false, false),
+        E::Left => (false, false, true, false),
+        E::TopLeft => (true, false, true, false),
+        E::BottomLeft => (false, true, true, false),
+        E::Right => (false, false, false, true),
+        E::TopRight => (true, false, false, true),
+        E::BottomRight => (false, true, false, true),
+        _ => (false, false, false, false),
+    };
+    if left {
+        x += delta.x;
+        w -= delta.x;
+    }
+    if right {
+        w += delta.x;
+    }
+    if top {
+        y += delta.y;
+        h -= delta.y;
+    }
+    if bottom {
+        h += delta.y;
+    }
+    Rectangle::new(Point::from((x, y)), Size::from((w.max(1), h.max(1))))
+}
+
 /// Drag the window by the pointer delta since the press.
 pub struct MoveSurfaceGrab {
     pub start_data: GrabStartData<AbyssState>,
@@ -65,17 +148,7 @@ impl PointerGrab<AbyssState> for MoveSurfaceGrab {
         // dragged, not pointed at.
         handle.motion(data, None, event);
         let delta = event.location - self.start_data.location;
-        let loc = self.initial_location.to_f64() + delta;
-        let size = data
-            .space
-            .element_geometry(&self.window)
-            .map(|g| g.size)
-            .unwrap_or_default();
-        crate::shell::place_at(
-            data,
-            &self.window.clone(),
-            Rectangle::new(loc.to_i32_round(), size),
-        );
+        place_moved(data, &self.window, self.initial_location, delta);
     }
 
     fn relative_motion(
@@ -206,35 +279,7 @@ pub struct ResizeSurfaceGrab {
 impl ResizeSurfaceGrab {
     fn apply(&self, data: &mut AbyssState, location: Point<f64, Logical>) {
         let delta = (location - self.start_data.location).to_i32_round::<i32>();
-        let (mut x, mut y) = (self.initial_rect.loc.x, self.initial_rect.loc.y);
-        let (mut w, mut h) = (self.initial_rect.size.w, self.initial_rect.size.h);
-        use xdg_toplevel::ResizeEdge as E;
-        let (top, bottom, left, right) = match self.edges {
-            E::Top => (true, false, false, false),
-            E::Bottom => (false, true, false, false),
-            E::Left => (false, false, true, false),
-            E::TopLeft => (true, false, true, false),
-            E::BottomLeft => (false, true, true, false),
-            E::Right => (false, false, false, true),
-            E::TopRight => (true, false, false, true),
-            E::BottomRight => (false, true, false, true),
-            _ => (false, false, false, false),
-        };
-        if left {
-            x += delta.x;
-            w -= delta.x;
-        }
-        if right {
-            w += delta.x;
-        }
-        if top {
-            y += delta.y;
-            h -= delta.y;
-        }
-        if bottom {
-            h += delta.y;
-        }
-        let rect = Rectangle::new(Point::from((x, y)), Size::from((w.max(1), h.max(1))));
+        let rect = resized_rect(self.initial_rect, self.edges, delta);
         crate::shell::place_at(data, &self.window.clone(), rect);
     }
 }
@@ -368,29 +413,218 @@ impl PointerGrab<AbyssState> for ResizeSurfaceGrab {
     }
 }
 
-/// Begin an interactive move for `window` if `serial` really is a live press.
+/// Touch twin of [`MoveSurfaceGrab`]: the finger that pressed drags the window.
+///
+/// Motion is not forwarded — the client is being dragged, not touched. Further
+/// fingers, shape and orientation are swallowed for the same reason. `up` and
+/// `frame` are forwarded so the client still sees every point it was sent a
+/// `down` for released (smithay drops an `up` for a slot the client never saw).
+pub struct TouchMoveSurfaceGrab {
+    pub start_data: TouchGrabStartData<AbyssState>,
+    pub window: Window,
+    /// Window-geometry origin at the moment the grab started.
+    pub initial_location: Point<i32, Logical>,
+}
+
+impl TouchGrab<AbyssState> for TouchMoveSurfaceGrab {
+    fn down(
+        &mut self,
+        _data: &mut AbyssState,
+        _handle: &mut TouchInnerHandle<'_, AbyssState>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        _event: &DownEvent,
+        _seq: Serial,
+    ) {
+    }
+
+    fn up(
+        &mut self,
+        data: &mut AbyssState,
+        handle: &mut TouchInnerHandle<'_, AbyssState>,
+        event: &UpEvent,
+        seq: Serial,
+    ) {
+        handle.up(data, event, seq);
+        if event.slot == self.start_data.slot {
+            handle.unset_grab(self, data);
+        }
+    }
+
+    fn motion(
+        &mut self,
+        data: &mut AbyssState,
+        _handle: &mut TouchInnerHandle<'_, AbyssState>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        event: &TouchMotionEvent,
+        _seq: Serial,
+    ) {
+        if event.slot != self.start_data.slot {
+            return;
+        }
+        let delta = event.location - self.start_data.location;
+        place_moved(data, &self.window, self.initial_location, delta);
+    }
+
+    fn frame(&mut self, data: &mut AbyssState, handle: &mut TouchInnerHandle<'_, AbyssState>, seq: Serial) {
+        handle.frame(data, seq);
+    }
+
+    fn cancel(&mut self, data: &mut AbyssState, handle: &mut TouchInnerHandle<'_, AbyssState>, seq: Serial) {
+        handle.cancel(data, seq);
+        handle.unset_grab(self, data);
+    }
+
+    fn shape(
+        &mut self,
+        _data: &mut AbyssState,
+        _handle: &mut TouchInnerHandle<'_, AbyssState>,
+        _event: &ShapeEvent,
+        _seq: Serial,
+    ) {
+    }
+
+    fn orientation(
+        &mut self,
+        _data: &mut AbyssState,
+        _handle: &mut TouchInnerHandle<'_, AbyssState>,
+        _event: &OrientationEvent,
+        _seq: Serial,
+    ) {
+    }
+
+    fn start_data(&self) -> &TouchGrabStartData<AbyssState> {
+        &self.start_data
+    }
+
+    fn unset(&mut self, data: &mut AbyssState) {
+        data.touch_grab_active = false;
+    }
+}
+
+/// Touch twin of [`ResizeSurfaceGrab`]; same forwarding rules as
+/// [`TouchMoveSurfaceGrab`].
+pub struct TouchResizeSurfaceGrab {
+    pub start_data: TouchGrabStartData<AbyssState>,
+    pub window: Window,
+    pub edges: xdg_toplevel::ResizeEdge,
+    /// Window geometry at the moment the grab started.
+    pub initial_rect: Rectangle<i32, Logical>,
+}
+
+impl TouchGrab<AbyssState> for TouchResizeSurfaceGrab {
+    fn down(
+        &mut self,
+        _data: &mut AbyssState,
+        _handle: &mut TouchInnerHandle<'_, AbyssState>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        _event: &DownEvent,
+        _seq: Serial,
+    ) {
+    }
+
+    fn up(
+        &mut self,
+        data: &mut AbyssState,
+        handle: &mut TouchInnerHandle<'_, AbyssState>,
+        event: &UpEvent,
+        seq: Serial,
+    ) {
+        handle.up(data, event, seq);
+        if event.slot == self.start_data.slot {
+            handle.unset_grab(self, data);
+        }
+    }
+
+    fn motion(
+        &mut self,
+        data: &mut AbyssState,
+        _handle: &mut TouchInnerHandle<'_, AbyssState>,
+        _focus: Option<(WlSurface, Point<f64, Logical>)>,
+        event: &TouchMotionEvent,
+        _seq: Serial,
+    ) {
+        if event.slot != self.start_data.slot {
+            return;
+        }
+        let delta = (event.location - self.start_data.location).to_i32_round::<i32>();
+        let rect = resized_rect(self.initial_rect, self.edges, delta);
+        crate::shell::place_at(data, &self.window.clone(), rect);
+    }
+
+    fn frame(&mut self, data: &mut AbyssState, handle: &mut TouchInnerHandle<'_, AbyssState>, seq: Serial) {
+        handle.frame(data, seq);
+    }
+
+    fn cancel(&mut self, data: &mut AbyssState, handle: &mut TouchInnerHandle<'_, AbyssState>, seq: Serial) {
+        handle.cancel(data, seq);
+        handle.unset_grab(self, data);
+    }
+
+    fn shape(
+        &mut self,
+        _data: &mut AbyssState,
+        _handle: &mut TouchInnerHandle<'_, AbyssState>,
+        _event: &ShapeEvent,
+        _seq: Serial,
+    ) {
+    }
+
+    fn orientation(
+        &mut self,
+        _data: &mut AbyssState,
+        _handle: &mut TouchInnerHandle<'_, AbyssState>,
+        _event: &OrientationEvent,
+        _seq: Serial,
+    ) {
+    }
+
+    fn start_data(&self) -> &TouchGrabStartData<AbyssState> {
+        &self.start_data
+    }
+
+    fn unset(&mut self, data: &mut AbyssState) {
+        data.touch_grab_active = false;
+    }
+}
+
+/// Begin an interactive move for `window` if `serial` really is a live press
+/// (pointer button or touch down) on a surface of the requesting client.
 pub fn start_move(state: &mut AbyssState, window: Window, surface: &WlSurface, serial: Serial) {
-    let Some(start_data) = start_data(state, surface, serial) else {
-        return;
-    };
     let Some(initial_location) = state.space.element_geometry(&window).map(|g| g.loc) else {
         return;
     };
-    let Some(pointer) = state.seat.get_pointer() else {
+    if let Some(start_data) = start_data(state, surface, serial) {
+        let Some(pointer) = state.seat.get_pointer() else {
+            return;
+        };
+        let grab = MoveSurfaceGrab {
+            start_data,
+            window,
+            initial_location,
+        };
+        // Set after `set_grab`: it runs the *previous* grab's `unset`, which
+        // clears the flag.
+        pointer.set_grab(state, grab, serial, Focus::Clear);
+        state.pointer_grab_active = true;
+        return;
+    }
+    let Some(start_data) = touch_start_data(state, surface, serial) else {
         return;
     };
-    let grab = MoveSurfaceGrab {
+    let Some(touch) = state.seat.get_touch() else {
+        return;
+    };
+    let grab = TouchMoveSurfaceGrab {
         start_data,
         window,
         initial_location,
     };
-    // Set after `set_grab`: it runs the *previous* grab's `unset`, which
-    // clears the flag.
-    pointer.set_grab(state, grab, serial, Focus::Clear);
-    state.pointer_grab_active = true;
+    touch.set_grab(state, grab, serial);
+    state.touch_grab_active = true;
 }
 
-/// Begin an interactive resize for `window` if `serial` really is a live press.
+/// Begin an interactive resize for `window` if `serial` really is a live press
+/// (pointer button or touch down) on a surface of the requesting client.
 pub fn start_resize(
     state: &mut AbyssState,
     window: Window,
@@ -398,23 +632,37 @@ pub fn start_resize(
     serial: Serial,
     edges: xdg_toplevel::ResizeEdge,
 ) {
-    let Some(start_data) = start_data(state, surface, serial) else {
-        return;
-    };
     let Some(initial_rect) = state.space.element_geometry(&window) else {
         return;
     };
-    let Some(pointer) = state.seat.get_pointer() else {
+    if let Some(start_data) = start_data(state, surface, serial) {
+        let Some(pointer) = state.seat.get_pointer() else {
+            return;
+        };
+        let grab = ResizeSurfaceGrab {
+            start_data,
+            window,
+            edges,
+            initial_rect,
+        };
+        pointer.set_grab(state, grab, serial, Focus::Clear);
+        state.pointer_grab_active = true;
+        return;
+    }
+    let Some(start_data) = touch_start_data(state, surface, serial) else {
         return;
     };
-    let grab = ResizeSurfaceGrab {
+    let Some(touch) = state.seat.get_touch() else {
+        return;
+    };
+    let grab = TouchResizeSurfaceGrab {
         start_data,
         window,
         edges,
         initial_rect,
     };
-    pointer.set_grab(state, grab, serial, Focus::Clear);
-    state.pointer_grab_active = true;
+    touch.set_grab(state, grab, serial);
+    state.touch_grab_active = true;
 }
 
 /// The single definition of "a drag is in flight" (COMP-05 §5).
@@ -431,13 +679,78 @@ pub fn start_resize(
 /// (`dnd_icon`, set in `started`, cleared in `dropped`) is checked too, since
 /// a touch-initiated DnD never touches the pointer grab at all.
 ///
-/// Order matters: the two lock-free reads come first, because
+/// A shell-owned touch move/resize (`touch_grab_active`) is a drag too. It is
+/// a plain flag for the same reason as `pointer_grab_active`: smithay holds the
+/// touch mutex across a touch grab's callbacks, and this predicate is reached
+/// from inside them (`place_at` → focus refresh). `TouchHandle::is_grabbed` is
+/// deliberately not consulted — it is true for every plain finger press.
+///
+/// Order matters: the lock-free reads come first, because
 /// `PointerHandle::is_grabbed` takes the pointer's internal mutex — which
 /// smithay holds across a grab's own callbacks. Checking
 /// `pointer_grab_active` first short-circuits the one re-entrant case.
 pub fn drag_active(state: &AbyssState) -> bool {
-    if state.pointer_grab_active || !state.popup_grabs.is_empty() || state.dnd_icon.is_some() {
+    if state.pointer_grab_active
+        || state.touch_grab_active
+        || !state.popup_grabs.is_empty()
+        || state.dnd_icon.is_some()
+    {
         return true;
     }
     state.seat.get_pointer().is_some_and(|p| p.is_grabbed())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xdg_toplevel::ResizeEdge as E;
+
+    fn r(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new(Point::from((x, y)), Size::from((w, h)))
+    }
+
+    #[test]
+    fn resize_moves_only_the_dragged_edges() {
+        let init = r(100, 100, 400, 300);
+        let d = Point::from((50, 30));
+        assert_eq!(resized_rect(init, E::BottomRight, d), r(100, 100, 450, 330));
+        assert_eq!(resized_rect(init, E::TopLeft, d), r(150, 130, 350, 270));
+        assert_eq!(resized_rect(init, E::Right, d), r(100, 100, 450, 300));
+        assert_eq!(resized_rect(init, E::Top, d), r(100, 130, 400, 270));
+        assert_eq!(resized_rect(init, E::None, d), init);
+    }
+
+    #[test]
+    fn resize_never_collapses_below_one_pixel() {
+        let got = resized_rect(r(0, 0, 10, 10), E::BottomRight, Point::from((-50, -50)));
+        assert_eq!(got.size, Size::from((1, 1)));
+    }
+
+    #[test]
+    fn a_touch_grab_counts_as_a_drag_and_a_bare_press_does_not() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let s = &mut h.state;
+        let at = s.pointer_location;
+        // A plain finger press holds smithay's touch grab but is not a drag.
+        s.inject_touch_down(0, at, 0);
+        assert!(!drag_active(s));
+        s.inject_touch_up(0, 1);
+        s.touch_grab_active = true;
+        assert!(drag_active(s));
+    }
+
+    #[test]
+    fn a_touch_serial_that_is_not_live_starts_nothing() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let s = &mut h.state;
+        let at = s.pointer_location;
+        s.inject_touch_down(0, at, 0);
+        let touch = s.seat.get_touch().expect("touch capability");
+        // Nothing is under the point, so there is no focus for a client to
+        // claim, and a made-up serial is not the one the press holds.
+        let bogus = smithay::utils::SERIAL_COUNTER.next_serial();
+        assert!(!touch.has_grab(bogus));
+        assert!(touch.grab_start_data().and_then(|d| d.focus).is_none());
+        assert!(!s.touch_grab_active);
+    }
 }

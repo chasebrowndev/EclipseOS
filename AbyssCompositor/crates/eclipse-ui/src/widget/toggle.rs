@@ -11,6 +11,7 @@ use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer;
 use iced::advanced::widget::{tree, Tree, Widget};
 use iced::advanced::{mouse, Shell};
+use iced::touch;
 use iced::{border, Color, Element, Event, Length, Rectangle, Size};
 
 use crate::tokens::color;
@@ -88,7 +89,9 @@ where
             shell.request_redraw();
         }
 
-        if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) = event {
+        if let Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+        | Event::Touch(touch::Event::FingerPressed { .. }) = event
+        {
             if over {
                 if let Some(on_toggle) = &self.on_toggle {
                     shell.publish(on_toggle(!self.is_on));

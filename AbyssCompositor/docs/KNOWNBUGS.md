@@ -49,6 +49,19 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
 
 ---
 
+# Touchscreen — CSW1322 panel on the dev box, 2026-09-24
+
+## TOUCH-01: taskbar and tray context menus cannot be opened by touch
+
+`hyperion/src/view.rs:777`, `:1152`, `:1567` open the window and tray menus
+with `mouse_area::on_right_press`, and a finger has no right button. iced 0.14's
+`mouse_area` has no long-press. **Repro:** on a touchscreen, hold a finger on a
+taskbar window button or tray icon. No menu opens. **Proposed:** a long-press
+(about 500 ms with no movement past a small slop) in hyperion that sends the same
+`Menu`/`TrayMenu` message.
+
+---
+
 ## Probing notes for the launcher
 
 The Hyprland-host probing recipe (`hyprctl`, `ydotool` scale) that used to sit

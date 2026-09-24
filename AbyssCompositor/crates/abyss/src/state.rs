@@ -193,6 +193,10 @@ pub struct AbyssState {
     /// callback, so *any* re-entrant call into it from inside that callback
     /// self-deadlocks; this flag is what keeps `refresh_pointer_focus` out.
     pub pointer_grab_active: bool,
+    /// True while a shell-owned touch grab (touch-initiated move/resize) is
+    /// active. Kept apart from `pointer_grab_active` so either grab ending
+    /// cannot clear the other's re-entrancy guard.
+    pub touch_grab_active: bool,
     /// Active `xdg_popup.grab` stack, outermost first (COMP-06 §4).
     pub popup_grabs: Vec<smithay::wayland::shell::xdg::PopupSurface>,
 
@@ -473,6 +477,7 @@ impl AbyssState {
             last_pointer_focus: None,
             popup_grabs: Vec::new(),
             pointer_grab_active: false,
+            touch_grab_active: false,
             outputs: crate::outputs::Outputs::new(),
             focus: None,
             touch_points: Vec::new(),

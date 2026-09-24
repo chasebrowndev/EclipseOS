@@ -1303,13 +1303,16 @@ fn fold_ticks() -> Subscription<Message> {
     })
 }
 
-/// Where the pointer is, and on which surface. The only source of the popup's
+/// Where the pointer (or a finger) is, and on which surface. The only source of the popup's
 /// parent and anchor.
 fn pointer() -> Subscription<Message> {
     iced::event::listen_with(|event, _status, id| match event {
-        iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
-            Some(Message::Pointer(id, position))
-        }
+        // A finger is the pointer too: a tap must anchor the popup it opens.
+        iced::Event::Mouse(iced::mouse::Event::CursorMoved { position })
+        | iced::Event::Touch(
+            iced::touch::Event::FingerPressed { position, .. }
+            | iced::touch::Event::FingerMoved { position, .. },
+        ) => Some(Message::Pointer(id, position)),
         // The surface's own size, which is where the task strip's condensation
         // ladder gets its "what fits" from.
         iced::Event::Window(iced::window::Event::Opened { size, .. })

@@ -529,7 +529,8 @@ pub fn subscription(app: &App) -> Subscription<Message> {
 /// open and actually differs from the live value.
 fn blur() -> Subscription<Message> {
     iced::event::listen_with(|event, _status, _window| match event {
-        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::NumberBlur),
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_))
+        | iced::Event::Touch(iced::touch::Event::FingerPressed { .. }) => Some(Message::NumberBlur),
         _ => None,
     })
 }
