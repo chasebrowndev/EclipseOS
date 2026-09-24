@@ -141,6 +141,11 @@ pub enum Message {
     /// One frame of the fold slide. Only sent while an animation, or a fold
     /// waiting out its grace window, is live.
     FoldTick,
+    /// Oracle-Eyes' beacon moved (ADR 0055). Only sent while `bar.eye` is on.
+    Eye(crate::eye::Eye),
+    /// One frame of the eclipse mark's pupil, or the end of a hold between
+    /// darts. Only sent while the pupil is moving or waiting to.
+    EyeTick,
     /// A configuration reload succeeded. The `bar.*` keys may have moved, so
     /// re-read them; the event itself is payload-free by design.
     Reconfigured,
@@ -218,6 +223,13 @@ pub struct App {
     pub idle: bool,
     /// Where the bar is between shown, folded and hidden.
     pub fold: FoldState,
+    /// What the beacon last said, and where that has the pupil right now;
+    /// [`Eye::Off`](crate::eye::Eye::Off) while `bar.eye` is off or nothing is
+    /// listening.
+    pub iris: crate::eye::Iris,
+    /// The live eye's own layer surface, while there is one. See
+    /// [`sync_eye`].
+    pub eye_surface: Option<iced::window::Id>,
     /// Radio lists and tray items — what the drawers draw beyond the one-line
     /// status feed. See [`crate::radio`].
     pub radios: crate::radio::Radios,
@@ -427,6 +439,8 @@ impl App {
             fullscreen: false,
             idle: false,
             fold: FoldState::default(),
+            iris: crate::eye::Iris::default(),
+            eye_surface: None,
             radios: crate::radio::Radios::default(),
             pending_menu: None,
             tray,
@@ -545,7 +559,7 @@ fn preview(app: &mut App) {
 /// the answer is to wait for it. Only a closed channel (the surface is gone)
 /// ends the event thread; treating "full" as fatal is how the clock used to
 /// stop for good after one busy moment.
-fn send(sender: &mut iced::futures::channel::mpsc::Sender<Message>, message: Message) -> bool {
+pub(crate) fn send(sender: &mut iced::futures::channel::mpsc::Sender<Message>, message: Message) -> bool {
     let mut message = message;
     loop {
         match sender.try_send(message) {
@@ -617,23 +631,27 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::Dismiss => return dismiss(app),
         Message::Pointer(id, position) => {
-            // Anything that is not the open popup is the bar itself: there is
-            // only ever one of each.
-            if app.popup.as_ref().map(|p| p.id) != Some(id) {
+            // Anything that is not the open popup or the eye is the bar
+            // itself: there is only ever one of each.
+            if app.popup.as_ref().map(|p| p.id) != Some(id) && app.eye_surface != Some(id) {
                 app.main = Some(id);
                 app.cursor = position;
             }
             return Task::none();
         }
         Message::Closed(id) => {
+            if app.eye_surface == Some(id) {
+                app.eye_surface = None;
+            }
             if app.popup.as_ref().map(|p| p.id) == Some(id) {
                 app.popup = None;
             }
             return Task::none();
         }
-        // A popup is its own surface and its own width; only the bar's counts.
+        // A popup is its own surface and its own width, and so is the eye;
+        // only the bar's counts.
         Message::Sized(id, width) => {
-            if app.popup.as_ref().map(|p| p.id) != Some(id) {
+            if app.popup.as_ref().map(|p| p.id) != Some(id) && app.eye_surface != Some(id) {
                 app.width = width;
                 // The bar's own surface. Learned here and not only from the
                 // pointer: a bar the pointer never crossed (an inactive
@@ -676,11 +694,24 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             // Outputs are hotplugged and renumbered; an id resolved once at
             // startup goes stale and strands the bar folded forever.
             resolve_output(app);
-            return fold(app);
+            return fold_and_eye(app);
         }
-        Message::FoldTick => return fold(app),
+        Message::FoldTick => return fold_and_eye(app),
+        // The beacon and the eye's frames are not the compositor: nothing to
+        // refetch, only the eye's surface to raise or drop.
+        Message::Eye(eye) => {
+            app.iris.set(eye, std::time::Instant::now());
+            return sync_eye(app);
+        }
+        Message::EyeTick => {
+            app.iris.tick(std::time::Instant::now());
+            return sync_eye(app);
+        }
         Message::Reconfigured => {
             app.bar = app.conn.bar_config();
+            if !app.bar.eye {
+                app.iris.set(crate::eye::Eye::Off, std::time::Instant::now());
+            }
             app.tray = app.conn.tray_config();
             if let Some(radius) = app.conn.glass_radius("bar.rounding") {
                 app.bar_radius = radius;
@@ -695,7 +726,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             if let Some(focused) = focused {
                 app.focused_output = focused;
             }
-            return fold(app);
+            return fold_and_eye(app);
         }
         // The radio verbs. Each is an action on the service and nothing else:
         // the drawer redraws from the `Update` the service answers with, not
@@ -868,6 +899,87 @@ fn fold(app: &mut App) -> Task<Message> {
             zone_size: after.zone,
         }),
     ])
+}
+
+/// A fold step, then the eye brought in line with it: the eye rides only on
+/// a full pill, so a fold drops it and an unfold that lands raises it again.
+fn fold_and_eye(app: &mut App) -> Task<Message> {
+    let fold = fold(app);
+    Task::batch([fold, sync_eye(app)])
+}
+
+/// Where the eye's surface sits: the launcher button's own box, anchored to
+/// the bar's edge and the output's left, so the disc drawn centred in it lands
+/// pixel for pixel on the ring the bar draws centred in the button.
+///
+/// The offsets are the pill's layer-shell margin plus the row's inset to the
+/// button: `MARGIN_X + EDGE` across, and down (or up) `MARGIN_Y` plus half
+/// the room the `PILL_H` row leaves around the `TASK_H` button.
+fn eye_placement(
+    edge: BarPosition,
+) -> (
+    iced_layershell::reexport::Anchor,
+    (i32, i32, i32, i32),
+    (u32, u32),
+) {
+    use iced_layershell::reexport::Anchor;
+    let left = (bar::MARGIN_X + bar::EDGE) as i32;
+    let off = (bar::MARGIN_Y + (bar::PILL_H - bar::TASK_H) / 2.0) as i32;
+    let size = (bar::TASK_MIN as u32, bar::TASK_H as u32);
+    match edge {
+        BarPosition::Top => (Anchor::Top | Anchor::Left, (off, 0, 0, left), size),
+        BarPosition::Bottom => (Anchor::Bottom | Anchor::Left, (0, 0, off, left), size),
+    }
+}
+
+/// Raise or drop the eye's surface to match the iris (ADR 0056).
+///
+/// The bar only ever draws the plain ring. The live eye is a second layer
+/// surface, namespace [`crate::eye::NAMESPACE`], laid over the mark, which
+/// abyss leaves out of screenshots and recordings (`capture { hide-layer
+/// "hyperion:eclipse-eye" }`) — so a capture shows the still ring beneath and
+/// the person at the screen sees the eye. It exists only while there is an
+/// eye to show on a full pill: a settled Off, a folded or hidden bar, or
+/// `bar.eye = false` costs no surface at all.
+///
+/// Exclusive zone `-1`, not unset: an unset zone is `0`, which wlr-layer-shell
+/// places clear of the bar's own reserved strip, i.e. under the bar rather
+/// than on it. An empty input region, so a click falls through to the
+/// launcher button beneath.
+fn sync_eye(app: &mut App) -> Task<Message> {
+    use iced_layershell::reexport::{KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption};
+    let want = app.bar.eye && !app.iris.is_plain() && app.fold.pill();
+    match (want, app.eye_surface) {
+        (true, None) => {
+            let (anchor, margin, size) = eye_placement(app.edge);
+            let output_option = if app.output_name.is_empty() {
+                OutputOption::Active
+            } else {
+                OutputOption::OutputName(app.output_name.clone())
+            };
+            let id = iced::window::Id::unique();
+            app.eye_surface = Some(id);
+            Task::done(Message::NewLayerShell {
+                settings: NewLayerShellSettings {
+                    size: Some(size),
+                    layer: Layer::Top,
+                    anchor,
+                    exclusive_zone: Some(-1),
+                    margin: Some(margin),
+                    keyboard_interactivity: KeyboardInteractivity::None,
+                    output_option,
+                    events_transparent: true,
+                    namespace: Some(crate::eye::NAMESPACE.to_owned()),
+                },
+                id,
+            })
+        }
+        (false, Some(id)) => {
+            app.eye_surface = None;
+            Task::done(Message::RemoveWindow(id))
+        }
+        _ => Task::none(),
+    }
 }
 
 /// Accept a new target and start the slide toward it from wherever the bar
@@ -1164,6 +1276,16 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     if app.fold.animating() {
         subs.push(fold_ticks());
     }
+    if app.bar.eye {
+        subs.push(crate::eye::watch());
+    }
+    // Same rule for the eye: frames only mid-dart or mid-resize, one deadline
+    // while holding, nothing at all once it has settled back to the ring.
+    if app.iris.animating() {
+        subs.push(crate::eye::frames());
+    } else if let Some(at) = app.iris.dart_at() {
+        subs.push(crate::eye::after(at));
+    }
     Subscription::batch(subs)
 }
 
@@ -1316,6 +1438,37 @@ mod tests {
 
     fn app() -> App {
         App::new()
+    }
+
+    #[test]
+    fn the_eye_surface_exists_only_while_there_is_an_eye_on_a_full_pill() {
+        let mut a = app();
+        a.bar.eye = true;
+        assert!(a.iris.is_plain());
+        let _ = sync_eye(&mut a);
+        assert_eq!(a.eye_surface, None, "a settled Off costs no surface");
+        a.iris.set(crate::eye::Eye::Watch, std::time::Instant::now());
+        let _ = sync_eye(&mut a);
+        let id = a.eye_surface.expect("a watching eye raises its surface");
+        let _ = sync_eye(&mut a);
+        assert_eq!(a.eye_surface, Some(id), "raised once, not once per frame");
+        a.fold.target = FoldTarget::Folded;
+        let _ = sync_eye(&mut a);
+        assert_eq!(a.eye_surface, None, "a folded bar has no mark to cover");
+        a.fold.target = FoldTarget::Shown;
+        a.bar.eye = false;
+        let _ = sync_eye(&mut a);
+        assert_eq!(a.eye_surface, None);
+    }
+
+    #[test]
+    fn the_eye_surface_is_small_enough_to_leave_out_of_captures() {
+        // abyss omits a `hide-layer` surface only up to 64x64 logical px
+        // (render/capture.rs `HIDE_LAYER_MAX`); past that it is captured.
+        for edge in [BarPosition::Top, BarPosition::Bottom] {
+            let (_, _, (w, h)) = eye_placement(edge);
+            assert!(w <= 64 && h <= 64);
+        }
     }
 
     #[test]

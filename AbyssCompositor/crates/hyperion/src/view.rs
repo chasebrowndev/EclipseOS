@@ -31,9 +31,13 @@
 //! rounded chip read as a sticker bolted to the bottom.
 //!
 //! The launcher mark is the third and last, also by explicit direction: the
-//! corona is the desktop's own mark, the one fixed thing on the row, and a
-//! white ring read as a disabled button rather than as a logo. It is not live
-//! state, so it never competes with the two that are — it never changes.
+//! corona is the desktop's own mark, and a white ring read as a disabled
+//! button rather than as a logo. At rest it is that fixed ring. While
+//! Oracle-Eyes is working it opens into an eye — a gold iris whose pupil
+//! wanders while it watches and narrows to a point while it thinks — so the
+//! mark reports that daemon's live state (ADR 0055). It stays one small
+//! circle of the same yellow and never grows, so it still does not compete
+//! for area with the two above.
 //!
 //! Nothing else on the row is allowed to be yellow: the tray and the clock
 //! are white at 1.0 / 0.64 / 0.40 throughout. A low battery may go `DANGER`, which is the
@@ -51,7 +55,9 @@
 //! in this file is a bug, because the tokens are the only transcription of
 //! `docs/STYLE.md`.
 
-use iced::widget::{button, column, container, image, mouse_area, row, svg, text, Column, Row, Space};
+use iced::widget::{
+    button, canvas, column, container, image, mouse_area, row, svg, text, Column, Row, Space,
+};
 use iced::{Alignment, Color, Element, Length, Theme};
 
 use eclipse_services::status::{Battery, Bluetooth, Charge, Network};
@@ -215,6 +221,9 @@ fn whole_width(label: &str) -> f32 {
 /// so the id is the branch: the bar owns exactly one popup at a time and
 /// anything that is not it is the row.
 pub fn view(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message, Theme> {
+    if app.eye_surface == Some(id) {
+        return eye_view(&app.iris);
+    }
     match app.popup.as_ref() {
         Some(popup) if popup.id == id => {
             return match &popup.kind {
@@ -387,8 +396,12 @@ fn accent_cell_style() -> impl Fn(&Theme, button::Status) -> button::Style {
 /// quad across it because on a translucent bar that occluder would punch a
 /// hole through to the wallpaper. It is also the only circle on the row,
 /// which is what stops it reading as a task button.
+///
+/// The bar always draws the plain ring here, whatever Oracle-Eyes is doing:
+/// the live eye is [`eye_view`], on a surface of its own laid over this one,
+/// so a capture that leaves that surface out shows this ring, unchanging.
 fn launcher_button() -> Element<'static, Message, Theme> {
-    let mark = parts::ring(size::ICON * MARK_DISC, bar::RING, color::ACCENT);
+    let mark = parts::ring(bar::EYE_DISC, bar::RING, color::ACCENT);
 
     button(container(mark).center(Length::Fill))
         .width(Length::Fixed(bar::TASK_MIN))
@@ -399,8 +412,63 @@ fn launcher_button() -> Element<'static, Message, Theme> {
         .into()
 }
 
-/// Diameter of the corona ring, as a fraction of the icon square.
-const MARK_DISC: f32 = 0.85;
+/// Oracle-Eyes' status (ADR 0055), on the eye's own surface over the
+/// launcher mark. While the daemon watches, the corona thickens into an iris
+/// and the hole becomes a pupil that darts about; while it thinks, the pupil
+/// narrows to a point.
+///
+/// The surface is the launcher button's box and the disc is centred in it
+/// exactly as the ring is centred in the button, so the iris covers the ring
+/// edge for edge. The hole is a real hole — the gold is one even-odd path and
+/// the surface is transparent — and since the pupil never reaches past the
+/// ring's inner edge (`EYE_PUPIL + EYE_WANDER`), what shows through it is the
+/// bar's glass, never the ring's gold.
+fn eye_view(iris: &crate::eye::Iris) -> Element<'static, Message, Theme> {
+    let mark = canvas(EyeMark {
+        pupil: iris.pupil,
+        offset: iris.offset,
+    })
+    .width(Length::Fixed(bar::EYE_DISC))
+    .height(Length::Fixed(bar::EYE_DISC));
+    // The surface is sized to the button (`eye_placement`), so filling it is
+    // the button's own centring.
+    container(mark).center(Length::Fill).into()
+}
+
+/// The eye, one frame of it: a gold disc with the pupil cut out of it.
+struct EyeMark {
+    pupil: f32,
+    offset: (f32, f32),
+}
+
+impl canvas::Program<Message> for EyeMark {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let centre = frame.center();
+        let pupil = iced::Point::new(centre.x + self.offset.0, centre.y + self.offset.1);
+        let path = canvas::Path::new(|b| {
+            b.circle(centre, crate::eye::outer());
+            b.circle(pupil, self.pupil);
+        });
+        frame.fill(
+            &path,
+            canvas::Fill {
+                style: canvas::Style::Solid(color::ACCENT),
+                rule: canvas::fill::Rule::EvenOdd,
+            },
+        );
+        vec![frame.into_geometry()]
+    }
+}
 
 // ------------------------------------------------------------------ pager
 

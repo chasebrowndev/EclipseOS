@@ -142,9 +142,15 @@ impl Row {
         })
     }
 
-    /// The last segment of the path, used as the row label.
+    /// The last segment of the path, used as the row label — or, for the few
+    /// keys whose last segment names a thing rather than a setting, a
+    /// display form. `bar.eye` alone reads as a body part; what the switch
+    /// governs is the indicator.
     pub fn label(&self) -> &str {
-        self.path.rsplit('.').next().unwrap_or(&self.path)
+        match self.path.as_str() {
+            "bar.eye" => "Eye indicator",
+            path => path.rsplit('.').next().unwrap_or(path),
+        }
     }
 
     /// Policy-owned keys are read-only here by construction, not by a check at
@@ -202,6 +208,18 @@ mod tests {
             control_for("enum", &json!({ "values": many })),
             Some(Control::Dropdown(_))
         ));
+    }
+
+    #[test]
+    fn a_label_is_the_last_segment_unless_it_names_a_thing() {
+        let row = |path: &str| {
+            Row::parse(&json!({
+                "path": path, "file": "abyss", "type": "bool", "value": true,
+            }))
+            .expect("a bool row parses")
+        };
+        assert_eq!(row("bar.fold-when-idle").label(), "fold-when-idle");
+        assert_eq!(row("bar.eye").label(), "Eye indicator");
     }
 
     #[test]

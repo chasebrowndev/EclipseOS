@@ -44,6 +44,8 @@ pub struct BarConfig {
     /// `bar.popup-anchor`: where every popup the bar owns grows from — the
     /// context menu and the tray drawers alike, one setting for all of them.
     pub popup_anchor: Anchor,
+    /// `bar.eye`: let Oracle-Eyes' beacon open the eclipse into an eye.
+    pub eye: bool,
 }
 
 /// Where each tray entry lives. `pinned: None` is "unset" — the taskbar's own
@@ -107,6 +109,7 @@ impl Default for BarConfig {
             hour_12: eclipse_ui::tokens::clock::HOUR_12,
             date_mdy: eclipse_ui::tokens::clock::DATE_MDY,
             popup_anchor: eclipse_ui::tokens::popup::ANCHOR,
+            eye: true,
         }
     }
 }
@@ -284,6 +287,11 @@ impl Conn {
                 Some("bar.clock.date-mdy") => {
                     if let Some(b) = value.and_then(Value::as_bool) {
                         cfg.date_mdy = b;
+                    }
+                }
+                Some("bar.eye") => {
+                    if let Some(b) = value.and_then(Value::as_bool) {
+                        cfg.eye = b;
                     }
                 }
                 Some("bar.popup-anchor") => match value.and_then(Value::as_str) {
