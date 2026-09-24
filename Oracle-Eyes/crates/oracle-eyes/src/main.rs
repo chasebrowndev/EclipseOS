@@ -7,6 +7,7 @@
 //! Every stage's failure is shown rather than logged away (§2.1).
 
 mod answer;
+mod beacon;
 mod capture;
 mod choice;
 mod classify;
@@ -21,6 +22,7 @@ mod redact;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use beacon::Eye;
 use eclipse_ipc::{Client, EventKind};
 use frame::Region;
 use hud::{Anchor, Hud, Panel};
@@ -57,6 +59,7 @@ fn run() -> Result<(), String> {
     );
 
     let mut pipeline = Pipeline::new(cfg);
+    pipeline.beacon.set(resting(auto));
     let mut hud = Hud::new();
     // When the current annotation has outstayed its welcome.
     let mut until: Option<Instant> = None;
@@ -93,6 +96,9 @@ fn run() -> Result<(), String> {
                 continue;
             }
             let action = event.data.get("action").and_then(|v| v.as_str());
+            if matches!(action, Some("annotation-select" | "annotation-expand")) {
+                pipeline.beacon.set(Eye::Think);
+            }
             let outcome = match action {
                 Some("annotation-select") => match region_of(&event.data) {
                     Some(r) => Some(pipeline.select(r)),
@@ -118,6 +124,7 @@ fn run() -> Result<(), String> {
                 }
                 _ => None,
             };
+            pipeline.beacon.set(resting(auto));
             if let Some(result) = outcome {
                 let near = pipeline.last_region();
                 until = present(&mut hud, &mut client, result, near, fail_ms);
@@ -150,7 +157,9 @@ fn run() -> Result<(), String> {
                 // Nothing on screen means nothing to look at: automatic mode
                 // never interrupts an answer the user is still reading.
                 if until.is_none() {
-                    match pipeline.auto(region, elapsed_ms(started)) {
+                    let pass = pipeline.auto(region, elapsed_ms(started));
+                    pipeline.beacon.set(resting(auto));
+                    match pass {
                         // The gate declined. That is the common case.
                         Ok(None) => {}
                         Ok(Some(a)) => {
@@ -167,6 +176,15 @@ fn run() -> Result<(), String> {
                 }
             }
         }
+    }
+}
+
+/// What the taskbar eye shows when nothing is in flight.
+fn resting(auto: bool) -> Eye {
+    if auto {
+        Eye::Watch
+    } else {
+        Eye::Off
     }
 }
 

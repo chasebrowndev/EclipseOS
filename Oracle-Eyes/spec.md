@@ -180,6 +180,12 @@ revocable capabilities:
   Identity is the peer pid's executable basename. Revoking is deleting that
   line; it hot-reloads.
 
+- **Beacon — output only (ADR 0055).** `$XDG_RUNTIME_DIR/oracle-eyes/eye.sock`,
+  mode 0600. One word per line — `off`, `watch` (automatic mode on, idle) or
+  `think` (a model call in flight) — for the taskbar's eye. The daemon never
+  reads from it and nothing screen-derived crosses it; a reader treats a lost
+  connection as `off`.
+
 Capture is deliberately *not* a control-socket capability — pixels travel the
 Wayland path so the two grants stay separable. "May draw but may no longer read"
 is a coherent, reachable state, which is the point.

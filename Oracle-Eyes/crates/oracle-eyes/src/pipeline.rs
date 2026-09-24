@@ -13,6 +13,7 @@
 //! not.
 
 use crate::answer::{Answerer, Confidence, Reply};
+use crate::beacon::{Beacon, Eye};
 use crate::capture::Capturer;
 use crate::choice::{self, Choice};
 use crate::classify::{Gate, Verdict};
@@ -59,6 +60,9 @@ pub struct Pipeline {
     /// The last region asked about, so the expand chord has something to
     /// widen (§3.6).
     last: Option<Region>,
+    /// The taskbar's eye (ADR 0055). Held here because only the gate knows
+    /// the moment automatic mode found something worth asking about.
+    pub beacon: Beacon,
 }
 
 impl Pipeline {
@@ -81,6 +85,7 @@ impl Pipeline {
             answerer,
             gate,
             last: None,
+            beacon: Beacon::bind(),
         }
     }
 
@@ -197,6 +202,7 @@ impl Pipeline {
         {
             Verdict::Skip(_) => Ok(None),
             Verdict::Ask => {
+                self.beacon.set(Eye::Think);
                 let reply = self.answerer.ask(&read.lines, &read.options, None)?;
                 Ok(Some(self.dress(&read, reply, Fallback::Densest)))
             }
