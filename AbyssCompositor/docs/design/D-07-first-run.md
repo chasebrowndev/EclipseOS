@@ -87,6 +87,7 @@ session apply live, so the live medium itself is the preview.
 
 | # | Step | `--install` | Effect |
 |---|---|---|---|
+| 0 | **Welcome** | yes | `eclipse-welcome`: the eclipse animation, greetings in ten languages, "press Space". Space begins step 1. Not a setup step: it writes nothing, and `--reconfigure` skips it. Reduced motion is honoured |
 | 1 | **Language, keyboard** | yes | `input.kb-layout`, `input.kb-variant` (live); locale for the target. First, because every later step types |
 | 2 | **Timezone** | yes | Target timezone; `hwclock --systohc` at install |
 | 3 | **Network** | both | NetworkManager owns it. Reuses `eclipse-secret-prompt` for the passphrase. Skippable. Offline disables the network-dependent choices in steps 8, 9 and 12 with "needs network" rather than hiding them |

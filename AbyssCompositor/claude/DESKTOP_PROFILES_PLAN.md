@@ -295,7 +295,7 @@ session start; `dist/` is the parent's.
 view), `eclipse-setup-helper` + polkit actions `org.eclipse.install.apply`
 (live medium only) and `org.eclipse.setup.apply` (parent: a root binary is
 reviewed line by line; add to `tcb-review`), `eclipse-ctl setup reset`,
-`setup.profile`/`setup.complete`/`setup.pending-preset` keys. ISO work in
+`setup.profile`/`setup.complete`/`setup.pending-preset` keys. `eclipse-welcome` (native iced canvas port of the welcome animation; step 0, embeddable as a lib). ISO work in
 `dist/iso/` (parent): `liveuser`, greetd autologin, live-only polkit rule, tty2
 root shell, on-medium local repo. The phrase and policy preset are handled on
 the installed system after milestone 15 (D-07 §4.5).

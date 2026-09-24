@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Welcome to EclipseOS</title>
+<style>
+@font-face{font-family:"Cormorant Garamond";font-weight:300;src:local("Cormorant Garamond Light"),local("CormorantGaramond-Light"),url("fonts/CormorantGaramond-Light.woff2") format("woff2");}
+@font-face{font-family:"Lora";font-weight:400;src:local("Lora"),local("Lora-Regular"),url("fonts/Lora-Regular.woff2") format("woff2");}
+@font-face{font-family:"Noto Serif JP";font-weight:300;src:local("Noto Serif JP Light"),local("NotoSerifJP-Light"),url("fonts/NotoSerifJP-Light.woff2") format("woff2");}
+@font-face{font-family:"Noto Serif SC";font-weight:300;src:local("Noto Serif SC Light"),local("NotoSerifSC-Light"),url("fonts/NotoSerifSC-Light.woff2") format("woff2");}
+@font-face{font-family:"Noto Serif KR";font-weight:300;src:local("Noto Serif KR Light"),local("NotoSerifKR-Light"),url("fonts/NotoSerifKR-Light.woff2") format("woff2");}
+html,body{margin:0;height:100%;background:#060505;overflow:hidden;cursor:none;user-select:none;}
+#stage{position:fixed;inset:0;container-type:size;overflow:hidden;background:radial-gradient(ellipse at 50% 42%,#1c1915 0%,#0b0a09 60%,#060505 100%);font-family:"Lora",serif;color:#f3f2f2;}
+.abs{position:absolute;}
+#eclipse{width:1em;height:1em;transform:translate(-50%,-50%);}
+#corona{position:absolute;inset:-.7em;border-radius:50%;background:radial-gradient(circle,rgba(244,187,60,.32) 0%,rgba(244,187,60,.1) 38%,rgba(244,187,60,0) 68%);}
+#sun{position:absolute;inset:0;border-radius:50%;background:#f4bb3c;}
+#moon{position:absolute;left:10%;top:10%;width:80%;height:80%;border-radius:50%;background:#000;}
+#wordRow{left:0;right:0;top:72cqh;display:flex;justify-content:center;}
+#word{font-weight:300;font-size:5cqw;line-height:1.2;white-space:nowrap;will-change:transform,filter;}
+#logo{left:50cqw;top:50cqh;width:50cqw;transform:translate(-50%,-50%);opacity:0;}
+#key{left:50cqw;top:78cqh;width:20cqw;height:4.6cqw;transform:translateX(-50%);opacity:0;}
+#keycap{position:absolute;inset:0;border-radius:.9cqw;background:linear-gradient(180deg,rgba(255,255,255,.10) 0%,rgba(255,255,255,.04) 100%);border:1px solid rgba(244,187,60,.18);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);}
+#version{right:3cqw;bottom:3cqh;font-size:1cqw;letter-spacing:.06em;color:#8d8a85;font-variant-numeric:tabular-nums;opacity:0;}
+#fade{inset:0;background:#000;pointer-events:none;opacity:0;}
+</style>
+</head>
+<body>
+<div id="stage" role="main" aria-label="Welcome to EclipseOS">
+  <div id="eclipse" class="abs"><div id="corona"></div><div id="sun"></div><div id="moon"></div></div>
+  <div id="wordRow" class="abs" aria-hidden="true"><div id="word"></div></div>
+  <img id="logo" class="abs" src="assets/eclipseos-logo.png" alt="EclipseOS">
+  <div id="key" class="abs" role="img" aria-label="Press space to begin"><div id="keycap"></div></div>
+  <div id="version" class="abs">Version 1.0.0</div>
+  <div id="fade" class="abs"></div>
+</div>
+<script>
+(() => {
+  // ---- Config -------------------------------------------------------------
+  const SPEED = 0.9;
+  const WORDS = [
+    ['Welcome', 'en'], ['Bienvenue', 'fr'], ['Willkommen', 'de'], ['Bienvenido', 'es'], ['Benvenuto', 'it'],
+    ['Добро пожаловать', 'ru'], ['ようこそ', 'ja'], ['欢迎', 'zh-Hans'], ['환영합니다', 'ko'], ['Bem-vindo', 'pt'],
+  ];
+  const FONT = { ja: '"Noto Serif JP",', 'zh-Hans': '"Noto Serif SC",', ko: '"Noto Serif KR",' };
+
+  // ---- Hand-off hook --------------------------------------------------------
+  // Fires once, after the fade to black, when the user presses Space (or taps).
+  // Listen with:  window.addEventListener('eclipseos:begin', () => { ... })
+  // or define:    window.EclipseWelcome = { onBegin() { ... } }
+  function handOff() {
+    window.dispatchEvent(new CustomEvent('eclipseos:begin'));
+    window.EclipseWelcome?.onBegin?.();
+    try { window.parent !== window && window.parent.postMessage({ type: 'eclipseos:begin' }, '*'); } catch (e) {}
+  }
+
+  // ---- Animation -------------------------------------------------------------
+  const $ = id => document.getElementById(id);
+  const el = { eclipse: $('eclipse'), corona: $('corona'), sun: $('sun'), moon: $('moon'), word: $('word'),
+    logo: $('logo'), key: $('key'), keycap: $('keycap'), version: $('version'), fade: $('fade') };
+  const cl = x => Math.max(0, Math.min(1, x));
+  const eo = x => 1 - Math.pow(1 - cl(x), 3);
+  const eio = x => { x = cl(x); return x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
+  const sine = x => .5 - .5 * Math.cos(Math.PI * cl(x));
+  const L = (a, b, p) => a + (b - a) * p;
+  const T = 6, W = T / WORDS.length, READY = 8.4;
+  const xf = f => {
+    if (f < .22) return -70 + 67 * (1 - Math.pow(1 - f / .22, 3));
+    if (f < .78) return -3 + 6 * (f - .22) / .56;
+    const p = (f - .78) / .22; return 3 + 67 * p * p * p;
+  };
+
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let start = performance.now(), exitAt = null, done = false, lastWord = -1;
+
+  function frame(now) {
+    const t = reduced ? 20 : (now - start) / 1000 * SPEED;
+
+    // Moon crossing + corona
+    const c = eo((t - 5.2) / 1.2);
+    el.moon.style.transform = `translateX(${L(-150, 0, eio(t / T))}%)`;
+    el.corona.style.opacity = c;
+    el.sun.style.boxShadow = `0 0 ${.08 + .5 * c}em ${.01 + .08 * c}em rgba(244,187,60,${.45 + .45 * c})`;
+
+    // Shrink into the logo's O
+    const sp = sine(sine((t - 6.2) / 2.2));
+    el.eclipse.style.fontSize = L(24, 6.25, sp) + 'cqw';
+    el.eclipse.style.left = L(50, 65.5, sp) + 'cqw';
+    el.eclipse.style.top = L(44, 50, sp) + 'cqh';
+    el.eclipse.style.opacity = 1 - sine((t - 8.2) / .9);
+    el.logo.style.opacity = sine((t - 7.4) / 1.3);
+
+    // Fly-by greetings
+    if (t < T) {
+      const i = Math.floor(t / W), f = (t % W) / W, e = .004;
+      if (i !== lastWord) {
+        lastWord = i;
+        el.word.textContent = WORDS[i][0];
+        el.word.lang = WORDS[i][1];
+        el.word.style.fontFamily = `${FONT[WORDS[i][1]] || ''}"Cormorant Garamond",serif`;
+      }
+      const av = Math.abs((xf(Math.min(1, f + e)) - xf(Math.max(0, f - e))) / (2 * e) / 300);
+      el.word.style.transform = `translateX(${xf(f)}cqw) skewX(${-Math.min(22, av * 34)}deg) scaleX(${1 + Math.min(.5, av * .7)})`;
+      el.word.style.filter = `blur(${Math.min(14, av * 26)}px)`;
+      el.word.style.opacity = cl(1 - Math.max(0, av - .35) * 1.4);
+    } else el.word.style.opacity = 0;
+
+    // Spacebar prompt
+    el.key.style.opacity = cl((t - READY) / .8);
+    const k = Math.max(0, t - 8.6) % 1.6;
+    const d = reduced ? 0 : k < .12 ? k / .12 : k < .36 ? 1 : k < .52 ? 1 - (k - .36) / .16 : 0;
+    el.keycap.style.transform = `translateY(${d * .35}cqw)`;
+    el.keycap.style.borderColor = `rgba(244,187,60,${.18 + d * .5})`;
+    el.keycap.style.boxShadow = `0 ${.4 - d * .32}cqw 0 rgba(255,255,255,.10), 0 ${1.2 - d * .8}cqw ${2 - d}cqw rgba(0,0,0,.5), 0 0 ${d * 2.4}cqw rgba(244,187,60,${d * .35})`;
+    el.version.style.opacity = eo((t - 8.6) / 1);
+
+    // Exit
+    if (exitAt !== null) {
+      const x = cl((now - exitAt) / 700);
+      el.fade.style.opacity = x;
+      if (x >= 1 && !done) { done = true; handOff(); return; }
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  function begin() {
+    const t = reduced ? 20 : (performance.now() - start) / 1000 * SPEED;
+    if (t >= READY && exitAt === null) exitAt = performance.now();
+  }
+  window.addEventListener('keydown', e => { if (e.code === 'Space' || e.key === ' ') { e.preventDefault(); begin(); } });
+  window.addEventListener('pointerdown', begin);
+})();
+</script>
+</body>
+</html>
