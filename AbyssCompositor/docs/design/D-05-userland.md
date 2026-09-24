@@ -194,7 +194,7 @@ it holds to the four §3 limits:
 - No `mode "wm" | "de"` key (COMP-17 §2) and no `components {}` slots
   (COMP-17 §2.2). The DE described here is the only profile, equivalent to
   COMP-17 §2.1's Standard with defaults; the tiling defaults are always on.
-  First-run setup (D-07) is what will choose among profiles.
+  The graphical installer (D-07) is what will choose among profiles.
 - No terminal of our own. `foot` is the default (`eclipseos-meta` depends on
   it, and the default `Super+Return` bind spawns it) until `cataclysm` exists.
   This is the D-01 §1.3 substitution, said out loud.

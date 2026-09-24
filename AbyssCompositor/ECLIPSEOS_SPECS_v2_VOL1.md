@@ -4271,11 +4271,13 @@ Rules:
   surface, never in a client. While no phrase is set, `agent-attention`
   (SUPER+space, §3.9) opens phrase entry first, then continues to its normal
   target, which is delayed, never replaced. That first entry cannot show a phrase,
-  so it states in fixed text that it only appears after the chord. D-07's
-  first-run wizard explains the phrase and asks the user to press the chord. It
-  cannot summon the surface itself, and it learns only that a phrase now
-  exists, from a `phrase {set: bool}` event on the COMP-13 human socket. The
-  text never crosses any socket.
+  so it states in fixed text that it only appears after the chord. The phrase
+  is set on the **installed** system at first login, never during D-07's
+  live-medium install: the live medium is throwaway and must not be the origin
+  of anything the installed compositor trusts. The installer only explains the
+  phrase. It cannot summon the surface, and afterwards a settings client learns
+  only that a phrase exists, from a `phrase {set: bool}` event on the COMP-13
+  human socket. The text never crosses any socket.
 - Changing it requires the human seat and a prompt.
 
 This is the same idea as bank sitekeys, and it fails the same way if the
@@ -6763,7 +6765,7 @@ without a restart.
 ### 2.1 Setup profiles *(added DA-01, 2026-09-24)*
 
 A **setup profile** is a named bundle of defaults, one for every choice D-07's
-first-run setup asks: `mode`, every component slot (§2.2), the application set,
+graphical installer asks (first boot is booting the ISO): `mode`, every component slot (§2.2), the application set,
 and the agent stack. Four exist:
 
 - **Minimal**: nothing optional chosen. For the user who configures everything.
@@ -6779,11 +6781,13 @@ time after. Picking Minimal does not lock anyone out of the native bar, and
 picking Agentic grants no agent anything (below).
 
 **A profile is a one-time seed, not a runtime layer.** It is chosen *inside*
-the session on first login (D-07 §4), never by the installer, and it writes
-ordinary values into `abyss.kdl` through COMP-13 §1.4. After setup, nothing
+the live-medium session, in the same graphical setup that partitions the disk and
+installs the system (D-07 §4), so the choices are seen live before they are
+committed. It writes ordinary values into `abyss.kdl` through COMP-13 §1.4, and
+that file is copied to the installed system. After setup, nothing
 reads the profile. `setup.profile` records which one was chosen, for reference
-only. Choosing a different profile later means re-running setup, which starts
-from the current files. A live profile layer under explicit config would give
+only. Choosing a different profile later means re-running setup
+(`eclipse-setup --reconfigure`), which starts from the current files. A live profile layer under explicit config would give
 every value three possible sources and make "why is this set" unanswerable
 from the file, against CHARTER §4.
 
@@ -6806,9 +6810,10 @@ start anything. It is the smallest *usable* set, not the empty one.
 software. The policy starting point is **locked down**, the shipped fail-closed
 `policy.kdl`, for every profile including Agentic. A **curated preset** is
 offered to Agentic users as an opt-in. It is applied only through the COMP-10
-§3.9 policy editor, summoned by chord, where each rule is shown as a pending
-change and accepted or struck by the human. The setup wizard cannot write
-`policy.kdl` (COMP-13 §1.3) and does not try.
+§3.9 policy editor, on the installed system at first login, summoned by chord,
+where each rule is shown as a pending change and accepted or struck by the
+human. The setup program cannot write `policy.kdl` (COMP-13 §1.3), does not try,
+and does not carry it from the live medium to the target.
 
 Until COMP-16 milestones 11–25 deliver the agent stack, Agentic is offered
 marked *preview* and installs only what exists.
@@ -6897,7 +6902,7 @@ deferred under Z-01 is the rest of a native shell beyond the D-05 components.
 2. Whether desktop icons are in v1 scope. They are the largest single piece of
    DE mode and the least security-relevant.
 3. *(DA-01)* Full's application list beyond the five §2.1 slot defaults, and
-   which alternative candidates the catalog admits (D-07 §10).
+   which alternative candidates the catalog admits (D-07 §11).
 4. *(DA-01)* The curated Agentic preset's contents. It cannot be written before
    S-01's grant set exists, so until then the opt-in is shown disabled.
 
@@ -7182,20 +7187,25 @@ Tier 6's `D-0n` documents.
 
 | ID | Target | Change | Applied |
 |---|---|---|---|
-| DA-01 | COMP-17 §2.1, §2.2, §5, §6; planning index | Four setup profiles (Minimal, Standard, Full, Agentic), as a one-time seed chosen in-session on first login, never a runtime layer. `components {}` slots with a root-owned candidate catalog. Agentic confers no authority: locked-down policy by default, curated preset opt-in, applied only through the COMP-10 §3.9 policy editor. COMP-17 to Draft v0.2 | yes |
+| DA-01 | COMP-17 §2.1, §2.2, §5, §6; planning index | Four setup profiles (Minimal, Standard, Full, Agentic), as a one-time seed chosen in the ISO's graphical installer, never a runtime layer. `components {}` slots with a root-owned candidate catalog. Agentic confers no authority: locked-down policy by default, curated preset opt-in, applied only through the COMP-10 §3.9 policy editor. COMP-17 to Draft v0.2 | yes |
 | DA-02 | COMP-17 §2 | The autostart set moved from `mode` to `components`. `mode` keeps keybinds, decoration defaults and whether a configured panel shows | yes |
-| DA-03 | COMP-10 §2 | Phrase entry is compositor-drawn. While unset, `agent-attention` opens it. The first-run wizard learns only `phrase {set}` | yes |
-| DA-04 | Planning index D-07 | D-07 written as `docs/design/D-07-first-run.md`: installer asks disk/host/user only, and everything else is asked in-session. Also amends D-03 §4 and D-05 §5, §7, §8 | yes |
+| DA-03 | COMP-10 §2 | Phrase entry is compositor-drawn. While unset, `agent-attention` opens it. Set on the installed system at first login, not on the live medium. Setup learns only `phrase {set}` | yes |
+| DA-04 | Planning index D-07 | D-07 written as `docs/design/D-07-first-run.md`: first boot is the ISO, whose live session runs a graphical installer covering language, network, disk, identity, profile, mode, components, apps, appearance, displays and agents, then installs. Also amends D-03 §4, §5 and D-05 §7, §8 | yes |
 
 ## Open decisions this appendix leaves standing
 
 1. **Full's application list** and **catalog governance**: which alternative
-   candidates ship, and from which repositories (COMP-17 §6.3, D-07 §10.2–3).
+   candidates ship, and from which repositories (COMP-17 §6.3, D-07 §11.4–5).
 2. **The curated Agentic preset's contents**, which wait on S-01 (COMP-17 §6.4).
 3. **The `phrase` event** is named here but not yet in COMP-13 §2's event table.
    It lands there with milestone 15, which is the first code that can emit it.
-4. **Timezone** at install or in setup (D-07 §10.4).
-5. **Agent sandboxes and the system bus.** D-07 §6's helper assumes agents cannot
+4. **Offline install and disk layouts.** Whether the floor installs without a
+   network today, and layouts beyond whole-disk erase (D-07 §11.1, §11.3).
+5. **Two trusted-UI surfaces owed to COMP-10** for D-07 §6: a compositor-drawn
+   "destructive system action" confirmation (the disk wipe) and a
+   compositor-drawn polkit authentication agent. Until they exist the TTY
+   fallback installer is the only wipe path.
+6. **Agent sandboxes and the system bus.** D-07 §6's helper assumes agents cannot
    reach it. S-03 must state that; until it does, it is an assumption.
 
 ---

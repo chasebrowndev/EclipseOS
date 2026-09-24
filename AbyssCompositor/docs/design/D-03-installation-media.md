@@ -131,12 +131,14 @@ run by hand from the live root shell. Flow:
    `amd_pstate=active` is on from first boot rather than discovered later.
 10. `passwd` for root and the new user, `umount -R /mnt`.
 
-*(amended DA-04, 2026-09-24)* **These are all the questions the installer
-will ever ask.** Profile, interaction mode, components, applications and agents
-are asked on first login, in the session, by `eclipse-setup` (D-07). The
-pacstrapped list is the D-07 §2 setup floor, `eclipseos-base`, which carries
-every default component plus the wizard, so the common path needs no further
-package. Specified, not built: the list is still `eclipseos-meta` today.
+*(amended DA-04, 2026-09-24)* **This script is the fallback installer, not the
+primary one.** The primary installer is `eclipse-setup --install`, a graphical
+program in the live session (D-07), which asks these questions and many more
+(language, network, profile, mode, components, applications, appearance,
+displays, agents) and drives the same steps through the D-07 §6 helper. The
+pacstrapped list becomes the D-07 §2.2 setup floor, `eclipseos-base`, installed
+from an on-medium local repository so it works offline. Specified, not built:
+the script is what exists today, and the list is still `eclipseos-meta`.
 
 ### 4.1 Why this and not an `archinstall` JSON
 
@@ -164,6 +166,11 @@ absence of those lines is load-bearing; do not "fix" it when a device looks
 inaccessible.
 
 ## 5. greetd is not enabled on the live medium
+
+*(amended DA-04, 2026-09-24: this section describes the medium as built. D-07
+§2.1 replaces it: the live medium gains an unprivileged `liveuser`, greetd
+autologin into `abyss-session`, and a live-only polkit rule. The root shell
+moves to tty2 and stays.)*
 
 The installed system enables `greetd` (step 8). The live medium does not, and
 no `/etc/greetd` overlay exists under `airootfs/`.

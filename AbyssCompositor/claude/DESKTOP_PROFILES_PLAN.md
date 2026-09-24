@@ -282,22 +282,26 @@ exception of whatever background-layer support abyss has to provide.
 schema, validated against the root-owned candidate catalog
 (`/usr/share/eclipse/setup/catalog.kdl`). `abyss-session` starts what it names
 and swaps a slot on hot reload, replacing the fixed `.wants/` links D-05 §5
-describes. `dist/` gains `eclipseos-base`, the D-07 §2 setup floor, which the
+describes. `dist/` gains `eclipseos-base`, the D-07 §2.2 setup floor, which the
 installer pacstraps instead of `eclipseos-meta`. Backend agent for the schema and
 session start; `dist/` is the parent's.
 
 **Gate:** change `components.bar` from `hyperion` to `none` and back with
 `eclipse-ctl`. The bar leaves and returns without a restart.
 
-## DP-8 — First-run setup *(D-07)*
+## DP-8 — Graphical installer and setup *(D-07)*
 
-`eclipse-setup` (frontend agent: every view), `eclipse-setup-helper` + polkit
-action `org.eclipse.setup.apply` (parent: a root binary is reviewed line by
-line), `eclipse-ctl setup reset`, `setup.profile`/`setup.complete` keys. The
-phrase and policy-preset steps render as deferred until milestone 15.
+`eclipse-setup` with `--install` and `--reconfigure` (frontend agent: every
+view), `eclipse-setup-helper` + polkit actions `org.eclipse.install.apply`
+(live medium only) and `org.eclipse.setup.apply` (parent: a root binary is
+reviewed line by line; add to `tcb-review`), `eclipse-ctl setup reset`,
+`setup.profile`/`setup.complete`/`setup.pending-preset` keys. ISO work in
+`dist/iso/` (parent): `liveuser`, greetd autologin, live-only polkit rule, tty2
+root shell, on-medium local repo. The phrase and policy preset are handled on
+the installed system after milestone 15 (D-07 §4.5).
 
-**Gate:** D-07 §9, and the B-02 companion gate: a fresh install reaches a
-working configuration for each profile without editing a file.
+**Gate:** D-07 §10, and the B-02 companion gate: booting the ISO reaches an
+installed, working configuration for each profile without editing a file.
 
 ## The policy editor is milestone 15, not a DP item
 
