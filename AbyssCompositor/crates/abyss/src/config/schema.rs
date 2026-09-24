@@ -587,6 +587,14 @@ pub const TABLE: &[Key] = &[
         Live,
         "Disable the touchpad while typing.",
     ),
+    k(
+        "input.touchpad.click-method",
+        Ty::Enum(&["clickfinger", "button-areas"]),
+        Str("clickfinger"),
+        Abyss,
+        Live,
+        "Touchpad click method: finger count or bottom-corner button areas.",
+    ),
     // misc
     k(
         "misc.render-device",
@@ -1198,6 +1206,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "input.touchpad.natural-scroll" => V::Bool(c.input.touchpad.natural_scroll),
         "input.touchpad.tap-to-click" => V::Bool(c.input.touchpad.tap_to_click),
         "input.touchpad.dwt" => V::Bool(c.input.touchpad.dwt),
+        "input.touchpad.click-method" => V::Str(c.input.touchpad.click_method.clone()),
         "misc.render-device" => s(&c.misc.render_device),
         "misc.terminal-command" => s(&c.misc.terminal_command),
         "misc.scripted-input" => V::Bool(c.misc.scripted_input),

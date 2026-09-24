@@ -124,6 +124,7 @@ Each animation is off until named in an `animation` node inside `animations { }`
 | `input.touchpad.natural-scroll` | bool | `#false` | live | Invert touchpad scroll direction. |
 | `input.touchpad.tap-to-click` | bool | `#false` | live | Treat a tap as a click. |
 | `input.touchpad.dwt` | bool | `#false` | live | Disable the touchpad while typing. |
+| `input.touchpad.click-method` | clickfinger \| button-areas | `"clickfinger"` | live | Touchpad click method: finger count or bottom-corner button areas. |
 
 ### `misc`
 

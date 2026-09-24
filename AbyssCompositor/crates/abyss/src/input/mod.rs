@@ -1188,7 +1188,10 @@ pub fn configure_device(device: &mut smithay::reexports::input::Device, input: &
     });
     if device.config_tap_finger_count() > 0 {
         let _ = device.config_tap_set_enabled(input.touchpad.tap_to_click);
-        let _ = device.config_click_set_method(ClickMethod::Clickfinger);
+        let _ = device.config_click_set_method(match input.touchpad.click_method.as_str() {
+            "button-areas" => ClickMethod::ButtonAreas,
+            _ => ClickMethod::Clickfinger,
+        });
         let _ = device.config_dwt_set_enabled(input.touchpad.dwt);
         if device.config_scroll_methods().contains(&ScrollMethod::TwoFinger) {
             let _ = device.config_scroll_set_natural_scroll_enabled(input.touchpad.natural_scroll);

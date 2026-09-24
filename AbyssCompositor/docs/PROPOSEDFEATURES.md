@@ -165,7 +165,7 @@ first, then where the code goes, then the COMP-16 milestone.
   `:344`). Behind the same fail-closed gate and the `capture.cursor` policy.
   *Phase 1, M8.*
 - **Per-device input settings.** COMP-04 §2: accel speed, tap-and-drag, click
-  method (hardcoded `Clickfinger` in `input::configure_device`), scroll
+  method, scroll
   method, touchscreen/tablet calibration, per-device overrides. Today only
   global `accel-profile` and touchpad natural-scroll/tap/dwt exist.
   `crates/abyss/src/input/mod.rs`, `config/mod.rs` + `config/schema.rs`.

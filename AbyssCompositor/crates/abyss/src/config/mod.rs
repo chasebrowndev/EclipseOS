@@ -631,12 +631,25 @@ impl Default for Input {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Touchpad {
     pub natural_scroll: bool,
     pub tap_to_click: bool,
     /// Disable-while-typing.
     pub dwt: bool,
+    /// `clickfinger` | `button-areas`.
+    pub click_method: String,
+}
+
+impl Default for Touchpad {
+    fn default() -> Self {
+        Self {
+            natural_scroll: false,
+            tap_to_click: false,
+            dwt: false,
+            click_method: "clickfinger".into(),
+        }
+    }
 }
 
 /// Swap in an already-validated config and retune everything that caches a
@@ -1905,6 +1918,15 @@ impl Config {
         let Some(children) = node.children() else { return };
         for n in children.nodes() {
             let name = n.name().value();
+            if name == "click-method" {
+                match arg(n).and_then(KdlValue::as_string) {
+                    Some(v @ ("clickfinger" | "button-areas")) => {
+                        self.input.touchpad.click_method = v.to_string()
+                    }
+                    other => self.reject(n, format!("unknown click-method {other:?}")),
+                }
+                continue;
+            }
             let Some(b) = arg(n).and_then(KdlValue::as_bool) else {
                 self.reject(n, format!("touchpad key needs a boolean: {name:?}"));
                 continue;
@@ -3139,7 +3161,7 @@ mod tests {
                 repeat-rate 25
                 repeat-delay 400
                 accel-profile "flat"
-                touchpad { natural-scroll #true; tap-to-click #true; dwt #false }
+                touchpad { natural-scroll #true; tap-to-click #true; dwt #false; click-method "button-areas" }
             }
         "#
         .parse()
@@ -3153,6 +3175,8 @@ mod tests {
         assert_eq!(cfg.input.accel_profile, "flat");
         assert!(cfg.input.touchpad.natural_scroll && cfg.input.touchpad.tap_to_click);
         assert!(!cfg.input.touchpad.dwt);
+        assert_eq!(cfg.input.touchpad.click_method, "button-areas");
+        assert_eq!(Config::default().input.touchpad.click_method, "clickfinger");
         // The override chord is built in, never taken from the config.
         assert!(binds.is_empty());
         assert!(default_binds()
