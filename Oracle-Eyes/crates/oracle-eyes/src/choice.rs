@@ -60,16 +60,30 @@ const BULLETS: &[&str] = &[
 
 /// The label a line opens with, if any.
 fn key_of(text: &str) -> Option<Key> {
-    let first = text.split_whitespace().next()?;
+    let mut words = text.split_whitespace();
+    let first = words.next()?;
     // Something has to follow the label, or it is a lone letter, not an option.
-    text.split_whitespace().nth(1)?;
-    if BULLETS.contains(&first) {
-        return Some(Key::Bullet);
+    let second = words.next()?;
+    if let Some(k) = label(first) {
+        return Some(k);
     }
-    let inner = first
+    // A list bullet before the label (`• A) London`), which OCR also reads as
+    // `e`, `«` or `°`: any short mark, as long as a real label and some text
+    // follow it.
+    if first.chars().count() <= 2 && words.next().is_some() {
+        if let Some(k) = label(second) {
+            return Some(k);
+        }
+    }
+    BULLETS.contains(&first).then_some(Key::Bullet)
+}
+
+/// A letter or number label on its own: `A)`, `(a)`, `b.`, `1:`.
+fn label(tok: &str) -> Option<Key> {
+    let inner = tok
         .strip_prefix('(')
         .and_then(|t| t.strip_suffix(')'))
-        .or_else(|| first.strip_suffix([')', '.', ':']))?;
+        .or_else(|| tok.strip_suffix([')', '.', ':']))?;
     if inner.len() == 1 && inner.as_bytes()[0].is_ascii_alphabetic() {
         return Some(Key::Letter(inner.as_bytes()[0].to_ascii_uppercase()));
     }
@@ -327,6 +341,27 @@ mod tests {
             detect(&l).is_empty(),
             "a run that starts mid-list is a guess"
         );
+    }
+
+    #[test]
+    fn a_list_bullet_before_the_label_is_looked_past() {
+        // Google's AI Overview renders options as a bulleted list, and OCR
+        // spells the bullet several ways.
+        let l = [
+            line(1, "What is the capital city of France?", 0, 0),
+            line(2, "• A) London", 10, 40),
+            line(3, "e B) Paris", 10, 80),
+            line(4, "« C) Rome", 10, 120),
+        ];
+        let c = detect(&l);
+        assert_eq!(labels(&c), ["A", "B", "C"]);
+        assert_eq!(c[1].line, 3);
+    }
+
+    #[test]
+    fn a_short_word_before_a_label_needs_text_after_it() {
+        assert_eq!(key_of("• B)"), None);
+        assert_eq!(key_of("to 2."), None);
     }
 
     #[test]
