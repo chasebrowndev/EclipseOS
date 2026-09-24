@@ -361,9 +361,9 @@ fn lay_out(
     taken: &[Rectangle<i32, Logical>],
 ) -> Option<Layout> {
     let local = |r: Rectangle<i32, Logical>| Rectangle::new(r.loc - output_loc, r.size);
-    let region = drawable_region(local(a.anchor), output);
-    // A pick is drawn only inside what is drawn of the anchor: if the cap on
-    // the region cut it off, it goes unmarked rather than half-marked.
+    let region = drawable_region(local(a.anchor), output, a.pick.as_ref().map(|p| local(p.rect)));
+    // A pick is drawn only inside what is drawn of the anchor: if it is
+    // taller or wider than the cap, it goes unmarked rather than half-marked.
     let pick = a.pick.as_ref().and_then(|p| {
         let rect = local(p.rect);
         region.filter(|r| r.contains_rect(rect)).map(|_| Pick {
@@ -617,9 +617,15 @@ fn leader_raster(path: &[Point<i32, Logical>], dev: usize) -> (Point<i32, Logica
 /// output per axis and clipping to the output leaves every real region
 /// untouched while taking that choice away. Returns `None` when nothing is
 /// left, in which case the panel is drawn unmarked.
+///
+/// A capped region keeps its top-left, unless that would cut off `keep` --
+/// the pick, already known to lie inside `r` -- in which case the window
+/// slides along `r` just far enough to hold it. Where it sits within `r` is
+/// the compositor's choice either way; the size cap is unchanged.
 fn drawable_region(
     r: Rectangle<i32, Logical>,
     output: Size<i32, Logical>,
+    keep: Option<Rectangle<i32, Logical>>,
 ) -> Option<Rectangle<i32, Logical>> {
     if r.size.w <= 0 || r.size.h <= 0 {
         return None;
@@ -628,13 +634,23 @@ fn drawable_region(
     // reaching onto the output keeps its visible corner rather than being
     // trimmed off-screen and vanishing.
     let on = r.intersection(Rectangle::new(Point::from((0, 0)), output))?;
-    Some(Rectangle::new(
-        on.loc,
-        Size::from((
-            on.size.w.min((output.w / 3).max(1)),
-            on.size.h.min((output.h / 3).max(1)),
+    let (w, h) = (
+        on.size.w.min((output.w / 3).max(1)),
+        on.size.h.min((output.h / 3).max(1)),
+    );
+    // The start of a `len`-long window within `lo..lo + span` that covers
+    // `k0..k1` if it can, and otherwise at least its far end.
+    let slide = |lo: i32, span: i32, len: i32, k0: i32, k1: i32| {
+        (k1 - len).max(lo).min(k0).min(lo + span - len).max(lo)
+    };
+    let loc = match keep {
+        Some(k) => Point::from((
+            slide(on.loc.x, on.size.w, w, k.loc.x, k.loc.x + k.size.w),
+            slide(on.loc.y, on.size.h, h, k.loc.y, k.loc.y + k.size.h),
         )),
-    ))
+        None => on.loc,
+    };
+    Some(Rectangle::new(loc, Size::from((w, h))))
 }
 
 /// Where a panel of `size` goes, beside `blocked` and as near `focus` as it
@@ -858,8 +874,8 @@ mod tests {
 
     #[test]
     fn a_pick_cut_off_by_the_region_cap_is_not_drawn() {
-        // The anchor is capped to a third of the output when drawn; a pick in
-        // the part that is not drawn goes unmarked rather than half-marked.
+        // The capped region slides to keep a pick, but a pick larger than the
+        // cap cannot be kept whole: it goes unmarked rather than half-marked.
         let out: Size<i32, Logical> = (900, 900).into();
         let mut s = AnnotationStore::default();
         s.create(
@@ -867,7 +883,7 @@ mod tests {
             rect(0, 0, 900, 900),
             "t",
             "x",
-            pick(rect(10, 700, 100, 20), "A"),
+            pick(rect(10, 300, 100, 400), "A"),
         );
         let a = s.iter().next().unwrap().1;
         let l = lay_out(a, out, (0, 0).into(), &[]).unwrap();
@@ -963,17 +979,40 @@ mod tests {
     }
 
     #[test]
+    fn a_capped_region_slides_to_keep_its_pick() {
+        // 1440x960 logical, so the cap is 480x320. A quiz whose anchor runs
+        // 500 tall with the pick near the bottom keeps the pick on screen.
+        let out: Size<i32, Logical> = (1440, 960).into();
+        let anchor = rect(100, 100, 400, 500);
+        let pick_r = rect(110, 520, 200, 20);
+        let r = drawable_region(anchor, out, Some(pick_r)).unwrap();
+        assert_eq!((r.size.w, r.size.h), (400, 320), "the cap is unchanged");
+        assert!(r.contains_rect(pick_r), "{r:?}");
+        assert!(anchor.contains_rect(r), "and it stays inside the anchor");
+        // A pick that already fits leaves the top-left where it was.
+        let r = drawable_region(anchor, out, Some(rect(110, 150, 200, 20))).unwrap();
+        assert_eq!(r.loc, anchor.loc);
+
+        // End to end: the store keeps the pick and the layout draws it.
+        let mut s = AnnotationStore::default();
+        s.create(1, anchor, "Paris", "", pick(pick_r, "B")).unwrap();
+        let a = s.iter().next().unwrap().1;
+        let l = lay_out(a, out, (0, 0).into(), &[]).unwrap();
+        assert_eq!(l.pick.map(|p| p.rect), Some(pick_r));
+    }
+
+    #[test]
     fn a_marker_cannot_be_made_to_frame_the_screen() {
         let out: Size<i32, Logical> = (1920, 1080).into();
         // A caller asking to outline everything gets a third of it, on-screen.
-        let r = drawable_region(rect(-500, -500, 9000, 9000), out).unwrap();
+        let r = drawable_region(rect(-500, -500, 9000, 9000), out, None).unwrap();
         assert_eq!((r.loc.x, r.loc.y), (0, 0));
         assert_eq!((r.size.w, r.size.h), (640, 360));
         // A real OCR region is untouched.
-        let r = drawable_region(rect(300, 200, 400, 60), out).unwrap();
+        let r = drawable_region(rect(300, 200, 400, 60), out, None).unwrap();
         assert_eq!((r.loc.x, r.loc.y, r.size.w, r.size.h), (300, 200, 400, 60));
         // Entirely off this output: nothing to draw.
-        assert!(drawable_region(rect(5000, 5000, 100, 100), out).is_none());
+        assert!(drawable_region(rect(5000, 5000, 100, 100), out, None).is_none());
     }
 
     #[test]
