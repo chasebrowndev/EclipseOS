@@ -105,10 +105,12 @@ package_eclipseos-launcher() {
 }
 
 package_eclipseos-desktop() {
-  pkgdesc="EclipseOS desktop apps: settings, policy viewer, screensaver"
-  depends=(eclipseos-abyss wayland libxkbcommon mesa)
+  pkgdesc="EclipseOS desktop apps: settings, policy viewer, screensaver, welcome"
+  # Fonts for eclipse-welcome (D-07 step 0). Lora has no official package; the
+  # version label falls back to a serif.
+  depends=(eclipseos-abyss wayland libxkbcommon mesa ttf-cormorant noto-fonts-cjk)
 
-  for b in eclipse-settings eclipse-policy-viewer eclipse-screensaver; do _bin "$b"; done
+  for b in eclipse-settings eclipse-policy-viewer eclipse-screensaver eclipse-welcome; do _bin "$b"; done
   _unit eclipse-screensaver.service
   _want eclipse-screensaver.service
   _app eclipse-settings.desktop
