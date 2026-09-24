@@ -27,7 +27,7 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `general.gaps-in` | int 0..512 | `5` | live | Gap between tiled windows, logical px. |
 | `general.gaps-out` | int 0..512 | `10` | live | Gap between the tiling area and the screen edge, logical px. |
 | `general.border-size` | int 0..512 | `2` | live | Window border thickness, logical px. 0 disables borders. |
-| `general.layout` | dwindle \| master | `"dwindle"` | live | Default tiling layout for workspaces without their own. |
+| `general.layout` | radiant \| dwindle \| master | `"radiant"` | live | Default tiling layout for workspaces without their own. `radiant` is a weighted tree with drag-to-tile drop zones and per-window priority; `dwindle` is classic dwindle; `master` puts the first window on the left. |
 | `general.floating-placement` | centered \| pointer \| cascade | `"centered"` | live | Where a new floating window lands when no window rule places it. |
 | `general.focus-follows-mouse` | bool | `#true` | live | Move keyboard focus to the window under the pointer. |
 | `general.focus-follows-mouse-across-outputs` | bool | `#true` | live | Let pointer motion move focus to another output. Off keeps focus on the current output until you click. |
@@ -38,6 +38,9 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `general.refocus-on-scene-change` | bool | `#true` | live | Re-evaluate focus when windows appear or disappear under a stationary pointer. |
 | `general.col-active-border` | colour `#rrggbb[aa]` | `#e8a33dff` | live | Border colour of the focused window. |
 | `general.col-inactive-border` | colour `#rrggbb[aa]` | `#161616ff` | live | Border colour of every unfocused window. |
+| `general.drop-guides` | bool | `#true` | live | Draw the drop zones and a ghost of where a dragged window will land (radiant layout). |
+| `general.drop-guide-color` | colour `#rrggbb[aa]` | `#e8a33dff` | live | Colour of the drop guides. |
+| `general.drop-edge-band` | int 0..512 | `40` | live | Width of the screen-edge band that drops a window as a full-height column or full-width row, logical px. 0 disables it. |
 
 ### `render`
 
@@ -140,7 +143,7 @@ A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPE
 | `toggle-floating` | `toggle-floating` | Float or tile the focused window. |
 | `minimize` | `minimize` | Send the focused window away. |
 | `unminimize` / `restore` | `unminimize` | Bring back the last window sent away on the active workspace. |
-| `toggle-layout` | `toggle-layout` | Switch the workspace between dwindle and master. |
+| `toggle-layout` | `toggle-layout` | Cycle the workspace layout: radiant, dwindle, master. |
 | `focus-left` | `focus-left` | Focus the neighbour to the left. |
 | `focus-right` | `focus-right` | Focus the neighbour to the right. |
 | `focus-up` | `focus-up` | Focus the neighbour above. |
@@ -149,6 +152,8 @@ A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPE
 | `move-right` | `move-right` | Swap with the neighbour to the right. |
 | `move-up` | `move-up` | Swap with the neighbour above. |
 | `move-down` | `move-down` | Swap with the neighbour below. |
+| `priority-up` | `priority-up` | Give the focused tiled window a bigger share of its row or column (radiant layout). |
+| `priority-down` | `priority-down` | Give the focused tiled window a smaller share of its row or column (radiant layout). |
 | `workspace <1..10>` | `workspace 3` | Switch to a workspace. |
 | `workspace-next` | `workspace-next` | The workspace after the active one on the focused output. |
 | `workspace-prev` | `workspace-prev` | The workspace before the active one on the focused output. |

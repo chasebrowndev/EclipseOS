@@ -42,6 +42,10 @@ pub enum FloatingPlacement {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutKind {
+    /// Weighted n-ary tree: dwindle-style auto insert, drag-to-tile drop
+    /// zones and per-window priority (COMP-05 §3.1). The default.
+    Radiant,
+    /// Classic dwindle over the in-order window sequence ("Dwindle Classic").
     Dwindle,
     Master,
 }
@@ -66,6 +70,13 @@ pub struct General {
     pub follow_window_to_workspace: bool,
     pub col_active: [f32; 4],
     pub col_inactive: [f32; 4],
+    /// Draw the section outlines, edge bands and landing ghost while a tiled
+    /// window is dragged (Radiant only).
+    pub drop_guides: bool,
+    pub drop_guide_color: [f32; 4],
+    /// Width, logical px, of the screen-edge band that adds a full-height
+    /// column or full-width row on drop.
+    pub drop_edge_band: i32,
 }
 
 impl Default for General {
@@ -74,7 +85,7 @@ impl Default for General {
             gaps_in: 5,
             gaps_out: 10,
             border_size: 2,
-            layout: LayoutKind::Dwindle,
+            layout: LayoutKind::Radiant,
             floating_placement: FloatingPlacement::Centered,
             focus_follows_mouse: true,
             focus_follows_mouse_across_outputs: true,
@@ -86,6 +97,9 @@ impl Default for General {
             // eclipse amber on near-black
             col_active: [0.91, 0.64, 0.24, 1.0],
             col_inactive: [0.09, 0.09, 0.09, 1.0],
+            drop_guides: true,
+            drop_guide_color: [0.91, 0.64, 0.24, 1.0],
+            drop_edge_band: 40,
         }
     }
 }
@@ -1047,6 +1061,9 @@ pub fn default_binds() -> Vec<Bind> {
         // Swapping a tiled window with its neighbour has no Hyprland bind to
         // copy; Shift over the focus arrows is the obvious pair and collides
         // with nothing. Floating windows move by mouse drag (`mousebind`).
+        // Vertically, Shift+Up/Down change the window's Radiant priority
+        // instead: a drag does the vertical swap, and `move-up`/`move-down`
+        // stay bindable.
         Bind {
             mods: sup_shift,
             key: Keysym::Left,
@@ -1060,12 +1077,12 @@ pub fn default_binds() -> Vec<Bind> {
         Bind {
             mods: sup_shift,
             key: Keysym::Up,
-            action: Action::Move(Direction::Up),
+            action: Action::Priority(1),
         },
         Bind {
             mods: sup_shift,
             key: Keysym::Down,
-            action: Action::Move(Direction::Down),
+            action: Action::Priority(-1),
         },
         // Session.
         Bind {
@@ -1523,6 +1540,7 @@ impl Config {
                     }
                 }
                 "layout" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("radiant") => self.general.layout = LayoutKind::Radiant,
                     Some("dwindle") => self.general.layout = LayoutKind::Dwindle,
                     Some("master") => self.general.layout = LayoutKind::Master,
                     other => self.reject(n, format!("unknown layout {other:?}")),
@@ -1533,6 +1551,20 @@ impl Config {
                     Some("cascade") => self.general.floating_placement = FloatingPlacement::Cascade,
                     other => self.reject(n, format!("unknown floating-placement {other:?}")),
                 },
+                "drop-guides" => {
+                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
+                        self.general.drop_guides = b;
+                    }
+                }
+                "drop-guide-color" => match arg(n).and_then(KdlValue::as_string).and_then(parse_color) {
+                    Some(c) => self.general.drop_guide_color = c,
+                    None => self.reject(n, "bad color for \"drop-guide-color\""),
+                },
+                "drop-edge-band" => {
+                    if !set_i32(&mut self.general.drop_edge_band, n) {
+                        self.reject(n, "drop-edge-band expects an integer");
+                    }
+                }
                 "col-active-border" | "col-inactive-border" => {
                     match arg(n).and_then(KdlValue::as_string).and_then(parse_color) {
                         Some(c) if name.starts_with("col-active") => self.general.col_active = c,
@@ -2199,6 +2231,7 @@ impl Config {
             if n.name().value() == "layout" {
                 let slot = &mut self.workspace_layout[idx as usize - 1];
                 match arg(n).and_then(KdlValue::as_string) {
+                    Some("radiant") => *slot = Some(LayoutKind::Radiant),
                     Some("dwindle") => *slot = Some(LayoutKind::Dwindle),
                     Some("master") => *slot = Some(LayoutKind::Master),
                     other => self.reject(n, format!("unknown workspace layout {other:?}")),
@@ -2582,6 +2615,8 @@ fn parse_action(node: &KdlNode) -> Result<Action, String> {
         "move-right" => Action::Move(Direction::Right),
         "move-up" => Action::Move(Direction::Up),
         "move-down" => Action::Move(Direction::Down),
+        "priority-up" => Action::Priority(1),
+        "priority-down" => Action::Priority(-1),
         "workspace" => Action::SwitchWorkspace(workspace_arg(num())?),
         "workspace-next" => Action::WorkspaceNext,
         "workspace-prev" => Action::WorkspacePrev,
@@ -3412,7 +3447,7 @@ mod tests {
         let mut cfg = Config::default();
         let mut binds = Vec::new();
         cfg.apply(&doc, &mut binds);
-        assert_eq!(cfg.general.layout, LayoutKind::Dwindle);
+        assert_eq!(cfg.general.layout, LayoutKind::Radiant);
         assert!(binds.is_empty(), "Super+Escape must stay reserved");
     }
 

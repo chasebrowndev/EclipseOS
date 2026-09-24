@@ -1104,6 +1104,15 @@ fn render_output(state: &mut AbyssState, index: usize) {
         cursor_pos,
         scale,
     ));
+    // Radiant drop guides (COMP-05 §3.1): above the windows, below the
+    // annotations and the cursor.
+    elements.extend(crate::render::drop::drop_elements(
+        state.tile_drag.as_ref(),
+        state.config.general.drop_guides,
+        state.config.general.drop_guide_color,
+        &output,
+        output_loc,
+    ));
     if state.lock.locked {
         elements.extend(crate::protocols::standard::session_lock::lock_elements(
             &mut drm.renderer,

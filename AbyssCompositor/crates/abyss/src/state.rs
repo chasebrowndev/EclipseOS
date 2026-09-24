@@ -172,6 +172,9 @@ pub struct AbyssState {
     /// A modal region selection, while one is running (COMP-18 §1.3). The
     /// compositor owns the interaction so an addon never grabs the seat.
     pub region_select: crate::render::select::RegionSelect,
+    /// A window being dragged onto the Radiant tree, while one is (COMP-05
+    /// §3.1). Its drop guides are drawn from here.
+    pub tile_drag: Option<crate::shell::TileDrag>,
 
     /// Who set the current clipboard (COMP-06 §4). Never holds contents.
     pub clipboard: Option<crate::protocols::standard::data_device::ClipboardSource>,
@@ -487,6 +490,7 @@ impl AbyssState {
             borders: crate::render::BorderStore::default(),
             annotations: crate::render::annotation::AnnotationStore::default(),
             region_select: crate::render::select::RegionSelect::default(),
+            tile_drag: None,
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
             config,
             #[cfg(feature = "drm")]

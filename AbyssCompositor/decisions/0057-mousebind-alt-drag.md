@@ -1,5 +1,5 @@
 # 0057 — `mousebind`: modifier + mouse-button window move/resize
-Status: accepted
+Status: accepted; amended by 0058 (radiant keeps a dragged tiled window tiled)
 Date: 2026-09-24
 Deciders: chase (owner), Claude (advisory)
 

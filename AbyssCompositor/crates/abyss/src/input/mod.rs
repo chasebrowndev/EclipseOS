@@ -74,6 +74,9 @@ pub enum Action {
     /// Swap with the neighbour in this direction (tiled windows only; a
     /// floating window is moved with the mouse, see `MouseBind`).
     Move(Direction),
+    /// Raise (positive) or lower the focused tiled window's weight in its
+    /// Radiant container. A no-op for floating windows and other layouts.
+    Priority(i32),
     /// 1-based workspace index.
     SwitchWorkspace(usize),
     /// The workspace after / before the active one on the focused output.
@@ -322,6 +325,7 @@ impl AbyssState {
             Action::ToggleLayout => shell::toggle_layout(self),
             Action::Focus(dir) => shell::focus_direction(self, dir),
             Action::Move(dir) => shell::move_direction(self, dir),
+            Action::Priority(delta) => shell::adjust_priority(self, delta),
             Action::SwitchWorkspace(n) => shell::switch_workspace(self, n),
             Action::WorkspaceNext => shell::switch_workspace_relative(self, 1),
             Action::WorkspacePrev => shell::switch_workspace_relative(self, -1),

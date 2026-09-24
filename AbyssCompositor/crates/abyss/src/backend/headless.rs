@@ -432,6 +432,22 @@ fn redraw(
                 fullscreen,
             )
         };
+        // Radiant drop guides (COMP-05 §3.1): above the windows, below
+        // annotations and everything spliced after them.
+        elements.splice(
+            0..0,
+            crate::render::drop::drop_elements(
+                state.tile_drag.as_ref(),
+                state.config.general.drop_guides,
+                state.config.general.drop_guide_color,
+                out,
+                state
+                    .space
+                    .output_geometry(out)
+                    .map(|g| g.loc)
+                    .unwrap_or_default(),
+            ),
+        );
         // Annotations (COMP-18) go in first so the trusted indicator, spliced
         // after them, stays ahead of them in this front-to-back list.
         elements.splice(

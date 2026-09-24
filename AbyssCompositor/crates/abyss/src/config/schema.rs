@@ -153,11 +153,11 @@ pub const TABLE: &[Key] = &[
     ),
     k(
         "general.layout",
-        Ty::Enum(&["dwindle", "master"]),
-        Str("dwindle"),
+        Ty::Enum(&["radiant", "dwindle", "master"]),
+        Str("radiant"),
         Abyss,
         Live,
-        "Default tiling layout for workspaces without their own.",
+        "Default tiling layout for workspaces without their own. `radiant` is a weighted tree with drag-to-tile drop zones and per-window priority; `dwindle` is classic dwindle; `master` puts the first window on the left.",
     ),
     k(
         "general.floating-placement",
@@ -238,6 +238,30 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Border colour of every unfocused window.",
+    ),
+    k(
+        "general.drop-guides",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Draw the drop zones and a ghost of where a dragged window will land (radiant layout).",
+    ),
+    k(
+        "general.drop-guide-color",
+        Ty::Color,
+        Color([0.91, 0.64, 0.24, 1.0]),
+        Abyss,
+        Live,
+        "Colour of the drop guides.",
+    ),
+    k(
+        "general.drop-edge-band",
+        int(0, 512),
+        Int(40),
+        Abyss,
+        Live,
+        "Width of the screen-edge band that drops a window as a full-height column or full-width row, logical px. 0 disables it.",
     ),
     // render
     k(
@@ -977,7 +1001,7 @@ pub const BIND_ACTIONS: &[Form] = &[
         &["toggle-layout"],
         "",
         &["toggle-layout"],
-        "Switch the workspace between dwindle and master.",
+        "Cycle the workspace layout: radiant, dwindle, master.",
     ),
     form(
         &["focus-left"],
@@ -1011,6 +1035,18 @@ pub const BIND_ACTIONS: &[Form] = &[
         "",
         &["move-down"],
         "Swap with the neighbour below.",
+    ),
+    form(
+        &["priority-up"],
+        "",
+        &["priority-up"],
+        "Give the focused tiled window a bigger share of its row or column (radiant layout).",
+    ),
+    form(
+        &["priority-down"],
+        "",
+        &["priority-down"],
+        "Give the focused tiled window a smaller share of its row or column (radiant layout).",
     ),
     form(
         &["workspace"],
@@ -1107,6 +1143,9 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "general.refocus-on-scene-change" => V::Bool(c.general.refocus_on_scene_change),
         "general.col-active-border" => V::Color(c.general.col_active),
         "general.col-inactive-border" => V::Color(c.general.col_inactive),
+        "general.drop-guides" => V::Bool(c.general.drop_guides),
+        "general.drop-guide-color" => V::Color(c.general.drop_guide_color),
+        "general.drop-edge-band" => V::Int(c.general.drop_edge_band as i64),
         "render.direct-scanout" => V::Bool(c.render.direct_scanout),
         "bar.fold-when-inactive" => V::Bool(c.bar.fold_when_inactive),
         "bar.fold-height" => V::Int(c.bar.fold_height as i64),
@@ -1178,6 +1217,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
 
 fn layout_name(l: LayoutKind) -> &'static str {
     match l {
+        LayoutKind::Radiant => "radiant",
         LayoutKind::Dwindle => "dwindle",
         LayoutKind::Master => "master",
     }

@@ -80,13 +80,26 @@ pub fn touch_start_data(
 }
 
 /// Place `window` at `initial_location` shifted by `delta` (move grabs).
+/// Under Radiant a tiled window is dragged over its placeholder instead of
+/// being floated (`shell::drag_tile`); `pointer` aims the drop.
 fn place_moved(
     data: &mut AbyssState,
     window: &Window,
     initial_location: Point<i32, Logical>,
     delta: Point<f64, Logical>,
+    pointer: Point<f64, Logical>,
 ) {
+    // Nothing behind the lock moves. The grab can outlive `engage_lock`
+    // (ending it there would send a focus-restoring motion to the surface
+    // behind the lock), so without this every motion would float a tiled
+    // window out of its tree via `place_at`.
+    if data.lock.locked {
+        return;
+    }
     let loc = initial_location.to_f64() + delta;
+    if crate::shell::drag_tile(data, window, loc.to_i32_round(), pointer) {
+        return;
+    }
     let size = data
         .space
         .element_geometry(window)
@@ -153,7 +166,7 @@ impl PointerGrab<AbyssState> for MoveSurfaceGrab {
         // dragged, not pointed at.
         handle.motion(data, None, event);
         let delta = event.location - self.start_data.location;
-        place_moved(data, &self.window, self.initial_location, delta);
+        place_moved(data, &self.window, self.initial_location, delta, event.location);
     }
 
     fn relative_motion(
@@ -174,6 +187,7 @@ impl PointerGrab<AbyssState> for MoveSurfaceGrab {
     ) {
         handle.button(data, event);
         if !handle.current_pressed().contains(&self.start_data.button) {
+            finish_move(data, &self.window, handle.current_location());
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
     }
@@ -268,8 +282,17 @@ impl PointerGrab<AbyssState> for MoveSurfaceGrab {
     }
 
     fn unset(&mut self, data: &mut AbyssState) {
+        // A grab that ends without a release (replaced, torn down) puts the
+        // window back on its placeholder. After a release this is a no-op.
+        crate::shell::cancel_tile_drag(data);
         data.pointer_grab_active = false;
     }
+}
+
+/// The shared end of a pointer or touch move: hand the window to the Radiant
+/// drop (a no-op when no drop is in flight).
+pub fn finish_move(state: &mut AbyssState, window: &Window, pos: Point<f64, Logical>) {
+    crate::shell::drop_window(state, window, pos);
 }
 
 /// Drag one or two edges of the window; the opposite edges stay put.
@@ -429,6 +452,9 @@ pub struct TouchMoveSurfaceGrab {
     pub window: Window,
     /// Window-geometry origin at the moment the grab started.
     pub initial_location: Point<i32, Logical>,
+    /// Where the dragging finger last was: `wl_touch.up` carries no position,
+    /// and the drop lands where the finger left the glass.
+    pub last: Point<f64, Logical>,
 }
 
 impl TouchGrab<AbyssState> for TouchMoveSurfaceGrab {
@@ -451,6 +477,7 @@ impl TouchGrab<AbyssState> for TouchMoveSurfaceGrab {
     ) {
         handle.up(data, event, seq);
         if event.slot == self.start_data.slot {
+            finish_move(data, &self.window, self.last);
             handle.unset_grab(self, data);
         }
     }
@@ -466,8 +493,9 @@ impl TouchGrab<AbyssState> for TouchMoveSurfaceGrab {
         if event.slot != self.start_data.slot {
             return;
         }
+        self.last = event.location;
         let delta = event.location - self.start_data.location;
-        place_moved(data, &self.window, self.initial_location, delta);
+        place_moved(data, &self.window, self.initial_location, delta, event.location);
     }
 
     fn frame(&mut self, data: &mut AbyssState, handle: &mut TouchInnerHandle<'_, AbyssState>, seq: Serial) {
@@ -502,6 +530,9 @@ impl TouchGrab<AbyssState> for TouchMoveSurfaceGrab {
     }
 
     fn unset(&mut self, data: &mut AbyssState) {
+        // Cancelled, or ended without its finger lifting: back to the
+        // placeholder. After `up` this is a no-op.
+        crate::shell::cancel_tile_drag(data);
         data.touch_grab_active = false;
     }
 }
@@ -619,10 +650,12 @@ pub fn start_move(state: &mut AbyssState, window: Window, surface: &WlSurface, s
     let Some(touch) = state.seat.get_touch() else {
         return;
     };
+    let last = start_data.location;
     let grab = TouchMoveSurfaceGrab {
         start_data,
         window,
         initial_location,
+        last,
     };
     touch.set_grab(state, grab, serial);
     state.touch_grab_active = true;

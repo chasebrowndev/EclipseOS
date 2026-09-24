@@ -97,6 +97,11 @@ pub fn value_label(value: &str) -> &str {
         // `floating-placement`, which shares the spelling.
         "cell" => "below chip",
         "pointer" => "at pointer",
+        // `general.layout`: radiant is the default, dwindle the classic
+        // tiler it replaced. The wire still carries the bare token.
+        "radiant" => "Radiant (Default)",
+        "dwindle" => "Dwindle Classic",
+        "master" => "Master",
         other => other,
     }
 }
@@ -227,6 +232,8 @@ mod tests {
         assert_eq!(value_label("cell"), "below chip");
         assert_eq!(value_label("pointer"), "at pointer");
         assert_eq!(value_label("ease-out"), "ease-out");
+        assert_eq!(value_label("radiant"), "Radiant (Default)");
+        assert_eq!(value_label("dwindle"), "Dwindle Classic");
     }
 
     #[test]

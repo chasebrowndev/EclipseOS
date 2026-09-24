@@ -359,6 +359,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
 
     let entry = state.outputs.get_mut(id).expect("checked above");
     let tiled: Vec<(Window, Rectangle<i32, Logical>)> = match kind {
+        LayoutKind::Radiant => entry.workspaces[ws].tiled.radiant(area, gap),
         LayoutKind::Dwindle => entry.workspaces[ws].tiled.dwindle(area, gap),
         LayoutKind::Master => entry.workspaces[ws].tiled.master(area, gap),
     };
@@ -369,7 +370,17 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         .collect();
     let focus = state.focus.clone();
 
+    // A tiled window being dragged keeps its leaf as a placeholder so its
+    // neighbours hold still, but the grab owns where it is drawn.
+    let dragged = state
+        .tile_drag
+        .as_ref()
+        .filter(|d| !d.floating)
+        .map(|d| d.window.clone());
     for (w, rect) in tiled {
+        if dragged.as_ref() == Some(&w) {
+            continue;
+        }
         let inner = shrink(rect, border);
         let size = clamp_size(&w, inner.size, true);
         configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
@@ -423,6 +434,7 @@ pub fn place_at(state: &mut AbyssState, window: &Window, geo: Rectangle<i32, Log
                 ws.floating.push(Floating {
                     window: window.clone(),
                     rect: outer,
+                    weight: None,
                 });
                 found = true;
                 break 'outer;
@@ -520,6 +532,7 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
         entry.workspaces[ws].floating.push(Floating {
             window: window.clone(),
             rect,
+            weight: None,
         });
     } else {
         let near = state
@@ -1030,6 +1043,7 @@ fn restore_floating(state: &mut AbyssState, window: &Window, p: Remembered) -> b
     ws.floating.push(Floating {
         window: window.clone(),
         rect: p.rect,
+        weight: None,
     });
     // Same bookkeeping as `place_new_window`, minus the placement decision.
     crate::render::capture::mark_sensitive(state, window);
@@ -1402,6 +1416,7 @@ pub fn unminimize_window(state: &mut AbyssState, window: &Window) {
         Some(rect) => entry.workspaces[ws].floating.push(Floating {
             window: window.clone(),
             rect,
+            weight: None,
         }),
         None => entry.workspaces[ws]
             .tiled
@@ -1522,18 +1537,26 @@ pub fn toggle_floating(state: &mut AbyssState) {
             pointer,
             entry.workspaces[ws].floating.len(),
         );
+        // The leaf weight rides along, so re-tiling restores its priority.
+        let weight = entry.workspaces[ws].tiled.weight_of(&window);
         entry.workspaces[ws].tiled.remove(&window);
         entry.workspaces[ws].floating.push(Floating {
             window,
             rect: Rectangle::new(loc, rect.size),
+            weight,
         });
     } else if let Some(i) = entry.workspaces[ws]
         .floating
         .iter()
         .position(|f| f.window == window)
     {
-        entry.workspaces[ws].floating.remove(i);
-        entry.workspaces[ws].tiled.insert(window, None, area, pointer);
+        let f = entry.workspaces[ws].floating.remove(i);
+        entry.workspaces[ws]
+            .tiled
+            .insert(window.clone(), None, area, pointer);
+        if let Some(w) = f.weight {
+            entry.workspaces[ws].tiled.set_weight(&window, w);
+        }
     }
     arrange(state);
 }
@@ -1585,6 +1608,7 @@ pub fn maximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::she
     entry.workspaces[ws].floating.push(Floating {
         window: window.clone(),
         rect: area,
+        weight: None,
     });
     state.maximized.insert(window.clone(), restore);
 
@@ -1640,6 +1664,7 @@ pub fn unmaximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::s
             entry.workspaces[ws].floating.push(Floating {
                 window: window.clone(),
                 rect,
+                weight: None,
             });
             rect.size
         }
@@ -1736,6 +1761,7 @@ pub fn fullscreen_toplevel(
     entry.workspaces[ws].floating.push(Floating {
         window: window.clone(),
         rect: area,
+        weight: None,
     });
     state.fullscreen.insert(window.clone(), restore);
 
@@ -1789,6 +1815,7 @@ pub fn unfullscreen_toplevel(
         entry.workspaces[ws].floating.push(Floating {
             window: window.clone(),
             rect: max_area,
+            weight: None,
         });
         max_area.size
     } else {
@@ -1797,6 +1824,7 @@ pub fn unfullscreen_toplevel(
                 entry.workspaces[ws].floating.push(Floating {
                     window: window.clone(),
                     rect,
+                    weight: None,
                 });
                 rect.size
             }
@@ -1828,8 +1856,9 @@ pub fn toggle_layout(state: &mut AbyssState) {
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let current = entry.workspaces[ws].layout.unwrap_or(fallback);
     let next = match current {
+        LayoutKind::Radiant => LayoutKind::Dwindle,
         LayoutKind::Dwindle => LayoutKind::Master,
-        LayoutKind::Master => LayoutKind::Dwindle,
+        LayoutKind::Master => LayoutKind::Radiant,
     };
     entry.workspaces[ws].layout = Some(next);
     tracing::info!(workspace = ws + 1, layout = ?next, "layout toggled");
@@ -1891,6 +1920,369 @@ pub fn move_direction(state: &mut AbyssState, dir: Direction) {
         entry.workspaces[ws].tiled.swap(&from, &target);
         arrange(state);
         warp_pointer_to(state, &from);
+    }
+}
+
+/// The active workspace on output `id` and the layout it is using.
+fn active_layout(state: &AbyssState, id: u64) -> Option<(usize, LayoutKind)> {
+    let entry = state.outputs.get(id)?;
+    let ws = entry.active;
+    let kind = entry.workspaces[ws]
+        .layout
+        .unwrap_or_else(|| state.config.layout_for(ws + 1));
+    Some((ws, kind))
+}
+
+/// Raise or lower the focused tiled window's weight in its container
+/// (COMP-05 §3.1 priority). Radiant only: classic dwindle and master ignore
+/// weights, and a floating window has none.
+pub fn adjust_priority(state: &mut AbyssState, delta: i32) {
+    let Some(window) = state.focus.clone() else { return };
+    let Some(id) = output_of_window(state, &window) else {
+        return;
+    };
+    let Some((ws, LayoutKind::Radiant)) = active_layout(state, id) else {
+        return;
+    };
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    if entry.workspaces[ws].tiled.adjust_weight(&window, delta) {
+        arrange(state);
+    }
+}
+
+/// Where a Radiant drag would land if released now.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DropKey {
+    /// The window's own placeholder, a gap between tiles, or off the output:
+    /// nothing changes and the window snaps back.
+    Stay,
+    /// A screen-edge band: a full-height column or full-width row.
+    Band(layout::Side),
+    /// A zone of `TileDrag::tiles[i]`.
+    Tile(usize, layout::Zone),
+}
+
+/// The drop target and the rectangle the window would get there, looked up
+/// in `TileDrag::ghosts` when the target changes: motion never allocates.
+#[derive(Debug, Clone, Copy)]
+pub struct DropPreview {
+    pub key: DropKey,
+    /// The landing tile, global logical coordinates. `None` for `Stay`.
+    pub ghost: Option<Rectangle<i32, Logical>>,
+}
+
+/// A window being dragged onto the Radiant tree (COMP-05 §3.1).
+///
+/// A tiled window keeps its leaf as a placeholder for the whole drag, so the
+/// other tiles hold still while the human aims; `tiles` is their layout
+/// captured when the drag started. A floating window only gets one while the
+/// main modifier (Super) is held.
+#[derive(Debug)]
+pub struct TileDrag {
+    pub window: Window,
+    /// The output the drag started on; drops land on its active workspace.
+    pub output: Output,
+    id: u64,
+    ws: usize,
+    /// The window was floating when the drag started.
+    pub floating: bool,
+    /// Whether a drop would tile it: always for a tiled window, and for a
+    /// floating one only while Super is held. Releasing and re-pressing Super
+    /// toggles this without recomputing anything.
+    pub armed: bool,
+    /// The output's global logical geometry.
+    pub bounds: Rectangle<i32, Logical>,
+    /// The tiling area the tiles were laid out in.
+    pub area: Rectangle<i32, Logical>,
+    /// Edge band width, logical px; 0 disables the bands.
+    pub band: i32,
+    pub tiles: Vec<(Window, Rectangle<i32, Logical>)>,
+    /// Every drop target's landing rectangle, computed once at drag start.
+    /// A key that is absent lands nowhere (no ghost).
+    ghosts: Vec<(DropKey, Rectangle<i32, Logical>)>,
+    pub preview: DropPreview,
+}
+
+fn main_mod_held(state: &AbyssState) -> bool {
+    state.seat.get_keyboard().is_some_and(|k| k.modifier_state().logo)
+}
+
+/// The drop target under `pointer`. Pure so it can be tested without a
+/// window. The nearest screen edge within `band` of the tiling area wins over
+/// any tile; inside a tile, [`layout::drop_zone`] picks the zone.
+pub(crate) fn drop_key<W: PartialEq>(
+    bounds: Rectangle<i32, Logical>,
+    area: Rectangle<i32, Logical>,
+    band: i32,
+    tiles: &[(W, Rectangle<i32, Logical>)],
+    dragged: &W,
+    pointer: Point<f64, Logical>,
+) -> DropKey {
+    if !bounds.to_f64().contains(pointer) {
+        return DropKey::Stay;
+    }
+    if band > 0 {
+        let a = area.to_f64();
+        let edges = [
+            (layout::Side::Left, pointer.x - a.loc.x),
+            (layout::Side::Right, a.loc.x + a.size.w - pointer.x),
+            (layout::Side::Top, pointer.y - a.loc.y),
+            (layout::Side::Bottom, a.loc.y + a.size.h - pointer.y),
+        ];
+        let (side, d) = edges
+            .into_iter()
+            .min_by(|x, y| x.1.total_cmp(&y.1))
+            .expect("four edges");
+        if d < band as f64 {
+            return DropKey::Band(side);
+        }
+    }
+    match tiles
+        .iter()
+        .enumerate()
+        .find(|(_, (_, r))| r.to_f64().contains(pointer))
+    {
+        Some((_, (w, _))) if w == dragged => DropKey::Stay,
+        Some((i, (_, r))) => DropKey::Tile(i, layout::drop_zone(*r, pointer)),
+        None => DropKey::Stay,
+    }
+}
+
+/// Apply a drop to `tree`. False, with `tree` untouched, when nothing would
+/// change or the target has gone away since the drag started.
+pub(crate) fn apply_drop<W: Clone + PartialEq>(
+    tree: &mut layout::Tree<W>,
+    window: &W,
+    key: DropKey,
+    tiles: &[(W, Rectangle<i32, Logical>)],
+) -> bool {
+    use layout::{Side, Target};
+    match key {
+        DropKey::Stay => false,
+        DropKey::Band(side) => {
+            tree.remove(window);
+            tree.insert_at(window.clone(), Target::Root, side, 1.0)
+        }
+        DropKey::Tile(i, zone) => {
+            let Some((target, rect)) = tiles.get(i) else {
+                return false;
+            };
+            if target == window || !tree.contains(target) {
+                return false;
+            }
+            match zone.side() {
+                // The centre swaps two tiles. A floating window has no tile to
+                // swap into, so it splits the target dwindle-style instead.
+                None if tree.contains(window) => {
+                    tree.swap(window, target);
+                    true
+                }
+                None => {
+                    let side = if rect.size.w >= rect.size.h {
+                        Side::Right
+                    } else {
+                        Side::Bottom
+                    };
+                    tree.insert_at(window.clone(), Target::Leaf(target), side, 1.0)
+                }
+                Some(side) => {
+                    tree.remove(window);
+                    tree.insert_at(window.clone(), Target::Leaf(target), side, 1.0)
+                }
+            }
+        }
+    }
+}
+
+/// The landing rectangle of `window` for every drop target the drag could
+/// aim at: each other tile's five zones and the four edge bands. Targets
+/// that would change nothing are left out.
+pub(crate) fn drop_ghosts<W: Clone + PartialEq>(
+    tree: &layout::Tree<W>,
+    window: &W,
+    tiles: &[(W, Rectangle<i32, Logical>)],
+    area: Rectangle<i32, Logical>,
+    gap: i32,
+    band: i32,
+) -> Vec<(DropKey, Rectangle<i32, Logical>)> {
+    use layout::{Side, Zone};
+    const ZONES: [Zone; 5] = [Zone::Left, Zone::Right, Zone::Top, Zone::Bottom, Zone::Center];
+    const SIDES: [Side; 4] = [Side::Left, Side::Right, Side::Top, Side::Bottom];
+    let bands = SIDES.iter().filter(|_| band > 0).map(|s| DropKey::Band(*s));
+    let on_tiles = tiles
+        .iter()
+        .enumerate()
+        .filter(|(_, (w, _))| w != window)
+        .flat_map(|(i, _)| ZONES.iter().map(move |z| DropKey::Tile(i, *z)));
+    bands
+        .chain(on_tiles)
+        .filter_map(|key| {
+            let mut t = tree.clone();
+            if !apply_drop(&mut t, window, key, tiles) {
+                return None;
+            }
+            t.radiant(area, gap)
+                .into_iter()
+                .find(|(w, _)| w == window)
+                .map(|(_, r)| (key, r))
+        })
+        .collect()
+}
+
+/// Start a Radiant drag for `window` if it qualifies: tiled (or floating with
+/// Super held) on the active workspace of a Radiant output, and neither
+/// maximized nor fullscreen.
+fn start_tile_drag(state: &mut AbyssState, window: &Window) {
+    if state.lock.locked || state.maximized.contains_key(window) || state.fullscreen.contains_key(window) {
+        return;
+    }
+    let Some(id) = output_of_window(state, window) else {
+        return;
+    };
+    let Some((ws, LayoutKind::Radiant)) = active_layout(state, id) else {
+        return;
+    };
+    let entry = state.outputs.get(id).expect("just resolved");
+    let floating = if entry.workspaces[ws].tiled.contains(window) {
+        false
+    } else if entry.workspaces[ws].floating.iter().any(|f| &f.window == window) && main_mod_held(state) {
+        true
+    } else {
+        return;
+    };
+    // Every allocation of the drag happens here, once per drag, and in
+    // `drop_window` on release; motion only looks up `ghosts`. The float-on-
+    // first-motion path this replaces allocated on every motion.
+    let output = entry.output.clone();
+    let area = tiling_area(state, &output);
+    let bounds = state.space.output_geometry(&output).unwrap_or_default();
+    let gap = state.config.general.gaps_in;
+    let band = state.config.general.drop_edge_band;
+    let tree = &state.outputs.get(id).expect("just resolved").workspaces[ws].tiled;
+    let tiles = tree.radiant(area, gap);
+    let ghosts = drop_ghosts(tree, window, &tiles, area, gap, band);
+    if !floating {
+        // The tile crop would clip the window to where it used to be.
+        set_tile_clip(window, None);
+    }
+    state.tile_drag = Some(TileDrag {
+        window: window.clone(),
+        output,
+        id,
+        ws,
+        floating,
+        armed: true,
+        bounds,
+        area,
+        band,
+        tiles,
+        ghosts,
+        preview: DropPreview {
+            key: DropKey::Stay,
+            ghost: None,
+        },
+    });
+    tracing::debug!(floating, "radiant drag started");
+    crate::backend::damage_all(state);
+}
+
+/// Re-aim the drag at `pointer`: a key comparison and, when the target
+/// changed, a lookup in the precomputed `ghosts`. No allocation.
+fn update_drop_target(state: &mut AbyssState, pointer: Point<f64, Logical>) {
+    let Some(drag) = state.tile_drag.as_mut() else {
+        return;
+    };
+    let key = if drag.armed {
+        drop_key(
+            drag.bounds,
+            drag.area,
+            drag.band,
+            &drag.tiles,
+            &drag.window,
+            pointer,
+        )
+    } else {
+        DropKey::Stay
+    };
+    if key == drag.preview.key {
+        return;
+    }
+    let ghost = drag.ghosts.iter().find(|(k, _)| *k == key).map(|(_, r)| *r);
+    drag.preview = DropPreview { key, ghost };
+    crate::backend::damage_all(state);
+}
+
+/// One motion of an interactive move (COMP-05 §3.1). Under Radiant a tiled
+/// window is not floated: the grab draws it at `loc` over its placeholder
+/// and the drop target follows `pointer`. Returns `true` when it handled the
+/// motion; `false` means the caller floats/moves the window as before, which
+/// is also what a floating window gets (with the guides aimed while Super is
+/// held).
+pub fn drag_tile(
+    state: &mut AbyssState,
+    window: &Window,
+    loc: Point<i32, Logical>,
+    pointer: Point<f64, Logical>,
+) -> bool {
+    if !state.tile_drag.as_ref().is_some_and(|d| &d.window == window) {
+        start_tile_drag(state, window);
+    }
+    let Some(drag) = state.tile_drag.as_ref().filter(|d| &d.window == window) else {
+        return false;
+    };
+    if drag.floating {
+        let armed = main_mod_held(state);
+        if let Some(drag) = state.tile_drag.as_mut() {
+            drag.armed = armed;
+        }
+        update_drop_target(state, pointer);
+        return false;
+    }
+    if state.lock.locked {
+        return true;
+    }
+    update_drop_target(state, pointer);
+    state.space.map_element(window.clone(), loc, false);
+    true
+}
+
+/// The end of an interactive move: land the window on the drop target under
+/// `pos`, or snap it back to its placeholder. A floating window only tiles
+/// if Super is still held. Always ends the drag.
+pub fn drop_window(state: &mut AbyssState, window: &Window, pos: Point<f64, Logical>) {
+    let Some(drag) = state.tile_drag.take() else {
+        return;
+    };
+    let tile_it = &drag.window == window && !state.lock.locked && (!drag.floating || main_mod_held(state));
+    if tile_it {
+        let key = drop_key(drag.bounds, drag.area, drag.band, &drag.tiles, &drag.window, pos);
+        if let Some(entry) = state.outputs.get_mut(drag.id) {
+            if entry.active == drag.ws {
+                let ws = &mut entry.workspaces[drag.ws];
+                let held = if drag.floating {
+                    ws.floating.iter().any(|f| f.window == drag.window)
+                } else {
+                    ws.tiled.contains(&drag.window)
+                };
+                // Applied to a copy and committed whole, so a drop whose
+                // target vanished mid-drag changes nothing at all.
+                let mut tree = ws.tiled.clone();
+                if held && apply_drop(&mut tree, &drag.window, key, &drag.tiles) {
+                    ws.tiled = tree;
+                    ws.floating.retain(|f| f.window != drag.window);
+                    tracing::debug!(?key, "radiant drop");
+                }
+            }
+        }
+    }
+    arrange(state);
+}
+
+/// Abandon a drag in flight (grab cancelled, session locked): the window goes
+/// back to its placeholder.
+pub fn cancel_tile_drag(state: &mut AbyssState) {
+    if state.tile_drag.take().is_some() {
+        arrange(state);
     }
 }
 
@@ -2078,7 +2470,7 @@ pub fn move_to_output_workspace(state: &mut AbyssState, number: u8) {
 /// Floating and tiled are different operations and both are handled here. A
 /// floating window owns its rectangle, so the new size is simply stored. A
 /// tiled window owns nothing but the split ratios above it, so the size is
-/// expressed as ratios by [`layout::Tree::resize`] and may not be honoured
+/// expressed as weights by [`layout::Tree::resize`] and may not be honoured
 /// exactly. Errors are strings so the caller can hand them straight back over
 /// the socket; nothing is mutated on an error path.
 pub fn resize_window(
@@ -2103,10 +2495,13 @@ pub fn resize_window(
     let kind = entry.workspaces[ws]
         .layout
         .unwrap_or_else(|| state.config.layout_for(ws + 1));
-    // The master layout ignores the tree's shape (ADR 0031), so a ratio has
-    // nowhere to land. Say so rather than silently doing nothing.
+    // Master and classic dwindle ignore the tree's shape (ADR 0031), so a
+    // weight has nowhere to land. Say so rather than silently doing nothing.
     if tiled && kind == LayoutKind::Master {
         return Err("a tiled window cannot be resized under the master layout");
+    }
+    if tiled && kind == LayoutKind::Dwindle {
+        return Err("a tiled window cannot be resized under the dwindle layout");
     }
     let border = state.config.general.border_size;
     let gap = state.config.general.gaps_in;
@@ -2332,5 +2727,120 @@ mod tests {
         // Room is (min(400, 300) / 32) = 9 steps, so the tenth window restarts
         // the diagonal rather than walking off the bottom-right.
         assert_eq!(origin(FloatingPlacement::Cascade, (0.0, 0.0), 9), (100, 50));
+    }
+
+    fn rr(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new(Point::from((x, y)), Size::from((w, h)))
+    }
+
+    /// Two side-by-side tiles 1|2 on a 1000x500 area at the origin.
+    type Tiles = Vec<(u32, Rectangle<i32, Logical>)>;
+
+    fn two() -> (layout::Tree<u32>, Tiles) {
+        let mut t = layout::Tree::new();
+        t.insert_at(1, layout::Target::Root, layout::Side::Right, 1.0);
+        t.insert_at(2, layout::Target::Leaf(&1), layout::Side::Right, 1.0);
+        let tiles = t.radiant(rr(0, 0, 1000, 500), 0);
+        (t, tiles)
+    }
+
+    #[test]
+    fn drop_key_bands_win_then_tiles_then_own_placeholder_stays() {
+        let (_, tiles) = two();
+        let (b, a) = (rr(0, 0, 1000, 500), rr(0, 0, 1000, 500));
+        let k = |x: f64, y: f64| drop_key(b, a, 40, &tiles, &1, Point::from((x, y)));
+        assert_eq!(k(10.0, 250.0), DropKey::Band(layout::Side::Left));
+        assert_eq!(k(500.0, 490.0), DropKey::Band(layout::Side::Bottom));
+        assert_eq!(k(250.0, 250.0), DropKey::Stay);
+        assert_eq!(k(750.0, 250.0), DropKey::Tile(1, layout::Zone::Center));
+        assert_eq!(k(560.0, 250.0), DropKey::Tile(1, layout::Zone::Left));
+        assert_eq!(k(1500.0, 250.0), DropKey::Stay);
+        // Band 0 disables the edges: the same point now hits the tile.
+        let k0 = drop_key(b, a, 0, &tiles, &1, Point::from((990.0, 250.0)));
+        assert_eq!(k0, DropKey::Tile(1, layout::Zone::Right));
+    }
+
+    #[test]
+    fn apply_drop_side_centre_band_and_stale_target() {
+        let (t, tiles) = two();
+        let area = rr(0, 0, 1000, 500);
+
+        // Bottom of 2: 2 over 1 on the right half.
+        let mut d = t.clone();
+        assert!(apply_drop(
+            &mut d,
+            &1,
+            DropKey::Tile(1, layout::Zone::Bottom),
+            &tiles
+        ));
+        let g = d.radiant(area, 0);
+        assert_eq!(g, vec![(2, rr(0, 0, 1000, 250)), (1, rr(0, 250, 1000, 250))]);
+
+        // Centre swaps.
+        let mut d = t.clone();
+        assert!(apply_drop(
+            &mut d,
+            &1,
+            DropKey::Tile(1, layout::Zone::Center),
+            &tiles
+        ));
+        assert_eq!(d.windows(), vec![2, 1]);
+
+        // Top band: a full-width row above the rest. With 2 over 3 left
+        // behind, the root is already a column, so 1 joins it as a third row.
+        let mut d = t.clone();
+        d.insert_at(3, layout::Target::Leaf(&2), layout::Side::Bottom, 1.0);
+        assert!(apply_drop(&mut d, &1, DropKey::Band(layout::Side::Top), &tiles));
+        assert_eq!(d.windows(), vec![1, 2, 3]);
+        assert_eq!(rect(&d, 1, area), rr(0, 0, 1000, 166));
+        assert_eq!(rect(&d, 3, area).size.w, 1000);
+
+        // A floating window (not in the tree) on a centre splits the target.
+        let mut d = t.clone();
+        assert!(apply_drop(
+            &mut d,
+            &9,
+            DropKey::Tile(1, layout::Zone::Center),
+            &tiles
+        ));
+        assert_eq!(d.windows(), vec![1, 2, 9]);
+
+        // Target gone since the drag started: nothing changes.
+        let mut d = t.clone();
+        d.remove(&2);
+        let before = d.windows();
+        assert!(!apply_drop(
+            &mut d,
+            &1,
+            DropKey::Tile(1, layout::Zone::Left),
+            &tiles
+        ));
+        assert_eq!(d.windows(), before);
+        assert!(!apply_drop(&mut d, &1, DropKey::Stay, &tiles));
+    }
+
+    #[test]
+    fn drop_ghosts_precompute_exactly_what_a_drop_would_do() {
+        let (t, tiles) = two();
+        let area = rr(0, 0, 1000, 500);
+        let ghosts = drop_ghosts(&t, &1, &tiles, area, 0, 40);
+        // 4 bands + 5 zones of tile 2; tile 1 is the dragged window's own.
+        assert_eq!(ghosts.len(), 9);
+        assert!(ghosts.iter().all(|(k, _)| !matches!(k, DropKey::Tile(0, _))));
+        for (key, ghost) in &ghosts {
+            let mut d = t.clone();
+            assert!(apply_drop(&mut d, &1, *key, &tiles));
+            assert_eq!(rect(&d, 1, area), *ghost, "{key:?}");
+        }
+        let centre = ghosts
+            .iter()
+            .find(|(k, _)| *k == DropKey::Tile(1, layout::Zone::Center));
+        assert_eq!(centre.map(|(_, r)| *r), Some(rr(500, 0, 500, 500)));
+        // Band 0: no band targets at all.
+        assert_eq!(drop_ghosts(&t, &1, &tiles, area, 0, 0).len(), 5);
+    }
+
+    fn rect(t: &layout::Tree<u32>, w: u32, area: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+        t.radiant(area, 0).into_iter().find(|(x, _)| *x == w).unwrap().1
     }
 }

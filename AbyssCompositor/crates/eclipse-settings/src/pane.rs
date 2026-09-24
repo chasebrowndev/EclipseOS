@@ -98,8 +98,12 @@ pub fn pane_for(path: &str) -> Option<Pane> {
 
 /// Heading a key is grouped under inside its pane: the node prefix, so
 /// `decoration.blur.size` sits under "blur" and `general.gaps-in` under
-/// "general".
+/// "general". The drag-drop keys share `general` with the layout they serve
+/// but are one feature, so they get their own heading beneath it.
 pub fn group_for(path: &str) -> &str {
+    if path.starts_with("general.drop-") {
+        return "drag guides";
+    }
     let mut parts = path.rsplitn(3, '.');
     let _leaf = parts.next();
     parts.next().unwrap_or(path)
@@ -120,5 +124,6 @@ mod tests {
     fn groups_come_from_the_node_prefix() {
         assert_eq!(group_for("decoration.blur.size"), "blur");
         assert_eq!(group_for("general.gaps-in"), "general");
+        assert_eq!(group_for("general.drop-edge-band"), "drag guides");
     }
 }

@@ -10,6 +10,7 @@ pub mod blur;
 pub mod capture;
 pub mod cursor;
 pub mod curve;
+pub mod drop;
 pub mod effects;
 pub mod font;
 pub mod overscan;
