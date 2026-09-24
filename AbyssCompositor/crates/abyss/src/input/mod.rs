@@ -4,11 +4,12 @@
 
 use smithay::{
     backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent, GestureEndEvent,
-        GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _, InputBackend, InputEvent, KeyState,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, ProximityState, Switch,
-        SwitchState, SwitchToggleEvent, TabletToolButtonEvent, TabletToolEvent, TabletToolProximityEvent,
-        TabletToolTipEvent, TabletToolTipState, TouchEvent, TouchSlot,
+        AbsolutePositionEvent, Axis, AxisRelativeDirection, AxisSource, ButtonState, Event,
+        GestureBeginEvent, GestureEndEvent, GesturePinchUpdateEvent as _, GestureSwipeUpdateEvent as _,
+        InputBackend, InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        PointerMotionEvent, ProximityState, Switch, SwitchState, SwitchToggleEvent, TabletToolButtonEvent,
+        TabletToolEvent, TabletToolProximityEvent, TabletToolTipEvent, TabletToolTipState, TouchEvent,
+        TouchSlot,
     },
     input::{
         keyboard::{FilterResult, Keysym, ModifiersState},
@@ -168,6 +169,15 @@ pub struct MouseBind {
     pub mods: Mods,
     pub button: MouseButton,
     pub action: MouseAction,
+}
+
+/// A configured touchpad window drag (COMP-04 §2, amended C-11): with exactly
+/// `mods` held, a `fingers`-finger touchpad drag moves the window under the
+/// pointer. Two fingers arrive as finger scroll, three and four as a swipe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DragGesture {
+    pub fingers: u32,
+    pub mods: Mods,
 }
 
 /// A swipe the compositor has claimed at begin. Only the deltas are kept, so
@@ -722,6 +732,11 @@ impl AbyssState {
             self.gesture_capture = None;
             return;
         }
+        // A drag gesture with its modifiers held owns the swipe outright.
+        if grabs::start_drag_gesture(self, fingers) {
+            self.gesture_capture = None;
+            return;
+        }
         if self.region_select.active() || self.config.gesture_bound(fingers) {
             self.gesture_capture = Some(GestureCapture {
                 fingers,
@@ -744,6 +759,10 @@ impl AbyssState {
     }
 
     fn on_swipe_update(&mut self, delta: Point<f64, Logical>, time: u32) {
+        if self.gesture_drag.as_ref().is_some_and(|d| d.fingers >= 3) {
+            grabs::update_drag_gesture(self, delta);
+            return;
+        }
         if let Some(capture) = self.gesture_capture.as_mut() {
             capture.dx += delta.x;
             capture.dy += delta.y;
@@ -758,6 +777,10 @@ impl AbyssState {
     }
 
     fn on_swipe_end(&mut self, cancelled: bool, time: u32) {
+        if self.gesture_drag.as_ref().is_some_and(|d| d.fingers >= 3) {
+            grabs::end_drag_gesture(self, cancelled);
+            return;
+        }
         if let Some(capture) = self.gesture_capture.take() {
             // Re-checked at end: the lock or a selection may have come up
             // while the fingers were moving.
@@ -1044,6 +1067,9 @@ impl AbyssState {
 
     fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {
         let source = event.source();
+        if source == AxisSource::Finger && self.finger_scroll_drag::<B>(&event) {
+            return;
+        }
         let mut frame = AxisFrame::new(event.time_msec()).source(source);
         for axis in [Axis::Horizontal, Axis::Vertical] {
             let amount = event
@@ -1062,6 +1088,54 @@ impl AbyssState {
         pointer.axis(self, frame);
         pointer.frame(self);
     }
+}
+
+impl AbyssState {
+    /// Two-finger touchpad drag (COMP-04 §2, amended C-11). libinput reports
+    /// two fingers as finger scroll, a sequence of axis events ended by one
+    /// whose every axis is zero. Ownership is decided on the sequence's first
+    /// event and kept to its end, like a swipe's: a drag's scroll never
+    /// reaches the app, and an app's scroll never turns into a drag. Returns
+    /// whether the event was the drag's.
+    fn finger_scroll_drag<B: InputBackend>(&mut self, event: &B::PointerAxisEvent) -> bool {
+        let delta = finger_scroll_motion(
+            event.amount(Axis::Horizontal).unwrap_or(0.0),
+            event.amount(Axis::Vertical).unwrap_or(0.0),
+            event.relative_direction(Axis::Horizontal) == AxisRelativeDirection::Inverted,
+            event.relative_direction(Axis::Vertical) == AxisRelativeDirection::Inverted,
+        );
+        let stop = delta == Point::default();
+        if self.gesture_drag.as_ref().is_some_and(|d| d.fingers == 2) {
+            if stop {
+                grabs::end_drag_gesture(self, false);
+            } else {
+                grabs::update_drag_gesture(self, delta);
+            }
+            return true;
+        }
+        if stop {
+            self.finger_scroll_forwarded = false;
+            return false;
+        }
+        if self.finger_scroll_forwarded {
+            return false;
+        }
+        if grabs::start_drag_gesture(self, 2) {
+            grabs::update_drag_gesture(self, delta);
+            return true;
+        }
+        self.finger_scroll_forwarded = true;
+        false
+    }
+}
+
+/// How far the fingers moved for one finger-scroll event, in screen
+/// coordinates. libinput's scroll values point where the fingers went
+/// (fingers down, positive); natural scrolling inverts them, so an inverted
+/// axis is flipped back.
+pub fn finger_scroll_motion(h: f64, v: f64, h_inverted: bool, v_inverted: bool) -> Point<f64, Logical> {
+    let flip = |x: f64, inverted: bool| if inverted { -x } else { x };
+    Point::from((flip(h, h_inverted), flip(v, v_inverted)))
 }
 
 /// A libinput slot as the id `wl_touch` carries. A single-touch device has
@@ -1132,6 +1206,7 @@ mod gesture_tests {
         GesturePinchEndEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
         UnusedEvent,
     };
+    use smithay::input::keyboard::ModifiersState;
 
     use super::*;
     use crate::shell::focus::state_tests::harness;
@@ -1162,6 +1237,8 @@ mod gesture_tests {
     struct Begin(u32);
     struct Update(f64, f64);
     struct End(bool);
+    /// A finger-scroll event; `(0, 0)` is the sequence's stop.
+    struct Scroll(f64, f64);
 
     macro_rules! event {
         ($($t:ty),*) => {$(
@@ -1175,7 +1252,25 @@ mod gesture_tests {
             }
         )*};
     }
-    event!(Begin, Update, End);
+    event!(Begin, Update, End, Scroll);
+
+    impl PointerAxisEvent<Fake> for Scroll {
+        fn amount(&self, axis: Axis) -> Option<f64> {
+            Some(match axis {
+                Axis::Horizontal => self.0,
+                Axis::Vertical => self.1,
+            })
+        }
+        fn amount_v120(&self, _: Axis) -> Option<f64> {
+            None
+        }
+        fn source(&self) -> AxisSource {
+            AxisSource::Finger
+        }
+        fn relative_direction(&self, _: Axis) -> AxisRelativeDirection {
+            AxisRelativeDirection::Identical
+        }
+    }
 
     impl GestureBeginEvent<Fake> for Begin {
         fn fingers(&self) -> u32 {
@@ -1205,7 +1300,7 @@ mod gesture_tests {
     impl InputBackend for Fake {
         type Device = Pad;
         type KeyboardKeyEvent = UnusedEvent;
-        type PointerAxisEvent = UnusedEvent;
+        type PointerAxisEvent = Scroll;
         type PointerButtonEvent = UnusedEvent;
         type PointerMotionEvent = UnusedEvent;
         type PointerMotionAbsoluteEvent = UnusedEvent;
@@ -1282,6 +1377,62 @@ mod gesture_tests {
         assert!(s.gesture_capture.is_none());
         s.process_input_event::<Fake>(InputEvent::GestureSwipeEnd { event: End(false) });
         assert_eq!(active(s), 0);
+    }
+
+    fn scroll(state: &mut AbyssState, h: f64, v: f64) {
+        state.process_input_event::<Fake>(InputEvent::PointerAxis { event: Scroll(h, v) });
+    }
+
+    fn hold(state: &AbyssState, mods: ModifiersState) {
+        state
+            .seat
+            .get_keyboard()
+            .expect("keyboard")
+            .set_modifier_state(mods);
+    }
+
+    /// Ownership of a finger scroll is settled on its first event: with no
+    /// window under the pointer even Super + two fingers is the app's scroll,
+    /// and Super pressed mid-scroll does not turn the rest into a drag.
+    #[test]
+    fn a_finger_scroll_is_owned_from_its_first_event_to_its_stop() {
+        let mut h = harness();
+        let s = &mut h.state;
+        let sup = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        hold(s, sup);
+        scroll(s, 4.0, 1.0);
+        assert!(s.gesture_drag.is_none(), "nothing under the pointer to drag");
+        assert!(s.finger_scroll_forwarded);
+        scroll(s, 0.0, 0.0);
+        assert!(!s.finger_scroll_forwarded, "the stop ends the sequence");
+
+        hold(s, ModifiersState::default());
+        scroll(s, 0.0, 3.0);
+        assert!(s.finger_scroll_forwarded);
+        hold(s, sup);
+        scroll(s, 0.0, 3.0);
+        assert!(s.gesture_drag.is_none() && s.finger_scroll_forwarded);
+        scroll(s, 0.0, 0.0);
+        assert!(!s.finger_scroll_forwarded);
+    }
+
+    #[test]
+    fn finger_scroll_motion_follows_the_fingers_under_natural_scrolling() {
+        assert_eq!(
+            finger_scroll_motion(3.0, -2.0, false, false),
+            Point::from((3.0, -2.0))
+        );
+        assert_eq!(
+            finger_scroll_motion(3.0, -2.0, true, true),
+            Point::from((-3.0, 2.0))
+        );
+        assert_eq!(
+            finger_scroll_motion(3.0, -2.0, false, true),
+            Point::from((3.0, 2.0))
+        );
     }
 
     #[test]

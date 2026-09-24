@@ -15,6 +15,11 @@
 //! titlebar is dragged by finger. Those get a touch grab instead: motion of the
 //! starting slot drives the window, and lifting that finger (or a cancel) ends
 //! it.
+//!
+//! A touchpad drag gesture (`gesture "drag"`, COMP-04 §2 amended C-11) moves a
+//! window without any grab: two fingers arrive as finger scroll and three or
+//! four as a swipe, neither of which a pointer grab sees, so the input path
+//! claims the gesture at its begin and drives [`GestureDrag`] from its deltas.
 
 use smithay::{
     backend::input::ButtonState,
@@ -36,6 +41,7 @@ use smithay::{
     utils::{Logical, Point, Rectangle, Serial, Size, SERIAL_COUNTER},
 };
 
+use crate::config::Config;
 use crate::input::MouseAction;
 use crate::state::AbyssState;
 
@@ -81,13 +87,12 @@ pub fn touch_start_data(
 
 /// Place `window` at `initial_location` shifted by `delta` (move grabs).
 /// Under Radiant a tiled window is dragged over its placeholder instead of
-/// being floated (`shell::drag_tile`); `pointer` aims the drop.
+/// being floated (`shell::drag_tile`); the window's centre aims the drop.
 fn place_moved(
     data: &mut AbyssState,
     window: &Window,
     initial_location: Point<i32, Logical>,
     delta: Point<f64, Logical>,
-    pointer: Point<f64, Logical>,
 ) {
     // Nothing behind the lock moves. The grab can outlive `engage_lock`
     // (ending it there would send a focus-restoring motion to the surface
@@ -97,7 +102,7 @@ fn place_moved(
         return;
     }
     let loc = initial_location.to_f64() + delta;
-    if crate::shell::drag_tile(data, window, loc.to_i32_round(), pointer) {
+    if crate::shell::drag_tile(data, window, loc.to_i32_round()) {
         return;
     }
     let size = data
@@ -166,7 +171,7 @@ impl PointerGrab<AbyssState> for MoveSurfaceGrab {
         // dragged, not pointed at.
         handle.motion(data, None, event);
         let delta = event.location - self.start_data.location;
-        place_moved(data, &self.window, self.initial_location, delta, event.location);
+        place_moved(data, &self.window, self.initial_location, delta);
     }
 
     fn relative_motion(
@@ -187,7 +192,7 @@ impl PointerGrab<AbyssState> for MoveSurfaceGrab {
     ) {
         handle.button(data, event);
         if !handle.current_pressed().contains(&self.start_data.button) {
-            finish_move(data, &self.window, handle.current_location());
+            finish_move(data, &self.window);
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
     }
@@ -291,8 +296,8 @@ impl PointerGrab<AbyssState> for MoveSurfaceGrab {
 
 /// The shared end of a pointer or touch move: hand the window to the Radiant
 /// drop (a no-op when no drop is in flight).
-pub fn finish_move(state: &mut AbyssState, window: &Window, pos: Point<f64, Logical>) {
-    crate::shell::drop_window(state, window, pos);
+pub fn finish_move(state: &mut AbyssState, window: &Window) {
+    crate::shell::drop_window(state, window);
 }
 
 /// Drag one or two edges of the window; the opposite edges stay put.
@@ -452,9 +457,6 @@ pub struct TouchMoveSurfaceGrab {
     pub window: Window,
     /// Window-geometry origin at the moment the grab started.
     pub initial_location: Point<i32, Logical>,
-    /// Where the dragging finger last was: `wl_touch.up` carries no position,
-    /// and the drop lands where the finger left the glass.
-    pub last: Point<f64, Logical>,
 }
 
 impl TouchGrab<AbyssState> for TouchMoveSurfaceGrab {
@@ -477,7 +479,7 @@ impl TouchGrab<AbyssState> for TouchMoveSurfaceGrab {
     ) {
         handle.up(data, event, seq);
         if event.slot == self.start_data.slot {
-            finish_move(data, &self.window, self.last);
+            finish_move(data, &self.window);
             handle.unset_grab(self, data);
         }
     }
@@ -493,9 +495,8 @@ impl TouchGrab<AbyssState> for TouchMoveSurfaceGrab {
         if event.slot != self.start_data.slot {
             return;
         }
-        self.last = event.location;
         let delta = event.location - self.start_data.location;
-        place_moved(data, &self.window, self.initial_location, delta, event.location);
+        place_moved(data, &self.window, self.initial_location, delta);
     }
 
     fn frame(&mut self, data: &mut AbyssState, handle: &mut TouchInnerHandle<'_, AbyssState>, seq: Serial) {
@@ -650,12 +651,10 @@ pub fn start_move(state: &mut AbyssState, window: Window, surface: &WlSurface, s
     let Some(touch) = state.seat.get_touch() else {
         return;
     };
-    let last = start_data.location;
     let grab = TouchMoveSurfaceGrab {
         start_data,
         window,
         initial_location,
-        last,
     };
     touch.set_grab(state, grab, serial);
     state.touch_grab_active = true;
@@ -803,24 +802,106 @@ pub fn start_mouse_bind(state: &mut AbyssState, button: u32) -> bool {
     let Some(action) = state.config.mouse_bind_for(&mods, button) else {
         return false;
     };
-    let Some((surface, _)) = state.surface_under(state.pointer_location) else {
+    let Some(window) = grabbable_window_under_pointer(state) else {
         return false;
     };
-    let Some(window) = crate::shell::window_for_surface(state, &root_surface(&surface)) else {
-        return false;
-    };
-    if state.maximized.contains_key(&window)
-        || state.fullscreen.contains_key(&window)
-        || crate::shell::output_of_window(state, &window).is_none()
-    {
-        return false;
-    }
     // Raise and focus the dragged window now rather than leaving it to
     // click-to-focus, which is frozen when the drag started on another output.
     crate::shell::focus::focus_window_raising(state, &window, true);
     match action {
         MouseAction::MoveWindow => start_move_at(state, window, button),
         MouseAction::ResizeWindow => start_resize_at(state, window, button),
+    }
+}
+
+/// The managed toplevel under the pointer, if the human may drag it: not a
+/// layer surface, popup or override-redirect X11 window, not maximized or
+/// fullscreen, and on an output.
+fn grabbable_window_under_pointer(state: &AbyssState) -> Option<Window> {
+    let (surface, _) = state.surface_under(state.pointer_location)?;
+    let window = crate::shell::window_for_surface(state, &root_surface(&surface))?;
+    if state.maximized.contains_key(&window)
+        || state.fullscreen.contains_key(&window)
+        || crate::shell::output_of_window(state, &window).is_none()
+    {
+        return None;
+    }
+    Some(window)
+}
+
+/// A touchpad drag gesture moving a window, from the gesture's begin to its
+/// end. Only the accumulated delta changes per motion; nothing allocates.
+#[derive(Debug)]
+pub struct GestureDrag {
+    /// 2 for a finger scroll, 3 or 4 for a swipe: which event stream owns it.
+    pub fingers: u32,
+    window: Window,
+    initial_location: Point<i32, Logical>,
+    delta: Point<f64, Logical>,
+}
+
+/// Whether a `fingers`-finger touchpad gesture beginning now is a window drag
+/// rather than the app's: bound with exactly the held modifiers, not under the
+/// lock, not while a region selection or another drag holds the input.
+pub fn drag_gesture_claims(
+    config: &Config,
+    fingers: u32,
+    mods: &smithay::input::keyboard::ModifiersState,
+    locked: bool,
+    busy: bool,
+) -> bool {
+    !locked && !busy && config.drag_gesture_bound(fingers, mods)
+}
+
+/// Claim a touchpad gesture beginning now as a window drag if it is one (see
+/// [`drag_gesture_claims`]) and a draggable window is under the pointer.
+/// Returns whether it was claimed; if not, the gesture is the app's.
+pub fn start_drag_gesture(state: &mut AbyssState, fingers: u32) -> bool {
+    let Some(keyboard) = state.seat.get_keyboard() else {
+        return false;
+    };
+    let mods = keyboard.modifier_state();
+    let busy = state.region_select.active() || state.gesture_drag.is_some() || drag_active(state);
+    if !drag_gesture_claims(&state.config, fingers, &mods, state.lock.locked, busy) {
+        return false;
+    }
+    let Some(window) = grabbable_window_under_pointer(state) else {
+        return false;
+    };
+    let Some(initial_location) = state.space.element_geometry(&window).map(|g| g.loc) else {
+        return false;
+    };
+    crate::shell::focus::focus_window_raising(state, &window, true);
+    state.gesture_drag = Some(GestureDrag {
+        fingers,
+        window,
+        initial_location,
+        delta: Point::default(),
+    });
+    true
+}
+
+/// Move the dragged window by `delta` more, through the same path as a
+/// pointer move (Radiant tile drag, or a floating placement).
+pub fn update_drag_gesture(state: &mut AbyssState, delta: Point<f64, Logical>) {
+    let Some(drag) = state.gesture_drag.as_mut() else {
+        return;
+    };
+    drag.delta += delta;
+    let (window, initial_location, delta) = (drag.window.clone(), drag.initial_location, drag.delta);
+    place_moved(state, &window, initial_location, delta);
+}
+
+/// The fingers lifted: land the window where the guides showed, or put a
+/// cancelled drag's tile back on its placeholder.
+pub fn end_drag_gesture(state: &mut AbyssState, cancelled: bool) {
+    let Some(drag) = state.gesture_drag.take() else {
+        return;
+    };
+    if cancelled {
+        crate::shell::cancel_tile_drag(state);
+    } else {
+        finish_move(state, &drag.window);
     }
 }
 
@@ -851,6 +932,7 @@ pub fn start_mouse_bind(state: &mut AbyssState, button: u32) -> bool {
 pub fn drag_active(state: &AbyssState) -> bool {
     if state.pointer_grab_active
         || state.touch_grab_active
+        || state.gesture_drag.is_some()
         || !state.popup_grabs.is_empty()
         || state.dnd_icon.is_some()
     {
@@ -917,6 +999,52 @@ mod tests {
             ..Default::default()
         };
         kbd.set_modifier_state(mods);
+    }
+
+    #[test]
+    fn a_drag_gesture_is_claimed_only_with_its_exact_modifiers_and_nothing_in_the_way() {
+        use smithay::input::keyboard::ModifiersState;
+        let cfg = Config::default();
+        let sup = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        assert!(drag_gesture_claims(&cfg, 2, &sup, false, false));
+        // Unbound finger count, no modifier, extra modifier, wrong modifier.
+        assert!(!drag_gesture_claims(&cfg, 3, &sup, false, false));
+        assert!(!drag_gesture_claims(
+            &cfg,
+            2,
+            &ModifiersState::default(),
+            false,
+            false
+        ));
+        let sup_shift = ModifiersState { shift: true, ..sup };
+        assert!(!drag_gesture_claims(&cfg, 2, &sup_shift, false, false));
+        let alt = ModifiersState {
+            alt: true,
+            ..Default::default()
+        };
+        assert!(!drag_gesture_claims(&cfg, 2, &alt, false, false));
+        // The lock, and a drag or selection already holding the input.
+        assert!(!drag_gesture_claims(&cfg, 2, &sup, true, false));
+        assert!(!drag_gesture_claims(&cfg, 2, &sup, false, true));
+    }
+
+    /// With Super held but no window under the pointer the gesture is the
+    /// app's, and nothing is left claimed.
+    #[test]
+    fn a_drag_gesture_over_no_window_is_not_claimed() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let s = &mut h.state;
+        let kbd = s.seat.get_keyboard().expect("keyboard capability");
+        kbd.set_modifier_state(smithay::input::keyboard::ModifiersState {
+            logo: true,
+            ..Default::default()
+        });
+        assert!(!start_drag_gesture(s, 2));
+        assert!(s.gesture_drag.is_none());
+        assert!(!drag_active(s));
     }
 
     /// The harness has no client, so there is never a window to grab; every

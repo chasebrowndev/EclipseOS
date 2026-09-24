@@ -24,7 +24,9 @@ use std::path::{Path, PathBuf};
 use kdl::{KdlDocument, KdlNode, KdlValue};
 use smithay::input::keyboard::{xkb, Keysym, ModifiersState};
 
-use crate::input::{Action, Bind, Direction, GestureBind, Mods, MouseAction, MouseBind, MouseButton};
+use crate::input::{
+    Action, Bind, Direction, DragGesture, GestureBind, Mods, MouseAction, MouseBind, MouseButton,
+};
 use crate::xwayland::security::{AppTrust, SeatCompat};
 
 /// Where a floating window lands when nothing else decides for it — no
@@ -819,6 +821,9 @@ pub struct Config {
     /// Modifier + mouse-button bindings, one per `(mods, button)`: the
     /// defaults with every `mousebind` node merged over them (COMP-04 §5).
     pub mouse_binds: Vec<MouseBind>,
+    /// Touchpad window drags, one per finger count: the default with every
+    /// `gesture "drag"` node merged over it (COMP-04 §2, amended C-11).
+    pub drag_gestures: Vec<DragGesture>,
     /// Per-workspace layout overrides, indexed 1..=10.
     pub workspace_layout: [Option<LayoutKind>; 10],
     /// `output` blocks in file order; the last match wins.
@@ -857,6 +862,7 @@ impl Default for Config {
             binds: default_binds(),
             gesture_binds: default_gesture_binds(),
             mouse_binds: default_mouse_binds(),
+            drag_gestures: default_drag_gestures(),
             workspace_layout: Default::default(),
             outputs: Vec::new(),
             window_rules: Vec::new(),
@@ -910,6 +916,19 @@ pub fn default_gesture_binds() -> Vec<GestureBind> {
             action: Action::WorkspacePrev,
         },
     ]
+}
+
+/// Super + two-finger touchpad drag moves the window under the pointer
+/// (ADR 0059). Super, not Alt: two-finger scroll with Alt held is a common
+/// app gesture (zoom, horizontal scroll), and Super reaches no app.
+pub fn default_drag_gestures() -> Vec<DragGesture> {
+    vec![DragGesture {
+        fingers: 2,
+        mods: Mods {
+            logo: true,
+            ..Mods::default()
+        },
+    }]
 }
 
 /// Hyprland's `bindm` pair on Alt (ADR 0057): hold Alt, drag with the left
@@ -1444,7 +1463,19 @@ impl Config {
                 // arrives: a later entry for the same `(fingers, direction)`
                 // replaces the earlier one (default or file) in place.
                 "gesture" => match parse_gesture(node) {
-                    Ok(g) => match self
+                    // A finger count is either swiped or dragged, never both:
+                    // the begin could not tell them apart. Whichever node
+                    // comes second is the one refused.
+                    Ok(ParsedGesture::Swipe(g)) if self.drag_gestures.iter().any(|d| d.fingers == g.fingers) => {
+                        self.reject(
+                            node,
+                            format!(
+                                "ignoring gesture (error={n}-finger swipe collides with the {n}-finger drag gesture; disable that with gesture \"drag\" {n} {{ none; }})",
+                                n = g.fingers
+                            ),
+                        )
+                    }
+                    Ok(ParsedGesture::Swipe(g)) => match self
                         .gesture_binds
                         .iter_mut()
                         .find(|o| o.fingers == g.fingers && o.direction == g.direction)
@@ -1452,6 +1483,17 @@ impl Config {
                         Some(slot) => *slot = g,
                         None => self.gesture_binds.push(g),
                     },
+                    Ok(ParsedGesture::Drag(n, Some(_))) if self.gesture_bound(n) => self.reject(
+                        node,
+                        format!("ignoring gesture (error={n}-finger drag collides with a bound {n}-finger swipe)"),
+                    ),
+                    // Keyed on fingers: a later entry replaces, `none` removes.
+                    Ok(ParsedGesture::Drag(fingers, mods)) => {
+                        self.drag_gestures.retain(|d| d.fingers != fingers);
+                        if let Some(mods) = mods {
+                            self.drag_gestures.push(DragGesture { fingers, mods });
+                        }
+                    }
                     Err(e) => self.reject(node, format!("ignoring gesture (error={})", e)),
                 },
                 // Same replace-in-place rule, keyed on `(mods, button)`.
@@ -2366,6 +2408,14 @@ impl Config {
         self.gesture_binds.iter().any(|g| g.fingers == fingers)
     }
 
+    /// Whether a `fingers`-finger touchpad drag with exactly `mods` held moves
+    /// a window. Asked once per gesture, at its begin; allocates nothing.
+    pub fn drag_gesture_bound(&self, fingers: u32, mods: &ModifiersState) -> bool {
+        self.drag_gestures
+            .iter()
+            .any(|d| d.fingers == fingers && d.mods.matches(mods))
+    }
+
     /// The mouse binding for `button` pressed with exactly `mods` held.
     /// Called on every button press, so it borrows and allocates nothing.
     pub fn mouse_bind_for(&self, mods: &ModifiersState, button: u32) -> Option<MouseAction> {
@@ -2531,14 +2581,25 @@ fn parse_bind(node: &KdlNode) -> Result<Bind, String> {
     Ok(Bind { mods, key, action })
 }
 
-/// `gesture "swipe" 3 "left" { workspace-next; }`
-fn parse_gesture(node: &KdlNode) -> Result<GestureBind, String> {
+/// A parsed `gesture` node: a swipe binding, or a drag for a finger count
+/// with its modifiers (`None` switches that finger count's drag off).
+enum ParsedGesture {
+    Swipe(GestureBind),
+    Drag(u32, Option<Mods>),
+}
+
+/// `gesture "swipe" 3 "left" { workspace-next; }` or a drag (see
+/// [`parse_drag_gesture`]).
+fn parse_gesture(node: &KdlNode) -> Result<ParsedGesture, String> {
     let a = args(node);
+    if a.first().and_then(|k| k.as_string()) == Some("drag") {
+        return parse_drag_gesture(node);
+    }
     let [kind, fingers, direction] = a[..] else {
         return Err("gesture takes \"swipe\" fingers direction { action }".into());
     };
     if kind.as_string() != Some("swipe") {
-        return Err("only \"swipe\" gestures can be bound".into());
+        return Err("only \"swipe\" and \"drag\" gestures can be bound".into());
     }
     let fingers = match fingers.as_integer() {
         Some(n @ (3 | 4)) => n as u32,
@@ -2554,11 +2615,39 @@ fn parse_gesture(node: &KdlNode) -> Result<GestureBind, String> {
     let children = node.children().ok_or("gesture needs an action block")?;
     let action_node = children.nodes().first().ok_or("gesture action block is empty")?;
     let action = parse_action(action_node)?;
-    Ok(GestureBind {
+    Ok(ParsedGesture::Swipe(GestureBind {
         fingers,
         direction,
         action,
-    })
+    }))
+}
+
+/// `gesture "drag" 2 "Super" { move-window; }`, or `gesture "drag" 2 { none; }`
+/// (modifiers optional) to switch that finger count's drag off.
+fn parse_drag_gesture(node: &KdlNode) -> Result<ParsedGesture, String> {
+    let a = args(node);
+    let (fingers, mods) = match a[..] {
+        [_, fingers] => (fingers, None),
+        [_, fingers, mods] => (fingers, Some(mods)),
+        _ => return Err("gesture takes \"drag\" fingers \"modifiers\" { move-window; }".into()),
+    };
+    let fingers = match fingers.as_integer() {
+        Some(n @ 2..=4) => n as u32,
+        _ => return Err("drag gesture fingers must be 2, 3 or 4".into()),
+    };
+    let mods = match mods {
+        Some(m) => parse_mods(m.as_string().ok_or("modifiers must be a string")?)?,
+        None => Mods::default(),
+    };
+    let children = node.children().ok_or("gesture needs an action block")?;
+    let action_node = children.nodes().first().ok_or("gesture action block is empty")?;
+    match action_node.name().value() {
+        "none" => Ok(ParsedGesture::Drag(fingers, None)),
+        // As with mousebind: a bare drag would take every scroll from the app.
+        "move-window" if mods == Mods::default() => Err("drag gesture needs at least one modifier".into()),
+        "move-window" => Ok(ParsedGesture::Drag(fingers, Some(mods))),
+        other => Err(format!("unknown drag gesture action '{other}'")),
+    }
 }
 
 /// `mousebind "Alt" "left" { move-window; }`
@@ -3560,6 +3649,97 @@ mod tests {
         // The later entry wins, the same as a later file over an earlier one.
         assert_eq!(cfg.gesture_for(3, Direction::Left), Some(&Action::ToggleLayout));
         assert_eq!(cfg.gesture_for(3, Direction::Right), Some(&Action::WorkspacePrev));
+    }
+
+    #[test]
+    fn drag_gesture_defaults_to_super_two_fingers() {
+        let cfg = Config::default();
+        assert_eq!(cfg.drag_gestures, default_drag_gestures());
+        let sup = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        assert!(cfg.drag_gesture_bound(2, &sup));
+        assert!(!cfg.drag_gesture_bound(2, &ModifiersState::default()));
+        assert!(!cfg.drag_gesture_bound(3, &sup));
+        // A drag is not a swipe: two fingers stay unbound for swipes.
+        assert!(!cfg.gesture_bound(2));
+    }
+
+    #[test]
+    fn drag_gesture_replaces_the_default_for_the_same_fingers() {
+        let cfg = gestures("gesture \"drag\" 2 \"Alt\" { move-window; }\ngesture \"drag\" 4 \"Super Shift\" { move-window; }\n");
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.drag_gestures.len(), 2, "2 replaced, 4 added");
+        let alt = ModifiersState {
+            alt: true,
+            ..Default::default()
+        };
+        let sup = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        assert!(cfg.drag_gesture_bound(2, &alt));
+        assert!(!cfg.drag_gesture_bound(2, &sup));
+        assert!(cfg.drag_gesture_bound(4, &ModifiersState { shift: true, ..sup }));
+    }
+
+    #[test]
+    fn drag_gesture_none_disables_it() {
+        for off in [
+            "gesture \"drag\" 2 { none; }",
+            "gesture \"drag\" 2 \"Super\" { none; }",
+        ] {
+            let cfg = gestures(off);
+            assert!(cfg.errors.is_empty(), "{off}: {:?}", cfg.errors);
+            assert!(cfg.drag_gestures.is_empty(), "{off}");
+        }
+        // Disabling a finger count that has no drag is harmless, even one a
+        // swipe is bound to.
+        let cfg = gestures("gesture \"drag\" 3 { none; }");
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.drag_gestures, default_drag_gestures());
+    }
+
+    #[test]
+    fn drag_gesture_may_not_share_fingers_with_a_bound_swipe() {
+        // The default 3-finger swipes are bound, so a 3-finger drag is refused.
+        let cfg = gestures("gesture \"drag\" 3 \"Super\" { move-window; }");
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        assert!(cfg.errors[0]
+            .message
+            .contains("collides with a bound 3-finger swipe"));
+        assert_eq!(cfg.drag_gestures, default_drag_gestures());
+        // And the other way round: a swipe on a dragged finger count.
+        let cfg = gestures(
+            "gesture \"drag\" 4 \"Super\" { move-window; }\ngesture \"swipe\" 4 \"up\" { toggle-layout; }",
+        );
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        assert!(cfg.errors[0]
+            .message
+            .contains("collides with the 4-finger drag gesture"));
+        assert!(!cfg.gesture_bound(4));
+    }
+
+    #[test]
+    fn drag_gesture_rejects_bad_nodes_and_keeps_the_default() {
+        for bad in [
+            "gesture \"drag\" 2 { move-window; }",
+            "gesture \"drag\" 2 \"\" { move-window; }",
+            "gesture \"drag\" 2 \"none\" { move-window; }",
+            "gesture \"drag\" 1 \"Super\" { move-window; }",
+            "gesture \"drag\" 5 \"Super\" { move-window; }",
+            "gesture \"drag\" 2 \"Hyper\" { move-window; }",
+            "gesture \"drag\" 2 \"Super\" { resize-window; }",
+            "gesture \"drag\" 2 \"Super\"",
+            "gesture \"drag\" 2 \"Super\" \"left\" { move-window; }",
+        ] {
+            let cfg = gestures(bad);
+            assert_eq!(cfg.errors.len(), 1, "{bad}: {:?}", cfg.errors);
+            assert_eq!(cfg.drag_gestures, default_drag_gestures(), "{bad}");
+        }
+        let cfg = gestures("gesture \"drag\" 2 { move-window; }");
+        assert!(cfg.errors[0].message.contains("at least one modifier"));
     }
 
     #[test]
