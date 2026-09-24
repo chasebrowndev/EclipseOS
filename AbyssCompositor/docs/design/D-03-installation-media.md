@@ -131,6 +131,13 @@ run by hand from the live root shell. Flow:
    `amd_pstate=active` is on from first boot rather than discovered later.
 10. `passwd` for root and the new user, `umount -R /mnt`.
 
+*(amended DA-04, 2026-09-24)* **These are all the questions the installer
+will ever ask.** Profile, interaction mode, components, applications and agents
+are asked on first login, in the session, by `eclipse-setup` (D-07). The
+pacstrapped list is the D-07 §2 setup floor, `eclipseos-base`, which carries
+every default component plus the wizard, so the common path needs no further
+package. Specified, not built: the list is still `eclipseos-meta` today.
+
 ### 4.1 Why this and not an `archinstall` JSON
 
 `archinstall` supports an unattended config file, which is the obvious answer

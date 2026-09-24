@@ -191,8 +191,10 @@ it holds to the four §3 limits:
 
 ## 7. What this does not do
 
-- No `mode "wm" | "de"` key (COMP-17 §2). The DE described here is the only
-  profile; the tiling defaults are always on.
+- No `mode "wm" | "de"` key (COMP-17 §2) and no `components {}` slots
+  (COMP-17 §2.2). The DE described here is the only profile, equivalent to
+  COMP-17 §2.1's Standard with defaults; the tiling defaults are always on.
+  First-run setup (D-07) is what will choose among profiles.
 - No terminal of our own. `foot` is the default (`eclipseos-meta` depends on
   it, and the default `Super+Return` bind spawns it) until `cataclysm` exists.
   This is the D-01 §1.3 substitution, said out loud.
@@ -203,8 +205,10 @@ it holds to the four §3 limits:
 ## 8. Open questions
 
 1. **Desktop icons** (COMP-17 §6.2): in v1 scope or not. Nothing is built.
-2. **The `mode` key** (COMP-17 §2): whether it lands, and what the WM profile
-   drops from the autostart set above.
+2. ~~**The `mode` key** (COMP-17 §2): whether it lands, and what the WM profile
+   drops from the autostart set above.~~ Decided by ADR 0060: it lands, and the
+   autostart set moves to `components {}` (COMP-17 §2.2), which will replace
+   §5's fixed `.wants/` links.
 3. **Packaging `eclipse-secret-prompt`** (§5): which package carries it. It
    belongs with hyperion's actions but is reusable by any bar (ADR 0053).
 4. **Center from the taskbar.** ADR 0052 says hyperion spawns `eclipse-center`

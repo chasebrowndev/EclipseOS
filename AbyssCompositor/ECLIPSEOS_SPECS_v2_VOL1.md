@@ -64,7 +64,7 @@ priority.
 | COMP-14 | Performance targets & benchmarking | **DONE** | F-04 |
 | COMP-15 | Testing, fuzzing, client compat matrix | **DONE** | C-00 |
 | COMP-16 | Milestones & sequencing | **DONE** | C-00 |
-| COMP-17 | Desktop profiles: WM and DE interaction modes | Draft v0.1 *(amended C-08, 2026-09-23)* | C-00, COMP-13 |
+| COMP-17 | Desktop profiles: WM and DE interaction modes, setup profiles, component slots | Draft v0.2 *(amended DA-01, 2026-09-24)* | C-00, COMP-13 |
 | COMP-18 | Annotation overlays: the untrusted compositor-drawn text pass | Draft v0.2 (ADR 0040/0041) *(amended C-08, 2026-09-23)* | C-00, COMP-10, COMP-13 |
 
 ## Tier 2 — Security & Policy (`policyd`)
@@ -137,7 +137,7 @@ than silently restating it.* | | |
 | D-04 | Update strategy: rolling vs snapshots, atomic updates, rollback | planned | D-02 |
 | D-05 | Default userland: bar, launcher, terminal (`cataclysm`, P-04), portal, notifications, **settings GUI** | planned; **bar pulled forward into Phase 1** (B-08). *(amended C-06, 2026-09-23)* Native Rust/iced (ADR 0038), one crate per swappable component (ADR 0052): bar `hyperion`, `eclipse-toasts`, `eclipse-center`, `eclipse-launcher`, `eclipse-settings`, `eclipse-policy-viewer`, `eclipse-secret-prompt` (ADR 0053) | C-00, P-04, COMP-17 |
 | D-06 | Hardware support matrix, GPU drivers, firmware | planned | F-04 |
-| D-07 | First-run experience & agent onboarding | planned | D-03 |
+| D-07 | First-run experience & agent onboarding | written, `docs/design/D-07-first-run.md` *(added DA-04, 2026-09-24)* | D-03, COMP-17 |
 | D-08 | Telemetry & crash reporting (opt-in; privacy stance) | planned | F-02 |
 
 ## Tier 7 — Cross-cutting
@@ -4267,6 +4267,15 @@ Rules:
   wording must say this plainly.
 - Setup is mandatory at first run; a skipped secret means prompts render a
   visible warning that anti-spoofing is unconfigured.
+- *(amended DA-03, 2026-09-24)* The phrase is entered on a **compositor-drawn**
+  surface, never in a client. While no phrase is set, `agent-attention`
+  (SUPER+space, §3.9) opens phrase entry first, then continues to its normal
+  target, which is delayed, never replaced. That first entry cannot show a phrase,
+  so it states in fixed text that it only appears after the chord. D-07's
+  first-run wizard explains the phrase and asks the user to press the chord. It
+  cannot summon the surface itself, and it learns only that a phrase now
+  exists, from a `phrase {set: bool}` event on the COMP-13 human socket. The
+  text never crosses any socket.
 - Changing it requires the human seat and a prompt.
 
 This is the same idea as bank sitekeys, and it fails the same way if the
@@ -6701,9 +6710,10 @@ carry `app_trust=untrusted` regardless of the browser's class.
 
 <!-- ===== FILE: COMP-17_DESKTOP_PROFILES.md ===== -->
 
-# COMP-17 — Desktop Profiles (Draft v0.1)
+# COMP-17 — Desktop Profiles (Draft v0.2)
 
-*Added by Appendix B, B-03, 2026-09-10.*
+*Added by Appendix B, B-03, 2026-09-10. v0.2: setup profiles and component
+slots added by Appendix D, DA-01/DA-02, 2026-09-24.*
 
 Depends on: C-00, COMP-13. Consumed by: D-05, D-07.
 
@@ -6741,11 +6751,90 @@ rounding. A toggle that discards explicit configuration is one nobody touches
 twice, and it would violate CHARTER §4's promise that configuration files
 remain the source of truth.
 
-What the mode selects: the autostart set, default keybinds, whether the panel
-and desktop layers launch, and decoration defaults.
+What the mode selects: default keybinds, whether the desktop layer launches,
+and decoration defaults. *(amended DA-02, 2026-09-24)* The autostart set, which
+this sentence also listed, moved to `components` (§2.2): which bar, launcher
+and notifier run is a per-slot choice, not a consequence of the mode. `mode`
+still decides whether a configured panel is *shown*.
 
 Mode changes apply on hot reload (COMP-13 §1.2); the session changes shape
 without a restart.
+
+### 2.1 Setup profiles *(added DA-01, 2026-09-24)*
+
+A **setup profile** is a named bundle of defaults, one for every choice D-07's
+first-run setup asks: `mode`, every component slot (§2.2), the application set,
+and the agent stack. Four exist:
+
+- **Minimal**: nothing optional chosen. For the user who configures everything.
+- **Standard**: the native EclipseOS desktop. Applications are asked, not
+  assumed.
+- **Full**: Standard plus a working application set (browser, office, image
+  editor, file manager, media player).
+- **Agentic**: Standard plus the agent stack and agent workspaces.
+
+**Like the modes, these are defaults, not tiers.** Every value a profile picks
+is shown preselected and can be changed individually, in setup and at any
+time after. Picking Minimal does not lock anyone out of the native bar, and
+picking Agentic grants no agent anything (below).
+
+**A profile is a one-time seed, not a runtime layer.** It is chosen *inside*
+the session on first login (D-07 §4), never by the installer, and it writes
+ordinary values into `abyss.kdl` through COMP-13 §1.4. After setup, nothing
+reads the profile. `setup.profile` records which one was chosen, for reference
+only. Choosing a different profile later means re-running setup, which starts
+from the current files. A live profile layer under explicit config would give
+every value three possible sources and make "why is this set" unanswerable
+from the file, against CHARTER §4.
+
+| Choice | Minimal | Standard | Full | Agentic |
+|---|---|---|---|---|
+| `mode` | `wm` | `de` | `de` | `de` |
+| `components.bar` | `none` | `hyperion` | `hyperion` | `hyperion` |
+| `components.launcher` | `eclipse-launcher` | `eclipse-launcher` | `eclipse-launcher` | `eclipse-launcher` |
+| `components.notifications` | `none` | `eclipse-toasts` | `eclipse-toasts` | `eclipse-toasts` |
+| `components.control-center` | `none` | `eclipse-center` | `eclipse-center` | `eclipse-center` |
+| terminal | `foot` | `foot` | `foot` | `foot` (`cataclysm` once P-04 exists) |
+| browser, office, image editor, file manager, media player | none | asked, none preselected | `firefox`, `libreoffice-fresh`, `gimp`, `nautilus`, `mpv` | asked, none preselected |
+| agent stack | off | off | off | on (`agentd`, `brokerd`, egress proxy) |
+| policy starting point | locked down | locked down | locked down | locked down (default) or curated preset (opt-in) |
+
+Minimal keeps a launcher and a terminal because a session with neither cannot
+start anything. It is the smallest *usable* set, not the empty one.
+
+**The Agentic profile confers no authority.** It installs and enables
+software. The policy starting point is **locked down**, the shipped fail-closed
+`policy.kdl`, for every profile including Agentic. A **curated preset** is
+offered to Agentic users as an opt-in. It is applied only through the COMP-10
+§3.9 policy editor, summoned by chord, where each rule is shown as a pending
+change and accepted or struck by the human. The setup wizard cannot write
+`policy.kdl` (COMP-13 §1.3) and does not try.
+
+Until COMP-16 milestones 11–25 deliver the agent stack, Agentic is offered
+marked *preview* and installs only what exists.
+
+### 2.2 Component slots *(added DA-01, 2026-09-24)*
+
+```kdl
+components {
+    bar "hyperion"              // hyperion | waybar | quickshell | none
+    launcher "eclipse-launcher"
+    notifications "eclipse-toasts"
+    control-center "eclipse-center"
+}
+```
+
+A slot is a replaceable piece of the desktop. Its candidates come from a
+root-owned catalog (D-07 §4.1), which maps each candidate id to its packages
+and to what starts it. `abyss-session` starts what `components` names. An id
+the catalog does not know is refused at parse time, naming the key (COMP-13
+§1.2). The slots are `abyss.kdl` keys like any other, so the settings GUI and
+`eclipse-ctl` reach them (COMP-13 §1.5), and a slot change applies on hot
+reload by stopping the old candidate and starting the new one.
+
+ADR 0038's "no Quickshell" is about the *default* userland and stands. Offering
+Quickshell or waybar as a non-default candidate is the modularity ADR 0052's
+"one crate per swappable component" was for.
 
 ## 3. Settings GUI
 
@@ -6792,6 +6881,12 @@ deferred under Z-01 is the rest of a native shell beyond the D-05 components.
   and without dropping any explicitly-set value.
 - Confirm every setting reachable in one mode is reachable in the other.
 - Confirm the settings GUI cannot write any `policy.kdl` key by any path.
+- *(DA-01)* For each profile, accepting every default produces exactly the
+  §2.1 row in `abyss.kdl`, and nothing reads `setup.profile` afterwards.
+- *(DA-01)* Change `components.bar` and hot-reload: the old bar exits and the new
+  one starts, with no restart. An unknown candidate id is refused.
+- *(DA-01)* Choosing Agentic leaves `policy.kdl` byte-identical until the
+  human commits a change in the policy editor.
 
 ## 6. Open Decisions
 
@@ -6801,6 +6896,10 @@ deferred under Z-01 is the rest of a native shell beyond the D-05 components.
    no Quickshell.
 2. Whether desktop icons are in v1 scope. They are the largest single piece of
    DE mode and the least security-relevant.
+3. *(DA-01)* Full's application list beyond the five §2.1 slot defaults, and
+   which alternative candidates the catalog admits (D-07 §10).
+4. *(DA-01)* The curated Agentic preset's contents. It cannot be written before
+   S-01's grant set exists, so until then the opt-in is shown disabled.
 
 ---
 
@@ -7074,6 +7173,30 @@ against source before it was written. Nothing was renumbered.
    AMD/laptop measurement column is not decided.
 
 ---
+
+# Appendix D — amendment record, 2026-09-24
+
+**Applied inline to this volume on 2026-09-24.** Source: an owner ruling of
+2026-09-24 (ADR 0060). Row IDs carry a `DA-` prefix so they cannot be read as
+Tier 6's `D-0n` documents.
+
+| ID | Target | Change | Applied |
+|---|---|---|---|
+| DA-01 | COMP-17 §2.1, §2.2, §5, §6; planning index | Four setup profiles (Minimal, Standard, Full, Agentic), as a one-time seed chosen in-session on first login, never a runtime layer. `components {}` slots with a root-owned candidate catalog. Agentic confers no authority: locked-down policy by default, curated preset opt-in, applied only through the COMP-10 §3.9 policy editor. COMP-17 to Draft v0.2 | yes |
+| DA-02 | COMP-17 §2 | The autostart set moved from `mode` to `components`. `mode` keeps keybinds, decoration defaults and whether a configured panel shows | yes |
+| DA-03 | COMP-10 §2 | Phrase entry is compositor-drawn. While unset, `agent-attention` opens it. The first-run wizard learns only `phrase {set}` | yes |
+| DA-04 | Planning index D-07 | D-07 written as `docs/design/D-07-first-run.md`: installer asks disk/host/user only, and everything else is asked in-session. Also amends D-03 §4 and D-05 §5, §7, §8 | yes |
+
+## Open decisions this appendix leaves standing
+
+1. **Full's application list** and **catalog governance**: which alternative
+   candidates ship, and from which repositories (COMP-17 §6.3, D-07 §10.2–3).
+2. **The curated Agentic preset's contents**, which wait on S-01 (COMP-17 §6.4).
+3. **The `phrase` event** is named here but not yet in COMP-13 §2's event table.
+   It lands there with milestone 15, which is the first code that can emit it.
+4. **Timezone** at install or in setup (D-07 §10.4).
+5. **Agent sandboxes and the system bus.** D-07 §6's helper assumes agents cannot
+   reach it. S-03 must state that; until it does, it is an assumption.
 
 ---
 
