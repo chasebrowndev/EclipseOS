@@ -98,11 +98,37 @@ fi
 # The machine is EclipseOS by the time this script is done, so the boot menu
 # should say so. Only the entry titles are touched -- paths, cmdline and the
 # rest are archinstall's and are none of our business.
-for conf in /mnt/boot/limine.conf /mnt/boot/limine/limine.conf /mnt/boot/EFI/limine/limine.conf; do
+for conf in /mnt/boot/limine.conf /mnt/boot/limine/limine.conf /mnt/boot/EFI/limine/limine.conf \
+            /mnt/boot/EFI/BOOT/limine.conf; do
   [[ -f $conf ]] || continue
   say "branding the boot menu in ${conf#/mnt}"
   sed -i -E 's,^(/+)Arch Linux,\1EclipseOS,' "$conf"
+  # Seamless boot: no menu, no kernel or systemd text. With nothing written to
+  # the console, fbcon's deferred takeover leaves the UKI splash up until the
+  # greeter takes the display.
+  sed -i -E 's/^timeout:.*/timeout: 0/' "$conf"
+  grep -q '^timeout:' "$conf" || sed -i '1i timeout: 0' "$conf"
+  sed -i -E '/^\s*cmdline:/{/ quiet( |$)/!s/$/ quiet loglevel=3 systemd.show_status=auto rd.udev.log_level=3 vt.global_cursor_default=0/}' "$conf"
 done
+
+# A UKI carries its splash; the preset archinstall generated embeds Arch's.
+rebuild=0
+presets=(/mnt/etc/mkinitcpio.d/*.preset)
+if grep -qs 'splash-arch.bmp' "${presets[@]}"; then
+  say "branding the boot splash"
+  sed -i 's,/usr/share/systemd/bootctl/splash-arch.bmp,/usr/share/eclipseos/splash.bmp,' "${presets[@]}"
+  rebuild=1
+fi
+# The busybox initramfs prints its own lines (fsck's "clean") whatever the
+# cmdline says; the systemd one honours `quiet`.
+if grep -Eqs '^HOOKS=\(base udev' /mnt/etc/mkinitcpio.conf; then
+  say "switching the initramfs to systemd"
+  sed -i -E '/^HOOKS=/{s/\bbase udev\b/systemd/;s/\bkeymap consolefont\b/sd-vconsole/}' /mnt/etc/mkinitcpio.conf
+  rebuild=1
+fi
+if ((rebuild)); then
+  arch-chroot /mnt mkinitcpio -P
+fi
 
 say "done. reboot and pick Abyss at the greeter."
 say "if the greeter does not come up: Ctrl+Alt+F2, then"

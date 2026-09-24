@@ -38,10 +38,6 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
 
 ## Still open from this install
 
-- **Boot is visually Arch, not EclipseOS.** Kernel messages and the Arch
-  plymouth-less boot are what the user sees between firmware and the greeter.
-  Tracked as a wanted feature, not a bug — see "Boot splash" in
-  `PROPOSEDFEATURES.md`.
 - **`eclipseos-postinstall.sh` mounts the root partition plainly**, so an
   archinstall btrfs subvolume layout lands in the top-level subvolume and the
   install goes to the wrong place. Only ext4 has been walked through.

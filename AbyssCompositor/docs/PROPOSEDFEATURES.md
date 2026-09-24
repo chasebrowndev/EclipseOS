@@ -99,13 +99,24 @@ defaults.
   it is Python where the DE is Rust/iced, and GPL-3.0-only would permanently
   pin that component. It stays as an escape hatch until the GUI lands.
 
-- **A boot splash of our own.** Between firmware and the greeter the machine
-  currently shows the stock Arch boot — kernel messages, Arch branding, no sign
-  it is EclipseOS. That is the last place another distribution's identity shows
-  through, and it should be an EclipseOS splash instead: quiet boot, our mark,
-  handed off cleanly to the greeter with no flicker or VT flash between them.
-  The greeter and the boot menu are already branded (D-03), so this is the
-  remaining gap in the same story.
+- **User-chosen boot and shutdown splash, set in Settings.** The EclipseOS
+  mark now shows at boot (UKI `--splash`, `dist/boot/splash.bmp`) and at
+  shutdown (`eclipse-shutdown-splash.service` blitting to fbdev), with quiet
+  boot and no menu. Letting the user pick their own PNG was scoped on
+  2026-09-23 and held:
+  - Two settings, boot and shutdown; shutdown defaults to the boot image.
+  - PNG only. GIF was considered: boot cannot animate (systemd-stub draws one
+    BMP), shutdown could, but it was dropped for now.
+  - Decode and convert as the user; root only validates fixed-format output
+    (BMP for the UKI, raw XRGB for fbdev), installs it and runs
+    `mkinitcpio -P`. Root never parses a user-supplied PNG.
+  - Applying the boot image needs root, and the owner wants an admin prompt,
+    not a passwordless wheel rule. **Blocked:** the session has no polkit
+    authentication agent, and a password prompt is trusted UI that must be
+    compositor-drawn (COMP-10). This lands after that, or with an interim
+    `sudo eclipse-splash apply` step if one is wanted sooner.
+  - Settings has no path/image control yet (`schema.rs` maps `string` to a
+    text field), so the pane needs an image picker type.
 
 - **The greeter gets its own package.** `eclipseos-meta` owns the greetd
   drop-in and `/etc/eclipse/greetd/`, and depends on every desktop package, so

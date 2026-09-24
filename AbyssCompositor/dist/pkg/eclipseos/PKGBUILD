@@ -156,4 +156,23 @@ package_eclipseos-meta() {
     "$pkgdir/usr/lib/systemd/system/greetd.service.d/10-eclipseos.conf"
   install -Dm0644 "$srcdir/$_src/dist/greetd/wallpaper.png" \
     "$pkgdir/usr/share/backgrounds/eclipseos/greeter.png"
+
+  # Boot splash systemd-stub draws from the UKI. The mkinitcpio preset is
+  # generated, not package-owned, so eclipseos-postinstall.sh points its
+  # `--splash` here.
+  install -Dm0644 "$srcdir/$_src/dist/boot/splash.bmp" \
+    "$pkgdir/usr/share/eclipseos/splash.bmp"
+  install -Dm0644 "$srcdir/$_src/dist/systemd/10-eclipseos.conf" \
+    "$pkgdir/usr/lib/systemd/system.conf.d/10-eclipseos.conf"
+
+  # The same mark over the console at shutdown and reboot. Enabled by the
+  # shipped wants/ symlink, not a preset (see HW-02 in KNOWNBUGS history).
+  install -Dm0644 "$srcdir/$_src/dist/boot/splash.bgr0" "$pkgdir/usr/share/eclipseos/splash.bgr0"
+  install -Dm0755 "$srcdir/$_src/dist/boot/eclipse-shutdown-splash" \
+    "$pkgdir/usr/lib/eclipseos/shutdown-splash"
+  install -Dm0644 "$srcdir/$_src/dist/systemd/eclipse-shutdown-splash.service" \
+    "$pkgdir/usr/lib/systemd/system/eclipse-shutdown-splash.service"
+  install -d "$pkgdir/usr/lib/systemd/system/multi-user.target.wants"
+  ln -sf ../eclipse-shutdown-splash.service \
+    "$pkgdir/usr/lib/systemd/system/multi-user.target.wants/eclipse-shutdown-splash.service"
 }

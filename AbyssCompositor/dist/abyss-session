@@ -12,4 +12,7 @@ export XDG_SESSION_DESKTOP=abyss
 # --backend drm is explicit rather than inferred: default_backend() picks DRM
 # only because WAYLAND_DISPLAY and DISPLAY are unset, and a greeter that leaks
 # either into the session would silently start a nested winit compositor.
-exec abyss --backend drm --session "$@"
+# greetd hands the session the VT as stdout/stderr; anything printed there
+# shows as text between the greeter and the first frame, and again on logout.
+# abyss logs to journald itself, so stray output goes there too.
+exec systemd-cat -t abyss-session abyss --backend drm --session "$@"
