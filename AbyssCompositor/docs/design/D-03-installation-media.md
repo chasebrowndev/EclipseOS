@@ -137,7 +137,9 @@ program in the live session (D-07), which asks these questions and many more
 (language, network, profile, mode, components, applications, appearance,
 displays, agents) and drives the same steps through the D-07 §6 helper. The
 pacstrapped list becomes the D-07 §2.2 setup floor, `eclipseos-base`, installed
-from an on-medium local repository so it works offline. Specified, not built:
+from the baked on-medium `[eclipseos]` repository (already the case for the
+EclipseOS packages; their official-repo dependencies still need a mirror, see
+D-07 §2.2). Specified, not built:
 the script is what exists today, and the list is still `eclipseos-meta`.
 
 ### 4.1 Why this and not an `archinstall` JSON

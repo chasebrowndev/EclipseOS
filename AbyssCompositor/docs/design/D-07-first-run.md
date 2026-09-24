@@ -56,10 +56,13 @@ chooses; §5 enforces what may cross.
 The installer installs `eclipseos-base`: the compositor, `policyd`, the greeter
 set, the D-Bus services D-01 §1 names, `foot`, **every D-05 component** and
 `eclipse-setup`. This is the setup floor: it is what D-03 §2.1 already says,
-"what you booted is what you install". It must install **without a network**,
-which means the medium carries a local package repository holding the floor's
-dependency closure. Whether D-03's current `pacstrap` already draws from one is
-not established in D-03 §2. **Owed: state it, or add it.**
+"what you booted is what you install". Today `build-iso.sh` bakes the signed
+`[eclipseos]` packages into the medium (`/root/eclipseos-repo`) and
+`install-eclipseos.sh` pacstraps from that copy, so **the EclipseOS packages
+install offline**. Their dependencies from the Arch repositories (mesa, fonts,
+`networkmanager`, …) still come from a mirror, so the floor as a whole does
+**not** install offline yet. **Owed:** bake the floor's official-repo closure
+into the medium too, or state that step 3 (network) precedes Apply.
 
 What the floor does **not** carry is profile-specific payload: Full's
 applications, alternative components (Quickshell, waybar, …) and the Agentic
@@ -411,7 +414,8 @@ file*, is met by D-07 alone for every profile and is its acceptance test.
 
 ## 11. Open decisions
 
-1. **Whether the floor installs offline today** (§2.2). D-03 §2 does not say.
+1. **Offline install of the floor** (§2.2). The `[eclipseos]` packages are on the
+   medium; the official-repo closure is not.
 2. **Where the phrase is stored** is Appendix C open decision 3, unchanged.
    §4.5 needs only that the installed compositor can tell "set" from "unset".
 3. **Disk layouts beyond whole-disk erase**: dual boot, existing partitions,
