@@ -19,5 +19,7 @@
 vt = 1
 
 [default_session]
-command = "cage -s -m last -- regreet --config /etc/eclipse/greetd/regreet.toml --style /etc/eclipse/greetd/regreet.css"
+# systemd-cat: the greeter's stdio is the VT, and its output would show as text
+# around the handoff to the session.
+command = "systemd-cat -t greeter cage -s -m last -- regreet --config /etc/eclipse/greetd/regreet.toml --style /etc/eclipse/greetd/regreet.css"
 user = "greeter"

@@ -1,5 +1,5 @@
 # 0021 — Per-workspace arena binary tree for tiling
-Status: accepted
+Status: accepted; binary splits superseded by 0058
 Date: 2026-09-06
 Deciders: chase (owner), Claude (advisory)
 

@@ -172,6 +172,9 @@ pub struct AbyssState {
     /// A modal region selection, while one is running (COMP-18 §1.3). The
     /// compositor owns the interaction so an addon never grabs the seat.
     pub region_select: crate::render::select::RegionSelect,
+    /// A window being dragged onto the Radiant tree, while one is (COMP-05
+    /// §3.1). Its drop guides are drawn from here.
+    pub tile_drag: Option<crate::shell::TileDrag>,
 
     /// Who set the current clipboard (COMP-06 §4). Never holds contents.
     pub clipboard: Option<crate::protocols::standard::data_device::ClipboardSource>,
@@ -193,6 +196,10 @@ pub struct AbyssState {
     /// callback, so *any* re-entrant call into it from inside that callback
     /// self-deadlocks; this flag is what keeps `refresh_pointer_focus` out.
     pub pointer_grab_active: bool,
+    /// True while a shell-owned touch grab (touch-initiated move/resize) is
+    /// active. Kept apart from `pointer_grab_active` so either grab ending
+    /// cannot clear the other's re-entrancy guard.
+    pub touch_grab_active: bool,
     /// Active `xdg_popup.grab` stack, outermost first (COMP-06 §4).
     pub popup_grabs: Vec<smithay::wayland::shell::xdg::PopupSurface>,
 
@@ -473,6 +480,7 @@ impl AbyssState {
             last_pointer_focus: None,
             popup_grabs: Vec::new(),
             pointer_grab_active: false,
+            touch_grab_active: false,
             outputs: crate::outputs::Outputs::new(),
             focus: None,
             touch_points: Vec::new(),
@@ -482,6 +490,7 @@ impl AbyssState {
             borders: crate::render::BorderStore::default(),
             annotations: crate::render::annotation::AnnotationStore::default(),
             region_select: crate::render::select::RegionSelect::default(),
+            tile_drag: None,
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
             config,
             #[cfg(feature = "drm")]

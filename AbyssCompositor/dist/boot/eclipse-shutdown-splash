@@ -1,0 +1,30 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Install to: /usr/lib/eclipseos/shutdown-splash
+#
+# Draws the EclipseOS mark on black straight into the fbdev console once the
+# session has let go of the display, so shutdown and reboot show the same still
+# image as the UKI splash at boot instead of whatever text is on the VT.
+# Centred at 1:1 like systemd-stub draws it. Any surprise (no fbdev, not
+# 32 bpp, a screen smaller than the logo) exits quietly: this is cosmetic.
+set -eu
+fb=/dev/fb0
+sys=/sys/class/graphics/fb0
+logo=/usr/share/eclipseos/splash.bgr0
+lw=796 lh=144
+
+[ -w "$fb" ] && [ -r "$logo" ] || exit 0
+[ "$(cat "$sys/bits_per_pixel")" = 32 ] || exit 0
+IFS=, read -r w h <"$sys/virtual_size"
+stride=$(cat "$sys/stride")
+[ "$w" -ge "$lw" ] && [ "$h" -ge "$lh" ] || exit 0
+x=$(((w - lw) / 2))
+y=$(((h - lh) / 2))
+
+dd if=/dev/zero of="$fb" bs="$stride" count="$h" conv=notrunc status=none 2>/dev/null || true
+row=0
+while [ "$row" -lt "$lh" ]; do
+  dd if="$logo" of="$fb" bs=$((lw * 4)) count=1 skip="$row" \
+    seek=$(((y + row) * stride + x * 4)) oflag=seek_bytes conv=notrunc status=none
+  row=$((row + 1))
+done

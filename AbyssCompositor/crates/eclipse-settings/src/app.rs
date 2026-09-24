@@ -529,7 +529,8 @@ pub fn subscription(app: &App) -> Subscription<Message> {
 /// open and actually differs from the live value.
 fn blur() -> Subscription<Message> {
     iced::event::listen_with(|event, _status, _window| match event {
-        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::NumberBlur),
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_))
+        | iced::Event::Touch(iced::touch::Event::FingerPressed { .. }) => Some(Message::NumberBlur),
         _ => None,
     })
 }
@@ -861,9 +862,13 @@ fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Theme> {
 
         Control::Segmented(values) => {
             let current = key.value.as_str().unwrap_or_default().to_string();
-            let mut r = Row::new().spacing(6);
+            let mut r = Row::new().spacing(space::PILL_GAP);
             for v in values {
-                r = r.push(pill(v, *v == current, Message::Chose(path.clone(), v.clone())));
+                r = r.push(pill(
+                    crate::schema::value_label(v),
+                    *v == current,
+                    Message::Chose(path.clone(), v.clone()),
+                ));
             }
             r.into()
         }

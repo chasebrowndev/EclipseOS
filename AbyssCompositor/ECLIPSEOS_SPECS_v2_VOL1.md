@@ -3227,15 +3227,39 @@ agents check against (COMP §0.5).
 ## 3. Layout
 
 Layout is a trait; two implementations plus floating in v1.
+*(amended C-10, 2026-09-24)* Three: radiant (default), dwindle, master.
 
 ### 3.1 Human workspaces — Hyprland-style
 - **dwindle** (default): binary split, each new window splits the focused
   one; split direction follows the larger dimension unless forced.
+  *(amended C-10, 2026-09-24)* No longer the default; kept as **Dwindle
+  Classic**, computed from the in-order window sequence (window i halves
+  the remaining area along its longer side), ignoring weights. The default
+  is **radiant**. Under radiant a new window still splits the focused one
+  along its larger dimension, but the tree is n-ary and weighted: a split
+  holds any number of children along one axis, each with a weight, and a
+  child's share of the axis is its weight over the sum. A split with one
+  child collapses; a child split on its parent's axis is flattened into it,
+  so three columns are three siblings, not a nested pair. Per-window
+  **priority** is the window's weight, 1..9, raised and lowered by
+  `priority-up` / `priority-down` (default Super+Shift+Up/Down); 1,1,2 gives
+  1/4, 1/4, 2/4. Dragging a tiled window keeps its tile reserved and drops
+  it by position: each other tile is cut by its diagonals into four sides
+  (split that tile on that side) and a centre third (swap); a band along
+  each edge of the tiling area adds a full-height column or full-width row.
+  Dropping on its own tile or outside the area puts it back. A floating
+  window tiles on drop only with Super held. While dragging, the
+  compositor draws the tile outlines, edge bands and a ghost of the landing
+  rect (`drop-guides`, `drop-guide-color`, `drop-edge-band`). ADR 0058.
 - **master**: one master area plus a stack; master count and ratio
   adjustable.
 - **floating layer** above the tiled layer, per-window togglable.
 - Gaps (inner/outer), border width, per-workspace layout override.
 - Resize by keyboard (adjust split ratio) and mouse (drag borders).
+  *(amended C-10, 2026-09-24)* Under radiant a tiled window has a weight,
+  not a split ratio: resize (keyboard priority, or the `resize` method)
+  sets the weight that yields the wanted share. Under dwindle and master
+  a tiled window is not resizable (the `resize` method refuses).
 - Fullscreen: two modes — real fullscreen (client informed) and "maximize
   to output" (client not informed), as Hyprland distinguishes.
   *(amended C-04, 2026-09-23)* As built, maximize is the client's
@@ -4772,7 +4796,7 @@ general {
     gaps-in 5
     gaps-out 10
     border-size 2
-    layout "dwindle"          // dwindle | master
+    layout "radiant"          // radiant | dwindle | master
     focus-follows-mouse true  // default (COMP-04)
 }
 
@@ -7024,6 +7048,7 @@ against source before it was written. Nothing was renumbered.
 | C-07 | Vol 2 S-05 §6 | The `trusted` row names `hyperion` and the `eclipse-*` binaries | yes |
 | C-08 | COMP-01 §12; COMP-13 §1.4; F-01 §3; planning index; COMP-16 M11, M13, M14; F-07 §6; Appendix B | Struck what ADRs resolved: render-device refusal (ADR 0033), the §1.4 VERIFY (ADR 0036). F-01 §3 deadline moved to "before COMP-17 leaves draft". Index: COMP-17 Draft v0.1, COMP-18 Draft v0.2, D-01..03 written. COMP-16 citations corrected to the sections that specify each milestone. F-07 §6 invariants synced with root `CLAUDE.md`. Appendix B numbering note resolved (COMP-16 is v0.2 inline) | yes |
 | C-09 | C-00 §1.4; COMP-13 §1.1; F-04 §1 | Snapshot path uses the `eclipse/` runtime namespace (matches COMP-01 §7 and the code). Agent-attention is SUPER+space, reserved, as the parser enforces. F-04 clarified as the performance reference, distinct from the D-03 install target. Conflicts with no code to decide them are listed below | yes |
+| C-10 | COMP-05 §3.1 | *(2026-09-24, owner ruling)* **radiant** added as the default layout: weighted n-ary tree, per-window priority, drag-to-tile drop zones with guides (ADR 0058, supersedes the binary tree of ADR 0021, amends ADR 0057). `dwindle` kept as Dwindle Classic, `master` unchanged; drop zones and priority are radiant-only | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing

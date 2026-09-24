@@ -27,7 +27,7 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `general.gaps-in` | int 0..512 | `5` | live | Gap between tiled windows, logical px. |
 | `general.gaps-out` | int 0..512 | `10` | live | Gap between the tiling area and the screen edge, logical px. |
 | `general.border-size` | int 0..512 | `2` | live | Window border thickness, logical px. 0 disables borders. |
-| `general.layout` | dwindle \| master | `"dwindle"` | live | Default tiling layout for workspaces without their own. |
+| `general.layout` | radiant \| dwindle \| master | `"radiant"` | live | Default tiling layout for workspaces without their own. `radiant` is a weighted tree with drag-to-tile drop zones and per-window priority; `dwindle` is classic dwindle; `master` puts the first window on the left. |
 | `general.floating-placement` | centered \| pointer \| cascade | `"centered"` | live | Where a new floating window lands when no window rule places it. |
 | `general.focus-follows-mouse` | bool | `#true` | live | Move keyboard focus to the window under the pointer. |
 | `general.focus-follows-mouse-across-outputs` | bool | `#true` | live | Let pointer motion move focus to another output. Off keeps focus on the current output until you click. |
@@ -38,6 +38,9 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `general.refocus-on-scene-change` | bool | `#true` | live | Re-evaluate focus when windows appear or disappear under a stationary pointer. |
 | `general.col-active-border` | colour `#rrggbb[aa]` | `#e8a33dff` | live | Border colour of the focused window. |
 | `general.col-inactive-border` | colour `#rrggbb[aa]` | `#161616ff` | live | Border colour of every unfocused window. |
+| `general.drop-guides` | bool | `#true` | live | Draw the drop zones and a ghost of where a dragged window will land (radiant layout). |
+| `general.drop-guide-color` | colour `#rrggbb[aa]` | `#e8a33dff` | live | Colour of the drop guides. |
+| `general.drop-edge-band` | int 0..512 | `40` | live | Width of the screen-edge band that drops a window as a full-height column or full-width row, logical px. 0 disables it. |
 
 ### `render`
 
@@ -59,6 +62,10 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `bar.tray.pinned` | list of strings | _unset_ | live | Tray ids shown on the taskbar itself, in this order. Built-in applets are network, bluetooth, battery and volume; a StatusNotifierItem app goes by its own id. Unset means the taskbar's built-in order; an empty list pins nothing. Anything neither pinned nor hidden sits in the overflow drawer. |
 | `bar.tray.hidden` | list of strings | _empty_ | live | Tray ids never shown, on the taskbar or in its overflow drawer. Hidden wins over pinned when an id is in both. |
 | `bar.rounding` | int 0..512 | `20` | live | Corner radius in logical px for the taskbar's own blur backdrop. |
+| `bar.clock.hour-12` | bool | `#true` | live | Show the taskbar clock in 12-hour time with AM/PM; off is 24-hour. |
+| `bar.clock.date-mdy` | bool | `#true` | live | Write the taskbar date month/day/year; off is ISO year-month-day (2026-09-23). |
+| `bar.popup-anchor` | cell \| pointer | `"cell"` | live | Where taskbar popups open: under the cell that was clicked, or at the pointer. |
+| `bar.eye` | bool | `#true` | live | Show the Oracle-Eyes status eye on the taskbar's eclipse mark. The compositor only stores this; the taskbar reads Oracle-Eyes' own status socket (ADR 0055). |
 
 ### `decoration`
 
@@ -136,15 +143,17 @@ A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPE
 | `toggle-floating` | `toggle-floating` | Float or tile the focused window. |
 | `minimize` | `minimize` | Send the focused window away. |
 | `unminimize` / `restore` | `unminimize` | Bring back the last window sent away on the active workspace. |
-| `toggle-layout` | `toggle-layout` | Switch the workspace between dwindle and master. |
+| `toggle-layout` | `toggle-layout` | Cycle the workspace layout: radiant, dwindle, master. |
 | `focus-left` | `focus-left` | Focus the neighbour to the left. |
 | `focus-right` | `focus-right` | Focus the neighbour to the right. |
 | `focus-up` | `focus-up` | Focus the neighbour above. |
 | `focus-down` | `focus-down` | Focus the neighbour below. |
-| `move-left` | `move-left` | Swap with the neighbour to the left (nudges a floating window). |
+| `move-left` | `move-left` | Swap with the neighbour to the left (tiled windows only). |
 | `move-right` | `move-right` | Swap with the neighbour to the right. |
 | `move-up` | `move-up` | Swap with the neighbour above. |
 | `move-down` | `move-down` | Swap with the neighbour below. |
+| `priority-up` | `priority-up` | Give the focused tiled window a bigger share of its row or column (radiant layout). |
+| `priority-down` | `priority-down` | Give the focused tiled window a smaller share of its row or column (radiant layout). |
 | `workspace <1..10>` | `workspace 3` | Switch to a workspace. |
 | `workspace-next` | `workspace-next` | The workspace after the active one on the focused output. |
 | `workspace-prev` | `workspace-prev` | The workspace before the active one on the focused output. |
@@ -161,6 +170,10 @@ A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPE
 ### `gesture`
 
 A touchpad swipe binding: `gesture "swipe" <fingers> "<direction>" { <action>; }`. `fingers` is 3 or 4, `direction` is `left`, `right`, `up` or `down`, and the action is anything `bind` accepts. A bound finger count is the compositor's for the whole swipe; unbound swipes, pinches and holds reach the app. Defaults: 3-finger `left` runs `workspace-next`, 3-finger `right` runs `workspace-prev`. A `gesture` for the same fingers and direction replaces the default.
+
+### `mousebind`
+
+A modifier + mouse-button binding: `mousebind "<modifiers>" "<button>" { <action>; }`. `button` is `left`, `right` or `middle`, and the action is `move-window` or `resize-window`. With exactly those modifiers held, pressing the button over a window drags it (move) or drags its nearest corner (resize); a tiled window is floated first. The press never reaches the client. At least one modifier is required. Defaults: `Alt` + `left` runs `move-window`, `Alt` + `right` runs `resize-window`. A `mousebind` for the same modifiers and button replaces the default.
 
 ### `output`
 
@@ -244,4 +257,5 @@ Read-only over the socket. A GUI shows these; it cannot change them.
 | --- | --- | --- | --- | --- |
 | `capture.allow` | list of strings | _empty_ | live | Process names allowed to bind zwlr_screencopy_manager_v1. Empty denies everyone. |
 | `capture.redact-app-id` | list of strings | _empty_ | live | app_ids whose windows are `secret`: never composited into a capture target, only a solid placeholder (COMP-02 §7). |
+| `capture.hide-layer` | list of strings | _empty_ | live | exe:namespace pairs whose layer surfaces are omitted from every capture: shown on screen, absent from screenshots and screen shares, with whatever is beneath showing instead. Only surfaces up to 64x64 logical px qualify (ADR 0056). Empty hides nothing. |
 

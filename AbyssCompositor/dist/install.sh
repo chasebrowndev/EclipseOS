@@ -27,7 +27,7 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$here/.." && pwd)
 
 BINS='abyss hyperion eclipse-toasts eclipse-center eclipse-launcher
-      eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver'
+      eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt'
 UNITS='hyperion.service eclipse-toasts.service eclipse-screensaver.service'
 
 do_deps=1 do_build=1 assume_yes=0 uninstall=0

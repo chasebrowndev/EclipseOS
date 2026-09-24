@@ -86,7 +86,7 @@ SPDX header naming which.
 | `render/` | COMP-02 | Damage tracking, composition, direct scanout, explicit sync, fractional scaling, capture redaction, blur and effects, FB damage-clip sanitising (`sanitize.rs`), COMP-18 annotations and the region selector. |
 | `outputs/` | COMP-03 | Output discovery and hotplug, layout, EDID, overscan calibration, persistence, DPMS/power. Virtual outputs for agent workspaces are not yet (M24). |
 | `input/` | COMP-04 | The human seat: xkb, keybindings, pointer, touch, tablet, touchpad swipe gestures, move/resize grabs, idle, and synthetic injection (`inject.rs`, used by wlcs and IPC). The override and attention chords parse and dispatch but are stubs until agent seats exist (M11); agent seats and atomic batches are not yet. |
-| `shell/` | COMP-05 | Window management: dwindle/master layouts, workspaces, window rules (matching on app id, title, cgroup), focus. |
+| `shell/` | COMP-05 | Window management: radiant/dwindle/master layouts, workspaces, window rules (matching on app id, title, cgroup), focus. |
 | `protocols/standard/` | COMP-06 | `wl_compositor`, `wl_shm`, `xdg_shell`, seat, selection/clipboard, layer-shell, dmabuf, session lock, idle, and the rest of the support matrix. |
 | `protocols/agent/` (not yet) | COMP-08 | `eclipse_agent_v1` server side, on the privileged socket only. Every request crosses `policy::check()` first. |
 | `protocols/semantic/` (not yet) | COMP-09 | `eclipse_semantic_v1` server side: semantic tree publication and change notification. |

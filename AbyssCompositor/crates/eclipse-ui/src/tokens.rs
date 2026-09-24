@@ -200,6 +200,8 @@ pub mod space {
     pub const FIELD_W: f32 = 220.0;
     /// Between the two halves of one control (track and entry).
     pub const CONTROL_GAP: f32 = 10.0;
+    /// Between the pills of one segmented choice.
+    pub const PILL_GAP: f32 = 6.0;
     /// A hero's level bar: half the content column, so the reading beside it
     /// keeps the other half.
     pub const HERO_METER_W: f32 = 360.0;
@@ -291,6 +293,41 @@ pub mod bar {
     pub const MARK: f32 = 14.0;
     /// Thickness of the launcher mark's ring.
     pub const RING: f32 = 2.0;
+
+    /// The launcher mark's outer diameter: the corona, and the iris when
+    /// Oracle-Eyes opens it into an eye. A fraction of the icon square so the
+    /// one circle on the row sits inside the same box as the task icons.
+    pub const EYE_DISC: f32 = super::size::ICON * 0.85;
+    /// The pupil while watching, as a fraction of the iris radius. Wide
+    /// enough to read as a pupil and not a ring; small enough that a full
+    /// wander still leaves a gold rim all the way round.
+    pub const EYE_PUPIL: f32 = 0.4;
+    /// How far the pupil's centre may wander from the iris's, as a fraction
+    /// of the iris radius. `EYE_PUPIL + EYE_WANDER` is 0.76: on the 8.5px
+    /// iris of [`EYE_DISC`] the pupil's far edge reaches 6.46px, inside the
+    /// plain ring's 6.5px hole (outer radius less [`RING`]), leaving a 2.04px
+    /// rim. The cap is `1 - RING / (EYE_DISC / 2)`, about 0.765: past it the
+    /// pupil would cut into the ring drawn beneath the eye and show its gold
+    /// through the hole.
+    pub const EYE_WANDER: f32 = 0.36;
+    /// A glance lands at least this fraction of [`EYE_WANDER`] off centre.
+    /// Uniform points in the disc cluster near the middle and read as a
+    /// twitch; a glance has to visibly look somewhere.
+    pub const EYE_GLANCE: f32 = 0.8;
+    /// One dart in this many looks straight ahead again instead.
+    pub const EYE_RECENTRE: u64 = 6;
+    /// The pupil's radius while thinking: a point, in logical pixels.
+    pub const EYE_PINPOINT: f32 = 1.5;
+    /// One saccade: quick, eased out, so it reads as a glance and not a drift.
+    pub const EYE_DART_MS: u64 = 120;
+    /// The pupil opening or narrowing between states.
+    pub const EYE_RESIZE_MS: u64 = 200;
+    /// The pupil holds still between darts for a random span in this range:
+    /// long enough to read as a fixation, short enough to read as scanning.
+    pub const EYE_HOLD_MIN_MS: u64 = 400;
+    pub const EYE_HOLD_MAX_MS: u64 = 1400;
+    /// Frame interval while a dart or resize is in flight — and only then.
+    pub const EYE_FRAME_MS: u64 = 16;
     /// Task buttons clamp between these. Past the minimum a button is
     /// icon-only rather than overflowing the row.
     pub const TASK_MIN: f32 = 34.0;
@@ -441,9 +478,9 @@ pub mod secret {
     pub const TITLE_GAP: f32 = 4.0;
 }
 
-/// Clock format. Taste, not mechanism — these are the two knobs a config file
-/// will one day set, and until it exists they live here rather than as `if`s
-/// buried in the clock module.
+/// Clock format defaults. Taste, not mechanism: the live values are
+/// `bar.clock.hour-12` and `bar.clock.date-mdy` in `abyss.kdl`, and these are
+/// what the bar uses when the keys are unset or the compositor is not there.
 pub mod clock {
     /// 12-hour time with a meridiem suffix (`11:15 PM`) rather than 23:15.
     pub const HOUR_12: bool = true;
@@ -534,6 +571,8 @@ pub mod popup {
         Pointer,
     }
 
-    /// The default: below the cell.
+    /// The default: below the cell. The live value is `bar.popup-anchor`
+    /// (`"cell"` / `"pointer"`); this is what applies when it is unset or the
+    /// compositor is not there.
     pub const ANCHOR: Anchor = Anchor::Cell;
 }

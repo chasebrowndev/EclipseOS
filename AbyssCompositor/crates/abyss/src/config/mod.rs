@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use kdl::{KdlDocument, KdlNode, KdlValue};
 use smithay::input::keyboard::{xkb, Keysym, ModifiersState};
 
-use crate::input::{Action, Bind, Direction, GestureBind, Mods};
+use crate::input::{Action, Bind, Direction, GestureBind, Mods, MouseAction, MouseBind, MouseButton};
 use crate::xwayland::security::{AppTrust, SeatCompat};
 
 /// Where a floating window lands when nothing else decides for it — no
@@ -42,6 +42,10 @@ pub enum FloatingPlacement {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutKind {
+    /// Weighted n-ary tree: dwindle-style auto insert, drag-to-tile drop
+    /// zones and per-window priority (COMP-05 §3.1). The default.
+    Radiant,
+    /// Classic dwindle over the in-order window sequence ("Dwindle Classic").
     Dwindle,
     Master,
 }
@@ -66,6 +70,13 @@ pub struct General {
     pub follow_window_to_workspace: bool,
     pub col_active: [f32; 4],
     pub col_inactive: [f32; 4],
+    /// Draw the section outlines, edge bands and landing ghost while a tiled
+    /// window is dragged (Radiant only).
+    pub drop_guides: bool,
+    pub drop_guide_color: [f32; 4],
+    /// Width, logical px, of the screen-edge band that adds a full-height
+    /// column or full-width row on drop.
+    pub drop_edge_band: i32,
 }
 
 impl Default for General {
@@ -74,7 +85,7 @@ impl Default for General {
             gaps_in: 5,
             gaps_out: 10,
             border_size: 2,
-            layout: LayoutKind::Dwindle,
+            layout: LayoutKind::Radiant,
             floating_placement: FloatingPlacement::Centered,
             focus_follows_mouse: true,
             focus_follows_mouse_across_outputs: true,
@@ -86,6 +97,9 @@ impl Default for General {
             // eclipse amber on near-black
             col_active: [0.91, 0.64, 0.24, 1.0],
             col_inactive: [0.09, 0.09, 0.09, 1.0],
+            drop_guides: true,
+            drop_guide_color: [0.91, 0.64, 0.24, 1.0],
+            drop_edge_band: 40,
         }
     }
 }
@@ -153,6 +167,11 @@ pub struct Capture {
     /// `app_id`s whose windows are `secret`: never composited into a capture
     /// target, only a solid placeholder (COMP-02 §7).
     pub redact_app_id: Vec<String>,
+    /// `(exe basename, layer-shell namespace)` pairs whose layer surfaces are
+    /// omitted from every capture: shown on screen, absent from screenshots
+    /// and screen shares. Only surfaces up to 64x64 logical px qualify
+    /// (ADR 0056); that bound is enforced by the consumer.
+    pub hide_layer: Vec<(String, String)>,
 }
 
 /// `xwayland { ... }` (COMP-07 §4, §7 open decision 2).
@@ -279,6 +298,40 @@ pub struct Bar {
     pub position: BarPosition,
     /// `tray { ... }`: which applets and StatusNotifierItems the bar shows.
     pub tray: BarTray,
+    /// `clock { ... }`: how the bar's clock cell formats time and date.
+    pub clock: BarClock,
+    /// Where the bar's popups open: under the cell that was clicked, or at
+    /// the pointer.
+    pub popup_anchor: BarPopupAnchor,
+    /// `eye`: whether the taskbar draws its status eye on the eclipse mark.
+    /// Stored only; the taskbar sources the eye's state itself (ADR 0055).
+    pub eye: bool,
+}
+
+/// `bar { clock { hour-12 …; date-mdy … } }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BarClock {
+    /// 12-hour clock with AM/PM; false is 24-hour.
+    pub hour_12: bool,
+    /// Month/day/year date order; false is day/month/year.
+    pub date_mdy: bool,
+}
+
+impl Default for BarClock {
+    fn default() -> Self {
+        Self {
+            hour_12: true,
+            date_mdy: true,
+        }
+    }
+}
+
+/// `bar { popup-anchor "cell" | "pointer" }`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BarPopupAnchor {
+    #[default]
+    Cell,
+    Pointer,
 }
 
 /// `bar { tray { pinned …; hidden … } }`. Ids only — the compositor neither
@@ -314,6 +367,9 @@ impl Default for Bar {
             fold_curve: "ease-out".to_owned(),
             position: BarPosition::Top,
             tray: BarTray::default(),
+            clock: BarClock::default(),
+            popup_anchor: BarPopupAnchor::Cell,
+            eye: true,
         }
     }
 }
@@ -760,6 +816,9 @@ pub struct Config {
     /// Touchpad swipe bindings, one per `(fingers, direction)`: the defaults
     /// with every `gesture` node merged over them.
     pub gesture_binds: Vec<GestureBind>,
+    /// Modifier + mouse-button bindings, one per `(mods, button)`: the
+    /// defaults with every `mousebind` node merged over them (COMP-04 §5).
+    pub mouse_binds: Vec<MouseBind>,
     /// Per-workspace layout overrides, indexed 1..=10.
     pub workspace_layout: [Option<LayoutKind>; 10],
     /// `output` blocks in file order; the last match wins.
@@ -797,6 +856,7 @@ impl Default for Config {
             input: Input::default(),
             binds: default_binds(),
             gesture_binds: default_gesture_binds(),
+            mouse_binds: default_mouse_binds(),
             workspace_layout: Default::default(),
             outputs: Vec::new(),
             window_rules: Vec::new(),
@@ -852,6 +912,28 @@ pub fn default_gesture_binds() -> Vec<GestureBind> {
     ]
 }
 
+/// Hyprland's `bindm` pair on Alt (ADR 0057): hold Alt, drag with the left
+/// button to move a window and with the right button to resize it. Alt rather
+/// than Super, which is kept free for a future launcher.
+pub fn default_mouse_binds() -> Vec<MouseBind> {
+    let alt = Mods {
+        alt: true,
+        ..Mods::default()
+    };
+    vec![
+        MouseBind {
+            mods: alt,
+            button: MouseButton::Left,
+            action: MouseAction::MoveWindow,
+        },
+        MouseBind {
+            mods: alt,
+            button: MouseButton::Right,
+            action: MouseAction::ResizeWindow,
+        },
+    ]
+}
+
 fn m(logo: bool, shift: bool, ctrl: bool, alt: bool) -> Mods {
     Mods {
         logo,
@@ -874,7 +956,6 @@ fn m(logo: bool, shift: bool, ctrl: bool, alt: bool) -> Mods {
 pub fn default_binds() -> Vec<Bind> {
     let sup = m(true, false, false, false);
     let sup_shift = m(true, true, false, false);
-    let sup_alt = m(true, false, false, true);
     let sup_ctrl = m(true, false, true, false);
     let none = m(false, false, false, false);
     let mut b = vec![
@@ -977,8 +1058,12 @@ pub fn default_binds() -> Vec<Bind> {
             key: Keysym::Down,
             action: Action::Focus(Direction::Down),
         },
-        // Moving a window has no Hyprland bind to copy; Shift over the focus
-        // arrows is the obvious pair and collides with nothing.
+        // Swapping a tiled window with its neighbour has no Hyprland bind to
+        // copy; Shift over the focus arrows is the obvious pair and collides
+        // with nothing. Floating windows move by mouse drag (`mousebind`).
+        // Vertically, Shift+Up/Down change the window's Radiant priority
+        // instead: a drag does the vertical swap, and `move-up`/`move-down`
+        // stay bindable.
         Bind {
             mods: sup_shift,
             key: Keysym::Left,
@@ -992,44 +1077,18 @@ pub fn default_binds() -> Vec<Bind> {
         Bind {
             mods: sup_shift,
             key: Keysym::Up,
-            action: Action::Move(Direction::Up),
+            action: Action::Priority(1),
         },
         Bind {
             mods: sup_shift,
             key: Keysym::Down,
-            action: Action::Move(Direction::Down),
+            action: Action::Priority(-1),
         },
         // Session.
         Bind {
             mods: sup_shift,
             key: Keysym::L,
             action: Action::Spawn("loginctl lock-session".into()),
-        },
-        // Screenshot and screen recording, straight out of ~/.local/bin.
-        Bind {
-            mods: sup_shift,
-            key: Keysym::grave,
-            action: Action::Spawn("screenshot region".into()),
-        },
-        Bind {
-            mods: sup_shift,
-            key: Keysym::Print,
-            action: Action::Spawn("screenshot screen".into()),
-        },
-        Bind {
-            mods: sup,
-            key: Keysym::Print,
-            action: Action::Spawn("screenshot window".into()),
-        },
-        Bind {
-            mods: sup_alt,
-            key: Keysym::grave,
-            action: Action::Spawn("screenrecord region".into()),
-        },
-        Bind {
-            mods: sup_alt,
-            key: Keysym::Print,
-            action: Action::Spawn("screenrecord screen".into()),
         },
         // Media and brightness keys, unmodified, exactly as Hyprland has them.
         Bind {
@@ -1395,6 +1454,18 @@ impl Config {
                     },
                     Err(e) => self.reject(node, format!("ignoring gesture (error={})", e)),
                 },
+                // Same replace-in-place rule, keyed on `(mods, button)`.
+                "mousebind" => match parse_mousebind(node) {
+                    Ok(b) => match self
+                        .mouse_binds
+                        .iter_mut()
+                        .find(|o| o.mods == b.mods && o.button == b.button)
+                    {
+                        Some(slot) => *slot = b,
+                        None => self.mouse_binds.push(b),
+                    },
+                    Err(e) => self.reject(node, format!("ignoring mousebind (error={})", e)),
+                },
                 "workspace" => self.apply_workspace(node),
                 "render" => self.apply_render(node),
                 "bar" => self.apply_bar(node),
@@ -1469,6 +1540,7 @@ impl Config {
                     }
                 }
                 "layout" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("radiant") => self.general.layout = LayoutKind::Radiant,
                     Some("dwindle") => self.general.layout = LayoutKind::Dwindle,
                     Some("master") => self.general.layout = LayoutKind::Master,
                     other => self.reject(n, format!("unknown layout {other:?}")),
@@ -1479,6 +1551,20 @@ impl Config {
                     Some("cascade") => self.general.floating_placement = FloatingPlacement::Cascade,
                     other => self.reject(n, format!("unknown floating-placement {other:?}")),
                 },
+                "drop-guides" => {
+                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
+                        self.general.drop_guides = b;
+                    }
+                }
+                "drop-guide-color" => match arg(n).and_then(KdlValue::as_string).and_then(parse_color) {
+                    Some(c) => self.general.drop_guide_color = c,
+                    None => self.reject(n, "bad color for \"drop-guide-color\""),
+                },
+                "drop-edge-band" => {
+                    if !set_i32(&mut self.general.drop_edge_band, n) {
+                        self.reject(n, "drop-edge-band expects an integer");
+                    }
+                }
                 "col-active-border" | "col-inactive-border" => {
                     match arg(n).and_then(KdlValue::as_string).and_then(parse_color) {
                         Some(c) if name.starts_with("col-active") => self.general.col_active = c,
@@ -1547,8 +1633,38 @@ impl Config {
                     ),
                 },
                 "tray" => self.apply_bar_tray(n),
+                "clock" => self.apply_bar_clock(n),
+                "eye" => {
+                    self.bar.eye = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
+                }
+                "popup-anchor" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("cell") => self.bar.popup_anchor = BarPopupAnchor::Cell,
+                    Some("pointer") => self.bar.popup_anchor = BarPopupAnchor::Pointer,
+                    other => self.reject(
+                        n,
+                        format!(
+                            "bar popup-anchor must be \"cell\" or \"pointer\", keeping default (other={:?})",
+                            other
+                        ),
+                    ),
+                },
                 _ => self.unknown_key(n, "bar", "bar node"),
             }
+        }
+    }
+
+    fn apply_bar_clock(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let slot = match n.name().value() {
+                "hour-12" => &mut self.bar.clock.hour_12,
+                "date-mdy" => &mut self.bar.clock.date_mdy,
+                _ => {
+                    self.unknown_key(n, "bar.clock", "bar clock node");
+                    continue;
+                }
+            };
+            *slot = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
         }
     }
 
@@ -1601,6 +1717,7 @@ impl Config {
         let Some(children) = node.children() else { return };
         let mut seen_allow = false;
         let mut seen_redact = false;
+        let mut seen_hide = false;
         for n in children.nodes() {
             match n.name().value() {
                 "allow" => {
@@ -1617,6 +1734,27 @@ impl Config {
                         self.reject(n, "repeated redact-app-id replaces the previous one; list every name on a single node");
                     }
                     self.capture.redact_app_id = names(n, &mut seen_redact);
+                }
+                "hide-layer" => {
+                    if seen_hide {
+                        self.reject(
+                            n,
+                            "repeated hide-layer replaces the previous one; list every pair on a single node",
+                        );
+                    }
+                    seen_hide = true;
+                    let mut pairs = Vec::new();
+                    for v in args(n) {
+                        let pair = v
+                            .as_string()
+                            .and_then(|a| a.split_once(':'))
+                            .filter(|(exe, ns)| !exe.is_empty() && !ns.is_empty());
+                        match pair {
+                            Some((exe, ns)) => pairs.push((exe.to_string(), ns.to_string())),
+                            None => self.reject(n, format!("hide-layer entry {v} must be \"exe:namespace\" with both parts non-empty")),
+                        }
+                    }
+                    self.capture.hide_layer = pairs;
                 }
                 _ => self.unknown_key(n, "capture", "capture node"),
             }
@@ -2069,8 +2207,11 @@ impl Config {
                     Some(c) => self.misc.terminal_command = Some(c.to_owned()),
                     None => self.reject(n, "terminal-command needs a string argument"),
                 },
-                // Restart-only knobs (COMP-13 §1.2); parsed elsewhere or not yet.
-                "xwayland" => {}
+                // COMP-13 §1.1 (amended C-05): X11 is its own top-level node.
+                "xwayland" => self.reject(
+                    n,
+                    "misc.xwayland is not a key; use the top-level `xwayland { enable #false }` node",
+                ),
                 _ => self.unknown_key(n, "misc", "misc key"),
             }
         }
@@ -2090,6 +2231,7 @@ impl Config {
             if n.name().value() == "layout" {
                 let slot = &mut self.workspace_layout[idx as usize - 1];
                 match arg(n).and_then(KdlValue::as_string) {
+                    Some("radiant") => *slot = Some(LayoutKind::Radiant),
                     Some("dwindle") => *slot = Some(LayoutKind::Dwindle),
                     Some("master") => *slot = Some(LayoutKind::Master),
                     other => self.reject(n, format!("unknown workspace layout {other:?}")),
@@ -2222,6 +2364,15 @@ impl Config {
     /// before the direction is known, to decide who owns the whole swipe.
     pub fn gesture_bound(&self, fingers: u32) -> bool {
         self.gesture_binds.iter().any(|g| g.fingers == fingers)
+    }
+
+    /// The mouse binding for `button` pressed with exactly `mods` held.
+    /// Called on every button press, so it borrows and allocates nothing.
+    pub fn mouse_bind_for(&self, mods: &ModifiersState, button: u32) -> Option<MouseAction> {
+        self.mouse_binds
+            .iter()
+            .find(|b| b.button.code() == button && b.mods.matches(mods))
+            .map(|b| b.action)
     }
 
     pub fn gesture_for(&self, fingers: u32, direction: Direction) -> Option<&Action> {
@@ -2410,6 +2561,37 @@ fn parse_gesture(node: &KdlNode) -> Result<GestureBind, String> {
     })
 }
 
+/// `mousebind "Alt" "left" { move-window; }`
+fn parse_mousebind(node: &KdlNode) -> Result<MouseBind, String> {
+    let a = args(node);
+    let [mods, button] = a[..] else {
+        return Err("mousebind takes \"modifiers\" \"button\" { action }".into());
+    };
+    let mods = parse_mods(mods.as_string().ok_or("modifiers must be a string")?)?;
+    let button = match button.as_string() {
+        Some("left") => MouseButton::Left,
+        Some("right") => MouseButton::Right,
+        Some("middle") => MouseButton::Middle,
+        _ => return Err("mousebind button must be left, right or middle".into()),
+    };
+    let children = node.children().ok_or("mousebind needs an action block")?;
+    let action_node = children
+        .nodes()
+        .first()
+        .ok_or("mousebind action block is empty")?;
+    let action = match action_node.name().value() {
+        "move-window" => MouseAction::MoveWindow,
+        "resize-window" => MouseAction::ResizeWindow,
+        other => return Err(format!("unknown mousebind action '{other}'")),
+    };
+    // A bare click is not a binding: it would take every press away from the
+    // client under it.
+    if mods == Mods::default() {
+        return Err("mousebind needs at least one modifier".into());
+    }
+    Ok(MouseBind { mods, button, action })
+}
+
 fn parse_action(node: &KdlNode) -> Result<Action, String> {
     let a = args(node);
     let text = || a.first().and_then(|v| v.as_string()).map(str::to_owned);
@@ -2433,6 +2615,8 @@ fn parse_action(node: &KdlNode) -> Result<Action, String> {
         "move-right" => Action::Move(Direction::Right),
         "move-up" => Action::Move(Direction::Up),
         "move-down" => Action::Move(Direction::Down),
+        "priority-up" => Action::Priority(1),
+        "priority-down" => Action::Priority(-1),
         "workspace" => Action::SwitchWorkspace(workspace_arg(num())?),
         "workspace-next" => Action::WorkspaceNext,
         "workspace-prev" => Action::WorkspacePrev,
@@ -2597,6 +2781,112 @@ mod tests {
         // Nothing close enough: no suggestion rather than a misleading one.
         let m = err("general {\n    quux 4\n}\n");
         assert!(!m.contains("did you mean"), "{m}");
+    }
+
+    /// HW-04 rule: every shipped bind spawns a binary in `eclipseos-meta`'s
+    /// dependency closure, or it reads to the user as a dead keybind.
+    #[test]
+    fn default_bind_spawns_name_shipped_binaries() {
+        // Mirrors `dist/pkg/eclipseos/PKGBUILD`: the `eclipseos-*` split
+        // packages' `_bin`s plus `eclipseos-meta`'s `depends`. Change the two
+        // together.
+        const SHIPPED: &[&str] = &[
+            "foot",             // meta depends: foot
+            "eclipse-launcher", // eclipseos-launcher
+            "eclipse-center",   // eclipseos-center
+            "wpctl",            // meta depends: wireplumber
+            "loginctl",         // systemd, via the Arch base every image has
+            "brightnessctl",    // meta depends: brightnessctl
+            "playerctl",        // meta depends: playerctl
+        ];
+        for bind in default_binds() {
+            let Action::Spawn(cmd) = &bind.action else {
+                continue;
+            };
+            let argv0 = cmd.split_whitespace().next().unwrap_or_default();
+            assert!(
+                SHIPPED.contains(&argv0),
+                "default bind {:?}+{:?} spawns {argv0:?}, which no EclipseOS package installs",
+                bind.mods,
+                bind.key
+            );
+        }
+    }
+
+    /// CFG-01: `misc { xwayland … }` was accepted and ignored; it is an error
+    /// that points at the real node (COMP-13 §1.1, amended C-05).
+    #[test]
+    fn misc_xwayland_is_rejected_with_a_hint() {
+        let doc: KdlDocument = "misc {\n    xwayland #false\n}\n".parse().unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        let m = &cfg.errors[0].message;
+        assert!(m.contains("xwayland { enable"), "{m}");
+        assert!(cfg.xwayland.enable, "the misc key must not disable X11");
+    }
+
+    /// `bar.clock.*` and `bar.popup-anchor`: defaults, parse, and a bad
+    /// anchor rejected without moving off the default.
+    #[test]
+    fn bar_clock_and_popup_anchor_parse() {
+        fn cfg(text: &str) -> Config {
+            let doc: KdlDocument = text.parse().unwrap();
+            let mut cfg = Config::default();
+            cfg.apply(&doc, &mut Vec::new());
+            cfg
+        }
+        let d = Config::default();
+        assert_eq!(
+            d.bar.clock,
+            BarClock {
+                hour_12: true,
+                date_mdy: true
+            }
+        );
+        assert_eq!(d.bar.popup_anchor, BarPopupAnchor::Cell);
+
+        let c =
+            cfg("bar {\n    clock { hour-12 #false; date-mdy #false }\n    popup-anchor \"pointer\"\n}\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert_eq!(
+            c.bar.clock,
+            BarClock {
+                hour_12: false,
+                date_mdy: false
+            }
+        );
+        assert_eq!(c.bar.popup_anchor, BarPopupAnchor::Pointer);
+
+        let c = cfg("bar { popup-anchor \"corner\" }\n");
+        assert_eq!(c.errors.len(), 1);
+        assert!(
+            c.errors[0].message.contains("\"cell\" or \"pointer\""),
+            "{}",
+            c.errors[0].message
+        );
+        assert_eq!(c.bar.popup_anchor, BarPopupAnchor::Cell);
+
+        let c = cfg("bar { clock { hour-24 #true } }\n");
+        assert_eq!(c.errors.len(), 1, "{:?}", c.errors);
+    }
+
+    /// `bar.eye`: on by default, a bare node is on, `#false` turns it off.
+    #[test]
+    fn bar_eye_parses() {
+        fn cfg(text: &str) -> Config {
+            let doc: KdlDocument = text.parse().unwrap();
+            let mut cfg = Config::default();
+            cfg.apply(&doc, &mut Vec::new());
+            cfg
+        }
+        assert!(Config::default().bar.eye);
+        let c = cfg("bar { eye #false }\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert!(!c.bar.eye);
+        let c = cfg("bar { eye }\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert!(c.bar.eye);
     }
 
     /// `bar.tray`: an absent `pinned` is "the bar decides", a bare one pins
@@ -3069,6 +3359,70 @@ mod tests {
         let cfg = Config::default();
         assert!(cfg.capture.allow.is_empty());
         assert!(cfg.capture.redact_app_id.is_empty());
+        assert!(cfg.capture.hide_layer.is_empty());
+    }
+
+    #[test]
+    fn parses_capture_hide_layer() {
+        let doc: KdlDocument = r#"
+            capture { hide-layer "hyperion:eclipse-eye" "foo:ns:with:colons" }
+        "#
+        .parse()
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(
+            cfg.capture.hide_layer,
+            [
+                ("hyperion".to_string(), "eclipse-eye".to_string()),
+                ("foo".to_string(), "ns:with:colons".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_hide_layer_entries_are_rejected_and_dropped() {
+        let doc: KdlDocument = r#"
+            capture { hide-layer "hyperion:eclipse-eye" "nocolon" ":ns" "exe:" 7 }
+        "#
+        .parse()
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.errors.len(), 4, "{:?}", cfg.errors);
+        assert_eq!(
+            cfg.capture.hide_layer,
+            [("hyperion".to_string(), "eclipse-eye".to_string())]
+        );
+    }
+
+    #[test]
+    fn shipped_policy_hides_the_taskbar_eye() {
+        let text = include_str!("../../../../dist/etc/policy.kdl");
+        let doc: KdlDocument = text.parse().unwrap();
+        let mut cfg = Config {
+            cur: Some((policy_src("/etc/eclipse/policy.kdl"), text.to_owned())),
+            ..Config::default()
+        };
+        cfg.apply(&doc, &mut Vec::new());
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(
+            cfg.capture.hide_layer,
+            [("hyperion".to_string(), "eclipse-eye".to_string())]
+        );
+    }
+
+    #[test]
+    fn repeated_hide_layer_is_rejected() {
+        let doc: KdlDocument = r#"
+            capture { hide-layer "a:b"; hide-layer "c:d" }
+        "#
+        .parse()
+        .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
     }
 
     #[test]
@@ -3093,7 +3447,7 @@ mod tests {
         let mut cfg = Config::default();
         let mut binds = Vec::new();
         cfg.apply(&doc, &mut binds);
-        assert_eq!(cfg.general.layout, LayoutKind::Dwindle);
+        assert_eq!(cfg.general.layout, LayoutKind::Radiant);
         assert!(binds.is_empty(), "Super+Escape must stay reserved");
     }
 
@@ -3206,6 +3560,85 @@ mod tests {
         // The later entry wins, the same as a later file over an earlier one.
         assert_eq!(cfg.gesture_for(3, Direction::Left), Some(&Action::ToggleLayout));
         assert_eq!(cfg.gesture_for(3, Direction::Right), Some(&Action::WorkspacePrev));
+    }
+
+    #[test]
+    fn mousebind_defaults_are_alt_drag() {
+        use crate::input::MouseAction;
+        let cfg = Config::default();
+        let alt = Mods {
+            alt: true,
+            ..Mods::default()
+        };
+        let mut state = ModifiersState {
+            alt: true,
+            ..Default::default()
+        };
+        assert_eq!(cfg.mouse_bind_for(&state, 0x110), Some(MouseAction::MoveWindow));
+        assert_eq!(cfg.mouse_bind_for(&state, 0x111), Some(MouseAction::ResizeWindow));
+        assert_eq!(cfg.mouse_bind_for(&state, 0x112), None);
+        assert_eq!(cfg.mouse_binds, default_mouse_binds());
+        assert!(cfg.mouse_binds.iter().all(|b| b.mods == alt));
+        // Exact match: Alt+Shift, and no modifier at all, are not Alt.
+        state.shift = true;
+        assert_eq!(cfg.mouse_bind_for(&state, 0x110), None);
+        assert_eq!(cfg.mouse_bind_for(&ModifiersState::default(), 0x110), None);
+    }
+
+    #[test]
+    fn mousebind_node_parses_and_extends_the_defaults() {
+        use crate::input::{MouseAction, MouseButton};
+        let cfg = gestures("mousebind \"SUPER SHIFT\" \"middle\" { resize-window; }\n");
+        assert_eq!(cfg.mouse_binds.len(), default_mouse_binds().len() + 1);
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        let added = cfg.mouse_binds.last().unwrap();
+        assert_eq!(added.button, MouseButton::Middle);
+        assert_eq!(added.action, MouseAction::ResizeWindow);
+        assert_eq!(
+            added.mods,
+            Mods {
+                logo: true,
+                shift: true,
+                ..Mods::default()
+            }
+        );
+    }
+
+    #[test]
+    fn mousebind_replaces_the_default_for_the_same_mods_and_button() {
+        use crate::input::MouseAction;
+        let cfg = gestures(
+            "mousebind \"ALT\" \"left\" { resize-window; }\nmousebind \"MOD1\" \"left\" { move-window; }\n",
+        );
+        // Replaced once by the first node, again by the second: still one entry.
+        assert_eq!(cfg.mouse_binds.len(), default_mouse_binds().len());
+        let state = ModifiersState {
+            alt: true,
+            ..Default::default()
+        };
+        assert_eq!(cfg.mouse_bind_for(&state, 0x110), Some(MouseAction::MoveWindow));
+        assert_eq!(cfg.mouse_bind_for(&state, 0x111), Some(MouseAction::ResizeWindow));
+        let cfg = gestures("mousebind \"ALT\" \"left\" { resize-window; }\n");
+        assert_eq!(cfg.mouse_bind_for(&state, 0x110), Some(MouseAction::ResizeWindow));
+    }
+
+    #[test]
+    fn mousebind_rejects_bad_nodes_and_keeps_the_defaults() {
+        for bad in [
+            "mousebind \"Alt\" \"side\" { move-window; }",
+            "mousebind \"Alt\" \"left\" { spawn \"foot\"; }",
+            "mousebind \"Alt\" \"left\" { }",
+            "mousebind \"Alt\" \"left\"",
+            "mousebind \"Alt\" { move-window; }",
+            "mousebind \"Hyper\" \"left\" { move-window; }",
+            "mousebind \"left\" { move-window; }",
+            "mousebind \"\" \"left\" { move-window; }",
+            "mousebind \"none\" \"left\" { move-window; }",
+        ] {
+            let cfg = gestures(bad);
+            assert!(!cfg.errors.is_empty(), "{bad}");
+            assert_eq!(cfg.mouse_binds, default_mouse_binds(), "{bad}");
+        }
     }
 
     #[test]

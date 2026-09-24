@@ -85,6 +85,27 @@ pub fn control_for(ty: &str, constraints: &Value) -> Option<Control> {
     }
 }
 
+/// How an enum value reads on its pill. The wire spelling is a config token
+/// (`cell`), right for `abyss.kdl` and wrong for a person, so the few that do
+/// not read as themselves get a display form here. Keyed on the value, not on
+/// a key path: this is not a key list, and a value with no entry — every value
+/// the compositor grows later — reads as itself.
+pub fn value_label(value: &str) -> &str {
+    match value {
+        // `bar.popup-anchor`: the chip is what the user clicked, so "cell"
+        // is named after it. `pointer` reads the same way for
+        // `floating-placement`, which shares the spelling.
+        "cell" => "below chip",
+        "pointer" => "at pointer",
+        // `general.layout`: radiant is the default, dwindle the classic
+        // tiler it replaced. The wire still carries the bare token.
+        "radiant" => "Radiant (Default)",
+        "dwindle" => "Dwindle Classic",
+        "master" => "Master",
+        other => other,
+    }
+}
+
 /// One row of `{"keys": [...]}`.
 #[derive(Debug, Clone)]
 pub struct Row {
@@ -126,9 +147,15 @@ impl Row {
         })
     }
 
-    /// The last segment of the path, used as the row label.
+    /// The last segment of the path, used as the row label — or, for the few
+    /// keys whose last segment names a thing rather than a setting, a
+    /// display form. `bar.eye` alone reads as a body part; what the switch
+    /// governs is the indicator.
     pub fn label(&self) -> &str {
-        self.path.rsplit('.').next().unwrap_or(&self.path)
+        match self.path.as_str() {
+            "bar.eye" => "Eye indicator",
+            path => path.rsplit('.').next().unwrap_or(path),
+        }
     }
 
     /// Policy-owned keys are read-only here by construction, not by a check at
@@ -186,6 +213,27 @@ mod tests {
             control_for("enum", &json!({ "values": many })),
             Some(Control::Dropdown(_))
         ));
+    }
+
+    #[test]
+    fn a_label_is_the_last_segment_unless_it_names_a_thing() {
+        let row = |path: &str| {
+            Row::parse(&json!({
+                "path": path, "file": "abyss", "type": "bool", "value": true,
+            }))
+            .expect("a bool row parses")
+        };
+        assert_eq!(row("bar.fold-when-idle").label(), "fold-when-idle");
+        assert_eq!(row("bar.eye").label(), "Eye indicator");
+    }
+
+    #[test]
+    fn enum_values_read_as_words_or_as_themselves() {
+        assert_eq!(value_label("cell"), "below chip");
+        assert_eq!(value_label("pointer"), "at pointer");
+        assert_eq!(value_label("ease-out"), "ease-out");
+        assert_eq!(value_label("radiant"), "Radiant (Default)");
+        assert_eq!(value_label("dwindle"), "Dwindle Classic");
     }
 
     #[test]

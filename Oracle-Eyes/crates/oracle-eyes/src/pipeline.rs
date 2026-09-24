@@ -13,6 +13,7 @@
 //! not.
 
 use crate::answer::{Answerer, Confidence, Reply};
+use crate::beacon::{Beacon, Eye};
 use crate::capture::Capturer;
 use crate::choice::{self, Choice};
 use crate::classify::{Gate, Verdict};
@@ -59,6 +60,9 @@ pub struct Pipeline {
     /// The last region asked about, so the expand chord has something to
     /// widen (§3.6).
     last: Option<Region>,
+    /// The taskbar's eye (ADR 0055). Held here because only the gate knows
+    /// the moment automatic mode found something worth asking about.
+    pub beacon: Beacon,
 }
 
 impl Pipeline {
@@ -81,6 +85,7 @@ impl Pipeline {
             answerer,
             gate,
             last: None,
+            beacon: Beacon::bind(),
         }
     }
 
@@ -197,6 +202,7 @@ impl Pipeline {
         {
             Verdict::Skip(_) => Ok(None),
             Verdict::Ask => {
+                self.beacon.set(Eye::Think);
                 let reply = self.answerer.ask(&read.lines, &read.options, None)?;
                 Ok(Some(self.dress(&read, reply, Fallback::Densest)))
             }
@@ -302,9 +308,12 @@ fn pad(r: Region, within: Region) -> Region {
     }
 }
 
-/// What the answer is about, as a rect measured from OCR. A pick widens it to
-/// the whole question — stem and every option — because the compositor only
-/// draws a pick inside its anchor, and "B out of these" needs the these.
+/// What the answer is about, as a rect measured from OCR. A pick anchors on
+/// the whole question — stem and every option — and on nothing else: the
+/// compositor only draws a pick inside its anchor, "B out of these" needs the
+/// these, and the model's focus lines can sit anywhere on the page. Pulled in,
+/// they stretch the anchor past the compositor's size cap, which trims the
+/// options and can drop the pick with them.
 fn anchor_for(read: &Read, focus: &[usize], picked: bool, fallback: Fallback) -> Region {
     let named = read
         .lines
@@ -313,12 +322,13 @@ fn anchor_for(read: &Read, focus: &[usize], picked: bool, fallback: Fallback) ->
         .map(rect_of_line);
     let r = if picked {
         let first = read.options.first().map(|o| o.line).unwrap_or(1);
-        // The stem: the lines just above the first option, back to the last
-        // paragraph break.
+        // The stem: the paragraph just above the first option. Strictly
+        // above — options set far apart each open a paragraph, the first one
+        // included, and counting it would leave the stem empty.
         let stem_start = read
             .lines
             .iter()
-            .filter(|l| l.id <= first && l.para)
+            .filter(|l| l.id < first && l.para)
             .map(|l| l.id)
             .max()
             .unwrap_or(1);
@@ -327,11 +337,7 @@ fn anchor_for(read: &Read, focus: &[usize], picked: bool, fallback: Fallback) ->
             .iter()
             .filter(|l| l.id >= stem_start && l.id < first)
             .map(rect_of_line);
-        bounds_of(
-            named
-                .chain(stem)
-                .chain(read.options.iter().map(rect_of_choice)),
-        )
+        bounds_of(stem.chain(read.options.iter().map(rect_of_choice)))
     } else if !focus.is_empty() {
         bounds_of(named)
     } else {
@@ -627,6 +633,32 @@ mod tests {
         assert_eq!(a.anchor.h, 56 + 12);
         let pick = a.panel.pick.expect("picked");
         assert_eq!((pick.label.as_str(), pick.x, pick.y), ("B", 100, 240));
+    }
+
+    #[test]
+    fn a_pick_ignores_focus_lines_outside_the_question() {
+        // The model named the search box that asked for the quiz; the
+        // brackets still hug the quiz, so the compositor's cap cannot trim
+        // the options off the bottom.
+        let p = Pipeline::new(Config::default());
+        let r = read_of(vec![
+            line(
+                1,
+                300,
+                20,
+                400,
+                false,
+                "generate me a multiple choice question",
+            ),
+            line(2, 200, 400, 300, true, "Capital of France?"),
+            line(3, 200, 440, 120, true, "A) London"),
+            line(4, 200, 480, 120, true, "B) Paris"),
+            line(5, 200, 520, 120, true, "C) Rome"),
+            line(6, 200, 560, 120, true, "D) Madrid"),
+        ]);
+        let a = p.dress(&r, reply("Paris", "", &[1, 4], Some("B")), Fallback::All);
+        assert_eq!(a.anchor.y, 394, "starts at the stem, not the search box");
+        assert_eq!(a.anchor.y + a.anchor.h, 576 + 6, "ends below D");
     }
 
     #[test]

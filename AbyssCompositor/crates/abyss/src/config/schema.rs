@@ -18,7 +18,7 @@
 //! 3. schema → defaults: [`get`] on a default `Config` returns exactly the
 //!    `default` column for every row.
 
-use super::{BarPosition, Config, FloatingPlacement, LayoutKind};
+use super::{BarPopupAnchor, BarPosition, Config, FloatingPlacement, LayoutKind};
 
 /// The type of a key's value, and whatever constrains it. A GUI maps this
 /// straight onto a control: `Bool` is a toggle, `Int{min,max}` a slider,
@@ -153,11 +153,11 @@ pub const TABLE: &[Key] = &[
     ),
     k(
         "general.layout",
-        Ty::Enum(&["dwindle", "master"]),
-        Str("dwindle"),
+        Ty::Enum(&["radiant", "dwindle", "master"]),
+        Str("radiant"),
         Abyss,
         Live,
-        "Default tiling layout for workspaces without their own.",
+        "Default tiling layout for workspaces without their own. `radiant` is a weighted tree with drag-to-tile drop zones and per-window priority; `dwindle` is classic dwindle; `master` puts the first window on the left.",
     ),
     k(
         "general.floating-placement",
@@ -238,6 +238,30 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Border colour of every unfocused window.",
+    ),
+    k(
+        "general.drop-guides",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Draw the drop zones and a ghost of where a dragged window will land (radiant layout).",
+    ),
+    k(
+        "general.drop-guide-color",
+        Ty::Color,
+        Color([0.91, 0.64, 0.24, 1.0]),
+        Abyss,
+        Live,
+        "Colour of the drop guides.",
+    ),
+    k(
+        "general.drop-edge-band",
+        int(0, 512),
+        Int(40),
+        Abyss,
+        Live,
+        "Width of the screen-edge band that drops a window as a full-height column or full-width row, logical px. 0 disables it.",
     ),
     // render
     k(
@@ -338,6 +362,42 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Corner radius in logical px for the taskbar's own blur backdrop.",
+    ),
+    k(
+        "bar.clock.hour-12",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Show the taskbar clock in 12-hour time with AM/PM; off is 24-hour.",
+    ),
+    k(
+        "bar.clock.date-mdy",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Write the taskbar date month/day/year; off is ISO year-month-day \
+       (2026-09-23).",
+    ),
+    k(
+        "bar.popup-anchor",
+        Ty::Enum(&["cell", "pointer"]),
+        Str("cell"),
+        Abyss,
+        Live,
+        "Where taskbar popups open: under the cell that was clicked, or at \
+       the pointer.",
+    ),
+    k(
+        "bar.eye",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Show the Oracle-Eyes status eye on the taskbar's eclipse mark. The \
+       compositor only stores this; the taskbar reads Oracle-Eyes' own status \
+       socket (ADR 0055).",
     ),
     // decoration
     k(
@@ -583,6 +643,17 @@ pub const TABLE: &[Key] = &[
         "app_ids whose windows are `secret`: never composited into a capture \
        target, only a solid placeholder (COMP-02 §7).",
     ),
+    k(
+        "capture.hide-layer",
+        Ty::StrList,
+        EmptyList,
+        Policy,
+        Live,
+        "exe:namespace pairs whose layer surfaces are omitted from every \
+       capture: shown on screen, absent from screenshots and screen shares, \
+       with whatever is beneath showing instead. Only surfaces up to 64x64 \
+       logical px qualify (ADR 0056). Empty hides nothing.",
+    ),
 ];
 
 /// Owner of a whole top-level node, when every key under it agrees.
@@ -627,6 +698,7 @@ pub struct Collection {
 pub const COLLECTIONS: &[Collection] = &[
     Collection { node: "bind", owner: Abyss, doc: "A key binding: `bind [\"<modifiers>\"] \"<keysym>\" { <action>; }`, e.g. `bind \"SUPER SHIFT\" \"Return\" { spawn \"foot\"; }`. `Super+Escape` and `Super+space` are reserved and cannot be bound." },
     Collection { node: "gesture", owner: Abyss, doc: "A touchpad swipe binding: `gesture \"swipe\" <fingers> \"<direction>\" { <action>; }`. `fingers` is 3 or 4, `direction` is `left`, `right`, `up` or `down`, and the action is anything `bind` accepts. A bound finger count is the compositor's for the whole swipe; unbound swipes, pinches and holds reach the app. Defaults: 3-finger `left` runs `workspace-next`, 3-finger `right` runs `workspace-prev`. A `gesture` for the same fingers and direction replaces the default." },
+    Collection { node: "mousebind", owner: Abyss, doc: "A modifier + mouse-button binding: `mousebind \"<modifiers>\" \"<button>\" { <action>; }`. `button` is `left`, `right` or `middle`, and the action is `move-window` or `resize-window`. With exactly those modifiers held, pressing the button over a window drags it (move) or drags its nearest corner (resize); a tiled window is floated first. The press never reaches the client. At least one modifier is required. Defaults: `Alt` + `left` runs `move-window`, `Alt` + `right` runs `resize-window`. A `mousebind` for the same modifiers and button replaces the default." },
     Collection { node: "output", owner: Abyss, doc: "Per-output settings: `output \"<glob>\" { … }`. The glob (`*` only) matches the connector name or the persistent identity; later blocks override earlier ones key by key." },
     Collection { node: "workspace", owner: Abyss, doc: "Per-workspace layout override." },
     Collection { node: "windowrule", owner: Abyss, doc: "A rule matched against windows at map time. Its *action* decides the owning file." },
@@ -929,7 +1001,7 @@ pub const BIND_ACTIONS: &[Form] = &[
         &["toggle-layout"],
         "",
         &["toggle-layout"],
-        "Switch the workspace between dwindle and master.",
+        "Cycle the workspace layout: radiant, dwindle, master.",
     ),
     form(
         &["focus-left"],
@@ -949,7 +1021,7 @@ pub const BIND_ACTIONS: &[Form] = &[
         &["move-left"],
         "",
         &["move-left"],
-        "Swap with the neighbour to the left (nudges a floating window).",
+        "Swap with the neighbour to the left (tiled windows only).",
     ),
     form(
         &["move-right"],
@@ -963,6 +1035,18 @@ pub const BIND_ACTIONS: &[Form] = &[
         "",
         &["move-down"],
         "Swap with the neighbour below.",
+    ),
+    form(
+        &["priority-up"],
+        "",
+        &["priority-up"],
+        "Give the focused tiled window a bigger share of its row or column (radiant layout).",
+    ),
+    form(
+        &["priority-down"],
+        "",
+        &["priority-down"],
+        "Give the focused tiled window a smaller share of its row or column (radiant layout).",
     ),
     form(
         &["workspace"],
@@ -1059,6 +1143,9 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "general.refocus-on-scene-change" => V::Bool(c.general.refocus_on_scene_change),
         "general.col-active-border" => V::Color(c.general.col_active),
         "general.col-inactive-border" => V::Color(c.general.col_inactive),
+        "general.drop-guides" => V::Bool(c.general.drop_guides),
+        "general.drop-guide-color" => V::Color(c.general.drop_guide_color),
+        "general.drop-edge-band" => V::Int(c.general.drop_edge_band as i64),
         "render.direct-scanout" => V::Bool(c.render.direct_scanout),
         "bar.fold-when-inactive" => V::Bool(c.bar.fold_when_inactive),
         "bar.fold-height" => V::Int(c.bar.fold_height as i64),
@@ -1070,6 +1157,16 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.tray.pinned" => c.bar.tray.pinned.as_deref().map_or(V::Null, list),
         "bar.tray.hidden" => list(&c.bar.tray.hidden),
         "bar.rounding" => V::Int(c.bar.rounding as i64),
+        "bar.clock.hour-12" => V::Bool(c.bar.clock.hour_12),
+        "bar.clock.date-mdy" => V::Bool(c.bar.clock.date_mdy),
+        "bar.eye" => V::Bool(c.bar.eye),
+        "bar.popup-anchor" => V::Str(
+            match c.bar.popup_anchor {
+                BarPopupAnchor::Cell => "cell",
+                BarPopupAnchor::Pointer => "pointer",
+            }
+            .into(),
+        ),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.active-opacity" => V::Float(c.decoration.active_opacity as f64),
         "decoration.inactive-opacity" => V::Float(c.decoration.inactive_opacity as f64),
@@ -1107,12 +1204,20 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "clipboard.data-control-allow" => list(&c.clipboard.data_control_allow),
         "capture.allow" => list(&c.capture.allow),
         "capture.redact-app-id" => list(&c.capture.redact_app_id),
+        "capture.hide-layer" => V::List(
+            c.capture
+                .hide_layer
+                .iter()
+                .map(|(exe, ns)| format!("{exe}:{ns}"))
+                .collect(),
+        ),
         _ => return None,
     })
 }
 
 fn layout_name(l: LayoutKind) -> &'static str {
     match l {
+        LayoutKind::Radiant => "radiant",
         LayoutKind::Dwindle => "dwindle",
         LayoutKind::Master => "master",
     }
@@ -1405,6 +1510,7 @@ mod tests {
                 "clipboard.data-control-allow",
                 "capture.allow",
                 "capture.redact-app-id",
+                "capture.hide-layer",
             ]
         );
         let rules: Vec<_> = RULE_ACTIONS

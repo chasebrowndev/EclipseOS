@@ -12,6 +12,7 @@ const POLICY_KEYS: &[&str] = &[
     "clipboard.data-control-allow",
     "capture.allow",
     "capture.redact-app-id",
+    "capture.hide-layer",
 ];
 
 /// Keep in sync with `migrate::POLICY_RULE_ACTIONS`.

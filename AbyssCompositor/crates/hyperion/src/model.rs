@@ -102,7 +102,6 @@ pub struct Snapshot {
     /// Handle of the focused window, from `get_focused` — authoritative over
     /// the per-window `focused` flag when the two disagree.
     pub focused: Option<u64>,
-    pub clock: String,
 }
 
 fn str_at(v: &Value, key: &str) -> String {

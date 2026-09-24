@@ -18,6 +18,9 @@ pub const COUNT: usize = 10;
 pub struct Floating {
     pub window: Window,
     pub rect: Rectangle<i32, Logical>,
+    /// The Radiant leaf weight it had when `toggle-floating` lifted it out
+    /// of the tree, restored when it is toggled back in.
+    pub weight: Option<f64>,
 }
 
 /// A window the human sent away (COMP-05 §4 `minimized`). It keeps its place

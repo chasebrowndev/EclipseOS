@@ -71,8 +71,12 @@ pub enum Action {
     Unminimize,
     ToggleLayout,
     Focus(Direction),
-    /// Swap with the neighbour in this direction (nudges a floating window).
+    /// Swap with the neighbour in this direction (tiled windows only; a
+    /// floating window is moved with the mouse, see `MouseBind`).
     Move(Direction),
+    /// Raise (positive) or lower the focused tiled window's weight in its
+    /// Radiant container. A no-op for floating windows and other layouts.
+    Priority(i32),
     /// 1-based workspace index.
     SwitchWorkspace(usize),
     /// The workspace after / before the active one on the focused output.
@@ -130,6 +134,42 @@ pub struct GestureBind {
     pub action: Action,
 }
 
+/// Mouse button a [`MouseBind`] listens for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+impl MouseButton {
+    /// The `linux/input-event-codes.h` code libinput reports for this button.
+    pub fn code(self) -> u32 {
+        match self {
+            MouseButton::Left => BTN_LEFT,
+            MouseButton::Right => BTN_RIGHT,
+            MouseButton::Middle => BTN_MIDDLE,
+        }
+    }
+}
+
+/// What a held-modifier mouse drag does to the window under the pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseAction {
+    MoveWindow,
+    ResizeWindow,
+}
+
+/// A configured modifier + mouse-button binding (COMP-04 §5, ADR 0057): with
+/// exactly `mods` held, pressing `button` over a window starts `action` on it,
+/// and the press never reaches the client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseBind {
+    pub mods: Mods,
+    pub button: MouseButton,
+    pub action: MouseAction,
+}
+
 /// A swipe the compositor has claimed at begin. Only the deltas are kept, so
 /// the update path adds two floats and allocates nothing.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -168,6 +208,7 @@ pub fn swipe_direction(dx: f64, dy: f64, threshold: f64) -> Option<Direction> {
 /// right; every other button is swallowed.
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
+const BTN_MIDDLE: u32 = 0x112;
 
 /// `XF86_Switch_VT_1` .. `XF86_Switch_VT_12`.
 const VT_SWITCH_FIRST: u32 = 0x1008_FE01;
@@ -284,6 +325,7 @@ impl AbyssState {
             Action::ToggleLayout => shell::toggle_layout(self),
             Action::Focus(dir) => shell::focus_direction(self, dir),
             Action::Move(dir) => shell::move_direction(self, dir),
+            Action::Priority(delta) => shell::adjust_priority(self, delta),
             Action::SwitchWorkspace(n) => shell::switch_workspace(self, n),
             Action::WorkspaceNext => shell::switch_workspace_relative(self, 1),
             Action::WorkspacePrev => shell::switch_workspace_relative(self, -1),
@@ -957,6 +999,14 @@ impl AbyssState {
                 _ => {}
             }
             return;
+        }
+        // A `mousebind` press (Alt+drag by default) starts a compositor-owned
+        // move/resize. The grab has to be in place *before* the seat sees the
+        // press: it clears pointer focus, so the press goes into the grab and
+        // the client under the pointer never receives it (ADR 0057). Whether it
+        // fired or not, the press carries on to the seat and click-to-focus.
+        if pressed {
+            grabs::start_mouse_bind(self, event.button_code());
         }
         let pointer = self.seat.get_pointer().unwrap();
         pointer.button(
