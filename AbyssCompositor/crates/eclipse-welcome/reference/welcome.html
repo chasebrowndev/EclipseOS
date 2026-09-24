@@ -19,7 +19,11 @@ html,body{margin:0;height:100%;background:#060505;overflow:hidden;cursor:none;us
 #moon{position:absolute;left:10%;top:10%;width:80%;height:80%;border-radius:50%;background:#000;}
 #wordRow{left:0;right:0;top:72cqh;display:flex;justify-content:center;}
 #word{font-weight:300;font-size:5cqw;line-height:1.2;white-space:nowrap;will-change:transform,filter;}
-#logo{left:50cqw;top:50cqh;width:50cqw;transform:translate(-50%,-50%);opacity:0;}
+#logo,#logoO{left:50cqw;top:50cqh;width:50cqw;transform:translate(-50%,-50%);opacity:0;}
+/* The asset has its own O (centre 654,74 of 796x144, radius 57). It must not show before the shrinking eclipse lands on it,
+   so the letters are drawn with that disc cut out, and the O alone is drawn as a second copy that fades in on landing. */
+#logo{-webkit-mask-image:radial-gradient(circle at 82.16% 51.39%,transparent calc(3.58cqw - .5px),#000 3.58cqw);mask-image:radial-gradient(circle at 82.16% 51.39%,transparent calc(3.58cqw - .5px),#000 3.58cqw);}
+#logoO{-webkit-mask-image:radial-gradient(circle at 82.16% 51.39%,#000 calc(3.58cqw - .5px),transparent 3.58cqw);mask-image:radial-gradient(circle at 82.16% 51.39%,#000 calc(3.58cqw - .5px),transparent 3.58cqw);}
 #key{left:50cqw;top:78cqh;width:20cqw;height:4.6cqw;transform:translateX(-50%);opacity:0;}
 #keycap{position:absolute;inset:0;border-radius:.9cqw;background:linear-gradient(180deg,rgba(255,255,255,.10) 0%,rgba(255,255,255,.04) 100%);border:1px solid rgba(244,187,60,.18);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);}
 #version{right:3cqw;bottom:3cqh;font-size:1cqw;letter-spacing:.06em;color:#8d8a85;font-variant-numeric:tabular-nums;opacity:0;}
@@ -31,6 +35,7 @@ html,body{margin:0;height:100%;background:#060505;overflow:hidden;cursor:none;us
   <div id="eclipse" class="abs"><div id="corona"></div><div id="sun"></div><div id="moon"></div></div>
   <div id="wordRow" class="abs" aria-hidden="true"><div id="word"></div></div>
   <img id="logo" class="abs" src="assets/eclipseos-logo.png" alt="EclipseOS">
+  <img id="logoO" class="abs" src="assets/eclipseos-logo.png" alt="" aria-hidden="true">
   <div id="key" class="abs" role="img" aria-label="Press space to begin"><div id="keycap"></div></div>
   <div id="version" class="abs">Version 1.0.0</div>
   <div id="fade" class="abs"></div>
@@ -58,17 +63,19 @@ html,body{margin:0;height:100%;background:#060505;overflow:hidden;cursor:none;us
   // ---- Animation -------------------------------------------------------------
   const $ = id => document.getElementById(id);
   const el = { eclipse: $('eclipse'), corona: $('corona'), sun: $('sun'), moon: $('moon'), word: $('word'),
-    logo: $('logo'), key: $('key'), keycap: $('keycap'), version: $('version'), fade: $('fade') };
+    logo: $('logo'), logoO: $('logoO'), key: $('key'), keycap: $('keycap'), version: $('version'), fade: $('fade') };
   const cl = x => Math.max(0, Math.min(1, x));
   const eo = x => 1 - Math.pow(1 - cl(x), 3);
   const eio = x => { x = cl(x); return x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2; };
   const sine = x => .5 - .5 * Math.cos(Math.PI * cl(x));
   const L = (a, b, p) => a + (b - a) * p;
   const T = 6, W = T / WORDS.length, READY = 8.4;
-  const xf = f => {
-    if (f < .22) return -70 + 67 * (1 - Math.pow(1 - f / .22, 3));
-    if (f < .78) return -3 + 6 * (f - .22) / .56;
-    const p = (f - .78) / .22; return 3 + 67 * p * p * p;
+  // "Welcome" holds 2.5 even slots; the other nine share the rest (0.5 s each).
+  const WS = 2.5 * W, OS = (T - WS) / (WORDS.length - 1), FLIGHT = .22 * OS;
+  const xf = (f, a = .22) => {
+    if (f < a) return -70 + 67 * (1 - Math.pow(1 - f / a, 3));
+    if (f < 1 - a) return -3 + 6 * (f - a) / (1 - 2 * a);
+    const p = (f - (1 - a)) / a; return 3 + 67 * p * p * p;
   };
 
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -78,30 +85,38 @@ html,body{margin:0;height:100%;background:#060505;overflow:hidden;cursor:none;us
     const t = reduced ? 20 : (now - start) / 1000 * SPEED;
 
     // Moon crossing + corona
-    const c = eo((t - 5.2) / 1.2);
+    const c = eo((t - 5.2) / 1.2), halo = 1 - sine((t - 7.7) / 1.0);
     el.moon.style.transform = `translateX(${L(-150, 0, eio(t / T))}%)`;
-    el.corona.style.opacity = c;
-    el.sun.style.boxShadow = `0 0 ${.08 + .5 * c}em ${.01 + .08 * c}em rgba(244,187,60,${.45 + .45 * c})`;
+    el.corona.style.opacity = c * halo;
+    el.sun.style.boxShadow = `0 0 ${.08 + .5 * c}em ${.01 + .08 * c}em rgba(244,187,60,${(.45 + .45 * c) * halo})`;
 
     // Shrink into the logo's O
     const sp = sine(sine((t - 6.2) / 2.2));
-    el.eclipse.style.fontSize = L(24, 6.25, sp) + 'cqw';
-    el.eclipse.style.left = L(50, 65.5, sp) + 'cqw';
-    el.eclipse.style.top = L(44, 50, sp) + 'cqh';
-    el.eclipse.style.opacity = 1 - sine((t - 8.2) / .9);
+    el.eclipse.style.fontSize = L(24, 6.91, sp) + 'cqw';
+    el.eclipse.style.left = L(50, 66.08, sp) + 'cqw';
+    el.eclipse.style.top = `calc(${L(44, 50, sp)}cqh + ${.126 * sp}cqw)`;
+    // The moon ends the size of the O's black disc (78/110 of its diameter) so sun+moon and the logo's O are one picture.
+    const mw = L(80, 70.91, sp);
+    el.moon.style.width = el.moon.style.height = mw + '%';
+    el.moon.style.left = el.moon.style.top = (100 - mw) / 2 + '%';
+    // Hand-off: the sun and moon stay opaque (two same-coloured layers would dip) until the logo's own O has faded in over
+    // them (8.1..8.7); only the glow fades, from 7.7 to 8.7. Then the eclipse is gone.
+    el.eclipse.style.opacity = t >= 8.7 ? 0 : 1;
     el.logo.style.opacity = sine((t - 7.4) / 1.3);
+    el.logoO.style.opacity = sine((t - 8.1) / .6);
 
     // Fly-by greetings
     if (t < T) {
-      const i = Math.floor(t / W), f = (t % W) / W, e = .004;
+      const i = t < WS ? 0 : Math.min(WORDS.length - 1, 1 + Math.floor((t - WS) / OS));
+      const span = i ? OS : WS, f = i ? ((t - WS) % OS) / OS : t / WS, a = FLIGHT / span, k = W / span, e = .004 * k;
       if (i !== lastWord) {
         lastWord = i;
         el.word.textContent = WORDS[i][0];
         el.word.lang = WORDS[i][1];
         el.word.style.fontFamily = `${FONT[WORDS[i][1]] || ''}"Cormorant Garamond",serif`;
       }
-      const av = Math.abs((xf(Math.min(1, f + e)) - xf(Math.max(0, f - e))) / (2 * e) / 300);
-      el.word.style.transform = `translateX(${xf(f)}cqw) skewX(${-Math.min(22, av * 34)}deg) scaleX(${1 + Math.min(.5, av * .7)})`;
+      const av = Math.abs((xf(Math.min(1, f + e), a) - xf(Math.max(0, f - e), a)) / (2 * e) / 300 * k);
+      el.word.style.transform = `translateX(${xf(f, a)}cqw) skewX(${-Math.min(22, av * 34)}deg) scaleX(${1 + Math.min(.5, av * .7)})`;
       el.word.style.filter = `blur(${Math.min(14, av * 26)}px)`;
       el.word.style.opacity = cl(1 - Math.max(0, av - .35) * 1.4);
     } else el.word.style.opacity = 0;

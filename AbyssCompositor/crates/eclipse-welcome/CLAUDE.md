@@ -14,6 +14,24 @@ Native Rust, not a webview: ADR 0038 (`decisions/0038-de-userland-is-native-rust
 - **Reference:** `reference/welcome.html` is the design. The timings, easings
   and the `SPEED = 0.9` clock are ported verbatim into `timeline.rs`
   (pure functions, unit-tested). Change the reference first, then the port.
+- **Greeting timing.** English holds `WELCOME_SPAN = 1.5 s` (2.5 even slots);
+  the other nine get `OTHER_SPAN = 0.5 s` each, so the fly-by still ends at
+  `T = 6` and the moon crossing, corona, shrink and `READY` are unmoved. The
+  flight in/out is the same `FLIGHT_SECS` (0.11 s) for every word, so only
+  English's near-stationary settle stretches. `timeline::slot` is the pure
+  function; the reference's `WS`/`OS`/`FLIGHT` are the same numbers.
+- **The eclipse becomes the O (never two Os).** The logo PNG has its own O, so
+  `logo.rs` splits the asset at load into `body` (letters, the O's glow
+  subtracted) and `o` (ring, disc and glow, glow rebuilt analytically and
+  dithered). `body` fades in 7.4..8.7 with the O absent; the eclipse shrinks
+  (`land`, 6.2..8.4, double half-cosine) onto the O measured from the asset
+  (`draw::eclipse_box`, not fixed cqw constants) with the moon growing to the
+  disc's size; its sun and moon stay opaque, only glow/corona fade (`halo`,
+  7.7..8.7); `o_opacity` fades the real O in over it 8.1..8.7; the eclipse is
+  dropped when `merged`. All pure and tested in `timeline.rs`. `READY` (8.4)
+  is unchanged and the hand-off is finished before the prompt is pressable.
+  `reference/welcome.html` carries the same hand-off (masked letters copy plus
+  an O copy); it is an approximation (the letters copy keeps the asset's glow).
 - **Input counts only once `t >= READY (8.4)`.** Space (non-repeat), a pointer
   press or a touch then starts a 700 ms fade to black, then `Begin`, once.
 - **Reduced motion:** `EclipseOS_REDUCED_MOTION=1` or `--reduced-motion` pins
@@ -31,6 +49,13 @@ Native Rust, not a webview: ADR 0038 (`decisions/0038-de-userland-is-native-rust
   layer's alpha (`lit`, `dim`, `sheen`) so the composite lands on the sRGB
   value the browser produces. If iced ever gains `web-colors`, delete the
   remaps.
+- **Crispness rules (do not regress; the owner saw blur).** The logo is
+  Lanczos-resampled to the exact physical width and drawn 1:1 on a snapped
+  pixel rect (never GPU-upscaled), with edge steepening on letters and ring
+  only. At-rest words are `fill_text` at whole-pixel positions (glyph atlas,
+  full-quality AA); outlines plus blur copies are used only while a word moves
+  (`draw::is_crisp`, with a sigma dead zone). Version glyphs snap to pixels.
+  Everything scales with the output scale factor.
 - The CSS blur is approximated by weighted offset copies; `backdrop-filter`
   on the keycap is omitted (the ground is uniform, so it is a no-op).
 - The canvas has no letter-spacing or `tnum`; the version label places glyphs
@@ -49,10 +74,16 @@ fallback chain if a face is missing. The ISO must install:
 
 Subset the CJK faces to the glyphs used (`reference/fonts.md`: they are
 10–25 MB each). Install the **static** Light cuts: iced does not select a
-weight from a variable font, so a variable file renders as Regular.
+weight from a variable font, so a variable file renders as Regular (the dev
+rig has only variable fonts, so its captures carry a little more ink than the
+ISO will).
 
-## Screenshots
+## Screenshots and visual checks: offscreen only
 
-`eclipse-welcome --size 1920x1080 --at 5.9 --shot out.png` renders one frozen
-frame and exits (`--fade 0..1` overlays the exit fade). It needs a Wayland
-display but no compositor of ours.
+`eclipse-welcome --size 1920x1080 --scale 1.5 --at 5.9 --shot out.png` renders
+one frozen frame **offscreen** (`iced::advanced::renderer::Headless`, wgpu, no
+window, no compositor, no display) and exits; the PNG is `size * scale`
+physical pixels (`--fade 0..1` overlays the exit fade). Run it with
+`env -u WAYLAND_DISPLAY -u DISPLAY`. **Never open a window on the host session
+to look at this** (no windowed runs, fullscreen or `grim`): the dev host is the
+owner's live desktop. In windowed mode `--scale` multiplies the scale factor.

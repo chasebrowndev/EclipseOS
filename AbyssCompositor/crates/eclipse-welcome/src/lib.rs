@@ -21,6 +21,7 @@
 
 mod draw;
 pub mod fonts;
+mod logo;
 pub mod palette;
 pub mod timeline;
 mod welcome;

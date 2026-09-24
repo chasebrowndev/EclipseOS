@@ -14,8 +14,9 @@
 //! Fully opaque things are unaffected and use the raw colour.
 
 use crate::fonts::Faces;
+use crate::logo::{o_box, Layers, O_HOLE_RATIO};
 use crate::palette;
-use crate::timeline::{Eclipse, Frame, Greeting, WORDS};
+use crate::timeline::{lerp, Eclipse, Frame, Greeting, START_CQW, START_X_CQW, START_Y_CQH, WORDS};
 use crate::Message;
 use iced::advanced::graphics::text::Paragraph as TextParagraph;
 use iced::advanced::text::{Paragraph as _, Shaping, Text as CoreText, Wrapping};
@@ -25,7 +26,6 @@ use iced::widget::canvas::path::lyon_path::math::Transform;
 use iced::widget::canvas::{
     self, fill, gradient, Cache, Fill, Geometry, Image, Path, Program, Stroke, Style, Text,
 };
-use iced::widget::image::Handle;
 use iced::widget::text::{Alignment, LineHeight};
 use iced::{Color, Font, Pixels, Point, Rectangle, Renderer, Size, Theme};
 
@@ -177,9 +177,13 @@ pub struct Stage<'a> {
     pub fade: f32,
     pub label: &'a str,
     pub faces: &'a Faces,
-    pub logo: &'a Handle,
+    pub logo: &'a Layers,
     /// Logo height over width.
     pub logo_aspect: f32,
+    /// The logo's resampled size in physical pixels, once known.
+    pub logo_px: Option<(u32, u32)>,
+    /// Physical pixels per logical pixel, for snapping to whole pixels.
+    pub pixel_ratio: f32,
     pub background: &'a Cache,
 }
 
@@ -203,26 +207,31 @@ impl Program<Message> for Stage<'_> {
             .draw(renderer, bounds.size(), |f| paint_background(f, u));
 
         let mut scene = canvas::Frame::new(renderer, bounds.size());
-        paint_eclipse(&mut scene, u, &self.frame.eclipse);
+        let rect = logo_rect(u, self.logo_px, self.logo_aspect, self.pixel_ratio);
+        paint_eclipse(&mut scene, u, &self.frame.eclipse, rect);
+        // The letters, then the O over the eclipse that has landed on it: the
+        // same rectangle, so the two are one picture.
         if self.frame.logo_opacity > 0.0 {
-            let w = 50.0 * u.cqw();
-            let h = w * self.logo_aspect;
             scene.draw_image(
-                Rectangle::new(
-                    Point::new(50.0 * u.cqw() - w / 2.0, 50.0 * u.cqh() - h / 2.0),
-                    Size::new(w, h),
-                ),
-                Image::new(self.logo.clone()).opacity(lit(self.frame.logo_opacity)),
+                rect,
+                Image::new(self.logo.body.clone()).opacity(lit(self.frame.logo_opacity)),
+            );
+        }
+        if self.frame.o_opacity > 0.0 {
+            scene.draw_image(
+                rect,
+                Image::new(self.logo.o.clone()).opacity(lit(self.frame.o_opacity)),
             );
         }
         if let Some(g) = &self.frame.greeting {
-            paint_greeting(&mut scene, u, self.faces, g);
+            paint_greeting(&mut scene, u, self.pixel_ratio, self.faces, g);
         }
         paint_keycap(&mut scene, u, self.frame.key_opacity, self.frame.pulse);
         if self.frame.version_opacity > 0.0 {
             paint_version(
                 &mut scene,
                 u,
+                self.pixel_ratio,
                 self.label,
                 self.faces.label(),
                 scaled(palette::MUTED, lit(self.frame.version_opacity)),
@@ -310,55 +319,63 @@ fn radial(
     }
 }
 
+/// Where the eclipse is at `land` (`0..=1`) on its way to the O of the logo
+/// drawn at `rect`: its centre and its diameter (one em).
+///
+/// The end is the O itself, measured on the asset, not a constant in `cqw`, so
+/// the two coincide at any window size and aspect ratio, and on the pixel grid
+/// the logo was snapped to.
+fn eclipse_box(u: Units, rect: Rectangle, land: f32) -> (Point, f32) {
+    let ((ox, oy), od) = o_box(rect.x, rect.y, rect.width, rect.height);
+    let em = lerp(START_CQW * u.cqw(), od, land);
+    let x = lerp(START_X_CQW * u.cqw(), ox, land);
+    let y = lerp(START_Y_CQH * u.cqh(), oy, land);
+    (Point::new(x, y), em)
+}
+
+/// The moon's radius in em: 0.4 at the start, and by the time the eclipse has
+/// landed the size of the O's black disc, so the two are the same picture.
+fn moon_radius_em(land: f32) -> f32 {
+    lerp(0.4, 0.5 * O_HOLE_RATIO, land)
+}
+
 /// Corona, the sun's glow, the sun and the moon.
-fn paint_eclipse(frame: &mut canvas::Frame, u: Units, e: &Eclipse) {
-    if e.opacity <= 0.0 {
+///
+/// The sun and moon are opaque throughout: the logo's own O is faded in over
+/// them (see `logo`), and only then is the eclipse dropped. Only the corona
+/// and glow are translucent, and they fade by `halo`.
+fn paint_eclipse(frame: &mut canvas::Frame, u: Units, e: &Eclipse, logo: Rectangle) {
+    if e.merged {
         return;
     }
-    let em = e.size_cqw * u.cqw();
-    let centre = Point::new(e.x_cqw * u.cqw(), e.y_cqh * u.cqh());
-    let fading = e.opacity < 1.0;
-    // While the group is translucent the moon sits inside the sun, so the
-    // sun is a ring and nothing beneath it may show through the moon.
-    let hole = fading.then_some(0.5 * em - 0.75);
+    let (centre, em) = eclipse_box(u, logo, e.land);
 
-    if e.corona > 0.0 {
-        radial(frame, centre, 1.154 * em, 0.0, 72, palette::GOLD, hole, |r| {
-            corona_profile(r / em) * e.corona * e.opacity
+    if e.corona > 0.0 && e.halo > 0.0 {
+        radial(frame, centre, 1.154 * em, 0.0, 72, palette::GOLD, None, |r| {
+            corona_profile(r / em) * e.corona * e.halo
         });
     }
     // The sun's box-shadow: a blurred disc, painted only outside the sun.
-    let sigma = e.glow_blur_em / 2.0;
-    let reach = 0.5 + e.glow_spread_em;
-    radial(
-        frame,
-        centre,
-        (reach + 3.0 * sigma) * em,
-        0.5 * em,
-        96,
-        palette::GOLD,
-        hole,
-        |r| e.glow_alpha * e.opacity * blurred_edge(r / em - reach, sigma),
-    );
-
-    let sun = Path::new(|b| {
-        b.circle(centre, 0.5 * em);
-        if fading {
-            b.circle(centre, 0.4 * em);
-        }
-    });
-    if fading {
-        frame.fill(&sun, even_odd(scaled(palette::GOLD, lit(e.opacity))));
-    } else {
-        frame.fill(&sun, solid(palette::GOLD));
+    if e.halo > 0.0 {
+        let sigma = e.glow_blur_em / 2.0;
+        let reach = 0.5 + e.glow_spread_em;
+        radial(
+            frame,
+            centre,
+            (reach + 3.0 * sigma) * em,
+            0.5 * em,
+            96,
+            palette::GOLD,
+            None,
+            |r| e.glow_alpha * e.halo * blurred_edge(r / em - reach, sigma),
+        );
     }
 
-    let moon = Point::new(centre.x + e.moon_pct / 100.0 * 0.8 * em, centre.y);
-    let alpha = if fading { dim(e.opacity) } else { 1.0 };
-    frame.fill(
-        &Path::circle(moon, 0.4 * em),
-        solid(scaled(palette::BLACK, alpha)),
-    );
+    frame.fill(&Path::circle(centre, 0.5 * em), solid(palette::GOLD));
+
+    let radius = moon_radius_em(e.land) * em;
+    let moon = Point::new(centre.x + e.moon_pct / 100.0 * 2.0 * radius, centre.y);
+    frame.fill(&Path::circle(moon, radius), solid(palette::BLACK));
 }
 
 /// One greeting, as glyph outlines run through the reference's
@@ -367,7 +384,7 @@ fn paint_eclipse(frame: &mut canvas::Frame, u: Units, e: &Eclipse) {
 /// Outlines (`Text::draw_with`) rather than `fill_text` because the canvas can
 /// scale text but not skew it. The CSS blur is approximated by a few
 /// alpha-faded offset copies.
-fn paint_greeting(frame: &mut canvas::Frame, u: Units, faces: &Faces, g: &Greeting) {
+fn paint_greeting(frame: &mut canvas::Frame, u: Units, ratio: f32, faces: &Faces, g: &Greeting) {
     if g.opacity <= 0.0 {
         return;
     }
@@ -385,12 +402,24 @@ fn paint_greeting(frame: &mut canvas::Frame, u: Units, faces: &Faces, g: &Greeti
         align_y: Vertical::Center,
         shaping: Shaping::Advanced,
     };
-    let mut glyphs = Vec::new();
-    text.draw_with(|path, _| glyphs.push(path));
-
     // The transform origin is the middle of the (1.2 line-height) element.
     let cx = 50.0 * u.cqw() + g.x_cqw * u.cqw();
     let cy = 72.0 * u.cqh() + 0.6 * size;
+
+    // At rest a word is upright, unblurred and solid: draw it as text, on the
+    // glyph atlas, at a whole pixel. That is how every other pane's text is
+    // drawn and it is far crisper than a filled outline, which only gets the
+    // canvas's 4x multisampling. Outlines are for words that are moving.
+    if is_crisp(g) {
+        frame.fill_text(Text {
+            position: Point::new(snap(cx, ratio), snap(cy, ratio)),
+            ..text
+        });
+        return;
+    }
+
+    let mut glyphs = Vec::new();
+    text.draw_with(|path, _| glyphs.push(path));
     let skew = (-g.skew_deg).to_radians().tan();
 
     for (dx, dy, weight) in blur_copies(g.blur_px) {
@@ -404,11 +433,26 @@ fn paint_greeting(frame: &mut canvas::Frame, u: Units, faces: &Faces, g: &Greeti
     }
 }
 
+/// Whether a greeting is at rest: upright, unblurred and solid. The reference
+/// blurs by `av * 26` px, so a word gliding at a tenth of the fastest speed is
+/// still blurred by a couple of pixels there; that much is not worth softening
+/// text over, so it is drawn sharp.
+pub fn is_crisp(g: &Greeting) -> bool {
+    g.blur_px < CRISP_BLUR && g.skew_deg > -CRISP_SKEW && g.scale_x < 1.005 && g.opacity >= 1.0
+}
+
+/// Below this blur radius (px) a word is drawn sharp.
+const CRISP_BLUR: f32 = 1.0;
+const CRISP_SKEW: f32 = 0.5;
+
 /// Offsets and weights of the copies approximating `filter: blur(sigma)`:
 /// the centre plus three rings out to two sigma, weighted like a Gaussian and
-/// normalised to sum to one. An unblurred word is a single full copy.
+/// normalised to sum to one. Up to [`CRISP_BLUR`] the word is a single full
+/// copy, and past it the blur starts from zero rather than jumping to the
+/// full radius, so a word never pops from sharp to soft.
 pub fn blur_copies(sigma: f32) -> Vec<(f32, f32, f32)> {
-    if sigma < 0.75 {
+    let sigma = (sigma - CRISP_BLUR).max(0.0);
+    if sigma < 0.05 {
         return vec![(0.0, 0.0, 1.0)];
     }
     const RINGS: [(f32, usize); 3] = [(0.7, 6), (1.4, 12), (2.1, 18)];
@@ -427,12 +471,35 @@ pub fn blur_copies(sigma: f32) -> Vec<(f32, f32, f32)> {
     out
 }
 
+/// Where the logo goes: 50cqw wide, centred. Once its resampled size is known
+/// the rectangle is placed on whole physical pixels and is exactly the texture's
+/// size, so nothing is stretched or shifted by a fraction of a pixel.
+fn logo_rect(u: Units, px: Option<(u32, u32)>, aspect: f32, ratio: f32) -> Rectangle {
+    let Some((w, h)) = px else {
+        let w = 50.0 * u.cqw();
+        let h = w * aspect;
+        return Rectangle::new(
+            Point::new(50.0 * u.cqw() - w / 2.0, 50.0 * u.cqh() - h / 2.0),
+            Size::new(w, h),
+        );
+    };
+    let (w, h) = (w as f32, h as f32);
+    let x = (50.0 * u.cqw() * ratio - w / 2.0).round();
+    let y = (50.0 * u.cqh() * ratio - h / 2.0).round();
+    Rectangle::new(Point::new(x / ratio, y / ratio), Size::new(w / ratio, h / ratio))
+}
+
+/// `v` moved to the nearest whole physical pixel.
+fn snap(v: f32, ratio: f32) -> f32 {
+    (v * ratio).round() / ratio
+}
+
 /// The version label, `letter-spacing: .06em`, right-aligned at 97cqw/97cqh.
 ///
 /// The canvas has no letter-spacing, so each character is placed by hand at
 /// its own measured advance (digits tabular). CSS spaces after every character, the last
 /// included, so the run ends one gap short of the anchor.
-fn paint_version(frame: &mut canvas::Frame, u: Units, label: &str, font: Font, color: Color) {
+fn paint_version(frame: &mut canvas::Frame, u: Units, ratio: f32, label: &str, font: Font, color: Color) {
     let size = u.cqw();
     let gap = 0.06 * size;
     let measure = |c: char| -> f32 {
@@ -470,7 +537,7 @@ fn paint_version(frame: &mut canvas::Frame, u: Units, label: &str, font: Font, c
         };
         frame.fill_text(Text {
             content: c.to_string(),
-            position: Point::new(x + centred, 97.0 * u.cqh()),
+            position: Point::new(snap(x + centred, ratio), snap(97.0 * u.cqh(), ratio)),
             max_width: f32::INFINITY,
             color,
             size: Pixels(size),
@@ -647,5 +714,62 @@ mod tests {
         assert_eq!(blur_copies(14.0).len(), 37);
         let sum: f32 = blur_copies(14.0).iter().map(|c| c.2).sum();
         assert!((sum - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_slow_word_is_sharp_and_blur_starts_from_zero_past_the_dead_zone() {
+        assert_eq!(blur_copies(CRISP_BLUR).len(), 1);
+        assert_eq!(blur_copies(0.4).len(), 1);
+        // Just past it the cluster is nearly the centre: no jump to full radius.
+        let near = blur_copies(CRISP_BLUR + 0.2);
+        assert_eq!(near.len(), 37);
+        let reach = near.iter().map(|c| c.0.hypot(c.1)).fold(0.0, f32::max);
+        assert!(reach < 0.6, "{reach}");
+    }
+
+    fn greeting(blur: f32, skew: f32, scale: f32, opacity: f32) -> Greeting {
+        Greeting {
+            index: 0,
+            x_cqw: 0.0,
+            skew_deg: skew,
+            blur_px: blur,
+            scale_x: scale,
+            opacity,
+        }
+    }
+
+    #[test]
+    fn only_a_settled_word_is_drawn_as_crisp_text() {
+        assert!(is_crisp(&greeting(0.2, -0.1, 1.001, 1.0)));
+        assert!(!is_crisp(&greeting(3.0, -0.1, 1.001, 1.0)));
+        assert!(!is_crisp(&greeting(0.2, -6.0, 1.001, 1.0)));
+        assert!(!is_crisp(&greeting(0.2, -0.1, 1.2, 1.0)));
+        assert!(!is_crisp(&greeting(0.2, -0.1, 1.001, 0.6)));
+    }
+
+    #[test]
+    fn the_eclipse_lands_exactly_on_the_logos_o_at_any_window_shape() {
+        for (w, h) in [(1920.0, 1080.0), (2880.0, 1920.0), (1000.0, 1000.0)] {
+            let u = Units { w, h };
+            let rect = logo_rect(
+                u,
+                Some(((0.5 * w) as u32, ((0.5 * w) * 144.0 / 796.0) as u32)),
+                144.0 / 796.0,
+                1.0,
+            );
+            let ((ox, oy), od) = o_box(rect.x, rect.y, rect.width, rect.height);
+            let (c, em) = eclipse_box(u, rect, 1.0);
+            assert!((c.x - ox).abs() < 1e-3 && (c.y - oy).abs() < 1e-3 && (em - od).abs() < 1e-3);
+            // And it starts where the reference put it.
+            let (c, em) = eclipse_box(u, rect, 0.0);
+            assert!((c.x - 0.5 * w).abs() < 1e-2 && (c.y - 0.44 * h).abs() < 1e-2);
+            assert!((em - 0.24 * w).abs() < 1e-2);
+        }
+    }
+
+    #[test]
+    fn the_moon_ends_the_size_of_the_o_s_black_disc() {
+        assert!((moon_radius_em(0.0) - 0.4).abs() < 1e-6);
+        assert!((moon_radius_em(1.0) - 0.5 * O_HOLE_RATIO).abs() < 1e-6);
     }
 }
