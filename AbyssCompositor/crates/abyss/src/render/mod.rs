@@ -27,7 +27,8 @@ use smithay::{
     backend::renderer::{
         element::{
             solid::{SolidColorBuffer, SolidColorRenderElement},
-            surface::WaylandSurfaceRenderElement,
+            surface::{render_elements_from_surface_tree, WaylandSurfaceRenderElement},
+            utils::CropRenderElement,
             AsRenderElements, Kind,
         },
         gles::{element::PixelShaderElement, GlesRenderer},
@@ -39,7 +40,7 @@ use smithay::{
             surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
             update_surface_primary_scanout_output, OutputPresentationFeedback,
         },
-        Space, Window,
+        PopupManager, Space, Window,
     },
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -64,6 +65,9 @@ smithay::backend::renderer::element::render_elements! {
     Rounded=effects::RoundedElement,
     Shader=smithay::backend::renderer::gles::element::PixelShaderElement,
     Blur=blur::BlurElement,
+    // A tiled window that overhangs its tile, cut back to it (see `window_elements`).
+    Cropped=CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
+    CroppedRounded=CropRenderElement<effects::RoundedElement>,
 }
 
 /// A surface that wants a blurred backdrop: what it belongs to, the index in
@@ -399,8 +403,20 @@ fn window_elements(
         let Some(loc) = space.element_location(&window) else {
             continue;
         };
+        // A tiled client that ignored its configure (Electron holds its own
+        // min width) is cut back to its tile rather than drawn under its
+        // neighbour. Only a window that actually overhangs is cropped, so one
+        // that fits keeps its plain elements and its scanout path.
+        let clip = crate::shell::tile_clip(&window).filter(|c| {
+            let g = window.geometry().size;
+            g.w > c.size.w || g.h > c.size.h
+        });
         let geo = space.element_geometry(&window).map(|mut geo| {
             geo.loc += store.anim.offset(&window);
+            if let Some(c) = clip {
+                geo.size.w = geo.size.w.min(c.size.w);
+                geo.size.h = geo.size.h.min(c.size.h);
+            }
             geo
         });
         let active = focus == Some(&window);
@@ -432,12 +448,51 @@ fn window_elements(
         }
 
         let render_loc = loc + store.anim.offset(&window) - window.geometry().loc - output_geo.loc;
-        let surfaces = window.render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
-            renderer,
-            phys(render_loc, scale),
-            scale,
-            alpha,
-        );
+        // Popups are split off a cropped window so a menu that opens past the
+        // tile edge is not cut; smithay's `render_elements` puts them first.
+        let (popups, surfaces) = match (clip, window.toplevel()) {
+            (Some(_), Some(toplevel)) => {
+                let surface = toplevel.wl_surface();
+                let popups = PopupManager::popups_for_surface(surface)
+                    .flat_map(|(popup, popup_offset)| {
+                        let offset = (window.geometry().loc + popup_offset - popup.geometry().loc)
+                            .to_physical_precise_round(scale);
+                        render_elements_from_surface_tree(
+                            renderer,
+                            popup.wl_surface(),
+                            phys(render_loc, scale) + offset,
+                            scale,
+                            alpha,
+                            Kind::Unspecified,
+                        )
+                    })
+                    .collect();
+                let own = render_elements_from_surface_tree(
+                    renderer,
+                    surface,
+                    phys(render_loc, scale),
+                    scale,
+                    alpha,
+                    Kind::Unspecified,
+                );
+                (popups, own)
+            }
+            _ => (
+                Vec::new(),
+                window.render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
+                    renderer,
+                    phys(render_loc, scale),
+                    scale,
+                    alpha,
+                ),
+            ),
+        };
+        let crop = clip.map(|c| {
+            Rectangle::new(
+                phys(c.loc + store.anim.offset(&window) - output_geo.loc, scale),
+                c.size.to_f64().to_physical(scale).to_i32_round(),
+            )
+        });
 
         // Every surface of one window is masked by the same rectangle, so a
         // window with subsurfaces rounds as a single shape.
@@ -449,15 +504,36 @@ fn window_elements(
                 );
                 let radius = deco.rounding as f64 * scale.x.max(scale.y);
                 let uniforms = effects::rounding_uniforms(rect, *fb_height, *mirrored, radius as f32);
-                out.extend(surfaces.into_iter().map(|surface| {
-                    AbyssRenderElement::Rounded(effects::RoundedElement::new(
-                        surface,
-                        program.clone(),
-                        uniforms.clone(),
-                    ))
-                }));
+                let round =
+                    |surface| effects::RoundedElement::new(surface, program.clone(), uniforms.clone());
+                // Unmasked: the mask follows the tile, and would cut the popup too.
+                out.extend(popups.into_iter().map(AbyssRenderElement::Surface));
+                match crop {
+                    Some(crop) => out.extend(
+                        surfaces
+                            .into_iter()
+                            .filter_map(|s| CropRenderElement::from_element(round(s), scale, crop))
+                            .map(AbyssRenderElement::CroppedRounded),
+                    ),
+                    None => out.extend(
+                        surfaces
+                            .into_iter()
+                            .map(|s| AbyssRenderElement::Rounded(round(s))),
+                    ),
+                }
             }
-            _ => out.extend(surfaces.into_iter().map(AbyssRenderElement::Surface)),
+            _ => {
+                out.extend(popups.into_iter().map(AbyssRenderElement::Surface));
+                match crop {
+                    Some(crop) => out.extend(
+                        surfaces
+                            .into_iter()
+                            .filter_map(|s| CropRenderElement::from_element(s, scale, crop))
+                            .map(AbyssRenderElement::Cropped),
+                    ),
+                    None => out.extend(surfaces.into_iter().map(AbyssRenderElement::Surface)),
+                }
+            }
         }
 
         let Some(geo) = geo else {

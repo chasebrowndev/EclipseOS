@@ -16,44 +16,7 @@ HW-01 through HW-07 (the first Framework install, 2026-09-19) and PKG-01/PKG-02
 (updating a live install, 2026-09-22), PKG-03, PKG-04 and CFG-01 were fixed and removed on 2026-09-23; the
 rules they left behind are kept below. The full write-ups are in git history
 (this file at `20d8e3a`) and `docs/handoff/2026-09-19-greeter-to-abyss.md`.
-
----
-
-## BLUR-02 — a 1px dark line appears across a translucent window on eDP-1
-
-**Severity: visual.** Cosmetic, persistent until the window redraws.
-
-**Needs re-verification (2026-09-23).** `107b5de` (#29, rounded borders, masks
-and blur that match their windows) and `e906321` reworked the blur path after
-this was written, including the final upright pass's orientation. Nobody has
-looked at eDP-1 at scale 2.0 since. Check before working on it.
-
-Found 2026-09-21. A thin dark horizontal line, one pixel high, starts
-partway across a translucent kitty window and runs to its right edge. Not a
-dead pixel (checked in the BIOS).
-
-**Confirmed:**
-- Only on eDP-1 (2880x1920, scale 2.0), not on DP-3 (scale 1.0).
-- Gone with `decoration { blur { enabled #false } }` plus `eclipse-ctl reload`.
-- Absent from `grim` screenshots and from region selection, so the fault is in
-  what the live output frame shows, not in the composed scene.
-- No `invalid damage clip` or `queueing frame` in the journal, so it is not a
-  refused DRM commit.
-
-**Root cause: not identified.** Suspects in `BlurStore::element`
-(`crates/abyss/src/render/blur.rs`, the `src`/`size` block near the end of the
-function), all unverified:
-- `src` is `region / scale` (logical) but the texture is in output-local
-  physical pixels with buffer scale 1, so at scale 2.0 the sampled rectangle
-  differs from the region. This would explain why it only shows at 2.0.
-- `size` is rounded on its own instead of derived from `region.size`, so the
-  element geometry can differ from the blur region by a pixel.
-- The result texture is static and refreshes only when `invalidates()` fires,
-  so a missed invalidation leaves a stale strip.
-
-**Proposed fix:** none. Blur is due for a major rework; the rework should
-cover the three points above and add a test that element geometry equals the
-region at scales 1.5 and 2.0. Workaround: disable blur.
+BLUR-02 and TILE-01 were fixed on 2026-09-23 and removed.
 
 ---
 
@@ -89,19 +52,6 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
   is the default.
 
 ---
-
-## TILE-01 — nothing crops a tiled window to its tile
-
-**Severity: visual. Needs live verification.** Electron clients (Discord,
-Spotify) advertise a min width wider than a half tile. The layout used to
-configure them at that min, so they drew under their neighbour; tiled windows
-now ignore min_size (`clamp_size`, `crates/abyss/src/shell/mod.rs`). But a
-client that ignores the configure still draws past its tile: `window_elements`
-(`render/mod.rs`) renders each window unclipped at its mapped location, and the
-shell keeps no tile rectangle render could crop to.
-
-**Proposed fix:** only if Discord/Spotify still bleed after the min_size change
-— store the tile rect per tiled window and wrap its elements in a crop.
 
 ## Probing notes for the launcher
 

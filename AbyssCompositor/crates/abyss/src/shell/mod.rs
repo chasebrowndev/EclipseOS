@@ -47,6 +47,25 @@ pub fn window_surface(window: &Window) -> Option<WlSurface> {
     }
 }
 
+/// The tile's inner rect (after the border shrink) a tiled window was last
+/// configured to, in global logical coordinates. Render crops tiled windows to
+/// it, since some clients (Electron) ignore the configure and overhang their
+/// tile (COMP-05, KNOWNBUGS TILE-01). `None` for floating windows.
+pub struct TileClip(Cell<Option<Rectangle<i32, Logical>>>);
+
+/// The tile rect a tiled window is cropped to, if it is tiled.
+pub fn tile_clip(window: &Window) -> Option<Rectangle<i32, Logical>> {
+    window.user_data().get::<TileClip>().and_then(|c| c.0.get())
+}
+
+fn set_tile_clip(window: &Window, rect: Option<Rectangle<i32, Logical>>) {
+    let data = window.user_data();
+    data.insert_if_missing(|| TileClip(Cell::new(None)));
+    if let Some(c) = data.get::<TileClip>() {
+        c.0.set(rect);
+    }
+}
+
 /// The output that owns focus. `None` only when there is no output at all:
 /// `Outputs::add` adopts focus for the first entry and `unregister` calls
 /// `repair_focus`, so the focused id dangles nowhere in between (ADR 0042).
@@ -355,6 +374,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         let size = clamp_size(&w, inner.size, true);
         configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
         fractional_scale::update_window_scale(&w, &output);
+        set_tile_clip(&w, Some(inner));
         state.space.map_element(w, inner.loc, false);
     }
     for (w, rect) in floating {
@@ -367,6 +387,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         let size = clamp_size(&w, inner.size, false);
         configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
         fractional_scale::update_window_scale(&w, &output);
+        set_tile_clip(&w, None);
         state.space.map_element(w.clone(), inner.loc, false);
         state.space.raise_element(&w, false);
     }
