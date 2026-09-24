@@ -674,6 +674,7 @@ pub struct Collection {
 pub const COLLECTIONS: &[Collection] = &[
     Collection { node: "bind", owner: Abyss, doc: "A key binding: `bind [\"<modifiers>\"] \"<keysym>\" { <action>; }`, e.g. `bind \"SUPER SHIFT\" \"Return\" { spawn \"foot\"; }`. `Super+Escape` and `Super+space` are reserved and cannot be bound." },
     Collection { node: "gesture", owner: Abyss, doc: "A touchpad swipe binding: `gesture \"swipe\" <fingers> \"<direction>\" { <action>; }`. `fingers` is 3 or 4, `direction` is `left`, `right`, `up` or `down`, and the action is anything `bind` accepts. A bound finger count is the compositor's for the whole swipe; unbound swipes, pinches and holds reach the app. Defaults: 3-finger `left` runs `workspace-next`, 3-finger `right` runs `workspace-prev`. A `gesture` for the same fingers and direction replaces the default." },
+    Collection { node: "mousebind", owner: Abyss, doc: "A modifier + mouse-button binding: `mousebind \"<modifiers>\" \"<button>\" { <action>; }`. `button` is `left`, `right` or `middle`, and the action is `move-window` or `resize-window`. With exactly those modifiers held, pressing the button over a window drags it (move) or drags its nearest corner (resize); a tiled window is floated first. The press never reaches the client. At least one modifier is required. Defaults: `Alt` + `left` runs `move-window`, `Alt` + `right` runs `resize-window`. A `mousebind` for the same modifiers and button replaces the default." },
     Collection { node: "output", owner: Abyss, doc: "Per-output settings: `output \"<glob>\" { … }`. The glob (`*` only) matches the connector name or the persistent identity; later blocks override earlier ones key by key." },
     Collection { node: "workspace", owner: Abyss, doc: "Per-workspace layout override." },
     Collection { node: "windowrule", owner: Abyss, doc: "A rule matched against windows at map time. Its *action* decides the owning file." },
@@ -996,7 +997,7 @@ pub const BIND_ACTIONS: &[Form] = &[
         &["move-left"],
         "",
         &["move-left"],
-        "Swap with the neighbour to the left (nudges a floating window).",
+        "Swap with the neighbour to the left (tiled windows only).",
     ),
     form(
         &["move-right"],

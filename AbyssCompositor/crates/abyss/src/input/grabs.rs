@@ -7,6 +7,10 @@
 //! turned into a new window geometry instead. The grab ends when the button
 //! that started it is released.
 //!
+//! The human can start the same grabs without the client's help: a `mousebind`
+//! (modifier + button, `start_mouse_bind`) drags whatever window is under the
+//! pointer, and the press is swallowed so the client never sees it.
+//!
 //! The same requests arrive with a `wl_touch.down` serial when a CSD client's
 //! titlebar is dragged by finger. Those get a touch grab instead: motion of the
 //! starting slot drives the window, and lifting that finger (or a cancel) ends
@@ -29,9 +33,10 @@ use smithay::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{protocol::wl_surface::WlSurface, Resource},
     },
-    utils::{Logical, Point, Rectangle, Serial, Size},
+    utils::{Logical, Point, Rectangle, Serial, Size, SERIAL_COUNTER},
 };
 
+use crate::input::MouseAction;
 use crate::state::AbyssState;
 
 /// The grab is only honoured if the serial really belongs to a press the
@@ -665,6 +670,127 @@ pub fn start_resize(
     state.touch_grab_active = true;
 }
 
+/// Which edges a mouse-bound resize drags, chosen by the quadrant of the window
+/// the pointer is in (Hyprland's behaviour): the nearest corner moves, the
+/// opposite one stays put. A pointer exactly on a midline counts as right or
+/// bottom.
+pub fn edges_for(rect: Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> xdg_toplevel::ResizeEdge {
+    use xdg_toplevel::ResizeEdge as E;
+    let cx = rect.loc.x as f64 + rect.size.w as f64 / 2.0;
+    let cy = rect.loc.y as f64 + rect.size.h as f64 / 2.0;
+    match (pos.x < cx, pos.y < cy) {
+        (true, true) => E::TopLeft,
+        (false, true) => E::TopRight,
+        (true, false) => E::BottomLeft,
+        (false, false) => E::BottomRight,
+    }
+}
+
+/// Begin a compositor-initiated move: the human pressed a `mousebind`, so
+/// there is no client serial to vet. The grab starts where the pointer is now.
+/// Returns whether it was installed.
+pub fn start_move_at(state: &mut AbyssState, window: Window, button: u32) -> bool {
+    let Some(initial_location) = state.space.element_geometry(&window).map(|g| g.loc) else {
+        return false;
+    };
+    let Some(pointer) = state.seat.get_pointer() else {
+        return false;
+    };
+    let grab = MoveSurfaceGrab {
+        start_data: GrabStartData {
+            focus: None,
+            button,
+            location: state.pointer_location,
+        },
+        window,
+        initial_location,
+    };
+    // Set after `set_grab`, which runs the previous grab's `unset`.
+    pointer.set_grab(state, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);
+    state.pointer_grab_active = true;
+    true
+}
+
+/// Compositor-initiated resize; the dragged corner is the one nearest the
+/// pointer (see [`edges_for`]). Returns whether it was installed.
+pub fn start_resize_at(state: &mut AbyssState, window: Window, button: u32) -> bool {
+    let Some(initial_rect) = state.space.element_geometry(&window) else {
+        return false;
+    };
+    let Some(pointer) = state.seat.get_pointer() else {
+        return false;
+    };
+    let location = state.pointer_location;
+    let grab = ResizeSurfaceGrab {
+        start_data: GrabStartData {
+            focus: None,
+            button,
+            location,
+        },
+        window,
+        edges: edges_for(initial_rect, location),
+        initial_rect,
+    };
+    pointer.set_grab(state, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);
+    state.pointer_grab_active = true;
+    true
+}
+
+/// The root of a surface tree: a subsurface resolves to the surface it hangs
+/// off, so a press on a subsurface counts as a press on its window.
+fn root_surface(surface: &WlSurface) -> WlSurface {
+    let mut root = surface.clone();
+    while let Some(parent) = smithay::wayland::compositor::get_parent(&root) {
+        root = parent;
+    }
+    root
+}
+
+/// A `mousebind` press (COMP-04 §5, ADR 0057): if `button` went down with
+/// exactly the bound modifiers over a managed toplevel, start the bound
+/// move/resize on it and return `true`.
+///
+/// Called *before* the press is handed to the seat. The grab clears pointer
+/// focus, so the press lands in the grab and the client never sees it — nor the
+/// matching release. Declines (returns `false`, press proceeds normally) when a
+/// drag is already in flight, the session is locked, nothing bound matches, the
+/// surface under the pointer is not a toplevel (layer surfaces, popups,
+/// override-redirect X11 windows) or the window is maximized/fullscreen.
+///
+/// The lookup allocates nothing (a refcount bump per subsurface hop at most);
+/// focusing an X11 window on a hit is the press path's, not the motion path's.
+pub fn start_mouse_bind(state: &mut AbyssState, button: u32) -> bool {
+    if state.lock.locked || drag_active(state) {
+        return false;
+    }
+    let Some(keyboard) = state.seat.get_keyboard() else {
+        return false;
+    };
+    let mods = keyboard.modifier_state();
+    let Some(action) = state.config.mouse_bind_for(&mods, button) else {
+        return false;
+    };
+    let Some((surface, _)) = state.surface_under(state.pointer_location) else {
+        return false;
+    };
+    let Some(window) = crate::shell::window_for_surface(state, &root_surface(&surface)) else {
+        return false;
+    };
+    if state.maximized.contains_key(&window)
+        || state.fullscreen.contains_key(&window)
+        || crate::shell::output_of_window(state, &window).is_none()
+    {
+        return false;
+    }
+    // Raise and focus the dragged window now rather than leaving it to
+    // click-to-focus, which is frozen when the drag started on another output.
+    crate::shell::focus::focus_window_raising(state, &window, true);
+    match action {
+        MouseAction::MoveWindow => start_move_at(state, window, button),
+        MouseAction::ResizeWindow => start_resize_at(state, window, button),
+    }
+}
+
 /// The single definition of "a drag is in flight" (COMP-05 §5).
 ///
 /// Focus must not follow the mouse across an output boundary mid-drag, and a
@@ -724,6 +850,74 @@ mod tests {
     fn resize_never_collapses_below_one_pixel() {
         let got = resized_rect(r(0, 0, 10, 10), E::BottomRight, Point::from((-50, -50)));
         assert_eq!(got.size, Size::from((1, 1)));
+    }
+
+    #[test]
+    fn edges_for_picks_the_nearest_corner() {
+        let rect = r(100, 200, 400, 300); // centre (300, 350)
+        let at = |x: f64, y: f64| edges_for(rect, Point::from((x, y)));
+        assert_eq!(at(110.0, 210.0), E::TopLeft);
+        assert_eq!(at(490.0, 210.0), E::TopRight);
+        assert_eq!(at(110.0, 490.0), E::BottomLeft);
+        assert_eq!(at(490.0, 490.0), E::BottomRight);
+        // The midlines belong to the right and bottom halves.
+        assert_eq!(at(300.0, 350.0), E::BottomRight);
+        assert_eq!(at(299.9, 349.9), E::TopLeft);
+    }
+
+    #[test]
+    fn a_mouse_resize_keeps_the_corner_opposite_the_pointer_fixed() {
+        let rect = r(100, 200, 400, 300);
+        let start = Point::from((110.0, 210.0));
+        let edges = edges_for(rect, start);
+        // Dragging the top-left corner right/down shrinks from that corner.
+        assert_eq!(
+            resized_rect(rect, edges, Point::from((20, 10))),
+            r(120, 210, 380, 290)
+        );
+    }
+
+    fn hold_alt(s: &mut AbyssState) {
+        let kbd = s.seat.get_keyboard().expect("keyboard capability");
+        let mods = smithay::input::keyboard::ModifiersState {
+            alt: true,
+            ..Default::default()
+        };
+        kbd.set_modifier_state(mods);
+    }
+
+    /// The harness has no client, so there is never a window to grab; every
+    /// path must decline and leave the press for the seat.
+    #[test]
+    fn a_mousebind_press_with_no_window_under_the_pointer_starts_nothing() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let s = &mut h.state;
+        hold_alt(s);
+        assert!(!start_mouse_bind(s, 0x110));
+        assert!(!start_mouse_bind(s, 0x111));
+        assert!(!s.pointer_grab_active);
+        assert!(!s.seat.get_pointer().unwrap().is_grabbed());
+    }
+
+    #[test]
+    fn a_press_without_the_bound_modifiers_or_button_starts_nothing() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let s = &mut h.state;
+        // No modifier held.
+        assert!(!start_mouse_bind(s, 0x110));
+        hold_alt(s);
+        // Bound modifier, unbound button.
+        assert!(!start_mouse_bind(s, 0x112));
+        assert!(!s.pointer_grab_active);
+    }
+
+    #[test]
+    fn a_mousebind_press_is_declined_while_a_drag_is_in_flight() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let s = &mut h.state;
+        hold_alt(s);
+        s.pointer_grab_active = true;
+        assert!(!start_mouse_bind(s, 0x110));
     }
 
     #[test]

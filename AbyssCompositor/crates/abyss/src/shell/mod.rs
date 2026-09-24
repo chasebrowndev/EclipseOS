@@ -1875,32 +1875,14 @@ pub fn focus_direction(state: &mut AbyssState, dir: Direction) {
     }
 }
 
-/// Swap the focused window with its neighbour in `dir` (tiled), or nudge a
-/// floating window.
+/// Swap the focused tiled window with its neighbour in `dir`. A floating
+/// window is not moved here; it is dragged with a `mousebind` (ADR 0057).
 pub fn move_direction(state: &mut AbyssState, dir: Direction) {
     let Some(from) = state.focus.clone() else { return };
     let Some(id) = output_of_window(state, &from) else {
         return;
     };
     let ws = state.outputs.get(id).expect("just resolved").active;
-    let entry = state.outputs.get_mut(id).expect("just resolved");
-    if let Some(i) = entry.workspaces[ws]
-        .floating
-        .iter()
-        .position(|f| f.window == from)
-    {
-        const STEP: i32 = 50;
-        let r = &mut entry.workspaces[ws].floating[i].rect;
-        match dir {
-            Direction::Left => r.loc.x -= STEP,
-            Direction::Right => r.loc.x += STEP,
-            Direction::Up => r.loc.y -= STEP,
-            Direction::Down => r.loc.y += STEP,
-        }
-        arrange(state);
-        warp_pointer_to(state, &from);
-        return;
-    }
     let Some(target) = neighbour(state, &from, dir) else {
         return;
     };

@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use kdl::{KdlDocument, KdlNode, KdlValue};
 use smithay::input::keyboard::{xkb, Keysym, ModifiersState};
 
-use crate::input::{Action, Bind, Direction, GestureBind, Mods};
+use crate::input::{Action, Bind, Direction, GestureBind, Mods, MouseAction, MouseBind, MouseButton};
 use crate::xwayland::security::{AppTrust, SeatCompat};
 
 /// Where a floating window lands when nothing else decides for it — no
@@ -802,6 +802,9 @@ pub struct Config {
     /// Touchpad swipe bindings, one per `(fingers, direction)`: the defaults
     /// with every `gesture` node merged over them.
     pub gesture_binds: Vec<GestureBind>,
+    /// Modifier + mouse-button bindings, one per `(mods, button)`: the
+    /// defaults with every `mousebind` node merged over them (COMP-04 §5).
+    pub mouse_binds: Vec<MouseBind>,
     /// Per-workspace layout overrides, indexed 1..=10.
     pub workspace_layout: [Option<LayoutKind>; 10],
     /// `output` blocks in file order; the last match wins.
@@ -839,6 +842,7 @@ impl Default for Config {
             input: Input::default(),
             binds: default_binds(),
             gesture_binds: default_gesture_binds(),
+            mouse_binds: default_mouse_binds(),
             workspace_layout: Default::default(),
             outputs: Vec::new(),
             window_rules: Vec::new(),
@@ -890,6 +894,28 @@ pub fn default_gesture_binds() -> Vec<GestureBind> {
             fingers: 3,
             direction: Direction::Right,
             action: Action::WorkspacePrev,
+        },
+    ]
+}
+
+/// Hyprland's `bindm` pair on Alt (ADR 0057): hold Alt, drag with the left
+/// button to move a window and with the right button to resize it. Alt rather
+/// than Super, which is kept free for a future launcher.
+pub fn default_mouse_binds() -> Vec<MouseBind> {
+    let alt = Mods {
+        alt: true,
+        ..Mods::default()
+    };
+    vec![
+        MouseBind {
+            mods: alt,
+            button: MouseButton::Left,
+            action: MouseAction::MoveWindow,
+        },
+        MouseBind {
+            mods: alt,
+            button: MouseButton::Right,
+            action: MouseAction::ResizeWindow,
         },
     ]
 }
@@ -1018,8 +1044,9 @@ pub fn default_binds() -> Vec<Bind> {
             key: Keysym::Down,
             action: Action::Focus(Direction::Down),
         },
-        // Moving a window has no Hyprland bind to copy; Shift over the focus
-        // arrows is the obvious pair and collides with nothing.
+        // Swapping a tiled window with its neighbour has no Hyprland bind to
+        // copy; Shift over the focus arrows is the obvious pair and collides
+        // with nothing. Floating windows move by mouse drag (`mousebind`).
         Bind {
             mods: sup_shift,
             key: Keysym::Left,
@@ -1409,6 +1436,18 @@ impl Config {
                         None => self.gesture_binds.push(g),
                     },
                     Err(e) => self.reject(node, format!("ignoring gesture (error={})", e)),
+                },
+                // Same replace-in-place rule, keyed on `(mods, button)`.
+                "mousebind" => match parse_mousebind(node) {
+                    Ok(b) => match self
+                        .mouse_binds
+                        .iter_mut()
+                        .find(|o| o.mods == b.mods && o.button == b.button)
+                    {
+                        Some(slot) => *slot = b,
+                        None => self.mouse_binds.push(b),
+                    },
+                    Err(e) => self.reject(node, format!("ignoring mousebind (error={})", e)),
                 },
                 "workspace" => self.apply_workspace(node),
                 "render" => self.apply_render(node),
@@ -2294,6 +2333,15 @@ impl Config {
         self.gesture_binds.iter().any(|g| g.fingers == fingers)
     }
 
+    /// The mouse binding for `button` pressed with exactly `mods` held.
+    /// Called on every button press, so it borrows and allocates nothing.
+    pub fn mouse_bind_for(&self, mods: &ModifiersState, button: u32) -> Option<MouseAction> {
+        self.mouse_binds
+            .iter()
+            .find(|b| b.button.code() == button && b.mods.matches(mods))
+            .map(|b| b.action)
+    }
+
     pub fn gesture_for(&self, fingers: u32, direction: Direction) -> Option<&Action> {
         self.gesture_binds
             .iter()
@@ -2478,6 +2526,37 @@ fn parse_gesture(node: &KdlNode) -> Result<GestureBind, String> {
         direction,
         action,
     })
+}
+
+/// `mousebind "Alt" "left" { move-window; }`
+fn parse_mousebind(node: &KdlNode) -> Result<MouseBind, String> {
+    let a = args(node);
+    let [mods, button] = a[..] else {
+        return Err("mousebind takes \"modifiers\" \"button\" { action }".into());
+    };
+    let mods = parse_mods(mods.as_string().ok_or("modifiers must be a string")?)?;
+    let button = match button.as_string() {
+        Some("left") => MouseButton::Left,
+        Some("right") => MouseButton::Right,
+        Some("middle") => MouseButton::Middle,
+        _ => return Err("mousebind button must be left, right or middle".into()),
+    };
+    let children = node.children().ok_or("mousebind needs an action block")?;
+    let action_node = children
+        .nodes()
+        .first()
+        .ok_or("mousebind action block is empty")?;
+    let action = match action_node.name().value() {
+        "move-window" => MouseAction::MoveWindow,
+        "resize-window" => MouseAction::ResizeWindow,
+        other => return Err(format!("unknown mousebind action '{other}'")),
+    };
+    // A bare click is not a binding: it would take every press away from the
+    // client under it.
+    if mods == Mods::default() {
+        return Err("mousebind needs at least one modifier".into());
+    }
+    Ok(MouseBind { mods, button, action })
 }
 
 fn parse_action(node: &KdlNode) -> Result<Action, String> {
@@ -3446,6 +3525,85 @@ mod tests {
         // The later entry wins, the same as a later file over an earlier one.
         assert_eq!(cfg.gesture_for(3, Direction::Left), Some(&Action::ToggleLayout));
         assert_eq!(cfg.gesture_for(3, Direction::Right), Some(&Action::WorkspacePrev));
+    }
+
+    #[test]
+    fn mousebind_defaults_are_alt_drag() {
+        use crate::input::MouseAction;
+        let cfg = Config::default();
+        let alt = Mods {
+            alt: true,
+            ..Mods::default()
+        };
+        let mut state = ModifiersState {
+            alt: true,
+            ..Default::default()
+        };
+        assert_eq!(cfg.mouse_bind_for(&state, 0x110), Some(MouseAction::MoveWindow));
+        assert_eq!(cfg.mouse_bind_for(&state, 0x111), Some(MouseAction::ResizeWindow));
+        assert_eq!(cfg.mouse_bind_for(&state, 0x112), None);
+        assert_eq!(cfg.mouse_binds, default_mouse_binds());
+        assert!(cfg.mouse_binds.iter().all(|b| b.mods == alt));
+        // Exact match: Alt+Shift, and no modifier at all, are not Alt.
+        state.shift = true;
+        assert_eq!(cfg.mouse_bind_for(&state, 0x110), None);
+        assert_eq!(cfg.mouse_bind_for(&ModifiersState::default(), 0x110), None);
+    }
+
+    #[test]
+    fn mousebind_node_parses_and_extends_the_defaults() {
+        use crate::input::{MouseAction, MouseButton};
+        let cfg = gestures("mousebind \"SUPER SHIFT\" \"middle\" { resize-window; }\n");
+        assert_eq!(cfg.mouse_binds.len(), default_mouse_binds().len() + 1);
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        let added = cfg.mouse_binds.last().unwrap();
+        assert_eq!(added.button, MouseButton::Middle);
+        assert_eq!(added.action, MouseAction::ResizeWindow);
+        assert_eq!(
+            added.mods,
+            Mods {
+                logo: true,
+                shift: true,
+                ..Mods::default()
+            }
+        );
+    }
+
+    #[test]
+    fn mousebind_replaces_the_default_for_the_same_mods_and_button() {
+        use crate::input::MouseAction;
+        let cfg = gestures(
+            "mousebind \"ALT\" \"left\" { resize-window; }\nmousebind \"MOD1\" \"left\" { move-window; }\n",
+        );
+        // Replaced once by the first node, again by the second: still one entry.
+        assert_eq!(cfg.mouse_binds.len(), default_mouse_binds().len());
+        let state = ModifiersState {
+            alt: true,
+            ..Default::default()
+        };
+        assert_eq!(cfg.mouse_bind_for(&state, 0x110), Some(MouseAction::MoveWindow));
+        assert_eq!(cfg.mouse_bind_for(&state, 0x111), Some(MouseAction::ResizeWindow));
+        let cfg = gestures("mousebind \"ALT\" \"left\" { resize-window; }\n");
+        assert_eq!(cfg.mouse_bind_for(&state, 0x110), Some(MouseAction::ResizeWindow));
+    }
+
+    #[test]
+    fn mousebind_rejects_bad_nodes_and_keeps_the_defaults() {
+        for bad in [
+            "mousebind \"Alt\" \"side\" { move-window; }",
+            "mousebind \"Alt\" \"left\" { spawn \"foot\"; }",
+            "mousebind \"Alt\" \"left\" { }",
+            "mousebind \"Alt\" \"left\"",
+            "mousebind \"Alt\" { move-window; }",
+            "mousebind \"Hyper\" \"left\" { move-window; }",
+            "mousebind \"left\" { move-window; }",
+            "mousebind \"\" \"left\" { move-window; }",
+            "mousebind \"none\" \"left\" { move-window; }",
+        ] {
+            let cfg = gestures(bad);
+            assert!(!cfg.errors.is_empty(), "{bad}");
+            assert_eq!(cfg.mouse_binds, default_mouse_binds(), "{bad}");
+        }
     }
 
     #[test]
