@@ -303,7 +303,7 @@ class VM:
                      "-device", "ide-cd,drive=cd,bootindex=1"]
         if not no_disk:
             args += ["-drive", "file=%s,format=qcow2,if=none,id=hd" % self.disk,
-                     "-device", "virtio-blk-pci,drive=hd,bootindex=2"]
+                     "-device", "virtio-blk-pci,drive=hd,bootindex=2,serial=eclipse0"]
         with open(self.qemu_log, "wb") as lf:
             self.proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
                                          start_new_session=True)
