@@ -162,6 +162,15 @@ pub fn preflight(env: &Env, v: &Validated, locale: &str) -> Result<Prepared> {
             .arg(conf)
             .args(args.iter().copied())
     };
+    // The baked database is signed: pacman refuses to sync it until the live
+    // keyring holds the packaging key.
+    env.runner
+        .run(&Cmd::new(Tool::PacmanKey).arg("--add").arg(&p.packaging_key))
+        .and_then(|()| {
+            env.runner
+                .run(&Cmd::new(Tool::PacmanKey).arg("--lsign-key").arg(&keyid))
+        })
+        .map_err(|_| Error::Refused("could not trust the packaging key"))?;
     env.runner
         .run(&pacman(&["-Sy", "--noconfirm", "archlinux-keyring"]))
         .map_err(|_| Error::Refused("could not refresh the package keyring"))?;
@@ -449,12 +458,7 @@ mod tests {
             assert!(!t.touches_disk(), "{t:?} issued before confirmation");
         }
         assert!(!r.issued(Tool::Blkid));
-        // Refreshing the live keyring is fine; trusting the packaging key is pacstrap's.
-        assert!(!r
-            .log
-            .borrow()
-            .iter()
-            .any(|l| l.tool == Tool::PacmanKey && l.args.iter().any(|a| a == "--add" || a == "--lsign-key")));
+        // The live keyring may change (packaging key, refresh); the disk may not.
         assert!(!lines.iter().any(|l| l.stage == Stage::Partition));
     }
 
