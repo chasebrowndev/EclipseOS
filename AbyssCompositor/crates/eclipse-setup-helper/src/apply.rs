@@ -497,7 +497,7 @@ mod tests {
     #[test]
     fn validate_failures_touch_nothing() {
         refuses(|q, _| q.plan.disk_by_id = "usb-Stick_1".into(), Stage::Validate);
-        refuses(|q, _| q.plan.candidates = vec!["waybar".into()], Stage::Validate);
+        refuses(|q, _| q.plan.candidates = vec!["firefox".into()], Stage::Validate);
         refuses(|q, _| q.plan.username = "root".into(), Stage::Validate);
         refuses(
             |q, _| q.password = zeroize::Zeroizing::new("a\nb".into()),

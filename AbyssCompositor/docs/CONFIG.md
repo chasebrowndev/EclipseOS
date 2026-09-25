@@ -20,6 +20,21 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 
 ## `abyss.kdl`
 
+### `mode`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `mode` | wm \| hybrid \| de | `"hybrid"` | live | Interaction mode (COMP-17 §2): `wm` tiling, workspaces-only taskbar; `hybrid` adds window chips, tray and clock; `de` adds desktop icons and pointer-first navigation. Selects defaults that explicit configuration overrides. Applies on hot reload. |
+
+### `components`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `components.bar` | hyperion \| waybar \| quickshell \| none | `"hyperion"` | live | Which bar `abyss-session` runs (COMP-17 §2.2). A change on hot reload stops the old candidate and starts the new one. |
+| `components.launcher` | eclipse-launcher \| fuzzel \| none | `"eclipse-launcher"` | live | Which launcher `abyss-session` runs (COMP-17 §2.2). |
+| `components.notifications` | eclipse-toasts \| mako \| none | `"eclipse-toasts"` | live | Which notification daemon `abyss-session` runs (COMP-17 §2.2). |
+| `components.control-center` | eclipse-center \| none | `"eclipse-center"` | live | Which control center `abyss-session` runs (COMP-17 §2.2). |
+
 ### `general`
 
 | setting | type | default | reload | what it does |

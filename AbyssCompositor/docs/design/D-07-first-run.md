@@ -120,7 +120,9 @@ which may be `none`. Candidates come from a root-owned catalog,
 `/usr/share/eclipse/setup/catalog.kdl`, shipped in `eclipseos-base`. Each entry
 names the candidate id, its packages, the command or user unit that starts it,
 and any **system** units it needs enabled. **Nothing outside the catalog ever
-supplies a package or unit name.**
+supplies a package or unit name.** Component slots take one candidate each; optional
+applications (`app-*`: browser, editor, files, media, images, pdf, archive, printing,
+bluetooth-ui) are a slot of their own that any number may fill. *(ADR 0062)*
 
 | Slot | Candidates (initial) |
 |---|---|
@@ -261,8 +263,10 @@ they get. That file is written by a same-uid process and is therefore
   no swap between check and copy.
 - **Key allowlist, not just validation.** COMP-13 §1.2 validation checks schema,
   not intent. The helper keeps only presentation and preference keys
-  (`input.kb-*`, `general.layout`, `decoration.*`, `animations.*`, `bar.*`,
-  `mode`, `components.*`, `setup.*`) and **drops every command-bearing key**:
+  (`input.kb-*`, `general.layout`, `decoration.rounding`,
+  `decoration.blur.enabled`, `animations.enabled|animation`, `bar.position`,
+  `mode`, `components.{bar,launcher,notifications,control-center}`,
+  `setup.{complete,profile}`: exactly the keys the wizard writes, leaf by leaf) and **drops every command-bearing key**:
   `bind` actions that spawn or exec, `idle.lock-command`, `misc.terminal-command`,
   and any exec-style key added later (an unknown key is dropped, never kept).
   `misc.terminal-command` is **regenerated from the chosen terminal's catalog

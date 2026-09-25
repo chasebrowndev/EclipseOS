@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn refuses_candidates_not_in_the_catalog() {
-        for bad in ["waybar", "eclipseos-hyperion", "systemctl poweroff", "hyperion;x"] {
+        for bad in ["firefox", "eclipseos-hyperion", "systemctl poweroff", "hyperion;x"] {
             let (_t, p) = live();
             assert_eq!(
                 refused_with(p, |q| q.plan.candidates = vec![bad.into()], 0),

@@ -150,7 +150,7 @@ mod tests {
         let c = Catalog::builtin();
         // A raw package name is not an id, even a real one.
         for bad in [
-            "waybar",
+            "firefox",
             "eclipseos-hyperion",
             "hyperion ",
             "Hyperion",
