@@ -630,6 +630,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
 
     crate::input::idle::start(&mut state, &handle);
     crate::ipc::start(&mut state, &handle);
+    crate::trusted_ui::socket::start(&mut state, &handle);
     crate::config::watch::start(&mut state, &handle);
     crate::xwayland::start(&mut state);
 
@@ -936,6 +937,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         let _ = state.display_handle.flush_clients();
     })?;
     crate::ipc::cleanup(&state);
+    crate::trusted_ui::socket::cleanup(&state);
     if session_handoff {
         crate::session::teardown();
     }
@@ -1082,6 +1084,13 @@ fn render_output(state: &mut AbyssState, index: usize) {
     let cursor_pos = state.pointer_location - output_loc.to_f64();
     // Trusted UI, above the cursor and never drawn into a capture target.
     let mut elements: Vec<AbyssRenderElement> = crate::render::capture::indicator(&output, capture_active);
+    // The destructive-action prompt (COMP-10 §3.10): above everything
+    // untrusted, and below the capture indicator just above.
+    elements.extend(crate::trusted_ui::draw::elements(
+        &mut drm.renderer,
+        &mut state.trusted_ui,
+        &output,
+    ));
     // The region selector (COMP-18 §1.3): untrusted too, but above the
     // annotation pass it is about to feed.
     elements.extend(crate::render::select::selector_elements(

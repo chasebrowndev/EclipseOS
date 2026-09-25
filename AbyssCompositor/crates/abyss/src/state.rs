@@ -172,6 +172,8 @@ pub struct AbyssState {
     /// A modal region selection, while one is running (COMP-18 §1.3). The
     /// compositor owns the interaction so an addon never grabs the seat.
     pub region_select: crate::render::select::RegionSelect,
+    /// The compositor-drawn destructive-action prompt (COMP-10 §3.10).
+    pub trusted_ui: crate::trusted_ui::TrustedUi,
     /// A window being dragged onto the Radiant tree, while one is (COMP-05
     /// §3.1). Its drop guides are drawn from here.
     pub tile_drag: Option<crate::shell::TileDrag>,
@@ -490,6 +492,7 @@ impl AbyssState {
             borders: crate::render::BorderStore::default(),
             annotations: crate::render::annotation::AnnotationStore::default(),
             region_select: crate::render::select::RegionSelect::default(),
+            trusted_ui: crate::trusted_ui::TrustedUi::default(),
             tile_drag: None,
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
             config,

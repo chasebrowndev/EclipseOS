@@ -24,6 +24,9 @@ use crate::state::AbyssState;
 impl AbyssState {
     /// Absolute pointer motion, in global compositor coordinates.
     pub fn inject_pointer_absolute(&mut self, location: Point<f64, Logical>, time: u32) {
+        if self.trusted_ui.active() {
+            return;
+        }
         super::idle::on_activity(self);
         self.pointer_moved(location, time);
     }
@@ -32,6 +35,9 @@ impl AbyssState {
     /// the absolute one are sent, in that order — the same pair a libinput
     /// motion event produces.
     pub fn inject_pointer_relative(&mut self, delta: Point<f64, Logical>, time: u32) {
+        if self.trusted_ui.active() {
+            return;
+        }
         super::idle::on_activity(self);
         let pointer = self.seat.get_pointer().unwrap();
         pointer.relative_motion(
@@ -49,6 +55,11 @@ impl AbyssState {
 
     /// Pointer button press or release, by evdev button code.
     pub fn inject_pointer_button(&mut self, button: u32, pressed: bool, time: u32) {
+        // A trusted prompt owns the seat; scripted input cannot answer or
+        // steer around it (COMP-10 §3.10).
+        if self.trusted_ui.active() {
+            return;
+        }
         super::idle::on_activity(self);
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
@@ -88,6 +99,11 @@ impl AbyssState {
     /// A scroll frame. The `AxisFrame` is built by the caller, since only it
     /// knows the source, discrete steps and stop flags of the event.
     pub fn inject_pointer_axis(&mut self, frame: smithay::input::pointer::AxisFrame) {
+        // A trusted prompt owns the seat; scripted input cannot answer or
+        // steer around it (COMP-10 §3.10).
+        if self.trusted_ui.active() {
+            return;
+        }
         super::idle::on_activity(self);
         let pointer = self.seat.get_pointer().unwrap();
         pointer.axis(self, frame);
@@ -102,6 +118,11 @@ impl AbyssState {
     /// lifts). Down does raise and focus its window, the same way a pointer
     /// click does — a tap is how a touch user picks a window.
     pub fn inject_touch_down(&mut self, slot: u32, location: Point<f64, Logical>, time: u32) {
+        // A trusted prompt owns the seat; scripted input cannot answer or
+        // steer around it (COMP-10 §3.10).
+        if self.trusted_ui.active() {
+            return;
+        }
         super::idle::on_activity(self);
         let serial = SERIAL_COUNTER.next_serial();
         let touch = match self.seat.get_touch() {
@@ -149,6 +170,11 @@ impl AbyssState {
     /// A touch point moving. The focus handed to smithay here is only used to
     /// find drag-and-drop targets; the point keeps the surface it came down on.
     pub fn inject_touch_motion(&mut self, slot: u32, location: Point<f64, Logical>, time: u32) {
+        // A trusted prompt owns the seat; scripted input cannot answer or
+        // steer around it (COMP-10 §3.10).
+        if self.trusted_ui.active() {
+            return;
+        }
         super::idle::on_activity(self);
         let touch = match self.seat.get_touch() {
             Some(touch) => touch,

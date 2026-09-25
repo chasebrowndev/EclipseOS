@@ -63,9 +63,10 @@ off it.
 Phase 2 (milestones 10–25, the agent protocol) has started: milestone 10 landed
 on `comp16-m10-policyd` as `crates/policy-eval/` and `crates/policyd/` — the
 task store, grant issue/revocation and the S-04 §4 audit store. Inside
-`crates/abyss` itself Phase 2 is still absent: the `trusted_ui/`, `policy/`,
+`crates/abyss` itself Phase 2 is still absent: the `policy/`,
 `audit/`, `protocols/agent/` and `protocols/semantic/` directories named in the
-root `CLAUDE.md` module map do not exist on disk. Two things landed early —
+root `CLAUDE.md` module map do not exist on disk (`trusted_ui/` holds only the
+destructive-action prompt, COMP-10 §3.10). Two things landed early —
 frame-level capture redaction (milestones 9d and 22, landed inside milestone 8)
 and the capture indicator (milestone 15, same).
 
@@ -131,7 +132,7 @@ across 9d/17/22, 14→15, 15→16, 16→22, 17→24, 18→25. Milestones 10, 12,
 | 12 | Audit spine: append-only journal, req-id chaining, `trace` | **store landed early** | `policyd/src/audit.rs` is the S-04 §4 hash-chained store, built at milestone 10 per ADR 0046; it carries `task`, `grant_issued` and `grant_revoked` records. The remaining record kinds, req-id chaining, `trace` and `eclipse-audit verify` are still milestone 12's work. |
 | 13 | Agent seats; injection; focus arbitration; `agent-override` chord | **not started** | No agent seats. `type_text`/`click_at` are gated `implemented: false`. The `agent-override` chord has an `Action::AgentOverride` variant and a default bind (Super+Escape) that only logs (stub 9). |
 | 14 | Atomic batches, `click`, `wait_for`, dedupe, generations | **not started** | — |
-| 15 | Trusted UI: prompt, emergency panel, phrase | **indicator landed early** | `render::capture::indicator()` draws the compositor-drawn capture indicator (COMP-10 §3.6) in both backends, from milestone 8. No prompt, no emergency panel, no phrase, no `trusted_ui/`. |
+| 15 | Trusted UI: prompt, emergency panel, phrase | **indicator landed early** | `render::capture::indicator()` draws the compositor-drawn capture indicator (COMP-10 §3.6) in both backends, from milestone 8. `trusted_ui/` holds the destructive-system-action confirmation only (§3.10, ADR 0061, D-07 §6). No consent prompt, no emergency panel, no phrase. |
 | 16 | Policy table enforcement; prompt and defer paths | **not started** | No `policy/`. The IPC gate in `ipc/gate.rs` is a separate, narrower mechanism (COMP-13 §2) and must not be mistaken for COMP-11's enforcement table. |
 | 17 | Policy-driven sensitivity classes; classification races | **not started** | Sensitivity is a manual flag on the surface (`state.rs:218`, "Stub until the policy engine"); nothing classifies automatically. |
 | 18 | Provenance chain; irreversible matcher | **not started** | Blocked on F-03 (defect 13) for the S-07 §5 `stamper` enum. |

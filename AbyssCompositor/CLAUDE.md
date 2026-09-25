@@ -153,7 +153,7 @@ crates/abyss/src/shell/       COMP-05  layouts, workspaces, rules, focus
 crates/abyss/src/protocols/standard/  COMP-06
 crates/abyss/src/protocols/agent/     COMP-08  eclipse_agent_v1       (not yet)
 crates/abyss/src/protocols/semantic/  COMP-09  eclipse_semantic_v1    (not yet)
-crates/abyss/src/trusted_ui/  COMP-10  prompts, indicator, emergency panel  (not yet)
+crates/abyss/src/trusted_ui/  COMP-10  prompts, indicator, emergency panel  (§3.10 destructive-action prompt only)
 crates/abyss/src/policy/      COMP-11  enforcement table, check()     (not yet; stub in state.rs)
 crates/abyss/src/audit/       COMP-12  provenance emission            (not yet)
 crates/abyss/src/ipc/         COMP-13  human JSON-RPC socket, gate table

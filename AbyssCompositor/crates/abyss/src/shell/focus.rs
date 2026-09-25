@@ -185,10 +185,7 @@ pub(crate) fn pointer_focus_ctx(state: &AbyssState, pos: Point<f64, Logical>) ->
         layer_interactivity: crate::shell::focused_layer(state)
             .map(|l| l.cached_state().keyboard_interactivity),
         drag_active: crate::input::grabs::drag_active(state),
-        // TODO(step 6: trusted UI): `trusted_ui/` does not exist yet, so no
-        // prompt can hold the seat and `false` is correct today. This becomes
-        // a read of the prompt grab when COMP-10 lands.
-        prompt_grab_active: false,
+        prompt_grab_active: state.trusted_ui.active(),
         focus_follows_mouse_across_outputs: g.focus_follows_mouse_across_outputs,
         unfocus_on_empty_workspace: g.unfocus_on_empty_workspace,
         focus_follows_mouse_layers: g.focus_follows_mouse_layers,
@@ -224,6 +221,11 @@ pub fn focus_window(state: &mut AbyssState, window: &Window) {
 /// records the focus history and moves keyboard focus but leaves the floating
 /// stacking order alone; see [`FocusCause::raises`].
 pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool) {
+    // Neither the destructive-action prompt (COMP-10 §3.10) nor the lock
+    // screen may lose the keyboard to a client, whatever asked for focus.
+    if state.trusted_ui.active() || state.lock.locked {
+        return;
+    }
     let Some(surface) = window_surface(window) else {
         return;
     };
@@ -316,6 +318,10 @@ pub fn emit_focused_output_state(state: &mut AbyssState) {
 }
 
 pub fn focus_surface(state: &mut AbyssState, surface: Option<WlSurface>) {
+    // The destructive-action prompt keeps the keyboard until it is answered.
+    if state.trusted_ui.active() {
+        return;
+    }
     let keyboard = state.seat.get_keyboard().unwrap();
     keyboard.set_focus(state, surface.map(Into::into), SERIAL_COUNTER.next_serial());
 }

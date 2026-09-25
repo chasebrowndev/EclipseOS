@@ -15,8 +15,9 @@ Read the root `CLAUDE.md` first. This file only adds crate-local rules.
   `config/` (KDL parse, schema, watch, in-place edit), `xwayland/` (XWM,
   security), `state.rs` (globals + seat), `session.rs`. `tests/config_doc.rs`
   checks the config schema against `docs/CONFIG.md`.
-- Not yet present: `protocols/agent/`, `protocols/semantic/`, `trusted_ui/`,
-  `policy/`, `audit/`. When they land they go there, not elsewhere.
+- `trusted_ui/` (TCB) holds only the COMP-10 §3.10 destructive-action prompt.
+  Not yet present: `protocols/agent/`, `protocols/semantic/`, `policy/`, `audit/`.
+  When they land they go there, not elsewhere.
 - Human keystrokes are never logged by content. Log keysym names only behind `trace`.
 - Logs go to journald: `journalctl --user -t abyss -o cat --since "5 min ago"`.
 - Nested test under the host session (itself abyss): `./target/debug/abyss --backend winit & pid=$!`,

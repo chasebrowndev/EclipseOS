@@ -90,7 +90,7 @@ SPDX header naming which.
 | `protocols/standard/` | COMP-06 | `wl_compositor`, `wl_shm`, `xdg_shell`, seat, selection/clipboard, layer-shell, dmabuf, session lock, idle, and the rest of the support matrix. |
 | `protocols/agent/` (not yet) | COMP-08 | `eclipse_agent_v1` server side, on the privileged socket only. Every request crosses `policy::check()` first. |
 | `protocols/semantic/` (not yet) | COMP-09 | `eclipse_semantic_v1` server side: semantic tree publication and change notification. |
-| `trusted_ui/` (not yet) | COMP-10 | Compositor-drawn consent prompts, agent-activity indicator, emergency panel. Never a client (ADR 0009). |
+| `trusted_ui/` (destructive-action prompt only) | COMP-10 | Compositor-drawn consent prompts, agent-activity indicator, emergency panel. Never a client (ADR 0009). So far only the destructive-system-action confirmation (§3.10, ADR 0061) and its root-only `trusted.sock`; the rest is not yet. |
 | `policy/` (not yet) | COMP-11 | The compiled enforcement table and `check()`; today a stub in `state.rs`. Fail-closed; no state mutation before `Allow`; `defer` may only tighten. |
 | `audit/` (not yet) | COMP-12 | Audit and provenance event emission. Never records human input by content. |
 | `ipc/` | COMP-13 | Human JSON-RPC socket and its gate table — the taskbar, the launcher, settings, `eclipse-ctl`. Unprivileged, human-principal only. |

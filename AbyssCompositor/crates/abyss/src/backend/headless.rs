@@ -306,6 +306,7 @@ fn boot(
     let handle = event_loop.handle();
     crate::input::idle::start(&mut state, &handle);
     crate::ipc::start(&mut state, &handle);
+    crate::trusted_ui::socket::start(&mut state, &handle);
     crate::config::watch::start(&mut state, &handle);
     // Registered ahead of the wayland sources on purpose: calloop dispatches in
     // registration order, so a queued PositionWindow wins over client requests
@@ -376,6 +377,7 @@ fn boot(
         })
         .context("event loop")?;
     crate::ipc::cleanup(&state);
+    crate::trusted_ui::socket::cleanup(&state);
     if session {
         crate::session::teardown();
     }
@@ -476,6 +478,12 @@ fn redraw(
                     .map(|g| g.loc)
                     .unwrap_or_default(),
             ),
+        );
+        // The destructive-action prompt (COMP-10 §3.10): above everything
+        // untrusted, and below the capture indicator spliced next.
+        elements.splice(
+            0..0,
+            crate::trusted_ui::draw::elements(renderer, &mut state.trusted_ui, out),
         );
         // Trusted UI, drawn on top of everything and never into a capture.
         elements.splice(

@@ -4482,8 +4482,8 @@ model, size and by-id name, says it is irreversible, and carries the §2
 personal phrase. On the live medium no phrase exists (DA-03), so it shows the
 fixed "anti-spoofing unconfigured" warning form instead, and the prompt states
 that it is drawn by the compositor and appears only when the system asks to
-erase a disk. It is drawn above every client and above the §3.6 indicator's
-z-order rules, is not captured (COMP-02), and does not interfere with the
+erase a disk. It is drawn above every client and below the §3.6
+indicator, which it never covers, is not captured (COMP-02), and does not interfere with the
 override chord (§3.3).
 
 ## 4. Input Handling

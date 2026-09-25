@@ -104,6 +104,7 @@ pub enum Action {
     /// bindable from config — the input filter synthesises it while a
     /// selection owns the seat.
     RegionSelect(crate::render::select::SelectKey),
+    Trusted(crate::trusted_ui::Key),
     /// Chords an addon owns (COMP-18 §4). The compositor does not act on
     /// these itself; it forwards the name on the `keybind` event stream, so
     /// nothing happens when no addon is listening.
@@ -282,6 +283,18 @@ impl AbyssState {
                 if (VT_SWITCH_FIRST..=VT_SWITCH_LAST).contains(&raw) {
                     return FilterResult::Intercept(Action::SwitchVt((raw - VT_SWITCH_FIRST + 1) as i32));
                 }
+                // The destructive-action prompt owns the seat outright
+                // (COMP-10 §3.10). Only VT switching, above, stays reachable:
+                // a way out to a text console must not depend on the prompt.
+                // Releases still go through, so smithay's held-key set stays
+                // clean; with focus cleared nobody receives them. The human
+                // override chord (§3.3, COMP-04 §6) stays live too.
+                if state.trusted_ui.active() {
+                    if matches!(state.config.action_for(mods, sym), Some(Action::AgentOverride)) {
+                        return FilterResult::Intercept(Action::AgentOverride);
+                    }
+                    return FilterResult::Intercept(Action::Trusted(crate::trusted_ui::key(sym)));
+                }
                 // Locked: no binding may act on the session behind the lock.
                 // Keys still reach the locker, which holds keyboard focus.
                 if state.lock.locked {
@@ -337,6 +350,7 @@ impl AbyssState {
                 crate::outputs::calibrate::apply(self, step);
             }
             Action::RegionSelect(key) => self.region_select_key(key),
+            Action::Trusted(key) => crate::trusted_ui::on_key(self, key),
             Action::AnnotationSelect => self.region_select_start(),
             Action::AnnotationDismiss => self.emit_keybind("annotation-dismiss"),
             Action::AnnotationExpand => self.emit_keybind("annotation-expand"),
@@ -368,6 +382,12 @@ impl AbyssState {
 
     /// COMP-18 §1.3: enter modal region selection. The chord toggles, so the
     /// same key that started it gets the human back out.
+    /// Whether a modal grab owns the pointer, touch and tablet: nothing behind
+    /// it may be steered or told about input.
+    pub(crate) fn input_captured(&self) -> bool {
+        self.region_select.active() || self.trusted_ui.active()
+    }
+
     fn region_select_start(&mut self) {
         if self.region_select.active() {
             self.region_select.cancel();
@@ -443,7 +463,7 @@ impl AbyssState {
         let pos = self.clamp_to_outputs(pos);
         // The cursor is compositor-drawn, so it keeps moving during a
         // selection; nothing under it hears about that until the drag commits.
-        if self.region_select.active() {
+        if self.region_select.active() || self.trusted_ui.active() {
             self.pointer_location = pos;
             if self.region_select.motion(pos.to_i32_round()) {
                 crate::backend::damage_all(self);
@@ -555,7 +575,7 @@ impl AbyssState {
     /// hands focus to whatever is now underneath instead of leaving it stale
     /// until the mouse is jiggled (ADR 0042).
     pub(crate) fn refresh_pointer_focus(&mut self) {
-        if self.lock.locked {
+        if self.lock.locked || self.input_captured() {
             return;
         }
         // An interactive move/resize deliberately clears pointer focus for the
@@ -685,7 +705,7 @@ impl AbyssState {
     /// steer anything behind the dim. Up, cancel and frame still pass, so a
     /// point already down when the selection began is released normally.
     fn on_touch_down<B: InputBackend>(&mut self, event: B::TouchDownEvent) {
-        if self.region_select.active() {
+        if self.input_captured() {
             return;
         }
         if let Some(pos) = self.absolute_to_global(|size| event.position_transformed(size)) {
@@ -694,7 +714,7 @@ impl AbyssState {
     }
 
     fn on_touch_motion<B: InputBackend>(&mut self, event: B::TouchMotionEvent) {
-        if self.region_select.active() {
+        if self.input_captured() {
             return;
         }
         if let Some(pos) = self.absolute_to_global(|size| event.position_transformed(size)) {
@@ -722,7 +742,7 @@ impl AbyssState {
             self.gesture_capture = None;
             return;
         }
-        if self.region_select.active() || self.config.gesture_bound(fingers) {
+        if self.input_captured() || self.config.gesture_bound(fingers) {
             self.gesture_capture = Some(GestureCapture {
                 fingers,
                 dx: 0.0,
@@ -749,7 +769,7 @@ impl AbyssState {
             capture.dy += delta.y;
             return;
         }
-        if self.lock.locked || self.region_select.active() {
+        if self.lock.locked || self.input_captured() {
             return;
         }
         let pointer = self.seat.get_pointer().unwrap();
@@ -761,7 +781,7 @@ impl AbyssState {
         if let Some(capture) = self.gesture_capture.take() {
             // Re-checked at end: the lock or a selection may have come up
             // while the fingers were moving.
-            if cancelled || self.lock.locked || self.region_select.active() {
+            if cancelled || self.lock.locked || self.input_captured() {
                 return;
             }
             let action = swipe_direction(capture.dx, capture.dy, SWIPE_THRESHOLD)
@@ -795,7 +815,7 @@ impl AbyssState {
     /// dropped at begin has its end dropped too: no client sees an end
     /// without a begin.
     fn gesture_dropped_at_begin(&mut self) -> bool {
-        self.gesture_dropped = self.lock.locked || self.region_select.active();
+        self.gesture_dropped = self.lock.locked || self.input_captured();
         self.gesture_dropped
     }
 
@@ -822,7 +842,7 @@ impl AbyssState {
     }
 
     fn on_pinch_update(&mut self, event: &GesturePinchUpdateEvent) {
-        if self.gesture_dropped || self.lock.locked || self.region_select.active() {
+        if self.gesture_dropped || self.lock.locked || self.input_captured() {
             return;
         }
         let pointer = self.seat.get_pointer().unwrap();
@@ -882,7 +902,7 @@ impl AbyssState {
     /// a selection, which smithay turns into a proximity-out: the tool fails
     /// closed exactly like the pointer.
     fn tablet_focus(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        if self.lock.locked || self.region_select.active() {
+        if self.lock.locked || self.input_captured() {
             return None;
         }
         self.surface_under(pos)
@@ -953,7 +973,7 @@ impl AbyssState {
     fn on_tablet_tip<B: InputBackend>(&mut self, event: B::TabletToolTipEvent) {
         // The tool's focus may predate the lock or selection if it has not
         // moved since; refuse rather than deliver to it.
-        if self.lock.locked || self.region_select.active() {
+        if self.lock.locked || self.input_captured() {
             return;
         }
         let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) else {
@@ -973,7 +993,7 @@ impl AbyssState {
     }
 
     fn on_tablet_button<B: InputBackend>(&mut self, event: B::TabletToolButtonEvent) {
-        if self.lock.locked || self.region_select.active() {
+        if self.lock.locked || self.input_captured() {
             return;
         }
         if let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) {
@@ -988,6 +1008,11 @@ impl AbyssState {
 
     fn on_pointer_button<B: InputBackend>(&mut self, event: B::PointerButtonEvent) {
         let pressed = event.state() == ButtonState::Pressed;
+        // The destructive-action prompt is answered from the keyboard only
+        // (COMP-10 §3.10): a click neither answers it nor reaches a client.
+        if self.trusted_ui.active() {
+            return;
+        }
         // The selector holds the pointer as well as the keyboard: a press that
         // reached a client would focus or activate something behind the dim.
         if self.region_select.active() {
@@ -1043,6 +1068,9 @@ impl AbyssState {
     }
 
     fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {
+        if self.trusted_ui.active() {
+            return;
+        }
         let source = event.source();
         let mut frame = AxisFrame::new(event.time_msec()).source(source);
         for axis in [Axis::Horizontal, Axis::Vertical] {

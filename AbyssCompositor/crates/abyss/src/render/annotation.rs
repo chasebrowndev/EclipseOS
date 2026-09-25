@@ -734,7 +734,7 @@ fn place(
 ///
 /// `None` on any GL failure: an annotation is cosmetic and must never be able
 /// to take a frame down with it.
-fn upload(
+pub(crate) fn upload(
     renderer: &mut GlesRenderer,
     raster: &text::Raster,
     bs: usize,
