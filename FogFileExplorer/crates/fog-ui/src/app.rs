@@ -9,7 +9,6 @@
 //! value is the selected row (gold bar, gold name, faint gold ground).
 //! Nothing else is ever gold.
 
-use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -17,9 +16,12 @@ use fog_proto::{Entry, Kind, Request};
 use fog_widgets::{scroll_into_view, virtual_list};
 use iced::keyboard::{self, key::Named, Key};
 use iced::widget::operation::{scroll_to, AbsoluteOffset};
+use iced::widget::responsive;
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row, text, Id, Space};
-use iced::{alignment, Background, Border, Color, Element, Length, Subscription, Task};
+use iced::{
+    alignment, window, Background, Border, Color, Element, Length, Size, Subscription, Task,
+};
 
 use crate::conn::{self, Link};
 use crate::state::{Browser, Effect};
@@ -50,6 +52,7 @@ enum Fogd {
 pub enum Message {
     Key(keyboard::Event),
     Conn(conn::Event),
+    Resized,
     Script,
 }
 
@@ -112,6 +115,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Conn(conn::Event::Up(link)) => {
             app.link = Some(link);
             app.fogd = Fogd::Up;
+            app.browser.reconnected();
             Effect::List(app.browser.target().to_vec())
         }
         Message::Conn(conn::Event::Down) => {
@@ -120,8 +124,14 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             Effect::None
         }
         Message::Conn(conn::Event::Reply(r)) => app.browser.on_reply(r),
-        Message::Key(keyboard::Event::KeyPressed { key, .. }) => press(&mut app.browser, &key),
+        // `key` is the key without modifiers; Shift+g must read as `G`.
+        Message::Key(keyboard::Event::KeyPressed { modified_key, .. }) => {
+            press(&mut app.browser, &modified_key)
+        }
         Message::Key(_) => Effect::None,
+        // A shrinking window can leave the selection below the fold.
+        Message::Resized if app.browser.len() > 0 => Effect::Reveal(app.browser.selected),
+        Message::Resized => Effect::None,
         Message::Script => match app.script.pop_front() {
             Some(key) => press(&mut app.browser, &key),
             None => Effect::None,
@@ -147,6 +157,7 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     let base = [
         keyboard::listen().map(Message::Key),
         conn::subscription().map(Message::Conn),
+        window::resize_events().map(|_| Message::Resized),
     ];
     if app.script.is_empty() {
         Subscription::batch(base)
@@ -199,24 +210,55 @@ fn label<'a>(s: impl text::IntoFragment<'a>, sz: f32, c: Color) -> text::Text<'a
 
 /// Breadcrumbs: ancestors tertiary, the current folder primary. While a
 /// navigation is in flight the requested path is shown, so the bar answers
-/// "where am I going" the moment a key is pressed.
+/// "where am I going" the moment a key is pressed. When the bar is too
+/// narrow the path is elided from the left, so the current folder stays.
 fn path_bar(app: &App) -> Element<'_, Message> {
-    let path = String::from_utf8_lossy(app.browser.target());
-    let (head, tail) = match path.rfind('/') {
-        Some(0) if path.len() == 1 => (Cow::Borrowed(""), path.clone()),
-        Some(i) => (
-            Cow::Owned(path[..=i].to_owned()),
-            Cow::Owned(path[i + 1..].to_owned()),
-        ),
-        None => (Cow::Borrowed(""), path.clone()),
-    };
-    container(row![
-        label(head, size::TEXT, color::TEXT_TERTIARY),
-        label(tail, size::TEXT, color::TEXT),
-    ])
-    .width(Length::Fill)
-    .clip(true)
+    let path = String::from_utf8_lossy(app.browser.target()).into_owned();
+    responsive(move |room: Size| {
+        // The UI font is monospace, so a width is a character count.
+        let fits = (room.width / (size::TEXT * size::MONO_ADVANCE)) as usize;
+        let (head, tail) = elide_left(&path, fits);
+        container(row![
+            label(head, size::TEXT, color::TEXT_TERTIARY),
+            label(tail, size::TEXT, color::TEXT),
+        ])
+        .width(Length::Fill)
+        .clip(true)
+        .into()
+    })
+    .height(Length::Shrink)
     .into()
+}
+
+/// `path` split into ancestors and the current folder, elided from the left
+/// to fit `fits` characters: `/a/b/c/cur` becomes `…/c/cur`, cut at a `/`
+/// where possible, and only the current name's own tail if nothing else fits.
+fn elide_left(path: &str, fits: usize) -> (String, String) {
+    let (head, tail) = match path.rfind('/') {
+        Some(0) if path.len() == 1 => ("", path),
+        Some(i) => (&path[..=i], &path[i + 1..]),
+        None => ("", path),
+    };
+    let tail_n = tail.chars().count();
+    if head.chars().count() + tail_n <= fits {
+        return (head.to_owned(), tail.to_owned());
+    }
+    // `…` plus the longest `/`-led suffix of the ancestors that still fits.
+    let room = fits.saturating_sub(tail_n + 1);
+    let cut = head
+        .char_indices()
+        .filter(|&(i, c)| c == '/' && i > 0)
+        .map(|(i, _)| i)
+        .find(|&i| head[i..].chars().count() <= room);
+    if let Some(i) = cut {
+        return (format!("…{}", &head[i..]), tail.to_owned());
+    }
+    let keep = fits.saturating_sub(1);
+    let skip = tail_n.saturating_sub(keep);
+    (
+        String::new(),
+        format!("…{}", tail.chars().skip(skip).collect::<String>()),
+    )
 }
 
 fn status_line(app: &App) -> Element<'_, Message> {
@@ -254,6 +296,7 @@ fn status_line(app: &App) -> Element<'_, Message> {
     } else {
         format!("{} / {}", group(b.selected + 1), group(b.len()))
     };
+    // The left side yields and clips; the counter and fogd state never do.
     row![
         container(left).width(Length::Fill).clip(true),
         row![
@@ -262,6 +305,7 @@ fn status_line(app: &App) -> Element<'_, Message> {
         ]
         .spacing(size::GAP),
     ]
+    .spacing(size::GAP)
     .into()
 }
 
@@ -367,6 +411,20 @@ fn group(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn path_elides_from_the_left() {
+        use super::elide_left;
+        let own = |a: &str, b: &str| (a.to_owned(), b.to_owned());
+        assert_eq!(elide_left("/", 10), own("", "/"));
+        assert_eq!(elide_left("/home/u/src", 40), own("/home/u/", "src"));
+        // 11 chars do not fit in 9: keep "…/u/src".
+        assert_eq!(elide_left("/home/u/src", 9), own("…/u/", "src"));
+        assert_eq!(elide_left("/home/u/src", 6), own("…/", "src"));
+        // Not even "…/src": the name's own tail.
+        assert_eq!(elide_left("/home/u/src", 3), own("", "…rc"));
+        assert_eq!(elide_left("/home/u/src", 0), own("", "…"));
+    }
+
     #[test]
     fn group_thousands() {
         assert_eq!(super::group(0), "0");

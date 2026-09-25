@@ -89,7 +89,7 @@ fn boot() -> Demo {
 
 fn update(demo: &mut Demo, message: Message) -> Task<Message> {
     let key = match message {
-        Message::Key(keyboard::Event::KeyPressed { key, .. }) => key,
+        Message::Key(keyboard::Event::KeyPressed { modified_key, .. }) => modified_key,
         Message::Key(_) => return Task::none(),
         Message::Tour(now) => {
             if !demo.tour {

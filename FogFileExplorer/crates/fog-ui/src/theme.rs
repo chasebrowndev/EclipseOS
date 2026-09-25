@@ -85,6 +85,10 @@ pub mod size {
     pub const HAIRLINE: f32 = 1.0;
     /// Width of the right-aligned kind tag column.
     pub const TAG_W: f32 = 48.0;
+    /// Advance of one monospace glyph, in ems: turns a width into a
+    /// character budget for eliding the path bar. Slightly generous, so an
+    /// estimate never clips the current folder.
+    pub const MONO_ADVANCE: f32 = 0.62;
     /// Gap between status line segments.
     pub const GAP: f32 = 18.0;
     /// Initial window size.

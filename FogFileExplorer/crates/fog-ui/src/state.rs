@@ -19,6 +19,22 @@ pub enum Effect {
     List(Vec<u8>),
 }
 
+/// What the selection holds on to while a listing arrives in pieces.
+///
+/// `fogd` answers an uncached folder with a partial snapshot (the first
+/// batch, sorted on its own) and then a diff carrying the full order. Until
+/// the user moves, the selection is pinned to where entering put it, not to
+/// whichever name happened to be first in the partial batch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pin {
+    /// The top row of whatever order is current.
+    Top,
+    /// The folder we came up from, once it shows up in the listing.
+    Name(Vec<u8>),
+    /// The user has moved: follow the selected name across updates.
+    Free,
+}
+
 /// A navigation waiting for its first snapshot. Until it arrives the old
 /// listing stays on screen, so a failed open leaves you where you were.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +57,7 @@ pub struct Browser {
     pub order: Vec<u32>,
     /// Index into `order`.
     pub selected: usize,
+    pub pin: Pin,
     pub complete: bool,
     pub pending: Option<Nav>,
     /// The last error for the shown or requested folder: path and errno.
@@ -61,6 +78,7 @@ impl Browser {
             entries: Vec::new(),
             order: Vec::new(),
             selected: 0,
+            pin: Pin::Top,
             complete: false,
             error: None,
         }
@@ -69,6 +87,14 @@ impl Browser {
     /// The path to (re)request when a connection comes up.
     pub fn target(&self) -> &[u8] {
         self.pending.as_ref().map_or(&self.path, |n| &n.path)
+    }
+
+    /// A new `fogd` connection is a new id space: `fogd` numbers listings
+    /// from 1 on every start, so the id and generation we hold mean nothing
+    /// to it. Forget them, so the relist's snapshot is taken as-is.
+    pub fn reconnected(&mut self) {
+        self.dir = None;
+        self.generation = 0;
     }
 
     /// Rows in display order.
@@ -99,10 +125,9 @@ impl Browser {
                 if let Some(nav) = self.pending.take_if(|n| n.path == path) {
                     self.path = path;
                     self.set_listing(dir, generation, entries, order, complete);
-                    self.selected = nav
-                        .select
-                        .and_then(|name| self.position(&name))
-                        .unwrap_or(0);
+                    self.pin = nav.select.map_or(Pin::Top, Pin::Name);
+                    self.selected = 0;
+                    self.settle(None);
                     self.error = None;
                     return Effect::Entered(self.selected);
                 }
@@ -116,8 +141,7 @@ impl Browser {
                 }
                 let keep = self.selected_name();
                 self.set_listing(dir, generation, entries, order, complete);
-                self.reselect(keep);
-                Effect::None
+                self.settle_moved(keep)
             }
             Reply::DirDiff {
                 dir,
@@ -143,8 +167,7 @@ impl Browser {
                 self.order = order;
                 self.generation = generation;
                 self.complete = complete;
-                self.reselect(keep);
-                Effect::None
+                self.settle_moved(keep)
             }
             Reply::Error { path, errno } => {
                 if self.pending.take_if(|n| n.path == path).is_none() && path != self.path {
@@ -163,6 +186,7 @@ impl Browser {
             return Effect::None;
         }
         let last = self.order.len() - 1;
+        self.pin = Pin::Free;
         self.selected = self.selected.saturating_add_signed(delta).min(last);
         Effect::Reveal(self.selected)
     }
@@ -179,6 +203,7 @@ impl Browser {
         if self.order.is_empty() {
             return Effect::None;
         }
+        self.pin = Pin::Free;
         self.selected = i;
         Effect::Reveal(i)
     }
@@ -233,12 +258,29 @@ impl Browser {
         self.selected_entry().map(|e| e.name.clone())
     }
 
-    /// Select the row showing `name`; if it is gone, keep the index, clamped.
-    fn reselect(&mut self, name: Option<Vec<u8>>) {
-        if let Some(i) = name.and_then(|n| self.position(&n)) {
-            self.selected = i;
+    /// Place the selection in a new order by the [`Pin`]. `keep` is the name
+    /// that was selected before, which a free selection follows; if it is
+    /// gone, the index stays, clamped.
+    fn settle(&mut self, keep: Option<Vec<u8>>) {
+        let found = match &self.pin {
+            Pin::Top => Some(0),
+            Pin::Name(n) => Some(self.position(n).unwrap_or(0)),
+            Pin::Free => keep.and_then(|n| self.position(&n)),
+        };
+        self.selected = found
+            .unwrap_or(self.selected)
+            .min(self.order.len().saturating_sub(1));
+    }
+
+    /// [`Self::settle`] for an update of the shown folder: if the selected
+    /// row moved, it is scrolled back into view.
+    fn settle_moved(&mut self, keep: Option<Vec<u8>>) -> Effect {
+        let before = self.selected;
+        self.settle(keep);
+        if self.selected == before {
+            Effect::None
         } else {
-            self.selected = self.selected.min(self.order.len().saturating_sub(1));
+            Effect::Reveal(self.selected)
         }
     }
 
@@ -362,6 +404,122 @@ mod tests {
         });
         assert!(b.complete);
         assert_eq!(names(&b), ["a", "c", "m", "z"]);
+    }
+
+    fn partial(path: &str, dir: u64, names: &[(&str, Kind)], order: &[u32]) -> Reply {
+        let mut r = snap(path, dir, 0, names, order);
+        if let Reply::DirSnapshot { complete, .. } = &mut r {
+            *complete = false;
+        }
+        r
+    }
+
+    #[test]
+    fn cold_open_keeps_the_top_row_selected() {
+        // The partial batch holds "m" and "c"; the full order puts both
+        // far from the top.
+        let mut b = Browser::new(b"/big".to_vec());
+        let fx = b.on_reply(partial(
+            "/big",
+            1,
+            &[("m", Kind::File), ("c", Kind::File)],
+            &[1, 0],
+        ));
+        assert_eq!(fx, Effect::Entered(0));
+        assert_eq!(sel(&b), "c");
+        let fx = b.on_reply(Reply::DirDiff {
+            dir: 1,
+            generation: 1,
+            removed: vec![],
+            added: vec![e("a", Kind::File), e("b", Kind::File)],
+            order: vec![2, 3, 1, 0],
+            complete: true,
+        });
+        assert_eq!(names(&b), ["a", "b", "c", "m"]);
+        assert_eq!(b.selected, 0);
+        assert_eq!(sel(&b), "a");
+        assert_eq!(fx, Effect::None);
+    }
+
+    #[test]
+    fn cold_open_follows_a_moved_selection_and_reveals_it() {
+        let mut b = Browser::new(b"/big".to_vec());
+        b.on_reply(partial(
+            "/big",
+            1,
+            &[("m", Kind::File), ("c", Kind::File)],
+            &[1, 0],
+        ));
+        b.step(1);
+        assert_eq!(sel(&b), "m");
+        let fx = b.on_reply(Reply::DirDiff {
+            dir: 1,
+            generation: 1,
+            removed: vec![],
+            added: vec![e("a", Kind::File), e("b", Kind::File)],
+            order: vec![2, 3, 1, 0],
+            complete: true,
+        });
+        assert_eq!(sel(&b), "m");
+        assert_eq!(fx, Effect::Reveal(3));
+    }
+
+    #[test]
+    fn cold_parent_reselects_the_folder_we_left_once_it_arrives() {
+        let mut b = Browser::new(b"/p/src".to_vec());
+        b.on_reply(snap("/p/src", 1, 0, &[("x", Kind::File)], &[0]));
+        b.parent();
+        // "src" is not in the first batch.
+        let fx = b.on_reply(partial("/p", 2, &[("m", Kind::File)], &[0]));
+        assert_eq!(fx, Effect::Entered(0));
+        let fx = b.on_reply(Reply::DirDiff {
+            dir: 2,
+            generation: 1,
+            removed: vec![],
+            added: vec![e("a", Kind::Dir), e("src", Kind::Dir)],
+            order: vec![1, 2, 0],
+            complete: true,
+        });
+        assert_eq!(sel(&b), "src");
+        assert_eq!(fx, Effect::Reveal(1));
+    }
+
+    #[test]
+    fn reconnect_accepts_a_relist_that_reuses_the_old_id() {
+        let mut b = Browser::new(b"/t".to_vec());
+        b.on_reply(snap("/t", 1, 0, &[("a", Kind::File)], &[0]));
+        b.on_reply(Reply::DirDiff {
+            dir: 1,
+            generation: 1,
+            removed: vec![],
+            added: vec![e("b", Kind::File)],
+            order: vec![0, 1],
+            complete: true,
+        });
+        b.on_reply(Reply::DirDiff {
+            dir: 1,
+            generation: 2,
+            removed: vec![],
+            added: vec![e("c", Kind::File)],
+            order: vec![0, 1, 2],
+            complete: true,
+        });
+        assert_eq!(b.generation, 2);
+        // fogd restarts: ids begin at 1 again and generations at 0.
+        b.reconnected();
+        b.on_reply(partial("/t", 1, &[("a", Kind::File)], &[0]));
+        assert_eq!(names(&b), ["a"]);
+        assert!(!b.complete);
+        b.on_reply(Reply::DirDiff {
+            dir: 1,
+            generation: 1,
+            removed: vec![],
+            added: vec![e("d", Kind::File)],
+            order: vec![0, 1],
+            complete: true,
+        });
+        assert_eq!(names(&b), ["a", "d"]);
+        assert!(b.complete);
     }
 
     #[test]
