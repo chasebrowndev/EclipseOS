@@ -240,6 +240,9 @@ pub struct App {
     /// `bar.tray.*`: which tray entries are pinned, in what order, and which
     /// are hidden.
     pub tray: crate::conn::TrayConfig,
+    /// `mode` (ADR 0062), refetched on every `config` event. Decides whether
+    /// the task strip draws window chips at all.
+    pub mode: crate::model::Mode,
     /// Debug builds only: the popup `HYPERION_PREVIEW` asked for, opened on
     /// the first event that names the bar's surface. Always `None` in release.
     pub preview: Option<Preview>,
@@ -408,6 +411,7 @@ impl App {
         let output_name = std::env::var(crate::OUTPUT_ENV).unwrap_or_default();
         let bar = conn.bar_config();
         let tray = conn.tray_config();
+        let mode = conn.mode();
         let bar_radius = conn
             .glass_radius("bar.rounding")
             .unwrap_or(eclipse_ui::tokens::bar::RADIUS_SHEET);
@@ -444,6 +448,7 @@ impl App {
             radios: crate::radio::Radios::default(),
             pending_menu: None,
             tray,
+            mode,
             preview: None,
             bar_radius,
             menu_radius,
@@ -538,6 +543,42 @@ fn preview(app: &mut App) {
         )),
         _ => None,
     };
+    if let Ok(mode) = std::env::var("HYPERION_PREVIEW_MODE") {
+        app.mode = crate::model::parse_mode(&serde_json::json!({"keys": [{"value": mode}]}));
+        let window = |handle: u64, app_id: &str, title: &str| crate::model::Window {
+            handle,
+            app_id: app_id.to_owned(),
+            title: title.to_owned(),
+            workspace: Some(1),
+            output: Some(0),
+            focused: handle == 2,
+            minimized: false,
+            pid: None,
+            trust: crate::model::Trust::Private,
+        };
+        let workspace = |index: usize, active: bool, windows: usize| crate::model::Workspace {
+            index,
+            output: 0,
+            output_name: String::new(),
+            active,
+            windows,
+        };
+        app.snapshot = crate::model::Snapshot {
+            connected: true,
+            workspaces: vec![
+                workspace(1, true, 3),
+                workspace(2, false, 1),
+                workspace(3, false, 0),
+            ],
+            windows: vec![
+                window(1, "foot", "~/syncedprojects/EclipseOS"),
+                window(2, "firefox", "Eclipse"),
+                window(3, "micro", "hyperion/src/view.rs"),
+            ],
+            focused: Some(2),
+        };
+        app.icons.warm(&app.snapshot.windows);
+    }
     if which == "bar" {
         app.tray.pinned = Some(
             [
@@ -551,6 +592,13 @@ fn preview(app: &mut App) {
             .to_vec(),
         );
     }
+}
+
+/// `HYPERION_PREVIEW_MODE=wm|hybrid|de` (debug builds only) pins the model to
+/// [`preview`]'s fixture — mode and windows — so a taskbar can be screenshotted
+/// headless per mode with no compositor to answer. Live refreshes leave it be.
+fn fixture_pinned() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("HYPERION_PREVIEW_MODE").is_some()
 }
 
 /// Hand one message to the UI thread.
@@ -713,6 +761,9 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                 app.iris.set(crate::eye::Eye::Off, std::time::Instant::now());
             }
             app.tray = app.conn.tray_config();
+            if !fixture_pinned() {
+                app.mode = app.conn.mode();
+            }
             if let Some(radius) = app.conn.glass_radius("bar.rounding") {
                 app.bar_radius = radius;
             }
@@ -1017,6 +1068,9 @@ fn advance(app: &mut App, now: std::time::Instant) {
 
 /// Re-read the three lists and re-resolve any icon we have not seen.
 fn refetch(app: &mut App) {
+    if fixture_pinned() {
+        return;
+    }
     app.snapshot = app.conn.snapshot();
     app.icons.warm(&app.snapshot.windows);
 }

@@ -10,7 +10,7 @@ use eclipse_ipc::{Client, Error, EventKind};
 use eclipse_ui::tokens::popup::Anchor;
 use serde_json::{json, Value};
 
-use crate::model::{parse_focused, parse_windows, parse_workspaces, Snapshot};
+use crate::model::{parse_focused, parse_mode, parse_windows, parse_workspaces, Mode, Snapshot};
 
 /// The events that change anything the bar draws.
 pub const KINDS: &[EventKind] = &[
@@ -303,6 +303,16 @@ impl Conn {
             }
         }
         cfg
+    }
+
+    /// The interaction `mode` (ADR 0062). Fail-soft to `hybrid`, the schema
+    /// default, so a compositor that is absent or too old leaves the bar as
+    /// it was.
+    pub fn mode(&mut self) -> Mode {
+        self.ensure();
+        self.call("get_config", json!({ "path": "mode" }))
+            .map(|v| parse_mode(&v))
+            .unwrap_or_default()
     }
 
     /// `bar.tray.pinned` and `bar.tray.hidden`. Separate from [`bar_config`]

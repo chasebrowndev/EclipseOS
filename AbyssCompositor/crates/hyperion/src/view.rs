@@ -577,6 +577,20 @@ fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
 
 // ------------------------------------------------------------------- tasks
 
+/// The windows the strip draws as chips: this bar's, on its active workspace.
+/// Empty under `wm` (ADR 0062) — the bar is a workspace indicator there, and
+/// every consumer of the strip (drawing, popup anchoring) sees the same
+/// answer because they all come through here.
+fn chips(app: &crate::app::App) -> Vec<&Window> {
+    if !app.mode.shows_chips() {
+        return Vec::new();
+    }
+    let active = active_workspace(&app.snapshot, app.output_id);
+    windows_on(&app.snapshot, app.output_id)
+        .filter(|w| active.is_none() || w.workspace == active)
+        .collect()
+}
+
 /// The windows on the focused workspace — the bar's hero zone.
 ///
 /// Click focuses, middle-click closes, as before. Windows are *not* grouped
@@ -584,11 +598,7 @@ fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
 /// second surface and a second focus path, and neither falls out cheaply from
 /// a model whose whole content is three flat lists.
 fn tasks(app: &crate::app::App) -> Element<'_, Message, Theme> {
-    let snapshot = &app.snapshot;
-    let active = active_workspace(snapshot, app.output_id);
-    let on_workspace: Vec<&Window> = windows_on(snapshot, app.output_id)
-        .filter(|w| active.is_none() || w.workspace == active)
-        .collect();
+    let on_workspace = chips(app);
 
     if on_workspace.is_empty() {
         return Space::new().width(Length::Fill).into();
@@ -627,11 +637,7 @@ fn strip_left(app: &crate::app::App) -> f32 {
 /// workspace, or it fell past the end into the `+N` cell — in which case there
 /// is no cell to hang a popup under and the caller falls back to the pointer.
 pub fn chip_span(app: &crate::app::App, handle: u64) -> Option<(f32, f32)> {
-    let snapshot = &app.snapshot;
-    let active = active_workspace(snapshot, app.output_id);
-    let on_workspace: Vec<&Window> = windows_on(snapshot, app.output_id)
-        .filter(|w| active.is_none() || w.workspace == active)
-        .collect();
+    let on_workspace = chips(app);
     if on_workspace.is_empty() {
         return None;
     }
@@ -2215,6 +2221,45 @@ mod tests {
         let tray = tray_span(&app, crate::app::Drawer::Overflow).expect("sized bar");
         assert!(tray.1 <= app.width - bar::EDGE);
         assert!(tray.0 > chip_span(&app, 3).expect("chip 3 is drawn").1);
+    }
+
+    /// Under `wm` the strip is empty and nothing anchors to a chip; the
+    /// pager is untouched. Hybrid and de draw the chips as before.
+    #[test]
+    fn wm_mode_drops_the_chips_and_keeps_the_pager() {
+        use crate::model::Mode;
+        let mut app = crate::app::App::new();
+        app.width = 1830.0;
+        app.snapshot = Snapshot {
+            workspaces: vec![Workspace {
+                index: 1,
+                output: 0,
+                output_name: String::new(),
+                active: true,
+                windows: 1,
+            }],
+            windows: vec![Window {
+                handle: 1,
+                app_id: "kitty".into(),
+                title: "t".into(),
+                workspace: Some(1),
+                output: Some(0),
+                focused: true,
+                minimized: false,
+                pid: None,
+                trust: crate::model::Trust::Private,
+            }],
+            ..Snapshot::default()
+        };
+        for mode in [Mode::Hybrid, Mode::De] {
+            app.mode = mode;
+            assert_eq!(chips(&app).len(), 1);
+            assert!(chip_span(&app, 1).is_some());
+        }
+        app.mode = Mode::Wm;
+        assert!(chips(&app).is_empty());
+        assert_eq!(chip_span(&app, 1), None);
+        assert_eq!(live_workspaces(&app.snapshot, 0).count(), 1);
     }
 
     /// Hidden beats pinned, pinned keeps its own order, and a drawer whose

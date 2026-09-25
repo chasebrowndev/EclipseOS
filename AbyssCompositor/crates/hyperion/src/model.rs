@@ -24,6 +24,42 @@ impl Trust {
     }
 }
 
+/// The desktop's interaction mode (ADR 0062), `mode` in the compositor
+/// config. Only one thing on the bar depends on it: whether windows are drawn
+/// as chips. Under `wm` the human drives windows by keybind and the bar is a
+/// workspace indicator; `hybrid` and `de` keep the pointer-first strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    Wm,
+    #[default]
+    Hybrid,
+    De,
+}
+
+impl Mode {
+    /// Whether the task strip draws window chips.
+    pub fn shows_chips(self) -> bool {
+        self != Mode::Wm
+    }
+}
+
+/// `get_config {path:"mode"}` replies `{keys:[{path, value}]}`. Anything that
+/// is not a recognised mode string keeps the schema default, `hybrid`: an
+/// older compositor without the key must leave the bar as it always was.
+pub fn parse_mode(v: &Value) -> Mode {
+    let value = v
+        .get("keys")
+        .and_then(Value::as_array)
+        .and_then(|k| k.first())
+        .and_then(|k| k.get("value"))
+        .and_then(Value::as_str);
+    match value {
+        Some("wm") => Mode::Wm,
+        Some("de") => Mode::De,
+        _ => Mode::Hybrid,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Workspace {
     pub index: usize,
@@ -206,6 +242,24 @@ mod tests {
         assert_eq!(wins[0].name(), "kitty");
         assert_eq!(wins[1].name(), "Protected window");
         assert_eq!(wins[2].name(), "scratch");
+    }
+
+    #[test]
+    fn mode_reads_the_three_values_and_defaults_to_hybrid() {
+        let reply = |m: &str| json!({"keys": [{"path": "mode", "value": m}]});
+        assert_eq!(parse_mode(&reply("wm")), Mode::Wm);
+        assert_eq!(parse_mode(&reply("hybrid")), Mode::Hybrid);
+        assert_eq!(parse_mode(&reply("de")), Mode::De);
+        assert_eq!(parse_mode(&reply("nonsense")), Mode::Hybrid);
+        assert_eq!(parse_mode(&Value::Null), Mode::Hybrid);
+        assert_eq!(parse_mode(&json!({"keys": []})), Mode::Hybrid);
+    }
+
+    #[test]
+    fn only_wm_hides_the_chips() {
+        assert!(!Mode::Wm.shows_chips());
+        assert!(Mode::Hybrid.shows_chips());
+        assert!(Mode::De.shows_chips());
     }
 
     #[test]
