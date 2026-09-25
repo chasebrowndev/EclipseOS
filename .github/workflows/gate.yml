@@ -355,6 +355,7 @@ jobs:
       # F-07 §5: every PR body cites the spec section it implements.
       # This is what makes the spec->code trail auditable when work is
       # delegated to an agent rather than typed by hand.
+      # Fog's spec has no numbered IDs, so it is cited as 'Implements FOG §X'.
       - name: check PR body
         # No checkout in this job, so the workflow-level
         # `working-directory: AbyssCompositor` would not exist yet and bash
@@ -363,9 +364,9 @@ jobs:
         env:
           BODY: ${{ github.event.pull_request.body }}
         run: |
-          if echo "$BODY" | grep -qE '(Implements|Fixes|Amends) (COMP|S|P|A|F|I|D|X)-[0-9]{2}'; then
+          if echo "$BODY" | grep -qE '(Implements|Fixes|Amends) ((COMP|S|P|A|F|I|D|X)-[0-9]{2}|FOG §)'; then
             echo "spec citation found"
           else
-            echo "::error title=No spec citation::PR body must cite the spec section it implements, e.g. 'Implements COMP-08 §4' (F-07 §5)"
+            echo "::error title=No spec citation::PR body must cite the spec section it implements, e.g. 'Implements COMP-08 §4' or 'Implements FOG §Milestones' (F-07 §5)"
             exit 1
           fi
