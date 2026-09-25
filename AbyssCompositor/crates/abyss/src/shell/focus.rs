@@ -179,7 +179,13 @@ pub(crate) fn pointer_focus_ctx(state: &AbyssState, pos: Point<f64, Logical>) ->
     let g = &state.config.general;
     PointerFocusCtx {
         pointer_output,
-        window_under: state.space.element_under(pos).map(|(w, _)| w.clone()),
+        // Override-redirect menus/tooltips are not focus targets: the pointer
+        // over one keeps the owning client's focus.
+        window_under: state
+            .space
+            .element_under(pos)
+            .filter(|(w, _)| !w.x11_surface().is_some_and(|x| x.is_override_redirect()))
+            .map(|(w, _)| w.clone()),
         focused,
         focused_output,
         layer_interactivity: crate::shell::focused_layer(state)
@@ -224,6 +230,10 @@ pub fn focus_window(state: &mut AbyssState, window: &Window) {
 /// records the focus history and moves keyboard focus but leaves the floating
 /// stacking order alone; see [`FocusCause::raises`].
 pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool) {
+    // Override-redirect menus/tooltips never take focus or activation; the owning client keeps it.
+    if window.x11_surface().is_some_and(|x| x.is_override_redirect()) {
+        return;
+    }
     let Some(surface) = window_surface(window) else {
         return;
     };
