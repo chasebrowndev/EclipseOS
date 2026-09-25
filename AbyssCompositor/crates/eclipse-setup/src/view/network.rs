@@ -30,7 +30,7 @@ pub fn body(m: &Model) -> Body<'_> {
         Load::Failed(_) => Body {
             title,
             lead: "The network state could not be read. You can continue without it.".to_owned(),
-            blocks: vec![],
+            blocks: vec![parts::link("Rescan", Message::Rescan)],
             scroll: false,
         },
         Load::Ready(s) => match &s.link {
@@ -38,6 +38,7 @@ pub fn body(m: &Model) -> Body<'_> {
                 let mut blocks: Vec<El<'_, Message>> = Vec::new();
                 if m.more {
                     blocks.push(wifi(m));
+                    blocks.push(parts::link("Fewer options", Message::More(false)));
                 } else {
                     blocks.push(parts::link("Connect to Wi-Fi", Message::More(true)));
                 }
@@ -135,6 +136,7 @@ fn wifi(m: &Model) -> El<'_, Message> {
             }
             trailing = trailing.push(join);
             col = col.push(prompt_band("key", field, Some(trailing.into())));
+            col = col.push(parts::link("Rescan", Message::Rescan));
         } else {
             let mut r = row![
                 parts::body("This network is open: anyone nearby can read what is sent over it."),
@@ -147,6 +149,7 @@ fn wifi(m: &Model) -> El<'_, Message> {
             }
             r = r.push(join);
             col = col.push(r);
+            col = col.push(parts::link("Rescan", Message::Rescan));
         }
     } else {
         let mut r = row![parts::link("Rescan", Message::Rescan)].align_y(Alignment::Center);

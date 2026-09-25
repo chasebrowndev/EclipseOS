@@ -23,7 +23,7 @@ pub fn body(m: &Model) -> Body<'_> {
     let field = text_input("Type here to try the keyboard", &m.kb_test)
         .id(ids::KB_TEST)
         .on_input(Message::KbTest)
-        .on_submit(Message::Key(Key::Enter))
+        .on_submit(Message::Noop)
         .font(font::DATA)
         .size(size::PROMPT)
         .padding(0)

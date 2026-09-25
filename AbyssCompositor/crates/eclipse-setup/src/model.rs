@@ -363,7 +363,8 @@ pub enum Message {
     Restart,
     Restarted(Result<(), String>),
 
-    /// Nothing to do (a focus task that had no target).
+    /// Nothing to do: a focus task with no target, and Enter in the keyboard
+    /// test field, which must not advance the wizard.
     Noop,
 }
 
@@ -710,12 +711,17 @@ impl Model {
                     if let Some(s) = self.step.next() {
                         self.enter(s, &mut fx);
                     }
+                } else {
+                    self.surface_hostname(&mut fx);
                 }
             }
             Message::Back => self.back(&mut fx),
             Message::Key(k) => self.key(k, &mut fx),
 
-            Message::More(open) => self.more = open,
+            // A hidden field that blocks Continue is never left hidden.
+            Message::More(open) => {
+                self.more = open || (self.step == Step::Identity && !self.hostname_ok());
+            }
             Message::Language(i) => self.set_language(i, &mut fx),
             Message::Layout(code) => {
                 if self.layouts.iter().any(|l| l.code == code) {
@@ -863,7 +869,12 @@ impl Model {
                 }
             }
 
-            Message::Hostname(s) => self.hostname = s,
+            Message::Hostname(s) => {
+                self.hostname = s;
+                if self.step == Step::Identity && !self.hostname_ok() {
+                    self.more = true;
+                }
+            }
             Message::Username(s) => self.username = s,
             Message::Password(s) => self.password = s,
             Message::Password2(s) => self.password2 = s,
@@ -957,6 +968,8 @@ impl Model {
                         if let Some(s) = self.step.next() {
                             self.enter(s, fx);
                         }
+                    } else {
+                        self.surface_hostname(fx);
                     }
                 }
             },
@@ -965,6 +978,15 @@ impl Model {
             }
             Key::Up => self.step_selection(-1, fx),
             Key::Down => self.step_selection(1, fx),
+        }
+    }
+
+    /// On the identity step, an invalid host name is the first problem and
+    /// lives under More options: open them and put the cursor there.
+    fn surface_hostname(&mut self, fx: &mut Vec<Effect>) {
+        if self.step == Step::Identity && !self.hostname_ok() {
+            self.more = true;
+            fx.push(Effect::Focus(ids::HOSTNAME));
         }
     }
 
@@ -986,14 +1008,22 @@ impl Model {
                 }
             }
             Step::Keyboard => {
-                let codes: Vec<String> = self.visible_layouts().iter().map(|l| l.code.clone()).collect();
-                let cur = codes.iter().position(|c| *c == self.layout);
-                if let Some(i) = shift(codes.len(), cur, delta) {
-                    let _ = self
-                        .update(Message::Layout(codes[i].clone()))
-                        .into_iter()
-                        .map(|e| fx.push(e))
-                        .count();
+                // The list is not on screen under More options.
+                if self.more {
+                    return;
+                }
+                let visible: Vec<String> = self.visible_layouts().iter().map(|l| l.code.clone()).collect();
+                let target = match visible.iter().position(|c| *c == self.layout) {
+                    Some(i) => shift(visible.len(), Some(i), delta).map(|i| visible[i].clone()),
+                    // The filter hides the current layout: one row from it in
+                    // the whole list, not a jump to the top of the filtered one.
+                    None => {
+                        let cur = self.layouts.iter().position(|l| l.code == self.layout);
+                        shift(self.layouts.len(), cur, delta).map(|i| self.layouts[i].code.clone())
+                    }
+                };
+                if let Some(code) = target {
+                    fx.extend(self.update(Message::Layout(code)));
                 }
             }
             Step::Timezone => {
@@ -1776,5 +1806,65 @@ mod tests {
         assert!(stage_rank(Stage::Confirm) < stage_rank(Stage::Partition));
         assert!(stage_rank(Stage::Validate) < stage_rank(Stage::Preflight));
         assert_eq!(STAGE_ORDER.last(), Some(&Stage::Done));
+    }
+    #[test]
+    fn arrows_do_nothing_on_the_keyboard_step_while_the_list_is_hidden() {
+        let mut m = at(Step::Keyboard);
+        let before = m.layout.clone();
+        m.update(Message::More(true));
+        assert!(m.update(Message::Key(Key::Down)).is_empty());
+        assert_eq!(m.layout, before);
+    }
+
+    #[test]
+    fn arrows_move_one_row_from_a_layout_the_filter_hides() {
+        let mut m = at(Step::Keyboard);
+        m.update(Message::Layout("us".into()));
+        let pos = m.layouts.iter().position(|l| l.code == "us").unwrap();
+        m.update(Message::KbFilter("zzzz-no-such".into()));
+        assert!(m.visible_layouts().is_empty());
+        m.update(Message::Key(Key::Down));
+        assert_eq!(m.layout, m.layouts[pos + 1].code);
+        m.update(Message::Key(Key::Up));
+        assert_eq!(m.layout, m.layouts[pos].code);
+    }
+
+    #[test]
+    fn enter_in_the_keyboard_test_field_does_not_advance() {
+        // The field submits Noop, which takes the key so the wizard does not.
+        let mut m = at(Step::Keyboard);
+        assert!(m.update(Message::Noop).is_empty());
+        assert_eq!(m.step, Step::Keyboard);
+    }
+
+    #[test]
+    fn a_bad_hidden_host_name_is_brought_into_view() {
+        let mut m = at(Step::Identity);
+        fill_identity(&mut m);
+        m.hostname = "Bad Host".into();
+        assert!(!m.more);
+
+        // Enter from the last password field lands on the host name first.
+        let fx = m.update(Message::Key(Key::Enter));
+        assert_eq!(m.step, Step::Identity);
+        assert!(m.more);
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Focus(id) if *id == ids::HOSTNAME)));
+
+        // It cannot be hidden again while it is the problem.
+        m.update(Message::More(false));
+        assert!(m.more);
+
+        // Continue does the same from a closed state.
+        m.more = false;
+        m.update(Message::Next);
+        assert!(m.more);
+
+        m.update(Message::Hostname("eclipse-1".into()));
+        m.update(Message::More(false));
+        assert!(!m.more);
+        m.update(Message::Next);
+        assert_eq!(m.step, Step::Profile);
     }
 }
