@@ -127,6 +127,18 @@ pub fn with_eclipseos_include(text: &str) -> Option<String> {
     Some(s)
 }
 
+/// Nothing else refreshes the stub on the ESP, so without this a `limine`
+/// upgrade would leave the machine booting last release's stub (D-03 §4).
+pub const LIMINE_HOOK: &str = "[Trigger]\n\
+Type = Path\n\
+Operation = Install\n\
+Operation = Upgrade\n\
+Target = usr/share/limine/BOOTX64.EFI\n\n\
+[Action]\n\
+Description = Copying the Limine stub to the ESP...\n\
+When = PostTransaction\n\
+Exec = /usr/bin/install -Dm0644 /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/BOOTX64.EFI\n";
+
 pub const SUDOERS_WHEEL: &str = "%wheel ALL=(ALL:ALL) ALL\n";
 
 /// Limine's config, byte for byte what the reference script wrote. The ESP is
@@ -292,6 +304,7 @@ pub fn configure(env: &Env, plan: &Plan) -> Result<()> {
     target::write(t, TargetFile::SudoersWheel, SUDOERS_WHEEL.as_bytes())?;
 
     env.runner.run(&chroot(env).arg("locale-gen"))?;
+    env.runner.run(&chroot(env).args(["hwclock", "--systohc"]))?;
     env.runner.run(&chroot(env).args(["mkinitcpio", "-P"]))
 }
 
@@ -303,6 +316,7 @@ pub fn bootloader(env: &Env, l: &Layout) -> Result<()> {
     // path, which needs no NVRAM entry, and a config that says what it does.
     let stub = target::read_limine_stub(t)?;
     target::write(t, TargetFile::LimineStub, &stub)?;
+    target::write(t, TargetFile::LimineHook, LIMINE_HOOK.as_bytes())?;
 
     let out = env.runner.capture(
         &Cmd::new(Tool::Blkid)
@@ -438,6 +452,17 @@ mod tests {
         assert!(c.contains("/EclipseOS (fallback initramfs)"));
         assert!(!limine_conf("u", false).contains("amd-ucode"));
         assert!(valid_uuid("1b2c-3D4e") && !valid_uuid("a b") && !valid_uuid("x\ny") && !valid_uuid(""));
+    }
+
+    #[test]
+    fn the_limine_hook_matches_the_reference_script() {
+        let script = include_str!("../../../dist/iso/airootfs/root/install-eclipseos.sh");
+        let body = script
+            .split("95-limine-esp.hook <<'HOOK'\n")
+            .nth(1)
+            .and_then(|r| r.split("\nHOOK").next())
+            .unwrap();
+        assert_eq!(LIMINE_HOOK, format!("{body}\n"));
     }
 
     #[test]

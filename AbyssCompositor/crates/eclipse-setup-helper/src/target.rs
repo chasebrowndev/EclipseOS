@@ -24,9 +24,10 @@ pub enum TargetFile {
     SudoersWheel,
     LimineConf,
     LimineStub,
+    LimineHook,
 }
 
-pub const ALL: [TargetFile; 9] = [
+pub const ALL: [TargetFile; 10] = [
     TargetFile::Hostname,
     TargetFile::LocaleGen,
     TargetFile::LocaleConf,
@@ -36,6 +37,7 @@ pub const ALL: [TargetFile; 9] = [
     TargetFile::SudoersWheel,
     TargetFile::LimineConf,
     TargetFile::LimineStub,
+    TargetFile::LimineHook,
 ];
 
 impl TargetFile {
@@ -51,6 +53,7 @@ impl TargetFile {
             TargetFile::SudoersWheel => "etc/sudoers.d/wheel",
             TargetFile::LimineConf => "boot/limine.conf",
             TargetFile::LimineStub => "boot/EFI/BOOT/BOOTX64.EFI",
+            TargetFile::LimineHook => "etc/pacman.d/hooks/95-limine-esp.hook",
         }
     }
 

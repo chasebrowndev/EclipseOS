@@ -596,6 +596,7 @@ mod tests {
             "etc/sudoers.d/wheel",
             "boot/limine.conf",
             "boot/EFI/BOOT/BOOTX64.EFI",
+            "etc/pacman.d/hooks/95-limine-esp.hook",
             "home/chase/.config/eclipse/abyss.kdl",
         ]
         .into();

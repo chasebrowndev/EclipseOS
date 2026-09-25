@@ -299,7 +299,9 @@ catalog entries list.
 **Its complete write surface** (the security boundary, so it is one list): the
 target disk (partition table, filesystems), `pacstrap` payload, target
 `/etc/{hostname,locale.gen,locale.conf,localtime,fstab,pacman.conf,sudoers.d/wheel}`,
-the bootloader config, the new user and its password, the catalog-listed
+the bootloader config and its ESP-refresh pacman hook
+(`/etc/pacman.d/hooks/95-limine-esp.hook`), `/etc/adjtime` (`hwclock --systohc`),
+the new user and its password (root is locked), the catalog-listed
 `systemctl enable`s, and the target user's `abyss.kdl` (§5). Nothing else. On a
 failed candidate fetch (§8) it rewrites the affected `components.*` value in
 that same file to the native default, which is inside that list.
@@ -427,7 +429,7 @@ file*, is met by D-07 alone for every profile and is its acceptance test.
 6. **The curated Agentic preset's contents.** Written once S-01's grant set
    exists. Until then the option is shown disabled.
 7. **Two trusted-UI surfaces owed to COMP-10**: the "destructive system action"
-   confirmation (§6; specified in COMP-10 §3.10, code owed) and the
+   confirmation (§6; COMP-10 §3.10, built: compositor `trusted_ui/` and the helper's socket client) and the
    compositor-drawn polkit authentication agent (§6; still unspecified). Until
    the confirmation exists, the install falls back to the TTY script on tty2,
    which is root-run by a person at the keyboard. Until the agent exists,
