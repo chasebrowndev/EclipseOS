@@ -1,0 +1,12 @@
+[package]
+name = "eclipse-setup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "the graphical installer and setup wizard (D-07). Steps 1-14; step 0 is eclipse-welcome."
+publish = false
+
+[dependencies]
+eclipse-setup-plan = { path = "../eclipse-setup-plan" }

@@ -1,0 +1,12 @@
+[package]
+name = "eclipse-setup-helper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "the root helper behind eclipse-setup (D-07 §6). Closed plan in, polkit-gated. TCB-adjacent: owner review."
+publish = false
+
+[dependencies]
+eclipse-setup-plan = { path = "../eclipse-setup-plan" }
