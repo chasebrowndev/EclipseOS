@@ -7,3 +7,9 @@ license.workspace = true
 repository.workspace = true
 description = "Fog widgets: virtual list, glass shader (FOG §Performance model)."
 publish = false
+
+[dependencies]
+iced.workspace = true
+
+[[example]]
+name = "virtual_list"
