@@ -175,10 +175,14 @@ file descriptor, and applied with `chpasswd` (§6 rejects newlines and NUL). The
 are never written to any file the wizard owns, never logged, never placed on an
 argument list. The wizard clears its own buffer once sent; **it cannot promise
 the toolkit's widget state, undo history or glyph cache hold no copy**, which is
-one reason the wizard is not trusted (§7). Wi-fi credentials from step 3 belong
-to the *live* NetworkManager and are **not** carried to the target unless the
-user asks, and then only through the secret store, never a file the helper
-copies. The user is created with `-G wheel` and nothing else (D-03
+one reason the wizard is not trusted (§7). The password is at least 8 characters
+(the helper enforces it; root is locked, so this is also the sudo password).
+Wi-fi from step 3 **is carried to the target by default**, with an opt-out
+checkbox on Review (`Plan.carry_network`). The helper copies only the live
+NetworkManager's root-owned, mode-0600 Wi-fi keyfiles, by validated file name,
+rewritten at mode 0600 root, never echoed or logged. The keyboard step's
+console keymap (`Plan.keymap`, checked against the installed kbd keymaps) is
+written to `/etc/vconsole.conf` before the initramfs is built. The user is created with `-G wheel` and nothing else (D-03
 §4.2); no legacy device groups.
 
 ### 4.4 Agents
@@ -298,7 +302,11 @@ catalog entries list.
 
 **Its complete write surface** (the security boundary, so it is one list): the
 target disk (partition table, filesystems), `pacstrap` payload, target
-`/etc/{hostname,locale.gen,locale.conf,localtime,fstab,pacman.conf,sudoers.d/wheel}`,
+`/etc/{hostname,locale.gen,locale.conf,localtime,vconsole.conf,fstab,pacman.conf,sudoers.d/wheel,systemd/zram-generator.conf}`,
+`/etc/NetworkManager/system-connections/*` (carried Wi-fi, §4.3), the install log
+`/var/log/eclipseos-install/install.log`, `wipefs`/`blkdiscard` on the target
+disk (after the trusted confirm, never before), `efibootmgr` boot entries
+(best effort), the ESP mount options (`umask=0077`),
 the bootloader config and its ESP-refresh pacman hook
 (`/etc/pacman.d/hooks/95-limine-esp.hook`), `/etc/adjtime` (`hwclock --systohc`),
 the new user and its password (root is locked), the catalog-listed

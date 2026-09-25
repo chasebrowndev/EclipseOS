@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The helper's write surface on the target, as a closed enum (D-07 §6):
 //! `/etc/{hostname,locale.gen,locale.conf,localtime,fstab,pacman.conf,
-//! sudoers.d/wheel}` and the bootloader's two files. The user's `abyss.kdl` is
+//! vconsole.conf,sudoers.d/wheel,systemd/zram-generator.conf}`, the bootloader's
+//! files, the install log, and Wi-Fi connection files (whose one directory is
+//! fixed and whose names are checked as single path components). The user's `abyss.kdl` is
 //! written by `seed`, the disk by `sgdisk`/`mkfs`, the payload by `pacstrap`;
 //! there is no other way to put a byte on the target from this crate, and no
 //! function here takes a path from anywhere but this enum.
@@ -25,9 +27,12 @@ pub enum TargetFile {
     LimineConf,
     LimineStub,
     LimineHook,
+    Vconsole,
+    ZramGenerator,
+    InstallLog,
 }
 
-pub const ALL: [TargetFile; 10] = [
+pub const ALL: [TargetFile; 13] = [
     TargetFile::Hostname,
     TargetFile::LocaleGen,
     TargetFile::LocaleConf,
@@ -38,6 +43,9 @@ pub const ALL: [TargetFile; 10] = [
     TargetFile::LimineConf,
     TargetFile::LimineStub,
     TargetFile::LimineHook,
+    TargetFile::Vconsole,
+    TargetFile::ZramGenerator,
+    TargetFile::InstallLog,
 ];
 
 impl TargetFile {
@@ -54,12 +62,16 @@ impl TargetFile {
             TargetFile::LimineConf => "boot/limine.conf",
             TargetFile::LimineStub => "boot/EFI/BOOT/BOOTX64.EFI",
             TargetFile::LimineHook => "etc/pacman.d/hooks/95-limine-esp.hook",
+            TargetFile::Vconsole => "etc/vconsole.conf",
+            TargetFile::ZramGenerator => "etc/systemd/zram-generator.conf",
+            TargetFile::InstallLog => "var/log/eclipseos-install/install.log",
         }
     }
 
     const fn mode(self) -> u32 {
         match self {
             TargetFile::SudoersWheel => 0o440,
+            TargetFile::InstallLog => 0o600,
             _ => 0o644,
         }
     }
@@ -113,6 +125,10 @@ pub fn write(target: &Path, f: TargetFile, bytes: &[u8]) -> Result<()> {
         return Err(Error::Refused("localtime is a link"));
     }
     let (parent, name) = split(f);
+    place(target, parent, name, f.mode(), bytes)
+}
+
+fn place(target: &Path, parent: &Path, name: &std::ffi::OsStr, mode: u32, bytes: &[u8]) -> Result<()> {
     let dir = ensure_dirs(target, parent)?;
     let tmp = dir.join(tmp_name(name));
     let _ = fs::remove_file(&tmp);
@@ -120,14 +136,39 @@ pub fn write(target: &Path, f: TargetFile, bytes: &[u8]) -> Result<()> {
         .write(true)
         .create_new(true)
         .custom_flags(OFlags::NOFOLLOW.bits() as i32)
-        .mode(f.mode())
+        .mode(mode)
         .open(&tmp)
         .map_err(io("create target file"))?;
-    h.set_permissions(fs::Permissions::from_mode(f.mode()))
+    h.set_permissions(fs::Permissions::from_mode(mode))
         .map_err(io("chmod target file"))?;
     h.write_all(bytes).map_err(io("write target file"))?;
     drop(h);
     fs::rename(&tmp, dir.join(name)).map_err(io("place target file"))
+}
+
+/// Where NetworkManager keeps system connections, relative to the target root.
+pub const NM_DIR: &str = "etc/NetworkManager/system-connections";
+
+/// A NetworkManager keyfile name: one path component, `*.nmconnection`, text.
+pub fn valid_nm_name(s: &str) -> bool {
+    s.len() <= 128
+        && s.ends_with(".nmconnection")
+        && !s.starts_with('.')
+        && s.chars().all(|c| !c.is_control() && c != '/')
+}
+
+/// One Wi-Fi keyfile, root-only. Secrets ride in it, so it is never logged.
+pub fn write_nm_connection(target: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+    if !valid_nm_name(name) {
+        return Err(Error::Refused("connection file name"));
+    }
+    place(
+        target,
+        Path::new(NM_DIR),
+        std::ffi::OsStr::new(name),
+        0o600,
+        bytes,
+    )
 }
 
 /// `/etc/localtime` -> `/usr/share/zoneinfo/<tz>`. `tz` has already been through
@@ -150,7 +191,7 @@ pub fn link_localtime(target: &Path, tz: &str) -> Result<()> {
     fs::rename(&tmp, dir.join(name)).map_err(io("place localtime link"))
 }
 
-fn read_bounded(path: &Path) -> Result<Vec<u8>> {
+pub fn read_bounded(path: &Path) -> Result<Vec<u8>> {
     let f = fs::OpenOptions::new()
         .read(true)
         .custom_flags(OFlags::NOFOLLOW.bits() as i32)
@@ -196,7 +237,9 @@ mod tests {
             assert!(r
                 .components()
                 .all(|c| matches!(c, std::path::Component::Normal(_))));
-            assert!(r.starts_with("etc") || r.starts_with("boot"));
+            assert!(
+                r.starts_with("etc") || r.starts_with("boot") || r.starts_with("var/log/eclipseos-install")
+            );
             assert!(seen.insert(f.rel()));
         }
     }
@@ -258,6 +301,42 @@ mod tests {
             assert!(link_localtime(t.path(), bad).is_err(), "{bad:?}");
         }
         assert!(write(t.path(), TargetFile::Localtime, b"x").is_err());
+    }
+
+    #[test]
+    fn nm_names_are_one_component() {
+        for ok in ["home.nmconnection", "Café Wi-Fi (5G).nmconnection"] {
+            assert!(valid_nm_name(ok), "{ok:?}");
+        }
+        for bad in [
+            "",
+            "a",
+            "../x.nmconnection",
+            "a/b.nmconnection",
+            ".h.nmconnection",
+            "a\n.nmconnection",
+            &format!("{}.nmconnection", "a".repeat(120)),
+        ] {
+            assert!(!valid_nm_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_connection_is_written_root_only_in_the_fixed_directory() {
+        let t = TempDir::new();
+        write_nm_connection(t.path(), "home.nmconnection", b"[wifi]\n").unwrap();
+        let p = t.path().join(NM_DIR).join("home.nmconnection");
+        assert_eq!(fs::metadata(p).unwrap().mode() & 0o777, 0o600);
+        assert!(write_nm_connection(t.path(), "../evil.nmconnection", b"x").is_err());
+        assert_eq!(fs::read_dir(t.path().join(NM_DIR)).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn the_install_log_is_root_only() {
+        let t = TempDir::new();
+        write(t.path(), TargetFile::InstallLog, b"x").unwrap();
+        let md = fs::metadata(t.path().join(TargetFile::InstallLog.rel())).unwrap();
+        assert_eq!(md.mode() & 0o777, 0o600);
     }
 
     #[test]

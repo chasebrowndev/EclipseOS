@@ -820,3 +820,9 @@ suite to put in it:
 The 516 tests are unit-level. Nothing in the security suite of COMP-15 §2 is
 asserted by anything today; redaction was verified by hand, once. **The
 presence of CI must not be read as coverage.**
+
+**Installer hardware (D-07, D-03 §2):** the helper detects AMD, Intel and NVIDIA
+(microcode, Vulkan/VA drivers, nouveau/NVK). Only AMD has been exercised. Intel
+and NVIDIA are **untested** until the second machine is run. No part of the
+installer has been run against a real disk or a VM yet; the helper's 95 tests
+use a fake runner.

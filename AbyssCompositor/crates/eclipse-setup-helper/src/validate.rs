@@ -7,7 +7,9 @@ use crate::catalog::{Catalog, Entry};
 use crate::disks::{self, DiskEntry};
 use crate::env::{Env, Paths};
 use crate::error::{io, Error, Result};
-use eclipse_setup_plan::{check_password, valid_by_id, valid_hostname, valid_username, Plan, Request};
+use eclipse_setup_plan::{
+    check_password, valid_by_id, valid_hostname, valid_keymap, valid_username, Plan, Request,
+};
 use std::fs;
 use std::io::Read;
 
@@ -75,6 +77,23 @@ pub fn valid_timezone(paths: &Paths, s: &str) -> bool {
         && &magic == b"TZif"
 }
 
+/// A kbd keymap that is actually installed: `<name>.map.gz` somewhere under the
+/// keymap tree (bounded walk, no links followed).
+pub fn keymap_installed(paths: &Paths, name: &str) -> bool {
+    fn walk(dir: &std::path::Path, want: &str, depth: u8) -> bool {
+        let Ok(rd) = fs::read_dir(dir) else { return false };
+        rd.flatten().any(|e| {
+            let Ok(ft) = e.file_type() else { return false };
+            if ft.is_dir() {
+                depth < 4 && walk(&e.path(), want, depth + 1)
+            } else {
+                ft.is_file() && e.file_name().to_str() == Some(want)
+            }
+        })
+    }
+    valid_keymap(name) && walk(&paths.keymaps, &format!("{name}.map.gz"), 0)
+}
+
 fn check_plan_fields(paths: &Paths, plan: &Plan, password: &str) -> Result<()> {
     if !valid_hostname(&plan.hostname) {
         return Err(Error::Refused("hostname"));
@@ -92,6 +111,9 @@ fn check_plan_fields(paths: &Paths, plan: &Plan, password: &str) -> Result<()> {
     }
     if !valid_timezone(paths, &plan.timezone) {
         return Err(Error::Refused("timezone"));
+    }
+    if !keymap_installed(paths, &plan.keymap) {
+        return Err(Error::Refused("keymap"));
     }
     Ok(())
 }
@@ -211,7 +233,7 @@ mod tests {
 
     #[test]
     fn refuses_passwords_with_newline_cr_nul_or_empty() {
-        for bad in ["a\nroot:x", "a\rb", "a\0b", ""] {
+        for bad in ["a\nroot:x1234", "abcdefg\rb", "abcdefg\0b", ""] {
             let (_t, p) = live();
             let e = refused_with(p, |q| q.password = Zeroizing::new(bad.into()), 0);
             assert_eq!(e, Error::Refused("password"));
@@ -249,6 +271,29 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn keymaps_must_be_installed() {
+        let (_t, p) = live();
+        assert!(keymap_installed(&p, "us") && keymap_installed(&p, "de-latin1"));
+        for bad in ["", "xx", "../us", "us.map.gz", "i386"] {
+            assert!(!keymap_installed(&p, bad), "{bad:?}");
+        }
+        let (_t, p) = live();
+        assert_eq!(
+            refused_with(p, |q| q.plan.keymap = "nope".into(), 0),
+            Error::Refused("keymap")
+        );
+    }
+
+    #[test]
+    fn refuses_short_passwords() {
+        let (_t, p) = live();
+        assert_eq!(
+            refused_with(p, |q| q.password = Zeroizing::new("short".into()), 0),
+            Error::Refused("password")
+        );
     }
 
     #[test]

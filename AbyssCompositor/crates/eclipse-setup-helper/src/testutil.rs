@@ -59,6 +59,16 @@ pub fn fake_paths(t: &TempDir) -> Paths {
         live_pacman_conf: r.join("etc/pacman.conf"),
         install_pacman_conf: r.join("root/eclipseos-install-pacman.conf"),
         uid_min: 1,
+        proc_cpuinfo: r.join("proc/cpuinfo"),
+        proc_meminfo: r.join("proc/meminfo"),
+        proc_swaps: r.join("proc/swaps"),
+        sys_pci: r.join("sys/bus/pci/devices"),
+        power_supply: r.join("sys/class/power_supply"),
+        keymaps: r.join("usr/share/kbd/keymaps"),
+        ntp_synced: r.join("run/systemd/timesync/synchronized"),
+        clock_wait: std::time::Duration::ZERO,
+        nm_connections: r.join("etc/NetworkManager/system-connections"),
+        install_log: r.join("run/eclipseos-install.log"),
     }
 }
 
@@ -190,6 +200,24 @@ pub fn make_live(p: &Paths) {
     std::fs::create_dir_all(&p.repo).unwrap();
     std::fs::write(&p.pkg_list, "# base\n\nbase\nlinux\nlimine\neclipseos-meta\n").unwrap();
     std::fs::write(&p.packaging_key, b"KEYDATA").unwrap();
+    // A quiet 16 GiB AMD desktop on AC, clock synced, one keymap.
+    std::fs::write(
+        &p.proc_cpuinfo,
+        "processor\t: 0\nvendor_id\t: AuthenticAMD\nflags\t\t: fpu vme sse\n",
+    )
+    .unwrap();
+    std::fs::write(&p.proc_meminfo, "MemTotal:       16000000 kB\nMemFree: 1 kB\n").unwrap();
+    std::fs::write(
+        &p.proc_swaps,
+        "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(p.ntp_synced.parent().unwrap()).unwrap();
+    std::fs::write(&p.ntp_synced, b"").unwrap();
+    std::fs::create_dir_all(p.keymaps.join("i386/qwerty")).unwrap();
+    std::fs::create_dir_all(p.keymaps.join("i386/qwertz")).unwrap();
+    std::fs::write(p.keymaps.join("i386/qwerty/us.map.gz"), b"").unwrap();
+    std::fs::write(p.keymaps.join("i386/qwertz/de-latin1.map.gz"), b"").unwrap();
     let home = p.target.parent().unwrap().join("home/liveuser");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(
@@ -219,6 +247,8 @@ pub fn req() -> eclipse_setup_plan::Request {
             username: "chase".into(),
             locale: "en_US.UTF-8".into(),
             timezone: "America/New_York".into(),
+            keymap: "us".into(),
+            carry_network: false,
             profile: Profile::Standard,
             candidates: vec!["hyperion".into(), "eclipse-toasts".into()],
         },

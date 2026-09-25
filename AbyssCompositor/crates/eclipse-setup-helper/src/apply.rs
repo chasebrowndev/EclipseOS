@@ -11,8 +11,10 @@
 //! The first failed stage is reported (`failed: true`) and ends the run.
 
 use crate::disks;
-use crate::env::Env;
+use crate::env::{Env, Paths};
 use crate::error::{io, Error, Result};
+use crate::hw;
+use crate::network;
 use crate::runner::{Cmd, Tool};
 use crate::seed;
 use crate::stages::{self, Prepared};
@@ -20,9 +22,15 @@ use crate::validate::{self, Validated};
 use eclipse_setup_plan::{Progress, Request, Stage};
 use std::fs;
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Smaller than this cannot hold the package set plus a usable home.
 pub const MIN_DISK_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+
+/// Sized for the Abyss desktop plus the installer running from RAM. `MemTotal`
+/// reads a little under the fitted amount, so this is roughly a 2 GB machine.
+pub const MIN_MEM_KIB: u64 = 1_800_000;
 
 /// Arch's own packages come from the mirrors; check before touching the disk.
 const MIRROR_PROBE: &str = "https://geo.mirror.pkgbuild.com/lastupdate";
@@ -32,6 +40,20 @@ const MAX_PKG_LIST_BYTES: u64 = 256 * 1024;
 
 struct Reporter<'a> {
     out: &'a mut dyn Write,
+    /// The same lines, kept for the failure screen and the installed system.
+    /// They are fixed-vocabulary and never echo content, so this is not secret.
+    log: Option<fs::File>,
+}
+
+fn open_log(p: &Paths) -> Option<fs::File> {
+    let _ = fs::remove_file(&p.install_log);
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .mode(0o644)
+        .open(&p.install_log)
+        .ok()
 }
 
 impl Reporter<'_> {
@@ -47,6 +69,12 @@ impl Reporter<'_> {
             s.push('\n');
             let _ = self.out.write_all(s.as_bytes());
             let _ = self.out.flush();
+            if let Some(f) = &mut self.log {
+                let ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                let _ = writeln!(f, "{ts} {}", s.trim_end());
+            }
         }
     }
 }
@@ -69,7 +97,21 @@ pub fn preflight(env: &Env, v: &Validated) -> Result<Prepared> {
         return Err(Error::Refused("package list on the medium"));
     }
     let text = fs::read_to_string(&p.pkg_list).map_err(io("read package list"))?;
-    let pkgs = stages::package_set(stages::parse_pkg_list(&text)?, &v.entries);
+    let mut pkgs = stages::package_set(stages::parse_pkg_list(&text)?, &v.entries);
+
+    let machine = hw::detect(p);
+    if machine.mem_kib < MIN_MEM_KIB {
+        return Err(Error::Refused("not enough memory"));
+    }
+    for extra in machine.packages() {
+        if !pkgs.iter().any(|q| q == extra) {
+            pkgs.push(extra.to_owned());
+        }
+    }
+    let mut warnings = Vec::new();
+    if machine.on_battery {
+        warnings.push("running on battery: plug in before installing");
+    }
 
     if !p.packaging_key.is_file() {
         return Err(Error::Refused("medium has no packaging key"));
@@ -90,6 +132,9 @@ pub fn preflight(env: &Env, v: &Validated) -> Result<Prepared> {
     if disks::in_use(&mounts, &v.disk) {
         return Err(Error::Refused("disk has mounted partitions"));
     }
+    if let Some(why) = disks::busy_reason(p, &v.disk) {
+        return Err(Error::Refused(why));
+    }
 
     let probe = Cmd::new(Tool::Curl)
         .args(["-fsS", "--max-time", "10", "-o", "/dev/null"])
@@ -98,7 +143,50 @@ pub fn preflight(env: &Env, v: &Validated) -> Result<Prepared> {
         .run(&probe)
         .map_err(|_| Error::Refused("no network: package mirror unreachable"))?;
 
-    Ok(Prepared { pkgs, keyid })
+    // The signatures on the packages are checked against the clock.
+    if !wait_for_clock(p) {
+        return Err(Error::Refused("system clock not synchronised"));
+    }
+    // Everything the install will download must resolve now: after the erase
+    // there is no going back to the old system.
+    stages::install_pacman_conf(env)?;
+    let conf = &p.install_pacman_conf;
+    let pacman = |args: &[&str]| {
+        Cmd::new(Tool::Pacman)
+            .arg("--config")
+            .arg(conf)
+            .args(args.iter().copied())
+    };
+    env.runner
+        .run(&pacman(&["-Sy", "--noconfirm", "archlinux-keyring"]))
+        .map_err(|_| Error::Refused("could not refresh the package keyring"))?;
+    env.runner
+        .run(&Cmd::new(Tool::PacmanKey).args(["--populate", "archlinux"]))
+        .map_err(|_| Error::Refused("could not refresh the package keyring"))?;
+    env.runner
+        .run(&pacman(&["-Sp", "--noconfirm"]).args(&pkgs))
+        .map_err(|_| Error::Refused("a package could not be resolved"))?;
+
+    Ok(Prepared {
+        pkgs,
+        keyid,
+        ucode: machine.ucode(),
+        warnings,
+    })
+}
+
+/// True once timesyncd has set the clock, waiting up to `clock_wait` for it.
+fn wait_for_clock(p: &Paths) -> bool {
+    let end = Instant::now() + p.clock_wait;
+    loop {
+        if p.ntp_synced.exists() {
+            return true;
+        }
+        if Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 struct Run<'a, 'b> {
@@ -140,6 +228,9 @@ impl Run<'_, '_> {
             "checking the machine and the network",
             |_| preflight(env, &v),
         )?;
+        for w in &prep.warnings {
+            self.rep.line(Stage::Preflight, 10, w, false);
+        }
 
         self.stage(
             Stage::Confirm,
@@ -169,16 +260,31 @@ impl Run<'_, '_> {
             stages::configure(env, &req.plan)
         })?;
         self.stage(Stage::Bootloader, 85, "installing the bootloader", |_| {
-            stages::bootloader(env, &layout)
+            stages::bootloader(env, &layout, prep.ucode)
         })?;
         self.stage(Stage::User, 90, "creating the user", |_| stages::user(env, req))?;
         let outcome = self.stage(Stage::Seed, 94, "carrying over settings", |_| {
             seed::run(env, &req.plan.username)
         })?;
         self.rep.line(Stage::Seed, 95, &outcome.message(), false);
+        if req.plan.carry_network {
+            let n = network::carry(env);
+            self.rep.line(
+                Stage::Seed,
+                95,
+                if n == 0 {
+                    "no network connections carried"
+                } else {
+                    "network connections carried"
+                },
+                false,
+            );
+        }
         self.stage(Stage::Units, 97, "enabling services", |_| {
             stages::units(env, &v.entries)
         })?;
+        // Last, so the copy holds everything but the closing lines. Best effort.
+        let _ = stages::keep_log(env);
         Ok(())
     }
 }
@@ -190,7 +296,10 @@ pub fn apply(env: &Env, req: &Request, out: &mut dyn Write) -> bool {
     let mut run = Run {
         env,
         req,
-        rep: Reporter { out },
+        rep: Reporter {
+            out,
+            log: open_log(&env.paths),
+        },
         mounted: false,
     };
     let ok = run.go().is_ok();
@@ -334,9 +443,13 @@ mod tests {
         for t in r.tools() {
             assert!(!t.touches_disk(), "{t:?} issued before confirmation");
         }
-        for t in [Tool::PacmanKey, Tool::Blkid] {
-            assert!(!r.issued(t), "{t:?}");
-        }
+        assert!(!r.issued(Tool::Blkid));
+        // Refreshing the live keyring is fine; trusting the packaging key is pacstrap's.
+        assert!(!r
+            .log
+            .borrow()
+            .iter()
+            .any(|l| l.tool == Tool::PacmanKey && l.args.iter().any(|a| a == "--add" || a == "--lsign-key")));
         assert!(!lines.iter().any(|l| l.stage == Stage::Partition));
     }
 
@@ -400,6 +513,75 @@ mod tests {
             |_, p| fs::remove_file(&p.packaging_key).unwrap(),
             Stage::Preflight,
         );
+    }
+
+    #[test]
+    fn machine_and_package_checks_refuse_before_the_wipe() {
+        refuses(
+            |_, p| fs::write(&p.proc_meminfo, "MemTotal: 900000 kB\n").unwrap(),
+            Stage::Preflight,
+        );
+        refuses(|_, p| fs::remove_file(&p.ntp_synced).unwrap(), Stage::Preflight);
+        refuses(
+            |_, p| {
+                fs::write(
+                    &p.proc_swaps,
+                    "Filename Type Size Used Priority\n/dev/nvme0n1 partition 1 0 -2\n",
+                )
+                .unwrap()
+            },
+            Stage::Preflight,
+        );
+    }
+
+    #[test]
+    fn a_failing_keyring_or_closure_check_refuses_before_the_wipe() {
+        for bad in [Tool::PacmanKey, Tool::Pacman] {
+            let (_t, p) = live();
+            let inner = machine_runner(&p);
+            let r = FakeRunner::new(move |c| {
+                if c.tool == bad {
+                    return Err(Error::Command {
+                        tool: "x",
+                        code: Some(1),
+                    });
+                }
+                inner.capture(c)
+            });
+            let mut out = Vec::new();
+            assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+            assert_eq!(progress(&out).pop().unwrap().stage, Stage::Preflight);
+            assert!(r.tools().iter().all(|t| !t.touches_disk()));
+        }
+    }
+
+    #[test]
+    fn a_missing_rtc_does_not_fail_the_run() {
+        let (_t, p) = live();
+        let inner = machine_runner(&p);
+        let r = FakeRunner::new(move |c| {
+            if c.args.iter().any(|a| a == "hwclock") {
+                return Err(Error::Command {
+                    tool: "arch-chroot",
+                    code: Some(1),
+                });
+            }
+            inner.capture(c)
+        });
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+    }
+
+    #[test]
+    fn stale_signatures_are_wiped_after_confirm_and_before_partitioning() {
+        let (_t, p) = live();
+        let r = machine_runner(&p);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let t = r.tools();
+        let w = t.iter().position(|t| *t == Tool::Wipefs).expect("wipefs");
+        let s = t.iter().position(|t| *t == Tool::Sgdisk).unwrap();
+        assert!(w < s);
     }
 
     #[test]
@@ -573,7 +755,7 @@ mod tests {
         assert_eq!(rd("etc/sudoers.d/wheel"), "%wheel ALL=(ALL:ALL) ALL\n");
         assert!(rd("etc/pacman.conf").contains("eclipseos.conf"));
         assert!(rd("etc/fstab").contains("UUID=1"));
-        assert!(rd("boot/limine.conf").contains("root=UUID=1234-ABCD rw"));
+        assert!(rd("boot/limine.conf").contains("root=UUID=1234-ABCD rootfstype=ext4 rw"));
         assert_eq!(
             fs::read_link(target.join("etc/localtime")).unwrap(),
             Path::new("/usr/share/zoneinfo/America/New_York")
@@ -597,6 +779,9 @@ mod tests {
             "boot/limine.conf",
             "boot/EFI/BOOT/BOOTX64.EFI",
             "etc/pacman.d/hooks/95-limine-esp.hook",
+            "etc/vconsole.conf",
+            "etc/systemd/zram-generator.conf",
+            "var/log/eclipseos-install/install.log",
             "home/chase/.config/eclipse/abyss.kdl",
         ]
         .into();

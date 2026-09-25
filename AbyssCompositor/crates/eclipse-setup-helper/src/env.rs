@@ -6,6 +6,7 @@
 use crate::confirm::Confirm;
 use crate::runner::Runner;
 use std::path::PathBuf;
+use std::time::Duration;
 
 pub struct Paths {
     /// Present only on the live medium (D-07 §6: refuse without it).
@@ -33,6 +34,21 @@ pub struct Paths {
     pub install_pacman_conf: PathBuf,
     /// Lowest uid accepted as "a real user" for the seed.
     pub uid_min: u32,
+    pub proc_cpuinfo: PathBuf,
+    pub proc_meminfo: PathBuf,
+    pub proc_swaps: PathBuf,
+    pub sys_pci: PathBuf,
+    pub power_supply: PathBuf,
+    /// kbd's keymap tree; a console keymap is valid if a `<name>.map.gz` is in it.
+    pub keymaps: PathBuf,
+    /// Present once systemd-timesyncd has set the clock from the network.
+    pub ntp_synced: PathBuf,
+    /// How long `Preflight` waits for the clock before refusing.
+    pub clock_wait: Duration,
+    /// The live medium's saved connections (D-07 §4.3).
+    pub nm_connections: PathBuf,
+    /// Progress log; not secret by construction, so world-readable for the GUI.
+    pub install_log: PathBuf,
 }
 
 impl Paths {
@@ -55,6 +71,16 @@ impl Paths {
             live_pacman_conf: "/etc/pacman.conf".into(),
             install_pacman_conf: "/root/eclipseos-install-pacman.conf".into(),
             uid_min: 1000,
+            proc_cpuinfo: "/proc/cpuinfo".into(),
+            proc_meminfo: "/proc/meminfo".into(),
+            proc_swaps: "/proc/swaps".into(),
+            sys_pci: "/sys/bus/pci/devices".into(),
+            power_supply: "/sys/class/power_supply".into(),
+            keymaps: "/usr/share/kbd/keymaps".into(),
+            ntp_synced: "/run/systemd/timesync/synchronized".into(),
+            clock_wait: Duration::from_secs(30),
+            nm_connections: "/etc/NetworkManager/system-connections".into(),
+            install_log: "/run/eclipseos-install.log".into(),
         }
     }
 }

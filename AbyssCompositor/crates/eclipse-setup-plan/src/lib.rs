@@ -36,6 +36,13 @@ pub struct Plan {
     pub locale: String,
     /// e.g. `America/New_York`, from the tzdata list.
     pub timezone: String,
+    /// Console keymap for `/etc/vconsole.conf`, e.g. `de-latin1`. The helper
+    /// checks it against the installed kbd keymaps. The graphical layout rides
+    /// in the seed (`input.kb-layout`).
+    pub keymap: String,
+    /// Copy the live NetworkManager connections to the target (D-07 §4.3). On
+    /// by default in the UI; the user can clear it on Review.
+    pub carry_network: bool,
     pub profile: Profile,
     /// Catalog ids only. The helper resolves them; it takes no package or unit
     /// name from its caller.
@@ -117,10 +124,21 @@ pub fn valid_username(s: &str) -> bool {
         && s != "root"
 }
 
+/// Root is locked, so this is also the sudo password.
+pub const MIN_PASSWORD_CHARS: usize = 8;
+
 /// `chpasswd` reads `user:password` lines, so a newline would inject a second
-/// entry (D-07 §6). Empty is also refused.
+/// entry (D-07 §6). Shorter than [`MIN_PASSWORD_CHARS`] is refused.
 pub fn check_password(s: &str) -> bool {
-    !s.is_empty() && !s.bytes().any(|c| matches!(c, b'\n' | b'\r' | 0))
+    s.chars().count() >= MIN_PASSWORD_CHARS && !s.bytes().any(|c| matches!(c, b'\n' | b'\r' | 0))
+}
+
+/// A kbd keymap name: one path component, as `loadkeys` and `vconsole.conf` take it.
+pub fn valid_keymap(s: &str) -> bool {
+    (1..=64).contains(&s.len())
+        && s.bytes().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && s.bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
 }
 
 /// A `/dev/disk/by-id` entry name: one path component, no separators.
@@ -156,8 +174,19 @@ mod tests {
     #[test]
     fn passwords() {
         assert!(check_password("correct horse"));
-        for bad in ["", "a\nroot:x", "a\rb", "a\0b"] {
+        assert!(check_password("üüüüüüüü"));
+        for bad in ["", "short", "a\nroot:x1234", "abcdefg\r", "abc\0defgh"] {
             assert!(!check_password(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn keymaps() {
+        for ok in ["us", "de-latin1", "uk", "br-abnt2", "cz-qwertz"] {
+            assert!(valid_keymap(ok), "{ok:?}");
+        }
+        for bad in ["", "-us", ".us", "../us", "a/b", "a b", "a\n", &"a".repeat(65)] {
+            assert!(!valid_keymap(bad), "{bad:?}");
         }
     }
 
@@ -177,6 +206,8 @@ mod tests {
             username: "u".into(),
             locale: "en_US.UTF-8".into(),
             timezone: "UTC".into(),
+            keymap: "us".into(),
+            carry_network: true,
             profile: Profile::Standard,
             candidates: vec!["hyperion".into()],
         };

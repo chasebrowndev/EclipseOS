@@ -170,6 +170,29 @@ pub fn in_use(mounts: &[Mount], e: &DiskEntry) -> bool {
     })
 }
 
+/// Why a disk that nothing has mounted is still busy: a device-mapper or md
+/// device sits on it (or a partition of it), or it holds swap.
+pub fn busy_reason(paths: &Paths, e: &DiskEntry) -> Option<&'static str> {
+    let names = std::iter::once(&e.kernel).chain(e.parts.iter());
+    for n in names {
+        let held =
+            fs::read_dir(paths.sys_class_block.join(n).join("holders")).is_ok_and(|mut r| r.next().is_some());
+        if held {
+            return Some("disk is in use by RAID, LVM or an encrypted volume");
+        }
+    }
+    let swaps = fs::read_to_string(&paths.proc_swaps).unwrap_or_default();
+    let on_disk = swaps
+        .lines()
+        .skip(1)
+        .filter_map(|l| l.split_whitespace().next())
+        .any(|f| {
+            f.strip_prefix("/dev/")
+                .is_some_and(|n| n == e.kernel || e.parts.iter().any(|p| p == n))
+        });
+    on_disk.then_some("disk is in use as swap")
+}
+
 struct RawPart {
     kernel: String,
     fs: String,

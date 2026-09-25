@@ -64,7 +64,13 @@ const BUILTIN: &[Entry] = &[
 /// candidates. Fixed here, like the catalog: nothing the caller says adds to it.
 /// `iwd` is not among them: the live medium's wifi is not carried over (D-07
 /// §4.3), and without that NetworkManager backend switch iwd only races it.
-pub const FLOOR_UNITS: &[&str] = &["greetd", "NetworkManager", "bluetooth", "systemd-timesyncd"];
+pub const FLOOR_UNITS: &[&str] = &[
+    "greetd",
+    "NetworkManager",
+    "bluetooth",
+    "systemd-timesyncd",
+    "fstrim.timer",
+];
 
 /// More than there are slots is already nonsense.
 const MAX_CANDIDATES: usize = 16;

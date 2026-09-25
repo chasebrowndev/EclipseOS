@@ -58,9 +58,10 @@ Framework 13 AMD choices and why:
 
 | Package | Why, and what it replaces |
 |---|---|
-| `amd-ucode` | The only microcode image on the medium. Intel's is not shipped, and the Limine entry adds it as a `module_path` ahead of the initramfs. |
+| `amd-ucode` | Installed when `/proc/cpuinfo` says AMD; `intel-ucode` when Intel; neither in a VM. The Limine entry adds it as a `module_path` ahead of the initramfs. Intel is **untested** until the second machine is run. |
 | `linux-firmware-amdgpu` | Split out of `linux-firmware` upstream; without it amdgpu does not come up on this generation. Named explicitly rather than relied on as a transitive pull. |
 | `vulkan-radeon` + `mesa` + `libva-mesa-driver` | The RADV path. `amdvlk` is not installed — two Vulkan ICDs on one system is a loader-ordering problem, not a choice worth offering. |
+| Detected GPUs (sysfs) | AMD as above; Intel adds `vulkan-intel` and `intel-media-driver`; NVIDIA uses the open-source nouveau/NVK stack (`vulkan-nouveau`), no proprietary or DKMS module. Intel and NVIDIA are detected and installed but **untested**. |
 | *(no DKMS anything)* | amdgpu is in-tree. There is no out-of-tree module, so there is no `dkms`, no headers package, and **no kernel-upgrade step that can fail after reboot**. This is the single biggest reason the target hardware is AMD; it is a property of the install, not a preference. |
 
 Beyond that: disk tooling the installer calls (`gptfdisk`, `dosfstools`,
@@ -213,7 +214,7 @@ run first — `mkarchiso` resolves `eclipseos-meta` out of the `file://` repo of
 
 ## 7. What this does not do
 
-No LUKS, no swap, no btrfs snapshots, no secure boot enrolment, no unattended
+No LUKS (top known gap, deferred to D-04), no swap partition (zram only), no btrfs snapshots, no secure boot enrolment, no unattended
 mode, no second target machine. Each is a real gap and each is deferred:
 disk encryption and rollback belong with D-04 (update strategy), which is also
 where "what happens when an upgrade breaks the session" is answered. D-03's job

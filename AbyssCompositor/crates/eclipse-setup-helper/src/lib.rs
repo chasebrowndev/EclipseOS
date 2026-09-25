@@ -14,6 +14,8 @@
 //! * `catalog`  candidate ids -> packages and units (built in for M1)
 //! * `stages`   partition, pacstrap, configure, bootloader, user, units
 //! * `target`   the closed list of files written on the target
+//! * `hw`       CPU, GPU, RAM, battery from /proc and /sys
+//! * `network`  the live Wi-Fi connections carried to the target
 //! * `seed`     the carried-over `abyss.kdl`, filtered by allowlist
 //! * `runner`   the closed set of external programs, fixed argv, no shell
 //! * `confirm`  the wipe confirmation trait; `DenyConfirm` is the default
@@ -27,6 +29,8 @@ pub mod confirm;
 pub mod disks;
 pub mod env;
 pub mod error;
+pub mod hw;
+pub mod network;
 pub mod passwd;
 pub mod runner;
 pub mod seed;

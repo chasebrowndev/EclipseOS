@@ -31,6 +31,10 @@ pub enum Tool {
     Genfstab,
     ArchChroot,
     Blkid,
+    Pacman,
+    Wipefs,
+    Blkdiscard,
+    Efibootmgr,
 }
 
 impl Tool {
@@ -51,6 +55,10 @@ impl Tool {
             Tool::Genfstab => "/usr/bin/genfstab",
             Tool::ArchChroot => "/usr/bin/arch-chroot",
             Tool::Blkid => "/usr/bin/blkid",
+            Tool::Pacman => "/usr/bin/pacman",
+            Tool::Wipefs => "/usr/bin/wipefs",
+            Tool::Blkdiscard => "/usr/bin/blkdiscard",
+            Tool::Efibootmgr => "/usr/bin/efibootmgr",
         }
     }
 
@@ -71,16 +79,24 @@ impl Tool {
             Tool::Genfstab => "genfstab",
             Tool::ArchChroot => "arch-chroot",
             Tool::Blkid => "blkid",
+            Tool::Pacman => "pacman",
+            Tool::Wipefs => "wipefs",
+            Tool::Blkdiscard => "blkdiscard",
+            Tool::Efibootmgr => "efibootmgr",
         }
     }
 
-    /// Tools whose use means the disk is being (or is about to be) changed.
-    /// Nothing here may run before `Confirm` has allowed. (`Genfstab` and
-    /// `ArchChroot` only make sense on an already-mounted target.)
+    /// Tools whose use means the disk (or the firmware's boot entries) is being
+    /// changed. Nothing here may run before `Confirm` has allowed. (`Genfstab`
+    /// and `ArchChroot` only make sense on an already-mounted target. `Pacman`
+    /// is not here: preflight runs it against the live medium's own root.)
     pub const fn touches_disk(self) -> bool {
         matches!(
             self,
             Tool::Sgdisk
+                | Tool::Wipefs
+                | Tool::Blkdiscard
+                | Tool::Efibootmgr
                 | Tool::Partprobe
                 | Tool::MkfsFat
                 | Tool::MkfsExt4

@@ -9,6 +9,7 @@ use crate::catalog::{valid_pkg_name, Entry, FLOOR_UNITS};
 use crate::disks::{self, DiskEntry};
 use crate::env::Env;
 use crate::error::{io, Error, Result};
+use crate::hw::Ucode;
 use crate::runner::{Cmd, Tool};
 use crate::target::{self, TargetFile};
 use eclipse_setup_plan::{Plan, Request};
@@ -25,9 +26,14 @@ pub struct Prepared {
     pub pkgs: Vec<String>,
     /// Fingerprint of the packaging key on the medium.
     pub keyid: String,
+    /// What this machine's CPU needs loaded ahead of the initramfs.
+    pub ucode: Option<Ucode>,
+    /// Non-fatal findings, reported to the user before the erase.
+    pub warnings: Vec<&'static str>,
 }
 
 pub struct Layout {
+    pub disk: PathBuf,
     pub esp: PathBuf,
     pub root: PathBuf,
 }
@@ -139,28 +145,52 @@ Description = Copying the Limine stub to the ESP...\n\
 When = PostTransaction\n\
 Exec = /usr/bin/install -Dm0644 /usr/share/limine/BOOTX64.EFI /boot/EFI/BOOT/BOOTX64.EFI\n";
 
+/// Compressed swap in RAM (D-07 §6): no partition, nothing to size.
+pub const ZRAM_CONF: &str = "[zram0]\nzram-size = min(ram / 2, 4096)\ncompression-algorithm = zstd\n";
+
+/// Uncomment the two pacman options an installed system wants: coloured output
+/// and parallel downloads. `None` when there is nothing to change.
+pub fn with_pacman_options(text: &str) -> Option<String> {
+    let mut changed = false;
+    let mut out = String::with_capacity(text.len());
+    for l in text.lines() {
+        let t = l.trim();
+        if t == "#Color" || t == "#ParallelDownloads = 5" {
+            out.push_str(&t[1..]);
+            changed = true;
+        } else {
+            out.push_str(l);
+        }
+        out.push('\n');
+    }
+    changed.then_some(out)
+}
+
 pub const SUDOERS_WHEEL: &str = "%wheel ALL=(ALL:ALL) ALL\n";
 
 /// Limine's config, byte for byte what the reference script wrote. The ESP is
 /// mounted at /boot, so `boot():/` is where the kernel and initramfs sit.
-pub fn limine_conf(root_uuid: &str, ucode: bool) -> String {
-    let ucode = if ucode {
-        "    module_path: boot():/amd-ucode.img\n"
+pub fn limine_conf(root_uuid: &str, ucode: Option<Ucode>) -> String {
+    let pstate = if ucode == Some(Ucode::Amd) {
+        " amd_pstate=active"
     } else {
         ""
     };
+    let ucode = ucode
+        .map(|u| format!("    module_path: boot():/{}\n", u.image()))
+        .unwrap_or_default();
     format!(
         "timeout: 2\n\n\
          /EclipseOS\n\
          \x20   protocol: linux\n\
          \x20   path: boot():/vmlinuz-linux\n\
-         \x20   cmdline: root=UUID={root_uuid} rw amd_pstate=active\n\
+         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0{pstate}\n\
          {ucode}\
          \x20   module_path: boot():/initramfs-linux.img\n\n\
          /EclipseOS (fallback initramfs)\n\
          \x20   protocol: linux\n\
          \x20   path: boot():/vmlinuz-linux\n\
-         \x20   cmdline: root=UUID={root_uuid} rw\n\
+         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0\n\
          \x20   module_path: boot():/initramfs-linux-fallback.img\n"
     )
 }
@@ -170,6 +200,23 @@ fn chroot(env: &Env) -> Cmd {
 }
 
 // ---- Partition ---------------------------------------------------------------
+
+fn queue_attr(env: &Env, kernel: &str, name: &str) -> Option<u64> {
+    fs::read_to_string(env.paths.sys_class_block.join(kernel).join("queue").join(name))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+fn discards(env: &Env, kernel: &str) -> bool {
+    queue_attr(env, kernel, "discard_max_bytes").is_some_and(|n| n > 0)
+}
+
+/// Logical sector size, for `mkfs.fat -S` (a 4Kn disk needs it to match).
+fn sector_size(env: &Env, kernel: &str) -> Option<u64> {
+    queue_attr(env, kernel, "logical_block_size").filter(|s| matches!(s, 512 | 1024 | 2048 | 4096))
+}
 
 pub fn partition(env: &Env, d: &DiskEntry) -> Result<Layout> {
     let p = &env.paths;
@@ -182,6 +229,17 @@ pub fn partition(env: &Env, d: &DiskEntry) -> Result<Layout> {
     let esp = p.dev.join(part_name(&d.kernel, 1));
     let root = p.dev.join(part_name(&d.kernel, 2));
     let r = env.runner;
+    // Old RAID, LVM, LUKS and ZFS labels survive `sgdisk --zap-all` and get
+    // re-assembled by udev, so clear signatures first: partitions, then the disk.
+    for part in &d.parts {
+        r.run(&Cmd::new(Tool::Wipefs).arg("-a").arg(p.dev.join(part)))?;
+    }
+    r.run(&Cmd::new(Tool::Wipefs).arg("-a").arg(&dev))?;
+    // Best effort: not every device can discard, and the wipe above already
+    // made the old contents unreachable.
+    if discards(env, &d.kernel) {
+        let _ = r.run(&Cmd::new(Tool::Blkdiscard).arg("-f").arg(&dev));
+    }
     r.run(&Cmd::new(Tool::Sgdisk).arg("--zap-all").arg(&dev))?;
     r.run(
         &Cmd::new(Tool::Sgdisk)
@@ -191,25 +249,27 @@ pub fn partition(env: &Env, d: &DiskEntry) -> Result<Layout> {
     )?;
     r.run(&Cmd::new(Tool::Partprobe).arg(&dev))?;
     r.run(&Cmd::new(Tool::Udevadm).arg("settle"))?;
-    r.run(
-        &Cmd::new(Tool::MkfsFat)
-            .args(["-F32", "-n", "ECLIPSE_ESP"])
-            .arg(&esp),
-    )?;
+    let mut mkfs = Cmd::new(Tool::MkfsFat).args(["-F32", "-n", "ECLIPSE_ESP"]);
+    if let Some(ss) = sector_size(env, &d.kernel) {
+        mkfs = mkfs.arg("-S").arg(ss.to_string());
+    }
+    r.run(&mkfs.arg(&esp))?;
     r.run(
         &Cmd::new(Tool::MkfsExt4)
             .args(["-F", "-L", "eclipseos"])
             .arg(&root),
     )?;
-    Ok(Layout { esp, root })
+    Ok(Layout { disk: dev, esp, root })
 }
 
 pub fn mount(env: &Env, l: &Layout) -> Result<()> {
     let t = &env.paths.target;
     env.runner.run(&Cmd::new(Tool::Mount).arg(&l.root).arg(t))?;
+    // `genfstab` copies these, so the installed system keeps the ESP (kernel,
+    // initramfs) readable by root only.
     env.runner.run(
         &Cmd::new(Tool::Mount)
-            .arg("--mkdir")
+            .args(["--mkdir", "-o", "fmask=0177,dmask=0077"])
             .arg(&l.esp)
             .arg(t.join("boot")),
     )
@@ -223,7 +283,7 @@ pub fn unmount(env: &Env) -> Result<()> {
 
 // ---- Pacstrap ----------------------------------------------------------------
 
-fn install_pacman_conf(env: &Env) -> Result<()> {
+pub fn install_pacman_conf(env: &Env) -> Result<()> {
     let p = &env.paths;
     let mut conf = fs::read_to_string(&p.live_pacman_conf).map_err(io("read pacman.conf"))?;
     // Baked into the medium by dist/iso/build-iso.sh (D-03): the database is
@@ -288,7 +348,11 @@ pub fn configure(env: &Env, plan: &Plan) -> Result<()> {
 
     let lg = String::from_utf8(target::read(t, TargetFile::LocaleGen)?)
         .map_err(|_| Error::Refused("target locale.gen"))?;
-    let lg = enable_locale(&lg, &plan.locale).ok_or(Error::Refused("locale not in target"))?;
+    let mut lg = enable_locale(&lg, &plan.locale).ok_or(Error::Refused("locale not in target"))?;
+    // Programs that assume English messages keep working next to the chosen locale.
+    if let Some(both) = enable_locale(&lg, "en_US.UTF-8") {
+        lg = both;
+    }
     target::write(t, TargetFile::LocaleGen, lg.as_bytes())?;
     target::write(
         t,
@@ -298,19 +362,28 @@ pub fn configure(env: &Env, plan: &Plan) -> Result<()> {
 
     let pc = String::from_utf8(target::read(t, TargetFile::PacmanConf)?)
         .map_err(|_| Error::Refused("target pacman.conf"))?;
-    if let Some(new) = with_eclipseos_include(&pc) {
-        target::write(t, TargetFile::PacmanConf, new.as_bytes())?;
-    }
+    let pc = with_pacman_options(&pc).unwrap_or(pc);
+    let pc = with_eclipseos_include(&pc).unwrap_or(pc);
+    target::write(t, TargetFile::PacmanConf, pc.as_bytes())?;
+    // Before `mkinitcpio`, whose `keymap` hook bakes this into the initramfs.
+    target::write(
+        t,
+        TargetFile::Vconsole,
+        format!("KEYMAP={}\n", plan.keymap).as_bytes(),
+    )?;
+    target::write(t, TargetFile::ZramGenerator, ZRAM_CONF.as_bytes())?;
     target::write(t, TargetFile::SudoersWheel, SUDOERS_WHEEL.as_bytes())?;
 
     env.runner.run(&chroot(env).arg("locale-gen"))?;
-    env.runner.run(&chroot(env).args(["hwclock", "--systohc"]))?;
+    // Virtual machines and some firmware have no usable RTC; the disk is already
+    // erased, so this must not fail the install.
+    let _ = env.runner.run(&chroot(env).args(["hwclock", "--systohc"]));
     env.runner.run(&chroot(env).args(["mkinitcpio", "-P"]))
 }
 
 // ---- Bootloader --------------------------------------------------------------
 
-pub fn bootloader(env: &Env, l: &Layout) -> Result<()> {
+pub fn bootloader(env: &Env, l: &Layout, ucode: Option<Ucode>) -> Result<()> {
     let t = &env.paths.target;
     // Limine's UEFI install is two files: the stub at the removable fallback
     // path, which needs no NVRAM entry, and a config that says what it does.
@@ -328,8 +401,25 @@ pub fn bootloader(env: &Env, l: &Layout) -> Result<()> {
     if !valid_uuid(uuid) {
         return Err(Error::Refused("root uuid"));
     }
-    let ucode = t.join("boot/amd-ucode.img").is_file();
-    target::write(t, TargetFile::LimineConf, limine_conf(uuid, ucode).as_bytes())
+    let ucode = ucode.filter(|u| t.join("boot").join(u.image()).is_file());
+    target::write(t, TargetFile::LimineConf, limine_conf(uuid, ucode).as_bytes())?;
+    // A firmware entry as well as the removable path, so machines that prefer
+    // NVRAM entries boot it. Best effort: the fallback path is what must work.
+    let _ = env.runner.run(
+        &Cmd::new(Tool::Efibootmgr)
+            .arg("--create")
+            .arg("--disk")
+            .arg(&l.disk)
+            .args(["--part", "1", "--label", "EclipseOS", "--loader"])
+            .arg("\\EFI\\BOOT\\BOOTX64.EFI"),
+    );
+    Ok(())
+}
+
+/// Keep the redacted progress log on the installed system.
+pub fn keep_log(env: &Env) -> Result<()> {
+    let bytes = target::read_bounded(&env.paths.install_log)?;
+    target::write(&env.paths.target, TargetFile::InstallLog, &bytes)
 }
 
 // ---- User --------------------------------------------------------------------
@@ -446,12 +536,21 @@ mod tests {
 
     #[test]
     fn limine_config_matches_the_reference() {
-        let c = limine_conf("abcd-1234", true);
+        let c = limine_conf("abcd-1234", Some(Ucode::Amd));
         assert!(c.starts_with("timeout: 2\n\n/EclipseOS\n    protocol: linux\n"));
-        assert!(c.contains("    cmdline: root=UUID=abcd-1234 rw amd_pstate=active\n    module_path: boot():/amd-ucode.img\n    module_path: boot():/initramfs-linux.img\n"));
+        assert!(c.contains("    cmdline: root=UUID=abcd-1234 rootfstype=ext4 rw zswap.enabled=0 amd_pstate=active\n    module_path: boot():/amd-ucode.img\n    module_path: boot():/initramfs-linux.img\n"));
         assert!(c.contains("/EclipseOS (fallback initramfs)"));
-        assert!(!limine_conf("u", false).contains("amd-ucode"));
+        assert!(!limine_conf("u", None).contains("ucode"));
+        let i = limine_conf("u", Some(Ucode::Intel));
+        assert!(i.contains("module_path: boot():/intel-ucode.img") && !i.contains("amd_pstate"));
         assert!(valid_uuid("1b2c-3D4e") && !valid_uuid("a b") && !valid_uuid("x\ny") && !valid_uuid(""));
+    }
+
+    #[test]
+    fn pacman_options_are_uncommented_once() {
+        let a = with_pacman_options("[options]\n#Color\n#ParallelDownloads = 5\n#VerbosePkgLists\n").unwrap();
+        assert_eq!(a, "[options]\nColor\nParallelDownloads = 5\n#VerbosePkgLists\n");
+        assert!(with_pacman_options(&a).is_none());
     }
 
     #[test]
