@@ -160,14 +160,25 @@ fn main() -> Result<()> {
         libc::sigaction(libc::SIGCHLD, &act, std::ptr::null_mut());
     }
     let mut config = config::Config::load(args.config.as_deref());
-    // COMP-01 §5 step 3 / COMP-13 §1.2: validation is total, and an invalid
-    // config at startup is a refusal to start, not a silent fallback.
-    if !config.errors.is_empty() {
-        for e in &config.errors {
-            eprintln!("abyss: {e}");
+    // COMP-01 §5 step 3 / COMP-13 §1.2, amended by ADR 0064: validation is
+    // still total and every refusal is still reported, but a rejected node is
+    // dropped and Abyss starts. Refusing used to bounce a greetd login straight
+    // back to the greeter with the reason only in the journal. The live config
+    // keeps the refusals, so `config-error` subscribers hear them once they
+    // connect. The fail-closed set (policy.kdl, misplaced policy keys,
+    // render-device, idle lock settings) still refuses.
+    for e in &config.errors {
+        eprintln!("abyss: {e}");
+    }
+    match config.startup() {
+        config::Startup::Refuse { fatal } => {
+            eprintln!("abyss: refusing to start: {fatal} config error(s) have no safe default (ADR 0064)");
+            std::process::exit(1);
         }
-        eprintln!("abyss: refusing to start on an invalid config");
-        std::process::exit(1);
+        config::Startup::Start { ignored: 0 } => {}
+        config::Startup::Start { ignored } => {
+            tracing::warn!(ignored, "starting with invalid config nodes ignored (ADR 0064)");
+        }
     }
     // COMP-01 §4 override precedence: CLI flag > ECLIPSE_RENDER_DEVICE > config.
     if let Some(dev) = args

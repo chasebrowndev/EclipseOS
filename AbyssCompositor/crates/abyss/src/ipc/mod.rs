@@ -547,6 +547,24 @@ pub fn emit(state: &mut AbyssState, kind: &str, params: Value) {
     reap(state);
 }
 
+/// [`emit`] to one connection only. For an event that stands for state
+/// rather than a moment, replayed to a client as it subscribes — the
+/// startup `config-error` of ADR 0064, which fired before anyone listened.
+pub fn emit_to(state: &mut AbyssState, conn: u64, kind: &str, params: Value) {
+    #[cfg(test)]
+    capture::record(kind, &params);
+    let Some(c) = state.ipc.conn_mut(conn).filter(|c| wants(c, kind)) else {
+        return;
+    };
+    let line = json!({
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {"event": kind, "data": params},
+    })
+    .to_string();
+    c.enqueue(&line, true);
+}
+
 fn wants(c: &Conn, kind: &str) -> bool {
     !c.dead && c.subs.iter().any(|s| s == kind)
 }

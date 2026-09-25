@@ -131,6 +131,7 @@ impl Server {
 pub fn spawn() -> zbus::Result<Notifications> {
     let (event_tx, event_rx) = mpsc::channel();
     let (command_tx, command_rx) = mpsc::channel();
+    let compositor_tx = event_tx.clone();
 
     // The connection is built on the service thread so that the whole D-Bus
     // side lives and dies there, but the caller still learns about a name
@@ -181,7 +182,12 @@ pub fn spawn() -> zbus::Result<Notifications> {
         .map_err(|e| zbus::Error::InputOutput(std::sync::Arc::new(e)))?;
 
     match ready_rx.recv() {
-        Ok(Ok(())) => Ok(Notifications::new(event_rx, command_tx)),
+        Ok(Ok(())) => {
+            // Only the daemon that owns the name shows the compositor's config
+            // problems (ADR 0064); a second instance would double them.
+            super::compositor::spawn(compositor_tx);
+            Ok(Notifications::new(event_rx, command_tx))
+        }
         Ok(Err(e)) => Err(e),
         // The thread died before it said anything; treat it as a failure to
         // take the name rather than hanging the caller.

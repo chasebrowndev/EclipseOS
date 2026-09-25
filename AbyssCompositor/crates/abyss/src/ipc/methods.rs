@@ -371,6 +371,13 @@ fn subscribe(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {
         return Err(RpcError::invalid_params("connection is gone"));
     };
     c.subs = wanted.clone();
+    // ADR 0064: nodes dropped at startup were refused before any client was
+    // connected. The live config keeps those refusals until a clean load
+    // replaces it, and every new `config-error` subscriber hears them once.
+    if !state.config.errors.is_empty() {
+        let event = crate::config::error_event(&state.config.errors, true);
+        crate::ipc::emit_to(state, conn, "config-error", event);
+    }
     Ok(json!({"subscribed": wanted}))
 }
 

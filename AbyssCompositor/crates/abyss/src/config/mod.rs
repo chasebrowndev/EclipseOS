@@ -11,9 +11,11 @@
 //! Validation is total (COMP-13 §1.2): an unknown key or a malformed value is
 //! an error, not a warning. Refusals are collected in [`Config::errors`] as
 //! [`ConfigError`]s carrying `file:line:col` and the offending token; the
-//! caller decides what to do with them. Startup (COMP-01 §5 step 3) prints them
-//! and exits; hot-reload ([`watch::reload_now`]) keeps the last good config and
-//! emits a `config-error` IPC event. Never half-apply.
+//! caller decides what to do with them. Startup (COMP-01 §5 step 3, amended by
+//! ADR 0064) drops each rejected node, logs the refusal and starts, unless one
+//! of them is [`ConfigError::startup_fatal`] — see [`Config::startup`].
+//! Hot-reload ([`watch::reload_now`]) keeps the last good config and emits a
+//! `config-error` IPC event; it never half-applies.
 
 pub mod edit;
 pub mod schema;
@@ -646,6 +648,9 @@ pub struct Touchpad {
 /// something different from the same value typed into the file.
 ///
 /// Caller's obligation: `next.errors` is empty. Nothing here re-validates.
+/// Startup does not come through here: a config that started with dropped
+/// nodes (ADR 0064) goes straight into `AbyssState::config`, refusals and all,
+/// so that they can be replayed; only a clean reload replaces it.
 pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
     debug_assert!(next.errors.is_empty(), "apply_loaded got an invalid config");
     let sources: Vec<String> = next
@@ -699,6 +704,59 @@ pub fn error_json(e: &ConfigError) -> serde_json::Value {
     })
 }
 
+/// The `config-error` event payload: every refusal, plus one line a human
+/// reads at a glance.
+///
+/// Emitted by a failed hot reload and replayed to each new subscriber after a
+/// startup that dropped nodes (ADR 0064). One event, not one per error: the
+/// full list rides in `errors`, and `file`/`line`/`col`/`message` repeat the
+/// first one for a consumer that shows a single problem.
+pub fn error_event(errors: &[ConfigError], startup: bool) -> serde_json::Value {
+    let first = errors.first();
+    let mut v = serde_json::json!({
+        "errors": errors.iter().map(error_json).collect::<Vec<_>>(),
+        "startup": startup,
+        "summary": summary(errors, startup),
+    });
+    if let Some(e) = first {
+        v["file"] = e.file.display().to_string().into();
+        v["line"] = e.line.into();
+        v["col"] = e.col.into();
+        v["message"] = e.message.clone().into();
+    }
+    v
+}
+
+/// `abyss.kdl: 1 problem ignored — line 14: touchpad key needs a boolean: "click-method"`.
+fn summary(errors: &[ConfigError], startup: bool) -> String {
+    let Some(first) = errors.first() else {
+        return String::new();
+    };
+    let file = first
+        .file
+        .file_name()
+        .map_or_else(|| "config".to_string(), |n| n.to_string_lossy().into_owned());
+    let n = errors.len();
+    let plural = if n == 1 { "" } else { "s" };
+    let what = if startup { "ignored" } else { "change not applied" };
+    let mut s = if startup {
+        format!("{file}: {n} problem{plural} {what} \u{2014} ")
+    } else {
+        format!("{file}: {n} problem{plural}, {what} \u{2014} ")
+    };
+    if first.line > 0 {
+        s.push_str(&format!("line {}: ", first.line));
+    }
+    s.push_str(&first.message);
+    if n > 1 {
+        s.push_str(&format!(
+            " (and {} more; `eclipse-ctl config validate` lists them)",
+            n - 1
+        ));
+    }
+    s
+}
+
 /// A refusal from config validation (COMP-13 §1.2). Carries the precise
 /// `file:line:col` the spec requires so the message can be acted on directly.
 #[derive(Debug, Clone)]
@@ -711,6 +769,22 @@ pub struct ConfigError {
     /// token covers — so [`Display`] can point at it the way rustc does.
     pub snippet: Option<String>,
     pub span_len: usize,
+    /// True when dropping this node at startup would leave a default that is
+    /// not safe, so Abyss refuses to start rather than ignore it (ADR 0064):
+    /// anything in `policy.kdl`, a policy-owned key in `abyss.kdl`,
+    /// `misc.render-device`, and the `idle` lock settings.
+    pub startup_fatal: bool,
+}
+
+/// What startup does with a loaded config (COMP-01 §5 step 3, amended by
+/// ADR 0064).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Startup {
+    /// Start. `ignored` rejected nodes were dropped; each setting they would
+    /// have set keeps its default (or a lower-precedence file's value).
+    Start { ignored: usize },
+    /// At least one refusal is in the fail-closed set: do not start.
+    Refuse { fatal: usize },
 }
 
 /// Nearest schema path by edit distance, when it is near enough to be worth
@@ -832,8 +906,11 @@ pub struct Config {
     /// `--config <path>`, if one was given. Reload must honour it rather than
     /// falling back to the search path.
     pub explicit: Option<PathBuf>,
-    /// Validation refusals collected during the last load. Non-empty means the
-    /// config is invalid: startup exits, hot-reload keeps the last good one.
+    /// Validation refusals collected during the last load. On a freshly
+    /// loaded config, non-empty means invalid: hot-reload keeps the last good
+    /// one. On the *live* config it is non-empty only after a startup that
+    /// dropped nodes (ADR 0064): those refusals stay here and are replayed to
+    /// every `config-error` subscriber until a clean load replaces the config.
     pub errors: Vec<ConfigError>,
     /// The file being parsed, and its text, so `reject` can turn a KDL span
     /// into `file:line:col`. Cleared when the load finishes.
@@ -1249,6 +1326,9 @@ impl Config {
                             message: format!("config unreadable: {e}"),
                             snippet: None,
                             span_len: 0,
+                            // ADR 0064: an unreadable `--config` contributes
+                            // nothing and Abyss starts on the rest.
+                            startup_fatal: false,
                         });
                     }
                     continue;
@@ -1279,6 +1359,9 @@ impl Config {
                         message,
                         snippet: Some(snippet),
                         span_len,
+                        // ADR 0064: a file that is not KDL is dropped whole —
+                        // unless it is `policy.kdl`, which stays fail-closed.
+                        startup_fatal: f.owner == schema::Owner::Policy,
                     });
                     continue;
                 }
@@ -1329,6 +1412,7 @@ impl Config {
                     message,
                     snippet: Some(snippet),
                     span_len,
+                    startup_fatal: owner == schema::Owner::Policy,
                 }];
             }
         };
@@ -1397,7 +1481,9 @@ impl Config {
             schema::Owner::Abyss => "abyss.kdl",
             schema::Owner::Policy => "policy.kdl",
         };
-        self.reject(node, format!("{what} belongs in {dest}, not in this file"));
+        // ADR 0064 fail-closed case 2: a misplaced policy key is a protection
+        // the owner meant to have; dropping it would silently discard it.
+        self.reject_fatal(node, format!("{what} belongs in {dest}, not in this file"));
         false
     }
 
@@ -1405,12 +1491,19 @@ impl Config {
         let message = message.into();
         // Underline the node name only; the node's own span runs to the end of
         // its children, which would drown the line in carets.
-        let (file, line, col, snippet, span_len) = match &self.cur {
+        let (file, line, col, snippet, span_len, policy) = match &self.cur {
             Some((f, text)) => {
                 let (line, col, snippet, len) = locate(text, node.span().offset(), node.name().value().len());
-                (f.path.clone(), line, col, Some(snippet), len)
+                (
+                    f.path.clone(),
+                    line,
+                    col,
+                    Some(snippet),
+                    len,
+                    f.owner == schema::Owner::Policy,
+                )
             }
-            None => (PathBuf::new(), 0, 0, None, 0),
+            None => (PathBuf::new(), 0, 0, None, 0, false),
         };
         tracing::error!(path = %file.display(), line, col, %message, "invalid config");
         self.errors.push(ConfigError {
@@ -1420,7 +1513,31 @@ impl Config {
             message,
             snippet,
             span_len,
+            // ADR 0064 fail-closed case 1: nothing in `policy.kdl` is dropped
+            // to a default at startup.
+            startup_fatal: policy,
         });
+    }
+
+    /// [`Config::reject`] for a node whose default is not safe to fall back
+    /// to: Abyss refuses to start on it rather than dropping it (ADR 0064).
+    fn reject_fatal(&mut self, node: &KdlNode, message: impl Into<String>) {
+        self.reject(node, message);
+        if let Some(e) = self.errors.last_mut() {
+            e.startup_fatal = true;
+        }
+    }
+
+    /// What startup does with this config (COMP-01 §5 step 3, amended by
+    /// ADR 0064): start with every rejected node dropped, or refuse when any
+    /// refusal is in the fail-closed set.
+    pub fn startup(&self) -> Startup {
+        match self.errors.iter().filter(|e| e.startup_fatal).count() {
+            0 => Startup::Start {
+                ignored: self.errors.len(),
+            },
+            fatal => Startup::Refuse { fatal },
+        }
     }
 
     fn apply(&mut self, doc: &KdlDocument, binds: &mut Vec<Bind>) {
@@ -1675,20 +1792,18 @@ impl Config {
         for n in children.nodes() {
             match n.name().value() {
                 "pinned" => {
+                    // A rejected node is dropped whole, never applied as well
+                    // (ADR 0064): the first `pinned` stands.
                     if seen_pinned {
-                        self.reject(
-                            n,
-                            "repeated pinned replaces the previous one; list every id on a single node",
-                        );
+                        self.reject(n, "repeated pinned is ignored; list every id on a single node");
+                        continue;
                     }
                     self.bar.tray.pinned = Some(names(n, &mut seen_pinned));
                 }
                 "hidden" => {
                     if seen_hidden {
-                        self.reject(
-                            n,
-                            "repeated hidden replaces the previous one; list every id on a single node",
-                        );
+                        self.reject(n, "repeated hidden is ignored; list every id on a single node");
+                        continue;
                     }
                     self.bar.tray.hidden = names(n, &mut seen_hidden);
                 }
@@ -1802,6 +1917,12 @@ impl Config {
                                 self.idle.lock_timeout = v;
                             }
                         }
+                        // ADR 0064 fail-closed case 4: a dropped lock setting
+                        // starts a session that never locks by itself.
+                        _ if name == "lock-timeout-seconds" => self.reject_fatal(
+                            n,
+                            format!("idle timeout must be a non-negative integer (node={})", name),
+                        ),
                         _ => self.reject(
                             n,
                             format!("idle timeout must be a non-negative integer (node={})", name),
@@ -1810,7 +1931,7 @@ impl Config {
                 }
                 "lock-command" => match arg(n).and_then(KdlValue::as_string) {
                     Some(c) => self.idle.lock_command = Some(c.to_owned()),
-                    None => self.reject(n, "idle lock-command needs a string argument"),
+                    None => self.reject_fatal(n, "idle lock-command needs a string argument"),
                 },
                 _ => self.unknown_key(n, "idle", "idle node"),
             }
@@ -1997,7 +2118,12 @@ impl Config {
                         return;
                     }
                 },
-                other => self.reject(node, format!("unknown animation property {other:?}")),
+                // Dropped whole, like a bad duration or curve: a rejected
+                // node never applies in part (ADR 0064).
+                other => {
+                    self.reject(node, format!("unknown animation property {other:?}"));
+                    return;
+                }
             }
         }
         self.animations.curves.push(anim);
@@ -2201,7 +2327,8 @@ impl Config {
                 "render-device" => match arg(n).and_then(KdlValue::as_string) {
                     Some("auto") => self.misc.render_device = None,
                     Some(v) => self.misc.render_device = Some(v.to_owned()),
-                    None => self.reject(n, "render-device needs a string"),
+                    // ADR 0064 / ADR 0033: dropping it would fall back to auto.
+                    None => self.reject_fatal(n, "render-device needs a string"),
                 },
                 "terminal-command" => match arg(n).and_then(KdlValue::as_string) {
                     Some(c) => self.misc.terminal_command = Some(c.to_owned()),
@@ -3791,5 +3918,211 @@ mod rounding_tests {
         cfg.apply(&doc, &mut Vec::new());
         assert_eq!(cfg.decoration.rounding, 20);
         assert!(cfg.decoration.any_window_effect());
+    }
+}
+
+/// ADR 0064: an invalid `abyss.kdl` at startup drops the bad nodes and starts;
+/// a short fail-closed list still refuses.
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    fn parse(owner: schema::Owner, text: &str) -> Config {
+        let doc: KdlDocument = text.parse().expect("kdl parses");
+        let mut cfg = Config {
+            cur: Some((
+                Source {
+                    path: PathBuf::from(match owner {
+                        schema::Owner::Abyss => "abyss.kdl",
+                        schema::Owner::Policy => "policy.kdl",
+                    }),
+                    owner,
+                },
+                text.to_owned(),
+            )),
+            ..Config::default()
+        };
+        let mut binds = Vec::new();
+        cfg.apply(&doc, &mut binds);
+        cfg.cur = None;
+        cfg.binds = merge_binds(default_binds(), binds);
+        cfg
+    }
+
+    fn abyss(text: &str) -> Config {
+        parse(schema::Owner::Abyss, text)
+    }
+
+    #[test]
+    fn an_unknown_key_is_dropped_and_its_neighbours_apply() {
+        let cfg = abyss("general {\n    gaps-in 7\n    gaps-sideways 3\n}\n");
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        assert!(cfg.errors[0].message.contains("gaps-sideways"));
+        assert_eq!(cfg.general.gaps_in, 7, "the valid key applies");
+        let d = General::default();
+        assert_eq!(cfg.general.gaps_out, d.gaps_out, "untouched keys keep defaults");
+        assert_eq!(cfg.startup(), Startup::Start { ignored: 1 });
+    }
+
+    /// The owner's login loop: a touchpad key this build does not know.
+    #[test]
+    fn an_unknown_touchpad_key_leaves_tap_to_click_alone() {
+        let cfg = abyss(
+            "input {\n    touchpad {\n        tap-to-click #true\n        click-method \"button-areas\"\n    }\n}\n",
+        );
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        assert_eq!(cfg.errors[0].line, 4);
+        assert!(cfg.input.touchpad.tap_to_click);
+        assert!(!cfg.input.touchpad.natural_scroll && !cfg.input.touchpad.dwt);
+        assert_eq!(cfg.startup(), Startup::Start { ignored: 1 });
+
+        let ev = error_event(&cfg.errors, true);
+        assert_eq!(
+            ev["summary"],
+            "abyss.kdl: 1 problem ignored \u{2014} line 4: touchpad key needs a boolean: \"click-method\""
+        );
+        assert_eq!(ev["errors"].as_array().map(Vec::len), Some(1));
+        assert_eq!(ev["line"], 4);
+    }
+
+    #[test]
+    fn a_config_with_no_errors_starts_clean() {
+        assert_eq!(
+            abyss("general { gaps-in 4; }\n").startup(),
+            Startup::Start { ignored: 0 }
+        );
+    }
+
+    /// Fail-closed case 1: nothing in `policy.kdl` is dropped to a default.
+    #[test]
+    fn any_policy_kdl_error_refuses() {
+        let cfg = parse(
+            schema::Owner::Policy,
+            "clipboard {\n    data-control-alow \"x\"\n}\n",
+        );
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        assert_eq!(cfg.startup(), Startup::Refuse { fatal: 1 });
+
+        // Unparseable policy.kdl refuses; unparseable abyss.kdl is dropped whole.
+        let bad = "capture { allow \"unterminated\n";
+        let policy = Config {
+            errors: Config::check_text(Path::new("policy.kdl"), schema::Owner::Policy, bad),
+            ..Config::default()
+        };
+        assert_eq!(policy.startup(), Startup::Refuse { fatal: 1 });
+        let ours = Config {
+            errors: Config::check_text(Path::new("abyss.kdl"), schema::Owner::Abyss, bad),
+            ..Config::default()
+        };
+        assert_eq!(ours.startup(), Startup::Start { ignored: 1 });
+    }
+
+    /// Fail-closed case 2: a policy-owned key misplaced in `abyss.kdl`.
+    #[test]
+    fn a_misplaced_policy_key_refuses() {
+        for text in [
+            "misc {\n    scripted-input #true\n}\n",
+            "capture {\n    allow \"grim\"\n}\n",
+            "clipboard {\n    data-control-allow \"wl-paste\"\n}\n",
+            "windowrule \"no-agent\" {\n    app-id \"keepassxc\"\n}\n",
+            "windowrule \"sensitivity secret\" {\n    app-id \"keepassxc\"\n}\n",
+            "windowrule \"app-trust trusted\" {\n    app-id \"x\"\n}\n",
+            "windowrule \"seat-compat lock\" {\n    app-id \"x\"\n}\n",
+        ] {
+            let cfg = abyss(text);
+            assert_eq!(
+                cfg.startup(),
+                Startup::Refuse { fatal: 1 },
+                "{text}: {:?}",
+                cfg.errors
+            );
+        }
+    }
+
+    /// Fail-closed case 3, parse half; the resolve half is in `backend::drm`.
+    #[test]
+    fn a_rejected_render_device_refuses() {
+        let cfg = abyss("misc {\n    render-device 1\n}\n");
+        assert_eq!(cfg.startup(), Startup::Refuse { fatal: 1 }, "{:?}", cfg.errors);
+        // A sibling that is merely misspelt does not.
+        let cfg = abyss("misc {\n    render-devcie \"/dev/dri/card1\"\n}\n");
+        assert_eq!(cfg.startup(), Startup::Start { ignored: 1 }, "{:?}", cfg.errors);
+    }
+
+    /// Fail-closed case 4: dropping a lock setting would never lock.
+    #[test]
+    fn a_rejected_idle_lock_setting_refuses() {
+        for text in [
+            "idle {\n    lock-timeout-seconds -5\n}\n",
+            "idle {\n    lock-command 3\n}\n",
+        ] {
+            let cfg = abyss(text);
+            assert_eq!(
+                cfg.startup(),
+                Startup::Refuse { fatal: 1 },
+                "{text}: {:?}",
+                cfg.errors
+            );
+        }
+        // DPMS is not a protection; its default (never) is safe.
+        let cfg = abyss("idle {\n    dpms-timeout-seconds -5\n}\n");
+        assert_eq!(cfg.startup(), Startup::Start { ignored: 1 });
+    }
+
+    /// C-00 §4.5 / COMP-04 §6: a dropped `bind` or `idle` node leaves the
+    /// human override, agent-attention and the lock bind in force.
+    #[test]
+    fn dropped_nodes_leave_the_reserved_and_lock_binds_bound() {
+        let cfg = abyss(concat!(
+            "bind \"SUPER\" \"Escape\" { quit; }\n",
+            "bind \"SUPER\" \"space\" { quit; }\n",
+            "bind \"SUPER+SHIFT\" \"L\" { no-such-action; }\n",
+            "idle {\n    dpms-timeout-seconds \"soon\"\n}\n",
+        ));
+        assert_eq!(cfg.errors.len(), 4, "{:?}", cfg.errors);
+        assert_eq!(cfg.startup(), Startup::Start { ignored: 4 });
+        let sup = m(true, false, false, false);
+        let sup_shift = m(true, true, false, false);
+        let has = |mods: Mods, key: Keysym, f: &dyn Fn(&Action) -> bool| {
+            cfg.binds
+                .iter()
+                .any(|b| b.mods == mods && b.key == key && f(&b.action))
+        };
+        assert!(has(sup, Keysym::Escape, &|a| matches!(a, Action::AgentOverride)));
+        assert!(has(sup, Keysym::space, &|a| matches!(a, Action::AgentAttention)));
+        assert!(has(sup_shift, Keysym::L, &|a| {
+            matches!(a, Action::Spawn(c) if c == "loginctl lock-session")
+        }));
+    }
+
+    /// A rejected node is dropped whole, never applied as well.
+    #[test]
+    fn rejected_nodes_do_not_half_apply() {
+        let cfg = abyss("bar {\n    tray {\n        pinned \"a\"\n        pinned \"b\"\n    }\n}\n");
+        assert_eq!(cfg.errors.len(), 1);
+        assert_eq!(cfg.bar.tray.pinned, Some(vec!["a".to_string()]));
+
+        let cfg = abyss("animations {\n    animation \"windows\" duration=\"80ms\" speed=2\n}\n");
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        assert!(cfg.animations.curves.is_empty(), "{:?}", cfg.animations.curves);
+    }
+
+    #[test]
+    fn the_summary_counts_and_points_at_the_list() {
+        let cfg = abyss("general {\n    nope 1\n    nada 2\n}\n");
+        let s = error_event(&cfg.errors, true)["summary"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            s.starts_with("abyss.kdl: 2 problems ignored \u{2014} line 2: "),
+            "{s}"
+        );
+        assert!(s.contains("and 1 more; `eclipse-ctl config validate`"), "{s}");
+        let r = error_event(&cfg.errors, false)["summary"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(r.contains("change not applied"), "{r}");
     }
 }
