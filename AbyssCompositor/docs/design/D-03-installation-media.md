@@ -70,6 +70,8 @@ Beyond that: disk tooling the installer calls (`gptfdisk`, `dosfstools`,
 D-01 §1), the greeter set (`greetd`, `greetd-regreet`, `cage`, `foot`), fonts,
 and `eclipseos-meta`, which pulls `abyss`, the desktop and `policyd`.
 
+``noto-fonts-cjk` is on the live medium only (the wizard shows language names in their own script); the helper adds it to the target only for a ja/zh/ko locale.
+
 `archinstall` is on the medium too, as the guided alternative (§4).
 
 ### 2.1 One list, two jobs

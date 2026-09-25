@@ -1217,7 +1217,15 @@ dependencies = [
 name = "eclipse-setup"
 version = "0.1.0"
 dependencies = [
+ "eclipse-ipc",
  "eclipse-setup-plan",
+ "eclipse-ui",
+ "eclipse-welcome",
+ "iced",
+ "iced_runtime",
+ "image",
+ "serde_json",
+ "zeroize",
 ]
 
 [[package]]

@@ -11,7 +11,7 @@
 
 pkgbase=eclipseos
 pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-center
-         eclipseos-launcher eclipseos-desktop eclipseos-policyd eclipseos-meta)
+         eclipseos-launcher eclipseos-desktop eclipseos-policyd eclipseos-setup eclipseos-meta)
 pkgver=0.1.1
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
@@ -124,6 +124,18 @@ package_eclipseos-policyd() {
   _bin policyd
   _unit policyd.service
   _want policyd.service
+}
+
+package_eclipseos-setup() {
+  pkgdesc="EclipseOS graphical installer and its root helper (D-07)"
+  # Not in eclipseos-meta: the installed system does not carry the installer
+  # until reconfigure (D-07 §8) exists. The tools are what the helper runs.
+  depends=(eclipseos-abyss wayland libxkbcommon mesa polkit
+           arch-install-scripts gptfdisk dosfstools e2fsprogs util-linux)
+
+  for b in eclipse-setup eclipse-setup-helper; do _bin "$b"; done
+  install -Dm0644 "$srcdir/$_src/dist/polkit/org.eclipse.install.apply.policy" \
+    "$pkgdir/usr/share/polkit-1/actions/org.eclipse.install.apply.policy"
 }
 
 package_eclipseos-meta() {
