@@ -6772,10 +6772,12 @@ Depends on: C-00, COMP-13. Consumed by: D-05, D-07.
 
 ## 1. Model
 
-Abyss supports two **interaction modes**, selected by configuration and
+Abyss supports three **interaction modes** *(amended ADR 0062, 2026-09-25)*, selected by configuration and
 switchable at runtime without a restart:
 
 - **WM mode** — tiling, keyboard-driven. What abyss is today.
+- **Hybrid mode** — tiling plus a taskbar with window chips, tray and clock.
+  What the shipped session is today.
 - **DE mode** — desktop metaphor: taskbar, desktop icons, pointer-first
   navigation.
 
@@ -6793,7 +6795,7 @@ identical in both modes.
 ## 2. The `mode` key
 
 ```kdl
-mode "wm"     // wm | de
+mode "hybrid"     // wm | hybrid | de
 ```
 
 `mode` selects **defaults that explicit configuration overrides**. It does not
@@ -6842,7 +6844,7 @@ from the file, against CHARTER §4.
 
 | Choice | Minimal | Standard | Full | Agentic |
 |---|---|---|---|---|
-| `mode` | `wm` | `de` | `de` | `de` |
+| `mode` | `wm` | `hybrid` | `hybrid` | `hybrid` |
 | `components.bar` | `none` | `hyperion` | `hyperion` | `hyperion` |
 | `components.launcher` | `eclipse-launcher` | `eclipse-launcher` | `eclipse-launcher` | `eclipse-launcher` |
 | `components.notifications` | `none` | `eclipse-toasts` | `eclipse-toasts` | `eclipse-toasts` |
