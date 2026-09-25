@@ -19,3 +19,14 @@ path = "src/main.rs"
 [features]
 gio = []
 activity = []
+
+[dependencies]
+fog-proto.workspace = true
+tokio.workspace = true
+rustix.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

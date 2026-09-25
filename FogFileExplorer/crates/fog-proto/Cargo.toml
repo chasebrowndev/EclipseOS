@@ -12,7 +12,8 @@ publish = false
 serde.workspace = true
 postcard.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+# Framing needs only the async read/write traits.
+tokio = { version = "1", default-features = false, features = ["io-util"] }
 
 [dev-dependencies]
 tokio.workspace = true
