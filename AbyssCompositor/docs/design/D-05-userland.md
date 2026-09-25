@@ -45,9 +45,12 @@ iced_layershell 0.19.1 (ADR 0038).
 (`HYPERION_OUTPUT` carries the name into the app), reconciles the set on
 `output` events, and ties children to itself with `PR_SET_PDEATHSIG`. Each bar
 shows its output's workspaces, window chips (focus, close, minimize, new
-instance via the matching `.desktop` entry), a clock, volume (`pactl`,
-`src/audio.rs`), network/bluetooth/battery drawers, and the SNI tray with an
-overflow drawer. It folds per `bar.*` (ADR 0042). The event thread `poll`s the
+instance via the matching `.desktop` entry), a clock, widgets (ADR 0065:
+Now Playing, System Usage, Volume, network, bluetooth, battery, tray, clock
+and user `widget` blocks; non-important ones compress to a
+drag bar as chips need the room), network/bluetooth/battery drawers, and the SNI tray with an
+overflow drawer. It folds per `bar.*` (ADR 0042). Chips and widgets are
+placed by one layout solver and move under `bar.motion.*` (ADR 0065). The event thread `poll`s the
 socket with a 500 ms ceiling and coalesces a burst into one refetch;
 `window {change: "title"}` follows renames. The supervisor also holds the one
 BlueZ pairing agent (ADR 0053).
@@ -98,7 +101,7 @@ nothing listening renders empty, never crashes.
 
 | Component | Socket methods | Events | D-Bus |
 |---|---|---|---|
-| hyperion (bar) | `get_workspaces`, `get_windows`, `get_focused`, `get_outputs`, `get_config`, `focus_window`, `close_window`, `set_minimized`, `switch_workspace` | `window`, `workspace`, `focus`, `output`, `config_error`, `config` | system: NetworkManager, BlueZ, UPower. session: SNI watcher/host |
+| hyperion (bar) | `get_workspaces`, `get_windows`, `get_focused`, `get_outputs`, `get_config`, `focus_window`, `close_window`, `set_minimized`, `switch_workspace` | `window`, `workspace`, `focus`, `output`, `config_error`, `config` | system: NetworkManager, BlueZ, UPower. session: SNI watcher/host, MPRIS players (`org.mpris.MediaPlayer2.*`). PipeWire: default sink volume/mute, monitor tap (ADR 0065) |
 | hyperion (supervisor) | `get_outputs` | `output` | system: BlueZ `org.bluez.Agent1`. session: serves `org.eclipse.Services.Pairing` |
 | eclipse-toasts | `get_config` (`decoration.rounding`, startup) | — | session: serves `org.freedesktop.Notifications` |
 | eclipse-center | `get_config` (`decoration.rounding`, startup) | — | system: NetworkManager, BlueZ, UPower (read), logind `login1.Manager` / `login1.Session` |
@@ -199,6 +202,8 @@ it holds to the four §3 limits:
 - No portal. `xdg-desktop-portal*` is not in `eclipseos-meta`.
 - No policy editor; that is COMP-10 §3.9, compositor-drawn, milestone 15.
 - No clipboard manager, OSD, wallpaper setter or desktop icons.
+- No in-process widget plugins. Custom taskbar widgets are argv commands run
+  off the draw path, or declarative (ADR 0065).
 
 ## 8. Open questions
 
