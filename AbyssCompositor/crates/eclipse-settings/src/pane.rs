@@ -9,6 +9,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Appearance,
+    Desktop,
     Taskbar,
     Display,
     Network,
@@ -22,6 +23,7 @@ impl Pane {
     /// Sidebar order.
     pub const ALL: &'static [Pane] = &[
         Pane::Appearance,
+        Pane::Desktop,
         Pane::Taskbar,
         Pane::Display,
         Pane::Network,
@@ -34,6 +36,7 @@ impl Pane {
     pub fn title(self) -> &'static str {
         match self {
             Pane::Appearance => "Appearance",
+            Pane::Desktop => "Desktop",
             Pane::Taskbar => "Taskbar",
             Pane::Display => "Display",
             Pane::Network => "Network",
@@ -47,6 +50,7 @@ impl Pane {
     pub fn subtitle(self) -> &'static str {
         match self {
             Pane::Appearance => "Layout, borders, decoration and animation.",
+            Pane::Desktop => "How much desktop there is, and which apps run it.",
             Pane::Taskbar => "Bar placement, folding and the tray.",
             Pane::Display => "Outputs, modes and overscan calibration.",
             Pane::Network => "The wifi link, saved networks and paired devices.",
@@ -86,6 +90,7 @@ pub fn pane_for(path: &str) -> Option<Pane> {
     }
     let node = path.split('.').next().unwrap_or(path);
     match node {
+        "mode" | "components" => Some(Pane::Desktop),
         "general" | "decoration" | "animations" | "render" => Some(Pane::Appearance),
         "bar" => Some(Pane::Taskbar),
         "input" => Some(Pane::Input),
@@ -102,6 +107,9 @@ pub fn pane_for(path: &str) -> Option<Pane> {
 /// "general". The drag-drop keys share `general` with the layout they serve
 /// but are one feature, so they get their own heading beneath it.
 pub fn group_for(path: &str) -> &str {
+    if path == "mode" {
+        return "interaction";
+    }
     if path.starts_with("general.drop-") {
         return "drag guides";
     }
@@ -126,5 +134,7 @@ mod tests {
         assert_eq!(group_for("decoration.blur.size"), "blur");
         assert_eq!(group_for("general.gaps-in"), "general");
         assert_eq!(group_for("general.drop-edge-band"), "drag guides");
+        assert_eq!(group_for("mode"), "interaction");
+        assert_eq!(group_for("components.bar"), "components");
     }
 }

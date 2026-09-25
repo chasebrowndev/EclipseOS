@@ -102,7 +102,25 @@ pub fn value_label(value: &str) -> &str {
         "radiant" => "Radiant (Default)",
         "dwindle" => "Dwindle Classic",
         "master" => "Master",
+        // `mode`: what each level adds, in the words COMP-17 §2 uses.
+        "wm" => "WM",
+        "hybrid" => "Hybrid",
+        "de" => "Desktop",
+        // Component slots: the ids are program names and read as themselves;
+        // only the opt-out needs a word.
+        "none" => "None",
         other => other,
+    }
+}
+
+/// What an interaction mode gives you, in plain words, shown beneath the
+/// `mode` control. The pills stay short; the meaning lives here.
+pub fn mode_blurb(value: &str) -> Option<&'static str> {
+    match value {
+        "wm" => Some("Tiling with a workspaces bar only."),
+        "hybrid" => Some("The bar also shows window chips, the tray and the clock."),
+        "de" => Some("Hybrid, plus desktop icons and pointer-first navigation."),
+        _ => None,
     }
 }
 
@@ -154,6 +172,11 @@ impl Row {
     pub fn label(&self) -> &str {
         match self.path.as_str() {
             "bar.eye" => "Eye indicator",
+            "mode" => "Interaction mode",
+            "components.bar" => "Bar",
+            "components.launcher" => "Launcher",
+            "components.notifications" => "Notifications",
+            "components.control-center" => "Control center",
             path => path.rsplit('.').next().unwrap_or(path),
         }
     }
@@ -225,6 +248,8 @@ mod tests {
         };
         assert_eq!(row("bar.fold-when-idle").label(), "fold-when-idle");
         assert_eq!(row("bar.eye").label(), "Eye indicator");
+        assert_eq!(row("mode").label(), "Interaction mode");
+        assert_eq!(row("components.control-center").label(), "Control center");
     }
 
     #[test]
@@ -234,6 +259,7 @@ mod tests {
         assert_eq!(value_label("ease-out"), "ease-out");
         assert_eq!(value_label("radiant"), "Radiant (Default)");
         assert_eq!(value_label("dwindle"), "Dwindle Classic");
+        assert_eq!(value_label("de"), "Desktop");
     }
 
     #[test]
