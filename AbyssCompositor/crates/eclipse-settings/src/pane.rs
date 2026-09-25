@@ -91,6 +91,7 @@ pub fn pane_for(path: &str) -> Option<Pane> {
         "input" => Some(Pane::Input),
         "idle" => Some(Pane::Session),
         "xwayland" => Some(Pane::System),
+        "setup" => Some(Pane::System),
         "clipboard" | "capture" => Some(Pane::Privacy),
         _ => None,
     }

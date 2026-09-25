@@ -117,6 +117,9 @@ const fn int(min: i64, max: i64) -> Ty {
     Ty::Int { min, max }
 }
 
+/// The setup profiles (COMP-17 §2.1), in the order the installer shows them.
+pub const SETUP_PROFILES: &[&str] = &["minimal", "standard", "full", "agentic"];
+
 /// Every scalar key `abyss` understands.
 ///
 /// `xwayland.enable` is `Abyss` and not `Policy` even though disabling X11 is
@@ -606,6 +609,36 @@ pub const TABLE: &[Key] = &[
         "Terminal emulator used to launch `Terminal=true` .desktop entries \
        (`$term -e <argv>`). Unset: those entries are dropped from the app \
        index rather than shown and refused.",
+    ),
+    // setup: recorded by eclipse-setup (D-07 §4), read by nothing at runtime
+    k(
+        "setup.profile",
+        Ty::Enum(SETUP_PROFILES),
+        Str("standard"),
+        Abyss,
+        Live,
+        "Setup profile chosen in eclipse-setup (COMP-17 §2.1). A record for \
+       reference only: nothing reads it at runtime, and changing it does not \
+       change any other value.",
+    ),
+    k(
+        "setup.complete",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Set when eclipse-setup applies (D-07 §4). `eclipse-ctl setup reset` \
+       clears it so setup runs again.",
+    ),
+    k(
+        "setup.pending-preset",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "The Agentic curated policy preset was chosen in setup and is not \
+       loaded yet. A nudge only: the preset is loaded through the policy \
+       editor on the installed system (D-07 §4.5).",
     ),
     // --- policy-owned: the security surface -------------------------------
     k(
@@ -1201,6 +1234,9 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "misc.render-device" => s(&c.misc.render_device),
         "misc.terminal-command" => s(&c.misc.terminal_command),
         "misc.scripted-input" => V::Bool(c.misc.scripted_input),
+        "setup.profile" => V::Str(c.setup.profile.clone()),
+        "setup.complete" => V::Bool(c.setup.complete),
+        "setup.pending-preset" => V::Bool(c.setup.pending_preset),
         "clipboard.data-control-allow" => list(&c.clipboard.data_control_allow),
         "capture.allow" => list(&c.capture.allow),
         "capture.redact-app-id" => list(&c.capture.redact_app_id),

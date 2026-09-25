@@ -644,6 +644,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// D-07 §4: `setup.*` is readable, defaults are served, a write round-trips
+    /// through the user file with its comments and neighbours intact, and a
+    /// bad profile or an unknown sub-key is refused without touching the file.
+    #[test]
+    fn setup_keys_round_trip_and_refuse_junk() {
+        use crate::shell::focus::state_tests::Harness;
+        let mut h = crate::shell::focus::state_tests::harness();
+        let dir = std::env::temp_dir().join(format!("abyss-setup-keys-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+        let start = "// hand-written\nbar {\n    rounding 20 // keep\n}\nsetup {\n    profile \"full\"\n    complete #true\n}\n";
+        std::fs::write(&file, start).unwrap();
+        h.state.config.explicit = Some(file.clone());
+        h.state.config = h.state.config.reload();
+
+        let row = |h: &mut Harness, path: &str| {
+            let got = get_config(&mut h.state, Decision::Allow, &json!({"path": path}))
+                .ok()
+                .expect("readable");
+            got["keys"][0].clone()
+        };
+        assert_eq!(row(&mut h, "setup.profile")["value"], json!("full"));
+        assert_eq!(row(&mut h, "setup.profile")["default"], json!("standard"));
+        assert_eq!(row(&mut h, "setup.complete")["value"], json!(true));
+        assert_eq!(row(&mut h, "setup.pending-preset")["value"], json!(false));
+
+        let set = |h: &mut Harness, path: &str, v: Value| {
+            set_config_value(&mut h.state, Decision::Allow, &json!({"path": path, "value": v}))
+        };
+        assert!(set(&mut h, "setup.complete", json!(false)).is_ok());
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("// hand-written"), "{text}");
+        assert!(text.contains("rounding 20 // keep"), "{text}");
+        assert!(text.contains("profile \"full\""), "{text}");
+        assert!(text.contains("complete #false"), "{text}");
+        assert_eq!(row(&mut h, "setup.complete")["value"], json!(false));
+
+        let before = std::fs::read_to_string(&file).unwrap();
+        assert!(set(&mut h, "setup.profile", json!("bespoke")).is_err());
+        assert!(set(&mut h, "setup.pending-preset", json!("yes")).is_err());
+        assert!(set(&mut h, "setup.mode", json!("wm")).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+
+        // An unknown sub-key in a file is refused with file:line:col.
+        let bad = validate_config(
+            &mut h.state,
+            Decision::Allow,
+            &json!({"text": "setup {\n    complet #true\n}\n"}),
+        )
+        .ok()
+        .expect("validate answers");
+        assert_eq!(bad["valid"], json!(false));
+        assert_eq!(bad["errors"][0]["line"], json!(2));
+        assert_eq!(bad["errors"][0]["col"], json!(5));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn writes_land_in_the_user_tier_not_etc() {
         let Some(base) = crate::config::user_config_base() else {
