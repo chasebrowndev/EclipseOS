@@ -69,7 +69,11 @@ No client is connected at startup, so the compositor keeps the **latest**
 `config-error` event and replays it on every `subscribe` that asks for it,
 for as long as it stands. At first that is the startup set, labelled
 "ignored". A failed hot reload replaces it with its own set, labelled "change
-not applied". A clean load clears it. `eclipse-ctl config validate` reports
+not applied". While the live config still has auto-lock or Xwayland off from
+the degraded start, that reload summary keeps the "auto-lock is OFF" /
+"Xwayland is OFF" lead ahead of "change not applied". The notification has one
+fixed id, so a later reload could otherwise downgrade the warning. A clean load
+clears it. `eclipse-ctl config validate` reports
 the errors as well.
 
 **The summary leads with a protection that did not take.** When a refusal

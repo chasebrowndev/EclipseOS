@@ -163,7 +163,9 @@ pub fn reload_now(state: &mut AbyssState) {
     }
     let next = state.config.reload();
     if !next.errors.is_empty() {
-        let event = crate::config::error_event(&next.errors, false);
+        // The live config may still carry a degraded start's fail-safes
+        // (auto-lock or Xwayland off); the summary keeps leading with them.
+        let event = crate::config::reload_error_event(&next.errors, &state.config.errors);
         for e in &next.errors {
             tracing::error!("{e}");
         }

@@ -714,11 +714,24 @@ pub fn error_json(e: &ConfigError) -> serde_json::Value {
 /// full list rides in `errors`, and `file`/`line`/`col`/`message` repeat the
 /// first one for a consumer that shows a single problem.
 pub fn error_event(errors: &[ConfigError], startup: bool) -> serde_json::Value {
+    event(errors, startup, if startup { errors } else { &[] })
+}
+
+/// The `config-error` event for a failed hot reload. `live` is the refusal
+/// list of the config still running: after a degraded start it carries the
+/// [`FailSafe`] refusals, and while they stand the summary keeps leading with
+/// them, so the fixed-id notification never trades "auto-lock is OFF" for a
+/// milder "change not applied" (ADR 0064).
+pub fn reload_error_event(errors: &[ConfigError], live: &[ConfigError]) -> serde_json::Value {
+    event(errors, false, live)
+}
+
+fn event(errors: &[ConfigError], startup: bool, leads_from: &[ConfigError]) -> serde_json::Value {
     let first = errors.first();
     let mut v = serde_json::json!({
         "errors": errors.iter().map(error_json).collect::<Vec<_>>(),
         "startup": startup,
-        "summary": summary(errors, startup),
+        "summary": summary(errors, startup, leads_from),
     });
     if let Some(e) = first {
         v["file"] = e.file.display().to_string().into();
@@ -734,7 +747,11 @@ pub fn error_event(errors: &[ConfigError], startup: bool) -> serde_json::Value {
 /// At startup a refusal that left a protection off ([`FailSafe`]) leads,
 /// named for what it switched off — `abyss.kdl: auto-lock is OFF — line 3: …`
 /// — so that "(and N more)" can never be where it hides.
-fn summary(errors: &[ConfigError], startup: bool) -> String {
+///
+/// After a failed reload the leads come from the *live* config (`leads_from`)
+/// and go before the reload's own part:
+/// `abyss.kdl: auto-lock is OFF — line 6: …; 1 problem, change not applied — line 2: …`.
+fn summary(errors: &[ConfigError], startup: bool, leads_from: &[ConfigError]) -> String {
     let Some(first) = errors.first() else {
         return String::new();
     };
@@ -750,33 +767,31 @@ fn summary(errors: &[ConfigError], startup: bool) -> String {
             e.message.clone()
         }
     };
-    let leads: Vec<String> = if startup {
-        [FailSafe::AutoLockOff, FailSafe::XwaylandOff]
-            .into_iter()
-            .filter_map(|g| {
-                errors
-                    .iter()
-                    .find(|e| e.fail_safe == Some(g))
-                    .map(|e| format!("{} \u{2014} {}", g.label(), at(e)))
-            })
-            .collect()
+    let leads: Vec<String> = [FailSafe::AutoLockOff, FailSafe::XwaylandOff]
+        .into_iter()
+        .filter_map(|g| {
+            leads_from
+                .iter()
+                .find(|e| e.fail_safe == Some(g))
+                .map(|e| format!("{} \u{2014} {}", g.label(), at(e)))
+        })
+        .collect();
+    let plural = if n == 1 { "" } else { "s" };
+    let (mut s, shown) = if startup && !leads.is_empty() {
+        (format!("{file}: {}", leads.join("; ")), leads.len())
+    } else if startup {
+        (
+            format!("{file}: {n} problem{plural} ignored \u{2014} {}", at(first)),
+            1,
+        )
     } else {
-        Vec::new()
-    };
-    let mut s = if !leads.is_empty() {
-        format!("{file}: {}", leads.join("; "))
-    } else {
-        let plural = if n == 1 { "" } else { "s" };
-        if startup {
-            format!("{file}: {n} problem{plural} ignored \u{2014} {}", at(first))
+        let body = format!("{n} problem{plural}, change not applied \u{2014} {}", at(first));
+        if leads.is_empty() {
+            (format!("{file}: {body}"), 1)
         } else {
-            format!(
-                "{file}: {n} problem{plural}, change not applied \u{2014} {}",
-                at(first)
-            )
+            (format!("{file}: {}; {body}", leads.join("; ")), 1)
         }
     };
-    let shown = leads.len().max(1);
     if n > shown {
         s.push_str(&format!(
             " (and {} more; `eclipse-ctl config validate` lists them)",
