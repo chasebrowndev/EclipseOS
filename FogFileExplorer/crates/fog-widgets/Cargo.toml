@@ -1,0 +1,9 @@
+[package]
+name = "fog-widgets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fog widgets: virtual list, glass shader (FOG §Performance model)."
+publish = false

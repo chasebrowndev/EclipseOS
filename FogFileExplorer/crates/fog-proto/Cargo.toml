@@ -1,0 +1,18 @@
+[package]
+name = "fog-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fog IPC wire types and framing (FOG §Architecture). No filesystem I/O."
+publish = false
+
+[dependencies]
+serde.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

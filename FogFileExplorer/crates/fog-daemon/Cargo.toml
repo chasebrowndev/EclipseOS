@@ -1,0 +1,21 @@
+[package]
+name = "fog-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "fogd: Fog's filesystem daemon (FOG §Architecture, §Filesystem backend)."
+publish = false
+
+[lib]
+name = "fog_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fogd"
+path = "src/main.rs"
+
+[features]
+gio = []
+activity = []
