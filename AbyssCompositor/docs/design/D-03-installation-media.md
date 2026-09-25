@@ -180,9 +180,9 @@ The medium boots to a session, not a prompt. `airootfs/` carries:
 - **`liveuser`**, made at boot by `sysusers.d/liveuser.conf` (uid 1000, no
   groups, no password, no sudoers or wheel entry; D-01 §5). `sysusers` rather
   than a copy of `/etc/group`, which would replace the base file wholesale.
-- **`/etc/eclipse/greetd/config.toml`**, the shipped greetd config plus an
-  `initial_session` running `abyss-session` as `liveuser`. This is the one
-  deliberate second copy of an `eclipseos-meta` file: the live medium needs the
+- **`/etc/eclipse/greetd-live.toml`** and a `greetd.service.d/20-live.conf` drop-in pointing greetd at it: the shipped greetd config plus an
+  `initial_session` running `abyss-session` as `liveuser`. A different path from the
+  package's file, since pacstrap refuses to overwrite an overlay file at the same path: the live medium needs the
   initial session and the installed system must not have it. `display-manager`
   and `default.target` link greetd and `graphical.target`.
 - **`/etc/systemd/user/eclipse-setup-live.service`**, wanted by
