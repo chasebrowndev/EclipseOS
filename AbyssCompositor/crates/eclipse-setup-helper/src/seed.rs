@@ -46,7 +46,9 @@ enum Verdict {
 }
 
 /// The allowlist, and the whole of it: `input.kb-*`, `general.layout`,
-/// `decoration.*`, `animations.*`, `bar.*`, `mode`, `components.*`, `setup.*`.
+/// `decoration.rounding`, `decoration.blur.enabled`, `animations.enabled|animation`,
+/// `bar.position`, `mode`, `components.{bar,launcher,notifications,control-center}`,
+/// `setup.{complete,profile}`.
 /// Anything not named here is dropped, so a key added to the schema later (an
 /// exec-style one included) is dropped until someone decides otherwise. That
 /// covers `bind`, `gesture`, `mousebind`, `windowrule`, `output`, `idle.*`,
@@ -58,8 +60,14 @@ fn verdict(path: &[&str]) -> Verdict {
         ["input", k] if k.starts_with("kb-") => Verdict::Full,
         ["general"] => Verdict::Partial,
         ["general", "layout"] => Verdict::Full,
-        ["decoration" | "animations" | "bar" | "components" | "setup"] => Verdict::Partial,
-        ["decoration" | "animations" | "bar" | "components" | "setup", _] => Verdict::Full,
+        ["decoration"] | ["animations"] | ["bar"] | ["components"] | ["setup"] => Verdict::Partial,
+        ["decoration", "rounding"] | ["animations", "enabled" | "animation"] | ["bar", "position"] => {
+            Verdict::Full
+        }
+        ["decoration", "blur"] => Verdict::Partial,
+        ["decoration", "blur", "enabled"] => Verdict::Full,
+        ["components", "bar" | "launcher" | "notifications" | "control-center"] => Verdict::Full,
+        ["setup", "complete" | "profile"] => Verdict::Full,
         _ => Verdict::Drop,
     }
 }

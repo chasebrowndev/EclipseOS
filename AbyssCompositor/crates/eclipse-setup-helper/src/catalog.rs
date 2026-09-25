@@ -15,6 +15,8 @@ pub enum Slot {
     Launcher,
     Notifications,
     ControlCenter,
+    /// Optional applications: any number may be chosen, none exclude another.
+    App,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -57,6 +59,84 @@ const BUILTIN: &[Entry] = &[
         packages: &["eclipseos-center"],
         system_units: &[],
     },
+    Entry {
+        id: "waybar",
+        slot: Slot::Bar,
+        packages: &["waybar"],
+        system_units: &[],
+    },
+    Entry {
+        id: "quickshell",
+        slot: Slot::Bar,
+        packages: &["quickshell"],
+        system_units: &[],
+    },
+    Entry {
+        id: "fuzzel",
+        slot: Slot::Launcher,
+        packages: &["fuzzel"],
+        system_units: &[],
+    },
+    Entry {
+        id: "mako",
+        slot: Slot::Notifications,
+        packages: &["mako"],
+        system_units: &[],
+    },
+    Entry {
+        id: "app-browser",
+        slot: Slot::App,
+        packages: &["firefox"],
+        system_units: &[],
+    },
+    Entry {
+        id: "app-editor",
+        slot: Slot::App,
+        packages: &["micro"],
+        system_units: &[],
+    },
+    Entry {
+        id: "app-files",
+        slot: Slot::App,
+        packages: &["thunar"],
+        system_units: &[],
+    },
+    Entry {
+        id: "app-media",
+        slot: Slot::App,
+        packages: &["mpv"],
+        system_units: &[],
+    },
+    Entry {
+        id: "app-images",
+        slot: Slot::App,
+        packages: &["imv"],
+        system_units: &[],
+    },
+    Entry {
+        id: "app-pdf",
+        slot: Slot::App,
+        packages: &["zathura", "zathura-pdf-mupdf"],
+        system_units: &[],
+    },
+    Entry {
+        id: "app-archive",
+        slot: Slot::App,
+        packages: &["p7zip", "unzip"],
+        system_units: &[],
+    },
+    Entry {
+        id: "app-printing",
+        slot: Slot::App,
+        packages: &["cups"],
+        system_units: &["cups.socket"],
+    },
+    Entry {
+        id: "app-bluetooth-ui",
+        slot: Slot::App,
+        packages: &["blueman"],
+        system_units: &[],
+    },
 ];
 
 /// System units of the floor (the session and network the installed system
@@ -73,7 +153,7 @@ pub const FLOOR_UNITS: &[&str] = &[
 ];
 
 /// More than there are slots is already nonsense.
-const MAX_CANDIDATES: usize = 16;
+const MAX_CANDIDATES: usize = 32;
 
 impl Catalog {
     pub fn builtin() -> Self {
@@ -97,7 +177,10 @@ impl Catalog {
                 .iter()
                 .find(|e| e.id == id.as_str())
                 .ok_or(Error::Refused("candidate not in catalog"))?;
-            if out.iter().any(|o| o.slot == e.slot) {
+            if out
+                .iter()
+                .any(|o| o.id == e.id || (o.slot == e.slot && e.slot != Slot::App))
+            {
                 return Err(Error::Refused("two candidates for one slot"));
             }
             out.push(e);
@@ -160,7 +243,20 @@ mod tests {
             assert!(c.resolve(&ids(&[bad])).is_err(), "{bad:?}");
         }
         assert!(c.resolve(&ids(&["hyperion", "hyperion"])).is_err());
-        assert!(c.resolve(&ids(&["a"; 17])).is_err());
+        assert!(c.resolve(&ids(&["a"; 33])).is_err());
+    }
+
+    #[test]
+    fn apps_stack_but_slots_do_not() {
+        let c = Catalog::builtin();
+        assert_eq!(
+            c.resolve(&ids(&["app-browser", "app-pdf", "mako"]))
+                .unwrap()
+                .len(),
+            3
+        );
+        assert!(c.resolve(&ids(&["hyperion", "waybar"])).is_err());
+        assert!(c.resolve(&ids(&["app-pdf", "app-pdf"])).is_err());
     }
 
     #[test]
