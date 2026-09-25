@@ -348,7 +348,7 @@ At a glance, Fog shows which files agents are working on right now and where the
 
 **Intensity rule**: read < sweep < write, in every view. A large grep never looks more significant than a single edit.
 
-**Reads and sweeps** come from `agentd` (see the ADR). Reads are exact, both through MCP tools and through fanotify marks on the sandbox's own bind mounts. When one process opens 20 or more distinct files within about 1 s, the burst arrives already collapsed into a single Sweep event. It carries the root folder, file count, duration, tool name, and matches when known (MCP search only).
+**Reads and sweeps** come from `agentd` (see ADR 0063). Reads are exact, both through MCP tools and through fanotify marks on the sandbox's own bind mounts. When one process opens 20 or more distinct files within about 1 s, the burst arrives already collapsed into a single Sweep event. It carries the root folder, file count, duration, tool name, and matches when known (MCP search only).
 
 **Shared behavior**
 
@@ -442,12 +442,12 @@ Build the daemon and the fast path first. The glass and the picker come after th
 | M3 — Picker | `fog-portal`, reduced picker mode, xdg-foreign parenting | Firefox, a GTK4 app, a Qt6 app and a Flatpak all open and save through Fog |
 | M4 — Semantic + CLI | `fog` CLI, `fog-pub` over `eclipse_semantic_v1`, custom actions, elevated tabs | Fog's tree visible via the semantic protocol; CLI covers all job types |
 | M5 — Remote | GioBackend, udisks2 mounts, MTP | An SMB share and a phone browse and copy correctly |
-| M6 — Agents (blocked on `agentd` + activity ADR) | `fog.*` MCP tools via `agentd`; `fog-agentic` build: lens pills, Map/Files/Graph/Detail, replay | An agent can find, reveal, move and undo via MCP; a live task's activity shows in every view within one frame |
+| M6 — Agents (blocked on `agentd` + ADR 0063) | `fog.*` MCP tools via `agentd`; `fog-agentic` build: lens pills, Map/Files/Graph/Detail, replay | An agent can find, reveal, move and undo via MCP; a live task's activity shows in every view within one frame |
 
 **Open questions**
 
 - [ ] Does the iced version in use have a virtual list that handles 100k rows, or does `fog-widgets` need its own?
 - [ ] Split pane: in v1 or deferred? Radiant can already tile two Fog windows side by side.
 - [ ] Should `fog-ui` stay resident (hidden) for instant opens, and what does that cost in memory?
-- [ ] Agent file-activity ADR: check whether the kernel reports create/delete/rename on fanotify mount marks, and confirm `agentd` holds `CAP_SYS_ADMIN`.
+- [ ] ADR 0063: check whether the kernel reports create/delete/rename on fanotify mount marks, and confirm `agentd` holds `CAP_SYS_ADMIN`.
 - [ ] The agent colour (VOL1 L4573) must be decided before M6 visuals ship.
