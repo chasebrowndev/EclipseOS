@@ -317,10 +317,11 @@ authorities:
   installed system cannot be pointed at its own disk even if the rule leaked.
   **A typed disk name in a client proves nothing** against a `liveuser` process
   that sends the right string, so the wipe is confirmed on a **compositor-drawn
-  trusted prompt** (COMP-10 class "destructive system action", **owed**): before
+  trusted prompt** (COMP-10 §3.10, ADR 0061; code owed): before
   repartitioning the helper asks the compositor to show the disk's model, size
   and by-id name and to return allow or deny from the human seat, and it
-  proceeds only on allow. The typed name in §4.2 remains as an in-client safety
+  proceeds only on allow. The helper reaches the compositor over its root-only
+  trusted socket after checking the peer is the session's `abyss`. The typed name in §4.2 remains as an in-client safety
   against mistakes, not as the authority. The root shell on tty2 is accepted
   for a person at the keyboard; this gate is against *other processes*.
 - **`org.eclipse.setup.apply`**: `--reconfigure` on an installed system, one
@@ -426,7 +427,8 @@ file*, is met by D-07 alone for every profile and is its acceptance test.
 6. **The curated Agentic preset's contents.** Written once S-01's grant set
    exists. Until then the option is shown disabled.
 7. **Two trusted-UI surfaces owed to COMP-10**: the "destructive system action"
-   confirmation (§6) and the compositor-drawn polkit authentication agent (§6).
-   Until they exist, the install falls back to the TTY script on tty2, which is
-   root-run by a person at the keyboard, and `--reconfigure` package changes are
-   not offered.
+   confirmation (§6; specified in COMP-10 §3.10, code owed) and the
+   compositor-drawn polkit authentication agent (§6; still unspecified). Until
+   the confirmation exists, the install falls back to the TTY script on tty2,
+   which is root-run by a person at the keyboard. Until the agent exists,
+   `--reconfigure` package changes are not offered.
