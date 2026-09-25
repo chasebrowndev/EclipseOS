@@ -371,6 +371,13 @@ fn subscribe(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {
         return Err(RpcError::invalid_params("connection is gone"));
     };
     c.subs = wanted.clone();
+    // ADR 0064: nodes dropped at startup were refused before any client was
+    // connected, so the latest `config-error` (startup-ignored, or a later
+    // reload-not-applied) is replayed on every `subscribe` that asks for it,
+    // repeatedly, for as long as it stands. A clean load clears it.
+    if let Some(event) = state.config_error.clone() {
+        crate::ipc::emit_to(state, conn, "config-error", event);
+    }
     Ok(json!({"subscribed": wanted}))
 }
 
@@ -1011,5 +1018,124 @@ mod tests {
 
         assert!(update_params(&json!({"id": 1, "text": "t", "title": false})).is_err());
         assert!(update_params(&json!({"id": 1, "text": "t", "pick": null})).is_err());
+    }
+
+    /// ADR 0064: `subscribe` replays the *latest* `config-error` — after a
+    /// degraded start and then a failed reload, the reload's, labelled as
+    /// such — on every subscribe while it stands, and nothing after a clean
+    /// load.
+    #[test]
+    fn subscribe_replays_the_current_config_error() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let dir = std::env::temp_dir().join(format!("abyss-replay-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+        h.state.config.explicit = Some(file.clone());
+
+        let replayed = |state: &mut AbyssState| -> Vec<Value> {
+            let (conn, _client) = crate::ipc::test_conn(state);
+            crate::ipc::capture::take();
+            assert!(subscribe(state, conn, &json!({"events": ["config-error"]})).is_ok());
+            crate::ipc::capture::take()
+                .into_iter()
+                .filter(|(k, _)| k == "config-error")
+                .map(|(_, v)| v)
+                .collect()
+        };
+
+        // A degraded start, as `AbyssState::new` records it.
+        std::fs::write(&file, "idle {\n    lock-command 3\n}\n").unwrap();
+        let mut start = crate::config::Config::load(Some(&file));
+        let _ = start.startup();
+        h.state.config_error = Some(crate::config::error_event(&start.errors, true));
+        for _ in 0..2 {
+            let got = replayed(&mut h.state);
+            assert_eq!(got.len(), 1, "{got:?}");
+            assert_eq!(got[0]["startup"], true);
+        }
+
+        // A failed reload replaces it: new subscribers hear the reload.
+        std::fs::write(&file, "general {\n    nope 1\n}\n").unwrap();
+        crate::config::watch::reload_now(&mut h.state);
+        let got = replayed(&mut h.state);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0]["startup"], false);
+        let s = got[0]["summary"].as_str().unwrap_or_default();
+        assert!(s.contains("change not applied"), "{s}");
+        assert!(s.contains("line 2"), "{s}");
+
+        // A clean load clears it.
+        std::fs::write(&file, "general {\n    gaps-in 3\n}\n").unwrap();
+        crate::config::watch::reload_now(&mut h.state);
+        assert!(h.state.config_error.is_none());
+        assert!(replayed(&mut h.state).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ADR 0064: a failed reload after a degraded start must not downgrade
+    /// the warning. The live config still has auto-lock off, so the reload's
+    /// summary (and its replay) keeps leading with it, ahead of "change not
+    /// applied". A clean load clears it.
+    #[test]
+    fn a_failed_reload_keeps_the_degraded_start_lead() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let dir = std::env::temp_dir().join(format!("abyss-replay-lead-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+
+        // Degraded start with a bad lock-command, as `main` + `AbyssState::new`
+        // set it up: the settled config goes live with its refusals.
+        std::fs::write(
+            &file,
+            "idle {\n    lock-timeout-seconds 600\n    lock-command 3\n}\n",
+        )
+        .unwrap();
+        let mut start = crate::config::Config::load(Some(&file));
+        assert!(matches!(
+            start.startup(),
+            crate::config::Startup::Start { ignored: 1 }
+        ));
+        h.state.config_error = Some(crate::config::error_event(&start.errors, true));
+        h.state.config = start;
+
+        // A failed reload of an unrelated key.
+        std::fs::write(
+            &file,
+            "idle {\n    lock-timeout-seconds 600\n    lock-command 3\n}\ngeneral {\n    nope 1\n}\n",
+        )
+        .unwrap();
+        crate::ipc::capture::take();
+        crate::config::watch::reload_now(&mut h.state);
+        let emitted: Vec<Value> = crate::ipc::capture::take()
+            .into_iter()
+            .filter(|(k, _)| k == "config-error")
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(emitted.len(), 1, "{emitted:?}");
+
+        let (conn, _client) = crate::ipc::test_conn(&mut h.state);
+        assert!(subscribe(&mut h.state, conn, &json!({"events": ["config-error"]})).is_ok());
+        let replayed: Vec<Value> = crate::ipc::capture::take()
+            .into_iter()
+            .filter(|(k, _)| k == "config-error")
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(replayed.len(), 1, "{replayed:?}");
+        for ev in [&emitted[0], &replayed[0]] {
+            assert_eq!(ev["startup"], false);
+            let s = ev["summary"].as_str().unwrap_or_default();
+            assert_eq!(
+                s,
+                "abyss.kdl: auto-lock is OFF \u{2014} line 3: idle lock-command needs a string argument; \
+                 2 problems, change not applied \u{2014} line 3: idle lock-command needs a string argument \
+                 (and 1 more; `eclipse-ctl config validate` lists them)",
+            );
+        }
+
+        // A clean load clears everything.
+        std::fs::write(&file, "general {\n    gaps-in 3\n}\n").unwrap();
+        crate::config::watch::reload_now(&mut h.state);
+        assert!(h.state.config_error.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -270,6 +270,19 @@ impl Client {
         }
     }
 
+    /// Next event, waiting as long as it takes. For a client on a thread of
+    /// its own with nothing else to wait on; a GUI loop wants
+    /// [`Client::poll_event`]. `Err` means the connection is gone.
+    pub fn wait_event(&mut self) -> Result<Event> {
+        loop {
+            if let Some(ev) = self.poll_event()? {
+                return Ok(ev);
+            }
+            // Idle is idle: an hour between wake-ups, not a poll interval.
+            wait_readable(self.sock.as_raw_fd(), Duration::from_secs(3600))?;
+        }
+    }
+
     fn write_line(&mut self, line: &str) -> Result<()> {
         // The write side stays blocking in effect: a request is small enough
         // that a partial write means the compositor is wedged, and looping

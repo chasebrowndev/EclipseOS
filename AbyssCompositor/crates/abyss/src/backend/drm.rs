@@ -1439,6 +1439,15 @@ pub fn set_power(state: &mut AbyssState, id: u64, on: bool) {
 mod tests {
     use super::*;
 
+    /// ADR 0033, kept fatal by ADR 0064: an explicit render device that does
+    /// not resolve refuses, whether it came from the config, `--render-device`
+    /// or `ECLIPSE_RENDER_DEVICE` (all three land in `misc.render_device`).
+    #[test]
+    fn an_unresolvable_render_device_refuses() {
+        assert!(resolve_render_device(Some("/nonexistent/dri/card9"), "seat0").is_err());
+        assert!(resolve_render_device(Some("pci:ffff:ff:ff.7"), "seat0").is_err());
+    }
+
     #[test]
     fn a_failed_frame_is_retried_within_one_frame() {
         // A refused commit clears on its own; the retry must not be the slow part.

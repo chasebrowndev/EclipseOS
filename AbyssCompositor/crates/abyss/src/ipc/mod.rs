@@ -547,6 +547,24 @@ pub fn emit(state: &mut AbyssState, kind: &str, params: Value) {
     reap(state);
 }
 
+/// [`emit`] to one connection only. For an event that stands for state
+/// rather than a moment, replayed to a client as it subscribes — the
+/// startup `config-error` of ADR 0064, which fired before anyone listened.
+pub fn emit_to(state: &mut AbyssState, conn: u64, kind: &str, params: Value) {
+    #[cfg(test)]
+    capture::record(kind, &params);
+    let Some(c) = state.ipc.conn_mut(conn).filter(|c| wants(c, kind)) else {
+        return;
+    };
+    let line = json!({
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {"event": kind, "data": params},
+    })
+    .to_string();
+    c.enqueue(&line, true);
+}
+
 fn wants(c: &Conn, kind: &str) -> bool {
     !c.dead && c.subs.iter().any(|s| s == kind)
 }
@@ -582,6 +600,32 @@ fn disown_annotations(state: &mut AbyssState, id: u64) {
     if state.annotations.clear_for(id) > 0 {
         crate::backend::damage_all(state);
     }
+}
+
+/// Test-only: register a connection with no event source behind it, so a
+/// method that needs a live `conn` (`subscribe`) can run in a unit test. The
+/// returned stream is the client end.
+#[cfg(test)]
+pub fn test_conn(state: &mut AbyssState) -> (u64, UnixStream) {
+    let (ours, theirs) = UnixStream::pair().expect("socketpair");
+    state.ipc.next_conn += 1;
+    let id = state.ipc.next_conn;
+    state.ipc.conns.push(Conn {
+        id,
+        peer: Peer {
+            uid: owner_uid(),
+            pid: 1,
+            comm: None,
+        },
+        write: ours,
+        inbuf: Vec::new(),
+        outbuf: VecDeque::new(),
+        subs: Vec::new(),
+        dropped: 0,
+        dead: false,
+        token: None,
+    });
+    (id, theirs)
 }
 
 /// Test-only tap on the broadcast path. A unit test has no subscribed client,
