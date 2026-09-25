@@ -1,0 +1,448 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! The stages that change the machine, reimplemented from
+//! `dist/iso/airootfs/root/install-eclipseos.sh` with fixed argv: every command
+//! is a [`Tool`] plus arguments built here from validated values, never a shell
+//! line. Nothing in this module runs before `Confirm` has allowed (the caller
+//! in `apply` orders that; `Tool::touches_disk` lets tests prove it).
+
+use crate::catalog::{valid_pkg_name, Entry, FLOOR_UNITS};
+use crate::disks::{self, DiskEntry};
+use crate::env::Env;
+use crate::error::{io, Error, Result};
+use crate::runner::{Cmd, Tool};
+use crate::target::{self, TargetFile};
+use eclipse_setup_plan::{Plan, Request};
+use std::ffi::OsString;
+use std::fs;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::PathBuf;
+use zeroize::Zeroizing;
+
+/// Everything the pre-disk stages worked out for the later ones.
+pub struct Prepared {
+    /// Floor list from the medium plus catalog packages, in order, no duplicates.
+    pub pkgs: Vec<String>,
+    /// Fingerprint of the packaging key on the medium.
+    pub keyid: String,
+}
+
+pub struct Layout {
+    pub esp: PathBuf,
+    pub root: PathBuf,
+}
+
+const MAX_PKGS: usize = 2048;
+
+/// `nvme0n1` -> `nvme0n1p1`; `sda` -> `sda1`.
+pub fn part_name(kernel: &str, n: u8) -> String {
+    if kernel.ends_with(|c: char| c.is_ascii_digit()) {
+        format!("{kernel}p{n}")
+    } else {
+        format!("{kernel}{n}")
+    }
+}
+
+/// The medium's package list: one name per line, `#` comments and blanks skipped.
+/// Each name is held to the argv-safe pattern; a bad line refuses the install
+/// rather than being skipped, since a silently missing package is a broken system.
+pub fn parse_pkg_list(text: &str) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for l in text.lines() {
+        let l = l.trim();
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        if !valid_pkg_name(l) {
+            return Err(Error::Refused("package list on the medium"));
+        }
+        out.push(l.to_owned());
+        if out.len() > MAX_PKGS {
+            return Err(Error::Refused("package list on the medium"));
+        }
+    }
+    if out.is_empty() {
+        return Err(Error::Refused("package list on the medium"));
+    }
+    Ok(out)
+}
+
+pub fn package_set(base: Vec<String>, entries: &[&Entry]) -> Vec<String> {
+    let mut all = base;
+    for e in entries {
+        for p in e.packages {
+            if !all.iter().any(|a| a == p) {
+                all.push((*p).to_owned());
+            }
+        }
+    }
+    all
+}
+
+/// First `fpr:` record of `gpg --with-colons`: 40 (v4) to 64 (v5) hex digits.
+pub fn parse_fpr(colons: &str) -> Option<String> {
+    let f = colons
+        .lines()
+        .find(|l| l.starts_with("fpr:"))?
+        .split(':')
+        .nth(9)?;
+    let ok = (40..=64).contains(&f.len()) && f.bytes().all(|c| c.is_ascii_hexdigit());
+    ok.then(|| f.to_ascii_uppercase())
+}
+
+pub fn valid_uuid(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+}
+
+/// Uncomment `NAME UTF-8` in a `locale.gen`. `None` if the locale is not there.
+/// (Already uncommented counts as there.)
+pub fn enable_locale(text: &str, locale: &str) -> Option<String> {
+    let mut found = false;
+    let mut out = String::with_capacity(text.len());
+    for l in text.lines() {
+        let body = l.strip_prefix('#').unwrap_or(l);
+        let mut t = body.split_whitespace();
+        if t.next() == Some(locale) && t.next() == Some("UTF-8") && t.next().is_none() {
+            found = true;
+            out.push_str(body.trim_start());
+        } else {
+            out.push_str(l);
+        }
+        out.push('\n');
+    }
+    found.then_some(out)
+}
+
+/// The D-02 include line, added if `eclipseos.conf` is not already referenced.
+/// `None` when nothing needs adding.
+pub fn with_eclipseos_include(text: &str) -> Option<String> {
+    if text.contains("eclipseos.conf") {
+        return None;
+    }
+    let mut s = text.to_owned();
+    if !s.ends_with('\n') && !s.is_empty() {
+        s.push('\n');
+    }
+    s.push_str("\n# EclipseOS packages (D-02)\nInclude = /etc/pacman.d/eclipseos.conf\n");
+    Some(s)
+}
+
+pub const SUDOERS_WHEEL: &str = "%wheel ALL=(ALL:ALL) ALL\n";
+
+/// Limine's config, byte for byte what the reference script wrote. The ESP is
+/// mounted at /boot, so `boot():/` is where the kernel and initramfs sit.
+pub fn limine_conf(root_uuid: &str, ucode: bool) -> String {
+    let ucode = if ucode {
+        "    module_path: boot():/amd-ucode.img\n"
+    } else {
+        ""
+    };
+    format!(
+        "timeout: 2\n\n\
+         /EclipseOS\n\
+         \x20   protocol: linux\n\
+         \x20   path: boot():/vmlinuz-linux\n\
+         \x20   cmdline: root=UUID={root_uuid} rw amd_pstate=active\n\
+         {ucode}\
+         \x20   module_path: boot():/initramfs-linux.img\n\n\
+         /EclipseOS (fallback initramfs)\n\
+         \x20   protocol: linux\n\
+         \x20   path: boot():/vmlinuz-linux\n\
+         \x20   cmdline: root=UUID={root_uuid} rw\n\
+         \x20   module_path: boot():/initramfs-linux-fallback.img\n"
+    )
+}
+
+fn chroot(env: &Env) -> Cmd {
+    Cmd::new(Tool::ArchChroot).arg(&env.paths.target)
+}
+
+// ---- Partition ---------------------------------------------------------------
+
+pub fn partition(env: &Env, d: &DiskEntry) -> Result<Layout> {
+    let p = &env.paths;
+    // The link is re-resolved at the point of use: it must still name the disk
+    // that was validated and confirmed.
+    if disks::resolve_by_id(p, &d.disk.by_id).as_deref() != Some(d.kernel.as_str()) {
+        return Err(Error::Refused("disk changed since it was confirmed"));
+    }
+    let dev = p.dev.join(&d.kernel);
+    let esp = p.dev.join(part_name(&d.kernel, 1));
+    let root = p.dev.join(part_name(&d.kernel, 2));
+    let r = env.runner;
+    r.run(&Cmd::new(Tool::Sgdisk).arg("--zap-all").arg(&dev))?;
+    r.run(
+        &Cmd::new(Tool::Sgdisk)
+            .args(["-n1:0:+1G", "-t1:ef00", "-c1:EFI"])
+            .args(["-n2:0:0", "-t2:8304", "-c2:eclipseos"])
+            .arg(&dev),
+    )?;
+    r.run(&Cmd::new(Tool::Partprobe).arg(&dev))?;
+    r.run(&Cmd::new(Tool::Udevadm).arg("settle"))?;
+    r.run(
+        &Cmd::new(Tool::MkfsFat)
+            .args(["-F32", "-n", "ECLIPSE_ESP"])
+            .arg(&esp),
+    )?;
+    r.run(
+        &Cmd::new(Tool::MkfsExt4)
+            .args(["-F", "-L", "eclipseos"])
+            .arg(&root),
+    )?;
+    Ok(Layout { esp, root })
+}
+
+pub fn mount(env: &Env, l: &Layout) -> Result<()> {
+    let t = &env.paths.target;
+    env.runner.run(&Cmd::new(Tool::Mount).arg(&l.root).arg(t))?;
+    env.runner.run(
+        &Cmd::new(Tool::Mount)
+            .arg("--mkdir")
+            .arg(&l.esp)
+            .arg(t.join("boot")),
+    )
+}
+
+/// Best effort; also run after a failure so the disk is not left busy.
+pub fn unmount(env: &Env) -> Result<()> {
+    env.runner
+        .run(&Cmd::new(Tool::Umount).arg("-R").arg(&env.paths.target))
+}
+
+// ---- Pacstrap ----------------------------------------------------------------
+
+fn install_pacman_conf(env: &Env) -> Result<()> {
+    let p = &env.paths;
+    let mut conf = fs::read_to_string(&p.live_pacman_conf).map_err(io("read pacman.conf"))?;
+    // Baked into the medium by dist/iso/build-iso.sh (D-03): the database is
+    // unsigned, the packages in it are signed.
+    conf.push_str(&format!(
+        "\n[eclipseos]\nSigLevel = PackageRequired DatabaseOptional\nServer = file://{}\n",
+        p.repo.display()
+    ));
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&p.install_pacman_conf)
+        .map_err(io("write install pacman.conf"))?;
+    f.write_all(conf.as_bytes())
+        .map_err(io("write install pacman.conf"))
+}
+
+pub fn pacstrap(env: &Env, prep: &Prepared) -> Result<()> {
+    let p = &env.paths;
+    let r = env.runner;
+    // Trust the packaging key on the live side (to verify the baked repo) and in
+    // the target's own keyring (its first `pacman -Syu` needs it).
+    r.run(&Cmd::new(Tool::PacmanKey).arg("--add").arg(&p.packaging_key))?;
+    r.run(&Cmd::new(Tool::PacmanKey).arg("--lsign-key").arg(&prep.keyid))?;
+    install_pacman_conf(env)?;
+    r.run(
+        &Cmd::new(Tool::Pacstrap)
+            .args(["-K", "-C"])
+            .arg(&p.install_pacman_conf)
+            .arg(&p.target)
+            .args(&prep.pkgs),
+    )?;
+    let ring = p.target.join("etc/pacman.d/gnupg");
+    r.run(
+        &Cmd::new(Tool::PacmanKey)
+            .arg("--gpgdir")
+            .arg(&ring)
+            .arg("--add")
+            .arg(&p.packaging_key),
+    )?;
+    r.run(
+        &Cmd::new(Tool::PacmanKey)
+            .arg("--gpgdir")
+            .arg(&ring)
+            .arg("--lsign-key")
+            .arg(&prep.keyid),
+    )?;
+    let fstab = r.capture(&Cmd::new(Tool::Genfstab).arg("-U").arg(&p.target))?;
+    let mut all = target::read(&p.target, TargetFile::Fstab)?;
+    all.extend_from_slice(&fstab);
+    target::write(&p.target, TargetFile::Fstab, &all)
+}
+
+// ---- Configure ---------------------------------------------------------------
+
+pub fn configure(env: &Env, plan: &Plan) -> Result<()> {
+    let t = &env.paths.target;
+    target::write(t, TargetFile::Hostname, format!("{}\n", plan.hostname).as_bytes())?;
+    target::link_localtime(t, &plan.timezone)?;
+
+    let lg = String::from_utf8(target::read(t, TargetFile::LocaleGen)?)
+        .map_err(|_| Error::Refused("target locale.gen"))?;
+    let lg = enable_locale(&lg, &plan.locale).ok_or(Error::Refused("locale not in target"))?;
+    target::write(t, TargetFile::LocaleGen, lg.as_bytes())?;
+    target::write(
+        t,
+        TargetFile::LocaleConf,
+        format!("LANG={}\n", plan.locale).as_bytes(),
+    )?;
+
+    let pc = String::from_utf8(target::read(t, TargetFile::PacmanConf)?)
+        .map_err(|_| Error::Refused("target pacman.conf"))?;
+    if let Some(new) = with_eclipseos_include(&pc) {
+        target::write(t, TargetFile::PacmanConf, new.as_bytes())?;
+    }
+    target::write(t, TargetFile::SudoersWheel, SUDOERS_WHEEL.as_bytes())?;
+
+    env.runner.run(&chroot(env).arg("locale-gen"))?;
+    env.runner.run(&chroot(env).args(["mkinitcpio", "-P"]))
+}
+
+// ---- Bootloader --------------------------------------------------------------
+
+pub fn bootloader(env: &Env, l: &Layout) -> Result<()> {
+    let t = &env.paths.target;
+    // Limine's UEFI install is two files: the stub at the removable fallback
+    // path, which needs no NVRAM entry, and a config that says what it does.
+    let stub = target::read_limine_stub(t)?;
+    target::write(t, TargetFile::LimineStub, &stub)?;
+
+    let out = env.runner.capture(
+        &Cmd::new(Tool::Blkid)
+            .args(["-s", "UUID", "-o", "value"])
+            .arg(&l.root),
+    )?;
+    let uuid = String::from_utf8(out).map_err(|_| Error::Refused("root uuid"))?;
+    let uuid = uuid.trim();
+    if !valid_uuid(uuid) {
+        return Err(Error::Refused("root uuid"));
+    }
+    let ucode = t.join("boot/amd-ucode.img").is_file();
+    target::write(t, TargetFile::LimineConf, limine_conf(uuid, ucode).as_bytes())
+}
+
+// ---- User --------------------------------------------------------------------
+
+pub fn user(env: &Env, req: &Request) -> Result<()> {
+    let name = &req.plan.username;
+    env.runner.run(
+        &chroot(env)
+            .args(["useradd", "-m", "-G", "wheel", "-s", "/bin/bash"])
+            .arg(name),
+    )?;
+    // `user:password\n` on the child's stdin, its stderr discarded. Names and
+    // password were checked for `:`-free names and no `\n`, `\r`, NUL.
+    let mut line = Zeroizing::new(Vec::with_capacity(name.len() + req.password.len() + 2));
+    line.extend_from_slice(name.as_bytes());
+    line.push(b':');
+    line.extend_from_slice(req.password.as_bytes());
+    line.push(b'\n');
+    env.runner.run(&chroot(env).arg("chpasswd").stdin(line))?;
+    // One password in the plan and it is the user's; root stays locked.
+    env.runner.run(&chroot(env).args(["passwd", "-l", "root"]))
+}
+
+// ---- Units -------------------------------------------------------------------
+
+/// System units to enable: the floor plus what the resolved catalog entries list.
+pub fn unit_list(entries: &[&Entry]) -> Vec<&'static str> {
+    let mut u: Vec<&'static str> = FLOOR_UNITS.to_vec();
+    for e in entries {
+        for s in e.system_units {
+            if !u.contains(s) {
+                u.push(s);
+            }
+        }
+    }
+    u
+}
+
+pub fn units(env: &Env, entries: &[&Entry]) -> Result<()> {
+    let list = unit_list(entries);
+    if !list.iter().all(|u| valid_pkg_name(u)) {
+        return Err(Error::Refused("unit name"));
+    }
+    let args: Vec<OsString> = ["systemctl", "enable"]
+        .iter()
+        .chain(list.iter())
+        .map(OsString::from)
+        .collect();
+    env.runner.run(&chroot(env).args(args))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::Catalog;
+
+    #[test]
+    fn partition_names() {
+        assert_eq!(part_name("sda", 1), "sda1");
+        assert_eq!(part_name("nvme0n1", 2), "nvme0n1p2");
+        assert_eq!(part_name("mmcblk0", 1), "mmcblk0p1");
+        assert_eq!(part_name("vda", 2), "vda2");
+    }
+
+    #[test]
+    fn package_list_is_strict() {
+        assert_eq!(
+            parse_pkg_list("# c\n\n base \nlinux\n").unwrap(),
+            ["base", "linux"]
+        );
+        for bad in ["", "# only\n", "a b\n", "-rf\n", "$(x)\n", "a;b\n", "../x\n"] {
+            assert!(parse_pkg_list(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn package_set_adds_catalog_packages_once() {
+        let es = Catalog::builtin()
+            .resolve(&["hyperion".into(), "eclipse-toasts".into()])
+            .unwrap();
+        let s = package_set(vec!["base".into(), "eclipseos-hyperion".into()], &es);
+        assert_eq!(s, ["base", "eclipseos-hyperion", "eclipseos-toasts"]);
+    }
+
+    #[test]
+    fn fingerprint_parse() {
+        let f = "A".repeat(40);
+        let ok = format!("tru::1:0:0:3:1:5\npub:-:255:22:AAAA:1:::-:::scESC:::\nfpr:::::::::{f}:\n");
+        assert_eq!(parse_fpr(&ok).unwrap(), f);
+        assert!(parse_fpr("fpr:::::::::zz:\n").is_none());
+        assert!(parse_fpr("nothing\n").is_none());
+        assert!(parse_fpr(&format!("fpr:::::::::{}:\n", "g".repeat(40))).is_none());
+    }
+
+    #[test]
+    fn locale_is_uncommented_only_when_present() {
+        let lg = "# header\n#en_US.UTF-8 UTF-8\n#de_DE.UTF-8 UTF-8\n#en_US ISO-8859-1\n";
+        let out = enable_locale(lg, "en_US.UTF-8").unwrap();
+        assert_eq!(
+            out,
+            "# header\nen_US.UTF-8 UTF-8\n#de_DE.UTF-8 UTF-8\n#en_US ISO-8859-1\n"
+        );
+        assert!(enable_locale(lg, "xx_XX.UTF-8").is_none());
+        assert!(enable_locale(lg, "en_US").is_none());
+        assert!(enable_locale("en_US.UTF-8 UTF-8\n", "en_US.UTF-8").is_some());
+    }
+
+    #[test]
+    fn pacman_include_is_added_once() {
+        let a = with_eclipseos_include("[options]\n").unwrap();
+        assert!(a.contains("Include = /etc/pacman.d/eclipseos.conf"));
+        assert!(with_eclipseos_include(&a).is_none());
+    }
+
+    #[test]
+    fn limine_config_matches_the_reference() {
+        let c = limine_conf("abcd-1234", true);
+        assert!(c.starts_with("timeout: 2\n\n/EclipseOS\n    protocol: linux\n"));
+        assert!(c.contains("    cmdline: root=UUID=abcd-1234 rw amd_pstate=active\n    module_path: boot():/amd-ucode.img\n    module_path: boot():/initramfs-linux.img\n"));
+        assert!(c.contains("/EclipseOS (fallback initramfs)"));
+        assert!(!limine_conf("u", false).contains("amd-ucode"));
+        assert!(valid_uuid("1b2c-3D4e") && !valid_uuid("a b") && !valid_uuid("x\ny") && !valid_uuid(""));
+    }
+
+    #[test]
+    fn units_are_floor_plus_catalog_and_nothing_else() {
+        let es = Catalog::builtin().resolve(&["hyperion".into()]).unwrap();
+        assert_eq!(unit_list(&es), FLOOR_UNITS);
+    }
+}

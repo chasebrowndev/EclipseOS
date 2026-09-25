@@ -1225,6 +1225,10 @@ name = "eclipse-setup-helper"
 version = "0.1.0"
 dependencies = [
  "eclipse-setup-plan",
+ "kdl",
+ "rustix 1.1.4",
+ "serde_json",
+ "zeroize",
 ]
 
 [[package]]

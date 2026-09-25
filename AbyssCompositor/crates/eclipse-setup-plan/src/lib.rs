@@ -26,6 +26,7 @@ pub enum Profile {
 /// Everything the helper acts on, all validated by the helper itself (D-07
 /// §4.2, §4.3, §6). Nothing here is trusted because the UI validated it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Plan {
     /// A `/dev/disk/by-id` name from the helper's own listing, never a free path.
     pub disk_by_id: String,
@@ -43,6 +44,7 @@ pub struct Plan {
 
 /// The stdin frame: the plan plus the one secret.
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Request {
     pub plan: Plan,
     /// Cleared on drop. Rejected by [`check_password`] if it holds `\n`, `\r` or NUL.
