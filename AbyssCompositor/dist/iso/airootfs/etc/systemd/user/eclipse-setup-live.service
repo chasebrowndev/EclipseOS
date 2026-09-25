@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+[Unit]
+Description=EclipseOS live installer (D-07 §2.1)
+PartOf=graphical-session.target
+ConditionPathExists=/run/archiso
+
+[Service]
+# eclipse-welcome until eclipse-setup lands (D-07 step 0); then
+# `eclipse-setup --install`, which embeds it.
+ExecStart=/usr/bin/eclipse-welcome
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=abyss-session.target

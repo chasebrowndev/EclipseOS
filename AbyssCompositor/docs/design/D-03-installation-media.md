@@ -167,26 +167,37 @@ install time, to a user who might not be the one sitting at the machine. The
 absence of those lines is load-bearing; do not "fix" it when a device looks
 inaccessible.
 
-## 5. greetd is not enabled on the live medium
+## 5. greetd on the live medium
 
-*(amended DA-04, 2026-09-24: this section describes the medium as built. D-07
-§2.1 replaces it: the live medium gains an unprivileged `liveuser`, greetd
-autologin into `abyss-session`, and a live-only polkit rule. The root shell
-moves to tty2 and stays.)*
+*(rewritten with D-07 §2.1, 2026-09-24. Before this, the medium had only a root
+shell on tty1 and greetd was not enabled.)*
 
-The installed system enables `greetd` (step 8). The live medium does not, and
-no `/etc/greetd` overlay exists under `airootfs/`.
+The medium boots to a session, not a prompt. `airootfs/` carries:
 
-The live ISO is an installer. Only `root` exists on it, `.zlogin` already
-drops into a root shell on tty1, and a greeter's job — pick a user, pick a
-session, hand off to logind — has no input to work with. Enabling it would
-replace a working root shell with a login prompt for an account set that has
-one member and a password that is empty by design.
+- **`liveuser`**, made at boot by `sysusers.d/liveuser.conf` (uid 1000, no
+  groups, no password, no sudoers or wheel entry; D-01 §5). `sysusers` rather
+  than a copy of `/etc/group`, which would replace the base file wholesale.
+- **`/etc/eclipse/greetd/config.toml`**, the shipped greetd config plus an
+  `initial_session` running `abyss-session` as `liveuser`. This is the one
+  deliberate second copy of an `eclipseos-meta` file: the live medium needs the
+  initial session and the installed system must not have it. `display-manager`
+  and `default.target` link greetd and `graphical.target`.
+- **`/etc/systemd/user/eclipse-setup-live.service`**, wanted by
+  `abyss-session.target` and conditioned on `/run/archiso`. It starts the
+  installer. It is the medium's own unit, not a key in any `abyss.kdl`.
+- **`/etc/polkit-1/rules.d/50-eclipse-live-install.rules`**, allowing
+  `org.eclipse.install.apply` for a local, active `liveuser` only.
+- **`kernel.yama.ptrace_scope = 1`**, so a same-uid client cannot trace the
+  compositor that draws the erase confirmation (D-07 §6).
+- **No sshd, no mDNS listener.** `sshd` is not enabled and its `PermitRootLogin`
+  drop-in is gone; nothing on the medium listens to the network.
+- **NetworkManager** owns networking (D-07 §4 step 3), with iwd as its wifi
+  backend so `iwctl` and the fallback script's saved-network carry-over work.
 
-The configuration is not missing, either: `eclipseos-meta` ships `/etc/greetd/*`
-and `/etc/eclipse/*`, so the moment `pacstrap` finishes, the target has the
-greeter config and the `systemctl enable greetd` in the same script turns it on.
-Duplicating those files into `airootfs/` would create a second copy that drifts.
+The root shell moves to **tty2** and stays: root has an empty password, reachable
+only from the local console now that sshd is gone. A session that will not start
+on some hardware must not strand the user (D-07 §8), and `/root/install-eclipseos.sh`
+runs from there.
 
 ## 6. Build
 

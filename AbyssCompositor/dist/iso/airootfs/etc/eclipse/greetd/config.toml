@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# Live-medium greetd config (D-07 §2.1). Same as /etc/eclipse/greetd/config.toml plus
+# an initial session: the medium boots straight into the installer, no login.
+# initial_session runs once per boot; a logout falls back to the greeter, and
+# liveuser has no password, so tty2 (root shell) is the way back in (D-07 §8).
+
+[terminal]
+vt = 1
+
+[default_session]
+# systemd-cat: the greeter's stdio is the VT, and its output would show as text
+# around the handoff to the session.
+command = "systemd-cat -t greeter cage -s -m last -- regreet --config /etc/eclipse/greetd/regreet.toml --style /etc/eclipse/greetd/regreet.css"
+user = "greeter"
+
+[initial_session]
+command = "abyss-session"
+user = "liveuser"

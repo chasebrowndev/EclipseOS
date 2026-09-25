@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Live medium only (lives in airootfs, never in a package; D-07 §6, §7).
+// The action's own .policy defaults are `no`; this is the only thing that
+// allows it. A remote or inactive liveuser session cannot qualify. The helper
+// also refuses unless /run/archiso exists, so a leaked copy of this file on an
+// installed system still cannot point the helper at its disk.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.eclipse.install.apply" &&
+        subject.user == "liveuser" && subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});
