@@ -192,6 +192,74 @@ jobs:
           command: check advisories bans licenses sources
           manifest-path: Oracle-Eyes/Cargo.toml
 
+  fog:
+    name: fog build / fmt / clippy / test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # The Fog file explorer (FogFileExplorer/FOG-SPEC.md, §Implementation
+    # guide) is its own cargo workspace, like Oracle-Eyes, so it gets its own
+    # gate rooted one directory over. Override `defaults` here.
+    defaults:
+      run:
+        working-directory: FogFileExplorer
+    steps:
+      - uses: actions/checkout@v4
+
+      # The workspace is still landing on its branch. Skip cleanly rather than
+      # failing red on every push in the meantime; delete this step and the
+      # `if:` guards below once FogFileExplorer/Cargo.toml is on main.
+      - id: exists
+        run: test -f Cargo.toml && echo "yes=true" >> "$GITHUB_OUTPUT" || echo "yes=false" >> "$GITHUB_OUTPUT"
+
+      - if: steps.exists.outputs.yes == 'true'
+        name: system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev libxkbcommon-dev pkg-config
+
+      - if: steps.exists.outputs.yes == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - if: steps.exists.outputs.yes == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: FogFileExplorer
+
+      - if: steps.exists.outputs.yes == 'true'
+        run: cargo fmt --all --check
+
+      - if: steps.exists.outputs.yes == 'true'
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - if: steps.exists.outputs.yes == 'true'
+        run: cargo build --workspace --all-targets
+
+      # FOG-SPEC invariant: the base build compiles without the optional
+      # `gio` and `activity` features. --all-features above never proves that.
+      - if: steps.exists.outputs.yes == 'true'
+        name: cargo build (no default features)
+        run: cargo build --workspace --no-default-features
+
+      - if: steps.exists.outputs.yes == 'true'
+        run: cargo test --workspace
+
+  fog-supply-chain:
+    name: fog cargo-deny
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - id: exists
+        run: test -f FogFileExplorer/Cargo.toml && echo "yes=true" >> "$GITHUB_OUTPUT" || echo "yes=false" >> "$GITHUB_OUTPUT"
+      - if: steps.exists.outputs.yes == 'true'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+          manifest-path: FogFileExplorer/Cargo.toml
+
   supply-chain:
     name: cargo-deny
     runs-on: ubuntu-24.04
