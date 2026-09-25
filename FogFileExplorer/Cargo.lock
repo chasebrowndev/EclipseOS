@@ -603,6 +603,12 @@ dependencies = [
 [[package]]
 name = "fog-ui"
 version = "0.1.0"
+dependencies = [
+ "fog-proto",
+ "fog-widgets",
+ "iced",
+ "tokio",
+]
 
 [[package]]
 name = "fog-widgets"

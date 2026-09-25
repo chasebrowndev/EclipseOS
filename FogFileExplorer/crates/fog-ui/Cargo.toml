@@ -12,5 +12,11 @@ publish = false
 name = "fog-ui"
 path = "src/main.rs"
 
+[dependencies]
+fog-proto.workspace = true
+fog-widgets.workspace = true
+iced.workspace = true
+tokio.workspace = true
+
 [features]
 activity = []
