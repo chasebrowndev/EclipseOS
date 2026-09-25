@@ -80,7 +80,7 @@ impl Reporter<'_> {
 }
 
 /// Everything that can fail without touching a disk, after `validate`.
-pub fn preflight(env: &Env, v: &Validated) -> Result<Prepared> {
+pub fn preflight(env: &Env, v: &Validated, locale: &str) -> Result<Prepared> {
     let p = &env.paths;
     if v.disk.disk.size_bytes < MIN_DISK_BYTES {
         return Err(Error::Refused("disk too small"));
@@ -106,6 +106,11 @@ pub fn preflight(env: &Env, v: &Validated) -> Result<Prepared> {
     for extra in machine.packages() {
         if !pkgs.iter().any(|q| q == extra) {
             pkgs.push(extra.to_owned());
+        }
+    }
+    for extra in stages::locale_packages(locale) {
+        if !pkgs.iter().any(|q| q == extra) {
+            pkgs.push((*extra).to_owned());
         }
     }
     let mut warnings = Vec::new();
@@ -226,7 +231,7 @@ impl Run<'_, '_> {
             Stage::Preflight,
             8,
             "checking the machine and the network",
-            |_| preflight(env, &v),
+            |_| preflight(env, &v, &req.plan.locale),
         )?;
         for w in &prep.warnings {
             self.rep.line(Stage::Preflight, 10, w, false);

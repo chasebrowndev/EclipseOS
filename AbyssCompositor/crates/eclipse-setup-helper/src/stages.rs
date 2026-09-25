@@ -170,6 +170,15 @@ pub const SUDOERS_WHEEL: &str = "%wheel ALL=(ALL:ALL) ALL\n";
 
 /// Limine's config, byte for byte what the reference script wrote. The ESP is
 /// mounted at /boot, so `boot():/` is where the kernel and initramfs sit.
+/// Fonts the chosen locale needs on the installed system. The live medium
+/// carries them for its own wizard; the target gets them only when used.
+pub fn locale_packages(locale: &str) -> &'static [&'static str] {
+    match locale.split(['_', '.']).next() {
+        Some("ja" | "zh" | "ko") => &["noto-fonts-cjk"],
+        _ => &[],
+    }
+}
+
 pub fn limine_conf(root_uuid: &str, ucode: Option<Ucode>) -> String {
     let pstate = if ucode == Some(Ucode::Amd) {
         " amd_pstate=active"
@@ -532,6 +541,13 @@ mod tests {
         let a = with_eclipseos_include("[options]\n").unwrap();
         assert!(a.contains("Include = /etc/pacman.d/eclipseos.conf"));
         assert!(with_eclipseos_include(&a).is_none());
+    }
+
+    #[test]
+    fn cjk_fonts_follow_the_locale() {
+        assert_eq!(locale_packages("ja_JP.UTF-8"), ["noto-fonts-cjk"]);
+        assert_eq!(locale_packages("zh_CN.UTF-8"), ["noto-fonts-cjk"]);
+        assert!(locale_packages("en_US.UTF-8").is_empty() && locale_packages("de_DE.UTF-8").is_empty());
     }
 
     #[test]
