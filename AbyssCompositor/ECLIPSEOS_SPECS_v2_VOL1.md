@@ -4437,6 +4437,55 @@ has to be migrated after it.
 
 ---
 
+### 3.10 Destructive system action *(added DA-05, 2026-09-24)*
+
+A modal, compositor-drawn, human-seat-only confirmation for one class of
+request: a privileged system service is about to do something irreversible to
+the machine. Its first and so far only user is the installer's whole-disk erase
+(D-07 §6). It is an authority surface in the same trust class as §3.2 and
+extends ADR 0053's closed list by exactly this one entry.
+
+**Request channel.** A dedicated socket, `$XDG_RUNTIME_DIR/eclipse/trusted.sock`
+(0600, in the 0700 directory of COMP-13 §2), separate from the human control
+socket and outside the `gate.rs` table. It accepts a connection only when
+`SO_PEERCRED` says the peer's uid is **0**, so no ordinary client, and no
+process running as the session owner, can raise the prompt or answer it. One
+request per connection: `{action: "erase-disk", disk, model, size_bytes}`,
+reply `{decision: "allow" | "deny"}`. The compositor draws what the requester
+claims and does not verify it: fields are sanitised (ASCII, length-clamped, no
+markup or colour control) and shown as the requesting service's own words.
+
+**Fail closed.** Deny on disconnect, on timeout (§3.2 default), on an invalid
+field, and on a second request while one is pending. A requester that gets no
+answer, or cannot reach the socket, treats it as deny.
+
+**The requester authenticates the compositor.** The socket sits in a directory
+the session owner controls, so a same-uid process could unlink and rebind the
+path. Before it sends anything the requester checks that the peer's
+`SO_PEERCRED` pid is the compositor of the polkit subject's logind session and
+that `/proc/<pid>/exe` is the installed compositor binary. The live medium sets
+`kernel.yama.ptrace_scope = 1` so a same-uid client cannot trace it. **Stated
+limit:** a process that can ptrace or inject into the compositor as the session
+owner is outside this defence, as ADR 0028 already accepts for the control
+socket. What the surface stops is a same-uid process that merely connects,
+runs `pkexec`, or types a string.
+
+**The answer comes from the human seat only.** The compositor takes the
+keyboard for the prompt's lifetime (focus cleared, no key reaches a client) and
+drops pointer, touch and **injected** input aimed at it. Default focus is Deny;
+Escape is Deny; Enter activates the focused button, and Allow needs Tab to move
+focus first, so a reflexive Enter cannot erase a disk. No socket, protocol or
+injection path can produce an answer.
+
+**Fixed text, no theming.** The card names the action ("Erase this disk"),
+model, size and by-id name, says it is irreversible, and carries the §2
+personal phrase. On the live medium no phrase exists (DA-03), so it shows the
+fixed "anti-spoofing unconfigured" warning form instead, and the prompt states
+that it is drawn by the compositor and appears only when the system asks to
+erase a disk. It is drawn above every client and above the §3.6 indicator's
+z-order rules, is not captured (COMP-02), and does not interfere with the
+override chord (§3.3).
+
 ## 4. Input Handling
 
 - Prompts take a compositor-owned keyboard grab on the human seat. Clients
@@ -7191,6 +7240,7 @@ Tier 6's `D-0n` documents.
 | DA-02 | COMP-17 §2 | The autostart set moved from `mode` to `components`. `mode` keeps keybinds, decoration defaults and whether a configured panel shows | yes |
 | DA-03 | COMP-10 §2 | Phrase entry is compositor-drawn. While unset, `agent-attention` opens it. Set on the installed system at first login, not on the live medium. Setup learns only `phrase {set}` | yes |
 | DA-04 | Planning index D-07 | D-07 written as `docs/design/D-07-first-run.md`: first boot is the ISO, whose live session runs a graphical installer covering language, network, disk, identity, profile, mode, components, apps, appearance, displays and agents, then installs. Also amends D-03 §4, §5 and D-05 §7, §8 | yes |
+| DA-05 | COMP-10 §3.10; D-07 §6, §11.7 | Adds the compositor-drawn destructive-system-action confirmation and its request channel: a root-only socket in the session runtime directory, requester-side compositor authentication, human-seat-only answer with Deny as default. Extends the ADR 0053 closed list by this one surface. The compositor-drawn polkit authentication agent remains owed | yes |
 
 ## Open decisions this appendix leaves standing
 
