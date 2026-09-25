@@ -107,6 +107,10 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `decoration.blur.passes` | int 1..6 | `2` | live | Down/up-sample pairs in the blur chain. |
 | `decoration.shadow.enabled` | bool | `#false` | live | Drop shadow behind windows. |
 | `decoration.shadow.range` | int 0..128 | `20` | live | Shadow falloff distance, logical px. |
+| `decoration.glow.enabled` | bool | `#false` | live | Glow around windows in their border colour. |
+| `decoration.glow.active` | bool | `#true` | live | Glow on the focused window. |
+| `decoration.glow.inactive` | bool | `#true` | live | Glow on unfocused windows. |
+| `decoration.glow.strength` | int 0..100 | `60` | live | Glow peak intensity, percent. |
 
 ### `animations`
 
