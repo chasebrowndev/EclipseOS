@@ -8,11 +8,16 @@
 //! step files decide what the hero is and where the pane's one yellow goes
 //! (docs/COMPOSITION.md); each says so in its own header.
 
+mod appearance;
+mod apps;
+mod components;
 mod disk;
 mod identity;
 mod install;
 mod keyboard;
 mod language;
+mod layout;
+mod mode;
 mod network;
 mod profile;
 mod review;
@@ -54,6 +59,11 @@ pub fn view(m: &Model) -> El<'_, Message> {
         Step::Disk => disk::body(m),
         Step::Identity => identity::body(m),
         Step::Profile => profile::body(m),
+        Step::Mode => mode::body(m),
+        Step::Layout => layout::body(m),
+        Step::Components => components::body(m),
+        Step::Appearance => appearance::body(m),
+        Step::Apps => apps::body(m),
         Step::Review => review::body(m),
         Step::Install => install::body(m),
     };

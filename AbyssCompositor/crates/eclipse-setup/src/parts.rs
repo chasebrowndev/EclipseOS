@@ -660,6 +660,107 @@ pub fn tag<'a, M: 'a>(label: &str) -> El<'a, M> {
     .into()
 }
 
+// ---------------------------------------------------------------- diagrams
+
+/// A tile that is `w` wide and `h` tall out of its neighbours' portions.
+fn tile<'a, M: 'a>(w: u16, h: u16) -> El<'a, M> {
+    quad(
+        Length::FillPortion(w),
+        Length::FillPortion(h),
+        color::TEXT_TERTIARY,
+        radius::BAR,
+    )
+}
+
+/// Tiles stacked top to bottom in a column `w` portions wide.
+fn stack<'a, M: 'a>(w: u16, tiles: Vec<El<'a, M>>) -> El<'a, M> {
+    Column::with_children(tiles)
+        .spacing(metrics::GLYPH_GAP)
+        .width(Length::FillPortion(w))
+        .height(Length::Fill)
+        .into()
+}
+
+/// Tiles side by side in a row `h` portions tall.
+fn side<'a, M: 'a>(h: u16, tiles: Vec<El<'a, M>>) -> El<'a, M> {
+    Row::with_children(tiles)
+        .spacing(metrics::GLYPH_GAP)
+        .width(Length::Fill)
+        .height(Length::FillPortion(h))
+        .into()
+}
+
+/// A small picture of how a layout divides a screen.
+///
+/// A widget because the three layouts differ only in geometry, and the words
+/// for it ("weighted tree", "dwindle") mean nothing to someone choosing: the
+/// picture is the explanation. A spatial canvas in COMPOSITION.md's terms.
+pub fn tiles<'a, M: 'a>(layout: crate::choices::Tiling) -> El<'a, M> {
+    use crate::choices::Tiling;
+    let inner: El<'a, M> = match layout {
+        // Uneven weights: the big window has more of the screen than its neighbours.
+        Tiling::Radiant => Row::with_children(vec![stack(3, vec![tile(1, 2), tile(1, 1)]), tile(2, 1)])
+            .spacing(metrics::GLYPH_GAP)
+            .into(),
+        // Each window splits the last one, alternating across and down.
+        Tiling::Dwindle => Row::with_children(vec![
+            tile(1, 1),
+            stack(
+                1,
+                vec![
+                    tile(1, 1),
+                    side(1, vec![tile(1, 1), stack(1, vec![tile(1, 1), tile(1, 1)])]),
+                ],
+            ),
+        ])
+        .spacing(metrics::GLYPH_GAP)
+        .into(),
+        // One main window, the rest in a stack beside it.
+        Tiling::Master => Row::with_children(vec![
+            tile(3, 1),
+            stack(2, vec![tile(1, 1), tile(1, 1), tile(1, 1)]),
+        ])
+        .spacing(metrics::GLYPH_GAP)
+        .into(),
+    };
+    container(inner)
+        .width(Length::Fill)
+        .height(Length::Fixed(metrics::GLYPH_H))
+        .into()
+}
+
+/// A small desktop: the bar's strip (the accent, because the bar is the thing
+/// being placed) and two tiled windows, square or rounded.
+///
+/// A widget because the appearance step's hero is a picture of the result, and
+/// `eclipse_ui` has no primitive for a stylised screen.
+pub fn desk<'a, M: 'a>(rounded: bool, bottom: bool) -> El<'a, M> {
+    let corner = if rounded { radius::CARD } else { 0.0 };
+    let bar: El<'a, M> = quad(
+        Length::Fill,
+        Length::Fixed(metrics::DESK_BAR_H),
+        color::ACCENT,
+        radius::BAR,
+    );
+    let windows: El<'a, M> = Row::with_children(vec![
+        quad(Length::FillPortion(3), Length::Fill, color::TRACK, corner),
+        quad(Length::FillPortion(2), Length::Fill, color::TRACK, corner),
+    ])
+    .spacing(space::CHIP_GAP)
+    .height(Length::Fill)
+    .into();
+    let mut col = Column::new().spacing(space::CHIP_GAP);
+    col = if bottom {
+        col.push(windows).push(bar)
+    } else {
+        col.push(bar).push(windows)
+    };
+    eclipse_ui::widget::inset(col.height(Length::Fill))
+        .padding(space::CHIP_GAP)
+        .height(Length::Fixed(metrics::DESK_H))
+        .into()
+}
+
 /// A level bar that takes the width it is given, `fraction` lit.
 ///
 /// `eclipse_ui::widget::meter_bar` is fixed-width for a drawer row; a hero

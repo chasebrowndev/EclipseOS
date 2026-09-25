@@ -10,7 +10,8 @@
 //! until the disk's own name has been typed again (D-07 §4.2).
 
 use super::{ok_ink, Body};
-use crate::data::{format_size, LANGUAGES};
+use crate::choices::NONE;
+use crate::data::{format_size, CARDS, LANGUAGES};
 use crate::model::{ids, Key, Message, Model};
 use crate::parts::{self, El, Tone};
 use eclipse_ui::theme;
@@ -18,6 +19,14 @@ use eclipse_ui::tokens::{color, font, size, space};
 use eclipse_ui::widget::{micro_label, prompt_band};
 use iced::widget::{column, row, text_input};
 use iced::Length;
+
+/// The chosen profile's name as its card says it.
+fn profile_name(m: &Model) -> &'static str {
+    CARDS
+        .iter()
+        .find(|c| c.profile == m.profile)
+        .map_or("Custom", |c| c.name)
+}
 
 pub fn body(m: &Model) -> Body<'_> {
     let title = "Ready to install".to_owned();
@@ -46,12 +55,21 @@ pub fn body(m: &Model) -> Body<'_> {
         Some(v) => format!("{} ({v})", m.layout),
         None => m.layout.clone(),
     };
+    let parts_on = m.choices.slots.iter().filter(|s| **s != NONE).count();
+    let apps = match m.choices.app_count() {
+        0 => "no apps".to_owned(),
+        1 => "1 app".to_owned(),
+        n => format!("{n} apps"),
+    };
     let grid = parts::stat_grid(
         vec![
-            ("Language", lang.english.to_owned()),
-            ("Keyboard", keyboard),
-            ("Time zone", m.zone.clone()),
+            ("Language", format!("{} ({keyboard})", lang.english)),
             ("User", m.username.clone()),
+            (
+                "Desktop",
+                format!("{} / {}", profile_name(m), m.choices.mode.id()),
+            ),
+            ("Parts", format!("{parts_on} parts, {apps}")),
         ],
         4,
     );

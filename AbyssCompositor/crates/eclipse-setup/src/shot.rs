@@ -9,10 +9,11 @@
 //! door the real app uses, so a screenshot cannot show a state the wizard cannot
 //! reach.
 
+use crate::choices::{BarPosition, Choices};
 use crate::helper::{fake_disks, HelperEvent};
 use crate::model::{Inputs, Message, Model, Secret, Step, ZoneClock};
 use crate::net::fake_snapshot;
-use eclipse_setup_plan::{Progress, Stage};
+use eclipse_setup_plan::{Profile, Progress, Stage};
 use eclipse_ui::theme;
 use eclipse_ui::tokens::color;
 use eclipse_welcome::{timeline, Welcome};
@@ -44,6 +45,14 @@ pub const NAMES: &[&str] = &[
     "identity-invalid",
     "profile",
     "profile-more",
+    "mode",
+    "layout",
+    "components",
+    "components-more",
+    "appearance",
+    "appearance-changed",
+    "apps",
+    "apps-full",
     "review",
     "review-armed",
     "install",
@@ -165,6 +174,27 @@ pub fn fixture(name: &str) -> Option<Model> {
             walk(&mut m, Step::Profile, true);
             m.update(Message::More(true));
         }
+        "mode" => walk(&mut m, Step::Mode, true),
+        "layout" => walk(&mut m, Step::Layout, true),
+        "components" => walk(&mut m, Step::Components, true),
+        "components-more" => {
+            walk(&mut m, Step::Components, true);
+            m.update(Message::More(true));
+            m.update(Message::SetSlot(0, "waybar"));
+        }
+        "appearance" => walk(&mut m, Step::Appearance, true),
+        "appearance-changed" => {
+            walk(&mut m, Step::Appearance, true);
+            m.update(Message::SetRounded(false));
+            m.update(Message::SetBarPosition(BarPosition::Bottom));
+        }
+        "apps" => walk(&mut m, Step::Apps, true),
+        "apps-full" => {
+            walk(&mut m, Step::Apps, true);
+            // Full is not selectable yet; its defaults are what the step
+            // would open on once it is.
+            m.choices = Choices::for_profile(Profile::Full);
+        }
         "review" => walk(&mut m, Step::Review, true),
         "review-armed" | "install" | "install-confirm" | "install-done" | "install-failed" => {
             walk(&mut m, Step::Review, true);
@@ -275,6 +305,11 @@ mod tests {
                 n if n.starts_with("disk") => Step::Disk,
                 n if n.starts_with("identity") => Step::Identity,
                 n if n.starts_with("profile") => Step::Profile,
+                "mode" => Step::Mode,
+                "layout" => Step::Layout,
+                n if n.starts_with("components") => Step::Components,
+                n if n.starts_with("appearance") => Step::Appearance,
+                n if n.starts_with("apps") => Step::Apps,
                 "review" | "review-armed" => Step::Review,
                 _ => Step::Install,
             };

@@ -553,13 +553,13 @@ pub const CARDS: [Card; 4] = [
         profile: Profile::Standard,
         name: "Standard",
         blurb: "The native EclipseOS desktop. Applications are asked, not assumed.",
-        meta: "mode de",
+        meta: "mode hybrid",
     },
     Card {
         profile: Profile::Full,
         name: "Full",
         blurb: "Standard plus a browser, an office suite, an image editor, files and media.",
-        meta: "mode de",
+        meta: "mode hybrid",
     },
     Card {
         profile: Profile::Agentic,
@@ -584,22 +584,9 @@ pub fn status_word(p: Profile) -> Option<&'static str> {
     }
 }
 
-/// Catalog ids the helper resolves for a profile (D-07 §4.1, §6). Ids only:
-/// the helper takes no package or unit name from this program.
-pub fn candidates(p: Profile) -> Vec<String> {
-    let ids: &[&str] = match p {
-        Profile::Standard => &["hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center"],
-        // Not selectable in this version; kept total so the match is exhaustive.
-        Profile::Minimal => &["eclipse-launcher"],
-        Profile::Full => &["hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center"],
-        Profile::Agentic => &["hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center"],
-    };
-    ids.iter().map(|s| (*s).to_owned()).collect()
-}
-
 /// What Standard seeds, in the config file's words (COMP-17 §2.1 table).
 pub const STANDARD_SEEDS: [(&str, &str); 8] = [
-    ("mode", "de"),
+    ("mode", "hybrid"),
     ("components.bar", "hyperion"),
     ("components.launcher", "eclipse-launcher"),
     ("components.notifications", "eclipse-toasts"),
@@ -634,15 +621,61 @@ pub fn format_size(bytes: u64) -> String {
 mod tests {
     use super::*;
 
-    /// The helper's catalog holds exactly these four ids. `foot` is a floor
-    /// package and a seed key, not a candidate: sending it is refused.
+    /// The helper's catalog holds exactly these ids. `foot` is a floor package
+    /// and a seed key, not a candidate, and `none` is the absence of one:
+    /// sending either is refused. Every choice the wizard can make, on every
+    /// profile, has to come out of this set.
     #[test]
     fn candidates_are_only_catalog_ids() {
-        let want = ["hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center"];
-        for p in [Profile::Standard, Profile::Full, Profile::Agentic] {
-            assert_eq!(candidates(p), want);
+        use crate::choices::{Choices, APPS, SLOTS};
+        let mut catalog: Vec<&str> = vec![
+            "hyperion",
+            "eclipse-launcher",
+            "eclipse-toasts",
+            "eclipse-center",
+            "waybar",
+            "quickshell",
+            "fuzzel",
+            "mako",
+        ];
+        catalog.extend(APPS.iter().map(|a| a.id));
+        assert_eq!(catalog.len(), 17);
+        assert!(catalog.contains(&"app-bluetooth-ui") && catalog.contains(&"app-browser"));
+
+        // Every slot choice but `none` is a catalog id, and nothing else is.
+        for s in &SLOTS {
+            for c in s.choices.iter().filter(|c| **c != "none") {
+                assert!(catalog.contains(c), "{c}");
+            }
         }
-        assert_eq!(candidates(Profile::Minimal), ["eclipse-launcher"]);
+        for p in [
+            Profile::Minimal,
+            Profile::Standard,
+            Profile::Full,
+            Profile::Agentic,
+        ] {
+            let mut c = Choices::for_profile(p);
+            // Everything ticked, the last non-none choice in every slot.
+            c.apps = [true; 9];
+            for (i, s) in SLOTS.iter().enumerate() {
+                c.slots[i] = s.choices[s.choices.len() - 2];
+            }
+            for id in c.candidates() {
+                assert!(catalog.contains(&id.as_str()), "{id}");
+            }
+            assert!(!Choices::for_profile(p)
+                .candidates()
+                .iter()
+                .any(|i| i == "none" || i == "foot"));
+        }
+        assert_eq!(
+            Choices::for_profile(Profile::Minimal).candidates(),
+            ["eclipse-launcher"]
+        );
+        assert_eq!(
+            Choices::for_profile(Profile::Standard).candidates(),
+            ["hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center"]
+        );
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! control socket) runs on its own thread and comes back as a message, so the
 //! window never waits on the machine.
 
-use crate::config::{WriteError, Writer, SETUP_PREFIX};
+use crate::config::{WriteError, Writer};
 use crate::helper::{self, Env, FakeCfg};
 use crate::model::{Effect, Inputs, Key, Message, Model, Step};
 use crate::net::{self, Link, Snapshot};
@@ -79,7 +79,7 @@ fn spawn_writer(fake: bool) -> mpsc::Sender<Job> {
             Writer::socket()
         };
         for job in rx {
-            let result = if job.key.starts_with(SETUP_PREFIX) {
+            let result = if crate::config::tolerates_unknown(job.key) {
                 writer.set_setup(job.key, job.value)
             } else {
                 writer.set(job.key, job.value)

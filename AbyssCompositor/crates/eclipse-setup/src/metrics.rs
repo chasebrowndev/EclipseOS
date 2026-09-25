@@ -61,3 +61,13 @@ pub const BUTTON_Y: f32 = 8.0;
 pub const BUTTON_X: f32 = 22.0;
 /// A form field's inner padding.
 pub const INPUT_PAD: f32 = 8.0;
+
+/// A layout card's tile diagram.
+pub const GLYPH_H: f32 = 64.0;
+/// Air between the tiles of a diagram, so neighbours stay separate shapes.
+pub const GLYPH_GAP: f32 = 3.0;
+
+/// The desktop preview on the appearance step.
+pub const DESK_H: f32 = 96.0;
+/// The bar's strip in the preview.
+pub const DESK_BAR_H: f32 = 10.0;

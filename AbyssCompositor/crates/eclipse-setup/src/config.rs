@@ -23,14 +23,22 @@ pub const SETUP_PREFIX: &str = "setup.";
 /// The fixed keys, for the test that pins them. `setup.*` is the prefix rule.
 pub const FIXED_KEYS: [&str; 2] = [KB_LAYOUT, KB_VARIANT];
 
+/// Whether an "unknown key" answer is tolerated for `key`. `setup.*`, `mode`
+/// and `components.*` rows are being added to the schema on another track, so
+/// a compositor that does not know them yet is not a failure: the choice still
+/// reaches the seed at Apply, and the live preview is a nicety.
+pub fn tolerates_unknown(key: &str) -> bool {
+    key.starts_with(SETUP_PREFIX) || key == crate::choices::MODE || key.starts_with("components.")
+}
+
 /// Whether this program may ask the compositor to write `key`.
 ///
-/// Exactly [`FIXED_KEYS`], or `setup.` followed by one lowercase word (letters,
+/// Exactly [`FIXED_KEYS`], the ten [`crate::choices::SEED_KEYS`], or `setup.` followed by one lowercase word (letters,
 /// digits and `-`). No other dotted path is writable, and in particular nothing
 /// that could name a policy key: those are owned by `policy.kdl`, which this
 /// program cannot write (COMP-13 §1.3), and the compositor refuses them anyway.
 pub fn is_allowed(key: &str) -> bool {
-    if FIXED_KEYS.contains(&key) {
+    if FIXED_KEYS.contains(&key) || crate::choices::SEED_KEYS.contains(&key) {
         return true;
     }
     match key.strip_prefix(SETUP_PREFIX) {
@@ -111,11 +119,11 @@ impl Writer {
         }
     }
 
-    /// A `setup.*` write. The schema rows for these keys are being added on
-    /// another track, so a compositor that answers "unknown key" is not an
-    /// error here: the wizard's progress is best-effort until they land.
+    /// A write whose key may not be in the compositor's schema yet
+    /// ([`tolerates_unknown`]): "unknown key" is not an error here, the
+    /// wizard's progress is best-effort until the rows land.
     pub fn set_setup(&mut self, key: &str, value: Value) -> Result<(), WriteError> {
-        debug_assert!(key.starts_with(SETUP_PREFIX));
+        debug_assert!(tolerates_unknown(key));
         match self.set(key, value) {
             Err(WriteError::Rejected) => Ok(()),
             other => other,
@@ -136,7 +144,10 @@ mod tests {
             "setup.profile",
             "setup.complete",
             "setup.pending-preset",
-        ] {
+        ]
+        .into_iter()
+        .chain(crate::choices::SEED_KEYS)
+        {
             assert!(is_allowed(k), "{k}");
         }
     }
@@ -158,9 +169,11 @@ mod tests {
             "policy.rules",
             "misc.terminal-command",
             "idle.lock-command",
-            "mode",
-            "components.bar",
-            "general.layout",
+            "components.terminal",
+            "components.bar.x",
+            "general.gaps-in",
+            "decoration.blur.size",
+            "bar.eye",
             "bind",
             "../setup.profile",
             "xsetup.profile",

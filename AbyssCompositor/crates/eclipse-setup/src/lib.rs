@@ -17,6 +17,7 @@
 //! It is never the default.
 
 pub mod app;
+pub mod choices;
 pub mod config;
 pub mod data;
 pub mod helper;

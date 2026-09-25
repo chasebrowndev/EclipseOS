@@ -14,6 +14,7 @@
 //! leaves the model exactly once, inside [`Effect::Apply`], and both buffers
 //! that held it are empty afterwards.
 
+use crate::choices::{self, BarPosition, Choices, Mode, Tiling};
 use crate::config::{self, WriteError};
 use crate::data::{self, Layout, LANGUAGES};
 use crate::helper::HelperEvent;
@@ -40,8 +41,10 @@ pub mod ids {
 }
 
 /// The screens of the install flow, in order. `number` is D-07 §4's own number:
-/// steps 7 to 12 are not built yet, which is why the numbers jump, and the
-/// keyboard screen is D-07's step 1 shown on its own, so it shares the number.
+/// steps 11 and 12 are not built yet, which is why the numbers jump. The
+/// keyboard screen is D-07's step 1 shown on its own, and layout is split from
+/// appearance (step 10), so each pair shares a number; the wizard asks layout
+/// before components, which is not D-07's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     Welcome,
@@ -52,12 +55,17 @@ pub enum Step {
     Disk,
     Identity,
     Profile,
+    Mode,
+    Layout,
+    Components,
+    Appearance,
+    Apps,
     Review,
     Install,
 }
 
 impl Step {
-    pub const ALL: [Step; 10] = [
+    pub const ALL: [Step; 15] = [
         Step::Welcome,
         Step::Language,
         Step::Keyboard,
@@ -66,6 +74,11 @@ impl Step {
         Step::Disk,
         Step::Identity,
         Step::Profile,
+        Step::Mode,
+        Step::Layout,
+        Step::Components,
+        Step::Appearance,
+        Step::Apps,
         Step::Review,
         Step::Install,
     ];
@@ -79,6 +92,10 @@ impl Step {
             Step::Disk => 4,
             Step::Identity => 5,
             Step::Profile => 6,
+            Step::Mode => 7,
+            Step::Components => 8,
+            Step::Apps => 9,
+            Step::Layout | Step::Appearance => 10,
             Step::Review => 13,
             Step::Install => 14,
         }
@@ -94,6 +111,11 @@ impl Step {
             Step::Disk => "Disk",
             Step::Identity => "Identity",
             Step::Profile => "Profile",
+            Step::Mode => "Mode",
+            Step::Layout => "Layout",
+            Step::Components => "Components",
+            Step::Appearance => "Appearance",
+            Step::Apps => "Apps",
             Step::Review => "Review",
             Step::Install => "Install",
         }
@@ -101,7 +123,7 @@ impl Step {
 
     /// The steps the progress indicator counts: everything between the welcome
     /// and the install itself.
-    pub const COUNTED: usize = 8;
+    pub const COUNTED: usize = 13;
 
     /// 1-based place among the counted steps, or `None` on the welcome and
     /// while installing.
@@ -355,6 +377,16 @@ pub enum Message {
     Password2(Secret),
 
     Profile(Profile),
+    SetMode(Mode),
+    SetTiling(Tiling),
+    /// Slot index into [`choices::SLOTS`] and one of that slot's choices.
+    SetSlot(usize, &'static str),
+    SetRounded(bool),
+    SetBlur(bool),
+    SetAnimations(bool),
+    SetBarPosition(BarPosition),
+    /// Tick or untick an application, by index into [`choices::APPS`].
+    ToggleApp(usize),
 
     Confirm(String),
     Apply,
@@ -476,6 +508,9 @@ pub struct Model {
     // 6
     pub profile: Profile,
 
+    // 7 to 12: seeded from the profile, then edited
+    pub choices: Choices,
+
     // 13
     pub carry_network: bool,
     pub saved_wifi: bool,
@@ -538,6 +573,7 @@ impl Model {
             password: Secret::default(),
             password2: Secret::default(),
             profile: Profile::Standard,
+            choices: Choices::for_profile(Profile::Standard),
             carry_network: true,
             saved_wifi: inputs.saved_wifi,
             confirm: String::new(),
@@ -684,6 +720,7 @@ impl Model {
             Step::Disk => self.selected_disk().is_some(),
             Step::Identity => self.identity_problem().is_none(),
             Step::Profile => data::selectable(self.profile),
+            Step::Mode | Step::Layout | Step::Components | Step::Appearance | Step::Apps => true,
         }
     }
 
@@ -882,7 +919,43 @@ impl Model {
             Message::Profile(p) => {
                 // Only Standard exists in this version (D-07 §4, step 6).
                 if data::selectable(p) {
-                    self.profile = p;
+                    self.set_profile(p, &mut fx);
+                }
+            }
+            Message::SetMode(v) => {
+                self.choices.mode = v;
+                self.write(choices::MODE, self.choices.mode_value(), &mut fx);
+            }
+            Message::SetTiling(v) => {
+                self.choices.tiling = v;
+                self.write(choices::LAYOUT, self.choices.tiling_value(), &mut fx);
+            }
+            Message::SetSlot(slot, id) => {
+                if choices::SLOTS.get(slot).is_some_and(|s| s.choices.contains(&id)) {
+                    self.choices.slots[slot] = id;
+                    self.write(choices::SLOTS[slot].key, self.choices.slot_value(slot), &mut fx);
+                }
+            }
+            Message::SetRounded(v) => {
+                self.choices.rounded = v;
+                self.write(choices::ROUNDING, self.choices.rounding_value(), &mut fx);
+            }
+            Message::SetBlur(v) => {
+                self.choices.blur = v;
+                self.write(choices::BLUR, self.choices.blur_value(), &mut fx);
+            }
+            Message::SetAnimations(v) => {
+                self.choices.animations = v;
+                self.write(choices::ANIMATIONS, self.choices.animations_value(), &mut fx);
+            }
+            Message::SetBarPosition(v) => {
+                self.choices.bar_position = v;
+                self.write(choices::BAR_POSITION, self.choices.bar_position_value(), &mut fx);
+            }
+            Message::ToggleApp(i) => {
+                // Staged until Apply: an application is a package, not a setting.
+                if let Some(on) = self.choices.apps.get_mut(i) {
+                    *on = !*on;
                 }
             }
 
@@ -911,7 +984,15 @@ impl Model {
         self.step = step;
         self.more = false;
         match step {
-            Step::Welcome | Step::Language | Step::Profile | Step::Install => {}
+            Step::Welcome
+            | Step::Language
+            | Step::Profile
+            | Step::Mode
+            | Step::Layout
+            | Step::Components
+            | Step::Appearance
+            | Step::Apps
+            | Step::Install => {}
             Step::Keyboard => fx.push(Effect::Focus(ids::KB_TEST)),
             Step::Timezone => {
                 fx.push(Effect::ReadClock(self.zone.clone()));
@@ -1026,6 +1107,18 @@ impl Model {
                     fx.extend(self.update(Message::Layout(code)));
                 }
             }
+            Step::Mode => {
+                let cur = Mode::ALL.iter().position(|m| *m == self.choices.mode);
+                if let Some(i) = shift(Mode::ALL.len(), cur, delta) {
+                    fx.extend(self.update(Message::SetMode(Mode::ALL[i])));
+                }
+            }
+            Step::Layout => {
+                let cur = Tiling::ALL.iter().position(|t| *t == self.choices.tiling);
+                if let Some(i) = shift(Tiling::ALL.len(), cur, delta) {
+                    fx.extend(self.update(Message::SetTiling(Tiling::ALL[i])));
+                }
+            }
             Step::Timezone => {
                 let zones: Vec<String> = self.zone_results().iter().map(|e| e.zone.clone()).collect();
                 let cur = zones.iter().position(|z| *z == self.zone);
@@ -1097,6 +1190,24 @@ impl Model {
         });
     }
 
+    /// One live write of a seed key, as the user leaves a value (D-07 §4).
+    fn write(&self, key: &'static str, value: Value, fx: &mut Vec<Effect>) {
+        fx.push(Effect::Config { key, value });
+    }
+
+    /// Picking a profile preselects every later step (COMP-17 §2.1). Picking the
+    /// one already chosen keeps what the user has changed since.
+    fn set_profile(&mut self, p: Profile, fx: &mut Vec<Effect>) {
+        if p == self.profile {
+            return;
+        }
+        self.profile = p;
+        self.choices = Choices::for_profile(p);
+        for (key, value) in self.choices.seeds() {
+            self.write(key, value, fx);
+        }
+    }
+
     fn set_zone(&mut self, zone: String, fx: &mut Vec<Effect>) {
         if self.zones.contains(&zone) && data::valid_zone(&zone) {
             self.zone_clock = None;
@@ -1124,7 +1235,7 @@ impl Model {
             keymap: self.keymap.clone(),
             carry_network: self.carry_network,
             profile: self.profile,
-            candidates: data::candidates(self.profile),
+            candidates: self.choices.candidates(),
         };
         // The password leaves the model here and nowhere else. Both buffers are
         // emptied, whether or not the helper ever answers.
@@ -1133,6 +1244,12 @@ impl Model {
         self.passphrase.clear();
         let request = Request { plan, password };
 
+        // The live file may never have been touched by a step that kept its
+        // profile default, and the helper copies that file: write the whole
+        // seed so what is copied is what the review showed.
+        for (key, value) in self.choices.seeds() {
+            self.write(key, value, fx);
+        }
         fx.push(Effect::Config {
             key: "setup.profile",
             value: json!("standard"),
@@ -1206,6 +1323,11 @@ mod tests {
             Step::Disk,
             Step::Identity,
             Step::Profile,
+            Step::Mode,
+            Step::Layout,
+            Step::Components,
+            Step::Appearance,
+            Step::Apps,
             Step::Review,
         ] {
             if m.step == step {
@@ -1246,7 +1368,7 @@ mod tests {
     #[test]
     fn steps_are_d07s_and_in_order() {
         let numbers: Vec<u8> = Step::ALL.iter().map(|s| s.number()).collect();
-        assert_eq!(numbers, [0, 1, 1, 2, 3, 4, 5, 6, 13, 14]);
+        assert_eq!(numbers, [0, 1, 1, 2, 3, 4, 5, 6, 7, 10, 8, 10, 9, 13, 14]);
         assert_eq!(Step::Welcome.prev(), None);
         assert_eq!(Step::Install.next(), None);
         for w in Step::ALL.windows(2) {
@@ -1282,6 +1404,11 @@ mod tests {
     fn next_and_back_walk_the_whole_flow_and_undo_it() {
         let mut m = at(Step::Review);
         for expected in [
+            Step::Apps,
+            Step::Appearance,
+            Step::Components,
+            Step::Layout,
+            Step::Mode,
             Step::Profile,
             Step::Identity,
             Step::Disk,
@@ -1430,6 +1557,129 @@ mod tests {
         assert!(m.can_next());
     }
 
+    /// The `Config` effects among `fx`, as (key, value).
+    fn writes(fx: &[Effect]) -> Vec<(&'static str, Value)> {
+        fx.iter()
+            .filter_map(|e| match e {
+                Effect::Config { key, value } => Some((*key, value.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_choice_steps_start_from_the_profile_and_standard_is_continue_continue() {
+        let mut m = at(Step::Profile);
+        assert_eq!(m.choices, Choices::for_profile(Profile::Standard));
+        for step in [
+            Step::Mode,
+            Step::Layout,
+            Step::Components,
+            Step::Appearance,
+            Step::Apps,
+            Step::Review,
+        ] {
+            assert!(m.can_next() || step == Step::Review);
+            m.update(Message::Next);
+            assert_eq!(m.step, step);
+        }
+        assert_eq!(m.choices.mode, Mode::Hybrid);
+        assert_eq!(m.choices.tiling, Tiling::Radiant);
+    }
+
+    #[test]
+    fn choosing_a_profile_reseeds_every_later_step_and_rewrites_the_seed() {
+        for p in [Profile::Minimal, Profile::Full, Profile::Agentic] {
+            let mut m = at(Step::Profile);
+            m.choices.mode = Mode::De;
+            m.choices.apps[3] = true;
+            let mut fx = Vec::new();
+            m.set_profile(p, &mut fx);
+            assert_eq!(m.choices, Choices::for_profile(p), "{p:?}");
+            let keys: Vec<&str> = writes(&fx).into_iter().map(|(k, _)| k).collect();
+            assert_eq!(keys, choices::SEED_KEYS, "{p:?}");
+
+            // Picking the same one again keeps what was changed since.
+            m.choices.blur = false;
+            let mut fx = Vec::new();
+            m.set_profile(p, &mut fx);
+            assert!(fx.is_empty() && !m.choices.blur);
+        }
+    }
+
+    #[test]
+    fn each_choice_changes_the_model_writes_its_key_and_reaches_the_plan() {
+        let mut m = review_ready();
+        let mut seen = Vec::new();
+        for msg in [
+            Message::SetMode(Mode::De),
+            Message::SetTiling(Tiling::Dwindle),
+            Message::SetSlot(0, "waybar"),
+            Message::SetSlot(1, "fuzzel"),
+            Message::SetSlot(2, "none"),
+            Message::SetSlot(3, "none"),
+            Message::SetRounded(false),
+            Message::SetBlur(false),
+            Message::SetAnimations(true),
+            Message::SetBarPosition(BarPosition::Bottom),
+            Message::ToggleApp(0),
+            Message::ToggleApp(7),
+        ] {
+            seen.extend(writes(&m.update(msg)));
+        }
+        assert_eq!(
+            seen,
+            [
+                ("mode", json!("de")),
+                ("general.layout", json!("dwindle")),
+                ("components.bar", json!("waybar")),
+                ("components.launcher", json!("fuzzel")),
+                ("components.notifications", json!("none")),
+                ("components.control-center", json!("none")),
+                ("decoration.rounding", json!(0)),
+                ("decoration.blur.enabled", json!(false)),
+                ("animations.enabled", json!(true)),
+                ("bar.position", json!("bottom")),
+            ],
+            "applications are packages, so toggling one writes nothing"
+        );
+        // A choice the slot does not offer is refused.
+        assert!(m.update(Message::SetSlot(3, "waybar")).is_empty());
+        assert!(m.update(Message::SetSlot(9, "waybar")).is_empty());
+        assert_eq!(m.choices.slots[3], "none");
+
+        let fx = m.update(Message::Apply);
+        let plan = fx
+            .iter()
+            .find_map(|e| match e {
+                Effect::Apply(r) => Some(r.plan.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            plan.candidates,
+            ["waybar", "fuzzel", "app-browser", "app-printing"]
+        );
+        // The final seed carries every change.
+        let last: std::collections::HashMap<_, _> = writes(&fx).into_iter().collect();
+        assert_eq!(last["mode"], json!("de"));
+        assert_eq!(last["bar.position"], json!("bottom"));
+        assert_eq!(last["components.bar"], json!("waybar"));
+    }
+
+    #[test]
+    fn arrows_move_the_mode_and_layout_selection() {
+        let mut m = at(Step::Mode);
+        m.update(Message::Key(Key::Down));
+        assert_eq!(m.choices.mode, Mode::De);
+        m.update(Message::Key(Key::Up));
+        m.update(Message::Key(Key::Up));
+        assert_eq!(m.choices.mode, Mode::Wm);
+        let mut m = at(Step::Layout);
+        m.update(Message::Key(Key::Down));
+        assert_eq!(m.choices.tiling, Tiling::Dwindle);
+    }
+
     #[test]
     fn apply_is_disabled_until_the_disks_name_is_typed_again() {
         let mut m = at(Step::Review);
@@ -1461,9 +1711,9 @@ mod tests {
     fn changing_the_disk_clears_the_typed_confirmation() {
         let mut m = review_ready();
         assert!(m.confirmed());
-        m.update(Message::Back);
-        m.update(Message::Back);
-        m.update(Message::Back);
+        for _ in 0..8 {
+            m.update(Message::Back);
+        }
         assert_eq!(m.step, Step::Disk);
         m.update(Message::SelectDisk(crate::helper::fake_disks()[0].by_id.clone()));
         assert!(m.confirm.is_empty());
@@ -1498,9 +1748,13 @@ mod tests {
         assert_eq!(r.plan.timezone, "Europe/Berlin");
         assert_eq!(r.plan.username, "chase");
         // The plan carries catalog ids, never a package or a unit.
-        assert_eq!(r.plan.candidates, data::candidates(Profile::Standard));
+        assert_eq!(
+            r.plan.candidates,
+            ["hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center"]
+        );
 
-        // The config writes come first, and only the wizard's own keys.
+        // The config writes come first, and only the wizard's own keys: the
+        // whole seed, then the two `setup.` records.
         let keys: Vec<&str> = fx
             .iter()
             .filter_map(|e| match e {
@@ -1508,7 +1762,9 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(keys, ["setup.profile", "setup.complete"]);
+        let mut want: Vec<&str> = choices::SEED_KEYS.to_vec();
+        want.extend(["setup.profile", "setup.complete"]);
+        assert_eq!(keys, want);
         assert!(matches!(fx.last(), Some(Effect::Apply(_))));
 
         // A second Apply does nothing: nothing to send, and not in Review.

@@ -3,7 +3,7 @@
 //! the whole wizard, from Begin to Restart, is an ordinary `#[test]` with no
 //! iced, no window, no root and no desktop to disturb.
 
-use crate::config::{Writer, SETUP_PREFIX};
+use crate::config::{self, Writer};
 use crate::helper::{self, Env, FakeCfg};
 use crate::model::{Effect, Inputs, Message, Model, Phase, Secret, Step, ZoneClock};
 use crate::{net, sys};
@@ -47,7 +47,7 @@ impl Driver {
     fn run(&mut self, effect: Effect) -> Vec<Message> {
         match effect {
             Effect::Config { key, value } => {
-                let r = if key.starts_with(SETUP_PREFIX) {
+                let r = if config::tolerates_unknown(key) {
                     self.writer.set_setup(key, value)
                 } else {
                     self.writer.set(key, value)
@@ -99,8 +99,10 @@ impl Driver {
         self.send(Message::Username("chase".into()));
         self.send(Message::Password(Secret::new("correct horse".into())));
         self.send(Message::Password2(Secret::new("correct horse".into())));
-        self.send(Message::Next);
-        self.send(Message::Next);
+        // Identity, profile and the five choice steps are all Continue.
+        for _ in 0..7 {
+            self.send(Message::Next);
+        }
         assert_eq!(self.model.step, Step::Review);
     }
 
