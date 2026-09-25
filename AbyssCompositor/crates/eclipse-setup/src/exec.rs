@@ -88,7 +88,8 @@ impl Driver {
     /// Walk the honest route up to the review, with a valid identity.
     pub fn walk_to_review(&mut self) {
         self.send(Message::Begin);
-        self.send(Message::Next); // language -> time zone
+        self.send(Message::Next); // language -> keyboard
+        self.send(Message::Next); // -> time zone
         self.send(Message::Next); // -> network
         self.send(Message::Next); // -> disk
         assert_eq!(self.model.step, Step::Disk);

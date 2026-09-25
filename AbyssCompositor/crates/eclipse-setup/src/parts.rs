@@ -390,31 +390,11 @@ pub fn input<'a, M: Clone + 'a>(
         .into()
 }
 
-/// A labelled form row: the name and a line of help at the left, the field at
-/// the right.
-pub fn field_row<'a, M: 'a>(label: &str, help: &str, field: El<'a, M>) -> El<'a, M> {
-    container(
-        row![
-            column![
-                text(label.to_owned())
-                    .font(font::UI_MEDIUM)
-                    .size(size::BODY)
-                    .style(theme::text_primary),
-                text(help.to_owned())
-                    .font(font::DATA)
-                    .size(size::MICRO)
-                    .style(theme::text_tertiary),
-            ]
-            .spacing(space::CHIP_ORDINAL_GAP / 2.0)
-            .width(Length::Fixed(metrics::LABEL_W)),
-            container(field).width(Length::Fill),
-        ]
-        .spacing(space::CARD)
-        .align_y(Alignment::Center),
-    )
-    .padding([space::ROW_Y, space::CARD])
-    .width(Length::Fill)
-    .into()
+/// A field with its name above it, in plain words.
+pub fn labeled<'a, M: 'a>(label: &str, field: El<'a, M>) -> El<'a, M> {
+    column![strong(label.to_owned()), field]
+        .spacing(space::CHIP_GAP)
+        .into()
 }
 
 // ------------------------------------------------------------------ marks
@@ -540,126 +520,81 @@ pub fn stat_grid<'a, M: 'a>(cells: Vec<(&str, String)>, columns: usize) -> El<'a
     eclipse_ui::widget::inset(rows).padding(space::CARD).into()
 }
 
-/// The key hints in the footer: `enter continue  esc back`.
-pub fn key_hints<'a, M: 'a>(hints: &[(&str, &str)]) -> El<'a, M> {
-    let mut r = Row::new()
-        .spacing(metrics::KEY_HINT_GAP)
-        .align_y(Alignment::Center);
-    for (key, what) in hints {
-        r = r.push(
-            row![
-                text((*key).to_owned())
-                    .font(font::DATA_MEDIUM)
-                    .size(size::MICRO)
-                    .style(theme::text_secondary),
-                text((*what).to_owned())
-                    .font(font::DATA)
-                    .size(size::MICRO)
-                    .style(theme::text_tertiary),
-            ]
-            .spacing(space::CHIP_ORDINAL_GAP)
-            .align_y(Alignment::Center),
-        );
-    }
-    r.into()
-}
+// --------------------------------------------------------------- progress
 
-// -------------------------------------------------------------- step rail
-
-/// Where a step is relative to the one showing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RailState {
-    Done,
-    Here,
-    Ahead,
-}
-
-/// The left rail: the steps in order, where you are, and a mono block at the
-/// foot. Not clickable: the wizard is a line, and Back is the way back.
+/// Where you are in the flow: one short bar per step, the current one longer
+/// and white, the ones behind you grey, and "3 of 8" beside them.
 ///
-/// `eclipse_ui::widget::sidebar` is a nav of pages with a yellow marker on the
-/// current one, which is exactly what this is not: here the current step's
-/// marker is white, because the yellow belongs to the step's own live value.
-pub fn rail<'a, M: 'a>(
-    heading: &str,
-    steps: Vec<(usize, &'static str, RailState)>,
-    footer: Vec<(&'a str, String)>,
-) -> El<'a, M> {
-    let mut list = Column::new().spacing(space::CHIP_GAP / 2.0);
-    for (n, title, state) in steps {
-        let (marker, num_ink, title_ink, weight) = match state {
-            RailState::Here => (color::TEXT, color::TEXT, color::TEXT, font::UI_MEDIUM),
-            RailState::Done => (
-                Color::TRANSPARENT,
-                color::TEXT_SECONDARY,
-                color::TEXT_SECONDARY,
-                font::UI,
-            ),
-            RailState::Ahead => (
-                Color::TRANSPARENT,
-                color::TEXT_TERTIARY,
-                color::TEXT_TERTIARY,
-                font::UI,
-            ),
+/// A widget because the wizard has no sidebar to say where you are, and eight
+/// squares in a row are a magnitude (how far along), which `eclipse_ui` has no
+/// primitive for. It is white, never yellow: the yellow belongs to the step's
+/// own value.
+pub fn progress<'a, M: 'a>(here: usize, total: usize) -> El<'a, M> {
+    let mut bars = Row::new()
+        .spacing(metrics::PROGRESS_GAP)
+        .align_y(Alignment::Center);
+    for n in 1..=total {
+        let (w, ink) = match n.cmp(&here) {
+            std::cmp::Ordering::Less => (metrics::PROGRESS_W, color::TEXT_TERTIARY),
+            std::cmp::Ordering::Equal => (metrics::PROGRESS_W * 2.0, color::TEXT),
+            std::cmp::Ordering::Greater => (metrics::PROGRESS_W, color::TRACK),
         };
-        list = list.push(
-            container(
-                row![
-                    edge_quad(
-                        Length::Fixed(space::BAR_W),
-                        Length::Fixed(space::NAV_BAR_H),
-                        marker
-                    ),
-                    container(
-                        text(format!("{n:02}"))
-                            .font(font::DATA)
-                            .size(size::MICRO)
-                            .color(num_ink)
-                    )
-                    .width(Length::Fixed(metrics::RAIL_NUM_W)),
-                    text(title).font(weight).size(size::BODY).color(title_ink),
-                ]
-                .spacing(space::CHIP_GAP)
-                .align_y(Alignment::Center),
-            )
-            .height(Length::Fixed(metrics::RAIL_ROW_H))
-            .align_y(Alignment::Center),
-        );
+        bars = bars.push(quad(
+            Length::Fixed(w),
+            Length::Fixed(metrics::PROGRESS_H),
+            ink,
+            0.0,
+        ));
     }
-
-    let mut foot = Column::new().spacing(space::CHIP_GAP / 2.0);
-    for (k, v) in footer {
-        foot = foot.push(
-            row![
-                text(k)
-                    .font(font::DATA)
-                    .size(size::MICRO)
-                    .style(theme::text_tertiary),
-                Space::new().width(Length::Fill),
-                text(v)
-                    .font(font::DATA)
-                    .size(size::MICRO)
-                    .style(theme::text_secondary),
-            ]
-            .align_y(Alignment::Center),
-        );
-    }
-
-    container(
-        column![
-            container(micro_label(heading)).padding([0.0, space::BAR_W + space::CHIP_GAP]),
-            list,
-            Space::new().height(Length::Fill),
-            foot,
-        ]
-        .spacing(space::BLOCK)
-        .width(Length::Fill),
-    )
-    .width(Length::Fixed(space::SIDEBAR_W))
-    .height(Length::Fill)
-    .padding([space::PANE_Y, space::ROW_Y])
-    .style(theme::sidebar)
+    row![
+        bars,
+        Space::new().width(Length::Fill),
+        text(format!("{here} of {total}"))
+            .font(font::DATA)
+            .size(size::MICRO)
+            .style(theme::text_tertiary),
+    ]
+    .align_y(Alignment::Center)
     .into()
+}
+
+/// A quiet text button: "More options", "Connect to Wi-Fi".
+///
+/// A widget and not a `ghost` because a disclosure is not a verb of the step;
+/// it must read as smaller than Back and Continue so nobody takes it for the
+/// next thing to press.
+pub fn link<'a, M: Clone + 'a>(label: &str, on_press: M) -> El<'a, M> {
+    button(text(label.to_owned()).font(font::UI_MEDIUM).size(size::BODY))
+        .padding([space::CHIP_Y, 0.0])
+        .on_press(on_press)
+        .style(|_t: &Theme, status: button::Status| button::Style {
+            background: None,
+            text_color: if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                color::TEXT
+            } else {
+                color::TEXT_SECONDARY
+            },
+            ..button::Style::default()
+        })
+        .into()
+}
+
+/// The step's big plain question.
+pub fn title<'a, M: 'a>(s: &str) -> El<'a, M> {
+    text(s.to_owned())
+        .font(font::UI_SEMIBOLD)
+        .size(size::BIG_NUMBER)
+        .style(theme::text_primary)
+        .into()
+}
+
+/// The one plain sentence under it.
+pub fn lead<'a, M: 'a>(s: &str) -> El<'a, M> {
+    text(s.to_owned())
+        .font(font::UI)
+        .size(size::PROMPT)
+        .style(theme::text_secondary)
+        .into()
 }
 
 // ---------------------------------------------------------- cards and tags

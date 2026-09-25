@@ -27,15 +27,23 @@ use std::path::Path;
 pub const NAMES: &[&str] = &[
     "welcome",
     "language",
+    "keyboard",
+    "keyboard-more",
     "timezone",
+    "timezone-search",
+    "timezone-none",
     "network",
+    "network-more",
     "network-offline",
     "network-join",
     "disk",
     "disk-empty",
+    "disk-none",
+    "disk-more",
     "identity",
     "identity-invalid",
     "profile",
+    "profile-more",
     "review",
     "review-armed",
     "install",
@@ -48,7 +56,7 @@ fn walk(m: &mut Model, to: Step, snapshot_online: bool) {
     m.update(Message::Begin);
     loop {
         match m.step {
-            Step::Language => {
+            Step::Keyboard => {
                 m.update(Message::KbTest("Grüße, wörld".into()));
                 m.update(Message::ConfigResult(crate::config::KB_LAYOUT, Ok(())));
             }
@@ -97,8 +105,32 @@ pub fn fixture(name: &str) -> Option<Model> {
     match name {
         "welcome" => {}
         "language" => walk(&mut m, Step::Language, true),
+        "keyboard" => walk(&mut m, Step::Keyboard, true),
+        "keyboard-more" => {
+            walk(&mut m, Step::Keyboard, true);
+            m.update(Message::More(true));
+        }
         "timezone" => walk(&mut m, Step::Timezone, true),
+        "timezone-search" => {
+            walk(&mut m, Step::Timezone, true);
+            m.update(Message::ZoneQuery("us eastern".into()));
+            m.update(Message::ZoneClock(
+                m.zone.clone(),
+                Some(ZoneClock {
+                    time: "08:32".into(),
+                    offset: "-0400".into(),
+                }),
+            ));
+        }
+        "timezone-none" => {
+            walk(&mut m, Step::Timezone, true);
+            m.update(Message::ZoneQuery("atlantis".into()));
+        }
         "network" => walk(&mut m, Step::Network, true),
+        "network-more" => {
+            walk(&mut m, Step::Network, true);
+            m.update(Message::More(true));
+        }
         "network-offline" => walk(&mut m, Step::Network, false),
         "network-join" => {
             walk(&mut m, Step::Network, false);
@@ -109,6 +141,14 @@ pub fn fixture(name: &str) -> Option<Model> {
         "disk-empty" => {
             walk(&mut m, Step::Disk, true);
             m.update(Message::SelectDisk(fake_disks()[1].by_id.clone()));
+        }
+        "disk-none" => {
+            walk(&mut m, Step::Disk, true);
+            m.update(Message::DisksLoaded(Ok(vec![])));
+        }
+        "disk-more" => {
+            walk(&mut m, Step::Disk, true);
+            m.update(Message::More(true));
         }
         "identity" => {
             walk(&mut m, Step::Identity, true);
@@ -121,6 +161,10 @@ pub fn fixture(name: &str) -> Option<Model> {
             m.update(Message::Password2(Secret::new("correct hors".into())));
         }
         "profile" => walk(&mut m, Step::Profile, true),
+        "profile-more" => {
+            walk(&mut m, Step::Profile, true);
+            m.update(Message::More(true));
+        }
         "review" => walk(&mut m, Step::Review, true),
         "review-armed" | "install" | "install-confirm" | "install-done" | "install-failed" => {
             walk(&mut m, Step::Review, true);
@@ -225,6 +269,7 @@ mod tests {
             let want = match *name {
                 "welcome" => Step::Welcome,
                 n if n.starts_with("language") => Step::Language,
+                n if n.starts_with("keyboard") => Step::Keyboard,
                 n if n.starts_with("timezone") => Step::Timezone,
                 n if n.starts_with("network") => Step::Network,
                 n if n.starts_with("disk") => Step::Disk,

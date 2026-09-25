@@ -373,9 +373,164 @@ pub fn current_zone(zones: &[String]) -> Option<String> {
     zones.iter().find(|z| z.as_str() == name).cloned()
 }
 
-/// The part of a zone name before the first `/`; a bare name is its own region.
-pub fn region_of(zone: &str) -> &str {
-    zone.split('/').next().unwrap_or(zone)
+/// tzdata's country names, `US<TAB>United States`.
+pub const ISO_TAB: &str = "/usr/share/zoneinfo/iso3166.tab";
+
+/// A place the time-zone search can find: the zone, how to say it, and every
+/// word that should lead to it, each with a weight.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZoneEntry {
+    pub zone: String,
+    /// `America/Argentina/Buenos_Aires` -> `Buenos Aires`.
+    pub place: String,
+    /// The country the zone is in, as tzdata names it; empty when unknown.
+    pub country: String,
+    words: Vec<(String, u8)>,
+}
+
+const W_OTHER: u8 = 1;
+const W_PLACE: u8 = 3;
+const W_ALIAS: u8 = 4;
+/// The most results a search returns; a longer list is a wall, not an answer.
+pub const MAX_ZONE_RESULTS: usize = 40;
+
+/// The phrases people actually type, for zones whose path does not say them.
+/// Only zones that exist on the machine are given the words.
+const ZONE_ALIASES: &[(&str, &str)] = &[
+    ("us usa eastern est edt", "America/New_York"),
+    ("us usa central cst cdt", "America/Chicago"),
+    ("us usa mountain mst mdt", "America/Denver"),
+    ("us usa mountain mst arizona", "America/Phoenix"),
+    ("us usa pacific pst pdt", "America/Los_Angeles"),
+    ("us usa alaska akst akdt", "America/Anchorage"),
+    ("us usa hawaii hst", "Pacific/Honolulu"),
+    ("eastern est edt canada", "America/Toronto"),
+    ("pacific pst pdt canada", "America/Vancouver"),
+    ("gmt bst uk britain british england greenwich", "Europe/London"),
+    ("gmt utc zulu universal", "UTC"),
+    ("cet cest central european", "Europe/Berlin"),
+    ("cet cest central european", "Europe/Paris"),
+    ("cet cest central european", "Europe/Madrid"),
+    ("cet cest central european", "Europe/Rome"),
+    ("cet cest central european", "Europe/Amsterdam"),
+    ("cet cest central european", "Europe/Stockholm"),
+    ("cet cest central european", "Europe/Warsaw"),
+    ("cet cest central european", "Europe/Zurich"),
+    ("eet eest eastern european", "Europe/Athens"),
+    ("eet eest eastern european", "Europe/Kyiv"),
+    ("eet eest eastern european", "Europe/Helsinki"),
+    ("wet west western european", "Europe/Lisbon"),
+    ("msk", "Europe/Moscow"),
+    ("ist india", "Asia/Kolkata"),
+    ("jst", "Asia/Tokyo"),
+    ("kst", "Asia/Seoul"),
+    ("cst china beijing", "Asia/Shanghai"),
+    ("aest aedt eastern", "Australia/Sydney"),
+];
+
+fn words_of(s: &str) -> impl Iterator<Item = String> + '_ {
+    s.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+}
+
+/// `Buenos_Aires` -> `Buenos Aires`; the last path segment, said as a name.
+pub fn place_name(zone: &str) -> String {
+    zone.rsplit('/').next().unwrap_or(zone).replace('_', " ")
+}
+
+/// Country codes to names from `iso3166.tab`.
+pub fn parse_iso_tab(text: &str) -> std::collections::HashMap<String, String> {
+    text.lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| {
+            let (code, name) = l.split_once('\t')?;
+            Some((code.trim().to_owned(), name.trim().to_owned()))
+        })
+        .collect()
+}
+
+/// The search index over `zones`. `zone_tab` supplies each zone's countries and
+/// comment, `iso_tab` the country names; either may be empty, and the zone's own
+/// path words and the alias table still work.
+pub fn build_index(zones: &[String], zone_tab: &str, iso_tab: &str) -> Vec<ZoneEntry> {
+    let iso = parse_iso_tab(iso_tab);
+    let mut tab: std::collections::HashMap<&str, (&str, &str)> = std::collections::HashMap::new();
+    for l in zone_tab.lines().filter(|l| !l.starts_with('#')) {
+        let mut c = l.split('\t');
+        if let (Some(codes), Some(_), Some(zone)) = (c.next(), c.next(), c.next()) {
+            tab.insert(zone, (codes, c.next().unwrap_or("")));
+        }
+    }
+    zones
+        .iter()
+        .map(|zone| {
+            let mut words: Vec<(String, u8)> = Vec::new();
+            for w in words_of(zone) {
+                words.push((w, W_PLACE));
+            }
+            for (phrase, z) in ZONE_ALIASES {
+                if z == zone {
+                    words.extend(words_of(phrase).map(|w| (w, W_ALIAS)));
+                }
+            }
+            let mut country = String::new();
+            if let Some((codes, comment)) = tab.get(zone.as_str()) {
+                for code in codes.split(',') {
+                    words.push((code.to_lowercase(), W_OTHER));
+                    if let Some(name) = iso.get(code.trim()) {
+                        words.extend(words_of(name).map(|w| (w, W_OTHER)));
+                        if country.is_empty() {
+                            country = name.clone();
+                        }
+                    }
+                }
+                words.extend(words_of(comment).map(|w| (w, W_OTHER)));
+            }
+            ZoneEntry {
+                zone: zone.clone(),
+                place: place_name(zone),
+                country,
+                words,
+            }
+        })
+        .collect()
+}
+
+/// Places that match every word of `query`, best first. A word matches the start
+/// of any word the place is known by: its city and region, its country, tzdata's
+/// note for it, and the aliases people use (`us eastern`, `cet`). An empty query
+/// matches nothing: the caller shows the current guess instead.
+pub fn search_zones<'a>(index: &'a [ZoneEntry], query: &str) -> Vec<&'a ZoneEntry> {
+    let tokens: Vec<String> = words_of(query).collect();
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+    let mut hits: Vec<(u32, &ZoneEntry)> = index
+        .iter()
+        .filter_map(|e| {
+            let mut total = 0u32;
+            for t in &tokens {
+                let best = e
+                    .words
+                    .iter()
+                    .filter(|(w, _)| w.starts_with(t.as_str()))
+                    .map(|(w, weight)| u32::from(*weight) * if w == t { 2 } else { 1 })
+                    .max()?;
+                total += best;
+            }
+            Some((total, e))
+        })
+        .collect();
+    hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.zone.cmp(&b.1.zone)));
+    hits.into_iter().take(MAX_ZONE_RESULTS).map(|(_, e)| e).collect()
+}
+
+/// The machine's own index, or one built from the zone names alone.
+pub fn load_zone_index(zones: &[String]) -> Vec<ZoneEntry> {
+    let tab = std::fs::read_to_string(ZONE_TAB).unwrap_or_default();
+    let iso = std::fs::read_to_string(ISO_TAB).unwrap_or_default();
+    build_index(zones, &tab, &iso)
 }
 
 /// One of the four setup profiles (COMP-17 §2.1) as the card shows it.
@@ -433,29 +588,11 @@ pub fn status_word(p: Profile) -> Option<&'static str> {
 /// the helper takes no package or unit name from this program.
 pub fn candidates(p: Profile) -> Vec<String> {
     let ids: &[&str] = match p {
-        Profile::Standard => &[
-            "hyperion",
-            "eclipse-launcher",
-            "eclipse-toasts",
-            "eclipse-center",
-            "foot",
-        ],
+        Profile::Standard => &["hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center"],
         // Not selectable in this version; kept total so the match is exhaustive.
-        Profile::Minimal => &["eclipse-launcher", "foot"],
-        Profile::Full => &[
-            "hyperion",
-            "eclipse-launcher",
-            "eclipse-toasts",
-            "eclipse-center",
-            "foot",
-        ],
-        Profile::Agentic => &[
-            "hyperion",
-            "eclipse-launcher",
-            "eclipse-toasts",
-            "eclipse-center",
-            "foot",
-        ],
+        Profile::Minimal => &["eclipse-launcher"],
+        Profile::Full => &["hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center"],
+        Profile::Agentic => &["hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center"],
     };
     ids.iter().map(|s| (*s).to_owned()).collect()
 }
@@ -496,6 +633,17 @@ pub fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The helper's catalog holds exactly these four ids. `foot` is a floor
+    /// package and a seed key, not a candidate: sending it is refused.
+    #[test]
+    fn candidates_are_only_catalog_ids() {
+        let want = ["hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center"];
+        for p in [Profile::Standard, Profile::Full, Profile::Agentic] {
+            assert_eq!(candidates(p), want);
+        }
+        assert_eq!(candidates(Profile::Minimal), ["eclipse-launcher"]);
+    }
 
     #[test]
     fn sizes_read_the_way_lsblk_says_them() {
@@ -555,6 +703,61 @@ mod tests {
         let tab = "# comment\nDE,CH\t+4723+00832\tEurope/Zurich\tGermany\nJP\t+353916+1394441\tAsia/Tokyo\n";
         let z = parse_zone_tab(tab);
         assert_eq!(z, vec!["Asia/Tokyo", "Europe/Zurich", "UTC"]);
+    }
+
+    fn index() -> Vec<ZoneEntry> {
+        let tab = "# c\nUS\t+404251-0740023\tAmerica/New_York\tEastern (most areas)\nUS\t+421953-0830245\tAmerica/Detroit\tEastern - MI (most areas)\nUS\t+340308-1181434\tAmerica/Los_Angeles\tPacific\nJP\t+353916+1394441\tAsia/Tokyo\t\nGB,GG\t+513030-0000731\tEurope/London\t\nDE,DK\t+5230+01322\tEurope/Berlin\tmost of Germany\n";
+        let iso =
+            "# c\nUS\tUnited States\nJP\tJapan\nGB\tBritain (UK)\nGG\tGuernsey\nDE\tGermany\nDK\tDenmark\n";
+        let zones = parse_zone_tab(tab);
+        build_index(&zones, tab, iso)
+    }
+
+    fn found<'a>(idx: &'a [ZoneEntry], q: &str) -> Vec<&'a str> {
+        search_zones(idx, q).iter().map(|e| e.zone.as_str()).collect()
+    }
+
+    #[test]
+    fn a_city_is_found_by_its_words_in_any_case() {
+        let idx = index();
+        assert_eq!(found(&idx, "New York"), ["America/New_York"]);
+        assert_eq!(found(&idx, "  new   YORK "), ["America/New_York"]);
+        assert_eq!(found(&idx, "tokyo"), ["Asia/Tokyo"]);
+        assert_eq!(found(&idx, "lon"), ["Europe/London"]);
+    }
+
+    #[test]
+    fn a_country_leads_to_its_zones_and_an_alias_ranks_first() {
+        let idx = index();
+        assert_eq!(found(&idx, "japan"), ["Asia/Tokyo"]);
+        assert_eq!(found(&idx, "germany"), ["Europe/Berlin"]);
+        let east = found(&idx, "us eastern");
+        assert_eq!(east.first(), Some(&"America/New_York"));
+        assert!(!east.contains(&"America/Los_Angeles"));
+        assert_eq!(found(&idx, "US Pacific"), ["America/Los_Angeles"]);
+        assert_eq!(found(&idx, "gmt").first(), Some(&"Europe/London"));
+        assert!(found(&idx, "cet").contains(&"Europe/Berlin"));
+        assert!(found(&idx, "utc").contains(&"UTC"));
+    }
+
+    #[test]
+    fn an_empty_or_unmatched_query_finds_nothing() {
+        let idx = index();
+        assert!(found(&idx, "").is_empty());
+        assert!(found(&idx, "   ").is_empty());
+        assert!(found(&idx, "atlantis").is_empty());
+        assert!(found(&idx, "new atlantis").is_empty(), "every word has to match");
+    }
+
+    #[test]
+    fn the_index_works_without_the_machines_tables() {
+        let idx = build_index(&builtin_zones(), "", "");
+        assert_eq!(found(&idx, "new york"), ["America/New_York"]);
+        assert_eq!(found(&idx, "us eastern"), ["America/New_York"]);
+        assert_eq!(
+            idx.iter().find(|e| e.zone == "Asia/Tokyo").unwrap().place,
+            "Tokyo"
+        );
     }
 
     #[test]

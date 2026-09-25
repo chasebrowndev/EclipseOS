@@ -8,14 +8,12 @@
 
 /// The content column is centred at this width on a wide screen and shrinks
 /// with the window on a narrow one.
-pub const CONTENT_W: f32 = 900.0;
+pub const CONTENT_W: f32 = 620.0;
 
-/// The label column of a form row.
-pub const LABEL_W: f32 = 150.0;
-
-/// The step rail's number column and the mark before a step.
-pub const RAIL_NUM_W: f32 = 26.0;
-pub const RAIL_ROW_H: f32 = 34.0;
+/// The progress indicator: one short bar per step.
+pub const PROGRESS_W: f32 = 16.0;
+pub const PROGRESS_H: f32 = 3.0;
+pub const PROGRESS_GAP: f32 = 5.0;
 
 /// A hero banner: the accent or danger bordered band.
 pub const BANNER_BORDER: f32 = 1.0;
@@ -48,13 +46,6 @@ pub const CARD_H: f32 = 158.0;
 pub const CARD_TAG_Y: f32 = 3.0;
 pub const CARD_TAG_X: f32 = 8.0;
 
-/// The time-zone ruler: one column per hour from UTC-12 to UTC+14.
-pub const RULER_H: f32 = 34.0;
-pub const RULER_MARKER_W: f32 = 3.0;
-pub const RULER_TICK_H: f32 = 10.0;
-pub const RULER_FIRST: i32 = -12;
-pub const RULER_LAST: i32 = 14;
-
 /// The install meter runs the width the layout gives it.
 pub const METER_H: f32 = 8.0;
 /// The lists that fill a step's remaining height stop growing here on a tall
@@ -63,11 +54,10 @@ pub const LIST_MAX_H: f32 = 520.0;
 /// A list narrower than this stops being a list.
 pub const COLUMN_MIN_W: f32 = 240.0;
 
-/// The footer bar: back, a key hint, next.
+/// The footer bar: back and the one forward action.
 pub const FOOTER_H: f32 = 64.0;
 /// A footer button's padding.
 pub const BUTTON_Y: f32 = 8.0;
 pub const BUTTON_X: f32 = 22.0;
 /// A form field's inner padding.
 pub const INPUT_PAD: f32 = 8.0;
-pub const KEY_HINT_GAP: f32 = 14.0;

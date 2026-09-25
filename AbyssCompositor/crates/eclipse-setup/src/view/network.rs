@@ -1,70 +1,73 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Step 3: network.
 //!
-//! Hero: the *schedule band*, a bordered statement of whether you are online,
-//! with the medium and the connection at its right. Under it the access points
-//! as a list, and, once one is chosen, a prompt band for its passphrase.
-//! The accented value: the online banner. Offline it is the status red, never
-//! the accent, and says what the install needs the network for; the step is
-//! skippable but never hides that.
+//! Online, the whole step is one word, "Connected", and Continue; the wireless
+//! panel appears only if the user asks for it ("Connect to Wi-Fi"). Not online,
+//! the panel is the step: the networks in range, pick one, type its passphrase,
+//! Join. The step is skippable but never hides that the install downloads its
+//! packages.
+//! The accented value: the selected network row (offline), or "Connected".
 
 use super::{list_box, Body};
 use crate::model::{ids, Load, Message, Model, Secret};
 use crate::net::Link;
-use crate::parts::{self, El, Tone};
+use crate::parts::{self, El};
 use eclipse_ui::theme;
 use eclipse_ui::tokens::{color, font, size, space};
 use eclipse_ui::widget::prompt_band;
-use iced::widget::{container, row, text, text_input, Column, Space};
+use iced::widget::{column, container, row, text, text_input, Column, Space};
 use iced::{Alignment, Length};
 
 pub fn body(m: &Model) -> Body<'_> {
-    let (banner, chip) = match &m.net {
-        Load::Idle | Load::Loading => (
-            parts::banner(Tone::Quiet, "network", "Looking for a connection", "Asking NetworkManager what is connected.", vec![]),
-            ("checking".to_owned(), "network manager".to_owned()),
-        ),
-        Load::Failed(_) => (
-            parts::banner(Tone::Quiet, "network", "Could not check", "The network state could not be read.", vec![]),
-            ("unknown".to_owned(), "network manager".to_owned()),
-        ),
-        Load::Ready(s) => match &s.link {
-            Link::Online { medium, name } => (
-                parts::banner(
-                    Tone::Accent,
-                    "network",
-                    "Online",
-                    &format!("Connected to {name}. The install downloads its packages over this."),
-                    vec![("online".to_owned(), medium.clone()), ("via".to_owned(), name.clone())],
-                ),
-                ("online".to_owned(), name.clone()),
-            ),
-            Link::Offline | Link::Unknown => (
-                parts::banner(
-                    Tone::Danger,
-                    "network",
-                    "Needs network",
-                    "The install downloads its packages, so it cannot finish offline. Join a network below. You can skip this and connect later, but the install will stop at its first download.",
-                    vec![("offline".to_owned(), "no connection".to_owned())],
-                ),
-                ("offline".to_owned(), "needs network".to_owned()),
-            ),
-            Link::NoManager => (
-                parts::banner(
-                    Tone::Quiet,
-                    "network",
-                    "No network manager",
-                    "This session cannot join a network from here. A cable that is already connected still works.",
-                    vec![("unmanaged".to_owned(), "no nmcli".to_owned())],
-                ),
-                ("unmanaged".to_owned(), "no network manager".to_owned()),
-            ),
+    let title = "Network".to_owned();
+    match &m.net {
+        Load::Idle | Load::Loading => Body {
+            title,
+            lead: "Checking the connection.".to_owned(),
+            blocks: vec![],
+            scroll: false,
         },
-    };
+        Load::Failed(_) => Body {
+            title,
+            lead: "The network state could not be read. You can continue without it.".to_owned(),
+            blocks: vec![],
+            scroll: false,
+        },
+        Load::Ready(s) => match &s.link {
+            Link::Online { .. } => {
+                let mut blocks: Vec<El<'_, Message>> = Vec::new();
+                if m.more {
+                    blocks.push(wifi(m));
+                } else {
+                    blocks.push(parts::link("Connect to Wi-Fi", Message::More(true)));
+                }
+                Body {
+                    title,
+                    lead: "Connected".to_owned(),
+                    blocks,
+                    scroll: false,
+                }
+            }
+            Link::NoManager => Body {
+                title,
+                lead: "This session cannot join a network from here. A cable that is already connected still works."
+                    .to_owned(),
+                blocks: vec![],
+                scroll: false,
+            },
+            Link::Offline | Link::Unknown => Body {
+                title: "Connect to the internet".to_owned(),
+                lead: "The install downloads its packages. You can skip this, but it will stop at its first download."
+                    .to_owned(),
+                blocks: vec![wifi(m)],
+                scroll: false,
+            },
+        },
+    }
+}
 
-    let mut blocks: Vec<El<'_, Message>> = vec![banner];
-
-    // --- access points
+/// The networks in range and, once one is chosen, how to join it.
+fn wifi(m: &Model) -> El<'_, Message> {
     let mut rows = Column::new();
     let mut count = 0;
     if let Load::Ready(s) = &m.net {
@@ -82,15 +85,13 @@ pub fn body(m: &Model) -> Body<'_> {
             .align_y(Alignment::Center);
             if ap.in_use {
                 r = r.push(parts::mono("connected", color::TEXT_SECONDARY));
+            } else if !ap.secure {
+                r = r.push(parts::mono("open", color::TEXT_TERTIARY));
             }
-            r = r.push(parts::mono(
-                if ap.secure { "secured" } else { "open" },
-                color::TEXT_TERTIARY,
-            ));
             rows = rows.push(parts::pick(
                 r,
                 m.ap.as_deref() == Some(ap.ssid.as_str()),
-                false,
+                true,
                 Some(Message::SelectAp(ap.ssid.clone())),
             ));
         }
@@ -102,37 +103,24 @@ pub fn body(m: &Model) -> Body<'_> {
         };
         rows = rows.push(container(parts::body(note)).padding([space::ROW_Y, space::CARD]));
     }
-    let heading = if count == 0 {
-        "Wireless".to_owned()
-    } else {
-        format!("Wireless, {count} in range")
-    };
-    blocks.push(list_box(
-        &heading,
-        vec![parts::verb("rescan", Message::Rescan)],
-        None,
-        rows,
-    ));
 
-    // --- join
+    let mut col = Column::new().spacing(space::BLOCK).height(Length::Fill);
+    col = col.push(list_box(None, rows));
+
     if let Some(ap) = m.ap_choice() {
         let status: Option<El<'_, Message>> = if m.joining {
             Some(parts::mono("joining", color::TEXT_SECONDARY))
         } else if m.join_failed {
-            Some(parts::problem(
-                "Could not join. Check the passphrase and try again.",
-            ))
+            Some(parts::problem("Could not join. Check the passphrase."))
         } else {
             None
         };
-        let join = parts::verb(if m.joining { "Joining" } else { "Join" }, Message::Join);
-        let join: El<'_, Message> = if m.can_join() {
-            join
-        } else {
-            parts::ghost("Join", None)
-        };
+        let join: El<'_, Message> = parts::primary(
+            if m.joining { "Joining" } else { "Join" },
+            m.can_join().then_some(Message::Join),
+        );
         if ap.secure {
-            let field = text_input(&format!("Passphrase for {}", ap.ssid), m.passphrase.as_str())
+            let field = text_input("Passphrase", m.passphrase.as_str())
                 .id(ids::PASSPHRASE)
                 .secure(true)
                 .on_input(|s| Message::Passphrase(Secret::new(s)))
@@ -146,13 +134,10 @@ pub fn body(m: &Model) -> Body<'_> {
                 trailing = trailing.push(s);
             }
             trailing = trailing.push(join);
-            blocks.push(prompt_band("key", field, Some(trailing.into())));
+            col = col.push(prompt_band("key", field, Some(trailing.into())));
         } else {
             let mut r = row![
-                parts::body(format!(
-                    "{} is open: anyone nearby can read what is sent over it.",
-                    ap.ssid
-                )),
+                parts::body("This network is open: anyone nearby can read what is sent over it."),
                 Space::new().width(Length::Fill),
             ]
             .spacing(space::CARD)
@@ -161,16 +146,16 @@ pub fn body(m: &Model) -> Body<'_> {
                 r = r.push(s);
             }
             r = r.push(join);
-            blocks.push(container(r).padding([space::ROW_Y, space::CARD]).into());
+            col = col.push(r);
         }
-    } else if m.join_failed {
-        blocks.push(parts::problem("Could not join."));
+    } else {
+        let mut r = row![parts::link("Rescan", Message::Rescan)].align_y(Alignment::Center);
+        if m.join_failed {
+            r = r
+                .push(Space::new().width(space::CARD))
+                .push(parts::problem("Could not join."));
+        }
+        col = col.push(column![r]);
     }
-
-    Body {
-        subtitle: "The install needs a connection to download the system. Skip it if you are wired or will connect later.".to_owned(),
-        chip,
-        blocks,
-        scroll: false,
-    }
+    col.into()
 }

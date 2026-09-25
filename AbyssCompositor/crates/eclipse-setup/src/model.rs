@@ -30,6 +30,7 @@ use zeroize::{Zeroize, Zeroizing};
 pub mod ids {
     pub const KB_TEST: &str = "kb-test";
     pub const KB_FILTER: &str = "kb-filter";
+    pub const ZONE_SEARCH: &str = "zone-search";
     pub const PASSPHRASE: &str = "passphrase";
     pub const HOSTNAME: &str = "hostname";
     pub const USERNAME: &str = "username";
@@ -39,11 +40,13 @@ pub mod ids {
 }
 
 /// The screens of the install flow, in order. `number` is D-07 §4's own number:
-/// steps 7 to 12 are not built yet, which is why the numbers jump.
+/// steps 7 to 12 are not built yet, which is why the numbers jump, and the
+/// keyboard screen is D-07's step 1 shown on its own, so it shares the number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
     Welcome,
     Language,
+    Keyboard,
     Timezone,
     Network,
     Disk,
@@ -54,9 +57,10 @@ pub enum Step {
 }
 
 impl Step {
-    pub const ALL: [Step; 9] = [
+    pub const ALL: [Step; 10] = [
         Step::Welcome,
         Step::Language,
+        Step::Keyboard,
         Step::Timezone,
         Step::Network,
         Step::Disk,
@@ -69,7 +73,7 @@ impl Step {
     pub fn number(self) -> u8 {
         match self {
             Step::Welcome => 0,
-            Step::Language => 1,
+            Step::Language | Step::Keyboard => 1,
             Step::Timezone => 2,
             Step::Network => 3,
             Step::Disk => 4,
@@ -84,6 +88,7 @@ impl Step {
         match self {
             Step::Welcome => "Welcome",
             Step::Language => "Language",
+            Step::Keyboard => "Keyboard",
             Step::Timezone => "Time zone",
             Step::Network => "Network",
             Step::Disk => "Disk",
@@ -91,6 +96,19 @@ impl Step {
             Step::Profile => "Profile",
             Step::Review => "Review",
             Step::Install => "Install",
+        }
+    }
+
+    /// The steps the progress indicator counts: everything between the welcome
+    /// and the install itself.
+    pub const COUNTED: usize = 8;
+
+    /// 1-based place among the counted steps, or `None` on the welcome and
+    /// while installing.
+    pub fn position(self) -> Option<usize> {
+        match self {
+            Step::Welcome | Step::Install => None,
+            s => Some(s.index()),
         }
     }
 
@@ -244,6 +262,7 @@ pub struct Inputs {
     /// NetworkManager already holds a saved Wi-Fi connection.
     pub saved_wifi: bool,
     pub zones: Vec<String>,
+    pub zone_index: Vec<data::ZoneEntry>,
     pub default_zone: Option<String>,
     pub reduced_motion: bool,
     pub version: String,
@@ -256,6 +275,7 @@ impl Inputs {
         let zones = data::load_zones();
         Inputs {
             default_zone: data::current_zone(&zones),
+            zone_index: data::load_zone_index(&zones),
             layouts: data::load_layouts(),
             keymaps: data::load_keymaps(),
             saved_wifi: data::has_saved_wifi(),
@@ -272,6 +292,7 @@ impl Inputs {
             layouts: data::builtin_layouts(),
             keymaps: data::builtin_keymaps(),
             saved_wifi: false,
+            zone_index: data::build_index(&data::builtin_zones(), "", ""),
             zones: data::builtin_zones(),
             default_zone: Some("Europe/Berlin".into()),
             reduced_motion: false,
@@ -300,6 +321,8 @@ pub enum Message {
     Back,
     Key(Key),
 
+    /// The step's "More options" disclosure, open or shut.
+    More(bool),
     Language(usize),
     Layout(String),
     Variant(Option<String>),
@@ -310,7 +333,8 @@ pub enum Message {
     KbTest(String),
     ConfigResult(&'static str, Result<(), WriteError>),
 
-    Region(String),
+    /// What is typed in the time-zone search box.
+    ZoneQuery(String),
     Zone(String),
     ZoneClock(String, Option<ZoneClock>),
 
@@ -409,6 +433,9 @@ pub struct Model {
     pub reduced_motion: bool,
     pub version: String,
 
+    /// The current step's "More options" is open. Shut on every step change.
+    pub more: bool,
+
     // 1
     pub language: usize,
     pub layouts: Vec<Layout>,
@@ -423,8 +450,9 @@ pub struct Model {
 
     // 2
     pub zones: Vec<String>,
+    pub zone_index: Vec<data::ZoneEntry>,
     pub zone: String,
-    pub region: String,
+    pub zone_query: String,
     pub zone_clock: Option<ZoneClock>,
 
     // 3
@@ -491,9 +519,11 @@ impl Model {
             kb_filter: String::new(),
             kb_test: String::new(),
             kb_live: KbLive::Idle,
-            region: data::region_of(&zone).to_owned(),
+            more: false,
+            zone_query: String::new(),
             zone,
             zones: inputs.zones,
+            zone_index: inputs.zone_index,
             zone_clock: None,
             net: Load::Idle,
             ap: None,
@@ -533,18 +563,14 @@ impl Model {
         LANGUAGES[self.language.min(LANGUAGES.len() - 1)].locale
     }
 
-    pub fn regions(&self) -> Vec<String> {
-        let mut r: Vec<String> = self.zones.iter().map(|z| data::region_of(z).to_owned()).collect();
-        r.sort();
-        r.dedup();
-        r
+    /// Places matching the search box, best first. Empty when nothing is typed.
+    pub fn zone_results(&self) -> Vec<&data::ZoneEntry> {
+        data::search_zones(&self.zone_index, &self.zone_query)
     }
 
-    pub fn zones_in_region(&self) -> Vec<&String> {
-        self.zones
-            .iter()
-            .filter(|z| data::region_of(z) == self.region)
-            .collect()
+    /// The chosen zone as the search index knows it.
+    pub fn zone_entry(&self) -> Option<&data::ZoneEntry> {
+        self.zone_index.iter().find(|e| e.zone == self.zone)
     }
 
     pub fn current_layout(&self) -> Option<&Layout> {
@@ -650,7 +676,8 @@ impl Model {
     pub fn can_next(&self) -> bool {
         match self.step {
             Step::Welcome | Step::Review | Step::Install => false,
-            Step::Language => self.kb_live != KbLive::Refused,
+            Step::Language => true,
+            Step::Keyboard => self.kb_live != KbLive::Refused,
             Step::Timezone => self.zones.contains(&self.zone),
             Step::Network => !self.joining,
             Step::Disk => self.selected_disk().is_some(),
@@ -688,6 +715,7 @@ impl Model {
             Message::Back => self.back(&mut fx),
             Message::Key(k) => self.key(k, &mut fx),
 
+            Message::More(open) => self.more = open,
             Message::Language(i) => self.set_language(i, &mut fx),
             Message::Layout(code) => {
                 if self.layouts.iter().any(|l| l.code == code) {
@@ -727,12 +755,21 @@ impl Model {
                 }
             }
 
-            Message::Region(r) => {
-                if self.regions().contains(&r) {
-                    self.region = r;
-                    if let Some(first) = self.zones_in_region().first().map(|z| (*z).clone()) {
-                        self.set_zone(first, &mut fx);
+            Message::ZoneQuery(q) => {
+                self.zone_query = q;
+                // Typing a place picks the best match, so Enter takes it. A
+                // choice that is still among the results is left where it is.
+                let pick = {
+                    let results = self.zone_results();
+                    match results.first() {
+                        Some(first) if !results.iter().any(|e| e.zone == self.zone) => {
+                            Some(first.zone.clone())
+                        }
+                        _ => None,
                     }
+                };
+                if let Some(z) = pick {
+                    self.set_zone(z, &mut fx);
                 }
             }
             Message::Zone(z) => self.set_zone(z, &mut fx),
@@ -861,9 +898,14 @@ impl Model {
 
     fn enter(&mut self, step: Step, fx: &mut Vec<Effect>) {
         self.step = step;
+        self.more = false;
         match step {
             Step::Welcome | Step::Language | Step::Profile | Step::Install => {}
-            Step::Timezone => fx.push(Effect::ReadClock(self.zone.clone())),
+            Step::Keyboard => fx.push(Effect::Focus(ids::KB_TEST)),
+            Step::Timezone => {
+                fx.push(Effect::ReadClock(self.zone.clone()));
+                fx.push(Effect::Focus(ids::ZONE_SEARCH));
+            }
             Step::Network => {
                 if matches!(self.net, Load::Idle | Load::Failed(_)) {
                     self.net = Load::Loading;
@@ -876,7 +918,7 @@ impl Model {
                     fx.push(Effect::LoadDisks);
                 }
             }
-            Step::Identity => fx.push(Effect::Focus(ids::HOSTNAME)),
+            Step::Identity => fx.push(Effect::Focus(ids::USERNAME)),
             Step::Review => fx.push(Effect::Focus(ids::CONFIRM)),
         }
     }
@@ -943,12 +985,22 @@ impl Model {
                     self.set_language(i, fx);
                 }
             }
+            Step::Keyboard => {
+                let codes: Vec<String> = self.visible_layouts().iter().map(|l| l.code.clone()).collect();
+                let cur = codes.iter().position(|c| *c == self.layout);
+                if let Some(i) = shift(codes.len(), cur, delta) {
+                    let _ = self
+                        .update(Message::Layout(codes[i].clone()))
+                        .into_iter()
+                        .map(|e| fx.push(e))
+                        .count();
+                }
+            }
             Step::Timezone => {
-                let zones = self.zones_in_region();
-                let cur = zones.iter().position(|z| **z == self.zone);
+                let zones: Vec<String> = self.zone_results().iter().map(|e| e.zone.clone()).collect();
+                let cur = zones.iter().position(|z| *z == self.zone);
                 if let Some(i) = shift(zones.len(), cur, delta) {
-                    let z = zones[i].clone();
-                    self.set_zone(z, fx);
+                    self.set_zone(zones[i].clone(), fx);
                 }
             }
             Step::Network => {
@@ -1017,7 +1069,6 @@ impl Model {
 
     fn set_zone(&mut self, zone: String, fx: &mut Vec<Effect>) {
         if self.zones.contains(&zone) && data::valid_zone(&zone) {
-            self.region = data::region_of(&zone).to_owned();
             self.zone_clock = None;
             fx.push(Effect::ReadClock(zone.clone()));
             self.zone = zone;
@@ -1119,6 +1170,7 @@ mod tests {
         let mut m = model();
         m.update(Message::Begin);
         for target in [
+            Step::Keyboard,
             Step::Timezone,
             Step::Network,
             Step::Disk,
@@ -1164,7 +1216,7 @@ mod tests {
     #[test]
     fn steps_are_d07s_and_in_order() {
         let numbers: Vec<u8> = Step::ALL.iter().map(|s| s.number()).collect();
-        assert_eq!(numbers, [0, 1, 2, 3, 4, 5, 6, 13, 14]);
+        assert_eq!(numbers, [0, 1, 1, 2, 3, 4, 5, 6, 13, 14]);
         assert_eq!(Step::Welcome.prev(), None);
         assert_eq!(Step::Install.next(), None);
         for w in Step::ALL.windows(2) {
@@ -1205,6 +1257,7 @@ mod tests {
             Step::Disk,
             Step::Network,
             Step::Timezone,
+            Step::Keyboard,
             Step::Language,
         ] {
             m.update(Message::Back);
@@ -1215,8 +1268,13 @@ mod tests {
     #[test]
     fn entering_a_step_asks_for_what_it_needs_once() {
         let mut m = at(Step::Language);
+        m.update(Message::Next);
+        assert_eq!(m.step, Step::Keyboard);
         let fx = m.update(Message::Next);
-        assert!(matches!(fx.as_slice(), [Effect::ReadClock(z)] if z == "Europe/Berlin"));
+        assert!(matches!(
+            fx.as_slice(),
+            [Effect::ReadClock(z), Effect::Focus(ids::ZONE_SEARCH)] if z == "Europe/Berlin"
+        ));
         let fx = m.update(Message::Next);
         assert!(matches!(fx.as_slice(), [Effect::NetScan]));
         assert_eq!(m.net, Load::Loading);
@@ -1496,7 +1554,7 @@ mod tests {
 
     #[test]
     fn a_refused_keyboard_write_blocks_next_but_no_socket_does_not() {
-        let mut m = at(Step::Language);
+        let mut m = at(Step::Keyboard);
         m.update(Message::ConfigResult(
             config::KB_LAYOUT,
             Err(WriteError::NoSocket),
@@ -1517,7 +1575,7 @@ mod tests {
 
     #[test]
     fn the_layout_filter_narrows_the_list() {
-        let mut m = at(Step::Language);
+        let mut m = at(Step::Keyboard);
         m.update(Message::KbFilter("ger".into()));
         let v = m.visible_layouts();
         assert_eq!(v.len(), 1);
@@ -1529,23 +1587,88 @@ mod tests {
         let mut m = at(Step::Timezone);
         let fx = m.update(Message::Zone("Asia/Tokyo".into()));
         assert_eq!(m.zone, "Asia/Tokyo");
-        assert_eq!(m.region, "Asia");
         assert!(matches!(fx.as_slice(), [Effect::ReadClock(z)] if z == "Asia/Tokyo"));
         for bad in ["../../etc/passwd", "/etc/localtime", "Mars/Olympus", ""] {
             assert!(m.update(Message::Zone(bad.into())).is_empty());
             assert_eq!(m.zone, "Asia/Tokyo");
         }
-        m.update(Message::Region("Europe".into()));
-        assert_eq!(data::region_of(&m.zone), "Europe");
         // A stale clock reading for another zone is dropped.
         m.update(Message::ZoneClock(
-            "Asia/Tokyo".into(),
+            "Europe/Berlin".into(),
             Some(ZoneClock {
                 time: "00:00".into(),
-                offset: "+0900".into(),
+                offset: "+0100".into(),
             }),
         ));
         assert_eq!(m.zone_clock, None);
+    }
+
+    #[test]
+    fn typing_a_place_picks_the_best_match_and_reads_its_clock() {
+        let mut m = at(Step::Timezone);
+        assert_eq!(m.zone, "Europe/Berlin", "the guess is preselected");
+        assert!(m.zone_results().is_empty(), "nothing typed, nothing listed");
+
+        let fx = m.update(Message::ZoneQuery("New York".into()));
+        assert_eq!(m.zone, "America/New_York");
+        assert!(matches!(fx.as_slice(), [Effect::ReadClock(z)] if z == "America/New_York"));
+
+        m.update(Message::ZoneQuery("us eastern".into()));
+        assert_eq!(m.zone, "America/New_York", "a choice still in the results stays");
+
+        m.update(Message::ZoneQuery("Tokyo".into()));
+        assert_eq!(m.zone, "Asia/Tokyo");
+
+        let fx = m.update(Message::ZoneQuery("us pacific".into()));
+        assert_eq!(m.zone, "America/Los_Angeles");
+        assert_eq!(fx.len(), 1);
+
+        // No match, or an emptied box, leaves the choice alone.
+        let fx = m.update(Message::ZoneQuery("atlantis".into()));
+        assert!(fx.is_empty() && m.zone_results().is_empty());
+        assert_eq!(m.zone, "America/Los_Angeles");
+        m.update(Message::ZoneQuery(String::new()));
+        assert_eq!(m.zone, "America/Los_Angeles");
+        assert!(m.can_next());
+    }
+
+    #[test]
+    fn arrow_keys_walk_the_search_results() {
+        let mut m = at(Step::Timezone);
+        m.update(Message::Zone("Asia/Tokyo".into()));
+        m.update(Message::ZoneQuery("eur".into()));
+        let first = m.zone_results()[0].zone.clone();
+        assert_eq!(m.zone, first);
+        m.update(Message::Key(Key::Down));
+        let second = m.zone_results()[1].zone.clone();
+        assert_eq!(m.zone, second);
+        m.update(Message::Key(Key::Up));
+        assert_eq!(m.zone, first);
+    }
+
+    #[test]
+    fn more_options_shut_again_on_every_step_change() {
+        let mut m = at(Step::Keyboard);
+        m.update(Message::More(true));
+        assert!(m.more);
+        m.update(Message::Next);
+        assert!(!m.more);
+    }
+
+    #[test]
+    fn an_empty_disk_list_is_a_state_that_can_be_rescanned() {
+        let mut m = at(Step::Disk);
+        m.update(Message::DisksLoaded(Ok(vec![])));
+        assert!(matches!(&m.disks, Load::Ready(v) if v.is_empty()));
+        assert!(!m.can_next(), "no disk, no way forward");
+        assert!(m.selected_disk().is_none());
+        m.update(Message::Key(Key::Down));
+        assert_eq!(m.disk, None);
+        let fx = m.update(Message::ReloadDisks);
+        assert!(matches!(fx.as_slice(), [Effect::LoadDisks]));
+        assert_eq!(m.disks, Load::Loading);
+        m.update(Message::DisksLoaded(Ok(crate::helper::fake_disks())));
+        assert!(matches!(&m.disks, Load::Ready(v) if !v.is_empty()));
     }
 
     #[test]
@@ -1626,7 +1749,7 @@ mod tests {
     fn enter_advances_and_escape_goes_back_and_tab_moves_focus() {
         let mut m = at(Step::Language);
         m.update(Message::Key(Key::Enter));
-        assert_eq!(m.step, Step::Timezone);
+        assert_eq!(m.step, Step::Keyboard);
         m.update(Message::Key(Key::Escape));
         assert_eq!(m.step, Step::Language);
         assert!(matches!(
@@ -1645,7 +1768,7 @@ mod tests {
         m.update(Message::DisksLoaded(Ok(crate::helper::fake_disks())));
         m.update(Message::SelectDisk(crate::helper::fake_disks()[1].by_id.clone()));
         let fx = m.update(Message::Next);
-        assert!(matches!(fx.as_slice(), [Effect::Focus(ids::HOSTNAME)]));
+        assert!(matches!(fx.as_slice(), [Effect::Focus(ids::USERNAME)]));
     }
 
     #[test]

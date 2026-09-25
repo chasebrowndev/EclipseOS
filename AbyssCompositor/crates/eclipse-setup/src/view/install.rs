@@ -2,22 +2,20 @@
 //! Step 14: install.
 //!
 //! Hero: a live meter, the percentage set large over a bar that fills across the
-//! column. Under it the stage ladder, every stage the helper will run with a
-//! mark for done, current and waiting, which is what turns "47%" into something
-//! you can believe. A failure swaps the meter for the danger band and says
-//! whether the disk had already been changed (D-07 §8).
+//! column, and the name of what the installer is doing now. A failure swaps the
+//! meter for the danger band and says whether the disk had already been changed
+//! (D-07 §8).
 //! The accented value: the percentage while it runs, and the Restart button once
 //! it is done. Never both at once.
 
 use super::Body;
-use crate::metrics;
-use crate::model::{stage_rank, touched_disk, Message, Model, Phase, STAGE_ORDER};
+use crate::model::{touched_disk, Message, Model, Phase};
 use crate::parts::{self, El, Tone};
 use eclipse_setup_plan::Stage;
 use eclipse_ui::theme;
 use eclipse_ui::tokens::{color, font, radius, size, space};
-use eclipse_ui::widget::{big_value, inset, micro_label, panel, quad};
-use iced::widget::{column, container, row, text, Column, Space};
+use eclipse_ui::widget::{big_value, panel};
+use iced::widget::{column, row, text, Space};
 use iced::{Alignment, Length};
 
 pub fn stage_label(s: Stage) -> &'static str {
@@ -41,26 +39,16 @@ pub fn body(m: &Model) -> Body<'_> {
     let stage = ins.stage;
     let at = stage.map_or("starting", stage_label).to_owned();
 
-    let (subtitle, chip) = match ins.phase {
-        Phase::Failed => (
-            "The install did not finish.".to_owned(),
-            ("failed".to_owned(), at.clone()),
-        ),
-        Phase::Done => (
-            "Remove the installation medium, then restart.".to_owned(),
-            (
-                "installed".to_owned(),
-                if m.fake {
-                    "dry run".to_owned()
-                } else {
-                    "ready to restart".to_owned()
-                },
-            ),
-        ),
-        _ => (
-            "Leave the machine on and plugged in.".to_owned(),
-            (format!("{}%", ins.pct), at.clone()),
-        ),
+    let title = match ins.phase {
+        Phase::Failed => "The install stopped",
+        Phase::Done => "Installed",
+        _ => "Installing",
+    }
+    .to_owned();
+    let lead = match ins.phase {
+        Phase::Failed => String::new(),
+        Phase::Done => "Remove the installation medium, then restart.".to_owned(),
+        _ => "Leave the machine on and plugged in.".to_owned(),
     };
 
     let hero: El<'_, Message> = match ins.phase {
@@ -87,11 +75,11 @@ pub fn body(m: &Model) -> Body<'_> {
         Phase::Done => parts::banner(
             Tone::Quiet,
             "done",
-            "Installed",
+            "EclipseOS is installed",
             if m.fake {
                 "Dry run: the whole flow ran, and nothing was written to any disk."
             } else {
-                "EclipseOS is on the disk. Take out the installation medium so the machine starts from it."
+                "Take out the installation medium so the machine starts from the disk."
             },
             vec![],
         ),
@@ -108,11 +96,7 @@ pub fn body(m: &Model) -> Body<'_> {
                 radius::CARD,
                 column![
                     row![
-                        column![
-                            micro_label("Installing"),
-                            big_value(&ins.pct.to_string(), "%", true)
-                        ]
-                        .spacing(space::CHIP_GAP),
+                        big_value(&ins.pct.to_string(), "%", true),
                         Space::new().width(Length::Fill),
                         column![
                             text(at.clone())
@@ -136,53 +120,7 @@ pub fn body(m: &Model) -> Body<'_> {
         }
     };
 
-    // --- the ladder
-    let here = stage.map_or(0, stage_rank);
-    let mut ladder = Column::new();
-    for s in STAGE_ORDER {
-        let rank = stage_rank(s);
-        let failed_here = ins.phase == Phase::Failed && ins.failed_at == Some(s);
-        let (mark, ink) = if failed_here {
-            (color::DANGER, color::DANGER)
-        } else if ins.phase == Phase::Done || rank < here {
-            (color::TEXT_SECONDARY, color::TEXT_SECONDARY)
-        } else if rank == here && ins.phase == Phase::Running {
-            (color::TEXT, color::TEXT)
-        } else {
-            (color::TRACK, color::TEXT_TERTIARY)
-        };
-        let word = if failed_here {
-            "failed"
-        } else if ins.phase == Phase::Done || rank < here {
-            "done"
-        } else if rank == here && ins.phase == Phase::Running {
-            "now"
-        } else {
-            "waiting"
-        };
-        ladder = ladder.push(
-            container(
-                row![
-                    quad(
-                        Length::Fixed(metrics::STAGE_MARK),
-                        Length::Fixed(metrics::STAGE_MARK),
-                        mark,
-                        radius::BAR
-                    ),
-                    text(stage_label(s)).font(font::UI).size(size::BODY).color(ink),
-                    Space::new().width(Length::Fill),
-                    parts::mono(word, ink),
-                ]
-                .spacing(space::CARD)
-                .align_y(Alignment::Center),
-            )
-            .height(Length::Fixed(metrics::STAGE_H))
-            .align_y(Alignment::Center)
-            .padding([0.0, space::CARD]),
-        );
-    }
-
-    let mut blocks: Vec<El<'_, Message>> = vec![hero, inset(ladder).padding([space::CHIP_GAP, 0.0]).into()];
+    let mut blocks: Vec<El<'_, Message>> = vec![hero];
     if ins.phase == Phase::Running && m.fake {
         blocks.push(parts::mono("dry run: nothing is written", color::TEXT_TERTIARY));
     }
@@ -191,8 +129,8 @@ pub fn body(m: &Model) -> Body<'_> {
     }
 
     Body {
-        subtitle,
-        chip,
+        title,
+        lead,
         blocks,
         scroll: true,
     }
