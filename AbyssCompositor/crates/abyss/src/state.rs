@@ -291,6 +291,12 @@ pub struct AbyssState {
     /// the same second as the GUI must still win; a window would drop that
     /// edit, a hash cannot.
     pub config_written: std::collections::HashMap<std::path::PathBuf, u64>,
+    /// The latest `config-error` event, while it still describes the current
+    /// state: the startup refusals of a degraded start (ADR 0064), replaced by
+    /// a failed reload's refusals, cleared by a clean load. Replayed to every
+    /// new `config-error` subscriber, so a client that connects late hears
+    /// what is true now rather than what was true at startup.
+    pub config_error: Option<serde_json::Value>,
 }
 
 impl AbyssState {
@@ -329,6 +335,8 @@ impl AbyssState {
         stats: bool,
     ) -> Self {
         let dh = display.handle();
+        let config_error =
+            (!config.errors.is_empty()).then(|| crate::config::error_event(&config.errors, true));
         // The display owns its globals' user data, so anything stored there
         // that needs a handle takes a `WeakDh` upgraded through this `Arc`.
         // A `DisplayHandle` parked in global data would be a strong cycle and
@@ -518,6 +526,7 @@ impl AbyssState {
             config_dirty: None,
             config_timer: None,
             config_written: std::collections::HashMap::new(),
+            config_error,
         }
     }
 

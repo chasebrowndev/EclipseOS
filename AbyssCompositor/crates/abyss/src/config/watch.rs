@@ -171,6 +171,7 @@ pub fn reload_now(state: &mut AbyssState) {
             count = next.errors.len(),
             "config invalid, keeping the last good one"
         );
+        state.config_error = Some(event.clone());
         crate::ipc::emit(state, "config-error", event);
         return;
     }

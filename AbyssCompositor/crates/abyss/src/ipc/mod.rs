@@ -602,6 +602,32 @@ fn disown_annotations(state: &mut AbyssState, id: u64) {
     }
 }
 
+/// Test-only: register a connection with no event source behind it, so a
+/// method that needs a live `conn` (`subscribe`) can run in a unit test. The
+/// returned stream is the client end.
+#[cfg(test)]
+pub fn test_conn(state: &mut AbyssState) -> (u64, UnixStream) {
+    let (ours, theirs) = UnixStream::pair().expect("socketpair");
+    state.ipc.next_conn += 1;
+    let id = state.ipc.next_conn;
+    state.ipc.conns.push(Conn {
+        id,
+        peer: Peer {
+            uid: owner_uid(),
+            pid: 1,
+            comm: None,
+        },
+        write: ours,
+        inbuf: Vec::new(),
+        outbuf: VecDeque::new(),
+        subs: Vec::new(),
+        dropped: 0,
+        dead: false,
+        token: None,
+    });
+    (id, theirs)
+}
+
 /// Test-only tap on the broadcast path. A unit test has no subscribed client,
 /// so `emit` would otherwise be indistinguishable from doing nothing; the emit
 /// *sites* are the thing several tests are actually about (ADR 0042 amendment).

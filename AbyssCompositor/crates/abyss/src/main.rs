@@ -164,9 +164,11 @@ fn main() -> Result<()> {
     // still total and every refusal is still reported, but a rejected node is
     // dropped and Abyss starts. Refusing used to bounce a greetd login straight
     // back to the greeter with the reason only in the journal. The live config
-    // keeps the refusals, so `config-error` subscribers hear them once they
+    // keeps the refusals, so `config-error` subscribers hear them when they
     // connect. The fail-closed set (policy.kdl, misplaced policy keys,
-    // render-device, idle lock settings) still refuses.
+    // render-device) still refuses. A refused idle lock setting starts with
+    // auto-lock off and a refused xwayland setting starts with Xwayland off;
+    // `startup()` settles both and the summary leads with them.
     for e in &config.errors {
         eprintln!("abyss: {e}");
     }
