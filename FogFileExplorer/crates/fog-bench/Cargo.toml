@@ -7,3 +7,10 @@ license.workspace = true
 repository.workspace = true
 description = "Fog latency and frame-time benchmarks (FOG §Performance model)."
 publish = false
+
+[dependencies]
+fog-proto.workspace = true
+fog-daemon.workspace = true
+tokio.workspace = true
+tempfile.workspace = true
+anyhow.workspace = true
