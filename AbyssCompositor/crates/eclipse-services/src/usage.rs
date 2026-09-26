@@ -13,17 +13,19 @@
 //! The first reading lands one interval after [`spawn`], because CPU load is
 //! a delta between two `/proc/stat` reads.
 //!
-//! GPU: amdgpu's `gpu_busy_percent` on the first DRM card that has one. i915
-//! and xe expose engine busyness only through the perf PMU, not a readable
-//! sysfs file, so on those the GPU is `None`. There is no NVML and no
-//! `nvidia-smi` subprocess. The card is probed at spawn and on
-//! [`Handle::reconfigure`], not every tick.
+//! GPU: the busiest of every GPU that can be read — amdgpu sysfs, Intel idle
+//! residency, and NVIDIA through NVML loaded at runtime when the driver ships
+//! it. A runtime-suspended GPU reads as idle and is never woken. Sources are
+//! probed at spawn and on [`Handle::reconfigure`], not every tick; see
+//! [`gpu`].
 
 use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
+
+mod gpu;
 
 /// Smallest change, as a fraction, that is worth a new sample.
 const EMIT_THRESHOLD: f32 = 0.005;
@@ -91,7 +93,7 @@ pub fn spawn(cfg: UsageConfig) -> Handle {
 /// The sampler's state between ticks.
 struct Sampler {
     cfg: UsageConfig,
-    gpu_file: Option<PathBuf>,
+    gpus: gpu::Gpus,
     prev_cpu: Option<CpuTimes>,
     cpu: f32,
     last_sent: Option<(Sample, Instant)>,
@@ -101,7 +103,7 @@ impl Sampler {
     fn new(cfg: UsageConfig) -> Self {
         Self {
             cfg,
-            gpu_file: probe_gpu(Path::new("/sys/class/drm")),
+            gpus: gpu::Gpus::probe(Path::new(gpu::SYS), gpu::NVML_LIB.as_ref()),
             prev_cpu: read_to_string("/proc/stat").and_then(|s| parse_cpu(&s)),
             cpu: 0.0,
             last_sent: None,
@@ -110,10 +112,10 @@ impl Sampler {
 
     fn reconfigure(&mut self, cfg: UsageConfig) {
         self.cfg = cfg;
-        self.gpu_file = probe_gpu(Path::new("/sys/class/drm"));
+        self.gpus.reprobe(Path::new(gpu::SYS), gpu::NVML_LIB.as_ref());
     }
 
-    fn sample(&mut self) -> Sample {
+    fn sample(&mut self, now: Instant) -> Sample {
         if let Some(now) = read_to_string("/proc/stat").and_then(|s| parse_cpu(&s)) {
             if let Some(prev) = self.prev_cpu {
                 if let Some(f) = cpu_fraction(prev, now) {
@@ -125,18 +127,14 @@ impl Sampler {
         Sample {
             cpu: self.cpu,
             mem: read_to_string("/proc/meminfo").and_then(|s| parse_meminfo(&s)),
-            gpu: self
-                .gpu_file
-                .as_ref()
-                .and_then(read_to_string)
-                .and_then(|s| parse_gpu_busy(&s)),
+            gpu: self.gpus.read(now),
             disk: disk_fraction(&self.cfg.disk_path),
         }
     }
 
     /// The sample to send now, if any. `force` bypasses the change filter.
     fn tick(&mut self, now: Instant, force: bool) -> Option<Sample> {
-        let s = self.sample();
+        let s = self.sample(now);
         let due = match self.last_sent {
             None => true,
             Some((last, at)) => force || changed(&last, &s) || now.duration_since(at) >= HEARTBEAT,
@@ -247,33 +245,6 @@ fn parse_meminfo(meminfo: &str) -> Option<f32> {
     Some((1.0 - available as f64 / total as f64).clamp(0.0, 1.0) as f32)
 }
 
-/// amdgpu's `gpu_busy_percent`: an integer 0..=100.
-fn parse_gpu_busy(s: &str) -> Option<f32> {
-    let pct: u32 = s.trim().parse().ok()?;
-    (pct <= 100).then(|| pct as f32 / 100.0)
-}
-
-/// The first `card*/device/gpu_busy_percent` under `drm`, by card name.
-/// Connector entries (`card1-eDP-1`) have no `device/` of their own.
-fn probe_gpu(drm: &Path) -> Option<PathBuf> {
-    let mut cards: Vec<PathBuf> = std::fs::read_dir(drm)
-        .ok()?
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            name.strip_prefix("card")
-                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-        })
-        .map(|e| e.path())
-        .collect();
-    cards.sort();
-    cards
-        .into_iter()
-        .map(|c| c.join("device/gpu_busy_percent"))
-        .find(|p| read_to_string(p).and_then(|s| parse_gpu_busy(&s)).is_some())
-}
-
 /// Used fraction of the filesystem holding `path`, as `df` reports it:
 /// used / (used + available to unprivileged users).
 #[allow(clippy::useless_conversion, reason = "fsblkcnt_t is not u64 on every target")]
@@ -369,15 +340,6 @@ Buffers:          100000 kB\n";
     }
 
     #[test]
-    fn gpu_busy() {
-        assert_eq!(parse_gpu_busy("37\n"), Some(0.37));
-        assert_eq!(parse_gpu_busy("0\n"), Some(0.0));
-        assert_eq!(parse_gpu_busy("101\n"), None);
-        assert_eq!(parse_gpu_busy("garbage"), None);
-        assert_eq!(parse_gpu_busy(""), None);
-    }
-
-    #[test]
     fn change_filter() {
         let a = Sample {
             cpu: 0.10,
@@ -396,11 +358,6 @@ Buffers:          100000 kB\n";
         let f = disk_fraction(Path::new("/")).unwrap();
         assert!((0.0..=1.0).contains(&f));
         assert_eq!(disk_fraction(Path::new("/no/such/path/here")), None);
-    }
-
-    #[test]
-    fn probe_gpu_missing_dir() {
-        assert_eq!(probe_gpu(Path::new("/no/such/drm")), None);
     }
 
     #[test]
