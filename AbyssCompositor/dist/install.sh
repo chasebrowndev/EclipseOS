@@ -59,6 +59,7 @@ if [ "$uninstall" -eq 1 ]; then
                /usr/share/applications/eclipse-center.desktop \
                /usr/share/applications/eclipse-policy-viewer.desktop \
                /usr/share/applications/eclipse-settings.desktop
+    sudo rm -rf /usr/share/eclipse/widgets
     systemctl --user daemon-reload 2>/dev/null || true
     echo "Removed. /etc/eclipse/ and your ~/.config/eclipse/ were left alone."
     exit 0
@@ -157,6 +158,9 @@ sudo install -Dm 0644 -t /usr/lib/systemd/user \
 # 5. The apps a human launches. The bar, toasts and launcher are session
 #    components, not applications, and deliberately have no entry.
 sudo install -Dm 0644 -t /usr/share/applications "$here"/applications/*.desktop
+
+# 6. Premade command widgets, approved by shipping (ADR 0067).
+sudo install -Dm 0644 -t /usr/share/eclipse/widgets "$here"/widgets/*.kdl
 
 # ---------------------------------------------------------------- seat/perms --
 

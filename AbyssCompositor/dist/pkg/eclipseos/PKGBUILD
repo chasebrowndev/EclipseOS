@@ -76,6 +76,8 @@ package_eclipseos-hyperion() {
   _bin eclipse-secret-prompt
   _unit hyperion.service
   _want hyperion.service
+  # Premade command widgets, approved by shipping (ADR 0067).
+  install -Dm0644 -t "$pkgdir/usr/share/eclipse/widgets" "$srcdir/$_src"/dist/widgets/*.kdl
 }
 
 package_eclipseos-toasts() {

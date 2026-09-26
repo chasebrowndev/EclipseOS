@@ -3760,6 +3760,55 @@ mod tests {
         );
     }
 
+    /// Every premade in `dist/widgets/` (ADR 0067) loads through the same
+    /// path as a user `widget` block: one block, no refusals, and a command
+    /// widget (exec or stream), never a declarative `source`.
+    #[test]
+    fn premade_widgets_are_valid_command_widgets() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dist/widgets");
+        let mut n = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "kdl") {
+                continue;
+            }
+            n += 1;
+            let text = std::fs::read_to_string(&path).unwrap();
+            let cfg = widgets_cfg(&text);
+            assert!(cfg.errors.is_empty(), "{}: {:?}", path.display(), cfg.errors);
+            let [w] = &cfg.bar.custom_widgets[..] else {
+                panic!("{}: expected exactly one widget block", path.display());
+            };
+            assert_eq!(Some(w.name.as_str()), path.file_stem().and_then(|s| s.to_str()));
+            let argv = match &w.kind {
+                CustomWidgetKind::Exec { argv, .. } | CustomWidgetKind::Stream { argv } => argv,
+                CustomWidgetKind::Source { .. } => {
+                    panic!("{}: premade must be a command widget", path.display())
+                }
+            };
+            // Argv only: nothing handed to a shell or an interpreter.
+            for a in [
+                Some(argv),
+                w.on_click.as_ref(),
+                w.on_scroll_up.as_ref(),
+                w.on_scroll_down.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let argv0 = a[0].rsplit('/').next().unwrap();
+                assert!(
+                    !["sh", "bash", "zsh", "dash", "fish", "env", "python", "python3", "perl"]
+                        .contains(&argv0),
+                    "{}: {argv0} is a shell or interpreter",
+                    path.display()
+                );
+                assert!(!a.iter().any(|s| s == "-c"), "{}: -c", path.display());
+            }
+        }
+        assert!(n > 0, "no premade widgets in {}", dir.display());
+    }
+
     /// Out-of-range and mistyped widget settings are refused, keeping the
     /// default; a bad motion curve too, and `animations` still refuses spring.
     #[test]
