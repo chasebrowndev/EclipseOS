@@ -999,6 +999,10 @@ pub struct Config {
     cur: Option<(Source, String)>,
     /// `custom:<name>` ids in the file being parsed, checked at its end.
     pending_custom: Vec<PendingCustom>,
+    /// Names of every named `widget` block seen, valid or refused. A refused
+    /// block already has its own positioned error, so a `custom:` id naming
+    /// it is not also reported missing.
+    widget_blocks: Vec<String>,
 }
 
 impl Default for Config {
@@ -1026,6 +1030,7 @@ impl Default for Config {
             errors: Vec::new(),
             cur: None,
             pending_custom: Vec::new(),
+            widget_blocks: Vec::new(),
         }
     }
 }
@@ -1673,7 +1678,7 @@ impl Config {
     /// file the id is in.
     fn check_custom_widget_ids(&mut self) {
         for p in std::mem::take(&mut self.pending_custom) {
-            if self.bar.custom_widgets.iter().any(|w| w.name == p.name) {
+            if self.widget_blocks.contains(&p.name) {
                 continue;
             }
             let near = nearest(&p.name, self.bar.custom_widgets.iter().map(|w| w.name.as_str()));
@@ -2208,6 +2213,9 @@ impl Config {
                 return;
             }
         };
+        if !self.widget_blocks.contains(&name) {
+            self.widget_blocks.push(name.clone());
+        }
         let mut ok = true;
         let mut exec = None;
         let mut interval_ms = None;
@@ -3659,6 +3667,34 @@ mod tests {
         assert_eq!((e.line, e.col), (2, 21));
         let cfg = widgets_cfg("bar { widgets { order \"custom:\"; } }\n");
         assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+    }
+
+    /// One bad field in a `widget` block is one error, at the field: the
+    /// refused block is not also reported missing by a `custom:` id naming it.
+    #[test]
+    fn an_invalid_widget_block_is_not_also_missing() {
+        let cfg = widgets_cfg(
+            "bar {\n    widgets { order \"custom:a\"; }\n    widget \"a\" { exec \"x\"; interval-ms 10; }\n}\n",
+        );
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        let e = &cfg.errors[0];
+        assert!(!e.message.contains("names no widget block"), "{}", e.message);
+        assert_eq!(e.line, 3);
+        assert!(cfg.bar.custom_widgets.is_empty());
+    }
+
+    /// An order entry whose block is truly absent is reported missing.
+    #[test]
+    fn an_absent_widget_block_is_reported_missing() {
+        let cfg = widgets_cfg("bar {\n    widgets { order \"custom:a\"; }\n}\n");
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        let e = &cfg.errors[0];
+        assert!(
+            e.message.contains("custom:a names no widget block"),
+            "{}",
+            e.message
+        );
+        assert_eq!((e.line, e.col), (2, 21));
     }
 
     /// A `widget` block is all or nothing, and a later one replaces an
