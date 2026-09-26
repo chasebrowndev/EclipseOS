@@ -40,10 +40,14 @@ iced_layershell 0.19.1 (ADR 0038).
 
 ## 2. Components
 
-**hyperion** — the taskbar. With no arguments it is a surface-less
-**supervisor** that spawns one `hyperion --output <NAME>` child per output
-(`HYPERION_OUTPUT` carries the name into the app), reconciles the set on
-`output` events, and ties children to itself with `PR_SET_PDEATHSIG`. Each bar
+**hyperion** — the taskbar. One process draws a bar on every output. It
+reconciles the set on `output` events: a new output gets its bar about 250 ms
+after it first appears, a vanished one's bar closes, the others are untouched,
+and an empty output list (socket still connecting) closes nothing.
+`--output <NAME>` pins one bar to one output for debugging. Services, the
+control-socket connection and custom widget commands run once per session, not
+per monitor; widget data is shared, while layout, fold, pins and drag are per
+bar. One popup exists across all bars, owned by the bar it opened from. Each bar
 shows its output's workspaces, window chips (focus, close, minimize, new
 instance via the matching `.desktop` entry), a clock, widgets (ADR 0065:
 Now Playing, System Usage, Volume, network, bluetooth, battery, tray, clock
@@ -52,7 +56,7 @@ drag bar as chips need the room), network/bluetooth/battery drawers, and the SNI
 overflow drawer. It folds per `bar.*` (ADR 0042). Chips and widgets are
 placed by one layout solver and move under `bar.motion.*` (ADR 0065). The event thread `poll`s the
 socket with a 500 ms ceiling and coalesces a burst into one refetch;
-`window {change: "title"}` follows renames. The supervisor also holds the one
+`window {change: "title"}` follows renames. hyperion also holds the one
 BlueZ pairing agent (ADR 0053).
 
 **eclipse-toasts** — the notification stack. Owns
@@ -82,7 +86,7 @@ nothing.
 **eclipse-secret-prompt** — one password field, then exit (ADR 0053).
 `wifi <ssid>` hands the passphrase to NetworkManager through
 `eclipse_services::status::Actions`; `bt <addr> pin|passkey|authorize|confirm
-<n>|show <code>` answers the supervisor's agent over the session-bus door
+<n>|show <code>` answers hyperion's pairing agent over the session-bus door
 `org.eclipse.Services.Pairing`. Every owned copy of the secret is wiped; no
 `Debug` on anything that holds it. App-id `eclipse-secret-prompt` is
 load-bearing (§5).
@@ -102,11 +106,11 @@ nothing listening renders empty, never crashes.
 | Component | Socket methods | Events | D-Bus |
 |---|---|---|---|
 | hyperion (bar) | `get_workspaces`, `get_windows`, `get_focused`, `get_outputs`, `get_config`, `focus_window`, `close_window`, `set_minimized`, `switch_workspace` | `window`, `workspace`, `focus`, `output`, `config_error`, `config` | system: NetworkManager, BlueZ, UPower. session: SNI watcher/host, MPRIS players (`org.mpris.MediaPlayer2.*`). PipeWire: default sink volume/mute, monitor tap (ADR 0065) |
-| hyperion (supervisor) | `get_outputs` | `output` | system: BlueZ `org.bluez.Agent1`. session: serves `org.eclipse.Services.Pairing` |
+| hyperion (pairing thread) | — | — | system: BlueZ `org.bluez.Agent1`. session: serves `org.eclipse.Services.Pairing` |
 | eclipse-toasts | `get_config` (`decoration.rounding`, startup) | — | session: serves `org.freedesktop.Notifications` |
 | eclipse-center | `get_config` (`decoration.rounding`, startup) | — | system: NetworkManager, BlueZ, UPower (read), logind `login1.Manager` / `login1.Session` |
 | eclipse-launcher | `get_config` (`misc.terminal-command`, `decoration.rounding`, startup) | — | — |
-| eclipse-settings | `get_config {schema: true}`, `set_config_value`, `get_outputs`, `set_output`, `calibrate_output` | `output`, `config_error`, `config` | system: NetworkManager, BlueZ (Network pane only). session: SNI host via `tray::observe` (Taskbar pane only; never serves the watcher, cannot click) |
+| eclipse-settings | `get_config {schema: true}`, `set_config_value`, `set_config_collection` (`widget`, `bar.widgets.*`), `get_outputs`, `set_output`, `calibrate_output` | `output`, `config_error`, `config` | system: NetworkManager, BlueZ (Network pane only). session: SNI host via `tray::observe` (Taskbar pane only; never serves the watcher, cannot click) |
 | eclipse-policy-viewer | `get_config` (`decoration.rounding`, startup) | — | — |
 | eclipse-secret-prompt | — | — | system: NetworkManager. session: calls `org.eclipse.Services.Pairing` |
 | eclipse-screensaver | `set_idle_inhibit` | — | session: serves `org.freedesktop.ScreenSaver` |
@@ -147,7 +151,7 @@ stays closed in `ipc/gate.rs`, which is why the viewer reads the file itself.
 | eclipse-center | `Super+N` default bind; `eclipse-center.desktop` | ordinary client |
 | eclipse-settings | `eclipse-settings.desktop`; hyperion drawer links | ordinary client |
 | eclipse-policy-viewer | `eclipse-policy-viewer.desktop` | ordinary client |
-| eclipse-secret-prompt | hyperion (bar for wifi, supervisor for bluetooth) | ordinary client, surface classified `secret` |
+| eclipse-secret-prompt | hyperion (bar for wifi, its pairing thread for bluetooth) | ordinary client, surface classified `secret` |
 
 The three units in `dist/` install to `/usr/lib/systemd/user/`, are
 `PartOf=graphical-session.target`, `Requisite=`/`After=abyss-session.target`,

@@ -13,9 +13,10 @@ ADR 0065 (taskbar widgets: `media`, `audio`, `usage`, `custom`).
   `org.freedesktop.ScreenSaver` and forwards inhibits to the compositor
   (`dist/eclipse-screensaver.service`).
 - Deps stay at `zbus` (already in the tree via iced_layershell → mundy, so no
-  new supply chain), `eclipse-ipc` and `serde_json`, plus the two ADR 0065
+  new supply chain), `eclipse-ipc` and `serde_json`, plus what ADR 0065
   admits for the taskbar widgets: `pulseaudio` (pure-Rust PulseAudio
-  protocol, served by pipewire-pulse; no libclang) and `realfft`. Blocking zbus only: iced
+  protocol, served by pipewire-pulse; no libclang), `realfft`, `libc`, and
+  `nvml-wrapper`/`nvml-wrapper-sys` (NVML `dlopen`ed at runtime). Blocking zbus only: iced
   runs no tokio runtime, so each server owns its own thread and talks to its
   GUI over a channel.
 - **`password`-role values** (wifi passphrase, Bluetooth PIN) travel only as

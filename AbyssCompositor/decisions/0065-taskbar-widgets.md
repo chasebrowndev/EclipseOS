@@ -119,23 +119,36 @@ Turning the key off closes the stream.
 
 ## Consequences
 - New `bar.widgets.*` (including `order` and `important`), `bar.motion.*` keys and a `widget` collection, all with
-  Settings controls. `set_config_value` gains a collection write for `widget`
-  entries (COLLECTIONS were not settable before).
+  Settings controls. A new socket method, `set_config_collection` (gate kind
+  `Command`, owner uid), writes `widget` entries and the widget lists with
+  dry-run validation (COLLECTIONS were not settable before). It lets a socket
+  peer add an exec widget, so the socket can now cause a command to run; how
+  that is confirmed is an open question for the owner (see Revisit when).
 - `hyperion/src/audio.rs`'s `pactl` path goes away; volume keybinds are
   unaffected.
 - New crates on the supply chain: an audio-server client (native PipeWire, or
   the PulseAudio protocol that PipeWire serves; whichever builds without
-  libclang and passes `cargo deny`), `realfft` (MIT/Apache), and an NVML
-  binding that `dlopen`s `libnvidia-ml.so` (no build-time NVIDIA dependency).
+  libclang and passes `cargo deny`), `realfft` (MIT/Apache), `libc`, the
+  `nvml-wrapper`/`nvml-wrapper-sys` binding that `dlopen`s `libnvidia-ml.so`
+  (no build-time NVIDIA dependency; NVML is released while a runtime-PM dGPU
+  idles so it can suspend), and iced's `image` feature, whose decoders now read
+  untrusted remote art bytes.
 - The tray's built-in status items become widgets; `bar.tray.*` shrinks to SNI
   items, with a config migration.
 - The chip layout functions (`ladder`, `expand`, `chip_span`) fold into the
   solver; `chip_span`'s drift is fixed as a consequence.
+- hyperion becomes one process drawing a bar on every output, replacing the
+  per-output supervisor and children, so services, the monitor tap and exec
+  widgets run once per session rather than once per monitor. The curl art URL
+  goes to curl on stdin, never argv, so it is not visible in `/proc`.
 - D-05 §2, §3 and §7 are updated to say what the bar now does.
 - Owed tests: solver invariants, spring continuity under retarget, clock stops
   when settled, MPRIS mapping, `/proc` parsing, exec timeout and caps.
 
 ## Revisit when
+- The owner settles how an exec widget written over the socket is approved
+  before it runs (a per-widget hash with an accept-or-revert prompt is
+  proposed; where the prompt is drawn is undecided).
 - A spec (COMP-10 or a privacy volume) defines audio capture policy: the monitor
   tap moves under it.
 - Anyone proposes loading widget code in-process: that is ADR 0041's question
