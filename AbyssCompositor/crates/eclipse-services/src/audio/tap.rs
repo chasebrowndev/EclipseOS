@@ -12,6 +12,7 @@ use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::mpsc::Sender;
+use std::time::Instant;
 
 use pulseaudio::protocol::{
     ChannelMap, Command, CreateRecordStreamReply, Prop, Props, RecordStreamParams, SampleFormat, SampleSpec,
@@ -21,7 +22,7 @@ use pulseaudio::protocol::stream::{BufferAttr, StreamFlags};
 
 use super::spectrum::Analyzer;
 use super::wire::{self, Conn, Result};
-use super::Update;
+use super::{Internal, Update};
 
 /// Mono at 48 kHz: the server downmixes, and 48 kHz keeps the top band
 /// (16 kHz) under Nyquist.
@@ -32,14 +33,22 @@ const RATE: u32 = 48_000;
 const FRAGMENT_BYTES: u32 = (RATE / 60) * 4;
 
 pub(super) struct Tap {
+    id: u64,
     source: CString,
     stop: UnixStream,
 }
 
 impl Tap {
     /// Open a record stream on `source` and start pumping levels into
-    /// `updates`.
-    pub(super) fn start(path: &Path, source: &CStr, updates: Sender<Update>) -> Result<Self> {
+    /// `updates`. When the pump ends, for whatever reason, it says so on
+    /// `internal` as [`Internal::TapEnded`] with this `id`.
+    pub(super) fn start(
+        path: &Path,
+        source: &CStr,
+        id: u64,
+        updates: Sender<Update>,
+        internal: Sender<Internal>,
+    ) -> Result<Self> {
         let mut conn = wire::connect(path, c"Eclipse visualizer")?;
         let mut props = Props::new();
         props.set(Prop::MediaName, c"Visualizer");
@@ -70,8 +79,14 @@ impl Tap {
         let stop = conn.stream().try_clone()?;
         std::thread::Builder::new()
             .name("eclipse-audio-tap".into())
-            .spawn(move || pump(conn, &reply, &updates))?;
+            .spawn(move || {
+                let started = Instant::now();
+                pump(conn, &reply, &updates);
+                let ran = started.elapsed();
+                let _ = internal.send(Internal::TapEnded { id, ran });
+            })?;
         Ok(Self {
+            id,
             source: source.to_owned(),
             stop,
         })
@@ -79,6 +94,22 @@ impl Tap {
 
     pub(super) fn source(&self) -> &CStr {
         &self.source
+    }
+
+    pub(super) fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// A tap with no stream behind it, for tests of the service's
+    /// bookkeeping.
+    #[cfg(test)]
+    pub(super) fn fake(id: u64, source: &CStr) -> Self {
+        let (stop, _) = UnixStream::pair().expect("socketpair");
+        Self {
+            id,
+            source: source.to_owned(),
+            stop,
+        }
     }
 }
 
