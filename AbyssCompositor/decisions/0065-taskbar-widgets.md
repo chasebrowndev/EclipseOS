@@ -97,7 +97,9 @@ they are not a plugin mechanism and gain nothing from the taskbar.
 watcher thread per source, an `mpsc` feed, a separate actions handle):
 `media` (MPRIS over zbus), `audio` (PipeWire default-sink volume and mute, the
 per-window mute that replaces `pactl`, and the monitor tap), `usage`
-(`/proc`, `statvfs`, GPU sysfs; an absent source is hidden, not zero),
+(`/proc`, `statvfs`, GPU sysfs, and NVIDIA's NVML loaded at runtime when the
+driver ships it; a runtime-suspended GPU is read as idle, never woken; an
+absent source is hidden, not zero),
 `custom` (the exec runner).
 
 **The monitor tap** reads the default sink's monitor only while media is
@@ -114,7 +116,8 @@ Turning the key off closes the stream.
   unaffected.
 - New crates on the supply chain: an audio-server client (native PipeWire, or
   the PulseAudio protocol that PipeWire serves; whichever builds without
-  libclang and passes `cargo deny`) and `realfft` (MIT/Apache).
+  libclang and passes `cargo deny`), `realfft` (MIT/Apache), and an NVML
+  binding that `dlopen`s `libnvidia-ml.so` (no build-time NVIDIA dependency).
 - The tray's built-in status items become widgets; `bar.tray.*` shrinks to SNI
   items, with a config migration.
 - The chip layout functions (`ladder`, `expand`, `chip_span`) fold into the
