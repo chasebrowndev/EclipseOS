@@ -34,3 +34,6 @@ serde_json.workspace = true
 pulseaudio = "0.3"
 # ADR 0065: the monitor tap's band reduction. MIT.
 realfft = "3"
+# ADR 0065: the usage sampler's disk fill level via statvfs(3). Already in the
+# tree through eclipse-ipc and zbus, so no new supply-chain surface.
+libc = "0.2"
