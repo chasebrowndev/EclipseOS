@@ -18,6 +18,12 @@ single-file `abyss.kdl` into the two.
 
 KDL v2: booleans are `#true` and `#false`, never bare `true`.
 
+Add-ons are not configured here (ADR 0066). An installed add-on package's
+manifest in `/usr/share/eclipse/addons/` turns on hooks; no key in either file
+can. `get_config` reports them on every reply as `addons: [{"id", "name",
+"hooks": [..], "capture_requested": bool}]` and `hooks_on: [..]`, and
+`eclipse-ctl addons` prints the same.
+
 ## `abyss.kdl`
 
 ### `general`
@@ -214,7 +220,7 @@ Per-workspace layout override.
 
 ### `widget`
 
-A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget "<name>" { exec "<argv0>" "<arg>"…; interval-ms <ms>; }`; or `stream #true` instead of `interval-ms`, for a command that keeps running and prints one update per line; or `source "<source>"` with a `format` instead of `exec`. `bar.widgets.order` draws it as `custom:<name>`. Commands run argv-exec, never through a shell, off the draw path, with a timeout and a 4 KiB line cap, and are killed on reload or removal. A line of output is plain text or JSON `{text, detail, tooltip, state}`; it is shown as plain text, never markup, and never logged. A command has exactly your authority and gains nothing from the taskbar. A later block with the same name replaces an earlier one. `get_config` lists every block, in file order, under `collections.widget` as `{"name", "kind": "exec" | "stream" | "source", "exec": [argv] | null, "interval-ms": int | null, "source": string | null, "format": string | null, "icon": string | null, "on-click": [argv] | null, "on-scroll-up": [argv] | null, "on-scroll-down": [argv] | null}`, every field always present: `exec` is set for `exec` and `stream`, `interval-ms` for `exec` only, `source` and `format` for `source` only.
+A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget "<name>" { exec "<argv0>" "<arg>"…; interval-ms <ms>; }`; or `stream #true` instead of `interval-ms`, for a command that keeps running and prints one update per line; or `source "<source>"` with a `format` instead of `exec`. `bar.widgets.order` draws it as `custom:<name>`. Commands run argv-exec, never through a shell, off the draw path, with a timeout and a 4 KiB line cap, and are killed on reload or removal. A line of output is plain text or JSON `{text, detail, tooltip, state}`; it is shown as plain text, never markup, and never logged. A command has exactly your authority and gains nothing from the taskbar. A later block with the same name replaces an earlier one. `get_config` lists every block, in file order, under `collections.widget` as `{"name", "kind": "exec" | "stream" | "source", "exec": [argv] | null, "interval-ms": int | null, "source": string | null, "format": string | null, "icon": string | null, "on-click": [argv] | null, "on-scroll-up": [argv] | null, "on-scroll-down": [argv] | null}`, every field always present: `exec` is set for `exec` and `stream`, `interval-ms` for `exec` only, `source` and `format` for `source` only. Widgets are an add-on hook (ADR 0066): unless an installed add-on (the taskbar) turns on `taskbar-widgets`, `widget` blocks are ignored rather than refused, their `custom:` ids are dropped from `bar.widgets.*`, `collections.widget` is empty and `set_config_collection` for `widget` is refused.
 
 | key | example | what it does |
 | --- | --- | --- |

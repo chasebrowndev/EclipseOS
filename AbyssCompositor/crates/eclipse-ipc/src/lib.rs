@@ -140,6 +140,8 @@ impl From<std::io::Error> for Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
+pub mod addons;
+pub use addons::{Addon, Addons};
 pub mod widgets;
 pub use widgets::{Widget, WidgetKind, WidgetOp, WriteResult};
 

@@ -795,6 +795,8 @@ pub struct Touchpad {
 /// Caller's obligation: `next.errors` is empty. Nothing here re-validates.
 pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
     debug_assert!(next.errors.is_empty(), "apply_loaded got an invalid config");
+    let mut next = next;
+    drop_unhooked_widgets(&mut next, state.addons.hooks);
     let sources: Vec<String> = next
         .sources
         .iter()
@@ -828,6 +830,24 @@ pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
     crate::shell::arrange(state);
     crate::backend::damage_all(state);
     tracing::info!(?sources, "config applied");
+}
+
+/// ADR 0066: `widget` blocks are inert without the `taskbar-widgets` hook.
+/// They are ignored, not refused, so a config written with the taskbar
+/// installed still loads after it is removed; their `custom:` ids go with them
+/// so no list names a widget that is not there.
+pub fn drop_unhooked_widgets(cfg: &mut Config, hooks: crate::addons::HookSet) {
+    if hooks.is_on(crate::addons::Hook::TaskbarWidgets) || cfg.bar.custom_widgets.is_empty() {
+        return;
+    }
+    tracing::info!(
+        count = cfg.bar.custom_widgets.len(),
+        "add-on hook `taskbar-widgets` is off; ignoring widget blocks"
+    );
+    cfg.bar.custom_widgets.clear();
+    let builtin = |id: &String| !id.starts_with(schema::BAR_WIDGET_CUSTOM_PREFIX);
+    cfg.bar.widgets.order.retain(builtin);
+    cfg.bar.widgets.important.retain(builtin);
 }
 
 /// The one JSON shape a config refusal is reported in.

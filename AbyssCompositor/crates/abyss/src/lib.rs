@@ -5,6 +5,7 @@
 //! split exists so the `wlcs` conformance harness (COMP-15 §1) can link the
 //! compositor and drive it in-process; nothing else about the layout changes.
 
+pub mod addons;
 pub mod backend;
 pub mod config;
 pub mod input;

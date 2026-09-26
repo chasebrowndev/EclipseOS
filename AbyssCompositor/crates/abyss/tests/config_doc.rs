@@ -197,7 +197,12 @@ fn generate() -> String {
          both are hot-reloaded. `eclipse-ctl config list` prints this same table with the\n\
          values you actually have; `eclipse-ctl config migrate` splits a legacy\n\
          single-file `abyss.kdl` into the two.\n\n\
-         KDL v2: booleans are `#true` and `#false`, never bare `true`.\n\n",
+         KDL v2: booleans are `#true` and `#false`, never bare `true`.\n\n\
+         Add-ons are not configured here (ADR 0066). An installed add-on package's\n\
+         manifest in `/usr/share/eclipse/addons/` turns on hooks; no key in either file\n\
+         can. `get_config` reports them on every reply as `addons: [{\"id\", \"name\",\n\
+         \"hooks\": [..], \"capture_requested\": bool}]` and `hooks_on: [..]`, and\n\
+         `eclipse-ctl addons` prints the same.\n\n",
     );
 
     for owner in [Owner::Abyss, Owner::Policy] {

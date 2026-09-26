@@ -291,6 +291,11 @@ pub struct AbyssState {
     /// the same second as the GUI must still win; a window would drop that
     /// edit, a hash cannot.
     pub config_written: std::collections::HashMap<std::path::PathBuf, u64>,
+    /// Installed add-ons and the hooks they turn on (ADR 0066). Empty until
+    /// `addons::start`; every hook is off by default.
+    pub addons: crate::addons::Addons,
+    /// A debounced re-read of the add-on directory is armed.
+    pub addons_pending: bool,
 }
 
 impl AbyssState {
@@ -518,6 +523,8 @@ impl AbyssState {
             config_dirty: None,
             config_timer: None,
             config_written: std::collections::HashMap::new(),
+            addons: crate::addons::Addons::default(),
+            addons_pending: false,
         }
     }
 

@@ -307,6 +307,7 @@ fn boot(
     crate::input::idle::start(&mut state, &handle);
     crate::ipc::start(&mut state, &handle);
     crate::config::watch::start(&mut state, &handle);
+    crate::addons::start(&mut state, &handle);
     // Registered ahead of the wayland sources on purpose: calloop dispatches in
     // registration order, so a queued PositionWindow wins over client requests
     // that arrived in the same wakeup. wlcs assumes move_surface_to has taken

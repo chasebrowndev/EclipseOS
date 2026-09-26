@@ -285,11 +285,20 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
     }
     // Collections are abyss-owned and not keyed by path, so they ride along
     // only on an unfiltered abyss read; the capability check above covers them.
+    // Installed add-ons (ADR 0066) ride on every reply: they are not config
+    // and not a secret, and a pane that greys out a hooked control needs them
+    // next to the keys it is drawing.
+    let (addons, hooks_on) = crate::addons::json(&state.addons);
     if only_path.is_none() && only_file != Some(ConfigFile::Policy) {
         let widgets: Vec<Value> = state.config.bar.custom_widgets.iter().map(widget_json).collect();
-        return Ok(json!({ "keys": keys, "collections": { "widget": widgets } }));
+        return Ok(json!({
+            "keys": keys,
+            "collections": { "widget": widgets },
+            "addons": addons,
+            "hooks_on": hooks_on,
+        }));
     }
-    Ok(json!({ "keys": keys }))
+    Ok(json!({ "keys": keys, "addons": addons, "hooks_on": hooks_on }))
 }
 
 // ----------------------------------------------------------- set_config_value
@@ -966,12 +975,76 @@ mod tests {
         assert!(got.get("collections").is_none());
     }
 
+    /// ADR 0066: without `taskbar-widgets`, `widget` blocks load without error
+    /// but stay out of the live config (and so out of `collections.widget`),
+    /// with their `custom:` ids; with the hook they are live.
+    #[test]
+    fn widget_blocks_are_inert_without_the_hook() {
+        let text = "bar {\n    widgets { order \"custom:cpu\" \"clock\"; important \"custom:cpu\"; }\n    \
+                    widget \"cpu\" { source \"usage.cpu\"; format \"{}%\"; }\n}\n";
+        let (mut h, file) = widget_harness("inert", text);
+        h.state.addons.hooks = crate::addons::HookSet::default();
+        let next = Config::load(Some(&file));
+        assert!(
+            next.errors.iter().all(|e| e.file != file),
+            "a widget block became an error"
+        );
+        crate::config::apply_loaded(&mut h.state, next);
+        assert!(names(&h).is_empty());
+        assert_eq!(h.state.config.bar.widgets.order, ["clock"]);
+        assert!(h.state.config.bar.widgets.important.is_empty());
+        let got = get_config(&mut h.state, Decision::Allow, &json!({}))
+            .ok()
+            .unwrap();
+        assert_eq!(got["collections"]["widget"], json!([]));
+
+        h.state.addons.hooks.insert(crate::addons::Hook::TaskbarWidgets);
+        crate::config::apply_loaded(&mut h.state, Config::load(Some(&file)));
+        assert_eq!(names(&h), ["cpu"]);
+        assert_eq!(h.state.config.bar.widgets.order, ["custom:cpu", "clock"]);
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// `get_config` reports installed add-ons and the hooks that are on, on
+    /// every reply shape.
+    #[test]
+    fn get_config_reports_addons() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let got = get_config(&mut h.state, Decision::Allow, &json!({}))
+            .ok()
+            .unwrap();
+        assert_eq!(
+            (got["addons"].clone(), got["hooks_on"].clone()),
+            (json!([]), json!([]))
+        );
+
+        h.state.addons.manifests.push(crate::addons::Manifest {
+            id: "oracle-eyes".into(),
+            name: "Oracle Eyes".into(),
+            hooks: vec!["annotations".into(), "region-select".into()],
+            capture_requested: true,
+        });
+        h.state.addons.hooks.insert(crate::addons::Hook::Annotations);
+        h.state.addons.hooks.insert(crate::addons::Hook::RegionSelect);
+        for params in [json!({}), json!({"path": "bar.eye"})] {
+            let got = get_config(&mut h.state, Decision::Allow, &params).ok().unwrap();
+            assert_eq!(
+                got["addons"],
+                json!([{"id": "oracle-eyes", "name": "Oracle Eyes",
+                        "hooks": ["annotations", "region-select"], "capture_requested": true}])
+            );
+            assert_eq!(got["hooks_on"], json!(["annotations", "region-select"]));
+        }
+    }
+
     /// A harness whose config is `text` in a scratch file, loaded as `--config`.
     fn widget_harness(
         tag: &str,
         text: &str,
     ) -> (crate::shell::focus::state_tests::Harness, std::path::PathBuf) {
         let mut h = crate::shell::focus::state_tests::harness();
+        // The collection only exists with its add-on hook on (ADR 0066).
+        h.state.addons.hooks.insert(crate::addons::Hook::TaskbarWidgets);
         let dir = std::env::temp_dir().join(format!("abyss-coll-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("abyss.kdl");

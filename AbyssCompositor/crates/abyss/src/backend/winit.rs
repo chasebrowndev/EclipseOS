@@ -129,6 +129,7 @@ pub fn run(config: Config, stats: bool, session: bool) -> Result<()> {
     crate::input::idle::start(&mut state, &handle);
     crate::ipc::start(&mut state, &handle);
     crate::config::watch::start(&mut state, &handle);
+    crate::addons::start(&mut state, &handle);
     handle
         .insert_source(socket, |stream, _, state| {
             if let Err(e) = state.display_handle.insert_client(stream, client_state()) {

@@ -23,6 +23,7 @@ use smithay::{
     wayland::tablet_manager::{TabletDescriptor, TabletSeatTrait},
 };
 
+use crate::addons::Hook;
 use crate::state::AbyssState;
 
 pub mod grabs;
@@ -337,7 +338,13 @@ impl AbyssState {
                 crate::outputs::calibrate::apply(self, step);
             }
             Action::RegionSelect(key) => self.region_select_key(key),
+            // ADR 0066: add-on hooks. Off, the chord is consumed and does nothing.
+            Action::AnnotationSelect if !self.addons.hooks.is_on(Hook::RegionSelect) => {
+                tracing::debug!("region-select hook is off; chord ignored");
+            }
             Action::AnnotationSelect => self.region_select_start(),
+            Action::AnnotationDismiss | Action::AnnotationExpand | Action::AnnotationAutoToggle
+                if !self.addons.hooks.is_on(Hook::Annotations) => {}
             Action::AnnotationDismiss => self.emit_keybind("annotation-dismiss"),
             Action::AnnotationExpand => self.emit_keybind("annotation-expand"),
             Action::AnnotationAutoToggle => self.emit_keybind("annotation-auto-toggle"),
