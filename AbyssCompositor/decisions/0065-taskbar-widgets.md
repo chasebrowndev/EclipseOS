@@ -102,6 +102,15 @@ driver ships it; a runtime-suspended GPU is read as idle, never woken; an
 absent source is hidden, not zero),
 `custom` (the exec runner).
 
+**Remote album art.** Players such as Spotify publish cover art only as an
+`https` URL. `media` fetches it by spawning `curl` (argv-exec, `https` only,
+5 s timeout, 4 MiB cap, no cookies or credentials) on its art thread; we link
+no HTTP or TLS client. The fetch tells the image host what is playing, which
+the player's own fetch already did, but the request now comes from the
+desktop, so `bar.widgets.now-playing.remote-art` (default true) turns it off.
+Art bytes stay in memory; the URL is never logged. No `curl`, a failed fetch,
+or the key off all show the fallback glyph.
+
 **The monitor tap** reads the default sink's monitor only while media is
 playing, the Now Playing widget is on screen, and
 `bar.widgets.now-playing.visualizer` is true. Samples are reduced to band
