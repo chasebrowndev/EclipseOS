@@ -395,6 +395,8 @@ pub struct NowPlayingWidget {
     pub art: bool,
     /// Whether the monitor tap may open at all (ADR 0065).
     pub visualizer: bool,
+    /// Whether `https` cover art is fetched via `curl` (ADR 0065).
+    pub remote_art: bool,
 }
 
 impl Default for NowPlayingWidget {
@@ -402,6 +404,7 @@ impl Default for NowPlayingWidget {
         Self {
             art: true,
             visualizer: true,
+            remote_art: true,
         }
     }
 }
@@ -2076,6 +2079,11 @@ impl Config {
                         self.bar.widgets.now_playing.visualizer = b;
                     }
                 }
+                "remote-art" => {
+                    if let Some(b) = self.flag(n) {
+                        self.bar.widgets.now_playing.remote_art = b;
+                    }
+                }
                 _ => self.unknown_key(n, "bar.widgets.now-playing", "now-playing node"),
             }
         }
@@ -3588,7 +3596,7 @@ mod tests {
         assert_eq!(d.motion.curve, "spring");
         let cfg = widgets_cfg(
             "bar {\n    widgets {\n        order \"clock\" \"custom:cpu\" \"tray\"\n        important \"custom:cpu\"\n        \
-             now-playing { art #false; visualizer; }\n        system-usage { interval-ms \"2s\"; gpu #false; disk-path \"/home\"; }\n        \
+             now-playing { art #false; visualizer; remote-art #false; }\n        system-usage { interval-ms \"2s\"; gpu #false; disk-path \"/home\"; }\n        \
              volume { step 10; scroll #false; max-percent 150; }\n    }\n    motion { enabled #false; duration-ms 300; curve \"ease-out\"; }\n    \
              widget \"cpu\" { source \"usage.cpu\"; format \"{}%\"; }\n}\n",
         );
@@ -3596,7 +3604,8 @@ mod tests {
         let w = &cfg.bar.widgets;
         assert_eq!(w.order, ["clock", "custom:cpu", "tray"]);
         assert_eq!(w.important, ["custom:cpu"]);
-        assert!(!w.now_playing.art && w.now_playing.visualizer);
+        assert!(!w.now_playing.art && w.now_playing.visualizer && !w.now_playing.remote_art);
+        assert!(Config::default().bar.widgets.now_playing.remote_art);
         assert_eq!(w.system_usage.interval_ms, 2000);
         assert!(!w.system_usage.gpu && w.system_usage.disk);
         assert_eq!(w.system_usage.disk_path, "/home");

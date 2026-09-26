@@ -435,8 +435,9 @@ pub const TABLE: &[Key] = &[
         Bool(true),
         Abyss,
         Live,
-        "Show album art in the Now Playing widget. Only art the player keeps \
-       on this machine is shown; nothing is downloaded.",
+        "Show album art in the Now Playing widget. Art the player keeps on \
+       this machine is read from disk; `https` art is fetched only while \
+       `bar.widgets.now-playing.remote-art` is on.",
     ),
     k(
         "bar.widgets.now-playing.visualizer",
@@ -448,6 +449,16 @@ pub const TABLE: &[Key] = &[
        widget is on screen it reads the default output's monitor, reduced to \
        levels in memory and never stored, logged or sent. Off closes the \
        stream.",
+    ),
+    k(
+        "bar.widgets.now-playing.remote-art",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Fetch Now Playing cover art the player publishes as an `https` URL, \
+       over https via `curl`. This reveals the playing track to the image \
+       host. Off shows the fallback glyph instead; `http` is never fetched.",
     ),
     k(
         "bar.widgets.system-usage.interval-ms",
@@ -1410,6 +1421,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.widgets.important" => list(&c.bar.widgets.important),
         "bar.widgets.now-playing.art" => V::Bool(c.bar.widgets.now_playing.art),
         "bar.widgets.now-playing.visualizer" => V::Bool(c.bar.widgets.now_playing.visualizer),
+        "bar.widgets.now-playing.remote-art" => V::Bool(c.bar.widgets.now_playing.remote_art),
         "bar.widgets.system-usage.interval-ms" => V::Int(c.bar.widgets.system_usage.interval_ms as i64),
         "bar.widgets.system-usage.gpu" => V::Bool(c.bar.widgets.system_usage.gpu),
         "bar.widgets.system-usage.disk" => V::Bool(c.bar.widgets.system_usage.disk),

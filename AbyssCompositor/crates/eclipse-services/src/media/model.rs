@@ -278,16 +278,26 @@ pub(super) enum ArtLookup {
 }
 
 /// Covers read so far, keyed by URL. A failed read is cached as `None` so a
-/// missing file is not retried on every signal.
+/// missing file or a failed fetch is not retried on every signal.
 #[derive(Debug, Default)]
 pub(super) struct ArtCache {
     entries: VecDeque<(String, Option<Arc<[u8]>>)>,
+    /// At most one read or fetch in flight per URL. Kept across a remote-art
+    /// toggle, so switching off and on mid-fetch does not start a second one.
     pending: HashSet<String>,
 }
 
+/// An `https://` cover, fetched only while remote art is on.
+pub(super) fn is_remote(url: &str) -> bool {
+    url.starts_with("https://")
+}
+
 impl ArtCache {
-    pub fn lookup(&mut self, url: &str) -> ArtLookup {
-        if !url.starts_with("file://") {
+    /// `remote`: whether `https://` art may be fetched. `http://` and every
+    /// other scheme are never read.
+    pub fn lookup(&mut self, url: &str, remote: bool) -> ArtLookup {
+        let readable = url.starts_with("file://") || (remote && is_remote(url));
+        if !readable {
             return ArtLookup::None;
         }
         if let Some((key, bytes)) = self.entries.iter().find(|(k, _)| k == url) {
@@ -306,23 +316,30 @@ impl ArtCache {
         }
     }
 
-    pub fn insert(&mut self, url: String, bytes: Option<Arc<[u8]>>) {
+    /// A read finished. A remote result that lands after remote art was
+    /// switched off is dropped, not cached.
+    pub fn insert(&mut self, url: String, bytes: Option<Arc<[u8]>>, remote: bool) {
         self.pending.remove(&url);
+        if is_remote(&url) && !remote {
+            return;
+        }
         self.entries.retain(|(k, _)| *k != url);
         if self.entries.len() == ART_CACHE_ENTRIES {
             self.entries.pop_front();
         }
         self.entries.push_back((url, bytes));
     }
+
+    /// Remote art was switched off: forget every fetched cover, and every
+    /// cached fetch failure, so switching back on fetches afresh.
+    pub fn drop_remote(&mut self) {
+        self.entries.retain(|(k, _)| !is_remote(k));
+    }
 }
 
 /// Read a `file://` cover. `None` for anything else, a missing or non-regular
 /// file, or one over [`ART_MAX_BYTES`]. Blocking: call it off the service
-/// thread.
-///
-/// `http(s)` art is never fetched. The services ship no HTTP client, and a
-/// player's say-so is not a reason to make network requests on the human's
-/// behalf; such players simply show no cover.
+/// thread. `https` art is fetched by `super::curl`, never here.
 pub(super) fn read_art(url: &str) -> Option<Arc<[u8]>> {
     let rest = url.strip_prefix("file://")?;
     // `file://localhost/x` and `file:///x` both name `/x`.
@@ -548,25 +565,60 @@ mod tests {
     #[test]
     fn art_cache_reads_file_urls_once_and_skips_http() {
         let mut cache = ArtCache::default();
-        assert_eq!(cache.lookup("https://example.com/a.png"), ArtLookup::None);
+        assert_eq!(cache.lookup("https://example.com/a.png", false), ArtLookup::None);
+        assert_eq!(cache.lookup("http://example.com/a.png", true), ArtLookup::None);
         let url = "file:///x.png";
-        assert_eq!(cache.lookup(url), ArtLookup::Read);
-        assert_eq!(cache.lookup(url), ArtLookup::Pending);
+        assert_eq!(cache.lookup(url, false), ArtLookup::Read);
+        assert_eq!(cache.lookup(url, false), ArtLookup::Pending);
         let bytes: Arc<[u8]> = Arc::from(&b"png"[..]);
-        cache.insert(url.to_owned(), Some(bytes.clone()));
+        cache.insert(url.to_owned(), Some(bytes.clone()), false);
         assert_eq!(
-            cache.lookup(url),
+            cache.lookup(url, false),
             ArtLookup::Ready(Art {
                 key: url.to_owned(),
                 bytes
             })
         );
-        cache.insert("file:///missing".to_owned(), None);
-        assert_eq!(cache.lookup("file:///missing"), ArtLookup::None);
+        cache.insert("file:///missing".to_owned(), None, false);
+        assert_eq!(cache.lookup("file:///missing", false), ArtLookup::None);
         for i in 0..ART_CACHE_ENTRIES {
-            cache.insert(format!("file:///{i}"), None);
+            cache.insert(format!("file:///{i}"), None, false);
         }
-        assert_eq!(cache.lookup(url), ArtLookup::Read, "evicted, oldest first");
+        assert_eq!(cache.lookup(url, false), ArtLookup::Read, "evicted, oldest first");
+    }
+
+    #[test]
+    fn art_cache_remote_toggle() {
+        let mut cache = ArtCache::default();
+        let url = "https://img.example/a.jpg";
+        let file = "file:///f.png";
+        let bytes: Arc<[u8]> = Arc::from(&b"jpg"[..]);
+        assert_eq!(cache.lookup(url, true), ArtLookup::Read);
+        assert_eq!(cache.lookup(url, true), ArtLookup::Pending, "one fetch per URL");
+        cache.insert(url.to_owned(), Some(bytes.clone()), true);
+        cache.insert(file.to_owned(), Some(bytes.clone()), true);
+        assert!(matches!(cache.lookup(url, true), ArtLookup::Ready(_)));
+
+        // Off: remote art is hidden and dropped; local art stays.
+        assert_eq!(cache.lookup(url, false), ArtLookup::None);
+        cache.drop_remote();
+        assert!(matches!(cache.lookup(file, false), ArtLookup::Ready(_)));
+        assert_eq!(cache.lookup(url, true), ArtLookup::Read, "dropped, so re-fetched");
+
+        // A fetch landing after the switch-off is not cached.
+        cache.insert(url.to_owned(), Some(bytes), false);
+        assert_eq!(cache.lookup(url, true), ArtLookup::Read);
+    }
+
+    #[test]
+    fn art_cache_caches_remote_failures_until_switched_off() {
+        let mut cache = ArtCache::default();
+        let url = "https://img.example/gone.jpg";
+        assert_eq!(cache.lookup(url, true), ArtLookup::Read);
+        cache.insert(url.to_owned(), None, true);
+        assert_eq!(cache.lookup(url, true), ArtLookup::None, "not retried");
+        cache.drop_remote();
+        assert_eq!(cache.lookup(url, true), ArtLookup::Read);
     }
 
     #[test]
