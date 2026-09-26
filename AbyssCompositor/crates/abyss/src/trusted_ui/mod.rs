@@ -161,10 +161,19 @@ pub(crate) fn arm_now(state: &mut AbyssState) {
 
 /// No client keeps pointer focus behind a prompt: it would otherwise still
 /// be hovered, and see the leave only when the prompt was gone.
+///
+/// A button held as the prompt opens has put a grab on the pointer (a click
+/// grab keeps focus on the pressed surface whatever the motion says), so the
+/// grab is ended first. Otherwise that client would keep getting motion
+/// until the release (COMP-10 §4).
 pub fn release_pointer_focus(state: &mut AbyssState) {
     let Some(pointer) = state.seat.get_pointer() else {
         return;
     };
+    let time = state.start_time.elapsed().as_millis() as u32;
+    if pointer.is_grabbed() {
+        pointer.unset_grab(state, SERIAL_COUNTER.next_serial(), time);
+    }
     let location = state.pointer_location;
     pointer.motion(
         state,
@@ -172,7 +181,7 @@ pub fn release_pointer_focus(state: &mut AbyssState) {
         &MotionEvent {
             location,
             serial: SERIAL_COUNTER.next_serial(),
-            time: state.start_time.elapsed().as_millis() as u32,
+            time,
         },
     );
     pointer.frame(state);
@@ -420,6 +429,32 @@ mod tests {
             // at index 0, which reverses source order.
             assert_eq!(ui < ind, top_first, "{path}: a prompt is behind the indicator");
         }
+    }
+
+    /// A button held down as the prompt opens leaves no client grab behind:
+    /// the pressed surface must not keep the pointer while the prompt is up.
+    #[test]
+    fn a_held_button_does_not_keep_a_client_grab_under_a_prompt() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let s = &mut h.state;
+        s.inject_pointer_button(0x110, true, 0);
+        let pointer = s.seat.get_pointer().unwrap();
+        assert!(pointer.is_grabbed(), "a press starts a click grab");
+        let m = Modal::new(
+            1,
+            "h",
+            None,
+            "b",
+            "l",
+            "x",
+            vec![Button {
+                label: "Not now",
+                role: Role::Safe,
+            }],
+        )
+        .unwrap();
+        assert!(open(s, m));
+        assert!(!pointer.is_grabbed(), "the prompt ended the grab");
     }
 
     #[test]
