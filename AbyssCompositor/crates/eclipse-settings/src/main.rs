@@ -12,7 +12,7 @@ fn main() -> iced::Result {
         .nth(1)
         .and_then(|a| Pane::from_arg(&a))
         .unwrap_or(Pane::Appearance);
-    let mut builder = iced::application(move || App::with_pane(pane), app::update, app::view)
+    let mut builder = iced::application(move || app::boot(pane), app::update, app::view)
         .title("Eclipse Settings")
         .theme(|_: &App| eclipse_ui::theme::theme())
         .subscription(app::subscription)

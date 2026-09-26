@@ -482,6 +482,61 @@ pub mod bar {
     pub const LABEL_LINE_GAP: f32 = 1.0;
 }
 
+/// The bar, as a settings pane draws it: a live preview strip, the lane of
+/// widget tiles under it, and the parts of a widget editor (ADR 0065).
+///
+/// The preview reuses [`bar`]'s metrics wholesale — it is the bar, at 1:1 —
+/// so this holds only what exists in a pane and never on the bar itself.
+pub mod canvas {
+    use super::bar;
+
+    /// The widest a lane tile gets. Narrower when the lane holds more
+    /// widgets than fit, so the lane never wraps: one row is one order.
+    pub const TILE_W: f32 = 136.0;
+    /// The narrowest a lane tile gets: its grip, a pin and four characters.
+    pub const TILE_MIN_W: f32 = 64.0;
+    /// A tile is a bar cell, so it is a bar cell's height.
+    pub const TILE_H: f32 = bar::TASK_H;
+    /// Between two tiles: the bar's own cell gap, doubled, because a lane is
+    /// a thing you aim a drag at and a bar is not.
+    pub const TILE_GAP: f32 = 2.0 * bar::GAP;
+
+    /// The pin: a square head on a short stem. Hard-edged, like the grip.
+    pub const PIN_HEAD: f32 = 6.0;
+    pub const PIN_STEM_W: f32 = 2.0;
+    pub const PIN_STEM_H: f32 = 4.0;
+    /// The column a pin sits in, so a tile does not shift when it gains one.
+    pub const PIN_W: f32 = 10.0;
+
+    /// The motion demo's track, and the chip that glides along it.
+    pub const GLIDE_W: f32 = super::space::HERO_METER_W;
+    pub const GLIDE_CHIP_W: f32 = 2.0 * bar::TASK_MIN;
+    pub const GLIDE_RAIL: f32 = 1.0;
+
+    /// Most windows the preview's stepper offers: far enough down the ladder
+    /// to reach the `+N` cell on a pane-wide bar.
+    pub const WINDOWS_MAX: usize = 40;
+    /// What the preview opens on: enough windows that the chips have to
+    /// negotiate with the widgets.
+    pub const WINDOWS_DEFAULT: usize = 3;
+
+    /// An argument chip in an argv editor, and the gap before its remove
+    /// mark.
+    pub const ARG_GAP: f32 = 6.0;
+    /// The caret under a positioned config error, a hard rule under the
+    /// offending span.
+    pub const CARET_H: f32 = 2.0;
+    /// One character cell of the data face at [`super::size::MONO`]:
+    /// JetBrains Mono advances 0.6 em. What lines a caret up under a column.
+    pub const MONO_CHAR_W: f32 = 0.6 * super::size::MONO;
+    /// The drop marker between lane tiles while one is dragged: a hard
+    /// rule where the tile will land.
+    pub const DROP_MARK_W: f32 = 2.0;
+    /// The width a bar preview solves for before its sheet has been
+    /// measured: one frame at most, and never drawn animated.
+    pub const SHEET_FALLBACK_W: f32 = 720.0;
+}
+
 /// Motion defaults. Taste, not mechanism: the live values are
 /// `bar.motion.{enabled, curve, duration-ms}` (ADR 0065), and these apply when
 /// they are unset or the compositor is not there.

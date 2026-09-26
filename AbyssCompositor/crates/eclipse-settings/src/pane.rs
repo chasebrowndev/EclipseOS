@@ -47,7 +47,7 @@ impl Pane {
     pub fn subtitle(self) -> &'static str {
         match self {
             Pane::Appearance => "Layout, borders, decoration and animation.",
-            Pane::Taskbar => "Bar placement, folding and the tray.",
+            Pane::Taskbar => "Widgets, their order, and how the bar gives way.",
             Pane::Display => "Outputs, modes and overscan calibration.",
             Pane::Network => "The wifi link, saved networks and paired devices.",
             Pane::Input => "Keyboard, pointer and touchpad.",
