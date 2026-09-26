@@ -125,12 +125,13 @@ fn stepped(volume: f32, cfg: &Cfg, delta: ScrollDelta) -> f32 {
     (at + dir * step).clamp(0.0, cfg.max())
 }
 
-pub fn view<'a>(state: &'a State, cfg: &Cfg, _frame: ShellFrame) -> Parts<'a> {
+pub fn view<'a>(state: &'a State, cfg: &Cfg, frame: ShellFrame) -> Parts<'a> {
+    let ink = frame.core_alpha();
     let Some(sink) = state.sink.as_ref() else {
         let mark = parts::mark(
             crate::icons::symbolic("audio-volume-muted"),
             bar::MARK,
-            color::TEXT_TERTIARY,
+            color::TEXT_TERTIARY.scale_alpha(ink),
         );
         return Parts {
             core: super::fixed(mark, bar::MARK),
@@ -142,7 +143,11 @@ pub fn view<'a>(state: &'a State, cfg: &Cfg, _frame: ShellFrame) -> Parts<'a> {
     } else {
         color::TEXT_SECONDARY
     };
-    let mark = parts::mark(crate::icons::symbolic(glyph(sink)), bar::MARK, tint);
+    let mark = parts::mark(
+        crate::icons::symbolic(glyph(sink)),
+        bar::MARK,
+        tint.scale_alpha(ink),
+    );
     let press = super::press(mark, bar::MARK, msg(Feed::Mute(!sink.muted)));
     let core = if cfg.scroll {
         let (volume, cfg) = (sink.volume, *cfg);
@@ -152,13 +157,14 @@ pub fn view<'a>(state: &'a State, cfg: &Cfg, _frame: ShellFrame) -> Parts<'a> {
     } else {
         press
     };
-    let slider = parts::volume_slider(
+    let slider = parts::volume_slider_faded(
         sink.volume,
         cfg.max(),
         sink.muted,
         false,
         |v| msg(Feed::Set(v)),
         None,
+        frame.revealed_alpha(),
     );
     Parts {
         core,

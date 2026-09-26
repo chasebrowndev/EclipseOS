@@ -22,10 +22,10 @@ pub fn spans(_app: &App) -> Spans {
     }
 }
 
-pub fn view(app: &App, _frame: ShellFrame) -> Parts<'_> {
+pub fn view(app: &App, frame: ShellFrame) -> Parts<'_> {
     Parts {
         core: super::press(
-            network_mark(&app.network, bar::MARK),
+            network_mark(&app.network, bar::MARK, frame.core_alpha()),
             bar::MARK,
             Message::Open(Drawer::Network),
         ),
@@ -59,15 +59,20 @@ pub(crate) fn glyph(network: &Network) -> &'static str {
 /// rungs are the icon theme's five `network-wireless-signal-*` levels; a
 /// wired or unknown link gets the plain *connected* glyph because there is no
 /// magnitude to report for it.
-pub(crate) fn network_mark(network: &Network, side: f32) -> Element<'static, Message, Theme> {
+///
+/// White ink only (the accent ledger in `view.rs`): a link is up or down, and
+/// the rung of the cone already says how strong it is. `alpha` fades it with
+/// its cell.
+pub(crate) fn network_mark(network: &Network, side: f32, alpha: f32) -> Element<'static, Message, Theme> {
     let tint = match network {
         Network::Offline => color::TEXT_TERTIARY,
-        // Accent at full bars and nowhere else: tinting every usable signal
-        // would spend yellow on a reading that is true almost all the time.
-        Network::Wifi { strength, .. } if *strength > 80 => color::ACCENT,
         _ => color::TEXT_SECONDARY,
     };
-    parts::mark(crate::icons::symbolic(glyph(network)), side, tint)
+    parts::mark(
+        crate::icons::symbolic(glyph(network)),
+        side,
+        tint.scale_alpha(alpha),
+    )
 }
 
 /// The wi-fi drawer. See `view::drawer_view` for its anatomy and ledger.

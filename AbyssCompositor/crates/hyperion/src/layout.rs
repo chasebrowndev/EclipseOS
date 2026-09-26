@@ -74,6 +74,9 @@ pub fn detail_of(width: f32) -> Detail {
 pub struct ChipIn {
     /// The width that shows its label whole ([`whole_width`]).
     pub whole: f32,
+    /// The width that shows its process name whole ([`whole_width`] of the
+    /// name): the cheapest label a chip can wear.
+    pub name: f32,
     /// A put-away window yields spare room to one that is up.
     pub minimized: bool,
 }
@@ -138,6 +141,15 @@ impl WidgetIn {
         } else {
             0.0
         }
+    }
+
+    /// How compressed it is at `extent`: `1.0` is the grip alone, `0.0` any
+    /// width at or past its core. A widget with no grip is never compressed.
+    pub fn closed(&self, extent: f32) -> f32 {
+        if !self.grip() {
+            return 0.0;
+        }
+        1.0 - (extent / self.core_run()).clamp(0.0, 1.0)
     }
 
     /// The whole cell's width with `extent` of body showing.
@@ -218,6 +230,18 @@ impl Default for Layout {
     }
 }
 
+/// The air before a widget, given how compressed it and the widget before
+/// it are (`1.0` is the grip alone). Two grips side by side close up to
+/// [`bar::GRIP_RUN_GAP`] — a run of compressed widgets is one rack of
+/// handles, not a row of empty chips — and the gap follows the
+/// less-compressed of the pair, so it opens continuously as either does.
+/// The solver and the row both use this, so an anchor never drifts from
+/// the glass it hangs from.
+pub fn widget_gap(before: f32, closed: f32) -> f32 {
+    let racked = before.min(closed).clamp(0.0, 1.0);
+    bar::GAP - racked * (bar::GAP - bar::GRIP_RUN_GAP)
+}
+
 /// The room `n` chips need to all be at least `each` wide.
 fn chips_need(n: usize, each: f32) -> f32 {
     if n == 0 {
@@ -245,7 +269,11 @@ pub fn solve(input: Input<'_>) -> Layout {
         let mut right = input.width - bar::EDGE;
         if !present.is_empty() {
             let cells: f32 = present.iter().map(|&i| ws[i].width(extent[i])).sum();
-            right -= cells + (present.len() - 1) as f32 * bar::GAP + bar::ZONE_GAP;
+            let gaps: f32 = present
+                .windows(2)
+                .map(|p| widget_gap(ws[p[0]].closed(extent[p[0]]), ws[p[1]].closed(extent[p[1]])))
+                .sum();
+            right -= cells + gaps + bar::ZONE_GAP;
         }
         (right - input.lead).max(0.0)
     };
@@ -314,6 +342,7 @@ pub fn solve(input: Input<'_>) -> Layout {
             out[i].x = right;
             continue;
         }
+        let before = (0..i).rev().find(|&j| ws[j].present);
         let width = w.width(extent[i]);
         let state = if w.live.is_some() {
             State::Live
@@ -330,7 +359,7 @@ pub fn solve(input: Input<'_>) -> Layout {
             extent: extent[i],
             state,
         };
-        right -= width + bar::GAP;
+        right -= width + before.map_or(0.0, |j| widget_gap(ws[j].closed(extent[j]), w.closed(extent[i])));
     }
     layout.widgets = out;
 
@@ -388,8 +417,16 @@ fn ladder(avail: f32, count: usize) -> (f32, Detail, usize) {
 /// room went undrawn. Only the surplus is up for grabs, so the ladder's
 /// no-overflow guarantee still holds for the total.
 ///
-/// Non-minimized windows are offered it first, then left to right, so which
-/// chip grows never depends on iteration order or timing.
+/// A chip whose share buys it no words at all — neither its title nor its
+/// name fits whole — is an icon, and an icon needs only [`bar::TASK_MIN`]: the
+/// rest of its share was air around a glyph, so it goes into the pool too.
+/// That is what keeps a dense strip from being a row of wide empty tabs.
+///
+/// The pool buys whole rungs only, never a partial width that changes
+/// nothing on screen: first a name for each chip that is an icon, then a
+/// whole title for anyone. Non-minimized windows are offered each first,
+/// then left to right, so which chip grows never depends on iteration order
+/// or timing.
 fn expand(chips: &[ChipIn], base_width: f32, avail: f32) -> Vec<f32> {
     let shown = chips.len();
     if shown == 0 {
@@ -401,15 +438,32 @@ fn expand(chips: &[ChipIn], base_width: f32, avail: f32) -> Vec<f32> {
     let mut order: Vec<usize> = (0..shown).collect();
     order.sort_by_key(|&i| (chips[i].minimized, i));
 
+    // The cheapest words a chip can wear: its title whole, or its name —
+    // which shows only on a chip wide enough for the Name rung.
+    let cheapest = |c: &ChipIn| c.whole.min(c.name.max(bar::TASK_NAME));
     let mut widths = vec![base_width; shown];
-    for i in order {
-        if remaining <= 0.0 {
-            break;
+    if base_width > bar::TASK_MIN {
+        for (w, c) in widths.iter_mut().zip(chips) {
+            if cheapest(c) > base_width {
+                remaining += base_width - bar::TASK_MIN;
+                *w = bar::TASK_MIN;
+            }
         }
-        let want = (chips[i].whole - base_width).max(0.0).floor();
-        let take = want.min(remaining);
-        widths[i] += take;
-        remaining -= take;
+    }
+    let mut buy = |widths: &mut Vec<f32>, i: usize, to: f32| {
+        let take = (to - widths[i]).floor();
+        if take > 0.0 && take <= remaining {
+            widths[i] += take;
+            remaining -= take;
+        }
+    };
+    for &i in &order {
+        if widths[i] < cheapest(&chips[i]) {
+            buy(&mut widths, i, cheapest(&chips[i]));
+        }
+    }
+    for &i in &order {
+        buy(&mut widths, i, chips[i].whole);
     }
     widths
 }
@@ -428,6 +482,17 @@ pub fn rung(label: &str, name: &str, width: f32, strip: Detail) -> Detail {
         Detail::Full | Detail::Name if fits(name, Detail::Name) => Detail::Name,
         Detail::Full | Detail::Name => Detail::Icon,
         other => other,
+    }
+}
+
+/// The rung one window's chip draws at `width`: its title whenever that fits
+/// whole, else [`rung`] of what the width buys. The view and the motion both
+/// ask this, so a cross-fade starts exactly when the face changes.
+pub fn chip_detail(label: &str, name: &str, width: f32) -> Detail {
+    if width >= whole_width(label) {
+        Detail::Full
+    } else {
+        rung(label, name, width, detail_of(width))
     }
 }
 
@@ -459,6 +524,7 @@ mod tests {
         (0..n)
             .map(|i| ChipIn {
                 whole: whole_width("a window title"),
+                name: whole_width("app"),
                 minimized: i % 3 == 0,
             })
             .collect()
@@ -604,6 +670,54 @@ mod tests {
         assert!(shown < 30);
     }
 
+    /// At a dense strip's share, a chip that can say nothing is an icon at
+    /// [`bar::TASK_MIN`]; the air it gives back buys names first, then titles,
+    /// and never more room than the strip had.
+    #[test]
+    fn an_icon_gives_its_air_back_and_it_buys_names() {
+        let base = 72.0;
+        let mute = ChipIn {
+            whole: whole_width("a long document title"),
+            name: whole_width("a-very-long-application-name"),
+            minimized: false,
+        };
+        let short = ChipIn {
+            whole: whole_width("a long document title"),
+            name: whole_width("discord"),
+            minimized: false,
+        };
+        let chips = [mute, mute, short, mute];
+        let avail = 4.0 * base + 3.0 * bar::GAP;
+        let w = expand(&chips, base, avail);
+        let used: f32 = w.iter().sum::<f32>() + 3.0 * bar::GAP;
+        assert!(used <= avail, "{w:?}");
+        assert_eq!(w[2], short.name, "the pool bought discord its name: {w:?}");
+        assert_eq!(
+            chip_detail("a long document title", "discord", w[2]),
+            Detail::Name
+        );
+        for i in [0, 1, 3] {
+            assert!(w[i] < base, "a mute chip gave its air back: {w:?}");
+            assert_eq!(
+                chip_detail("a long document title", "a-very-long-application-name", w[i]),
+                Detail::Icon
+            );
+        }
+        // A short title is cheaper than a long app id: it is what is bought.
+        let titled = ChipIn {
+            whole: whole_width("Downloads"),
+            name: whole_width("org.gnome.Nautilus"),
+            minimized: false,
+        };
+        let w = expand(&[titled, mute, mute], base, 3.0 * base + 2.0 * bar::GAP);
+        assert_eq!(w[0], titled.whole, "{w:?}");
+        // At the Bare rung there is no air to give.
+        assert_eq!(
+            expand(&chips, bar::TASK_BARE, 4.0 * bar::TASK_BARE + 3.0 * bar::GAP),
+            vec![bar::TASK_BARE; 4]
+        );
+    }
+
     #[test]
     fn expansion_favours_the_window_that_is_up_then_the_left() {
         let long = whole_width("a title much longer than eighteen characters wide");
@@ -613,10 +727,12 @@ mod tests {
         let away_up = [
             ChipIn {
                 whole: long,
+                name: whole_width("app"),
                 minimized: true,
             },
             ChipIn {
                 whole: long,
+                name: whole_width("app"),
                 minimized: false,
             },
         ];
@@ -624,10 +740,12 @@ mod tests {
         let equals = [
             ChipIn {
                 whole: long,
+                name: whole_width("app"),
                 minimized: false,
             },
             ChipIn {
                 whole: long,
+                name: whole_width("app"),
                 minimized: false,
             },
         ];
@@ -700,6 +818,111 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// ADR 0065's order, swept across every width: unpinned widgets compress
+    /// to their grips before any chip leaves Full; a pinned widget folds only
+    /// once the chips are bare (or overflowing); and every pinned core is
+    /// kept before any pinned reveal. Important widgets hold throughout.
+    #[test]
+    fn the_order_is_compress_then_ladder_then_fold() {
+        let mut widgets = defaults();
+        widgets[0].pin = Some(Pin::Revealed);
+        widgets[1].pin = Some(Pin::Revealed);
+        let mut saw = [false; 3];
+        for n in [3usize, 8, 20, 60] {
+            let cs = chips(n);
+            for width in (300..=3400).step_by(7) {
+                let width = width as f32;
+                let l = solve_at(width, &cs, &widgets);
+                let unpinned_open = widgets
+                    .iter()
+                    .zip(&l.widgets)
+                    .any(|(w, o)| w.pin.is_none() && !w.important && o.state != State::Grip);
+                if l.detail != Detail::Full {
+                    saw[0] = true;
+                    assert!(
+                        !unpinned_open,
+                        "{n} chips at {width}: laddered before compressing"
+                    );
+                }
+                // A pin folds only when its next step (the core, then the
+                // reveal) would overflow even bare chips: forcing that step
+                // with a live width must push chips into the `+N` cell.
+                let folded = widgets
+                    .iter()
+                    .zip(&l.widgets)
+                    .position(|(w, o)| w.pin.is_some() && o.extent < w.max_extent());
+                if let Some(i) = folded {
+                    saw[1] = true;
+                    let w = &widgets[i];
+                    let next = if l.widgets[i].extent < w.core_run() {
+                        w.core_run()
+                    } else {
+                        w.max_extent()
+                    };
+                    // Everything else held where it landed.
+                    let mut forced = widgets.clone();
+                    for (f, o) in forced.iter_mut().zip(&l.widgets) {
+                        f.live = Some(o.extent);
+                    }
+                    forced[i].live = Some(next);
+                    let f = solve_at(width, &cs, &forced);
+                    assert!(
+                        f.hidden > 0 || f.chips.is_empty(),
+                        "{n} chips at {width}: a pin folded that bare chips had room for"
+                    );
+                }
+                let core_short = widgets
+                    .iter()
+                    .zip(&l.widgets)
+                    .any(|(w, o)| w.pin.is_some() && o.extent < w.core_run());
+                if core_short {
+                    saw[2] = true;
+                    assert!(
+                        l.widgets.iter().all(|o| o.state != State::Revealed),
+                        "{n} chips at {width}: a reveal outlived a pinned core"
+                    );
+                }
+                for (w, o) in widgets.iter().zip(&l.widgets) {
+                    if w.important {
+                        assert_eq!(o.extent, w.core_run(), "{n} chips at {width}");
+                    }
+                }
+            }
+        }
+        assert!(saw.iter().all(|s| *s), "the sweep reached every tier: {saw:?}");
+    }
+
+    /// Two grips side by side close up to a rack; a grip beside an open
+    /// widget keeps the full gap. The solver places by the same rule the
+    /// row draws by, so the rack's anchors are exact.
+    #[test]
+    fn a_run_of_grips_is_racked_and_the_solver_agrees() {
+        assert_eq!(widget_gap(1.0, 1.0), bar::GRIP_RUN_GAP);
+        assert_eq!(widget_gap(0.0, 1.0), bar::GAP);
+        assert_eq!(widget_gap(1.0, 0.0), bar::GAP);
+        let mut prev = widget_gap(0.0, 0.0);
+        for i in 0..=100 {
+            let g = widget_gap(i as f32 / 100.0, 1.0);
+            assert!(g <= prev && prev - g < 0.1, "continuous and closing at {i}");
+            prev = g;
+        }
+
+        let widgets = defaults();
+        let l = solve_at(1400.0, &chips(20), &widgets);
+        let mut racked = 0;
+        for i in 1..widgets.len() {
+            let (a, b) = (&l.widgets[i - 1], &l.widgets[i]);
+            let air = b.x - (a.x + a.width);
+            if a.state == State::Grip && b.state == State::Grip {
+                racked += 1;
+                assert_eq!(air, bar::GRIP_RUN_GAP, "{i}: {l:?}");
+            } else {
+                assert_eq!(air, bar::GAP, "{i}: {l:?}");
+            }
+        }
+        assert!(racked > 0, "the 20-chip bar racks its grips: {l:?}");
     }
 
     /// As the bar narrows, no widget ever opens further, and the chips never

@@ -128,7 +128,7 @@ fn msg(name: &str, f: Feed) -> Message {
     Message::Widget(Routed::Custom(name.to_owned(), f))
 }
 
-pub fn view<'a>(out: Option<Output>, spec: &'a WidgetSpec, _frame: ShellFrame) -> Parts<'a> {
+pub fn view<'a>(out: Option<Output>, spec: &'a WidgetSpec, frame: ShellFrame) -> Parts<'a> {
     let Some(out) = out else {
         return Parts::empty();
     };
@@ -136,7 +136,8 @@ pub fn view<'a>(out: Option<Output>, spec: &'a WidgetSpec, _frame: ShellFrame) -
         color::DANGER
     } else {
         color::TEXT_SECONDARY
-    };
+    }
+    .scale_alpha(frame.core_alpha());
     let mut core = Row::new().spacing(bar::WIDGET_GAP).align_y(Alignment::Center);
     if let Some(name) = &spec.icon {
         core = core.push(parts::mark(icon(name), bar::MARK, ink));
@@ -173,7 +174,7 @@ pub fn view<'a>(out: Option<Output>, spec: &'a WidgetSpec, _frame: ShellFrame) -
         text(d)
             .font(font::DATA)
             .size(size::MICRO)
-            .color(color::TEXT_TERTIARY)
+            .color(color::TEXT_TERTIARY.scale_alpha(frame.revealed_alpha()))
             .wrapping(text::Wrapping::None)
             .into()
     });

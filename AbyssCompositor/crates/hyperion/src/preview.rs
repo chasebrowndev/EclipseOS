@@ -5,9 +5,11 @@
 //! - `HYPERION_PREVIEW=widgets` — a strip of fixture windows and every
 //!   widget, media playing; `widgets-idle` is the same with no player.
 //! - `HYPERION_PREVIEW_CHIPS=3|8|20` — how many windows (default 8).
-//! - `HYPERION_PREVIEW_SCRIPT=grow|drag|np-out` — a timed sequence, for frame
-//!   captures: windows arriving one by one, a grip dragged open, the player
-//!   stopping.
+//! - `HYPERION_PREVIEW_SCRIPT=grow|shrink|drag|drag-half|np-out|np-back|interrupt`
+//!   — a timed sequence, for frame captures: windows arriving or leaving one
+//!   by one, a grip dragged open (all the way, or let go half-way), the
+//!   player stopping (and coming back with a new cover), and a compress sent
+//!   back open while it is still moving.
 //! - `HYPERION_PREVIEW_SLOW=<n>` — every movement `n` times slower, so a
 //!   screenshot loop catches the frames in between.
 //!
@@ -234,6 +236,10 @@ fn script_name() -> String {
 
 /// Presses on the drag script, and the travel per step.
 const DRAG_STEPS: u32 = 40;
+/// Where `drag-half` lets go: part-way into the reveal.
+const DRAG_HALF_STEPS: u32 = 10;
+/// How many windows `interrupt` opens at once, and then closes again.
+const BURST: usize = 8;
 const DRAG_STEP_PX: f32 = 5.0;
 
 /// The script's schedule: `(step, wait before it)`.
@@ -244,8 +250,14 @@ fn plan(name: &str) -> Vec<(u32, Duration)> {
             .map(|n| (n, ms(300)))
             .collect(),
         // Press, travel a frame-ish apart, release.
+        "shrink" => (1..=chips().saturating_sub(1) as u32)
+            .map(|n| (n, ms(300)))
+            .collect(),
         "drag" => (1..=DRAG_STEPS + 2).map(|n| (n, ms(40))).collect(),
+        "drag-half" => (1..=DRAG_HALF_STEPS + 2).map(|n| (n, ms(40))).collect(),
         "np-out" => vec![(1, ms(0))],
+        "np-back" => vec![(1, ms(0)), (2, ms(1600))],
+        "interrupt" => vec![(1, ms(0)), (2, ms(350))],
         _ => Vec::new(),
     }
 }
@@ -290,21 +302,56 @@ pub fn step(app: &mut App, n: u32) {
                 app.icons.warm(&app.snapshot.windows);
             }
         }
-        "drag" => {
+        "shrink" => {
+            app.snapshot.windows.pop();
+            recount(app);
+        }
+        "drag" | "drag-half" => {
+            let steps = if script_name() == "drag" {
+                DRAG_STEPS
+            } else {
+                DRAG_HALF_STEPS
+            };
             let key = WidgetId::NowPlaying.key();
             let ev = match n {
                 1 => GripEv::Press,
-                n if n <= DRAG_STEPS + 1 => GripEv::Drag(-((n - 1) as f32) * DRAG_STEP_PX),
+                n if n <= steps + 1 => GripEv::Drag(-((n - 1) as f32) * DRAG_STEP_PX),
                 _ => GripEv::Release,
             };
             crate::app::grip(app, key, ev, now);
         }
-        "np-out" => {
+        "np-back" if n == 2 => {
+            widgets::update(
+                &mut app.widgets,
+                widgets::Feed::NowPlaying(now_playing::Feed::Player(Some(track()))),
+            );
+            app.widgets.now_playing.set_art("fixture-next", cover());
+        }
+        "interrupt" => {
+            let base = chips();
+            if n == 1 {
+                for i in base..(base + BURST).min(WINDOWS.len()) {
+                    app.snapshot.windows.push(window(i, app.output_id));
+                }
+                app.icons.warm(&app.snapshot.windows);
+            } else {
+                app.snapshot.windows.truncate(base);
+            }
+            recount(app);
+        }
+        "np-out" | "np-back" => {
             widgets::update(
                 &mut app.widgets,
                 widgets::Feed::NowPlaying(now_playing::Feed::Player(None)),
             );
         }
         _ => {}
+    }
+}
+
+/// Keep the fixture workspace's window count honest after a script step.
+fn recount(app: &mut App) {
+    if let Some(ws) = app.snapshot.workspaces.first_mut() {
+        ws.windows = app.snapshot.windows.len();
     }
 }

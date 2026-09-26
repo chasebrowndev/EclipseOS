@@ -24,7 +24,8 @@ pub fn spans(_app: &App) -> Spans {
     }
 }
 
-pub fn view(app: &App, _frame: ShellFrame) -> Parts<'_> {
+pub fn view(app: &App, frame: ShellFrame) -> Parts<'_> {
+    let ink = frame.core_alpha();
     let tint = if app.snapshot.connected {
         color::TEXT
     } else {
@@ -37,11 +38,11 @@ pub fn view(app: &App, _frame: ShellFrame) -> Parts<'_> {
         text(crate::clock::time(app.bar.hour_12))
             .size(size::BODY_SMALL)
             .font(font::DATA_MEDIUM)
-            .color(tint),
+            .color(tint.scale_alpha(ink)),
         text(crate::clock::date(app.bar.date_mdy))
             .size(size::MICRO)
             .font(font::DATA)
-            .color(color::TEXT_TERTIARY),
+            .color(color::TEXT_TERTIARY.scale_alpha(ink)),
     ]
     .spacing(0)
     .align_x(Alignment::Center);
