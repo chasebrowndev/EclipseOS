@@ -40,13 +40,24 @@ eclipse-ctl — control the abyss compositor
   eclipse-ctl config set PATH VALUE   write a setting (abyss.kdl only)
   eclipse-ctl config validate         check a config file without applying it
   eclipse-ctl config migrate          split a legacy abyss.kdl into two files
+  eclipse-ctl config widget list      custom taskbar widgets (bar { widget … })
+  eclipse-ctl config widget set NAME exec|stream ARGV0 [ARG...]
+  eclipse-ctl config widget set NAME source SOURCE [FORMAT]
+  eclipse-ctl config widget set NAME JSON
+                                      create or replace a widget; JSON is the
+                                      entry shape `config widget list --json` prints
+  eclipse-ctl config widget rm NAME   delete it, and its custom:NAME ids
+  eclipse-ctl config widget mv NAME INDEX
+                                      move it to INDEX (0-based)
+  eclipse-ctl config widget rename OLD NEW
+                                      rename it, rewriting custom:OLD ids
   eclipse-ctl call METHOD [JSON]      raw JSON-RPC, for anything not above
 
 Options:
   --json          print the raw result even for the table commands
   --file abyss|policy   which config file a config verb is about
   --changed       config list: only settings that differ from the default
-  --dry-run       config set/migrate: say what would happen, write nothing
+  --dry-run       config set/widget/migrate: say what would happen, write nothing
   --socket PATH
 ";
 
@@ -181,6 +192,7 @@ enum Table {
     ConfigKey,
     ConfigValue,
     ConfigCheck,
+    Widgets,
 }
 
 type Parsed = (String, Value, Option<Table>);
@@ -300,6 +312,7 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
                     }
                     ("validate_config".into(), params, Some(Table::ConfigCheck))
                 }
+                "widget" => widget(&args[2..], flags)?,
                 other => return Err(format!("unknown config subcommand {other:?}")),
             }
         }
@@ -345,6 +358,66 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
             (method.to_string(), params, None)
         }
         other => return Err(format!("unknown command {other:?}; try --help")),
+    })
+}
+
+/// `config widget …` → `get_config` or `set_config_collection` (ADR 0065).
+fn widget(args: &[String], flags: &Flags) -> Result<Parsed, String> {
+    let a = |i: usize| args.get(i).map(String::as_str).unwrap_or_default();
+    let name = |verb: &str| -> Result<String, String> {
+        match a(1) {
+            "" => Err(format!("config widget {verb} needs a widget name")),
+            n => Ok(n.to_string()),
+        }
+    };
+    let write = |op: &str, name: String, extra: Value| -> Parsed {
+        let mut p = json!({"collection": "widget", "op": op, "name": name, "dry_run": flags.dry_run});
+        if let (Value::Object(p), Value::Object(extra)) = (&mut p, extra) {
+            p.extend(extra);
+        }
+        ("set_config_collection".into(), p, None)
+    };
+    Ok(match a(0) {
+        "" | "list" => (
+            "get_config".into(),
+            json!({"file": "abyss"}),
+            Some(Table::Widgets),
+        ),
+        "set" => {
+            let name = name("set")?;
+            let rest = &args[2.min(args.len())..];
+            let entry = match rest.first().map(String::as_str) {
+                None => return Err("config widget set needs exec|stream|source … or a JSON entry".into()),
+                Some(kind @ ("exec" | "stream")) => {
+                    if rest.len() < 2 {
+                        return Err(format!("{kind} needs a command"));
+                    }
+                    json!({"kind": kind, "exec": rest[1..]})
+                }
+                Some("source") => match rest {
+                    [_, source] => json!({"kind": "source", "source": source}),
+                    [_, source, format] => json!({"kind": "source", "source": source, "format": format}),
+                    _ => return Err("source takes SOURCE [FORMAT]".into()),
+                },
+                Some(raw) => serde_json::from_str(raw).map_err(|e| format!("entry: {e}"))?,
+            };
+            write("upsert", name, json!({"entry": entry}))
+        }
+        "rm" | "remove" => write("remove", name("rm")?, json!({})),
+        "mv" | "move" => {
+            let index: u64 = a(2)
+                .parse()
+                .map_err(|_| format!("config widget mv needs an index, got {:?}", a(2)))?;
+            write("move", name("mv")?, json!({"index": index}))
+        }
+        "rename" => {
+            let new_name = a(2);
+            if new_name.is_empty() {
+                return Err("config widget rename needs OLD NEW".into());
+            }
+            write("rename", name("rename")?, json!({"new_name": new_name}))
+        }
+        other => return Err(format!("unknown config widget subcommand {other:?}")),
     })
 }
 
@@ -542,6 +615,24 @@ fn print_table(table: Table, result: &Value) {
             }
             return;
         }
+        Table::Widgets => {
+            println!("{:<16} {:<7} {:<40} ICON", "NAME", "KIND", "WHAT");
+            for w in result["collections"]["widget"].as_array().unwrap_or(&Vec::new()) {
+                let what = match w["kind"].as_str() {
+                    Some("source") => format!("{} {}", s(w, "source"), s(w, "format")),
+                    Some("exec") => format!("{} every {}ms", scalar_str(&w["exec"]), s(w, "interval-ms")),
+                    _ => scalar_str(&w["exec"]),
+                };
+                println!(
+                    "{:<16} {:<7} {:<40} {}",
+                    s(w, "name"),
+                    s(w, "kind"),
+                    what,
+                    s(w, "icon")
+                );
+            }
+            return;
+        }
         Table::ConfigCheck => {
             if result["valid"] == Value::Bool(true) {
                 println!("ok");
@@ -609,7 +700,11 @@ fn print_table(table: Table, result: &Value) {
                 );
             }
         }
-        Table::Config { .. } | Table::ConfigKey | Table::ConfigValue | Table::ConfigCheck => {
+        Table::Config { .. }
+        | Table::ConfigKey
+        | Table::ConfigValue
+        | Table::ConfigCheck
+        | Table::Widgets => {
             unreachable!("handled above")
         }
         Table::Windows => {
@@ -628,5 +723,52 @@ fn print_table(table: Table, result: &Value) {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(args: &[&str]) -> Result<Parsed, String> {
+        let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        parse(&args, &Flags::default())
+    }
+
+    #[test]
+    fn widget_verbs_build_collection_writes() {
+        let (m, p, _) = run(&["config", "widget", "set", "w", "exec", "curl", "-s"]).unwrap();
+        assert_eq!(m, "set_config_collection");
+        assert_eq!(
+            p,
+            json!({"collection": "widget", "op": "upsert", "name": "w", "dry_run": false,
+                   "entry": {"kind": "exec", "exec": ["curl", "-s"]}})
+        );
+        let (_, p, _) = run(&["config", "widget", "set", "c", "source", "usage.cpu", "{}%"]).unwrap();
+        assert_eq!(
+            p["entry"],
+            json!({"kind": "source", "source": "usage.cpu", "format": "{}%"})
+        );
+        let (_, p, _) = run(&[
+            "config",
+            "widget",
+            "set",
+            "c",
+            r#"{"kind":"stream","exec":["x"]}"#,
+        ])
+        .unwrap();
+        assert_eq!(p["entry"]["kind"], "stream");
+        let (_, p, _) = run(&["config", "widget", "rm", "c"]).unwrap();
+        assert_eq!(p["op"], "remove");
+        let (_, p, _) = run(&["config", "widget", "mv", "c", "2"]).unwrap();
+        assert_eq!((p["op"].clone(), p["index"].clone()), (json!("move"), json!(2)));
+        let (_, p, _) = run(&["config", "widget", "rename", "c", "d"]).unwrap();
+        assert_eq!(p["new_name"], "d");
+        let (m, _, t) = run(&["config", "widget", "list"]).unwrap();
+        assert_eq!(m, "get_config");
+        assert!(matches!(t, Some(Table::Widgets)));
+        assert!(run(&["config", "widget", "set", "c"]).is_err());
+        assert!(run(&["config", "widget", "mv", "c", "x"]).is_err());
+        assert!(run(&["config", "widget", "rename", "c"]).is_err());
     }
 }
