@@ -1203,6 +1203,7 @@ name = "eclipse-services"
 version = "0.1.0"
 dependencies = [
  "eclipse-ipc",
+ "libc",
  "pulseaudio",
  "realfft",
  "serde_json",
