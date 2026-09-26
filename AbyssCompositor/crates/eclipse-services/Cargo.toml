@@ -18,6 +18,10 @@ path = "src/lib.rs"
 name = "eclipse-screensaver"
 path = "src/bin/eclipse-screensaver.rs"
 
+[[bin]]
+name = "eclipse-pairing"
+path = "src/bin/eclipse-pairing.rs"
+
 [dependencies]
 # Already in the tree via iced_layershell 0.19.1 -> mundy 0.2.3, so this adds
 # no new supply-chain surface (ADR 0038, ADR 0039). The blocking API is the

@@ -34,6 +34,7 @@ eclipse-ctl — control the abyss compositor
   eclipse-ctl output ID calibrate [commit|cancel]
                                       drive the on-screen overscan calibration
   eclipse-ctl reload                  re-read the config
+  eclipse-ctl addons                  installed add-ons and the hooks they turn on
   eclipse-ctl config list [--changed] every setting, its value and its file
   eclipse-ctl config describe PATH    one setting: type, range, default, doc
   eclipse-ctl config get PATH         one setting's value, bare
@@ -193,6 +194,7 @@ enum Table {
     ConfigValue,
     ConfigCheck,
     Widgets,
+    Addons,
 }
 
 type Parsed = (String, Value, Option<Table>);
@@ -216,6 +218,7 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
         "dump" => ("dump_state".into(), Value::Null, None),
         "agents" => ("get_agents".into(), Value::Null, None),
         "reload" => ("reload_config".into(), Value::Null, None),
+        "addons" => ("get_config".into(), json!({}), Some(Table::Addons)),
         "watch" => {
             let events: Vec<Value> = args[1..].iter().map(|s| Value::String(s.clone())).collect();
             let params = if events.is_empty() {
@@ -599,6 +602,43 @@ fn print_config_key(rows: &[Value]) {
     println!("  {}", s(r, "doc"));
 }
 
+/// `eclipse-ctl addons`: one line per add-on, then the hooks that are on
+/// (ADR 0066). A string so the format is testable without a socket.
+fn addons_text(result: &Value) -> String {
+    let join = |v: &Value| {
+        let names: Vec<&str> = v
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        if names.is_empty() {
+            "none".to_string()
+        } else {
+            names.join(",")
+        }
+    };
+    let mut out = String::new();
+    let empty = Vec::new();
+    let list = result["addons"].as_array().unwrap_or(&empty);
+    if list.is_empty() {
+        out.push_str("no add-ons installed\n");
+    }
+    for a in list {
+        let capture = if a["capture_requested"] == Value::Bool(true) {
+            "  capture: requested"
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "{:<16} {:<20} hooks: {}{capture}\n",
+            s(a, "id"),
+            s(a, "name"),
+            join(&a["hooks"])
+        ));
+    }
+    out.push_str(&format!("hooks on: {}\n", join(&result["hooks_on"])));
+    out
+}
+
 fn print_table(table: Table, result: &Value) {
     // The config verbs answer with an object, not a bare array.
     match table {
@@ -631,6 +671,10 @@ fn print_table(table: Table, result: &Value) {
                     s(w, "icon")
                 );
             }
+            return;
+        }
+        Table::Addons => {
+            print!("{}", addons_text(result));
             return;
         }
         Table::ConfigCheck => {
@@ -704,7 +748,8 @@ fn print_table(table: Table, result: &Value) {
         | Table::ConfigKey
         | Table::ConfigValue
         | Table::ConfigCheck
-        | Table::Widgets => {
+        | Table::Widgets
+        | Table::Addons => {
             unreachable!("handled above")
         }
         Table::Windows => {
@@ -770,5 +815,31 @@ mod tests {
         assert!(run(&["config", "widget", "set", "c"]).is_err());
         assert!(run(&["config", "widget", "mv", "c", "x"]).is_err());
         assert!(run(&["config", "widget", "rename", "c"]).is_err());
+    }
+
+    #[test]
+    fn addons_lists_manifests_then_hooks() {
+        let (m, p, t) = run(&["addons"]).unwrap();
+        assert_eq!((m.as_str(), p), ("get_config", json!({})));
+        assert!(matches!(t, Some(Table::Addons)));
+        let reply = json!({
+            "keys": [],
+            "addons": [
+                {"id": "hyperion", "name": "Hyperion", "hooks": ["taskbar-widgets"], "capture_requested": false},
+                {"id": "oracle-eyes", "name": "Oracle Eyes",
+                 "hooks": ["annotations", "region-select"], "capture_requested": true},
+            ],
+            "hooks_on": ["annotations", "region-select", "taskbar-widgets"],
+        });
+        assert_eq!(
+            addons_text(&reply),
+            "hyperion         Hyperion             hooks: taskbar-widgets\n\
+             oracle-eyes      Oracle Eyes          hooks: annotations,region-select  capture: requested\n\
+             hooks on: annotations,region-select,taskbar-widgets\n"
+        );
+        assert_eq!(
+            addons_text(&json!({"keys": [], "addons": [], "hooks_on": []})),
+            "no add-ons installed\nhooks on: none\n"
+        );
     }
 }

@@ -23,6 +23,7 @@ name = "abyss"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "calloop 0.14.4",
  "kdl",
  "libc",

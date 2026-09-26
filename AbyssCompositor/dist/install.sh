@@ -27,8 +27,9 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$here/.." && pwd)
 
 BINS='abyss hyperion eclipse-toasts eclipse-center eclipse-launcher
-      eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt'
-UNITS='hyperion.service eclipse-toasts.service eclipse-screensaver.service'
+      eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt
+      eclipse-pairing'
+UNITS='hyperion.service eclipse-toasts.service eclipse-screensaver.service eclipse-pairing.service'
 
 do_deps=1 do_build=1 assume_yes=0 uninstall=0
 for arg in "$@"; do
@@ -56,9 +57,11 @@ if [ "$uninstall" -eq 1 ]; then
                /usr/share/wayland-sessions/abyss.desktop \
                $(for u in $UNITS; do printf '/usr/lib/systemd/user/%s ' "$u"; done) \
                /usr/lib/systemd/user/abyss-session.target \
+               /usr/share/eclipse/addons/hyperion.kdl \
                /usr/share/applications/eclipse-center.desktop \
                /usr/share/applications/eclipse-policy-viewer.desktop \
                /usr/share/applications/eclipse-settings.desktop
+    sudo rm -rf /usr/share/eclipse/widgets
     systemctl --user daemon-reload 2>/dev/null || true
     echo "Removed. /etc/eclipse/ and your ~/.config/eclipse/ were left alone."
     exit 0
@@ -152,11 +155,18 @@ sudo install -Dm 0644 "$here/abyss.desktop" /usr/share/wayland-sessions/abyss.de
 #    shipped pointing at /usr/bin, which is where step 1 put the binaries.
 sudo install -Dm 0644 -t /usr/lib/systemd/user \
     "$here/abyss-session.target" "$here/hyperion.service" "$here/eclipse-toasts.service" \
-    "$here/eclipse-screensaver.service"
+    "$here/eclipse-screensaver.service" "$here/eclipse-pairing.service"
+
+# 4b. The taskbar's add-on manifest (ADR 0066). Without it abyss keeps its
+#     taskbar-widgets hook off; hosts read manifests only from this directory.
+sudo install -Dm 0644 "$here/addons/hyperion.kdl" /usr/share/eclipse/addons/hyperion.kdl
 
 # 5. The apps a human launches. The bar, toasts and launcher are session
 #    components, not applications, and deliberately have no entry.
 sudo install -Dm 0644 -t /usr/share/applications "$here"/applications/*.desktop
+
+# 6. Premade command widgets, approved by shipping (ADR 0067).
+sudo install -Dm 0644 -t /usr/share/eclipse/widgets "$here"/widgets/*.kdl
 
 # ---------------------------------------------------------------- seat/perms --
 

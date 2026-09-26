@@ -307,6 +307,7 @@ fn boot(
     crate::input::idle::start(&mut state, &handle);
     crate::ipc::start(&mut state, &handle);
     crate::config::watch::start(&mut state, &handle);
+    crate::addons::start(&mut state, &handle);
     // Registered ahead of the wayland sources on purpose: calloop dispatches in
     // registration order, so a queued PositionWindow wins over client requests
     // that arrived in the same wakeup. wlcs assumes move_surface_to has taken
@@ -481,6 +482,21 @@ fn redraw(
         elements.splice(
             0..0,
             crate::render::capture::indicator(out, state.capture_active()),
+        );
+        // A trusted prompt (COMP-10) is front-most of all.
+        elements.splice(
+            0..0,
+            crate::trusted_ui::elements(
+                renderer,
+                &mut state.trusted_ui,
+                state.lock.locked,
+                out,
+                state
+                    .space
+                    .output_geometry(out)
+                    .map(|g| g.loc)
+                    .unwrap_or_default(),
+            ),
         );
         let mut fb = match Bind::bind(renderer, &mut data.target) {
             Ok(fb) => fb,

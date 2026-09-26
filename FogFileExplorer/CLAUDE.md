@@ -11,7 +11,7 @@ guide first; the rest is reference. Standalone cargo workspace (the spec's
 - Every mutation goes through the job queue and the undo journal. No direct writes from the UI, CLI or portal.
 - Renames use `RENAME_NOREPLACE`. No code path may silently overwrite a file.
 - Unknown config keys are errors, and the last valid config stays active.
-- Without the `activity` feature, the binary contains no `agentd` client code.
+- `fog`, `fogd` and `fog-ui` contain no `agentd` client code; only the `fog-activityd` add-on daemon does (ADR 0066).
 - Agents never reach `fogd.sock`. Agent calls arrive only via `agentd`.
 
 ## Crates
@@ -24,8 +24,9 @@ guide first; the rest is reference. Standalone cargo workspace (the spec's
 
 ## Features
 
-`gio` (remote backends) and `activity` (agent integration) must stay off in
-base builds. Base builds compile and pass tests with neither.
+`gio` (remote backends) must stay off in base builds. Agent integration is
+not a feature but the fog-activity add-on (ADR 0066): Fog keeps its lens views
+behind the `activity-lens` hook, off unless an installed manifest names it.
 
 ## Gate (from `FogFileExplorer/`)
 

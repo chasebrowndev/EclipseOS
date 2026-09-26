@@ -7,9 +7,9 @@
 //!
 //! One process draws every bar. It starts with no surface of its own and opens
 //! a bar per output the control socket lists, closing and opening bars as
-//! monitors come and go (see `app::reconcile`). The shared services, the
-//! control-socket connection and the BlueZ pairing agent each exist once,
-//! whatever the number of screens.
+//! monitors come and go (see `app::reconcile`). The shared services and the
+//! control-socket connection each exist once, whatever the number of screens.
+//! The BlueZ pairing agent is not here: it is `eclipse-pairing` (ADR 0066).
 //!
 //! `--output <NAME>` pins the process to one bar on that connector and never
 //! reconciles: a debug path, not how the session runs it.
@@ -42,7 +42,6 @@ fn main() -> iced_layershell::Result {
     // by content, and the simplest way to keep that true is not to hold a
     // clipboard at all.
     iced_layershell::disable_clipboard();
-    hyperion::pairing::spawn();
 
     let mut builder = iced_layershell::build_pattern::daemon(
         move || app::boot(pin.clone()),

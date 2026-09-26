@@ -4,7 +4,7 @@ Sep 25, 2026 · Kiel
 
 ## Overview
 
-Fog is EclipseOS's native file manager and system file picker. It is a Rust daemon plus an iced UI, dark glass by default, keyboard-first, and configured entirely in KDL. In the agentic install profile it also shows, at a glance, which files agents are working on.
+Fog is EclipseOS's native file manager and system file picker. It is a Rust daemon plus an iced UI, dark glass by default, keyboard-first, and configured entirely in KDL. With the fog-activity add-on installed it also shows, at a glance, which files agents are working on.
 
 **Goals**
 
@@ -39,12 +39,13 @@ fog/
     fog-portal/     # xdg-desktop-portal FileChooser backend
     fog-pub/        # eclipse_semantic_v1 publisher
     fog-elevate/    # polkit-spawned root helper (minimal, audited)
-    fog-activity/   # agent views; compiled only with --features activity
+    fog-activity/   # agent views; always built, inert until the activity-lens hook is on
+    fog-activityd/  # the fog-activity add-on: agentd subscription, replay log, fog.* MCP bridge
     fog-bench/      # latency and frame-time benchmarks
   config/fog.default.kdl
 ```
 
-**Features**: `gio` (remote backends) and `activity` (agent integration; pulls in `fog-activity` and the `agentd` client). Base builds must compile and pass tests with neither.
+**Features**: `gio` (remote backends). Base builds must compile and pass tests without it. Agent integration is not a feature: it is the fog-activity add-on (ADR 0066), a separate package.
 
 **Invariants (never violate)**
 
@@ -53,7 +54,7 @@ fog/
 - Every mutation goes through the job queue and the undo journal. No direct writes from the UI, CLI or portal.
 - Renames use `RENAME_NOREPLACE`. No code path may silently overwrite a file.
 - Unknown config keys are errors, and the last valid config stays active.
-- Without the `activity` feature, the binary contains no `agentd` client code.
+- `fog`, `fogd` and `fog-ui` contain no `agentd` client code. Only `fog-activityd` talks to `agentd`.
 - Agents never reach `fogd.sock`. Agent calls arrive only via `agentd`.
 
 **Start here: M0**
@@ -74,7 +75,7 @@ flowchart LR
   UI[fog-ui<br/>iced windows] --> D
   CLI[fog CLI<br/>user + scripts] --> D
   P[fog-portal<br/>FileChooser backend] --> D
-  AG[agentd<br/>MCP bridge + activity] --> D
+  AG[agentd] --> FA[fog-activityd<br/>MCP bridge + activity] --> D
   D[fogd] --> FS[Local FS<br/>getdents64 / statx / io_uring]
   D --> G[GIO/GVfs<br/>smb, sftp, mtp]
   D --> W[inotify]
@@ -93,7 +94,7 @@ Clients send requests and subscribe to change streams. After the first full list
 | Protocol | `fog-proto` | Shared, versioned message types. serde over length-prefixed frames |
 | Publisher | `fog-pub` | Describes Fog's windows (current folder, selection, view) over `eclipse_semantic_v1` (COMP-09) |
 
-Agents never talk to `fogd` directly. `agentd` passes their MCP calls to `fogd` and streams file-activity events to it (see Agent and scripting interface, and Agent activity).
+Agents never talk to `fogd` directly. `agentd` passes their MCP calls, and streams file-activity events, to `fog-activityd`, which relays calls to `fogd` (see Agent and scripting interface, and Agent activity).
 
 **IPC**
 
@@ -284,7 +285,7 @@ Glass comes from two sources: the compositor blurs what is behind the window (ex
 
 ## Agent and scripting interface
 
-Agents are bwrap-sandboxed and reach the OS only through MCP on their per-agent `agentd` socket. Fog's agent interface is therefore a set of MCP tools that `agentd` passes to `fogd`. The `fog` CLI is for the user and user scripts.
+Agents are bwrap-sandboxed and reach the OS only through MCP on their per-agent `agentd` socket. Fog's agent interface is therefore a set of MCP tools that `agentd` passes to `fog-activityd`, which relays them to `fogd`. Without the fog-activity add-on, agents have no Fog tools. The `fog` CLI is for the user and user scripts.
 
 **MCP tools (via `agentd`)**
 
@@ -318,16 +319,16 @@ Fog describes its own windows over `eclipse_semantic_v1` (COMP-09): path bar, cu
 
 **Custom actions**: commands defined in KDL, shown in the context menu and palette. They run with the selection passed as arguments and in the environment (`FOG_SELECTION`, `FOG_CWD`). No native plugin loading in v1.
 
-## Agent activity (fog-activity addon)
+## Agent activity (fog-activity add-on)
 
-At a glance, Fog shows which files agents are working on right now and where they have been. It does not diff, review or revert agent edits. The addon ships only in the agentic install profile. It lives in the same window behind a lens pill bar (`User | Claude | Agent-Y | …`) and is drawn purely from `agentd` events, so agents spend no tokens on it.
+At a glance, Fog shows which files agents are working on right now and where they have been. It does not diff, review or revert agent edits. The add-on is its own package, which the Agentic install profile selects. It lives in the same window behind a lens pill bar (`User | Claude | Agent-Y | …`) and is drawn purely from `agentd` events, so agents spend no tokens on it.
 
 **Packaging**
 
-- One source tree, two builds. The base profile ships `fog`. The agentic profile ships `fog-agentic`: the same binaries built with `--features activity`, which provides and replaces `fog`. Switching profiles swaps the package; config and state carry over.
-- The `activity` feature adds the `agentd` subscription and event log in `fogd`, the `fog-activity` view crate in `fog-ui`, and the `fog.*` MCP bridge.
-- Base builds contain no `agentd` client code and show no pill bar at all, not an empty one.
-- Why not a runtime plugin: Rust has no stable ABI for dynamic loading, and Wayland has no way for one app to draw inside another's window. An out-of-process addon couldn't render inside Fog's window with shared glass.
+- One kind of add-on (ADR 0066). The `fog-activity` package ships `fog-activityd` (the `agentd` activity subscription, the replay log and the `fog.*` MCP bridge), its user unit, and a manifest `/usr/share/eclipse/addons/fog-activity.kdl` naming the `activity-lens` hook.
+- Fog always carries the lens views (`fog-activity` crate) because Wayland has no way for one app to draw inside another's window. They are a hook: with no installed manifest naming `activity-lens`, Fog shows no pill bar at all, not an empty one, and opens no connection to `fog-activityd`.
+- With the hook on, `fog-ui` reads events and replay logs from `fog-activityd` over its socket. Installing or removing the package turns the lens on or off live; config and state carry over.
+- Why not a runtime plugin: Rust has no stable ABI for dynamic loading (ADR 0041).
 
 **Lens pills**
 
@@ -362,7 +363,7 @@ At a glance, Fog shows which files agents are working on right now and where the
 
 **Data**
 
-- `fogd` subscribes to `agentd`'s activity socket and appends events to `$XDG_STATE_HOME/fog/activity/<task_id>.log` for replay (default retention 7 days).
+- `fog-activityd` subscribes to `agentd`'s activity socket and appends events to `$XDG_STATE_HOME/fog/activity/<task_id>.log` for replay (default retention 7 days).
 - Events only. Fog needs no file snapshots or content.
 - The agent colour comes from the pending EclipseOS decision (VOL1 L4573).
 
@@ -400,7 +401,7 @@ agents {
     confirm "replace"
 }
 
-// fog-agentic builds only; ignored with a warning in base builds.
+// Used only while the activity-lens hook is on; accepted and ignored otherwise.
 activity {
     user-lens-marks #true
     default-view "map"
@@ -442,7 +443,7 @@ Build the daemon and the fast path first. The glass and the picker come after th
 | M3 — Picker | `fog-portal`, reduced picker mode, xdg-foreign parenting | Firefox, a GTK4 app, a Qt6 app and a Flatpak all open and save through Fog |
 | M4 — Semantic + CLI | `fog` CLI, `fog-pub` over `eclipse_semantic_v1`, custom actions, elevated tabs | Fog's tree visible via the semantic protocol; CLI covers all job types |
 | M5 — Remote | GioBackend, udisks2 mounts, MTP | An SMB share and a phone browse and copy correctly |
-| M6 — Agents (blocked on `agentd` + ADR 0063) | `fog.*` MCP tools via `agentd`; `fog-agentic` build: lens pills, Map/Files/Graph/Detail, replay | An agent can find, reveal, move and undo via MCP; a live task's activity shows in every view within one frame |
+| M6 — Agents (blocked on `agentd` + ADR 0063) | `fog.*` MCP tools via `agentd`; `fog-activity` add-on: lens pills, Map/Files/Graph/Detail, replay | An agent can find, reveal, move and undo via MCP; a live task's activity shows in every view within one frame |
 
 **Open questions**
 

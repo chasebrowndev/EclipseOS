@@ -243,6 +243,35 @@ impl Conn {
         client.widgets().map_err(Problem::from_error)
     }
 
+    /// Installed add-ons and the abyss hooks they turn on (ADR 0066).
+    pub fn addons(&mut self) -> Result<eclipse_ipc::Addons, Problem> {
+        let client = self
+            .client
+            .as_mut()
+            .ok_or_else(|| Problem::Disconnected("not connected".into()))?;
+        client.addons().map_err(Problem::from_error)
+    }
+
+    /// Every widget's approval state, withheld ones included (ADR 0067).
+    pub fn widget_statuses(&mut self) -> Result<Vec<eclipse_ipc::WidgetStatus>, Problem> {
+        let client = self
+            .client
+            .as_mut()
+            .ok_or_else(|| Problem::Disconnected("not connected".into()))?;
+        client.widget_statuses().map_err(Problem::from_error)
+    }
+
+    /// Ask the compositor to show a withheld widget's approval prompt again.
+    /// Carries no answer: the owner gives that on the compositor's own
+    /// surface. `false` when the prompt is already queued or on screen.
+    pub fn review_widget(&mut self, name: &str) -> Result<bool, Problem> {
+        let client = self
+            .client
+            .as_mut()
+            .ok_or_else(|| Problem::Disconnected("not connected".into()))?;
+        client.review_widget(name).map_err(Problem::from_error)
+    }
+
     /// One `set_config_collection` write on the widget collection. A dry run
     /// answers `valid: false` with positioned errors rather than failing.
     pub fn widget_write(

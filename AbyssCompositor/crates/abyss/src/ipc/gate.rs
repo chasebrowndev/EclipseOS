@@ -7,6 +7,7 @@
 //! ratchet — [`Decision::tighten`] can turn `Allow` into `Deny` and never
 //! the other way round — so adding a rule can only ever remove access.
 
+use crate::addons::{Hook, HookSet};
 use crate::config::Config;
 
 /// What a method is allowed to touch. Ordering is not significance: each
@@ -89,6 +90,9 @@ pub const TABLE: &[Entry] = &[
     // Collection entries (`bar { widget … }`, ADR 0065): the same authority as
     // `set_config_value`, by the same reasoning, and the same per-file check.
     e("set_config_collection", Kind::Command, true),
+    // Re-queue a withheld command widget's approval prompt (ADR 0067). Command:
+    // it carries no answer and can only show the owner a prompt again.
+    e("review_widget", Kind::Command, true),
     // Agent lifecycle: the protocol itself is Phase 2 (COMP-08).
     e("get_agents", Kind::Privileged, false),
     e("pause_agent", Kind::Privileged, false),
@@ -158,6 +162,57 @@ pub fn check_config_file(outer: Decision, file: ConfigFile, access: Access) -> D
         !allowed,
         "the control socket has no such authority over that config file",
     );
+    d
+}
+
+/// A method (or one collection of it) that only exists while an add-on hook
+/// is on (ADR 0066). In addition to [`TABLE`], never instead of it: the row
+/// there still decides the gate kind and the uid.
+#[derive(Debug, Clone, Copy)]
+pub struct HookBinding {
+    pub method: &'static str,
+    /// For `set_config_collection`: which `collection` param the binding is
+    /// about. `None` binds every call of the method.
+    pub collection: Option<&'static str>,
+    pub hook: Hook,
+}
+
+const fn hb(method: &'static str, collection: Option<&'static str>, hook: Hook) -> HookBinding {
+    HookBinding {
+        method,
+        collection,
+        hook,
+    }
+}
+
+/// Every hook-bound method (ADR 0066 table). Reads stay open: `get_config`
+/// is not here, and serves an empty `collections.widget` while
+/// `taskbar-widgets` is off because the blocks are kept out of the live config.
+pub const HOOKED: &[HookBinding] = &[
+    hb("annotation_create", None, Hook::Annotations),
+    hb("annotation_update", None, Hook::Annotations),
+    hb("annotation_destroy", None, Hook::Annotations),
+    hb("annotation_clear", None, Hook::Annotations),
+    // Every `widget` write (upsert, remove, rename, move) is this one method.
+    hb("set_config_collection", Some("widget"), Hook::TaskbarWidgets),
+    // Command approval exists only with the taskbar add-on (ADR 0067).
+    hb("review_widget", None, Hook::TaskbarWidgets),
+];
+
+/// Hook check, tightened onto the outer [`check`] (the ratchet). A binding
+/// with a `collection` applies unless the request names a *different*
+/// collection as a string: a missing or malformed `collection` is treated as
+/// the bound one, so a bad request can never slip past the hook.
+pub fn check_hook(outer: Decision, hooks: HookSet, method: &str, params: &serde_json::Value) -> Decision {
+    let mut d = outer;
+    let named = params.get("collection").and_then(serde_json::Value::as_str);
+    for b in HOOKED.iter().filter(|b| b.method == method) {
+        let applies = match (b.collection, named) {
+            (Some(c), Some(n)) => c == n,
+            _ => true,
+        };
+        d.tighten(applies && !hooks.is_on(b.hook), b.hook.off_reason());
+    }
     d
 }
 
@@ -367,6 +422,93 @@ mod tests {
             check(&other, 1000, &cfg, "type_text"),
             Decision::Deny(_)
         ));
+    }
+
+    fn hooked_params(b: &HookBinding) -> serde_json::Value {
+        match b.collection {
+            Some(c) => serde_json::json!({ "collection": c, "op": "remove", "name": "w" }),
+            None => serde_json::Value::Null,
+        }
+    }
+
+    /// ADR 0066: every hook-bound method is refused with its hook off, naming
+    /// the hook, and passes the hook check with it on.
+    #[test]
+    fn hook_bound_methods_follow_their_hook() {
+        let cfg = Config::default();
+        for b in HOOKED {
+            let row = lookup(b.method).unwrap_or_else(|| panic!("{} has no gate row", b.method));
+            assert!(row.implemented, "{}", b.method);
+            let params = hooked_params(b);
+            let outer = check(&owner(), 1000, &cfg, b.method);
+            assert_eq!(outer, Decision::Allow, "{}", b.method);
+            let off = check_hook(outer, HookSet::default(), b.method, &params);
+            let Decision::Deny(why) = off else {
+                panic!("{} allowed with `{}` off", b.method, b.hook.name())
+            };
+            assert_eq!(why, format!("add-on hook `{}` is off", b.hook.name()));
+            // Every other hook on is not enough.
+            let mut others = HookSet::default();
+            for h in Hook::ALL.into_iter().filter(|h| *h != b.hook) {
+                others.insert(h);
+            }
+            assert!(matches!(
+                check_hook(outer, others, b.method, &params),
+                Decision::Deny(_)
+            ));
+            let mut on = HookSet::default();
+            on.insert(b.hook);
+            assert_eq!(
+                check_hook(outer, on, b.method, &params),
+                Decision::Allow,
+                "{}",
+                b.method
+            );
+            // The hook never rescues a denial the table made.
+            let other = Peer { uid: 1001, ..owner() };
+            let foreign = check(&other, 1000, &cfg, b.method);
+            assert!(matches!(
+                check_hook(foreign, on, b.method, &params),
+                Decision::Deny(_)
+            ));
+        }
+    }
+
+    /// A new `annotation_*` row cannot land without its hook binding, and a
+    /// `widget` write with a missing or malformed collection is still bound.
+    #[test]
+    fn hook_bindings_cover_the_surface() {
+        for e in TABLE.iter().filter(|e| e.method.starts_with("annotation_")) {
+            assert!(
+                HOOKED
+                    .iter()
+                    .any(|b| b.method == e.method && b.hook == Hook::Annotations),
+                "{} is not bound to `annotations`",
+                e.method
+            );
+        }
+        for params in [
+            serde_json::Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({"collection": 7}),
+        ] {
+            assert!(matches!(
+                check_hook(
+                    Decision::Allow,
+                    HookSet::default(),
+                    "set_config_collection",
+                    &params
+                ),
+                Decision::Deny(_)
+            ));
+        }
+        // Reads and unbound methods pass the hook check untouched.
+        for m in ["get_config", "set_config_value", "get_windows"] {
+            assert_eq!(
+                check_hook(Decision::Allow, HookSet::default(), m, &serde_json::Value::Null),
+                Decision::Allow
+            );
+        }
     }
 
     #[test]

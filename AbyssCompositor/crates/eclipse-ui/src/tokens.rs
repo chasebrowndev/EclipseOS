@@ -163,6 +163,9 @@ pub mod radius {
     pub const CHIP: f32 = 6.0;
     /// Bar-chart caps.
     pub const BAR: f32 = 2.5;
+    /// A badge: nearly square, so a label that classifies an object never
+    /// reads as a chip you can pick or a pill you can press.
+    pub const BADGE: f32 = 3.0;
 }
 
 pub mod space {
@@ -214,6 +217,14 @@ pub mod space {
     /// One row of chips. An empty lane keeps it, so moving the last chip
     /// out does not collapse the canvas under the pointer.
     pub const CHIP_H: f32 = 28.0;
+    /// A badge's padding: a line of micro mono with a hair of air around it.
+    pub const BADGE_Y: f32 = 2.0;
+    /// A badge's side padding.
+    pub const BADGE_X: f32 = 6.0;
+    /// Between the cells of a status grid, both axes.
+    pub const GRID_GAP: f32 = 10.0;
+    /// Between the lines inside a status cell or an edge note.
+    pub const LINE_GAP: f32 = 3.0;
 }
 
 pub mod size {

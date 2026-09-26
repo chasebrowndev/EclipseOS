@@ -41,6 +41,7 @@ pub fn dispatch(state: &mut AbyssState, outer: Decision, method: &str, params: &
         "set_config_value" => set_config_value(state, outer, params),
         "set_config_collection" => set_config_collection(state, outer, params),
         "validate_config" => validate_config(state, outer, params),
+        "review_widget" => review_widget(state, params),
         other => Err(RpcError::not_implemented(other)),
     }
 }
@@ -205,6 +206,49 @@ fn target_path(cfg: &Config, owner: schema::Owner) -> Option<std::path::PathBuf>
         .map(|s| s.path.clone())
 }
 
+/// A widget as `get_config` serves it (ADR 0067): the live entry plus
+/// `approval: "approved"` and `premade`.
+fn live_widget_json(catalog: &[crate::config::CustomWidget], w: &crate::config::CustomWidget) -> Value {
+    let mut v = widget_json(w);
+    let m = v.as_object_mut().expect("object");
+    m.insert("approval".into(), json!("approved"));
+    m.insert(
+        "premade".into(),
+        json!(crate::config::withhold::is_premade(catalog, w)),
+    );
+    v
+}
+
+/// A withheld widget: its name and why, and nothing that runs. No `exec`, no
+/// actions, no `kind`-specific fields, so no reader can run it.
+fn pending_widget_json(p: &crate::config::withhold::PendingWidget) -> Value {
+    json!({
+        "name": p.name,
+        "approval": "pending",
+        "premade": false,
+        "altered": p.kind == crate::config::withhold::PendingKind::Altered,
+    })
+}
+
+/// `collections.widget`: live and withheld entries in merged file order.
+fn widgets_json(state: &AbyssState) -> Vec<Value> {
+    let live = &state.config.bar.custom_widgets;
+    let withheld = &state.widget_approvals.withheld;
+    let mut out = Vec::with_capacity(live.len() + withheld.len());
+    let mut live_iter = live.iter();
+    for i in 0..live.len() + withheld.len() {
+        match withheld.iter().find(|(at, _)| *at == i) {
+            Some((_, p)) => out.push(pending_widget_json(p)),
+            None => {
+                if let Some(w) = live_iter.next() {
+                    out.push(live_widget_json(&state.config.catalog, w));
+                }
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------- get_config
 
 fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply {
@@ -285,11 +329,20 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
     }
     // Collections are abyss-owned and not keyed by path, so they ride along
     // only on an unfiltered abyss read; the capability check above covers them.
+    // Installed add-ons (ADR 0066) ride on every reply: they are not config
+    // and not a secret, and a pane that greys out a hooked control needs them
+    // next to the keys it is drawing.
+    let (addons, hooks_on) = crate::addons::json(&state.addons);
     if only_path.is_none() && only_file != Some(ConfigFile::Policy) {
-        let widgets: Vec<Value> = state.config.bar.custom_widgets.iter().map(widget_json).collect();
-        return Ok(json!({ "keys": keys, "collections": { "widget": widgets } }));
+        let widgets = widgets_json(state);
+        return Ok(json!({
+            "keys": keys,
+            "collections": { "widget": widgets },
+            "addons": addons,
+            "hooks_on": hooks_on,
+        }));
     }
-    Ok(json!({ "keys": keys }))
+    Ok(json!({ "keys": keys, "addons": addons, "hooks_on": hooks_on }))
 }
 
 // ----------------------------------------------------------- set_config_value
@@ -416,7 +469,7 @@ fn set_config_collection(state: &mut AbyssState, outer: Decision, params: &Value
     let (previous, after, references) = widget_edit(state, params, &before)?;
 
     if dry_run {
-        let errors = Config::check_text(&target, coll.owner, &after);
+        let errors = Config::check_text_with(&target, coll.owner, &after, &state.config.catalog);
         let errors: Vec<Value> = errors.iter().map(crate::config::error_json).collect();
         return Ok(json!({
             "file": target.display().to_string(),
@@ -453,7 +506,13 @@ fn widget_edit(
     let op = str_param(params, "op").ok_or_else(|| RpcError::invalid_params("op must be a string"))?;
     let e = |e: edit::EditError| RpcError::invalid_params(&e.to_string());
     let existing = |n: &str| state.config.bar.custom_widgets.iter().find(|w| w.name == n);
-    let previous = existing(name).map_or(Value::Null, widget_json);
+    let withheld = |n: &str| state.widget_approvals.withheld.iter().find(|(_, p)| p.name == n);
+    // A withheld widget's argv is never served, not even as `previous`.
+    let previous = match (existing(name), withheld(name)) {
+        (Some(w), _) => widget_json(w),
+        (None, Some((_, p))) => pending_widget_json(p),
+        (None, None) => Value::Null,
+    };
     let id = format!("{}{name}", schema::BAR_WIDGET_CUSTOM_PREFIX);
     let mut references = Vec::new();
 
@@ -483,7 +542,7 @@ fn widget_edit(
             if new_name == name {
                 return Err(RpcError::invalid_params("new_name is the current name"));
             }
-            if existing(new_name).is_some() {
+            if existing(new_name).is_some() || withheld(new_name).is_some() {
                 return Err(RpcError::invalid_params(&format!(
                     "widget {new_name:?} already exists"
                 )));
@@ -515,6 +574,74 @@ fn widget_edit(
     Ok((previous, after, references))
 }
 
+// -------------------------------------------------------- command approval
+
+/// `review_widget {name}` (ADR 0067; COMP-10 §3.11): re-queue a withheld
+/// widget's approval prompt. It carries no answer and cannot approve; a widget
+/// already queued or on screen is not queued again (`queued: false`).
+fn review_widget(state: &mut AbyssState, params: &Value) -> Reply {
+    use crate::config::withhold::{self, ReviewError};
+    let name = str_param(params, "name")
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| RpcError::invalid_params("name must be a non-empty string"))?;
+    match withhold::review(state, name) {
+        Ok(queued) => {
+            crate::trusted_ui::approval::schedule(state);
+            Ok(json!({ "name": name, "queued": queued }))
+        }
+        Err(ReviewError::Unknown) => Err(RpcError::invalid_params(&format!("no widget named {name:?}"))),
+        Err(ReviewError::NotPending) => Err(RpcError::invalid_params(&format!(
+            "widget {name:?} is not waiting on approval"
+        ))),
+    }
+}
+
+fn widgets_hooked(state: &AbyssState) -> Result<(), RpcError> {
+    if state.addons.hooks.is_on(crate::addons::Hook::TaskbarWidgets) {
+        Ok(())
+    } else {
+        Err(RpcError::denied(crate::addons::Hook::TaskbarWidgets.off_reason()))
+    }
+}
+
+/// Revert an altered premade: delete the owner's `widget "<name>"` block so
+/// the catalog block applies again. `custom:<name>` ids stay, since the
+/// catalog still defines the name. Same write path as `set_config_collection`
+/// (render, write, full reload, roll back on refusal, re-apply, `config`).
+///
+/// **Only the Trusted UI approval surface (`trusted_ui/`, ADR 0067) may call
+/// this**, on the owner's Revert. It is not a socket method; a test scans the
+/// source to keep every other caller out.
+pub fn revert_widget(state: &mut AbyssState, name: &str) -> Result<(), RpcError> {
+    widgets_hooked(state)?;
+    if !state.config.catalog.iter().any(|w| w.name == name) {
+        return Err(RpcError::invalid_params(&format!(
+            "no premade widget named {name:?}"
+        )));
+    }
+    let target = target_path(&state.config, schema::Owner::Abyss)
+        .ok_or_else(|| RpcError::invalid_params("no config file on the search path to write to"))?;
+    let before = std::fs::read_to_string(&target).unwrap_or_default();
+    let after = edit::remove_block(&before, edit::WIDGET, name)
+        .map_err(|e| RpcError::invalid_params(&e.to_string()))?;
+    commit(state, &target, &before, &after)
+}
+
+/// Remove a new command widget: delete the owner's block and its
+/// `custom:<name>` ids, exactly as `set_config_collection` `remove` does.
+///
+/// **Only the Trusted UI approval surface (`trusted_ui/`, ADR 0067) may call
+/// this**, on the owner's Remove. It is not a socket method; a test scans the
+/// source to keep every other caller out.
+pub fn remove_widget(state: &mut AbyssState, name: &str) -> Result<(), RpcError> {
+    widgets_hooked(state)?;
+    let target = target_path(&state.config, schema::Owner::Abyss)
+        .ok_or_else(|| RpcError::invalid_params("no config file on the search path to write to"))?;
+    let before = std::fs::read_to_string(&target).unwrap_or_default();
+    let (_, after, _) = widget_edit(state, &json!({ "op": "remove", "name": name }), &before)?;
+    commit(state, &target, &before, &after)
+}
+
 /// A `get_config` widget entry → the lines of its block. Only the JSON
 /// *shape* is checked here; what the values mean (a known source, an
 /// interval in range) is the parser's call on reload, so a refusal reads
@@ -532,6 +659,11 @@ fn widget_body(name: &str, entry: &Value) -> Result<Vec<String>, RpcError> {
         "on-click",
         "on-scroll-up",
         "on-scroll-down",
+        // Reported by `get_config` (ADR 0067), ignored on write: a pane may
+        // post back what it read, and approval is never set from here.
+        "approval",
+        "premade",
+        "altered",
     ];
     let bad = |m: String| RpcError::invalid_params(&m);
     let m = entry
@@ -774,7 +906,8 @@ fn validate_config(state: &mut AbyssState, outer: Decision, params: &Value) -> R
     };
 
     let path = target.unwrap_or_else(|| std::path::PathBuf::from("<text>"));
-    let errors = Config::check_text(&path, owner, &text);
+    // Same layers as the real load: the catalog defines `custom:<premade>`.
+    let errors = Config::check_text_with(&path, owner, &text, &state.config.catalog);
     let errors: Vec<Value> = errors.iter().map(crate::config::error_json).collect();
     Ok(json!({
         "valid": errors.is_empty(),
@@ -953,11 +1086,12 @@ mod tests {
             json!([
                 {"name": "cpu", "kind": "source", "exec": null, "interval-ms": null,
                  "source": "usage.cpu", "format": "{}%", "icon": null,
-                 "on-click": null, "on-scroll-up": null, "on-scroll-down": null},
+                 "on-click": null, "on-scroll-up": null, "on-scroll-down": null,
+                 "approval": "approved", "premade": false},
                 {"name": "weather", "kind": "exec", "exec": ["curl", "-s", "wttr.in"],
                  "interval-ms": 600000, "source": null, "format": null, "icon": null,
                  "on-click": ["xdg-open", "https://wttr.in"], "on-scroll-up": null,
-                 "on-scroll-down": null},
+                 "on-scroll-down": null, "approval": "approved", "premade": false},
             ])
         );
         let got = get_config(&mut h.state, Decision::Allow, &json!({"path": "bar.eye"}))
@@ -966,12 +1100,76 @@ mod tests {
         assert!(got.get("collections").is_none());
     }
 
+    /// ADR 0066: without `taskbar-widgets`, `widget` blocks load without error
+    /// but stay out of the live config (and so out of `collections.widget`),
+    /// with their `custom:` ids; with the hook they are live.
+    #[test]
+    fn widget_blocks_are_inert_without_the_hook() {
+        let text = "bar {\n    widgets { order \"custom:cpu\" \"clock\"; important \"custom:cpu\"; }\n    \
+                    widget \"cpu\" { source \"usage.cpu\"; format \"{}%\"; }\n}\n";
+        let (mut h, file) = widget_harness("inert", text);
+        h.state.addons.hooks = crate::addons::HookSet::default();
+        let next = Config::load(Some(&file));
+        assert!(
+            next.errors.iter().all(|e| e.file != file),
+            "a widget block became an error"
+        );
+        crate::config::apply_loaded(&mut h.state, next);
+        assert!(names(&h).is_empty());
+        assert_eq!(h.state.config.bar.widgets.order, ["clock"]);
+        assert!(h.state.config.bar.widgets.important.is_empty());
+        let got = get_config(&mut h.state, Decision::Allow, &json!({}))
+            .ok()
+            .unwrap();
+        assert_eq!(got["collections"]["widget"], json!([]));
+
+        h.state.addons.hooks.insert(crate::addons::Hook::TaskbarWidgets);
+        crate::config::apply_loaded(&mut h.state, Config::load(Some(&file)));
+        assert_eq!(names(&h), ["cpu"]);
+        assert_eq!(h.state.config.bar.widgets.order, ["custom:cpu", "clock"]);
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// `get_config` reports installed add-ons and the hooks that are on, on
+    /// every reply shape.
+    #[test]
+    fn get_config_reports_addons() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let got = get_config(&mut h.state, Decision::Allow, &json!({}))
+            .ok()
+            .unwrap();
+        assert_eq!(
+            (got["addons"].clone(), got["hooks_on"].clone()),
+            (json!([]), json!([]))
+        );
+
+        h.state.addons.manifests.push(crate::addons::Manifest {
+            id: "oracle-eyes".into(),
+            name: "Oracle Eyes".into(),
+            hooks: vec!["annotations".into(), "region-select".into()],
+            capture_requested: true,
+        });
+        h.state.addons.hooks.insert(crate::addons::Hook::Annotations);
+        h.state.addons.hooks.insert(crate::addons::Hook::RegionSelect);
+        for params in [json!({}), json!({"path": "bar.eye"})] {
+            let got = get_config(&mut h.state, Decision::Allow, &params).ok().unwrap();
+            assert_eq!(
+                got["addons"],
+                json!([{"id": "oracle-eyes", "name": "Oracle Eyes",
+                        "hooks": ["annotations", "region-select"], "capture_requested": true}])
+            );
+            assert_eq!(got["hooks_on"], json!(["annotations", "region-select"]));
+        }
+    }
+
     /// A harness whose config is `text` in a scratch file, loaded as `--config`.
     fn widget_harness(
         tag: &str,
         text: &str,
     ) -> (crate::shell::focus::state_tests::Harness, std::path::PathBuf) {
         let mut h = crate::shell::focus::state_tests::harness();
+        // The collection only exists with its add-on hook on (ADR 0066).
+        h.state.addons.hooks.insert(crate::addons::Hook::TaskbarWidgets);
         let dir = std::env::temp_dir().join(format!("abyss-coll-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("abyss.kdl");
@@ -1012,17 +1210,6 @@ mod tests {
             .unwrap_or_else(|e| panic!("{}", e.message));
         assert_eq!(got["applied"], json!(true));
         assert_eq!(got["previous"], Value::Null);
-        assert_eq!(names(&h), ["cpu", "weather"]);
-        // get_config serves back exactly what was written.
-        let read = get_config(&mut h.state, Decision::Allow, &json!({}))
-            .ok()
-            .unwrap();
-        assert_eq!(read["collections"]["widget"][1], entry);
-        let text = std::fs::read_to_string(&file).unwrap();
-        assert!(text.starts_with(
-            "// mine\nbar {\n    widget \"cpu\" { source \"usage.cpu\"; format \"{}%\"; } // c\n"
-        ));
-        assert!(text.contains("    widget \"weather\" {\n        exec \"curl\" \"-s\" \"wttr.in\"\n        interval-ms 600000\n"));
         assert_eq!(
             crate::ipc::capture::take()
                 .iter()
@@ -1030,6 +1217,33 @@ mod tests {
                 .count(),
             1
         );
+        // ADR 0067: a new command widget is written but withheld.
+        assert_eq!(names(&h), ["cpu"]);
+        let pending = h.state.widget_approvals.queue[0].clone();
+        assert_eq!(
+            (pending.name.as_str(), pending.kind),
+            ("weather", crate::config::withhold::PendingKind::New)
+        );
+        // The owner approves it (stand-in for the Trusted UI surface).
+        let store = file.parent().unwrap().join("approvals.kdl");
+        crate::config::approvals::set_test_path(Some(store));
+        crate::config::approvals::record_approval("weather", pending.hash).unwrap();
+        crate::config::withhold::reapply(&mut h.state);
+        assert_eq!(names(&h), ["cpu", "weather"]);
+        assert!(h.state.widget_approvals.queue.is_empty());
+        // get_config serves back exactly what was written.
+        let read = get_config(&mut h.state, Decision::Allow, &json!({}))
+            .ok()
+            .unwrap();
+        let mut served = entry.clone();
+        served["approval"] = json!("approved");
+        served["premade"] = json!(false);
+        assert_eq!(read["collections"]["widget"][1], served);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.starts_with(
+            "// mine\nbar {\n    widget \"cpu\" { source \"usage.cpu\"; format \"{}%\"; } // c\n"
+        ));
+        assert!(text.contains("    widget \"weather\" {\n        exec \"curl\" \"-s\" \"wttr.in\"\n        interval-ms 600000\n"));
 
         // Replace, as a stream; previous is the old entry.
         let got = coll(
@@ -1038,10 +1252,10 @@ mod tests {
         )
         .unwrap_or_else(|e| panic!("{}", e.message));
         assert_eq!(got["previous"]["kind"], json!("exec"));
-        assert!(matches!(
-            h.state.config.bar.custom_widgets[1].kind,
-            crate::config::CustomWidgetKind::Stream { .. }
-        ));
+        // A changed definition is a new hash: withheld again until approved.
+        assert_eq!(names(&h), ["cpu"]);
+        assert_eq!(h.state.widget_approvals.withheld[0].1.name, "weather");
+        crate::config::approvals::set_test_path(None);
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 
@@ -1094,7 +1308,7 @@ mod tests {
         let (mut h, file) = widget_harness("move", WIDGETS);
         coll(
             &mut h,
-            json!({"op": "upsert", "name": "a", "entry": {"kind": "exec", "exec": ["true"]}}),
+            json!({"op": "upsert", "name": "a", "entry": {"kind": "source", "source": "usage.cpu"}}),
         )
         .unwrap_or_else(|e| panic!("{}", e.message));
         assert_eq!(names(&h), ["cpu", "a"]);
@@ -1180,6 +1394,224 @@ mod tests {
         assert_eq!(row.kind, gate::Kind::Command);
         assert!(row.implemented);
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    // ------------------------------------------------ command approval (ADR 0067)
+
+    const PREMADE: &str = "bar {\n    widget \"load\" { exec \"cut\" \"-d\" \" \" \"-f1\" \"/proc/loadavg\"; interval-ms 5000; }\n}\n";
+
+    /// A harness with a scratch catalog holding [`PREMADE`], a scratch
+    /// approvals store, the hook on, and the owner's file `text`, applied
+    /// through the inotify reload path (`watch::reload_now`).
+    fn approval_harness(
+        tag: &str,
+        text: &str,
+    ) -> (crate::shell::focus::state_tests::Harness, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("abyss-approve-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("widgets")).unwrap();
+        std::fs::write(dir.join("widgets/premade.kdl"), PREMADE).unwrap();
+        crate::config::catalog::set_test_dir(Some(dir.join("widgets")));
+        crate::config::approvals::set_test_path(Some(dir.join("approvals.kdl")));
+        let file = dir.join("abyss.kdl");
+        std::fs::write(&file, text).unwrap();
+        let mut h = crate::shell::focus::state_tests::harness();
+        h.state.addons.hooks.insert(crate::addons::Hook::TaskbarWidgets);
+        h.state.config = Config::load_with(Some(&file), true);
+        let mine: Vec<_> = h.state.config.errors.iter().filter(|e| e.file == file).collect();
+        assert!(mine.is_empty(), "{mine:?}");
+        crate::config::withhold::reapply(&mut h.state);
+        (h, file)
+    }
+
+    fn approval_done(file: &std::path::Path) {
+        crate::config::catalog::set_test_dir(None);
+        crate::config::approvals::set_test_path(None);
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    fn served(h: &mut crate::shell::focus::state_tests::Harness) -> Value {
+        get_config(&mut h.state, Decision::Allow, &json!({}))
+            .ok()
+            .unwrap()["collections"]["widget"]
+            .clone()
+    }
+
+    fn rewrite(h: &mut crate::shell::focus::state_tests::Harness, file: &std::path::Path, text: &str) {
+        std::fs::write(file, text).unwrap();
+        crate::config::withhold::reapply(&mut h.state);
+    }
+
+    #[test]
+    fn a_catalog_block_is_live_without_an_approval() {
+        let (mut h, file) = approval_harness(
+            "premade",
+            "bar {\n    widgets { order \"custom:load\" \"clock\"; }\n}\n",
+        );
+        assert_eq!(names(&h), ["load"]);
+        assert!(h.state.widget_approvals.queue.is_empty());
+        assert_eq!(h.state.config.bar.widgets.order, ["custom:load", "clock"]);
+        let w = served(&mut h);
+        assert_eq!(w[0]["approval"], json!("approved"));
+        assert_eq!(w[0]["premade"], json!(true));
+        assert_eq!(w[0]["exec"][0], json!("cut"));
+        approval_done(&file);
+    }
+
+    #[test]
+    fn an_edited_premade_is_withheld_until_approved_and_again_after_an_edit() {
+        let altered = "bar {\n    widgets { order \"custom:load\"; }\n    \
+                       widget \"load\" { exec \"sh\" \"-c\" \"secret-argv\"; interval-ms 5000; }\n}\n";
+        let (mut h, file) = approval_harness("altered", altered);
+        assert!(names(&h).is_empty());
+        // The id stays and draws nothing.
+        assert_eq!(h.state.config.bar.widgets.order, ["custom:load"]);
+        let q = &h.state.widget_approvals.queue;
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].kind, crate::config::withhold::PendingKind::Altered);
+        assert_eq!(q[0].command_text, "sh -c secret-argv");
+        let hash = q[0].hash;
+        let w = served(&mut h);
+        assert_eq!(
+            w,
+            json!([{"name": "load", "approval": "pending", "premade": false, "altered": true}])
+        );
+        // A withheld widget's argv never reaches get_config.
+        let all = get_config(&mut h.state, Decision::Allow, &json!({}))
+            .ok()
+            .unwrap();
+        assert!(!all.to_string().contains("secret-argv"));
+
+        // A store entry for exactly this hash makes it live.
+        crate::config::approvals::record_approval("load", hash).unwrap();
+        crate::config::withhold::reapply(&mut h.state);
+        assert_eq!(names(&h), ["load"]);
+        assert!(h.state.widget_approvals.queue.is_empty());
+        let w = served(&mut h);
+        assert_eq!(
+            (w[0]["approval"].clone(), w[0]["premade"].clone()),
+            (json!("approved"), json!(false))
+        );
+
+        // A further edit is a new hash: withheld again.
+        rewrite(&mut h, &file, &altered.replace("secret-argv", "other"));
+        assert!(names(&h).is_empty());
+        assert_eq!(h.state.widget_approvals.queue.len(), 1);
+        assert_ne!(h.state.widget_approvals.queue[0].hash, hash);
+
+        // Revert drops the owner's block; the catalog block is live again.
+        revert_widget(&mut h.state, "load").unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(names(&h), ["load"]);
+        assert!(h.state.widget_approvals.queue.is_empty());
+        assert_eq!(served(&mut h)[0]["premade"], json!(true));
+        assert!(!std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("widget \"load\""));
+        assert_eq!(h.state.config.bar.widgets.order, ["custom:load"]);
+        approval_done(&file);
+    }
+
+    /// The `set_config_collection` commit path withholds exactly as the
+    /// reload path does; Not now holds across reloads; `review_widget`
+    /// re-queues once and never stacks.
+    #[test]
+    fn a_new_command_widget_is_withheld_and_review_cannot_stack_prompts() {
+        use crate::config::withhold::{self, PendingKind};
+        let (mut h, file) = approval_harness("new", WIDGETS);
+        coll(
+            &mut h,
+            json!({"op": "upsert", "name": "x", "entry": {"kind": "exec", "exec": ["hidden-argv"]}}),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(names(&h), ["load", "cpu"]);
+        assert!(!served(&mut h).to_string().contains("hidden-argv"));
+        assert_eq!(h.state.widget_approvals.queue.len(), 1);
+        assert_eq!(h.state.widget_approvals.queue[0].kind, PendingKind::New);
+
+        // One prompt at a time; review while it is on screen queues nothing.
+        let shown = withhold::next_pending(&mut h.state).expect("queued");
+        assert_eq!(shown.name, "x");
+        assert!(withhold::next_pending(&mut h.state).is_none());
+        let r = dispatch(
+            &mut h.state,
+            Decision::Allow,
+            "review_widget",
+            &json!({"name": "x"}),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(r, json!({"name": "x", "queued": false}));
+        assert!(h.state.widget_approvals.queue.is_empty());
+
+        // Not now (what the surface does), then a reload: not re-queued.
+        h.state.widget_approvals.declined.insert(("x".into(), shown.hash));
+        withhold::prompt_closed(&mut h.state);
+        crate::config::withhold::reapply(&mut h.state);
+        assert!(h.state.widget_approvals.queue.is_empty());
+        assert!(withhold::is_declined(&h.state, "x", &shown.hash));
+        assert!(withhold::next_pending(&mut h.state).is_none());
+
+        // review_widget re-queues it once; asking again does not stack.
+        let r = dispatch(
+            &mut h.state,
+            Decision::Allow,
+            "review_widget",
+            &json!({"name": "x"}),
+        )
+        .ok()
+        .unwrap();
+        assert_eq!(r["queued"], json!(true));
+        assert!(!withhold::is_declined(&h.state, "x", &shown.hash));
+        for _ in 0..3 {
+            let r = dispatch(
+                &mut h.state,
+                Decision::Allow,
+                "review_widget",
+                &json!({"name": "x"}),
+            )
+            .ok()
+            .unwrap();
+            assert_eq!(r["queued"], json!(false));
+        }
+        assert_eq!(h.state.widget_approvals.queue.len(), 1);
+
+        // Errors: unknown name, a live widget, a missing name.
+        for (params, needle) in [
+            (json!({"name": "nope"}), "no widget named"),
+            (json!({"name": "load"}), "not waiting on approval"),
+            (json!({"name": "cpu"}), "not waiting on approval"),
+            (json!({}), "name must be"),
+        ] {
+            let e = dispatch(&mut h.state, Decision::Allow, "review_widget", &params).unwrap_err();
+            assert_eq!(e.code, super::super::INVALID_PARAMS);
+            assert!(e.message.contains(needle), "{}", e.message);
+        }
+
+        // Remove drops the block and its ids; nothing is left to prompt for.
+        remove_widget(&mut h.state, "x").unwrap_or_else(|e| panic!("{}", e.message));
+        assert!(h.state.widget_approvals.withheld.is_empty());
+        assert!(h.state.widget_approvals.queue.is_empty());
+        assert!(!std::fs::read_to_string(&file).unwrap().contains("hidden-argv"));
+        approval_done(&file);
+    }
+
+    /// With `taskbar-widgets` off the catalog is not read, nothing is queued,
+    /// and `widget` blocks are dropped with their ids as before ADR 0067.
+    #[test]
+    fn without_the_hook_the_catalog_is_not_read() {
+        let text =
+            "bar {\n    widgets { order \"custom:x\" \"clock\"; }\n    widget \"x\" { exec \"true\"; }\n}\n";
+        let (mut h, file) = approval_harness("off", text);
+        h.state.addons.hooks = crate::addons::HookSet::default();
+        let next = Config::load_with(Some(&file), false);
+        assert!(next.catalog.is_empty());
+        assert!(next.errors.iter().all(|e| e.file != file));
+        crate::config::apply_loaded(&mut h.state, next);
+        assert!(names(&h).is_empty());
+        assert_eq!(h.state.config.bar.widgets.order, ["clock"]);
+        assert!(h.state.widget_approvals.queue.is_empty());
+        assert!(h.state.widget_approvals.withheld.is_empty());
+        assert_eq!(served(&mut h), json!([]));
+        approval_done(&file);
     }
 
     #[test]

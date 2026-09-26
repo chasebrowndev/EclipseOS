@@ -169,7 +169,10 @@ revocable capabilities:
   name that is absent simply does not exist. Oracle-Eyes may call
   `annotation_create` / `annotation_update` / `annotation_destroy` /
   `annotation_clear`, and subscribe to the `keybind` event kind (and later
-  `damage`). Nothing else.
+  `damage`). Nothing else. abyss refuses these methods, and ignores the
+  annotation binds and region select, unless the add-on manifest
+  (`dist/addon.kdl`, installed as `/usr/share/eclipse/addons/oracle-eyes.kdl`)
+  turns on the `annotations` and `region-select` hooks (ADR 0066).
 - **Pixels — `ext-image-copy-capture-v1`**, behind the existing fail-closed
   capture gate, enabled by one line in `policy.kdl`:
 

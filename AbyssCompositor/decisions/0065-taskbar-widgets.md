@@ -146,9 +146,8 @@ Turning the key off closes the stream.
   when settled, MPRIS mapping, `/proc` parsing, exec timeout and caps.
 
 ## Revisit when
-- The owner settles how an exec widget written over the socket is approved
-  before it runs (a per-widget hash with an accept-or-revert prompt is
-  proposed; where the prompt is drawn is undecided).
+- ~~The owner settles how an exec widget written over the socket is approved
+  before it runs.~~ Settled by ADR 0067 (command approval, COMP-10 §3.11).
 - A spec (COMP-10 or a privacy volume) defines audio capture policy: the monitor
   tap moves under it.
 - Anyone proposes loading widget code in-process: that is ADR 0041's question
