@@ -26,3 +26,11 @@ path = "src/bin/eclipse-screensaver.rs"
 zbus = "5.19"
 eclipse-ipc = { path = "../eclipse-ipc" }
 serde_json.workspace = true
+# ADR 0065. The audio service (default sink, per-app mute, the visualizer's
+# monitor tap) speaks the PulseAudio native protocol, which pipewire-pulse
+# serves. Pure Rust: no libpulse, no bindgen/libclang (the `pipewire` crate
+# needs both), and its `protocol` module is synchronous, so the service runs
+# it on its own blocking thread like every other watcher here. MIT.
+pulseaudio = "0.3"
+# ADR 0065: the monitor tap's band reduction. MIT.
+realfft = "3"

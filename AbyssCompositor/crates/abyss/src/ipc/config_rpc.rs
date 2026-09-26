@@ -141,8 +141,34 @@ fn default_json(d: &schema::Dv) -> Value {
         D::Float(f) => json!(f),
         D::Str(s) => json!(s),
         D::EmptyList => json!([] as [&str; 0]),
+        D::List(l) => json!(l),
         D::Color(c) => json!(color_hex(*c)),
     }
+}
+
+/// One `bar { widget "<name>" { … } }` block as `get_config` serves it under
+/// `collections.widget` (ADR 0065). Every field is always present so a client
+/// never has to tell "absent" from "null"; the shape is documented on the
+/// `widget` collection in `schema.rs` and in `docs/CONFIG.md`.
+fn widget_json(w: &crate::config::CustomWidget) -> Value {
+    use crate::config::CustomWidgetKind as K;
+    let (kind, exec, interval, source, format) = match &w.kind {
+        K::Exec { argv, interval_ms } => ("exec", json!(argv), json!(interval_ms), Value::Null, Value::Null),
+        K::Stream { argv } => ("stream", json!(argv), Value::Null, Value::Null, Value::Null),
+        K::Source { source, format } => ("source", Value::Null, Value::Null, json!(source), json!(format)),
+    };
+    json!({
+        "name": w.name,
+        "kind": kind,
+        "exec": exec,
+        "interval-ms": interval,
+        "source": source,
+        "format": format,
+        "icon": w.icon,
+        "on-click": w.on_click,
+        "on-scroll-up": w.on_scroll_up,
+        "on-scroll-down": w.on_scroll_down,
+    })
 }
 
 /// The file on disk a key would be written to.
@@ -255,6 +281,12 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
             );
         }
         keys.push(row);
+    }
+    // Collections are abyss-owned and not keyed by path, so they ride along
+    // only on an unfiltered abyss read; the capability check above covers them.
+    if only_path.is_none() && only_file != Some(ConfigFile::Policy) {
+        let widgets: Vec<Value> = state.config.bar.custom_widgets.iter().map(widget_json).collect();
+        return Ok(json!({ "keys": keys, "collections": { "widget": widgets } }));
     }
     Ok(json!({ "keys": keys }))
 }
@@ -642,6 +674,44 @@ mod tests {
         )
         .is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `widget` blocks are served under `collections.widget` with every field
+    /// present, and not at all on a filtered read.
+    #[test]
+    fn widget_blocks_are_served_as_a_collection() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let text = "bar {\n    widgets { order \"custom:cpu\" \"custom:weather\" \"clock\"; }\n    \
+                    widget \"cpu\" { source \"usage.cpu\"; format \"{}%\"; }\n    \
+                    widget \"weather\" { exec \"curl\" \"-s\" \"wttr.in\"; interval-ms \"10m\"; on-click \"xdg-open\" \"https://wttr.in\"; }\n}\n";
+        let dir = std::env::temp_dir().join(format!("abyss-widget-coll-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+        std::fs::write(&file, text).unwrap();
+        h.state.config = Config::load(Some(&file));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mine: Vec<_> = h.state.config.errors.iter().filter(|e| e.file == file).collect();
+        assert!(mine.is_empty(), "{mine:?}");
+
+        let got = get_config(&mut h.state, Decision::Allow, &json!({}))
+            .ok()
+            .expect("abyss is readable");
+        assert_eq!(
+            got["collections"]["widget"],
+            json!([
+                {"name": "cpu", "kind": "source", "exec": null, "interval-ms": null,
+                 "source": "usage.cpu", "format": "{}%", "icon": null,
+                 "on-click": null, "on-scroll-up": null, "on-scroll-down": null},
+                {"name": "weather", "kind": "exec", "exec": ["curl", "-s", "wttr.in"],
+                 "interval-ms": 600000, "source": null, "format": null, "icon": null,
+                 "on-click": ["xdg-open", "https://wttr.in"], "on-scroll-up": null,
+                 "on-scroll-down": null},
+            ])
+        );
+        let got = get_config(&mut h.state, Decision::Allow, &json!({"path": "bar.eye"}))
+            .ok()
+            .expect("bar.eye is readable");
+        assert!(got.get("collections").is_none());
     }
 
     #[test]

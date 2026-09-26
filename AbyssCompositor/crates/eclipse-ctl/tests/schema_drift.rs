@@ -4,7 +4,7 @@
 //! this test compares it against the schema it mirrors. `abyss` is a
 //! dev-dependency: it is here and nowhere else.
 
-use abyss::config::schema::{Owner, RULE_ACTIONS, TABLE};
+use abyss::config::schema::{self, Owner, RULE_ACTIONS, TABLE};
 
 /// Keep in sync with `migrate::POLICY_KEYS`.
 const POLICY_KEYS: &[&str] = &[
@@ -17,6 +17,34 @@ const POLICY_KEYS: &[&str] = &[
 
 /// Keep in sync with `migrate::POLICY_RULE_ACTIONS`.
 const POLICY_RULE_ACTIONS: &[&str] = &["sensitivity", "app-trust", "seat-compat", "no-agent"];
+
+/// Keep in sync with `migrate::LEGACY_TRAY_BUILTINS`.
+const LEGACY_TRAY_BUILTINS: &[&str] = &["network", "bluetooth", "battery", "volume"];
+
+/// Keep in sync with `migrate::BAR_WIDGET_DEFAULT_ORDER`.
+const BAR_WIDGET_DEFAULT_ORDER: &[&str] = &[
+    "now-playing",
+    "volume",
+    "network",
+    "bluetooth",
+    "battery",
+    "tray",
+    "clock",
+];
+
+#[test]
+fn migrate_knows_the_widget_ids() {
+    assert_eq!(
+        LEGACY_TRAY_BUILTINS,
+        schema::LEGACY_TRAY_BUILTINS,
+        "migrate::LEGACY_TRAY_BUILTINS has drifted from the schema; update it and this test"
+    );
+    assert_eq!(
+        BAR_WIDGET_DEFAULT_ORDER,
+        schema::BAR_WIDGET_DEFAULT_ORDER,
+        "migrate::BAR_WIDGET_DEFAULT_ORDER has drifted from the schema; update it and this test"
+    );
+}
 
 #[test]
 fn migrate_knows_every_policy_owned_key() {
