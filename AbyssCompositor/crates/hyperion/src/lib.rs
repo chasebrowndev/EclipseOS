@@ -13,9 +13,15 @@ pub mod clock;
 pub mod conn;
 pub mod eye;
 pub mod icons;
+pub mod layout;
 pub mod model;
+pub mod motion;
+#[cfg(debug_assertions)]
+pub mod preview;
 pub mod radio;
+pub mod services;
 pub mod view;
+pub mod widgets;
 
 /// Bar height in logical pixels, and therefore its exclusive zone.
 ///

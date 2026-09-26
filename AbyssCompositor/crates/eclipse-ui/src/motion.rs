@@ -373,6 +373,40 @@ impl<T: Animatable> Animated<T> {
         }
     }
 
+    /// Let go of a value a gesture was holding: move toward `target` starting
+    /// at `velocity` (units per second), the speed the finger had when it
+    /// lifted.
+    ///
+    /// A separate door from [`set_target`](Animated::set_target) because a
+    /// dragged value has no drive of its own — the gesture snapped it every
+    /// frame — so there is no spring whose speed a retarget could keep. Under
+    /// [`Curve::Spring`] the speed is carried, capped at what a critically
+    /// damped spring can absorb without passing the target: a fling lands, it
+    /// does not bounce. Tween curves carry no speed and start from rest.
+    pub fn fling(&mut self, target: T, velocity: f32, now: Instant) {
+        let target = target.to_f32();
+        if self.motion.snaps() || self.motion.curve != Curve::Spring {
+            self.drive = Drive::Rest;
+            self.set_target(T::from_f32(target), now);
+            return;
+        }
+        let mut s = Spring::new(self.value, self.motion.duration);
+        let e0 = self.value - target;
+        // Moving toward the target faster than ω·|e| is what carries a
+        // critically damped spring past it; away from it, any speed is fine.
+        let v = if velocity.is_finite() { velocity } else { 0.0 };
+        let toward = v * e0 < 0.0;
+        s.velocity = if toward {
+            v.clamp(-s.omega * e0.abs(), s.omega * e0.abs())
+        } else {
+            v
+        };
+        s.retarget(target);
+        self.target = target;
+        self.drive = Drive::Spring(s);
+        self.last = Some(now);
+    }
+
     /// Jump to `value` and stop.
     pub fn snap(&mut self, value: T) {
         let v = value.to_f32();
@@ -642,5 +676,26 @@ mod tests {
         assert!(tw.done(t0 + DUR));
         let zero = Tween::new(0.0, 10.0, t0, Duration::ZERO, Curve::EaseOut);
         assert_eq!(zero.value_at(t0), 10.0);
+    }
+
+    #[test]
+    fn a_fling_keeps_its_speed_but_never_passes_the_target() {
+        let t0 = Instant::now();
+        let mut a = Animated::new(0.0, Motion::DEFAULT);
+        a.snap(40.0);
+        // Thrown hard toward 100: carried, capped, and lands without overshoot.
+        a.fling(100.0, 1.0e6, t0);
+        assert!(a.velocity() > 0.0);
+        let (samples, _) = run(&mut a, t0, DUR * 10);
+        assert!(samples.iter().all(|v| *v <= 100.0), "{samples:?}");
+        assert!(samples.windows(2).all(|w| w[1] >= w[0]), "{samples:?}");
+        assert_eq!(a.value(), 100.0);
+        // Thrown away from the target: the speed is kept and the spring turns
+        // it around.
+        a.fling(0.0, 5000.0, t0);
+        a.tick(t0 + FRAME);
+        assert!(a.value() > 100.0);
+        let (_, _) = run(&mut a, t0 + FRAME, DUR * 10);
+        assert_eq!(a.value(), 0.0);
     }
 }

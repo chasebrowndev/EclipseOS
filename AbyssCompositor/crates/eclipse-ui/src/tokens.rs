@@ -426,10 +426,10 @@ pub mod bar {
     pub const WIDGET_X: f32 = 8.0;
     /// Between items inside a core (art and title, meter and meter).
     pub const WIDGET_GAP: f32 = 8.0;
-    /// Corner radius of the shell. Tighter than [`RADIUS_CELL`]: a widget is
-    /// an instrument, not a task chip, and the squarer corner is half of what
-    /// tells the two apart at a glance (the grip is the other half).
-    pub const RADIUS_WIDGET: f32 = 7.0;
+    /// Corner radius of the shell: the task chip's own. A widget is a glass
+    /// cell of the same family as the window chips beside it, by the owner's
+    /// direction (ADR 0065); the grip is what tells the two apart.
+    pub const RADIUS_WIDGET: f32 = RADIUS_CELL;
 
     /// The visualizer: sixteen bands, each a hard 2px column with 2px of air,
     /// mirrored about the row's midline.
@@ -488,6 +488,16 @@ pub mod bar {
 pub mod motion {
     /// How long a movement takes to settle.
     pub const DURATION_MS: u64 = 220;
+    /// One frame of the bar's motion clock, while anything moves.
+    pub const FRAME_MS: u64 = 16;
+    /// Travel under which a grip's press and release is a tap, not a drag.
+    pub const TAP_SLOP: f32 = 4.0;
+    /// How far ahead a released drag is projected along its velocity, in
+    /// seconds, to choose the rest it snaps to: a flick carries past the
+    /// midpoint the finger never reached.
+    pub const FLING_LOOKAHEAD_S: f32 = 0.12;
+    /// Weight of the newest sample in a drag's smoothed velocity.
+    pub const VELOCITY_BLEND: f32 = 0.6;
 }
 
 /// A context menu: the mark rail that opens on a right-click.
