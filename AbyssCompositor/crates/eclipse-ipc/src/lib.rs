@@ -143,7 +143,7 @@ type Result<T> = std::result::Result<T, Error>;
 pub mod addons;
 pub use addons::{Addon, Addons};
 pub mod widgets;
-pub use widgets::{Widget, WidgetKind, WidgetOp, WriteResult};
+pub use widgets::{Approval, Widget, WidgetKind, WidgetOp, WidgetStatus, WriteResult};
 
 /// Longest line accepted from the compositor. Matches the server's own cap;
 /// anything longer is a bug on one side and we drop the connection rather

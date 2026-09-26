@@ -90,6 +90,9 @@ pub const TABLE: &[Entry] = &[
     // Collection entries (`bar { widget … }`, ADR 0065): the same authority as
     // `set_config_value`, by the same reasoning, and the same per-file check.
     e("set_config_collection", Kind::Command, true),
+    // Re-queue a withheld command widget's approval prompt (ADR 0067). Command:
+    // it carries no answer and can only show the owner a prompt again.
+    e("review_widget", Kind::Command, true),
     // Agent lifecycle: the protocol itself is Phase 2 (COMP-08).
     e("get_agents", Kind::Privileged, false),
     e("pause_agent", Kind::Privileged, false),
@@ -192,6 +195,8 @@ pub const HOOKED: &[HookBinding] = &[
     hb("annotation_clear", None, Hook::Annotations),
     // Every `widget` write (upsert, remove, rename, move) is this one method.
     hb("set_config_collection", Some("widget"), Hook::TaskbarWidgets),
+    // Command approval exists only with the taskbar add-on (ADR 0067).
+    hb("review_widget", None, Hook::TaskbarWidgets),
 ];
 
 /// Hook check, tightened onto the outer [`check`] (the ratchet). A binding

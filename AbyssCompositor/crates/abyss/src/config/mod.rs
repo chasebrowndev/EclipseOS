@@ -2,6 +2,8 @@
 //! KDL configuration (COMP-13 §1).
 //!
 //! Search path, later files overriding earlier ones:
+//!   0. `/usr/share/eclipse/widgets/*.kdl`, the premade widget catalog, only
+//!      `bar { widget … }` and only while `taskbar-widgets` is on (ADR 0067)
 //!   1. `/etc/eclipse/abyss.kdl`
 //!   2. `$XDG_CONFIG_HOME/eclipse/abyss.kdl`
 //!   3. `$XDG_CONFIG_HOME/eclipse/abyss.d/*.kdl` (sorted)
@@ -15,9 +17,13 @@
 //! and exits; hot-reload ([`watch::reload_now`]) keeps the last good config and
 //! emits a `config-error` IPC event. Never half-apply.
 
+pub mod approvals;
+pub mod catalog;
 pub mod edit;
 pub mod schema;
 pub mod watch;
+pub mod widget_hash;
+pub mod withhold;
 
 use std::path::{Path, PathBuf};
 
@@ -796,7 +802,9 @@ pub struct Touchpad {
 pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
     debug_assert!(next.errors.is_empty(), "apply_loaded got an invalid config");
     let mut next = next;
-    drop_unhooked_widgets(&mut next, state.addons.hooks);
+    // ADR 0066/0067: without the hook, widget blocks go; with it, unapproved
+    // command widgets are withheld and queued for the owner's prompt.
+    withhold::settle(state, &mut next);
     let sources: Vec<String> = next
         .sources
         .iter()
@@ -1011,6 +1019,12 @@ pub struct Config {
     /// `--config <path>`, if one was given. Reload must honour it rather than
     /// falling back to the search path.
     pub explicit: Option<PathBuf>,
+    /// The premade catalog was read as the lowest layer (ADR 0067). Set from
+    /// the `taskbar-widgets` hook; reload keeps it.
+    pub catalog_layer: bool,
+    /// The catalog blocks as shipped, before any user block replaced one of
+    /// the same name: the hash reference for `withhold::settle`.
+    pub catalog: Vec<CustomWidget>,
     /// Validation refusals collected during the last load. Non-empty means the
     /// config is invalid: startup exits, hot-reload keeps the last good one.
     pub errors: Vec<ConfigError>,
@@ -1047,6 +1061,8 @@ impl Default for Config {
             window_rules: Vec::new(),
             sources: Vec::new(),
             explicit: None,
+            catalog_layer: false,
+            catalog: Vec::new(),
             errors: Vec::new(),
             cur: None,
             pending_custom: Vec::new(),
@@ -1401,6 +1417,14 @@ impl Config {
     /// total (COMP-13 §1.2): any refusal lands in `errors`, and the caller
     /// decides — startup exits, hot-reload keeps the last good config.
     pub fn load(explicit: Option<&Path>) -> Self {
+        Self::load_with(explicit, false)
+    }
+
+    /// [`Config::load`], with the premade widget catalog read first as the
+    /// lowest layer when `catalog_layer` is set (ADR 0067). Its blocks count
+    /// as defined for `custom:<name>` ids, and a later block of the same name
+    /// replaces one, exactly like a block in `/etc` would be replaced.
+    pub fn load_with(explicit: Option<&Path>, catalog_layer: bool) -> Self {
         // An explicit `--config` names one abyss.kdl; policy stays on the
         // search path, since a flag must not be able to swap the policy file.
         let files: Vec<Source> = match explicit {
@@ -1420,8 +1444,14 @@ impl Config {
         };
         let mut cfg = Config {
             explicit: explicit.map(|p| p.to_path_buf()),
+            catalog_layer,
             ..Config::default()
         };
+        if catalog_layer {
+            cfg.catalog = catalog::load();
+            cfg.bar.custom_widgets = cfg.catalog.clone();
+            cfg.widget_blocks = cfg.catalog.iter().map(|w| w.name.clone()).collect();
+        }
         let mut binds_from_file = Vec::new();
         let mut any = false;
         for f in &files {
@@ -1488,7 +1518,7 @@ impl Config {
     /// Re-read the same sources. The inotify watcher (`config::watch`) calls
     /// this and must check `errors` before applying the result.
     pub fn reload(&self) -> Self {
-        Self::load(self.explicit.as_deref())
+        Self::load_with(self.explicit.as_deref(), self.catalog_layer)
     }
 
     /// Validate `text` as if it were the file at `path` owned by `owner`,
@@ -1498,6 +1528,18 @@ impl Config {
     /// same code the loader runs: a GUI that previews an edit must be told
     /// exactly what a file edit would have been told, down to the wording.
     pub fn check_text(path: &Path, owner: schema::Owner, text: &str) -> Vec<ConfigError> {
+        Self::check_text_with(path, owner, text, &[])
+    }
+
+    /// [`Config::check_text`], with `known` widget names (the premade
+    /// catalog's) counting as defined for `custom:<name>` ids, as they do in
+    /// the real load.
+    pub fn check_text_with(
+        path: &Path,
+        owner: schema::Owner,
+        text: &str,
+        known: &[CustomWidget],
+    ) -> Vec<ConfigError> {
         let doc = match text.parse::<KdlDocument>() {
             Ok(d) => d,
             Err(e) => {
@@ -1527,6 +1569,7 @@ impl Config {
                 },
                 text.to_owned(),
             )),
+            widget_blocks: known.iter().map(|w| w.name.clone()).collect(),
             ..Config::default()
         };
         cfg.apply(&doc, &mut Vec::new());
@@ -3604,7 +3647,7 @@ mod tests {
     }
 
     /// Apply `text` as `a.kdl`, returning the config and its refusals.
-    fn widgets_cfg(text: &str) -> Config {
+    pub(crate) fn widgets_cfg(text: &str) -> Config {
         let doc: KdlDocument = text.parse().unwrap();
         let mut cfg = Config {
             cur: Some((abyss_src("a.kdl"), text.to_owned())),

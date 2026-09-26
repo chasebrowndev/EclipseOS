@@ -281,8 +281,22 @@ pub fn json(a: &Addons) -> (serde_json::Value, serde_json::Value) {
 pub fn start(state: &mut AbyssState, handle: &LoopHandle<'static, AbyssState>) {
     state.addons = Addons::load();
     log_hooks(&state.addons);
-    // The config was loaded before the hooks were known.
-    crate::config::drop_unhooked_widgets(&mut state.config, state.addons.hooks);
+    // The config was loaded before these hooks were read (main.rs reads them
+    // once too, for the catalog layer). Bring the catalog layer in line if a
+    // package changed in between, then withhold or drop widget blocks.
+    let widgets = state.addons.hooks.is_on(Hook::TaskbarWidgets);
+    if state.config.catalog_layer != widgets {
+        let next = crate::config::Config::load_with(state.config.explicit.as_deref(), widgets);
+        if next.errors.is_empty() {
+            state.config = next;
+        } else {
+            state.config.catalog_layer = widgets;
+        }
+    }
+    let mut cfg = std::mem::take(&mut state.config);
+    crate::config::withhold::settle(state, &mut cfg);
+    state.config = cfg;
+    crate::config::catalog::start(handle);
 
     // SAFETY: `inotify_init1` takes only flags and returns a new fd or -1.
     let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
@@ -392,6 +406,7 @@ pub fn apply(state: &mut AbyssState, next: Addons) {
         // one apply path. Forget our own-write hashes: the files did not
         // change, but what the live config should hold did.
         state.config_written.clear();
+        state.config.catalog_layer = now.is_on(Hook::TaskbarWidgets);
         crate::config::watch::reload_now(state);
     } else {
         // `get_config` reports add-ons; clients refetch on `config`.

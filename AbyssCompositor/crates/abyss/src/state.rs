@@ -298,6 +298,11 @@ pub struct AbyssState {
     pub addons: crate::addons::Addons,
     /// A debounced re-read of the add-on directory is armed.
     pub addons_pending: bool,
+    /// A debounced re-read after a widget catalog change is armed.
+    pub catalog_pending: bool,
+    /// Withheld command widgets, the prompt queue and the session's Not now
+    /// set (ADR 0067). Plain data; see `config::withhold`.
+    pub widget_approvals: crate::config::withhold::WidgetApprovals,
 }
 
 impl AbyssState {
@@ -528,6 +533,8 @@ impl AbyssState {
             config_written: std::collections::HashMap::new(),
             addons: crate::addons::Addons::default(),
             addons_pending: false,
+            catalog_pending: false,
+            widget_approvals: Default::default(),
         }
     }
 

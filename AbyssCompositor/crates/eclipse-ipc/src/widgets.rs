@@ -121,6 +121,57 @@ pub fn widgets_from_config(reply: &Value) -> Vec<Widget> {
         .unwrap_or_default()
 }
 
+/// Whether a command widget may run (ADR 0067).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Approval {
+    /// Live: declarative, an unedited premade, or approved by the owner.
+    Approved,
+    /// Withheld until the owner answers the compositor-drawn prompt. The
+    /// entry carries no command fields, so [`Widget::from_json`] skips it.
+    Pending,
+}
+
+/// A `collections.widget` entry's approval state, present for every entry,
+/// withheld or not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WidgetStatus {
+    pub name: String,
+    pub approval: Approval,
+    /// Identical to the catalog block of the same name.
+    pub premade: bool,
+    /// Pending because a premade was edited (false for a new command).
+    pub altered: bool,
+}
+
+impl WidgetStatus {
+    /// A missing `approval` (a compositor predating ADR 0067) reads as
+    /// approved: such a compositor withholds nothing.
+    pub fn from_json(v: &Value) -> Option<WidgetStatus> {
+        let approval = match v.get("approval").and_then(Value::as_str) {
+            None | Some("approved") => Approval::Approved,
+            Some("pending") => Approval::Pending,
+            Some(_) => return None,
+        };
+        let flag = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
+        Some(WidgetStatus {
+            name: v.get("name")?.as_str()?.to_owned(),
+            approval,
+            premade: flag("premade"),
+            altered: flag("altered"),
+        })
+    }
+}
+
+/// Every `collections.widget` entry's status, in file order, withheld ones
+/// included.
+pub fn widget_statuses_from_config(reply: &Value) -> Vec<WidgetStatus> {
+    reply
+        .pointer("/collections/widget")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(WidgetStatus::from_json).collect())
+        .unwrap_or_default()
+}
+
 /// A collection write, as `set_config_collection` params.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WidgetOp<'a> {
@@ -191,6 +242,24 @@ impl Client {
         Ok(widgets_from_config(&reply))
     }
 
+    /// Every widget's approval state, withheld ones included.
+    pub fn widget_statuses(&mut self) -> Result<Vec<WidgetStatus>> {
+        let reply = self.call("get_config", json!({"file": "abyss"}))?;
+        Ok(widget_statuses_from_config(&reply))
+    }
+
+    /// `review_widget`: bring back a withheld widget's approval prompt. Only
+    /// re-queues it; the answer is the owner's, on the prompt. `false` when it
+    /// was already queued or on screen. A live or unknown name is an
+    /// [`Error::Rpc`].
+    pub fn review_widget(&mut self, name: &str) -> Result<bool> {
+        let reply = self.call("review_widget", json!({ "name": name }))?;
+        reply
+            .get("queued")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| Error::Protocol(format!("unexpected review_widget reply: {reply}")))
+    }
+
     /// Apply one collection write. `dry_run` validates without writing.
     pub fn widget_write(&mut self, op: &WidgetOp<'_>, dry_run: bool) -> Result<WriteResult> {
         let reply = self.call("set_config_collection", op.params(dry_run))?;
@@ -232,6 +301,32 @@ mod tests {
             widgets_from_config(&json!({"keys": [], "collections": {"widget": [src, {"kind": "?"}]}})),
             vec![w]
         );
+    }
+
+    #[test]
+    fn statuses_cover_live_and_withheld_entries() {
+        let mut live = weather().to_json();
+        live["approval"] = json!("approved");
+        live["premade"] = json!(false);
+        let pending = json!({"name": "load", "approval": "pending", "premade": false, "altered": true});
+        let old = json!({"name": "cpu", "kind": "source", "source": "usage.cpu"});
+        let reply = json!({"collections": {"widget": [live, pending, old, {"name": "x", "approval": "?"}]}});
+        // The typed widget list skips the pending entry: it has no command.
+        assert_eq!(widgets_from_config(&reply).len(), 2);
+        assert_eq!(widgets_from_config(&reply)[0], weather());
+        let s = widget_statuses_from_config(&reply);
+        assert_eq!(s.len(), 3);
+        assert_eq!((s[0].approval, s[0].premade), (Approval::Approved, false));
+        assert_eq!(
+            s[1],
+            WidgetStatus {
+                name: "load".into(),
+                approval: Approval::Pending,
+                premade: false,
+                altered: true
+            }
+        );
+        assert_eq!(s[2].approval, Approval::Approved);
     }
 
     #[test]

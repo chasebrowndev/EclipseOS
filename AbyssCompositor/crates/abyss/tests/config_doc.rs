@@ -202,7 +202,12 @@ fn generate() -> String {
          manifest in `/usr/share/eclipse/addons/` turns on hooks; no key in either file\n\
          can. `get_config` reports them on every reply as `addons: [{\"id\", \"name\",\n\
          \"hooks\": [..], \"capture_requested\": bool}]` and `hooks_on: [..]`, and\n\
-         `eclipse-ctl addons` prints the same.\n\n",
+         `eclipse-ctl addons` prints the same.\n\n\
+         With the `taskbar-widgets` hook on, the premade widget catalog in\n\
+         `/usr/share/eclipse/widgets/*.kdl` is read first, below `/etc/eclipse/abyss.kdl`;\n\
+         a catalog file may hold only `bar { widget … }`. A command widget that is not\n\
+         an unedited premade runs only after you approve it in a compositor-drawn\n\
+         prompt (ADR 0067); see `widget` below and the `review_widget` method.\n\n",
     );
 
     for owner in [Owner::Abyss, Owner::Policy] {

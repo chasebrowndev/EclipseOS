@@ -120,7 +120,7 @@ nothing listening renders empty, never crashes.
 | eclipse-toasts | `get_config` (`decoration.rounding`, startup) | — | session: serves `org.freedesktop.Notifications` |
 | eclipse-center | `get_config` (`decoration.rounding`, startup) | — | system: NetworkManager, BlueZ, UPower (read), logind `login1.Manager` / `login1.Session` |
 | eclipse-launcher | `get_config` (`misc.terminal-command`, `decoration.rounding`, startup) | — | — |
-| eclipse-settings | `get_config {schema: true}`, `set_config_value`, `set_config_collection` (`widget`, `bar.widgets.*`), `get_outputs`, `set_output`, `calibrate_output` | `output`, `config_error`, `config` | system: NetworkManager, BlueZ (Network pane only). session: SNI host via `tray::observe` (Taskbar pane only; never serves the watcher, cannot click) |
+| eclipse-settings | `get_config {schema: true}`, `set_config_value`, `set_config_collection` (`widget`, `bar.widgets.*`), `review_widget` (re-show a withheld command widget's approval prompt; ADR 0067), `get_outputs`, `set_output`, `calibrate_output` | `output`, `config_error`, `config` | system: NetworkManager, BlueZ (Network pane only). session: SNI host via `tray::observe` (Taskbar pane only; never serves the watcher, cannot click) |
 | eclipse-policy-viewer | `get_config` (`decoration.rounding`, startup) | — | — |
 | eclipse-secret-prompt | — | — | system: NetworkManager. session: calls `org.eclipse.Services.Pairing` |
 | eclipse-screensaver | `set_idle_inhibit` | — | session: serves `org.freedesktop.ScreenSaver` |
