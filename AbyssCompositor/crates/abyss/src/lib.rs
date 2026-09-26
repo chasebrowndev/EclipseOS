@@ -16,4 +16,5 @@ pub mod render;
 pub mod session;
 pub mod shell;
 pub mod state;
+pub mod trusted_ui;
 pub mod xwayland;

@@ -301,6 +301,21 @@ fn redraw(
             0..0,
             crate::render::capture::indicator(out, state.capture_active()),
         );
+        // A trusted prompt (COMP-10) is front-most of all.
+        elements.splice(
+            0..0,
+            crate::trusted_ui::elements(
+                renderer,
+                &mut state.trusted_ui,
+                state.lock.locked,
+                out,
+                state
+                    .space
+                    .output_geometry(out)
+                    .map(|g| g.loc)
+                    .unwrap_or_default(),
+            ),
+        );
         // Overscan compensation (COMP-03 §2) — same wrap as the DRM path, so a
         // nested dev session shows exactly what the panel will.
         let (overscan, calibrating) = state

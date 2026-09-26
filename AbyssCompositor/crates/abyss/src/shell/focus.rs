@@ -191,10 +191,7 @@ pub(crate) fn pointer_focus_ctx(state: &AbyssState, pos: Point<f64, Logical>) ->
         layer_interactivity: crate::shell::focused_layer(state)
             .map(|l| l.cached_state().keyboard_interactivity),
         drag_active: crate::input::grabs::drag_active(state),
-        // TODO(step 6: trusted UI): `trusted_ui/` does not exist yet, so no
-        // prompt can hold the seat and `false` is correct today. This becomes
-        // a read of the prompt grab when COMP-10 lands.
-        prompt_grab_active: false,
+        prompt_grab_active: crate::trusted_ui::holds_seat(state),
         focus_follows_mouse_across_outputs: g.focus_follows_mouse_across_outputs,
         unfocus_on_empty_workspace: g.unfocus_on_empty_workspace,
         focus_follows_mouse_layers: g.focus_follows_mouse_layers,
