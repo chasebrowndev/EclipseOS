@@ -327,14 +327,14 @@ pub fn category(app: &App, id: &WidgetId) -> String {
     }
 }
 
-fn parts<'a>(app: &'a App, id: &WidgetId, frame: ShellFrame) -> Parts<'a> {
+fn parts<'a>(app: &'a App, bar: &crate::app::Bar, id: &WidgetId, frame: ShellFrame) -> Parts<'a> {
     let cfg = &app.widget_cfg;
     match id {
         WidgetId::NowPlaying => now_playing::view(
             &app.widgets.now_playing,
             &cfg.now_playing,
             frame,
-            app.motion.art.value(),
+            bar.motion.art.value(),
         ),
         WidgetId::SystemUsage => system_usage::view(&app.widgets.usage, &cfg.usage, frame),
         WidgetId::Volume => volume::view(&app.widgets.volume, &cfg.volume, frame),
@@ -362,19 +362,19 @@ pub struct Cell<'a> {
 
 /// The widget at `index` of `bar.widgets.order`, on its shell, at the width
 /// its animation has reached. `None` once it has animated all the way out.
-pub fn cell(app: &App, index: usize) -> Option<Cell<'_>> {
-    let mut c = shell(app, index)?;
+pub fn cell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cell<'a>> {
+    let mut c = shell(app, bar, index)?;
     if app.widget_cfg.order.get(index) == Some(&WidgetId::Volume) {
         c.element = volume::wheel(&app.widgets.volume, &app.widget_cfg.volume, c.element);
     }
     Some(c)
 }
 
-fn shell(app: &App, index: usize) -> Option<Cell<'_>> {
+fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cell<'a>> {
     let id = app.widget_cfg.order.get(index)?;
-    let input = app.widget_inputs.get(index)?;
+    let input = bar.widget_inputs.get(index)?;
     let key = id.key();
-    let anim = app.motion.widgets.get(&key)?;
+    let anim = bar.motion.widgets.get(&key)?;
     let presence = anim.presence.value().clamp(0.0, 1.0);
     if presence <= 0.0 {
         return None;
@@ -391,7 +391,7 @@ fn shell(app: &App, index: usize) -> Option<Cell<'_>> {
         },
         presence,
     };
-    let Parts { core, revealed } = parts(app, id, frame);
+    let Parts { core, revealed } = parts(app, bar, id, frame);
 
     if !input.grip() {
         // Nothing to drag: an important widget with no revealed section is a
@@ -412,7 +412,7 @@ fn shell(app: &App, index: usize) -> Option<Cell<'_>> {
         });
     }
 
-    let live = app.motion.drag.as_ref().is_some_and(|d| d.key == key);
+    let live = bar.motion.drag.as_ref().is_some_and(|d| d.key == key);
     let (press, drag_key, release) = (key.clone(), key.clone(), key);
     let grip = parts::drag_bar()
         .state(if live { Grip::Active } else { Grip::Rest })

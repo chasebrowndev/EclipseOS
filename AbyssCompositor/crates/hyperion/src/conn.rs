@@ -200,9 +200,8 @@ impl Conn {
     /// `workspace` is the 1-based wire index, exactly as `get_workspaces`
     /// reported it.
     /// Every output the compositor knows about, as `(id, connector)`, plus the
-    /// id of the focused one. The supervisor uses the list to decide how many
-    /// bars to run; a bound bar uses it once to learn its own id from the
-    /// connector name it was started with.
+    /// id of the focused one. The list decides which outputs have a bar
+    /// (`app::reconcile`) and resolves each bar's connector name to its id.
     pub fn outputs(&mut self) -> (Vec<(u64, String)>, Option<u64>) {
         self.ensure();
         let Some(v) = self.call("get_outputs", json!({})) else {

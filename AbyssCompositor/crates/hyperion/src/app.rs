@@ -5,9 +5,16 @@
 //! triggers one refetch of the three lists rather than a delta merge: the
 //! events carry enough to reconstruct the state, but a refetch is one round
 //! trip on a socket we already hold and keeps the model single-sourced.
+//!
+//! One process draws a bar on every output. [`App`] holds what every bar
+//! shares — the snapshot, the services' readings, the configuration — and
+//! [`App::bars`] one [`Bar`] per output: its surface, fold, layout and
+//! motion. The set follows the compositor's output list ([`reconcile`]).
 
-use std::time::Instant;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
+use iced::window::Id;
 use iced::{Subscription, Task};
 use iced_layershell::actions::IcedNewPopupSettings;
 use iced_layershell::reexport::PopupGravity;
@@ -90,11 +97,15 @@ pub enum Kind {
 }
 
 /// The one open popup. One at a time, as on any desktop: opening a second
-/// closes the first, whichever kind each of them is.
+/// closes the first, whichever kind each of them is and whichever bar it
+/// hangs from.
 #[derive(Debug)]
 pub struct Popup {
     /// The popup surface. Also the key `view` branches on.
-    pub id: iced::window::Id,
+    pub id: Id,
+    /// The bar it hangs from: its parent surface, and the bar a message from
+    /// inside it acts for.
+    pub owner: Id,
     pub kind: Kind,
 }
 
@@ -195,6 +206,13 @@ pub enum Message {
     Frame,
     /// Debug previews: the next step of `HYPERION_PREVIEW_SCRIPT`.
     Script(u32),
+    /// A message a surface's view produced, and that surface. The view is
+    /// one function for every bar; this is how a click knows which bar it
+    /// was on. See [`owner`].
+    On(Id, Box<Message>),
+    /// Look at the output list again: an output seen for the first time has
+    /// waited out [`SETTLE`].
+    Screens,
 }
 
 pub struct App {
@@ -209,28 +227,18 @@ pub struct App {
     /// the view. A directory walk in the draw path would be a frame hitch per
     /// window.
     pub icons: Icons,
-    /// The bar's own surface, learned from the first event that names it. The
-    /// popup needs a parent and `iced_layershell` does not hand us one.
-    pub main: Option<iced::window::Id>,
-    /// Last known pointer position on the bar, in bar-local coordinates.
-    pub cursor: iced::Point,
+    /// One bar per output, keyed by its layer surface.
+    pub bars: HashMap<Id, Bar>,
+    /// `--output NAME`: one bar on that connector and no reconciling. A
+    /// debug path; the unit runs without it.
+    pub pin: Option<String>,
+    /// Outputs listed but not yet given a bar, and when each was first
+    /// seen. See [`reconcile`].
+    pub seen: HashMap<String, Instant>,
+    /// A [`Message::Screens`] is already on its way.
+    pub checking: bool,
+    /// The one open popup, on whichever bar opened it.
     pub popup: Option<Popup>,
-    /// The bar's own width in logical pixels, as the compositor last sized the
-    /// surface. Zero until the first event names it.
-    ///
-    /// This is what makes the task strip's condensation a function of *room*
-    /// rather than of a window count: the strip subtracts the fixed zones from
-    /// it and divides what is left. A bar that did not know its own width
-    /// could only ever guess, which is how chips came to run off the end.
-    pub width: f32,
-    /// The connector this bar is bound to (`DP-1`), from `--output`. Empty
-    /// when the bar was started without one — a single-output dev run — in
-    /// which case nothing is filtered out and nothing ever folds.
-    pub output_name: String,
-    /// The numeric id of that output, resolved once against `get_outputs`.
-    /// The compositor's workspace and window rows are keyed by this, not by
-    /// the connector, so it is what the views filter on.
-    pub output_id: u64,
     /// The `bar.*` settings, re-read on every successful config reload.
     pub bar: BarConfig,
     /// The edge the surface is anchored to, fixed at startup like the anchor
@@ -243,22 +251,18 @@ pub struct App {
     pub focused_output: u64,
     pub fullscreen: bool,
     pub idle: bool,
-    /// Where the bar is between shown, folded and hidden.
-    pub fold: FoldState,
     /// What the beacon last said, and where that has the pupil right now;
     /// [`Eye::Off`](crate::eye::Eye::Off) while `bar.eye` is off or nothing is
     /// listening.
     pub iris: crate::eye::Iris,
-    /// The live eye's own layer surface, while there is one. See
-    /// [`sync_eye`].
-    pub eye_surface: Option<iced::window::Id>,
     /// Radio lists and tray items — what the drawers draw beyond the one-line
     /// status feed. See [`crate::radio`].
     pub radios: crate::radio::Radios,
-    /// The tray item whose menu a right-click asked for. The entries arrive
-    /// later; they open a sheet only if this still names the item, so a menu
-    /// that answers after the user moved on never pops up.
-    pub pending_menu: Option<String>,
+    /// The tray item whose menu a right-click asked for, and the bar it was
+    /// asked on. The entries arrive later; they open a sheet only if this
+    /// still names the item, so a menu that answers after the user moved on
+    /// never pops up.
+    pub pending_menu: Option<(Id, String)>,
     /// `bar.tray.*`: which tray entries are pinned, in what order, and which
     /// are hidden.
     pub tray: crate::conn::TrayConfig,
@@ -280,8 +284,46 @@ pub struct App {
     /// `bar.widgets.*`, `bar.motion.*` and the `widget` blocks, re-read on
     /// every successful config reload.
     pub widget_cfg: widgets::Config,
-    /// What the widgets' services last said.
+    /// What the widgets' services last said. Shared: every bar draws the
+    /// same readings, and a click on any of them acts once.
     pub widgets: widgets::State,
+    /// The audio service's playback streams, for the per-window mute.
+    pub streams: Vec<eclipse_services::audio::Stream>,
+    /// Debug previews only: when a widget fixture started. A fixture bar
+    /// neither refetches nor starts services — the fixture stands in for
+    /// both.
+    pub fixture: Option<Instant>,
+}
+
+/// One output's bar: everything that depends on *where* it is drawn.
+pub struct Bar {
+    /// The bar's layer surface, chosen when it was asked for. Also a popup's
+    /// parent.
+    pub id: Id,
+    /// The connector this bar is bound to (`DP-1`).
+    pub output_name: String,
+    /// The numeric id of that output, re-resolved by name against
+    /// `get_outputs`. The compositor's workspace and window rows are keyed
+    /// by this, not by the connector, so it is what the views filter on. `0`
+    /// while unresolved: nothing is filtered and nothing folds.
+    pub output_id: u64,
+    /// Last known pointer position on the bar, in bar-local coordinates.
+    pub cursor: iced::Point,
+    /// The bar's own width in logical pixels, as the compositor last sized the
+    /// surface. Zero until the first event names it.
+    ///
+    /// This is what makes the task strip's condensation a function of *room*
+    /// rather than of a window count: the strip subtracts the fixed zones from
+    /// it and divides what is left. A bar that did not know its own width
+    /// could only ever guess, which is how chips came to run off the end.
+    pub width: f32,
+    /// The surface has been configured. A fold is pushed to it only after.
+    pub mapped: bool,
+    /// Where the bar is between shown, folded and hidden.
+    pub fold: FoldState,
+    /// The live eye's own layer surface, while there is one. See
+    /// [`sync_eye`].
+    pub eye_surface: Option<Id>,
     /// The solver's widget inputs as of the last [`relayout`], one per
     /// `widget_cfg.order` entry: what a cell's shell is drawn against.
     pub widget_inputs: Vec<layout::WidgetIn>,
@@ -289,12 +331,26 @@ pub struct App {
     pub layout: layout::Layout,
     /// How far everything has got there.
     pub motion: crate::motion::Bar,
-    /// The audio service's playback streams, for the per-window mute.
-    pub streams: Vec<eclipse_services::audio::Stream>,
-    /// Debug previews only: when a widget fixture started. A fixture bar
-    /// neither refetches nor starts services — the fixture stands in for
-    /// both.
-    pub fixture: Option<Instant>,
+}
+
+impl Bar {
+    pub fn new(id: Id, output_name: String, output_id: u64, motion: eclipse_ui::motion::Motion) -> Self {
+        let mut m = crate::motion::Bar::default();
+        m.set_motion(motion);
+        Bar {
+            id,
+            output_name,
+            output_id,
+            cursor: iced::Point::ORIGIN,
+            width: 0.0,
+            mapped: false,
+            fold: FoldState::default(),
+            eye_surface: None,
+            widget_inputs: Vec::new(),
+            layout: layout::Layout::default(),
+            motion: m,
+        }
+    }
 }
 
 /// A popup a debug preview opens by itself, since nothing can click.
@@ -457,9 +513,6 @@ impl App {
     pub fn new() -> Self {
         let mut conn = Conn::new();
         let snapshot = conn.snapshot();
-        // `App::new` is the daemon builder's `fn() -> App`, so the connector
-        // cannot be passed as an argument; `main` puts it here instead.
-        let output_name = std::env::var(crate::OUTPUT_ENV).unwrap_or_default();
         let bar = conn.bar_config();
         let tray = conn.tray_config();
         let bar_radius = conn
@@ -468,15 +521,10 @@ impl App {
         let menu_radius = conn
             .glass_radius("decoration.rounding")
             .unwrap_or(eclipse_ui::tokens::radius::CARD);
-        let (outputs, _) = conn.outputs();
-        let output_id = outputs
-            .iter()
-            .find(|(_, name)| *name == output_name)
-            .map(|(id, _)| *id)
-            .unwrap_or(0);
+        // The focused output now, so a bar opened on any other one folds
+        // from its first frame rather than on the next output event.
+        let (_, focused) = conn.outputs();
         let widget_cfg = conn.widgets_config();
-        let mut motion = crate::motion::Bar::default();
-        motion.set_motion(widget_cfg.motion);
         let mut app = App {
             conn,
             snapshot,
@@ -484,20 +532,17 @@ impl App {
             bluetooth: Bluetooth::default(),
             battery: None,
             icons: Icons::new(),
-            main: None,
-            cursor: iced::Point::ORIGIN,
+            bars: HashMap::new(),
+            pin: None,
+            seen: HashMap::new(),
+            checking: false,
             popup: None,
-            width: 0.0,
-            output_name,
-            output_id,
             edge: bar.position,
             bar,
-            focused_output: 0,
+            focused_output: focused.unwrap_or(0),
             fullscreen: false,
             idle: false,
-            fold: FoldState::default(),
             iris: crate::eye::Iris::default(),
-            eye_surface: None,
             radios: crate::radio::Radios::default(),
             pending_menu: None,
             tray,
@@ -506,9 +551,6 @@ impl App {
             menu_radius,
             widget_cfg,
             widgets: widgets::State::default(),
-            widget_inputs: Vec::new(),
-            layout: layout::Layout::default(),
-            motion,
             streams: Vec::new(),
             fixture: None,
         };
@@ -604,7 +646,8 @@ fn preview(app: &mut App) {
             crate::radio::preview_menu(),
         )),
         "widgets" | "widgets-idle" => {
-            crate::preview::widgets(app, which == "widgets-idle");
+            let output = app.conn.outputs().0.first().map_or(0, |o| o.0);
+            crate::preview::widgets(app, which == "widgets-idle", output);
             None
         }
         _ => None,
@@ -664,20 +707,265 @@ fn wait(client: Option<&eclipse_ipc::Client>, timeout: std::time::Duration) {
     }
 }
 
-/// Handle one message, then re-solve the bar against whatever it changed.
+/// How long an output seen for the first time waits before it gets a bar.
+///
+/// A bar asks for its surface by connector name, which the toolkit resolves
+/// against the `xdg_output` names it has been told. A hotplugged output's
+/// name arrives a round trip after the output itself; a surface asked for
+/// before then lands on whichever output is focused — a second bar there and
+/// none on the new one. At boot the names are already in, so nothing waits.
+pub const SETTLE: Duration = Duration::from_millis(250);
+
+/// What to do about the output list. See [`reconcile`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Plan {
+    /// Connectors to open a bar on.
+    pub open: Vec<String>,
+    /// Bars whose output is gone.
+    pub close: Vec<Id>,
+    /// An output is still settling: look again after [`SETTLE`].
+    pub wait: bool,
+}
+
+/// The pure half of following the outputs: no `App`, no clock, no socket.
+///
+/// `open` is the bars there are, by connector; `live` is the compositor's
+/// output list; `seen` carries each unbarred output's first sighting from
+/// one call to the next, and an output gets its bar once it has been listed
+/// for `settle`.
+///
+/// An empty `live` is no answer — the socket is not up yet, or has just
+/// dropped — and never reads as "every monitor went away". A renamed output
+/// is its old name's removal and its new name's addition.
+pub fn reconcile(
+    open: &[(Id, &str)],
+    live: &[(u64, String)],
+    seen: &mut HashMap<String, Instant>,
+    now: Instant,
+    settle: Duration,
+) -> Plan {
+    let mut plan = Plan::default();
+    if live.is_empty() {
+        return plan;
+    }
+    let listed = |name: &str| live.iter().any(|(_, n)| n == name);
+    for (id, name) in open {
+        if !listed(name) {
+            plan.close.push(*id);
+        }
+    }
+    // An output that came and went while settling starts over next time.
+    seen.retain(|name, _| listed(name));
+    for (_, name) in live {
+        if open.iter().any(|(_, n)| n == name) || plan.open.contains(name) {
+            seen.remove(name);
+            continue;
+        }
+        let first = *seen.entry(name.clone()).or_insert(now);
+        if now.saturating_duration_since(first) >= settle {
+            seen.remove(name);
+            plan.open.push(name.clone());
+        } else {
+            plan.wait = true;
+        }
+    }
+    plan
+}
+
+/// Point every bar at its output's current numeric id. Outputs are
+/// hotplugged and renumbered; an id resolved once goes stale and strands the
+/// bar folded forever. An empty list is no answer and changes nothing.
+fn resolve(bars: &mut HashMap<Id, Bar>, live: &[(u64, String)]) {
+    for bar in bars.values_mut() {
+        if let Some((id, _)) = live.iter().find(|(_, name)| *name == bar.output_name) {
+            bar.output_id = *id;
+        }
+    }
+}
+
+/// The daemon's boot: the shared state, and a bar on every output there is —
+/// or, with `--output`, on that one alone.
+pub fn boot(pin: Option<String>) -> (App, Task<Message>) {
+    let mut app = App::new();
+    let task = match pin.clone() {
+        Some(name) => {
+            let (live, _) = app.conn.outputs();
+            let output_id = live.iter().find(|(_, n)| *n == name).map_or(0, |(id, _)| *id);
+            open_bar(&mut app, name, output_id)
+        }
+        None => screens(&mut app, Duration::ZERO),
+    };
+    app.pin = pin;
+    (app, task)
+}
+
+/// Bring the bars in line with the compositor's outputs: a bar opens on an
+/// output that has settled, and closes on one that has gone, and no other
+/// bar is touched.
+fn screens(app: &mut App, settle: Duration) -> Task<Message> {
+    let (live, _) = app.conn.outputs();
+    resolve(&mut app.bars, &live);
+    if app.pin.is_some() {
+        return Task::none();
+    }
+    let names: Vec<(Id, String)> = app.bars.values().map(|b| (b.id, b.output_name.clone())).collect();
+    let open: Vec<(Id, &str)> = names.iter().map(|(id, n)| (*id, n.as_str())).collect();
+    let plan = reconcile(&open, &live, &mut app.seen, Instant::now(), settle);
+    let mut tasks = Vec::new();
+    for id in plan.close {
+        tasks.push(close_bar(app, id));
+    }
+    for name in plan.open {
+        let output_id = live.iter().find(|(_, n)| *n == name).map_or(0, |(id, _)| *id);
+        tasks.push(open_bar(app, name, output_id));
+    }
+    if plan.wait && !app.checking {
+        app.checking = true;
+        tasks.push(recheck());
+    }
+    Task::batch(tasks)
+}
+
+/// A [`Message::Screens`] after [`SETTLE`]. A thread and a oneshot: the
+/// runtime has no timer of its own in our feature set.
+fn recheck() -> Task<Message> {
+    let (tx, rx) = iced::futures::channel::oneshot::channel::<()>();
+    std::thread::spawn(move || {
+        std::thread::sleep(SETTLE);
+        let _ = tx.send(());
+    });
+    Task::future(async move {
+        let _ = rx.await;
+        Message::Screens
+    })
+}
+
+/// Ask for a bar on `name` and start its state.
+///
+/// The first frame's geometry is the one every fold step asks for, so the
+/// first frame and a settled unfold cannot disagree. The anchor is the edge
+/// read at startup (`bar.position` is `reload: restart`), plus both sides.
+pub fn open_bar(app: &mut App, name: String, output_id: u64) -> Task<Message> {
+    use iced_layershell::reexport::{
+        Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
+    };
+    let id = Id::unique();
+    let bar = Bar::new(id, name.clone(), output_id, app.widget_cfg.motion);
+    let geometry = bar.fold.geometry(app.edge);
+    app.bars.insert(id, bar);
+    let edge = match app.edge {
+        BarPosition::Top => Anchor::Top,
+        BarPosition::Bottom => Anchor::Bottom,
+    };
+    Task::done(Message::NewLayerShell {
+        settings: NewLayerShellSettings {
+            // Width 0 means "as wide as the output, less the side margins".
+            // The pill fills the surface and the float gap is margin (see
+            // `FoldState::geometry`); the zone plus the edge margin is the
+            // full strip, so a window opened afterwards starts below the bar
+            // rather than under it.
+            size: Some((0, geometry.height)),
+            layer: Layer::Top,
+            anchor: edge | Anchor::Left | Anchor::Right,
+            exclusive_zone: Some(geometry.zone),
+            margin: Some(geometry.margin),
+            // The bar is pointer-driven. It must never take the keyboard
+            // away from the window the human is typing into.
+            keyboard_interactivity: KeyboardInteractivity::None,
+            // By name: a null output would be resolved to whichever monitor
+            // happens to be focused.
+            output_option: OutputOption::OutputName(name),
+            events_transparent: false,
+            namespace: None,
+        },
+        id,
+    })
+}
+
+/// Forget a bar and close its surface, and with it its popup and its eye.
+fn close_bar(app: &mut App, id: Id) -> Task<Message> {
+    let Some(bar) = app.bars.remove(&id) else {
+        return Task::none();
+    };
+    let mut tasks = vec![Task::done(Message::RemoveWindow(id))];
+    tasks.extend(bar.eye_surface.map(|eye| Task::done(Message::RemoveWindow(eye))));
+    tasks.push(orphan(app, id));
+    Task::batch(tasks)
+}
+
+/// Drop what hung from a bar that is gone: its popup and a menu it asked for.
+fn orphan(app: &mut App, id: Id) -> Task<Message> {
+    if app.pending_menu.as_ref().is_some_and(|(owner, _)| *owner == id) {
+        app.pending_menu = None;
+    }
+    match app.popup.take() {
+        Some(p) if p.owner == id => Task::done(Message::RemoveWindow(p.id)),
+        other => {
+            app.popup = other;
+            Task::none()
+        }
+    }
+}
+
+/// The bar a surface belongs to: the bar itself, or the bar its popup or eye
+/// hangs from.
+pub fn owner(app: &App, id: Id) -> Option<Id> {
+    if app.bars.contains_key(&id) {
+        return Some(id);
+    }
+    if let Some(p) = app.popup.as_ref().filter(|p| p.id == id) {
+        return Some(p.owner);
+    }
+    app.bars
+        .values()
+        .find(|b| b.eye_surface == Some(id))
+        .map(|b| b.id)
+}
+
+/// Run `f` on every bar. The bars are lifted out of the map for the
+/// duration, so `f` may read the rest of the app freely.
+fn each_bar(app: &mut App, mut f: impl FnMut(&App, &mut Bar) -> Task<Message>) -> Task<Message> {
+    let mut bars = std::mem::take(&mut app.bars);
+    let tasks: Vec<Task<Message>> = bars.values_mut().map(|bar| f(app, bar)).collect();
+    let added = std::mem::replace(&mut app.bars, bars);
+    app.bars.extend(added);
+    Task::batch(tasks)
+}
+
+/// Run `f` on one bar, lifted out of the map as in [`each_bar`].
+fn with_bar<R>(app: &mut App, id: Id, f: impl FnOnce(&App, &mut Bar) -> R) -> Option<R> {
+    let mut bar = app.bars.remove(&id)?;
+    let r = f(app, &mut bar);
+    app.bars.insert(id, bar);
+    Some(r)
+}
+
+/// Handle one message, then re-solve every bar against whatever it changed.
 ///
 /// Every message ends in [`relayout`]: the solver is pure and cheap, and
 /// retargeting an animation at the target it already has is a no-op, so one
 /// unconditional pass is simpler than knowing which messages move a cell.
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
-    let task = step(app, message);
-    relayout(app, Instant::now());
+    let task = step(app, message, None);
+    relayout_all(app, Instant::now());
     task
 }
 
-fn step(app: &mut App, message: Message) -> Task<Message> {
+/// One message. `at` is the bar it came from, when a view produced it.
+fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
     match message {
-        Message::Refresh => {}
+        Message::On(id, inner) => {
+            let at = owner(app, id);
+            return step(app, *inner, at);
+        }
+        Message::Refresh => {
+            refetch(app);
+            return screens(app, SETTLE);
+        }
+        Message::Screens => {
+            app.checking = false;
+            return screens(app, SETTLE);
+        }
         Message::Switch(index) => app.conn.switch_workspace(index),
         Message::Focus(handle) => {
             let dismiss = dismiss(app);
@@ -698,8 +986,18 @@ fn step(app: &mut App, message: Message) -> Task<Message> {
             refetch(app);
             return dismiss;
         }
-        Message::Menu(handle) => return open_menu(app, handle),
-        Message::Open(drawer) => return open_drawer(app, drawer, true),
+        Message::Menu(handle) => {
+            return match at {
+                Some(at) => open_menu(app, at, handle),
+                None => Task::none(),
+            }
+        }
+        Message::Open(drawer) => {
+            return match at {
+                Some(at) => open_drawer(app, at, drawer, true),
+                None => Task::none(),
+            }
+        }
         Message::Mute(handle, mute) => {
             let dismiss = dismiss(app);
             // A browser plays from a child process, so every stream the
@@ -720,53 +1018,74 @@ fn step(app: &mut App, message: Message) -> Task<Message> {
             return dismiss;
         }
         Message::Dismiss => return dismiss(app),
-        Message::BarPress(id, at) => {
-            if let Some(at) = at {
-                let _ = step(app, Message::Pointer(id, at));
+        Message::BarPress(id, point) => {
+            if let Some(point) = point {
+                let _ = step(app, Message::Pointer(id, point), at);
             }
             // A press inside the popup (its padding, a separator) is not a
-            // press outside it; neither is one on the eye.
+            // press outside it; neither is one on an eye. A press on any bar
+            // is: there is one popup, whichever bar it hangs from.
             let on_popup = app.popup.as_ref().is_some_and(|p| p.id == id);
-            if on_popup || app.eye_surface == Some(id) {
+            let on_eye = app.bars.values().any(|b| b.eye_surface == Some(id));
+            if on_popup || on_eye {
                 return Task::none();
             }
             return dismiss(app);
         }
         Message::Pointer(id, position) => {
-            // Anything that is not the open popup or the eye is the bar
-            // itself: there is only ever one of each.
-            if app.popup.as_ref().map(|p| p.id) != Some(id) && app.eye_surface != Some(id) {
-                app.main = Some(id);
-                app.cursor = position;
+            // Only a bar's own surface: a popup and an eye have their own
+            // coordinates, and a popup is anchored in its bar's.
+            if let Some(bar) = app.bars.get_mut(&id) {
+                bar.cursor = position;
             }
             return Task::none();
         }
         Message::Closed(id) => {
-            if app.eye_surface == Some(id) {
-                app.eye_surface = None;
+            if app.bars.contains_key(&id) {
+                // The compositor took the bar away — its output went, most
+                // likely. Its popup and eye go with it; if the output is in
+                // fact still listed, it gets a fresh bar once it settles.
+                let closed = close_bar(app, id);
+                return Task::batch([closed, screens(app, SETTLE)]);
             }
             if app.popup.as_ref().map(|p| p.id) == Some(id) {
                 app.popup = None;
             }
-            return Task::none();
-        }
-        // A popup is its own surface and its own width, and so is the eye;
-        // only the bar's counts.
-        Message::Sized(id, width) => {
-            if app.popup.as_ref().map(|p| p.id) != Some(id) && app.eye_surface != Some(id) {
-                app.width = width;
-                // The bar's own surface. Learned here and not only from the
-                // pointer: a bar the pointer never crossed (an inactive
-                // output) must still be able to push its fold geometry.
-                app.main = Some(id);
-                if let Some(which) = app.preview.take() {
-                    return match which {
-                        Preview::Drawer(drawer) => open_drawer(app, drawer, false),
-                        Preview::TrayMenu(item, entries) => show_tray_menu(app, item, entries),
-                    };
+            for bar in app.bars.values_mut() {
+                if bar.eye_surface == Some(id) {
+                    bar.eye_surface = None;
                 }
             }
             return Task::none();
+        }
+        // A popup is its own surface and its own width, and so is an eye;
+        // only a bar's counts.
+        Message::Sized(id, width) => {
+            let Some(first) = with_bar(app, id, |_, bar| {
+                bar.width = width;
+                !std::mem::replace(&mut bar.mapped, true)
+            }) else {
+                return Task::none();
+            };
+            let mut tasks = Vec::new();
+            // A fold committed before the surface was configured has not
+            // reached it yet; the surface is still the one it was asked as.
+            let asked = FoldState::default().geometry(app.edge);
+            if let Some(bar) = app
+                .bars
+                .get(&id)
+                .filter(|b| first && b.fold.geometry(app.edge) != asked)
+            {
+                tasks.push(push_geometry(app, bar));
+            }
+            if let Some(which) = app.preview.take() {
+                tasks.push(match which {
+                    Preview::Drawer(drawer) => open_drawer(app, id, drawer, false),
+                    Preview::TrayMenu(item, entries) => show_tray_menu(app, id, item, entries),
+                });
+            }
+            tasks.extend(with_bar(app, id, fold_and_eye));
+            return Task::batch(tasks);
         }
         // Nothing on the socket changed, so this one does not refetch.
         Message::Launch => {
@@ -786,7 +1105,8 @@ fn step(app: &mut App, message: Message) -> Task<Message> {
             return reflow(app);
         }
         // Focus moved, a window went fullscreen, or the session went idle or
-        // stopped being idle. All three are one event and one decision.
+        // stopped being idle. All three are one event and one decision, taken
+        // by every bar for itself.
         Message::OutputState {
             focused,
             fullscreen,
@@ -795,21 +1115,20 @@ fn step(app: &mut App, message: Message) -> Task<Message> {
             app.focused_output = focused;
             app.fullscreen = fullscreen;
             app.idle = idle;
-            // Outputs are hotplugged and renumbered; an id resolved once at
-            // startup goes stale and strands the bar folded forever.
-            resolve_output(app);
-            return fold_and_eye(app);
+            // The output event is also the one that says monitors came or went.
+            let screens = screens(app, SETTLE);
+            return Task::batch([screens, each_bar(app, fold_and_eye)]);
         }
-        Message::FoldTick => return fold_and_eye(app),
+        Message::FoldTick => return each_bar(app, fold_and_eye),
         // The beacon and the eye's frames are not the compositor: nothing to
-        // refetch, only the eye's surface to raise or drop.
+        // refetch, only the eyes' surfaces to raise or drop.
         Message::Eye(eye) => {
             app.iris.set(eye, std::time::Instant::now());
-            return sync_eye(app);
+            return each_bar(app, sync_eye);
         }
         Message::EyeTick => {
             app.iris.tick(std::time::Instant::now());
-            return sync_eye(app);
+            return each_bar(app, sync_eye);
         }
         Message::Reconfigured => {
             app.bar = app.conn.bar_config();
@@ -825,17 +1144,20 @@ fn step(app: &mut App, message: Message) -> Task<Message> {
             }
             if app.fixture.is_none() {
                 app.widget_cfg = app.conn.widgets_config();
-                app.motion.set_motion(app.widget_cfg.motion);
+                let motion = app.widget_cfg.motion;
+                for bar in app.bars.values_mut() {
+                    bar.motion.set_motion(motion);
+                }
                 crate::services::configure(&app.widget_cfg);
             }
-            // A reload can turn folding off while this bar is folded, so the
+            // A reload can turn folding off while a bar is folded, so the
             // decision is re-run rather than left until the next event.
-            resolve_output(app);
             let (_, focused) = app.conn.outputs();
             if let Some(focused) = focused {
                 app.focused_output = focused;
             }
-            return fold_and_eye(app);
+            let screens = screens(app, SETTLE);
+            return Task::batch([screens, each_bar(app, fold_and_eye)]);
         }
         // The radio verbs. Each is an action on the service and nothing else:
         // the drawer redraws from the `Update` the service answers with, not
@@ -896,17 +1218,25 @@ fn step(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::TrayActivate(id) => {
             let dismiss = dismiss(app);
-            let (x, y) = (app.cursor.x as i32, app.cursor.y as i32);
-            crate::radio::actions::tray_activate(&id, x, y);
+            let cursor = at
+                .and_then(|at| app.bars.get(&at))
+                .map_or(iced::Point::ORIGIN, |b| b.cursor);
+            crate::radio::actions::tray_activate(&id, cursor.x as i32, cursor.y as i32);
             return dismiss;
         }
-        Message::TrayMenu(id) => return open_tray_menu(app, id),
+        Message::TrayMenu(id) => {
+            return match at {
+                Some(at) => open_tray_menu(app, at, id),
+                None => Task::none(),
+            }
+        }
         Message::TrayMenuClick(id, entry) => {
             let dismiss = dismiss(app);
             crate::radio::actions::tray_menu_click(&id, entry);
             return dismiss;
         }
         Message::Radio(feed) => return radio(app, feed),
+        // Shared state, so one action however many bars draw the widget.
         Message::Widget(feed) => {
             if let Some(action) = widgets::update(&mut app.widgets, feed) {
                 if app.fixture.is_none() {
@@ -919,13 +1249,19 @@ fn step(app: &mut App, message: Message) -> Task<Message> {
             app.streams = streams;
             return Task::none();
         }
+        // A grip is a gesture on one bar: the pins and the drag are that
+        // bar's own.
         Message::Grip(key, ev) => {
-            grip(app, key, ev, Instant::now());
+            if let Some(at) = at {
+                with_bar(app, at, |app, bar| grip(app, bar, key, ev, Instant::now()));
+            }
             return Task::none();
         }
         Message::Frame => {
             let now = Instant::now();
-            app.motion.tick(now);
+            for bar in app.bars.values_mut() {
+                bar.motion.tick(now);
+            }
             #[cfg(debug_assertions)]
             crate::preview::frame(app, now);
             return Task::none();
@@ -937,30 +1273,14 @@ fn step(app: &mut App, message: Message) -> Task<Message> {
             let _ = n;
             return Task::none();
         }
-        // `to_layer_message` injects the layer-control variants. The bar never
-        // sends one — it is anchored for its whole life — but the match must
-        // still be total.
+        // `to_layer_message` injects the layer-control variants. The bar only
+        // ever sends them; the match must still be total.
         _ => return Task::none(),
     }
     // Every branch above either changed compositor state or was told state
     // changed, so all of them end the same way.
     refetch(app);
     Task::none()
-}
-
-/// Re-resolve this bar's numeric output id against the compositor's live list.
-///
-/// Cheap (one socket round trip) and done on every `output` event: the id is
-/// what every view filters on, and a stale one is indistinguishable from "this
-/// bar's output is never focused".
-fn resolve_output(app: &mut App) {
-    if app.output_name.is_empty() {
-        return;
-    }
-    let (outputs, _) = app.conn.outputs();
-    if let Some((id, _)) = outputs.iter().find(|(_, name)| *name == app.output_name) {
-        app.output_id = *id;
-    }
 }
 
 /// The height a target settles at.
@@ -978,73 +1298,79 @@ fn target_height(bar: &BarConfig, target: FoldTarget) -> u32 {
 /// The exclusive zone moves with the size on every frame, not just at the
 /// ends: shrinking only the paint would leave tiled windows avoiding a
 /// full-height bar, and reflowing only at the end is the jump the user saw.
-fn fold(app: &mut App) -> Task<Message> {
+fn fold(app: &App, bar: &mut Bar) -> Task<Message> {
     let now = std::time::Instant::now();
     let want = decide(
         &app.bar,
-        app.output_id,
+        bar.output_id,
         app.focused_output,
         app.fullscreen,
         app.idle,
     );
+    let fold = &mut bar.fold;
 
-    if want != app.fold.target {
+    if want != fold.target {
         // Unfolding is immediate; folding waits out `FOLD_GRACE` with the
         // decision unchanged, which is what kills the two-bar flicker when the
         // pointer crosses an output boundary.
         let immediate = want == FoldTarget::Shown;
-        match app.fold.pending {
+        match fold.pending {
             Some((pending, since)) if pending == want => {
                 if immediate || now.duration_since(since) >= FOLD_GRACE {
-                    commit(app, want, now);
+                    commit(&app.bar, fold, want, now);
                 }
             }
             _ => {
                 if immediate {
-                    app.fold.pending = None;
-                    commit(app, want, now);
+                    fold.pending = None;
+                    commit(&app.bar, fold, want, now);
                 } else {
-                    app.fold.pending = Some((want, now));
+                    fold.pending = Some((want, now));
                 }
             }
         }
     } else {
-        app.fold.pending = None;
+        fold.pending = None;
     }
 
     // Compared as a whole geometry, not a height: committing a fold swaps
     // the pill for the strip (dropping the edge margin) before the height
     // has moved at all.
-    let before = app.fold.geometry(app.edge);
-    advance(app, now);
-    let after = app.fold.geometry(app.edge);
-    if after == before {
+    let before = fold.geometry(app.edge);
+    advance(&app.bar, fold, now);
+    if fold.geometry(app.edge) == before {
         return Task::none();
     }
-    let Some(id) = app.main else {
+    push_geometry(app, bar)
+}
+
+/// Ask the compositor for the surface the fold state needs. Nothing before
+/// the surface is configured: [`Message::Sized`] pushes the state it reached
+/// by then.
+fn push_geometry(app: &App, bar: &Bar) -> Task<Message> {
+    let g = bar.fold.geometry(app.edge);
+    if !bar.mapped {
         return Task::none();
-    };
+    }
+    let id = bar.id;
     Task::batch([
         Task::done(Message::SizeChange {
             id,
-            size: (0, after.height),
+            size: (0, g.height),
         }),
-        Task::done(Message::MarginChange {
-            id,
-            margin: after.margin,
-        }),
+        Task::done(Message::MarginChange { id, margin: g.margin }),
         Task::done(Message::ExclusiveZoneChange {
             id,
-            zone_size: after.zone,
+            zone_size: g.zone,
         }),
     ])
 }
 
 /// A fold step, then the eye brought in line with it: the eye rides only on
 /// a full pill, so a fold drops it and an unfold that lands raises it again.
-fn fold_and_eye(app: &mut App) -> Task<Message> {
-    let fold = fold(app);
-    Task::batch([fold, sync_eye(app)])
+fn fold_and_eye(app: &App, bar: &mut Bar) -> Task<Message> {
+    let fold = fold(app, bar);
+    Task::batch([fold, sync_eye(app, bar)])
 }
 
 /// Where the eye's surface sits: the launcher button's own box, anchored to
@@ -1071,7 +1397,7 @@ fn eye_placement(
     }
 }
 
-/// Raise or drop the eye's surface to match the iris (ADR 0056).
+/// Raise or drop a bar's eye surface to match the iris (ADR 0056).
 ///
 /// The bar only ever draws the plain ring. The live eye is a second layer
 /// surface, namespace [`crate::eye::NAMESPACE`], laid over the mark, which
@@ -1079,25 +1405,21 @@ fn eye_placement(
 /// "hyperion:eclipse-eye" }`) — so a capture shows the still ring beneath and
 /// the person at the screen sees the eye. It exists only while there is an
 /// eye to show on a full pill: a settled Off, a folded or hidden bar, or
-/// `bar.eye = false` costs no surface at all.
+/// `bar.eye = false` costs no surface at all. Each bar has its own, on its
+/// own output.
 ///
 /// Exclusive zone `-1`, not unset: an unset zone is `0`, which wlr-layer-shell
 /// places clear of the bar's own reserved strip, i.e. under the bar rather
 /// than on it. An empty input region, so a click falls through to the
 /// launcher button beneath.
-fn sync_eye(app: &mut App) -> Task<Message> {
+fn sync_eye(app: &App, bar: &mut Bar) -> Task<Message> {
     use iced_layershell::reexport::{KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption};
-    let want = app.bar.eye && !app.iris.is_plain() && app.fold.pill();
-    match (want, app.eye_surface) {
+    let want = app.bar.eye && !app.iris.is_plain() && bar.fold.pill();
+    match (want, bar.eye_surface) {
         (true, None) => {
             let (anchor, margin, size) = eye_placement(app.edge);
-            let output_option = if app.output_name.is_empty() {
-                OutputOption::Active
-            } else {
-                OutputOption::OutputName(app.output_name.clone())
-            };
-            let id = iced::window::Id::unique();
-            app.eye_surface = Some(id);
+            let id = Id::unique();
+            bar.eye_surface = Some(id);
             Task::done(Message::NewLayerShell {
                 settings: NewLayerShellSettings {
                     size: Some(size),
@@ -1106,7 +1428,7 @@ fn sync_eye(app: &mut App) -> Task<Message> {
                     exclusive_zone: Some(-1),
                     margin: Some(margin),
                     keyboard_interactivity: KeyboardInteractivity::None,
-                    output_option,
+                    output_option: OutputOption::OutputName(bar.output_name.clone()),
                     events_transparent: true,
                     namespace: Some(crate::eye::NAMESPACE.to_owned()),
                 },
@@ -1114,7 +1436,7 @@ fn sync_eye(app: &mut App) -> Task<Message> {
             })
         }
         (false, Some(id)) => {
-            app.eye_surface = None;
+            bar.eye_surface = None;
             Task::done(Message::RemoveWindow(id))
         }
         _ => Task::none(),
@@ -1125,18 +1447,18 @@ fn sync_eye(app: &mut App) -> Task<Message> {
 /// currently is. From rest the leg follows `bar.fold-curve`; a reversal
 /// mid-slide becomes a spring that keeps the bar's current speed, so it
 /// neither jumps back to the old end nor stops dead before turning.
-fn commit(app: &mut App, target: FoldTarget, now: std::time::Instant) {
+fn commit(cfg: &BarConfig, fold: &mut FoldState, target: FoldTarget, now: std::time::Instant) {
     use eclipse_ui::motion::{Animated, Curve, Motion};
-    app.fold.pending = None;
-    app.fold.target = target;
-    let (at, speed) = slide_at(app, now);
-    let to_h = target_height(&app.bar, target);
-    app.fold.to_h = to_h;
+    fold.pending = None;
+    fold.target = target;
+    let (at, speed) = slide_at(cfg, fold, now);
+    let to_h = target_height(cfg, target);
+    fold.to_h = to_h;
     let to = to_h as f32;
-    app.fold.slide = if app.bar.fold_duration_ms == 0 || at == to {
-        app.fold.height = to_h;
+    fold.slide = if cfg.fold_duration_ms == 0 || at == to {
+        fold.height = to_h;
         Slide::Rest
-    } else if matches!(app.fold.slide, Slide::Rest) {
+    } else if matches!(fold.slide, Slide::Rest) {
         Slide::Curve {
             from: at,
             started: now,
@@ -1145,7 +1467,7 @@ fn commit(app: &mut App, target: FoldTarget, now: std::time::Instant) {
         let motion = Motion {
             enabled: true,
             curve: Curve::Spring,
-            duration: std::time::Duration::from_millis(app.bar.fold_duration_ms as u64),
+            duration: std::time::Duration::from_millis(cfg.fold_duration_ms as u64),
         };
         let mut spring = Animated::new(at, motion);
         spring.fling(to, speed, now);
@@ -1155,17 +1477,17 @@ fn commit(app: &mut App, target: FoldTarget, now: std::time::Instant) {
 
 /// Where the slide is at `now`, in fractional pixels, and how fast it is
 /// moving there (pixels per second).
-fn slide_at(app: &App, now: std::time::Instant) -> (f32, f32) {
-    match app.fold.slide {
-        Slide::Rest => (app.fold.height as f32, 0.0),
+fn slide_at(cfg: &BarConfig, fold: &FoldState, now: std::time::Instant) -> (f32, f32) {
+    match fold.slide {
+        Slide::Rest => (fold.height as f32, 0.0),
         Slide::Curve { from, started } => {
-            let dur = app.bar.fold_duration_ms.max(1) as f32 / 1000.0;
+            let dur = cfg.fold_duration_ms.max(1) as f32 / 1000.0;
             let t = now.saturating_duration_since(started).as_secs_f32() / dur;
             if t >= 1.0 {
-                return (app.fold.to_h as f32, 0.0);
+                return (fold.to_h as f32, 0.0);
             }
-            let curve = app.bar.fold_curve;
-            let span = app.fold.to_h as f32 - from;
+            let curve = cfg.fold_curve;
+            let span = fold.to_h as f32 - from;
             // The curves are quadratics: a central difference is exact.
             let (lo, hi) = ((t - 1e-3).max(0.0), t + 1e-3);
             let slope = (curve.ease(hi) - curve.ease(lo)) / (hi - lo);
@@ -1179,12 +1501,12 @@ fn slide_at(app: &App, now: std::time::Instant) -> (f32, f32) {
 }
 
 /// Advance one frame. Lands exactly on `to_h`, never past it.
-fn advance(app: &mut App, now: std::time::Instant) {
-    let (at, _) = slide_at(app, now);
-    let landed = match &mut app.fold.slide {
+fn advance(cfg: &BarConfig, fold: &mut FoldState, now: std::time::Instant) {
+    let (at, _) = slide_at(cfg, fold, now);
+    let landed = match &mut fold.slide {
         Slide::Rest => true,
         Slide::Curve { started, .. } => {
-            now.saturating_duration_since(*started).as_millis() >= app.bar.fold_duration_ms as u128
+            now.saturating_duration_since(*started).as_millis() >= cfg.fold_duration_ms as u128
         }
         Slide::Spring(s) => {
             s.tick(now);
@@ -1192,10 +1514,10 @@ fn advance(app: &mut App, now: std::time::Instant) {
         }
     };
     if landed {
-        app.fold.slide = Slide::Rest;
-        app.fold.height = app.fold.to_h;
+        fold.slide = Slide::Rest;
+        fold.height = fold.to_h;
     } else {
-        app.fold.height = at.round().max(0.0) as u32;
+        fold.height = at.round().max(0.0) as u32;
     }
 }
 
@@ -1208,21 +1530,32 @@ fn refetch(app: &mut App) {
     app.icons.warm(&app.snapshot.windows);
 }
 
-/// Re-solve the bar and point the animations at the answer.
+/// Re-solve every bar, then open or close the monitor tap for all of them.
+pub fn relayout_all(app: &mut App, now: Instant) {
+    let _ = each_bar(app, |app, bar| {
+        relayout(app, bar, now);
+        Task::none()
+    });
+    if app.fixture.is_none() {
+        crate::services::set_tap(tap_wanted(app));
+    }
+}
+
+/// Re-solve one bar and point its animations at the answer.
 ///
 /// The widgets' inputs are rebuilt from their state, a pin whose widget has
 /// changed category is dropped (ADR 0065), and a grip under the finger is
 /// taken at exactly the width the finger asks for. Nothing is placed until
 /// the surface has a width: the first real layout must land, not grow in
 /// from a zero-width bar.
-pub fn relayout(app: &mut App, now: Instant) {
-    let order = app.widget_cfg.order.clone();
+pub fn relayout(app: &App, bar: &mut Bar, now: Instant) {
+    let order = &app.widget_cfg.order;
     let mut inputs = Vec::with_capacity(order.len());
-    for id in &order {
+    for id in order {
         let key = id.key();
         let category = widgets::category(app, id);
-        if app.motion.pins.get(&key).is_some_and(|(_, c)| *c != category) {
-            app.motion.pins.remove(&key);
+        if bar.motion.pins.get(&key).is_some_and(|(_, c)| *c != category) {
+            bar.motion.pins.remove(&key);
         }
         let spans = widgets::spans(app, id);
         inputs.push(layout::WidgetIn {
@@ -1230,16 +1563,16 @@ pub fn relayout(app: &mut App, now: Instant) {
             revealed: spans.revealed,
             important: app.widget_cfg.important.contains(id),
             present: spans.present,
-            pin: app.motion.pins.get(&key).map(|(pin, _)| *pin),
-            live: app.motion.drag.as_ref().filter(|d| d.key == key).map(Drag::live),
+            pin: bar.motion.pins.get(&key).map(|(pin, _)| *pin),
+            live: bar.motion.drag.as_ref().filter(|d| d.key == key).map(Drag::live),
         });
     }
-    app.widget_inputs = inputs;
-    if app.width <= 0.0 {
+    bar.widget_inputs = inputs;
+    if bar.width <= 0.0 {
         return;
     }
 
-    let windows: Vec<crate::model::Window> = crate::view::strip_windows(app).into_iter().cloned().collect();
+    let windows: Vec<&crate::model::Window> = crate::view::strip_windows(app, bar);
     let chips: Vec<layout::ChipIn> = windows
         .iter()
         .map(|w| layout::ChipIn {
@@ -1248,53 +1581,50 @@ pub fn relayout(app: &mut App, now: Instant) {
             minimized: w.minimized,
         })
         .collect();
-    app.layout = layout::solve(layout::Input {
-        width: app.width,
-        lead: crate::view::strip_left(app),
+    bar.layout = layout::solve(layout::Input {
+        width: bar.width,
+        lead: crate::view::strip_left(app, bar),
         chips: &chips,
-        widgets: &app.widget_inputs,
+        widgets: &bar.widget_inputs,
     });
 
     // Before the chips: their retarget marks the bar laid out, and a cover
     // already on hand at the first layout must land, not fade.
-    let cover = app.widgets.now_playing.art_key().map(str::to_owned);
-    app.motion.retarget_art(cover.as_deref(), now);
+    let cover = app.widgets.now_playing.art_key();
+    bar.motion.retarget_art(cover, now);
 
-    let workspace = crate::view::strip_workspace(app);
-    let snap = app.motion.snaps(workspace);
-    let live: Vec<&crate::model::Window> = windows.iter().collect();
-    app.motion
-        .retarget_chips(&live, &app.layout.chips, workspace, now);
+    let workspace = crate::view::strip_workspace(app, bar);
+    let snap = bar.motion.snaps(workspace);
+    bar.motion
+        .retarget_chips(&windows, &bar.layout.chips, workspace, now);
     let targets: Vec<(String, bool, layout::WidgetOut)> = order
         .iter()
-        .zip(&app.widget_inputs)
-        .zip(&app.layout.widgets)
+        .zip(&bar.widget_inputs)
+        .zip(&bar.layout.widgets)
         .map(|((id, input), out)| (id.key(), input.present, *out))
         .collect();
-    app.motion.retarget_widgets(&targets, snap, now);
-
-    if app.fixture.is_none() {
-        crate::services::set_tap(tap_wanted(app));
-    }
+    bar.motion.retarget_widgets(&targets, snap, now);
 }
 
-/// The monitor tap costs a capture stream, so it runs only while its bars
-/// can be seen: playing, visualizer on, not compressed away, and the bar
-/// itself up. A folded strip draws no widgets and a hidden bar (fullscreen)
-/// draws nothing, so either one closes the stream; a fold still sitting out
-/// its grace window has not happened yet and keeps it.
+/// The monitor tap costs a capture stream, so it runs only while a bar can
+/// show it: playing, visualizer on, and on at least one bar that has not
+/// compressed it away and is itself up. A folded strip draws no widgets and
+/// a hidden bar (fullscreen) draws nothing, so neither holds the stream
+/// open; a fold still sitting out its grace window has not happened yet and
+/// keeps it.
 fn tap_wanted(app: &App) -> bool {
     let np = widgets::WidgetId::NowPlaying;
-    let shown = app
-        .motion
-        .widgets
-        .get(&np.key())
-        .is_some_and(|w| w.extent.target() > 0.0);
     app.widget_cfg.now_playing.visualizer
         && app.widget_cfg.order.contains(&np)
         && app.widgets.now_playing.playing()
-        && shown
-        && app.fold.target == FoldTarget::Shown
+        && app.bars.values().any(|bar| {
+            bar.fold.target == FoldTarget::Shown
+                && bar
+                    .motion
+                    .widgets
+                    .get(&np.key())
+                    .is_some_and(|w| w.extent.target() > 0.0)
+        })
 }
 
 /// A grip gesture.
@@ -1304,25 +1634,25 @@ fn tap_wanted(app: &App) -> bool {
 /// under it); release settles on the rest nearest to where the finger's
 /// velocity was carrying it, and pins it there. A press that barely moved is
 /// a tap and toggles instead.
-pub(crate) fn grip(app: &mut App, key: String, ev: GripEv, now: Instant) {
+pub(crate) fn grip(app: &App, bar: &mut Bar, key: String, ev: GripEv, now: Instant) {
     match ev {
         GripEv::Press => {
-            let start = app.motion.widgets.get(&key).map_or(0.0, |w| w.extent.value());
-            app.motion.drag = Some(Drag::new(key, start, now));
+            let start = bar.motion.widgets.get(&key).map_or(0.0, |w| w.extent.value());
+            bar.motion.drag = Some(Drag::new(key, start, now));
         }
         GripEv::Drag(dx) => {
-            if let Some(d) = app.motion.drag.as_mut().filter(|d| d.key == key) {
+            if let Some(d) = bar.motion.drag.as_mut().filter(|d| d.key == key) {
                 d.follow(dx, now);
             }
         }
         GripEv::Release => {
-            let Some(drag) = app.motion.drag.take().filter(|d| d.key == key) else {
+            let Some(drag) = bar.motion.drag.take().filter(|d| d.key == key) else {
                 return;
             };
             let Some(index) = app.widget_cfg.order.iter().position(|id| id.key() == key) else {
                 return;
             };
-            let Some(input) = app.widget_inputs.get(index).copied() else {
+            let Some(input) = bar.widget_inputs.get(index).copied() else {
                 return;
             };
             let pin = if drag.is_tap() {
@@ -1338,10 +1668,10 @@ pub(crate) fn grip(app: &mut App, key: String, ev: GripEv, now: Instant) {
                 settle(drag.live(), drag.velocity, &rests).unwrap_or(Pin::Open)
             };
             let category = widgets::category(app, &app.widget_cfg.order[index]);
-            app.motion.pins.insert(key.clone(), (pin, category));
-            relayout(app, now);
-            if let Some(out) = app.layout.widgets.get(index) {
-                app.motion.fling(&key, out.extent, drag.velocity, now);
+            bar.motion.pins.insert(key.clone(), (pin, category));
+            relayout(app, bar, now);
+            if let Some(out) = bar.layout.widgets.get(index) {
+                bar.motion.fling(&key, out.extent, drag.velocity, now);
             }
         }
     }
@@ -1369,8 +1699,9 @@ fn window(app: &App, handle: u64) -> Option<&crate::model::Window> {
     app.snapshot.windows.iter().find(|w| w.handle == handle)
 }
 
-/// Close the open menu, if there is one. `RemoveWindow` is the macro's own
-/// name for closing a surface it created.
+/// Close the open popup, whichever bar it hangs from, and forget a menu
+/// still on its way. `RemoveWindow` is the macro's own name for closing a
+/// surface it created.
 fn dismiss(app: &mut App) -> Task<Message> {
     app.pending_menu = None;
     match app.popup.take() {
@@ -1414,7 +1745,7 @@ fn items(app: &App, handle: u64) -> Vec<Item> {
 /// has an unambiguous anchor point, where a rect's is the positioner's
 /// business and differs between compositors. Popup *size* is still fixed at
 /// creation; this only moves it.
-fn anchor(app: &App, span: Option<(f32, f32)>, edge: Edge) -> (i32, i32, i32, i32) {
+fn anchor(app: &App, bar: &Bar, span: Option<(f32, f32)>, edge: Edge) -> (i32, i32, i32, i32) {
     let point = match (app.bar.popup_anchor, span) {
         (tokens::popup::Anchor::Cell, Some((left, right))) => {
             let x = match edge {
@@ -1426,7 +1757,7 @@ fn anchor(app: &App, span: Option<(f32, f32)>, edge: Edge) -> (i32, i32, i32, i3
         // Either the human asked for click-point popups, or the cell has no
         // computable position (a chip in the `+N` tail, a bar that has not
         // been sized yet). The pointer is always somewhere.
-        _ => (app.cursor.x, app.cursor.y),
+        _ => (bar.cursor.x, bar.cursor.y),
     };
     (point.0 as i32, point.1 as i32, 1, 1)
 }
@@ -1438,9 +1769,9 @@ enum Edge {
     Right,
 }
 
-fn open_menu(app: &mut App, handle: u64) -> Task<Message> {
+fn open_menu(app: &mut App, at: Id, handle: u64) -> Task<Message> {
     let closed = dismiss(app);
-    let Some(parent) = app.main else {
+    let Some(bar) = app.bars.get(&at) else {
         return closed;
     };
     let items = items(app, handle);
@@ -1449,11 +1780,12 @@ fn open_menu(app: &mut App, handle: u64) -> Task<Message> {
     }
     let size = (crate::view::MENU_W, crate::view::menu_height(&items));
     // Gravity down-and-right, so the menu hangs from the chip's left edge.
-    let rect = anchor(app, crate::view::chip_span(app, handle), Edge::Left);
-    let settings = IcedNewPopupSettings::new(parent, size, rect).gravity(PopupGravity::BottomRight);
+    let rect = anchor(app, bar, crate::view::chip_span(app, bar, handle), Edge::Left);
+    let settings = IcedNewPopupSettings::new(at, size, rect).gravity(PopupGravity::BottomRight);
     let (id, open) = Message::popup_open(settings);
     app.popup = Some(Popup {
         id,
+        owner: at,
         kind: Kind::Menu { handle, items },
     });
     Task::batch([closed, open])
@@ -1465,20 +1797,21 @@ fn open_menu(app: &mut App, handle: u64) -> Task<Message> {
 ///
 /// Clicking the applet whose drawer is already open closes it and opens
 /// nothing: an applet button is a toggle, the way a tray is on every other
-/// desktop.
+/// desktop. The same applet on another bar is another button: its click
+/// moves the drawer there.
 ///
 /// `toggle` is false when the drawer is being *re*opened at a new height by
 /// [`reflow`], which must never read as a second click.
-fn open_drawer(app: &mut App, drawer: Drawer, toggle: bool) -> Task<Message> {
+fn open_drawer(app: &mut App, at: Id, drawer: Drawer, toggle: bool) -> Task<Message> {
     let same = matches!(
-        app.popup.as_ref().map(|p| &p.kind),
-        Some(Kind::Drawer { which, .. }) if *which == drawer
+        app.popup.as_ref(),
+        Some(Popup { owner, kind: Kind::Drawer { which, .. }, .. }) if *which == drawer && *owner == at
     );
     let closed = dismiss(app);
     if same && toggle {
         return closed;
     }
-    let Some(parent) = app.main else {
+    let Some(bar) = app.bars.get(&at) else {
         return closed;
     };
     if drawer == Drawer::Network && toggle {
@@ -1489,11 +1822,12 @@ fn open_drawer(app: &mut App, drawer: Drawer, toggle: bool) -> Task<Message> {
     // Gravity down-and-*left*: the tray lives at the right end of the bar, so
     // a drawer growing to the right would hang off the edge of the screen —
     // which is also why it hangs from the cell's right edge and not its left.
-    let rect = anchor(app, crate::view::drawer_span(app, drawer), Edge::Right);
-    let settings = IcedNewPopupSettings::new(parent, size, rect).gravity(PopupGravity::BottomLeft);
+    let rect = anchor(app, bar, crate::view::drawer_span(app, bar, drawer), Edge::Right);
+    let settings = IcedNewPopupSettings::new(at, size, rect).gravity(PopupGravity::BottomLeft);
     let (id, open) = Message::popup_open(settings);
     app.popup = Some(Popup {
         id,
+        owner: at,
         kind: Kind::Drawer {
             which: drawer,
             height,
@@ -1506,29 +1840,31 @@ fn open_drawer(app: &mut App, drawer: Drawer, toggle: bool) -> Task<Message> {
 ///
 /// A popup's size is fixed when it is created, so a scan that finds three more
 /// networks cannot grow the sheet in place. The drawer is closed and reopened
-/// at the new height instead — one frame of churn, against a sheet that would
-/// otherwise clip its own link row or hang empty glass under it.
+/// at the new height instead, on the same bar — one frame of churn, against a
+/// sheet that would otherwise clip its own link row or hang empty glass
+/// under it.
 fn reflow(app: &mut App) -> Task<Message> {
     let Some(Popup {
+        owner,
         kind: Kind::Drawer { which, height },
         ..
     }) = app.popup.as_ref()
     else {
         return Task::none();
     };
-    let which = *which;
+    let (owner, which) = (*owner, *which);
     if crate::view::drawer_height(app, which) == *height {
         return Task::none();
     }
-    open_drawer(app, which, false)
+    open_drawer(app, owner, which, false)
 }
 
 /// Ask for a tray item's own menu. It opens in [`radio`], when the entries
-/// arrive.
-fn open_tray_menu(app: &mut App, id: String) -> Task<Message> {
+/// arrive, on the bar that asked.
+fn open_tray_menu(app: &mut App, at: Id, id: String) -> Task<Message> {
     let closed = dismiss(app);
     crate::radio::actions::tray_menu(&id);
-    app.pending_menu = Some(id);
+    app.pending_menu = Some((at, id));
     closed
 }
 
@@ -1536,19 +1872,20 @@ fn open_tray_menu(app: &mut App, id: String) -> Task<Message> {
 ///
 /// An item with no menu opens nothing: an empty sheet is a worse answer to a
 /// right-click than no sheet.
-fn show_tray_menu(app: &mut App, id: String, entries: Vec<crate::radio::MenuEntry>) -> Task<Message> {
-    let Some(parent) = app.main else {
+fn show_tray_menu(app: &mut App, at: Id, id: String, entries: Vec<crate::radio::MenuEntry>) -> Task<Message> {
+    let Some(bar) = app.bars.get(&at) else {
         return Task::none();
     };
     if entries.is_empty() {
         return Task::none();
     }
     let size = (crate::view::MENU_W, crate::view::tray_menu_height(&entries));
-    let rect = anchor(app, None, Edge::Right);
-    let settings = IcedNewPopupSettings::new(parent, size, rect).gravity(PopupGravity::BottomLeft);
+    let rect = anchor(app, bar, None, Edge::Right);
+    let settings = IcedNewPopupSettings::new(at, size, rect).gravity(PopupGravity::BottomLeft);
     let (id_, open) = Message::popup_open(settings);
     app.popup = Some(Popup {
         id: id_,
+        owner: at,
         kind: Kind::TrayMenu { id, entries },
     });
     open
@@ -1572,11 +1909,12 @@ fn radio(app: &mut App, feed: crate::radio::Feed) -> Task<Message> {
             return dismiss;
         }
         Feed::Menu { item, entries } => {
-            if app.pending_menu.as_deref() != Some(item.as_str()) {
+            let Some((at, _)) = app.pending_menu.as_ref().filter(|(_, pending)| *pending == item) else {
                 return Task::none();
-            }
+            };
+            let at = *at;
             let closed = dismiss(app);
-            return Task::batch([closed, show_tray_menu(app, item, entries)]);
+            return Task::batch([closed, show_tray_menu(app, at, item, entries)]);
         }
     }
     reflow(app)
@@ -1616,12 +1954,13 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     let mut subs = vec![pointer(), surfaces(), compositor()];
     // Only while something is actually moving: a settled bar has no ticker at
     // all, so the idle cost of the animation is zero.
-    if app.fold.animating() {
+    // One clock for every bar, alive while any of them is moving.
+    if app.bars.values().any(|b| b.fold.animating()) {
         subs.push(fold_ticks());
     }
-    // The bar's own motion clock, on the same rule: frames only while a
-    // chip or a widget is moving or a grip is held.
-    if app.motion.animating() || fixture_moves(app) {
+    // The bars' own motion clock, on the same rule: frames only while a
+    // chip or a widget is moving or a grip is held, on any bar.
+    if app.bars.values().any(|b| b.motion.animating()) || fixture_moves(app) {
         subs.push(frames());
     }
     #[cfg(debug_assertions)]
@@ -1675,8 +2014,8 @@ fn frames() -> Subscription<Message> {
     })
 }
 
-/// Where the pointer (or a finger) is, and on which surface. The only source of the popup's
-/// parent and anchor.
+/// Where the pointer (or a finger) is, and on which surface. The only source
+/// of a popup's anchor.
 fn pointer() -> Subscription<Message> {
     use iced::event::Status;
     iced::event::listen_with(|event, status, id| match event {
@@ -1707,7 +2046,6 @@ fn pointer() -> Subscription<Message> {
         // ladder gets its "what fits" from.
         iced::Event::Window(iced::window::Event::Opened { size, .. })
         | iced::Event::Window(iced::window::Event::Resized(size)) => Some(Message::Sized(id, size.width)),
-        iced::Event::Window(_) => Some(Message::Pointer(id, iced::Point::ORIGIN)),
         _ => None,
     })
 }
@@ -1838,33 +2176,71 @@ fn compositor() -> Subscription<Message> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::model::{Trust, Window, Workspace};
 
+    /// An app whose bars are the test's own. `App::new` talks to the
+    /// session's control socket, which on a machine running abyss lists real
+    /// outputs; pinned, the app never reconciles its bars against them.
     fn app() -> App {
-        App::new()
+        let mut a = App::new();
+        a.pin = Some("test".to_owned());
+        a
+    }
+
+    /// A bar on `name` as [`open_bar`] makes it, already configured at a
+    /// laptop's width.
+    pub(crate) fn bar_on(a: &mut App, name: &str, output_id: u64) -> Id {
+        let _ = open_bar(a, name.to_owned(), output_id);
+        let bar = a
+            .bars
+            .values_mut()
+            .find(|b| b.output_name == name)
+            .expect("open_bar keeps the bar");
+        bar.width = 1440.0;
+        bar.mapped = true;
+        bar.id
+    }
+
+    fn now_playing(a: &mut App) {
+        use crate::widgets::{now_playing, Feed};
+        use eclipse_services::media::{NowPlaying, Playback};
+        widgets::update(
+            &mut a.widgets,
+            Feed::NowPlaying(now_playing::Feed::Player(Some(NowPlaying {
+                player: "player".into(),
+                title: "Track".into(),
+                artist: None,
+                album: None,
+                art: None,
+                status: Playback::Playing,
+                can_prev: true,
+                can_next: true,
+                can_pause: true,
+            }))),
+        );
     }
 
     #[test]
     fn the_eye_surface_exists_only_while_there_is_an_eye_on_a_full_pill() {
         let mut a = app();
+        let id = bar_on(&mut a, "DP-1", 0);
+        let eye = |a: &mut App| {
+            let _ = with_bar(a, id, sync_eye);
+            a.bars[&id].eye_surface
+        };
         a.bar.eye = true;
         assert!(a.iris.is_plain());
-        let _ = sync_eye(&mut a);
-        assert_eq!(a.eye_surface, None, "a settled Off costs no surface");
+        assert_eq!(eye(&mut a), None, "a settled Off costs no surface");
         a.iris.set(crate::eye::Eye::Watch, std::time::Instant::now());
-        let _ = sync_eye(&mut a);
-        let id = a.eye_surface.expect("a watching eye raises its surface");
-        let _ = sync_eye(&mut a);
-        assert_eq!(a.eye_surface, Some(id), "raised once, not once per frame");
-        a.fold.target = FoldTarget::Folded;
-        let _ = sync_eye(&mut a);
-        assert_eq!(a.eye_surface, None, "a folded bar has no mark to cover");
-        a.fold.target = FoldTarget::Shown;
+        let raised = eye(&mut a).expect("a watching eye raises its surface");
+        assert_eq!(eye(&mut a), Some(raised), "raised once, not once per frame");
+        a.bars.get_mut(&id).unwrap().fold.target = FoldTarget::Folded;
+        assert_eq!(eye(&mut a), None, "a folded bar has no mark to cover");
+        a.bars.get_mut(&id).unwrap().fold.target = FoldTarget::Shown;
         a.bar.eye = false;
-        let _ = sync_eye(&mut a);
-        assert_eq!(a.eye_surface, None);
+        assert_eq!(eye(&mut a), None);
     }
 
     #[test]
@@ -1888,7 +2264,7 @@ mod tests {
         let _ = update(
             &mut a,
             Message::SizeChange {
-                id: iced::window::Id::unique(),
+                id: Id::unique(),
                 size: (100, 34),
             },
         );
@@ -1968,7 +2344,7 @@ mod tests {
     fn a_grip_taps_shut_and_drags_open_and_shut() {
         use crate::widgets::{volume, Feed, WidgetId};
         let mut a = app();
-        a.width = 1440.0;
+        let id = bar_on(&mut a, "DP-1", 0);
         widgets::update(
             &mut a.widgets,
             Feed::Volume(volume::Feed::Sink(Some(eclipse_services::audio::Sink {
@@ -1978,7 +2354,8 @@ mod tests {
             }))),
         );
         let t0 = Instant::now();
-        relayout(&mut a, t0);
+        relayout_all(&mut a, t0);
+        let mut b = a.bars.remove(&id).unwrap();
         let i = a
             .widget_cfg
             .order
@@ -1986,92 +2363,285 @@ mod tests {
             .position(|id| *id == WidgetId::Volume)
             .expect("volume is in the default order");
         let key = WidgetId::Volume.key();
-        let input = a.widget_inputs[i];
+        let input = b.widget_inputs[i];
         assert!(
-            a.layout.widgets[i].extent >= input.core_run(),
+            b.layout.widgets[i].extent >= input.core_run(),
             "room to spare: open"
         );
 
         let later = |n: u64| t0 + std::time::Duration::from_secs(n);
-        grip(&mut a, key.clone(), GripEv::Press, later(1));
-        grip(&mut a, key.clone(), GripEv::Release, later(1));
-        assert_eq!(a.motion.pins.get(&key).map(|p| p.0), Some(Pin::Collapsed));
-        assert_eq!(a.layout.widgets[i].extent, 0.0);
-        a.motion.tick(later(3));
+        grip(&a, &mut b, key.clone(), GripEv::Press, later(1));
+        grip(&a, &mut b, key.clone(), GripEv::Release, later(1));
+        assert_eq!(b.motion.pins.get(&key).map(|p| p.0), Some(Pin::Collapsed));
+        assert_eq!(b.layout.widgets[i].extent, 0.0);
+        b.motion.tick(later(3));
 
-        grip(&mut a, key.clone(), GripEv::Press, later(4));
-        grip(&mut a, key.clone(), GripEv::Drag(-input.max_extent()), later(4));
-        relayout(&mut a, later(4));
+        grip(&a, &mut b, key.clone(), GripEv::Press, later(4));
+        grip(
+            &a,
+            &mut b,
+            key.clone(),
+            GripEv::Drag(-input.max_extent()),
+            later(4),
+        );
+        relayout(&a, &mut b, later(4));
         assert_eq!(
-            a.layout.widgets[i].extent,
+            b.layout.widgets[i].extent,
             input.max_extent(),
             "the width follows the finger"
         );
-        grip(&mut a, key.clone(), GripEv::Release, later(4));
-        assert_ne!(a.motion.pins.get(&key).map(|p| p.0), Some(Pin::Collapsed));
-        assert!(a.layout.widgets[i].extent >= input.core_run());
-        a.motion.tick(later(6));
+        grip(&a, &mut b, key.clone(), GripEv::Release, later(4));
+        assert_ne!(b.motion.pins.get(&key).map(|p| p.0), Some(Pin::Collapsed));
+        assert!(b.layout.widgets[i].extent >= input.core_run());
+        b.motion.tick(later(6));
 
-        grip(&mut a, key.clone(), GripEv::Press, later(7));
-        grip(&mut a, key.clone(), GripEv::Drag(input.max_extent()), later(7));
-        grip(&mut a, key.clone(), GripEv::Release, later(7));
-        assert_eq!(a.motion.pins.get(&key).map(|p| p.0), Some(Pin::Collapsed));
+        grip(&a, &mut b, key.clone(), GripEv::Press, later(7));
+        grip(
+            &a,
+            &mut b,
+            key.clone(),
+            GripEv::Drag(input.max_extent()),
+            later(7),
+        );
+        grip(&a, &mut b, key.clone(), GripEv::Release, later(7));
+        assert_eq!(b.motion.pins.get(&key).map(|p| p.0), Some(Pin::Collapsed));
     }
 
-    /// The monitor tap follows the bar off screen: a folded or hidden bar
-    /// draws no visualizer, so it holds no capture stream.
+    /// A grip is one bar's gesture: its pin lands on the bar it was on and
+    /// no other.
     #[test]
-    fn the_tap_closes_when_the_bar_folds_or_hides() {
-        use crate::widgets::{now_playing, Feed};
-        use eclipse_services::media::{NowPlaying, Playback};
+    fn a_grip_pins_only_the_bar_it_was_on() {
+        use crate::widgets::WidgetId;
         let mut a = app();
-        a.width = 1440.0;
-        widgets::update(
-            &mut a.widgets,
-            Feed::NowPlaying(now_playing::Feed::Player(Some(NowPlaying {
-                player: "player".into(),
-                title: "Track".into(),
-                artist: None,
-                album: None,
-                art: None,
-                status: Playback::Playing,
-                can_prev: true,
-                can_next: true,
-                can_pause: true,
-            }))),
+        let (one, two) = (bar_on(&mut a, "DP-1", 1), bar_on(&mut a, "DP-2", 2));
+        relayout_all(&mut a, Instant::now());
+        let key = WidgetId::Clock.key();
+        for ev in [GripEv::Press, GripEv::Release] {
+            let _ = update(&mut a, Message::On(one, Box::new(Message::Grip(key.clone(), ev))));
+        }
+        assert!(a.bars[&one].motion.pins.contains_key(&key));
+        assert!(!a.bars[&two].motion.pins.contains_key(&key));
+    }
+
+    /// The monitor tap follows the bars off screen: a folded or hidden bar
+    /// draws no visualizer, so it holds no capture stream — unless another
+    /// bar still shows it.
+    #[test]
+    fn the_tap_is_open_while_any_bar_shows_now_playing() {
+        let mut a = app();
+        let one = bar_on(&mut a, "DP-1", 1);
+        let two = bar_on(&mut a, "DP-2", 2);
+        now_playing(&mut a);
+        relayout_all(&mut a, Instant::now());
+        let set = |a: &mut App, id: Id, t: FoldTarget| a.bars.get_mut(&id).unwrap().fold.target = t;
+        assert!(tap_wanted(&a), "playing, on two shown bars");
+        set(&mut a, one, FoldTarget::Folded);
+        assert!(tap_wanted(&a), "one bar folded, the other still shows it");
+        set(&mut a, two, FoldTarget::Hidden);
+        assert!(
+            !tap_wanted(&a),
+            "folded on one, hidden under fullscreen on the other"
         );
-        relayout(&mut a, Instant::now());
-        assert!(tap_wanted(&a), "playing, on a shown bar");
-        a.fold.target = FoldTarget::Folded;
-        assert!(!tap_wanted(&a), "folded");
-        a.fold.target = FoldTarget::Hidden;
-        assert!(!tap_wanted(&a), "hidden under a fullscreen window");
-        a.fold.target = FoldTarget::Shown;
+        set(&mut a, two, FoldTarget::Shown);
+        assert!(tap_wanted(&a));
         a.widget_cfg.now_playing.visualizer = false;
         assert!(!tap_wanted(&a));
+        a.widget_cfg.now_playing.visualizer = true;
+        a.bars.clear();
+        assert!(!tap_wanted(&a), "no bar, no one to show it to");
     }
 
-    /// A press on bare bar closes the menu; one inside the menu does not.
+    /// Services are the process's, not a bar's: however many bars there
+    /// are, a reload configures them once and a click on a custom widget
+    /// runs its command once.
+    #[test]
+    fn a_service_starts_and_acts_once_whatever_the_bar_count() {
+        use crate::widgets::{custom, Feed};
+        let before = crate::services::calls();
+        let mut a = app();
+        let bars: Vec<Id> = ["DP-1", "DP-2", "HDMI-A-1"]
+            .iter()
+            .zip(1..)
+            .map(|(n, i)| bar_on(&mut a, n, i))
+            .collect();
+        let _ = update(&mut a, Message::Reconfigured);
+        let click = Message::Widget(Feed::Custom(
+            "weather".into(),
+            custom::Feed::Run(vec!["true".into()]),
+        ));
+        let _ = update(&mut a, Message::On(bars[1], Box::new(click)));
+        let after = crate::services::calls();
+        assert_eq!(
+            after.0 - before.0,
+            2,
+            "configured at start and on reload, not per bar"
+        );
+        assert_eq!(after.1 - before.1, 1, "one click, one run");
+    }
+
+    /// A press on bare bar closes the menu — on any bar, since there is one
+    /// popup; one inside the menu does not.
     #[test]
     fn a_press_on_bare_bar_closes_the_menu() {
         let mut a = app();
-        let (bar_id, menu_id) = (iced::window::Id::unique(), iced::window::Id::unique());
-        a.main = Some(bar_id);
+        let (one, two) = (bar_on(&mut a, "DP-1", 1), bar_on(&mut a, "DP-2", 2));
+        let menu_id = Id::unique();
         let menu = |id| Popup {
             id,
+            owner: one,
             kind: Kind::Menu {
                 handle: 1,
                 items: vec![Item::Close],
             },
         };
         a.popup = Some(menu(menu_id));
-        let _ = step(&mut a, Message::BarPress(menu_id, None));
+        let _ = step(&mut a, Message::BarPress(menu_id, None), None);
         assert!(a.popup.is_some(), "a press inside the menu keeps it");
-        let _ = step(&mut a, Message::BarPress(bar_id, None));
-        assert!(a.popup.is_none(), "a press on the bar closes it");
+        let _ = step(&mut a, Message::BarPress(two, None), None);
+        assert!(a.popup.is_none(), "a press on another bar closes it");
         a.popup = Some(menu(menu_id));
-        let _ = step(&mut a, Message::Dismiss);
+        let _ = step(&mut a, Message::BarPress(one, None), None);
+        assert!(a.popup.is_none(), "a press on its own bar closes it");
+        a.popup = Some(menu(menu_id));
+        let _ = step(&mut a, Message::Dismiss, None);
         assert!(a.popup.is_none(), "Escape's message closes it");
+    }
+
+    /// A message from inside a popup acts for the bar the popup hangs from,
+    /// and a bar that goes takes its popup with it and leaves the rest.
+    #[test]
+    fn a_popup_belongs_to_the_bar_it_opened_from() {
+        let mut a = app();
+        let (one, two) = (bar_on(&mut a, "DP-1", 1), bar_on(&mut a, "DP-2", 2));
+        let menu_id = Id::unique();
+        a.popup = Some(Popup {
+            id: menu_id,
+            owner: two,
+            kind: Kind::Menu {
+                handle: 1,
+                items: vec![Item::Close],
+            },
+        });
+        assert_eq!(owner(&a, menu_id), Some(two));
+        assert_eq!(owner(&a, one), Some(one));
+        assert_eq!(owner(&a, Id::unique()), None);
+        let _ = close_bar(&mut a, one);
+        assert!(a.popup.is_some(), "another bar going leaves it");
+        let _ = close_bar(&mut a, two);
+        assert!(a.popup.is_none(), "its own bar going takes it");
+    }
+
+    /// A drawer's toggle is per bar: the same applet on the other bar moves
+    /// the drawer there rather than just closing it.
+    #[test]
+    fn a_drawer_toggles_on_its_own_bar_and_moves_from_another() {
+        let mut a = app();
+        let (one, two) = (bar_on(&mut a, "DP-1", 1), bar_on(&mut a, "DP-2", 2));
+        let _ = open_drawer(&mut a, one, Drawer::Overflow, true);
+        assert_eq!(a.popup.as_ref().map(|p| p.owner), Some(one));
+        let _ = open_drawer(&mut a, two, Drawer::Overflow, true);
+        assert_eq!(a.popup.as_ref().map(|p| p.owner), Some(two), "moved");
+        let _ = open_drawer(&mut a, two, Drawer::Overflow, true);
+        assert!(a.popup.is_none(), "toggled shut");
+    }
+
+    fn live(names: &[&str]) -> Vec<(u64, String)> {
+        names.iter().zip(1..).map(|(n, i)| (i, (*n).to_owned())).collect()
+    }
+
+    /// A new output gets a bar once it has settled; a gone one loses its
+    /// bar; the others are left alone.
+    #[test]
+    fn outputs_are_added_and_removed_without_touching_the_rest() {
+        let (a, b) = (Id::unique(), Id::unique());
+        let mut seen = HashMap::new();
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+
+        let boot = reconcile(&[], &live(&["DP-1", "DP-2"]), &mut seen, t0, Duration::ZERO);
+        assert_eq!(boot.open, ["DP-1", "DP-2"], "at boot nothing waits");
+        assert!(boot.close.is_empty() && !boot.wait);
+
+        let open = [(a, "DP-1"), (b, "DP-2")];
+        let plugged = live(&["DP-1", "DP-2", "HDMI-A-1"]);
+        let first = reconcile(&open, &plugged, &mut seen, ms(0), SETTLE);
+        assert!(first.open.is_empty() && first.close.is_empty());
+        assert!(first.wait, "a new output waits out the settle");
+        let early = reconcile(&open, &plugged, &mut seen, ms(100), SETTLE);
+        assert!(early.open.is_empty() && early.wait);
+        let settled = reconcile(&open, &plugged, &mut seen, ms(300), SETTLE);
+        assert_eq!(settled.open, ["HDMI-A-1"]);
+        assert!(settled.close.is_empty() && !settled.wait);
+        assert!(seen.is_empty());
+
+        let unplugged = reconcile(&open, &live(&["DP-2"]), &mut seen, ms(400), SETTLE);
+        assert_eq!(unplugged.close, [a], "only the gone output's bar closes");
+        assert!(unplugged.open.is_empty());
+    }
+
+    /// An empty list is the socket not being up, not every monitor gone.
+    #[test]
+    fn an_empty_output_list_closes_nothing() {
+        let (a, b) = (Id::unique(), Id::unique());
+        let mut seen = HashMap::new();
+        let plan = reconcile(
+            &[(a, "DP-1"), (b, "DP-2")],
+            &[],
+            &mut seen,
+            Instant::now(),
+            SETTLE,
+        );
+        assert_eq!(plan, Plan::default());
+    }
+
+    /// A renamed output is its old bar closed and a new one opened, the new
+    /// one after the settle like any other arrival.
+    #[test]
+    fn a_renamed_output_is_a_removal_and_an_addition() {
+        let a = Id::unique();
+        let mut seen = HashMap::new();
+        let t0 = Instant::now();
+        let renamed = live(&["DP-3"]);
+        let plan = reconcile(&[(a, "DP-1")], &renamed, &mut seen, t0, SETTLE);
+        assert_eq!(plan.close, [a]);
+        assert!(plan.open.is_empty() && plan.wait);
+        let plan = reconcile(&[], &renamed, &mut seen, t0 + SETTLE, SETTLE);
+        assert_eq!(plan.open, ["DP-3"]);
+    }
+
+    /// An output that flickers out while settling starts its settle over.
+    #[test]
+    fn an_output_that_leaves_while_settling_starts_over() {
+        let mut seen = HashMap::new();
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        let _ = reconcile(&[], &live(&["DP-1", "DP-2"]), &mut seen, ms(0), SETTLE);
+        let _ = reconcile(&[], &live(&["DP-1"]), &mut seen, ms(100), SETTLE);
+        let plan = reconcile(&[], &live(&["DP-1", "DP-2"]), &mut seen, ms(300), SETTLE);
+        assert_eq!(plan.open, ["DP-1"], "DP-2 came back at 300 ms and waits again");
+        assert!(plan.wait);
+    }
+
+    /// Output ids are re-resolved by name on every look; an empty list
+    /// leaves a stale id alone rather than zeroing it.
+    #[test]
+    fn an_output_id_is_re_resolved_by_name() {
+        let mut a = app();
+        let id = bar_on(&mut a, "DP-99", 4);
+        resolve(&mut a.bars, &[]);
+        assert_eq!(a.bars[&id].output_id, 4);
+        resolve(&mut a.bars, &[(11, "DP-99".to_owned())]);
+        assert_eq!(a.bars[&id].output_id, 11);
+    }
+
+    /// A bar the compositor closed is forgotten; the others stay.
+    #[test]
+    fn a_closed_bar_is_forgotten() {
+        let mut a = app();
+        let (one, two) = (bar_on(&mut a, "DP-1", 1), bar_on(&mut a, "DP-2", 2));
+        let _ = step(&mut a, Message::Closed(one), None);
+        assert!(!a.bars.contains_key(&one));
+        assert!(a.bars.contains_key(&two));
     }
 }
 
@@ -2118,8 +2688,8 @@ mod fold_tests {
         }
     }
 
-    /// An unresolved output id means "single-output dev run": never fold, even
-    /// under a configuration that would otherwise fold everything.
+    /// An unresolved output id never folds, even under a configuration that
+    /// would otherwise fold everything.
     #[test]
     fn an_unresolved_output_never_folds() {
         assert_eq!(decide(&cfg(true, true), 0, 9, true, true), FoldTarget::Shown);
@@ -2131,47 +2701,66 @@ mod fold_tests {
         assert_eq!(decide(&cfg(false, false), 7, 9, true, false), FoldTarget::Shown);
     }
 
-    fn folding_app() -> App {
+    fn folding_app() -> (App, Bar) {
         let mut a = App::new();
         a.bar = cfg(true, false);
-        a.output_id = 7;
         a.focused_output = 7;
-        a.fold = FoldState::default();
-        a
+        let b = Bar::new(
+            Id::unique(),
+            "DP-1".into(),
+            7,
+            eclipse_ui::motion::Motion::DEFAULT,
+        );
+        (a, b)
     }
 
     /// Hysteresis: a fold that reverses inside the grace window commits nothing.
     #[test]
     fn a_fold_that_reverses_inside_the_grace_window_never_happens() {
-        let mut a = folding_app();
+        let (mut a, mut b) = folding_app();
         a.focused_output = 9;
-        let _ = fold(&mut a);
-        assert_eq!(a.fold.target, FoldTarget::Shown, "fold is only pending");
-        assert!(a.fold.pending.is_some());
+        let _ = fold(&a, &mut b);
+        assert_eq!(b.fold.target, FoldTarget::Shown, "fold is only pending");
+        assert!(b.fold.pending.is_some());
 
         a.focused_output = 7;
-        let _ = fold(&mut a);
-        assert_eq!(a.fold.target, FoldTarget::Shown);
-        assert!(a.fold.pending.is_none(), "the pending fold is dropped");
-        assert_eq!(a.fold.height, crate::HEIGHT, "the height never moved");
+        let _ = fold(&a, &mut b);
+        assert_eq!(b.fold.target, FoldTarget::Shown);
+        assert!(b.fold.pending.is_none(), "the pending fold is dropped");
+        assert_eq!(b.fold.height, crate::HEIGHT, "the height never moved");
     }
 
     /// The other direction has no grace at all: the human is already reaching
     /// for the bar.
     #[test]
     fn unfolding_is_immediate() {
-        let mut a = folding_app();
+        let (mut a, mut b) = folding_app();
         a.bar.fold_duration_ms = 0;
         a.focused_output = 9;
         let then = std::time::Instant::now() - FOLD_GRACE * 2;
-        a.fold.pending = Some((FoldTarget::Folded, then));
-        let _ = fold(&mut a);
-        assert_eq!(a.fold.target, FoldTarget::Folded);
+        b.fold.pending = Some((FoldTarget::Folded, then));
+        let _ = fold(&a, &mut b);
+        assert_eq!(b.fold.target, FoldTarget::Folded);
 
         a.focused_output = 7;
-        let _ = fold(&mut a);
-        assert_eq!(a.fold.target, FoldTarget::Shown);
-        assert_eq!(a.fold.height, crate::HEIGHT);
+        let _ = fold(&a, &mut b);
+        assert_eq!(b.fold.target, FoldTarget::Shown);
+        assert_eq!(b.fold.height, crate::HEIGHT);
+    }
+
+    /// Each bar folds for its own output: the focused one stays, the other
+    /// folds, from one shared output event.
+    #[test]
+    fn each_bar_folds_for_its_own_output() {
+        let (mut a, _) = folding_app();
+        a.bar.fold_duration_ms = 0;
+        let here = crate::app::tests::bar_on(&mut a, "DP-1", 7);
+        let there = crate::app::tests::bar_on(&mut a, "DP-2", 9);
+        let then = std::time::Instant::now() - FOLD_GRACE * 2;
+        a.bars.get_mut(&there).unwrap().fold.pending = Some((FoldTarget::Folded, then));
+        let _ = each_bar(&mut a, fold);
+        assert_eq!(a.bars[&here].fold.target, FoldTarget::Shown);
+        assert_eq!(a.bars[&there].fold.target, FoldTarget::Folded);
     }
 
     /// The slide is monotonic and lands exactly on `to_h` — never one pixel
@@ -2184,23 +2773,24 @@ mod fold_tests {
             FoldCurve::EaseOut,
             FoldCurve::EaseInOut,
         ] {
-            let mut a = folding_app();
+            let (mut a, mut b) = folding_app();
             a.bar.fold_curve = curve;
             let started = std::time::Instant::now();
-            commit(&mut a, FoldTarget::Folded, started);
-            assert!(a.fold.animating(), "{curve:?} animates");
+            commit(&a.bar, &mut b.fold, FoldTarget::Folded, started);
+            assert!(b.fold.animating(), "{curve:?} animates");
 
-            let mut last = a.fold.height;
+            let mut last = b.fold.height;
             for step in 1..=10u32 {
                 advance(
-                    &mut a,
+                    &a.bar,
+                    &mut b.fold,
                     started + std::time::Duration::from_millis(step as u64 * 15),
                 );
-                assert!(a.fold.height <= last, "{curve:?} step {step} went back up");
-                last = a.fold.height;
+                assert!(b.fold.height <= last, "{curve:?} step {step} went back up");
+                last = b.fold.height;
             }
-            assert_eq!(a.fold.height, a.fold.to_h, "{curve:?} lands on to_h");
-            assert!(!a.fold.animating(), "{curve:?} settles");
+            assert_eq!(b.fold.height, b.fold.to_h, "{curve:?} lands on to_h");
+            assert!(!b.fold.animating(), "{curve:?} settles");
         }
     }
 
@@ -2209,52 +2799,52 @@ mod fold_tests {
     /// height with the clock stopped.
     #[test]
     fn a_reversed_fold_turns_without_a_jump() {
-        let mut a = folding_app();
+        let (mut a, mut b) = folding_app();
         a.bar.fold_duration_ms = 200;
         let t0 = std::time::Instant::now();
         let ms = |n: u64| t0 + std::time::Duration::from_millis(n);
-        commit(&mut a, FoldTarget::Folded, t0);
+        commit(&a.bar, &mut b.fold, FoldTarget::Folded, t0);
         for n in (8..=80).step_by(8) {
-            advance(&mut a, ms(n));
+            advance(&a.bar, &mut b.fold, ms(n));
         }
-        let mid = a.fold.height;
+        let mid = b.fold.height;
         assert!(
             mid < crate::HEIGHT && mid > a.bar.fold_height,
             "mid-slide at {mid}"
         );
-        let (at, speed) = slide_at(&a, ms(80));
+        let (at, speed) = slide_at(&a.bar, &b.fold, ms(80));
         assert!(speed < 0.0, "folding moves down");
 
-        commit(&mut a, FoldTarget::Shown, ms(80));
-        let (at2, speed2) = slide_at(&a, ms(80));
+        commit(&a.bar, &mut b.fold, FoldTarget::Shown, ms(80));
+        let (at2, speed2) = slide_at(&a.bar, &b.fold, ms(80));
         assert!((at2 - at).abs() < 0.01, "no jump at the turn: {at} -> {at2}");
         assert!(
             (speed2 - speed).abs() < 1.0,
             "no velocity kink: {speed} -> {speed2}"
         );
 
-        let mut prev = a.fold.height;
+        let mut prev = b.fold.height;
         let mut steps = Vec::new();
         for n in (88..=1000).step_by(8) {
-            advance(&mut a, ms(n));
-            steps.push(a.fold.height as i32 - prev as i32);
-            prev = a.fold.height;
+            advance(&a.bar, &mut b.fold, ms(n));
+            steps.push(b.fold.height as i32 - prev as i32);
+            prev = b.fold.height;
         }
         let max_step = steps.iter().map(|d| d.abs()).max().unwrap_or(0);
         assert!(max_step <= 4, "no frame leaps: {steps:?}");
-        assert_eq!(a.fold.height, crate::HEIGHT, "lands exactly");
-        assert!(!a.fold.animating(), "and the clock stops");
+        assert_eq!(b.fold.height, crate::HEIGHT, "lands exactly");
+        assert!(!b.fold.animating(), "and the clock stops");
     }
 
     /// Zero duration means snap: no animation frames, no tick subscription.
     #[test]
     fn a_zero_duration_snaps() {
-        let mut a = folding_app();
+        let (mut a, mut b) = folding_app();
         a.bar.fold_duration_ms = 0;
-        commit(&mut a, FoldTarget::Folded, std::time::Instant::now());
-        advance(&mut a, std::time::Instant::now());
-        assert_eq!(a.fold.height, a.bar.fold_height);
-        assert!(!a.fold.animating());
+        commit(&a.bar, &mut b.fold, FoldTarget::Folded, std::time::Instant::now());
+        advance(&a.bar, &mut b.fold, std::time::Instant::now());
+        assert_eq!(b.fold.height, a.bar.fold_height);
+        assert!(!b.fold.animating());
     }
 
     /// The pill fills its surface and the float gap is margin, yet the strip
@@ -2279,11 +2869,11 @@ mod fold_tests {
         assert_eq!(g.margin.0, 0);
         assert_eq!(g.zone + g.margin.2, crate::HEIGHT as i32);
 
-        let mut a = folding_app();
+        let (mut a, mut b) = folding_app();
         a.bar.fold_duration_ms = 0;
-        commit(&mut a, FoldTarget::Folded, std::time::Instant::now());
-        advance(&mut a, std::time::Instant::now());
-        let g = a.fold.geometry(BarPosition::Top);
+        commit(&a.bar, &mut b.fold, FoldTarget::Folded, std::time::Instant::now());
+        advance(&a.bar, &mut b.fold, std::time::Instant::now());
+        let g = b.fold.geometry(BarPosition::Top);
         assert_eq!(g.height, a.bar.fold_height);
         assert_eq!(g.zone, a.bar.fold_height as i32);
         assert_eq!((g.margin.0, g.margin.2), (0, 0));
@@ -2296,18 +2886,5 @@ mod fold_tests {
         assert_eq!(target_height(&bar, FoldTarget::Hidden), HIDDEN_HEIGHT);
         assert_eq!(target_height(&bar, FoldTarget::Folded), bar.fold_height);
         assert_eq!(target_height(&bar, FoldTarget::Shown), crate::HEIGHT);
-    }
-
-    /// Defect 3: the id was resolved once in `App::new` and never again, so a
-    /// hotplug left the bar folded forever. It must re-resolve by name.
-    #[test]
-    fn an_output_id_is_re_resolved_by_name() {
-        let mut a = App::new();
-        a.output_name = "DP-99".to_owned();
-        a.output_id = 4;
-        // No compositor in the test environment, so `outputs()` is empty and
-        // the stale id must survive rather than being zeroed.
-        resolve_output(&mut a);
-        assert_eq!(a.output_id, 4);
     }
 }
