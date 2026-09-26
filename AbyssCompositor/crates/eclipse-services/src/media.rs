@@ -15,8 +15,9 @@
 //! logs them. Diagnostics name the player's bus name and nothing else.
 //!
 //! `https` cover art is fetched by spawning `curl` (the `curl` submodule)
-//! while remote art is on, the default; [`Handle::set_remote_art`] turns it
-//! off. `http` art is never fetched.
+//! while remote art is on. The setting is given to [`spawn`], so a service
+//! started with it off never fetches, not even before its first command;
+//! [`Handle::set_remote_art`] changes it later. `http` art is never fetched.
 
 mod curl;
 mod model;
@@ -101,7 +102,7 @@ impl Handle {
     }
 
     /// Whether `https` cover art is fetched (`bar.widgets.now-playing.remote-art`).
-    /// On by default. Off drops fetched covers and re-sends the current track
+    /// Starts as given to [`spawn`]. Off drops fetched covers and re-sends the current track
     /// without its remote art; on again fetches the current track's.
     pub fn set_remote_art(&self, on: bool) {
         let _ = self.commands.send(Command::SetRemoteArt(on));
@@ -129,16 +130,17 @@ impl Actions {
     }
 }
 
-/// Start watching. The thread lives until the [`Handle`] and every
-/// [`Actions`] cloned from it are dropped.
-pub fn spawn() -> Handle {
-    spawn_with(session, Arc::new(read_art))
+/// Start watching, fetching `https` cover art only if `remote_art`. The
+/// thread lives until the [`Handle`] and every [`Actions`] cloned from it are
+/// dropped.
+pub fn spawn(remote_art: bool) -> Handle {
+    spawn_with(session, Arc::new(read_art), remote_art)
 }
 
 /// Reads one cover, by URL. Injectable so tests never touch the network.
 type Fetch = Arc<dyn Fn(&str) -> Option<Arc<[u8]>> + Send + Sync>;
 
-fn spawn_with<C>(connect: C, fetch: Fetch) -> Handle
+fn spawn_with<C>(connect: C, fetch: Fetch, remote_art: bool) -> Handle
 where
     C: Fn() -> zbus::Result<Connection> + Send + 'static,
 {
@@ -146,7 +148,7 @@ where
     let (commands, commands_rx) = mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("eclipse-media".into())
-        .spawn(move || run(connect, fetch, updates_tx, commands_rx));
+        .spawn(move || run(connect, fetch, remote_art, updates_tx, commands_rx));
     Handle { updates, commands }
 }
 
@@ -212,7 +214,7 @@ struct Service {
     fetch: Fetch,
 }
 
-fn run<C>(connect: C, fetch: Fetch, updates: Sender<Update>, commands: Receiver<Command>)
+fn run<C>(connect: C, fetch: Fetch, remote_art: bool, updates: Sender<Update>, commands: Receiver<Command>)
 where
     C: Fn() -> zbus::Result<Connection>,
 {
@@ -232,7 +234,7 @@ where
         return;
     }
 
-    let mut service = Service::new(tx, updates, fetch);
+    let mut service = Service::new(tx, updates, fetch, remote_art);
     let mut retry_at = Instant::now();
     loop {
         if service.connection.is_none() && Instant::now() >= retry_at {
@@ -267,7 +269,7 @@ where
 }
 
 impl Service {
-    fn new(tx: Sender<Msg>, updates: Sender<Update>, fetch: Fetch) -> Self {
+    fn new(tx: Sender<Msg>, updates: Sender<Update>, fetch: Fetch, remote_art: bool) -> Self {
         Service {
             tx,
             updates,
@@ -276,7 +278,7 @@ impl Service {
             players: Players::default(),
             art: ArtCache::default(),
             dedupe: Dedupe::default(),
-            remote_art: true,
+            remote_art,
             fetch,
         }
     }
@@ -495,6 +497,7 @@ mod tests {
         let h = spawn_with(
             || Err(zbus::Error::Failure("no bus in tests".into())),
             Arc::new(|_: &str| None),
+            true,
         );
         h.set_remote_art(false);
         h.set_remote_art(true);
@@ -514,6 +517,13 @@ mod tests {
     /// their results queue on the returned receiver until a test delivers
     /// them, as the run loop would.
     fn service(bytes: Option<&'static [u8]>) -> (Service, Receiver<Msg>, Receiver<Update>, Receiver<String>) {
+        service_with(bytes, true)
+    }
+
+    fn service_with(
+        bytes: Option<&'static [u8]>,
+        remote_art: bool,
+    ) -> (Service, Receiver<Msg>, Receiver<Update>, Receiver<String>) {
         let (tx, rx) = mpsc::channel();
         let (updates_tx, updates) = mpsc::channel();
         let (seen_tx, seen) = mpsc::channel();
@@ -522,7 +532,7 @@ mod tests {
             let _ = seen_tx.lock().unwrap().send(url.to_owned());
             bytes.map(Arc::from)
         });
-        let mut s = Service::new(tx, updates_tx, fetch);
+        let mut s = Service::new(tx, updates_tx, fetch, remote_art);
         s.players.upsert(NAME, ":1.9");
         (s, rx, updates, seen)
     }
@@ -614,6 +624,23 @@ mod tests {
         assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
         assert_eq!(seen.try_iter().count(), 0);
         assert_eq!(shown(&updates), [("Two".into(), None)]);
+    }
+
+    /// Started with remote art off, the very first publish (what `attach`
+    /// does on connect, before any queued command is drained) fetches
+    /// nothing.
+    #[test]
+    fn spawned_off_never_fetches_before_its_first_command() {
+        let (mut s, rx, updates, seen) = service_with(Some(b"jpg"), false);
+        track(&mut s, "Two", A);
+        s.publish();
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        assert_eq!(seen.try_iter().count(), 0);
+        assert_eq!(shown(&updates), [("Two".into(), None)]);
+        // Turning it on is what first fetches.
+        s.command(Command::SetRemoteArt(true));
+        assert_eq!(land(&mut s, &rx), A);
+        assert_eq!(shown(&updates), [("Two".into(), Some(A.into()))]);
     }
 
     #[test]

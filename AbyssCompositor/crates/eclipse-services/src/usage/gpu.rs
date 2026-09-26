@@ -17,13 +17,19 @@
 //!
 //! A GPU whose PCI device is runtime-suspended reads as idle (`0.0`) without
 //! being touched: a query would resume it, and on a hybrid laptop that keeps
-//! the dGPU awake and drains the battery. For the same reason NVML is not
-//! even initialized while every NVIDIA GPU sleeps; it is initialized on the
-//! first tick one of them is awake, once, and kept until the next probe.
+//! the dGPU awake and drains the battery. For the same reason NVML's lifetime
+//! follows the devices ([`Life`]): `nvmlInit` opens every NVIDIA device, and
+//! an open NVML keeps a dGPU from runtime-suspending. So NVML is initialized
+//! only on a tick where every NVIDIA PCI device is awake, and shut down again
+//! once they have read idle for [`IDLE_RELEASE`], letting the dGPU suspend.
+//! While shut down the NVIDIA GPUs read `0.0`. Where no NVIDIA device can
+//! runtime-suspend at all (desktop cards: no `runtime_status`, `unsupported`,
+//! or `power/control` not `auto`) releasing would only churn, so NVML stays
+//! resident there.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use nvml_wrapper::{Device, Nvml};
 use nvml_wrapper_sys::bindings::nvmlDevice_t;
@@ -33,10 +39,18 @@ pub(super) const SYS: &str = "/sys";
 /// NVML's soname, as the driver installs it.
 pub(super) const NVML_LIB: &str = "libnvidia-ml.so.1";
 
+/// NVML is shut down once every NVIDIA GPU has read idle this long.
+const IDLE_RELEASE: Duration = Duration::from_secs(10);
+/// After a release, a device that has not been seen suspended is given this
+/// long to get there before NVML is loaded again: something else may be
+/// keeping it awake, and busy.
+const REOPEN_GRACE: Duration = Duration::from_secs(10);
+
 /// Every GPU source found by the last probe.
 pub(super) struct Gpus {
     sysfs: Vec<Source>,
-    nvidia: Nvidia,
+    /// `None`: no GPU driven by `nvidia`.
+    nvidia: Option<Nvidia>,
 }
 
 /// One GPU read from sysfs.
@@ -63,27 +77,105 @@ enum Kind {
 /// (`None` if the bus id was unparseable).
 type NvDevices = Vec<(nvmlDevice_t, Option<PathBuf>)>;
 
-enum Nvidia {
-    /// No GPU driven by `nvidia`, or NVML would not load or init.
-    Absent,
-    /// NVIDIA GPUs exist but all slept at probe: NVML not yet initialized.
-    Pending {
-        /// `power/runtime_status` of each NVIDIA PCI device.
-        power: Vec<PathBuf>,
-        pci: PathBuf,
-        lib: OsString,
-    },
-    Ready {
-        /// Handles from `nvml`.
-        devices: NvDevices,
-        /// Boxed: the loaded symbol table is large.
-        nvml: Box<Nvml>,
-    },
+/// The NVIDIA GPUs, read through NVML while [`Life`] lets it be loaded.
+struct Nvidia {
+    pci: PathBuf,
+    lib: OsString,
+    life: Life<Loaded>,
+}
+
+/// An initialized NVML. Dropping it calls `nvmlShutdown`.
+struct Loaded {
+    /// Handles from `nvml`.
+    devices: NvDevices,
+    /// Boxed: the loaded symbol table is large.
+    nvml: Box<Nvml>,
+}
+
+/// When a device-opening library (NVML, `H`) may be held, from the devices'
+/// `power/runtime_status` files alone. Generic so tests drive it without
+/// NVML.
+struct Life<H> {
+    /// `power/runtime_status` of each NVIDIA PCI device.
+    power: Vec<PathBuf>,
+    /// No device can runtime-suspend: never release, it would only churn.
+    resident: bool,
+    state: State<H>,
+}
+
+enum State<H> {
+    /// Not loaded. `slept`: a device has been seen asleep since `since` (or
+    /// this is the start), so its next wake was someone else's and loading
+    /// then keeps nothing awake that would have slept.
+    Closed { slept: bool, since: Instant },
+    /// Loaded; `idle_since` is when every reading last went to zero.
+    Open { handle: H, idle_since: Option<Instant> },
+    /// Would not load or init. Out until the next probe: no per-tick retry.
+    Failed,
+}
+
+impl<H> Life<H> {
+    fn new(power: Vec<PathBuf>, now: Instant) -> Self {
+        let resident = !power.iter().any(|p| runtime_pm(p));
+        Life {
+            power,
+            resident,
+            state: State::Closed {
+                slept: true,
+                since: now,
+            },
+        }
+    }
+
+    /// One reading per device. `open` loads the library, and is called only
+    /// when every device is awake; `read` reads through it.
+    fn tick(
+        &mut self,
+        now: Instant,
+        open: impl FnOnce() -> Option<H>,
+        read: impl FnOnce(&H) -> Vec<Option<f32>>,
+    ) -> Vec<Option<f32>> {
+        let idle = || vec![Some(0.0); self.power.len()];
+        if let State::Closed { slept, since } = &mut self.state {
+            // Opening would wake a sleeping device: every one must be awake.
+            if self.power.iter().any(|p| asleep(p)) {
+                *slept = true;
+                return idle();
+            }
+            if !*slept && now.saturating_duration_since(*since) < REOPEN_GRACE {
+                return idle();
+            }
+            self.state = match open() {
+                Some(handle) => State::Open {
+                    handle,
+                    idle_since: None,
+                },
+                None => State::Failed,
+            };
+        }
+        let State::Open { handle, idle_since } = &mut self.state else {
+            return Vec::new();
+        };
+        let readings = read(handle);
+        if readings.iter().any(|r| r.is_some_and(|v| v > 0.0)) {
+            *idle_since = None;
+            return readings;
+        }
+        let since = *idle_since.get_or_insert(now);
+        if !self.resident && now.saturating_duration_since(since) >= IDLE_RELEASE {
+            // Drops the handle: nvmlShutdown, so the device may suspend.
+            self.state = State::Closed {
+                slept: false,
+                since: now,
+            };
+        }
+        readings
+    }
 }
 
 impl Gpus {
-    /// Find every GPU source under `sys`. NVML is loaded from `lib` only if a
-    /// PCI GPU bound to `nvidia` exists and at least one is awake.
+    /// Find every GPU source under `sys`. NVML is not loaded here: only on a
+    /// tick where every PCI GPU bound to `nvidia` is awake (see [`Life`]).
     pub(super) fn probe(sys: &Path, lib: &OsStr) -> Self {
         let now = Instant::now();
         let mut sysfs = probe_cards(&sys.join("class/drm"));
@@ -96,16 +188,11 @@ impl Gpus {
         }
         let pci = sys.join("bus/pci/devices");
         let power = nvidia_devices(&pci);
-        let mut nvidia = if power.is_empty() {
-            Nvidia::Absent
-        } else {
-            Nvidia::Pending {
-                power,
-                pci,
-                lib: lib.to_owned(),
-            }
-        };
-        nvidia.init_if_awake();
+        let nvidia = (!power.is_empty()).then(|| Nvidia {
+            pci,
+            lib: lib.to_owned(),
+            life: Life::new(power, now),
+        });
         Self { sysfs, nvidia }
     }
 
@@ -124,7 +211,7 @@ impl Gpus {
                 _ => None,
             })
             .collect();
-        self.nvidia = Nvidia::Absent;
+        self.nvidia = None;
         *self = Self::probe(sys, lib);
         for s in &mut self.sysfs {
             if let Kind::Idle { counter, prev, last } = &mut s.kind {
@@ -139,7 +226,7 @@ impl Gpus {
     /// The busiest GPU now, `0.0..=1.0`; `None` if none could be read.
     pub(super) fn read(&mut self, now: Instant) -> Option<f32> {
         let sysfs = self.sysfs.iter_mut().map(|s| s.read(now));
-        let nvidia = self.nvidia.read();
+        let nvidia = self.nvidia.as_mut().map(|n| n.read(now)).unwrap_or_default();
         max_of(sysfs.chain(nvidia))
     }
 }
@@ -186,50 +273,36 @@ impl Source {
 }
 
 impl Nvidia {
-    /// Initialize NVML if it is pending and some NVIDIA GPU is awake. On
-    /// failure NVIDIA is out until the next probe: no per-tick retry.
-    fn init_if_awake(&mut self) {
-        let Nvidia::Pending { power, pci, lib } = self else {
-            return;
-        };
-        if power.iter().all(|p| asleep(p)) {
-            return;
-        }
-        *self = match open_nvml(lib, pci) {
-            Some((nvml, devices)) => Nvidia::Ready { devices, nvml },
-            None => Nvidia::Absent,
-        };
+    /// One reading per NVIDIA GPU; none if NVML would not load.
+    fn read(&mut self, now: Instant) -> Vec<Option<f32>> {
+        let (lib, pci) = (&self.lib, &self.pci);
+        self.life.tick(now, || open_nvml(lib, pci), Loaded::read)
     }
+}
 
-    /// One reading per NVIDIA GPU.
-    fn read(&mut self) -> Vec<Option<f32>> {
-        self.init_if_awake();
-        match self {
-            Nvidia::Absent => Vec::new(),
-            // Still pending, so every NVIDIA GPU sleeps.
-            Nvidia::Pending { power, .. } => vec![Some(0.0); power.len()],
-            Nvidia::Ready { devices, nvml } => devices
-                .iter()
-                .map(|(handle, power)| {
-                    if power.as_deref().is_some_and(asleep) {
-                        return Some(0.0);
-                    }
-                    // SAFETY: `handle` came from `device_by_index` on this
-                    // same `nvml`, which is still initialized (it is dropped,
-                    // calling nvmlShutdown, only together with `devices`).
-                    // NVML device handles stay valid until nvmlShutdown.
-                    let device = unsafe { Device::new(*handle, nvml) };
-                    let u = device.utilization_rates().ok()?;
-                    Some(u.gpu.min(100) as f32 / 100.0)
-                })
-                .collect(),
-        }
+impl Loaded {
+    fn read(&self) -> Vec<Option<f32>> {
+        self.devices
+            .iter()
+            .map(|(handle, power)| {
+                if power.as_deref().is_some_and(asleep) {
+                    return Some(0.0);
+                }
+                // SAFETY: `handle` came from `device_by_index` on this same
+                // `nvml`, which is still initialized (it is dropped, calling
+                // nvmlShutdown, only together with `devices`). NVML device
+                // handles stay valid until nvmlShutdown.
+                let device = unsafe { Device::new(*handle, &self.nvml) };
+                let u = device.utilization_rates().ok()?;
+                Some(u.gpu.min(100) as f32 / 100.0)
+            })
+            .collect()
     }
 }
 
 /// Load and init NVML from `lib` and list its devices. `None`, silently, if
 /// the library is missing, init fails or it reports no devices.
-fn open_nvml(lib: &OsStr, pci: &Path) -> Option<(Box<Nvml>, NvDevices)> {
+fn open_nvml(lib: &OsStr, pci: &Path) -> Option<Loaded> {
     let nvml = Nvml::builder().lib_path(lib).init().ok()?;
     let count = nvml.device_count().ok()?;
     let mut devices = Vec::new();
@@ -246,7 +319,10 @@ fn open_nvml(lib: &OsStr, pci: &Path) -> Option<(Box<Nvml>, NvDevices)> {
         // through `Device::new` with this same `nvml` (see `Nvidia::read`).
         devices.push((unsafe { device.handle() }, power));
     }
-    (!devices.is_empty()).then(|| (Box::new(nvml), devices))
+    (!devices.is_empty()).then(|| Loaded {
+        devices,
+        nvml: Box::new(nvml),
+    })
 }
 
 /// NVML's bus id (`00000000:01:00.0`, 8-digit domain) as sysfs names the PCI
@@ -265,6 +341,17 @@ fn sysfs_bdf(bus_id: &str) -> Option<String> {
 /// missing or unreadable file means it is not runtime-managed: awake.
 fn asleep(runtime_status: &Path) -> bool {
     read_to_string(runtime_status).is_some_and(|s| matches!(s.trim(), "suspended" | "suspending"))
+}
+
+/// Whether a PCI device can runtime-suspend: it has a `runtime_status` other
+/// than `unsupported`, and `power/control` is `auto` (`on` pins it awake).
+fn runtime_pm(runtime_status: &Path) -> bool {
+    let status = read_to_string(runtime_status).is_some_and(|s| s.trim() != "unsupported");
+    let control = runtime_status
+        .parent()
+        .and_then(|p| read_to_string(p.join("control")))
+        .is_some_and(|s| s.trim() == "auto");
+    status && control
 }
 
 /// The largest reading, or `None` if there were none.
@@ -576,7 +663,7 @@ mod tests {
         s.write("class/drm/card1/device/gpu_busy_percent", "90\n");
         s.write("class/drm/card1/device/power/runtime_status", "suspended\n");
         let mut g = Gpus::probe(&s.0, OsStr::new(NO_LIB));
-        assert!(matches!(g.nvidia, Nvidia::Absent));
+        assert!(g.nvidia.is_none());
         assert_eq!(g.read(Instant::now()), Some(0.12));
         // Waking it makes it the busiest.
         s.write("class/drm/card1/device/power/runtime_status", "active\n");
@@ -633,7 +720,8 @@ mod tests {
         s.write("class/drm/card0/device/gpu_busy_percent", "30\n");
         s.nvidia("0000:01:00.0", "nvidia", "active\n");
         let mut g = Gpus::probe(&s.0, OsStr::new(NO_LIB));
-        assert!(matches!(g.nvidia, Nvidia::Absent));
+        assert_eq!(g.read(Instant::now()), Some(0.3));
+        assert!(matches!(g.nvidia.as_ref().unwrap().life.state, State::Failed));
         assert_eq!(g.read(Instant::now()), Some(0.3));
         assert!(open_nvml(OsStr::new(NO_LIB), &s.0).is_none());
     }
@@ -645,11 +733,208 @@ mod tests {
         let s = FakeSys::new("nvasleep");
         s.nvidia("0000:01:00.0", "nvidia", "suspended\n");
         let mut g = Gpus::probe(&s.0, OsStr::new(NO_LIB));
-        assert!(matches!(g.nvidia, Nvidia::Pending { .. }));
         assert_eq!(g.read(Instant::now()), Some(0.0));
-        assert!(matches!(g.nvidia, Nvidia::Pending { .. }));
+        assert!(matches!(
+            g.nvidia.as_ref().unwrap().life.state,
+            State::Closed { .. }
+        ));
         s.write("bus/pci/devices/0000:01:00.0/power/runtime_status", "active\n");
         assert_eq!(g.read(Instant::now()), None);
-        assert!(matches!(g.nvidia, Nvidia::Absent));
+        assert!(matches!(g.nvidia.as_ref().unwrap().life.state, State::Failed));
+    }
+
+    /// Stands in for NVML: counts loads and shutdowns (drops) and reads
+    /// whatever the test last set.
+    struct Fake {
+        dropped: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            self.dropped.set(self.dropped.get() + 1);
+        }
+    }
+
+    struct Rig {
+        s: FakeSys,
+        life: Life<Fake>,
+        t: Instant,
+        opened: u32,
+        dropped: std::rc::Rc<std::cell::Cell<u32>>,
+        /// What the fake reads per device while open.
+        busy: f32,
+    }
+
+    impl Rig {
+        /// Two NVIDIA PCI devices, with `power/control` set to `control`.
+        fn new(tag: &str, control: &str) -> Self {
+            let s = FakeSys::new(tag);
+            for bdf in ["0000:01:00.0", "0000:02:00.0"] {
+                s.nvidia(bdf, "nvidia", "suspended\n");
+                s.write(&format!("bus/pci/devices/{bdf}/power/control"), control);
+            }
+            let t = Instant::now();
+            let power = nvidia_devices(&s.0.join("bus/pci/devices"));
+            Rig {
+                life: Life::new(power, t),
+                s,
+                t,
+                opened: 0,
+                dropped: Default::default(),
+                busy: 0.0,
+            }
+        }
+
+        fn status(&self, bdf: &str, status: &str) {
+            self.s
+                .write(&format!("bus/pci/devices/{bdf}/power/runtime_status"), status);
+        }
+
+        fn both(&self, status: &str) {
+            self.status("0000:01:00.0", status);
+            self.status("0000:02:00.0", status);
+        }
+
+        /// Advance the clock by `secs` and take one reading.
+        fn tick(&mut self, secs: u64) -> Vec<Option<f32>> {
+            self.t += Duration::from_secs(secs);
+            let busy = self.busy;
+            let (opened, dropped) = (&mut self.opened, self.dropped.clone());
+            self.life.tick(
+                self.t,
+                || {
+                    *opened += 1;
+                    Some(Fake { dropped })
+                },
+                |_| vec![Some(busy); 2],
+            )
+        }
+
+        fn open(&self) -> bool {
+            matches!(self.life.state, State::Open { .. })
+        }
+    }
+
+    #[test]
+    fn nvml_loads_only_while_every_device_is_awake() {
+        let mut r = Rig::new("nvlife-wake", "auto\n");
+        assert_eq!(r.tick(1), [Some(0.0); 2]);
+        // One awake is not enough: init would open, and wake, the other.
+        r.status("0000:01:00.0", "active\n");
+        assert_eq!(r.tick(1), [Some(0.0); 2]);
+        r.status("0000:02:00.0", "suspending\n");
+        assert_eq!(r.tick(1), [Some(0.0); 2]);
+        assert_eq!(r.opened, 0, "never loaded while a device sleeps");
+        r.status("0000:02:00.0", "active\n");
+        r.busy = 0.4;
+        assert_eq!(r.tick(1), [Some(0.4); 2], "read on the tick it loads");
+        assert_eq!(r.opened, 1);
+        assert!(r.open());
+    }
+
+    #[test]
+    fn nvml_is_released_after_idle_so_the_dgpu_can_suspend() {
+        let mut r = Rig::new("nvlife-idle", "auto\n");
+        r.both("active\n");
+        r.busy = 0.5;
+        r.tick(1);
+        assert!(r.open());
+        // Busy for a long time: kept.
+        for _ in 0..30 {
+            r.tick(1);
+        }
+        assert!(r.open());
+        // Idle, but under the window: kept. A busy blip restarts the window.
+        r.busy = 0.0;
+        r.tick(1);
+        r.tick(9);
+        assert!(r.open());
+        r.busy = 0.1;
+        r.tick(1);
+        r.busy = 0.0;
+        r.tick(1);
+        r.tick(9);
+        assert!(r.open(), "window restarted by the blip");
+        assert_eq!(r.tick(1), [Some(0.0); 2]);
+        assert!(!r.open(), "released after 10 s idle");
+        assert_eq!(r.dropped.get(), 1, "nvmlShutdown");
+
+        // Still awake right after release (autosuspend delay): not reloaded.
+        assert_eq!(r.tick(2), [Some(0.0); 2]);
+        // It suspends; while asleep nothing loads.
+        r.both("suspended\n");
+        for _ in 0..30 {
+            assert_eq!(r.tick(1), [Some(0.0); 2]);
+        }
+        assert_eq!(r.opened, 1);
+        // Something else wakes it: loaded at once, to read what it is doing.
+        r.both("active\n");
+        r.busy = 0.8;
+        assert_eq!(r.tick(1), [Some(0.8); 2]);
+        assert_eq!(r.opened, 2);
+    }
+
+    /// Released, but the device never suspends (someone else holds it): after
+    /// the grace NVML comes back to read it, rather than showing 0 forever.
+    #[test]
+    fn a_device_that_stays_awake_after_release_is_read_again() {
+        let mut r = Rig::new("nvlife-grace", "auto\n");
+        r.both("active\n");
+        r.tick(1);
+        r.tick(1);
+        r.tick(10);
+        assert!(!r.open());
+        r.busy = 0.6;
+        assert_eq!(r.tick(5), [Some(0.0); 2], "within the grace");
+        assert_eq!(r.opened, 1);
+        assert_eq!(r.tick(5), [Some(0.6); 2]);
+        assert_eq!(r.opened, 2);
+    }
+
+    /// Desktop cards cannot runtime-suspend: NVML stays resident however long
+    /// they idle, instead of loading and unloading every few seconds.
+    #[test]
+    fn without_runtime_pm_nvml_stays_resident() {
+        for (tag, control, status) in [
+            ("nvlife-on", "on\n", "active\n"),
+            ("nvlife-unsup", "auto\n", "unsupported\n"),
+        ] {
+            let mut r = Rig::new(tag, control);
+            r.both(status);
+            // Re-read at probe time, with the status just set.
+            r.life = Life::new(nvidia_devices(&r.s.0.join("bus/pci/devices")), r.t);
+            assert!(r.life.resident, "{tag}");
+            r.tick(1);
+            for _ in 0..60 {
+                assert_eq!(r.tick(1), [Some(0.0); 2]);
+            }
+            assert!(r.open(), "{tag}");
+            assert_eq!((r.opened, r.dropped.get()), (1, 0), "{tag}");
+        }
+        // No runtime_status at all (not runtime-managed): resident too.
+        let s = FakeSys::new("nvlife-missing");
+        let p = s.0.join("power/runtime_status");
+        assert!(Life::<Fake>::new(vec![p], Instant::now()).resident);
+    }
+
+    #[test]
+    fn a_failed_load_is_not_retried() {
+        let s = FakeSys::new("nvlife-fail");
+        s.nvidia("0000:01:00.0", "nvidia", "active\n");
+        let t = Instant::now();
+        let mut life = Life::<Fake>::new(nvidia_devices(&s.0.join("bus/pci/devices")), t);
+        let mut tries = 0;
+        for i in 1..5 {
+            let got = life.tick(
+                t + Duration::from_secs(i),
+                || {
+                    tries += 1;
+                    None
+                },
+                |_| unreachable!(),
+            );
+            assert!(got.is_empty());
+        }
+        assert_eq!(tries, 1);
     }
 }
