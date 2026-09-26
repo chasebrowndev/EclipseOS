@@ -108,12 +108,8 @@ absent source is hidden, not zero),
 no HTTP or TLS client. The fetch tells the image host what is playing, which
 the player's own fetch already did, but the request now comes from the
 desktop, so `bar.widgets.now-playing.remote-art` (default true) turns it off.
-Fetched art is downscaled to a small thumbnail (at most 96 px) and kept in a
-bounded cache under `$XDG_CACHE_HOME/eclipse/art/`, owner-only, named by a
-hash of the URL, never the URL itself, and capped at 1 MiB total with the
-least recently used evicted first. The cache exists so that a replayed track
-is not fetched again. It is wiped when the key is turned off. The URL is never
-logged. No `curl`, a failed fetch, or the key off all show the fallback glyph.
+Art bytes stay in memory; the URL is never logged. No `curl`, a failed fetch,
+or the key off all show the fallback glyph.
 
 **The monitor tap** reads the default sink's monitor only while media is
 playing, the Now Playing widget is on screen, and
