@@ -56,8 +56,18 @@ drag bar as chips need the room), network/bluetooth/battery drawers, and the SNI
 overflow drawer. It folds per `bar.*` (ADR 0042). Chips and widgets are
 placed by one layout solver and move under `bar.motion.*` (ADR 0065). The event thread `poll`s the
 socket with a 500 ms ceiling and coalesces a burst into one refetch;
-`window {change: "title"}` follows renames. hyperion also holds the one
-BlueZ pairing agent (ADR 0053).
+`window {change: "title"}` follows renames.
+
+hyperion is an **add-on** (ADR 0066): `eclipseos-meta` only suggests it, and
+its manifest `/usr/share/eclipse/addons/hyperion.kdl` turns on the
+`taskbar-widgets` hook. Without it abyss keeps no widget collection, no premade
+catalog and no command approval, and the session still starts: the launcher
+and center have their own binds. A command widget runs only once the owner has
+approved it in the compositor-drawn prompt (ADR 0067, COMP-10 §3.11).
+
+**eclipse-pairing** — the one BlueZ pairing agent (ADR 0053), an
+`eclipse-services` binary with its own user unit, so pairing works with no
+taskbar. PINs go through `eclipse-secret-prompt`.
 
 **eclipse-toasts** — the notification stack. Owns
 `org.freedesktop.Notifications` in-process via `eclipse_services::notifications`.
@@ -86,7 +96,7 @@ nothing.
 **eclipse-secret-prompt** — one password field, then exit (ADR 0053).
 `wifi <ssid>` hands the passphrase to NetworkManager through
 `eclipse_services::status::Actions`; `bt <addr> pin|passkey|authorize|confirm
-<n>|show <code>` answers hyperion's pairing agent over the session-bus door
+<n>|show <code>` answers eclipse-pairing over the session-bus door
 `org.eclipse.Services.Pairing`. Every owned copy of the secret is wiped; no
 `Debug` on anything that holds it. App-id `eclipse-secret-prompt` is
 load-bearing (§5).
@@ -106,7 +116,7 @@ nothing listening renders empty, never crashes.
 | Component | Socket methods | Events | D-Bus |
 |---|---|---|---|
 | hyperion (bar) | `get_workspaces`, `get_windows`, `get_focused`, `get_outputs`, `get_config`, `focus_window`, `close_window`, `set_minimized`, `switch_workspace` | `window`, `workspace`, `focus`, `output`, `config_error`, `config` | system: NetworkManager, BlueZ, UPower. session: SNI watcher/host, MPRIS players (`org.mpris.MediaPlayer2.*`). PipeWire: default sink volume/mute, monitor tap (ADR 0065) |
-| hyperion (pairing thread) | — | — | system: BlueZ `org.bluez.Agent1`. session: serves `org.eclipse.Services.Pairing` |
+| eclipse-pairing | — | — | system: BlueZ `org.bluez.Agent1`. session: serves `org.eclipse.Services.Pairing` |
 | eclipse-toasts | `get_config` (`decoration.rounding`, startup) | — | session: serves `org.freedesktop.Notifications` |
 | eclipse-center | `get_config` (`decoration.rounding`, startup) | — | system: NetworkManager, BlueZ, UPower (read), logind `login1.Manager` / `login1.Session` |
 | eclipse-launcher | `get_config` (`misc.terminal-command`, `decoration.rounding`, startup) | — | — |
@@ -144,16 +154,17 @@ stays closed in `ipc/gate.rs`, which is why the viewer reads the file itself.
 
 | Component | Started by | Trust |
 |---|---|---|
-| hyperion | `hyperion.service` | ordinary client |
+| hyperion (add-on) | `hyperion.service` | ordinary client |
+| eclipse-pairing | `eclipse-pairing.service` | ordinary client |
 | eclipse-toasts | `eclipse-toasts.service` | ordinary client |
 | eclipse-screensaver | `eclipse-screensaver.service` | ordinary client |
 | eclipse-launcher | `Super+E` / `Super+R` default binds; hyperion's launcher button | ordinary client |
 | eclipse-center | `Super+N` default bind; `eclipse-center.desktop` | ordinary client |
 | eclipse-settings | `eclipse-settings.desktop`; hyperion drawer links | ordinary client |
 | eclipse-policy-viewer | `eclipse-policy-viewer.desktop` | ordinary client |
-| eclipse-secret-prompt | hyperion (bar for wifi, its pairing thread for bluetooth) | ordinary client, surface classified `secret` |
+| eclipse-secret-prompt | hyperion (wifi), eclipse-pairing (bluetooth) | ordinary client, surface classified `secret` |
 
-The three units in `dist/` install to `/usr/lib/systemd/user/`, are
+The four units in `dist/` install to `/usr/lib/systemd/user/`, are
 `PartOf=graphical-session.target`, `Requisite=`/`After=abyss-session.target`,
 `Restart=on-failure`, and the PKGBUILD links each into
 `abyss-session.target.wants/` (a preset alone never fires for an existing
@@ -170,10 +181,8 @@ treatment is a *restriction*: `dist/etc/policy.kdl` ships
 buys capture redaction and no direct scanout. Session actions are authorised
 by logind/polkit, not by us.
 
-**`eclipse-secret-prompt` is not packaged.** It is absent from the PKGBUILD,
-`dist/install.sh` and `dist/install-session.sh`, so on a packaged system the
-wifi join and bluetooth PIN paths fail to spawn (hyperion logs it; the pairing
-agent refuses). This is a gap, not a decision.
+`eclipse-secret-prompt` and `eclipse-pairing` ship in `eclipseos-desktop`,
+so neither depends on the taskbar being installed.
 
 ## 6. Settings (COMP-17 §3)
 
@@ -208,6 +217,11 @@ it holds to the four §3 limits:
 - No clipboard manager, OSD, wallpaper setter or desktop icons.
 - No in-process widget plugins. Custom taskbar widgets are argv commands run
   off the draw path, or declarative (ADR 0065).
+- No add-on code in a host. An add-on is a package plus a manifest that turns
+  on small host hooks; its own code runs in its own process (ADR 0066).
+- Settings cannot approve a command widget. It shows the disclaimer, marks
+  premade widgets and can re-queue a pending prompt; only the compositor-drawn
+  prompt approves (ADR 0067).
 
 ## 8. Open questions
 

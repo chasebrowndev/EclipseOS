@@ -4424,6 +4424,28 @@ something to edit — `policyd`, the enforcement table, and grants. The COMP-13
 security-relevant key that accrues in `abyss.kdl` before the split is one that
 has to be migrated after it.
 
+### 3.11 Command approval *(added E-02, 2026-09-26)*
+
+Shown when a taskbar command widget (ADR 0065) is new or altered and has not
+been approved (ADR 0067). §3.10 is left to the pending-decision queue that
+code comments already cite. Present only while an installed add-on enables
+the `taskbar-widgets` hook (ADR 0066).
+
+**No client requests it.** The compositor decides: at config apply, a command
+widget whose canonical hash matches neither its shipped catalog entry nor a
+recorded approval is withheld from the live config and queued. That covers a
+socket write and a file edit alike. `review_widget` may re-queue a pending
+widget; it carries no answer.
+
+Content: the widget name; for a shipped widget that was changed, "This widget
+has been altered! Altered widgets are not guaranteed to be safe!"; for any
+other, "This is not a premade widget. It runs this command as you. EclipseOS
+is not responsible for what it does."; then the command, in the untrusted
+block (§3.2 treatment: plain text, control characters stripped, clamped).
+Buttons: **[Revert]** or **[Remove]**, **[Not now]**, **[Accept]** or
+**[Allow]**. Default focus is Not now, Escape is Not now, Enter never
+approves. Accept/Allow records the hash; a later change asks again.
+
 ---
 
 ## 4. Input Handling
@@ -6930,6 +6952,12 @@ Pixels travel the Wayland path, gated separately by
 independently revocable capabilities, and "may draw but may no longer read" is
 a reachable state.
 
+*(E-01, 2026-09-26)* These methods, the annotation binds and the
+`region-select` action are **hooks** (ADR 0066): refused, and forwarding
+nothing, unless an installed add-on manifest in `/usr/share/eclipse/addons/`
+names `annotations` (respectively `region-select`). Oracle-Eyes ships that
+manifest. A manifest never grants capture; it may only request it.
+
 ## 4. Naming
 
 "Oracle" is a load-bearing security term in Volume 2 — S-02's **no policy
@@ -7072,6 +7100,18 @@ against source before it was written. Nothing was renumbered.
 6. **Framework 13 as a performance reference.** F-04 and D-03 are
    reconciled as different roles (C-09), but whether COMP-14 gains an
    AMD/laptop measurement column is not decided.
+
+---
+
+# Appendix E — amendment record, 2026-09-26
+
+**Applied inline to this volume on 2026-09-26**, from owner rulings of the
+same day. Appendix D is reserved for the D-07 batch.
+
+| ID | Target | Change | Applied |
+|---|---|---|---|
+| E-01 | COMP-18 §3 | Annotation methods, binds and region select are add-on hooks (ADR 0066), off unless an installed manifest names them. A manifest never grants capture | yes |
+| E-02 | COMP-10 §3.11 | New surface: command approval for taskbar command widgets (ADR 0067). Compositor-initiated; no client may request it. §3.10 left to the pending-decision queue | yes |
 
 ---
 
