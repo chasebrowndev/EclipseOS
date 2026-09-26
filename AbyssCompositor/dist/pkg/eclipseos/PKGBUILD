@@ -68,14 +68,17 @@ package_eclipseos-abyss() {
 package_eclipseos-hyperion() {
   pkgdesc="EclipseOS taskbar (hyperion)"
   # The only DE component that talks to abyss directly (control socket).
-  depends=(eclipseos-abyss wayland libxkbcommon mesa networkmanager bluez bluez-utils upower)
-  optdepends=('curl: Now Playing album art from https URLs (ADR 0065)')
+  # eclipseos-desktop carries eclipse-secret-prompt, spawned for wifi passphrases.
+  depends=(eclipseos-abyss eclipseos-desktop wayland libxkbcommon mesa networkmanager bluez bluez-utils upower)
+  optdepends=('curl: Now Playing album art from https URLs (ADR 0065)'
+              'foot: click actions of the premade widgets (ADR 0067)')
 
   _bin hyperion
-  # Spawned by name from PATH for wifi passphrases and pairing PINs (ADR 0053).
-  _bin eclipse-secret-prompt
   _unit hyperion.service
   _want hyperion.service
+  # An add-on (ADR 0066): the manifest turns on abyss's taskbar-widgets hook.
+  install -Dm0644 "$srcdir/$_src/dist/addons/hyperion.kdl" \
+    "$pkgdir/usr/share/eclipse/addons/hyperion.kdl"
   # Premade command widgets, approved by shipping (ADR 0067).
   install -Dm0644 -t "$pkgdir/usr/share/eclipse/widgets" "$srcdir/$_src"/dist/widgets/*.kdl
 }
@@ -108,12 +111,19 @@ package_eclipseos-launcher() {
 }
 
 package_eclipseos-desktop() {
-  pkgdesc="EclipseOS desktop apps: settings, policy viewer, screensaver"
-  depends=(eclipseos-abyss wayland libxkbcommon mesa)
+  pkgdesc="EclipseOS desktop apps: settings, policy viewer, screensaver, pairing agent, secret prompt"
+  depends=(eclipseos-abyss wayland libxkbcommon mesa networkmanager bluez)
 
   for b in eclipse-settings eclipse-policy-viewer eclipse-screensaver; do _bin "$b"; done
+  # The Bluetooth pairing agent and the prompt it and the taskbar spawn by name
+  # from PATH for pairing PINs and wifi passphrases (ADR 0053). Here, not in the
+  # taskbar's package, so pairing works with no taskbar (ADR 0066).
+  _bin eclipse-pairing
+  _bin eclipse-secret-prompt
   _unit eclipse-screensaver.service
   _want eclipse-screensaver.service
+  _unit eclipse-pairing.service
+  _want eclipse-pairing.service
   _app eclipse-settings.desktop
   _app eclipse-policy-viewer.desktop
 }
@@ -130,11 +140,14 @@ package_eclipseos-policyd() {
 package_eclipseos-meta() {
   pkgdesc="EclipseOS base system (D-01 §1)"
   arch=(any)  # config and dependencies only, no ELF
-  depends=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-center
+  depends=(eclipseos-abyss eclipseos-toasts eclipseos-center
            eclipseos-launcher eclipseos-desktop eclipseos-policyd
            greetd greetd-regreet cage
            networkmanager bluez bluez-utils upower pipewire pipewire-pulse wireplumber
            foot xdg-user-dirs brightnessctl playerctl)
+  # Add-ons (ADR 0066): suggested, not required. The session starts without
+  # them; Super+E/R/N reach the launcher and center through built-in binds.
+  optdepends=('eclipseos-hyperion: the taskbar add-on (workspaces, window chips, widgets, tray)')
   # /etc/eclipse is image-owned (D-01 §4.1): deliberately NOT in backup(), so
   # pacman overwrites rather than leaving .pacnew, and the later atomic scheme
   # is a no-op migration.

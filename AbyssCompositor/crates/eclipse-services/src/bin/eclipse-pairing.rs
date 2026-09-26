@@ -1,41 +1,41 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The session's one BlueZ pairing agent.
+//! `eclipse-pairing`: the session's one BlueZ pairing agent (ADR 0053, ADR 0066).
 //!
-//! BlueZ takes one agent per session, not one per monitor, so it lives on a
-//! thread of its own beside the bars rather than in any of them. It never
-//! touches the UI: every question it is asked is answered by an
-//! `eclipse-secret-prompt` window it starts, and that window answers the agent
-//! itself.
+//! Its own process with its own user unit (`dist/eclipse-pairing.service`), so
+//! Bluetooth pairing works whether or not a taskbar is installed. It registers
+//! `org.bluez.Agent1` as BlueZ's default agent and serves
+//! `org.eclipse.Services.Pairing` on the session bus. It draws nothing: every
+//! question it is asked is answered by an `eclipse-secret-prompt` window it
+//! starts, and that window answers the agent itself through the session-bus
+//! door.
 
 use eclipse_services::status::{Actions, BtPrompt, Event, Events, PairingAgent};
+use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 /// How long a code-display window stays up. BlueZ sends no word when the
 /// device finishes typing the code, and the pair call's outcome goes to the
-/// bar that asked, not here; the kernel gives up on passkey entry after 30 s.
+/// process that asked, not here; the kernel gives up on passkey entry after 30 s.
 const SHOW_FOR: Duration = Duration::from_secs(30);
 
 /// How often the agent looks for a question and for a finished prompt.
 const POLL: Duration = Duration::from_millis(500);
 
 /// Register the agent and answer it for as long as the process lives.
-pub fn spawn() {
-    let spawned = std::thread::Builder::new().name("pairing".into()).spawn(|| {
-        let (actions, events) = match eclipse_services::status::actions(PairingAgent::Register) {
-            Ok(pair) => pair,
-            Err(e) => {
-                eprintln!("hyperion: no bluetooth pairing agent: {e}");
-                return;
-            }
-        };
-        let mut prompt = None;
-        loop {
-            pair(&actions, &events, &mut prompt);
-            std::thread::sleep(POLL);
+fn main() -> ExitCode {
+    let (actions, events) = match eclipse_services::status::actions(PairingAgent::Register) {
+        Ok(pair) => pair,
+        Err(e) => {
+            // Journald picks stderr up. Not fatal to the session: pairing
+            // falls back to BlueZ's own rules, and the unit retries.
+            eprintln!("eclipse-pairing: no bluetooth pairing agent: {e}");
+            return ExitCode::FAILURE;
         }
-    });
-    if let Err(e) = spawned {
-        eprintln!("hyperion: no bluetooth pairing agent: {e}");
+    };
+    let mut prompt = None;
+    loop {
+        pair(&actions, &events, &mut prompt);
+        std::thread::sleep(POLL);
     }
 }
 
@@ -84,7 +84,7 @@ fn pair(actions: &Actions, events: &Events, prompt: &mut Option<Prompt>) {
                         *prompt = Some(Prompt { child, args, until });
                     }
                     Err(e) => {
-                        eprintln!("hyperion: cannot start the pairing prompt: {e}");
+                        eprintln!("eclipse-pairing: cannot start the pairing prompt: {e}");
                         if answers {
                             actions.bt_answer(addr, None);
                         }
@@ -120,11 +120,11 @@ fn close(prompt: &mut Option<Prompt>) {
 }
 
 /// Have `cmd`'s process receive SIGTERM when this one dies, however it dies,
-/// so a pairing window never outlives the bar that answers for it.
+/// so a pairing window never outlives the agent that answers for it.
 ///
 /// `PR_SET_PDEATHSIG` fires on the death of the *thread* that forked, not the
-/// process; the pairing thread lives as long as the process, so the two are
-/// the same here.
+/// process; the forking thread is the main thread, so the two are the same
+/// here.
 fn tied(cmd: &mut std::process::Command) -> &mut std::process::Command {
     use std::os::unix::process::CommandExt;
     let parent = std::process::id() as libc::pid_t;

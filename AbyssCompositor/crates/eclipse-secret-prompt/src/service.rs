@@ -3,7 +3,7 @@
 //!
 //! Wifi goes to NetworkManager through `eclipse_services::status::Actions`,
 //! and the answer is the join's own result. Bluetooth goes to whichever
-//! process holds the pairing agent (the taskbar's supervisor), over the
+//! process holds the pairing agent (`eclipse-pairing`), over the
 //! session-bus door `org.eclipse.Services.Pairing`. Both block, so both run
 //! off the UI thread (see `app::update`).
 //!

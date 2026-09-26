@@ -21,14 +21,14 @@ Ten crates: seven programs, two libraries, and `eclipse-services`, which is both
 
 | Crate | Binary | Surface | Package |
 |---|---|---|---|
-| `hyperion` | `hyperion` | layer-shell, `Top`, one per output | `eclipseos-hyperion` |
+| `hyperion` | `hyperion` | layer-shell, `Top`, one per output | `eclipseos-hyperion` (add-on) |
 | `eclipse-toasts` | `eclipse-toasts` | layer-shell, `Overlay`, top-right | `eclipseos-toasts` |
 | `eclipse-center` | `eclipse-center` | layer-shell, `Overlay` | `eclipseos-center` |
 | `eclipse-launcher` | `eclipse-launcher` | layer-shell, `Overlay`, exclusive keyboard | `eclipseos-launcher` |
 | `eclipse-settings` | `eclipse-settings` | xdg_toplevel | `eclipseos-desktop` |
 | `eclipse-policy-viewer` | `eclipse-policy-viewer` | xdg_toplevel | `eclipseos-desktop` |
-| `eclipse-secret-prompt` | `eclipse-secret-prompt` | xdg_toplevel, fixed size | **none** (§5) |
-| `eclipse-services` | `eclipse-screensaver` (`src/bin/`) | none; also a library | `eclipseos-desktop` (bin) |
+| `eclipse-secret-prompt` | `eclipse-secret-prompt` | xdg_toplevel, fixed size | `eclipseos-desktop` |
+| `eclipse-services` | `eclipse-screensaver`, `eclipse-pairing` (`src/bin/`) | none; also a library | `eclipseos-desktop` (bins) |
 | `eclipse-ui` | — | library: tokens, theme, widgets, `ipc::fetch_config_radius` | inside consumers |
 | `eclipse-ipc` | — | library: control-socket client, `serde_json` + `libc` only | inside consumers |
 
@@ -164,11 +164,13 @@ stays closed in `ipc/gate.rs`, which is why the viewer reads the file itself.
 | eclipse-policy-viewer | `eclipse-policy-viewer.desktop` | ordinary client |
 | eclipse-secret-prompt | hyperion (wifi), eclipse-pairing (bluetooth) | ordinary client, surface classified `secret` |
 
-The four units in `dist/` install to `/usr/lib/systemd/user/`, are
+The four DE units in `dist/` (`hyperion`, `eclipse-pairing`, `eclipse-toasts`,
+`eclipse-screensaver`) install to `/usr/lib/systemd/user/`, are
 `PartOf=graphical-session.target`, `Requisite=`/`After=abyss-session.target`,
 `Restart=on-failure`, and the PKGBUILD links each into
 `abyss-session.target.wants/` (a preset alone never fires for an existing
-account). Everything else is spawned by name, so `PATH` must carry it:
+account). The fifth, `policyd.service`, is TCB and ordered `Before=` the
+target instead. Everything else is spawned by name, so `PATH` must carry it:
 `/usr/bin` packaged, `target/debug` under `dist/abyss-dev-session`. Default
 binds: `crates/abyss/src/config/mod.rs`. `.desktop` files: `dist/applications/`.
 

@@ -144,11 +144,12 @@ copies, a rebuild is live at the next login and the installer does not have to
 be run again — which is the whole point of it, and also the reason it is not
 how a distribution should ship Abyss.
 
-It also enables `hyperion`, `eclipse-toasts` and
-`eclipse-screensaver`. `dist/install.sh` is the non-symlink variant: it builds
-from a fresh clone as your user, installs real binaries into `/usr/bin` and the
-units into `/usr/lib/systemd/user`, and enables the same three units. Neither
-script installs `eclipse-secret-prompt` yet (`KNOWNBUGS.md` PKG-03).
+It also enables `hyperion`, `eclipse-toasts`, `eclipse-screensaver` and
+`eclipse-pairing`, and copies the taskbar's add-on manifest to
+`/usr/share/eclipse/addons/hyperion.kdl` (ADR 0066). `dist/install.sh` is the
+non-symlink variant: it builds from a fresh clone as your user, installs real
+binaries into `/usr/bin` and the units into `/usr/lib/systemd/user`, and
+enables the same four units.
 
 **Check for pacman-installed packages first.** A machine that ever had the
 `eclipseos-*` packages installed keeps their binaries and enabled units, and a
@@ -177,14 +178,18 @@ The distribution path (D-01..D-03), all under `dist/`:
   `v$pkgver` tag (`pkgver=0.1.1`). One package per swappable component
   (ADR 0052): `eclipseos-abyss` (abyss, eclipse-ctl, the session wrapper,
   desktop entry and target; hard-depends on `xorg-xwayland`),
-  `-hyperion`, `-toasts`, `-center`, `-launcher`, `-desktop` (settings, policy
-  viewer, `eclipse-screensaver`), `-policyd`, and `-meta`, which depends on all
-  of them plus greetd/regreet/cage, NetworkManager, BlueZ, UPower, PipeWire
+  `-hyperion` (the taskbar, an add-on with its manifest
+  `/usr/share/eclipse/addons/hyperion.kdl`, ADR 0066), `-toasts`, `-center`,
+  `-launcher`, `-desktop` (settings, policy viewer, `eclipse-screensaver`, the
+  `eclipse-pairing` Bluetooth agent and `eclipse-secret-prompt`), `-policyd`,
+  and `-meta`, which depends on all of them except `-hyperion` (an
+  optdepend) plus greetd/regreet/cage, NetworkManager, BlueZ, UPower, PipeWire
   and foot, and ships `/etc/eclipse/{abyss,policy}.kdl`, the greetd config under
   `/etc/eclipse/greetd` and its `greetd.service.d` drop-in.
 - **User units.** `hyperion.service`, `eclipse-toasts.service`,
-  `eclipse-screensaver.service` and `policyd.service` are all
-  `PartOf=graphical-session.target`; the three GUI-side units are
+  `eclipse-screensaver.service`, `eclipse-pairing.service` and
+  `policyd.service` are all `PartOf=graphical-session.target`; the four
+  session-side units are
   `After=`/`Requisite=abyss-session.target`, and `policyd` is
   `Before=abyss-session.target` so abyss still paints without it.
   The packages enable them image-side by shipping
@@ -197,8 +202,6 @@ The distribution path (D-01..D-03), all under `dist/`:
 - **`dist/iso/`** — `sudo ./build-iso.sh` bakes the signed packages and key
   into the archiso profile and runs `mkarchiso` (D-03). The medium carries its
   own copy of the repo, so the resulting ISO installs anywhere.
-
-Not packaged yet: `eclipse-secret-prompt` (PKG-03).
 
 ## Logs
 

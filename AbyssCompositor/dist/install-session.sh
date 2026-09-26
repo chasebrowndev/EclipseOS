@@ -20,14 +20,16 @@ bin="$here/../target/release"
 home=$(getent passwd "$user" | cut -d: -f6)
 
 for b in abyss hyperion eclipse-toasts eclipse-center eclipse-launcher \
-         eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt; do
+         eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt \
+         eclipse-pairing; do
     [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
 done
 
 # 1. Binaries. Symlinks, so the session always runs what was last built.
 install -d /usr/local/bin
 for b in abyss hyperion eclipse-toasts eclipse-center eclipse-launcher \
-         eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt; do
+         eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt \
+         eclipse-pairing; do
     ln -sfn "$bin/$b" "/usr/local/bin/$b"
 done
 install -m 0755 "$here/abyss-session" /usr/local/bin/abyss-session
@@ -43,10 +45,14 @@ sed -i 's|^Exec=.*|Exec=/usr/local/bin/abyss-session|' /usr/share/wayland-sessio
 dest="$home/.config/systemd/user"
 install -d -o "$user" -g "$user" "$dest"
 install -m 0644 -o "$user" -g "$user" "$here/abyss-session.target" "$dest/abyss-session.target"
-for unit in hyperion eclipse-toasts eclipse-screensaver; do
+for unit in hyperion eclipse-toasts eclipse-screensaver eclipse-pairing; do
     sed 's|/usr/bin/|/usr/local/bin/|' "$here/$unit.service" > "$dest/$unit.service"
     chown "$user:$user" "$dest/$unit.service"
 done
+
+# 3b. The taskbar's add-on manifest (ADR 0066). Hosts read manifests only from
+#     /usr/share/eclipse/addons, never a user directory, so it is copied there.
+install -Dm 0644 "$here/addons/hyperion.kdl" /usr/share/eclipse/addons/hyperion.kdl
 
 # 4. The apps a human launches. The bar, toasts and launcher are session
 #    components, not applications, and deliberately have no entry.
@@ -64,7 +70,7 @@ done
 #    already written and are read when their manager next starts.
 uid=$(id -u "$user")
 rt="/run/user/$uid"
-units="hyperion.service eclipse-toasts.service eclipse-screensaver.service"
+units="hyperion.service eclipse-toasts.service eclipse-screensaver.service eclipse-pairing.service"
 if [ -S "$rt/bus" ]; then
     as_user() {
         runuser -u "$user" -- env XDG_RUNTIME_DIR="$rt" DBUS_SESSION_BUS_ADDRESS="unix:path=$rt/bus" "$@"

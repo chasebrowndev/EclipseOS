@@ -1,0 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Add-on manifest (ADR 0066): /usr/share/eclipse/addons/hyperion.kdl, owned by
+// the eclipseos-hyperion package. Turns on abyss's taskbar-widgets hook.
+id "hyperion"
+name "Hyperion taskbar"
+hooks "taskbar-widgets"

@@ -16,7 +16,6 @@ pub mod icons;
 pub mod layout;
 pub mod model;
 pub mod motion;
-pub mod pairing;
 #[cfg(debug_assertions)]
 pub mod preview;
 pub mod radio;
