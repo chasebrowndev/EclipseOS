@@ -1572,3 +1572,125 @@ pub fn config_error<'a, Message: 'a>(
     })
     .into()
 }
+
+/// A small outlined mono label that says what an object *is* — "Premade".
+///
+/// A widget and not a [`chip`] because a chip is pickable and this is not: it
+/// classifies, it does not select or act. Nearly square ([`radius::BADGE`])
+/// and hairline-bordered so it cannot be mistaken for a pill or a chip beside
+/// it, and never the accent — a class is not a state.
+pub fn badge<'a, Message: 'a>(label: &str) -> Element<'a, Message, Theme> {
+    container(
+        text(label.to_string())
+            .font(font::DATA_MEDIUM)
+            .size(size::MICRO)
+            .style(theme::text_secondary)
+            .wrapping(text::Wrapping::None),
+    )
+    .padding([space::BADGE_Y, space::BADGE_X])
+    .style(|_t: &Theme| container::Style {
+        border: iced::Border {
+            color: color::BORDER_STRONG,
+            width: space::HAIRLINE,
+            radius: radius::BADGE.into(),
+        },
+        ..container::Style::default()
+    })
+    .into()
+}
+
+/// One subject of a status grid: the subject, its state, and a measure.
+///
+/// A widget because a status grid is a hero shape (COMPOSITION.md) with no
+/// primitive until now, and because the three-line cell is the rule — a
+/// subject with no state, or a state with no measure, is the half-reading the
+/// shape exists to stop. `lit` puts the state in the accent: it is the grid's
+/// one yellow, and marks what is currently true, never a heading.
+pub fn status_cell<'a, Message: 'a>(
+    subject: &str,
+    state: &str,
+    measure: &str,
+    lit: bool,
+) -> Element<'a, Message, Theme> {
+    inset(
+        column![
+            text(subject.to_string())
+                .font(font::DATA_MEDIUM)
+                .size(size::MONO)
+                .style(theme::text_primary)
+                .wrapping(text::Wrapping::None),
+            text(state.to_string())
+                .font(font::UI_MEDIUM)
+                .size(size::CARD_TITLE)
+                .style(if lit {
+                    theme::text_accent
+                } else {
+                    theme::text_secondary
+                }),
+            text(measure.to_string())
+                .font(font::DATA)
+                .size(size::MICRO)
+                .style(theme::text_tertiary),
+        ]
+        .spacing(space::LINE_GAP),
+    )
+    .padding([space::ROW_Y, space::CARD])
+    .into()
+}
+
+/// Cells in rows of `cols`, every cell the same width.
+///
+/// A widget so that a short last row keeps the grid's column widths (the gap
+/// is filled with empty room, not stretched cells) — the thing a hand-rolled
+/// `Row` of `Column`s gets wrong the first time a grid has an odd count.
+pub fn status_grid<'a, Message: 'a>(
+    cells: Vec<Element<'a, Message, Theme>>,
+    cols: usize,
+) -> Element<'a, Message, Theme> {
+    let cols = cols.max(1);
+    let mut grid = Column::new().spacing(space::GRID_GAP);
+    let mut cells = cells.into_iter().peekable();
+    while cells.peek().is_some() {
+        let mut r = Row::new().spacing(space::GRID_GAP);
+        for _ in 0..cols {
+            r = r.push(match cells.next() {
+                Some(c) => container(c).width(Length::FillPortion(1)),
+                None => container(Space::new()).width(Length::FillPortion(1)),
+            });
+        }
+        grid = grid.push(r);
+    }
+    grid.into()
+}
+
+/// A note with a hard coloured edge: a headline, and a paragraph under it.
+///
+/// A widget and not a styled column because the edge is a sibling quad (see
+/// [`edge_quad`]) and because the same notes recur: a caution before a
+/// command runs as the owner, a notice that part of a pane is switched off.
+/// `edge` is [`color::DANGER`] for a caution and [`color::NEUTRAL`] for a
+/// notice — never the accent, which marks state and not warnings.
+pub fn edge_note<'a, Message: 'a>(headline: &str, body: &str, edge: Color) -> Element<'a, Message, Theme> {
+    container(
+        row![
+            edge_quad(Length::Fixed(space::BAR_W), Length::Fill, edge),
+            container(
+                column![
+                    text(headline.to_string())
+                        .font(font::UI_MEDIUM)
+                        .size(size::BODY)
+                        .style(theme::text_primary),
+                    text(body.to_string())
+                        .font(font::UI)
+                        .size(size::BODY_SMALL)
+                        .style(theme::text_secondary),
+                ]
+                .spacing(space::LINE_GAP),
+            )
+            .padding([space::ROW_Y, space::CARD]),
+        ]
+        .height(Length::Shrink),
+    )
+    .width(Length::Fill)
+    .into()
+}

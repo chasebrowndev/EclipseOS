@@ -19,15 +19,15 @@ use iced::widget::{
 use iced::{Alignment, Element, Length, Size, Task, Theme};
 use serde_json::{json, Value};
 
-use eclipse_ipc::{Widget, WidgetOp};
+use eclipse_ipc::{Approval, Widget, WidgetOp, WidgetStatus};
 use eclipse_ui::motion::{Animated, Curve, Motion};
 use eclipse_ui::theme;
 use eclipse_ui::tokens::{bar, canvas, color, font, size, space};
 use eclipse_ui::widget::{
-    arg_chip, art_thumb, bar_cell_frame, bar_sheet, battery_gauge, big_value, chip, config_error, drag_bar,
-    elide, glide_track, hairline, inset, list_row, mark, micro_label, mini_meter, outline, panel, pill, pin,
-    placed, ring, track_label, value as mono, viz_bars, widget_shell, widget_tile, Grip, NumericSlider,
-    Toggle,
+    arg_chip, art_thumb, badge, bar_cell_frame, bar_sheet, battery_gauge, big_value, chip, config_error,
+    drag_bar, edge_note, elide, glide_track, hairline, inset, list_row, mark, micro_label, mini_meter,
+    outline, panel, pill, pin, placed, ring, track_label, value as mono, viz_bars, widget_shell, widget_tile,
+    Grip, NumericSlider, Toggle,
 };
 
 use crate::app::{App, Message};
@@ -269,13 +269,53 @@ pub fn status(app: &App) -> (String, String) {
     } else {
         format!("{} · {} ms", m.curve.as_str(), m.duration.as_millis())
     };
+    let widgets = match o.len() {
+        1 => "1 widget".to_owned(),
+        n => format!("{n} widgets"),
+    };
+    let waiting = app
+        .bar
+        .statuses
+        .iter()
+        .filter(|s| s.approval == Approval::Pending)
+        .count();
     (
-        match o.len() {
-            1 => "1 widget".to_owned(),
-            n => format!("{n} widgets"),
+        if waiting == 0 {
+            widgets
+        } else {
+            format!("{widgets} · {waiting} waiting")
         },
         format!("{pinned} never compress · {motion}"),
     )
+}
+
+// ------------------------------------------------------------- approval
+//
+// ADR 0067. Settings shows what abyss decided and can ask for its prompt
+// again; it never answers one. There is no Accept or Allow anywhere in this
+// crate: the answer is given on the compositor's own surface.
+
+/// Shown for every command widget that is not premade: the prompt's own
+/// words (COMP-10 §3.11), verbatim.
+pub const DISCLAIMER: &str =
+    "This is not a premade widget. It runs this command as you. EclipseOS is not responsible for what it does.";
+/// The risk, in one paragraph, under [`DISCLAIMER`].
+pub const RISK: &str = "A command widget runs with your full authority as a user, every time it \
+     refreshes: it can read, change or send anything you can. Only add commands you understand.";
+/// The altered-premade prompt's own words (ADR 0067), verbatim.
+pub const ALTERED: &str = "This widget has been altered! Altered widgets are not guaranteed to be safe!";
+
+/// A widget's approval state, if the compositor reported one.
+fn status_of<'a>(app: &'a App, name: &str) -> Option<&'a WidgetStatus> {
+    app.bar.statuses.iter().find(|s| s.name == name)
+}
+
+fn pending(app: &App, name: &str) -> bool {
+    status_of(app, name).is_some_and(|s| s.approval == Approval::Pending)
+}
+
+fn premade(app: &App, name: &str) -> bool {
+    status_of(app, name).is_some_and(|s| s.premade)
 }
 
 // ----------------------------------------------------------------- state
@@ -317,6 +357,9 @@ pub enum Msg {
     Close,
     /// After a new widget is saved: put it on the bar, or not.
     Offer(bool),
+    /// Bring a withheld widget's approval prompt back. Only re-queues it: the
+    /// answer is the owner's, on the compositor's surface.
+    Review(String),
 }
 
 #[derive(Debug, Clone)]
@@ -351,6 +394,12 @@ pub struct Bar {
     drag: Option<Drag>,
     picker: bool,
     pub(crate) customs: Vec<Widget>,
+    /// Every widget's approval state, withheld ones included: a withheld
+    /// widget is absent from `customs` (abyss serves no command for it).
+    pub(crate) statuses: Vec<WidgetStatus>,
+    /// The last Review answer per widget: `true` queued, `false` already
+    /// queued or on screen.
+    reviewed: Vec<(String, bool)>,
     pub(crate) editor: Option<Editor>,
     offer: Option<String>,
     width: Option<f32>,
@@ -375,6 +424,8 @@ impl Default for Bar {
             drag: None,
             picker: false,
             customs: Vec::new(),
+            statuses: Vec::new(),
+            reviewed: Vec::new(),
             editor: None,
             offer: None,
             width: None,
@@ -736,7 +787,9 @@ pub fn follow_config(app: &mut App) {
         }
         None => {
             app.bar.editor = None;
-            app.bar.selected = None;
+            if !name.as_deref().is_some_and(|n| pending(app, n)) {
+                app.bar.selected = None;
+            }
         }
     }
 }
@@ -802,9 +855,13 @@ fn save(app: &mut App) {
     }
     app.reload();
     let id = format!("{}{}", bp::CUSTOM, w.name);
-    let mut fresh = Editor::from_widget(&w);
-    fresh.checked = true;
-    app.bar.editor = Some(fresh);
+    // A command abyss has not approved is withheld: it serves no command for
+    // it, so there is nothing to edit until the owner answers the prompt.
+    app.bar.editor = (!pending(app, &w.name)).then(|| {
+        let mut fresh = Editor::from_widget(&w);
+        fresh.checked = true;
+        fresh
+    });
     app.bar.selected = Some(id.clone());
     if ed.is_new() && !order(app).contains(&id) {
         app.bar.offer = Some(w.name);
@@ -936,6 +993,9 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
             }
             select(app, id);
         }
+        // Widget writes are refused while the hook is off; the controls that
+        // start one are not drawn, and these are the ones a debug env reaches.
+        Msg::New | Msg::Save | Msg::Delete | Msg::Review(_) if !crate::addons::taskbar_widgets_on(app) => {}
         Msg::New => {
             app.bar.editor = Some(Editor::new());
             app.bar.picker = false;
@@ -1001,6 +1061,13 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
             }
             app.bar.offer = None;
         }
+        Msg::Review(name) => match app.conn.review_widget(&name) {
+            Ok(queued) => {
+                app.bar.reviewed.retain(|(n, _)| *n != name);
+                app.bar.reviewed.push((name, queued));
+            }
+            Err(p) => app.banner = Some(p),
+        },
     }
     Task::none()
 }
@@ -1018,13 +1085,102 @@ fn bar_msg(m: Msg) -> Message {
 
 /// Every block of the pane after the header.
 pub fn blocks(app: &App) -> Vec<Element<'_, Message, Theme>> {
-    let mut out = vec![hero(app)];
+    let on = crate::addons::taskbar_widgets_on(app);
+    let mut out = Vec::new();
+    if !on {
+        out.push(edge_note(
+            "Taskbar add-on not installed",
+            "Custom and premade widgets come with the taskbar add-on. Without it the compositor \
+             ignores widget blocks, so there is nothing here to edit; the bar's own settings \
+             still apply.",
+            color::NEUTRAL,
+        ));
+    }
+    out.push(hero(app));
     if let Some(s) = sheet(app) {
         out.push(s);
     }
     out.push(motion_band(app));
+    if on && !app.bar.statuses.is_empty() {
+        out.push(approvals(app));
+    }
     out.push(settings(app));
     out
+}
+
+/// One command widget's approval, as abyss reports it: the state line and,
+/// for a withheld one, the Review control. Review only brings the
+/// compositor's prompt back; Settings never answers it.
+/// `named` is false inside the widget's own sheet, whose head already says it.
+fn approval_row<'a>(app: &App, st: &WidgetStatus, named: bool) -> Element<'a, Message, Theme> {
+    let (state, style): (&str, fn(&Theme) -> text::Style) = match st.approval {
+        Approval::Approved => ("live", theme::text_secondary),
+        Approval::Pending if st.altered => ("Waiting for approval \u{b7} altered", theme::text_danger),
+        Approval::Pending => ("Waiting for approval", theme::text_secondary),
+    };
+    let mut r = Row::new().spacing(space::CONTROL_GAP).align_y(Alignment::Center);
+    if named {
+        r = r.push(
+            text(st.name.clone())
+                .font(font::UI)
+                .size(size::BODY)
+                .style(theme::text_primary),
+        );
+        if st.premade {
+            r = r.push(badge("Premade"));
+        }
+        r = r.push(Space::new().width(Length::Fill)).push(tag(state, style));
+    } else {
+        r = r.push(tag(state, style)).push(Space::new().width(Length::Fill));
+    }
+    if st.approval == Approval::Pending {
+        if let Some((_, queued)) = app.bar.reviewed.iter().find(|(n, _)| *n == st.name) {
+            r = r.push(caption(
+                if *queued {
+                    "prompt queued"
+                } else {
+                    "prompt already open"
+                }
+                .into(),
+            ));
+        }
+        r = r.push(pill("Review", false, bar_msg(Msg::Review(st.name.clone()))));
+    }
+    let mut c = Column::new().push(r).spacing(space::LINE_GAP);
+    if st.approval == Approval::Pending {
+        c = c.push(caption_prose(if st.altered {
+            ALTERED
+        } else {
+            "It does not run until you approve it in the compositor's prompt."
+        }));
+    }
+    padded(c)
+}
+
+/// Every widget block and whether it runs. Withheld ones are here even when
+/// they are not on the bar, since abyss serves nothing else for them.
+fn approvals(app: &App) -> Element<'_, Message, Theme> {
+    let waiting = app
+        .bar
+        .statuses
+        .iter()
+        .filter(|s| s.approval == Approval::Pending)
+        .count();
+    let mut col = Column::new().push(padded(
+        row![
+            micro_label("custom widgets"),
+            Space::new().width(Length::Fill),
+            caption(match waiting {
+                0 => "every command approved".to_owned(),
+                n => format!("{n} waiting \u{b7} approve in the compositor's prompt"),
+            }),
+        ]
+        .align_y(Alignment::Center),
+    ));
+    for st in &app.bar.statuses {
+        col = col.push(hairline()).push(approval_row(app, st, true));
+    }
+    inset(col).into()
 }
 
 fn caption<'a>(t: String) -> Element<'a, Message, Theme> {
@@ -1332,10 +1488,18 @@ fn picker(app: &App) -> Element<'_, Message, Theme> {
             bar_msg(Msg::Add((*id).to_owned())),
         ));
     }
-    for w in &app.bar.customs {
-        let id = format!("{}{}", bp::CUSTOM, w.name);
+    let on = crate::addons::taskbar_widgets_on(app);
+    let customs = app.bar.customs.iter().map(|w| w.name.as_str());
+    let withheld = app
+        .bar
+        .statuses
+        .iter()
+        .filter(|s| s.approval == Approval::Pending)
+        .map(|s| s.name.as_str());
+    for name in customs.chain(withheld).filter(|_| on) {
+        let id = format!("{}{}", bp::CUSTOM, name);
         if !o.contains(&id) {
-            chips.push(chip(None, &w.name, false, bar_msg(Msg::Add(id))));
+            chips.push(chip(None, name, false, bar_msg(Msg::Add(id))));
         }
     }
     let lead: Element<'_, Message, Theme> = if chips.is_empty() {
@@ -1343,13 +1507,13 @@ fn picker(app: &App) -> Element<'_, Message, Theme> {
     } else {
         Row::with_children(chips).spacing(space::CHIP_GAP).wrap().into()
     };
-    row![
-        container(lead).width(Length::Fill),
-        pill("New custom widget", false, bar_msg(Msg::New)),
-    ]
-    .spacing(space::CONTROL_GAP)
-    .align_y(Alignment::Center)
-    .into()
+    let mut r = row![container(lead).width(Length::Fill)]
+        .spacing(space::CONTROL_GAP)
+        .align_y(Alignment::Center);
+    if on {
+        r = r.push(pill("New custom widget", false, bar_msg(Msg::New)));
+    }
+    r.into()
 }
 
 /// The hero: the bar as it will draw, the windows that squeeze it, and the
@@ -1440,7 +1604,7 @@ fn sheet(app: &App) -> Option<Element<'_, Message, Theme>> {
                 .align_y(Alignment::Center)
             ),
             hairline(),
-            editor_view(ed),
+            editor_view(app, ed),
         ];
         return Some(inset(col).into());
     }
@@ -1450,13 +1614,17 @@ fn sheet(app: &App) -> Option<Element<'_, Message, Theme>> {
     let at = o.iter().position(|x| *x == id);
     let imp = important(app).contains(&id);
 
-    let mut head = Row::new()
-        .push(
-            text(bp::title(&id))
-                .font(font::UI)
-                .size(size::CARD_TITLE)
-                .style(theme::text_primary),
-        )
+    let custom = id.strip_prefix(bp::CUSTOM);
+    let mut head = Row::new().push(
+        text(bp::title(&id))
+            .font(font::UI)
+            .size(size::CARD_TITLE)
+            .style(theme::text_primary),
+    );
+    if custom.is_some_and(|n| premade(app, n)) {
+        head = head.push(badge("Premade"));
+    }
+    let mut head = head
         .push(caption(match at {
             Some(i) => format!("{id} · {} of {}", i + 1, o.len()),
             None => id.clone(),
@@ -1505,11 +1673,18 @@ fn sheet(app: &App) -> Option<Element<'_, Message, Theme>> {
             col = col.push(r);
         }
     }
-    if let Some(name) = id.strip_prefix(bp::CUSTOM) {
+    if let Some(name) = custom {
         col = col.push(hairline());
-        match &app.bar.editor {
-            Some(ed) => col = col.push(editor_view(ed)),
-            None => {
+        let st = status_of(app, name).filter(|s| s.approval == Approval::Pending);
+        match (&app.bar.editor, st) {
+            _ if !crate::addons::taskbar_widgets_on(app) => {
+                col = col.push(padded(prose(
+                    "The taskbar add-on is not installed: the compositor ignores widget blocks.",
+                )))
+            }
+            (_, Some(st)) => col = col.push(approval_row(app, st, false)),
+            (Some(ed), None) => col = col.push(editor_view(app, ed)),
+            (None, None) => {
                 col = col.push(padded(prose(&format!(
                     "No widget block named \u{201c}{name}\u{201d} in abyss.kdl: the bar draws nothing here."
                 ))))
@@ -1671,13 +1846,32 @@ fn argv_row(ed: &Editor, slot: Slot) -> Element<'_, Message, Theme> {
 }
 
 /// One custom widget, as the fields its kind has.
-fn editor_view(ed: &Editor) -> Element<'_, Message, Theme> {
+fn editor_view<'a>(app: &App, ed: &'a Editor) -> Element<'a, Message, Theme> {
     let bad = |f| ed.errors_for(f).next().is_some();
     let mut kinds = Row::new().spacing(space::PILL_GAP);
     for k in Kind::ALL {
         kinds = kinds.push(pill(k.as_str(), ed.kind == k, bar_msg(Msg::Kind(k))));
     }
-    let mut col = column![
+    // Premade means the block on file is the catalog's, unedited; a renamed
+    // draft is a new block and is not.
+    let is_premade = ed
+        .original
+        .as_deref()
+        .is_some_and(|n| !ed.renamed() && premade(app, n));
+    let mut col = Column::new();
+    match ed.kind {
+        Kind::Exec | Kind::Stream if !is_premade => {
+            col = col.push(edge_note(DISCLAIMER, RISK, color::DANGER));
+        }
+        Kind::Exec | Kind::Stream => {
+            col = col.push(padded(caption_prose(
+                "Premade: shipped with EclipseOS and unedited. Saving a change makes it altered, \
+                 and an altered widget does not run until you approve it in the compositor's prompt.",
+            )));
+        }
+        Kind::Source => {}
+    }
+    let mut col = col.push(column![
         padded(caption_prose(
             "Commands run as you, without a shell: each chip is one argument, passed exactly as written."
         )),
@@ -1685,7 +1879,7 @@ fn editor_view(ed: &Editor) -> Element<'_, Message, Theme> {
         errors_for(ed, Field::Name),
         list_row("Kind", kinds),
         padded(caption_prose(ed.kind.gist())),
-    ];
+    ]);
     match ed.kind {
         Kind::Exec | Kind::Stream => {
             col = col.push(argv_row(ed, Slot::Command));

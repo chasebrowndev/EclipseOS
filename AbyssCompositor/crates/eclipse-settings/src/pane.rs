@@ -16,6 +16,7 @@ pub enum Pane {
     Session,
     System,
     Privacy,
+    Addons,
 }
 
 impl Pane {
@@ -29,6 +30,7 @@ impl Pane {
         Pane::Session,
         Pane::System,
         Pane::Privacy,
+        Pane::Addons,
     ];
 
     pub fn title(self) -> &'static str {
@@ -41,6 +43,7 @@ impl Pane {
             Pane::Session => "Session",
             Pane::System => "System",
             Pane::Privacy => "Privacy",
+            Pane::Addons => "Add-ons",
         }
     }
 
@@ -54,12 +57,13 @@ impl Pane {
             Pane::Session => "Idle, lock and power.",
             Pane::System => "Xwayland and the render device.",
             Pane::Privacy => "Capture, clipboard and input scripting.",
+            Pane::Addons => "Optional packages, and the hooks they switch on.",
         }
     }
 
     /// Panes whose content is not a list of schema keys.
     pub fn is_bespoke(self) -> bool {
-        matches!(self, Pane::Display | Pane::Network)
+        matches!(self, Pane::Display | Pane::Network | Pane::Addons)
     }
 
     /// The pane named on the command line — its title, any case. The taskbar

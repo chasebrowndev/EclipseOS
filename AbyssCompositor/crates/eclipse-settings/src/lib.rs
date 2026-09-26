@@ -10,6 +10,7 @@
 //! The app keeps no persistent state of its own: window size and the selected
 //! pane are not remembered. `abyss.kdl` is the only state there is.
 
+pub mod addons;
 pub mod app;
 pub mod bar_preview;
 pub mod conn;

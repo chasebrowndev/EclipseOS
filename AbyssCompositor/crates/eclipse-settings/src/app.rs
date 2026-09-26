@@ -158,6 +158,9 @@ pub struct App {
     pub(crate) glass_radius: f32,
     /// The Taskbar pane's picture, lane and editor.
     pub(crate) bar: crate::taskbar::Bar,
+    /// Installed add-ons and the hooks they turn on (ADR 0066). `None` until
+    /// the compositor answers.
+    pub(crate) addons: Option<eclipse_ipc::Addons>,
 }
 
 impl Default for App {
@@ -194,6 +197,7 @@ impl App {
             tray_live: None,
             glass_radius,
             bar: crate::taskbar::Bar::default(),
+            addons: None,
         };
         // Debug builds only: open with a tray entry selected, so the selected
         // state can be screenshotted without pointer injection.
@@ -224,9 +228,7 @@ impl App {
         // Keys this compositor did not report still get a control, so the
         // Taskbar pane is whole with no socket and ahead of a newer schema.
         crate::taskbar::stand_in(&mut self.rows);
-        if let Ok(w) = self.conn.widgets() {
-            self.bar.customs = w;
-        }
+        self.read_widgets();
         match self.conn.call("get_outputs", json!({ "all": true })) {
             Ok(reply) => {
                 self.outputs = crate::output::parse_all(&reply);
@@ -244,8 +246,19 @@ impl App {
             self.rows = rows;
             crate::taskbar::stand_in(&mut self.rows);
         }
+        self.read_widgets();
+    }
+
+    /// The widget blocks, their approval states, and the add-ons that decide
+    /// whether there are any: one read, because the three change together
+    /// (an add-on installed, a widget withheld, a prompt answered).
+    fn read_widgets(&mut self) {
+        self.addons = self.conn.addons().ok();
         if let Ok(w) = self.conn.widgets() {
             self.bar.customs = w;
+        }
+        if let Ok(s) = self.conn.widget_statuses() {
+            self.bar.statuses = s;
         }
     }
 
@@ -666,6 +679,10 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
             let (state, measure) = crate::taskbar::status(app);
             controls.push(status_chip(&state, &measure));
         }
+        Pane::Addons => {
+            let (state, measure) = crate::addons::status(app);
+            controls.push(status_chip(&state, &measure));
+        }
         _ => {}
     }
     let mut blocks = vec![header(
@@ -680,6 +697,7 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
         Pane::Display => blocks.extend(display_pane(app)),
         Pane::Network => blocks.extend(network::blocks(&app.net, app.glass_radius)),
         Pane::Taskbar => blocks.extend(crate::taskbar::blocks(app)),
+        Pane::Addons => blocks.extend(crate::addons::blocks(app)),
         _ => blocks.extend(schema_pane(app)),
     }
 
