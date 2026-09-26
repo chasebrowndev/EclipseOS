@@ -186,6 +186,11 @@ enum Internal {
     },
     /// Event connection `generation` has closed.
     Gone(u64),
+    /// Tap `id`'s pump thread has ended, after running for `ran`.
+    TapEnded {
+        id: u64,
+        ran: Duration,
+    },
     /// The GUI hung up.
     Quit,
 }
@@ -228,7 +233,38 @@ struct Service {
     sent_streams: Option<Vec<Stream>>,
     tap_wanted: bool,
     tap: Option<Tap>,
+    /// Id for the next [`Tap`], so a stale exit signal is recognised.
+    next_tap: u64,
+    /// When to try the tap again after it failed to open or was dropped by
+    /// the server.
+    tap_retry: Backoff,
 }
+
+/// A doubling retry delay, `BACKOFF_MIN` up to `BACKOFF_MAX`.
+#[derive(Debug, PartialEq, Eq)]
+struct Backoff {
+    next: Duration,
+    due: Option<Instant>,
+}
+
+impl Backoff {
+    const fn new() -> Self {
+        Self {
+            next: BACKOFF_MIN,
+            due: None,
+        }
+    }
+
+    /// Schedule a try after the current delay, and double the delay.
+    fn schedule(&mut self, now: Instant) {
+        self.due = Some(now + self.next);
+        self.next = (self.next * 2).min(BACKOFF_MAX);
+    }
+}
+
+/// A tap that ran this long before ending was healthy: its retry starts
+/// again from `BACKOFF_MIN`.
+const TAP_HEALTHY: Duration = Duration::from_secs(10);
 
 impl Service {
     fn new(socket: Option<PathBuf>, updates: Sender<Update>, internal: Sender<Internal>) -> Self {
@@ -243,6 +279,8 @@ impl Service {
             sent_streams: None,
             tap_wanted: false,
             tap: None,
+            next_tap: 0,
+            tap_retry: Backoff::new(),
         }
     }
 
@@ -320,11 +358,20 @@ impl Service {
     /// of events are coalesced: one re-read per burst.
     fn serve(&mut self, rx: &Receiver<Internal>) -> Exit {
         loop {
-            let Ok(first) = rx.recv() else {
-                return Exit::Quit;
+            // Wait for news, or until a tap retry is due.
+            let first = match self.tap_retry.due {
+                Some(due) => match rx.recv_timeout(due.saturating_duration_since(Instant::now())) {
+                    Ok(message) => Some(message),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return Exit::Quit,
+                },
+                None => match rx.recv() {
+                    Ok(message) => Some(message),
+                    Err(_) => return Exit::Quit,
+                },
             };
             let (mut sink, mut streams) = (false, false);
-            let mut next = Some(first);
+            let mut next = first;
             while let Some(message) = next {
                 match message {
                     Internal::Quit => return Exit::Quit,
@@ -343,6 +390,7 @@ impl Service {
                             return Exit::Lost;
                         }
                     }
+                    Internal::TapEnded { id, ran } => self.tap_ended(id, ran, Instant::now()),
                     Internal::Gone(_) | Internal::Event { .. } => {}
                 }
                 next = rx.try_recv().ok();
@@ -353,12 +401,21 @@ impl Service {
             if streams && self.refresh_streams().is_err() {
                 return Exit::Lost;
             }
+            let now = Instant::now();
+            if self.tap_retry.due.is_some_and(|due| due <= now) {
+                self.retry_tap(now);
+            }
         }
     }
 
     /// Run one GUI command. `Err` only when the connection is broken; a
     /// server refusing (the sink vanished mid-change) is not.
     fn command(&mut self, command: Command) -> wire::Result<()> {
+        if let Command::Tap(on) = command {
+            self.tap_wanted = on;
+            self.sync_tap(Instant::now());
+            return Ok(());
+        }
         let Some(live) = self.live.as_mut() else {
             return Ok(());
         };
@@ -387,11 +444,7 @@ impl Service {
                 }))
             }
             Command::SetAppMuted { pid, muted } => set_app_muted(&mut live.conn, pid, muted),
-            Command::Tap(on) => {
-                self.tap_wanted = on;
-                self.sync_tap();
-                Ok(())
-            }
+            Command::Tap(_) => Ok(()),
         };
         match result {
             Err(ProtocolError::ServerError(_)) => Ok(()),
@@ -427,7 +480,7 @@ impl Service {
             description: i.description.unwrap_or(i.name).to_string_lossy().into_owned(),
         });
         self.emit_sink(sink);
-        self.sync_tap();
+        self.sync_tap(Instant::now());
         Ok(())
     }
 
@@ -450,25 +503,71 @@ impl Service {
     }
 
     /// Open, move or close the tap so it matches what is wanted: on, and on
-    /// the current default sink's monitor.
-    fn sync_tap(&mut self) {
+    /// the current default sink's monitor. While a retry is pending the tap
+    /// stays closed until it is due; not wanting the tap cancels the retry.
+    fn sync_tap(&mut self, now: Instant) {
         let want = self
             .sink
             .as_ref()
             .and_then(|s| s.monitor.clone())
-            .filter(|_| self.tap_wanted && self.live.is_some());
-        if want.as_deref() == self.tap.as_ref().map(Tap::source) {
+            .filter(|_| self.tap_wanted);
+        let Some(source) = want else {
+            self.tap = None; // closes the stream, if any
+            self.tap_retry = Backoff::new();
+            return;
+        };
+        if self.tap.as_ref().map(Tap::source) == Some(source.as_c_str()) {
             return;
         }
-        self.tap = None; // closes the old stream, if any
-        if let (Some(source), Some(live)) = (want, &self.live) {
-            self.tap = Tap::start(&live.path, &source, self.updates.clone()).ok();
+        if self.tap.is_none() && self.tap_retry.due.is_some_and(|due| now < due) {
+            return;
+        }
+        self.tap = None;
+        self.tap_retry.due = None;
+        let id = self.next_tap;
+        self.next_tap += 1;
+        let started = self.live.as_ref().and_then(|live| {
+            Tap::start(
+                &live.path,
+                &source,
+                id,
+                self.updates.clone(),
+                self.internal.clone(),
+            )
+            .ok()
+        });
+        match started {
+            Some(tap) => self.tap = Some(tap),
+            None => self.tap_retry.schedule(now),
         }
     }
 
-    /// The server is gone: drop everything that referred to it.
+    /// A tap's pump thread ended. If it was the current tap and it is still
+    /// wanted, the server dropped it: reopen it after the backoff.
+    fn tap_ended(&mut self, id: u64, ran: Duration, now: Instant) {
+        if self.tap.as_ref().map(Tap::id) != Some(id) {
+            return; // a tap we closed ourselves
+        }
+        self.tap = None;
+        if ran >= TAP_HEALTHY {
+            self.tap_retry = Backoff::new();
+        }
+        if self.tap_wanted {
+            self.tap_retry.schedule(now);
+        }
+    }
+
+    /// The retry delay has passed: try the tap again.
+    fn retry_tap(&mut self, now: Instant) {
+        self.tap_retry.due = None;
+        self.sync_tap(now);
+    }
+
+    /// The server is gone: drop everything that referred to it. The tap
+    /// reopens with the connection, if still wanted.
     fn lost(&mut self) {
         self.tap = None;
+        self.tap_retry = Backoff::new();
         self.live = None;
         self.sink = None;
         self.emit_sink(None);
@@ -580,6 +679,75 @@ mod tests {
         assert_eq!(pid_of(&props), Some(4242));
         props.set(Prop::ApplicationProcessId, c"not a pid");
         assert_eq!(pid_of(&props), None);
+    }
+
+    /// A service with a wanted tap on sink monitor `mon`, and no server.
+    fn tapping() -> Service {
+        let (updates, _) = mpsc::channel();
+        let (internal, _) = mpsc::channel();
+        let mut s = Service::new(None, updates, internal);
+        s.sink = Some(Current {
+            index: 0,
+            channels: 2,
+            monitor: Some(c"mon".to_owned()),
+        });
+        s.tap_wanted = true;
+        s.next_tap = 8;
+        s.tap = Some(Tap::fake(7, c"mon"));
+        s
+    }
+
+    #[test]
+    fn a_tap_the_server_drops_is_retried_with_backoff() {
+        let mut s = tapping();
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+
+        // An exit signal from a tap we already replaced changes nothing.
+        s.tap_ended(6, ms(0), t0);
+        assert!(s.tap.is_some());
+        assert_eq!(s.tap_retry.due, None);
+
+        // The current tap ends: closed, with a retry 250 ms out.
+        s.tap_ended(7, ms(100), t0);
+        assert!(s.tap.is_none());
+        assert_eq!(s.tap_retry.due, Some(t0 + ms(250)));
+
+        // Nothing reopens it early, even a sink refresh.
+        s.sync_tap(t0 + ms(100));
+        assert_eq!(s.tap_retry.due, Some(t0 + ms(250)));
+
+        // Each failed retry (no server here) doubles the delay, up to 5 s.
+        let mut now = t0 + ms(250);
+        for expect in [500, 1000, 2000, 4000, 5000, 5000] {
+            s.retry_tap(now);
+            assert!(s.tap.is_none());
+            assert_eq!(s.tap_retry.due, Some(now + ms(expect)));
+            now += ms(expect);
+        }
+
+        // Only turning the tap off gives up.
+        s.command(Command::Tap(false)).unwrap();
+        assert_eq!(s.tap_retry, Backoff::new());
+        assert!(s.tap.is_none());
+    }
+
+    #[test]
+    fn a_healthy_tap_that_ends_retries_from_the_start() {
+        let mut s = tapping();
+        s.tap_retry.next = BACKOFF_MAX;
+        let t0 = Instant::now();
+        s.tap_ended(7, TAP_HEALTHY, t0);
+        assert_eq!(s.tap_retry.due, Some(t0 + BACKOFF_MIN));
+    }
+
+    #[test]
+    fn a_tap_that_ends_when_not_wanted_is_not_retried() {
+        let mut s = tapping();
+        s.tap_wanted = false;
+        s.tap_ended(7, Duration::ZERO, Instant::now());
+        assert!(s.tap.is_none());
+        assert_eq!(s.tap_retry.due, None);
     }
 
     /// Drain the feed for up to two seconds.
