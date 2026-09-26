@@ -7,22 +7,22 @@
 //! (COMP-03 §1.1) — and even there the calibration overlay is the
 //! compositor's; this pane only sends the verbs and shows the numbers.
 //! Network is the other: the status service's readings, not config
-//! (`network.rs`). Taskbar is schema keys plus one hero — the tray lanes,
-//! which are the control for the two `bar.tray.*` lists.
+//! (`network.rs`). Taskbar is schema keys arranged around a live picture of
+//! the bar (`taskbar.rs`).
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use iced::widget::{column, pick_list, row, scrollable, text_input, Column, Row, Space};
-use iced::{Alignment, Element, Length, Subscription, Task, Theme};
+use iced::{Element, Length, Subscription, Task, Theme};
 use serde_json::{json, Value};
 
 use eclipse_ipc::EventKind;
 use eclipse_ui::theme;
 use eclipse_ui::tokens::space;
 use eclipse_ui::widget::{
-    big_value, chip, content, hairline, header, lane, list_row, micro_label, panel, pill, sidebar,
-    status_chip, subtitle, value as mono, NumericSlider, Toggle,
+    big_value, content, hairline, header, list_row, micro_label, panel, pill, sidebar, status_chip, subtitle,
+    value as mono, NumericSlider, Toggle,
 };
 
 use crate::conn::{Conn, Problem};
@@ -78,6 +78,8 @@ pub enum Message {
     TrayShift(String, bool),
     /// The live tray ids from `tray::feed`; `None` when it could not start.
     TrayLive(Option<Vec<String>>),
+    /// The Taskbar pane's own messages.
+    Bar(crate::taskbar::Msg),
 }
 
 /// Which draggable number a typed draft belongs to. The three sites are not
@@ -123,8 +125,8 @@ impl Span {
 }
 
 pub struct App {
-    conn: Conn,
-    rows: Vec<Key>,
+    pub(crate) conn: Conn,
+    pub(crate) rows: Vec<Key>,
     pane: Pane,
     /// Text in flight, per path. Absent means "show the committed value".
     drafts: HashMap<String, String>,
@@ -136,24 +138,26 @@ pub struct App {
     nums: HashMap<Num, String>,
     /// Slider position while the knob is held. The write happens on release —
     /// a drag must not splice the KDL file once per pixel.
-    live: HashMap<String, f64>,
+    pub(crate) live: HashMap<String, f64>,
     outputs: Vec<Output>,
     insets: HashMap<u64, Inset>,
     scales: HashMap<u64, f64>,
     calibrating: Option<u64>,
-    banner: Option<Problem>,
+    pub(crate) banner: Option<Problem>,
     restart_pending: bool,
     net: Net,
     /// The tray entry the move pills act on.
-    tray_sel: Option<String>,
+    pub(crate) tray_sel: Option<String>,
     /// The running status-notifier items, while the Taskbar pane shows.
     /// `None` is not heard from yet; `Some(None)` is the feed failing.
-    tray_live: Option<Option<Vec<String>>>,
+    pub(crate) tray_live: Option<Option<Vec<String>>>,
     /// Every panel's glass radius, live-synced to `decoration.rounding`
     /// (BLUR-06): read once at startup and refetched on every `Config` event,
     /// so a live-reload can never leave this pane's glass drifted from the
     /// compositor's blur backdrop behind it.
-    glass_radius: f32,
+    pub(crate) glass_radius: f32,
+    /// The Taskbar pane's picture, lane and editor.
+    pub(crate) bar: crate::taskbar::Bar,
 }
 
 impl Default for App {
@@ -189,6 +193,7 @@ impl App {
             tray_sel: None,
             tray_live: None,
             glass_radius,
+            bar: crate::taskbar::Bar::default(),
         };
         // Debug builds only: open with a tray entry selected, so the selected
         // state can be screenshotted without pointer injection.
@@ -197,12 +202,14 @@ impl App {
             app.tray_sel = std::env::var("SETTINGS_PREVIEW_TRAY_SEL").ok();
         }
         app.reload();
+        #[cfg(debug_assertions)]
+        crate::taskbar::preview_env(&mut app);
         app
     }
 
     /// Re-read everything. Cheaper than tracking which key a write touched,
     /// and it is also how the app recovers from someone editing the file.
-    fn reload(&mut self) {
+    pub(crate) fn reload(&mut self) {
         match self.conn.load_schema() {
             Ok(rows) => {
                 self.rows = rows;
@@ -213,6 +220,12 @@ impl App {
             }
             Err(e) => self.banner = Some(e),
         }
+        // Keys this compositor did not report still get a control, so the
+        // Taskbar pane is whole with no socket and ahead of a newer schema.
+        crate::taskbar::stand_in(&mut self.rows);
+        if let Ok(w) = self.conn.widgets() {
+            self.bar.customs = w;
+        }
         match self.conn.call("get_outputs", json!({ "all": true })) {
             Ok(reply) => {
                 self.outputs = crate::output::parse_all(&reply);
@@ -222,12 +235,12 @@ impl App {
         }
     }
 
-    fn key(&self, path: &str) -> Option<&Key> {
+    pub(crate) fn key(&self, path: &str) -> Option<&Key> {
         self.rows.iter().find(|r| r.path == path)
     }
 
     /// The two tray lists as the compositor last reported them.
-    fn tray(&self) -> Tray {
+    pub(crate) fn tray(&self) -> Tray {
         let v = |p| self.key(p).map(|k| k.value.clone()).unwrap_or(Value::Null);
         let mut t = Tray::from_values(&v(TRAY_PINNED), &v(TRAY_HIDDEN));
         if let Some(Some(live)) = &self.tray_live {
@@ -237,7 +250,7 @@ impl App {
     }
 
     /// Write one scalar and fold the outcome into the banner.
-    fn write(&mut self, path: &str, v: Value) {
+    pub(crate) fn write(&mut self, path: &str, v: Value) {
         match self.conn.set(path, v) {
             Ok(restart) => {
                 self.restart_pending |= restart;
@@ -347,7 +360,35 @@ impl App {
     }
 }
 
+/// The content column's scrollable, so a debug build can open scrolled.
+const SCROLL: &str = "content";
+
+/// Start on `pane`. Debug builds read `SETTINGS_PREVIEW_SCROLL` (logical px)
+/// and open scrolled that far, so a lower block can be screenshotted with no
+/// pointer to scroll it.
+pub fn boot(pane: Pane) -> (App, Task<Message>) {
+    let app = App::with_pane(pane);
+    #[cfg(debug_assertions)]
+    if let Some(y) = std::env::var("SETTINGS_PREVIEW_SCROLL")
+        .ok()
+        .and_then(|y| y.parse::<f32>().ok())
+    {
+        let to = iced::widget::scrollable::AbsoluteOffset { x: None, y: Some(y) };
+        return (app, iced::widget::operation::scroll_to(SCROLL, to));
+    }
+    (app, Task::none())
+}
+
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
+    let task = update_inner(app, message);
+    // Any message can move the bar picture: a knob, the order, a reload.
+    if app.pane == Pane::Taskbar {
+        crate::taskbar::sync(app, std::time::Instant::now());
+    }
+    task
+}
+
+fn update_inner(app: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::Select(p) => app.pane = p,
         Message::Dismiss => app.banner = None,
@@ -505,6 +546,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             }
         }
         Message::TrayLive(live) => app.tray_live = Some(live),
+        Message::Bar(m) => crate::taskbar::update(app, m),
     }
     Task::none()
 }
@@ -520,6 +562,10 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     }
     if app.pane == Pane::Taskbar {
         subs.push(crate::tray::feed());
+        // The frame clock runs only while something in the picture moves.
+        if app.bar.animating() {
+            subs.push(iced::window::frames().map(|t| Message::Bar(crate::taskbar::Msg::Frame(t))));
+        }
     }
     Subscription::batch(subs)
 }
@@ -601,15 +647,8 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
             controls.push(status_chip(&state, &measure));
         }
         Pane::Taskbar => {
-            let t = app.tray();
-            controls.push(status_chip(
-                &format!("{} in taskbar", t.taskbar().len()),
-                &format!(
-                    "{} overflow · {} hidden",
-                    t.in_lane(Lane::Overflow).len(),
-                    t.in_lane(Lane::Hidden).len()
-                ),
-            ));
+            let (state, measure) = crate::taskbar::status(app);
+            controls.push(status_chip(&state, &measure));
         }
         _ => {}
     }
@@ -624,16 +663,14 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
     match app.pane {
         Pane::Display => blocks.extend(display_pane(app)),
         Pane::Network => blocks.extend(network::blocks(&app.net, app.glass_radius)),
-        Pane::Taskbar => {
-            blocks.push(tray_hero(app));
-            blocks.extend(schema_pane(app));
-        }
+        Pane::Taskbar => blocks.extend(crate::taskbar::blocks(app)),
         _ => blocks.extend(schema_pane(app)),
     }
 
     row![
         sidebar(nav, footer),
         scrollable(content(blocks))
+            .id(SCROLL)
             .style(theme::eclipse_scrollable)
             .height(Length::Fill),
     ]
@@ -693,133 +730,8 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
         .collect()
 }
 
-/// The tray, as three lanes of chips: the hero of the Taskbar pane.
-///
-/// Select a chip, then move it. Pinned chips carry their position, and the
-/// taskbar lane is the order the bar draws them in. Accent ledger: the one
-/// yellow is the selected chip; every move pill is unaccented.
-///
-/// The chips are the built-ins, the status-notifier items running now, and
-/// any id the two lists name whose app is not running. The caption counts
-/// the running ones, so an app that is missing from the lanes is plainly
-/// not running rather than silently dropped.
-fn tray_hero(app: &App) -> Element<'_, Message, Theme> {
-    let t = app.tray();
-    let sel = app.tray_sel.as_deref();
-    let chips = |ids: &[String], ordinal: bool| -> Vec<Element<'_, Message, Theme>> {
-        ids.iter()
-            .enumerate()
-            .map(|(i, id)| {
-                chip(
-                    ordinal.then_some(i + 1),
-                    id,
-                    sel == Some(id.as_str()),
-                    Message::TraySelect(id.clone()),
-                )
-            })
-            .collect()
-    };
-    let pinned = t.taskbar();
-    let overflow = t.in_lane(Lane::Overflow);
-    let hidden = t.in_lane(Lane::Hidden);
-
-    let caption = row![
-        micro_label("tray"),
-        Space::new().width(Length::Fill),
-        iced::widget::text(match &app.tray_live {
-            None => "reading tray".to_owned(),
-            Some(None) => "tray unreachable".to_owned(),
-            Some(Some(live)) => match live.len() {
-                1 => "1 app running".to_owned(),
-                n => format!("{n} apps running"),
-            },
-        })
-        .font(eclipse_ui::tokens::font::DATA)
-        .size(eclipse_ui::tokens::size::MICRO)
-        .style(theme::text_tertiary),
-    ]
-    .align_y(Alignment::Center);
-
-    let actions: Element<'_, Message, Theme> = match sel {
-        None => iced::widget::text("nothing selected · select an entry, then move it")
-            .size(eclipse_ui::tokens::size::BODY_SMALL)
-            .style(theme::text_tertiary)
-            .into(),
-        Some(id) => {
-            let at = t.lane_of(id);
-            // Where the entry comes from, so a pinned app that is not
-            // running reads as that, not as a chip that does nothing.
-            let origin = if crate::tray::BUILTINS.contains(&id) {
-                "built-in"
-            } else if t.live.iter().any(|l| l == id) {
-                "running"
-            } else {
-                "not running"
-            };
-            let mut r = Row::new()
-                .push(mono(id))
-                .push(
-                    iced::widget::text(origin)
-                        .font(eclipse_ui::tokens::font::DATA)
-                        .size(eclipse_ui::tokens::size::MICRO)
-                        .style(theme::text_tertiary),
-                )
-                .push(Space::new().width(Length::Fill))
-                .spacing(space::CONTROL_GAP)
-                .align_y(Alignment::Center);
-            if at == Lane::Taskbar {
-                if t.shifted(id, false).is_some() {
-                    r = r.push(pill("Earlier", false, Message::TrayShift(id.to_owned(), false)));
-                }
-                if t.shifted(id, true).is_some() {
-                    r = r.push(pill("Later", false, Message::TrayShift(id.to_owned(), true)));
-                }
-            }
-            for (to, label) in [
-                (Lane::Taskbar, "To taskbar"),
-                (Lane::Overflow, "To overflow"),
-                (Lane::Hidden, "Hide"),
-            ] {
-                if at != to {
-                    r = r.push(pill(label, false, Message::TrayMove(id.to_owned(), to)));
-                }
-            }
-            r.into()
-        }
-    };
-
-    panel(
-        app.glass_radius,
-        column![
-            caption,
-            lane(
-                "taskbar",
-                &format!("{} pinned", pinned.len()),
-                chips(&pinned, true)
-            ),
-            row![
-                lane(
-                    "overflow",
-                    &format!("{} in drawer", overflow.len()),
-                    chips(&overflow, false)
-                ),
-                lane(
-                    "hidden",
-                    &format!("{} hidden", hidden.len()),
-                    chips(&hidden, false)
-                ),
-            ]
-            .spacing(space::BLOCK),
-            hairline(),
-            actions,
-        ]
-        .spacing(space::ROW_Y),
-    )
-    .into()
-}
-
 /// The one place a schema type becomes a widget.
-fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Theme> {
+pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Theme> {
     let path = key.path.clone();
     if key.locked() {
         // Policy-owned, or the compositor says not writable. Shown, never
