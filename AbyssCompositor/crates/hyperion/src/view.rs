@@ -550,6 +550,25 @@ pub fn drawer_span(
     }
 }
 
+/// The span a tray item's menu hangs from: its own mark when it is pinned on
+/// the bar, else the disclosure arrow its overflow drawer hung from. The
+/// pointer is no answer here: it is only tracked over the bar, so a right
+/// click in the drawer would read wherever it last crossed the bar.
+pub fn tray_item_span(app: &crate::app::App, on: &crate::app::Bar, address: &str) -> Option<(f32, f32)> {
+    let (pinned, _) = crate::widgets::tray::split(&app.radios.tray, &app.tray);
+    let Some(k) = pinned
+        .iter()
+        .position(|&i| app.radios.tray.get(i).is_some_and(|t| t.address == address))
+    else {
+        return drawer_span(app, on, crate::app::Drawer::Overflow);
+    };
+    let (_, right) = widget_span(app, on, &crate::widgets::WidgetId::Tray)?;
+    let pitch = bar::TRAY_MARK_W + bar::TRAY_GAP;
+    let core_left = right - bar::WIDGET_X - bar::ARROW_W - pinned.len() as f32 * pitch;
+    let left = core_left + k as f32 * pitch;
+    Some((left, left + bar::TRAY_MARK_W))
+}
+
 /// The tail of a strip that ran out of room: `+3`, in the neutral ink.
 ///
 /// It is not a chip — no icon, no accent, no press — because it stands for
@@ -1284,5 +1303,42 @@ mod tests {
             widget_span(&app, &on, &crate::widgets::WidgetId::Clock).expect("the clock is on the bar");
         assert!((clock.1 - (on.width - bar::EDGE)).abs() < 0.01);
         assert!(clock.0 > chip_span(&app, &on, 3).expect("chip 3 is drawn").1);
+    }
+
+    /// A tray item's menu hangs from the item, never from wherever the
+    /// pointer last crossed the bar: a pinned item from its own mark, left
+    /// of the arrow and in pin order; an overflow item from the arrow its
+    /// drawer hung from.
+    #[test]
+    fn a_tray_menu_hangs_from_the_item_or_its_drawer() {
+        use crate::radio::{TrayIcon, TrayItem};
+        let item = |id: &str| TrayItem {
+            id: id.into(),
+            address: format!(":1.{id}"),
+            title: id.into(),
+            icon: TrayIcon::None,
+        };
+        let mut app = crate::app::App::new();
+        app.radios.tray = vec![item("steam"), item("discord"), item("slack")];
+        app.tray = crate::conn::TrayConfig {
+            pinned: Some(vec!["discord".into(), "steam".into()]),
+            hidden: vec![],
+        };
+        let mut on = crate::app::Bar::new(
+            iced::window::Id::unique(),
+            "DP-1".into(),
+            0,
+            eclipse_ui::motion::Motion::DEFAULT,
+        );
+        on.width = 1830.0;
+        on.cursor = iced::Point::ORIGIN;
+        crate::app::relayout(&app, &mut on, std::time::Instant::now());
+
+        let arrow = drawer_span(&app, &on, crate::app::Drawer::Overflow).expect("the arrow is drawn");
+        let discord = tray_item_span(&app, &on, ":1.discord").expect("discord is pinned");
+        let steam = tray_item_span(&app, &on, ":1.steam").expect("steam is pinned");
+        assert!((steam.0 - discord.0 - (bar::TRAY_MARK_W + bar::TRAY_GAP)).abs() < 0.01);
+        assert!((arrow.0 - steam.1 - bar::TRAY_GAP).abs() < 0.01);
+        assert_eq!(tray_item_span(&app, &on, ":1.slack"), Some(arrow));
     }
 }

@@ -469,6 +469,7 @@ pub fn sync(app: &mut App, now: Instant) {
 }
 
 fn sync_with(app: &mut App, now: Instant, snap: bool) {
+    adopt_selection(app);
     let m = motion(app);
     if app.bar.motion != Some(m) {
         let first = app.bar.motion.is_none();
@@ -619,6 +620,32 @@ fn select(app: &mut App, id: String) {
     app.bar.picker = false;
 }
 
+/// Give the selection its editor when nobody clicked it. The first widget
+/// stands selected on open, after a reload and after its neighbour goes; a
+/// custom one there must open its block like a click would, not read as
+/// missing. Runs with every sync, so any change to the fallback is caught.
+pub fn adopt_selection(app: &mut App) {
+    let o = order(app);
+    adopt(&mut app.bar, &o);
+}
+
+/// [`adopt_selection`] on the pane's state alone. A draft (edited, or a new
+/// block) is never replaced, and an editor already on the widget stays: a
+/// config change reaches it through [`follow_config`].
+fn adopt(b: &mut Bar, order: &[String]) {
+    if b.editor.as_ref().is_some_and(|e| e.dirty || e.is_new()) {
+        return;
+    }
+    let id = b.selected.clone().or_else(|| order.first().cloned());
+    let Some(name) = id.as_deref().and_then(|i| i.strip_prefix(bp::CUSTOM)) else {
+        return;
+    };
+    if b.editor.as_ref().and_then(|e| e.original.as_deref()) == Some(name) {
+        return;
+    }
+    b.editor = b.customs.iter().find(|w| w.name == name).map(Editor::from_widget);
+}
+
 /// The selection, or the first widget when nothing is selected yet.
 fn selected(app: &App) -> Option<String> {
     if app.bar.editor.as_ref().is_some_and(Editor::is_new) {
@@ -681,12 +708,18 @@ fn flush(app: &mut App, now: Instant, force: bool) {
 
 /// The config changed underneath (a reload, another client, our own write).
 /// An editor with nothing unsaved follows it; one with a draft keeps the
-/// draft, and its next save answers against what is there now.
+/// draft, and its next save answers against what is there now. The draft's
+/// verdict was given against the old config, so it is asked again after the
+/// usual pause.
 pub fn follow_config(app: &mut App) {
-    let Some(ed) = app.bar.editor.as_ref() else {
+    let Some(ed) = app.bar.editor.as_mut() else {
         return;
     };
-    if ed.dirty || ed.is_new() {
+    if ed.dirty {
+        ed.check_at = Some(Instant::now() + CHECK_QUIET);
+        return;
+    }
+    if ed.is_new() {
         return;
     }
     let name = ed.original.clone();
@@ -1822,4 +1855,85 @@ fn settings(app: &App) -> Element<'_, Message, Theme> {
         body = body.push(hairline()).push(group("other", rest));
     }
     panel(app.glass_radius, body).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn widget(name: &str) -> Widget {
+        Widget {
+            name: name.into(),
+            kind: eclipse_ipc::WidgetKind::Exec {
+                argv: vec!["date".into()],
+                interval_ms: 5000,
+            },
+            icon: None,
+            on_click: None,
+            on_scroll_up: None,
+            on_scroll_down: None,
+        }
+    }
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn bar_with(customs: &[&str]) -> Bar {
+        Bar {
+            customs: customs.iter().map(|n| widget(n)).collect(),
+            ..Bar::default()
+        }
+    }
+
+    fn open(b: &Bar) -> Option<&str> {
+        b.editor.as_ref().and_then(|e| e.original.as_deref())
+    }
+
+    #[test]
+    fn a_custom_widget_selected_by_default_opens_its_block() {
+        let mut b = bar_with(&["weather"]);
+        adopt(&mut b, &ids(&["custom:weather", "clock"]));
+        assert_eq!(open(&b), Some("weather"));
+    }
+
+    #[test]
+    fn a_builtin_selected_by_default_opens_no_editor() {
+        let mut b = bar_with(&["weather"]);
+        adopt(&mut b, &ids(&["clock", "custom:weather"]));
+        assert!(b.editor.is_none());
+    }
+
+    #[test]
+    fn the_editor_follows_when_the_default_selection_changes() {
+        let mut b = bar_with(&["weather", "load"]);
+        adopt(&mut b, &ids(&["custom:weather", "custom:load"]));
+        adopt(&mut b, &ids(&["custom:load", "custom:weather"]));
+        assert_eq!(open(&b), Some("load"));
+    }
+
+    #[test]
+    fn a_draft_is_never_replaced() {
+        let mut b = bar_with(&["weather", "load"]);
+        adopt(&mut b, &ids(&["custom:weather"]));
+        if let Some(e) = b.editor.as_mut() {
+            e.name = "weather2".into();
+            e.dirty = true;
+        }
+        adopt(&mut b, &ids(&["custom:load"]));
+        assert_eq!(open(&b), Some("weather"));
+        assert_eq!(b.editor.as_ref().map(|e| e.name.as_str()), Some("weather2"));
+
+        b.editor = Some(Editor::new());
+        adopt(&mut b, &ids(&["custom:load"]));
+        assert!(b.editor.as_ref().is_some_and(Editor::is_new));
+    }
+
+    #[test]
+    fn an_explicit_selection_wins_over_the_first_widget() {
+        let mut b = bar_with(&["weather", "load"]);
+        b.selected = Some("custom:load".into());
+        adopt(&mut b, &ids(&["custom:weather", "custom:load"]));
+        assert_eq!(open(&b), Some("load"));
+    }
 }

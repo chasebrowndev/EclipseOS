@@ -204,6 +204,7 @@ impl App {
         app.reload();
         #[cfg(debug_assertions)]
         crate::taskbar::preview_env(&mut app);
+        crate::taskbar::adopt_selection(&mut app);
         app
     }
 
