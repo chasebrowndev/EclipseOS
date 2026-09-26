@@ -1868,7 +1868,7 @@ fn open_tray_menu(app: &mut App, at: Id, id: String) -> Task<Message> {
     closed
 }
 
-/// Open a tray item's menu under the pointer.
+/// Open a tray item's menu under the mark or drawer it was asked from.
 ///
 /// An item with no menu opens nothing: an empty sheet is a worse answer to a
 /// right-click than no sheet.
@@ -1880,7 +1880,9 @@ fn show_tray_menu(app: &mut App, at: Id, id: String, entries: Vec<crate::radio::
         return Task::none();
     }
     let size = (crate::view::MENU_W, crate::view::tray_menu_height(&entries));
-    let rect = anchor(app, bar, None, Edge::Right);
+    // Down-and-left from the right end, like the drawer it may have come
+    // from: the tray sits at the bar's right end.
+    let rect = anchor(app, bar, crate::view::tray_item_span(app, bar, &id), Edge::Right);
     let settings = IcedNewPopupSettings::new(at, size, rect).gravity(PopupGravity::BottomLeft);
     let (id_, open) = Message::popup_open(settings);
     app.popup = Some(Popup {
