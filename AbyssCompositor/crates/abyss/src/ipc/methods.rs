@@ -56,7 +56,7 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "set_idle_inhibit" => set_idle_inhibit(state, conn, params),
         // Config read/write (COMP-13 §1.4). The outer gate already returned
         // `Allow` to reach this line; `config_rpc` tightens onto it per file.
-        "get_config" | "set_config_value" | "validate_config" => {
+        "get_config" | "set_config_value" | "set_config_collection" | "validate_config" => {
             super::config_rpc::dispatch(state, super::gate::Decision::Allow, method, params)
         }
         // Unreachable: the gate rejects anything not in the table and

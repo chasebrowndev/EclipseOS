@@ -140,6 +140,9 @@ impl From<std::io::Error> for Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
+pub mod widgets;
+pub use widgets::{Widget, WidgetKind, WidgetOp, WriteResult};
+
 /// Longest line accepted from the compositor. Matches the server's own cap;
 /// anything longer is a bug on one side and we drop the connection rather
 /// than grow a buffer to meet it.

@@ -39,6 +39,7 @@ pub fn dispatch(state: &mut AbyssState, outer: Decision, method: &str, params: &
     match method {
         "get_config" => get_config(state, outer, params),
         "set_config_value" => set_config_value(state, outer, params),
+        "set_config_collection" => set_config_collection(state, outer, params),
         "validate_config" => validate_config(state, outer, params),
         other => Err(RpcError::not_implemented(other)),
     }
@@ -331,14 +332,33 @@ fn set_config_value(state: &mut AbyssState, outer: Decision, params: &Value) -> 
         }));
     }
 
-    write_atomically(&target, &after)?;
+    commit(state, &target, &before, &after)?;
+
+    Ok(json!({
+        "file": target.display().to_string(),
+        "previous": previous,
+        "applied": true,
+        "restart_required": key.reload == schema::Reload::NeedsRestart,
+    }))
+}
+
+/// The one write path (COMP-13 §1.5): write `after`, re-load the whole config
+/// from disk, and either apply it and announce `config`, or put `before` back
+/// and return the first load error untouched. Every socket write ends here.
+fn commit(
+    state: &mut AbyssState,
+    target: &std::path::Path,
+    before: &str,
+    after: &str,
+) -> Result<(), RpcError> {
+    write_atomically(target, after)?;
 
     // Re-read everything, not just this file: a key's effective value depends
     // on the whole search path, and the only honest check is the real load.
     let next = state.config.reload();
     if let Some(err) = next.errors.first() {
         let message = err.to_string();
-        if let Err(e) = write_atomically(&target, &before) {
+        if let Err(e) = write_atomically(target, before) {
             // The rollback itself failed. Say so loudly; the file on disk is
             // now the rejected version and a human has to look.
             tracing::error!(path = %target.display(), error = %e.message, "config rollback failed");
@@ -353,13 +373,245 @@ fn set_config_value(state: &mut AbyssState, outer: Decision, params: &Value) -> 
     // so it will not emit `config`; subscribers (the bar, Settings) hear about
     // a socket-driven change only from here. Same event as `watch::reload_now`.
     crate::ipc::emit(state, "config", json!({}));
+    Ok(())
+}
 
+// ------------------------------------------------------ set_config_collection
+
+/// Collections the socket can write, by node name. Anything else in
+/// `schema::COLLECTIONS` is readable but refused here; a collection joins
+/// this list with its own entry renderer and a row in `collection_write`.
+const WRITABLE_COLLECTIONS: &[&str] = &["widget"];
+
+/// Lists that name widgets by id: a removal drops `custom:<name>` from them
+/// and a rename rewrites it, in the same write (ADR 0065).
+const WIDGET_ID_LISTS: &[&str] = &["bar.widgets.order", "bar.widgets.important"];
+
+/// Create, replace, rename, reorder or delete one entry of a collection
+/// (COMP-13 §1.4; ADR 0065). Params:
+/// `{collection, op: "upsert"|"remove"|"rename"|"move", name, entry?, new_name?, index?, dry_run?}`.
+fn set_config_collection(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply {
+    let collection = str_param(params, "collection")
+        .ok_or_else(|| RpcError::invalid_params("collection must be a string"))?;
+    let coll = schema::COLLECTIONS
+        .iter()
+        .find(|c| c.node == collection)
+        .ok_or_else(|| RpcError::invalid_params(&format!("unknown config collection {collection:?}")))?;
+    let file = file_of(coll.owner);
+    // Before the file is opened, before `state.config` is read.
+    allow_file(outer, file, Access::Write, collection)?;
+    if !WRITABLE_COLLECTIONS.contains(&collection) {
+        return Err(RpcError::invalid_params(&format!(
+            "collection {collection:?} is not settable over the socket yet"
+        )));
+    }
+    let target = target_path(&state.config, coll.owner)
+        .ok_or_else(|| RpcError::invalid_params("no config file on the search path to write to"))?;
+    let dry_run = obj(params)
+        .get("dry_run")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let before = std::fs::read_to_string(&target).unwrap_or_default();
+    let (previous, after, references) = widget_edit(state, params, &before)?;
+
+    if dry_run {
+        let errors = Config::check_text(&target, coll.owner, &after);
+        let errors: Vec<Value> = errors.iter().map(crate::config::error_json).collect();
+        return Ok(json!({
+            "file": target.display().to_string(),
+            "previous": previous,
+            "references": references,
+            "applied": false,
+            "valid": errors.is_empty(),
+            "errors": errors,
+        }));
+    }
+
+    commit(state, &target, &before, &after)?;
     Ok(json!({
         "file": target.display().to_string(),
         "previous": previous,
+        "references": references,
         "applied": true,
-        "restart_required": key.reload == schema::Reload::NeedsRestart,
+        "valid": true,
+        "errors": [],
     }))
+}
+
+/// Render one `widget` op onto `before`: `(previous entry, new text, the id
+/// lists it rewrote)`.
+fn widget_edit(
+    state: &AbyssState,
+    params: &Value,
+    before: &str,
+) -> Result<(Value, String, Vec<&'static str>), RpcError> {
+    let kind = edit::WIDGET;
+    let name = str_param(params, "name")
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| RpcError::invalid_params("name must be a non-empty string"))?;
+    let op = str_param(params, "op").ok_or_else(|| RpcError::invalid_params("op must be a string"))?;
+    let e = |e: edit::EditError| RpcError::invalid_params(&e.to_string());
+    let existing = |n: &str| state.config.bar.custom_widgets.iter().find(|w| w.name == n);
+    let previous = existing(name).map_or(Value::Null, widget_json);
+    let id = format!("{}{name}", schema::BAR_WIDGET_CUSTOM_PREFIX);
+    let mut references = Vec::new();
+
+    let after = match op {
+        "upsert" => {
+            let entry = obj(params)
+                .get("entry")
+                .ok_or_else(|| RpcError::invalid_params("upsert needs an entry"))?;
+            let body = widget_body(name, entry)?;
+            edit::upsert_block(before, kind, name, &body).map_err(e)?
+        }
+        "remove" => {
+            let mut text = edit::remove_block(before, kind, name).map_err(e)?;
+            for path in WIDGET_ID_LISTS {
+                let next = edit::replace_list_item(&text, path, &id, None).map_err(e)?;
+                if next != text {
+                    references.push(*path);
+                }
+                text = next;
+            }
+            text
+        }
+        "rename" => {
+            let new_name = str_param(params, "new_name")
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| RpcError::invalid_params("rename needs a non-empty new_name"))?;
+            if new_name == name {
+                return Err(RpcError::invalid_params("new_name is the current name"));
+            }
+            if existing(new_name).is_some() {
+                return Err(RpcError::invalid_params(&format!(
+                    "widget {new_name:?} already exists"
+                )));
+            }
+            let new_id = format!("{}{new_name}", schema::BAR_WIDGET_CUSTOM_PREFIX);
+            let mut text = edit::rename_block(before, kind, name, new_name).map_err(e)?;
+            for path in WIDGET_ID_LISTS {
+                let next = edit::replace_list_item(&text, path, &id, Some(&new_id)).map_err(e)?;
+                if next != text {
+                    references.push(*path);
+                }
+                text = next;
+            }
+            text
+        }
+        "move" => {
+            let index = obj(params)
+                .get("index")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| RpcError::invalid_params("move needs an index (0-based)"))?;
+            edit::move_block(before, kind, name, index as usize).map_err(e)?
+        }
+        other => {
+            return Err(RpcError::invalid_params(&format!(
+                "op must be \"upsert\", \"remove\", \"rename\" or \"move\", not {other:?}"
+            )))
+        }
+    };
+    Ok((previous, after, references))
+}
+
+/// A `get_config` widget entry → the lines of its block. Only the JSON
+/// *shape* is checked here; what the values mean (a known source, an
+/// interval in range) is the parser's call on reload, so a refusal reads
+/// exactly as it would for a hand edit. Defaults (`interval-ms` 5000,
+/// `format "{}"`) are left out, so a read-modify-write does not grow the file.
+fn widget_body(name: &str, entry: &Value) -> Result<Vec<String>, RpcError> {
+    const FIELDS: &[&str] = &[
+        "name",
+        "kind",
+        "exec",
+        "interval-ms",
+        "source",
+        "format",
+        "icon",
+        "on-click",
+        "on-scroll-up",
+        "on-scroll-down",
+    ];
+    let bad = |m: String| RpcError::invalid_params(&m);
+    let m = entry
+        .as_object()
+        .ok_or_else(|| bad("entry must be an object".into()))?;
+    if let Some(k) = m.keys().find(|k| !FIELDS.contains(&k.as_str())) {
+        return Err(bad(format!("unknown widget field {k:?}")));
+    }
+    let field = |k: &str| m.get(k).filter(|v| !v.is_null());
+    if let Some(n) = field("name") {
+        if n.as_str() != Some(name) {
+            return Err(bad(format!("entry.name must match name {name:?}")));
+        }
+    }
+    let string = |k: &str| -> Result<Option<String>, RpcError> {
+        match field(k) {
+            None => Ok(None),
+            Some(v) => v
+                .as_str()
+                .map(|s| Some(s.to_owned()))
+                .ok_or_else(|| bad(format!("{k} must be a string or null"))),
+        }
+    };
+    let argv = |k: &str| -> Result<Option<String>, RpcError> {
+        let Some(v) = field(k) else { return Ok(None) };
+        let msg = || bad(format!("{k} must be a non-empty array of strings, or null"));
+        let items = v.as_array().filter(|a| !a.is_empty()).ok_or_else(msg)?;
+        let words: Option<Vec<String>> = items.iter().map(|i| i.as_str().map(edit::quote)).collect();
+        Ok(Some(format!("{k} {}", words.ok_or_else(msg)?.join(" "))))
+    };
+    let must_be_null = |k: &str, kind: &str| -> Result<(), RpcError> {
+        match field(k) {
+            Some(_) => Err(bad(format!("{k} must be null for a {kind} widget"))),
+            None => Ok(()),
+        }
+    };
+
+    let kind = field("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| bad("entry.kind must be \"exec\", \"stream\" or \"source\"".into()))?;
+    let mut lines = Vec::new();
+    match kind {
+        "exec" | "stream" => {
+            lines.push(argv("exec")?.ok_or_else(|| bad(format!("a {kind} widget needs exec")))?);
+            must_be_null("source", kind)?;
+            must_be_null("format", kind)?;
+            if kind == "stream" {
+                must_be_null("interval-ms", kind)?;
+                lines.push("stream #true".into());
+            } else if let Some(v) = field("interval-ms") {
+                let ms = v
+                    .as_u64()
+                    .ok_or_else(|| bad("interval-ms must be a positive integer or null".into()))?;
+                if ms != u64::from(schema::WIDGET_DEFAULT_INTERVAL_MS) {
+                    lines.push(format!("interval-ms {ms}"));
+                }
+            }
+        }
+        "source" => {
+            must_be_null("exec", kind)?;
+            must_be_null("interval-ms", kind)?;
+            let source = string("source")?.ok_or_else(|| bad("a source widget needs source".into()))?;
+            lines.push(format!("source {}", edit::quote(&source)));
+            if let Some(f) = string("format")?.filter(|f| f != "{}") {
+                lines.push(format!("format {}", edit::quote(&f)));
+            }
+        }
+        other => {
+            return Err(bad(format!(
+                "entry.kind must be \"exec\", \"stream\" or \"source\", not {other:?}"
+            )))
+        }
+    }
+    if let Some(icon) = string("icon")? {
+        lines.push(format!("icon {}", edit::quote(&icon)));
+    }
+    for k in ["on-click", "on-scroll-up", "on-scroll-down"] {
+        lines.extend(argv(k)?);
+    }
+    Ok(lines)
 }
 
 /// tmp + rename in the same directory, so a reader never sees a half-written
@@ -712,6 +964,222 @@ mod tests {
             .ok()
             .expect("bar.eye is readable");
         assert!(got.get("collections").is_none());
+    }
+
+    /// A harness whose config is `text` in a scratch file, loaded as `--config`.
+    fn widget_harness(
+        tag: &str,
+        text: &str,
+    ) -> (crate::shell::focus::state_tests::Harness, std::path::PathBuf) {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let dir = std::env::temp_dir().join(format!("abyss-coll-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+        std::fs::write(&file, text).unwrap();
+        h.state.config = Config::load(Some(&file));
+        let mine: Vec<_> = h.state.config.errors.iter().filter(|e| e.file == file).collect();
+        assert!(mine.is_empty(), "{mine:?}");
+        (h, file)
+    }
+
+    fn coll(h: &mut crate::shell::focus::state_tests::Harness, params: Value) -> Reply {
+        let mut p = params;
+        p["collection"] = json!("widget");
+        set_config_collection(&mut h.state, Decision::Allow, &p)
+    }
+
+    fn names(h: &crate::shell::focus::state_tests::Harness) -> Vec<String> {
+        h.state
+            .config
+            .bar
+            .custom_widgets
+            .iter()
+            .map(|w| w.name.clone())
+            .collect()
+    }
+
+    const WIDGETS: &str = "// mine\nbar {\n    widget \"cpu\" { source \"usage.cpu\"; format \"{}%\"; } // c\n    \
+                           widgets {\n        order \"custom:cpu\" \"clock\"\n        important \"custom:cpu\" \"clock\"\n    }\n}\n";
+
+    #[test]
+    fn widget_upsert_adds_and_replaces_through_the_real_load() {
+        let (mut h, file) = widget_harness("upsert", WIDGETS);
+        crate::ipc::capture::take();
+        let entry = json!({"name": "weather", "kind": "exec", "exec": ["curl", "-s", "wttr.in"],
+            "interval-ms": 600000, "source": null, "format": null, "icon": "weather-clear",
+            "on-click": ["xdg-open", "https://wttr.in"], "on-scroll-up": null, "on-scroll-down": null});
+        let got = coll(&mut h, json!({"op": "upsert", "name": "weather", "entry": entry}))
+            .unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(got["applied"], json!(true));
+        assert_eq!(got["previous"], Value::Null);
+        assert_eq!(names(&h), ["cpu", "weather"]);
+        // get_config serves back exactly what was written.
+        let read = get_config(&mut h.state, Decision::Allow, &json!({}))
+            .ok()
+            .unwrap();
+        assert_eq!(read["collections"]["widget"][1], entry);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.starts_with(
+            "// mine\nbar {\n    widget \"cpu\" { source \"usage.cpu\"; format \"{}%\"; } // c\n"
+        ));
+        assert!(text.contains("    widget \"weather\" {\n        exec \"curl\" \"-s\" \"wttr.in\"\n        interval-ms 600000\n"));
+        assert_eq!(
+            crate::ipc::capture::take()
+                .iter()
+                .filter(|(k, _)| k == "config")
+                .count(),
+            1
+        );
+
+        // Replace, as a stream; previous is the old entry.
+        let got = coll(
+            &mut h,
+            json!({"op": "upsert", "name": "weather", "entry": {"kind": "stream", "exec": ["tail", "-f", "x"]}}),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(got["previous"]["kind"], json!("exec"));
+        assert!(matches!(
+            h.state.config.bar.custom_widgets[1].kind,
+            crate::config::CustomWidgetKind::Stream { .. }
+        ));
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn widget_remove_drops_its_references_in_the_same_write() {
+        let (mut h, file) = widget_harness("remove", WIDGETS);
+        let got =
+            coll(&mut h, json!({"op": "remove", "name": "cpu"})).unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(
+            got["references"],
+            json!(["bar.widgets.order", "bar.widgets.important"])
+        );
+        assert!(names(&h).is_empty());
+        assert_eq!(h.state.config.bar.widgets.order, ["clock"]);
+        assert_eq!(h.state.config.bar.widgets.important, ["clock"]);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.starts_with("// mine\nbar {\n    widgets {\n"), "{text}");
+        // Not there any more: a typo-class error, nothing written.
+        let e = coll(&mut h, json!({"op": "remove", "name": "cpu"})).unwrap_err();
+        assert_eq!(e.code, super::super::INVALID_PARAMS);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn widget_rename_rewrites_its_references() {
+        let (mut h, file) = widget_harness("rename", WIDGETS);
+        let got = coll(&mut h, json!({"op": "rename", "name": "cpu", "new_name": "load"}))
+            .unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(
+            got["references"],
+            json!(["bar.widgets.order", "bar.widgets.important"])
+        );
+        assert_eq!(names(&h), ["load"]);
+        assert_eq!(h.state.config.bar.widgets.order, ["custom:load", "clock"]);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("widget \"load\" { source \"usage.cpu\"; format \"{}%\"; } // c\n"));
+        // Onto an existing name: refused.
+        coll(
+            &mut h,
+            json!({"op": "upsert", "name": "x", "entry": {"kind": "exec", "exec": ["true"]}}),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.message));
+        assert!(coll(&mut h, json!({"op": "rename", "name": "x", "new_name": "load"})).is_err());
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    #[test]
+    fn widget_move_reorders_the_collection() {
+        let (mut h, file) = widget_harness("move", WIDGETS);
+        coll(
+            &mut h,
+            json!({"op": "upsert", "name": "a", "entry": {"kind": "exec", "exec": ["true"]}}),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(names(&h), ["cpu", "a"]);
+        coll(&mut h, json!({"op": "move", "name": "a", "index": 0}))
+            .unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(names(&h), ["a", "cpu"]);
+        let e = coll(&mut h, json!({"op": "move", "name": "a", "index": 5})).unwrap_err();
+        assert!(e.message.contains("out of range"), "{}", e.message);
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// An entry the parser refuses is rolled back: the file is byte-identical,
+    /// the live config unchanged, no `config` event, and the error is the
+    /// positioned text a hand edit would have produced. A dry run reports the
+    /// same error without writing.
+    #[test]
+    fn an_invalid_widget_is_rolled_back() {
+        let (mut h, file) = widget_harness("rollback", WIDGETS);
+        crate::ipc::capture::take();
+        let bad = json!({"op": "upsert", "name": "cpu", "entry": {"kind": "source", "source": "usage.cpuu"}});
+        let e = coll(&mut h, bad.clone()).unwrap_err();
+        assert_eq!(e.code, super::super::INVALID_PARAMS);
+        assert!(e.message.contains("abyss.kdl:"), "{}", e.message);
+        assert!(e.message.contains("did you mean \"usage.cpu\""), "{}", e.message);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), WIDGETS);
+        assert!(crate::ipc::capture::take().iter().all(|(k, _)| k != "config"));
+        assert_eq!(names(&h), ["cpu"]);
+
+        let mut dry = bad;
+        dry["dry_run"] = json!(true);
+        let got = coll(&mut h, dry).ok().expect("a dry run answers");
+        assert_eq!(got["applied"], json!(false));
+        assert_eq!(got["valid"], json!(false));
+        assert!(got["errors"][0]["line"].as_u64().unwrap() > 0);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), WIDGETS);
+
+        // Shape errors never reach the file at all.
+        for entry in [
+            json!({"kind": "exec"}),
+            json!({"kind": "exec", "exec": []}),
+            json!({"kind": "exec", "exec": ["x"], "source": "usage.cpu"}),
+            json!({"kind": "stream", "exec": ["x"], "interval-ms": 5}),
+            json!({"kind": "source"}),
+            json!({"kind": "nope"}),
+            json!({"kind": "exec", "exec": ["x"], "colour": "red"}),
+            json!({"name": "other", "kind": "exec", "exec": ["x"]}),
+        ] {
+            assert!(
+                coll(&mut h, json!({"op": "upsert", "name": "cpu", "entry": entry})).is_err(),
+                "{entry}"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), WIDGETS);
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// The collection write takes the same two gates as `set_config_value`:
+    /// a denied outer decision is never loosened, and nothing is written.
+    #[test]
+    fn the_collection_write_is_gated() {
+        let (mut h, file) = widget_harness("gate", WIDGETS);
+        let e = set_config_collection(
+            &mut h.state,
+            Decision::Deny("peer uid is not the session owner"),
+            &json!({"collection": "widget", "op": "remove", "name": "cpu"}),
+        )
+        .unwrap_err();
+        assert_eq!(e.code, super::super::DENIED);
+        let body: Value = serde_json::from_str(&e.message).expect("structured denial");
+        assert_eq!(body["file"], "abyss");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), WIDGETS);
+        // Unknown collection: a typo. Known but not writable yet: refused.
+        for c in ["widgets", "bind"] {
+            let e = set_config_collection(
+                &mut h.state,
+                Decision::Allow,
+                &json!({"collection": c, "op": "remove", "name": "cpu"}),
+            )
+            .unwrap_err();
+            assert_eq!(e.code, super::super::INVALID_PARAMS, "{c}");
+        }
+        let row = gate::lookup("set_config_collection").expect("row");
+        assert_eq!(row.kind, gate::Kind::Command);
+        assert!(row.implemented);
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 
     #[test]
