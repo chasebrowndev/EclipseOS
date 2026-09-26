@@ -90,6 +90,17 @@ impl Slot {
         }
     }
 
+    /// The widget id of this slot's argument input, so focus can be put
+    /// back after a chip is pushed in front of it.
+    pub fn input_id(self) -> &'static str {
+        match self {
+            Slot::Command => "arg-command",
+            Slot::Click => "arg-click",
+            Slot::ScrollUp => "arg-scroll-up",
+            Slot::ScrollDown => "arg-scroll-down",
+        }
+    }
+
     pub fn field(self) -> Field {
         match self {
             Slot::Command => Field::Command,
@@ -178,6 +189,16 @@ pub struct Editor {
     pub checked: bool,
     /// Set by a refused save: shown until the next edit.
     pub refused: Option<String>,
+    /// Edited since it opened or last saved. A clean editor follows the
+    /// config when it changes underneath; a dirty one is the user's draft
+    /// and is kept.
+    pub dirty: bool,
+    /// Delete was pressed once: the confirm row is up and the next press
+    /// removes the block. Any edit takes it down.
+    pub confirm_delete: bool,
+    /// When the dry run for the latest edit is due; `None` when the verdict
+    /// is current. Edits push it back, so typing asks once, at the pause.
+    pub check_at: Option<std::time::Instant>,
 }
 
 impl Default for Editor {
@@ -200,6 +221,9 @@ impl Editor {
             errors: Vec::new(),
             checked: false,
             refused: None,
+            dirty: false,
+            confirm_delete: false,
+            check_at: None,
         }
     }
 
@@ -299,6 +323,14 @@ impl Editor {
     /// Take a dry run's verdict.
     pub fn take_result(&mut self, r: &WriteResult) {
         self.errors = r.errors.iter().map(parse_error).collect();
+        // abyss refuses a whole `widget` block on its first error, then says
+        // again that `custom:NAME` in the order names no block — the block it
+        // just refused. That second line is an echo, not a second problem;
+        // it stands only when it is the only thing wrong.
+        let echo = format!("custom:{} names no widget block", self.name.trim());
+        if self.errors.iter().any(|e| !e.message.starts_with(&echo)) {
+            self.errors.retain(|e| !e.message.starts_with(&echo));
+        }
         if !r.valid && self.errors.is_empty() {
             self.errors.push(FieldError {
                 field: Field::Block,
@@ -337,16 +369,10 @@ impl Editor {
     }
 
     /// Format `{}` with a stand-in reading, so the format field shows what
-    /// the bar will.
+    /// the bar will — through the bar's own function, units and all.
     pub fn format_preview(&self) -> String {
-        let sample = match self.source.as_str() {
-            "usage.cpu" | "usage.mem" | "usage.gpu" | "usage.disk" => "42",
-            "audio.volume" => "62",
-            "media.title" => "Midnight City",
-            "media.artist" => "M83",
-            _ => "42",
-        };
-        self.format.replace("{}", sample)
+        let r = eclipse_ui::reading::Readings::sample();
+        eclipse_ui::reading::line(&self.source, &self.format, &r).unwrap_or_else(|| self.format.clone())
     }
 }
 
@@ -539,7 +565,39 @@ mod tests {
     fn the_format_preview_fills_the_placeholder() {
         let mut e = Editor::new();
         e.kind = Kind::Source;
-        e.format = "CPU {}%".into();
-        assert_eq!(e.format_preview(), "CPU 42%");
+        e.format = "C {}pct".into();
+        assert_eq!(e.format_preview(), "C 42%pct", "the bar's own `%` stays");
+        e.source = "audio.volume".into();
+        e.format = "{}".into();
+        assert_eq!(e.format_preview(), "62%");
+    }
+
+    #[test]
+    fn a_refused_block_is_not_blamed_twice() {
+        let verdict = || WriteResult {
+            file: String::new(),
+            previous: serde_json::Value::Null,
+            references: Vec::new(),
+            applied: false,
+            valid: false,
+            errors: Vec::new(),
+        };
+        let mut e = Editor::new();
+        e.name = "probe".into();
+        let cascade = json!({"message": "custom:probe names no widget block"});
+        let floor = json!({"message": "interval-ms must be at least 250", "snippet": "interval-ms 10"});
+        e.take_result(&WriteResult {
+            valid: false,
+            errors: vec![floor, cascade.clone()],
+            ..verdict()
+        });
+        assert_eq!(e.errors.len(), 1);
+        assert_eq!(e.errors[0].field, Field::Interval);
+        e.take_result(&WriteResult {
+            valid: false,
+            errors: vec![cascade],
+            ..verdict()
+        });
+        assert_eq!(e.errors.len(), 1, "alone, it is the problem");
     }
 }

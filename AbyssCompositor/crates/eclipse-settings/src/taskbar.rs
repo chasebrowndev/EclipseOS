@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use iced::widget::{
     button, column, container, pick_list, row, sensor, text, text_input, Column, Row, Space, Stack,
 };
-use iced::{Alignment, Element, Length, Size, Theme};
+use iced::{Alignment, Element, Length, Size, Task, Theme};
 use serde_json::{json, Value};
 
 use eclipse_ipc::{Widget, WidgetOp};
@@ -150,7 +150,7 @@ fn note(id: &str) -> &'static str {
         "tray" => {
             "Apps' status icons. Pinned ones sit on the bar in this order; the rest wait in the drawer."
         }
-        "clock" => "The date shows in the clock's popup.",
+        "clock" => "Time over date, on the bar itself: these set the hour and the date's order.",
         _ => "",
     }
 }
@@ -178,7 +178,7 @@ pub fn stand_in(rows: &mut Vec<Key>) {
         e("bar.position", "top", &["top", "bottom"]),
         l("bar.tray.pinned", Value::Null),
         l("bar.tray.hidden", json!([])),
-        i("bar.rounding", 20, 0, 512),
+        i("bar.rounding", 20, 0, 64),
         b("bar.clock.hour-12", true),
         b("bar.clock.date-mdy", true),
         e("bar.popup-anchor", "cell", &["cell", "pointer"]),
@@ -310,7 +310,10 @@ pub enum Msg {
     Format(String),
     Icon(String),
     Save,
+    /// First press asks, second press removes (the confirm row's Delete).
     Delete,
+    /// The confirm row's Keep: back out of a delete.
+    Keep,
     Close,
     /// After a new widget is saved: put it on the bar, or not.
     Offer(bool),
@@ -408,6 +411,7 @@ impl Bar {
                 .any(|c| c.x.animating() || c.extent.animating() || c.presence.animating())
             || self.chips.iter().any(|c| c.w.animating())
             || self.sweep.is_some()
+            || self.editor.as_ref().is_some_and(|e| e.check_at.is_some())
     }
 
     fn every(&mut self) -> impl Iterator<Item = &mut Animated> {
@@ -559,17 +563,44 @@ pub fn preview_env(app: &mut App) {
     }
     app.bar.picker = std::env::var_os("SETTINGS_PREVIEW_PICKER").is_some();
     match std::env::var("SETTINGS_PREVIEW_EDITOR").as_deref() {
-        Ok("new") => update(app, Msg::New),
+        Ok("new") => {
+            let _ = update(app, Msg::New);
+        }
+        // An argument longer than the panel is wide, and a delete waiting
+        // on its confirm.
+        Ok("long") => {
+            let w = Widget {
+                name: "probe".into(),
+                kind: eclipse_ipc::WidgetKind::Exec {
+                    argv: vec![
+                        "sh".into(),
+                        "-c".into(),
+                        "curl -s https://example.org/a/very/long/path/that/keeps/going?and=more&query=strings | head -n1"
+                            .into(),
+                    ],
+                    interval_ms: 5000,
+                },
+                icon: None,
+                on_click: None,
+                on_scroll_up: None,
+                on_scroll_down: None,
+            };
+            let mut e = Editor::from_widget(&w);
+            e.checked = true;
+            e.confirm_delete = true;
+            app.bar.editor = Some(e);
+            app.bar.selected = Some(format!("{}probe", bp::CUSTOM));
+        }
         // A block the compositor refuses: an interval under its floor.
         Ok("invalid") => {
-            update(app, Msg::New);
+            let _ = update(app, Msg::New);
             if let Some(ed) = app.bar.editor.as_mut() {
                 ed.name = "weather".into();
                 ed.argv_mut(Slot::Command).args =
                     vec!["curl".into(), "-s".into(), "wttr.in/?format=%t".into()];
                 ed.argv_mut(Slot::Click).args = vec!["xdg-open".into(), "https://wttr.in".into()];
             }
-            update(app, Msg::Interval("10".into()));
+            let _ = update(app, Msg::Interval("10".into()));
         }
         _ => {}
     }
@@ -608,6 +639,7 @@ fn check(app: &mut App) {
         return;
     };
     ed.refused = None;
+    ed.check_at = None;
     match verdict {
         Err(local) => {
             ed.errors = vec![local];
@@ -618,10 +650,61 @@ fn check(app: &mut App) {
     }
 }
 
+/// How long the fields must sit still before the dry run asks the
+/// compositor. Each ask re-parses the whole config; a keystroke is not worth
+/// one, a pause is.
+const CHECK_QUIET: Duration = Duration::from_millis(300);
+
 fn edit(app: &mut App, f: impl FnOnce(&mut Editor)) {
     if let Some(ed) = app.bar.editor.as_mut() {
         f(ed);
+        ed.dirty = true;
+        ed.confirm_delete = false;
+        ed.refused = None;
+        ed.check_at = Some(Instant::now() + CHECK_QUIET);
+    }
+}
+
+/// Run the dry run now if one is waiting. The ask is synchronous, so there
+/// is never more than one in flight.
+fn flush(app: &mut App, now: Instant, force: bool) {
+    let due = app
+        .bar
+        .editor
+        .as_ref()
+        .and_then(|e| e.check_at)
+        .is_some_and(|at| force || now >= at);
+    if due {
         check(app);
+    }
+}
+
+/// The config changed underneath (a reload, another client, our own write).
+/// An editor with nothing unsaved follows it; one with a draft keeps the
+/// draft, and its next save answers against what is there now.
+pub fn follow_config(app: &mut App) {
+    let Some(ed) = app.bar.editor.as_ref() else {
+        return;
+    };
+    if ed.dirty || ed.is_new() {
+        return;
+    }
+    let name = ed.original.clone();
+    let fresh = name
+        .as_deref()
+        .and_then(|n| app.bar.customs.iter().find(|w| w.name == n));
+    match fresh {
+        Some(w) => {
+            if ed.widget().ok().as_ref() != Some(w) {
+                let mut e = Editor::from_widget(w);
+                e.checked = true;
+                app.bar.editor = Some(e);
+            }
+        }
+        None => {
+            app.bar.editor = None;
+            app.bar.selected = None;
+        }
     }
 }
 
@@ -648,6 +731,9 @@ fn commit(app: &mut App, op: WidgetOp<'_>) -> bool {
 }
 
 fn save(app: &mut App) {
+    // A dry run still waiting on the pause answers first: saving must never
+    // outrun the verdict on the text it saves.
+    flush(app, Instant::now(), true);
     let Some(ed) = app.bar.editor.clone() else {
         return;
     };
@@ -692,7 +778,7 @@ fn save(app: &mut App) {
     }
 }
 
-pub fn update(app: &mut App, msg: Msg) {
+pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
     let now = Instant::now();
     match msg {
         Msg::Measured(s) => {
@@ -704,6 +790,7 @@ pub fn update(app: &mut App, msg: Msg) {
         }
         Msg::Frame(t) => {
             app.bar.tick(t);
+            flush(app, t, false);
             if let Some(at) = app.bar.sweep {
                 const SWEEP: Duration = Duration::from_millis(1500);
                 if t.saturating_duration_since(at) >= SWEEP {
@@ -762,7 +849,9 @@ pub fn update(app: &mut App, msg: Msg) {
             }
         }
         Msg::Shift(later) => {
-            let Some(id) = selected(app) else { return };
+            let Some(id) = selected(app) else {
+                return Task::none();
+            };
             let mut o = order(app);
             if let Some(at) = o.iter().position(|x| *x == id) {
                 let to = if later { at + 1 } else { at.wrapping_sub(1) };
@@ -773,7 +862,9 @@ pub fn update(app: &mut App, msg: Msg) {
             }
         }
         Msg::Remove => {
-            let Some(id) = selected(app) else { return };
+            let Some(id) = selected(app) else {
+                return Task::none();
+            };
             let mut imp = important(app);
             if imp.contains(&id) {
                 imp.retain(|x| *x != id);
@@ -793,7 +884,9 @@ pub fn update(app: &mut App, msg: Msg) {
             }
         }
         Msg::Important(on) => {
-            let Some(id) = selected(app) else { return };
+            let Some(id) = selected(app) else {
+                return Task::none();
+            };
             let mut imp = important(app);
             imp.retain(|x| *x != id);
             if on {
@@ -818,26 +911,47 @@ pub fn update(app: &mut App, msg: Msg) {
         Msg::Name(t) => edit(app, |e| e.name = t),
         Msg::Kind(k) => edit(app, |e| e.kind = k),
         Msg::ArgDraft(s, t) => edit(app, |e| e.argv_mut(s).draft = t),
-        Msg::ArgPush(s) => edit(app, |e| e.argv_mut(s).push()),
-        Msg::ArgRemove(s, i) => edit(app, |e| {
-            let a = e.argv_mut(s);
-            if i < a.args.len() {
-                a.args.remove(i);
-            }
-        }),
+        // A pushed chip lands before the input in the same row, and iced
+        // keys widget state by position: the input is rebuilt and loses the
+        // caret. Hand it back, so the next argument types straight in.
+        Msg::ArgPush(s) => {
+            edit(app, |e| e.argv_mut(s).push());
+            return iced::widget::operation::focus(s.input_id());
+        }
+        Msg::ArgRemove(s, i) => {
+            edit(app, |e| {
+                let a = e.argv_mut(s);
+                if i < a.args.len() {
+                    a.args.remove(i);
+                }
+            });
+            return iced::widget::operation::focus(s.input_id());
+        }
         Msg::Interval(t) => edit(app, |e| e.interval = t),
         Msg::Source(t) => edit(app, |e| e.source = t),
         Msg::Format(t) => edit(app, |e| e.format = t),
         Msg::Icon(t) => edit(app, |e| e.icon = t),
         Msg::Save => save(app),
         Msg::Delete => {
-            let Some(name) = app.bar.editor.as_ref().and_then(|e| e.original.clone()) else {
-                return;
+            let Some(ed) = app.bar.editor.as_mut() else {
+                return Task::none();
             };
+            let Some(name) = ed.original.clone() else {
+                return Task::none();
+            };
+            if !ed.confirm_delete {
+                ed.confirm_delete = true;
+                return Task::none();
+            }
             if commit(app, WidgetOp::Remove { name: &name }) {
                 app.reload();
                 app.bar.editor = None;
                 app.bar.selected = None;
+            }
+        }
+        Msg::Keep => {
+            if let Some(ed) = app.bar.editor.as_mut() {
+                ed.confirm_delete = false;
             }
         }
         Msg::Close => {
@@ -855,6 +969,7 @@ pub fn update(app: &mut App, msg: Msg) {
             app.bar.offer = None;
         }
     }
+    Task::none()
 }
 
 // ------------------------------------------------------------------ view
@@ -1508,7 +1623,9 @@ fn argv_row(ed: &Editor, slot: Slot) -> Element<'_, Message, Theme> {
         "argument, then Enter"
     };
     r = r.push(
-        field(hint, &a.draft, bad, move |t| Msg::ArgDraft(slot, t)).on_submit(bar_msg(Msg::ArgPush(slot))),
+        field(hint, &a.draft, bad, move |t| Msg::ArgDraft(slot, t))
+            .id(slot.input_id())
+            .on_submit(bar_msg(Msg::ArgPush(slot))),
     );
     column![
         list_row(
@@ -1585,6 +1702,8 @@ fn editor_view(ed: &Editor) -> Element<'_, Message, Theme> {
 
     let verdict = if let Some(r) = &ed.refused {
         r.clone()
+    } else if ed.check_at.is_some() {
+        "checking\u{2026}".to_owned()
     } else if !ed.checked {
         "unchanged".to_owned()
     } else if ed.errors.is_empty() {
@@ -1600,13 +1719,33 @@ fn editor_view(ed: &Editor) -> Element<'_, Message, Theme> {
         .push(Space::new().width(Length::Fill))
         .spacing(space::PILL_GAP)
         .align_y(Alignment::Center);
+    let delete = || {
+        button(text("Delete").font(font::UI).size(size::BODY_SMALL))
+            .padding([space::CHIP_Y, space::CHIP_X])
+            .style(theme::danger)
+            .on_press(bar_msg(Msg::Delete))
+    };
+    if ed.confirm_delete {
+        // The ask replaces the foot rather than floating over the pane: the
+        // question sits where the button was, answered in place.
+        let name = ed.original.as_deref().unwrap_or_default();
+        let ask = Row::new()
+            .push(
+                text(format!(
+                    "Delete \u{201c}{name}\u{201d}? Its block leaves abyss.kdl and the bar."
+                ))
+                .font(font::UI)
+                .size(size::BODY_SMALL),
+            )
+            .push(Space::new().width(Length::Fill))
+            .push(pill("Keep", false, bar_msg(Msg::Keep)))
+            .push(delete())
+            .spacing(space::PILL_GAP)
+            .align_y(Alignment::Center);
+        return col.push(hairline()).push(padded(ask)).into();
+    }
     if !ed.is_new() {
-        foot = foot.push(
-            button(text("Delete").font(font::UI).size(size::BODY_SMALL))
-                .padding([space::CHIP_Y, space::CHIP_X])
-                .style(theme::danger)
-                .on_press(bar_msg(Msg::Delete)),
-        );
+        foot = foot.push(delete());
     }
     foot = foot.push(pill(
         if ed.is_new() { "Create" } else { "Save" },

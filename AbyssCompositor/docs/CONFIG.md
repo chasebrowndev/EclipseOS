@@ -61,7 +61,7 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `bar.position` | top \| bottom | `"top"` | restart | Which edge of every output the taskbar is anchored to. Takes effect the next time the taskbar starts, not on a live reload. |
 | `bar.tray.pinned` | list of strings | _unset_ | live | StatusNotifierItem ids shown on the taskbar itself, in this order; an app goes by its own id. Unset means the taskbar's built-in order; an empty list pins nothing. Anything neither pinned nor hidden sits in the overflow drawer. The built-in applets are widgets now (`bar.widgets.order`): their old ids here (network, bluetooth, battery, volume) still load, with a deprecation warning, and `eclipse-ctl config migrate` moves them. |
 | `bar.tray.hidden` | list of strings | _empty_ | live | StatusNotifierItem ids never shown, on the taskbar or in its overflow drawer. Hidden wins over pinned when an id is in both. A built-in applet id here is deprecated the same way as in `pinned`: leave it out of `bar.widgets.order` instead. |
-| `bar.rounding` | int 0..512 | `20` | live | Corner radius in logical px for the taskbar's own blur backdrop. |
+| `bar.rounding` | int 0..64 | `20` | live | Corner radius in logical px for the taskbar's own blur backdrop. |
 | `bar.clock.hour-12` | bool | `#true` | live | Show the taskbar clock in 12-hour time with AM/PM; off is 24-hour. |
 | `bar.clock.date-mdy` | bool | `#true` | live | Write the taskbar date month/day/year; off is ISO year-month-day (2026-09-23). |
 | `bar.popup-anchor` | cell \| pointer | `"cell"` | live | Where taskbar popups open: under the cell that was clicked, or at the pointer. |

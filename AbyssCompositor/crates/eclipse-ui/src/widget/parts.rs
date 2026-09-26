@@ -1477,14 +1477,17 @@ pub fn glide_track<'a, Message: 'a>(position: f32, label: &str) -> Element<'a, M
 /// exactly one argument, passed as-is with no shell in between; a text field
 /// with spaces in it would be quietly re-split. It is a [`chip`]'s ground so
 /// arguments read as objects, and the remove mark is inside it so the object
-/// and its verb cannot drift apart.
+/// and its verb cannot drift apart. Past [`canvas::ARG_MAX_CHARS`](crate::tokens::canvas::ARG_MAX_CHARS)
+/// characters the text ends in an ellipsis; the argument itself is untouched.
 pub fn arg_chip<'a, Message: Clone + 'a>(arg: &str, on_remove: Message) -> Element<'a, Message, Theme> {
     use crate::tokens::canvas;
     // An empty argument is legal and invisible; show it as the quotes it is.
+    // A long one is cut short: the chip is a handle on the argument, not its
+    // full text, and one URL must not run the row off the panel.
     let shown = if arg.is_empty() {
         "\"\"".to_owned()
     } else {
-        arg.to_owned()
+        super::bar_widget::elide(arg, canvas::ARG_MAX_CHARS)
     };
     button(
         row![

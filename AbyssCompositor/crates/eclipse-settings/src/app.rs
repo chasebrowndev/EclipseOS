@@ -235,6 +235,19 @@ impl App {
         }
     }
 
+    /// Re-read the values after the config changed underneath, keeping
+    /// what the user has typed and not yet committed. [`App::reload`] is
+    /// for when the app itself changed something and wants a clean slate.
+    pub(crate) fn refresh(&mut self) {
+        if let Ok(rows) = self.conn.load_schema() {
+            self.rows = rows;
+            crate::taskbar::stand_in(&mut self.rows);
+        }
+        if let Ok(w) = self.conn.widgets() {
+            self.bar.customs = w;
+        }
+    }
+
     pub(crate) fn key(&self, path: &str) -> Option<&Key> {
         self.rows.iter().find(|r| r.path == path)
     }
@@ -517,6 +530,8 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 if let Some(radius) = app.conn.glass_radius() {
                     app.glass_radius = radius;
                 }
+                app.refresh();
+                crate::taskbar::follow_config(app);
             }
             _ => {}
         },
@@ -546,7 +561,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             }
         }
         Message::TrayLive(live) => app.tray_live = Some(live),
-        Message::Bar(m) => crate::taskbar::update(app, m),
+        Message::Bar(m) => return crate::taskbar::update(app, m),
     }
     Task::none()
 }

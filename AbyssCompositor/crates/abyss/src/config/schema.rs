@@ -364,7 +364,7 @@ pub const TABLE: &[Key] = &[
     ),
     k(
         "bar.rounding",
-        int(0, 512),
+        int(0, 64),
         Int(20),
         Abyss,
         Live,
