@@ -13,7 +13,12 @@
 //!
 //! Titles, artists, albums and art URLs are the human's media: nothing here
 //! logs them. Diagnostics name the player's bus name and nothing else.
+//!
+//! `https` cover art is fetched by spawning `curl` (the `curl` submodule)
+//! while remote art is on, the default; [`Handle::set_remote_art`] turns it
+//! off. `http` art is never fetched.
 
+mod curl;
 mod model;
 
 use std::collections::HashMap;
@@ -57,9 +62,9 @@ pub enum Playback {
     Stopped,
 }
 
-/// Cover art, read from a `file://` `mpris:artUrl`. An `http(s)` URL is not
-/// fetched: the service makes no network requests on a player's say-so, and
-/// ships no HTTP client to make them with.
+/// Cover art, read from a `file://` `mpris:artUrl`, or fetched from an
+/// `https://` one via `curl` while remote art is on. `http://` is never
+/// fetched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Art {
     /// Stable identity for the image (the resolved URL), so the GUI can cache
@@ -73,6 +78,7 @@ enum Command {
     Previous,
     PlayPause,
     Next,
+    SetRemoteArt(bool),
 }
 
 /// The GUI's end of the watcher.
@@ -92,6 +98,13 @@ impl Handle {
         Actions {
             commands: self.commands.clone(),
         }
+    }
+
+    /// Whether `https` cover art is fetched (`bar.widgets.now-playing.remote-art`).
+    /// On by default. Off drops fetched covers and re-sends the current track
+    /// without its remote art; on again fetches the current track's.
+    pub fn set_remote_art(&self, on: bool) {
+        let _ = self.commands.send(Command::SetRemoteArt(on));
     }
 }
 
@@ -119,10 +132,13 @@ impl Actions {
 /// Start watching. The thread lives until the [`Handle`] and every
 /// [`Actions`] cloned from it are dropped.
 pub fn spawn() -> Handle {
-    spawn_with(session)
+    spawn_with(session, Arc::new(read_art))
 }
 
-fn spawn_with<C>(connect: C) -> Handle
+/// Reads one cover, by URL. Injectable so tests never touch the network.
+type Fetch = Arc<dyn Fn(&str) -> Option<Arc<[u8]>> + Send + Sync>;
+
+fn spawn_with<C>(connect: C, fetch: Fetch) -> Handle
 where
     C: Fn() -> zbus::Result<Connection> + Send + 'static,
 {
@@ -130,8 +146,18 @@ where
     let (commands, commands_rx) = mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("eclipse-media".into())
-        .spawn(move || run(connect, updates_tx, commands_rx));
+        .spawn(move || run(connect, fetch, updates_tx, commands_rx));
     Handle { updates, commands }
+}
+
+/// The real reader: `https` through `curl`, `file` from disk. Blocking.
+fn read_art(url: &str) -> Option<Arc<[u8]>> {
+    if model::is_remote(url) {
+        return curl::fetch(url)
+            .map_err(|failure| debug(format_args!("remote art: {}", failure.word())))
+            .ok();
+    }
+    model::read_art(url)
 }
 
 const DBUS: &str = "org.freedesktop.DBus";
@@ -182,9 +208,11 @@ struct Service {
     players: Players,
     art: ArtCache,
     dedupe: Dedupe,
+    remote_art: bool,
+    fetch: Fetch,
 }
 
-fn run<C>(connect: C, updates: Sender<Update>, commands: Receiver<Command>)
+fn run<C>(connect: C, fetch: Fetch, updates: Sender<Update>, commands: Receiver<Command>)
 where
     C: Fn() -> zbus::Result<Connection>,
 {
@@ -204,15 +232,7 @@ where
         return;
     }
 
-    let mut service = Service {
-        tx,
-        updates,
-        connection: None,
-        generation: 0,
-        players: Players::default(),
-        art: ArtCache::default(),
-        dedupe: Dedupe::default(),
-    };
+    let mut service = Service::new(tx, updates, fetch);
     let mut retry_at = Instant::now();
     loop {
         if service.connection.is_none() && Instant::now() >= retry_at {
@@ -241,15 +261,46 @@ where
                 retry_at = Instant::now() + RETRY;
             }
             Ok(Msg::Signal(..) | Msg::BusGone(_)) => {} // A previous connection's.
-            Ok(Msg::Art(url, bytes)) => {
-                service.art.insert(url, bytes);
-                service.publish();
-            }
+            Ok(Msg::Art(url, bytes)) => service.art_landed(url, bytes),
         }
     }
 }
 
 impl Service {
+    fn new(tx: Sender<Msg>, updates: Sender<Update>, fetch: Fetch) -> Self {
+        Service {
+            tx,
+            updates,
+            connection: None,
+            generation: 0,
+            players: Players::default(),
+            art: ArtCache::default(),
+            dedupe: Dedupe::default(),
+            remote_art: true,
+            fetch,
+        }
+    }
+
+    /// A cover read finished. Keyed by URL, so a cover landing after the
+    /// track changed is cached but never shown on the new track.
+    fn art_landed(&mut self, url: String, bytes: Option<Arc<[u8]>>) {
+        self.art.insert(url, bytes, self.remote_art);
+        self.publish();
+    }
+
+    fn set_remote_art(&mut self, on: bool) {
+        if on == self.remote_art {
+            return;
+        }
+        self.remote_art = on;
+        if !on {
+            self.art.drop_remote();
+        }
+        // Off: the current track goes out again without remote art. On: its
+        // art is looked up afresh, and fetched.
+        self.publish();
+    }
+
     /// Subscribe first, then list, so a player that appears in between is
     /// heard rather than missed.
     fn attach(&mut self, connection: Connection) -> zbus::Result<()> {
@@ -359,6 +410,9 @@ impl Service {
     }
 
     fn command(&mut self, command: Command) {
+        if let Command::SetRemoteArt(on) = command {
+            return self.set_remote_art(on);
+        }
         let (Some(connection), Some(name)) = (&self.connection, self.players.active()) else {
             return;
         };
@@ -366,6 +420,7 @@ impl Service {
             Command::Previous => "Previous",
             Command::PlayPause => "PlayPause",
             Command::Next => "Next",
+            Command::SetRemoteArt(_) => return,
         };
         if let Err(error) = connection.call_method(Some(name), MPRIS_PATH, Some(PLAYER), method, &()) {
             // The error text is the player's; it stays out of the log.
@@ -384,18 +439,21 @@ impl Service {
     fn publish(&mut self) {
         let tx = &self.tx;
         let art_cache = &mut self.art;
+        let remote = self.remote_art;
+        let fetch = &self.fetch;
         let shown = self.players.choose().map(|(name, player)| {
             let art = match player.meta.art_url.as_deref() {
                 None => None,
-                Some(url) => match art_cache.lookup(url) {
+                Some(url) => match art_cache.lookup(url, remote) {
                     ArtLookup::Ready(art) => Some(art),
                     ArtLookup::Read => {
                         let url = url.to_owned();
                         let tx = tx.clone();
+                        let fetch = fetch.clone();
                         let spawned = std::thread::Builder::new()
                             .name("eclipse-media-art".into())
                             .spawn(move || {
-                                let bytes = model::read_art(&url);
+                                let bytes = fetch(&url);
                                 let _ = tx.send(Msg::Art(url, bytes));
                             });
                         if spawned.is_err() {
@@ -434,12 +492,179 @@ mod tests {
     /// the handle ends the thread. Never touches the human's session bus.
     #[test]
     fn without_a_bus_the_feed_is_quiet_and_actions_are_harmless() {
-        let h = spawn_with(|| Err(zbus::Error::Failure("no bus in tests".into())));
+        let h = spawn_with(
+            || Err(zbus::Error::Failure("no bus in tests".into())),
+            Arc::new(|_: &str| None),
+        );
+        h.set_remote_art(false);
+        h.set_remote_art(true);
         let a = h.actions();
         a.clone().play_pause();
         a.previous();
         a.next();
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(h.try_recv(), None);
+    }
+
+    use zbus::zvariant::Value;
+
+    const NAME: &str = "org.mpris.MediaPlayer2.spotify";
+
+    /// A service with no bus. Fetches record their URL and return `bytes`;
+    /// their results queue on the returned receiver until a test delivers
+    /// them, as the run loop would.
+    fn service(bytes: Option<&'static [u8]>) -> (Service, Receiver<Msg>, Receiver<Update>, Receiver<String>) {
+        let (tx, rx) = mpsc::channel();
+        let (updates_tx, updates) = mpsc::channel();
+        let (seen_tx, seen) = mpsc::channel();
+        let seen_tx = std::sync::Mutex::new(seen_tx);
+        let fetch: Fetch = Arc::new(move |url: &str| {
+            let _ = seen_tx.lock().unwrap().send(url.to_owned());
+            bytes.map(Arc::from)
+        });
+        let mut s = Service::new(tx, updates_tx, fetch);
+        s.players.upsert(NAME, ":1.9");
+        (s, rx, updates, seen)
+    }
+
+    fn track(s: &mut Service, title: &str, art: &str) {
+        let meta: HashMap<String, Value<'static>> = [
+            ("xesam:title".to_owned(), Value::from(title.to_owned())),
+            ("mpris:artUrl".to_owned(), Value::from(art.to_owned())),
+        ]
+        .into_iter()
+        .collect();
+        let props: HashMap<String, OwnedValue> = [
+            ("PlaybackStatus", Value::from("Playing")),
+            ("Metadata", Value::from(meta)),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), OwnedValue::try_from(v).unwrap()))
+        .collect();
+        s.players.apply(NAME, &props);
+        s.publish();
+    }
+
+    /// Deliver the next finished read to the service.
+    fn land(s: &mut Service, rx: &Receiver<Msg>) -> String {
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Msg::Art(url, bytes)) => {
+                s.art_landed(url.clone(), bytes);
+                url
+            }
+            _ => panic!("expected a finished art read"),
+        }
+    }
+
+    fn shown(updates: &Receiver<Update>) -> Vec<(String, Option<String>)> {
+        updates
+            .try_iter()
+            .map(|Update::Player(np)| {
+                let np = np.expect("a track");
+                (np.title, np.art.map(|a| a.key))
+            })
+            .collect()
+    }
+
+    const A: &str = "https://i.scdn.co/image/a";
+    const B: &str = "https://i.scdn.co/image/b";
+
+    #[test]
+    fn https_art_is_fetched_and_http_is_refused() {
+        let (mut s, rx, updates, seen) = service(Some(b"jpg"));
+        track(&mut s, "One", "http://i.example/a");
+        track(&mut s, "Two", A);
+        assert_eq!(land(&mut s, &rx), A);
+        assert_eq!(
+            seen.try_iter().collect::<Vec<_>>(),
+            [A],
+            "http never reached the fetcher"
+        );
+        assert_eq!(
+            shown(&updates),
+            [
+                ("One".into(), None),
+                ("Two".into(), None),
+                ("Two".into(), Some(A.into()))
+            ]
+        );
+    }
+
+    #[test]
+    fn switching_off_clears_remote_art_and_on_refetches() {
+        let (mut s, rx, updates, seen) = service(Some(b"jpg"));
+        track(&mut s, "Two", A);
+        land(&mut s, &rx);
+        let _ = shown(&updates);
+        s.command(Command::SetRemoteArt(false));
+        assert_eq!(shown(&updates), [("Two".into(), None)], "re-emitted without art");
+        s.command(Command::SetRemoteArt(false));
+        assert!(shown(&updates).is_empty(), "no-op");
+        s.command(Command::SetRemoteArt(true));
+        assert_eq!(land(&mut s, &rx), A, "re-fetched");
+        assert_eq!(shown(&updates), [("Two".into(), Some(A.into()))]);
+        assert_eq!(seen.try_iter().count(), 2);
+    }
+
+    #[test]
+    fn while_off_https_art_is_not_fetched() {
+        let (mut s, rx, updates, seen) = service(Some(b"jpg"));
+        s.command(Command::SetRemoteArt(false));
+        track(&mut s, "Two", A);
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        assert_eq!(seen.try_iter().count(), 0);
+        assert_eq!(shown(&updates), [("Two".into(), None)]);
+    }
+
+    #[test]
+    fn a_failed_fetch_is_cached_not_retried() {
+        let (mut s, rx, updates, seen) = service(None);
+        track(&mut s, "Two", A);
+        land(&mut s, &rx);
+        track(&mut s, "Two again", A);
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        assert_eq!(seen.try_iter().count(), 1);
+        assert!(shown(&updates).iter().all(|(_, art)| art.is_none()));
+    }
+
+    #[test]
+    fn old_art_landing_after_a_track_change_is_not_shown() {
+        let (mut s, rx, updates, _seen) = service(Some(b"jpg"));
+        track(&mut s, "A", A);
+        track(&mut s, "B", B);
+        assert_eq!(shown(&updates), [("A".into(), None), ("B".into(), None)]);
+        // Both reads are in flight; deliver A's while B is shown. The reader
+        // threads may finish in either order, so pick A's out explicitly.
+        let mut results: Vec<(String, Option<Arc<[u8]>>)> = (0..2)
+            .map(|_| match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(Msg::Art(url, bytes)) => (url, bytes),
+                _ => panic!("expected a finished art read"),
+            })
+            .collect();
+        results.sort_by(|x, y| x.0.cmp(&y.0));
+        let [(url_a, bytes_a), (url_b, bytes_b)]: [_; 2] = results.try_into().unwrap();
+        s.art_landed(url_a, bytes_a);
+        assert!(shown(&updates).is_empty(), "A's art never shown on B");
+        s.art_landed(url_b, bytes_b);
+        assert_eq!(shown(&updates), [("B".into(), Some(B.into()))]);
+    }
+
+    #[test]
+    fn a_fetch_in_flight_across_a_toggle_is_not_doubled_or_shown_while_off() {
+        let (mut s, rx, updates, seen) = service(Some(b"jpg"));
+        track(&mut s, "Two", A);
+        s.command(Command::SetRemoteArt(false));
+        s.command(Command::SetRemoteArt(true));
+        assert_eq!(land(&mut s, &rx), A);
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err(), "one fetch");
+        assert_eq!(seen.try_iter().count(), 1);
+        assert_eq!(shown(&updates).last(), Some(&("Two".into(), Some(A.into()))));
+
+        // Off while in flight: the result is dropped, not shown or cached.
+        let (mut s, rx, updates, _) = service(Some(b"jpg"));
+        track(&mut s, "Two", A);
+        s.command(Command::SetRemoteArt(false));
+        land(&mut s, &rx);
+        assert!(shown(&updates).iter().all(|(_, art)| art.is_none()));
     }
 }
