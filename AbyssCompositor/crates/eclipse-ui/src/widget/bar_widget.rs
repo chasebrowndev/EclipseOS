@@ -334,18 +334,60 @@ impl<'a, Message: Clone + 'a> From<DragBar<'a, Message>> for Element<'a, Message
 
 // ------------------------------------------------------------------ clip
 
-/// A window onto a child laid out at its natural width, anchored at the right.
+/// Which edge of a clipped child stays put as the window onto it narrows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClipEdge {
+    /// The child's left edge is pinned: a label read from the left keeps its
+    /// first word while the cell narrows over its tail. Task chips.
+    #[default]
+    Left,
+    /// The child's right edge is pinned: a widget's body slides out from
+    /// under its grip. Widget shells.
+    Right,
+}
+
+/// A window onto a child laid out at its natural width, optionally on a glass
+/// cell ground.
 ///
 /// A widget because iced's `container` resolves a fixed-width child against
 /// its own maximum: shrink the container and the child is laid out narrower,
 /// which is text reflowing on every frame of a width animation — the jitter
 /// ADR 0065's motion exists to avoid. This lays the child out once at
-/// `natural` and draws only the rightmost `visible` of it, clipped by a layer.
+/// `natural` and draws only `visible` of it, clipped by a layer, pinned at
+/// `edge`.
+///
+/// With a `ground` it is also the cell: the chip ground of
+/// [`crate::theme::bar_cell`] drawn at the *visible* bounds, so the glass and
+/// its hairline animate with the width while the content stays whole and
+/// clipped. It has to be drawn here rather than by a styled container around
+/// it: the ground reads the pointer (hover and press lift it, as they do a
+/// chip) and a container has no pointer state.
 struct Clip<'a, Message> {
     content: Element<'a, Message, Theme>,
     natural: f32,
     visible: f32,
     height: f32,
+    edge: ClipEdge,
+    /// `Some(accent)` draws the bar cell ground.
+    ground: Option<bool>,
+}
+
+#[derive(Default)]
+struct CellState {
+    pressed: bool,
+    finger: Option<touch::Finger>,
+    /// What was last drawn, so a change can ask for a frame.
+    drawn: Option<button::Status>,
+}
+
+impl CellState {
+    fn status(&self, hovered: bool) -> button::Status {
+        match (self.pressed, hovered) {
+            (true, _) => button::Status::Pressed,
+            (false, true) => button::Status::Hovered,
+            (false, false) => button::Status::Active,
+        }
+    }
 }
 
 impl<'a, Message> Clip<'a, Message> {
@@ -356,9 +398,24 @@ impl<'a, Message> Clip<'a, Message> {
             cursor.levitate()
         }
     }
+
+    fn offset(&self) -> f32 {
+        match self.edge {
+            ClipEdge::Left => 0.0,
+            ClipEdge::Right => self.visible - self.natural,
+        }
+    }
 }
 
 impl<Message> Widget<Message, Theme, iced::Renderer> for Clip<'_, Message> {
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<CellState>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(CellState::default())
+    }
+
     fn size(&self) -> Size<Length> {
         Size::new(Length::Fixed(self.visible), Length::Fixed(self.height))
     }
@@ -386,7 +443,7 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Clip<'_, Message> {
                 renderer,
                 &layout::Limits::new(natural, natural),
             )
-            .move_to(Point::new(self.visible - self.natural, 0.0));
+            .move_to(Point::new(self.offset(), 0.0));
         layout::Node::with_children(Size::new(self.visible, self.height), vec![child])
     }
 
@@ -416,11 +473,42 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Clip<'_, Message> {
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        let bounds = layout.bounds();
+        if self.ground.is_some() {
+            // Observed, never captured: the press belongs to whatever inside
+            // the cell it landed on; the ground only lights under it.
+            let st = tree.state.downcast_mut::<CellState>();
+            match event {
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) if cursor.is_over(bounds) => {
+                    st.pressed = true;
+                }
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if st.finger.is_none() => {
+                    st.pressed = false;
+                }
+                Event::Touch(touch::Event::FingerPressed { id, position }) if bounds.contains(*position) => {
+                    st.pressed = true;
+                    st.finger = Some(*id);
+                }
+                Event::Touch(touch::Event::FingerLifted { id, .. } | touch::Event::FingerLost { id, .. })
+                    if st.finger == Some(*id) =>
+                {
+                    st.pressed = false;
+                    st.finger = None;
+                }
+                _ => {}
+            }
+            let now = st.status(cursor.is_over(bounds));
+            if let Event::Window(window::Event::RedrawRequested(_)) = event {
+                st.drawn = Some(now);
+            } else if st.drawn != Some(now) {
+                shell.request_redraw();
+            }
+        }
         // A touch that lands on the clipped-away part of the child is not a
         // touch on the child: the pointer path gets this from the levitated
         // cursor, a finger carries its own position and needs saying.
         if let Event::Touch(touch::Event::FingerPressed { position, .. }) = event {
-            if !layout.bounds().contains(*position) {
+            if !bounds.contains(*position) {
                 return;
             }
         }
@@ -464,9 +552,30 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Clip<'_, Message> {
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let Some(clip) = layout.bounds().intersection(viewport) else {
+        let bounds = layout.bounds();
+        let Some(clip) = bounds.intersection(viewport) else {
             return;
         };
+        if let (Some(accent), true) = (self.ground, bounds.width >= 1.0) {
+            let st = tree.state.downcast_ref::<CellState>();
+            let look = crate::theme::bar_cell(accent)(theme, st.status(cursor.is_over(bounds)));
+            // A cell narrower than its corners is a capsule, not a pinched
+            // square: the radius never exceeds half the short side.
+            let r = bar::RADIUS_CELL.min(bounds.width / 2.0).min(bounds.height / 2.0);
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds,
+                    border: Border {
+                        color: look.border.color,
+                        width: look.border.width,
+                        radius: r.into(),
+                    },
+                    ..renderer::Quad::default()
+                },
+                look.background
+                    .unwrap_or(iced::Background::Color(Color::TRANSPARENT)),
+            );
+        }
         let cursor = self.inner_cursor(layout, cursor);
         renderer.with_layer(clip, |r| {
             self.content.as_widget().draw(
@@ -582,18 +691,20 @@ impl ShellSpan {
     }
 }
 
-/// A bar widget: `[grip][revealed][core]` straight on the bar sheet.
+/// A bar widget: `[grip][revealed][core]` on one glass cell.
 ///
-/// No ground and no outline of its own: the bar sheet already draws the one
-/// hairline, and a lift per widget turns the bar into a row of grey boxes.
-/// The grip marks where one widget ends and the next begins.
+/// The cell is the task chip's own ground ([`crate::theme::bar_cell`]): a
+/// hairline over the bar's glass, lifted by the pointer. A widget beside a
+/// window chip reads as the same family of object, and a compressed widget
+/// is a slim glass chip holding its grip (owner direction, ADR 0065).
 ///
 /// A widget and not a styled row because the shell is the animation: its
-/// width is `span.width_at(frame)`, and every part inside it is laid out once
-/// at its natural width and *clipped*, never squashed, as that width moves.
-/// The body is anchored to the right edge, so opening the core slides it out
-/// from under the grip and revealing slides the extra section out after it —
-/// the grip is a drawer handle, and the drawer comes out where you pull.
+/// width is `span.width_at(frame)`, the ground and its hairline are drawn at
+/// that width, and every part inside is laid out once at its natural width
+/// and *clipped*, never squashed, as the width moves. The body is anchored to
+/// the right edge, so opening the core slides it out from under the grip and
+/// revealing slides the extra section out after it — the grip is a drawer
+/// handle, and the drawer comes out where you pull.
 ///
 /// `core` and `revealed` are laid out at exactly `span.core` and
 /// `span.revealed`; text in them should not wrap.
@@ -628,16 +739,40 @@ pub fn widget_shell<'a, Message: 'a>(
             natural: span.natural_body(),
             visible: body_w,
             height: bar::WIDGET_H,
+            edge: ClipEdge::Right,
+            ground: None,
         }),
     ];
     let natural = bar::GRIP_W + body_w;
     let visible = span.width_at(frame);
 
+    glass_cell(inner, natural, visible, false, ClipEdge::Right)
+}
+
+/// A bare glass cell: `content` laid out at `natural` width, shown `visible`
+/// wide on the bar cell ground, pinned at `edge`. `accent` is a window that
+/// is up.
+///
+/// What [`widget_shell`] draws its ground with, exposed for the cells that
+/// are not widgets — the window chips — and for a widget that has nothing to
+/// drag (an important one with no revealed section), so every cell on the
+/// bar animates its width the same way: ground and hairline at the moving
+/// width, content whole and clipped.
+pub fn glass_cell<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    natural: f32,
+    visible: f32,
+    accent: bool,
+    edge: ClipEdge,
+) -> Element<'a, Message, Theme> {
+    let visible = visible.max(0.0);
     container(Element::new(Clip {
-        content: inner.into(),
+        content: content.into(),
         natural,
         visible,
         height: bar::WIDGET_H,
+        edge,
+        ground: Some(accent),
     }))
     .width(Length::Fixed(visible))
     .height(Length::Fixed(bar::WIDGET_H))

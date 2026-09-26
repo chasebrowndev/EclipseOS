@@ -6,6 +6,8 @@
 //! events carry enough to reconstruct the state, but a refetch is one round
 //! trip on a socket we already hold and keeps the model single-sourced.
 
+use std::time::Instant;
+
 use iced::{Subscription, Task};
 use iced_layershell::actions::IcedNewPopupSettings;
 use iced_layershell::reexport::PopupGravity;
@@ -16,7 +18,10 @@ use eclipse_ui::tokens::{self, bar};
 
 use crate::conn::{BarConfig, BarPosition, Conn};
 use crate::icons::Icons;
+use crate::layout::{self, Pin};
 use crate::model::Snapshot;
+use crate::motion::{settle, Drag};
+use crate::widgets::{self, GripEv};
 
 /// The launcher binary the launcher button starts. The same name the
 /// compositor's default keybind spawns (`abyss` config `Action::Spawn`), so
@@ -40,7 +45,7 @@ const BACKPRESSURE: std::time::Duration = std::time::Duration::from_millis(8);
 /// many lines there are, and a view that could disagree with the height the
 /// popup was created at would clip its own last row. `Mute` in particular is
 /// conditional — it is absent entirely for a window with no playback stream —
-/// and asking `pactl` again from the draw path would be a frame hitch.
+/// and asking the audio service again from the draw path would be a frame hitch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {
     Close,
@@ -173,6 +178,16 @@ pub enum Message {
     TrayMenuClick(String, i32),
     /// The wifi, bluetooth or tray service said something.
     Radio(crate::radio::Feed),
+    /// A widget's service reported, or the human used a widget (ADR 0065).
+    Widget(widgets::Feed),
+    /// The playback streams, which the per-window mute reads.
+    Streams(Vec<eclipse_services::audio::Stream>),
+    /// A widget's grip, by widget key.
+    Grip(String, GripEv),
+    /// One frame of the bar's motion. Only sent while something moves.
+    Frame,
+    /// Debug previews: the next step of `HYPERION_PREVIEW_SCRIPT`.
+    Script(u32),
 }
 
 pub struct App {
@@ -255,6 +270,24 @@ pub struct App {
     ///
     /// [`bar_radius`]: App::bar_radius
     pub menu_radius: f32,
+    /// `bar.widgets.*`, `bar.motion.*` and the `widget` blocks, re-read on
+    /// every successful config reload.
+    pub widget_cfg: widgets::Config,
+    /// What the widgets' services last said.
+    pub widgets: widgets::State,
+    /// The solver's widget inputs as of the last [`relayout`], one per
+    /// `widget_cfg.order` entry: what a cell's shell is drawn against.
+    pub widget_inputs: Vec<layout::WidgetIn>,
+    /// Where everything is going.
+    pub layout: layout::Layout,
+    /// How far everything has got there.
+    pub motion: crate::motion::Bar,
+    /// The audio service's playback streams, for the per-window mute.
+    pub streams: Vec<eclipse_services::audio::Stream>,
+    /// Debug previews only: when a widget fixture started. A fixture bar
+    /// neither refetches nor starts services — the fixture stands in for
+    /// both.
+    pub fixture: Option<Instant>,
 }
 
 /// A popup a debug preview opens by itself, since nothing can click.
@@ -420,6 +453,9 @@ impl App {
             .find(|(_, name)| *name == output_name)
             .map(|(id, _)| *id)
             .unwrap_or(0);
+        let widget_cfg = conn.widgets_config();
+        let mut motion = crate::motion::Bar::default();
+        motion.set_motion(widget_cfg.motion);
         let mut app = App {
             conn,
             snapshot,
@@ -447,10 +483,20 @@ impl App {
             preview: None,
             bar_radius,
             menu_radius,
+            widget_cfg,
+            widgets: widgets::State::default(),
+            widget_inputs: Vec::new(),
+            layout: layout::Layout::default(),
+            motion,
+            streams: Vec::new(),
+            fixture: None,
         };
         app.icons.warm(&app.snapshot.windows);
         #[cfg(debug_assertions)]
         preview(&mut app);
+        if app.fixture.is_none() {
+            crate::services::configure(&app.widget_cfg);
+        }
         app
     }
 }
@@ -536,6 +582,10 @@ fn preview(app: &mut App) {
             "org.syncthing".to_owned(),
             crate::radio::preview_menu(),
         )),
+        "widgets" | "widgets-idle" => {
+            crate::preview::widgets(app, which == "widgets-idle");
+            None
+        }
         _ => None,
     };
     if which == "bar" {
@@ -573,11 +623,11 @@ pub(crate) fn send(sender: &mut iced::futures::channel::mpsc::Sender<Message>, m
     }
 }
 
-/// Sleep until the compositor has something to say, or `POLL` passes. Without
-/// a connection there is nothing to wake on, so it is a plain sleep.
-fn wait(client: Option<&eclipse_ipc::Client>) {
+/// Sleep until the compositor has something to say, or `timeout` passes.
+/// Without a connection there is nothing to wake on, so it is a plain sleep.
+fn wait(client: Option<&eclipse_ipc::Client>, timeout: std::time::Duration) {
     let Some(c) = client else {
-        std::thread::sleep(POLL);
+        std::thread::sleep(timeout);
         return;
     };
     let mut fd = libc::pollfd {
@@ -586,14 +636,25 @@ fn wait(client: Option<&eclipse_ipc::Client>) {
         revents: 0,
     };
     // SAFETY: one valid pollfd on the stack, count 1; the fd outlives the call.
-    let n = unsafe { libc::poll(&mut fd, 1, POLL.as_millis() as libc::c_int) };
+    let n = unsafe { libc::poll(&mut fd, 1, timeout.as_millis() as libc::c_int) };
     if n < 0 {
         // EINTR or worse: do not spin.
         std::thread::sleep(BACKPRESSURE);
     }
 }
 
+/// Handle one message, then re-solve the bar against whatever it changed.
+///
+/// Every message ends in [`relayout`]: the solver is pure and cheap, and
+/// retargeting an animation at the target it already has is a no-op, so one
+/// unconditional pass is simpler than knowing which messages move a cell.
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
+    let task = step(app, message);
+    relayout(app, Instant::now());
+    task
+}
+
+fn step(app: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::Refresh => {}
         Message::Switch(index) => app.conn.switch_workspace(index),
@@ -615,10 +676,13 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Open(drawer) => return open_drawer(app, drawer, true),
         Message::Mute(handle, mute) => {
             let dismiss = dismiss(app);
-            #[cfg(not(test))]
-            crate::audio::set_mute(window(app, handle).and_then(|w| w.pid), mute);
-            #[cfg(test)]
-            let _ = (handle, mute);
+            // A browser plays from a child process, so every stream the
+            // window's process tree owns is muted, not only its own pid's.
+            if let Some(pid) = window(app, handle).and_then(|w| w.pid) {
+                for stream in crate::audio::streams_for(&app.streams, pid) {
+                    crate::services::set_app_muted(stream.pid, mute);
+                }
+            }
             return dismiss;
         }
         Message::NewInstance(handle) => {
@@ -673,6 +737,8 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         // The system bus is not the compositor: fold the reading in and stop,
         // rather than falling through to a refetch the socket never asked for.
+        // A fixture's readings are the thing being screenshotted.
+        Message::Status(_) if app.fixture.is_some() => return Task::none(),
         Message::Status(update) => {
             match update {
                 Update::Network(network) => app.network = network,
@@ -718,6 +784,11 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             if let Some(radius) = app.conn.glass_radius("decoration.rounding") {
                 app.menu_radius = radius;
+            }
+            if app.fixture.is_none() {
+                app.widget_cfg = app.conn.widgets_config();
+                app.motion.set_motion(app.widget_cfg.motion);
+                crate::services::configure(&app.widget_cfg);
             }
             // A reload can turn folding off while this bar is folded, so the
             // decision is re-run rather than left until the next event.
@@ -798,6 +869,36 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             return dismiss;
         }
         Message::Radio(feed) => return radio(app, feed),
+        Message::Widget(feed) => {
+            if let Some(action) = widgets::update(&mut app.widgets, feed) {
+                if app.fixture.is_none() {
+                    crate::services::act(action);
+                }
+            }
+            return Task::none();
+        }
+        Message::Streams(streams) => {
+            app.streams = streams;
+            return Task::none();
+        }
+        Message::Grip(key, ev) => {
+            grip(app, key, ev, Instant::now());
+            return Task::none();
+        }
+        Message::Frame => {
+            let now = Instant::now();
+            app.motion.tick(now);
+            #[cfg(debug_assertions)]
+            crate::preview::frame(app, now);
+            return Task::none();
+        }
+        Message::Script(n) => {
+            #[cfg(debug_assertions)]
+            crate::preview::step(app, n);
+            #[cfg(not(debug_assertions))]
+            let _ = n;
+            return Task::none();
+        }
         // `to_layer_message` injects the layer-control variants. The bar never
         // sends one — it is anchored for its whole life — but the match must
         // still be total.
@@ -1017,8 +1118,155 @@ fn advance(app: &mut App, now: std::time::Instant) {
 
 /// Re-read the three lists and re-resolve any icon we have not seen.
 fn refetch(app: &mut App) {
+    if app.fixture.is_some() {
+        return;
+    }
     app.snapshot = app.conn.snapshot();
     app.icons.warm(&app.snapshot.windows);
+}
+
+/// Re-solve the bar and point the animations at the answer.
+///
+/// The widgets' inputs are rebuilt from their state, a pin whose widget has
+/// changed category is dropped (ADR 0065), and a grip under the finger is
+/// taken at exactly the width the finger asks for. Nothing is placed until
+/// the surface has a width: the first real layout must land, not grow in
+/// from a zero-width bar.
+pub fn relayout(app: &mut App, now: Instant) {
+    let order = app.widget_cfg.order.clone();
+    let mut inputs = Vec::with_capacity(order.len());
+    for id in &order {
+        let key = id.key();
+        let category = widgets::category(app, id);
+        if app.motion.pins.get(&key).is_some_and(|(_, c)| *c != category) {
+            app.motion.pins.remove(&key);
+        }
+        let spans = widgets::spans(app, id);
+        inputs.push(layout::WidgetIn {
+            core: spans.core,
+            revealed: spans.revealed,
+            important: app.widget_cfg.important.contains(id),
+            present: spans.present,
+            pin: app.motion.pins.get(&key).map(|(pin, _)| *pin),
+            live: app.motion.drag.as_ref().filter(|d| d.key == key).map(Drag::live),
+        });
+    }
+    app.widget_inputs = inputs;
+    if app.width <= 0.0 {
+        return;
+    }
+
+    let windows: Vec<crate::model::Window> = crate::view::strip_windows(app).into_iter().cloned().collect();
+    let chips: Vec<layout::ChipIn> = windows
+        .iter()
+        .map(|w| layout::ChipIn {
+            whole: layout::whole_width(w.label()),
+            minimized: w.minimized,
+        })
+        .collect();
+    app.layout = layout::solve(layout::Input {
+        width: app.width,
+        lead: crate::view::strip_left(app),
+        chips: &chips,
+        widgets: &app.widget_inputs,
+    });
+
+    let workspace = crate::view::strip_workspace(app);
+    let snap = app.motion.snaps(workspace);
+    let live: Vec<&crate::model::Window> = windows.iter().collect();
+    app.motion
+        .retarget_chips(&live, &app.layout.chips, workspace, now);
+    let targets: Vec<(String, bool, layout::WidgetOut)> = order
+        .iter()
+        .zip(&app.widget_inputs)
+        .zip(&app.layout.widgets)
+        .map(|((id, input), out)| (id.key(), input.present, *out))
+        .collect();
+    app.motion.retarget_widgets(&targets, snap, now);
+
+    // The monitor tap costs a capture stream, so it runs only while its
+    // bars can be seen: playing, visualizer on, and not compressed away.
+    if app.fixture.is_none() {
+        let np = widgets::WidgetId::NowPlaying;
+        let shown = app
+            .motion
+            .widgets
+            .get(&np.key())
+            .is_some_and(|w| w.extent.target() > 0.0);
+        let tap = app.widget_cfg.now_playing.visualizer
+            && app.widget_cfg.order.contains(&np)
+            && app.widgets.now_playing.playing()
+            && shown;
+        crate::services::set_tap(tap);
+    }
+}
+
+/// A grip gesture.
+///
+/// Press starts a drag from wherever the body is; drag follows the finger
+/// 1:1 (the solver takes the live width exactly, so the chips re-ladder
+/// under it); release settles on the rest nearest to where the finger's
+/// velocity was carrying it, and pins it there. A press that barely moved is
+/// a tap and toggles instead.
+pub(crate) fn grip(app: &mut App, key: String, ev: GripEv, now: Instant) {
+    match ev {
+        GripEv::Press => {
+            let start = app.motion.widgets.get(&key).map_or(0.0, |w| w.extent.value());
+            app.motion.drag = Some(Drag::new(key, start, now));
+        }
+        GripEv::Drag(dx) => {
+            if let Some(d) = app.motion.drag.as_mut().filter(|d| d.key == key) {
+                d.follow(dx, now);
+            }
+        }
+        GripEv::Release => {
+            let Some(drag) = app.motion.drag.take().filter(|d| d.key == key) else {
+                return;
+            };
+            let Some(index) = app.widget_cfg.order.iter().position(|id| id.key() == key) else {
+                return;
+            };
+            let Some(input) = app.widget_inputs.get(index).copied() else {
+                return;
+            };
+            let pin = if drag.is_tap() {
+                tap_pin(&input, drag.start)
+            } else {
+                let mut rests = vec![
+                    (Pin::Collapsed, input.min_extent()),
+                    (Pin::Open, input.core_run()),
+                ];
+                if input.revealed > 0.0 {
+                    rests.push((Pin::Revealed, input.max_extent()));
+                }
+                settle(drag.live(), drag.velocity, &rests).unwrap_or(Pin::Open)
+            };
+            let category = widgets::category(app, &app.widget_cfg.order[index]);
+            app.motion.pins.insert(key.clone(), (pin, category));
+            relayout(app, now);
+            if let Some(out) = app.layout.widgets.get(index) {
+                app.motion.fling(&key, out.extent, drag.velocity, now);
+            }
+        }
+    }
+}
+
+/// What a tap on a grip asks for: a compressed widget opens, an open one
+/// compresses, and an important one — which never compresses — toggles its
+/// revealed section instead.
+fn tap_pin(input: &layout::WidgetIn, extent: f32) -> Pin {
+    let open = extent >= input.core_run() - 0.5;
+    if input.important {
+        if extent >= input.max_extent() - 0.5 {
+            Pin::Open
+        } else {
+            Pin::Revealed
+        }
+    } else if open {
+        Pin::Collapsed
+    } else {
+        Pin::Open
+    }
 }
 
 fn window(app: &App, handle: u64) -> Option<&crate::model::Window> {
@@ -1039,7 +1287,7 @@ fn dismiss(app: &mut App) -> Task<Message> {
 ///
 /// `Mute` is present only when the window's process actually owns a playback
 /// stream: an entry that is meaningless for most windows is worse than no
-/// entry, and "does this play audio" is exactly the question `pactl` answers.
+/// entry, and "does this play audio" is exactly what the audio streams answer.
 fn items(app: &App, handle: u64) -> Vec<Item> {
     let Some(w) = window(app, handle) else {
         return Vec::new();
@@ -1049,8 +1297,7 @@ fn items(app: &App, handle: u64) -> Vec<Item> {
     } else {
         Item::Minimize
     }];
-    #[cfg(not(test))]
-    if let Some(muted) = crate::audio::state_of(w.pid) {
+    if let Some(muted) = crate::audio::state_of(&app.streams, w.pid) {
         items.push(if muted { Item::Unmute } else { Item::Mute });
     }
     items.push(Item::NewInstance);
@@ -1146,7 +1393,7 @@ fn open_drawer(app: &mut App, drawer: Drawer, toggle: bool) -> Task<Message> {
     // Gravity down-and-*left*: the tray lives at the right end of the bar, so
     // a drawer growing to the right would hang off the edge of the screen —
     // which is also why it hangs from the cell's right edge and not its left.
-    let rect = anchor(app, crate::view::tray_span(app, drawer), Edge::Right);
+    let rect = anchor(app, crate::view::drawer_span(app, drawer), Edge::Right);
     let settings = IcedNewPopupSettings::new(parent, size, rect).gravity(PopupGravity::BottomLeft);
     let (id, open) = Message::popup_open(settings);
     app.popup = Some(Popup {
@@ -1276,6 +1523,15 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     if app.fold.animating() {
         subs.push(fold_ticks());
     }
+    // The bar's own motion clock, on the same rule: frames only while a
+    // chip or a widget is moving or a grip is held.
+    if app.motion.animating() || fixture_moves(app) {
+        subs.push(frames());
+    }
+    #[cfg(debug_assertions)]
+    if app.fixture.is_some() {
+        subs.push(crate::preview::script());
+    }
     if app.bar.eye {
         subs.push(crate::eye::watch());
     }
@@ -1296,6 +1552,26 @@ fn fold_ticks() -> Subscription<Message> {
             std::thread::spawn(move || loop {
                 std::thread::sleep(FOLD_TICK);
                 if !send(&mut sender, Message::FoldTick) {
+                    return;
+                }
+            });
+        })
+    })
+}
+
+/// A preview fixture's visualizer is its own clock: it moves while its
+/// player plays, with no service behind it.
+fn fixture_moves(app: &App) -> bool {
+    app.fixture.is_some() && app.widgets.now_playing.playing()
+}
+
+/// The bar's motion clock, alive only while something animates.
+fn frames() -> Subscription<Message> {
+    Subscription::run(|| {
+        iced::stream::channel(8, async move |mut sender| {
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(tokens::motion::FRAME_MS));
+                if !send(&mut sender, Message::Frame) {
                     return;
                 }
             });
@@ -1418,6 +1694,12 @@ fn compositor() -> Subscription<Message> {
                             }
                         }
                     }
+                    // The widgets' services: media, audio, usage, custom.
+                    for message in crate::services::drain() {
+                        if !send(&mut sender, message) {
+                            return;
+                        }
+                    }
                     // Only the minute rollover matters here, so the format
                     // is whichever; the view formats per `bar.clock.*`.
                     let now = crate::clock::time(false);
@@ -1427,7 +1709,14 @@ fn compositor() -> Subscription<Message> {
                             return;
                         }
                     }
-                    wait(client.as_ref());
+                    // The visualizer's levels arrive a frame apart, so while
+                    // the tap is open the wait is a frame, not a poll.
+                    let wait_for = if crate::services::tapping() {
+                        std::time::Duration::from_millis(tokens::motion::FRAME_MS)
+                    } else {
+                        POLL
+                    };
+                    wait(client.as_ref(), wait_for);
                 }
             });
         })
@@ -1556,6 +1845,63 @@ mod tests {
             trust: Trust::Secret,
         };
         assert_eq!(w.label(), "Protected window");
+    }
+
+    /// The grip's three gestures: a tap on an open widget compresses it, a
+    /// leftward drag opens it at least to its core, and a rightward drag
+    /// compresses it again — each pinned, and each the solver's answer.
+    #[test]
+    fn a_grip_taps_shut_and_drags_open_and_shut() {
+        use crate::widgets::{volume, Feed, WidgetId};
+        let mut a = app();
+        a.width = 1440.0;
+        widgets::update(
+            &mut a.widgets,
+            Feed::Volume(volume::Feed::Sink(Some(eclipse_services::audio::Sink {
+                volume: 0.5,
+                muted: false,
+                description: "Speakers".into(),
+            }))),
+        );
+        let t0 = Instant::now();
+        relayout(&mut a, t0);
+        let i = a
+            .widget_cfg
+            .order
+            .iter()
+            .position(|id| *id == WidgetId::Volume)
+            .expect("volume is in the default order");
+        let key = WidgetId::Volume.key();
+        let input = a.widget_inputs[i];
+        assert!(
+            a.layout.widgets[i].extent >= input.core_run(),
+            "room to spare: open"
+        );
+
+        let later = |n: u64| t0 + std::time::Duration::from_secs(n);
+        grip(&mut a, key.clone(), GripEv::Press, later(1));
+        grip(&mut a, key.clone(), GripEv::Release, later(1));
+        assert_eq!(a.motion.pins.get(&key).map(|p| p.0), Some(Pin::Collapsed));
+        assert_eq!(a.layout.widgets[i].extent, 0.0);
+        a.motion.tick(later(3));
+
+        grip(&mut a, key.clone(), GripEv::Press, later(4));
+        grip(&mut a, key.clone(), GripEv::Drag(-input.max_extent()), later(4));
+        relayout(&mut a, later(4));
+        assert_eq!(
+            a.layout.widgets[i].extent,
+            input.max_extent(),
+            "the width follows the finger"
+        );
+        grip(&mut a, key.clone(), GripEv::Release, later(4));
+        assert_ne!(a.motion.pins.get(&key).map(|p| p.0), Some(Pin::Collapsed));
+        assert!(a.layout.widgets[i].extent >= input.core_run());
+        a.motion.tick(later(6));
+
+        grip(&mut a, key.clone(), GripEv::Press, later(7));
+        grip(&mut a, key.clone(), GripEv::Drag(input.max_extent()), later(7));
+        grip(&mut a, key.clone(), GripEv::Release, later(7));
+        assert_eq!(a.motion.pins.get(&key).map(|p| p.0), Some(Pin::Collapsed));
     }
 }
 
