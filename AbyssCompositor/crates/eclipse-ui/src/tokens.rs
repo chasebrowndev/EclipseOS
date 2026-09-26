@@ -401,6 +401,93 @@ pub mod bar {
     /// before layout. Erring a little narrow costs a character; erring wide
     /// would cost the clipping this whole ladder exists to prevent.
     pub const CHAR_W: f32 = 7.0;
+
+    // ------------------------------------------------------------- widgets
+    //
+    // ADR 0065: every bar widget is `[grip][revealed][core]` in one shell.
+    // These are the shell's metrics and its parts', decided once so that a
+    // user's custom widget and a shipped preset are the same object.
+
+    /// Height of a widget shell: the same ground a task chip paints, so the
+    /// row keeps one baseline.
+    pub const WIDGET_H: f32 = TASK_H;
+    /// The grip's column: wide enough to be a target at bar height, narrow
+    /// enough that a compressed widget is a sliver and not a chip.
+    pub const GRIP_W: f32 = 14.0;
+    /// One grip dot, square — hard-edged on purpose, so the grip reads as a
+    /// machined texture rather than a row of bullets.
+    pub const GRIP_DOT: f32 = 2.0;
+    /// Air between two grip dots, on both axes.
+    pub const GRIP_DOT_GAP: f32 = 2.0;
+    pub const GRIP_COLS: usize = 2;
+    pub const GRIP_ROWS: usize = 4;
+    /// Padding inside the shell, either side of the core and the revealed
+    /// section.
+    pub const WIDGET_X: f32 = 8.0;
+    /// Between items inside a core (art and title, meter and meter).
+    pub const WIDGET_GAP: f32 = 8.0;
+    /// Corner radius of the shell. Tighter than [`RADIUS_CELL`]: a widget is
+    /// an instrument, not a task chip, and the squarer corner is half of what
+    /// tells the two apart at a glance (the grip is the other half).
+    pub const RADIUS_WIDGET: f32 = 7.0;
+
+    /// The visualizer: sixteen bands, each a hard 2px column with 2px of air,
+    /// mirrored about the row's midline.
+    pub const VIZ_BANDS: usize = 16;
+    pub const VIZ_BAR_W: f32 = 2.0;
+    pub const VIZ_GAP: f32 = 2.0;
+    pub const VIZ_W: f32 = VIZ_BANDS as f32 * (VIZ_BAR_W + VIZ_GAP) - VIZ_GAP;
+    pub const VIZ_H: f32 = 20.0;
+    /// A silent band still draws this tall, so silence is a dotted rule and
+    /// not an empty box.
+    pub const VIZ_FLOOR: f32 = 2.0;
+
+    /// A mini meter: a micro label and a reading on one line, a hairline
+    /// track under them.
+    pub const METER_W: f32 = 52.0;
+    pub const METER_H: f32 = 2.0;
+    /// Between the label line and the track.
+    pub const METER_GAP: f32 = 4.0;
+
+    /// One transport button (prev / play-pause / next), and the glyph drawn
+    /// in it.
+    pub const TRANSPORT_BTN: f32 = 24.0;
+    pub const TRANSPORT_GLYPH: f32 = 9.0;
+    /// Stroke of the skip glyphs' stop bar and of the pause glyph's legs.
+    pub const TRANSPORT_STROKE: f32 = 2.0;
+    pub const TRANSPORT_GAP: f32 = 2.0;
+    pub const RADIUS_TRANSPORT: f32 = 5.0;
+
+    /// The volume track and its readout.
+    pub const VOLUME_W: f32 = 64.0;
+    pub const VOLUME_RAIL: f32 = 2.0;
+    /// The knob: a hard vertical tick, not a disc — at 34px a round knob is a
+    /// bead on a wire and reads as decoration.
+    pub const VOLUME_KNOB_W: u16 = 2;
+    pub const VOLUME_KNOB_H: f32 = 12.0;
+    /// Room for `100` in the mono face, so the track never shifts as the
+    /// reading changes width.
+    pub const VOLUME_READOUT_W: f32 = 22.0;
+    /// Between the track and its reading.
+    pub const VOLUME_GAP: f32 = 6.0;
+
+    /// Album art: a square on the icon grid, a touch larger than an icon
+    /// because it carries a picture, not a mark.
+    pub const ART: f32 = 24.0;
+    pub const RADIUS_ART: f32 = 4.0;
+    /// The title/artist column of a media core, fixed so that the shell's
+    /// width never tracks the song's name.
+    pub const MEDIA_TEXT_W: f32 = 132.0;
+    /// Between a two-line label's title and its subtitle.
+    pub const LABEL_LINE_GAP: f32 = 1.0;
+}
+
+/// Motion defaults. Taste, not mechanism: the live values are
+/// `bar.motion.{enabled, curve, duration-ms}` (ADR 0065), and these apply when
+/// they are unset or the compositor is not there.
+pub mod motion {
+    /// How long a movement takes to settle.
+    pub const DURATION_MS: u64 = 220;
 }
 
 /// A context menu: the mark rail that opens on a right-click.
