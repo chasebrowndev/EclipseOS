@@ -9,7 +9,18 @@
 //! re-queues and then [`schedule`]s.
 //!
 //! Wording is fixed and `'static`. The widget's name and command reach the
-//! prompt only as its untrusted well text.
+//! prompt only as its untrusted well text: the name on one clamped line, so
+//! it cannot draw a fake command or push the real one out of view. A command
+//! too long to show whole gets no Accept/Allow; the owner cannot approve what
+//! they cannot read.
+//!
+//! Budget (COMP-10 §6): after Not now, or a timeout, no approval prompt
+//! comes up for [`QUIET`], however often `review_widget` or new widgets ask.
+//! A peer cannot keep the seat taken.
+
+use std::time::{Duration, Instant};
+
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 
 use crate::config::withhold::{self, PendingKind, PendingWidget};
 use crate::state::AbyssState;
@@ -22,6 +33,13 @@ const ALTERED_BODY: &str = "Accept the alteration, or revert to the original.";
 const NEW_BODY: &str = "This is not a premade widget. It runs this command as you. \
                         EclipseOS is not responsible for what it does.";
 const WELL: &str = "Taskbar widget and the command it runs";
+const WELL_CUT: &str = "Too long to show whole, so it cannot be allowed here:";
+
+/// Longest widget name shown, in chars.
+const NAME_MAX: usize = 40;
+
+/// Quiet time after a declined prompt.
+pub const QUIET: Duration = Duration::from_secs(30);
 
 const NOT_NOW: Button = Button {
     label: "Not now",
@@ -33,6 +51,8 @@ const NOT_NOW: Button = Button {
 pub struct Asking {
     current: Option<(u64, PendingWidget)>,
     next_token: u64,
+    /// No new prompt before this (after Not now or a timeout).
+    quiet_until: Option<Instant>,
 }
 
 /// Look at the queue on the next idle turn. Deferred so a config apply (which
@@ -67,6 +87,15 @@ pub fn pump(state: &mut AbyssState) {
         // Another prompt owns the seat; its close schedules us again.
         return;
     }
+    if state
+        .trusted_ui
+        .asking
+        .quiet_until
+        .is_some_and(|t| Instant::now() < t)
+    {
+        // The timer set with `quiet_until` pumps again when it ends.
+        return;
+    }
     let Some(w) = withhold::next_pending(state) else {
         return;
     };
@@ -96,26 +125,39 @@ fn modal_for(token: u64, w: &PendingWidget) -> Result<Modal, super::modal::Inval
         PendingKind::Altered => (Some(ALTERED), ALTERED_BODY, "Revert", "Accept"),
         PendingKind::New => (None, NEW_BODY, "Remove", "Allow"),
     };
-    let untrusted = format!("widget: {}\n{}", w.name, w.command_text);
-    Modal::new(
+    let mut name = crate::render::text::sanitize_line(&w.name);
+    if name.chars().count() > NAME_MAX {
+        name = name.chars().take(NAME_MAX - 1).collect();
+        name.push('\u{2026}');
+    }
+    let untrusted = format!("widget: {name}\n{}", w.command_text);
+    let buttons = |grant: Option<&'static str>| {
+        let mut b = vec![
+            Button {
+                label: other,
+                role: Role::Other,
+            },
+            NOT_NOW,
+        ];
+        b.extend(grant.map(|label| Button {
+            label,
+            role: Role::Grant,
+        }));
+        b
+    };
+    let m = Modal::new(
         token,
         HEADING,
         warning,
         body,
         WELL,
         &untrusted,
-        vec![
-            Button {
-                label: other,
-                role: Role::Other,
-            },
-            NOT_NOW,
-            Button {
-                label: grant,
-                role: Role::Grant,
-            },
-        ],
-    )
+        buttons(Some(grant)),
+    )?;
+    if !m.is_cut() {
+        return Ok(m);
+    }
+    Modal::new(token, HEADING, warning, body, WELL_CUT, &untrusted, buttons(None))
 }
 
 /// Whether `token` is an approval prompt's; `resolve` routes on this.
@@ -160,6 +202,13 @@ pub fn answer(state: &mut AbyssState, choice: super::Choice) {
         }
         Role::Safe => {
             state.widget_approvals.declined.insert((w.name, w.hash));
+            state.trusted_ui.asking.quiet_until = Some(Instant::now() + QUIET);
+            let _ = state
+                .loop_handle
+                .insert_source(Timer::from_duration(QUIET), |_, _, state| {
+                    pump(state);
+                    TimeoutAction::Drop
+                });
         }
     }
 }
@@ -253,6 +302,7 @@ mod tests {
     }
 
     fn keys(h: &mut crate::shell::focus::state_tests::Harness, syms: &[smithay::input::keyboard::Keysym]) {
+        super::super::arm_now(&mut h.state);
         for s in syms {
             super::super::key(&mut h.state, *s);
         }
@@ -278,8 +328,13 @@ mod tests {
         pump(&mut h.state);
         assert!(!h.state.trusted_ui.is_open(), "a declined widget came back");
 
-        // Review re-queues; Enter on Allow does nothing, Space activates it.
+        // Not now buys a quiet spell: Review re-queues, but nothing comes up.
         assert_eq!(withhold::review(&mut h.state, "x"), Ok(true));
+        pump(&mut h.state);
+        assert!(!h.state.trusted_ui.is_open(), "a prompt inside the quiet spell");
+
+        // After it, Enter on Allow does nothing and Space activates it.
+        h.state.trusted_ui.asking.quiet_until = None;
         pump(&mut h.state);
         keys(&mut h, &[K::Right, K::Return]);
         assert!(h.state.trusted_ui.is_open(), "Enter granted");
@@ -288,6 +343,41 @@ mod tests {
         assert_eq!(live(&h), ["load", "x"]);
         assert!(h.state.widget_approvals.withheld.is_empty());
         done(&file);
+    }
+
+    #[test]
+    fn a_fresh_prompt_ignores_all_but_escape() {
+        let (mut h, file) = harness("arm", NEW);
+        pump(&mut h.state);
+        // `<Tab><space>` typed the instant it appears grants nothing.
+        super::super::key(&mut h.state, K::Tab);
+        super::super::key(&mut h.state, K::space);
+        assert!(h.state.trusted_ui.is_open());
+        super::super::key(&mut h.state, K::Escape);
+        assert!(!h.state.trusted_ui.is_open(), "Escape counts at once");
+        done(&file);
+    }
+
+    #[test]
+    fn a_name_cannot_forge_a_command_line() {
+        let mut w = pending(PendingKind::New);
+        w.name = format!("x\n/usr/bin/uptime\n\n\n{}", "n".repeat(200));
+        let m = modal_for(1, &w).unwrap();
+        let u = m.untrusted();
+        assert!(u[0].starts_with("widget: x /usr/bin/uptime"), "{u:?}");
+        assert!(u[0].chars().count() <= "widget: ".len() + NAME_MAX);
+        assert_eq!(u[1], "uptime");
+        assert!(m.buttons().iter().any(|b| b.role == Role::Grant));
+    }
+
+    #[test]
+    fn a_command_too_long_to_show_cannot_be_allowed() {
+        let mut w = pending(PendingKind::New);
+        w.command_text = format!("sh -c 'uptime{}; evil'", " ".repeat(460));
+        let m = modal_for(1, &w).unwrap();
+        assert!(m.is_cut());
+        assert!(m.buttons().iter().all(|b| b.role != Role::Grant));
+        assert_eq!(m.buttons()[m.safe()].label, "Not now");
     }
 
     #[test]

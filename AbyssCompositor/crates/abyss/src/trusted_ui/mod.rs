@@ -13,16 +13,23 @@
 //!   not name this module (a test checks that).
 //! * **Lock.** Under the session lock a prompt is neither drawn nor holding
 //!   the seat. A prompt that can grant must not be answerable by whoever is
-//!   at a locked machine. It stays pending and comes back on unlock.
+//!   at a locked machine. It stays pending and comes back on unlock, unless
+//!   the timeout runs out first.
 //! * **Timeout.** Unanswered, it resolves to its `Safe` button (§3.2: fails
-//!   closed).
+//!   closed). The clock runs under the lock too.
+//! * **Arming.** For [`ARM`] after it appears, only Escape counts. A key or
+//!   click already on its way (a `<Tab><space>` typed into a shell, a double
+//!   click) cannot answer a prompt the human has not seen (§3.2, §7).
 //!
 //! One prompt at a time. `open` refuses a second, and the owner re-queues it.
 
 pub mod approval;
 pub mod modal;
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
 use smithay::{
     backend::{
@@ -49,6 +56,9 @@ pub use modal::{Button, Modal, Role};
 /// §3.2: a prompt nobody answers fails closed after this long.
 pub const TIMEOUT: Duration = Duration::from_secs(120);
 
+/// How long a new prompt ignores everything but Escape.
+pub const ARM: Duration = Duration::from_millis(750);
+
 /// Everything behind a prompt is dimmed, on every output, so it is plain that
 /// the session is waiting on the human and nothing behind it takes input.
 const DIM: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -71,6 +81,8 @@ struct Open {
     /// release lands on the same one, so a press already in flight when the
     /// prompt appeared cannot answer it by being let go.
     pressed: Option<usize>,
+    /// When it went up; input before `shown + ARM` is ignored.
+    shown: Instant,
 }
 
 /// Trusted-UI state, owned by `AbyssState`.
@@ -115,6 +127,7 @@ pub fn open(state: &mut AbyssState, modal: modal::Modal) -> bool {
         layout,
         focus,
         pressed: None,
+        shown: Instant::now(),
     });
     state.trusted_ui.art.clear();
     let timer = state
@@ -136,6 +149,14 @@ pub fn open(state: &mut AbyssState, modal: modal::Modal) -> bool {
     release_pointer_focus(state);
     crate::backend::damage_all(state);
     true
+}
+
+/// Tests only: let the prompt that is up take input now.
+#[cfg(test)]
+pub(crate) fn arm_now(state: &mut AbyssState) {
+    if let Some(o) = state.trusted_ui.open.as_mut() {
+        o.shown = Instant::now() - ARM;
+    }
 }
 
 /// No client keeps pointer focus behind a prompt: it would otherwise still
@@ -163,7 +184,11 @@ pub fn key(state: &mut AbyssState, sym: Keysym) {
     let Some(o) = state.trusted_ui.open.as_mut() else {
         return;
     };
-    match modal::apply(&o.modal, o.focus, modal::key(sym)) {
+    let k = modal::key(sym);
+    if k != modal::Key::Escape && o.shown.elapsed() < ARM {
+        return;
+    }
+    match modal::apply(&o.modal, o.focus, k) {
         modal::Outcome::Focus(i) => {
             o.focus = i;
             crate::backend::damage_all(state);
@@ -177,17 +202,21 @@ pub fn key(state: &mut AbyssState, sym: Keysym) {
 /// other button is swallowed by the caller.
 pub fn button(state: &mut AbyssState, pressed: bool) {
     let pos = state.pointer_location.to_i32_round::<i32>();
-    let panels: Vec<Point<i32, Logical>> = state
+    let under = state
         .space
         .outputs()
-        .filter_map(|o| panel_origin(state, o))
-        .collect();
+        .filter_map(|out| panel_origin(state, out))
+        .find_map(|p| {
+            let o = state.trusted_ui.open.as_ref()?;
+            modal::hit(&o.layout, pos.x - p.x, pos.y - p.y)
+        });
     let Some(o) = state.trusted_ui.open.as_mut() else {
         return;
     };
-    let under = panels
-        .iter()
-        .find_map(|p| modal::hit(&o.layout, pos.x - p.x, pos.y - p.y));
+    if o.shown.elapsed() < ARM {
+        o.pressed = None;
+        return;
+    }
     if pressed {
         o.pressed = under;
         return;
@@ -279,12 +308,11 @@ pub fn elements(
     let Some(o) = ui.open.as_ref() else {
         return Vec::new();
     };
-    let Some(mode) = output.current_mode() else {
+    let Some(logical) = logical_size(output) else {
         return Vec::new();
     };
     let fractional = output.current_scale().fractional_scale();
     let scale = Scale::from(fractional);
-    let logical: Size<i32, Logical> = mode.size.to_f64().to_logical(scale).to_i32_round();
     // Whole device pixels, like the annotation cards: the font is a bitmap.
     let dev = (fractional.round() as usize).max(1);
 
@@ -328,6 +356,21 @@ pub fn elements(
         Kind::Unspecified,
     )));
     out
+}
+
+/// The output's logical size, transformed as `space.output_geometry` is:
+/// the hit test in `button` centres on that, and the drawn panel must sit
+/// where it hits, rotated outputs included.
+fn logical_size(output: &Output) -> Option<Size<i32, Logical>> {
+    let mode = output.current_mode()?;
+    Some(
+        output
+            .current_transform()
+            .transform_size(mode.size)
+            .to_f64()
+            .to_logical(output.current_scale().fractional_scale())
+            .to_i32_round(),
+    )
 }
 
 fn upload(
@@ -377,6 +420,26 @@ mod tests {
             // at index 0, which reverses source order.
             assert_eq!(ui < ind, top_first, "{path}: a prompt is behind the indicator");
         }
+    }
+
+    #[test]
+    fn a_rotated_output_is_drawn_where_it_is_hit() {
+        use smithay::output::{Mode, PhysicalProperties, Subpixel};
+        let o = Output::new(
+            "t".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "t".into(),
+                model: "t".into(),
+            },
+        );
+        let mode = Mode {
+            size: (1920, 1080).into(),
+            refresh: 60_000,
+        };
+        o.change_current_state(Some(mode), Some(Transform::_90), None, None);
+        assert_eq!(logical_size(&o), Some(Size::from((1080, 1920))));
     }
 
     #[test]

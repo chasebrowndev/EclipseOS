@@ -42,6 +42,10 @@ const BTN_H: usize = GLYPH_H + 8;
 const BTN_GAP: usize = 12;
 /// Lines of untrusted text kept. The rest is dropped, and says so.
 pub const MAX_UNTRUSTED_LINES: usize = 8;
+
+/// COMP-10 §2: with no personal secret set, every prompt says anti-spoofing
+/// is unconfigured. No secret can be set yet, so every prompt says it.
+const UNSPOOFED: &str = "Anti-spoofing is not configured: no personal secret is set.";
 const MAX_BUTTONS: usize = 4;
 
 /// What pressing a button means, as far as the prompt itself is concerned.
@@ -128,7 +132,14 @@ impl Modal {
     pub fn untrusted(&self) -> &[String] {
         &self.untrusted
     }
+
+    /// Whether the untrusted text was longer than the well shows.
+    pub fn is_cut(&self) -> bool {
+        self.untrusted.last().is_some_and(|l| l == CUT)
+    }
 }
+
+const CUT: &str = "[... cut: longer than shown]";
 
 /// §3.2 treatment for text the compositor did not write: control characters
 /// stripped, no markup, hard length and line clamp. A cut is marked, so the
@@ -142,7 +153,7 @@ fn clamp_untrusted(input: &str) -> Vec<String> {
         if lines.len() == MAX_UNTRUSTED_LINES {
             lines.pop();
         }
-        lines.push("[... cut: longer than shown]".into());
+        lines.push(CUT.into());
     }
     if lines.is_empty() {
         lines.push("(empty)".into());
@@ -207,6 +218,7 @@ pub struct Layout {
     warning: Vec<String>,
     well_y: usize,
     well_h: usize,
+    notice_y: usize,
     /// `(x, y, w, h)` of each button.
     pub buttons: Vec<(usize, usize, usize, usize)>,
 }
@@ -231,7 +243,9 @@ pub fn layout(modal: &Modal) -> Layout {
     y += LINE_H;
     let well_y = y;
     let well_h = WELL_PAD + block_h(modal.untrusted.len()) + WELL_PAD;
-    y += well_h + GAP * 2;
+    y += well_h + GAP;
+    let notice_y = y;
+    y += LINE_H + GAP;
 
     // Buttons right-aligned, in the order given.
     let widths: Vec<usize> = modal
@@ -254,6 +268,7 @@ pub fn layout(modal: &Modal) -> Layout {
         warning,
         well_y,
         well_h,
+        notice_y,
         buttons,
     }
 }
@@ -301,6 +316,7 @@ pub fn rasterize(modal: &Modal, focus: usize, scale: usize) -> Raster {
     for (i, line) in modal.untrusted.iter().enumerate() {
         c.text(x0, l.well_y + WELL_PAD + i * LINE_H, line, WELL_TEXT, false);
     }
+    c.text(x0, l.notice_y, UNSPOOFED, WARN, false);
 
     for (i, (b, &(bx, by, bw, bh))) in modal.buttons.iter().zip(&l.buttons).enumerate() {
         let tx = bx + BTN_PAD;
@@ -450,6 +466,11 @@ mod tests {
             assert_eq!((r.w as usize, r.h as usize), (l.w * scale, l.h * scale));
             assert_eq!(r.px.len(), l.w * l.h * scale * scale * 4);
         }
+    }
+
+    #[test]
+    fn the_anti_spoofing_notice_fits_one_line() {
+        assert!(UNSPOOFED.len() <= COLS);
     }
 
     #[test]
