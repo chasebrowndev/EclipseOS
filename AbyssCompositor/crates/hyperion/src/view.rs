@@ -44,9 +44,10 @@
 //!
 //! The widgets keep the rule with one exception, which is the fourth: Now
 //! Playing's visualizer is yellow while media plays and the widget is open —
-//! the one live value on the right of the row. Network at full bars and an
-//! idle bluetooth adapter keep the accent marks they had as tray cells. The
-//! rest of the widgets are white at 1.0 / 0.64 / 0.40, and a low battery or a
+//! the one live value on the right of the row. Every other widget glyph and
+//! reading is white at 1.0 / 0.64 / 0.40 — a full-bar signal and an idle
+//! bluetooth adapter included, which as tray cells once spent yellow (and
+//! blue) on states that are true nearly all the time. A low battery or a
 //! custom widget's `critical` state may go `DANGER`, which is the one alarm
 //! and not an accent.
 //!
@@ -73,7 +74,7 @@ use eclipse_ui::widget::{self as parts, ClipEdge};
 
 use crate::app::Message;
 use crate::icons::Icon;
-use crate::layout::{detail_of, rung, whole_width, Detail};
+use crate::layout::{chip_detail, Detail};
 use crate::model::{Snapshot, Window, Workspace};
 
 /// The bar, or the one popup over it.
@@ -174,10 +175,16 @@ fn bar_row(app: &crate::app::App) -> Element<'_, Message, Theme> {
     if !cells.is_empty() {
         bar_row = bar_row.push(Space::new().width(Length::Fixed(bar::ZONE_GAP - bar::GAP)));
     }
-    for (presence, cell) in cells {
+    // Two neighbours both compressed to their grips close up to one rack of
+    // handles; the gap follows the less-compressed of the pair, so it opens
+    // continuously as either widget does.
+    let mut before: Option<f32> = None;
+    for cell in cells {
+        let gap = crate::layout::widget_gap(before.unwrap_or(0.0), cell.closed);
         bar_row = bar_row
-            .push(Space::new().width(Length::Fixed((bar::GAP * presence).round())))
-            .push(cell);
+            .push(Space::new().width(Length::Fixed((gap * cell.presence).round())))
+            .push(cell.element);
+        before = Some(cell.closed);
     }
     let bar_row = bar_row
         .padding([0.0, bar::EDGE])
@@ -550,48 +557,28 @@ fn task_chip(chip: &crate::motion::Chip, icon: Icon, visible: f32) -> Element<'_
     // chip with no state on it at all, which is the point: it is a placeholder
     // for something that is not on the screen.
     let up = !w.minimized;
-    let (tint, face) = if up {
-        (color::ACCENT_TEXT, font::UI_MEDIUM)
-    } else {
-        (color::TEXT_SECONDARY, font::UI)
+    // Ink leads the glass: an arriving chip's face shows once there is room
+    // to read it, a closing one's is gone before the edge reaches a glyph.
+    let presence = chip.presence.value().clamp(0.0, 1.0);
+    let ink = parts::lead(presence);
+    let swap = chip.swap.value().clamp(0.0, 1.0);
+    let natural = width.max(visible).max(chip.prev.unwrap_or(0.0));
+    let body: Element<'_, Message, Theme> = match chip.prev {
+        // A rung change in flight: the old face fades through to the new.
+        // Each takes its ink through `lead`, so the two are never both
+        // legible at once — two labels on one gridline read as one garbled
+        // word — and the crossover is a brief quiet, not a double exposure.
+        Some(prev) if swap < 1.0 => iced::widget::stack![
+            chip_face(w, icon.clone(), prev, visible, up, ink * parts::lead(1.0 - swap)),
+            chip_face(w, icon, width, visible, up, ink * parts::lead(swap)),
+        ]
+        .into(),
+        _ => chip_face(w, icon, width, visible, up, ink),
     };
-    // The rung is this chip's own business: the width it got buys a rung,
-    // and the words this window wants to say decide whether it can use it.
-    let detail = if width >= whole_width(w.label()) {
-        Detail::Full
-    } else {
-        rung(w.label(), w.name(), width, detail_of(width))
-    };
-    let mut face_row = Row::new().spacing(bar::GAP + bar::GAP).align_y(Alignment::Center);
-    if detail != Detail::Bare {
-        face_row = face_row.push(icon_view(icon));
-    }
-    // The second rung says the application, the first says the document: three
-    // terminals condense to three `kitty`s rather than three copies of the
-    // same truncated path. Neither is ever cut — `rung` already promised that
-    // whichever of the two is chosen fits whole.
-    let label = match detail {
-        Detail::Full => Some(w.label()),
-        Detail::Name => Some(w.name()),
-        Detail::Icon | Detail::Bare => None,
-    };
-    if let Some(label) = label {
-        face_row = face_row.push(text(label).size(size::BODY_SMALL).color(tint).font(face));
-    }
-    // Labelled chips are read from a left gridline; iconic ones are marks and
-    // centre, which is what keeps a row of them from looking like a row of
-    // chips that lost their words.
-    let (align, pad) = if label.is_some() {
-        (Alignment::Start, bar::CELL_X)
-    } else {
-        (Alignment::Center, 0.0)
-    };
-    let body = container(face_row)
-        .width(Length::Fixed(width))
-        .height(Length::Fixed(bar::TASK_H))
-        .align_x(align)
-        .align_y(Alignment::Center)
-        .padding([0.0, pad]);
+    let body = container(body)
+        .width(Length::Fixed(natural))
+        .height(Length::Fixed(bar::TASK_H));
+    let width = natural;
     let press = button(body)
         .width(Length::Fixed(width))
         .height(Length::Fixed(bar::TASK_H))
@@ -610,7 +597,72 @@ fn task_chip(chip: &crate::motion::Chip, icon: Icon, visible: f32) -> Element<'_
             .on_right_press(Message::Menu(w.handle))
             .into()
     };
-    parts::glass_cell(face, width.max(visible), visible, up, ClipEdge::Left)
+    parts::glass_cell_faded(face, width, visible, up, ClipEdge::Left, presence)
+}
+
+/// One face of a window chip, laid out at the content width `width` and drawn
+/// at `alpha` of its ink.
+///
+/// A labelled face is laid out once at its content width and read from a
+/// left gridline, so the moving edge uncovers or covers it and never
+/// re-wraps it. An iconic face has no text to reflow, so it centres in the
+/// width on screen (`visible`) and glides with the edge instead of jumping to
+/// the centre of where the chip is going.
+fn chip_face(
+    w: &Window,
+    icon: Icon,
+    width: f32,
+    visible: f32,
+    up: bool,
+    alpha: f32,
+) -> Element<'_, Message, Theme> {
+    let (tint, face) = if up {
+        (color::ACCENT_TEXT, font::UI_MEDIUM)
+    } else {
+        (color::TEXT_SECONDARY, font::UI)
+    };
+    // The rung is this chip's own business: the width it got buys a rung,
+    // and the words this window wants to say decide whether it can use it.
+    let detail = chip_detail(w.label(), w.name(), width);
+    let mut face_row = Row::new().spacing(bar::GAP + bar::GAP).align_y(Alignment::Center);
+    if detail != Detail::Bare {
+        face_row = face_row.push(icon_view(icon, alpha));
+    }
+    // The second rung says the application, the first says the document: three
+    // terminals condense to three `kitty`s rather than three copies of the
+    // same truncated path. Neither is ever cut — `rung` already promised that
+    // whichever of the two is chosen fits whole.
+    let label = match detail {
+        Detail::Full => Some(w.label()),
+        Detail::Name => Some(w.name()),
+        Detail::Icon | Detail::Bare => None,
+    };
+    if let Some(label) = label {
+        face_row = face_row.push(
+            text(label)
+                .size(size::BODY_SMALL)
+                .color(tint.scale_alpha(alpha))
+                .font(face)
+                // `whole_width` is an estimate: a label a hair wider than it
+                // runs under the glass's clip rather than folding in two.
+                .wrapping(iced::widget::text::Wrapping::None),
+        );
+    }
+    // Labelled chips are read from a left gridline; iconic ones are marks and
+    // centre, which is what keeps a row of them from looking like a row of
+    // chips that lost their words.
+    let (align, pad, laid) = if label.is_some() {
+        (Alignment::Start, bar::CELL_X, width)
+    } else {
+        (Alignment::Center, 0.0, visible)
+    };
+    container(face_row)
+        .width(Length::Fixed(laid))
+        .height(Length::Fixed(bar::TASK_H))
+        .align_x(align)
+        .align_y(Alignment::Center)
+        .padding([0.0, pad])
+        .into()
 }
 
 // -------------------------------------------------------------- context menu
@@ -788,26 +840,28 @@ fn menu_mark(item: crate::app::Item) -> Element<'static, Message, Theme> {
 /// The icon square. A miss draws the placeholder rather than a hole, and a
 /// `secret` window is handed [`Icon::Placeholder`] by `Icons::for_window`
 /// before it ever gets here.
-fn icon_view(icon: Icon) -> Element<'static, Message, Theme> {
+fn icon_view(icon: Icon, alpha: f32) -> Element<'static, Message, Theme> {
     let square = Length::Fixed(size::ICON);
     match icon {
         Icon::Svg(path) => svg(svg::Handle::from_path(path))
             .width(square)
             .height(square)
+            .opacity(alpha)
             .into(),
         Icon::Raster(path) => image(image::Handle::from_path(path))
             .width(square)
             .height(square)
+            .opacity(alpha)
             .into(),
         // A rounded square on the reference panes' 6px-on-18px placeholder
         // scale, so a missing icon still reads as a member of this row.
         Icon::Placeholder => container(Space::new())
             .width(square)
             .height(square)
-            .style(|_t: &Theme| container::Style {
-                background: Some(iced::Background::Color(color::CONTROL_OFF)),
+            .style(move |_t: &Theme| container::Style {
+                background: Some(iced::Background::Color(color::CONTROL_OFF.scale_alpha(alpha))),
                 border: iced::Border {
-                    color: color::BORDER,
+                    color: color::BORDER.scale_alpha(alpha),
                     width: bar::HAIRLINE,
                     radius: bar::RADIUS_ICON.into(),
                 },
@@ -909,11 +963,11 @@ fn sheet(app: &crate::app::App, which: crate::app::Drawer) -> Sheet {
 ///
 /// - **Wi-fi, bluetooth:** the one yellow is the switch's lit track — the
 ///   radio being on is the drawer's live state. Whatever it is connected to
-///   is [`color::CONNECTED`] blue, the same hue the bar uses for a linked
-///   device, and never the accent: that is why the drawers draw their own
-///   glyphs through `widgets::network::glyph` instead of the bar's `network_mark` and
-///   `bluetooth_mark`, which spend yellow on a full-bar signal and an idle
-///   adapter.
+///   is [`color::CONNECTED`] blue, and never the accent. The drawers draw
+///   their own glyphs through `widgets::network::glyph` rather than the bar's
+///   `network_mark` and `bluetooth_mark`, which are the white ink ramp: on
+///   the bar a link is a state, not a live value, and the widgets' one
+///   yellow belongs to the visualizer.
 /// - **Overflow:** no yellow at all. It is a shelf of other applets' doors;
 ///   the state behind each one is that applet's drawer's to colour.
 fn drawer_view(app: &crate::app::App, which: crate::app::Drawer) -> Element<'static, Message, Theme> {

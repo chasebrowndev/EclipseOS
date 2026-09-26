@@ -93,14 +93,19 @@ pub fn spans(state: &State, cfg: &Cfg) -> Spans {
     }
 }
 
-pub fn view<'a>(state: &'a State, cfg: &Cfg, _frame: ShellFrame) -> Parts<'a> {
+pub fn view<'a>(state: &'a State, cfg: &Cfg, frame: ShellFrame) -> Parts<'a> {
     let Some(s) = state.sample.as_ref() else {
         return Parts::empty();
     };
     let row = || Row::new().spacing(bar::WIDGET_GAP).align_y(Alignment::Center);
     let (mut core, mut more, mut any) = (row(), row(), false);
     for (label, f, revealed) in meters(s, cfg) {
-        let meter = parts::mini_meter(label, f, false);
+        let ink = if revealed {
+            frame.revealed_alpha()
+        } else {
+            frame.core_alpha()
+        };
+        let meter = parts::mini_meter_faded(label, f, false, ink);
         if revealed {
             more = more.push(meter);
             any = true;

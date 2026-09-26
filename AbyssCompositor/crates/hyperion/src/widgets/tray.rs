@@ -62,7 +62,8 @@ pub fn spans(app: &App) -> Spans {
 /// the overflow drawer hangs off it.
 pub(crate) const ARROW_FROM_RIGHT: f32 = bar::ARROW_W;
 
-pub fn view(app: &App, _frame: ShellFrame) -> Parts<'_> {
+pub fn view(app: &App, frame: ShellFrame) -> Parts<'_> {
+    let ink = frame.core_alpha();
     let (pinned, _) = split(&app.radios.tray, &app.tray);
     let mut r = Row::new().spacing(bar::TRAY_GAP).align_y(Alignment::Center);
     for i in pinned {
@@ -73,7 +74,7 @@ pub fn view(app: &App, _frame: ShellFrame) -> Parts<'_> {
         // every other mark: a row of vendor-coloured logos is the one place
         // a desktop loses its own palette to its guests.
         let press = button(super::fixed(
-            tray_mark(&item.icon, bar::MARK, color::TEXT_SECONDARY),
+            tray_mark(&item.icon, bar::MARK, color::TEXT_SECONDARY.scale_alpha(ink)),
             bar::TRAY_MARK_W,
         ))
         .width(Length::Fixed(bar::TRAY_MARK_W))
@@ -83,7 +84,7 @@ pub fn view(app: &App, _frame: ShellFrame) -> Parts<'_> {
         .on_press(Message::TrayActivate(item.address.clone()));
         r = r.push(mouse_area(press).on_right_press(Message::TrayMenu(item.address.clone())));
     }
-    r = r.push(disclosure());
+    r = r.push(disclosure(ink));
     Parts {
         core: r.into(),
         revealed: None,
@@ -91,12 +92,12 @@ pub fn view(app: &App, _frame: ShellFrame) -> Parts<'_> {
 }
 
 /// The arrow that opens the overflow drawer.
-fn disclosure() -> Element<'static, Message, Theme> {
+fn disclosure(ink: f32) -> Element<'static, Message, Theme> {
     button(
         container(parts::chevron(
             bar::ARROW,
             bar::ARROW_STROKE,
-            color::TEXT_SECONDARY,
+            color::TEXT_SECONDARY.scale_alpha(ink),
         ))
         .center(Length::Fill),
     )

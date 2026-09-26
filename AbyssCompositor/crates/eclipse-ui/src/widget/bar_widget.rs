@@ -79,6 +79,7 @@ pub struct DragBar<'a, Message> {
     on_press: Option<Message>,
     on_drag: Option<Box<dyn Fn(f32) -> Message + 'a>>,
     on_release: Option<Message>,
+    opacity: f32,
 }
 
 /// A grip at rest, with no gesture wired. See [`DragBar`].
@@ -88,6 +89,7 @@ pub fn drag_bar<'a, Message>() -> DragBar<'a, Message> {
         on_press: None,
         on_drag: None,
         on_release: None,
+        opacity: 1.0,
     }
 }
 
@@ -114,6 +116,14 @@ impl<'a, Message> DragBar<'a, Message> {
     /// The release that ends a drag, wherever the pointer is.
     pub fn on_release(mut self, message: Message) -> Self {
         self.on_release = Some(message);
+        self
+    }
+
+    /// Draw the dots and the wash at `opacity` (`0.0..=1.0`): a grip whose
+    /// widget is arriving or leaving fades with it instead of standing at
+    /// full ink while its cell closes over it. See [`ShellFrame::grip_alpha`].
+    pub fn opacity(mut self, opacity: f32) -> Self {
+        self.opacity = opacity.clamp(0.0, 1.0);
         self
     }
 
@@ -277,7 +287,10 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for DragBar<'_, Mess
         // The wash sits inside the shell's hairline and follows its left
         // corners, so a hovered grip is a lit end of the capsule rather than
         // a square pasted onto it.
-        let wash = look.wash();
+        if self.opacity <= 0.0 {
+            return;
+        }
+        let wash = look.wash().scale_alpha(self.opacity);
         if wash.a > 0.0 {
             let inset = bar::HAIRLINE;
             let r = (bar::RADIUS_WIDGET - inset).max(0.0);
@@ -306,7 +319,7 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for DragBar<'_, Mess
         // Whole-pixel origin: a dot that straddles a pixel is a grey smear.
         let x0 = (b.x + (b.width - field_w) / 2.0).round();
         let y0 = (b.y + (b.height - field_h) / 2.0).round();
-        let ink = look.dots();
+        let ink = look.dots().scale_alpha(self.opacity);
         for r in 0..bar::GRIP_ROWS {
             for c in 0..bar::GRIP_COLS {
                 renderer.fill_quad(
@@ -370,6 +383,8 @@ struct Clip<'a, Message> {
     edge: ClipEdge,
     /// `Some(accent)` draws the bar cell ground.
     ground: Option<bool>,
+    /// The ground's opacity: its fill and hairline scale by this.
+    opacity: f32,
 }
 
 #[derive(Default)]
@@ -556,24 +571,27 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Clip<'_, Message> {
         let Some(clip) = bounds.intersection(viewport) else {
             return;
         };
-        if let (Some(accent), true) = (self.ground, bounds.width >= 1.0) {
+        if let (Some(accent), true) = (self.ground, bounds.width >= 1.0 && self.opacity > 0.0) {
             let st = tree.state.downcast_ref::<CellState>();
             let look = crate::theme::bar_cell(accent)(theme, st.status(cursor.is_over(bounds)));
             // A cell narrower than its corners is a capsule, not a pinched
             // square: the radius never exceeds half the short side.
             let r = bar::RADIUS_CELL.min(bounds.width / 2.0).min(bounds.height / 2.0);
+            let fill = look
+                .background
+                .unwrap_or(iced::Background::Color(Color::TRANSPARENT))
+                .scale_alpha(self.opacity);
             renderer.fill_quad(
                 renderer::Quad {
                     bounds,
                     border: Border {
-                        color: look.border.color,
+                        color: look.border.color.scale_alpha(self.opacity),
                         width: look.border.width,
                         radius: r.into(),
                     },
                     ..renderer::Quad::default()
                 },
-                look.background
-                    .unwrap_or(iced::Background::Color(Color::TRANSPARENT)),
+                fill,
             );
         }
         let cursor = self.inner_cursor(layout, cursor);
@@ -645,6 +663,49 @@ impl ShellFrame {
         reveal: 0.0,
         presence: 0.0,
     };
+
+    /// The core's ink: faded by how open it is and by the shell's presence,
+    /// each through [`lead`], so the core's glyphs are transparent before the
+    /// closing edge reaches them and arrive only once there is room to read
+    /// them.
+    pub fn core_alpha(self) -> f32 {
+        lead(self.open) * lead(self.presence)
+    }
+
+    /// The revealed section's ink, the same way.
+    pub fn revealed_alpha(self) -> f32 {
+        lead(self.reveal) * lead(self.presence)
+    }
+
+    /// The grip's ink: it goes and comes with the shell.
+    pub fn grip_alpha(self) -> f32 {
+        lead(self.presence)
+    }
+
+    /// The cell ground's opacity. The glass scales linearly with presence —
+    /// it is the object's extent, and fading it ahead would leave content
+    /// floating on nothing — and a shell compressed to its grip keeps only
+    /// [`bar::GRIP_GROUND`] of it, so a run of grips is quiet.
+    pub fn ground_alpha(self) -> f32 {
+        let open = self.open.clamp(0.0, 1.0).max(self.reveal.clamp(0.0, 1.0));
+        let kept = bar::GRIP_GROUND + (1.0 - bar::GRIP_GROUND) * open;
+        kept * self.presence.clamp(0.0, 1.0)
+    }
+}
+
+/// How much ink a part shows at `travel` (`0.0..=1.0`) of its motion:
+/// nothing through the first [`crate::tokens::motion::FADE_LEAD`], then a
+/// smoothstep to full. Continuous in `travel`, so a retargeted motion never
+/// makes the ink jump; its slope is zero at both ends, so a settle never
+/// ends on a visible step.
+pub fn lead(travel: f32) -> f32 {
+    let l = crate::tokens::motion::FADE_LEAD;
+    let t = if travel.is_finite() {
+        ((travel - l) / (1.0 - l)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// The widths a shell's parts take, for a layout solver that has to know a
@@ -741,12 +802,20 @@ pub fn widget_shell<'a, Message: 'a>(
             height: bar::WIDGET_H,
             edge: ClipEdge::Right,
             ground: None,
+            opacity: 1.0,
         }),
     ];
     let natural = bar::GRIP_W + body_w;
     let visible = span.width_at(frame);
 
-    glass_cell(inner, natural, visible, false, ClipEdge::Right)
+    glass_cell_faded(
+        inner,
+        natural,
+        visible,
+        false,
+        ClipEdge::Right,
+        frame.ground_alpha(),
+    )
 }
 
 /// A bare glass cell: `content` laid out at `natural` width, shown `visible`
@@ -765,6 +834,22 @@ pub fn glass_cell<'a, Message: 'a>(
     accent: bool,
     edge: ClipEdge,
 ) -> Element<'a, Message, Theme> {
+    glass_cell_faded(content, natural, visible, accent, edge, 1.0)
+}
+
+/// [`glass_cell`] with its ground (fill and hairline) at `opacity`, for a
+/// cell that is arriving or leaving: the glass fades as it narrows rather
+/// than a full-strength hairline shrinking to a bright sliver. The content
+/// fades itself — iced has no layer opacity — so pass it inks already scaled
+/// (see [`ShellFrame::core_alpha`]).
+pub fn glass_cell_faded<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    natural: f32,
+    visible: f32,
+    accent: bool,
+    edge: ClipEdge,
+    opacity: f32,
+) -> Element<'a, Message, Theme> {
     let visible = visible.max(0.0);
     container(Element::new(Clip {
         content: content.into(),
@@ -773,6 +858,7 @@ pub fn glass_cell<'a, Message: 'a>(
         height: bar::WIDGET_H,
         edge,
         ground: Some(accent),
+        opacity: opacity.clamp(0.0, 1.0),
     }))
     .width(Length::Fixed(visible))
     .height(Length::Fixed(bar::WIDGET_H))
@@ -797,9 +883,19 @@ struct VizBars {
 /// The visualizer. `live` spends the accent: pass it only while media is
 /// playing and nothing else on the bar is yellow.
 pub fn viz_bars<'a, Message: 'a>(levels: &[f32; bar::VIZ_BANDS], live: bool) -> Element<'a, Message, Theme> {
+    viz_bars_faded(levels, live, 1.0)
+}
+
+/// [`viz_bars`] at `alpha` of its ink, for a shell in motion.
+pub fn viz_bars_faded<'a, Message: 'a>(
+    levels: &[f32; bar::VIZ_BANDS],
+    live: bool,
+    alpha: f32,
+) -> Element<'a, Message, Theme> {
+    let ink = if live { color::ACCENT } else { color::TEXT_TERTIARY };
     Element::new(VizBars {
         levels: *levels,
-        ink: if live { color::ACCENT } else { color::TEXT_TERTIARY },
+        ink: ink.scale_alpha(alpha.clamp(0.0, 1.0)),
     })
 }
 
@@ -838,6 +934,9 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for VizBars {
         _cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
+        if self.ink.a <= 0.0 {
+            return;
+        }
         let b = layout.bounds();
         let mid = (b.y + b.height / 2.0).round();
         let x0 = b.x.round();
@@ -869,6 +968,17 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for VizBars {
 /// shove its neighbours every second. `accent` is the bar's one yellow — leave
 /// it off unless this reading is the live value.
 pub fn mini_meter<'a, Message: 'a>(label: &str, fraction: f32, accent: bool) -> Element<'a, Message, Theme> {
+    mini_meter_faded(label, fraction, accent, 1.0)
+}
+
+/// [`mini_meter`] at `alpha` of its ink, for a shell in motion.
+pub fn mini_meter_faded<'a, Message: 'a>(
+    label: &str,
+    fraction: f32,
+    accent: bool,
+    alpha: f32,
+) -> Element<'a, Message, Theme> {
+    let a = alpha.clamp(0.0, 1.0);
     let f = if fraction.is_finite() {
         fraction.clamp(0.0, 1.0)
     } else {
@@ -879,12 +989,13 @@ pub fn mini_meter<'a, Message: 'a>(label: &str, fraction: f32, accent: bool) -> 
     } else {
         (color::TEXT_SECONDARY, color::TEXT)
     };
+    let (fill, reading) = (fill.scale_alpha(a), reading.scale_alpha(a));
     let lit = (bar::METER_W * f).round();
     let head = row![
         text(label.to_uppercase())
             .font(font::DATA_MEDIUM)
             .size(size::MICRO)
-            .color(color::TEXT_TERTIARY)
+            .color(color::TEXT_TERTIARY.scale_alpha(a))
             .wrapping(text::Wrapping::None),
         Space::new().width(Length::Fill),
         text(format!("{}%", (f * 100.0).round() as u32))
@@ -899,7 +1010,7 @@ pub fn mini_meter<'a, Message: 'a>(label: &str, fraction: f32, accent: bool) -> 
         quad(
             Length::Fixed(bar::METER_W - lit),
             Length::Fixed(bar::METER_H),
-            color::TRACK,
+            color::TRACK.scale_alpha(a),
             0.0
         ),
     ];
@@ -971,14 +1082,18 @@ impl<Message> canvas::Program<Message> for GlyphMark {
     }
 }
 
-fn transport_lift(_t: &Theme, status: button::Status) -> button::Style {
+fn transport_lift(alpha: f32) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_t: &Theme, status: button::Status| transport_lift_at(status, alpha)
+}
+
+fn transport_lift_at(status: button::Status, alpha: f32) -> button::Style {
     let background = match status {
         button::Status::Hovered => color::LIFT_SOFT,
         button::Status::Pressed => color::LIFT,
         _ => Color::TRANSPARENT,
     };
     button::Style {
-        background: Some(iced::Background::Color(background)),
+        background: Some(iced::Background::Color(background.scale_alpha(alpha))),
         text_color: color::TEXT,
         border: iced::border::rounded(bar::RADIUS_TRANSPORT),
         ..button::Style::default()
@@ -989,6 +1104,7 @@ fn transport_button<'a, Message: Clone + 'a>(
     glyph: Glyph,
     primary: bool,
     on_press: Option<Message>,
+    alpha: f32,
 ) -> Element<'a, Message, Theme> {
     let (ink, hover_ink) = match (on_press.is_some(), primary) {
         (false, _) => (color::TEXT_TERTIARY, color::TEXT_TERTIARY),
@@ -997,8 +1113,8 @@ fn transport_button<'a, Message: Clone + 'a>(
     };
     let mark = canvas(GlyphMark {
         glyph,
-        ink,
-        hover_ink,
+        ink: ink.scale_alpha(alpha),
+        hover_ink: hover_ink.scale_alpha(alpha),
     })
     .width(Length::Fixed(bar::TRANSPORT_BTN))
     .height(Length::Fixed(bar::TRANSPORT_BTN));
@@ -1006,7 +1122,7 @@ fn transport_button<'a, Message: Clone + 'a>(
         .padding(iced::Padding::ZERO)
         .width(Length::Fixed(bar::TRANSPORT_BTN))
         .height(Length::Fixed(bar::TRANSPORT_BTN))
-        .style(transport_lift);
+        .style(transport_lift(alpha));
     match on_press {
         Some(m) => b.on_press(m).into(),
         None => b.into(),
@@ -1027,10 +1143,27 @@ pub fn transport<'a, Message: Clone + 'a>(
     play_pause: Option<Message>,
     next: Option<Message>,
 ) -> Element<'a, Message, Theme> {
+    transport_faded(playing, prev, play_pause, next, 1.0)
+}
+
+/// [`transport`] at `alpha` of its ink, for a revealed section in motion.
+pub fn transport_faded<'a, Message: Clone + 'a>(
+    playing: bool,
+    prev: Option<Message>,
+    play_pause: Option<Message>,
+    next: Option<Message>,
+    alpha: f32,
+) -> Element<'a, Message, Theme> {
+    let a = alpha.clamp(0.0, 1.0);
     row![
-        transport_button(Glyph::Prev, false, prev),
-        transport_button(if playing { Glyph::Pause } else { Glyph::Play }, true, play_pause),
-        transport_button(Glyph::Next, false, next),
+        transport_button(Glyph::Prev, false, prev, a),
+        transport_button(
+            if playing { Glyph::Pause } else { Glyph::Play },
+            true,
+            play_pause,
+            a
+        ),
+        transport_button(Glyph::Next, false, next, a),
     ]
     .spacing(bar::TRANSPORT_GAP)
     .align_y(Alignment::Center)
@@ -1059,6 +1192,20 @@ pub fn volume_slider<'a, Message: Clone + 'a>(
     on_change: impl Fn(f32) -> Message + 'a,
     on_release: Option<Message>,
 ) -> Element<'a, Message, Theme> {
+    volume_slider_faded(volume, max, muted, accent, on_change, on_release, 1.0)
+}
+
+/// [`volume_slider`] at `alpha` of its ink, for a revealed section in motion.
+pub fn volume_slider_faded<'a, Message: Clone + 'a>(
+    volume: f32,
+    max: f32,
+    muted: bool,
+    accent: bool,
+    on_change: impl Fn(f32) -> Message + 'a,
+    on_release: Option<Message>,
+    alpha: f32,
+) -> Element<'a, Message, Theme> {
+    let a = alpha.clamp(0.0, 1.0);
     let max = if max.is_finite() && max > 0.0 { max } else { 1.0 };
     let v = if volume.is_finite() {
         volume.clamp(0.0, max)
@@ -1070,6 +1217,7 @@ pub fn volume_slider<'a, Message: Clone + 'a>(
         (false, true) => (color::ACCENT, color::ACCENT_TEXT),
         (false, false) => (color::TEXT_SECONDARY, color::TEXT),
     };
+    let (fill, reading) = (fill.scale_alpha(a), reading.scale_alpha(a));
     let mut track = slider(0.0..=max, v, on_change)
         .step(0.01_f32)
         .width(Length::Fixed(bar::VOLUME_W))
@@ -1077,14 +1225,14 @@ pub fn volume_slider<'a, Message: Clone + 'a>(
         .style(move |_t: &Theme, status: slider::Status| {
             let knob = match status {
                 slider::Status::Active => fill,
-                _ if muted => color::TEXT_SECONDARY,
-                _ => color::TEXT,
+                _ if muted => color::TEXT_SECONDARY.scale_alpha(a),
+                _ => color::TEXT.scale_alpha(a),
             };
             slider::Style {
                 rail: slider::Rail {
                     backgrounds: (
                         iced::Background::Color(fill),
-                        iced::Background::Color(color::TRACK),
+                        iced::Background::Color(color::TRACK.scale_alpha(a)),
                     ),
                     width: bar::VOLUME_RAIL,
                     border: Border::default(),
@@ -1156,6 +1304,40 @@ pub fn art_thumb<'a, Message: 'a>(art: Option<&image::Handle>, hard: bool) -> El
     }
 }
 
+/// The art square while a cover arrives: the [`art_thumb`] placeholder under
+/// it, the cover over it at `arrival` (`0.0..=1.0`, from an animation), the
+/// whole at `alpha` of its ink.
+///
+/// A widget because the cover lands after the track — the service fetches
+/// it, sometimes over the network — and the slot is already reserved, so the
+/// cover must *develop* in place over the square that held its room. An
+/// image swapped in on the frame it decoded is a pop, and ADR 0065's motion
+/// exists to remove pops.
+pub fn art_slot<'a, Message: 'a>(
+    art: Option<&image::Handle>,
+    hard: bool,
+    arrival: f32,
+    alpha: f32,
+) -> Element<'a, Message, Theme> {
+    let r = if hard { 0.0 } else { bar::RADIUS_ART };
+    let a = alpha.clamp(0.0, 1.0);
+    let arrival = arrival.clamp(0.0, 1.0);
+    let under = |ink: Color| quad(Length::Fixed(bar::ART), Length::Fixed(bar::ART), ink, r);
+    match art {
+        Some(h) if arrival > 0.0 => iced::widget::stack![
+            under(color::TRACK.scale_alpha(a * (1.0 - arrival))),
+            image(h.clone())
+                .width(Length::Fixed(bar::ART))
+                .height(Length::Fixed(bar::ART))
+                .content_fit(iced::ContentFit::Cover)
+                .border_radius(r)
+                .opacity(a * arrival),
+        ]
+        .into(),
+        _ => under(color::TRACK.scale_alpha(a)),
+    }
+}
+
 // ----------------------------------------------------------------- label
 
 /// Cut `s` to at most `max` characters, with an ellipsis if it was cut.
@@ -1178,6 +1360,17 @@ pub fn elide(s: &str, max: usize) -> String {
 /// width with every song. It is elided to the width's character budget and
 /// then clipped, so the worst case is a lost character, never a reflow.
 pub fn track_label<'a, Message: 'a>(title: &str, subtitle: &str, width: f32) -> Element<'a, Message, Theme> {
+    track_label_faded(title, subtitle, width, 1.0)
+}
+
+/// [`track_label`] at `alpha` of its ink, for a shell in motion.
+pub fn track_label_faded<'a, Message: 'a>(
+    title: &str,
+    subtitle: &str,
+    width: f32,
+    alpha: f32,
+) -> Element<'a, Message, Theme> {
+    let a = alpha.clamp(0.0, 1.0);
     let budget = (width / bar::CHAR_W).floor() as usize;
     // The mono face at MICRO is narrower per char than the UI face at 12px.
     let mono_budget = (width / (bar::CHAR_W * size::MICRO / size::BODY_SMALL)).floor() as usize;
@@ -1186,12 +1379,12 @@ pub fn track_label<'a, Message: 'a>(title: &str, subtitle: &str, width: f32) -> 
             text(elide(title, budget))
                 .font(font::UI_MEDIUM)
                 .size(size::BODY_SMALL)
-                .color(color::TEXT)
+                .color(color::TEXT.scale_alpha(a))
                 .wrapping(text::Wrapping::None),
             text(elide(subtitle, mono_budget))
                 .font(font::DATA)
                 .size(size::MICRO)
-                .color(color::TEXT_SECONDARY)
+                .color(color::TEXT_SECONDARY.scale_alpha(a))
                 .wrapping(text::Wrapping::None),
         ]
         .spacing(bar::LABEL_LINE_GAP),
@@ -1270,5 +1463,38 @@ mod tests {
         assert_eq!(st.look(Grip::Hover, false), Grip::Active);
         assert_eq!(GripState::default().look(Grip::Hover, false), Grip::Hover);
         assert_eq!(GripState::default().look(Grip::Rest, true), Grip::Hover);
+    }
+
+    /// The ink lead is silent through `FADE_LEAD`, whole at the end, and
+    /// continuous and monotonic between: a retargeted motion never makes a
+    /// glyph flicker.
+    #[test]
+    fn the_ink_lead_is_continuous_and_monotonic() {
+        let l = crate::tokens::motion::FADE_LEAD;
+        assert_eq!(lead(0.0), 0.0);
+        assert_eq!(lead(l), 0.0);
+        assert_eq!(lead(1.0), 1.0);
+        assert_eq!(lead(f32::NAN), 0.0);
+        let mut prev = 0.0;
+        for i in 0..=1000 {
+            let a = lead(i as f32 / 1000.0);
+            assert!(a >= prev, "monotonic at {i}");
+            assert!(a - prev < 0.01, "continuous at {i}: {prev} -> {a}");
+            prev = a;
+        }
+    }
+
+    /// A compressed shell keeps a quiet ground, a gone one none, an open one
+    /// all of it; the grip's ink follows presence alone.
+    #[test]
+    fn a_compressed_ground_is_quiet_and_a_gone_one_is_nothing() {
+        assert_eq!(ShellFrame::COMPRESSED.ground_alpha(), bar::GRIP_GROUND);
+        assert_eq!(ShellFrame::GONE.ground_alpha(), 0.0);
+        assert_eq!(ShellFrame::FULL.ground_alpha(), 1.0);
+        assert_eq!(ShellFrame::REVEALED.ground_alpha(), 1.0);
+        assert_eq!(ShellFrame::COMPRESSED.core_alpha(), 0.0);
+        assert_eq!(ShellFrame::COMPRESSED.grip_alpha(), 1.0);
+        assert_eq!(ShellFrame::FULL.revealed_alpha(), 0.0);
+        assert_eq!(ShellFrame::REVEALED.revealed_alpha(), 1.0);
     }
 }

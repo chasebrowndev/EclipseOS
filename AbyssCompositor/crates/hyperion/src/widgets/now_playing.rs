@@ -23,6 +23,9 @@ use crate::app::Message;
 pub struct Cfg {
     pub art: bool,
     pub visualizer: bool,
+    /// `remote-art`: whether the media service may fetch `https` covers.
+    /// Applied to the service in `services::configure`, not read here.
+    pub remote_art: bool,
 }
 
 impl Default for Cfg {
@@ -30,6 +33,7 @@ impl Default for Cfg {
         Cfg {
             art: true,
             visualizer: true,
+            remote_art: true,
         }
     }
 }
@@ -50,6 +54,12 @@ impl State {
     /// A cover that did not come from the service: a preview's fixture.
     pub fn set_art(&mut self, key: &str, handle: image::Handle) {
         self.art = Some((key.to_owned(), handle));
+    }
+
+    /// The service's key for the cover on hand: a change starts its fade in
+    /// (`motion::Bar::retarget_art`).
+    pub fn art_key(&self) -> Option<&str> {
+        self.art.as_ref().map(|(k, _)| k.as_str())
     }
 
     pub fn playing(&self) -> bool {
@@ -113,26 +123,41 @@ fn msg(f: Feed) -> Message {
     Message::Widget(Routed::NowPlaying(f))
 }
 
-pub fn view<'a>(state: &'a State, cfg: &Cfg, frame: ShellFrame) -> Parts<'a> {
+/// `arrival` is how far the current cover has faded in over its slot.
+pub fn view<'a>(state: &'a State, cfg: &Cfg, frame: ShellFrame, arrival: f32) -> Parts<'a> {
     let Some(np) = state.shown.as_ref() else {
         return Parts::empty();
     };
     let playing = np.status == Playback::Playing;
     let subtitle = np.artist.as_deref().or(np.album.as_deref()).unwrap_or(&np.player);
+    let ink = frame.core_alpha();
     let mut core = Row::new().spacing(bar::WIDGET_GAP).align_y(Alignment::Center);
     if cfg.art {
-        core = core.push(parts::art_thumb(state.art.as_ref().map(|(_, h)| h), false));
+        // The slot is reserved whether or not a cover has come: the cover
+        // lands after the track and develops in over the placeholder.
+        let art = state.art.as_ref().map(|(_, h)| h);
+        core = core.push(parts::art_slot(art, false, arrival, ink));
     }
-    core = core.push(parts::track_label(&np.title, subtitle, bar::MEDIA_TEXT_W));
+    core = core.push(parts::track_label_faded(
+        &np.title,
+        subtitle,
+        bar::MEDIA_TEXT_W,
+        ink,
+    ));
     if cfg.visualizer {
         // The accent is the live value: playing, and actually on screen.
-        core = core.push(parts::viz_bars(&state.levels, playing && frame.open > 0.0));
+        core = core.push(parts::viz_bars_faded(
+            &state.levels,
+            playing && frame.open > 0.0,
+            ink,
+        ));
     }
-    let transport = parts::transport(
+    let transport = parts::transport_faded(
         playing,
         np.can_prev.then(|| msg(Feed::Previous)),
         np.can_pause.then(|| msg(Feed::PlayPause)),
         np.can_next.then(|| msg(Feed::Next)),
+        frame.revealed_alpha(),
     );
     Parts {
         core: core.into(),
@@ -179,6 +204,7 @@ mod tests {
             &Cfg {
                 art: false,
                 visualizer: false,
+                ..Cfg::default()
             },
         )
         .core;

@@ -317,9 +317,10 @@ pub struct FoldState {
     /// Current surface height in logical pixels — what the view draws into and
     /// what the exclusive zone is set from, so the two can never disagree.
     pub height: u32,
-    from_h: u32,
     to_h: u32,
-    started: Option<std::time::Instant>,
+    /// The slide itself, in fractional pixels so a reversal starts from where
+    /// the bar really is rather than from the rounded `height`.
+    slide: Slide,
     /// A fold decided but not yet committed, and when it was first seen. Only
     /// ever a fold: unfolding is immediate, because that is the direction a
     /// human is waiting on.
@@ -331,12 +332,25 @@ impl Default for FoldState {
         FoldState {
             target: FoldTarget::Shown,
             height: crate::HEIGHT,
-            from_h: crate::HEIGHT,
             to_h: crate::HEIGHT,
-            started: None,
+            slide: Slide::Rest,
             pending: None,
         }
     }
+}
+
+/// What is moving the fold height.
+///
+/// A leg that starts from rest follows the configured `bar.fold-curve`, so the
+/// key keeps its meaning. A leg that interrupts a slide still in flight — the
+/// pointer came back before the fold landed — is handed to an
+/// [`Animated`](eclipse_ui::motion::Animated) spring seeded with the speed the
+/// bar had, so the reversal has neither a position jump nor a velocity kink.
+#[derive(Debug, Clone, Copy)]
+enum Slide {
+    Rest,
+    Curve { from: f32, started: std::time::Instant },
+    Spring(eclipse_ui::motion::Animated),
 }
 
 /// What the bar's layer surface is asked for: its height, its exclusive zone
@@ -391,7 +405,7 @@ impl FoldState {
     /// sitting out its grace. Drives whether the tick subscription exists at
     /// all, so a settled bar costs no wakeups.
     pub fn animating(&self) -> bool {
-        self.started.is_some() || self.pending.is_some()
+        !matches!(self.slide, Slide::Rest) || self.pending.is_some()
     }
 }
 
@@ -1084,36 +1098,81 @@ fn sync_eye(app: &mut App) -> Task<Message> {
 }
 
 /// Accept a new target and start the slide toward it from wherever the bar
-/// currently is — a reversal mid-slide does not jump back to the old end.
+/// currently is. From rest the leg follows `bar.fold-curve`; a reversal
+/// mid-slide becomes a spring that keeps the bar's current speed, so it
+/// neither jumps back to the old end nor stops dead before turning.
 fn commit(app: &mut App, target: FoldTarget, now: std::time::Instant) {
+    use eclipse_ui::motion::{Animated, Curve, Motion};
     app.fold.pending = None;
     app.fold.target = target;
-    app.fold.from_h = app.fold.height;
-    app.fold.to_h = target_height(&app.bar, target);
-    app.fold.started = if app.bar.fold_duration_ms == 0 || app.fold.from_h == app.fold.to_h {
-        None
+    let (at, speed) = slide_at(app, now);
+    let to_h = target_height(&app.bar, target);
+    app.fold.to_h = to_h;
+    let to = to_h as f32;
+    app.fold.slide = if app.bar.fold_duration_ms == 0 || at == to {
+        app.fold.height = to_h;
+        Slide::Rest
+    } else if matches!(app.fold.slide, Slide::Rest) {
+        Slide::Curve {
+            from: at,
+            started: now,
+        }
     } else {
-        Some(now)
+        let motion = Motion {
+            enabled: true,
+            curve: Curve::Spring,
+            duration: std::time::Duration::from_millis(app.bar.fold_duration_ms as u64),
+        };
+        let mut spring = Animated::new(at, motion);
+        spring.fling(to, speed, now);
+        Slide::Spring(spring)
     };
 }
 
-/// Interpolate one frame. Lands exactly on `to_h`, never past it.
-fn advance(app: &mut App, now: std::time::Instant) {
-    let Some(started) = app.fold.started else {
-        app.fold.height = app.fold.to_h;
-        return;
-    };
-    let dur = app.bar.fold_duration_ms.max(1) as f32;
-    let t = now.duration_since(started).as_secs_f32() * 1000.0 / dur;
-    if t >= 1.0 {
-        app.fold.started = None;
-        app.fold.height = app.fold.to_h;
-        return;
+/// Where the slide is at `now`, in fractional pixels, and how fast it is
+/// moving there (pixels per second).
+fn slide_at(app: &App, now: std::time::Instant) -> (f32, f32) {
+    match app.fold.slide {
+        Slide::Rest => (app.fold.height as f32, 0.0),
+        Slide::Curve { from, started } => {
+            let dur = app.bar.fold_duration_ms.max(1) as f32 / 1000.0;
+            let t = now.saturating_duration_since(started).as_secs_f32() / dur;
+            if t >= 1.0 {
+                return (app.fold.to_h as f32, 0.0);
+            }
+            let curve = app.bar.fold_curve;
+            let span = app.fold.to_h as f32 - from;
+            // The curves are quadratics: a central difference is exact.
+            let (lo, hi) = ((t - 1e-3).max(0.0), t + 1e-3);
+            let slope = (curve.ease(hi) - curve.ease(lo)) / (hi - lo);
+            (from + span * curve.ease(t), span * slope / dur)
+        }
+        Slide::Spring(mut s) => {
+            s.tick(now);
+            (s.value(), s.velocity())
+        }
     }
-    let eased = app.bar.fold_curve.ease(t);
-    let from = app.fold.from_h as f32;
-    let to = app.fold.to_h as f32;
-    app.fold.height = (from + (to - from) * eased).round() as u32;
+}
+
+/// Advance one frame. Lands exactly on `to_h`, never past it.
+fn advance(app: &mut App, now: std::time::Instant) {
+    let (at, _) = slide_at(app, now);
+    let landed = match &mut app.fold.slide {
+        Slide::Rest => true,
+        Slide::Curve { started, .. } => {
+            now.saturating_duration_since(*started).as_millis() >= app.bar.fold_duration_ms as u128
+        }
+        Slide::Spring(s) => {
+            s.tick(now);
+            !s.animating()
+        }
+    };
+    if landed {
+        app.fold.slide = Slide::Rest;
+        app.fold.height = app.fold.to_h;
+    } else {
+        app.fold.height = at.round().max(0.0) as u32;
+    }
 }
 
 /// Re-read the three lists and re-resolve any icon we have not seen.
@@ -1161,6 +1220,7 @@ pub fn relayout(app: &mut App, now: Instant) {
         .iter()
         .map(|w| layout::ChipIn {
             whole: layout::whole_width(w.label()),
+            name: layout::whole_width(w.name()),
             minimized: w.minimized,
         })
         .collect();
@@ -1170,6 +1230,11 @@ pub fn relayout(app: &mut App, now: Instant) {
         chips: &chips,
         widgets: &app.widget_inputs,
     });
+
+    // Before the chips: their retarget marks the bar laid out, and a cover
+    // already on hand at the first layout must land, not fade.
+    let cover = app.widgets.now_playing.art_key().map(str::to_owned);
+    app.motion.retarget_art(cover.as_deref(), now);
 
     let workspace = crate::view::strip_workspace(app);
     let snap = app.motion.snaps(workspace);
@@ -2018,7 +2083,7 @@ mod fold_tests {
             a.bar.fold_curve = curve;
             let started = std::time::Instant::now();
             commit(&mut a, FoldTarget::Folded, started);
-            assert!(a.fold.started.is_some(), "{curve:?} animates");
+            assert!(a.fold.animating(), "{curve:?} animates");
 
             let mut last = a.fold.height;
             for step in 1..=10u32 {
@@ -2032,6 +2097,48 @@ mod fold_tests {
             assert_eq!(a.fold.height, a.fold.to_h, "{curve:?} lands on to_h");
             assert!(!a.fold.animating(), "{curve:?} settles");
         }
+    }
+
+    /// A reversal mid-slide is continuous: no height jump at the turn, no
+    /// velocity kink, no frame that leaps, and it lands exactly on the shown
+    /// height with the clock stopped.
+    #[test]
+    fn a_reversed_fold_turns_without_a_jump() {
+        let mut a = folding_app();
+        a.bar.fold_duration_ms = 200;
+        let t0 = std::time::Instant::now();
+        let ms = |n: u64| t0 + std::time::Duration::from_millis(n);
+        commit(&mut a, FoldTarget::Folded, t0);
+        for n in (8..=80).step_by(8) {
+            advance(&mut a, ms(n));
+        }
+        let mid = a.fold.height;
+        assert!(
+            mid < crate::HEIGHT && mid > a.bar.fold_height,
+            "mid-slide at {mid}"
+        );
+        let (at, speed) = slide_at(&a, ms(80));
+        assert!(speed < 0.0, "folding moves down");
+
+        commit(&mut a, FoldTarget::Shown, ms(80));
+        let (at2, speed2) = slide_at(&a, ms(80));
+        assert!((at2 - at).abs() < 0.01, "no jump at the turn: {at} -> {at2}");
+        assert!(
+            (speed2 - speed).abs() < 1.0,
+            "no velocity kink: {speed} -> {speed2}"
+        );
+
+        let mut prev = a.fold.height;
+        let mut steps = Vec::new();
+        for n in (88..=1000).step_by(8) {
+            advance(&mut a, ms(n));
+            steps.push(a.fold.height as i32 - prev as i32);
+            prev = a.fold.height;
+        }
+        let max_step = steps.iter().map(|d| d.abs()).max().unwrap_or(0);
+        assert!(max_step <= 4, "no frame leaps: {steps:?}");
+        assert_eq!(a.fold.height, crate::HEIGHT, "lands exactly");
+        assert!(!a.fold.animating(), "and the clock stops");
     }
 
     /// Zero duration means snap: no animation frames, no tick subscription.

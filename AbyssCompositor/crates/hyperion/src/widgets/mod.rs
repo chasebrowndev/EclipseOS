@@ -268,7 +268,12 @@ pub fn category(app: &App, id: &WidgetId) -> String {
 fn parts<'a>(app: &'a App, id: &WidgetId, frame: ShellFrame) -> Parts<'a> {
     let cfg = &app.widget_cfg;
     match id {
-        WidgetId::NowPlaying => now_playing::view(&app.widgets.now_playing, &cfg.now_playing, frame),
+        WidgetId::NowPlaying => now_playing::view(
+            &app.widgets.now_playing,
+            &cfg.now_playing,
+            frame,
+            app.motion.art.value(),
+        ),
         WidgetId::SystemUsage => system_usage::view(&app.widgets.usage, &cfg.usage, frame),
         WidgetId::Volume => volume::view(&app.widgets.volume, &cfg.volume, frame),
         WidgetId::Network => network::view(app, frame),
@@ -283,9 +288,19 @@ fn parts<'a>(app: &'a App, id: &WidgetId, frame: ShellFrame) -> Parts<'a> {
     }
 }
 
+/// One widget as the row places it.
+pub struct Cell<'a> {
+    /// How far it has arrived: its leading gap opens with it.
+    pub presence: f32,
+    /// How far it is compressed to its grip: `1.0` is the grip alone. Two
+    /// neighbouring grips close their gap up to [`bar::GRIP_RUN_GAP`].
+    pub closed: f32,
+    pub element: Element<'a, Message, Theme>,
+}
+
 /// The widget at `index` of `bar.widgets.order`, on its shell, at the width
 /// its animation has reached. `None` once it has animated all the way out.
-pub fn cell(app: &App, index: usize) -> Option<(f32, Element<'_, Message, Theme>)> {
+pub fn cell(app: &App, index: usize) -> Option<Cell<'_>> {
     let id = app.widget_cfg.order.get(index)?;
     let input = app.widget_inputs.get(index)?;
     let key = id.key();
@@ -313,16 +328,25 @@ pub fn cell(app: &App, index: usize) -> Option<(f32, Element<'_, Message, Theme>
         // plain glass cell, clipped the same way while it comes and goes.
         let body = container(fixed(core, input.core)).padding([0.0, bar::WIDGET_X]);
         let visible = (core_run * presence).round();
-        return Some((
+        return Some(Cell {
             presence,
-            parts::glass_cell(body, core_run, visible, false, ClipEdge::Right),
-        ));
+            closed: 0.0,
+            element: parts::glass_cell_faded(
+                body,
+                core_run,
+                visible,
+                false,
+                ClipEdge::Right,
+                frame.ground_alpha(),
+            ),
+        });
     }
 
     let live = app.motion.drag.as_ref().is_some_and(|d| d.key == key);
     let (press, drag_key, release) = (key.clone(), key.clone(), key);
     let grip = parts::drag_bar()
         .state(if live { Grip::Active } else { Grip::Rest })
+        .opacity(frame.grip_alpha())
         .on_press(Message::Grip(press, GripEv::Press))
         .on_drag(move |dx| Message::Grip(drag_key.clone(), GripEv::Drag(dx)))
         .on_release(Message::Grip(release, GripEv::Release));
@@ -331,7 +355,11 @@ pub fn cell(app: &App, index: usize) -> Option<(f32, Element<'_, Message, Theme>
         revealed: input.revealed,
     };
     let revealed = revealed.filter(|_| input.revealed > 0.0);
-    Some((presence, parts::widget_shell(grip, core, revealed, span, frame)))
+    Some(Cell {
+        presence,
+        closed: 1.0 - frame.open.max(frame.reveal),
+        element: parts::widget_shell(grip, core, revealed, span, frame),
+    })
 }
 
 /// `content` in a box exactly `width` wide and the cell's height, centred.

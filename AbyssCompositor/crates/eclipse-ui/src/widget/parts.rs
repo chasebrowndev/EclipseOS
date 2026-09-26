@@ -688,6 +688,19 @@ pub fn surface<'a, Message: 'a>(
 /// system's job — a caller that drew it inline would be reinventing
 /// [`big_value`] at 10 pixels.
 pub fn battery_gauge<'a, Message: 'a>(percent: u8, fill: Color) -> Element<'a, Message, Theme> {
+    battery_gauge_faded(percent, fill, 1.0)
+}
+
+/// [`battery_gauge`] at `alpha` of its ink — frame and level together — for
+/// a bar cell in motion. A gauge whose frame stayed at full ink while its
+/// cell faded around it would be the last thing on screen.
+pub fn battery_gauge_faded<'a, Message: 'a>(
+    percent: u8,
+    fill: Color,
+    alpha: f32,
+) -> Element<'a, Message, Theme> {
+    let a = alpha.clamp(0.0, 1.0);
+    let (fill, track) = (fill.scale_alpha(a), color::TRACK.scale_alpha(a));
     let inner = space::MARK_CELL_W - 2.0 * space::MARK_BORDER;
     let filled = inner * (percent.min(100) as f32 / 100.0);
     let level = row![
@@ -698,9 +711,9 @@ pub fn battery_gauge<'a, Message: 'a>(percent: u8, fill: Color) -> Element<'a, M
         .width(Length::Fixed(space::MARK_CELL_W))
         .height(Length::Fixed(space::MARK))
         .padding(space::MARK_BORDER)
-        .style(|_t: &Theme| container::Style {
+        .style(move |_t: &Theme| container::Style {
             border: iced::Border {
-                color: color::TRACK,
+                color: track,
                 width: space::MARK_BORDER,
                 radius: 0.0.into(),
             },
@@ -711,7 +724,7 @@ pub fn battery_gauge<'a, Message: 'a>(percent: u8, fill: Color) -> Element<'a, M
         edge_quad(
             Length::Fixed(space::MARK_BORDER),
             Length::Fixed(space::MARK * 0.45),
-            color::TRACK,
+            track,
         ),
     ]
     .align_y(Alignment::Center)

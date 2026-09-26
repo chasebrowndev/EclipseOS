@@ -28,7 +28,8 @@ pub fn spans(app: &App) -> Spans {
     }
 }
 
-pub fn view(app: &App, _frame: ShellFrame) -> Parts<'_> {
+pub fn view(app: &App, frame: ShellFrame) -> Parts<'_> {
+    let ink = frame.core_alpha();
     let Some(battery) = app.battery else {
         return Parts::empty();
     };
@@ -42,12 +43,12 @@ pub fn view(app: &App, _frame: ShellFrame) -> Parts<'_> {
     let face = Row::new()
         .spacing(bar::GAP)
         .align_y(Alignment::Center)
-        .push(parts::battery_gauge(battery.percent, tint))
+        .push(parts::battery_gauge_faded(battery.percent, tint, ink))
         .push(
             text(battery_text(battery))
                 .size(size::MONO)
                 .font(font::DATA)
-                .color(tint),
+                .color(tint.scale_alpha(ink)),
         );
     Parts {
         core: face.into(),

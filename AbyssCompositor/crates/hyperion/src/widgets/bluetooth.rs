@@ -22,10 +22,10 @@ pub fn spans(_app: &App) -> Spans {
     }
 }
 
-pub fn view(app: &App, _frame: ShellFrame) -> Parts<'_> {
+pub fn view(app: &App, frame: ShellFrame) -> Parts<'_> {
     Parts {
         core: super::press(
-            bluetooth_mark(app.bluetooth, bar::MARK),
+            bluetooth_mark(app.bluetooth, bar::MARK, frame.core_alpha()),
             bar::MARK,
             Message::Open(Drawer::Bluetooth),
         ),
@@ -41,17 +41,18 @@ pub(crate) fn glyph(bt: Bluetooth) -> &'static str {
     }
 }
 
-/// The bluetooth mark: the theme's own rune, in one of three hues — inert
-/// grey when the radio is off, the accent when it is powered but idle, and
-/// [`color::CONNECTED`] when a device is on the other end. The glyph changes
-/// with it so the state survives for anyone who cannot tell the hues apart.
-pub(crate) fn bluetooth_mark(bt: Bluetooth, side: f32) -> Element<'static, Message, Theme> {
+/// The bluetooth mark: the theme's own rune on the white ink ramp —
+/// secondary while a device is on the other end, tertiary when the adapter
+/// is idle or off. The glyph carries which of those it is, so no hue has to:
+/// the widgets' one yellow is the visualizer's (see the accent ledger in
+/// `view.rs`), and blue is the drawer's word for "linked", not the bar's.
+/// `alpha` fades it with its cell.
+pub(crate) fn bluetooth_mark(bt: Bluetooth, side: f32, alpha: f32) -> Element<'static, Message, Theme> {
     let tint = match (bt.powered, bt.connected) {
-        (false, _) => color::NEUTRAL,
-        (true, 0) => color::ACCENT,
-        (true, _) => color::CONNECTED,
+        (true, n) if n > 0 => color::TEXT_SECONDARY,
+        _ => color::TEXT_TERTIARY,
     };
-    parts::mark(crate::icons::symbolic(glyph(bt)), side, tint)
+    parts::mark(crate::icons::symbolic(glyph(bt)), side, tint.scale_alpha(alpha))
 }
 
 /// A bluetooth device's mark, by what the device is.

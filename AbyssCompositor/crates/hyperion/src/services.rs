@@ -64,9 +64,11 @@ pub fn configure(cfg: &widgets::Config) {
         return;
     }
     let mut h = handles();
-    if h.media.is_none() {
-        h.media = Some(media::spawn());
-    }
+    let media = h.media.get_or_insert_with(media::spawn);
+    // Every configure, not only the first: a reload that turns remote art
+    // off must drop the covers already fetched, and the service makes a
+    // repeat of the current setting a no-op.
+    media.set_remote_art(cfg.now_playing.remote_art);
     if h.audio.is_none() {
         h.audio = Some(audio::spawn());
     }

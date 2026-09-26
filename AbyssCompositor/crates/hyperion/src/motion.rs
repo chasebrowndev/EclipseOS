@@ -14,8 +14,9 @@
 //! *target* width and drawn at that width under a clip whose edge is the
 //! animated one, so a label is uncovered or covered, never re-wrapped.
 //!
-//! The fold slide (`app::FoldState`) and the eye's darts (`eye::Iris`) keep
-//! their own tweens; they predate this and are not migrated here.
+//! The fold slide (`app::FoldState`) keeps its configured `bar.fold-curve`
+//! from rest and hands an interrupted slide to an [`Animated`] spring; the
+//! eye's darts (`eye::Iris`) keep their own tween.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -37,6 +38,11 @@ pub struct Chip {
     pub content: f32,
     /// Closed; drawn only until its presence reaches zero.
     pub gone: bool,
+    /// The content width of the face being faded out, while its rung
+    /// changes: a label that appears or goes cross-fades, never pops.
+    pub prev: Option<f32>,
+    /// How far the current face has faded in over `prev`'s.
+    pub swap: Animated,
 }
 
 impl Chip {
@@ -46,7 +52,34 @@ impl Chip {
     }
 
     fn animating(&self) -> bool {
-        self.width.animating() || self.presence.animating()
+        self.width.animating() || self.presence.animating() || self.swap.animating()
+    }
+
+    /// The face's rung at content width `width`.
+    fn detail(&self, width: f32) -> crate::layout::Detail {
+        crate::layout::chip_detail(self.window.label(), self.window.name(), width)
+    }
+
+    /// Lay the face out at `to`. A change of rung (a label arriving, going,
+    /// or turning from title to name) cross-fades from the face on screen;
+    /// a change inside one rung only moves the edge.
+    fn relay(&mut self, to: f32, snap: bool, now: Instant) {
+        if to == self.content {
+            return;
+        }
+        let changed = self.detail(to) != self.detail(self.content);
+        if changed && !snap {
+            // The outgoing face keeps the ink it has on screen now, so a
+            // change arriving mid-fade continues rather than restarts.
+            let shown = self.swap.value().clamp(0.0, 1.0);
+            self.prev = Some(self.content);
+            self.swap.snap(1.0 - shown);
+            self.swap.set_target(1.0, now);
+        } else if snap {
+            self.prev = None;
+            self.swap.snap(1.0);
+        }
+        self.content = to;
     }
 }
 
@@ -124,6 +157,10 @@ pub struct Bar {
     /// What the human last did to each widget, and the content category it
     /// was done to (see `widgets::category`).
     pub pins: HashMap<String, (Pin, String)>,
+    /// How far Now Playing's current cover has developed in over its slot.
+    pub art: Animated,
+    /// The cover `art` is fading in, by the service's key.
+    art_key: Option<String>,
     motion: Motion,
     /// Whether anything has been placed yet: the first layout lands at once.
     laid_out: bool,
@@ -138,6 +175,8 @@ impl Default for Bar {
             widgets: HashMap::new(),
             drag: None,
             pins: HashMap::new(),
+            art: Animated::new(0.0, Motion::DEFAULT),
+            art_key: None,
             motion: Motion::DEFAULT,
             laid_out: false,
             workspace: None,
@@ -153,9 +192,11 @@ impl Bar {
     /// Adopt `bar.motion.*`. Anything in flight lands.
     pub fn set_motion(&mut self, motion: Motion) {
         self.motion = motion;
+        self.art.set_motion(motion);
         for c in &mut self.chips {
             c.width.set_motion(motion);
             c.presence.set_motion(motion);
+            c.swap.set_motion(motion);
         }
         for w in self.widgets.values_mut() {
             w.extent.set_motion(motion);
@@ -170,6 +211,26 @@ impl Bar {
     pub fn snaps(&self, workspace: Option<usize>) -> bool {
         let dragging = self.drag.as_ref().is_some_and(|d| d.dx != 0.0);
         !self.laid_out || self.workspace != workspace || self.motion.snaps() || dragging
+    }
+
+    /// Now Playing's cover is `key` now. A new cover develops in from its
+    /// placeholder — it lands after the track, into a slot already reserved,
+    /// so it must never pop in. The first layout, and motion off, land at
+    /// once; no cover is the placeholder at once (there is nothing left to
+    /// fade out).
+    pub fn retarget_art(&mut self, key: Option<&str>, now: Instant) {
+        if self.art_key.as_deref() == key {
+            return;
+        }
+        self.art_key = key.map(str::to_owned);
+        match key {
+            Some(_) if self.laid_out && !self.motion.snaps() => {
+                self.art.snap(0.0);
+                self.art.set_target(1.0, now);
+            }
+            Some(_) => self.art.snap(1.0),
+            None => self.art.snap(0.0),
+        }
     }
 
     /// Point the chips at the solver's answer. `live` is the strip in order;
@@ -199,13 +260,15 @@ impl Bar {
                         presence: Animated::new(0.0, motion),
                         content: width,
                         gone: false,
+                        prev: None,
+                        swap: Animated::new(1.0, motion),
                     }
                 }
             };
             chip.window = (*w).clone();
             let presence = if target.is_some() { 1.0 } else { 0.0 };
             if let Some(t) = target {
-                chip.content = t;
+                chip.relay(t, snap, now);
                 aim(&mut chip.width, t, snap, now);
             }
             aim(&mut chip.presence, presence, snap, now);
@@ -267,17 +330,23 @@ impl Bar {
         for c in &mut self.chips {
             c.width.tick(now);
             c.presence.tick(now);
+            c.swap.tick(now);
+            if !c.swap.animating() {
+                c.prev = None;
+            }
         }
         self.chips.retain(|c| !(c.gone && !c.animating()));
         for w in self.widgets.values_mut() {
             w.extent.tick(now);
             w.presence.tick(now);
         }
+        self.art.tick(now);
     }
 
     /// Whether another frame is needed.
     pub fn animating(&self) -> bool {
         self.drag.is_some()
+            || self.art.animating()
             || self.chips.iter().any(Chip::animating)
             || self
                 .widgets
@@ -370,6 +439,136 @@ mod tests {
         bar.retarget_chips(&[&b], &out(1, 100.0), Some(2), t0);
         assert!(!bar.animating());
         assert_eq!(bar.chips.len(), 1);
+    }
+
+    fn wout(extent: f32) -> WidgetOut {
+        WidgetOut {
+            x: 0.0,
+            width: extent,
+            extent,
+            state: crate::layout::State::Core,
+        }
+    }
+
+    /// A compress interrupted mid-flight and sent back open keeps its value
+    /// and its speed at the turn, never moves more than a spring's step per
+    /// frame, lands exactly, and then stops the clock.
+    #[test]
+    fn an_interrupted_compress_turns_without_a_jump() {
+        let mut bar = Bar::default();
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        bar.retarget_widgets(&[("np".into(), true, wout(200.0))], true, t0);
+        bar.retarget_widgets(&[("np".into(), true, wout(0.0))], false, t0);
+        for n in (8..=64).step_by(8) {
+            bar.tick(ms(n));
+        }
+        let before = bar.widgets["np"].extent;
+        assert!(before.value() > 0.0 && before.value() < 200.0, "mid-flight");
+        assert!(before.velocity() < 0.0, "compressing");
+
+        bar.retarget_widgets(&[("np".into(), true, wout(200.0))], false, ms(64));
+        let after = bar.widgets["np"].extent;
+        assert_eq!(after.value(), before.value(), "no jump at the turn");
+        assert_eq!(after.velocity(), before.velocity(), "no velocity kink");
+
+        let mut prev = after.value();
+        for n in (72..=1200).step_by(8) {
+            bar.tick(ms(n));
+            let v = bar.widgets["np"].extent.value();
+            assert!((v - prev).abs() < 25.0, "frame at {n}ms leapt {prev} -> {v}");
+            prev = v;
+        }
+        assert_eq!(prev, 200.0, "lands exactly");
+        assert!(!bar.animating(), "and the clock stops");
+    }
+
+    /// Once everything has landed — widths, presences, a rung cross-fade
+    /// and a cover developing in — the bar asks for no more frames.
+    #[test]
+    fn the_clock_stops_when_settled() {
+        let (a, b) = (win(1), win(2));
+        let mut bar = Bar::default();
+        let t0 = Instant::now();
+        bar.retarget_chips(&[&a], &out(1, 400.0), Some(1), t0);
+        bar.retarget_art(Some("one"), t0);
+        bar.retarget_chips(&[&a, &b], &out(2, 20.0), Some(1), t0);
+        bar.retarget_art(Some("two"), t0);
+        bar.retarget_widgets(&[("np".into(), true, wout(120.0))], false, t0);
+        assert!(bar.animating());
+        bar.tick(t0 + Duration::from_secs(3));
+        assert!(!bar.animating());
+        assert!(
+            bar.chips.iter().all(|c| c.prev.is_none()),
+            "the outgoing face is dropped"
+        );
+        assert_eq!(bar.art.value(), 1.0);
+    }
+
+    /// Motion off lands every change at once: no frames at all.
+    #[test]
+    fn motion_off_snaps_everything() {
+        let (a, b) = (win(1), win(2));
+        let mut bar = Bar::default();
+        bar.set_motion(Motion::SNAP);
+        let t0 = Instant::now();
+        bar.retarget_chips(&[&a], &out(1, 400.0), Some(1), t0);
+        bar.retarget_chips(&[&a, &b], &out(2, 20.0), Some(1), t0);
+        bar.retarget_art(Some("cover"), t0);
+        let snap = bar.snaps(Some(1));
+        bar.retarget_widgets(&[("np".into(), true, wout(120.0))], snap, t0);
+        bar.retarget_widgets(&[("np".into(), true, wout(0.0))], snap, t0);
+        assert!(!bar.animating());
+        assert_eq!(bar.chips[1].visible(), 20.0);
+        assert!(bar.chips[0].prev.is_none(), "no cross-fade under motion off");
+        assert_eq!(bar.widgets["np"].extent.value(), 0.0);
+        assert_eq!(bar.art.value(), 1.0);
+    }
+
+    /// A chip whose rung changes cross-fades its two faces, and a change
+    /// arriving mid-fade continues from the ink on screen.
+    #[test]
+    fn a_rung_change_cross_fades_and_a_reversal_continues() {
+        let a = win(1);
+        let mut bar = Bar::default();
+        let t0 = Instant::now();
+        bar.retarget_chips(&[&a], &out(1, 400.0), Some(1), t0);
+        bar.retarget_chips(&[&a], &out(1, 20.0), Some(1), t0);
+        assert_eq!(bar.chips[0].prev, Some(400.0));
+        assert_eq!(bar.chips[0].swap.value(), 0.0, "the new face starts clear");
+        bar.tick(t0 + Duration::from_millis(80));
+        let shown = bar.chips[0].swap.value();
+        assert!(shown > 0.0 && shown < 1.0);
+        bar.retarget_chips(&[&a], &out(1, 400.0), Some(1), t0 + Duration::from_millis(80));
+        assert_eq!(bar.chips[0].prev, Some(20.0));
+        assert!((bar.chips[0].swap.value() - (1.0 - shown)).abs() < 1e-6);
+        // A move inside one rung only moves the edge.
+        bar.tick(t0 + Duration::from_secs(2));
+        bar.retarget_chips(&[&a], &out(1, 380.0), Some(1), t0 + Duration::from_secs(2));
+        assert!(bar.chips[0].prev.is_none());
+    }
+
+    /// A cover arriving on the first layout is simply there; one arriving
+    /// later develops in over its placeholder; no cover is the placeholder.
+    #[test]
+    fn a_cover_develops_in_after_the_first_layout() {
+        let a = win(1);
+        let mut bar = Bar::default();
+        let t0 = Instant::now();
+        bar.retarget_art(Some("one"), t0);
+        assert_eq!(bar.art.value(), 1.0);
+        assert!(!bar.animating());
+        bar.retarget_chips(&[&a], &out(1, 100.0), Some(1), t0);
+        bar.retarget_art(Some("two"), t0);
+        assert_eq!(bar.art.value(), 0.0);
+        bar.tick(t0 + Duration::from_millis(60));
+        let mid = bar.art.value();
+        assert!(mid > 0.0 && mid < 1.0);
+        bar.retarget_art(Some("two"), t0 + Duration::from_millis(60));
+        assert_eq!(bar.art.value(), mid, "the same cover does not restart");
+        bar.retarget_art(None, t0 + Duration::from_millis(60));
+        assert_eq!(bar.art.value(), 0.0);
+        assert!(!bar.animating());
     }
 
     #[test]

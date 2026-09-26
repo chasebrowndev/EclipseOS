@@ -396,6 +396,9 @@ pub fn parse_widgets(reply: &Value) -> widgets::Config {
             Some("bar.widgets.now-playing.visualizer") => {
                 cfg.now_playing.visualizer = b.unwrap_or(cfg.now_playing.visualizer)
             }
+            Some("bar.widgets.now-playing.remote-art") => {
+                cfg.now_playing.remote_art = b.unwrap_or(cfg.now_playing.remote_art)
+            }
             Some("bar.widgets.system-usage.interval-ms") => {
                 cfg.usage.interval_ms = n.unwrap_or(cfg.usage.interval_ms)
             }
@@ -462,6 +465,7 @@ mod tests {
                 {"path": "bar.widgets.important", "value": 7},
                 {"path": "bar.widgets.volume.max-percent", "value": 140},
                 {"path": "bar.widgets.now-playing.visualizer", "value": false},
+                {"path": "bar.widgets.now-playing.remote-art", "value": false},
                 {"path": "bar.motion.duration-ms", "value": 300},
                 {"path": "bar.motion.curve", "value": "linear"},
                 {"path": "bar.motion.enabled", "value": "yes"},
@@ -484,6 +488,8 @@ mod tests {
         assert_eq!(cfg.important, d.important);
         assert_eq!(cfg.volume.max_percent, 140);
         assert!(!cfg.now_playing.visualizer);
+        assert!(!cfg.now_playing.remote_art);
+        assert!(d.now_playing.remote_art, "remote art is on by default");
         assert_eq!(cfg.motion.duration.as_millis(), 300);
         assert_eq!(cfg.motion.curve.as_str(), "linear");
         assert_eq!(cfg.motion.enabled, d.motion.enabled);

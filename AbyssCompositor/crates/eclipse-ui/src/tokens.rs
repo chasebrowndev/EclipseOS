@@ -421,6 +421,15 @@ pub mod bar {
     pub const GRIP_DOT_GAP: f32 = 2.0;
     pub const GRIP_COLS: usize = 2;
     pub const GRIP_ROWS: usize = 4;
+    /// Air between two widgets that are both compressed to their grips. A
+    /// run of grips at the full [`GAP`] reads as a row of identical empty
+    /// chips; closed up, it reads as one rack of handles — each still its
+    /// own cell and its own drag.
+    pub const GRIP_RUN_GAP: f32 = 1.0;
+    /// How much of the cell ground (hairline and lift) a widget compressed
+    /// to its grip keeps, as a fraction. The grip's dots are the object; the
+    /// capsule around a lone grip is only there to say where it ends.
+    pub const GRIP_GROUND: f32 = 0.4;
     /// Padding inside the shell, either side of the core and the revealed
     /// section.
     pub const WIDGET_X: f32 = 8.0;
@@ -553,6 +562,11 @@ pub mod motion {
     pub const FLING_LOOKAHEAD_S: f32 = 0.12;
     /// Weight of the newest sample in a drag's smoothed velocity.
     pub const VELOCITY_BLEND: f32 = 0.6;
+    /// The first fraction of a cell's travel over which its content stays
+    /// fully transparent. Content fades *ahead of* its clip: closing, it is
+    /// gone before the edge reaches a glyph; opening, it arrives once there
+    /// is room to read it. Never a glyph cut in half at full ink.
+    pub const FADE_LEAD: f32 = 0.35;
 }
 
 /// A context menu: the mark rail that opens on a right-click.
