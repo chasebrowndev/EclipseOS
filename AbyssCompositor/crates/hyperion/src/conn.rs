@@ -11,6 +11,7 @@ use eclipse_ui::tokens::popup::Anchor;
 use serde_json::{json, Value};
 
 use crate::model::{parse_focused, parse_windows, parse_workspaces, Snapshot};
+use crate::widgets;
 
 /// The events that change anything the bar draws.
 pub const KINDS: &[EventKind] = &[
@@ -199,9 +200,8 @@ impl Conn {
     /// `workspace` is the 1-based wire index, exactly as `get_workspaces`
     /// reported it.
     /// Every output the compositor knows about, as `(id, connector)`, plus the
-    /// id of the focused one. The supervisor uses the list to decide how many
-    /// bars to run; a bound bar uses it once to learn its own id from the
-    /// connector name it was started with.
+    /// id of the focused one. The list decides which outputs have a bar
+    /// (`app::reconcile`) and resolves each bar's connector name to its id.
     pub fn outputs(&mut self) -> (Vec<(u64, String)>, Option<u64>) {
         self.ensure();
         let Some(v) = self.call("get_outputs", json!({})) else {
@@ -334,6 +334,16 @@ impl Conn {
         cfg
     }
 
+    /// `bar.widgets.*`, `bar.motion.*` and the `widget` blocks (ADR 0065).
+    /// Fail-soft like the others: no reply is the defaults.
+    pub fn widgets_config(&mut self) -> widgets::Config {
+        self.ensure();
+        match self.call("get_config", json!({ "schema": false })) {
+            Some(v) => parse_widgets(&v),
+            None => widgets::Config::default(),
+        }
+    }
+
     pub fn switch_workspace(&mut self, workspace: usize) {
         self.call("switch_workspace", json!({ "workspace": workspace }));
     }
@@ -349,5 +359,146 @@ impl Conn {
         self.ensure();
         let client = self.client.as_mut()?;
         eclipse_ui::ipc::fetch_config_radius(client, path)
+    }
+}
+
+/// `bar.widgets.*`, `bar.motion.*` and `collections.widget` out of a
+/// `get_config` reply. A key that is missing or the wrong shape keeps its
+/// default; an unknown widget id is dropped (the compositor's validator has
+/// already refused it, so this only matters for a newer compositor).
+pub fn parse_widgets(reply: &Value) -> widgets::Config {
+    use std::time::Duration;
+
+    use eclipse_ipc::widgets::{widgets_from_config, WidgetKind};
+    use eclipse_services::custom::{Kind, WidgetSpec};
+    use eclipse_ui::motion::Curve;
+    use widgets::WidgetId;
+
+    let mut cfg = widgets::Config::default();
+    let ids = |v: &Value| -> Option<Vec<WidgetId>> {
+        v.as_array().map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .filter_map(WidgetId::parse)
+                .collect()
+        })
+    };
+    for key in reply.get("keys").and_then(Value::as_array).into_iter().flatten() {
+        let Some(value) = key.get("value") else {
+            continue;
+        };
+        let (b, n, s) = (value.as_bool(), value.as_u64(), value.as_str());
+        match key.get("path").and_then(Value::as_str) {
+            Some("bar.widgets.order") => cfg.order = ids(value).unwrap_or(cfg.order),
+            Some("bar.widgets.important") => cfg.important = ids(value).unwrap_or(cfg.important),
+            Some("bar.widgets.now-playing.art") => cfg.now_playing.art = b.unwrap_or(cfg.now_playing.art),
+            Some("bar.widgets.now-playing.visualizer") => {
+                cfg.now_playing.visualizer = b.unwrap_or(cfg.now_playing.visualizer)
+            }
+            Some("bar.widgets.now-playing.remote-art") => {
+                cfg.now_playing.remote_art = b.unwrap_or(cfg.now_playing.remote_art)
+            }
+            Some("bar.widgets.system-usage.interval-ms") => {
+                cfg.usage.interval_ms = n.unwrap_or(cfg.usage.interval_ms)
+            }
+            Some("bar.widgets.system-usage.gpu") => cfg.usage.gpu = b.unwrap_or(cfg.usage.gpu),
+            Some("bar.widgets.system-usage.disk") => cfg.usage.disk = b.unwrap_or(cfg.usage.disk),
+            Some("bar.widgets.system-usage.disk-path") => {
+                if let Some(p) = s {
+                    cfg.usage.disk_path = p.into();
+                }
+            }
+            Some("bar.widgets.volume.step") => {
+                cfg.volume.step = n.map_or(cfg.volume.step, |n| n.min(100) as u32)
+            }
+            Some("bar.widgets.volume.scroll") => cfg.volume.scroll = b.unwrap_or(cfg.volume.scroll),
+            Some("bar.widgets.volume.max-percent") => {
+                cfg.volume.max_percent = n.map_or(cfg.volume.max_percent, |n| n.min(150) as u32)
+            }
+            Some("bar.motion.enabled") => cfg.motion.enabled = b.unwrap_or(cfg.motion.enabled),
+            Some("bar.motion.duration-ms") => {
+                if let Some(ms) = n {
+                    cfg.motion.duration = Duration::from_millis(ms);
+                }
+            }
+            Some("bar.motion.curve") => {
+                if let Some(c) = s.and_then(Curve::parse) {
+                    cfg.motion.curve = c;
+                }
+            }
+            _ => {}
+        }
+    }
+    cfg.custom = widgets_from_config(reply)
+        .into_iter()
+        .map(|w| WidgetSpec {
+            name: w.name,
+            kind: match w.kind {
+                WidgetKind::Exec { argv, interval_ms } => Kind::Exec {
+                    argv,
+                    interval: Duration::from_millis(interval_ms.into()),
+                },
+                WidgetKind::Stream { argv } => Kind::Stream { argv },
+                WidgetKind::Source { source, format } => Kind::Source { source, format },
+            },
+            icon: w.icon,
+            on_click: w.on_click,
+            on_scroll_up: w.on_scroll_up,
+            on_scroll_down: w.on_scroll_down,
+        })
+        .collect();
+    cfg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widgets::WidgetId;
+    use eclipse_services::custom::Kind;
+
+    #[test]
+    fn widget_keys_and_blocks_parse_and_bad_ones_keep_defaults() {
+        let reply = json!({
+            "keys": [
+                {"path": "bar.widgets.order", "value": ["clock", "custom:weather", "sparkles"]},
+                {"path": "bar.widgets.important", "value": 7},
+                {"path": "bar.widgets.volume.max-percent", "value": 140},
+                {"path": "bar.widgets.now-playing.visualizer", "value": false},
+                {"path": "bar.widgets.now-playing.remote-art", "value": false},
+                {"path": "bar.motion.duration-ms", "value": 300},
+                {"path": "bar.motion.curve", "value": "linear"},
+                {"path": "bar.motion.enabled", "value": "yes"},
+            ],
+            "collections": {"widget": [
+                {"name": "weather", "kind": "exec", "exec": ["curl", "-s", "wttr.in"],
+                 "interval-ms": 600000, "source": null, "format": null, "icon": null,
+                 "on-click": null, "on-scroll-up": null, "on-scroll-down": null},
+                {"name": "cpu", "kind": "source", "exec": null, "interval-ms": null,
+                 "source": "usage.cpu", "format": "{}%", "icon": null,
+                 "on-click": null, "on-scroll-up": null, "on-scroll-down": null},
+            ]},
+        });
+        let cfg = parse_widgets(&reply);
+        let d = widgets::Config::default();
+        assert_eq!(
+            cfg.order,
+            vec![WidgetId::Clock, WidgetId::Custom("weather".into())]
+        );
+        assert_eq!(cfg.important, d.important);
+        assert_eq!(cfg.volume.max_percent, 140);
+        assert!(!cfg.now_playing.visualizer);
+        assert!(!cfg.now_playing.remote_art);
+        assert!(d.now_playing.remote_art, "remote art is on by default");
+        assert_eq!(cfg.motion.duration.as_millis(), 300);
+        assert_eq!(cfg.motion.curve.as_str(), "linear");
+        assert_eq!(cfg.motion.enabled, d.motion.enabled);
+        assert_eq!(cfg.custom.len(), 2);
+        assert!(matches!(&cfg.custom[0].kind, Kind::Exec { interval, .. } if interval.as_secs() == 600));
+        assert!(matches!(&cfg.custom[1].kind, Kind::Source { format, .. } if format == "{}%"));
+    }
+
+    #[test]
+    fn no_reply_shape_is_the_defaults() {
+        assert_eq!(parse_widgets(&json!(null)), widgets::Config::default());
     }
 }

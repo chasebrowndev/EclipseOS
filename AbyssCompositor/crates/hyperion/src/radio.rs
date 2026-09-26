@@ -8,7 +8,7 @@
 //! a tray item needs happen there, never in `update` or the view. Under test
 //! neither is started: the bar's tests never touch a bus.
 //!
-//! This process is not BlueZ's pairing agent. The supervisor is (one agent
+//! This module is not BlueZ's pairing agent. [`crate::pairing`] is (one agent
 //! per session, not one per monitor), and it starts the secret prompt itself.
 //!
 //! Nothing in this module ever holds a secret. A network that needs one is
@@ -375,7 +375,7 @@ fn from_event(event: Event) -> Option<Feed> {
             eprintln!("hyperion: {action} failed: {reason}");
             None
         }
-        // Settings' business, or the supervisor's (the pairing agent).
+        // Settings' business, or the pairing agent's (`crate::pairing`).
         _ => None,
     }
 }
@@ -471,8 +471,8 @@ pub mod actions {
     pub fn bt_disconnect(addr: &str) {
         radio(|a| a.bt_disconnect(addr.to_owned()));
     }
-    /// A PIN or passkey the device asks for goes to the supervisor, which
-    /// is the pairing agent and starts the prompt; the bar never sees it.
+    /// A PIN or passkey the device asks for goes to the pairing agent
+    /// ([`crate::pairing`]), which starts the prompt; the bar never sees it.
     pub fn pair(addr: &str) {
         radio(|a| a.bt_pair(addr.to_owned()));
     }

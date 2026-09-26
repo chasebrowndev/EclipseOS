@@ -12,6 +12,6 @@ description = "The Eclipse design system: tokens, type and widgets for the DE us
 publish = false
 
 [dependencies]
-iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "svg"] }
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "svg", "image", "canvas"] }
 eclipse-ipc = { path = "../eclipse-ipc" }
 serde_json.workspace = true

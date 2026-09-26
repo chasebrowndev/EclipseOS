@@ -1,49 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Which windows are making noise, and muting them.
+//! Which windows are making noise.
 //!
 //! A Wayland window and an audio stream have nothing in common except the
 //! process behind them, so that is the join: the compositor reports a window's
-//! client pid, PipeWire reports each playback stream's `application.process.id`,
+//! client pid, the audio service reports each playback stream's owning pid,
 //! and a stream belongs to a window when its pid is that pid or a descendant of
 //! it. The descendant part is not pedantry — a browser plays audio from a
 //! content child, never from the process that owns the surface.
 //!
-//! This shells out to `pactl`, which is how the rest of the session already
-//! talks to PipeWire (the volume keybinds use `wpctl`). No daemon, no state:
-//! every question is asked at the moment the menu opens, because a stream that
-//! existed a second ago may not exist now. If `pactl` is missing or answers
-//! something we do not understand, the answer is "no audio" and the menu
-//! simply does not offer a Mute entry.
+//! The streams themselves come from `eclipse_services::audio` (ADR 0065), kept
+//! on the app as the service last reported them; this module only answers
+//! "which of these are this window's". Muting goes back through the service's
+//! `set_app_muted`, one call per owning pid.
 
 use std::collections::HashSet;
-use std::process::Command;
 
-use serde_json::Value;
+use eclipse_services::audio::Stream;
 
-/// The playback streams belonging to `pid` or any of its descendants, as
-/// `(sink input index, muted)`.
-fn streams_for(pid: i32) -> Vec<(u64, bool)> {
-    let Ok(out) = Command::new("pactl")
-        .args(["-f", "json", "list", "sink-inputs"])
-        .output()
-    else {
-        return Vec::new();
-    };
-    let Ok(list): Result<Vec<Value>, _> = serde_json::from_slice(&out.stdout) else {
-        return Vec::new();
-    };
-    list.iter()
-        .filter_map(|s| {
-            let index = s.get("index").and_then(Value::as_u64)?;
-            let spid = s
-                .get("properties")?
-                .get("application.process.id")?
-                .as_str()?
-                .parse::<i32>()
-                .ok()?;
-            descends_from(spid, pid)
-                .then_some((index, s.get("mute").and_then(Value::as_bool).unwrap_or(false)))
-        })
+/// The streams in `streams` that belong to `pid` or any of its descendants.
+pub fn streams_for(streams: &[Stream], pid: i32) -> Vec<Stream> {
+    streams
+        .iter()
+        .filter(|s| i32::try_from(s.pid).is_ok_and(|spid| descends_from(spid, pid)))
+        .copied()
         .collect()
 }
 
@@ -73,50 +52,50 @@ fn ppid_of(pid: i32) -> Option<i32> {
 
 /// `Some(muted)` when this window's process has playback streams, `None` when
 /// it has none — which is the menu's cue to leave the entry out entirely.
-pub fn state_of(pid: Option<i32>) -> Option<bool> {
-    let streams = streams_for(pid?);
-    (!streams.is_empty()).then(|| streams.iter().all(|&(_, muted)| muted))
-}
-
-/// Mute or unmute every stream this window's process owns.
-pub fn set_mute(pid: Option<i32>, mute: bool) {
-    let Some(pid) = pid else { return };
-    for (index, _) in streams_for(pid) {
-        let _ = Command::new("pactl")
-            .args([
-                "set-sink-input-mute",
-                &index.to_string(),
-                if mute { "1" } else { "0" },
-            ])
-            .status();
-    }
+pub fn state_of(streams: &[Stream], pid: Option<i32>) -> Option<bool> {
+    let mine = streams_for(streams, pid?);
+    (!mine.is_empty()).then(|| mine.iter().all(|s| s.muted))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn me() -> i32 {
+        std::process::id() as i32
+    }
+
     #[test]
     fn a_process_descends_from_itself() {
-        assert!(descends_from(
-            std::process::id() as i32,
-            std::process::id() as i32
-        ));
+        assert!(descends_from(me(), me()));
     }
 
     #[test]
     fn a_process_does_not_descend_from_its_own_child() {
         // pid 1 is nobody's descendant but its own.
-        assert!(!descends_from(1, std::process::id() as i32));
+        assert!(!descends_from(1, me()));
     }
 
     #[test]
     fn the_parent_of_this_process_is_readable() {
-        assert!(ppid_of(std::process::id() as i32).is_some_and(|p| p > 0));
+        assert!(ppid_of(me()).is_some_and(|p| p > 0));
     }
 
     #[test]
     fn a_window_with_no_pid_has_no_audio() {
-        assert_eq!(state_of(None), None);
+        assert_eq!(state_of(&[], None), None);
+    }
+
+    /// A stream owned by this very process is this process's; all muted reads
+    /// as muted, one live stream as not.
+    #[test]
+    fn a_windows_streams_are_joined_by_pid() {
+        let pid = std::process::id();
+        let mine = |muted| Stream { pid, muted };
+        let theirs = Stream { pid: 1, muted: false };
+        assert_eq!(state_of(&[theirs], Some(me())), None);
+        assert_eq!(state_of(&[mine(true), theirs], Some(me())), Some(true));
+        assert_eq!(state_of(&[mine(true), mine(false)], Some(me())), Some(false));
+        assert_eq!(streams_for(&[mine(true), theirs], me()).len(), 1);
     }
 }

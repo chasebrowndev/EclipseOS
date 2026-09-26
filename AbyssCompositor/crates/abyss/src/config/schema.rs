@@ -79,9 +79,12 @@ pub enum Dv {
     Int(i64),
     Float(f64),
     Str(&'static str),
-    /// Every list-valued key defaults to empty; a non-empty default would be
-    /// an allow-list entry nobody asked for.
+    /// An allow-list defaults to empty; a non-empty default there would be an
+    /// entry nobody asked for.
     EmptyList,
+    /// A non-empty list default. Only for ordering keys (`bar.widgets.*`),
+    /// never for a policy-owned key; a test below pins that.
+    List(&'static [&'static str]),
     Color([f32; 4]),
 }
 
@@ -340,11 +343,13 @@ pub const TABLE: &[Key] = &[
         Null,
         Abyss,
         Live,
-        "Tray ids shown on the taskbar itself, in this order. Built-in applets \
-       are network, bluetooth, battery and volume; a StatusNotifierItem app \
-       goes by its own id. Unset means the taskbar's built-in order; an \
+        "StatusNotifierItem ids shown on the taskbar itself, in this order; an \
+       app goes by its own id. Unset means the taskbar's built-in order; an \
        empty list pins nothing. Anything neither pinned nor hidden sits in \
-       the overflow drawer.",
+       the overflow drawer. The built-in applets are widgets now \
+       (`bar.widgets.order`): their old ids here (network, bluetooth, \
+       battery, volume) still load, with a deprecation warning, and \
+       `eclipse-ctl config migrate` moves them.",
     ),
     k(
         "bar.tray.hidden",
@@ -352,12 +357,14 @@ pub const TABLE: &[Key] = &[
         EmptyList,
         Abyss,
         Live,
-        "Tray ids never shown, on the taskbar or in its overflow drawer. \
-       Hidden wins over pinned when an id is in both.",
+        "StatusNotifierItem ids never shown, on the taskbar or in its \
+       overflow drawer. Hidden wins over pinned when an id is in both. A \
+       built-in applet id here is deprecated the same way as in `pinned`: \
+       leave it out of `bar.widgets.order` instead.",
     ),
     k(
         "bar.rounding",
-        int(0, 512),
+        int(0, 64),
         Int(20),
         Abyss,
         Live,
@@ -398,6 +405,145 @@ pub const TABLE: &[Key] = &[
         "Show the Oracle-Eyes status eye on the taskbar's eclipse mark. The \
        compositor only stores this; the taskbar reads Oracle-Eyes' own status \
        socket (ADR 0055).",
+    ),
+    k(
+        "bar.widgets.order",
+        Ty::StrList,
+        List(BAR_WIDGET_DEFAULT_ORDER),
+        Abyss,
+        Live,
+        "Widgets drawn after the task strip, left to right (ADR 0065). \
+       Built-in ids: now-playing, system-usage, volume, network, bluetooth, \
+       battery, tray (the StatusNotifierItems and their overflow drawer) and \
+       clock; `custom:<name>` names a `widget` block in `bar`. A widget left \
+       out is not drawn. An unknown id, a repeated one, or a `custom:` \
+       naming no `widget` block is refused.",
+    ),
+    k(
+        "bar.widgets.important",
+        Ty::StrList,
+        List(BAR_WIDGET_DEFAULT_IMPORTANT),
+        Abyss,
+        Live,
+        "Widgets that never compress: when the bar runs short of room they \
+       keep their full size and everything else gives way first. Same ids \
+       as `bar.widgets.order`.",
+    ),
+    k(
+        "bar.widgets.now-playing.art",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Show album art in the Now Playing widget. Art the player keeps on \
+       this machine is read from disk; `https` art is fetched only while \
+       `bar.widgets.now-playing.remote-art` is on.",
+    ),
+    k(
+        "bar.widgets.now-playing.visualizer",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Draw the audio visualizer in Now Playing. While media plays and the \
+       widget is on screen it reads the default output's monitor, reduced to \
+       levels in memory and never stored, logged or sent. Off closes the \
+       stream.",
+    ),
+    k(
+        "bar.widgets.now-playing.remote-art",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Fetch Now Playing cover art the player publishes as an `https` URL, \
+       over https via `curl`. This reveals the playing track to the image \
+       host. Off shows the fallback glyph instead; `http` is never fetched.",
+    ),
+    k(
+        "bar.widgets.system-usage.interval-ms",
+        int(250, 10_000),
+        Int(1000),
+        Abyss,
+        Live,
+        "How often System Usage samples CPU, memory, GPU and disk, in ms.",
+    ),
+    k(
+        "bar.widgets.system-usage.gpu",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Show GPU load in System Usage, where the driver reports it.",
+    ),
+    k(
+        "bar.widgets.system-usage.disk",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Show how full a disk is in System Usage.",
+    ),
+    k(
+        "bar.widgets.system-usage.disk-path",
+        Ty::Str,
+        Str("/"),
+        Abyss,
+        Live,
+        "Absolute path on the filesystem whose fill level System Usage shows.",
+    ),
+    k(
+        "bar.widgets.volume.step",
+        int(1, 25),
+        Int(5),
+        Abyss,
+        Live,
+        "Percent the volume moves per scroll notch on the Volume widget.",
+    ),
+    k(
+        "bar.widgets.volume.scroll",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Scrolling over the Volume widget changes the volume.",
+    ),
+    k(
+        "bar.widgets.volume.max-percent",
+        int(100, 150),
+        Int(100),
+        Abyss,
+        Live,
+        "Highest volume the Volume widget's slider and scroll reach. Above \
+       100 boosts past the output's nominal level.",
+    ),
+    k(
+        "bar.motion.enabled",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Animate the taskbar's chips and widgets to their new place, width \
+       and opacity. Off snaps.",
+    ),
+    k(
+        "bar.motion.duration-ms",
+        int(0, 2000),
+        Int(220),
+        Abyss,
+        Live,
+        "How long a taskbar movement takes; with `spring`, roughly how long \
+       the spring takes to settle. Zero snaps.",
+    ),
+    k(
+        "bar.motion.curve",
+        Ty::Enum(BAR_MOTION_CURVES),
+        Str("spring"),
+        Abyss,
+        Live,
+        "Curve for taskbar movement: one of the `animations` easings, or \
+       `spring`, which carries its speed through an interrupted move instead \
+       of jumping.",
     ),
     // decoration
     k(
@@ -701,6 +847,7 @@ pub const COLLECTIONS: &[Collection] = &[
     Collection { node: "mousebind", owner: Abyss, doc: "A modifier + mouse-button binding: `mousebind \"<modifiers>\" \"<button>\" { <action>; }`. `button` is `left`, `right` or `middle`, and the action is `move-window` or `resize-window`. With exactly those modifiers held, pressing the button over a window drags it (move) or drags its nearest corner (resize); a tiled window is floated first. The press never reaches the client. At least one modifier is required. Defaults: `Alt` + `left` runs `move-window`, `Alt` + `right` runs `resize-window`. A `mousebind` for the same modifiers and button replaces the default." },
     Collection { node: "output", owner: Abyss, doc: "Per-output settings: `output \"<glob>\" { … }`. The glob (`*` only) matches the connector name or the persistent identity; later blocks override earlier ones key by key." },
     Collection { node: "workspace", owner: Abyss, doc: "Per-workspace layout override." },
+    Collection { node: "widget", owner: Abyss, doc: "A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget \"<name>\" { exec \"<argv0>\" \"<arg>\"…; interval-ms <ms>; }`; or `stream #true` instead of `interval-ms`, for a command that keeps running and prints one update per line; or `source \"<source>\"` with a `format` instead of `exec`. `bar.widgets.order` draws it as `custom:<name>`. Commands run argv-exec, never through a shell, off the draw path, with a timeout and a 4 KiB line cap, and are killed on reload or removal. A line of output is plain text or JSON `{text, detail, tooltip, state}`; it is shown as plain text, never markup, and never logged. A command has exactly your authority and gains nothing from the taskbar. A later block with the same name replaces an earlier one. `get_config` lists every block, in file order, under `collections.widget` as `{\"name\", \"kind\": \"exec\" | \"stream\" | \"source\", \"exec\": [argv] | null, \"interval-ms\": int | null, \"source\": string | null, \"format\": string | null, \"icon\": string | null, \"on-click\": [argv] | null, \"on-scroll-up\": [argv] | null, \"on-scroll-down\": [argv] | null}`, every field always present: `exec` is set for `exec` and `stream`, `interval-ms` for `exec` only, `source` and `format` for `source` only." },
     Collection { node: "windowrule", owner: Abyss, doc: "A rule matched against windows at map time. Its *action* decides the owning file." },
 ];
 
@@ -772,6 +919,116 @@ pub const ANIMATION_DEFAULT_CURVE: &str = "ease-out";
 pub const ANIMATION_DEFAULT_MS: u32 = 150;
 /// A longer `duration` is refused, not clamped.
 pub const ANIMATION_MAX_MS: u32 = 10_000;
+
+/// `bar.motion.curve`: the [`ANIMATION_CURVES`] easings plus `spring`. Its
+/// own list so `animations` keeps refusing `spring`; a test pins the prefix.
+pub const BAR_MOTION_CURVES: &[&str] = &["linear", "ease-in", "ease-out", "ease-in-out", "spring"];
+
+/// Built-in taskbar widget ids (ADR 0065). `custom:<name>` names a `widget`
+/// block instead.
+pub const BAR_WIDGET_IDS: &[&str] = &[
+    "now-playing",
+    "system-usage",
+    "volume",
+    "network",
+    "bluetooth",
+    "battery",
+    "tray",
+    "clock",
+];
+/// The prefix a custom widget's id carries in `bar.widgets.order`.
+pub const BAR_WIDGET_CUSTOM_PREFIX: &str = "custom:";
+pub const BAR_WIDGET_DEFAULT_ORDER: &[&str] = &[
+    "now-playing",
+    "volume",
+    "network",
+    "bluetooth",
+    "battery",
+    "tray",
+    "clock",
+];
+pub const BAR_WIDGET_DEFAULT_IMPORTANT: &[&str] = &["clock", "battery"];
+/// Built-in applet ids `bar.tray.pinned`/`hidden` carried before they became
+/// widgets. Still accepted there, with a deprecation warning;
+/// `eclipse-ctl config migrate` moves them to `bar.widgets.order`.
+pub const LEGACY_TRAY_BUILTINS: &[&str] = &["network", "bluetooth", "battery", "volume"];
+
+/// Shipped data sources a declarative `widget { source … }` can show. The
+/// taskbar resolves them from its own feeds; `{}` in `format` becomes the
+/// value (a whole percent for `usage.*` and `audio.volume`, text for
+/// `media.*`).
+pub const WIDGET_SOURCES: &[&str] = &[
+    "usage.cpu",
+    "usage.mem",
+    "usage.gpu",
+    "usage.disk",
+    "audio.volume",
+    "media.title",
+    "media.artist",
+];
+/// `widget { interval-ms … }`: default and bounds.
+pub const WIDGET_DEFAULT_INTERVAL_MS: u32 = 5_000;
+pub const WIDGET_MIN_INTERVAL_MS: u32 = 250;
+pub const WIDGET_MAX_INTERVAL_MS: u32 = 86_400_000;
+
+/// Sub-nodes of `bar { widget "<name>" { … } }` (ADR 0065). Exactly one of
+/// `exec` and `source`.
+pub const WIDGET_KEYS: &[Form] = &[
+    form(
+        &["exec"],
+        "\"<argv0>\" [\"<arg>\"…]",
+        &[r#"exec "curl" "-s" "wttr.in/?format=1""#],
+        "Run this command, argv-exec with no shell. Each run's output is one update: a line of plain text, or JSON `{text, detail, tooltip, state}`.",
+    ),
+    form(
+        &["interval-ms"],
+        "<250..86400000>",
+        &["interval-ms 600000", r#"interval-ms "10m""#],
+        "How often the `exec` command runs: milliseconds, or a string with a unit. Default 5000. Not with `stream`.",
+    ),
+    form(
+        &["stream"],
+        "[<bool>]",
+        &["stream #true", "stream"],
+        "Run the `exec` command once and keep it running; every line it prints is one update. Bare means `#true`.",
+    ),
+    form(
+        &["source"],
+        "\"<source>\"",
+        &[r#"source "usage.cpu""#],
+        "Show a shipped data source instead of running a command.",
+    ),
+    form(
+        &["format"],
+        "\"<text>\"",
+        &[r#"format "{}%""#],
+        "How a `source` value is shown; `{}` becomes the value. Default `{}`.",
+    ),
+    form(
+        &["icon"],
+        "\"<icon name or path>\"",
+        &[r#"icon "weather-clear""#],
+        "Icon drawn before the text.",
+    ),
+    form(
+        &["on-click"],
+        "\"<argv0>\" [\"<arg>\"…]",
+        &[r#"on-click "xdg-open" "https://wttr.in""#],
+        "Command run on a click, argv-exec.",
+    ),
+    form(
+        &["on-scroll-up"],
+        "\"<argv0>\" [\"<arg>\"…]",
+        &[r#"on-scroll-up "brightnessctl" "set" "+5%""#],
+        "Command run on a scroll up, argv-exec.",
+    ),
+    form(
+        &["on-scroll-down"],
+        "\"<argv0>\" [\"<arg>\"…]",
+        &[r#"on-scroll-down "brightnessctl" "set" "5%-""#],
+        "Command run on a scroll down, argv-exec.",
+    ),
+];
 
 /// `animations { animation "<name>" duration=… curve=… }` (COMP-02 §9). Each
 /// animation is off until named; an unknown name drops its node.
@@ -1160,6 +1417,21 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.clock.hour-12" => V::Bool(c.bar.clock.hour_12),
         "bar.clock.date-mdy" => V::Bool(c.bar.clock.date_mdy),
         "bar.eye" => V::Bool(c.bar.eye),
+        "bar.widgets.order" => list(&c.bar.widgets.order),
+        "bar.widgets.important" => list(&c.bar.widgets.important),
+        "bar.widgets.now-playing.art" => V::Bool(c.bar.widgets.now_playing.art),
+        "bar.widgets.now-playing.visualizer" => V::Bool(c.bar.widgets.now_playing.visualizer),
+        "bar.widgets.now-playing.remote-art" => V::Bool(c.bar.widgets.now_playing.remote_art),
+        "bar.widgets.system-usage.interval-ms" => V::Int(c.bar.widgets.system_usage.interval_ms as i64),
+        "bar.widgets.system-usage.gpu" => V::Bool(c.bar.widgets.system_usage.gpu),
+        "bar.widgets.system-usage.disk" => V::Bool(c.bar.widgets.system_usage.disk),
+        "bar.widgets.system-usage.disk-path" => V::Str(c.bar.widgets.system_usage.disk_path.clone()),
+        "bar.widgets.volume.step" => V::Int(c.bar.widgets.volume.step as i64),
+        "bar.widgets.volume.scroll" => V::Bool(c.bar.widgets.volume.scroll),
+        "bar.widgets.volume.max-percent" => V::Int(c.bar.widgets.volume.max_percent as i64),
+        "bar.motion.enabled" => V::Bool(c.bar.motion.enabled),
+        "bar.motion.duration-ms" => V::Int(c.bar.motion.duration_ms as i64),
+        "bar.motion.curve" => V::Str(c.bar.motion.curve.clone()),
         "bar.popup-anchor" => V::Str(
             match c.bar.popup_anchor {
                 BarPopupAnchor::Cell => "cell",
@@ -1248,6 +1520,7 @@ impl Dv {
             Dv::Float(f) => Value::Float(f),
             Dv::Str(s) => Value::Str(s.to_string()),
             Dv::EmptyList => Value::List(Vec::new()),
+            Dv::List(l) => Value::List(l.iter().map(|s| s.to_string()).collect()),
             Dv::Color(c) => Value::Color(c),
         }
     }
@@ -1262,6 +1535,7 @@ impl Dv {
             Dv::Float(f) => format!("{f:?}"),
             Dv::Str(s) => format!("{s:?}"),
             Dv::EmptyList => String::new(),
+            Dv::List(l) => l.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>().join(" "),
             Dv::Color(c) => format!(
                 "\"#{:02x}{:02x}{:02x}{:02x}\"",
                 (c[0] * 255.0).round() as u8,
@@ -1306,6 +1580,7 @@ mod tests {
                 // "ask smithay", which is the unset state, not a value.
                 "misc.render-device" => "/dev/dri/card1".into(),
                 "input.kb-layout" => "de".into(),
+                "bar.widgets.system-usage.disk-path" => "/home".into(),
                 _ => "x".to_string(),
             }),
             // A list node is not a scalar assignment; covered by its own row on
@@ -1447,6 +1722,56 @@ mod tests {
                     "{text}"
                 );
             }
+        }
+        for f in WIDGET_KEYS {
+            // Each example inside a block that is valid around it: exec and
+            // source stand alone, format needs a source, the rest an exec.
+            let base = match f.names[0] {
+                "exec" | "source" => "",
+                "format" => "source \"usage.cpu\"; ",
+                _ => "exec \"true\"; ",
+            };
+            for ex in f.examples {
+                assert!(ex.starts_with(f.names[0]), "{ex}");
+                let cfg = accepts(&format!("bar {{ widget \"w\" {{ {base}{ex}; }} }}"));
+                assert_eq!(cfg.bar.custom_widgets.len(), 1, "{ex}");
+            }
+        }
+        for s in WIDGET_SOURCES {
+            accepts(&format!("bar {{ widget \"w\" {{ source \"{s}\"; }} }}"));
+        }
+    }
+
+    /// `bar.motion.curve` is the `animations` easings plus `spring`, and
+    /// `animations` itself still refuses `spring`.
+    #[test]
+    fn bar_motion_curves_extend_animation_curves() {
+        assert_eq!(&BAR_MOTION_CURVES[..ANIMATION_CURVES.len()], ANIMATION_CURVES);
+        assert_eq!(&BAR_MOTION_CURVES[ANIMATION_CURVES.len()..], ["spring"]);
+        assert!(!ANIMATION_CURVES.contains(&"spring"));
+    }
+
+    /// A non-empty list default is an ordering, never an allow-list entry.
+    #[test]
+    fn no_policy_key_has_a_non_empty_default() {
+        for key in TABLE {
+            if key.owner == Policy {
+                assert!(!matches!(key.default, Dv::List(_)), "{}", key.path);
+            }
+        }
+    }
+
+    /// The default order and important set name only built-in widgets.
+    #[test]
+    fn widget_defaults_are_built_in_ids() {
+        for id in BAR_WIDGET_DEFAULT_ORDER
+            .iter()
+            .chain(BAR_WIDGET_DEFAULT_IMPORTANT)
+        {
+            assert!(BAR_WIDGET_IDS.contains(id), "{id}");
+        }
+        for id in LEGACY_TRAY_BUILTINS {
+            assert!(BAR_WIDGET_DEFAULT_ORDER.contains(id), "{id}");
         }
     }
 

@@ -26,3 +26,21 @@ path = "src/bin/eclipse-screensaver.rs"
 zbus = "5.19"
 eclipse-ipc = { path = "../eclipse-ipc" }
 serde_json.workspace = true
+# ADR 0065. The audio service (default sink, per-app mute, the visualizer's
+# monitor tap) speaks the PulseAudio native protocol, which pipewire-pulse
+# serves. Pure Rust: no libpulse, no bindgen/libclang (the `pipewire` crate
+# needs both), and its `protocol` module is synchronous, so the service runs
+# it on its own blocking thread like every other watcher here. MIT.
+pulseaudio = "0.3"
+# ADR 0065: the monitor tap's band reduction. MIT.
+realfft = "3"
+# ADR 0065: the usage sampler's disk fill level via statvfs(3). Already in the
+# tree through eclipse-ipc and zbus, so no new supply-chain surface.
+libc = "0.2"
+# ADR 0065: NVIDIA GPU busyness via NVML, dlopened from libnvidia-ml.so.1 at
+# runtime by libloading (never linked; no bindgen, no NVIDIA headers at build
+# time). Absent library = no NVIDIA reading. MIT OR Apache-2.0.
+nvml-wrapper = "0.13"
+# Only for the raw `nvmlDevice_t` handle type, which the wrapper does not
+# re-export. Already pulled in by nvml-wrapper. MIT OR Apache-2.0.
+nvml-wrapper-sys = "0.10"

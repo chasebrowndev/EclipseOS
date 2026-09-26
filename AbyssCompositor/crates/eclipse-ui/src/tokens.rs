@@ -401,6 +401,176 @@ pub mod bar {
     /// before layout. Erring a little narrow costs a character; erring wide
     /// would cost the clipping this whole ladder exists to prevent.
     pub const CHAR_W: f32 = 7.0;
+
+    // ------------------------------------------------------------- widgets
+    //
+    // ADR 0065: every bar widget is `[grip][revealed][core]` in one shell.
+    // These are the shell's metrics and its parts', decided once so that a
+    // user's custom widget and a shipped preset are the same object.
+
+    /// Height of a widget shell: the same ground a task chip paints, so the
+    /// row keeps one baseline.
+    pub const WIDGET_H: f32 = TASK_H;
+    /// The grip's column: wide enough to be a target at bar height, narrow
+    /// enough that a compressed widget is a sliver and not a chip.
+    pub const GRIP_W: f32 = 14.0;
+    /// One grip dot, square — hard-edged on purpose, so the grip reads as a
+    /// machined texture rather than a row of bullets.
+    pub const GRIP_DOT: f32 = 2.0;
+    /// Air between two grip dots, on both axes.
+    pub const GRIP_DOT_GAP: f32 = 2.0;
+    pub const GRIP_COLS: usize = 2;
+    pub const GRIP_ROWS: usize = 4;
+    /// Air between two widgets that are both compressed to their grips. A
+    /// run of grips at the full [`GAP`] reads as a row of identical empty
+    /// chips; closed up, it reads as one rack of handles — each still its
+    /// own cell and its own drag.
+    pub const GRIP_RUN_GAP: f32 = 1.0;
+    /// How much of the cell ground (hairline and lift) a widget compressed
+    /// to its grip keeps, as a fraction. The grip's dots are the object; the
+    /// capsule around a lone grip is only there to say where it ends.
+    pub const GRIP_GROUND: f32 = 0.4;
+    /// Padding inside the shell, either side of the core and the revealed
+    /// section.
+    pub const WIDGET_X: f32 = 8.0;
+    /// Between items inside a core (art and title, meter and meter).
+    pub const WIDGET_GAP: f32 = 8.0;
+    /// Corner radius of the shell: the task chip's own. A widget is a glass
+    /// cell of the same family as the window chips beside it, by the owner's
+    /// direction (ADR 0065); the grip is what tells the two apart.
+    pub const RADIUS_WIDGET: f32 = RADIUS_CELL;
+
+    /// The visualizer: sixteen bands, each a hard 2px column with 2px of air,
+    /// mirrored about the row's midline.
+    pub const VIZ_BANDS: usize = 16;
+    pub const VIZ_BAR_W: f32 = 2.0;
+    pub const VIZ_GAP: f32 = 2.0;
+    pub const VIZ_W: f32 = VIZ_BANDS as f32 * (VIZ_BAR_W + VIZ_GAP) - VIZ_GAP;
+    pub const VIZ_H: f32 = 20.0;
+    /// A silent band still draws this tall, so silence is a dotted rule and
+    /// not an empty box.
+    pub const VIZ_FLOOR: f32 = 2.0;
+
+    /// A mini meter: a micro label and a reading on one line, a hairline
+    /// track under them.
+    pub const METER_W: f32 = 52.0;
+    pub const METER_H: f32 = 2.0;
+    /// Between the label line and the track.
+    pub const METER_GAP: f32 = 4.0;
+
+    /// One transport button (prev / play-pause / next), and the glyph drawn
+    /// in it.
+    pub const TRANSPORT_BTN: f32 = 24.0;
+    pub const TRANSPORT_GLYPH: f32 = 9.0;
+    /// Stroke of the skip glyphs' stop bar and of the pause glyph's legs.
+    pub const TRANSPORT_STROKE: f32 = 2.0;
+    pub const TRANSPORT_GAP: f32 = 2.0;
+    pub const RADIUS_TRANSPORT: f32 = 5.0;
+
+    /// The volume track and its readout.
+    pub const VOLUME_W: f32 = 64.0;
+    pub const VOLUME_RAIL: f32 = 2.0;
+    /// The knob: a hard vertical tick, not a disc — at 34px a round knob is a
+    /// bead on a wire and reads as decoration.
+    pub const VOLUME_KNOB_W: u16 = 2;
+    pub const VOLUME_KNOB_H: f32 = 12.0;
+    /// Room for `100` in the mono face, so the track never shifts as the
+    /// reading changes width.
+    pub const VOLUME_READOUT_W: f32 = 22.0;
+    /// Between the track and its reading.
+    pub const VOLUME_GAP: f32 = 6.0;
+
+    /// Album art: a square on the icon grid, a touch larger than an icon
+    /// because it carries a picture, not a mark.
+    pub const ART: f32 = 24.0;
+    pub const RADIUS_ART: f32 = 4.0;
+    /// The title/artist column of a media core, fixed so that the shell's
+    /// width never tracks the song's name.
+    pub const MEDIA_TEXT_W: f32 = 132.0;
+    /// Between a two-line label's title and its subtitle.
+    pub const LABEL_LINE_GAP: f32 = 1.0;
+}
+
+/// The bar, as a settings pane draws it: a live preview strip, the lane of
+/// widget tiles under it, and the parts of a widget editor (ADR 0065).
+///
+/// The preview reuses [`bar`]'s metrics wholesale — it is the bar, at 1:1 —
+/// so this holds only what exists in a pane and never on the bar itself.
+pub mod canvas {
+    use super::bar;
+
+    /// The widest a lane tile gets. Narrower when the lane holds more
+    /// widgets than fit, so the lane never wraps: one row is one order.
+    pub const TILE_W: f32 = 136.0;
+    /// The narrowest a lane tile gets: its grip, a pin and four characters.
+    pub const TILE_MIN_W: f32 = 64.0;
+    /// A tile is a bar cell, so it is a bar cell's height.
+    pub const TILE_H: f32 = bar::TASK_H;
+    /// Between two tiles: the bar's own cell gap, doubled, because a lane is
+    /// a thing you aim a drag at and a bar is not.
+    pub const TILE_GAP: f32 = 2.0 * bar::GAP;
+
+    /// The pin: a square head on a short stem. Hard-edged, like the grip.
+    pub const PIN_HEAD: f32 = 6.0;
+    pub const PIN_STEM_W: f32 = 2.0;
+    pub const PIN_STEM_H: f32 = 4.0;
+    /// The column a pin sits in, so a tile does not shift when it gains one.
+    pub const PIN_W: f32 = 10.0;
+
+    /// The motion demo's track, and the chip that glides along it.
+    pub const GLIDE_W: f32 = super::space::HERO_METER_W;
+    pub const GLIDE_CHIP_W: f32 = 2.0 * bar::TASK_MIN;
+    pub const GLIDE_RAIL: f32 = 1.0;
+
+    /// Most windows the preview's stepper offers: far enough down the ladder
+    /// to reach the `+N` cell on a pane-wide bar.
+    pub const WINDOWS_MAX: usize = 40;
+    /// What the preview opens on: enough windows that the chips have to
+    /// negotiate with the widgets.
+    pub const WINDOWS_DEFAULT: usize = 3;
+
+    /// An argument chip in an argv editor, and the gap before its remove
+    /// mark.
+    pub const ARG_GAP: f32 = 6.0;
+    /// The most characters an argument chip shows before it ends in an
+    /// ellipsis: about a field's width of the data face, so one long
+    /// argument (a URL, an `sh -c` script) cannot push past the panel.
+    pub const ARG_MAX_CHARS: usize = 32;
+    /// The caret under a positioned config error, a hard rule under the
+    /// offending span.
+    pub const CARET_H: f32 = 2.0;
+    /// One character cell of the data face at [`super::size::MONO`]:
+    /// JetBrains Mono advances 0.6 em. What lines a caret up under a column.
+    pub const MONO_CHAR_W: f32 = 0.6 * super::size::MONO;
+    /// The drop marker between lane tiles while one is dragged: a hard
+    /// rule where the tile will land.
+    pub const DROP_MARK_W: f32 = 2.0;
+    /// The width a bar preview solves for before its sheet has been
+    /// measured: one frame at most, and never drawn animated.
+    pub const SHEET_FALLBACK_W: f32 = 720.0;
+}
+
+/// Motion defaults. Taste, not mechanism: the live values are
+/// `bar.motion.{enabled, curve, duration-ms}` (ADR 0065), and these apply when
+/// they are unset or the compositor is not there.
+pub mod motion {
+    /// How long a movement takes to settle.
+    pub const DURATION_MS: u64 = 220;
+    /// One frame of the bar's motion clock, while anything moves.
+    pub const FRAME_MS: u64 = 16;
+    /// Travel under which a grip's press and release is a tap, not a drag.
+    pub const TAP_SLOP: f32 = 4.0;
+    /// How far ahead a released drag is projected along its velocity, in
+    /// seconds, to choose the rest it snaps to: a flick carries past the
+    /// midpoint the finger never reached.
+    pub const FLING_LOOKAHEAD_S: f32 = 0.12;
+    /// Weight of the newest sample in a drag's smoothed velocity.
+    pub const VELOCITY_BLEND: f32 = 0.6;
+    /// The first fraction of a cell's travel over which its content stays
+    /// fully transparent. Content fades *ahead of* its clip: closing, it is
+    /// gone before the edge reaches a glyph; opening, it arrives once there
+    /// is room to read it. Never a glyph cut in half at full ink.
+    pub const FADE_LEAD: f32 = 0.35;
 }
 
 /// A context menu: the mark rail that opens on a right-click.

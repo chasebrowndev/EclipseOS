@@ -59,13 +59,28 @@ KDL v2: booleans are `#true` and `#false`, never bare `true`.
 | `bar.fold-duration-ms` | int 0..1000 | `150` | live | How long the taskbar takes to slide open or shut. Height and exclusive zone animate together, so tiled windows reflow with it. Zero snaps. |
 | `bar.fold-curve` | linear \| ease-in \| ease-out \| ease-in-out | `"ease-out"` | live | Easing applied to the taskbar's fold slide. |
 | `bar.position` | top \| bottom | `"top"` | restart | Which edge of every output the taskbar is anchored to. Takes effect the next time the taskbar starts, not on a live reload. |
-| `bar.tray.pinned` | list of strings | _unset_ | live | Tray ids shown on the taskbar itself, in this order. Built-in applets are network, bluetooth, battery and volume; a StatusNotifierItem app goes by its own id. Unset means the taskbar's built-in order; an empty list pins nothing. Anything neither pinned nor hidden sits in the overflow drawer. |
-| `bar.tray.hidden` | list of strings | _empty_ | live | Tray ids never shown, on the taskbar or in its overflow drawer. Hidden wins over pinned when an id is in both. |
-| `bar.rounding` | int 0..512 | `20` | live | Corner radius in logical px for the taskbar's own blur backdrop. |
+| `bar.tray.pinned` | list of strings | _unset_ | live | StatusNotifierItem ids shown on the taskbar itself, in this order; an app goes by its own id. Unset means the taskbar's built-in order; an empty list pins nothing. Anything neither pinned nor hidden sits in the overflow drawer. The built-in applets are widgets now (`bar.widgets.order`): their old ids here (network, bluetooth, battery, volume) still load, with a deprecation warning, and `eclipse-ctl config migrate` moves them. |
+| `bar.tray.hidden` | list of strings | _empty_ | live | StatusNotifierItem ids never shown, on the taskbar or in its overflow drawer. Hidden wins over pinned when an id is in both. A built-in applet id here is deprecated the same way as in `pinned`: leave it out of `bar.widgets.order` instead. |
+| `bar.rounding` | int 0..64 | `20` | live | Corner radius in logical px for the taskbar's own blur backdrop. |
 | `bar.clock.hour-12` | bool | `#true` | live | Show the taskbar clock in 12-hour time with AM/PM; off is 24-hour. |
 | `bar.clock.date-mdy` | bool | `#true` | live | Write the taskbar date month/day/year; off is ISO year-month-day (2026-09-23). |
 | `bar.popup-anchor` | cell \| pointer | `"cell"` | live | Where taskbar popups open: under the cell that was clicked, or at the pointer. |
 | `bar.eye` | bool | `#true` | live | Show the Oracle-Eyes status eye on the taskbar's eclipse mark. The compositor only stores this; the taskbar reads Oracle-Eyes' own status socket (ADR 0055). |
+| `bar.widgets.order` | list of strings | `"now-playing" "volume" "network" "bluetooth" "battery" "tray" "clock"` | live | Widgets drawn after the task strip, left to right (ADR 0065). Built-in ids: now-playing, system-usage, volume, network, bluetooth, battery, tray (the StatusNotifierItems and their overflow drawer) and clock; `custom:<name>` names a `widget` block in `bar`. A widget left out is not drawn. An unknown id, a repeated one, or a `custom:` naming no `widget` block is refused. |
+| `bar.widgets.important` | list of strings | `"clock" "battery"` | live | Widgets that never compress: when the bar runs short of room they keep their full size and everything else gives way first. Same ids as `bar.widgets.order`. |
+| `bar.widgets.now-playing.art` | bool | `#true` | live | Show album art in the Now Playing widget. Art the player keeps on this machine is read from disk; `https` art is fetched only while `bar.widgets.now-playing.remote-art` is on. |
+| `bar.widgets.now-playing.visualizer` | bool | `#true` | live | Draw the audio visualizer in Now Playing. While media plays and the widget is on screen it reads the default output's monitor, reduced to levels in memory and never stored, logged or sent. Off closes the stream. |
+| `bar.widgets.now-playing.remote-art` | bool | `#true` | live | Fetch Now Playing cover art the player publishes as an `https` URL, over https via `curl`. This reveals the playing track to the image host. Off shows the fallback glyph instead; `http` is never fetched. |
+| `bar.widgets.system-usage.interval-ms` | int 250..10000 | `1000` | live | How often System Usage samples CPU, memory, GPU and disk, in ms. |
+| `bar.widgets.system-usage.gpu` | bool | `#true` | live | Show GPU load in System Usage, where the driver reports it. |
+| `bar.widgets.system-usage.disk` | bool | `#true` | live | Show how full a disk is in System Usage. |
+| `bar.widgets.system-usage.disk-path` | string | `"/"` | live | Absolute path on the filesystem whose fill level System Usage shows. |
+| `bar.widgets.volume.step` | int 1..25 | `5` | live | Percent the volume moves per scroll notch on the Volume widget. |
+| `bar.widgets.volume.scroll` | bool | `#true` | live | Scrolling over the Volume widget changes the volume. |
+| `bar.widgets.volume.max-percent` | int 100..150 | `100` | live | Highest volume the Volume widget's slider and scroll reach. Above 100 boosts past the output's nominal level. |
+| `bar.motion.enabled` | bool | `#true` | live | Animate the taskbar's chips and widgets to their new place, width and opacity. Off snaps. |
+| `bar.motion.duration-ms` | int 0..2000 | `220` | live | How long a taskbar movement takes; with `spring`, roughly how long the spring takes to settle. Zero snaps. |
+| `bar.motion.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring | `"spring"` | live | Curve for taskbar movement: one of the `animations` easings, or `spring`, which carries its speed through an interrupted move instead of jumping. |
 
 ### `decoration`
 
@@ -196,6 +211,24 @@ Per-output settings: `output "<glob>" { … }`. The glob (`*` only) matches the 
 ### `workspace`
 
 Per-workspace layout override.
+
+### `widget`
+
+A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget "<name>" { exec "<argv0>" "<arg>"…; interval-ms <ms>; }`; or `stream #true` instead of `interval-ms`, for a command that keeps running and prints one update per line; or `source "<source>"` with a `format` instead of `exec`. `bar.widgets.order` draws it as `custom:<name>`. Commands run argv-exec, never through a shell, off the draw path, with a timeout and a 4 KiB line cap, and are killed on reload or removal. A line of output is plain text or JSON `{text, detail, tooltip, state}`; it is shown as plain text, never markup, and never logged. A command has exactly your authority and gains nothing from the taskbar. A later block with the same name replaces an earlier one. `get_config` lists every block, in file order, under `collections.widget` as `{"name", "kind": "exec" | "stream" | "source", "exec": [argv] | null, "interval-ms": int | null, "source": string | null, "format": string | null, "icon": string | null, "on-click": [argv] | null, "on-scroll-up": [argv] | null, "on-scroll-down": [argv] | null}`, every field always present: `exec` is set for `exec` and `stream`, `interval-ms` for `exec` only, `source` and `format` for `source` only.
+
+| key | example | what it does |
+| --- | --- | --- |
+| `exec "<argv0>" ["<arg>"…]` | `exec "curl" "-s" "wttr.in/?format=1"` | Run this command, argv-exec with no shell. Each run's output is one update: a line of plain text, or JSON `{text, detail, tooltip, state}`. |
+| `interval-ms <250..86400000>` | `interval-ms 600000`<br>`interval-ms "10m"` | How often the `exec` command runs: milliseconds, or a string with a unit. Default 5000. Not with `stream`. |
+| `stream [<bool>]` | `stream #true`<br>`stream` | Run the `exec` command once and keep it running; every line it prints is one update. Bare means `#true`. |
+| `source "<source>"` | `source "usage.cpu"` | Show a shipped data source instead of running a command. |
+| `format "<text>"` | `format "{}%"` | How a `source` value is shown; `{}` becomes the value. Default `{}`. |
+| `icon "<icon name or path>"` | `icon "weather-clear"` | Icon drawn before the text. |
+| `on-click "<argv0>" ["<arg>"…]` | `on-click "xdg-open" "https://wttr.in"` | Command run on a click, argv-exec. |
+| `on-scroll-up "<argv0>" ["<arg>"…]` | `on-scroll-up "brightnessctl" "set" "+5%"` | Command run on a scroll up, argv-exec. |
+| `on-scroll-down "<argv0>" ["<arg>"…]` | `on-scroll-down "brightnessctl" "set" "5%-"` | Command run on a scroll down, argv-exec. |
+
+`<source>` is one of `usage.cpu`, `usage.mem`, `usage.gpu`, `usage.disk`, `audio.volume`, `media.title`, `media.artist`.
 
 ### `windowrule`
 

@@ -688,6 +688,19 @@ pub fn surface<'a, Message: 'a>(
 /// system's job — a caller that drew it inline would be reinventing
 /// [`big_value`] at 10 pixels.
 pub fn battery_gauge<'a, Message: 'a>(percent: u8, fill: Color) -> Element<'a, Message, Theme> {
+    battery_gauge_faded(percent, fill, 1.0)
+}
+
+/// [`battery_gauge`] at `alpha` of its ink — frame and level together — for
+/// a bar cell in motion. A gauge whose frame stayed at full ink while its
+/// cell faded around it would be the last thing on screen.
+pub fn battery_gauge_faded<'a, Message: 'a>(
+    percent: u8,
+    fill: Color,
+    alpha: f32,
+) -> Element<'a, Message, Theme> {
+    let a = alpha.clamp(0.0, 1.0);
+    let (fill, track) = (fill.scale_alpha(a), color::TRACK.scale_alpha(a));
     let inner = space::MARK_CELL_W - 2.0 * space::MARK_BORDER;
     let filled = inner * (percent.min(100) as f32 / 100.0);
     let level = row![
@@ -698,9 +711,9 @@ pub fn battery_gauge<'a, Message: 'a>(percent: u8, fill: Color) -> Element<'a, M
         .width(Length::Fixed(space::MARK_CELL_W))
         .height(Length::Fixed(space::MARK))
         .padding(space::MARK_BORDER)
-        .style(|_t: &Theme| container::Style {
+        .style(move |_t: &Theme| container::Style {
             border: iced::Border {
-                color: color::TRACK,
+                color: track,
                 width: space::MARK_BORDER,
                 radius: 0.0.into(),
             },
@@ -711,7 +724,7 @@ pub fn battery_gauge<'a, Message: 'a>(percent: u8, fill: Color) -> Element<'a, M
         edge_quad(
             Length::Fixed(space::MARK_BORDER),
             Length::Fixed(space::MARK * 0.45),
-            color::TRACK,
+            track,
         ),
     ]
     .align_y(Alignment::Center)
@@ -1224,4 +1237,338 @@ impl<'a, Message: Clone + 'a> From<NumericSlider<'a, Message>> for Element<'a, M
             .align_y(Alignment::Center)
             .into()
     }
+}
+
+// ------------------------------------------------------- the bar, in a pane
+//
+// ADR 0065. A settings pane that shows the bar has to *draw* the bar, from the
+// same metrics the bar uses, without being the bar: no services, no layer
+// shell, and no dependency on the taskbar crate. These are the pieces that
+// exist only in that picture, or only in the pane around it.
+
+/// The bar's sheet, drawn inside a pane: the pill ground, its hairline and its
+/// lit top edge, [`crate::tokens::bar::PILL_H`] tall.
+///
+/// A widget for the reason [`surface`] is one: the sheet is three things at
+/// once, and a pane that assembled two of them would draw a bar that is not
+/// quite the bar. `content` is laid out inside the sheet's edge padding; a
+/// preview that positions its cells itself passes a `stack` of [`placed`]
+/// layers.
+pub fn bar_sheet<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    width: Length,
+) -> Element<'a, Message, Theme> {
+    use crate::tokens::bar;
+    lit(
+        container(content)
+            .padding([0.0, bar::EDGE])
+            .width(width)
+            .height(Length::Fixed(bar::PILL_H))
+            .align_y(Alignment::Center)
+            .clip(true)
+            .style(theme::bar_ground(bar::RADIUS_SHEET)),
+        bar::RADIUS_SHEET,
+        color::HIGHLIGHT_SOFT,
+    )
+}
+
+/// A bar cell that is a picture of one: a window chip or the launcher, drawn
+/// still, at `width`, with its content clipped rather than squashed.
+///
+/// A widget and not a styled container because a preview animates the width
+/// through every value between two rungs of the chip ladder, and the content
+/// must be clipped at the cell's edge the whole way; a container that let its
+/// content decide its width would snap from rung to rung instead. The ground
+/// is the bar's own cell: a hairline and no fill at rest. `accent` outlines
+/// the cell in the accent border, for a pane whose single live value is on
+/// the bar.
+pub fn bar_cell_frame<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    width: f32,
+    accent: bool,
+) -> Element<'a, Message, Theme> {
+    use crate::tokens::bar;
+    let width = width.max(0.0);
+    container(content)
+        .width(Length::Fixed(width))
+        .height(Length::Fixed(bar::TASK_H))
+        .padding([0.0, bar::CELL_X.min(width / 2.0)])
+        .align_y(Alignment::Center)
+        .clip(true)
+        .style(move |_t: &Theme| container::Style {
+            border: iced::Border {
+                color: if accent {
+                    color::ACCENT_BORDER
+                } else {
+                    color::BORDER
+                },
+                width: bar::HAIRLINE,
+                radius: bar::RADIUS_CELL.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// `content` at `x` pixels from the left of a layer, centred on the layer's
+/// height.
+///
+/// A widget because iced has no absolute positioning, and a picture of the bar
+/// needs it: cells slide to new places as the order changes, and a `Row`
+/// would jump them there. A `stack` of these, one per cell, is a canvas whose
+/// every `x` can be an animated value.
+pub fn placed<'a, Message: 'a>(
+    x: f32,
+    content: impl Into<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    row![Space::new().width(Length::Fixed(x.max(0.0))), content.into()]
+        .height(Length::Fill)
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// The pin: a square head on a short stem, the mark of a widget that never
+/// compresses.
+///
+/// A widget because it is a glyph the desktop has no icon for, drawn from
+/// quads the way [`chevron`] is, and it has to be the same glyph on a lane
+/// tile and on the sheet row that sets it.
+pub fn pin<'a, Message: 'a>(ink: Color) -> Element<'a, Message, Theme> {
+    use crate::tokens::canvas;
+    container(
+        column![
+            edge_quad(
+                Length::Fixed(canvas::PIN_HEAD),
+                Length::Fixed(canvas::PIN_HEAD),
+                ink
+            ),
+            edge_quad(
+                Length::Fixed(canvas::PIN_STEM_W),
+                Length::Fixed(canvas::PIN_STEM_H),
+                ink
+            ),
+        ]
+        .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(canvas::PIN_W))
+    .align_x(Alignment::Center)
+    .into()
+}
+
+/// One widget in an ordered lane: a grip to drag it by, its name, and a
+/// [`pin`] when it never compresses. Pressing the name selects it.
+///
+/// A widget and not a [`chip`] because it is two gestures in one object (the
+/// grip drags, the body selects) and because it has to read as the thing it
+/// stands for: the bar's own cell, hairline and radius, so the lane under a
+/// bar preview is visibly the same objects in the same order. `selected` is
+/// the lane's one yellow. `width` is the caller's, so a lane of many widgets
+/// stays one row.
+pub fn widget_tile<'a, Message: Clone + 'a>(
+    grip: impl Into<Element<'a, Message, Theme>>,
+    label: &str,
+    width: f32,
+    pinned: bool,
+    selected: bool,
+    on_select: Message,
+) -> Element<'a, Message, Theme> {
+    use crate::tokens::{bar, canvas};
+    let room = width - bar::GRIP_W - canvas::PIN_W - 2.0 * bar::WIDGET_X;
+    let chars = (room / canvas::MONO_CHAR_W).floor().max(1.0) as usize;
+    let ink = if selected { color::ACCENT_TEXT } else { color::TEXT };
+    let mark: Element<'a, Message, Theme> = if pinned {
+        pin(if selected {
+            color::ACCENT_TEXT
+        } else {
+            color::TEXT_SECONDARY
+        })
+    } else {
+        Space::new().width(Length::Fixed(canvas::PIN_W)).into()
+    };
+    let body = button(
+        row![
+            text(crate::widget::elide(label, chars))
+                .font(font::DATA_MEDIUM)
+                .size(size::MONO)
+                .color(ink)
+                .wrapping(text::Wrapping::None),
+            Space::new().width(Length::Fill),
+            mark,
+        ]
+        .height(Length::Fill)
+        .align_y(Alignment::Center),
+    )
+    .padding([0.0, bar::WIDGET_X])
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .on_press(on_select)
+    .style(move |_t: &Theme, status: button::Status| button::Style {
+        background: match status {
+            button::Status::Hovered => Some(iced::Background::Color(color::LIFT_SOFT)),
+            button::Status::Pressed => Some(iced::Background::Color(color::LIFT)),
+            _ => None,
+        },
+        text_color: ink,
+        border: iced::border::rounded(bar::RADIUS_CELL),
+        ..button::Style::default()
+    });
+    container(
+        row![grip.into(), body]
+            .height(Length::Fill)
+            .align_y(Alignment::Center),
+    )
+    .width(Length::Fixed(width))
+    .height(Length::Fixed(canvas::TILE_H))
+    .style(move |_t: &Theme| container::Style {
+        background: selected.then_some(iced::Background::Color(color::ACCENT_WASH)),
+        border: iced::Border {
+            color: if selected {
+                color::ACCENT_BORDER
+            } else {
+                color::BORDER
+            },
+            width: crate::tokens::bar::HAIRLINE,
+            radius: crate::tokens::bar::RADIUS_CELL.into(),
+        },
+        ..container::Style::default()
+    })
+    .into()
+}
+
+/// A hairline rail with one bar cell on it at `position` (0 left, 1 right):
+/// the demo a motion setting moves, so a curve can be seen and not just named.
+///
+/// A widget because the cell's travel is the whole point and has to be exact
+/// (it never leaves the rail at either end, whatever its width), and because
+/// the motion section reads as a different silhouette from the lists around
+/// it only if this is drawn the same way every time.
+pub fn glide_track<'a, Message: 'a>(position: f32, label: &str) -> Element<'a, Message, Theme> {
+    use crate::tokens::canvas;
+    let travel = canvas::GLIDE_W - canvas::GLIDE_CHIP_W;
+    let rail = container(edge_quad(
+        Length::Fill,
+        Length::Fixed(canvas::GLIDE_RAIL),
+        color::TRACK,
+    ))
+    .height(Length::Fill)
+    .align_y(Alignment::Center);
+    let cell = bar_cell_frame(
+        container(
+            text(label.to_string())
+                .font(font::DATA_MEDIUM)
+                .size(size::MICRO)
+                .style(theme::text_secondary)
+                .wrapping(text::Wrapping::None),
+        )
+        .width(Length::Fill)
+        .align_x(Alignment::Center),
+        canvas::GLIDE_CHIP_W,
+        false,
+    );
+    container(stack![rail, placed(travel * position.clamp(0.0, 1.0), cell)])
+        .width(Length::Fixed(canvas::GLIDE_W))
+        .height(Length::Fixed(canvas::TILE_H))
+        .into()
+}
+
+/// One argument of a command, as a chip with a remove mark.
+///
+/// A widget because an argv editor's whole promise is that each chip is
+/// exactly one argument, passed as-is with no shell in between; a text field
+/// with spaces in it would be quietly re-split. It is a [`chip`]'s ground so
+/// arguments read as objects, and the remove mark is inside it so the object
+/// and its verb cannot drift apart. Past [`canvas::ARG_MAX_CHARS`](crate::tokens::canvas::ARG_MAX_CHARS)
+/// characters the text ends in an ellipsis; the argument itself is untouched.
+pub fn arg_chip<'a, Message: Clone + 'a>(arg: &str, on_remove: Message) -> Element<'a, Message, Theme> {
+    use crate::tokens::canvas;
+    // An empty argument is legal and invisible; show it as the quotes it is.
+    // A long one is cut short: the chip is a handle on the argument, not its
+    // full text, and one URL must not run the row off the panel.
+    let shown = if arg.is_empty() {
+        "\"\"".to_owned()
+    } else {
+        super::bar_widget::elide(arg, canvas::ARG_MAX_CHARS)
+    };
+    button(
+        row![
+            text(shown)
+                .font(font::DATA_MEDIUM)
+                .size(size::MONO)
+                .wrapping(text::Wrapping::None),
+            text("\u{d7}")
+                .font(font::DATA)
+                .size(size::MONO)
+                .style(theme::text_tertiary),
+        ]
+        .spacing(canvas::ARG_GAP)
+        .align_y(Alignment::Center),
+    )
+    .padding([space::CHIP_Y, space::CHIP_X])
+    .on_press(on_remove)
+    .style(theme::chip(false))
+    .into()
+}
+
+/// A config error with its position: `file:line:col`, the message, the
+/// offending line, and a caret under the span it names.
+///
+/// A widget because the compositor already says *where* (a line, a column and
+/// a span length) and a pane that flattened that into a sentence would throw
+/// the most useful part away. The caret is measured in mono character cells
+/// ([`crate::tokens::canvas::MONO_CHAR_W`]), so it lines up under the snippet
+/// it annotates. Danger ink, never the accent: a refusal is not state.
+pub fn config_error<'a, Message: 'a>(
+    position: &str,
+    message: &str,
+    snippet: &str,
+    col: usize,
+    span: usize,
+) -> Element<'a, Message, Theme> {
+    use crate::tokens::canvas;
+    let mut body = Column::new().spacing(space::PILL_GAP).push(
+        row![
+            text(position.to_string())
+                .font(font::DATA_MEDIUM)
+                .size(size::MONO)
+                .style(theme::text_danger)
+                .wrapping(text::Wrapping::None),
+            text(message.to_string())
+                .font(font::UI)
+                .size(size::BODY_SMALL)
+                .style(theme::text_secondary),
+        ]
+        .spacing(space::CONTROL_GAP)
+        .align_y(Alignment::Center),
+    );
+    if !snippet.is_empty() {
+        let lead = col.saturating_sub(1) as f32 * canvas::MONO_CHAR_W;
+        let run = span.max(1) as f32 * canvas::MONO_CHAR_W;
+        body = body.push(
+            column![
+                text(snippet.to_string())
+                    .font(font::DATA)
+                    .size(size::MONO)
+                    .style(theme::text_primary)
+                    .wrapping(text::Wrapping::None),
+                row![
+                    Space::new().width(Length::Fixed(lead)),
+                    edge_quad(Length::Fixed(run), Length::Fixed(canvas::CARET_H), color::DANGER),
+                ],
+            ]
+            .spacing(space::HAIRLINE),
+        );
+    }
+    container(
+        row![
+            edge_quad(Length::Fixed(space::BAR_W), Length::Fill, color::DANGER),
+            container(body).padding([space::ROW_Y / 2.0, space::CARD]),
+        ]
+        .height(Length::Shrink),
+    )
+    .width(Length::Fill)
+    .style(|_t: &Theme| container::Style {
+        background: Some(iced::Background::Color(color::DANGER_FILL)),
+        ..container::Style::default()
+    })
+    .into()
 }

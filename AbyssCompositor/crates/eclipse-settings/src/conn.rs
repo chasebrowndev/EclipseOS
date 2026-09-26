@@ -233,4 +233,33 @@ impl Conn {
             .and_then(Value::as_bool)
             .unwrap_or(false))
     }
+
+    /// Every `widget` block in `abyss.kdl`, in file order (ADR 0065).
+    pub fn widgets(&mut self) -> Result<Vec<eclipse_ipc::Widget>, Problem> {
+        let client = self
+            .client
+            .as_mut()
+            .ok_or_else(|| Problem::Disconnected("not connected".into()))?;
+        client.widgets().map_err(Problem::from_error)
+    }
+
+    /// One `set_config_collection` write on the widget collection. A dry run
+    /// answers `valid: false` with positioned errors rather than failing.
+    pub fn widget_write(
+        &mut self,
+        op: &eclipse_ipc::WidgetOp<'_>,
+        dry_run: bool,
+    ) -> Result<eclipse_ipc::WriteResult, Problem> {
+        let client = self
+            .client
+            .as_mut()
+            .ok_or_else(|| Problem::Disconnected("not connected".into()))?;
+        client.widget_write(op, dry_run).map_err(|e| {
+            let problem = Problem::from_error(e);
+            if matches!(problem, Problem::Disconnected(_)) {
+                self.client = None;
+            }
+            problem
+        })
+    }
 }

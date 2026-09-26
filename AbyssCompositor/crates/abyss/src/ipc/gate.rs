@@ -86,6 +86,9 @@ pub const TABLE: &[Entry] = &[
     e("get_config", Kind::Query, true),
     e("validate_config", Kind::Query, true),
     e("set_config_value", Kind::Command, true),
+    // Collection entries (`bar { widget … }`, ADR 0065): the same authority as
+    // `set_config_value`, by the same reasoning, and the same per-file check.
+    e("set_config_collection", Kind::Command, true),
     // Agent lifecycle: the protocol itself is Phase 2 (COMP-08).
     e("get_agents", Kind::Privileged, false),
     e("pause_agent", Kind::Privileged, false),

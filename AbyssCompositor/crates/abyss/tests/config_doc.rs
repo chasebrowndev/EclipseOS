@@ -15,7 +15,8 @@ use std::fmt::Write as _;
 use abyss::config::schema::{
     rule_owner, Collection, Dv, Form, Key, Owner, Reload, Ty, ANIMATIONS, ANIMATION_CURVES,
     ANIMATION_DEFAULT_CURVE, ANIMATION_DEFAULT_MS, ANIMATION_MAX_MS, BIND_ACTIONS, COLLECTIONS, LID_CLOSE,
-    OUTPUT_KEYS, OUTPUT_TRANSFORMS, REFUSED_MATCHERS, RULE_ACTION_FORMS, RULE_MATCHERS, TABLE,
+    OUTPUT_KEYS, OUTPUT_TRANSFORMS, REFUSED_MATCHERS, RULE_ACTION_FORMS, RULE_MATCHERS, TABLE, WIDGET_KEYS,
+    WIDGET_SOURCES,
 };
 
 fn ty(t: &Ty) -> String {
@@ -38,6 +39,10 @@ fn default(d: &Dv) -> String {
         Dv::Float(f) => format!("`{f}`"),
         Dv::Str(s) => format!("`\"{s}\"`"),
         Dv::EmptyList => "_empty_".into(),
+        Dv::List(l) => format!(
+            "`{}`",
+            l.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(" ")
+        ),
         Dv::Color([r, g, b, a]) => format!(
             "`#{:02x}{:02x}{:02x}{:02x}`",
             (r * 255.0) as u8,
@@ -166,6 +171,10 @@ fn collections(out: &mut String, cs: &[&Collection]) {
                     );
                 }
                 out.push('\n');
+            }
+            "widget" => {
+                forms(out, "key", WIDGET_KEYS);
+                let _ = writeln!(out, "`<source>` is one of {}.\n", ticks(WIDGET_SOURCES));
             }
             _ => {}
         }
