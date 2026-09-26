@@ -66,13 +66,12 @@ impl Pane {
         matches!(self, Pane::Display | Pane::Network | Pane::Addons)
     }
 
-    /// The pane named on the command line — its title, any case. The taskbar
-    /// opens `eclipse-settings network` from its drawers.
+    /// The pane named on the command line — its title, any case, hyphens
+    /// optional (`addons` finds "Add-ons"). The taskbar opens
+    /// `eclipse-settings network` from its drawers.
     pub fn from_arg(arg: &str) -> Option<Pane> {
-        Pane::ALL
-            .iter()
-            .copied()
-            .find(|p| p.title().eq_ignore_ascii_case(arg))
+        let bare = |s: &str| s.replace('-', "").to_ascii_lowercase();
+        Pane::ALL.iter().copied().find(|p| bare(p.title()) == bare(arg))
     }
 }
 
@@ -116,6 +115,14 @@ pub fn group_for(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pane_is_named_with_or_without_its_hyphen() {
+        assert_eq!(Pane::from_arg("addons"), Some(Pane::Addons));
+        assert_eq!(Pane::from_arg("Add-ons"), Some(Pane::Addons));
+        assert_eq!(Pane::from_arg("NETWORK"), Some(Pane::Network));
+        assert_eq!(Pane::from_arg("nope"), None);
+    }
 
     #[test]
     fn misc_splits_by_key_not_by_node() {
