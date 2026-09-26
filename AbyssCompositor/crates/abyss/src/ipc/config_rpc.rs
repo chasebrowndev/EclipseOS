@@ -585,7 +585,10 @@ fn review_widget(state: &mut AbyssState, params: &Value) -> Reply {
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| RpcError::invalid_params("name must be a non-empty string"))?;
     match withhold::review(state, name) {
-        Ok(queued) => Ok(json!({ "name": name, "queued": queued })),
+        Ok(queued) => {
+            crate::trusted_ui::approval::schedule(state);
+            Ok(json!({ "name": name, "queued": queued }))
+        }
         Err(ReviewError::Unknown) => Err(RpcError::invalid_params(&format!("no widget named {name:?}"))),
         Err(ReviewError::NotPending) => Err(RpcError::invalid_params(&format!(
             "widget {name:?} is not waiting on approval"
@@ -593,13 +596,6 @@ fn review_widget(state: &mut AbyssState, params: &Value) -> Reply {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "called by the Trusted UI approval surface, which lands in its own TCB node (ADR 0067)"
-    )
-)]
 fn widgets_hooked(state: &AbyssState) -> Result<(), RpcError> {
     if state.addons.hooks.is_on(crate::addons::Hook::TaskbarWidgets) {
         Ok(())
@@ -616,13 +612,6 @@ fn widgets_hooked(state: &AbyssState) -> Result<(), RpcError> {
 /// **Only the Trusted UI approval surface (`trusted_ui/`, ADR 0067) may call
 /// this**, on the owner's Revert. It is not a socket method; a test scans the
 /// source to keep every other caller out.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "called by the Trusted UI approval surface, which lands in its own TCB node (ADR 0067)"
-    )
-)]
 pub fn revert_widget(state: &mut AbyssState, name: &str) -> Result<(), RpcError> {
     widgets_hooked(state)?;
     if !state.config.catalog.iter().any(|w| w.name == name) {
@@ -644,13 +633,6 @@ pub fn revert_widget(state: &mut AbyssState, name: &str) -> Result<(), RpcError>
 /// **Only the Trusted UI approval surface (`trusted_ui/`, ADR 0067) may call
 /// this**, on the owner's Remove. It is not a socket method; a test scans the
 /// source to keep every other caller out.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "called by the Trusted UI approval surface, which lands in its own TCB node (ADR 0067)"
-    )
-)]
 pub fn remove_widget(state: &mut AbyssState, name: &str) -> Result<(), RpcError> {
     widgets_hooked(state)?;
     let target = target_path(&state.config, schema::Owner::Abyss)

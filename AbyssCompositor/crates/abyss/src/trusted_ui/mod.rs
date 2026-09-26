@@ -19,6 +19,7 @@
 //!
 //! One prompt at a time. `open` refuses a second, and the owner re-queues it.
 
+pub mod approval;
 pub mod modal;
 
 use std::{collections::BTreeMap, time::Duration};
@@ -81,6 +82,8 @@ pub struct TrustedUi {
     art: BTreeMap<usize, (usize, TextureBuffer<GlesTexture>)>,
     /// One dim buffer per output size, for the same reason.
     dim: BTreeMap<(i32, i32), SolidColorBuffer>,
+    /// The command-approval prompt's widget, if that is what is up.
+    asking: approval::Asking,
 }
 
 impl TrustedUi {
@@ -217,14 +220,32 @@ fn choose(state: &mut AbyssState, button: usize) {
     };
     crate::backend::damage_all(state);
     resolve(state, choice);
+    // Whatever was waiting behind this prompt gets its turn.
+    approval::schedule(state);
     // The pointer is re-evaluated as though it had just moved, so whatever is
     // under it gets its enter now rather than on the next motion.
     state.refresh_pointer_focus();
 }
 
 /// Where the answer goes. Owners of prompts are added here.
-fn resolve(_state: &mut AbyssState, choice: Choice) {
+fn resolve(state: &mut AbyssState, choice: Choice) {
     tracing::debug!(token = choice.token, role = ?choice.role, "trusted prompt answered");
+    if approval::owns(state, choice.token) {
+        approval::answer(state, choice);
+    }
+}
+
+/// Take prompt `token` down without an answer: its owner withdrew the
+/// question. Nothing is resolved.
+fn cancel(state: &mut AbyssState, token: u64) {
+    if state.trusted_ui.token() != Some(token) {
+        return;
+    }
+    state.trusted_ui.open = None;
+    state.trusted_ui.art.clear();
+    state.trusted_ui.dim.clear();
+    crate::backend::damage_all(state);
+    state.refresh_pointer_focus();
 }
 
 /// The panel's top-left on `output`, in global logical coordinates: centred.

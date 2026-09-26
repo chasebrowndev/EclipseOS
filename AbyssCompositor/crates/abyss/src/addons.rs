@@ -296,6 +296,7 @@ pub fn start(state: &mut AbyssState, handle: &LoopHandle<'static, AbyssState>) {
     let mut cfg = std::mem::take(&mut state.config);
     crate::config::withhold::settle(state, &mut cfg);
     state.config = cfg;
+    crate::trusted_ui::approval::schedule(state);
     crate::config::catalog::start(handle);
 
     // SAFETY: `inotify_init1` takes only flags and returns a new fd or -1.

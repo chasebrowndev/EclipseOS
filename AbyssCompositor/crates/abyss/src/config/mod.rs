@@ -837,6 +837,7 @@ pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
     crate::outputs::relayout(state);
     crate::shell::arrange(state);
     crate::backend::damage_all(state);
+    crate::trusted_ui::approval::schedule(state);
     tracing::info!(?sources, "config applied");
 }
 
