@@ -39,6 +39,39 @@ fn handles() -> MutexGuard<'static, Handles> {
         .unwrap_or_else(PoisonError::into_inner)
 }
 
+/// A call test builds count, since they start nothing.
+#[derive(Clone, Copy)]
+enum Call {
+    Configure,
+    Act,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// `configure` and `act` calls on this thread, for the tests that prove
+    /// one process with many bars still does each once.
+    static CALLS: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// `configure` and `act` calls on this test thread so far.
+#[cfg(test)]
+pub(crate) fn calls() -> (u32, u32) {
+    CALLS.with(std::cell::Cell::get)
+}
+
+fn counted(call: Call) {
+    #[cfg(test)]
+    CALLS.with(|c| {
+        let (configure, act) = c.get();
+        c.set(match call {
+            Call::Configure => (configure + 1, act),
+            Call::Act => (configure, act + 1),
+        });
+    });
+    #[cfg(not(test))]
+    let _ = call;
+}
+
 fn usage_cfg(cfg: &widgets::Config) -> usage::UsageConfig {
     usage::UsageConfig {
         interval: Duration::from_millis(cfg.usage.interval_ms),
@@ -61,6 +94,7 @@ fn wants_usage(cfg: &widgets::Config) -> bool {
 /// the per-window mute read audio, and both are cheap when idle.
 pub fn configure(cfg: &widgets::Config) {
     if cfg!(test) {
+        counted(Call::Configure);
         return;
     }
     let mut h = handles();
@@ -145,6 +179,7 @@ pub fn tapping() -> bool {
 
 /// Ask a service to do something on a widget's behalf.
 pub fn act(action: Action) {
+    counted(Call::Act);
     let h = handles();
     match action {
         Action::Previous | Action::PlayPause | Action::Next => {

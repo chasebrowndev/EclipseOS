@@ -116,11 +116,10 @@ fn cover() -> image::Handle {
     image::Handle::from_rgba(side, side, rgba)
 }
 
-/// Fill `app` with the widget fixture.
-pub fn widgets(app: &mut App, idle: bool) {
+/// Fill `app` with the widget fixture, its windows on `output`.
+pub fn widgets(app: &mut App, idle: bool, output: u64) {
     let now = Instant::now();
     app.fixture = Some(now);
-    let output = app.output_id;
     let windows: Vec<Window> = (0..chips()).map(|i| window(i, output)).collect();
     app.snapshot = Snapshot {
         connected: true,
@@ -175,9 +174,8 @@ pub fn widgets(app: &mut App, idle: bool) {
         .ok()
         .and_then(|n| n.parse().ok())
         .unwrap_or(1);
+    // Every bar takes its motion from here when it opens.
     cfg.motion.duration *= slow.max(1);
-    let motion = cfg.motion;
-    app.motion.set_motion(motion);
 
     let state = &mut app.widgets;
     if !idle {
@@ -291,11 +289,13 @@ pub fn script() -> Subscription<Message> {
 /// One step of the script.
 pub fn step(app: &mut App, n: u32) {
     let now = Instant::now();
+    // The output the fixture put its windows on.
+    let output = app.snapshot.workspaces.first().map_or(0, |w| w.output);
     match script_name().as_str() {
         "grow" => {
             let next = app.snapshot.windows.len();
             if next < WINDOWS.len() {
-                app.snapshot.windows.push(window(next, app.output_id));
+                app.snapshot.windows.push(window(next, output));
                 if let Some(ws) = app.snapshot.workspaces.first_mut() {
                     ws.windows = app.snapshot.windows.len();
                 }
@@ -318,7 +318,12 @@ pub fn step(app: &mut App, n: u32) {
                 n if n <= steps + 1 => GripEv::Drag(-((n - 1) as f32) * DRAG_STEP_PX),
                 _ => GripEv::Release,
             };
-            crate::app::grip(app, key, ev, now);
+            // Nothing can click a preview, so the drag is every bar's.
+            let mut bars = std::mem::take(&mut app.bars);
+            for bar in bars.values_mut() {
+                crate::app::grip(app, bar, key.clone(), ev, now);
+            }
+            app.bars = bars;
         }
         "np-back" if n == 2 => {
             widgets::update(
@@ -331,7 +336,7 @@ pub fn step(app: &mut App, n: u32) {
             let base = chips();
             if n == 1 {
                 for i in base..(base + BURST).min(WINDOWS.len()) {
-                    app.snapshot.windows.push(window(i, app.output_id));
+                    app.snapshot.windows.push(window(i, output));
                 }
                 app.icons.warm(&app.snapshot.windows);
             } else {

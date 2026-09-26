@@ -77,13 +77,18 @@ use crate::icons::Icon;
 use crate::layout::{chip_detail, Detail};
 use crate::model::{Snapshot, Window, Workspace};
 
-/// The bar, or the one popup over it.
+/// A bar, the one popup over the bars, or a bar's eye.
 ///
 /// `iced_layershell`'s daemon pattern draws every surface through one function,
-/// so the id is the branch: the bar owns exactly one popup at a time and
-/// anything that is not it is the row.
+/// so the id is the branch. Whatever the surface draws, its messages leave
+/// wrapped in [`Message::On`] with that surface's id, so `update` knows which
+/// bar a press, a hover or a grip came from.
 pub fn view(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message, Theme> {
-    if app.eye_surface == Some(id) {
+    surface(app, id).map(move |m| Message::On(id, Box::new(m)))
+}
+
+fn surface(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message, Theme> {
+    if app.bars.values().any(|b| b.eye_surface == Some(id)) {
         return eye_view(&app.iris);
     }
     match app.popup.as_ref() {
@@ -96,7 +101,12 @@ pub fn view(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message,
         }
         _ => {}
     }
-    match app.fold.target {
+    // A surface that is none of these is a bar being torn down, or one whose
+    // first configure beat its entry into the map: draw nothing.
+    let Some(bar) = app.bars.get(&id) else {
+        return Space::new().into();
+    };
+    match bar.fold.target {
         // Hidden is *gone*, not thin: nothing is drawn, and the surface it
         // still owns claims no exclusive zone, so a fullscreen video has the
         // whole output.
@@ -105,10 +115,10 @@ pub fn view(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message,
         // is room for a cell. `pill` is the same test the surface geometry
         // uses, so the view and the surface cannot disagree about which one
         // is up.
-        _ if !app.fold.pill() => return folded_row(app),
+        _ if !bar.fold.pill() => return folded_row(app, bar),
         _ => {}
     }
-    bar_row(app)
+    bar_row(app, bar)
 }
 
 /// The bar shrunk to a rule along the top of an output nobody is looking at.
@@ -122,7 +132,7 @@ pub fn view(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message,
 /// Every part of it is `Fill` or a hairline, so the two pixels at the bottom
 /// of the setting's range are squeezed out of the glass and never out of a
 /// fixed child: the strip cannot overflow its own surface at any height.
-fn folded_row(app: &crate::app::App) -> Element<'_, Message, Theme> {
+fn folded_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element<'a, Message, Theme> {
     let edges = column![
         Space::new().width(Length::Fill).height(Length::Fill),
         parts::quad(
@@ -152,25 +162,25 @@ fn folded_row(app: &crate::app::App) -> Element<'_, Message, Theme> {
         .width(Length::Fill)
         // The animated height, not the settled one: during a slide the strip
         // must fill exactly the surface the compositor just sized.
-        .height(Length::Fixed(app.fold.height as f32))
+        .height(Length::Fixed(bar.fold.height as f32))
         .into()
 }
 
-fn bar_row(app: &crate::app::App) -> Element<'_, Message, Theme> {
+fn bar_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element<'a, Message, Theme> {
     let mut bar_row = Row::new()
         .push(launcher_button())
         .push(Space::new().width(Length::Fixed(bar::ZONE_GAP)))
-        .push(pager(app))
+        .push(pager(app, bar))
         .push(Space::new().width(Length::Fixed(bar::ZONE_GAP)))
         // The task strip is also the row's spacer: it takes exactly the space
         // the widgets leave, so they cannot be pushed off.
-        .push(tasks(app));
+        .push(tasks(app, bar));
 
     // Each widget carries its own leading gap, scaled by its presence, so a
     // widget arriving or leaving opens and closes its gap with its glass —
     // the neighbours glide instead of stepping by a gap at either end.
     let cells: Vec<_> = (0..app.widget_cfg.order.len())
-        .filter_map(|i| crate::widgets::cell(app, i))
+        .filter_map(|i| crate::widgets::cell(app, bar, i))
         .collect();
     if !cells.is_empty() {
         bar_row = bar_row.push(Space::new().width(Length::Fixed(bar::ZONE_GAP - bar::GAP)));
@@ -334,9 +344,9 @@ impl canvas::Program<Message> for EyeMark {
 /// has focus", and marking one and not the other reads as an oversight. The
 /// two never compete for area — the tile is 24px, the chip is a strip — and
 /// nothing else on the row is allowed to join them.
-fn pager(app: &crate::app::App) -> Element<'_, Message, Theme> {
+fn pager<'a>(app: &'a crate::app::App, on: &crate::app::Bar) -> Element<'a, Message, Theme> {
     let mut r = Row::new().spacing(bar::GAP).align_y(Alignment::Center);
-    for ws in live_workspaces(&app.snapshot, app.output_id) {
+    for ws in live_workspaces(&app.snapshot, on.output_id) {
         r = r.push(tile(ws));
     }
     r.into()
@@ -434,18 +444,18 @@ fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
 /// The windows the strip speaks for, in strip order: this output's, on the
 /// workspace the human is standing on. What [`crate::layout::solve`] is
 /// given as its chips, and what [`crate::motion::Bar`] retargets against.
-pub(crate) fn strip_windows(app: &crate::app::App) -> Vec<&Window> {
+pub(crate) fn strip_windows<'a>(app: &'a crate::app::App, on: &crate::app::Bar) -> Vec<&'a Window> {
     let snapshot = &app.snapshot;
-    let active = active_workspace(snapshot, app.output_id);
-    windows_on(snapshot, app.output_id)
+    let active = active_workspace(snapshot, on.output_id);
+    windows_on(snapshot, on.output_id)
         .filter(|w| active.is_none() || w.workspace == active)
         .collect()
 }
 
 /// The workspace the strip is drawing; a change lands the chips at once
 /// rather than animating one desktop's windows into another's.
-pub(crate) fn strip_workspace(app: &crate::app::App) -> Option<usize> {
-    active_workspace(&app.snapshot, app.output_id)
+pub(crate) fn strip_workspace(app: &crate::app::App, on: &crate::app::Bar) -> Option<usize> {
+    active_workspace(&app.snapshot, on.output_id)
 }
 
 /// The windows on the focused workspace — the bar's hero zone.
@@ -461,9 +471,9 @@ pub(crate) fn strip_workspace(app: &crate::app::App) -> Option<usize> {
 /// neighbours along smoothly. The strip clips: mid-flight, a growing chip
 /// and a shrinking one may briefly sum past the room, and that overlap must
 /// fall under the widgets' edge rather than over it.
-fn tasks(app: &crate::app::App) -> Element<'_, Message, Theme> {
+fn tasks<'a>(app: &'a crate::app::App, on: &'a crate::app::Bar) -> Element<'a, Message, Theme> {
     let mut r = Row::new().align_y(Alignment::Center);
-    for chip in &app.motion.chips {
+    for chip in &on.motion.chips {
         let visible = chip.visible();
         if visible <= 0.0 && chip.presence.value() <= 0.0 {
             continue;
@@ -478,8 +488,8 @@ fn tasks(app: &crate::app::App) -> Element<'_, Message, Theme> {
             ))
             .push(Space::new().width(Length::Fixed((bar::GAP * presence).round())));
     }
-    if app.layout.hidden > 0 {
-        r = r.push(overflow_cell(app.layout.hidden));
+    if on.layout.hidden > 0 {
+        r = r.push(overflow_cell(on.layout.hidden));
     }
     container(r)
         .width(Length::Fill)
@@ -490,8 +500,8 @@ fn tasks(app: &crate::app::App) -> Element<'_, Message, Theme> {
 
 /// Where the task strip's first chip begins, in surface-local pixels: the
 /// solver's `lead`.
-pub(crate) fn strip_left(app: &crate::app::App) -> f32 {
-    let count = live_workspaces(&app.snapshot, app.output_id).count() as f32;
+pub(crate) fn strip_left(app: &crate::app::App, on: &crate::app::Bar) -> f32 {
+    let count = live_workspaces(&app.snapshot, on.output_id).count() as f32;
     let pager = (count * bar::PAGER_W + (count - 1.0).max(0.0) * bar::GAP).max(0.0);
     bar::EDGE + bar::TASK_MIN + bar::ZONE_GAP + pager + bar::ZONE_GAP
 }
@@ -503,29 +513,37 @@ pub(crate) fn strip_left(app: &crate::app::App) -> f32 {
 /// `None` when the window is not on the strip at all — it is on another
 /// workspace, or it fell past the end into the `+N` cell — in which case there
 /// is no cell to hang a popup under and the caller falls back to the pointer.
-pub fn chip_span(app: &crate::app::App, handle: u64) -> Option<(f32, f32)> {
-    let index = strip_windows(app).iter().position(|w| w.handle == handle)?;
-    let c = app.layout.chips.get(index)?;
+pub fn chip_span(app: &crate::app::App, on: &crate::app::Bar, handle: u64) -> Option<(f32, f32)> {
+    let index = strip_windows(app, on).iter().position(|w| w.handle == handle)?;
+    let c = on.layout.chips.get(index)?;
     Some((c.x, c.x + c.width))
 }
 
 /// The horizontal span of a widget's glass, `(left, right)`; `None` when it
 /// is not on the bar.
-pub fn widget_span(app: &crate::app::App, id: &crate::widgets::WidgetId) -> Option<(f32, f32)> {
+pub fn widget_span(
+    app: &crate::app::App,
+    on: &crate::app::Bar,
+    id: &crate::widgets::WidgetId,
+) -> Option<(f32, f32)> {
     let i = app.widget_cfg.order.iter().position(|w| w == id)?;
-    let w = app.layout.widgets.get(i)?;
+    let w = on.layout.widgets.get(i)?;
     (w.width > 0.0).then_some((w.x, w.x + w.width))
 }
 
 /// The span a drawer hangs from: the network or bluetooth widget, or the
 /// tray's disclosure arrow at the right end of its core.
-pub fn drawer_span(app: &crate::app::App, drawer: crate::app::Drawer) -> Option<(f32, f32)> {
+pub fn drawer_span(
+    app: &crate::app::App,
+    on: &crate::app::Bar,
+    drawer: crate::app::Drawer,
+) -> Option<(f32, f32)> {
     use crate::widgets::WidgetId;
     match drawer {
-        crate::app::Drawer::Network => widget_span(app, &WidgetId::Network),
-        crate::app::Drawer::Bluetooth => widget_span(app, &WidgetId::Bluetooth),
+        crate::app::Drawer::Network => widget_span(app, on, &WidgetId::Network),
+        crate::app::Drawer::Bluetooth => widget_span(app, on, &WidgetId::Bluetooth),
         crate::app::Drawer::Overflow => {
-            let (_, right) = widget_span(app, &WidgetId::Tray)?;
+            let (_, right) = widget_span(app, on, &WidgetId::Tray)?;
             let right = right - bar::WIDGET_X;
             Some((right - crate::widgets::tray::ARROW_FROM_RIGHT, right))
         }
@@ -1234,7 +1252,13 @@ mod tests {
     #[test]
     fn a_chip_span_follows_the_strip_it_describes() {
         let mut app = crate::app::App::new();
-        app.width = 1830.0;
+        let mut on = crate::app::Bar::new(
+            iced::window::Id::unique(),
+            "DP-1".into(),
+            0,
+            eclipse_ui::motion::Motion::DEFAULT,
+        );
+        on.width = 1830.0;
         app.snapshot = Snapshot {
             workspaces: vec![ws(1, 0, true, 3)],
             windows: vec![
@@ -1245,19 +1269,20 @@ mod tests {
             ],
             ..Snapshot::default()
         };
-        crate::app::relayout(&mut app, std::time::Instant::now());
+        crate::app::relayout(&app, &mut on, std::time::Instant::now());
 
-        let first = chip_span(&app, 1).expect("chip 1 is drawn");
-        let second = chip_span(&app, 2).expect("chip 2 is drawn");
-        assert!((first.0 - strip_left(&app)).abs() < 0.01);
+        let first = chip_span(&app, &on, 1).expect("chip 1 is drawn");
+        let second = chip_span(&app, &on, 2).expect("chip 2 is drawn");
+        assert!((first.0 - strip_left(&app, &on)).abs() < 0.01);
         assert!((second.0 - first.1 - bar::GAP).abs() < 0.01);
-        assert!(second.1 < app.width);
+        assert!(second.1 < on.width);
         // On another workspace, so it is not on the strip and has no cell.
-        assert_eq!(chip_span(&app, 9), None);
+        assert_eq!(chip_span(&app, &on, 9), None);
 
         // The clock is measured inward from the right edge and stays there.
-        let clock = widget_span(&app, &crate::widgets::WidgetId::Clock).expect("the clock is on the bar");
-        assert!((clock.1 - (app.width - bar::EDGE)).abs() < 0.01);
-        assert!(clock.0 > chip_span(&app, 3).expect("chip 3 is drawn").1);
+        let clock =
+            widget_span(&app, &on, &crate::widgets::WidgetId::Clock).expect("the clock is on the bar");
+        assert!((clock.1 - (on.width - bar::EDGE)).abs() < 0.01);
+        assert!(clock.0 > chip_span(&app, &on, 3).expect("chip 3 is drawn").1);
     }
 }
