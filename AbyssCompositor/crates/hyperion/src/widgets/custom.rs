@@ -28,6 +28,8 @@ pub struct State {
     /// The last good output. A failure clears it: stale output presented as
     /// current is worse than none.
     pub out: Option<Output>,
+    /// The wheel over this block, counted in notches.
+    pub wheel: super::Notches,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +38,13 @@ pub enum Feed {
     Failed,
     /// Run one of the block's own argv.
     Run(Vec<String>),
+    /// The wheel moved over the block: `up` or `down` runs, once a whole
+    /// notch has turned.
+    Wheel {
+        delta: ScrollDelta,
+        up: Vec<String>,
+        down: Vec<String>,
+    },
 }
 
 pub fn update(state: &mut State, feed: Feed) -> Option<Action> {
@@ -43,6 +52,14 @@ pub fn update(state: &mut State, feed: Feed) -> Option<Action> {
         Feed::Output(o) => state.out = Some(o),
         Feed::Failed => state.out = None,
         Feed::Run(argv) => return (!argv.is_empty()).then_some(Action::Run(argv)),
+        Feed::Wheel { delta, up, down } => {
+            let argv = match state.wheel.count(delta, std::time::Instant::now()) {
+                0 => return None,
+                n if n > 0 => up,
+                _ => down,
+            };
+            return (!argv.is_empty()).then_some(Action::Run(argv));
+        }
     }
     None
 }
@@ -77,26 +94,18 @@ fn detail(out: &Output) -> Option<String> {
 /// A `source` block's line: the shipped source's reading through `format`
 /// (`{}` is the value). `None` while the source has nothing to say.
 pub fn resolve(source: &str, format: &str, widgets: &super::State) -> Option<String> {
-    let pct = |f: f32| format!("{:.0}%", f * 100.0);
     let sample = widgets.usage.sample.as_ref();
     let np = widgets.now_playing.player.as_ref();
-    let value = match source {
-        "usage.cpu" => sample.map(|s| pct(s.cpu)),
-        "usage.mem" => sample.and_then(|s| s.mem).map(pct),
-        "usage.gpu" => sample.and_then(|s| s.gpu).map(pct),
-        "usage.disk" => sample.and_then(|s| s.disk).map(pct),
-        "audio.volume" => widgets.volume.sink.as_ref().map(|s| {
-            if s.muted {
-                "muted".to_owned()
-            } else {
-                pct(s.volume)
-            }
-        }),
-        "media.title" => np.map(|p| p.title.clone()),
-        "media.artist" => np.and_then(|p| p.artist.clone()),
-        _ => None,
-    }?;
-    Some(format.replace("{}", &value))
+    let readings = eclipse_ui::reading::Readings {
+        cpu: sample.map(|s| s.cpu),
+        mem: sample.and_then(|s| s.mem),
+        gpu: sample.and_then(|s| s.gpu),
+        disk: sample.and_then(|s| s.disk),
+        volume: widgets.volume.sink.as_ref().map(|s| (s.volume, s.muted)),
+        title: np.map(|p| p.title.clone()),
+        artist: np.and_then(|p| p.artist.clone()),
+    };
+    eclipse_ui::reading::line(source, format, &readings)
 }
 
 pub fn spans(out: Option<&Output>, spec: &WidgetSpec) -> Spans {
@@ -162,12 +171,15 @@ pub fn view<'a>(out: Option<Output>, spec: &'a WidgetSpec, frame: ShellFrame) ->
             spec.on_scroll_up.clone().unwrap_or_default(),
             spec.on_scroll_down.clone().unwrap_or_default(),
         );
-        area = area.on_scroll(move |d| {
-            let dy = match d {
-                ScrollDelta::Lines { y, .. } | ScrollDelta::Pixels { y, .. } => y,
-            };
-            let argv = if dy > 0.0 { up.clone() } else { down.clone() };
-            msg(&name, Feed::Run(argv))
+        area = area.on_scroll(move |delta| {
+            msg(
+                &name,
+                Feed::Wheel {
+                    delta,
+                    up: up.clone(),
+                    down: down.clone(),
+                },
+            )
         });
     }
     let revealed = detail(&out).map(|d| {
@@ -251,6 +263,26 @@ mod tests {
         });
         assert_eq!(resolve("usage.cpu", "CPU {}", &w).as_deref(), Some("CPU 42%"));
         assert_eq!(resolve("usage.mem", "{}", &w), None);
+    }
+
+    /// A zero delta is not a scroll down, and one click is one run.
+    #[test]
+    fn the_wheel_runs_once_per_notch() {
+        let mut st = State::default();
+        let wheel = |y: f32, lines: bool| Feed::Wheel {
+            delta: if lines {
+                ScrollDelta::Lines { x: 0.0, y }
+            } else {
+                ScrollDelta::Pixels { x: 0.0, y }
+            },
+            up: vec!["up".into()],
+            down: vec!["down".into()],
+        };
+        let runs: Vec<_> = [wheel(0.0, false), wheel(1.0, true), wheel(15.0, false)]
+            .into_iter()
+            .filter_map(|f| update(&mut st, f))
+            .collect();
+        assert_eq!(runs, [Action::Run(vec!["up".into()])]);
     }
 
     #[test]

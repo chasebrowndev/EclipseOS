@@ -450,7 +450,8 @@ pub(crate) fn strip_workspace(app: &crate::app::App) -> Option<usize> {
 
 /// The windows on the focused workspace — the bar's hero zone.
 ///
-/// Click toggles minimized, middle-click closes, right-click is the menu.
+/// Click brings a window forward, sends the focused one away and brings a
+/// minimized one back; middle-click closes, right-click is the menu.
 /// Windows are *not* grouped by `app_id`: grouping means a popup list for the
 /// group, which means a second surface and a second focus path.
 ///
@@ -469,7 +470,12 @@ fn tasks(app: &crate::app::App) -> Element<'_, Message, Theme> {
         }
         let presence = chip.presence.value().clamp(0.0, 1.0);
         r = r
-            .push(task_chip(chip, app.icons.for_window(&chip.window), visible))
+            .push(task_chip(
+                chip,
+                app.icons.for_window(&chip.window),
+                visible,
+                focused(app, &chip.window),
+            ))
             .push(Space::new().width(Length::Fixed((bar::GAP * presence).round())));
     }
     if app.layout.hidden > 0 {
@@ -550,7 +556,18 @@ fn overflow_cell(hidden: usize) -> Element<'static, Message, Theme> {
 /// shares) `visible` wide over a face laid out once at the chip's target
 /// width, so an animating chip uncovers or covers its label and never
 /// re-wraps it.
-fn task_chip(chip: &crate::motion::Chip, icon: Icon, visible: f32) -> Element<'_, Message, Theme> {
+/// Whether `w` holds focus: `get_focused` when it answered, else the
+/// window's own flag.
+fn focused(app: &crate::app::App, w: &crate::model::Window) -> bool {
+    app.snapshot.focused.map_or(w.focused, |f| f == w.handle)
+}
+
+fn task_chip(
+    chip: &crate::motion::Chip,
+    icon: Icon,
+    visible: f32,
+    focused: bool,
+) -> Element<'_, Message, Theme> {
     let w = &chip.window;
     let width = chip.content;
     // Up or put away — see the accent ledger. A minimized window reads as a
@@ -588,11 +605,18 @@ fn task_chip(chip: &crate::motion::Chip, icon: Icon, visible: f32) -> Element<'_
     let face: Element<'_, Message, Theme> = if chip.gone {
         press.into()
     } else {
-        // The chip is a toggle: click a window that is up to send it away,
-        // click one that is away to bring it back. `button` swallows only the
-        // left press, so the middle-click close and the right-click menu
-        // still reach the `mouse_area` around it.
-        mouse_area(press.on_press(Message::ToggleMinimize(w.handle)))
+        // The chip is a toggle: click the focused window to send it away,
+        // click one that is away to bring it back. A window that is up but
+        // behind another is brought forward first — sending away the window
+        // you reached for is the one answer that is never wanted. `button`
+        // swallows only the left press, so the middle-click close and the
+        // right-click menu still reach the `mouse_area` around it.
+        let click = if up && !focused {
+            Message::Focus(w.handle)
+        } else {
+            Message::ToggleMinimize(w.handle)
+        };
+        mouse_area(press.on_press(click))
             .on_middle_press(Message::Close(w.handle))
             .on_right_press(Message::Menu(w.handle))
             .into()

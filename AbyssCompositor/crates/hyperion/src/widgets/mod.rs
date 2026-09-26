@@ -199,6 +199,68 @@ pub enum Action {
     Run(Vec<String>),
 }
 
+/// A wheel's events, counted as notches.
+///
+/// One notch of a wheel reaches the bar as up to three events
+/// (layershellev): the axis source with no motion at all, the discrete step
+/// (`ScrollDelta::Lines`) and the same step again in pixels
+/// (`ScrollDelta::Pixels`). Acting on each is three steps per click. A zero
+/// delta is dropped; a pixel delta that trails a discrete one is its twin and
+/// dropped too; and a pixel stream with no discrete steps at all — a
+/// touchpad — counts a notch per [`PX_PER_NOTCH`] of travel.
+#[derive(Debug, Default)]
+pub struct Notches {
+    /// When the last discrete step arrived.
+    lines_at: Option<std::time::Instant>,
+    /// Pixel travel not yet counted as a notch.
+    px: f32,
+}
+
+/// How long after a discrete step its pixel twin may still arrive. The two
+/// come out of one `wl_pointer.frame`, so this is far longer than they are
+/// ever apart and far shorter than two human notches.
+const TWIN: std::time::Duration = std::time::Duration::from_millis(40);
+
+/// Smooth-scroll travel that counts as one notch: libinput's pixel value for
+/// one wheel click.
+const PX_PER_NOTCH: f32 = 15.0;
+
+impl Notches {
+    /// The notches this event is worth: positive is up, zero is nothing.
+    pub fn count(&mut self, delta: iced::mouse::ScrollDelta, now: std::time::Instant) -> i32 {
+        use iced::mouse::ScrollDelta;
+        match delta {
+            ScrollDelta::Lines { y, .. } => {
+                if y == 0.0 || !y.is_finite() {
+                    return 0;
+                }
+                self.lines_at = Some(now);
+                self.px = 0.0;
+                // A fast spin reports two clicks as one step of 2.
+                (y.abs().round().max(1.0) as i32) * y.signum() as i32
+            }
+            ScrollDelta::Pixels { y, .. } => {
+                if y == 0.0 || !y.is_finite() {
+                    return 0;
+                }
+                if self
+                    .lines_at
+                    .is_some_and(|at| now.saturating_duration_since(at) <= TWIN)
+                {
+                    return 0;
+                }
+                if self.px != 0.0 && self.px.signum() != y.signum() {
+                    self.px = 0.0;
+                }
+                self.px += y;
+                let n = (self.px / PX_PER_NOTCH).trunc();
+                self.px -= n * PX_PER_NOTCH;
+                n as i32
+            }
+        }
+    }
+}
+
 /// A grip gesture, keyed by widget in [`Message::Grip`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GripEv {
@@ -301,6 +363,14 @@ pub struct Cell<'a> {
 /// The widget at `index` of `bar.widgets.order`, on its shell, at the width
 /// its animation has reached. `None` once it has animated all the way out.
 pub fn cell(app: &App, index: usize) -> Option<Cell<'_>> {
+    let mut c = shell(app, index)?;
+    if app.widget_cfg.order.get(index) == Some(&WidgetId::Volume) {
+        c.element = volume::wheel(&app.widgets.volume, &app.widget_cfg.volume, c.element);
+    }
+    Some(c)
+}
+
+fn shell(app: &App, index: usize) -> Option<Cell<'_>> {
     let id = app.widget_cfg.order.get(index)?;
     let input = app.widget_inputs.get(index)?;
     let key = id.key();
@@ -446,5 +516,38 @@ mod tests {
         assert_eq!(cfg.order.first(), Some(&WidgetId::NowPlaying));
         assert_eq!(cfg.order.last(), Some(&WidgetId::Clock));
         assert!(cfg.important.contains(&WidgetId::Battery));
+    }
+
+    /// One wheel click as layershellev delivers it — the axis source's empty
+    /// event, the discrete step, its pixel twin — is one notch.
+    #[test]
+    fn one_click_of_the_wheel_is_one_notch() {
+        use iced::mouse::ScrollDelta;
+        let mut n = Notches::default();
+        let t = std::time::Instant::now();
+        let zero = ScrollDelta::Pixels { x: 0.0, y: 0.0 };
+        let total: i32 = [
+            zero,
+            ScrollDelta::Lines { x: 0.0, y: -1.0 },
+            ScrollDelta::Pixels { x: 0.0, y: -15.0 },
+        ]
+        .into_iter()
+        .map(|d| n.count(d, t))
+        .sum();
+        assert_eq!(total, -1);
+        assert_eq!(n.count(zero, t), 0, "a zero delta is never a step down");
+    }
+
+    /// A touchpad sends pixels only; they count once a notch's worth builds up.
+    #[test]
+    fn smooth_scroll_counts_by_travel() {
+        use iced::mouse::ScrollDelta;
+        let mut n = Notches::default();
+        let t = std::time::Instant::now();
+        let px = |y| ScrollDelta::Pixels { x: 0.0, y };
+        assert_eq!(n.count(px(6.0), t), 0);
+        assert_eq!(n.count(px(6.0), t), 0);
+        assert_eq!(n.count(px(6.0), t), 1);
+        assert_eq!(n.count(px(-4.0), t), 0, "a reversal starts over");
     }
 }

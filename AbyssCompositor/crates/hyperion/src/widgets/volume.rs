@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Volume: the speaker mark as the core (click mutes, the wheel steps), the
-//! level slider as the revealed section.
+//! Volume: the speaker mark as the core (click mutes), the level slider as
+//! the revealed section, and the wheel anywhere on the widget steps the level
+//! ([`wheel`]).
 //!
 //! Neutral throughout: a sink level is state, not the bar's live value.
 
@@ -44,6 +45,8 @@ impl Cfg {
 pub struct State {
     /// The default sink; `None` is no audio server, and no widget.
     pub sink: Option<Sink>,
+    /// The wheel over the widget, counted in notches.
+    pub wheel: super::Notches,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +55,8 @@ pub enum Feed {
     /// Set the level, `1.0` = 100%.
     Set(f32),
     Mute(bool),
+    /// The wheel moved over the widget; a whole notch steps by `cfg.step`.
+    Wheel(ScrollDelta, Cfg),
 }
 
 pub fn update(state: &mut State, feed: Feed) -> Option<Action> {
@@ -67,6 +72,13 @@ pub fn update(state: &mut State, feed: Feed) -> Option<Action> {
             if let Some(s) = state.sink.as_mut() {
                 s.volume = v;
             }
+            Some(Action::SetVolume(v))
+        }
+        Feed::Wheel(delta, cfg) => {
+            let notches = state.wheel.count(delta, std::time::Instant::now());
+            let sink = state.sink.as_mut().filter(|_| notches != 0)?;
+            let v = stepped(sink.volume, &cfg, notches);
+            sink.volume = v;
             Some(Action::SetVolume(v))
         }
         Feed::Mute(m) => {
@@ -107,22 +119,29 @@ fn msg(f: Feed) -> Message {
     Message::Widget(Routed::Volume(f))
 }
 
-/// One wheel notch's worth of level, in the direction the wheel went.
-fn stepped(volume: f32, cfg: &Cfg, delta: ScrollDelta) -> f32 {
-    let dy = match delta {
-        ScrollDelta::Lines { y, .. } | ScrollDelta::Pixels { y, .. } => y,
-    };
-    let dir = if dy > 0.0 {
-        1.0
-    } else if dy < 0.0 {
-        -1.0
-    } else {
-        0.0
-    };
+/// `notches` wheel notches' worth of level; positive is louder.
+fn stepped(volume: f32, cfg: &Cfg, notches: i32) -> f32 {
     // Snapped to the step grid, so a level set by the slider rejoins it.
     let step = cfg.step.max(1) as f32 / 100.0;
     let at = (volume / step).round() * step;
-    (at + dir * step).clamp(0.0, cfg.max())
+    (at + notches as f32 * step).clamp(0.0, cfg.max())
+}
+
+/// The whole widget — grip, speaker and slider — as the wheel's target, not
+/// the speaker alone: a 14px mark is too small a place to aim a wheel at.
+/// With no sink, or scrolling off, the cell is returned as it was.
+pub fn wheel<'a>(
+    state: &State,
+    cfg: &Cfg,
+    cell: iced::Element<'a, Message, iced::Theme>,
+) -> iced::Element<'a, Message, iced::Theme> {
+    if !cfg.scroll || state.sink.is_none() {
+        return cell;
+    }
+    let cfg = *cfg;
+    mouse_area(cell)
+        .on_scroll(move |d| msg(Feed::Wheel(d, cfg)))
+        .into()
 }
 
 pub fn view<'a>(state: &'a State, cfg: &Cfg, frame: ShellFrame) -> Parts<'a> {
@@ -148,15 +167,7 @@ pub fn view<'a>(state: &'a State, cfg: &Cfg, frame: ShellFrame) -> Parts<'a> {
         bar::MARK,
         tint.scale_alpha(ink),
     );
-    let press = super::press(mark, bar::MARK, msg(Feed::Mute(!sink.muted)));
-    let core = if cfg.scroll {
-        let (volume, cfg) = (sink.volume, *cfg);
-        mouse_area(press)
-            .on_scroll(move |d| msg(Feed::Set(stepped(volume, &cfg, d))))
-            .into()
-    } else {
-        press
-    };
+    let core = super::press(mark, bar::MARK, msg(Feed::Mute(!sink.muted)));
     let slider = parts::volume_slider_faded(
         sink.volume,
         cfg.max(),
@@ -179,12 +190,34 @@ mod tests {
     #[test]
     fn the_wheel_steps_on_the_grid_and_stops_at_the_ceiling() {
         let cfg = Cfg::default();
-        let up = ScrollDelta::Lines { x: 0.0, y: 1.0 };
-        let down = ScrollDelta::Lines { x: 0.0, y: -1.0 };
-        assert!((stepped(0.52, &cfg, up) - 0.55).abs() < 1e-4);
-        assert!((stepped(0.52, &cfg, down) - 0.45).abs() < 1e-4);
-        assert_eq!(stepped(0.99, &cfg, up), 1.0);
-        assert_eq!(stepped(0.01, &cfg, down), 0.0);
+        assert!((stepped(0.52, &cfg, 1) - 0.55).abs() < 1e-4);
+        assert!((stepped(0.52, &cfg, -1) - 0.45).abs() < 1e-4);
+        assert_eq!(stepped(0.99, &cfg, 1), 1.0);
+        assert_eq!(stepped(0.01, &cfg, -1), 0.0);
+    }
+
+    /// A wheel click's three events step the level once; the empty one never
+    /// turns it down.
+    #[test]
+    fn one_click_steps_once() {
+        let mut s = State {
+            sink: Some(Sink {
+                volume: 0.5,
+                muted: false,
+                description: String::new(),
+            }),
+            ..State::default()
+        };
+        let cfg = Cfg::default();
+        let feeds = [
+            ScrollDelta::Pixels { x: 0.0, y: 0.0 },
+            ScrollDelta::Lines { x: 0.0, y: 1.0 },
+            ScrollDelta::Pixels { x: 0.0, y: 15.0 },
+        ];
+        for d in feeds {
+            let _ = update(&mut s, Feed::Wheel(d, cfg));
+        }
+        assert!((s.sink.as_ref().map_or(0.0, |s| s.volume) - 0.55).abs() < 1e-4);
     }
 
     #[test]
@@ -202,6 +235,7 @@ mod tests {
                 muted: false,
                 description: String::new(),
             }),
+            ..State::default()
         };
         assert_eq!(update(&mut s, Feed::Set(0.6)), Some(Action::SetVolume(0.6)));
         assert_eq!(s.sink.as_ref().map(|s| s.volume), Some(0.6));

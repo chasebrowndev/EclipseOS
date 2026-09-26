@@ -105,7 +105,8 @@ pub enum Message {
     Refresh,
     /// A workspace pill was clicked. 1-based wire index.
     Switch(usize),
-    /// A window entry was clicked.
+    /// A window chip was clicked while its window is up but not focused:
+    /// bring it forward rather than send it away.
     Focus(u64),
     /// A window entry was middle-clicked, or `Close` was picked in the menu.
     Close(u64),
@@ -120,8 +121,14 @@ pub enum Message {
     Mute(u64, bool),
     /// Start a second copy of the window's application.
     NewInstance(u64),
-    /// Close the menu without acting.
+    /// Close the menu without acting: Escape, or a press on the bar that
+    /// no cell took ([`Message::BarPress`]).
     Dismiss,
+    /// A press on a surface that no widget took, and where it landed when it
+    /// was a finger. On the bar it closes the open popup: abyss counts the
+    /// parent bar as inside the popup's grab (`shell::popup_grab_button_press`),
+    /// so the compositor will not dismiss it for us.
+    BarPress(iced::window::Id, Option<iced::Point>),
     /// The pointer moved over a surface. The bar tracks it because a popup is
     /// positioned by a rectangle in its parent's coordinates, and the press
     /// that opens the menu is the only thing that knows where that is.
@@ -672,7 +679,12 @@ fn step(app: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::Refresh => {}
         Message::Switch(index) => app.conn.switch_workspace(index),
-        Message::Focus(handle) => app.conn.focus_window(handle),
+        Message::Focus(handle) => {
+            let dismiss = dismiss(app);
+            app.conn.focus_window(handle);
+            refetch(app);
+            return dismiss;
+        }
         Message::Close(handle) => {
             let dismiss = dismiss(app);
             app.conn.close_window(handle);
@@ -708,6 +720,18 @@ fn step(app: &mut App, message: Message) -> Task<Message> {
             return dismiss;
         }
         Message::Dismiss => return dismiss(app),
+        Message::BarPress(id, at) => {
+            if let Some(at) = at {
+                let _ = step(app, Message::Pointer(id, at));
+            }
+            // A press inside the popup (its padding, a separator) is not a
+            // press outside it; neither is one on the eye.
+            let on_popup = app.popup.as_ref().is_some_and(|p| p.id == id);
+            if on_popup || app.eye_surface == Some(id) {
+                return Task::none();
+            }
+            return dismiss(app);
+        }
         Message::Pointer(id, position) => {
             // Anything that is not the open popup or the eye is the bar
             // itself: there is only ever one of each.
@@ -1249,21 +1273,28 @@ pub fn relayout(app: &mut App, now: Instant) {
         .collect();
     app.motion.retarget_widgets(&targets, snap, now);
 
-    // The monitor tap costs a capture stream, so it runs only while its
-    // bars can be seen: playing, visualizer on, and not compressed away.
     if app.fixture.is_none() {
-        let np = widgets::WidgetId::NowPlaying;
-        let shown = app
-            .motion
-            .widgets
-            .get(&np.key())
-            .is_some_and(|w| w.extent.target() > 0.0);
-        let tap = app.widget_cfg.now_playing.visualizer
-            && app.widget_cfg.order.contains(&np)
-            && app.widgets.now_playing.playing()
-            && shown;
-        crate::services::set_tap(tap);
+        crate::services::set_tap(tap_wanted(app));
     }
+}
+
+/// The monitor tap costs a capture stream, so it runs only while its bars
+/// can be seen: playing, visualizer on, not compressed away, and the bar
+/// itself up. A folded strip draws no widgets and a hidden bar (fullscreen)
+/// draws nothing, so either one closes the stream; a fold still sitting out
+/// its grace window has not happened yet and keeps it.
+fn tap_wanted(app: &App) -> bool {
+    let np = widgets::WidgetId::NowPlaying;
+    let shown = app
+        .motion
+        .widgets
+        .get(&np.key())
+        .is_some_and(|w| w.extent.target() > 0.0);
+    app.widget_cfg.now_playing.visualizer
+        && app.widget_cfg.order.contains(&np)
+        && app.widgets.now_playing.playing()
+        && shown
+        && app.fold.target == FoldTarget::Shown
 }
 
 /// A grip gesture.
@@ -1647,13 +1678,31 @@ fn frames() -> Subscription<Message> {
 /// Where the pointer (or a finger) is, and on which surface. The only source of the popup's
 /// parent and anchor.
 fn pointer() -> Subscription<Message> {
-    iced::event::listen_with(|event, _status, id| match event {
+    use iced::event::Status;
+    iced::event::listen_with(|event, status, id| match event {
+        // A press no cell took is a press on bare bar: it closes the popup.
+        // Only uncaptured ones — a press a cell took has already acted, and
+        // may have just opened the popup this would close.
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) if status == Status::Ignored => {
+            Some(Message::BarPress(id, None))
+        }
+        iced::Event::Touch(iced::touch::Event::FingerPressed { position, .. })
+            if status == Status::Ignored =>
+        {
+            Some(Message::BarPress(id, Some(position)))
+        }
         // A finger is the pointer too: a tap must anchor the popup it opens.
         iced::Event::Mouse(iced::mouse::Event::CursorMoved { position })
         | iced::Event::Touch(
             iced::touch::Event::FingerPressed { position, .. }
             | iced::touch::Event::FingerMoved { position, .. },
         ) => Some(Message::Pointer(id, position)),
+        // The popup's grab holds the keyboard, so Escape arrives on the
+        // popup's own surface.
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+            ..
+        }) => Some(Message::Dismiss),
         // The surface's own size, which is where the task strip's condensation
         // ladder gets its "what fits" from.
         iced::Event::Window(iced::window::Event::Opened { size, .. })
@@ -1967,6 +2016,62 @@ mod tests {
         grip(&mut a, key.clone(), GripEv::Drag(input.max_extent()), later(7));
         grip(&mut a, key.clone(), GripEv::Release, later(7));
         assert_eq!(a.motion.pins.get(&key).map(|p| p.0), Some(Pin::Collapsed));
+    }
+
+    /// The monitor tap follows the bar off screen: a folded or hidden bar
+    /// draws no visualizer, so it holds no capture stream.
+    #[test]
+    fn the_tap_closes_when_the_bar_folds_or_hides() {
+        use crate::widgets::{now_playing, Feed};
+        use eclipse_services::media::{NowPlaying, Playback};
+        let mut a = app();
+        a.width = 1440.0;
+        widgets::update(
+            &mut a.widgets,
+            Feed::NowPlaying(now_playing::Feed::Player(Some(NowPlaying {
+                player: "player".into(),
+                title: "Track".into(),
+                artist: None,
+                album: None,
+                art: None,
+                status: Playback::Playing,
+                can_prev: true,
+                can_next: true,
+                can_pause: true,
+            }))),
+        );
+        relayout(&mut a, Instant::now());
+        assert!(tap_wanted(&a), "playing, on a shown bar");
+        a.fold.target = FoldTarget::Folded;
+        assert!(!tap_wanted(&a), "folded");
+        a.fold.target = FoldTarget::Hidden;
+        assert!(!tap_wanted(&a), "hidden under a fullscreen window");
+        a.fold.target = FoldTarget::Shown;
+        a.widget_cfg.now_playing.visualizer = false;
+        assert!(!tap_wanted(&a));
+    }
+
+    /// A press on bare bar closes the menu; one inside the menu does not.
+    #[test]
+    fn a_press_on_bare_bar_closes_the_menu() {
+        let mut a = app();
+        let (bar_id, menu_id) = (iced::window::Id::unique(), iced::window::Id::unique());
+        a.main = Some(bar_id);
+        let menu = |id| Popup {
+            id,
+            kind: Kind::Menu {
+                handle: 1,
+                items: vec![Item::Close],
+            },
+        };
+        a.popup = Some(menu(menu_id));
+        let _ = step(&mut a, Message::BarPress(menu_id, None));
+        assert!(a.popup.is_some(), "a press inside the menu keeps it");
+        let _ = step(&mut a, Message::BarPress(bar_id, None));
+        assert!(a.popup.is_none(), "a press on the bar closes it");
+        a.popup = Some(menu(menu_id));
+        let _ = step(&mut a, Message::Dismiss);
+        assert!(a.popup.is_none(), "Escape's message closes it");
     }
 }
 

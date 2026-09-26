@@ -532,6 +532,10 @@ pub mod canvas {
     /// An argument chip in an argv editor, and the gap before its remove
     /// mark.
     pub const ARG_GAP: f32 = 6.0;
+    /// The most characters an argument chip shows before it ends in an
+    /// ellipsis: about a field's width of the data face, so one long
+    /// argument (a URL, an `sh -c` script) cannot push past the panel.
+    pub const ARG_MAX_CHARS: usize = 32;
     /// The caret under a positioned config error, a hard rule under the
     /// offending span.
     pub const CARET_H: f32 = 2.0;
