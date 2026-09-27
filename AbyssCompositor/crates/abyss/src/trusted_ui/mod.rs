@@ -164,16 +164,17 @@ pub(crate) fn arm_now(state: &mut AbyssState) {
 ///
 /// A button held as the prompt opens has put a grab on the pointer (a click
 /// grab keeps focus on the pressed surface whatever the motion says), so the
-/// grab is ended first. Otherwise that client would keep getting motion
+/// grab is ended too. Otherwise that client would keep getting motion
 /// until the release (COMP-10 §4).
+///
+/// The motion to nothing comes first: ending a grab restores focus to the
+/// pending one, and ending a drag drops it on its current target. Moved to
+/// nothing, the click grab restores to no surface and the drag is cancelled.
 pub fn release_pointer_focus(state: &mut AbyssState) {
     let Some(pointer) = state.seat.get_pointer() else {
         return;
     };
     let time = state.start_time.elapsed().as_millis() as u32;
-    if pointer.is_grabbed() {
-        pointer.unset_grab(state, SERIAL_COUNTER.next_serial(), time);
-    }
     let location = state.pointer_location;
     pointer.motion(
         state,
@@ -184,6 +185,9 @@ pub fn release_pointer_focus(state: &mut AbyssState) {
             time,
         },
     );
+    if pointer.is_grabbed() {
+        pointer.unset_grab(state, SERIAL_COUNTER.next_serial(), time);
+    }
     pointer.frame(state);
     state.last_pointer_focus = None;
 }
