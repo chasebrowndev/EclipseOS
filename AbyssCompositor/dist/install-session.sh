@@ -53,6 +53,8 @@ done
 # 3b. The taskbar's add-on manifest (ADR 0066). Hosts read manifests only from
 #     /usr/share/eclipse/addons, never a user directory, so it is copied there.
 install -Dm 0644 "$here/addons/hyperion.kdl" /usr/share/eclipse/addons/hyperion.kdl
+#     Its premade command widgets, approved by shipping (ADR 0067).
+install -Dm 0644 -t /usr/share/eclipse/widgets "$here"/widgets/*.kdl
 
 # 4. The apps a human launches. The bar, toasts and launcher are session
 #    components, not applications, and deliberately have no entry.
