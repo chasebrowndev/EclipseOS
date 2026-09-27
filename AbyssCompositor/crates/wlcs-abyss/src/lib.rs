@@ -17,7 +17,7 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::thread::JoinHandle;
 
-use abyss::backend::headless::{wlcs_channel, WlcsEvent, WlcsSender};
+use abyss::backend::headless::{wlcs_channel, wlcs_send_and_wait, WlcsEvent, WlcsSender};
 use wayland_sys::client::*;
 use wayland_sys::ffi_dispatch;
 use wlcs::{
@@ -152,25 +152,29 @@ fn fixed(v: i32) -> f64 {
 
 impl wlcs::Pointer for PointerHandle {
     fn move_absolute(&mut self, x: i32, y: i32) {
-        let _ = self.sender.send(WlcsEvent::PointerMoveAbsolute {
-            location: (fixed(x), fixed(y)),
-        });
+        wlcs_send_and_wait(
+            &self.sender,
+            WlcsEvent::PointerMoveAbsolute {
+                location: (fixed(x), fixed(y)),
+            },
+        );
     }
 
     fn move_relative(&mut self, dx: i32, dy: i32) {
-        let _ = self.sender.send(WlcsEvent::PointerMoveRelative {
-            delta: (fixed(dx), fixed(dy)),
-        });
+        wlcs_send_and_wait(
+            &self.sender,
+            WlcsEvent::PointerMoveRelative {
+                delta: (fixed(dx), fixed(dy)),
+            },
+        );
     }
 
     fn button_down(&mut self, button: i32) {
-        let _ = self
-            .sender
-            .send(WlcsEvent::PointerButtonDown { button_id: button });
+        wlcs_send_and_wait(&self.sender, WlcsEvent::PointerButtonDown { button_id: button });
     }
 
     fn button_up(&mut self, button: i32) {
-        let _ = self.sender.send(WlcsEvent::PointerButtonUp { button_id: button });
+        wlcs_send_and_wait(&self.sender, WlcsEvent::PointerButtonUp { button_id: button });
     }
 }
 
@@ -189,22 +193,81 @@ const WLCS_TOUCH_SLOT: u32 = 0;
 
 impl wlcs::Touch for TouchHandle {
     fn touch_down(&mut self, x: i32, y: i32) {
-        let _ = self.sender.send(WlcsEvent::TouchDown {
-            slot: WLCS_TOUCH_SLOT,
-            location: (x as f64, y as f64),
-        });
+        wlcs_send_and_wait(
+            &self.sender,
+            WlcsEvent::TouchDown {
+                slot: WLCS_TOUCH_SLOT,
+                location: (x as f64, y as f64),
+            },
+        );
     }
 
     fn touch_move(&mut self, x: i32, y: i32) {
-        let _ = self.sender.send(WlcsEvent::TouchMove {
-            slot: WLCS_TOUCH_SLOT,
-            location: (x as f64, y as f64),
-        });
+        wlcs_send_and_wait(
+            &self.sender,
+            WlcsEvent::TouchMove {
+                slot: WLCS_TOUCH_SLOT,
+                location: (x as f64, y as f64),
+            },
+        );
     }
 
     fn touch_up(&mut self) {
-        let _ = self.sender.send(WlcsEvent::TouchUp {
-            slot: WLCS_TOUCH_SLOT,
-        });
+        wlcs_send_and_wait(
+            &self.sender,
+            WlcsEvent::TouchUp {
+                slot: WLCS_TOUCH_SLOT,
+            },
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wlcs::{Pointer, Touch};
+
+    /// Every synthetic input call blocks until the compositor loop has
+    /// handled it. wlcs follows input with a client roundtrip only, which
+    /// orders the Wayland socket and not this channel; a call that returned
+    /// early let `activated_state_follows_pointer` read the configure from
+    /// before the pointer moved.
+    #[test]
+    fn input_calls_wait_for_the_loop() {
+        type Call = fn(&WlcsSender);
+        let calls: [(&str, Call); 7] = [
+            ("move_absolute", |s| {
+                PointerHandle { sender: s.clone() }.move_absolute(256, 256)
+            }),
+            ("move_relative", |s| {
+                PointerHandle { sender: s.clone() }.move_relative(256, 0)
+            }),
+            ("button_down", |s| {
+                PointerHandle { sender: s.clone() }.button_down(0x110)
+            }),
+            ("button_up", |s| {
+                PointerHandle { sender: s.clone() }.button_up(0x110)
+            }),
+            ("touch_down", |s| {
+                TouchHandle { sender: s.clone() }.touch_down(1, 1)
+            }),
+            ("touch_move", |s| {
+                TouchHandle { sender: s.clone() }.touch_move(2, 2)
+            }),
+            ("touch_up", |s| TouchHandle { sender: s.clone() }.touch_up()),
+        ];
+        for (name, call) in calls {
+            // No loop drains `rx`, so a call that waits cannot return while
+            // it is alive; dropping it disconnects the ack and frees the call.
+            let (tx, rx) = wlcs_channel();
+            let caller = std::thread::spawn(move || call(&tx));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert!(
+                !caller.is_finished(),
+                "{name} returned before the loop handled it"
+            );
+            drop(rx);
+            caller.join().expect("caller thread");
+        }
     }
 }

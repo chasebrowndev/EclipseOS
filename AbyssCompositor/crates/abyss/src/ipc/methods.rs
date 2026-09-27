@@ -390,7 +390,17 @@ fn unsubscribe(state: &mut AbyssState, conn: u64) -> Reply {
 
 // --------------------------------------------------------------- commands
 
+/// Focus cannot move while the session is locked (COMP-06 §1, COMP-04 §7), so the
+/// commands that act through focus would hit the pre-lock window. Refuse.
+fn refuse_if_locked(state: &AbyssState) -> Result<(), RpcError> {
+    if state.lock.locked {
+        return Err(RpcError::denied("session is locked"));
+    }
+    Ok(())
+}
+
 fn focus_window(state: &mut AbyssState, params: &Value) -> Reply {
+    refuse_if_locked(state)?;
     let w = window_param(state, params)?;
     crate::shell::focus_window(state, &w);
     crate::backend::damage_all(state);
@@ -427,6 +437,7 @@ fn set_minimized(state: &mut AbyssState, params: &Value) -> Reply {
 }
 
 fn move_to_workspace(state: &mut AbyssState, params: &Value) -> Reply {
+    refuse_if_locked(state)?;
     let idx = u64_param(params, "workspace")? as usize;
     // A handle is optional: without one this moves the focused window, which
     // is what a keybind-shaped caller expects.
@@ -443,6 +454,7 @@ fn move_to_workspace(state: &mut AbyssState, params: &Value) -> Reply {
 }
 
 fn set_floating(state: &mut AbyssState, params: &Value) -> Reply {
+    refuse_if_locked(state)?;
     let want = bool_param(params, "floating")?;
     let w = window_param(state, params)?;
     if is_floating(state, &w) == want {
@@ -1018,6 +1030,30 @@ mod tests {
 
         assert!(update_params(&json!({"id": 1, "text": "t", "title": false})).is_err());
         assert!(update_params(&json!({"id": 1, "text": "t", "pick": null})).is_err());
+    }
+
+    /// Under the lock the focus-relative commands are refused before any
+    /// parameter is looked at: they would act on the pre-lock window.
+    #[test]
+    fn focus_relative_commands_are_refused_under_the_lock() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let s = &mut h.state;
+        s.lock.locked = true;
+        for (method, params) in [
+            ("focus_window", json!({"handle": 1})),
+            ("move_to_workspace", json!({"workspace": 2})),
+            ("set_floating", json!({"handle": 1, "floating": true})),
+        ] {
+            let e = dispatch(s, 0, method, &params).expect_err("refused");
+            assert_eq!(e.code, super::super::DENIED, "{method}");
+        }
+        s.lock.locked = false;
+        let e = dispatch(s, 0, "focus_window", &json!({"handle": 1})).expect_err("no such window");
+        assert_ne!(
+            e.code,
+            super::super::DENIED,
+            "unlocked, it gets as far as the handle"
+        );
     }
 
     /// ADR 0064: `subscribe` replays the *latest* `config-error` — after a

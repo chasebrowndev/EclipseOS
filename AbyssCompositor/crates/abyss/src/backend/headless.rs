@@ -187,6 +187,11 @@ pub enum WlcsEvent {
     TouchUp {
         slot: u32,
     },
+    /// Answered when the loop reaches it, by which point every event sent
+    /// before it has been handled. See [`wlcs_send_and_wait`].
+    Sync {
+        ack: std::sync::mpsc::SyncSender<()>,
+    },
 }
 
 /// Build the channel the harness sends on. Exported so the harness crate does
@@ -539,6 +544,27 @@ fn redraw(
     state.popups.cleanup();
 }
 
+/// Send `event`, then block until the loop has handled it.
+///
+/// wlcs reads client state straight after synthetic input, with only a
+/// `wl_display.sync` roundtrip in between. That roundtrip orders the client
+/// socket, not this channel: an input event still queued here can be handled
+/// after the `done`, and the test reads a configure from before it
+/// (`XdgToplevelStableConfigurationTest.activated_state_follows_pointer` went
+/// red on CI this way). The channel is FIFO, so once a `Sync` sent after the
+/// event is answered, the event and any configure it caused are already
+/// queued to the client ahead of the `done`.
+pub fn wlcs_send_and_wait(sender: &WlcsSender, event: WlcsEvent) {
+    if sender.send(event).is_err() {
+        return;
+    }
+    let (ack, done) = std::sync::mpsc::sync_channel(1);
+    if sender.send(WlcsEvent::Sync { ack }).is_ok() {
+        // Bounded: a loop that died must fail the test, not hang the suite.
+        let _ = done.recv_timeout(std::time::Duration::from_secs(5));
+    }
+}
+
 /// Apply one harness event on the loop thread.
 ///
 /// Input goes through [`AbyssState`]'s injection path rather than the seat
@@ -621,5 +647,55 @@ fn wlcs_event(
         WlcsEvent::TouchDown { slot, location } => state.inject_touch_down(slot, location.into(), time),
         WlcsEvent::TouchMove { slot, location } => state.inject_touch_motion(slot, location.into(), time),
         WlcsEvent::TouchUp { slot } => state.inject_touch_up(slot, time),
+        WlcsEvent::Sync { ack } => {
+            let _ = ack.send(());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smithay::reexports::calloop::{channel::Event as ChannelEvent, EventLoop};
+
+    /// `wlcs_send_and_wait` must not return until the loop has applied the
+    /// event: wlcs reads client state right after, and a motion still queued
+    /// then is focus-follows-mouse that has not happened yet.
+    #[test]
+    fn wlcs_input_is_applied_before_the_sender_returns() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let o = h.state.outputs.get(h.a).expect("output").output.clone();
+        let origin = h.state.space.output_geometry(&o).expect("mapped").loc;
+        let target = ((origin.x + 37) as f64, (origin.y + 41) as f64);
+
+        let (tx, rx) = wlcs_channel();
+        let mut event_loop: EventLoop<'static, AbyssState> = EventLoop::try_new().expect("calloop");
+        let mut clients = std::collections::HashMap::new();
+        event_loop
+            .handle()
+            .insert_source(rx, move |event, _, state| {
+                if let ChannelEvent::Msg(e) = event {
+                    wlcs_event(state, &mut clients, e);
+                }
+            })
+            .expect("channel source");
+
+        let sender = std::thread::spawn(move || {
+            wlcs_send_and_wait(&tx, WlcsEvent::PointerMoveAbsolute { location: target });
+        });
+        // Nothing is dispatching yet, so a sender that waits is still blocked.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            !sender.is_finished(),
+            "returned before the loop handled the motion"
+        );
+
+        while !sender.is_finished() {
+            event_loop
+                .dispatch(Some(std::time::Duration::from_millis(10)), &mut h.state)
+                .expect("dispatch");
+        }
+        sender.join().expect("sender thread");
+        assert_eq!(h.state.pointer_location, Point::from(target));
     }
 }

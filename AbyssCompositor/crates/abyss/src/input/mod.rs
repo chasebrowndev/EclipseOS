@@ -12,7 +12,7 @@ use smithay::{
         TouchSlot,
     },
     input::{
-        keyboard::{FilterResult, Keysym, ModifiersState},
+        keyboard::{FilterResult, Keycode, Keysym, ModifiersState},
         pointer::{
             AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
             GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
@@ -279,58 +279,60 @@ impl AbyssState {
     }
 
     fn on_keyboard<B: InputBackend>(&mut self, event: B::KeyboardKeyEvent) {
+        self.keyboard_key(event.key_code(), event.state(), Event::time_msec(&event));
+    }
+
+    /// A human key press or release. Split from `on_keyboard` so tests drive
+    /// the real path.
+    pub(crate) fn keyboard_key(&mut self, key_code: Keycode, key_state: KeyState, time: u32) {
         let serial = SERIAL_COUNTER.next_serial();
-        let time = Event::time_msec(&event);
         let keyboard = self.seat.get_keyboard().unwrap();
-        let action = keyboard.input(
-            self,
-            event.key_code(),
-            event.state(),
-            serial,
-            time,
-            |state, mods, handle| {
-                if event.state() != KeyState::Pressed {
-                    return FilterResult::Forward;
+        // An input method can grab the keyboard again while locked; a grab
+        // receives every key whatever holds focus, so the unlock password would
+        // go to it. The filter below still runs first, so VT switching works.
+        if self.lock.locked && keyboard.is_grabbed() {
+            keyboard.unset_grab(self);
+        }
+        let action = keyboard.input(self, key_code, key_state, serial, time, |state, mods, handle| {
+            if key_state != KeyState::Pressed {
+                return FilterResult::Forward;
+            }
+            let sym = handle.modified_sym();
+            let raw = sym.raw();
+            if (VT_SWITCH_FIRST..=VT_SWITCH_LAST).contains(&raw) {
+                return FilterResult::Intercept(Action::SwitchVt((raw - VT_SWITCH_FIRST + 1) as i32));
+            }
+            // Locked: no binding may act on the session behind the lock.
+            // Keys still reach the locker, which holds keyboard focus.
+            if state.lock.locked {
+                return FilterResult::Forward;
+            }
+            // A trusted prompt takes the keyboard before anything else
+            // can (COMP-10 §4): no client and no binding sees the key,
+            // except the override chord, which always works (COMP-04 §6).
+            if crate::trusted_ui::holds_seat(state) {
+                if matches!(state.config.action_for(mods, sym), Some(Action::AgentOverride)) {
+                    return FilterResult::Intercept(Action::AgentOverride);
                 }
-                let sym = handle.modified_sym();
-                let raw = sym.raw();
-                if (VT_SWITCH_FIRST..=VT_SWITCH_LAST).contains(&raw) {
-                    return FilterResult::Intercept(Action::SwitchVt((raw - VT_SWITCH_FIRST + 1) as i32));
-                }
-                // Locked: no binding may act on the session behind the lock.
-                // Keys still reach the locker, which holds keyboard focus.
-                if state.lock.locked {
-                    return FilterResult::Forward;
-                }
-                // A trusted prompt takes the keyboard before anything else
-                // can (COMP-10 §4): no client and no binding sees the key,
-                // except the override chord, which always works (COMP-04 §6).
-                if crate::trusted_ui::holds_seat(state) {
-                    if matches!(state.config.action_for(mods, sym), Some(Action::AgentOverride)) {
-                        return FilterResult::Intercept(Action::AgentOverride);
-                    }
-                    return FilterResult::Intercept(Action::Prompt(sym));
-                }
-                // Calibration owns the seat outright while it runs: every key
-                // is consumed, including ones that are bound to something else.
-                if let Some(step) = crate::outputs::calibrate::step_for(state, mods, sym) {
-                    return FilterResult::Intercept(Action::Calibrate(step));
-                }
-                // So does the region selector: a modal grab that leaked a
-                // chord through would let the human act on the session while
-                // the screen says it is picking a rectangle.
-                if state.region_select.active() {
-                    let chord = matches!(state.config.action_for(mods, sym), Some(Action::AnnotationSelect));
-                    return FilterResult::Intercept(Action::RegionSelect(crate::render::select::key(
-                        sym, chord,
-                    )));
-                }
-                match state.config.action_for(mods, sym) {
-                    Some(a) => FilterResult::Intercept(a.clone()),
-                    None => FilterResult::Forward,
-                }
-            },
-        );
+                return FilterResult::Intercept(Action::Prompt(sym));
+            }
+            // Calibration owns the seat outright while it runs: every key
+            // is consumed, including ones that are bound to something else.
+            if let Some(step) = crate::outputs::calibrate::step_for(state, mods, sym) {
+                return FilterResult::Intercept(Action::Calibrate(step));
+            }
+            // So does the region selector: a modal grab that leaked a
+            // chord through would let the human act on the session while
+            // the screen says it is picking a rectangle.
+            if state.region_select.active() {
+                let chord = matches!(state.config.action_for(mods, sym), Some(Action::AnnotationSelect));
+                return FilterResult::Intercept(Action::RegionSelect(crate::render::select::key(sym, chord)));
+            }
+            match state.config.action_for(mods, sym) {
+                Some(a) => FilterResult::Intercept(a.clone()),
+                None => FilterResult::Forward,
+            }
+        });
         if let Some(action) = action {
             self.run_action(action);
         }
@@ -1044,10 +1046,20 @@ impl AbyssState {
     }
 
     fn on_pointer_button<B: InputBackend>(&mut self, event: B::PointerButtonEvent) {
-        let pressed = event.state() == ButtonState::Pressed;
+        self.pointer_button(event.button_code(), event.state(), event.time_msec());
+    }
+
+    /// A human pointer button press or release, by evdev code. Split from
+    /// `on_pointer_button` so tests drive the real path.
+    pub(crate) fn pointer_button(&mut self, button: u32, button_state: ButtonState, time: u32) {
+        let pressed = button_state == ButtonState::Pressed;
+        if self.lock.locked {
+            self.locked_pointer_button(button, button_state, time);
+            return;
+        }
         // A trusted prompt answers to the left button and swallows the rest.
         if crate::trusted_ui::holds_seat(self) {
-            if event.button_code() == BTN_LEFT {
+            if button == BTN_LEFT {
                 crate::trusted_ui::button(self, pressed);
             }
             return;
@@ -1055,7 +1067,7 @@ impl AbyssState {
         // The selector holds the pointer as well as the keyboard: a press that
         // reached a client would focus or activate something behind the dim.
         if self.region_select.active() {
-            match event.button_code() {
+            match button {
                 BTN_LEFT => self.region_select_button(pressed),
                 // Right-click cancels, the same as Escape: the pointer hand is
                 // already on the mouse, so make it reachable from there too.
@@ -1070,19 +1082,16 @@ impl AbyssState {
         // the client under the pointer never receives it (ADR 0057). Whether it
         // fired or not, the press carries on to the seat and click-to-focus.
         if pressed {
-            grabs::start_mouse_bind(self, event.button_code());
+            grabs::start_mouse_bind(self, button);
         }
         let pointer = self.seat.get_pointer().unwrap();
         pointer.button(
             self,
             &ButtonEvent {
                 serial: SERIAL_COUNTER.next_serial(),
-                time: event.time_msec(),
-                button: event.button_code(),
-                state: match event.state() {
-                    ButtonState::Pressed => ButtonState::Pressed,
-                    ButtonState::Released => ButtonState::Released,
-                },
+                time,
+                button,
+                state: button_state,
             },
         );
         pointer.frame(self);
@@ -1106,8 +1115,38 @@ impl AbyssState {
         }
     }
 
+    /// A button under the lock reaches no surface and never moves keyboard
+    /// focus. It still goes through `PointerHandle::button` so smithay's
+    /// pressed-button set, which ends the click grab, stays in step with the
+    /// hardware.
+    fn locked_pointer_button(&mut self, button: u32, state: ButtonState, time: u32) {
+        let pointer = self.seat.get_pointer().unwrap();
+        if pointer.current_focus().is_some() {
+            pointer.motion(
+                self,
+                None,
+                &MotionEvent {
+                    location: self.pointer_location,
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time,
+                },
+            );
+        }
+        pointer.button(
+            self,
+            &ButtonEvent {
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+                button,
+                state,
+            },
+        );
+        pointer.frame(self);
+    }
+
     fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {
-        if crate::trusted_ui::holds_seat(self) {
+        // Nothing under the lock or behind a prompt scrolls.
+        if self.lock.locked || crate::trusted_ui::holds_seat(self) {
             return;
         }
         let source = event.source();
