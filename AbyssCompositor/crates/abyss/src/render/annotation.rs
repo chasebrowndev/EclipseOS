@@ -613,7 +613,7 @@ fn leader_raster(path: &[Point<i32, Logical>], dev: usize) -> (Point<i32, Logica
 /// the leader *draw* it, and `annotation_create` takes any `i32` position and
 /// any positive size -- so without this a control-socket caller could outline
 /// the whole screen, or ring another client's UI, which is on-screen geometry
-/// of its choosing rather than glyphs. Capping the size at a third of the
+/// of its choosing rather than glyphs. Capping the size at half of the
 /// output per axis and clipping to the output leaves every real region
 /// untouched while taking that choice away. Returns `None` when nothing is
 /// left, in which case the panel is drawn unmarked.
@@ -635,8 +635,8 @@ fn drawable_region(
     // trimmed off-screen and vanishing.
     let on = r.intersection(Rectangle::new(Point::from((0, 0)), output))?;
     let (w, h) = (
-        on.size.w.min((output.w / 3).max(1)),
-        on.size.h.min((output.h / 3).max(1)),
+        on.size.w.min((output.w / 2).max(1)),
+        on.size.h.min((output.h / 2).max(1)),
     );
     // The start of a `len`-long window within `lo..lo + span` that covers
     // `k0..k1` if it can, and otherwise at least its far end.
@@ -734,7 +734,7 @@ fn place(
 ///
 /// `None` on any GL failure: an annotation is cosmetic and must never be able
 /// to take a frame down with it.
-fn upload(
+pub(crate) fn upload(
     renderer: &mut GlesRenderer,
     raster: &text::Raster,
     bs: usize,
@@ -883,7 +883,7 @@ mod tests {
             rect(0, 0, 900, 900),
             "t",
             "x",
-            pick(rect(10, 300, 100, 400), "A"),
+            pick(rect(10, 300, 100, 500), "A"),
         );
         let a = s.iter().next().unwrap().1;
         let l = lay_out(a, out, (0, 0).into(), &[]).unwrap();
@@ -980,13 +980,13 @@ mod tests {
 
     #[test]
     fn a_capped_region_slides_to_keep_its_pick() {
-        // 1440x960 logical, so the cap is 480x320. A quiz whose anchor runs
-        // 500 tall with the pick near the bottom keeps the pick on screen.
+        // 1440x960 logical, so the cap is 720x480. A quiz whose anchor runs
+        // 500 tall with the pick at the very bottom keeps the pick on screen.
         let out: Size<i32, Logical> = (1440, 960).into();
         let anchor = rect(100, 100, 400, 500);
-        let pick_r = rect(110, 520, 200, 20);
+        let pick_r = rect(110, 580, 200, 20);
         let r = drawable_region(anchor, out, Some(pick_r)).unwrap();
-        assert_eq!((r.size.w, r.size.h), (400, 320), "the cap is unchanged");
+        assert_eq!((r.size.w, r.size.h), (400, 480), "the cap is unchanged");
         assert!(r.contains_rect(pick_r), "{r:?}");
         assert!(anchor.contains_rect(r), "and it stays inside the anchor");
         // A pick that already fits leaves the top-left where it was.
@@ -1004,10 +1004,10 @@ mod tests {
     #[test]
     fn a_marker_cannot_be_made_to_frame_the_screen() {
         let out: Size<i32, Logical> = (1920, 1080).into();
-        // A caller asking to outline everything gets a third of it, on-screen.
+        // A caller asking to outline everything gets half of it, on-screen.
         let r = drawable_region(rect(-500, -500, 9000, 9000), out, None).unwrap();
         assert_eq!((r.loc.x, r.loc.y), (0, 0));
-        assert_eq!((r.size.w, r.size.h), (640, 360));
+        assert_eq!((r.size.w, r.size.h), (960, 540));
         // A real OCR region is untouched.
         let r = drawable_region(rect(300, 200, 400, 60), out, None).unwrap();
         assert_eq!((r.loc.x, r.loc.y, r.size.w, r.size.h), (300, 200, 400, 60));

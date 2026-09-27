@@ -237,6 +237,69 @@ pub struct Misc {
     pub terminal_command: Option<String>,
 }
 
+/// `mode` (COMP-17 §2, ADR 0062).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Wm,
+    Hybrid,
+    De,
+}
+
+impl Mode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Wm => "wm",
+            Mode::Hybrid => "hybrid",
+            Mode::De => "de",
+        }
+    }
+}
+
+/// `components { ... }` (COMP-17 §2.2): candidate ids, validated against the
+/// `schema::COMPONENT_*` catalogs. Defaults are Standard's values; profiles
+/// are a one-time seed and are never read back (COMP-17 §2.1).
+#[derive(Debug, Clone)]
+pub struct Components {
+    pub bar: String,
+    pub launcher: String,
+    pub notifications: String,
+    pub control_center: String,
+}
+
+impl Default for Components {
+    fn default() -> Self {
+        Self {
+            bar: "hyperion".into(),
+            launcher: "eclipse-launcher".into(),
+            notifications: "eclipse-toasts".into(),
+            control_center: "eclipse-center".into(),
+        }
+    }
+}
+
+/// `setup { ... }` (D-07 §4, COMP-17 §2.1). Written by `eclipse-setup` through
+/// COMP-13 §1.4 and read by nothing at runtime: a record, not a layer.
+#[derive(Debug, Clone)]
+pub struct Setup {
+    /// `profile`: one of [`schema::SETUP_PROFILES`]. Reference only.
+    pub profile: String,
+    /// `complete`: setup has applied. `eclipse-ctl setup reset` clears it.
+    pub complete: bool,
+    /// `pending-preset`: the Agentic policy preset was chosen and awaits
+    /// loading on the installed system (D-07 §4.5).
+    pub pending_preset: bool,
+}
+
+impl Default for Setup {
+    fn default() -> Self {
+        Self {
+            profile: "standard".into(),
+            complete: false,
+            pending_preset: false,
+        }
+    }
+}
+
 /// One `output "<pattern>" { .. }` block (COMP-13 §4). Config wins over the
 /// persisted layout.
 #[derive(Debug, Clone, Default)]
@@ -1207,6 +1270,9 @@ pub struct Config {
     pub xwayland: Xwayland,
     pub idle: Idle,
     pub misc: Misc,
+    pub setup: Setup,
+    pub mode: Mode,
+    pub components: Components,
     pub input: Input,
     pub binds: Vec<Bind>,
     /// Touchpad swipe bindings, one per `(fingers, direction)`: the defaults
@@ -1267,6 +1333,9 @@ impl Default for Config {
             xwayland: Xwayland::default(),
             idle: Idle::default(),
             misc: Misc::default(),
+            setup: Setup::default(),
+            mode: Mode::Hybrid,
+            components: Components::default(),
             input: Input::default(),
             binds: default_binds(),
             gesture_binds: default_gesture_binds(),
@@ -2059,6 +2128,20 @@ impl Config {
                 "xwayland" => self.apply_xwayland(node),
                 "idle" => self.apply_idle(node),
                 "misc" => self.apply_misc(node),
+                "setup" => self.apply_setup(node),
+                "mode" => match arg(node).and_then(KdlValue::as_string) {
+                    Some("wm") => self.mode = Mode::Wm,
+                    Some("hybrid") => self.mode = Mode::Hybrid,
+                    Some("de") => self.mode = Mode::De,
+                    other => self.reject(
+                        node,
+                        format!(
+                            "mode: unknown value (other={other:?}); expected one of {}",
+                            schema::MODES.join(", ")
+                        ),
+                    ),
+                },
+                "components" => self.apply_components(node),
                 "input" => self.apply_input(node),
                 "output" => self.apply_output(node),
                 "decoration" => self.apply_decoration(node),
@@ -3351,6 +3434,66 @@ impl Config {
         }
     }
 
+    fn apply_components(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let name = n.name().value();
+            let (catalog, slot) = match name {
+                "bar" => (schema::COMPONENT_BARS, &mut self.components.bar),
+                "launcher" => (schema::COMPONENT_LAUNCHERS, &mut self.components.launcher),
+                "notifications" => (
+                    schema::COMPONENT_NOTIFICATIONS,
+                    &mut self.components.notifications,
+                ),
+                "control-center" => (
+                    schema::COMPONENT_CONTROL_CENTERS,
+                    &mut self.components.control_center,
+                ),
+                _ => {
+                    self.unknown_key(n, "components", "components key");
+                    continue;
+                }
+            };
+            match arg(n).and_then(KdlValue::as_string) {
+                Some(v) if catalog.contains(&v) => *slot = v.to_owned(),
+                other => {
+                    let msg = format!(
+                        "components.{name}: unknown value (other={other:?}); expected one of {}",
+                        catalog.join(", ")
+                    );
+                    self.reject(n, msg);
+                }
+            }
+        }
+    }
+
+    fn apply_setup(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "profile" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(v) if schema::SETUP_PROFILES.contains(&v) => self.setup.profile = v.to_owned(),
+                    other => self.reject(
+                        n,
+                        format!(
+                            "unknown setup profile (other={other:?}); expected one of {}",
+                            schema::SETUP_PROFILES.join(", ")
+                        ),
+                    ),
+                },
+                "complete" => match arg(n).and_then(KdlValue::as_bool) {
+                    Some(b) => self.setup.complete = b,
+                    None => self.reject(n, "complete expects #true or #false"),
+                },
+                "pending-preset" => match arg(n).and_then(KdlValue::as_bool) {
+                    Some(b) => self.setup.pending_preset = b,
+                    None => self.reject(n, "pending-preset expects #true or #false"),
+                },
+                _ => self.unknown_key(n, "setup", "setup key"),
+            }
+        }
+    }
+
     fn apply_workspace(&mut self, node: &KdlNode) {
         let Some(idx) = arg(node).and_then(KdlValue::as_integer) else {
             self.reject(node, "workspace node needs a number argument");
@@ -3941,6 +4084,144 @@ mod tests {
             e.to_string().lines().skip(1).collect::<Vec<_>>(),
             ["  |", "3 |     gaps-inn 4", "  |     ^^^^^^^^"]
         );
+    }
+
+    /// COMP-17 §2/§2.2, ADR 0062: `mode` and `components` parse, default to
+    /// Standard's values, and refuse an unknown id naming the key.
+    #[test]
+    fn mode_and_components_parse_default_and_refuse() {
+        let d = Config::default();
+        assert_eq!(d.mode, Mode::Hybrid);
+        assert_eq!(
+            (
+                d.components.bar.as_str(),
+                d.components.launcher.as_str(),
+                d.components.notifications.as_str(),
+                d.components.control_center.as_str()
+            ),
+            ("hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center")
+        );
+        for (m, want) in [("wm", Mode::Wm), ("hybrid", Mode::Hybrid), ("de", Mode::De)] {
+            let doc: KdlDocument = format!("mode \"{m}\"\n").parse().unwrap();
+            let mut cfg = Config::default();
+            cfg.apply(&doc, &mut Vec::new());
+            assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+            assert_eq!(cfg.mode, want);
+        }
+        let doc: KdlDocument = "components {\n    bar \"waybar\"\n    launcher \"fuzzel\"\n    notifications \"mako\"\n    control-center \"none\"\n}\n"
+            .parse()
+            .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.components.bar, "waybar");
+        assert_eq!(cfg.components.launcher, "fuzzel");
+        assert_eq!(cfg.components.notifications, "mako");
+        assert_eq!(cfg.components.control_center, "none");
+        assert_eq!(
+            schema::get(&cfg, "components.bar"),
+            Some(schema::Value::Str("waybar".into()))
+        );
+
+        let text = "mode \"tiling\"\ncomponents {\n    bar \"polybar\"\n    launcher \"eclipse-toasts\"\n    control-center \"mako\"\n    notifications 3\n    dock \"x\"\n}\n";
+        let doc: KdlDocument = text.parse().unwrap();
+        let mut cfg = Config {
+            cur: Some((abyss_src("/etc/eclipse/abyss.kdl"), text.to_owned())),
+            ..Config::default()
+        };
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.errors.len(), 6, "{:?}", cfg.errors);
+        assert!(
+            cfg.errors[0].message.contains("mode"),
+            "{}",
+            cfg.errors[0].message
+        );
+        assert!(cfg.errors[1].message.contains("components.bar"));
+        assert!(cfg.errors[2].message.contains("components.launcher"));
+        assert!(cfg.errors[3].message.contains("components.control-center"));
+        assert!(cfg.errors[4].message.contains("components.notifications"));
+        assert_eq!(cfg.mode, Mode::Hybrid, "a refused value must not land");
+        assert_eq!(cfg.components.bar, "hyperion");
+
+        // abyss.kdl only.
+        let text = "mode \"wm\"\n";
+        let doc: KdlDocument = text.parse().unwrap();
+        let mut cfg = Config {
+            cur: Some((policy_src("/etc/eclipse/policy.kdl"), text.to_owned())),
+            ..Config::default()
+        };
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.errors.len(), 1);
+        assert_eq!(cfg.mode, Mode::Hybrid);
+    }
+
+    /// Both keys hot-reload (COMP-17 §2, §2.2): `reload` is `Live`.
+    #[test]
+    fn mode_and_components_are_live() {
+        for p in [
+            "mode",
+            "components.bar",
+            "components.launcher",
+            "components.notifications",
+            "components.control-center",
+        ] {
+            let k = schema::get_key(p).expect(p);
+            assert_eq!(k.reload, schema::Reload::Live, "{p}");
+            assert_eq!(k.owner, schema::Owner::Abyss, "{p}");
+        }
+    }
+
+    /// D-07 §4: `setup.*` parses, lives in `abyss.kdl` only, and an unknown or
+    /// ill-typed key is refused with its position like any other.
+    #[test]
+    fn setup_keys_parse_and_refuse_junk() {
+        let doc: KdlDocument =
+            "setup {\n    profile \"agentic\"\n    complete #true\n    pending-preset #true\n}\n"
+                .parse()
+                .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.setup.profile, "agentic");
+        assert!(cfg.setup.complete && cfg.setup.pending_preset);
+
+        let text =
+            "setup {\n    profile \"standard\"\n    mode \"wm\"\n    profile \"nope\"\n    complete 1\n}\n";
+        let doc: KdlDocument = text.parse().unwrap();
+        let mut cfg = Config {
+            cur: Some((abyss_src("/etc/eclipse/abyss.kdl"), text.to_owned())),
+            ..Config::default()
+        };
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.errors.len(), 3, "{:?}", cfg.errors);
+        assert!(cfg.errors[0]
+            .to_string()
+            .starts_with("/etc/eclipse/abyss.kdl:3:5: "));
+        assert!(
+            cfg.errors[0].message.contains("\"mode\""),
+            "{}",
+            cfg.errors[0].message
+        );
+        assert_eq!(cfg.errors[1].line, 4);
+        assert_eq!(cfg.errors[2].line, 5);
+        assert_eq!(cfg.setup.profile, "standard", "a refused value must not land");
+        assert!(!cfg.setup.complete);
+
+        // The whole node is abyss-owned: policy.kdl may not carry it.
+        let text = "setup {\n    complete #true\n}\n";
+        let doc: KdlDocument = text.parse().unwrap();
+        let mut cfg = Config {
+            cur: Some((policy_src("/etc/eclipse/policy.kdl"), text.to_owned())),
+            ..Config::default()
+        };
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.errors.len(), 1);
+        assert!(
+            cfg.errors[0].message.contains("abyss.kdl"),
+            "{}",
+            cfg.errors[0].message
+        );
+        assert!(!cfg.setup.complete);
     }
 
     /// Anti-drift side (b): the parser's reject path consults the schema, so a

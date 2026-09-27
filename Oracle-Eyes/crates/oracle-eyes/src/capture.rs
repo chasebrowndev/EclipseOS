@@ -19,12 +19,12 @@
 //!    `ext_image_copy_capture_manager_v1` from the registry, then learn each
 //!    output's position, mode and scale from `wl_output`;
 //!
-//! Logical geometry comes from `wl_output` alone — `xdg-output` lives behind
-//! the `unstable` feature of `wayland-protocols`, which this crate does not
-//! enable, so the logical size is the mode divided by the integer scale. That
-//! is exact under integer scaling and approximate under fractional scaling;
-//! the crop rounds outward, so the approximation costs at most a pixel of
-//! extra context rather than a missing glyph edge.
+//! The logical size comes from `xdg-output` when the compositor offers it.
+//! `wl_output.scale` is an integer, so under fractional scaling (1.9 is
+//! advertised as 2) the mode divided by it is too small, and every OCR box
+//! mapped through that size lands too high and too narrow. Without xdg-output
+//! the size falls back to the mode divided by the integer scale, which is exact
+//! only under integer scaling.
 //! 2. pick the output whose logical rectangle contains the region's top-left
 //!    and turn it into an `ext_image_capture_source_v1`;
 //! 3. `create_session` on it, and wait for the `buffer_size` / `shm_format`
@@ -70,6 +70,10 @@ use wayland_protocols::ext::image_copy_capture::v1::client::{
     ext_image_copy_capture_frame_v1::{self, ExtImageCopyCaptureFrameV1, FailureReason},
     ext_image_copy_capture_manager_v1::{self, ExtImageCopyCaptureManagerV1},
     ext_image_copy_capture_session_v1::{self, ExtImageCopyCaptureSessionV1},
+};
+use wayland_protocols::xdg::xdg_output::zv1::client::{
+    zxdg_output_manager_v1::ZxdgOutputManagerV1,
+    zxdg_output_v1::{self, ZxdgOutputV1},
 };
 
 /// How long the initial registry/geometry exchange may take. Generous
@@ -312,7 +316,19 @@ struct OutputState {
     geom_pos: Option<(i32, i32)>,
     mode: Option<(i32, i32)>,
     scale: i32,
+    /// `zxdg_output_v1.logical_size`: exact under fractional scaling, where
+    /// `scale` is only the integer ceiling.
+    xdg_size: Option<(i32, i32)>,
     transform: Transform,
+}
+
+/// The output's logical size: the compositor's own, else the mode divided by
+/// the integer scale.
+fn logical_size(mode: (i32, i32), scale: i32, xdg: Option<(i32, i32)>) -> (i32, i32) {
+    match xdg {
+        Some((w, h)) if w > 0 && h > 0 => (w, h),
+        _ => (mode.0 / scale.max(1), mode.1 / scale.max(1)),
+    }
 }
 
 impl Default for OutputState {
@@ -322,6 +338,7 @@ impl Default for OutputState {
             geom_pos: None,
             mode: None,
             scale: 1,
+            xdg_size: None,
             transform: Transform::Normal,
         }
     }
@@ -380,6 +397,8 @@ impl Capturer {
             .bind(&qh, 1..=1, ())
             .map_err(|_| denied("ext_image_copy_capture_manager_v1"))?;
 
+        let xdg_mgr: Option<ZxdgOutputManagerV1> = globals.bind(&qh, 1..=3, ()).ok();
+
         // Outputs are enumerated once. Hotplug during the few milliseconds of
         // a grab is not handled: the worst case is one failed capture with a
         // visible error, and a resident registry listener would keep this
@@ -391,6 +410,9 @@ impl Capturer {
             let idx = state.outputs.len();
             let version = global.version.min(4);
             let output: WlOutput = globals.registry().bind(global.name, version, &qh, idx);
+            if let Some(m) = &xdg_mgr {
+                m.get_xdg_output(&output, &qh, idx);
+            }
             state.outputs.push(OutputState {
                 proxy: Some(output),
                 ..OutputState::default()
@@ -407,7 +429,11 @@ impl Capturer {
             &mut state,
             deadline,
             "output geometry",
-            |s| s.outputs.iter().all(|o| o.mode.is_some()),
+            |s| {
+                s.outputs
+                    .iter()
+                    .all(|o| o.mode.is_some() && (xdg_mgr.is_none() || o.xdg_size.is_some()))
+            },
         )?;
 
         Ok(Capturer {
@@ -428,11 +454,7 @@ impl Capturer {
             .iter()
             .map(|o| {
                 let (mw, mh) = o.mode.unwrap_or((0, 0));
-                // The logical size is the mode divided by the integer scale:
-                // exactly right for integer scaling, the best available guess
-                // under fractional (see the module doc on xdg-output).
-                let scale = o.scale.max(1);
-                let (lw, lh) = (mw / scale, mh / scale);
+                let (lw, lh) = logical_size((mw, mh), o.scale, o.xdg_size);
                 let (lx, ly) = o.geom_pos.unwrap_or((0, 0));
                 OutputGeom {
                     logical: Region {
@@ -738,6 +760,23 @@ impl Dispatch<WlOutput, usize> for State {
     }
 }
 
+impl Dispatch<ZxdgOutputV1, usize> for State {
+    fn event(
+        state: &mut Self,
+        _: &ZxdgOutputV1,
+        event: zxdg_output_v1::Event,
+        &idx: &usize,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let (zxdg_output_v1::Event::LogicalSize { width, height }, Some(out)) =
+            (event, state.outputs.get_mut(idx))
+        {
+            out.xdg_size = Some((width, height));
+        }
+    }
+}
+
 impl Dispatch<ExtImageCopyCaptureSessionV1, ()> for State {
     fn event(
         state: &mut Self,
@@ -804,6 +843,7 @@ delegate_noop!(State: ignore WlBuffer);
 delegate_noop!(State: ignore ExtImageCaptureSourceV1);
 delegate_noop!(State: ignore ExtOutputImageCaptureSourceManagerV1);
 delegate_noop!(State: ignore ExtImageCopyCaptureManagerV1);
+delegate_noop!(State: ignore ZxdgOutputManagerV1);
 
 #[cfg(test)]
 mod tests {
@@ -815,6 +855,17 @@ mod tests {
             buf_w: bw,
             buf_h: bh,
         }
+    }
+
+    #[test]
+    fn a_fractional_scale_output_uses_the_xdg_logical_size() {
+        // Scale 1.9 is advertised to wl_output as 2: mode / 2 is 1440x960.
+        assert_eq!(
+            logical_size((2880, 1920), 2, Some((1516, 1011))),
+            (1516, 1011)
+        );
+        assert_eq!(logical_size((2880, 1920), 2, None), (1440, 960));
+        assert_eq!(logical_size((2880, 1920), 2, Some((0, 0))), (1440, 960));
     }
 
     #[test]

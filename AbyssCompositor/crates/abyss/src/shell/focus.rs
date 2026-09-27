@@ -227,6 +227,11 @@ pub fn focus_window(state: &mut AbyssState, window: &Window) {
 /// records the focus history and moves keyboard focus but leaves the floating
 /// stacking order alone; see [`FocusCause::raises`].
 pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool) {
+    // Neither a trusted prompt (COMP-10) nor the lock screen may lose the
+    // keyboard to a client, whatever asked for focus.
+    if state.trusted_ui.active() || state.lock.locked {
+        return;
+    }
     // Override-redirect menus/tooltips never take focus or activation; the owning client keeps it.
     if window.x11_surface().is_some_and(|x| x.is_override_redirect()) {
         return;
@@ -323,6 +328,10 @@ pub fn emit_focused_output_state(state: &mut AbyssState) {
 }
 
 pub fn focus_surface(state: &mut AbyssState, surface: Option<WlSurface>) {
+    // The destructive-action prompt keeps the keyboard until it is answered.
+    if state.trusted_ui.active() {
+        return;
+    }
     let keyboard = state.seat.get_keyboard().unwrap();
     keyboard.set_focus(state, surface.map(Into::into), SERIAL_COUNTER.next_serial());
 }

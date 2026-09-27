@@ -11,7 +11,7 @@
 
 pkgbase=eclipseos
 pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-center
-         eclipseos-launcher eclipseos-desktop eclipseos-policyd eclipseos-meta)
+         eclipseos-launcher eclipseos-desktop eclipseos-policyd eclipseos-setup eclipseos-meta)
 pkgver=0.1.1
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
@@ -111,10 +111,12 @@ package_eclipseos-launcher() {
 }
 
 package_eclipseos-desktop() {
-  pkgdesc="EclipseOS desktop apps: settings, policy viewer, screensaver, pairing agent, secret prompt"
-  depends=(eclipseos-abyss wayland libxkbcommon mesa networkmanager bluez)
+  pkgdesc="EclipseOS desktop apps: settings, policy viewer, screensaver, welcome, pairing agent, secret prompt"
+  # Fonts for eclipse-welcome (D-07 step 0). Lora has no official package; the
+  # version label falls back to a serif.
+  depends=(eclipseos-abyss wayland libxkbcommon mesa networkmanager bluez ttf-cormorant noto-fonts-cjk)
 
-  for b in eclipse-settings eclipse-policy-viewer eclipse-screensaver; do _bin "$b"; done
+  for b in eclipse-settings eclipse-policy-viewer eclipse-screensaver eclipse-welcome; do _bin "$b"; done
   # The Bluetooth pairing agent and the prompt it and the taskbar spawn by name
   # from PATH for pairing PINs and wifi passphrases (ADR 0053). Here, not in the
   # taskbar's package, so pairing works with no taskbar (ADR 0066).
@@ -135,6 +137,18 @@ package_eclipseos-policyd() {
   _bin policyd
   _unit policyd.service
   _want policyd.service
+}
+
+package_eclipseos-setup() {
+  pkgdesc="EclipseOS graphical installer and its root helper (D-07)"
+  # Not in eclipseos-meta: the installed system does not carry the installer
+  # until reconfigure (D-07 §8) exists. The tools are what the helper runs.
+  depends=(eclipseos-abyss wayland libxkbcommon mesa polkit
+           arch-install-scripts gptfdisk dosfstools e2fsprogs util-linux)
+
+  for b in eclipse-setup eclipse-setup-helper; do _bin "$b"; done
+  install -Dm0644 "$srcdir/$_src/dist/polkit/org.eclipse.install.apply.policy" \
+    "$pkgdir/usr/share/polkit-1/actions/org.eclipse.install.apply.policy"
 }
 
 package_eclipseos-meta() {

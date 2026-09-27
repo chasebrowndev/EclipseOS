@@ -1225,6 +1225,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "eclipse-setup"
+version = "0.1.0"
+dependencies = [
+ "eclipse-ipc",
+ "eclipse-setup-plan",
+ "eclipse-ui",
+ "eclipse-welcome",
+ "iced",
+ "iced_runtime",
+ "image",
+ "serde_json",
+ "zeroize",
+]
+
+[[package]]
+name = "eclipse-setup-helper"
+version = "0.1.0"
+dependencies = [
+ "eclipse-setup-plan",
+ "kdl",
+ "rustix 1.1.4",
+ "serde_json",
+ "zeroize",
+]
+
+[[package]]
+name = "eclipse-setup-plan"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "zeroize",
+]
+
+[[package]]
 name = "eclipse-toasts"
 version = "0.1.0"
 dependencies = [
@@ -1242,6 +1277,14 @@ dependencies = [
  "eclipse-ipc",
  "iced",
  "serde_json",
+]
+
+[[package]]
+name = "eclipse-welcome"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "image",
 ]
 
 [[package]]
@@ -6282,6 +6325,9 @@ name = "zeroize"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "zlib-rs"

@@ -750,6 +750,17 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
             }
         };
         rows.push(list_row(key.label(), control(app, key)));
+        if key.path == "mode" {
+            if let Some(blurb) = crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()) {
+                rows.push(
+                    iced::widget::text(blurb)
+                        .font(eclipse_ui::tokens::font::UI)
+                        .size(eclipse_ui::tokens::size::BODY_SMALL)
+                        .style(theme::text_tertiary)
+                        .into(),
+                );
+            }
+        }
     }
 
     groups

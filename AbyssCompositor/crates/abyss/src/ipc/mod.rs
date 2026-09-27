@@ -171,7 +171,7 @@ impl IpcState {
     }
 }
 
-fn socket_dir() -> Option<PathBuf> {
+pub(crate) fn socket_dir() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_RUNTIME_DIR")?;
     Some(PathBuf::from(base).join("eclipse"))
 }
@@ -318,7 +318,7 @@ fn accept(state: &mut AbyssState, stream: UnixStream) {
 /// `SO_PEERCRED` (COMP-13 §3). The kernel fills this in at `connect` time
 /// from the peer's real credentials; it cannot be forged by the peer.
 /// `std`'s `peer_cred` is still unstable, hence the raw call.
-fn peer_cred(stream: &UnixStream) -> Option<Peer> {
+pub(crate) fn peer_cred(stream: &UnixStream) -> Option<Peer> {
     use std::os::fd::AsRawFd;
     let mut ucred = libc::ucred {
         pid: 0,

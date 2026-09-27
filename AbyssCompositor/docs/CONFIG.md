@@ -32,6 +32,21 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 
 ## `abyss.kdl`
 
+### `mode`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `mode` | wm \| hybrid \| de | `"hybrid"` | live | Interaction mode (COMP-17 §2): `wm` tiling, workspaces-only taskbar; `hybrid` adds window chips, tray and clock; `de` adds desktop icons and pointer-first navigation. Selects defaults that explicit configuration overrides. Applies on hot reload. |
+
+### `components`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `components.bar` | hyperion \| waybar \| quickshell \| none | `"hyperion"` | live | Which bar `abyss-session` runs (COMP-17 §2.2). A change on hot reload stops the old candidate and starts the new one. |
+| `components.launcher` | eclipse-launcher \| fuzzel \| none | `"eclipse-launcher"` | live | Which launcher `abyss-session` runs (COMP-17 §2.2). |
+| `components.notifications` | eclipse-toasts \| mako \| none | `"eclipse-toasts"` | live | Which notification daemon `abyss-session` runs (COMP-17 §2.2). |
+| `components.control-center` | eclipse-center \| none | `"eclipse-center"` | live | Which control center `abyss-session` runs (COMP-17 §2.2). |
+
 ### `general`
 
 | setting | type | default | reload | what it does |
@@ -163,6 +178,14 @@ Each animation is off until named in an `animation` node inside `animations { }`
 | --- | --- | --- | --- | --- |
 | `misc.render-device` | string | _unset_ | restart | `auto`, a /dev/dri/… path, or `pci:DDDD:BB:DD.F`. The CLI flag and ECLIPSE_RENDER_DEVICE both override it. |
 | `misc.terminal-command` | string | _unset_ | live | Terminal emulator used to launch `Terminal=true` .desktop entries (`$term -e <argv>`). Unset: those entries are dropped from the app index rather than shown and refused. |
+
+### `setup`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `setup.profile` | minimal \| standard \| full \| agentic | `"standard"` | live | Setup profile chosen in eclipse-setup (COMP-17 §2.1). A record for reference only: nothing reads it at runtime, and changing it does not change any other value. |
+| `setup.complete` | bool | `#false` | live | Set when eclipse-setup applies (D-07 §4). `eclipse-ctl setup reset` clears it so setup runs again. |
+| `setup.pending-preset` | bool | `#false` | live | The Agentic curated policy preset was chosen in setup and is not loaded yet. A nudge only: the preset is loaded through the policy editor on the installed system (D-07 §4.5). |
 
 ### `bind`
 

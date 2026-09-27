@@ -22,12 +22,19 @@
 //!   click) cannot answer a prompt the human has not seen (§3.2, §7).
 //!
 //! One prompt at a time. `open` refuses a second, and the owner re-queues it.
+//!
+//! Owners: command-widget approval ([`approval`], §3.11, ADR 0067) and the
+//! destructive-system-action confirmation ([`erase`], §3.10, ADR 0061),
+//! asked for over the root-only [`socket`].
 
 pub mod approval;
+pub mod erase;
 pub mod modal;
+pub mod socket;
 
 use std::{
     collections::BTreeMap,
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -96,11 +103,22 @@ pub struct TrustedUi {
     dim: BTreeMap<(i32, i32), SolidColorBuffer>,
     /// The command-approval prompt's widget, if that is what is up.
     asking: approval::Asking,
+    /// The erase prompt's requester, if that is what is up.
+    erase: erase::State,
+    /// The bound trusted socket, so a clean exit can unlink it.
+    pub path: Option<PathBuf>,
 }
 
 impl TrustedUi {
     pub fn is_open(&self) -> bool {
         self.open.is_some()
+    }
+
+    /// Whether a prompt is up or pending, locked or not. The injection and
+    /// client-focus paths refuse while it is: nothing scripted may steer
+    /// around a prompt, even one the lock is hiding.
+    pub fn active(&self) -> bool {
+        self.is_open()
     }
 
     /// The token of the prompt that is up, if any.
@@ -226,7 +244,8 @@ pub fn button(state: &mut AbyssState, pressed: bool) {
     let Some(o) = state.trusted_ui.open.as_mut() else {
         return;
     };
-    if o.shown.elapsed() < ARM {
+    // §3.10: the erase prompt is keyboard-only. A click aimed at it is dropped.
+    if o.shown.elapsed() < ARM || o.modal.token >= erase::TOKEN_BASE {
         o.pressed = None;
         return;
     }
@@ -274,6 +293,8 @@ fn resolve(state: &mut AbyssState, choice: Choice) {
     tracing::debug!(token = choice.token, role = ?choice.role, "trusted prompt answered");
     if approval::owns(state, choice.token) {
         approval::answer(state, choice);
+    } else if erase::owns(state, choice.token) {
+        erase::answer(state, choice);
     }
 }
 

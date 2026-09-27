@@ -313,32 +313,40 @@ fn pad(r: Region, within: Region) -> Region {
 /// compositor only draws a pick inside its anchor, "B out of these" needs the
 /// these, and the model's focus lines can sit anywhere on the page. Pulled in,
 /// they stretch the anchor past the compositor's size cap, which trims the
-/// options and can drop the pick with them.
+/// options and can drop the pick with them. The stem is every line above the
+/// options that is set close to them, so a multi-paragraph question is whole.
 fn anchor_for(read: &Read, focus: &[usize], picked: bool, fallback: Fallback) -> Region {
-    let named = read
-        .lines
-        .iter()
-        .filter(|l| focus.contains(&l.id))
-        .map(rect_of_line);
     let r = if picked {
         let first = read.options.first().map(|o| o.line).unwrap_or(1);
-        // The stem: the paragraph just above the first option. Strictly
-        // above — options set far apart each open a paragraph, the first one
-        // included, and counting it would leave the stem empty.
-        let stem_start = read
-            .lines
-            .iter()
-            .filter(|l| l.id < first && l.para)
-            .map(|l| l.id)
-            .max()
-            .unwrap_or(1);
-        let stem = read
-            .lines
-            .iter()
-            .filter(|l| l.id >= stem_start && l.id < first)
-            .map(rect_of_line);
+        // The stem: every line above the first option that is set close
+        // enough to the one below it to belong to the same question, however
+        // many paragraphs that is. Options set far apart each open a
+        // paragraph, so paragraph breaks cannot be what ends it.
+        let at = read.lines.iter().position(|l| l.id == first).unwrap_or(0);
+        let mut top = at;
+        while top > 0 {
+            let (above, below) = (&read.lines[top - 1], &read.lines[top]);
+            if below.y - (above.y + above.h) > above.h * 3 / 2 {
+                break;
+            }
+            top -= 1;
+        }
+        let stem = read.lines[top..at].iter().map(rect_of_line);
         bounds_of(stem.chain(read.options.iter().map(rect_of_choice)))
     } else if !focus.is_empty() {
+        // The whole paragraph of every line the answer is about: the model
+        // names a line of the question, and the brackets belong around all of it.
+        let named = focus
+            .iter()
+            .filter_map(|id| read.lines.iter().position(|l| l.id == *id))
+            .flat_map(|i| {
+                let start = read.lines[..=i].iter().rposition(|l| l.para).unwrap_or(0);
+                let end = read.lines[i + 1..]
+                    .iter()
+                    .position(|l| l.para)
+                    .map_or(read.lines.len(), |p| i + 1 + p);
+                read.lines[start..end].iter().map(rect_of_line)
+            });
         bounds_of(named)
     } else {
         match fallback {
@@ -659,6 +667,40 @@ mod tests {
         let a = p.dress(&r, reply("Paris", "", &[1, 4], Some("B")), Fallback::All);
         assert_eq!(a.anchor.y, 394, "starts at the stem, not the search box");
         assert_eq!(a.anchor.y + a.anchor.h, 576 + 6, "ends below D");
+    }
+
+    #[test]
+    fn a_pick_includes_a_stem_of_several_paragraphs() {
+        let p = Pipeline::new(Config::default());
+        let r = read_of(vec![
+            line(1, 0, 0, 80, false, "unrelated"),
+            line(2, 200, 300, 400, true, "Read the passage below."),
+            line(3, 200, 328, 400, true, "The cat sat on the mat."),
+            line(4, 200, 356, 300, true, "Where did the cat sit?"),
+            line(5, 200, 390, 120, true, "A) On a mat"),
+            line(6, 200, 420, 120, true, "B) On a bed"),
+        ]);
+        let a = p.dress(&r, reply("A", "", &[6], Some("A")), Fallback::All);
+        assert_eq!(a.anchor.y, 294, "starts at the passage, not the stem alone");
+        assert_eq!(
+            a.anchor.y + a.anchor.h,
+            420 + 16 + 6,
+            "ends below the last option"
+        );
+    }
+
+    #[test]
+    fn a_focus_line_brackets_its_whole_paragraph() {
+        let r = read_of(vec![
+            line(1, 0, 0, 80, false, "Menu"),
+            line(2, 300, 400, 200, true, "What is the capital"),
+            line(3, 300, 420, 500, false, "of France, given the map above?"),
+            line(4, 300, 440, 100, false, "Answer soon."),
+            line(5, 300, 700, 60, true, "footer"),
+        ]);
+        let a = anchor_for(&r, &[3], false, Fallback::All);
+        assert_eq!((a.x, a.y), (294, 394));
+        assert_eq!((a.w, a.h), (500 + 12, 56 + 12), "lines 2-4, not 5");
     }
 
     #[test]

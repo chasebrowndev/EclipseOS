@@ -120,6 +120,19 @@ const fn int(min: i64, max: i64) -> Ty {
     Ty::Int { min, max }
 }
 
+/// The setup profiles (COMP-17 §2.1), in the order the installer shows them.
+pub const SETUP_PROFILES: &[&str] = &["minimal", "standard", "full", "agentic"];
+
+/// `mode` values (COMP-17 §2, ADR 0062).
+pub const MODES: &[&str] = &["wm", "hybrid", "de"];
+
+/// Component-slot catalog (COMP-17 §2.2). An id outside the slot's list is a
+/// parse error naming the key. Mirrors the root-owned catalog of D-07 §4.1.
+pub const COMPONENT_BARS: &[&str] = &["hyperion", "waybar", "quickshell", "none"];
+pub const COMPONENT_LAUNCHERS: &[&str] = &["eclipse-launcher", "fuzzel", "none"];
+pub const COMPONENT_NOTIFICATIONS: &[&str] = &["eclipse-toasts", "mako", "none"];
+pub const COMPONENT_CONTROL_CENTERS: &[&str] = &["eclipse-center", "none"];
+
 /// Every scalar key `abyss` understands.
 ///
 /// `xwayland.enable` is `Abyss` and not `Policy` even though disabling X11 is
@@ -129,6 +142,51 @@ const fn int(min: i64, max: i64) -> Ty {
 /// actions, which *are* policy-owned. Stated so the choice is visible rather
 /// than inferred.
 pub const TABLE: &[Key] = &[
+    // interaction mode and component slots (COMP-17 §2, §2.2, ADR 0062)
+    k(
+        "mode",
+        Ty::Enum(MODES),
+        Str("hybrid"),
+        Abyss,
+        Live,
+        "Interaction mode (COMP-17 §2): `wm` tiling, workspaces-only taskbar; \
+       `hybrid` adds window chips, tray and clock; `de` adds desktop icons and \
+       pointer-first navigation. Selects defaults that explicit configuration \
+       overrides. Applies on hot reload.",
+    ),
+    k(
+        "components.bar",
+        Ty::Enum(COMPONENT_BARS),
+        Str("hyperion"),
+        Abyss,
+        Live,
+        "Which bar `abyss-session` runs (COMP-17 §2.2). A change on hot reload \
+       stops the old candidate and starts the new one.",
+    ),
+    k(
+        "components.launcher",
+        Ty::Enum(COMPONENT_LAUNCHERS),
+        Str("eclipse-launcher"),
+        Abyss,
+        Live,
+        "Which launcher `abyss-session` runs (COMP-17 §2.2).",
+    ),
+    k(
+        "components.notifications",
+        Ty::Enum(COMPONENT_NOTIFICATIONS),
+        Str("eclipse-toasts"),
+        Abyss,
+        Live,
+        "Which notification daemon `abyss-session` runs (COMP-17 §2.2).",
+    ),
+    k(
+        "components.control-center",
+        Ty::Enum(COMPONENT_CONTROL_CENTERS),
+        Str("eclipse-center"),
+        Abyss,
+        Live,
+        "Which control center `abyss-session` runs (COMP-17 §2.2).",
+    ),
     // general
     k(
         "general.gaps-in",
@@ -793,6 +851,36 @@ pub const TABLE: &[Key] = &[
        (`$term -e <argv>`). Unset: those entries are dropped from the app \
        index rather than shown and refused.",
     ),
+    // setup: recorded by eclipse-setup (D-07 §4), read by nothing at runtime
+    k(
+        "setup.profile",
+        Ty::Enum(SETUP_PROFILES),
+        Str("standard"),
+        Abyss,
+        Live,
+        "Setup profile chosen in eclipse-setup (COMP-17 §2.1). A record for \
+       reference only: nothing reads it at runtime, and changing it does not \
+       change any other value.",
+    ),
+    k(
+        "setup.complete",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Set when eclipse-setup applies (D-07 §4). `eclipse-ctl setup reset` \
+       clears it so setup runs again.",
+    ),
+    k(
+        "setup.pending-preset",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "The Agentic curated policy preset was chosen in setup and is not \
+       loaded yet. A nudge only: the preset is loaded through the policy \
+       editor on the installed system (D-07 §4.5).",
+    ),
     // --- policy-owned: the security surface -------------------------------
     k(
         "misc.scripted-input",
@@ -855,6 +943,10 @@ pub fn node_owner(node: &str) -> Option<Owner> {
         } else {
             Some(c.owner)
         };
+    }
+    // A top-level scalar (`mode`) is its own node.
+    if let Some(k) = get_key(node) {
+        return Some(k.owner);
     }
     let prefix = format!("{node}.");
     let mut owners = TABLE
@@ -1426,6 +1518,11 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
     let n = |o: &Option<u64>| o.map_or(V::Null, |v| V::Int(v as i64));
     let list = |v: &[String]| V::List(v.to_vec());
     Some(match path {
+        "mode" => V::Str(c.mode.name().into()),
+        "components.bar" => V::Str(c.components.bar.clone()),
+        "components.launcher" => V::Str(c.components.launcher.clone()),
+        "components.notifications" => V::Str(c.components.notifications.clone()),
+        "components.control-center" => V::Str(c.components.control_center.clone()),
         "general.gaps-in" => V::Int(c.general.gaps_in as i64),
         "general.gaps-out" => V::Int(c.general.gaps_out as i64),
         "general.border-size" => V::Int(c.general.border_size as i64),
@@ -1518,6 +1615,9 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "misc.render-device" => s(&c.misc.render_device),
         "misc.terminal-command" => s(&c.misc.terminal_command),
         "misc.scripted-input" => V::Bool(c.misc.scripted_input),
+        "setup.profile" => V::Str(c.setup.profile.clone()),
+        "setup.complete" => V::Bool(c.setup.complete),
+        "setup.pending-preset" => V::Bool(c.setup.pending_preset),
         "clipboard.data-control-allow" => list(&c.clipboard.data_control_allow),
         "capture.allow" => list(&c.capture.allow),
         "capture.redact-app-id" => list(&c.capture.redact_app_id),
