@@ -21,6 +21,7 @@
 //!   [`Urgency::Critical`] — only a critical notification may sit until the
 //!   human dismisses it.
 
+mod compositor;
 mod server;
 
 use std::sync::mpsc::{Receiver, Sender};
