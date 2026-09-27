@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Premade command widget — /usr/share/eclipse/widgets/failed-units.kdl, shipped
+// by eclipseos-hyperion (ADR 0067). Approved by shipping: editing this block in
+// your own abyss.kdl makes it an altered premade and prompts before it runs.
+//
+// Count of failed user units in this session. Click for the list.
+bar {
+    widget "failed-units" {
+        exec "systemctl" "--user" "show" "--property=NFailedUnits" "--value"
+        interval-ms "30s"
+        on-click "foot" "--hold" "systemctl" "--user" "--failed"
+    }
+}

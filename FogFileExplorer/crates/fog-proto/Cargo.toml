@@ -1,0 +1,19 @@
+[package]
+name = "fog-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+description = "Fog IPC wire types and framing (FOG §Architecture). No filesystem I/O."
+publish = false
+
+[dependencies]
+serde.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+# Framing needs only the async read/write traits.
+tokio = { version = "1", default-features = false, features = ["io-util"] }
+
+[dev-dependencies]
+tokio.workspace = true

@@ -66,7 +66,7 @@ two-finger drag is not.
   Over the desktop, a layer surface or a fullscreen window it still does.
 - With the default Super modifier a dragged floating window tiles on release
   unless Super is let go first.
-- COMP-04 §2 amended (C-11). `docs/CONFIG.md` documents the `drag` kind.
+- COMP-04 §2 amended (C-12). `docs/CONFIG.md` documents the `drag` kind.
 - Winit's nested backend reports touchpad scroll as `Continuous`, not
   `Finger`, so the two-finger path only runs under the DRM backend; tests
   drive it through a fake input backend.

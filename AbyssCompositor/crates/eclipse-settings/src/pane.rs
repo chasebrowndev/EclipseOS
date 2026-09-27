@@ -16,6 +16,7 @@ pub enum Pane {
     Session,
     System,
     Privacy,
+    Addons,
 }
 
 impl Pane {
@@ -29,6 +30,7 @@ impl Pane {
         Pane::Session,
         Pane::System,
         Pane::Privacy,
+        Pane::Addons,
     ];
 
     pub fn title(self) -> &'static str {
@@ -41,34 +43,35 @@ impl Pane {
             Pane::Session => "Session",
             Pane::System => "System",
             Pane::Privacy => "Privacy",
+            Pane::Addons => "Add-ons",
         }
     }
 
     pub fn subtitle(self) -> &'static str {
         match self {
             Pane::Appearance => "Layout, borders, decoration and animation.",
-            Pane::Taskbar => "Bar placement, folding and the tray.",
+            Pane::Taskbar => "Widgets, their order, and how the bar gives way.",
             Pane::Display => "Outputs, modes and overscan calibration.",
             Pane::Network => "The wifi link, saved networks and paired devices.",
             Pane::Input => "Keyboard, pointer and touchpad.",
             Pane::Session => "Idle, lock and power.",
             Pane::System => "Xwayland and the render device.",
             Pane::Privacy => "Capture, clipboard and input scripting.",
+            Pane::Addons => "Optional packages, and the hooks they switch on.",
         }
     }
 
     /// Panes whose content is not a list of schema keys.
     pub fn is_bespoke(self) -> bool {
-        matches!(self, Pane::Display | Pane::Network)
+        matches!(self, Pane::Display | Pane::Network | Pane::Addons)
     }
 
-    /// The pane named on the command line — its title, any case. The taskbar
-    /// opens `eclipse-settings network` from its drawers.
+    /// The pane named on the command line — its title, any case, hyphens
+    /// optional (`addons` finds "Add-ons"). The taskbar opens
+    /// `eclipse-settings network` from its drawers.
     pub fn from_arg(arg: &str) -> Option<Pane> {
-        Pane::ALL
-            .iter()
-            .copied()
-            .find(|p| p.title().eq_ignore_ascii_case(arg))
+        let bare = |s: &str| s.replace('-', "").to_ascii_lowercase();
+        Pane::ALL.iter().copied().find(|p| bare(p.title()) == bare(arg))
     }
 }
 
@@ -112,6 +115,14 @@ pub fn group_for(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pane_is_named_with_or_without_its_hyphen() {
+        assert_eq!(Pane::from_arg("addons"), Some(Pane::Addons));
+        assert_eq!(Pane::from_arg("Add-ons"), Some(Pane::Addons));
+        assert_eq!(Pane::from_arg("NETWORK"), Some(Pane::Network));
+        assert_eq!(Pane::from_arg("nope"), None);
+    }
 
     #[test]
     fn misc_splits_by_key_not_by_node() {

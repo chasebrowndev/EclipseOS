@@ -1,0 +1,73 @@
+# cargo-deny configuration for Fog, the file explorer — same policy as the
+# compositor's (F-05 §9, ADR 0035), scoped to this workspace's own graph.
+# Run: cargo deny check
+
+[graph]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+[advisories]
+version = 2
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = [
+    # Both mirrored from AbyssCompositor/deny.toml; they enter with iced.
+
+    # RUSTSEC-2024-0436 — `paste` is no longer maintained. A proc-macro with no
+    # runtime surface, and on this platform it is never even compiled: it
+    # reaches the graph only through `metal`, which is a macOS-only dependency
+    # of wgpu-hal under iced. Unmaintained, not vulnerable. Revisit when wgpu
+    # drops it or when EclipseOS ever targets macOS, which is never.
+    "RUSTSEC-2024-0436",
+
+    # RUSTSEC-2026-0192 — `ttf-parser` is unmaintained. It is the font parser
+    # under fontdb/cosmic-text, which is iced's text stack; there is no way to
+    # draw text with iced 0.14 without it. It parses font files installed on
+    # the local system (Fog vendors none yet), not attacker-supplied ones.
+    # Revisit when cosmic-text moves to a maintained parser, or if an advisory
+    # upgrades this to a vulnerability.
+    "RUSTSEC-2026-0192",
+]
+
+# Must be compatible with AGPL-3.0-only distribution. GPLv2-only is
+# incompatible and is rejected by omission.
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "AGPL-3.0-only",
+    "CC0-1.0",
+]
+# BSL-1.0 (Boost) is permissive and AGPL-compatible, but it is allowed here
+# only for the two Windows-only crates that carry it, rather than repo-wide:
+# a licence we accept for a crate that is never compiled on our target is not
+# a licence we have decided to accept in general. Both reach us through
+# `window_clipboard` under iced_winit, on the `cfg(windows)` branch.
+exceptions = [
+    { crate = "clipboard-win", allow = ["BSL-1.0"] },
+    { crate = "error-code", allow = ["BSL-1.0"] },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

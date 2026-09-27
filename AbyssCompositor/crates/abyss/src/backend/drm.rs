@@ -631,6 +631,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     crate::input::idle::start(&mut state, &handle);
     crate::ipc::start(&mut state, &handle);
     crate::config::watch::start(&mut state, &handle);
+    crate::addons::start(&mut state, &handle);
     crate::xwayland::start(&mut state);
 
     // --- GPU discovery -----------------------------------------------------
@@ -1047,6 +1048,7 @@ fn describe_elements(elements: &[crate::render::overscan::OutputElement], scale:
 /// Composite and page-flip one output. A no-op when the session is inactive.
 fn render_output(state: &mut AbyssState, index: usize) {
     let capture_active = state.capture_active();
+    let prompt = crate::trusted_ui::holds_seat(state);
     let Some(drm) = state.drm.as_mut() else { return };
     if !drm.session.is_active() {
         return;
@@ -1080,8 +1082,28 @@ fn render_output(state: &mut AbyssState, index: usize) {
 
     // The pointer lives in the global space; elements are output-local.
     let cursor_pos = state.pointer_location - output_loc.to_f64();
+    // A trusted prompt (COMP-10) is front-most, with the compositor's own
+    // arrow above it: the client cursor surface is not drawn while a prompt
+    // holds the seat, so nothing a client chose sits on top of the prompt.
+    let mut elements: Vec<AbyssRenderElement> = Vec::new();
+    if prompt {
+        elements.extend(crate::render::cursor::elements(
+            &mut drm.renderer,
+            &smithay::input::pointer::CursorImageStatus::default_named(),
+            &mut drm.cursor,
+            cursor_pos,
+            scale,
+        ));
+    }
+    elements.extend(crate::trusted_ui::elements(
+        &mut drm.renderer,
+        &mut state.trusted_ui,
+        state.lock.locked,
+        &output,
+        output_loc,
+    ));
     // Trusted UI, above the cursor and never drawn into a capture target.
-    let mut elements: Vec<AbyssRenderElement> = crate::render::capture::indicator(&output, capture_active);
+    elements.extend(crate::render::capture::indicator(&output, capture_active));
     // The region selector (COMP-18 §1.3): untrusted too, but above the
     // annotation pass it is about to feed.
     elements.extend(crate::render::select::selector_elements(
@@ -1097,13 +1119,15 @@ fn render_output(state: &mut AbyssState, index: usize) {
         &output,
         output_loc,
     ));
-    elements.extend(crate::render::cursor::elements(
-        &mut drm.renderer,
-        &state.cursor_status,
-        &mut drm.cursor,
-        cursor_pos,
-        scale,
-    ));
+    if !prompt {
+        elements.extend(crate::render::cursor::elements(
+            &mut drm.renderer,
+            &state.cursor_status,
+            &mut drm.cursor,
+            cursor_pos,
+            scale,
+        ));
+    }
     // Radiant drop guides (COMP-05 §3.1): above the windows, below the
     // annotations and the cursor.
     elements.extend(crate::render::drop::drop_elements(

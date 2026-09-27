@@ -1,0 +1,22 @@
+[package]
+name = "fog-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fog's iced frontend (FOG §UI and navigation)."
+publish = false
+
+[[bin]]
+name = "fog-ui"
+path = "src/main.rs"
+
+[dependencies]
+fog-proto.workspace = true
+fog-widgets.workspace = true
+iced.workspace = true
+tokio.workspace = true
+
+[features]
+activity = []

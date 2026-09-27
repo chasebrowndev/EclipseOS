@@ -16,7 +16,7 @@
 //! starting slot drives the window, and lifting that finger (or a cancel) ends
 //! it.
 //!
-//! A touchpad drag gesture (`gesture "drag"`, COMP-04 §2 amended C-11) moves a
+//! A touchpad drag gesture (`gesture "drag"`, COMP-04 §2 amended C-12) moves a
 //! window without any grab: two fingers arrive as finger scroll and three or
 //! four as a swipe, neither of which a pointer grab sees, so the input path
 //! claims the gesture at its begin and drives [`GestureDrag`] from its deltas.

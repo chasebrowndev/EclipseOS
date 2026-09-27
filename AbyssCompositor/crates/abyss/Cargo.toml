@@ -34,6 +34,7 @@ libc = "0.2"
 kdl.workspace = true
 regex.workspace = true
 serde_json.workspace = true
+blake3.workspace = true
 
 [features]
 default = ["winit", "drm", "headless"]

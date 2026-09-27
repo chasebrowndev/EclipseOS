@@ -462,8 +462,10 @@ fn handle_line(state: &mut AbyssState, conn: u64, line: &[u8]) -> Option<String>
         .iter()
         .find(|c| c.id == conn)
         .map(|c| c.peer.clone())?;
+    let params = req.get("params").cloned().unwrap_or(Value::Null);
     // Nothing above this line has read or written compositor state.
-    match gate::check(&peer, owner_uid(), &state.config, &method) {
+    let decision = gate::check(&peer, owner_uid(), &state.config, &method);
+    match gate::check_hook(decision, state.addons.hooks, &method, &params) {
         Decision::Deny(why) => {
             tracing::warn!(conn, pid = peer.pid, comm = ?peer.comm, method = %method, reason = why, "control request denied");
             let code = if gate::lookup(&method).is_none() {
@@ -488,7 +490,6 @@ fn handle_line(state: &mut AbyssState, conn: u64, line: &[u8]) -> Option<String>
         });
     }
 
-    let params = req.get("params").cloned().unwrap_or(Value::Null);
     let result = methods::dispatch(state, conn, &method, &params);
     if !respond {
         return None;

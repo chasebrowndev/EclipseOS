@@ -231,6 +231,12 @@ impl Dispatch<ZwlrVirtualPointerV1, VirtualPointerData> for AbyssState {
                 let absolute = pending.absolute.take();
                 let buttons = std::mem::take(&mut pending.buttons);
                 let axis = pending.axis.take();
+                // A client never moves the cursor or clicks while a trusted
+                // prompt holds the seat: it could steer the human's click
+                // onto Allow (COMP-10 §3.11, §4). Dropped, not deferred.
+                if crate::trusted_ui::holds_seat(state) {
+                    return;
+                }
                 if let Some(delta) = relative {
                     state.inject_pointer_relative(delta, time);
                 }

@@ -4,7 +4,11 @@
 //!
 //! The rules are the taskbar's (`hyperion/src/view.rs::tray_entries`), not
 //! this app's: hidden wins over pinned, anything neither pinned nor hidden is
-//! in the overflow drawer, and an unset `pinned` means the built-in order.
+//! in the overflow drawer, and an unset `pinned` pins nothing.
+//!
+//! The applets the bar draws itself are widgets now (ADR 0065) and are
+//! ordered in the widget lane; their old ids in these two lists are ignored
+//! by the taskbar, so the lanes leave them out too.
 //!
 //! The live status-notifier items come from [`feed`], which hosts against
 //! whichever process serves the tray watcher (normally the taskbar) while the
@@ -18,14 +22,10 @@ use serde_json::Value;
 
 use crate::app::Message;
 
-/// The entries the taskbar draws itself. Status-notifier items come and go
-/// with their apps; these are always nameable.
-pub const BUILTINS: [&str; 4] = ["network", "bluetooth", "battery", "volume"];
-
-/// What the taskbar pins when `bar.tray.pinned` is unset. Mirrors
-/// `DEFAULT_PINNED` in the taskbar; if the two drift, this pane shows a
-/// layout the bar is not drawing.
-pub const DEFAULT_PINNED: [&str; 2] = ["network", "battery"];
+/// Built-in applet ids these lists carried before the applets became
+/// widgets. Still accepted by the compositor, with a deprecation warning, and
+/// ignored by the taskbar.
+pub const LEGACY: [&str; 4] = ["network", "bluetooth", "battery", "volume"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lane {
@@ -52,8 +52,13 @@ pub struct Writes {
 }
 
 fn strings(v: &Value) -> Option<Vec<String>> {
-    v.as_array()
-        .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect())
+    v.as_array().map(|a| {
+        a.iter()
+            .filter_map(Value::as_str)
+            .filter(|s| !LEGACY.contains(s))
+            .map(str::to_owned)
+            .collect()
+    })
 }
 
 impl Tray {
@@ -67,17 +72,14 @@ impl Tray {
 
     /// The pinned order in effect, unset resolved.
     fn wanted(&self) -> Vec<String> {
-        match &self.pinned {
-            Some(p) => p.clone(),
-            None => DEFAULT_PINNED.iter().map(|s| (*s).to_owned()).collect(),
-        }
+        self.pinned.clone().unwrap_or_default()
     }
 
-    /// Every id there is anything to say about: the built-ins, then the live
-    /// items, then whatever else the two lists name (an app that is not
-    /// running keeps its place), first mention first.
+    /// Every id there is anything to say about: the live items, then
+    /// whatever else the two lists name (an app that is not running keeps its
+    /// place), first mention first.
     pub fn ids(&self) -> Vec<String> {
-        let mut all: Vec<String> = BUILTINS.iter().map(|s| (*s).to_owned()).collect();
+        let mut all: Vec<String> = Vec::new();
         let named = self.wanted().into_iter().chain(self.hidden.iter().cloned());
         for id in self.live.iter().cloned().chain(named) {
             if !all.contains(&id) {
@@ -121,8 +123,7 @@ impl Tray {
 
     /// Send `id` to `to`. Pinning appends to the end of the taskbar; the
     /// other two take it out of `pinned`, and only hiding puts it in
-    /// `hidden`. Touching `pinned` at all makes it explicit — the built-in
-    /// order is written out, so it stops being "unset".
+    /// `hidden`. Touching `pinned` at all makes it explicit.
     pub fn moved(&self, id: &str, to: Lane) -> Writes {
         let mut pinned = self.wanted();
         let mut hidden = self.hidden.clone();
@@ -216,20 +217,27 @@ mod tests {
     }
 
     #[test]
-    fn unset_is_the_built_in_order_and_empty_pins_nothing() {
-        let t = tray(Value::Null, json!([]));
-        assert_eq!(t.taskbar(), ["network", "battery"]);
-        assert_eq!(t.in_lane(Lane::Overflow), ["bluetooth", "volume"]);
-        let t = tray(json!([]), json!([]));
-        assert!(t.taskbar().is_empty());
-        assert_eq!(t.in_lane(Lane::Overflow).len(), BUILTINS.len());
+    fn unset_and_empty_both_pin_nothing() {
+        for pinned in [Value::Null, json!([])] {
+            let mut t = tray(pinned, json!([]));
+            t.live = vec!["spotify".into()];
+            assert!(t.taskbar().is_empty());
+            assert_eq!(t.in_lane(Lane::Overflow), ["spotify"]);
+        }
+    }
+
+    #[test]
+    fn the_old_applet_ids_are_not_tray_entries() {
+        let t = tray(json!(["network", "org.syncthing"]), json!(["volume"]));
+        assert_eq!(t.taskbar(), ["org.syncthing"]);
+        assert!(t.ids().iter().all(|id| !LEGACY.contains(&id.as_str())));
     }
 
     #[test]
     fn hidden_wins_over_pinned() {
-        let t = tray(json!(["network", "volume"]), json!(["network"]));
-        assert_eq!(t.lane_of("network"), Lane::Hidden);
-        assert_eq!(t.taskbar(), ["volume"]);
+        let t = tray(json!(["nm-applet", "spotify"]), json!(["nm-applet"]));
+        assert_eq!(t.lane_of("nm-applet"), Lane::Hidden);
+        assert_eq!(t.taskbar(), ["spotify"]);
     }
 
     #[test]
@@ -241,60 +249,43 @@ mod tests {
     }
 
     #[test]
-    fn live_items_follow_the_built_ins_and_are_listed_once() {
-        let mut t = tray(json!(["org.syncthing", "network"]), json!(["nm-applet"]));
+    fn live_items_come_first_and_are_listed_once() {
+        let mut t = tray(json!(["org.syncthing", "steam"]), json!(["nm-applet"]));
         t.live = live_ids(
             ["spotify", "org.syncthing", "spotify", ""]
                 .map(str::to_owned)
                 .into_iter(),
         );
         assert_eq!(t.live, ["spotify", "org.syncthing"]);
-        assert_eq!(
-            t.ids(),
-            [
-                "network",
-                "bluetooth",
-                "battery",
-                "volume",
-                "spotify",
-                "org.syncthing",
-                "nm-applet"
-            ]
-        );
+        assert_eq!(t.ids(), ["spotify", "org.syncthing", "steam", "nm-applet"]);
         assert_eq!(t.lane_of("spotify"), Lane::Overflow);
-        assert_eq!(
-            t.in_lane(Lane::Overflow),
-            ["bluetooth", "battery", "volume", "spotify"]
-        );
+        assert_eq!(t.in_lane(Lane::Overflow), ["spotify"]);
     }
 
     #[test]
     fn a_move_writes_only_what_changed() {
-        let t = tray(json!(["network"]), json!([]));
-        let w = t.moved("volume", Lane::Hidden);
+        let t = tray(json!(["steam"]), json!([]));
+        let w = t.moved("spotify", Lane::Hidden);
         assert_eq!(w.pinned, None);
-        assert_eq!(w.hidden, Some(vec!["volume".to_owned()]));
+        assert_eq!(w.hidden, Some(vec!["spotify".to_owned()]));
 
-        let w = t.moved("network", Lane::Overflow);
+        let w = t.moved("steam", Lane::Overflow);
         assert_eq!(w.pinned, Some(vec![]));
         assert_eq!(w.hidden, None);
     }
 
     #[test]
-    fn touching_pinned_makes_the_default_explicit() {
+    fn touching_pinned_makes_it_explicit() {
         let t = tray(Value::Null, json!([]));
-        let w = t.moved("volume", Lane::Taskbar);
-        assert_eq!(
-            w.pinned,
-            Some(vec!["network".into(), "battery".into(), "volume".into()])
-        );
+        let w = t.moved("spotify", Lane::Taskbar);
+        assert_eq!(w.pinned, Some(vec!["spotify".to_owned()]));
     }
 
     #[test]
     fn unhiding_to_the_taskbar_clears_hidden_and_pins() {
-        let t = tray(json!([]), json!(["volume"]));
-        let w = t.moved("volume", Lane::Taskbar);
-        assert_eq!(w.pinned, Some(vec!["volume".to_owned()]));
+        let t = tray(json!([]), json!(["spotify"]));
+        let w = t.moved("spotify", Lane::Taskbar);
+        assert_eq!(w.pinned, Some(vec!["spotify".to_owned()]));
         assert_eq!(w.hidden, Some(vec![]));
     }
 
@@ -307,7 +298,7 @@ mod tests {
         );
         assert_eq!(t.shifted("a", false), None);
         assert_eq!(t.shifted("c", true), None);
-        assert_eq!(t.shifted("volume", true), None);
+        assert_eq!(t.shifted("spotify", true), None);
     }
 
     #[test]

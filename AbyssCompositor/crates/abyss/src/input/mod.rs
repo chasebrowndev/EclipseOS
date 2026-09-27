@@ -24,6 +24,7 @@ use smithay::{
     wayland::tablet_manager::{TabletDescriptor, TabletSeatTrait},
 };
 
+use crate::addons::Hook;
 use crate::state::AbyssState;
 
 pub mod grabs;
@@ -105,6 +106,10 @@ pub enum Action {
     /// bindable from config — the input filter synthesises it while a
     /// selection owns the seat.
     RegionSelect(crate::render::select::SelectKey),
+    /// One keypress consumed by a trusted prompt (COMP-10 §4). Not bindable
+    /// from config -- the input filter synthesises it while a prompt holds
+    /// the seat.
+    Prompt(Keysym),
     /// Chords an addon owns (COMP-18 §4). The compositor does not act on
     /// these itself; it forwards the name on the `keybind` event stream, so
     /// nothing happens when no addon is listening.
@@ -171,7 +176,7 @@ pub struct MouseBind {
     pub action: MouseAction,
 }
 
-/// A configured touchpad window drag (COMP-04 §2, amended C-11): with exactly
+/// A configured touchpad window drag (COMP-04 §2, amended C-12): with exactly
 /// `mods` held, a `fingers`-finger touchpad drag moves the window under the
 /// pointer. Two fingers arrive as finger scroll, three and four as a swipe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,6 +302,15 @@ impl AbyssState {
                 if state.lock.locked {
                     return FilterResult::Forward;
                 }
+                // A trusted prompt takes the keyboard before anything else
+                // can (COMP-10 §4): no client and no binding sees the key,
+                // except the override chord, which always works (COMP-04 §6).
+                if crate::trusted_ui::holds_seat(state) {
+                    if matches!(state.config.action_for(mods, sym), Some(Action::AgentOverride)) {
+                        return FilterResult::Intercept(Action::AgentOverride);
+                    }
+                    return FilterResult::Intercept(Action::Prompt(sym));
+                }
                 // Calibration owns the seat outright while it runs: every key
                 // is consumed, including ones that are bound to something else.
                 if let Some(step) = crate::outputs::calibrate::step_for(state, mods, sym) {
@@ -347,7 +361,14 @@ impl AbyssState {
                 crate::outputs::calibrate::apply(self, step);
             }
             Action::RegionSelect(key) => self.region_select_key(key),
+            Action::Prompt(sym) => crate::trusted_ui::key(self, sym),
+            // ADR 0066: add-on hooks. Off, the chord is consumed and does nothing.
+            Action::AnnotationSelect if !self.addons.hooks.is_on(Hook::RegionSelect) => {
+                tracing::debug!("region-select hook is off; chord ignored");
+            }
             Action::AnnotationSelect => self.region_select_start(),
+            Action::AnnotationDismiss | Action::AnnotationExpand | Action::AnnotationAutoToggle
+                if !self.addons.hooks.is_on(Hook::Annotations) => {}
             Action::AnnotationDismiss => self.emit_keybind("annotation-dismiss"),
             Action::AnnotationExpand => self.emit_keybind("annotation-expand"),
             Action::AnnotationAutoToggle => self.emit_keybind("annotation-auto-toggle"),
@@ -378,6 +399,12 @@ impl AbyssState {
 
     /// COMP-18 §1.3: enter modal region selection. The chord toggles, so the
     /// same key that started it gets the human back out.
+    /// A compositor-owned modal holds the seat: the region selector or a
+    /// trusted prompt. Nothing behind either takes touch, gesture or tablet.
+    fn seat_held(&self) -> bool {
+        self.region_select.active() || crate::trusted_ui::holds_seat(self)
+    }
+
     fn region_select_start(&mut self) {
         if self.region_select.active() {
             self.region_select.cancel();
@@ -451,6 +478,12 @@ impl AbyssState {
     /// Shared tail for both relative and absolute motion.
     pub(crate) fn pointer_moved(&mut self, pos: Point<f64, Logical>, time: u32) {
         let pos = self.clamp_to_outputs(pos);
+        // A trusted prompt holds the pointer too: the cursor moves, no
+        // surface hears about it (COMP-10 §4).
+        if crate::trusted_ui::holds_seat(self) {
+            self.pointer_location = pos;
+            return;
+        }
         // The cursor is compositor-drawn, so it keeps moving during a
         // selection; nothing under it hears about that until the drag commits.
         if self.region_select.active() {
@@ -565,7 +598,7 @@ impl AbyssState {
     /// hands focus to whatever is now underneath instead of leaving it stale
     /// until the mouse is jiggled (ADR 0042).
     pub(crate) fn refresh_pointer_focus(&mut self) {
-        if self.lock.locked {
+        if self.lock.locked || crate::trusted_ui::holds_seat(self) {
             return;
         }
         // An interactive move/resize deliberately clears pointer focus for the
@@ -695,7 +728,7 @@ impl AbyssState {
     /// steer anything behind the dim. Up, cancel and frame still pass, so a
     /// point already down when the selection began is released normally.
     fn on_touch_down<B: InputBackend>(&mut self, event: B::TouchDownEvent) {
-        if self.region_select.active() {
+        if self.seat_held() {
             return;
         }
         if let Some(pos) = self.absolute_to_global(|size| event.position_transformed(size)) {
@@ -704,7 +737,7 @@ impl AbyssState {
     }
 
     fn on_touch_motion<B: InputBackend>(&mut self, event: B::TouchMotionEvent) {
-        if self.region_select.active() {
+        if self.seat_held() {
             return;
         }
         if let Some(pos) = self.absolute_to_global(|size| event.position_transformed(size)) {
@@ -732,12 +765,13 @@ impl AbyssState {
             self.gesture_capture = None;
             return;
         }
-        // A drag gesture with its modifiers held owns the swipe outright.
-        if grabs::start_drag_gesture(self, fingers) {
+        // A drag gesture with its modifiers held owns the swipe outright,
+        // unless the region selector or a trusted prompt holds the seat.
+        if !self.seat_held() && grabs::start_drag_gesture(self, fingers) {
             self.gesture_capture = None;
             return;
         }
-        if self.region_select.active() || self.config.gesture_bound(fingers) {
+        if self.seat_held() || self.config.gesture_bound(fingers) {
             self.gesture_capture = Some(GestureCapture {
                 fingers,
                 dx: 0.0,
@@ -768,7 +802,7 @@ impl AbyssState {
             capture.dy += delta.y;
             return;
         }
-        if self.lock.locked || self.region_select.active() {
+        if self.lock.locked || self.seat_held() {
             return;
         }
         let pointer = self.seat.get_pointer().unwrap();
@@ -784,7 +818,7 @@ impl AbyssState {
         if let Some(capture) = self.gesture_capture.take() {
             // Re-checked at end: the lock or a selection may have come up
             // while the fingers were moving.
-            if cancelled || self.lock.locked || self.region_select.active() {
+            if cancelled || self.lock.locked || self.seat_held() {
                 return;
             }
             let action = swipe_direction(capture.dx, capture.dy, SWIPE_THRESHOLD)
@@ -818,7 +852,7 @@ impl AbyssState {
     /// dropped at begin has its end dropped too: no client sees an end
     /// without a begin.
     fn gesture_dropped_at_begin(&mut self) -> bool {
-        self.gesture_dropped = self.lock.locked || self.region_select.active();
+        self.gesture_dropped = self.lock.locked || self.seat_held();
         self.gesture_dropped
     }
 
@@ -845,7 +879,7 @@ impl AbyssState {
     }
 
     fn on_pinch_update(&mut self, event: &GesturePinchUpdateEvent) {
-        if self.gesture_dropped || self.lock.locked || self.region_select.active() {
+        if self.gesture_dropped || self.lock.locked || self.seat_held() {
             return;
         }
         let pointer = self.seat.get_pointer().unwrap();
@@ -905,7 +939,7 @@ impl AbyssState {
     /// a selection, which smithay turns into a proximity-out: the tool fails
     /// closed exactly like the pointer.
     fn tablet_focus(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        if self.lock.locked || self.region_select.active() {
+        if self.lock.locked || self.seat_held() {
             return None;
         }
         self.surface_under(pos)
@@ -976,7 +1010,7 @@ impl AbyssState {
     fn on_tablet_tip<B: InputBackend>(&mut self, event: B::TabletToolTipEvent) {
         // The tool's focus may predate the lock or selection if it has not
         // moved since; refuse rather than deliver to it.
-        if self.lock.locked || self.region_select.active() {
+        if self.lock.locked || self.seat_held() {
             return;
         }
         let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) else {
@@ -996,7 +1030,7 @@ impl AbyssState {
     }
 
     fn on_tablet_button<B: InputBackend>(&mut self, event: B::TabletToolButtonEvent) {
-        if self.lock.locked || self.region_select.active() {
+        if self.lock.locked || self.seat_held() {
             return;
         }
         if let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) {
@@ -1011,6 +1045,13 @@ impl AbyssState {
 
     fn on_pointer_button<B: InputBackend>(&mut self, event: B::PointerButtonEvent) {
         let pressed = event.state() == ButtonState::Pressed;
+        // A trusted prompt answers to the left button and swallows the rest.
+        if crate::trusted_ui::holds_seat(self) {
+            if event.button_code() == BTN_LEFT {
+                crate::trusted_ui::button(self, pressed);
+            }
+            return;
+        }
         // The selector holds the pointer as well as the keyboard: a press that
         // reached a client would focus or activate something behind the dim.
         if self.region_select.active() {
@@ -1066,6 +1107,9 @@ impl AbyssState {
     }
 
     fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {
+        if crate::trusted_ui::holds_seat(self) {
+            return;
+        }
         let source = event.source();
         if source == AxisSource::Finger && self.finger_scroll_drag::<B>(&event) {
             return;
@@ -1091,7 +1135,7 @@ impl AbyssState {
 }
 
 impl AbyssState {
-    /// Two-finger touchpad drag (COMP-04 §2, amended C-11). libinput reports
+    /// Two-finger touchpad drag (COMP-04 §2, amended C-12). libinput reports
     /// two fingers as finger scroll, a sequence of axis events ended by one
     /// whose every axis is zero. Ownership is decided on the sequence's first
     /// event and kept to its end, like a swipe's: a drag's scroll never
@@ -1456,6 +1500,56 @@ mod gesture_tests {
         s.lock.locked = true;
         s.process_input_event::<Fake>(InputEvent::GestureSwipeEnd { event: End(false) });
         assert_eq!(active(s), 0);
+    }
+
+    /// A trusted prompt holds the seat (COMP-10 §4) until it is answered,
+    /// lets go of it under the lock, and Escape answers with its safe button.
+    #[test]
+    fn a_trusted_prompt_holds_the_seat_except_under_the_lock() {
+        use crate::trusted_ui::{self, Button, Modal, Role};
+        let mut h = harness();
+        let s = &mut h.state;
+        let m = Modal::new(
+            9,
+            "Command approval",
+            None,
+            "body",
+            "Command:",
+            "echo hi",
+            vec![
+                Button {
+                    label: "Not now",
+                    role: Role::Safe,
+                },
+                Button {
+                    label: "Allow",
+                    role: Role::Grant,
+                },
+            ],
+        )
+        .unwrap();
+        assert!(trusted_ui::open(s, m.clone()));
+        assert!(!trusted_ui::open(s, m), "one prompt at a time");
+        assert!(trusted_ui::holds_seat(s));
+        // No bound swipe runs behind it.
+        swipe(s, 3, -SWIPE_THRESHOLD * 2.0, false);
+        assert_eq!(active(s), 0);
+
+        s.lock.locked = true;
+        assert!(
+            !trusted_ui::holds_seat(s),
+            "the lock is never covered by a prompt"
+        );
+        s.lock.locked = false;
+        assert!(trusted_ui::holds_seat(s), "and it is still pending after unlock");
+
+        // Tab to Allow, then Enter: nothing. Escape: the safe answer.
+        trusted_ui::key(s, Keysym::Tab);
+        trusted_ui::key(s, Keysym::Return);
+        assert!(s.trusted_ui.is_open(), "Enter never approves");
+        trusted_ui::key(s, Keysym::Escape);
+        assert!(!s.trusted_ui.is_open());
+        assert!(!trusted_ui::holds_seat(s));
     }
 
     /// A pinch or hold dropped at begin has its end dropped too, even if the

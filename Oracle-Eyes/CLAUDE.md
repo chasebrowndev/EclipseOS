@@ -33,6 +33,9 @@ Two capabilities, granted and revoked independently, plus one output-only beacon
    in-anchor `pick` of ADR 0054), the read-only `get_outputs` query
    (ADR 0050 — automatic mode annotates the focused screen; no compositor change,
    no `TABLE` change), and the `keybind` (later `damage`) event kinds.
+   These methods, the annotation binds and region select are refused unless
+   the add-on manifest `dist/addon.kdl` is installed as
+   `/usr/share/eclipse/addons/oracle-eyes.kdl` (ADR 0066).
 3. **Beacon** — ADR 0055. `$XDG_RUNTIME_DIR/oracle-eyes/eye.sock`, 0600,
    write-only: one of `off` / `watch` / `think` per line for the taskbar eye.
    Never read from a client; never send anything screen-derived over it.
