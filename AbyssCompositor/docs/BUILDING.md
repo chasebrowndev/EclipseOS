@@ -146,7 +146,8 @@ how a distribution should ship Abyss.
 
 It also enables `hyperion`, `eclipse-toasts`, `eclipse-screensaver` and
 `eclipse-pairing`, and copies the taskbar's add-on manifest to
-`/usr/share/eclipse/addons/hyperion.kdl` (ADR 0066). `dist/install.sh` is the
+`/usr/share/eclipse/addons/hyperion.kdl` (ADR 0066), with its premade widgets
+in `/usr/share/eclipse/widgets` (ADR 0067). `dist/install.sh` is the
 non-symlink variant: it builds from a fresh clone as your user, installs real
 binaries into `/usr/bin` and the units into `/usr/lib/systemd/user`, and
 enables the same four units.

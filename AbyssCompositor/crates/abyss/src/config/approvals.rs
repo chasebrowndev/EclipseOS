@@ -11,9 +11,11 @@
 //! It maps a widget name to the one hash the owner accepted. It is state, not
 //! config: no GUI edits it, `get_config` does not serve it, and the config
 //! watcher does not watch it. Read at config apply; written only by
-//! [`record_approval`].
+//! [`persist`] (off the event loop) or [`record_approval`] (blocking).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::sync::OnceLock;
 
 use kdl::KdlDocument;
 
@@ -65,10 +67,14 @@ impl Approvals {
 /// Read the store. Missing or unreadable is "nothing approved"; a malformed
 /// line approves nothing and the rest still load (fail-closed per line).
 pub fn read() -> Approvals {
-    let Some(path) = path() else {
-        return Approvals::default();
-    };
-    match std::fs::read_to_string(&path) {
+    match path() {
+        Some(path) => read_at(&path),
+        None => Approvals::default(),
+    }
+}
+
+fn read_at(path: &Path) -> Approvals {
+    match std::fs::read_to_string(path) {
         Ok(text) => parse(&text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Approvals::default(),
         Err(e) => {
@@ -121,6 +127,7 @@ fn render(a: &Approvals) -> String {
 
 /// Record that the owner accepted `hash` for widget `name`, replacing any
 /// earlier approval for that name. Atomic (temp file + rename), mode 0600.
+/// Blocks on fsync: not for the event loop, which uses [`persist`].
 ///
 /// **Only the Trusted UI approval surface (`trusted_ui/`, ADR 0067) may call
 /// this**, and only on the owner's Accept/Allow. No socket method, no config
@@ -128,11 +135,85 @@ fn render(a: &Approvals) -> String {
 /// keep it that way. The caller re-applies the config afterwards
 /// (`withhold::reapply`) so the widget goes live.
 pub fn record_approval(name: &str, hash: WidgetHash) -> std::io::Result<()> {
+    let path = path().ok_or_else(no_path)?;
+    write_at(&path, name, hash)
+}
+
+/// [`record_approval`] without blocking: the store path is resolved here, the
+/// read-modify-write runs on one long-lived writer thread, in send order, so
+/// quick successive approvals never lose an update. A failed write is logged
+/// there (`tracing::error`, widget name only). `Err` only for immediate
+/// failures: no store path, the writer could not start, or it is gone.
+///
+/// The caller records the approval for this session in
+/// `WidgetApprovals::granted` and re-applies, so the widget goes live without
+/// waiting for the disk.
+///
+/// **Only the Trusted UI approval surface (`trusted_ui/`, ADR 0067) may call
+/// this**, and only on the owner's Accept/Allow; the same source-scan test
+/// as [`record_approval`] enforces it.
+pub fn persist(name: &str, hash: WidgetHash) -> std::io::Result<()> {
+    let path = path().ok_or_else(no_path)?;
+    writer()?
+        .send(Job::Write(path, name.to_owned(), hash))
+        .map_err(|_| std::io::Error::other("approvals writer is gone"))
+}
+
+/// Tests only: block until the writer has finished every [`persist`] sent so
+/// far (from any thread).
+#[cfg(test)]
+pub(crate) fn wait_written() {
+    let (tx, rx) = mpsc::channel();
+    writer().unwrap().send(Job::Flush(tx)).unwrap();
+    rx.recv().unwrap();
+}
+
+enum Job {
+    Write(PathBuf, String, WidgetHash),
+    #[cfg(test)]
+    Flush(mpsc::Sender<()>),
+}
+
+fn no_path() -> std::io::Error {
+    std::io::Error::other("no XDG_STATE_HOME or HOME")
+}
+
+static WRITER: OnceLock<mpsc::Sender<Job>> = OnceLock::new();
+
+/// The writer's queue, starting the thread on first use.
+fn writer() -> std::io::Result<&'static mpsc::Sender<Job>> {
+    if let Some(tx) = WRITER.get() {
+        return Ok(tx);
+    }
+    let (tx, rx) = mpsc::channel::<Job>();
+    std::thread::Builder::new()
+        .name("abyss-approvals".into())
+        .spawn(move || {
+            for job in rx {
+                match job {
+                    Job::Write(path, name, hash) => {
+                        if let Err(e) = write_at(&path, &name, hash) {
+                            tracing::error!(name, error = %e, "widget approval not saved; it lasts this session only");
+                        }
+                    }
+                    #[cfg(test)]
+                    Job::Flush(done) => {
+                        let _ = done.send(());
+                    }
+                }
+            }
+        })?;
+    // A racing first caller (tests only; the loop is one thread) may have
+    // won: its sender is kept, ours drops and our idle thread exits.
+    let _ = WRITER.set(tx);
+    Ok(WRITER.get().expect("set above"))
+}
+
+fn write_at(path: &Path, name: &str, hash: WidgetHash) -> std::io::Result<()> {
     use std::io::Write as _;
     use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 
-    let path = path().ok_or_else(|| std::io::Error::other("no XDG_STATE_HOME or HOME"))?;
-    let mut all = read();
+    let mut all = read_at(path);
     all.set(name, hash);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -148,7 +229,7 @@ pub fn record_approval(name: &str, hash: WidgetHash) -> std::io::Result<()> {
         .write_all(render(&all).as_bytes())
         .and_then(|()| f.sync_all())
         .and_then(|()| std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)))
-        .and_then(|()| std::fs::rename(&tmp, &path));
+        .and_then(|()| std::fs::rename(&tmp, path));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -201,6 +282,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn persist_writes_off_thread_in_order() {
+        let dir = std::env::temp_dir().join(format!("abyss-approvals-persist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("eclipse/widget-approvals.kdl");
+        set_test_path(Some(file.clone()));
+        persist("load", hx(1)).unwrap();
+        wait_written();
+        assert_eq!(read().get("load"), Some(hx(1)));
+        // Two in a row, no wait between: both land, the later wins per name.
+        persist("cpu", hx(2)).unwrap();
+        persist("load", hx(3)).unwrap();
+        wait_written();
+        let a = read();
+        assert_eq!(
+            (a.get("load"), a.get("cpu"), a.0.len()),
+            (Some(hx(3)), Some(hx(2)), 2)
+        );
+        set_test_path(None);
+        assert!(
+            persist("load", hx(4)).is_err(),
+            "no store path is an immediate error"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// ADR 0067: only the Trusted UI approval surface writes approvals or
     /// edits the owner's config on a prompt's answer. Outside `trusted_ui/`
     /// and test modules, the only mention of each is its own definition.
@@ -233,7 +340,7 @@ mod tests {
                 if t.starts_with("//") {
                     continue;
                 }
-                for name in ["record_approval", "revert_widget", "remove_widget"] {
+                for name in ["record_approval", "persist", "revert_widget", "remove_widget"] {
                     let call = format!("{name}(");
                     if !t.contains(&call) {
                         continue;
@@ -246,6 +353,6 @@ mod tests {
                 }
             }
         }
-        assert_eq!(defs, 3, "the three helpers were not all found");
+        assert_eq!(defs, 4, "the four helpers were not all found");
     }
 }

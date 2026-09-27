@@ -1963,8 +1963,8 @@ pub fn adjust_priority(state: &mut AbyssState, delta: i32) {
 /// Where a Radiant drag would land if released now.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DropKey {
-    /// The window's own placeholder, a gap between tiles, or off the output:
-    /// nothing changes and the window snaps back.
+    /// Back to the window's own placeholder (or, for a floating window, off
+    /// the output): nothing changes and the window snaps back.
     Stay,
     /// A screen-edge band: a full-height column or full-width row.
     Band(layout::Side),
@@ -1977,9 +1977,26 @@ pub enum DropKey {
 #[derive(Debug, Clone, Copy)]
 pub struct DropPreview {
     pub key: DropKey,
-    /// The landing tile, global logical coordinates. `None` for `Stay`.
+    /// The landing tile, global logical coordinates. `None` when nothing
+    /// would tile (a floating window aimed off the output, or Super up).
     pub ghost: Option<Rectangle<i32, Logical>>,
 }
+
+/// One place a Radiant drag could land, precomputed at drag start.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DropCandidate {
+    pub key: DropKey,
+    /// What the dragged window's centre is compared against: the landing
+    /// rectangle's centre, or for an edge band the centre of the edge strip.
+    pub aim: Point<f64, Logical>,
+    /// Where the window lands, global logical coordinates.
+    pub ghost: Rectangle<i32, Logical>,
+}
+
+/// Hysteresis for [`aim_drop`], logical px: a new candidate has to be this
+/// much nearer than the current one before the target changes, so a window
+/// resting between two candidates does not flicker.
+pub const AIM_HYSTERESIS: f64 = 24.0;
 
 /// A window being dragged onto the Radiant tree (COMP-05 §3.1).
 ///
@@ -2007,9 +2024,9 @@ pub struct TileDrag {
     /// Edge band width, logical px; 0 disables the bands.
     pub band: i32,
     pub tiles: Vec<(Window, Rectangle<i32, Logical>)>,
-    /// Every drop target's landing rectangle, computed once at drag start.
-    /// A key that is absent lands nowhere (no ghost).
-    ghosts: Vec<(DropKey, Rectangle<i32, Logical>)>,
+    /// Every place the drag could land, computed once at drag start. Motion
+    /// only scans this.
+    candidates: Vec<DropCandidate>,
     pub preview: DropPreview,
 }
 
@@ -2017,44 +2034,50 @@ fn main_mod_held(state: &AbyssState) -> bool {
     state.seat.get_keyboard().is_some_and(|k| k.modifier_state().logo)
 }
 
-/// The drop target under `pointer`. Pure so it can be tested without a
-/// window. The nearest screen edge within `band` of the tiling area wins over
-/// any tile; inside a tile, [`layout::drop_zone`] picks the zone.
-pub(crate) fn drop_key<W: PartialEq>(
+fn centre(r: Rectangle<i32, Logical>) -> Point<f64, Logical> {
+    Point::from((
+        r.loc.x as f64 + r.size.w as f64 / 2.0,
+        r.loc.y as f64 + r.size.h as f64 / 2.0,
+    ))
+}
+
+/// The edge strip of `area`, `band` wide, that aims at a band drop.
+fn band_strip(area: Rectangle<i32, Logical>, side: layout::Side, band: i32) -> Rectangle<i32, Logical> {
+    let bw = band.min(area.size.w);
+    let bh = band.min(area.size.h);
+    let (x, y, w, h) = (area.loc.x, area.loc.y, area.size.w, area.size.h);
+    let (loc, size) = match side {
+        layout::Side::Left => ((x, y), (bw, h)),
+        layout::Side::Right => ((x + w - bw, y), (bw, h)),
+        layout::Side::Top => ((x, y), (w, bh)),
+        layout::Side::Bottom => ((x, y + h - bh), (w, bh)),
+    };
+    Rectangle::new(Point::from(loc), Size::from(size))
+}
+
+/// The drop target for a dragged window centred at `aim` (COMP-05 §3.1):
+/// the candidate whose aim point is nearest, keeping `current` unless another
+/// is nearer by more than [`AIM_HYSTERESIS`]. Off the output is `Stay`. Pure
+/// and allocation free: it runs on every motion.
+pub(crate) fn aim_drop(
     bounds: Rectangle<i32, Logical>,
-    area: Rectangle<i32, Logical>,
-    band: i32,
-    tiles: &[(W, Rectangle<i32, Logical>)],
-    dragged: &W,
-    pointer: Point<f64, Logical>,
+    candidates: &[DropCandidate],
+    current: DropKey,
+    aim: Point<f64, Logical>,
 ) -> DropKey {
-    if !bounds.to_f64().contains(pointer) {
+    if !bounds.to_f64().contains(aim) {
         return DropKey::Stay;
     }
-    if band > 0 {
-        let a = area.to_f64();
-        let edges = [
-            (layout::Side::Left, pointer.x - a.loc.x),
-            (layout::Side::Right, a.loc.x + a.size.w - pointer.x),
-            (layout::Side::Top, pointer.y - a.loc.y),
-            (layout::Side::Bottom, a.loc.y + a.size.h - pointer.y),
-        ];
-        let (side, d) = edges
-            .into_iter()
-            .min_by(|x, y| x.1.total_cmp(&y.1))
-            .expect("four edges");
-        if d < band as f64 {
-            return DropKey::Band(side);
-        }
-    }
-    match tiles
-        .iter()
-        .enumerate()
-        .find(|(_, (_, r))| r.to_f64().contains(pointer))
-    {
-        Some((_, (w, _))) if w == dragged => DropKey::Stay,
-        Some((i, (_, r))) => DropKey::Tile(i, layout::drop_zone(*r, pointer)),
-        None => DropKey::Stay,
+    let dist = |c: &DropCandidate| {
+        let (dx, dy) = (c.aim.x - aim.x, c.aim.y - aim.y);
+        (dx * dx + dy * dy).sqrt()
+    };
+    let Some(best) = candidates.iter().min_by(|a, b| dist(a).total_cmp(&dist(b))) else {
+        return DropKey::Stay;
+    };
+    match candidates.iter().find(|c| c.key == current) {
+        Some(cur) if dist(best) + AIM_HYSTERESIS >= dist(cur) => current,
+        _ => best.key,
     }
 }
 
@@ -2104,39 +2127,48 @@ pub(crate) fn apply_drop<W: Clone + PartialEq>(
     }
 }
 
-/// The landing rectangle of `window` for every drop target the drag could
-/// aim at: each other tile's five zones and the four edge bands. Targets
-/// that would change nothing are left out.
-pub(crate) fn drop_ghosts<W: Clone + PartialEq>(
+/// Every place `window` could land: back home on its own tile (when it is
+/// tiled), each other tile's five zones, and the four edge bands (when `band`
+/// is non-zero). Drops that would change nothing are left out. `Stay` comes
+/// first, so an exact tie goes home.
+pub(crate) fn drop_candidates<W: Clone + PartialEq>(
     tree: &layout::Tree<W>,
     window: &W,
     tiles: &[(W, Rectangle<i32, Logical>)],
     area: Rectangle<i32, Logical>,
     gap: i32,
     band: i32,
-) -> Vec<(DropKey, Rectangle<i32, Logical>)> {
+) -> Vec<DropCandidate> {
     use layout::{Side, Zone};
     const ZONES: [Zone; 5] = [Zone::Left, Zone::Right, Zone::Top, Zone::Bottom, Zone::Center];
     const SIDES: [Side; 4] = [Side::Left, Side::Right, Side::Top, Side::Bottom];
+    let home = tiles
+        .iter()
+        .find(|(w, _)| w == window)
+        .map(|(_, r)| DropCandidate {
+            key: DropKey::Stay,
+            aim: centre(*r),
+            ghost: *r,
+        });
     let bands = SIDES.iter().filter(|_| band > 0).map(|s| DropKey::Band(*s));
     let on_tiles = tiles
         .iter()
         .enumerate()
         .filter(|(_, (w, _))| w != window)
         .flat_map(|(i, _)| ZONES.iter().map(move |z| DropKey::Tile(i, *z)));
-    bands
-        .chain(on_tiles)
-        .filter_map(|key| {
-            let mut t = tree.clone();
-            if !apply_drop(&mut t, window, key, tiles) {
-                return None;
-            }
-            t.radiant(area, gap)
-                .into_iter()
-                .find(|(w, _)| w == window)
-                .map(|(_, r)| (key, r))
-        })
-        .collect()
+    let drops = bands.chain(on_tiles).filter_map(|key| {
+        let mut t = tree.clone();
+        if !apply_drop(&mut t, window, key, tiles) {
+            return None;
+        }
+        let ghost = t.radiant(area, gap).into_iter().find(|(w, _)| w == window)?.1;
+        let aim = match key {
+            DropKey::Band(side) => centre(band_strip(area, side, band)),
+            _ => centre(ghost),
+        };
+        Some(DropCandidate { key, aim, ghost })
+    });
+    home.into_iter().chain(drops).collect()
 }
 
 /// Start a Radiant drag for `window` if it qualifies: tiled (or floating with
@@ -2170,7 +2202,7 @@ fn start_tile_drag(state: &mut AbyssState, window: &Window) {
     let band = state.config.general.drop_edge_band;
     let tree = &state.outputs.get(id).expect("just resolved").workspaces[ws].tiled;
     let tiles = tree.radiant(area, gap);
-    let ghosts = drop_ghosts(tree, window, &tiles, area, gap, band);
+    let candidates = drop_candidates(tree, window, &tiles, area, gap, band);
     if !floating {
         // The tile crop would clip the window to where it used to be.
         set_tile_clip(window, None);
@@ -2186,7 +2218,7 @@ fn start_tile_drag(state: &mut AbyssState, window: &Window) {
         area,
         band,
         tiles,
-        ghosts,
+        candidates,
         preview: DropPreview {
             key: DropKey::Stay,
             ghost: None,
@@ -2196,76 +2228,71 @@ fn start_tile_drag(state: &mut AbyssState, window: &Window) {
     crate::backend::damage_all(state);
 }
 
-/// Re-aim the drag at `pointer`: a key comparison and, when the target
-/// changed, a lookup in the precomputed `ghosts`. No allocation.
-fn update_drop_target(state: &mut AbyssState, pointer: Point<f64, Logical>) {
+/// Re-aim the drag at a window centred at `aim`: a scan of the precomputed
+/// candidates. No allocation.
+fn update_drop_target(state: &mut AbyssState, aim: Point<f64, Logical>) {
     let Some(drag) = state.tile_drag.as_mut() else {
         return;
     };
     let key = if drag.armed {
-        drop_key(
-            drag.bounds,
-            drag.area,
-            drag.band,
-            &drag.tiles,
-            &drag.window,
-            pointer,
-        )
+        aim_drop(drag.bounds, &drag.candidates, drag.preview.key, aim)
     } else {
         DropKey::Stay
     };
-    if key == drag.preview.key {
+    let ghost = drag
+        .candidates
+        .iter()
+        .find(|c| c.key == key)
+        .map(|c| c.ghost)
+        .filter(|_| drag.armed);
+    if key == drag.preview.key && ghost == drag.preview.ghost {
         return;
     }
-    let ghost = drag.ghosts.iter().find(|(k, _)| *k == key).map(|(_, r)| *r);
     drag.preview = DropPreview { key, ghost };
     crate::backend::damage_all(state);
 }
 
 /// One motion of an interactive move (COMP-05 §3.1). Under Radiant a tiled
 /// window is not floated: the grab draws it at `loc` over its placeholder
-/// and the drop target follows `pointer`. Returns `true` when it handled the
+/// and the drop target follows the window's centre. Returns `true` when it handled the
 /// motion; `false` means the caller floats/moves the window as before, which
 /// is also what a floating window gets (with the guides aimed while Super is
 /// held).
-pub fn drag_tile(
-    state: &mut AbyssState,
-    window: &Window,
-    loc: Point<i32, Logical>,
-    pointer: Point<f64, Logical>,
-) -> bool {
+pub fn drag_tile(state: &mut AbyssState, window: &Window, loc: Point<i32, Logical>) -> bool {
     if !state.tile_drag.as_ref().is_some_and(|d| &d.window == window) {
         start_tile_drag(state, window);
     }
     let Some(drag) = state.tile_drag.as_ref().filter(|d| &d.window == window) else {
         return false;
     };
+    let aim = centre(Rectangle::new(loc, window.geometry().size));
     if drag.floating {
         let armed = main_mod_held(state);
         if let Some(drag) = state.tile_drag.as_mut() {
             drag.armed = armed;
         }
-        update_drop_target(state, pointer);
+        update_drop_target(state, aim);
         return false;
     }
     if state.lock.locked {
         return true;
     }
-    update_drop_target(state, pointer);
+    update_drop_target(state, aim);
     state.space.map_element(window.clone(), loc, false);
     true
 }
 
-/// The end of an interactive move: land the window on the drop target under
-/// `pos`, or snap it back to its placeholder. A floating window only tiles
-/// if Super is still held. Always ends the drag.
-pub fn drop_window(state: &mut AbyssState, window: &Window, pos: Point<f64, Logical>) {
+/// The end of an interactive move: land the window on the previewed drop
+/// target, so the drop is exactly what the guides showed, or snap it back to
+/// its placeholder. A floating window only tiles if Super is still held.
+/// Always ends the drag.
+pub fn drop_window(state: &mut AbyssState, window: &Window) {
     let Some(drag) = state.tile_drag.take() else {
         return;
     };
     let tile_it = &drag.window == window && !state.lock.locked && (!drag.floating || main_mod_held(state));
     if tile_it {
-        let key = drop_key(drag.bounds, drag.area, drag.band, &drag.tiles, &drag.window, pos);
+        let key = drag.preview.key;
         if let Some(entry) = state.outputs.get_mut(drag.id) {
             if entry.active == drag.ws {
                 let ws = &mut entry.workspaces[drag.ws];
@@ -2754,20 +2781,64 @@ mod tests {
         (t, tiles)
     }
 
+    fn cand(key: DropKey, x: f64, y: f64) -> DropCandidate {
+        DropCandidate {
+            key,
+            aim: Point::from((x, y)),
+            ghost: rr(0, 0, 1, 1),
+        }
+    }
+
     #[test]
-    fn drop_key_bands_win_then_tiles_then_own_placeholder_stays() {
-        let (_, tiles) = two();
-        let (b, a) = (rr(0, 0, 1000, 500), rr(0, 0, 1000, 500));
-        let k = |x: f64, y: f64| drop_key(b, a, 40, &tiles, &1, Point::from((x, y)));
-        assert_eq!(k(10.0, 250.0), DropKey::Band(layout::Side::Left));
-        assert_eq!(k(500.0, 490.0), DropKey::Band(layout::Side::Bottom));
-        assert_eq!(k(250.0, 250.0), DropKey::Stay);
-        assert_eq!(k(750.0, 250.0), DropKey::Tile(1, layout::Zone::Center));
-        assert_eq!(k(560.0, 250.0), DropKey::Tile(1, layout::Zone::Left));
-        assert_eq!(k(1500.0, 250.0), DropKey::Stay);
-        // Band 0 disables the edges: the same point now hits the tile.
-        let k0 = drop_key(b, a, 0, &tiles, &1, Point::from((990.0, 250.0)));
-        assert_eq!(k0, DropKey::Tile(1, layout::Zone::Right));
+    fn aim_drop_takes_the_nearest_candidate_and_stays_off_the_output() {
+        let b = rr(0, 0, 1000, 500);
+        let top = DropKey::Tile(0, layout::Zone::Top);
+        let c = [cand(DropKey::Stay, 250.0, 250.0), cand(top, 750.0, 125.0)];
+        assert_eq!(aim_drop(b, &c, DropKey::Stay, Point::from((700.0, 150.0))), top);
+        assert_eq!(aim_drop(b, &c, top, Point::from((300.0, 240.0))), DropKey::Stay);
+        assert_eq!(aim_drop(b, &c, top, Point::from((1500.0, 150.0))), DropKey::Stay);
+        assert_eq!(aim_drop(b, &[], top, Point::from((10.0, 10.0))), DropKey::Stay);
+    }
+
+    #[test]
+    fn aim_drop_hysteresis_keeps_the_current_key_near_a_tie() {
+        let b = rr(0, 0, 1000, 500);
+        let (l, r) = (
+            DropKey::Tile(0, layout::Zone::Left),
+            DropKey::Tile(0, layout::Zone::Right),
+        );
+        let c = [cand(l, 400.0, 250.0), cand(r, 600.0, 250.0)];
+        // 10 px nearer to `r` is inside the hysteresis: `l` holds.
+        assert_eq!(aim_drop(b, &c, l, Point::from((505.0, 250.0))), l);
+        // Well past it, `r` takes over, and then holds the same way back.
+        assert_eq!(aim_drop(b, &c, l, Point::from((520.0, 250.0))), r);
+        assert_eq!(aim_drop(b, &c, r, Point::from((495.0, 250.0))), r);
+    }
+
+    #[test]
+    fn a_window_over_its_own_tile_stays_and_over_b_lands_where_it_points() {
+        let (t, tiles) = two();
+        let area = rr(0, 0, 1000, 500);
+        let c = drop_candidates(&t, &1, &tiles, area, 0, 40);
+        assert_eq!(c[0].key, DropKey::Stay, "home is first");
+        assert_eq!(c[0].ghost, rr(0, 0, 500, 500));
+        // Barely moved: home.
+        assert_eq!(
+            aim_drop(area, &c, DropKey::Stay, Point::from((270.0, 240.0))),
+            DropKey::Stay
+        );
+        // Centred in B's upper area: a candidate whose landing contains it.
+        let at = Point::from((750.0, 120.0));
+        let key = aim_drop(area, &c, DropKey::Stay, at);
+        let hit = c.iter().find(|x| x.key == key).expect("a candidate");
+        assert!(
+            hit.ghost.to_f64().contains(at),
+            "{key:?} lands at {:?}",
+            hit.ghost
+        );
+        // With A out, B's top would be the full-width top half, centred far
+        // from (750, 120); B's right half (A and B swap sides) is nearer.
+        assert_eq!(key, DropKey::Tile(1, layout::Zone::Right));
     }
 
     #[test]
@@ -2830,24 +2901,25 @@ mod tests {
     }
 
     #[test]
-    fn drop_ghosts_precompute_exactly_what_a_drop_would_do() {
+    fn drop_candidates_precompute_exactly_what_a_drop_would_do() {
         let (t, tiles) = two();
         let area = rr(0, 0, 1000, 500);
-        let ghosts = drop_ghosts(&t, &1, &tiles, area, 0, 40);
-        // 4 bands + 5 zones of tile 2; tile 1 is the dragged window's own.
-        assert_eq!(ghosts.len(), 9);
-        assert!(ghosts.iter().all(|(k, _)| !matches!(k, DropKey::Tile(0, _))));
-        for (key, ghost) in &ghosts {
+        let c = drop_candidates(&t, &1, &tiles, area, 0, 40);
+        // Home + 4 bands + 5 zones of tile 2; tile 1 is the dragged window's own.
+        assert_eq!(c.len(), 10);
+        assert!(c.iter().all(|x| !matches!(x.key, DropKey::Tile(0, _))));
+        for x in c.iter().filter(|x| x.key != DropKey::Stay) {
             let mut d = t.clone();
-            assert!(apply_drop(&mut d, &1, *key, &tiles));
-            assert_eq!(rect(&d, 1, area), *ghost, "{key:?}");
+            assert!(apply_drop(&mut d, &1, x.key, &tiles));
+            assert_eq!(rect(&d, 1, area), x.ghost, "{:?}", x.key);
         }
-        let centre = ghosts
-            .iter()
-            .find(|(k, _)| *k == DropKey::Tile(1, layout::Zone::Center));
-        assert_eq!(centre.map(|(_, r)| *r), Some(rr(500, 0, 500, 500)));
+        let swap = c.iter().find(|x| x.key == DropKey::Tile(1, layout::Zone::Center));
+        assert_eq!(swap.map(|x| x.ghost), Some(rr(500, 0, 500, 500)));
+        // A band is aimed at by its edge strip, not its landing rectangle.
+        let left = c.iter().find(|x| x.key == DropKey::Band(layout::Side::Left));
+        assert_eq!(left.map(|x| x.aim), Some(Point::from((20.0, 250.0))));
         // Band 0: no band targets at all.
-        assert_eq!(drop_ghosts(&t, &1, &tiles, area, 0, 0).len(), 5);
+        assert_eq!(drop_candidates(&t, &1, &tiles, area, 0, 0).len(), 6);
     }
 
     fn rect(t: &layout::Tree<u32>, w: u32, area: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {

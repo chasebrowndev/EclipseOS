@@ -45,11 +45,19 @@ pub enum Grip {
 }
 
 impl Grip {
-    fn dots(self) -> Color {
+    fn ink(self) -> Color {
         match self {
             Grip::Rest => color::TEXT_TERTIARY,
             Grip::Hover => color::TEXT_SECONDARY,
             Grip::Active => color::TEXT,
+        }
+    }
+
+    fn length(self) -> f32 {
+        match self {
+            Grip::Rest => bar::GRIP_LINE_H,
+            Grip::Hover => bar::GRIP_LINE_H_HOVER,
+            Grip::Active => bar::GRIP_LINE_H_ACTIVE,
         }
     }
 
@@ -62,7 +70,8 @@ impl Grip {
     }
 }
 
-/// The grip: a 2×4 field of square dots in a [`bar::GRIP_W`] column.
+/// The grip: one thin vertical line — a `|` with round ends — centred in a
+/// [`bar::GRIP_W`] column.
 ///
 /// A widget and not a styled container because it *is* a gesture: it owns the
 /// press, follows the pointer (or a finger) outside its own bounds for the
@@ -70,10 +79,12 @@ impl Grip {
 /// cursor. A container cannot keep a drag once the pointer leaves it, and a
 /// grip that drops the drag when you overshoot is a grip nobody trusts.
 ///
-/// The dot field is the one glyph every desktop already uses for "you can
-/// pull this"; hard square dots keep it on the owner's hard-edged grid. It is
-/// also the whole of a compressed widget, so it is drawn to stand alone: a
-/// slim capsule with a texture in it, never an empty sliver.
+/// The line is the owner's call: thin and sleek, pill-capped — the one
+/// rounded stroke on an otherwise hard-edged bar. Hover and a live drag
+/// brighten it and lengthen it ([`bar::GRIP_LINE_H`] up to
+/// [`bar::GRIP_LINE_H_ACTIVE`]); it never becomes anything but one line. It
+/// is also the whole of a compressed widget, so it is drawn to stand alone: a
+/// slim capsule with a mark in it, never an empty sliver.
 pub struct DragBar<'a, Message> {
     floor: Grip,
     on_press: Option<Message>,
@@ -119,7 +130,7 @@ impl<'a, Message> DragBar<'a, Message> {
         self
     }
 
-    /// Draw the dots and the wash at `opacity` (`0.0..=1.0`): a grip whose
+    /// Draw the line and the wash at `opacity` (`0.0..=1.0`): a grip whose
     /// widget is arriving or leaving fades with it instead of standing at
     /// full ink while its cell closes over it. See [`ShellFrame::grip_alpha`].
     pub fn opacity(mut self, opacity: f32) -> Self {
@@ -312,30 +323,25 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for DragBar<'_, Mess
             );
         }
 
-        let (cols, rows) = (bar::GRIP_COLS as f32, bar::GRIP_ROWS as f32);
-        let pitch = bar::GRIP_DOT + bar::GRIP_DOT_GAP;
-        let field_w = cols * pitch - bar::GRIP_DOT_GAP;
-        let field_h = rows * pitch - bar::GRIP_DOT_GAP;
-        // Whole-pixel origin: a dot that straddles a pixel is a grey smear.
-        let x0 = (b.x + (b.width - field_w) / 2.0).round();
-        let y0 = (b.y + (b.height - field_h) / 2.0).round();
-        let ink = look.dots().scale_alpha(self.opacity);
-        for r in 0..bar::GRIP_ROWS {
-            for c in 0..bar::GRIP_COLS {
-                renderer.fill_quad(
-                    renderer::Quad {
-                        bounds: Rectangle {
-                            x: x0 + c as f32 * pitch,
-                            y: y0 + r as f32 * pitch,
-                            width: bar::GRIP_DOT,
-                            height: bar::GRIP_DOT,
-                        },
-                        ..renderer::Quad::default()
-                    },
-                    ink,
-                );
-            }
-        }
+        // One thin `|`, pill-capped. Whole-pixel x so the stroke lands on
+        // exactly two columns instead of smearing over three.
+        let (w, h) = (bar::GRIP_LINE_W, look.length());
+        renderer.fill_quad(
+            renderer::Quad {
+                bounds: Rectangle {
+                    x: (b.x + (b.width - w) / 2.0).round(),
+                    y: (b.y + (b.height - h) / 2.0).round(),
+                    width: w,
+                    height: h,
+                },
+                border: Border {
+                    radius: (w / 2.0).into(),
+                    ..Border::default()
+                },
+                ..renderer::Quad::default()
+            },
+            look.ink().scale_alpha(self.opacity),
+        );
     }
 }
 

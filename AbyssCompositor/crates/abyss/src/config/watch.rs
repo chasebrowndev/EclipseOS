@@ -163,7 +163,9 @@ pub fn reload_now(state: &mut AbyssState) {
     }
     let next = state.config.reload();
     if !next.errors.is_empty() {
-        let errors: Vec<serde_json::Value> = next.errors.iter().map(crate::config::error_json).collect();
+        // The live config may still carry a degraded start's fail-safes
+        // (auto-lock or Xwayland off); the summary keeps leading with them.
+        let event = crate::config::reload_error_event(&next.errors, &state.config.errors);
         for e in &next.errors {
             tracing::error!("{e}");
         }
@@ -171,7 +173,8 @@ pub fn reload_now(state: &mut AbyssState) {
             count = next.errors.len(),
             "config invalid, keeping the last good one"
         );
-        crate::ipc::emit(state, "config-error", serde_json::json!({ "errors": errors }));
+        state.config_error = Some(event.clone());
+        crate::ipc::emit(state, "config-error", event);
         return;
     }
     crate::config::apply_loaded(state, next);

@@ -377,11 +377,17 @@ fn set_config_value(state: &mut AbyssState, outer: Decision, params: &Value) -> 
         .map_err(|e| RpcError::invalid_params(&format!("{e}")))?;
 
     if dry_run {
+        // The same check the real write's reload makes, so a dry run cannot
+        // pass an edit that `commit` would roll back.
+        let errors = Config::check_text_with(&target, key.owner, &after, &state.config.catalog);
+        let errors: Vec<Value> = errors.iter().map(crate::config::error_json).collect();
         return Ok(json!({
             "file": target.display().to_string(),
             "previous": previous,
             "applied": false,
             "restart_required": key.reload == schema::Reload::NeedsRestart,
+            "valid": errors.is_empty(),
+            "errors": errors,
         }));
     }
 
@@ -392,6 +398,8 @@ fn set_config_value(state: &mut AbyssState, outer: Decision, params: &Value) -> 
         "previous": previous,
         "applied": true,
         "restart_required": key.reload == schema::Reload::NeedsRestart,
+        "valid": true,
+        "errors": [],
     }))
 }
 
@@ -1018,6 +1026,54 @@ mod tests {
         );
         assert!(bad.is_err());
         assert!(crate::ipc::capture::take().iter().all(|(k, _)| k != "config"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A dry run runs the loader's check on the edited text: it reports
+    /// `valid: false` exactly when the real write would be rolled back, and
+    /// never touches the file. An empty `bar {}` is edited in place, so the
+    /// dry run and the write both pass.
+    #[test]
+    fn a_dry_run_agrees_with_the_write() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let dir = std::env::temp_dir().join(format!("abyss-set-dry-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+        h.state.config.explicit = Some(file.clone());
+        let set = |h: &mut crate::shell::focus::state_tests::Harness, dry: bool| {
+            set_config_value(
+                &mut h.state,
+                Decision::Allow,
+                &json!({"path": "bar.rounding", "value": 6, "dry_run": dry}),
+            )
+        };
+
+        // The loader rejects this file whatever the edit: dry says invalid,
+        // the write is refused, the bytes stay.
+        let rejected = "bar {\n    rounding 20\n}\nbogus-node 1\n";
+        std::fs::write(&file, rejected).unwrap();
+        let got = set(&mut h, true).ok().expect("a dry run answers");
+        assert_eq!(got["applied"], json!(false));
+        assert_eq!(got["valid"], json!(false));
+        assert!(got["errors"][0]["line"].as_u64().unwrap() > 0, "{got}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), rejected);
+        assert!(set(&mut h, false).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), rejected);
+
+        for empty in ["bar {}\n", "bar {\n}\n"] {
+            std::fs::write(&file, empty).unwrap();
+            let got = set(&mut h, true).ok().expect("a dry run answers");
+            assert_eq!(got["valid"], json!(true), "{got}");
+            assert_eq!(got["errors"], json!([]));
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), empty);
+            let got = set(&mut h, false).unwrap_or_else(|e| panic!("{}", e.message));
+            assert_eq!(got["applied"], json!(true));
+            assert_eq!(got["valid"], json!(true));
+            assert_eq!(
+                std::fs::read_to_string(&file).unwrap(),
+                "bar {\n    rounding 6\n}\n"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
