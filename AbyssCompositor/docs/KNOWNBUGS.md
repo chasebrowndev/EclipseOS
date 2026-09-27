@@ -28,8 +28,8 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
 - **A shipped bind must name a binary in `eclipseos-meta`'s dependency
   closure** (was HW-04). `default_binds()` spawns `foot` (Super+Q,
   Super+Return), `eclipse-launcher` (Super+E, Super+R) and `eclipse-center`
-  (Super+N). Nothing enforces the rule yet — a test that walks
-  `default_binds()` against the package list would.
+  (Super+N). `default_bind_spawns_name_shipped_binaries` enforces it against
+  `dist/pkg/eclipseos/PKGBUILD`.
 - **User units are enabled by `abyss-session.target.wants/` symlinks the
   packages ship** (was HW-02), not by a user-preset, which only takes effect
   on `systemctl --user preset-all`.

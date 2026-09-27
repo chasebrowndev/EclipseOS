@@ -30,7 +30,6 @@ dependencies = [
  "regex",
  "serde_json",
  "smithay",
- "thiserror 2.0.20",
  "tracing",
  "tracing-journald",
  "tracing-subscriber",
@@ -2007,6 +2006,7 @@ dependencies = [
  "freedesktop-icons",
  "iced",
  "iced_layershell",
+ "image",
  "libc",
  "serde_json",
 ]

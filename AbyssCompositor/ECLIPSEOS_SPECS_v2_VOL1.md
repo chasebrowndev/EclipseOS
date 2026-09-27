@@ -2292,8 +2292,14 @@ Explicit sync is mandatory; there is no implicit-sync fallback path.
 ```
 1. Parse args, init logging (tracing → journald, env-filtered).
 2. Acquire session via libseat. Fail → exit with diagnostic.
-3. Load + validate config (COMP-13). Invalid → exit at startup
-   (unlike hot-reload, where the last good config is kept).
+3. Load + validate config (COMP-13). ~~Invalid → exit at startup
+   (unlike hot-reload, where the last good config is kept).~~
+   *(amended ADR 0064, 2026-09-25)* Invalid → drop the rejected nodes
+   (defaults apply), start, and show the errors in-session; `policy.kdl`
+   errors, policy-owned keys misplaced in `abyss.kdl` and `render-device`
+   still refuse to start. A refused `xwayland` setting starts with Xwayland
+   off; a refused `idle` lock setting starts with auto-lock off and says so
+   first.
 4. Enumerate DRM devices (udev), rank, select (§4), open, set master.
 5. Init renderer on the selected device (COMP-02).
 6. Enumerate connectors, restore saved output layout (§7), set modes.
@@ -3009,6 +3015,16 @@ libinput event → session filter (paused during VT switch)
   and hold pass through to clients over `zwp_pointer_gestures`. Fails closed:
   under the session lock no gesture reaches a client or runs an action; an
   active region selector claims every swipe and drops pinch and hold.
+  *(amended C-12, 2026-09-24)* A touchpad **drag** is bindable too:
+  `gesture "drag" 2|3|4 "<modifiers>" { move-window; }`, default
+  `gesture "drag" 2 "Super" { move-window; }`, at least one modifier
+  required, `{ none; }` to switch a finger count off. With exactly those
+  modifiers held when the gesture begins, over a draggable window, the whole
+  gesture moves that window (the Radiant tile drag, or a floating move) and
+  none of it reaches the client; otherwise it is the client's whole. Two
+  fingers are taken from finger scroll, three and four from swipe. A finger
+  count cannot be both swiped and dragged; the config refuses the second.
+  The session lock blocks and cancels it (ADR 0059).
 - *(added C-03, 2026-09-23)* Touchscreen and tablet tools map absolute
   coordinates onto the output under the pointer, else the focused output,
   corrected for overscan (COMP-03 §1.1). Touch is delivered as `wl_touch`,
@@ -3245,13 +3261,17 @@ Layout is a trait; two implementations plus floating in v1.
   **priority** is the window's weight, 1..9, raised and lowered by
   `priority-up` / `priority-down` (default Super+Shift+Up/Down); 1,1,2 gives
   1/4, 1/4, 2/4. Dragging a tiled window keeps its tile reserved and drops
-  it by position: each other tile is cut by its diagonals into four sides
-  (split that tile on that side) and a centre third (swap); a band along
-  each edge of the tiling area adds a full-height column or full-width row.
-  Dropping on its own tile or outside the area puts it back. A floating
-  window tiles on drop only with Super held. While dragging, the
-  compositor draws the tile outlines, edge bands and a ghost of the landing
-  rect (`drop-guides`, `drop-guide-color`, `drop-edge-band`). ADR 0058.
+  it by the dragged window's position: the landing spot is whichever
+  candidate drop (a side of another tile, which splits that tile on that
+  side; another tile's centre, which swaps the two; an edge of the tiling
+  area, which adds a full-height column or full-width row; or back home)
+  has its result rect centred nearest the dragged window's centre, with
+  hysteresis so the target does not flicker. An edge is aimed at by
+  overhanging it, through a strip `drop-edge-band` wide. With its centre off
+  the output the window goes back home. A floating window tiles on drop only
+  with Super held. While dragging, the compositor draws the tile outlines,
+  edge strips and a ghost of the landing rect, and the drop is exactly that
+  ghost (`drop-guides`, `drop-guide-color`, `drop-edge-band`). ADR 0058.
 - **master**: one master area plus a stack; master count and ratio
   adjustable.
 - **floating layer** above the tiled layer, per-window togglable.
@@ -4951,8 +4971,20 @@ misc      { scripted-input #false }  // §2.2
 
 - **Validation is total.** Unknown keys are errors, not warnings — a typo
   that silently does nothing is worse than a refusal.
-- **Startup**: invalid config → refuse to start with a precise
-  `file:line:col` message and the offending token.
+- **Startup**: ~~invalid config → refuse to start with a precise
+  `file:line:col` message and the offending token.~~ *(amended ADR 0064,
+  2026-09-25)* invalid config → each rejected node is dropped and its setting
+  keeps its default; Abyss starts, and each error (`file:line:col` and the
+  offending token) goes to journald and to the `config-error` IPC event,
+  which `eclipse-services` shows as an ordinary client-drawn notification
+  (not trusted UI). Still a refusal to start: any error in `policy.kdl`, a
+  policy-owned key in `abyss.kdl`, and `render-device` (ADR 0033). Two
+  refusals start in a safe state rather than the default, and the notice leads
+  with them: any refusal touching `xwayland` (a bad value, an unknown child, or
+  an unknown top-level node within edit distance 2 of `xwayland`) starts with
+  **Xwayland off**; a refused `idle` lock setting (likewise including a
+  misspelt key or an `idle`-like node) starts with **auto-lock off**, the
+  built-in default (owner decision, 2026-09-25).
 - **Hot reload** (inotify, debounced 100 ms): invalid config → keep the
   last good config, surface the error in trusted UI and journald. Never
   half-apply.
@@ -4988,7 +5020,13 @@ appearing in `abyss.kdl` is refused at parse time with an error naming
 `policy.kdl` — preserving §1.2's totality and COMP-05 §4's rule that a rule is
 refused whole and never applies in part.
 
-**Both files behave identically on failure**, per §1.2. Keeping the last good
+~~**Both files behave identically on failure**, per §1.2.~~ *(amended ADR 0064,
+2026-09-25)* **On hot reload both files behave identically**, per §1.2: the
+last good config stays live. **At startup they differ:** `abyss.kdl` drops its
+rejected nodes and starts (except a misplaced policy-owned key or
+`render-device`, which refuse; `xwayland` fails closed to off), while any error
+in `policy.kdl` refuses to start.
+Keeping the last good
 `policy.kdl` across a failed reload *is* the fail-closed behaviour: it never
 widens permissions.
 
@@ -7235,6 +7273,7 @@ against source before it was written. Nothing was renumbered.
 | C-09 | C-00 §1.4; COMP-13 §1.1; F-04 §1 | Snapshot path uses the `eclipse/` runtime namespace (matches COMP-01 §7 and the code). Agent-attention is SUPER+space, reserved, as the parser enforces. F-04 clarified as the performance reference, distinct from the D-03 install target. Conflicts with no code to decide them are listed below | yes |
 | C-10 | COMP-05 §3.1 | *(2026-09-24, owner ruling)* **radiant** added as the default layout: weighted n-ary tree, per-window priority, drag-to-tile drop zones with guides (ADR 0058, supersedes the binary tree of ADR 0021, amends ADR 0057). `dwindle` kept as Dwindle Classic, `master` unchanged; drop zones and priority are radiant-only | yes |
 | C-11 | COMP-02 §4, §9; COMP-13 §1.1 | *(2026-09-25)* Border glow added: `decoration.glow { enabled; active; inactive; strength }`, the shadow shader in the border colour, outside-only, between shadow and border. Shadow row corrected from "nine-slice texture" to the SDF shader it is | yes |
+| C-12 | COMP-04 §2 | *(2026-09-24, owner ruling)* Bindable gestures gain `gesture "drag"`: modifier + 2/3/4-finger touchpad drag moves the window under the pointer, default Super + two fingers; two fingers claimed from finger scroll at its first event, without the modifiers scrolling is untouched; a finger count is swiped or dragged, not both (ADR 0059) | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing
