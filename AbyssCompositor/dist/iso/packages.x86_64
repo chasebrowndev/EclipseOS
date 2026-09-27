@@ -107,7 +107,11 @@ xdg-user-dirs
 xdg-utils
 noto-fonts
 noto-fonts-emoji
+noto-fonts-cjk
 ttf-jetbrains-mono-nerd
 
 ## EclipseOS itself (D-01 §1) — pulls abyss, desktop and policyd
 eclipseos-meta
+
+## The graphical installer (D-07); live medium only, not in eclipseos-packages.txt
+eclipseos-setup

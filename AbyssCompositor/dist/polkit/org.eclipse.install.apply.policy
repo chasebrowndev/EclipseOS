@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!--
+  D-07 §6. The install action of eclipse-setup-helper: disk, identity, locale,
+  timezone, the install itself. Fail-closed everywhere it is not explicitly
+  allowed: all three defaults are "no". The only rule that allows it lives in
+  the ISO's airootfs and requires an active, local liveuser session. The helper
+  independently refuses to run without /run/archiso.
+
+  Authority-bearing: reviewed line by line, like the code it gates (D-07 §7).
+-->
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>EclipseOS</vendor>
+  <vendor_url>https://github.com/chasebrowndev/EclipseOS</vendor_url>
+
+  <action id="org.eclipse.install.apply">
+    <description>Install EclipseOS to a disk</description>
+    <message>Authentication is required to erase a disk and install EclipseOS</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>no</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/eclipse-setup-helper</annotate>
+  </action>
+</policyconfig>

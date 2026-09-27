@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Live medium branding: the boot banner reads PRETTY_NAME and ANSI_COLOR (orange).
+NAME="EclipseOS"
+PRETTY_NAME="EclipseOS"
+ID=arch
+BUILD_ID=rolling
+ANSI_COLOR="38;2;255;140;0"
+HOME_URL="https://archlinux.org/"

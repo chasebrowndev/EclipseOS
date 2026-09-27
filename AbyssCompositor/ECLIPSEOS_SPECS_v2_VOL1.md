@@ -64,7 +64,7 @@ priority.
 | COMP-14 | Performance targets & benchmarking | **DONE** | F-04 |
 | COMP-15 | Testing, fuzzing, client compat matrix | **DONE** | C-00 |
 | COMP-16 | Milestones & sequencing | **DONE** | C-00 |
-| COMP-17 | Desktop profiles: WM and DE interaction modes | Draft v0.1 *(amended C-08, 2026-09-23)* | C-00, COMP-13 |
+| COMP-17 | Desktop profiles: WM and DE interaction modes, setup profiles, component slots | Draft v0.2 *(amended DA-01, 2026-09-24)* | C-00, COMP-13 |
 | COMP-18 | Annotation overlays: the untrusted compositor-drawn text pass | Draft v0.2 (ADR 0040/0041) *(amended C-08, 2026-09-23)* | C-00, COMP-10, COMP-13 |
 
 ## Tier 2 — Security & Policy (`policyd`)
@@ -137,7 +137,7 @@ than silently restating it.* | | |
 | D-04 | Update strategy: rolling vs snapshots, atomic updates, rollback | planned | D-02 |
 | D-05 | Default userland: bar, launcher, terminal (`cataclysm`, P-04), portal, notifications, **settings GUI** | planned; **bar pulled forward into Phase 1** (B-08). *(amended C-06, 2026-09-23)* Native Rust/iced (ADR 0038), one crate per swappable component (ADR 0052): bar `hyperion`, `eclipse-toasts`, `eclipse-center`, `eclipse-launcher`, `eclipse-settings`, `eclipse-policy-viewer`, `eclipse-secret-prompt` (ADR 0053) | C-00, P-04, COMP-17 |
 | D-06 | Hardware support matrix, GPU drivers, firmware | planned | F-04 |
-| D-07 | First-run experience & agent onboarding | planned | D-03 |
+| D-07 | First-run experience & agent onboarding | written, `docs/design/D-07-first-run.md` *(added DA-04, 2026-09-24)* | D-03, COMP-17 |
 | D-08 | Telemetry & crash reporting (opt-in; privacy stance) | planned | F-02 |
 
 ## Tier 7 — Cross-cutting
@@ -4288,6 +4288,17 @@ Rules:
   wording must say this plainly.
 - Setup is mandatory at first run; a skipped secret means prompts render a
   visible warning that anti-spoofing is unconfigured.
+- *(amended DA-03, 2026-09-24)* The phrase is entered on a **compositor-drawn**
+  surface, never in a client. While no phrase is set, `agent-attention`
+  (SUPER+space, §3.9) opens phrase entry first, then continues to its normal
+  target, which is delayed, never replaced. That first entry cannot show a phrase,
+  so it states in fixed text that it only appears after the chord. The phrase
+  is set on the **installed** system at first login, never during D-07's
+  live-medium install: the live medium is throwaway and must not be the origin
+  of anything the installed compositor trusts. The installer only explains the
+  phrase. It cannot summon the surface, and afterwards a settings client learns
+  only that a phrase exists, from a `phrase {set: bool}` event on the COMP-13
+  human socket. The text never crosses any socket.
 - Changing it requires the human seat and a prompt.
 
 This is the same idea as bank sitekeys, and it fails the same way if the
@@ -4445,11 +4456,60 @@ something to edit — `policyd`, the enforcement table, and grants. The COMP-13
 security-relevant key that accrues in `abyss.kdl` before the split is one that
 has to be migrated after it.
 
+### 3.10 Destructive system action *(added DA-05, 2026-09-24)*
+
+A modal, compositor-drawn, human-seat-only confirmation for one class of
+request: a privileged system service is about to do something irreversible to
+the machine. Its first and so far only user is the installer's whole-disk erase
+(D-07 §6). It is an authority surface in the same trust class as §3.2 and
+extends ADR 0053's closed list by exactly this one entry.
+
+**Request channel.** A dedicated socket, `$XDG_RUNTIME_DIR/eclipse/trusted.sock`
+(0600, in the 0700 directory of COMP-13 §2), separate from the human control
+socket and outside the `gate.rs` table. It accepts a connection only when
+`SO_PEERCRED` says the peer's uid is **0**, so no ordinary client, and no
+process running as the session owner, can raise the prompt or answer it. One
+request per connection: `{action: "erase-disk", disk, model, size_bytes}`,
+reply `{decision: "allow" | "deny"}`. The compositor draws what the requester
+claims and does not verify it: fields are sanitised (ASCII, length-clamped, no
+markup or colour control) and shown as the requesting service's own words.
+
+**Fail closed.** Deny on disconnect, on timeout (§3.2 default), on an invalid
+field, and on a second request while one is pending. A requester that gets no
+answer, or cannot reach the socket, treats it as deny.
+
+**The requester authenticates the compositor.** The socket sits in a directory
+the session owner controls, so a same-uid process could unlink and rebind the
+path. Before it sends anything the requester checks that the peer's
+`SO_PEERCRED` pid is the compositor of the polkit subject's logind session and
+that `/proc/<pid>/exe` is the installed compositor binary. The live medium sets
+`kernel.yama.ptrace_scope = 1` so a same-uid client cannot trace it. **Stated
+limit:** a process that can ptrace or inject into the compositor as the session
+owner is outside this defence, as ADR 0028 already accepts for the control
+socket. What the surface stops is a same-uid process that merely connects,
+runs `pkexec`, or types a string.
+
+**The answer comes from the human seat only.** The compositor takes the
+keyboard for the prompt's lifetime (focus cleared, no key reaches a client) and
+drops pointer, touch and **injected** input aimed at it. Default focus is Deny;
+Escape is Deny; the prompt uses the §3.11 modal rules, so Enter never
+activates the granting Erase button: it takes Tab then Space, and a reflexive
+Enter cannot erase a disk. No socket, protocol or
+injection path can produce an answer.
+
+**Fixed text, no theming.** The card names the action ("Erase this disk"),
+model, size and by-id name, says it is irreversible, and carries the §2
+personal phrase. On the live medium no phrase exists (DA-03), so it shows the
+fixed "anti-spoofing unconfigured" warning form instead, and the prompt states
+that it is drawn by the compositor and appears only when the system asks to
+erase a disk. It is drawn above every client, front-most with the
+other prompts (E-03), is not captured (COMP-02), and does not interfere with the
+override chord (§3.3).
+
 ### 3.11 Command approval *(added E-02, 2026-09-26)*
 
 Shown when a taskbar command widget (ADR 0065) is new or altered and has not
-been approved (ADR 0067). §3.10 is left to the pending-decision queue that
-code comments already cite. Present only while an installed add-on enables
+been approved (ADR 0067). Present only while an installed add-on enables
 the `taskbar-widgets` hook (ADR 0066).
 
 **No client requests it.** The compositor decides: at config apply, a command
@@ -6763,9 +6823,10 @@ carry `app_trust=untrusted` regardless of the browser's class.
 
 <!-- ===== FILE: COMP-17_DESKTOP_PROFILES.md ===== -->
 
-# COMP-17 — Desktop Profiles (Draft v0.1)
+# COMP-17 — Desktop Profiles (Draft v0.2)
 
-*Added by Appendix B, B-03, 2026-09-10.*
+*Added by Appendix B, B-03, 2026-09-10. v0.2: setup profiles and component
+slots added by Appendix D, DA-01/DA-02, 2026-09-24.*
 
 Depends on: C-00, COMP-13. Consumed by: D-05, D-07.
 
@@ -6773,10 +6834,12 @@ Depends on: C-00, COMP-13. Consumed by: D-05, D-07.
 
 ## 1. Model
 
-Abyss supports two **interaction modes**, selected by configuration and
+Abyss supports three **interaction modes** *(amended ADR 0062, 2026-09-25)*, selected by configuration and
 switchable at runtime without a restart:
 
 - **WM mode** — tiling, keyboard-driven. What abyss is today.
+- **Hybrid mode** — tiling plus a taskbar with window chips, tray and clock.
+  What the shipped session is today.
 - **DE mode** — desktop metaphor: taskbar, desktop icons, pointer-first
   navigation.
 
@@ -6794,7 +6857,7 @@ identical in both modes.
 ## 2. The `mode` key
 
 ```kdl
-mode "wm"     // wm | de
+mode "hybrid"     // wm | hybrid | de
 ```
 
 `mode` selects **defaults that explicit configuration overrides**. It does not
@@ -6803,11 +6866,93 @@ rounding. A toggle that discards explicit configuration is one nobody touches
 twice, and it would violate CHARTER §4's promise that configuration files
 remain the source of truth.
 
-What the mode selects: the autostart set, default keybinds, whether the panel
-and desktop layers launch, and decoration defaults.
+What the mode selects: default keybinds, whether the desktop layer launches,
+and decoration defaults. *(amended DA-02, 2026-09-24)* The autostart set, which
+this sentence also listed, moved to `components` (§2.2): which bar, launcher
+and notifier run is a per-slot choice, not a consequence of the mode. `mode`
+still decides whether a configured panel is *shown*.
 
 Mode changes apply on hot reload (COMP-13 §1.2); the session changes shape
 without a restart.
+
+### 2.1 Setup profiles *(added DA-01, 2026-09-24)*
+
+A **setup profile** is a named bundle of defaults, one for every choice D-07's
+graphical installer asks (first boot is booting the ISO): `mode`, every component slot (§2.2), the application set,
+and the agent stack. Four exist:
+
+- **Minimal**: nothing optional chosen. For the user who configures everything.
+- **Standard**: the native EclipseOS desktop. Applications are asked, not
+  assumed.
+- **Full**: Standard plus a working application set (browser, office, image
+  editor, file manager, media player).
+- **Agentic**: Standard plus the agent stack and agent workspaces.
+
+**Like the modes, these are defaults, not tiers.** Every value a profile picks
+is shown preselected and can be changed individually, in setup and at any
+time after. Picking Minimal does not lock anyone out of the native bar, and
+picking Agentic grants no agent anything (below).
+
+**A profile is a one-time seed, not a runtime layer.** It is chosen *inside*
+the live-medium session, in the same graphical setup that partitions the disk and
+installs the system (D-07 §4), so the choices are seen live before they are
+committed. It writes ordinary values into `abyss.kdl` through COMP-13 §1.4, and
+that file is copied to the installed system. After setup, nothing
+reads the profile. `setup.profile` records which one was chosen, for reference
+only. Choosing a different profile later means re-running setup
+(`eclipse-setup --reconfigure`), which starts from the current files. A live profile layer under explicit config would give
+every value three possible sources and make "why is this set" unanswerable
+from the file, against CHARTER §4.
+
+| Choice | Minimal | Standard | Full | Agentic |
+|---|---|---|---|---|
+| `mode` | `wm` | `hybrid` | `hybrid` | `hybrid` |
+| `components.bar` | `none` | `hyperion` | `hyperion` | `hyperion` |
+| `components.launcher` | `eclipse-launcher` | `eclipse-launcher` | `eclipse-launcher` | `eclipse-launcher` |
+| `components.notifications` | `none` | `eclipse-toasts` | `eclipse-toasts` | `eclipse-toasts` |
+| `components.control-center` | `none` | `eclipse-center` | `eclipse-center` | `eclipse-center` |
+| terminal | `foot` | `foot` | `foot` | `foot` (`cataclysm` once P-04 exists) |
+| browser, office, image editor, file manager, media player | none | asked, none preselected | `firefox`, `libreoffice-fresh`, `gimp`, `nautilus`, `mpv` | asked, none preselected |
+| agent stack | off | off | off | on (`agentd`, `brokerd`, egress proxy) |
+| policy starting point | locked down | locked down | locked down | locked down (default) or curated preset (opt-in) |
+
+Minimal keeps a launcher and a terminal because a session with neither cannot
+start anything. It is the smallest *usable* set, not the empty one.
+
+**The Agentic profile confers no authority.** It installs and enables
+software. The policy starting point is **locked down**, the shipped fail-closed
+`policy.kdl`, for every profile including Agentic. A **curated preset** is
+offered to Agentic users as an opt-in. It is applied only through the COMP-10
+§3.9 policy editor, on the installed system at first login, summoned by chord,
+where each rule is shown as a pending change and accepted or struck by the
+human. The setup program cannot write `policy.kdl` (COMP-13 §1.3), does not try,
+and does not carry it from the live medium to the target.
+
+Until COMP-16 milestones 11–25 deliver the agent stack, Agentic is offered
+marked *preview* and installs only what exists.
+
+### 2.2 Component slots *(added DA-01, 2026-09-24)*
+
+```kdl
+components {
+    bar "hyperion"              // hyperion | waybar | quickshell | none
+    launcher "eclipse-launcher"
+    notifications "eclipse-toasts"
+    control-center "eclipse-center"
+}
+```
+
+A slot is a replaceable piece of the desktop. Its candidates come from a
+root-owned catalog (D-07 §4.1), which maps each candidate id to its packages
+and to what starts it. `abyss-session` starts what `components` names. An id
+the catalog does not know is refused at parse time, naming the key (COMP-13
+§1.2). The slots are `abyss.kdl` keys like any other, so the settings GUI and
+`eclipse-ctl` reach them (COMP-13 §1.5), and a slot change applies on hot
+reload by stopping the old candidate and starting the new one.
+
+ADR 0038's "no Quickshell" is about the *default* userland and stands. Offering
+Quickshell or waybar as a non-default candidate is the modularity ADR 0052's
+"one crate per swappable component" was for.
 
 ## 3. Settings GUI
 
@@ -6854,6 +6999,12 @@ deferred under Z-01 is the rest of a native shell beyond the D-05 components.
   and without dropping any explicitly-set value.
 - Confirm every setting reachable in one mode is reachable in the other.
 - Confirm the settings GUI cannot write any `policy.kdl` key by any path.
+- *(DA-01)* For each profile, accepting every default produces exactly the
+  §2.1 row in `abyss.kdl`, and nothing reads `setup.profile` afterwards.
+- *(DA-01)* Change `components.bar` and hot-reload: the old bar exits and the new
+  one starts, with no restart. An unknown candidate id is refused.
+- *(DA-01)* Choosing Agentic leaves `policy.kdl` byte-identical until the
+  human commits a change in the policy editor.
 
 ## 6. Open Decisions
 
@@ -6863,6 +7014,10 @@ deferred under Z-01 is the rest of a native shell beyond the D-05 components.
    no Quickshell.
 2. Whether desktop icons are in v1 scope. They are the largest single piece of
    DE mode and the least security-relevant.
+3. *(DA-01)* Full's application list beyond the five §2.1 slot defaults, and
+   which alternative candidates the catalog admits (D-07 §11).
+4. *(DA-01)* The curated Agentic preset's contents. It cannot be written before
+   S-01's grant set exists, so until then the opt-in is shown disabled.
 
 ---
 
@@ -7145,6 +7300,38 @@ against source before it was written. Nothing was renumbered.
 
 ---
 
+# Appendix D — amendment record, 2026-09-24
+
+**Applied inline to this volume on 2026-09-24.** Source: an owner ruling of
+2026-09-24 (ADR 0060). Row IDs carry a `DA-` prefix so they cannot be read as
+Tier 6's `D-0n` documents.
+
+| ID | Target | Change | Applied |
+|---|---|---|---|
+| DA-01 | COMP-17 §2.1, §2.2, §5, §6; planning index | Four setup profiles (Minimal, Standard, Full, Agentic), as a one-time seed chosen in the ISO's graphical installer, never a runtime layer. `components {}` slots with a root-owned candidate catalog. Agentic confers no authority: locked-down policy by default, curated preset opt-in, applied only through the COMP-10 §3.9 policy editor. COMP-17 to Draft v0.2 | yes |
+| DA-02 | COMP-17 §2 | The autostart set moved from `mode` to `components`. `mode` keeps keybinds, decoration defaults and whether a configured panel shows | yes |
+| DA-03 | COMP-10 §2 | Phrase entry is compositor-drawn. While unset, `agent-attention` opens it. Set on the installed system at first login, not on the live medium. Setup learns only `phrase {set}` | yes |
+| DA-04 | Planning index D-07 | D-07 written as `docs/design/D-07-first-run.md`: first boot is the ISO, whose live session runs a graphical installer covering language, network, disk, identity, profile, mode, components, apps, appearance, displays and agents, then installs. Also amends D-03 §4, §5 and D-05 §7, §8 | yes |
+| DA-05 | COMP-10 §3.10; D-07 §6, §11.7 | Adds the compositor-drawn destructive-system-action confirmation and its request channel: a root-only socket in the session runtime directory, requester-side compositor authentication, human-seat-only answer with Deny as default. Extends the ADR 0053 closed list by this one surface. The compositor-drawn polkit authentication agent remains owed | yes |
+
+## Open decisions this appendix leaves standing
+
+1. **Full's application list** and **catalog governance**: which alternative
+   candidates ship, and from which repositories (COMP-17 §6.3, D-07 §11.4–5).
+2. **The curated Agentic preset's contents**, which wait on S-01 (COMP-17 §6.4).
+3. **The `phrase` event** is named here but not yet in COMP-13 §2's event table.
+   It lands there with milestone 15, which is the first code that can emit it.
+4. **Offline install and disk layouts.** Whether the floor installs without a
+   network today, and layouts beyond whole-disk erase (D-07 §11.1, §11.3).
+5. **Two trusted-UI surfaces owed to COMP-10** for D-07 §6: a compositor-drawn
+   "destructive system action" confirmation (the disk wipe) and a
+   compositor-drawn polkit authentication agent. Until they exist the TTY
+   fallback installer is the only wipe path.
+6. **Agent sandboxes and the system bus.** D-07 §6's helper assumes agents cannot
+   reach it. S-03 must state that; until it does, it is an assumption.
+
+---
+
 # Appendix E — amendment record, 2026-09-26
 
 **Applied inline to this volume on 2026-09-26**, from owner rulings of the
@@ -7153,9 +7340,8 @@ same day. Appendix D is reserved for the D-07 batch.
 | ID | Target | Change | Applied |
 |---|---|---|---|
 | E-01 | COMP-18 §3 | Annotation methods, binds and region select are add-on hooks (ADR 0066), off unless an installed manifest names them. A manifest never grants capture | yes |
-| E-02 | COMP-10 §3.11 | New surface: command approval for taskbar command widgets (ADR 0067). Compositor-initiated; no client may request it. §3.10 left to the pending-decision queue | yes |
-
----
+| E-02 | COMP-10 §3.11 | New surface: command approval for taskbar command widgets (ADR 0067). Compositor-initiated; no client may request it | yes |
+| E-03 | COMP-10 §3.10 | On merging with D-07 (DA-05), the destructive-action prompt runs on §3.11's modal primitive: the granting Erase button needs Tab then Space (Enter never grants), input is ignored for the arming delay, and it is drawn front-most with the other prompts, above the §3.6 indicator. Owner review pending on the indicator ordering | yes |
 
 ---
 

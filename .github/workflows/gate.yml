@@ -292,7 +292,7 @@ jobs:
           head="${{ github.event.pull_request.head.sha }}"
           changed=$(git diff --name-only "$base" "$head")
           tcb=$(echo "$changed" | grep -E \
-            '^AbyssCompositor/(crates/(policyd|policy-eval|sandbox|brokerd)/|crates/abyss/src/(policy|trusted_ui|audit)/|crates/abyss/src/render/capture\.rs$)' \
+            '^AbyssCompositor/(crates/(policyd|policy-eval|sandbox|brokerd|eclipse-setup-helper)/|dist/polkit/|crates/abyss/src/(policy|trusted_ui|audit)/|crates/abyss/src/render/capture\.rs$)' \
             || true)
           if [ -n "$tcb" ]; then
             echo "::warning title=TCB path touched::Line-by-line owner review required (F-07 §4)"

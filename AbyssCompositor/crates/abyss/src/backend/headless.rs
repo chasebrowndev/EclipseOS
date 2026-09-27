@@ -311,6 +311,7 @@ fn boot(
     let handle = event_loop.handle();
     crate::input::idle::start(&mut state, &handle);
     crate::ipc::start(&mut state, &handle);
+    crate::trusted_ui::socket::start(&mut state, &handle);
     crate::config::watch::start(&mut state, &handle);
     crate::addons::start(&mut state, &handle);
     // Registered ahead of the wayland sources on purpose: calloop dispatches in
@@ -382,6 +383,7 @@ fn boot(
         })
         .context("event loop")?;
     crate::ipc::cleanup(&state);
+    crate::trusted_ui::socket::cleanup(&state);
     if session {
         crate::session::teardown();
     }

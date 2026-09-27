@@ -444,7 +444,14 @@ fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
 /// The windows the strip speaks for, in strip order: this output's, on the
 /// workspace the human is standing on. What [`crate::layout::solve`] is
 /// given as its chips, and what [`crate::motion::Bar`] retargets against.
+///
+/// Empty under `wm` (ADR 0062) — the bar is a workspace indicator there, and
+/// every consumer of the strip (the solver, the chip animation, popup
+/// anchoring) sees the same answer because they all come through here.
 pub(crate) fn strip_windows<'a>(app: &'a crate::app::App, on: &crate::app::Bar) -> Vec<&'a Window> {
+    if !app.mode.shows_chips() {
+        return Vec::new();
+    }
     let snapshot = &app.snapshot;
     let active = active_workspace(snapshot, on.output_id);
     windows_on(snapshot, on.output_id)
@@ -1303,6 +1310,37 @@ mod tests {
             widget_span(&app, &on, &crate::widgets::WidgetId::Clock).expect("the clock is on the bar");
         assert!((clock.1 - (on.width - bar::EDGE)).abs() < 0.01);
         assert!(clock.0 > chip_span(&app, &on, 3).expect("chip 3 is drawn").1);
+    }
+
+    /// Under `wm` the strip is empty and nothing anchors to a chip; the
+    /// pager is untouched. Hybrid and de draw the chips as before.
+    #[test]
+    fn wm_mode_drops_the_chips_and_keeps_the_pager() {
+        use crate::model::Mode;
+        let mut app = crate::app::App::new();
+        let mut on = crate::app::Bar::new(
+            iced::window::Id::unique(),
+            "DP-1".into(),
+            0,
+            eclipse_ui::motion::Motion::DEFAULT,
+        );
+        on.width = 1830.0;
+        app.snapshot = Snapshot {
+            workspaces: vec![ws(1, 0, true, 1)],
+            windows: vec![win(1, 0, 1, false)],
+            ..Snapshot::default()
+        };
+        for mode in [Mode::Hybrid, Mode::De] {
+            app.mode = mode;
+            crate::app::relayout(&app, &mut on, std::time::Instant::now());
+            assert_eq!(strip_windows(&app, &on).len(), 1);
+            assert!(chip_span(&app, &on, 1).is_some());
+        }
+        app.mode = Mode::Wm;
+        crate::app::relayout(&app, &mut on, std::time::Instant::now());
+        assert!(strip_windows(&app, &on).is_empty());
+        assert_eq!(chip_span(&app, &on, 1), None);
+        assert_eq!(live_workspaces(&app.snapshot, 0).count(), 1);
     }
 
     /// A tray item's menu hangs from the item, never from wherever the

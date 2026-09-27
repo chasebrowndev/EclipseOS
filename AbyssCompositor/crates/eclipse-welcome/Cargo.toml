@@ -1,0 +1,26 @@
+[package]
+name = "eclipse-welcome"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The EclipseOS welcome screen: the eclipse animation, greetings in ten languages, press Space."
+# An application and an embeddable step, not a published crate.
+publish = false
+
+[lib]
+name = "eclipse_welcome"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eclipse-welcome"
+path = "src/main.rs"
+
+[dependencies]
+# `canvas` + `image` are the additions over the sibling panes: the whole screen
+# is one canvas, and the logo is a PNG drawn into it. `wayland` and
+# `thread-pool` are load-bearing as in every other DE crate (ADR 0039).
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "canvas", "image"] }
+# Only for `--shot`: encoding the window screenshot iced hands back.
+image = { version = "0.25", default-features = false, features = ["png"] }

@@ -630,6 +630,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
 
     crate::input::idle::start(&mut state, &handle);
     crate::ipc::start(&mut state, &handle);
+    crate::trusted_ui::socket::start(&mut state, &handle);
     crate::config::watch::start(&mut state, &handle);
     crate::addons::start(&mut state, &handle);
     crate::xwayland::start(&mut state);
@@ -937,6 +938,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         let _ = state.display_handle.flush_clients();
     })?;
     crate::ipc::cleanup(&state);
+    crate::trusted_ui::socket::cleanup(&state);
     if session_handoff {
         crate::session::teardown();
     }

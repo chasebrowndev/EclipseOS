@@ -9,6 +9,7 @@ linux
 linux-firmware
 linux-firmware-amdgpu
 amd-ucode
+zram-generator
 mkinitcpio
 base
 # Limine rather than systemd-boot: a Framework 13 refused systemd-boot's stub

@@ -276,7 +276,34 @@ exception of whatever background-layer support abyss has to provide.
 
 ---
 
-## The policy editor is milestone 15, not DP-7
+## DP-7 — Component slots and the setup floor *(COMP-17 §2.2, ADR 0060)*
+
+`components { bar …; launcher …; notifications …; control-center … }` in the
+schema, validated against the root-owned candidate catalog
+(`/usr/share/eclipse/setup/catalog.kdl`). `abyss-session` starts what it names
+and swaps a slot on hot reload, replacing the fixed `.wants/` links D-05 §5
+describes. `dist/` gains `eclipseos-base`, the D-07 §2.2 setup floor, which the
+installer pacstraps instead of `eclipseos-meta`. Backend agent for the schema and
+session start; `dist/` is the parent's.
+
+**Gate:** change `components.bar` from `hyperion` to `none` and back with
+`eclipse-ctl`. The bar leaves and returns without a restart.
+
+## DP-8 — Graphical installer and setup *(D-07)*
+
+`eclipse-setup` with `--install` and `--reconfigure` (frontend agent: every
+view), `eclipse-setup-helper` + polkit actions `org.eclipse.install.apply`
+(live medium only) and `org.eclipse.setup.apply` (parent: a root binary is
+reviewed line by line; add to `tcb-review`), `eclipse-ctl setup reset`,
+`setup.profile`/`setup.complete`/`setup.pending-preset` keys. `eclipse-welcome` (native iced canvas port of the welcome animation; step 0, embeddable as a lib). ISO work in
+`dist/iso/` (parent): `liveuser`, greetd autologin, live-only polkit rule, tty2
+root shell, on-medium local repo. The phrase and policy preset are handled on
+the installed system after milestone 15 (D-07 §4.5).
+
+**Gate:** D-07 §10, and the B-02 companion gate: booting the ISO reaches an
+installed, working configuration for each profile without editing a file.
+
+## The policy editor is milestone 15, not a DP item
 
 The separate app for agent config and policy is the right idea, and it should
 **not** be built as part of this series.
@@ -326,7 +353,10 @@ on milestones 10, 11, 15 and 16.
 5. **DP-2's write API, then DP-5, during the fourteen days.** The KDL
    round-trip spike happens before DP-5 is scheduled at all.
 6. **DP-6 after.**
-7. **Policy editor** — with milestone 15.
+7. **DP-7, then DP-8.** DP-8 needs DP-3's `mode` and DP-7's slots to have
+   anything to set.
+8. **Policy editor** — with milestone 15. It also unblocks DP-8's phrase and
+   preset steps.
 
 ## One caution
 

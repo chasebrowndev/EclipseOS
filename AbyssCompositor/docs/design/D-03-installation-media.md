@@ -58,9 +58,10 @@ Framework 13 AMD choices and why:
 
 | Package | Why, and what it replaces |
 |---|---|
-| `amd-ucode` | The only microcode image on the medium. Intel's is not shipped, and the Limine entry adds it as a `module_path` ahead of the initramfs. |
+| `amd-ucode` | Installed when `/proc/cpuinfo` says AMD; `intel-ucode` when Intel; neither in a VM. The Limine entry adds it as a `module_path` ahead of the initramfs. Intel is **untested** until the second machine is run. |
 | `linux-firmware-amdgpu` | Split out of `linux-firmware` upstream; without it amdgpu does not come up on this generation. Named explicitly rather than relied on as a transitive pull. |
 | `vulkan-radeon` + `mesa` + `libva-mesa-driver` | The RADV path. `amdvlk` is not installed — two Vulkan ICDs on one system is a loader-ordering problem, not a choice worth offering. |
+| Detected GPUs (sysfs) | AMD as above; Intel adds `vulkan-intel` and `intel-media-driver`; NVIDIA uses the open-source nouveau/NVK stack (`vulkan-nouveau`), no proprietary or DKMS module. Intel and NVIDIA are detected and installed but **untested**. |
 | *(no DKMS anything)* | amdgpu is in-tree. There is no out-of-tree module, so there is no `dkms`, no headers package, and **no kernel-upgrade step that can fail after reboot**. This is the single biggest reason the target hardware is AMD; it is a property of the install, not a preference. |
 
 Beyond that: disk tooling the installer calls (`gptfdisk`, `dosfstools`,
@@ -68,6 +69,8 @@ Beyond that: disk tooling the installer calls (`gptfdisk`, `dosfstools`,
 (`networkmanager`, `bluez`, `upower`, `pipewire`/`wireplumber`, `polkit` —
 D-01 §1), the greeter set (`greetd`, `greetd-regreet`, `cage`, `foot`), fonts,
 and `eclipseos-meta`, which pulls `abyss`, the desktop and `policyd`.
+
+``noto-fonts-cjk` is on the live medium only (the wizard shows language names in their own script); the helper adds it to the target only for a ja/zh/ko locale.
 
 `archinstall` is on the medium too, as the guided alternative (§4).
 
@@ -131,6 +134,17 @@ run by hand from the live root shell. Flow:
    `amd_pstate=active` is on from first boot rather than discovered later.
 10. `passwd` for root and the new user, `umount -R /mnt`.
 
+*(amended DA-04, 2026-09-24)* **This script is the fallback installer, not the
+primary one.** The primary installer is `eclipse-setup --install`, a graphical
+program in the live session (D-07), which asks these questions and many more
+(language, network, profile, mode, components, applications, appearance,
+displays, agents) and drives the same steps through the D-07 §6 helper. The
+pacstrapped list becomes the D-07 §2.2 setup floor, `eclipseos-base`, installed
+from the baked on-medium `[eclipseos]` repository (already the case for the
+EclipseOS packages; their official-repo dependencies still need a mirror, see
+D-07 §2.2). Specified, not built:
+the script is what exists today, and the list is still `eclipseos-meta`.
+
 ### 4.1 Why this and not an `archinstall` JSON
 
 `archinstall` supports an unattended config file, which is the obvious answer
@@ -156,21 +170,37 @@ install time, to a user who might not be the one sitting at the machine. The
 absence of those lines is load-bearing; do not "fix" it when a device looks
 inaccessible.
 
-## 5. greetd is not enabled on the live medium
+## 5. greetd on the live medium
 
-The installed system enables `greetd` (step 8). The live medium does not, and
-no `/etc/greetd` overlay exists under `airootfs/`.
+*(rewritten with D-07 §2.1, 2026-09-24. Before this, the medium had only a root
+shell on tty1 and greetd was not enabled.)*
 
-The live ISO is an installer. Only `root` exists on it, `.zlogin` already
-drops into a root shell on tty1, and a greeter's job — pick a user, pick a
-session, hand off to logind — has no input to work with. Enabling it would
-replace a working root shell with a login prompt for an account set that has
-one member and a password that is empty by design.
+The medium boots to a session, not a prompt. `airootfs/` carries:
 
-The configuration is not missing, either: `eclipseos-meta` ships `/etc/greetd/*`
-and `/etc/eclipse/*`, so the moment `pacstrap` finishes, the target has the
-greeter config and the `systemctl enable greetd` in the same script turns it on.
-Duplicating those files into `airootfs/` would create a second copy that drifts.
+- **`liveuser`**, made at boot by `sysusers.d/liveuser.conf` (uid 1000, no
+  groups, no password, no sudoers or wheel entry; D-01 §5). `sysusers` rather
+  than a copy of `/etc/group`, which would replace the base file wholesale.
+- **`/etc/eclipse/greetd-live.toml`** and a `greetd.service.d/20-live.conf` drop-in pointing greetd at it: the shipped greetd config plus an
+  `initial_session` running `abyss-session` as `liveuser`. A different path from the
+  package's file, since pacstrap refuses to overwrite an overlay file at the same path: the live medium needs the
+  initial session and the installed system must not have it. `display-manager`
+  and `default.target` link greetd and `graphical.target`.
+- **`/etc/systemd/user/eclipse-setup-live.service`**, wanted by
+  `abyss-session.target` and conditioned on `/run/archiso`. It starts the
+  installer. It is the medium's own unit, not a key in any `abyss.kdl`.
+- **`/etc/polkit-1/rules.d/50-eclipse-live-install.rules`**, allowing
+  `org.eclipse.install.apply` for a local, active `liveuser` only.
+- **`kernel.yama.ptrace_scope = 1`**, so a same-uid client cannot trace the
+  compositor that draws the erase confirmation (D-07 §6).
+- **No sshd, no mDNS listener.** `sshd` is not enabled and its `PermitRootLogin`
+  drop-in is gone; nothing on the medium listens to the network.
+- **NetworkManager** owns networking (D-07 §4 step 3), with iwd as its wifi
+  backend so `iwctl` and the fallback script's saved-network carry-over work.
+
+The root shell moves to **tty2** and stays: root has an empty password, reachable
+only from the local console now that sshd is gone. A session that will not start
+on some hardware must not strand the user (D-07 §8), and `/root/install-eclipseos.sh`
+runs from there.
 
 ## 6. Build
 
@@ -186,7 +216,7 @@ run first — `mkarchiso` resolves `eclipseos-meta` out of the `file://` repo of
 
 ## 7. What this does not do
 
-No LUKS, no swap, no btrfs snapshots, no secure boot enrolment, no unattended
+No LUKS (top known gap, deferred to D-04), no swap partition (zram only), no btrfs snapshots, no secure boot enrolment, no unattended
 mode, no second target machine. Each is a real gap and each is deferred:
 disk encryption and rollback belong with D-04 (update strategy), which is also
 where "what happens when an upgrade breaks the session" is answered. D-03's job

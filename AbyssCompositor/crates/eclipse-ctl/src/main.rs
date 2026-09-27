@@ -52,13 +52,14 @@ eclipse-ctl — control the abyss compositor
                                       move it to INDEX (0-based)
   eclipse-ctl config widget rename OLD NEW
                                       rename it, rewriting custom:OLD ids
+  eclipse-ctl setup reset             clear setup.complete so eclipse-setup runs again
   eclipse-ctl call METHOD [JSON]      raw JSON-RPC, for anything not above
 
 Options:
   --json          print the raw result even for the table commands
   --file abyss|policy   which config file a config verb is about
   --changed       config list: only settings that differ from the default
-  --dry-run       config set/widget/migrate: say what would happen, write nothing
+  --dry-run       config set/widget/migrate, setup reset: say what would happen, write nothing
   --socket PATH
 ";
 
@@ -319,6 +320,17 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
                 other => return Err(format!("unknown config subcommand {other:?}")),
             }
         }
+        "setup" => match a(1) {
+            // The one key, through the one write path: eclipse-setup (D-07 §4)
+            // re-runs when `setup.complete` is false, and nothing else about
+            // the config changes, `setup.profile` included.
+            "reset" => (
+                "set_config_value".into(),
+                json!({"path": "setup.complete", "value": false, "dry_run": flags.dry_run}),
+                None,
+            ),
+            other => return Err(format!("unknown setup subcommand {other:?}; expected reset")),
+        },
         "focus" => ("focus_window".into(), json!({"handle": num(1)?}), None),
         "close" => ("close_window".into(), json!({"handle": num(1)?}), None),
         "float" => {
@@ -774,6 +786,38 @@ fn print_table(table: Table, result: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parsed(words: &[&str], flags: &Flags) -> Result<Parsed, String> {
+        let args: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
+        parse(&args, flags)
+    }
+
+    #[test]
+    fn setup_reset_writes_only_setup_complete_false() {
+        let (method, params, table) = parsed(&["setup", "reset"], &Flags::default()).unwrap();
+        assert_eq!(method, "set_config_value");
+        assert_eq!(
+            params,
+            json!({"path": "setup.complete", "value": false, "dry_run": false})
+        );
+        assert!(table.is_none());
+    }
+
+    #[test]
+    fn setup_reset_honours_dry_run() {
+        let flags = Flags {
+            dry_run: true,
+            ..Flags::default()
+        };
+        let (_, params, _) = parsed(&["setup", "reset"], &flags).unwrap();
+        assert_eq!(params["dry_run"], json!(true));
+    }
+
+    #[test]
+    fn setup_without_a_known_subcommand_is_refused() {
+        assert!(parsed(&["setup"], &Flags::default()).is_err());
+        assert!(parsed(&["setup", "wipe"], &Flags::default()).is_err());
+    }
 
     fn run(args: &[&str]) -> Result<Parsed, String> {
         let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();

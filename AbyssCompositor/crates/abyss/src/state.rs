@@ -177,7 +177,8 @@ pub struct AbyssState {
     /// A modal region selection, while one is running (COMP-18 §1.3). The
     /// compositor owns the interaction so an addon never grabs the seat.
     pub region_select: crate::render::select::RegionSelect,
-    /// The trusted prompt, while one is up (COMP-10). TCB.
+    /// The trusted prompt, while one is up or pending (COMP-10; the
+    /// destructive-action prompt, §3.10, runs on it too). TCB.
     pub trusted_ui: crate::trusted_ui::TrustedUi,
     /// A window being dragged onto the Radiant tree, while one is (COMP-05
     /// §3.1). Its drop guides are drawn from here.
