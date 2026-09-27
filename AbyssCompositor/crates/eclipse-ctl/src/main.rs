@@ -34,19 +34,31 @@ eclipse-ctl — control the abyss compositor
   eclipse-ctl output ID calibrate [commit|cancel]
                                       drive the on-screen overscan calibration
   eclipse-ctl reload                  re-read the config
+  eclipse-ctl addons                  installed add-ons and the hooks they turn on
   eclipse-ctl config list [--changed] every setting, its value and its file
   eclipse-ctl config describe PATH    one setting: type, range, default, doc
   eclipse-ctl config get PATH         one setting's value, bare
   eclipse-ctl config set PATH VALUE   write a setting (abyss.kdl only)
   eclipse-ctl config validate         check a config file without applying it
   eclipse-ctl config migrate          split a legacy abyss.kdl into two files
+  eclipse-ctl config widget list      custom taskbar widgets (bar { widget … })
+  eclipse-ctl config widget set NAME exec|stream ARGV0 [ARG...]
+  eclipse-ctl config widget set NAME source SOURCE [FORMAT]
+  eclipse-ctl config widget set NAME JSON
+                                      create or replace a widget; JSON is the
+                                      entry shape `config widget list --json` prints
+  eclipse-ctl config widget rm NAME   delete it, and its custom:NAME ids
+  eclipse-ctl config widget mv NAME INDEX
+                                      move it to INDEX (0-based)
+  eclipse-ctl config widget rename OLD NEW
+                                      rename it, rewriting custom:OLD ids
   eclipse-ctl call METHOD [JSON]      raw JSON-RPC, for anything not above
 
 Options:
   --json          print the raw result even for the table commands
   --file abyss|policy   which config file a config verb is about
   --changed       config list: only settings that differ from the default
-  --dry-run       config set/migrate: say what would happen, write nothing
+  --dry-run       config set/widget/migrate: say what would happen, write nothing
   --socket PATH
 ";
 
@@ -181,6 +193,8 @@ enum Table {
     ConfigKey,
     ConfigValue,
     ConfigCheck,
+    Widgets,
+    Addons,
 }
 
 type Parsed = (String, Value, Option<Table>);
@@ -204,6 +218,7 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
         "dump" => ("dump_state".into(), Value::Null, None),
         "agents" => ("get_agents".into(), Value::Null, None),
         "reload" => ("reload_config".into(), Value::Null, None),
+        "addons" => ("get_config".into(), json!({}), Some(Table::Addons)),
         "watch" => {
             let events: Vec<Value> = args[1..].iter().map(|s| Value::String(s.clone())).collect();
             let params = if events.is_empty() {
@@ -300,6 +315,7 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
                     }
                     ("validate_config".into(), params, Some(Table::ConfigCheck))
                 }
+                "widget" => widget(&args[2..], flags)?,
                 other => return Err(format!("unknown config subcommand {other:?}")),
             }
         }
@@ -345,6 +361,66 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
             (method.to_string(), params, None)
         }
         other => return Err(format!("unknown command {other:?}; try --help")),
+    })
+}
+
+/// `config widget …` → `get_config` or `set_config_collection` (ADR 0065).
+fn widget(args: &[String], flags: &Flags) -> Result<Parsed, String> {
+    let a = |i: usize| args.get(i).map(String::as_str).unwrap_or_default();
+    let name = |verb: &str| -> Result<String, String> {
+        match a(1) {
+            "" => Err(format!("config widget {verb} needs a widget name")),
+            n => Ok(n.to_string()),
+        }
+    };
+    let write = |op: &str, name: String, extra: Value| -> Parsed {
+        let mut p = json!({"collection": "widget", "op": op, "name": name, "dry_run": flags.dry_run});
+        if let (Value::Object(p), Value::Object(extra)) = (&mut p, extra) {
+            p.extend(extra);
+        }
+        ("set_config_collection".into(), p, None)
+    };
+    Ok(match a(0) {
+        "" | "list" => (
+            "get_config".into(),
+            json!({"file": "abyss"}),
+            Some(Table::Widgets),
+        ),
+        "set" => {
+            let name = name("set")?;
+            let rest = &args[2.min(args.len())..];
+            let entry = match rest.first().map(String::as_str) {
+                None => return Err("config widget set needs exec|stream|source … or a JSON entry".into()),
+                Some(kind @ ("exec" | "stream")) => {
+                    if rest.len() < 2 {
+                        return Err(format!("{kind} needs a command"));
+                    }
+                    json!({"kind": kind, "exec": rest[1..]})
+                }
+                Some("source") => match rest {
+                    [_, source] => json!({"kind": "source", "source": source}),
+                    [_, source, format] => json!({"kind": "source", "source": source, "format": format}),
+                    _ => return Err("source takes SOURCE [FORMAT]".into()),
+                },
+                Some(raw) => serde_json::from_str(raw).map_err(|e| format!("entry: {e}"))?,
+            };
+            write("upsert", name, json!({"entry": entry}))
+        }
+        "rm" | "remove" => write("remove", name("rm")?, json!({})),
+        "mv" | "move" => {
+            let index: u64 = a(2)
+                .parse()
+                .map_err(|_| format!("config widget mv needs an index, got {:?}", a(2)))?;
+            write("move", name("mv")?, json!({"index": index}))
+        }
+        "rename" => {
+            let new_name = a(2);
+            if new_name.is_empty() {
+                return Err("config widget rename needs OLD NEW".into());
+            }
+            write("rename", name("rename")?, json!({"new_name": new_name}))
+        }
+        other => return Err(format!("unknown config widget subcommand {other:?}")),
     })
 }
 
@@ -526,6 +602,43 @@ fn print_config_key(rows: &[Value]) {
     println!("  {}", s(r, "doc"));
 }
 
+/// `eclipse-ctl addons`: one line per add-on, then the hooks that are on
+/// (ADR 0066). A string so the format is testable without a socket.
+fn addons_text(result: &Value) -> String {
+    let join = |v: &Value| {
+        let names: Vec<&str> = v
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        if names.is_empty() {
+            "none".to_string()
+        } else {
+            names.join(",")
+        }
+    };
+    let mut out = String::new();
+    let empty = Vec::new();
+    let list = result["addons"].as_array().unwrap_or(&empty);
+    if list.is_empty() {
+        out.push_str("no add-ons installed\n");
+    }
+    for a in list {
+        let capture = if a["capture_requested"] == Value::Bool(true) {
+            "  capture: requested"
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "{:<16} {:<20} hooks: {}{capture}\n",
+            s(a, "id"),
+            s(a, "name"),
+            join(&a["hooks"])
+        ));
+    }
+    out.push_str(&format!("hooks on: {}\n", join(&result["hooks_on"])));
+    out
+}
+
 fn print_table(table: Table, result: &Value) {
     // The config verbs answer with an object, not a bare array.
     match table {
@@ -540,6 +653,28 @@ fn print_table(table: Table, result: &Value) {
                 Some(r) => println!("{}", scalar_str(r.get("value").unwrap_or(&Value::Null))),
                 None => eprintln!("no such setting"),
             }
+            return;
+        }
+        Table::Widgets => {
+            println!("{:<16} {:<7} {:<40} ICON", "NAME", "KIND", "WHAT");
+            for w in result["collections"]["widget"].as_array().unwrap_or(&Vec::new()) {
+                let what = match w["kind"].as_str() {
+                    Some("source") => format!("{} {}", s(w, "source"), s(w, "format")),
+                    Some("exec") => format!("{} every {}ms", scalar_str(&w["exec"]), s(w, "interval-ms")),
+                    _ => scalar_str(&w["exec"]),
+                };
+                println!(
+                    "{:<16} {:<7} {:<40} {}",
+                    s(w, "name"),
+                    s(w, "kind"),
+                    what,
+                    s(w, "icon")
+                );
+            }
+            return;
+        }
+        Table::Addons => {
+            print!("{}", addons_text(result));
             return;
         }
         Table::ConfigCheck => {
@@ -609,7 +744,12 @@ fn print_table(table: Table, result: &Value) {
                 );
             }
         }
-        Table::Config { .. } | Table::ConfigKey | Table::ConfigValue | Table::ConfigCheck => {
+        Table::Config { .. }
+        | Table::ConfigKey
+        | Table::ConfigValue
+        | Table::ConfigCheck
+        | Table::Widgets
+        | Table::Addons => {
             unreachable!("handled above")
         }
         Table::Windows => {
@@ -628,5 +768,78 @@ fn print_table(table: Table, result: &Value) {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(args: &[&str]) -> Result<Parsed, String> {
+        let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        parse(&args, &Flags::default())
+    }
+
+    #[test]
+    fn widget_verbs_build_collection_writes() {
+        let (m, p, _) = run(&["config", "widget", "set", "w", "exec", "curl", "-s"]).unwrap();
+        assert_eq!(m, "set_config_collection");
+        assert_eq!(
+            p,
+            json!({"collection": "widget", "op": "upsert", "name": "w", "dry_run": false,
+                   "entry": {"kind": "exec", "exec": ["curl", "-s"]}})
+        );
+        let (_, p, _) = run(&["config", "widget", "set", "c", "source", "usage.cpu", "{}%"]).unwrap();
+        assert_eq!(
+            p["entry"],
+            json!({"kind": "source", "source": "usage.cpu", "format": "{}%"})
+        );
+        let (_, p, _) = run(&[
+            "config",
+            "widget",
+            "set",
+            "c",
+            r#"{"kind":"stream","exec":["x"]}"#,
+        ])
+        .unwrap();
+        assert_eq!(p["entry"]["kind"], "stream");
+        let (_, p, _) = run(&["config", "widget", "rm", "c"]).unwrap();
+        assert_eq!(p["op"], "remove");
+        let (_, p, _) = run(&["config", "widget", "mv", "c", "2"]).unwrap();
+        assert_eq!((p["op"].clone(), p["index"].clone()), (json!("move"), json!(2)));
+        let (_, p, _) = run(&["config", "widget", "rename", "c", "d"]).unwrap();
+        assert_eq!(p["new_name"], "d");
+        let (m, _, t) = run(&["config", "widget", "list"]).unwrap();
+        assert_eq!(m, "get_config");
+        assert!(matches!(t, Some(Table::Widgets)));
+        assert!(run(&["config", "widget", "set", "c"]).is_err());
+        assert!(run(&["config", "widget", "mv", "c", "x"]).is_err());
+        assert!(run(&["config", "widget", "rename", "c"]).is_err());
+    }
+
+    #[test]
+    fn addons_lists_manifests_then_hooks() {
+        let (m, p, t) = run(&["addons"]).unwrap();
+        assert_eq!((m.as_str(), p), ("get_config", json!({})));
+        assert!(matches!(t, Some(Table::Addons)));
+        let reply = json!({
+            "keys": [],
+            "addons": [
+                {"id": "hyperion", "name": "Hyperion", "hooks": ["taskbar-widgets"], "capture_requested": false},
+                {"id": "oracle-eyes", "name": "Oracle Eyes",
+                 "hooks": ["annotations", "region-select"], "capture_requested": true},
+            ],
+            "hooks_on": ["annotations", "region-select", "taskbar-widgets"],
+        });
+        assert_eq!(
+            addons_text(&reply),
+            "hyperion         Hyperion             hooks: taskbar-widgets\n\
+             oracle-eyes      Oracle Eyes          hooks: annotations,region-select  capture: requested\n\
+             hooks on: annotations,region-select,taskbar-widgets\n"
+        );
+        assert_eq!(
+            addons_text(&json!({"keys": [], "addons": [], "hooks_on": []})),
+            "no add-ons installed\nhooks on: none\n"
+        );
     }
 }

@@ -172,6 +172,8 @@ pub struct AbyssState {
     /// A modal region selection, while one is running (COMP-18 §1.3). The
     /// compositor owns the interaction so an addon never grabs the seat.
     pub region_select: crate::render::select::RegionSelect,
+    /// The trusted prompt, while one is up (COMP-10). TCB.
+    pub trusted_ui: crate::trusted_ui::TrustedUi,
     /// A window being dragged onto the Radiant tree, while one is (COMP-05
     /// §3.1). Its drop guides are drawn from here.
     pub tile_drag: Option<crate::shell::TileDrag>,
@@ -297,6 +299,16 @@ pub struct AbyssState {
     /// new `config-error` subscriber, so a client that connects late hears
     /// what is true now rather than what was true at startup.
     pub config_error: Option<serde_json::Value>,
+    /// Installed add-ons and the hooks they turn on (ADR 0066). Empty until
+    /// `addons::start`; every hook is off by default.
+    pub addons: crate::addons::Addons,
+    /// A debounced re-read of the add-on directory is armed.
+    pub addons_pending: bool,
+    /// A debounced re-read after a widget catalog change is armed.
+    pub catalog_pending: bool,
+    /// Withheld command widgets, the prompt queue and the session's Not now
+    /// set (ADR 0067). Plain data; see `config::withhold`.
+    pub widget_approvals: crate::config::withhold::WidgetApprovals,
 }
 
 impl AbyssState {
@@ -498,6 +510,7 @@ impl AbyssState {
             borders: crate::render::BorderStore::default(),
             annotations: crate::render::annotation::AnnotationStore::default(),
             region_select: crate::render::select::RegionSelect::default(),
+            trusted_ui: crate::trusted_ui::TrustedUi::default(),
             tile_drag: None,
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
             config,
@@ -527,6 +540,10 @@ impl AbyssState {
             config_timer: None,
             config_written: std::collections::HashMap::new(),
             config_error,
+            addons: crate::addons::Addons::default(),
+            addons_pending: false,
+            catalog_pending: false,
+            widget_approvals: Default::default(),
         }
     }
 

@@ -1,5 +1,5 @@
 # 0053 — The status service gains actions; secrets go through their own prompt process
-Status: accepted
+Status: accepted; amended by 0066 (the pairing agent moves out of hyperion to `eclipse-pairing`)
 Date: 2026-09-21
 Deciders: chase (owner), Claude (advisory)
 

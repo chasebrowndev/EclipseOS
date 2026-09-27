@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Premade command widget — /usr/share/eclipse/widgets/load.kdl, shipped by
+// eclipseos-hyperion (ADR 0067). Approved by shipping: editing this block in
+// your own abyss.kdl makes it an altered premade and prompts before it runs.
+//
+// 1, 5 and 15 minute load averages. Click for top.
+bar {
+    widget "load" {
+        exec "cut" "--delimiter= " "--fields=1-3" "/proc/loadavg"
+        interval-ms "5s"
+        on-click "foot" "top"
+    }
+}

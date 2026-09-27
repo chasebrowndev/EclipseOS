@@ -1,0 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Add-on manifest (ADR 0066). Installed as /usr/share/eclipse/addons/oracle-eyes.kdl.
+id "oracle-eyes"
+name "Oracle Eyes"
+hooks "annotations" "region-select"
+capture "request"   // shown to the owner; granted only in policy.kdl

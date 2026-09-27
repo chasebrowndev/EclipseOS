@@ -2,6 +2,8 @@
 //! KDL configuration (COMP-13 §1).
 //!
 //! Search path, later files overriding earlier ones:
+//!   0. `/usr/share/eclipse/widgets/*.kdl`, the premade widget catalog, only
+//!      `bar { widget … }` and only while `taskbar-widgets` is on (ADR 0067)
 //!   1. `/etc/eclipse/abyss.kdl`
 //!   2. `$XDG_CONFIG_HOME/eclipse/abyss.kdl`
 //!   3. `$XDG_CONFIG_HOME/eclipse/abyss.d/*.kdl` (sorted)
@@ -17,13 +19,17 @@
 //! Hot-reload ([`watch::reload_now`]) keeps the last good config and emits a
 //! `config-error` IPC event; it never half-applies.
 
+pub mod approvals;
+pub mod catalog;
 pub mod edit;
 pub mod schema;
 pub mod watch;
+pub mod widget_hash;
+pub mod withhold;
 
 use std::path::{Path, PathBuf};
 
-use kdl::{KdlDocument, KdlNode, KdlValue};
+use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 use smithay::input::keyboard::{xkb, Keysym, ModifiersState};
 
 use crate::input::{Action, Bind, Direction, GestureBind, Mods, MouseAction, MouseBind, MouseButton};
@@ -308,6 +314,13 @@ pub struct Bar {
     /// `eye`: whether the taskbar draws its status eye on the eclipse mark.
     /// Stored only; the taskbar sources the eye's state itself (ADR 0055).
     pub eye: bool,
+    /// `widgets { ... }`: which widgets the bar draws, in what order (ADR 0065).
+    pub widgets: BarWidgets,
+    /// `motion { ... }`: how the bar's chips and widgets animate.
+    pub motion: BarMotion,
+    /// `widget "<name>" { ... }` blocks, in file order; a later block with
+    /// the same name replaces the earlier one in place.
+    pub custom_widgets: Vec<CustomWidget>,
 }
 
 /// `bar { clock { hour-12 …; date-mdy … } }`.
@@ -357,6 +370,143 @@ pub enum BarPosition {
     Bottom,
 }
 
+/// `bar { widgets { … } }` (ADR 0065). Ids are checked here, against the
+/// built-in list and the `widget` blocks; what each widget draws is the bar's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BarWidgets {
+    /// Widgets after the task strip, left to right. Built-in ids and
+    /// `custom:<name>`; each at most once.
+    pub order: Vec<String>,
+    /// Widgets that never compress.
+    pub important: Vec<String>,
+    pub now_playing: NowPlayingWidget,
+    pub system_usage: SystemUsageWidget,
+    pub volume: VolumeWidget,
+}
+
+impl Default for BarWidgets {
+    fn default() -> Self {
+        let own = |l: &[&str]| l.iter().map(|s| s.to_string()).collect();
+        Self {
+            order: own(schema::BAR_WIDGET_DEFAULT_ORDER),
+            important: own(schema::BAR_WIDGET_DEFAULT_IMPORTANT),
+            now_playing: NowPlayingWidget::default(),
+            system_usage: SystemUsageWidget::default(),
+            volume: VolumeWidget::default(),
+        }
+    }
+}
+
+/// `bar { widgets { now-playing { … } } }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NowPlayingWidget {
+    pub art: bool,
+    /// Whether the monitor tap may open at all (ADR 0065).
+    pub visualizer: bool,
+    /// Whether `https` cover art is fetched via `curl` (ADR 0065).
+    pub remote_art: bool,
+}
+
+impl Default for NowPlayingWidget {
+    fn default() -> Self {
+        Self {
+            art: true,
+            visualizer: true,
+            remote_art: true,
+        }
+    }
+}
+
+/// `bar { widgets { system-usage { … } } }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemUsageWidget {
+    pub interval_ms: u32,
+    pub gpu: bool,
+    pub disk: bool,
+    /// Absolute path; checked at parse time.
+    pub disk_path: String,
+}
+
+impl Default for SystemUsageWidget {
+    fn default() -> Self {
+        Self {
+            interval_ms: 1000,
+            gpu: true,
+            disk: true,
+            disk_path: "/".to_owned(),
+        }
+    }
+}
+
+/// `bar { widgets { volume { … } } }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VolumeWidget {
+    pub step: u32,
+    pub scroll: bool,
+    pub max_percent: u32,
+}
+
+impl Default for VolumeWidget {
+    fn default() -> Self {
+        Self {
+            step: 5,
+            scroll: true,
+            max_percent: 100,
+        }
+    }
+}
+
+/// `bar { motion { … } }` (ADR 0065): how chips and widgets move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BarMotion {
+    pub enabled: bool,
+    pub duration_ms: u32,
+    /// One of `schema::BAR_MOTION_CURVES`.
+    pub curve: String,
+}
+
+impl Default for BarMotion {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            duration_ms: 220,
+            curve: "spring".to_owned(),
+        }
+    }
+}
+
+/// `bar { widget "<name>" { … } }` (ADR 0065). Stored and handed out through
+/// `get_config`; the compositor never runs these. The taskbar's
+/// `eclipse-services::custom` runner does, as the human.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomWidget {
+    pub name: String,
+    pub kind: CustomWidgetKind,
+    pub icon: Option<String>,
+    pub on_click: Option<Vec<String>>,
+    pub on_scroll_up: Option<Vec<String>>,
+    pub on_scroll_down: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CustomWidgetKind {
+    /// `exec …` run every `interval_ms`.
+    Exec { argv: Vec<String>, interval_ms: u32 },
+    /// `exec …` with `stream #true`: run once, one update per line.
+    Stream { argv: Vec<String> },
+    /// `source …` rendered through `format`.
+    Source { source: String, format: String },
+}
+
+/// A `custom:<name>` id seen in `bar.widgets.*`, checked against the `widget`
+/// blocks once the whole file is read, so a block may follow its use.
+#[derive(Debug, Clone)]
+struct PendingCustom {
+    name: String,
+    offset: usize,
+    len: usize,
+}
+
 impl Default for Bar {
     fn default() -> Self {
         Self {
@@ -372,6 +522,9 @@ impl Default for Bar {
             clock: BarClock::default(),
             popup_anchor: BarPopupAnchor::Cell,
             eye: true,
+            widgets: BarWidgets::default(),
+            motion: BarMotion::default(),
+            custom_widgets: Vec::new(),
         }
     }
 }
@@ -380,8 +533,9 @@ impl Default for Bar {
 /// default: the defaults below are the "no effect" values, so a config without a
 /// `decoration` block renders exactly as it did before milestone 9b and keeps
 /// direct scanout available. Opacity and `dim-inactive` are rendered today;
-/// `shadow` is an SDF pixel shader over the grown window rect and `blur` a
-/// dual-Kawase chain behind translucent windows (COMP-02 §9); both draw today.
+/// `shadow` and `glow` are one SDF pixel shader over the grown window rect and
+/// `blur` a dual-Kawase chain behind translucent windows (COMP-02 §9); all draw
+/// today.
 /// `rounding` is drawn as a fragment-shader mask.
 #[derive(Debug, Clone)]
 pub struct Decoration {
@@ -397,6 +551,7 @@ pub struct Decoration {
     pub dim_inactive: f32,
     pub blur: Blur,
     pub shadow: Shadow,
+    pub glow: Glow,
 }
 
 impl Default for Decoration {
@@ -408,6 +563,7 @@ impl Default for Decoration {
             dim_inactive: 0.0,
             blur: Blur::default(),
             shadow: Shadow::default(),
+            glow: Glow::default(),
         }
     }
 }
@@ -421,6 +577,7 @@ impl Decoration {
             || self.active_opacity < 1.0
             || self.inactive_opacity < 1.0
             || self.dim_inactive > 0.0
+            || self.glow.on()
     }
 }
 
@@ -442,7 +599,8 @@ impl Default for Blur {
     }
 }
 
-/// `shadow { enabled #false; range 20 }`. Nine-slice (COMP-02 §9).
+/// `shadow { enabled #false; range 20 }`. An SDF ring outside the window, drawn
+/// by a pixel shader (COMP-02 §9).
 #[derive(Debug, Clone)]
 pub struct Shadow {
     pub enabled: bool,
@@ -455,6 +613,37 @@ impl Default for Shadow {
             enabled: false,
             range: 20,
         }
+    }
+}
+
+/// `glow { enabled #false; active #true; inactive #true; strength 60 }`. The
+/// shadow's SDF ring, tinted with the window's border colour (COMP-02 §9).
+#[derive(Debug, Clone)]
+pub struct Glow {
+    pub enabled: bool,
+    /// Glow on the focused window.
+    pub active: bool,
+    /// Glow on unfocused windows.
+    pub inactive: bool,
+    /// Peak intensity, percent 0..=100.
+    pub strength: i32,
+}
+
+impl Default for Glow {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            active: true,
+            inactive: true,
+            strength: 60,
+        }
+    }
+}
+
+impl Glow {
+    /// Whether any window can glow at all.
+    pub fn on(&self) -> bool {
+        self.enabled && self.strength > 0 && (self.active || self.inactive)
     }
 }
 
@@ -653,6 +842,10 @@ pub struct Touchpad {
 /// only a clean reload replaces it.
 pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
     debug_assert!(next.errors.is_empty(), "apply_loaded got an invalid config");
+    let mut next = next;
+    // ADR 0066/0067: without the hook, widget blocks go; with it, unapproved
+    // command widgets are withheld and queued for the owner's prompt.
+    withhold::settle(state, &mut next);
     let sources: Vec<String> = next
         .sources
         .iter()
@@ -687,7 +880,26 @@ pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
     crate::outputs::relayout(state);
     crate::shell::arrange(state);
     crate::backend::damage_all(state);
+    crate::trusted_ui::approval::schedule(state);
     tracing::info!(?sources, "config applied");
+}
+
+/// ADR 0066: `widget` blocks are inert without the `taskbar-widgets` hook.
+/// They are ignored, not refused, so a config written with the taskbar
+/// installed still loads after it is removed; their `custom:` ids go with them
+/// so no list names a widget that is not there.
+pub fn drop_unhooked_widgets(cfg: &mut Config, hooks: crate::addons::HookSet) {
+    if hooks.is_on(crate::addons::Hook::TaskbarWidgets) || cfg.bar.custom_widgets.is_empty() {
+        return;
+    }
+    tracing::info!(
+        count = cfg.bar.custom_widgets.len(),
+        "add-on hook `taskbar-widgets` is off; ignoring widget blocks"
+    );
+    cfg.bar.custom_widgets.clear();
+    let builtin = |id: &String| !id.starts_with(schema::BAR_WIDGET_CUSTOM_PREFIX);
+    cfg.bar.widgets.order.retain(builtin);
+    cfg.bar.widgets.important.retain(builtin);
 }
 
 /// The one JSON shape a config refusal is reported in.
@@ -883,6 +1095,18 @@ fn did_you_mean(path: &str) -> Option<&'static str> {
         .map(|(_, p)| p)
 }
 
+/// [`did_you_mean`] over any candidate list: the nearest within a third of
+/// `word`'s length, or nothing.
+fn nearest<'a>(word: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let budget = (word.len() / 3).max(1);
+    candidates
+        .into_iter()
+        .map(|c| (edit_distance(word, c), c))
+        .filter(|(d, _)| *d <= budget)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, c)| c)
+}
+
 fn edit_distance(a: &str, b: &str) -> usize {
     let b: Vec<char> = b.chars().collect();
     let mut prev: Vec<usize> = (0..=b.len()).collect();
@@ -989,6 +1213,12 @@ pub struct Config {
     /// `--config <path>`, if one was given. Reload must honour it rather than
     /// falling back to the search path.
     pub explicit: Option<PathBuf>,
+    /// The premade catalog was read as the lowest layer (ADR 0067). Set from
+    /// the `taskbar-widgets` hook; reload keeps it.
+    pub catalog_layer: bool,
+    /// The catalog blocks as shipped, before any user block replaced one of
+    /// the same name: the hash reference for `withhold::settle`.
+    pub catalog: Vec<CustomWidget>,
     /// Validation refusals collected during the last load. On a freshly
     /// loaded config, non-empty means invalid: hot-reload keeps the last good
     /// one. On the *live* config it is non-empty only after a startup that
@@ -998,6 +1228,12 @@ pub struct Config {
     /// The file being parsed, and its text, so `reject` can turn a KDL span
     /// into `file:line:col`. Cleared when the load finishes.
     cur: Option<(Source, String)>,
+    /// `custom:<name>` ids in the file being parsed, checked at its end.
+    pending_custom: Vec<PendingCustom>,
+    /// Names of every named `widget` block seen, valid or refused. A refused
+    /// block already has its own positioned error, so a `custom:` id naming
+    /// it is not also reported missing.
+    widget_blocks: Vec<String>,
 }
 
 impl Default for Config {
@@ -1022,8 +1258,12 @@ impl Default for Config {
             window_rules: Vec::new(),
             sources: Vec::new(),
             explicit: None,
+            catalog_layer: false,
+            catalog: Vec::new(),
             errors: Vec::new(),
             cur: None,
+            pending_custom: Vec::new(),
+            widget_blocks: Vec::new(),
         }
     }
 }
@@ -1374,6 +1614,14 @@ impl Config {
     /// total (COMP-13 §1.2): any refusal lands in `errors`, and the caller
     /// decides — startup exits, hot-reload keeps the last good config.
     pub fn load(explicit: Option<&Path>) -> Self {
+        Self::load_with(explicit, false)
+    }
+
+    /// [`Config::load`], with the premade widget catalog read first as the
+    /// lowest layer when `catalog_layer` is set (ADR 0067). Its blocks count
+    /// as defined for `custom:<name>` ids, and a later block of the same name
+    /// replaces one, exactly like a block in `/etc` would be replaced.
+    pub fn load_with(explicit: Option<&Path>, catalog_layer: bool) -> Self {
         // An explicit `--config` names one abyss.kdl; policy stays on the
         // search path, since a flag must not be able to swap the policy file.
         let files: Vec<Source> = match explicit {
@@ -1393,8 +1641,14 @@ impl Config {
         };
         let mut cfg = Config {
             explicit: explicit.map(|p| p.to_path_buf()),
+            catalog_layer,
             ..Config::default()
         };
+        if catalog_layer {
+            cfg.catalog = catalog::load();
+            cfg.bar.custom_widgets = cfg.catalog.clone();
+            cfg.widget_blocks = cfg.catalog.iter().map(|w| w.name.clone()).collect();
+        }
         let mut binds_from_file = Vec::new();
         let mut any = false;
         for f in &files {
@@ -1469,7 +1723,7 @@ impl Config {
     /// Re-read the same sources. The inotify watcher (`config::watch`) calls
     /// this and must check `errors` before applying the result.
     pub fn reload(&self) -> Self {
-        Self::load(self.explicit.as_deref())
+        Self::load_with(self.explicit.as_deref(), self.catalog_layer)
     }
 
     /// Validate `text` as if it were the file at `path` owned by `owner`,
@@ -1479,6 +1733,18 @@ impl Config {
     /// same code the loader runs: a GUI that previews an edit must be told
     /// exactly what a file edit would have been told, down to the wording.
     pub fn check_text(path: &Path, owner: schema::Owner, text: &str) -> Vec<ConfigError> {
+        Self::check_text_with(path, owner, text, &[])
+    }
+
+    /// [`Config::check_text`], with `known` widget names (the premade
+    /// catalog's) counting as defined for `custom:<name>` ids, as they do in
+    /// the real load.
+    pub fn check_text_with(
+        path: &Path,
+        owner: schema::Owner,
+        text: &str,
+        known: &[CustomWidget],
+    ) -> Vec<ConfigError> {
         let doc = match text.parse::<KdlDocument>() {
             Ok(d) => d,
             Err(e) => {
@@ -1510,6 +1776,7 @@ impl Config {
                 },
                 text.to_owned(),
             )),
+            widget_blocks: known.iter().map(|w| w.name.clone()).collect(),
             ..Config::default()
         };
         cfg.apply(&doc, &mut Vec::new());
@@ -1574,12 +1841,32 @@ impl Config {
     }
 
     fn reject(&mut self, node: &KdlNode, message: impl Into<String>) {
-        let message = message.into();
         // Underline the node name only; the node's own span runs to the end of
         // its children, which would drown the line in carets.
+        self.reject_at(node.span().offset(), node.name().value().len(), message);
+    }
+
+    /// Refuse one argument of a node, underlining that argument rather than
+    /// the node name: in `order "clock" "clokc"` the caret belongs under the
+    /// typo. An entry's span may start at the whitespace before it.
+    fn reject_entry(&mut self, entry: &KdlEntry, message: impl Into<String>) {
+        let span = entry.span();
+        let (offset, len) = match &self.cur {
+            Some((_, text)) => {
+                let raw = text.get(span.offset()..span.offset() + span.len()).unwrap_or("");
+                let lead = raw.len() - raw.trim_start().len();
+                (span.offset() + lead, raw.trim().len())
+            }
+            None => (span.offset(), span.len()),
+        };
+        self.reject_at(offset, len, message);
+    }
+
+    fn reject_at(&mut self, offset: usize, len: usize, message: impl Into<String>) {
+        let message = message.into();
         let (file, line, col, snippet, span_len, policy) = match &self.cur {
             Some((f, text)) => {
-                let (line, col, snippet, len) = locate(text, node.span().offset(), node.name().value().len());
+                let (line, col, snippet, len) = locate(text, offset, len);
                 (
                     f.path.clone(),
                     line,
@@ -1717,6 +2004,31 @@ impl Config {
                     }
                 }
             }
+        }
+        self.check_custom_widget_ids();
+    }
+
+    /// Every `custom:<name>` in `bar.widgets.*` must name a `widget` block
+    /// from this file or one loaded before it. Run at the end of each file
+    /// so a block may follow its use, and while `cur` still points at the
+    /// file the id is in.
+    fn check_custom_widget_ids(&mut self) {
+        for p in std::mem::take(&mut self.pending_custom) {
+            if self.widget_blocks.contains(&p.name) {
+                continue;
+            }
+            let near = nearest(&p.name, self.bar.custom_widgets.iter().map(|w| w.name.as_str()));
+            let message = match near {
+                Some(n) => format!(
+                    "custom:{} names no widget block (did you mean \"custom:{n}\"?)",
+                    p.name
+                ),
+                None => format!(
+                    "custom:{} names no widget block; define one inside bar: widget {:?} {{ exec \"…\" }}",
+                    p.name, p.name
+                ),
+            };
+            self.reject_at(p.offset, p.len, message);
         }
     }
 
@@ -1870,6 +2182,9 @@ impl Config {
                 },
                 "tray" => self.apply_bar_tray(n),
                 "clock" => self.apply_bar_clock(n),
+                "widgets" => self.apply_bar_widgets(n),
+                "motion" => self.apply_bar_motion(n),
+                "widget" => self.apply_bar_widget(n),
                 "eye" => {
                     self.bar.eye = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
                 }
@@ -1928,6 +2243,464 @@ impl Config {
                 }
                 _ => self.unknown_key(n, "bar.tray", "bar tray node"),
             }
+        }
+        // The built-in applets became widgets (ADR 0065). Their old ids still
+        // load so an existing file keeps working, but they mean nothing here
+        // any more; say so once per id and point at the fix.
+        let tray = &self.bar.tray;
+        for id in tray.pinned.iter().flatten().chain(&tray.hidden) {
+            if schema::LEGACY_TRAY_BUILTINS.contains(&id.as_str()) {
+                tracing::warn!(
+                    id = id.as_str(),
+                    "deprecated: built-in applet id in bar.tray; list it in bar.widgets.order \
+                     instead (eclipse-ctl config migrate does this)"
+                );
+            }
+        }
+    }
+
+    /// `bar { widgets { … } }` (ADR 0065).
+    fn apply_bar_widgets(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        let mut seen_order = false;
+        let mut seen_important = false;
+        for n in children.nodes() {
+            match n.name().value() {
+                "order" => {
+                    if seen_order {
+                        self.reject(
+                            n,
+                            "repeated order replaces the previous one; list every id on a single node",
+                        );
+                    }
+                    seen_order = true;
+                    self.bar.widgets.order = self.widget_ids(n);
+                }
+                "important" => {
+                    if seen_important {
+                        self.reject(
+                            n,
+                            "repeated important replaces the previous one; list every id on a single node",
+                        );
+                    }
+                    seen_important = true;
+                    self.bar.widgets.important = self.widget_ids(n);
+                }
+                "now-playing" => self.apply_bar_widget_now_playing(n),
+                "system-usage" => self.apply_bar_widget_system_usage(n),
+                "volume" => self.apply_bar_widget_volume(n),
+                _ => self.unknown_key(n, "bar.widgets", "bar widgets node"),
+            }
+        }
+    }
+
+    /// The ids on an `order`/`important` node. Built-in ids are checked now;
+    /// `custom:<name>` is queued for [`Self::check_custom_widget_ids`] at the
+    /// end of the file. A refused id is dropped, never kept.
+    fn widget_ids(&mut self, n: &KdlNode) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for e in n.entries() {
+            if e.name().is_some() {
+                self.reject_entry(e, "widget ids are plain strings, not properties");
+                continue;
+            }
+            let Some(id) = e.value().as_string() else {
+                self.reject_entry(e, "a widget id is a string");
+                continue;
+            };
+            if out.iter().any(|o| o == id) {
+                self.reject_entry(e, format!("widget {id:?} is listed twice"));
+                continue;
+            }
+            if let Some(name) = id.strip_prefix(schema::BAR_WIDGET_CUSTOM_PREFIX) {
+                if name.is_empty() {
+                    self.reject_entry(e, "custom: needs a widget name, e.g. \"custom:weather\"");
+                    continue;
+                }
+                let span = e.span();
+                let (offset, len) = match &self.cur {
+                    Some((_, text)) => {
+                        let raw = text.get(span.offset()..span.offset() + span.len()).unwrap_or("");
+                        let lead = raw.len() - raw.trim_start().len();
+                        (span.offset() + lead, raw.trim().len())
+                    }
+                    None => (span.offset(), span.len()),
+                };
+                self.pending_custom.push(PendingCustom {
+                    name: name.to_owned(),
+                    offset,
+                    len,
+                });
+            } else if !schema::BAR_WIDGET_IDS.contains(&id) {
+                let message = match nearest(id, schema::BAR_WIDGET_IDS.iter().copied()) {
+                    Some(h) => format!("unknown widget {id:?} (did you mean {h:?}?)"),
+                    None => format!(
+                        "unknown widget {id:?}; built-in widgets are {}, or custom:<name> for a widget block",
+                        schema::BAR_WIDGET_IDS.join(", ")
+                    ),
+                };
+                self.reject_entry(e, message);
+                continue;
+            }
+            out.push(id.to_owned());
+        }
+        out
+    }
+
+    /// A bool node: bare is `#true`; anything but a bool is refused.
+    fn flag(&mut self, n: &KdlNode) -> Option<bool> {
+        match arg(n) {
+            None => Some(true),
+            Some(v) => match v.as_bool() {
+                Some(b) => Some(b),
+                None => {
+                    self.reject(n, format!("{} expects #true or #false", n.name().value()));
+                    None
+                }
+            },
+        }
+    }
+
+    /// An integer node within `min..=max`. Out of range is refused, keeping
+    /// the default, rather than clamped behind the human's back.
+    fn int_in(&mut self, n: &KdlNode, min: u32, max: u32) -> Option<u32> {
+        match arg(n).and_then(KdlValue::as_integer) {
+            Some(v) if (min as i128..=max as i128).contains(&v) => Some(v as u32),
+            Some(v) => {
+                self.reject(
+                    n,
+                    format!(
+                        "{} must be {min}..={max}, keeping default (got {v})",
+                        n.name().value()
+                    ),
+                );
+                None
+            }
+            None => {
+                self.reject(n, format!("{} expects an integer", n.name().value()));
+                None
+            }
+        }
+    }
+
+    /// A duration node (integer ms, or `"2s"`) within `min..=max` ms.
+    fn ms_in(&mut self, n: &KdlNode, min: u32, max: u32) -> Option<u32> {
+        match arg(n).and_then(parse_duration_ms) {
+            Some(v) if (min..=max).contains(&v) => Some(v),
+            Some(v) => {
+                self.reject(
+                    n,
+                    format!(
+                        "{} must be {min}..={max} ms, keeping default (got {v})",
+                        n.name().value()
+                    ),
+                );
+                None
+            }
+            None => {
+                self.reject(n, format!("{} expects a duration", n.name().value()));
+                None
+            }
+        }
+    }
+
+    fn apply_bar_widget_now_playing(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "art" => {
+                    if let Some(b) = self.flag(n) {
+                        self.bar.widgets.now_playing.art = b;
+                    }
+                }
+                "visualizer" => {
+                    if let Some(b) = self.flag(n) {
+                        self.bar.widgets.now_playing.visualizer = b;
+                    }
+                }
+                "remote-art" => {
+                    if let Some(b) = self.flag(n) {
+                        self.bar.widgets.now_playing.remote_art = b;
+                    }
+                }
+                _ => self.unknown_key(n, "bar.widgets.now-playing", "now-playing node"),
+            }
+        }
+    }
+
+    fn apply_bar_widget_system_usage(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "interval-ms" => {
+                    if let Some(v) = self.ms_in(n, 250, 10_000) {
+                        self.bar.widgets.system_usage.interval_ms = v;
+                    }
+                }
+                "gpu" => {
+                    if let Some(b) = self.flag(n) {
+                        self.bar.widgets.system_usage.gpu = b;
+                    }
+                }
+                "disk" => {
+                    if let Some(b) = self.flag(n) {
+                        self.bar.widgets.system_usage.disk = b;
+                    }
+                }
+                "disk-path" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(p) if p.starts_with('/') => self.bar.widgets.system_usage.disk_path = p.to_owned(),
+                    _ => self.reject(n, "disk-path expects an absolute path, e.g. \"/home\""),
+                },
+                _ => self.unknown_key(n, "bar.widgets.system-usage", "system-usage node"),
+            }
+        }
+    }
+
+    fn apply_bar_widget_volume(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "step" => {
+                    if let Some(v) = self.int_in(n, 1, 25) {
+                        self.bar.widgets.volume.step = v;
+                    }
+                }
+                "scroll" => {
+                    if let Some(b) = self.flag(n) {
+                        self.bar.widgets.volume.scroll = b;
+                    }
+                }
+                "max-percent" => {
+                    if let Some(v) = self.int_in(n, 100, 150) {
+                        self.bar.widgets.volume.max_percent = v;
+                    }
+                }
+                _ => self.unknown_key(n, "bar.widgets.volume", "volume node"),
+            }
+        }
+    }
+
+    /// `bar { motion { … } }` (ADR 0065).
+    fn apply_bar_motion(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "enabled" => {
+                    if let Some(b) = self.flag(n) {
+                        self.bar.motion.enabled = b;
+                    }
+                }
+                "duration-ms" => {
+                    if let Some(v) = self.ms_in(n, 0, 2000) {
+                        self.bar.motion.duration_ms = v;
+                    }
+                }
+                "curve" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(c) if schema::BAR_MOTION_CURVES.contains(&c) => self.bar.motion.curve = c.to_owned(),
+                    other => self.reject(
+                        n,
+                        format!(
+                            "bar motion curve must be one of {}, keeping default (other={other:?})",
+                            schema::BAR_MOTION_CURVES.join(", ")
+                        ),
+                    ),
+                },
+                _ => self.unknown_key(n, "bar.motion", "bar motion node"),
+            }
+        }
+    }
+
+    /// The string arguments of an argv node (`exec`, `on-click`, …): at least
+    /// one, all strings. `None` after a refusal.
+    fn argv(&mut self, n: &KdlNode) -> Option<Vec<String>> {
+        let mut out = Vec::new();
+        for e in n.entries() {
+            match (e.name(), e.value().as_string()) {
+                (None, Some(s)) => out.push(s.to_owned()),
+                _ => {
+                    self.reject_entry(e, format!("{} takes only string arguments", n.name().value()));
+                    return None;
+                }
+            }
+        }
+        if out.is_empty() || out[0].is_empty() {
+            self.reject(
+                n,
+                format!(
+                    "{} needs a command: {} \"<argv0>\" …",
+                    n.name().value(),
+                    n.name().value()
+                ),
+            );
+            return None;
+        }
+        Some(out)
+    }
+
+    /// `bar { widget "<name>" { … } }` (ADR 0065). The whole block is refused
+    /// on any error, so a widget never runs half-configured.
+    fn apply_bar_widget(&mut self, node: &KdlNode) {
+        let name = match arg(node).and_then(KdlValue::as_string) {
+            Some(s) if !s.trim().is_empty() => s.to_owned(),
+            _ => {
+                self.reject(node, "widget needs a name: widget \"<name>\" { … }");
+                return;
+            }
+        };
+        if !self.widget_blocks.contains(&name) {
+            self.widget_blocks.push(name.clone());
+        }
+        let mut ok = true;
+        let mut exec = None;
+        let mut interval_ms = None;
+        let mut stream = false;
+        let mut source = None;
+        let mut format = None;
+        let mut icon = None;
+        let mut on_click = None;
+        let mut on_scroll_up = None;
+        let mut on_scroll_down = None;
+        let mut seen: Vec<&str> = Vec::new();
+        for n in node.children().map(|c| c.nodes()).unwrap_or_default() {
+            let key = n.name().value();
+            let Some(form) = schema::find(schema::WIDGET_KEYS, key) else {
+                let names = schema::WIDGET_KEYS.iter().map(|f| f.names[0]);
+                self.reject(
+                    n,
+                    match nearest(key, names) {
+                        Some(h) => format!("unknown widget node {key:?} (did you mean {h:?}?)"),
+                        None => format!("unknown widget node {key:?}"),
+                    },
+                );
+                ok = false;
+                continue;
+            };
+            if seen.contains(&form.names[0]) {
+                self.reject(n, format!("{key} given twice in widget {name:?}"));
+                ok = false;
+                continue;
+            }
+            seen.push(form.names[0]);
+            let good = match form.names[0] {
+                "exec" => self.argv(n).map(|a| exec = Some(a)).is_some(),
+                "on-click" => self.argv(n).map(|a| on_click = Some(a)).is_some(),
+                "on-scroll-up" => self.argv(n).map(|a| on_scroll_up = Some(a)).is_some(),
+                "on-scroll-down" => self.argv(n).map(|a| on_scroll_down = Some(a)).is_some(),
+                "interval-ms" => self
+                    .ms_in(n, schema::WIDGET_MIN_INTERVAL_MS, schema::WIDGET_MAX_INTERVAL_MS)
+                    .map(|v| interval_ms = Some(v))
+                    .is_some(),
+                "stream" => self.flag(n).map(|b| stream = b).is_some(),
+                "source" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(s) if schema::WIDGET_SOURCES.contains(&s) => {
+                        source = Some(s.to_owned());
+                        true
+                    }
+                    other => {
+                        let other = other.unwrap_or("");
+                        self.reject(
+                            n,
+                            match nearest(other, schema::WIDGET_SOURCES.iter().copied()) {
+                                Some(h) => format!("unknown widget source {other:?} (did you mean {h:?}?)"),
+                                None => format!(
+                                    "unknown widget source {other:?}; sources are {}",
+                                    schema::WIDGET_SOURCES.join(", ")
+                                ),
+                            },
+                        );
+                        false
+                    }
+                },
+                "format" | "icon" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(s) => {
+                        let slot = if form.names[0] == "format" {
+                            &mut format
+                        } else {
+                            &mut icon
+                        };
+                        *slot = Some(s.to_owned());
+                        true
+                    }
+                    None => {
+                        self.reject(n, format!("{key} expects a string"));
+                        false
+                    }
+                },
+                // Every WIDGET_KEYS form is matched above; the table and this
+                // match are one list, and a form added to one alone must fail.
+                other => {
+                    self.reject(n, format!("widget node {other:?} is documented but not wired into the parser \u{2014} this is a bug in abyss, not in your config"));
+                    false
+                }
+            };
+            ok &= good;
+        }
+        let kind = match (exec, source) {
+            (Some(_), Some(_)) => {
+                self.reject(
+                    node,
+                    format!("widget {name:?} has both exec and source; give it one"),
+                );
+                return;
+            }
+            (None, None) => {
+                self.reject(
+                    node,
+                    format!("widget {name:?} needs exec \"<argv0>\" … or source \"<source>\""),
+                );
+                return;
+            }
+            (Some(argv), None) => {
+                if format.is_some() {
+                    self.reject(
+                        node,
+                        format!("widget {name:?}: format is for source widgets, not exec"),
+                    );
+                    return;
+                }
+                match (stream, interval_ms) {
+                    (true, Some(_)) => {
+                        self.reject(
+                            node,
+                            format!("widget {name:?}: a stream runs once and never on an interval; drop interval-ms"),
+                        );
+                        return;
+                    }
+                    (true, None) => CustomWidgetKind::Stream { argv },
+                    (false, i) => CustomWidgetKind::Exec {
+                        argv,
+                        interval_ms: i.unwrap_or(schema::WIDGET_DEFAULT_INTERVAL_MS),
+                    },
+                }
+            }
+            (None, Some(source)) => {
+                if stream || interval_ms.is_some() {
+                    self.reject(
+                        node,
+                        format!("widget {name:?}: stream and interval-ms are for exec widgets, not source"),
+                    );
+                    return;
+                }
+                CustomWidgetKind::Source {
+                    source,
+                    format: format.unwrap_or_else(|| "{}".to_owned()),
+                }
+            }
+        };
+        if !ok {
+            return;
+        }
+        let w = CustomWidget {
+            name,
+            kind,
+            icon,
+            on_click,
+            on_scroll_up,
+            on_scroll_down,
+        };
+        match self.bar.custom_widgets.iter_mut().find(|o| o.name == w.name) {
+            Some(slot) => *slot = w,
+            None => self.bar.custom_widgets.push(w),
         }
     }
 
@@ -2152,6 +2925,7 @@ impl Config {
                 },
                 "blur" => self.apply_blur(n),
                 "shadow" => self.apply_shadow(n),
+                "glow" => self.apply_glow(n),
                 _ => self.unknown_key(n, "decoration", "decoration key"),
             }
         }
@@ -2189,6 +2963,27 @@ impl Config {
                     _ => self.reject(n, "shadow range must be an integer 0..=128"),
                 },
                 _ => self.unknown_key(n, "decoration.shadow", "shadow key"),
+            }
+        }
+    }
+
+    fn apply_glow(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                name @ ("enabled" | "active" | "inactive") => {
+                    let v = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
+                    match name {
+                        "enabled" => self.decoration.glow.enabled = v,
+                        "active" => self.decoration.glow.active = v,
+                        _ => self.decoration.glow.inactive = v,
+                    }
+                }
+                "strength" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (0..=100).contains(&v) => self.decoration.glow.strength = v as i32,
+                    _ => self.reject(n, "glow strength must be an integer 0..=100"),
+                },
+                _ => self.unknown_key(n, "decoration.glow", "glow key"),
             }
         }
     }
@@ -3173,6 +3968,234 @@ mod tests {
         assert_eq!(t.hidden, ["battery"]);
     }
 
+    /// Apply `text` as `a.kdl`, returning the config and its refusals.
+    pub(crate) fn widgets_cfg(text: &str) -> Config {
+        let doc: KdlDocument = text.parse().unwrap();
+        let mut cfg = Config {
+            cur: Some((abyss_src("a.kdl"), text.to_owned())),
+            ..Config::default()
+        };
+        cfg.apply(&doc, &mut Vec::new());
+        cfg
+    }
+
+    /// `bar.widgets` and `bar.motion` (ADR 0065): defaults, a full block, and
+    /// a `custom:` id resolved by a `widget` block written after it.
+    #[test]
+    fn bar_widgets_parse() {
+        let d = Config::default().bar;
+        assert_eq!(d.widgets.order, schema::BAR_WIDGET_DEFAULT_ORDER);
+        assert_eq!(d.widgets.important, ["clock", "battery"]);
+        assert_eq!(d.motion.curve, "spring");
+        let cfg = widgets_cfg(
+            "bar {\n    widgets {\n        order \"clock\" \"custom:cpu\" \"tray\"\n        important \"custom:cpu\"\n        \
+             now-playing { art #false; visualizer; remote-art #false; }\n        system-usage { interval-ms \"2s\"; gpu #false; disk-path \"/home\"; }\n        \
+             volume { step 10; scroll #false; max-percent 150; }\n    }\n    motion { enabled #false; duration-ms 300; curve \"ease-out\"; }\n    \
+             widget \"cpu\" { source \"usage.cpu\"; format \"{}%\"; }\n}\n",
+        );
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        let w = &cfg.bar.widgets;
+        assert_eq!(w.order, ["clock", "custom:cpu", "tray"]);
+        assert_eq!(w.important, ["custom:cpu"]);
+        assert!(!w.now_playing.art && w.now_playing.visualizer && !w.now_playing.remote_art);
+        assert!(Config::default().bar.widgets.now_playing.remote_art);
+        assert_eq!(w.system_usage.interval_ms, 2000);
+        assert!(!w.system_usage.gpu && w.system_usage.disk);
+        assert_eq!(w.system_usage.disk_path, "/home");
+        assert_eq!(
+            (w.volume.step, w.volume.scroll, w.volume.max_percent),
+            (10, false, 150)
+        );
+        let m = &cfg.bar.motion;
+        assert_eq!(
+            (m.enabled, m.duration_ms, m.curve.as_str()),
+            (false, 300, "ease-out")
+        );
+        assert_eq!(
+            cfg.bar.custom_widgets[0].kind,
+            CustomWidgetKind::Source {
+                source: "usage.cpu".into(),
+                format: "{}%".into()
+            }
+        );
+        // An empty order draws nothing and is not an error.
+        let cfg = widgets_cfg("bar { widgets { order; } }\n");
+        assert!(cfg.errors.is_empty() && cfg.bar.widgets.order.is_empty());
+    }
+
+    /// An unknown id is refused at its own position with a did-you-mean, and
+    /// only that id is dropped.
+    #[test]
+    fn an_unknown_widget_id_is_refused_where_it_stands() {
+        let cfg = widgets_cfg("bar {\n    widgets { order \"clock\" \"batery\"; }\n}\n");
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        let e = &cfg.errors[0];
+        assert!(e.message.contains("did you mean \"battery\""), "{}", e.message);
+        assert_eq!((e.line, e.col, e.span_len), (2, 29, 8));
+        assert_eq!(cfg.bar.widgets.order, ["clock"]);
+
+        let cfg = widgets_cfg("bar { widgets { important \"clock\" \"clock\" \"zzzzzz\"; } }\n");
+        assert_eq!(cfg.errors.len(), 2, "{:?}", cfg.errors);
+        assert!(cfg.errors[0].message.contains("twice"));
+        assert!(cfg.errors[1].message.contains("built-in widgets are"));
+    }
+
+    /// `custom:<name>` must name a `widget` block, wherever in the file it is.
+    #[test]
+    fn a_custom_id_must_name_a_widget_block() {
+        let cfg = widgets_cfg(
+            "bar {\n    widgets { order \"custom:wether\"; }\n    widget \"weather\" { exec \"curl\"; }\n}\n",
+        );
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        let e = &cfg.errors[0];
+        assert!(e.message.contains("did you mean"), "{}", e.message);
+        assert_eq!((e.line, e.col), (2, 21));
+        let cfg = widgets_cfg("bar { widgets { order \"custom:\"; } }\n");
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+    }
+
+    /// One bad field in a `widget` block is one error, at the field: the
+    /// refused block is not also reported missing by a `custom:` id naming it.
+    #[test]
+    fn an_invalid_widget_block_is_not_also_missing() {
+        let cfg = widgets_cfg(
+            "bar {\n    widgets { order \"custom:a\"; }\n    widget \"a\" { exec \"x\"; interval-ms 10; }\n}\n",
+        );
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        let e = &cfg.errors[0];
+        assert!(!e.message.contains("names no widget block"), "{}", e.message);
+        assert_eq!(e.line, 3);
+        assert!(cfg.bar.custom_widgets.is_empty());
+    }
+
+    /// An order entry whose block is truly absent is reported missing.
+    #[test]
+    fn an_absent_widget_block_is_reported_missing() {
+        let cfg = widgets_cfg("bar {\n    widgets { order \"custom:a\"; }\n}\n");
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        let e = &cfg.errors[0];
+        assert!(
+            e.message.contains("custom:a names no widget block"),
+            "{}",
+            e.message
+        );
+        assert_eq!((e.line, e.col), (2, 21));
+    }
+
+    /// A `widget` block is all or nothing, and a later one replaces an
+    /// earlier one of the same name in place.
+    #[test]
+    fn widget_blocks_are_validated_whole() {
+        for bad in [
+            "widget \"a\" { }",
+            "widget \"a\" { exec \"x\"; source \"usage.cpu\"; }",
+            "widget \"a\" { exec \"x\"; stream; interval-ms 1000; }",
+            "widget \"a\" { exec \"x\"; format \"{}\"; }",
+            "widget \"a\" { source \"usage.cpu\"; interval-ms 1000; }",
+            "widget \"a\" { source \"usage.cpux\"; }",
+            "widget \"a\" { exec; }",
+            "widget \"a\" { exec \"x\" 1; }",
+            "widget \"a\" { exec \"x\"; interval-ms 10; }",
+            "widget \"a\" { exec \"x\"; colour \"red\"; }",
+            "widget \"a\" { exec \"x\"; exec \"y\"; }",
+            "widget { exec \"x\"; }",
+        ] {
+            let cfg = widgets_cfg(&format!("bar {{ {bad} }}\n"));
+            assert!(!cfg.errors.is_empty(), "{bad}");
+            assert!(cfg.bar.custom_widgets.is_empty(), "{bad}");
+        }
+        let cfg = widgets_cfg(
+            "bar { widget \"a\" { exec \"x\"; }; widget \"b\" { exec \"y\"; stream; }; widget \"a\" { exec \"z\"; interval-ms \"1m\"; } }\n",
+        );
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        let names: Vec<_> = cfg.bar.custom_widgets.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(names, ["a", "b"]);
+        assert_eq!(
+            cfg.bar.custom_widgets[0].kind,
+            CustomWidgetKind::Exec {
+                argv: vec!["z".into()],
+                interval_ms: 60_000
+            }
+        );
+        assert_eq!(
+            cfg.bar.custom_widgets[1].kind,
+            CustomWidgetKind::Stream {
+                argv: vec!["y".into()]
+            }
+        );
+    }
+
+    /// Every premade in `dist/widgets/` (ADR 0067) loads through the same
+    /// path as a user `widget` block: one block, no refusals, and a command
+    /// widget (exec or stream), never a declarative `source`.
+    #[test]
+    fn premade_widgets_are_valid_command_widgets() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dist/widgets");
+        let mut n = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "kdl") {
+                continue;
+            }
+            n += 1;
+            let text = std::fs::read_to_string(&path).unwrap();
+            let cfg = widgets_cfg(&text);
+            assert!(cfg.errors.is_empty(), "{}: {:?}", path.display(), cfg.errors);
+            let [w] = &cfg.bar.custom_widgets[..] else {
+                panic!("{}: expected exactly one widget block", path.display());
+            };
+            assert_eq!(Some(w.name.as_str()), path.file_stem().and_then(|s| s.to_str()));
+            let argv = match &w.kind {
+                CustomWidgetKind::Exec { argv, .. } | CustomWidgetKind::Stream { argv } => argv,
+                CustomWidgetKind::Source { .. } => {
+                    panic!("{}: premade must be a command widget", path.display())
+                }
+            };
+            // Argv only: nothing handed to a shell or an interpreter.
+            for a in [
+                Some(argv),
+                w.on_click.as_ref(),
+                w.on_scroll_up.as_ref(),
+                w.on_scroll_down.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let argv0 = a[0].rsplit('/').next().unwrap();
+                assert!(
+                    !["sh", "bash", "zsh", "dash", "fish", "env", "python", "python3", "perl"]
+                        .contains(&argv0),
+                    "{}: {argv0} is a shell or interpreter",
+                    path.display()
+                );
+                assert!(!a.iter().any(|s| s == "-c"), "{}: -c", path.display());
+            }
+        }
+        assert!(n > 0, "no premade widgets in {}", dir.display());
+    }
+
+    /// Out-of-range and mistyped widget settings are refused, keeping the
+    /// default; a bad motion curve too, and `animations` still refuses spring.
+    #[test]
+    fn widget_settings_out_of_range_keep_the_default() {
+        let cfg = widgets_cfg(
+            "bar { widgets { volume { step 0; max-percent 200; }; system-usage { interval-ms 100; disk-path \"home\"; }; }; motion { curve \"bounce\"; duration-ms 5000; } }\n",
+        );
+        assert_eq!(cfg.errors.len(), 6, "{:?}", cfg.errors);
+        assert_eq!(cfg.bar.widgets, BarWidgets::default());
+        assert_eq!(cfg.bar.motion, BarMotion::default());
+        let cfg = widgets_cfg("animations { enabled #true; animation \"window-open\" curve=\"spring\"; }\n");
+        assert!(!cfg.errors.is_empty());
+    }
+
+    /// Built-in applet ids in `bar.tray` still load: deprecated, not refused.
+    #[test]
+    fn legacy_tray_ids_still_load() {
+        let cfg = widgets_cfg("bar { tray { pinned \"volume\" \"org.kde.x\"; hidden \"battery\"; } }\n");
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.bar.tray.hidden, ["battery"]);
+    }
+
     /// A tab-indented line keeps its tabs in the caret gutter so the run still
     /// lands under the token whatever tab width the terminal uses.
     #[test]
@@ -3327,6 +4350,7 @@ mod tests {
                 dim-inactive 0.2
                 blur { enabled #false; size 12; passes 3 }
                 shadow { enabled #true; range 20 }
+                glow { enabled #true; inactive #false; strength 80 }
             }
             animations {
                 enabled #true
@@ -3345,6 +4369,11 @@ mod tests {
         assert!(!cfg.decoration.blur.enabled);
         assert_eq!((cfg.decoration.blur.size, cfg.decoration.blur.passes), (12, 3));
         assert!(cfg.decoration.shadow.enabled && cfg.decoration.shadow.range == 20);
+        let g = &cfg.decoration.glow;
+        assert_eq!(
+            (g.enabled, g.active, g.inactive, g.strength),
+            (true, true, false, 80)
+        );
         assert!(cfg.decoration.any_window_effect());
         let w = cfg.animations.get("windows").expect("windows curve");
         assert_eq!((w.duration_ms, w.curve.as_str()), (150, "ease-out"));
@@ -3361,6 +4390,7 @@ mod tests {
         // a window looks.
         assert!(cfg.decoration.any_window_effect());
         assert!(!cfg.decoration.shadow.enabled);
+        assert!(!cfg.decoration.glow.on());
         assert_eq!(cfg.decoration.rounding, 13);
         assert_eq!(cfg.decoration.active_opacity, 1.0);
         assert_eq!(cfg.decoration.inactive_opacity, 1.0);

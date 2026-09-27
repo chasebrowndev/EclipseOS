@@ -159,7 +159,13 @@ fn main() -> Result<()> {
         libc::sigemptyset(&mut act.sa_mask);
         libc::sigaction(libc::SIGCHLD, &act, std::ptr::null_mut());
     }
-    let mut config = config::Config::load(args.config.as_deref());
+    // ADR 0067: with the taskbar add-on installed, the premade widget catalog
+    // is the lowest config layer, so a `custom:<premade>` id validates at
+    // startup. `addons::start` re-reads the hooks and settles the rest.
+    let catalog_layer = abyss::addons::Addons::load()
+        .hooks
+        .is_on(abyss::addons::Hook::TaskbarWidgets);
+    let mut config = config::Config::load_with(args.config.as_deref(), catalog_layer);
     // COMP-01 §5 step 3 / COMP-13 §1.2, amended by ADR 0064: validation is
     // still total and every refusal is still reported, but a rejected node is
     // dropped and Abyss starts. Refusing used to bounce a greetd login straight

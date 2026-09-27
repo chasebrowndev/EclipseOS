@@ -254,14 +254,15 @@ fn block_h(rows: usize) -> usize {
 /// A 1x canvas of premultiplied pixels. Cards are laid out and drawn at one
 /// pixel per logical pixel and then scaled up whole, so every edge is exactly
 /// on the device grid at any integer scale and nothing is ever smeared.
-struct Canvas {
+/// Shared with `trusted_ui`, which draws its prompts the same way.
+pub(crate) struct Canvas {
     w: usize,
     h: usize,
     px: Vec<[u8; 4]>,
 }
 
 impl Canvas {
-    fn new(w: usize, h: usize) -> Canvas {
+    pub(crate) fn new(w: usize, h: usize) -> Canvas {
         Canvas {
             w,
             h,
@@ -288,7 +289,7 @@ impl Canvas {
         }
     }
 
-    fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, c: Rgba) {
+    pub(crate) fn fill(&mut self, x: usize, y: usize, w: usize, h: usize, c: Rgba) {
         let c = premul(c);
         for yy in y..(y + h).min(self.h) {
             for xx in x..(x + w).min(self.w) {
@@ -299,7 +300,7 @@ impl Canvas {
 
     /// One row of glyphs. Bold is the same glyph again one pixel to the
     /// right; the cells have a blank last column for exactly that to land in.
-    fn text(&mut self, x: usize, y: usize, s: &str, c: Rgba, bold: bool) {
+    pub(crate) fn text(&mut self, x: usize, y: usize, s: &str, c: Rgba, bold: bool) {
         let c = premul(c);
         for (col, ch) in s.bytes().enumerate() {
             // `sanitize` guarantees this, but the font index must not be able
@@ -323,7 +324,7 @@ impl Canvas {
     }
 
     /// Scale up by whole pixels into a raster.
-    fn into_raster(self, scale: usize) -> Raster {
+    pub(crate) fn into_raster(self, scale: usize) -> Raster {
         let (w, h) = (self.w * scale, self.h * scale);
         let mut px = Vec::with_capacity(w * h * 4);
         for y in 0..h {

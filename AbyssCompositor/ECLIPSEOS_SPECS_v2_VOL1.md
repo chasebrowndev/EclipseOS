@@ -2533,8 +2533,8 @@ cursor (if not on a plane), **TrustedUI last, always**.
 
 *(amended C-02, 2026-09-23)* As built (`render/`, `backend/`), bottom to top:
 background and bottom layer-shell; per toplevel in stacking order: blur
-backdrop, shadow, border, surface tree (rounded mask), dim overlay; top
-layer-shell; overlay layer-shell; input-method popup; cursor;
+backdrop, shadow, glow *(C-11)*, border, surface tree (rounded mask), dim
+overlay; top layer-shell; overlay layer-shell; input-method popup; cursor;
 **annotation pass** (COMP-18 §1.1); region selector; **TrustedUI last,
 always**. A fullscreen toplevel that owns its output is drawn above the top
 layer, not above overlay. While the session is locked the lock surfaces replace
@@ -2640,14 +2640,15 @@ surface never contributes a pixel without `capture.secret`.
 ~~All optional, all off by default until 9b, all designed for now:~~
 *(amended C-01, 2026-09-23)* All optional and all built (9b is at parity).
 Defaults (`config/schema.rs`): **blur on** (`decoration.blur`, size 8, 2
-passes), **rounding 13**, border 2; shadows, dim-inactive and animations off;
-active and inactive opacity 1.0.
+passes), **rounding 13**, border 2; shadows, glow, dim-inactive and
+animations off; active and inactive opacity 1.0.
 
 | Effect | Implementation | Cost note |
 |---|---|---|
 | Rounded corners | Fragment-shader mask in the surface pass | Negligible; disables direct scanout for that surface |
 | Borders | Quad pass around surface geometry | Negligible |
-| Shadows | Pre-blurred nine-slice texture | Cheap; expands damage |
+| Shadows | ~~Pre-blurred nine-slice texture~~ *(C-11)* SDF pixel shader over the bordered rect grown by `range`; drawn only outside it, so a translucent window is not darkened by its own shadow | Cheap; expands damage |
+| Glow *(added C-11)* | The shadow's pixel shader, tinted with the window's border colour (following its focus crossfade) and scaled by `strength`; reaches a fixed 24 logical px, drawn only outside the bordered rect, below the border and surface; `active` / `inactive` gate it per focus state | Cheap; expands damage |
 | Dim inactive | Colour multiply in the surface pass | Negligible |
 | Blur | Dual-Kawase downsample/upsample, N passes on the region behind translucent surfaces | Expensive; expands damage by kernel radius; disables direct scanout; skipped entirely when the blurred surface is opaque |
 | Animations | Interpolated geometry driven by the frame clock | Forces repaint while running; must not extend past the animation |
@@ -4430,6 +4431,28 @@ something to edit — `policyd`, the enforcement table, and grants. The COMP-13
 security-relevant key that accrues in `abyss.kdl` before the split is one that
 has to be migrated after it.
 
+### 3.11 Command approval *(added E-02, 2026-09-26)*
+
+Shown when a taskbar command widget (ADR 0065) is new or altered and has not
+been approved (ADR 0067). §3.10 is left to the pending-decision queue that
+code comments already cite. Present only while an installed add-on enables
+the `taskbar-widgets` hook (ADR 0066).
+
+**No client requests it.** The compositor decides: at config apply, a command
+widget whose canonical hash matches neither its shipped catalog entry nor a
+recorded approval is withheld from the live config and queued. That covers a
+socket write and a file edit alike. `review_widget` may re-queue a pending
+widget; it carries no answer.
+
+Content: the widget name; for a shipped widget that was changed, "This widget
+has been altered! Altered widgets are not guaranteed to be safe!"; for any
+other, "This is not a premade widget. It runs this command as you. EclipseOS
+is not responsible for what it does."; then the command, in the untrusted
+block (§3.2 treatment: plain text, control characters stripped, clamped).
+Buttons: **[Revert]** or **[Remove]**, **[Not now]**, **[Accept]** or
+**[Allow]**. Default focus is Not now, Escape is Not now, Enter never
+approves. Accept/Allow records the hash; a later change asks again.
+
 ---
 
 ## 4. Input Handling
@@ -4812,6 +4835,7 @@ decoration {
     inactive-opacity 0.95
     blur { enabled false; size 8; passes 2 }     // milestone 9b
     shadow { enabled true; range 20 }
+    glow { enabled false; active true; inactive true; strength 60 }  // C-11
 }
 
 animations {
@@ -6954,6 +6978,12 @@ Pixels travel the Wayland path, gated separately by
 independently revocable capabilities, and "may draw but may no longer read" is
 a reachable state.
 
+*(E-01, 2026-09-26)* These methods, the annotation binds and the
+`region-select` action are **hooks** (ADR 0066): refused, and forwarding
+nothing, unless an installed add-on manifest in `/usr/share/eclipse/addons/`
+names `annotations` (respectively `region-select`). Oracle-Eyes ships that
+manifest. A manifest never grants capture; it may only request it.
+
 ## 4. Naming
 
 "Oracle" is a load-bearing security term in Volume 2 — S-02's **no policy
@@ -7073,6 +7103,7 @@ against source before it was written. Nothing was renumbered.
 | C-08 | COMP-01 §12; COMP-13 §1.4; F-01 §3; planning index; COMP-16 M11, M13, M14; F-07 §6; Appendix B | Struck what ADRs resolved: render-device refusal (ADR 0033), the §1.4 VERIFY (ADR 0036). F-01 §3 deadline moved to "before COMP-17 leaves draft". Index: COMP-17 Draft v0.1, COMP-18 Draft v0.2, D-01..03 written. COMP-16 citations corrected to the sections that specify each milestone. F-07 §6 invariants synced with root `CLAUDE.md`. Appendix B numbering note resolved (COMP-16 is v0.2 inline) | yes |
 | C-09 | C-00 §1.4; COMP-13 §1.1; F-04 §1 | Snapshot path uses the `eclipse/` runtime namespace (matches COMP-01 §7 and the code). Agent-attention is SUPER+space, reserved, as the parser enforces. F-04 clarified as the performance reference, distinct from the D-03 install target. Conflicts with no code to decide them are listed below | yes |
 | C-10 | COMP-05 §3.1 | *(2026-09-24, owner ruling)* **radiant** added as the default layout: weighted n-ary tree, per-window priority, drag-to-tile drop zones with guides (ADR 0058, supersedes the binary tree of ADR 0021, amends ADR 0057). `dwindle` kept as Dwindle Classic, `master` unchanged; drop zones and priority are radiant-only | yes |
+| C-11 | COMP-02 §4, §9; COMP-13 §1.1 | *(2026-09-25)* Border glow added: `decoration.glow { enabled; active; inactive; strength }`, the shadow shader in the border colour, outside-only, between shadow and border. Shadow row corrected from "nine-slice texture" to the SDF shader it is | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing
@@ -7096,6 +7127,18 @@ against source before it was written. Nothing was renumbered.
 6. **Framework 13 as a performance reference.** F-04 and D-03 are
    reconciled as different roles (C-09), but whether COMP-14 gains an
    AMD/laptop measurement column is not decided.
+
+---
+
+# Appendix E — amendment record, 2026-09-26
+
+**Applied inline to this volume on 2026-09-26**, from owner rulings of the
+same day. Appendix D is reserved for the D-07 batch.
+
+| ID | Target | Change | Applied |
+|---|---|---|---|
+| E-01 | COMP-18 §3 | Annotation methods, binds and region select are add-on hooks (ADR 0066), off unless an installed manifest names them. A manifest never grants capture | yes |
+| E-02 | COMP-10 §3.11 | New surface: command approval for taskbar command widgets (ADR 0067). Compositor-initiated; no client may request it. §3.10 left to the pending-decision queue | yes |
 
 ---
 

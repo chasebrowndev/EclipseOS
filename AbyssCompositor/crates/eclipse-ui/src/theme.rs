@@ -12,7 +12,7 @@ use iced::{
     Background, Border, Color, Shadow, Theme, Vector,
 };
 
-use crate::tokens::{color, radius, size, space};
+use crate::tokens::{bar, color, radius, size, space};
 
 /// The theme every Eclipse binary runs.
 ///
@@ -258,6 +258,39 @@ pub fn chip(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
                 },
                 width: 1.0,
                 radius: radius::CHIP.into(),
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
+/// A cell on the taskbar: a window chip, a widget, a compressed widget's lone
+/// grip. One ground for all of them, so a chip and a widget sitting side by
+/// side on the bar read as one family (ADR 0065).
+///
+/// At rest the cell is a hairline and no fill — the bar's own glass shows
+/// through, and a lift per cell turns the row into grey boxes. The pointer
+/// brightens the edge and lays a soft wash; a press deepens the wash.
+/// `accent` is a window that is up: an accent edge, and an accent wash
+/// earned by the pointer, never a resting yellow fill.
+pub fn bar_cell(accent: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_t, status| {
+        let (background, edge) = match (accent, status) {
+            (true, button::Status::Hovered | button::Status::Pressed) => {
+                (color::ACCENT_WASH, color::ACCENT_BORDER)
+            }
+            (true, _) => (Color::TRANSPARENT, color::ACCENT_BORDER),
+            (false, button::Status::Hovered) => (color::LIFT_SOFT, color::BORDER_STRONG),
+            (false, button::Status::Pressed) => (color::LIFT, color::BORDER_STRONG),
+            (false, _) => (Color::TRANSPARENT, color::BORDER),
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: if accent { color::ACCENT_TEXT } else { color::TEXT },
+            border: Border {
+                color: edge,
+                width: bar::HAIRLINE,
+                radius: bar::RADIUS_CELL.into(),
             },
             ..button::Style::default()
         }

@@ -129,6 +129,7 @@ pub fn run(config: Config, stats: bool, session: bool) -> Result<()> {
     crate::input::idle::start(&mut state, &handle);
     crate::ipc::start(&mut state, &handle);
     crate::config::watch::start(&mut state, &handle);
+    crate::addons::start(&mut state, &handle);
     handle
         .insert_source(socket, |stream, _, state| {
             if let Err(e) = state.display_handle.insert_client(stream, client_state()) {
@@ -299,6 +300,21 @@ fn redraw(
         elements.splice(
             0..0,
             crate::render::capture::indicator(out, state.capture_active()),
+        );
+        // A trusted prompt (COMP-10) is front-most of all.
+        elements.splice(
+            0..0,
+            crate::trusted_ui::elements(
+                renderer,
+                &mut state.trusted_ui,
+                state.lock.locked,
+                out,
+                state
+                    .space
+                    .output_geometry(out)
+                    .map(|g| g.loc)
+                    .unwrap_or_default(),
+            ),
         );
         // Overscan compensation (COMP-03 §2) — same wrap as the DRM path, so a
         // nested dev session shows exactly what the panel will.

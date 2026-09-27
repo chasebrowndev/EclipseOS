@@ -15,7 +15,9 @@ Read the root `CLAUDE.md` first. This file only adds crate-local rules.
   `config/` (KDL parse, schema, watch, in-place edit), `xwayland/` (XWM,
   security), `state.rs` (globals + seat), `session.rs`. `tests/config_doc.rs`
   checks the config schema against `docs/CONFIG.md`.
-- Not yet present: `protocols/agent/`, `protocols/semantic/`, `trusted_ui/`,
+- `trusted_ui/` (TCB): the modal prompt primitive (COMP-10 §3.11, §4) and
+  its one owner so far, command-widget approval (`approval.rs`, ADR 0067).
+- Not yet present: `protocols/agent/`, `protocols/semantic/`,
   `policy/`, `audit/`. When they land they go there, not elsewhere.
 - Human keystrokes are never logged by content. Log keysym names only behind `trace`.
 - Logs go to journald: `journalctl --user -t abyss -o cat --since "5 min ago"`.
