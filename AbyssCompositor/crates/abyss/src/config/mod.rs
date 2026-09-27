@@ -531,8 +531,9 @@ impl Default for Bar {
 /// default: the defaults below are the "no effect" values, so a config without a
 /// `decoration` block renders exactly as it did before milestone 9b and keeps
 /// direct scanout available. Opacity and `dim-inactive` are rendered today;
-/// `shadow` is an SDF pixel shader over the grown window rect and `blur` a
-/// dual-Kawase chain behind translucent windows (COMP-02 §9); both draw today.
+/// `shadow` and `glow` are one SDF pixel shader over the grown window rect and
+/// `blur` a dual-Kawase chain behind translucent windows (COMP-02 §9); all draw
+/// today.
 /// `rounding` is drawn as a fragment-shader mask.
 #[derive(Debug, Clone)]
 pub struct Decoration {
@@ -548,6 +549,7 @@ pub struct Decoration {
     pub dim_inactive: f32,
     pub blur: Blur,
     pub shadow: Shadow,
+    pub glow: Glow,
 }
 
 impl Default for Decoration {
@@ -559,6 +561,7 @@ impl Default for Decoration {
             dim_inactive: 0.0,
             blur: Blur::default(),
             shadow: Shadow::default(),
+            glow: Glow::default(),
         }
     }
 }
@@ -572,6 +575,7 @@ impl Decoration {
             || self.active_opacity < 1.0
             || self.inactive_opacity < 1.0
             || self.dim_inactive > 0.0
+            || self.glow.on()
     }
 }
 
@@ -593,7 +597,8 @@ impl Default for Blur {
     }
 }
 
-/// `shadow { enabled #false; range 20 }`. Nine-slice (COMP-02 §9).
+/// `shadow { enabled #false; range 20 }`. An SDF ring outside the window, drawn
+/// by a pixel shader (COMP-02 §9).
 #[derive(Debug, Clone)]
 pub struct Shadow {
     pub enabled: bool,
@@ -606,6 +611,37 @@ impl Default for Shadow {
             enabled: false,
             range: 20,
         }
+    }
+}
+
+/// `glow { enabled #false; active #true; inactive #true; strength 60 }`. The
+/// shadow's SDF ring, tinted with the window's border colour (COMP-02 §9).
+#[derive(Debug, Clone)]
+pub struct Glow {
+    pub enabled: bool,
+    /// Glow on the focused window.
+    pub active: bool,
+    /// Glow on unfocused windows.
+    pub inactive: bool,
+    /// Peak intensity, percent 0..=100.
+    pub strength: i32,
+}
+
+impl Default for Glow {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            active: true,
+            inactive: true,
+            strength: 60,
+        }
+    }
+}
+
+impl Glow {
+    /// Whether any window can glow at all.
+    pub fn on(&self) -> bool {
+        self.enabled && self.strength > 0 && (self.active || self.inactive)
     }
 }
 
@@ -2637,6 +2673,7 @@ impl Config {
                 },
                 "blur" => self.apply_blur(n),
                 "shadow" => self.apply_shadow(n),
+                "glow" => self.apply_glow(n),
                 _ => self.unknown_key(n, "decoration", "decoration key"),
             }
         }
@@ -2674,6 +2711,27 @@ impl Config {
                     _ => self.reject(n, "shadow range must be an integer 0..=128"),
                 },
                 _ => self.unknown_key(n, "decoration.shadow", "shadow key"),
+            }
+        }
+    }
+
+    fn apply_glow(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                name @ ("enabled" | "active" | "inactive") => {
+                    let v = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
+                    match name {
+                        "enabled" => self.decoration.glow.enabled = v,
+                        "active" => self.decoration.glow.active = v,
+                        _ => self.decoration.glow.inactive = v,
+                    }
+                }
+                "strength" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (0..=100).contains(&v) => self.decoration.glow.strength = v as i32,
+                    _ => self.reject(n, "glow strength must be an integer 0..=100"),
+                },
+                _ => self.unknown_key(n, "decoration.glow", "glow key"),
             }
         }
     }
@@ -4029,6 +4087,7 @@ mod tests {
                 dim-inactive 0.2
                 blur { enabled #false; size 12; passes 3 }
                 shadow { enabled #true; range 20 }
+                glow { enabled #true; inactive #false; strength 80 }
             }
             animations {
                 enabled #true
@@ -4047,6 +4106,11 @@ mod tests {
         assert!(!cfg.decoration.blur.enabled);
         assert_eq!((cfg.decoration.blur.size, cfg.decoration.blur.passes), (12, 3));
         assert!(cfg.decoration.shadow.enabled && cfg.decoration.shadow.range == 20);
+        let g = &cfg.decoration.glow;
+        assert_eq!(
+            (g.enabled, g.active, g.inactive, g.strength),
+            (true, true, false, 80)
+        );
         assert!(cfg.decoration.any_window_effect());
         let w = cfg.animations.get("windows").expect("windows curve");
         assert_eq!((w.duration_ms, w.curve.as_str()), (150, "ease-out"));
@@ -4063,6 +4127,7 @@ mod tests {
         // a window looks.
         assert!(cfg.decoration.any_window_effect());
         assert!(!cfg.decoration.shadow.enabled);
+        assert!(!cfg.decoration.glow.on());
         assert_eq!(cfg.decoration.rounding, 13);
         assert_eq!(cfg.decoration.active_opacity, 1.0);
         assert_eq!(cfg.decoration.inactive_opacity, 1.0);

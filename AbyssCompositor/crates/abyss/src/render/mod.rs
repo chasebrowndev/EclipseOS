@@ -100,6 +100,10 @@ pub struct BorderStore {
     /// frames for the same reason; the last-applied range and radius are kept
     /// to skip no-op uniform updates.
     shadows: HashMap<Window, (PixelShaderElement, [f32; 2])>,
+    /// One border glow per window when glow is on, drawn by the shadow
+    /// program; the last-applied colour, range and radius are kept to skip
+    /// no-op uniform updates.
+    glows: HashMap<Window, (PixelShaderElement, [f32; 6])>,
     /// Blur chain, programs and per-window backdrops (COMP-02 §9).
     blur: blur::BlurStore,
 }
@@ -109,6 +113,7 @@ impl BorderStore {
         self.borders.remove(window);
         self.rings.remove(window);
         self.shadows.remove(window);
+        self.glows.remove(window);
         self.dims.remove(window);
     }
 }
@@ -120,8 +125,8 @@ fn phys(p: Point<i32, Logical>, scale: Scale<f64>) -> Point<i32, Physical> {
 /// Collect one frame's elements, front to back.
 ///
 /// Order (topmost first) follows COMP-02 §4: overlay layer surfaces, top layer
-/// surfaces, toplevels (each followed by its own border, shadow and blurred
-/// backdrop), then bottom and background layers.
+/// surfaces, toplevels (each followed by its own border, glow, shadow and
+/// blurred backdrop), then bottom and background layers.
 /// Trusted UI is prepended by the caller once COMP-10 lands.
 ///
 /// `fullscreen` says a fullscreen toplevel owns this output, which drops the
@@ -398,6 +403,7 @@ fn window_elements(
     let rounding = fb_height.zip(store.rounded.clone());
     let border = border_frame(renderer, store, output_geo.loc, scale, output, config, &live);
     let shadow = shadow_program(renderer, store, config, &live);
+    let glow = glow_program(renderer, store, config, &live);
 
     // `space.elements()` is bottom-to-top; frames are collected front-to-back.
     for window in live.into_iter().rev() {
@@ -540,11 +546,15 @@ fn window_elements(
         let Some(geo) = geo else {
             continue;
         };
-        // Border then shadow, both directly under this window's surfaces. The
-        // ring's inner edge is the exact complement of the window's rounded
-        // mask, so it never covers window content from below either.
+        // Border, glow, then shadow, all directly under this window's
+        // surfaces. The ring's inner edge is the exact complement of the
+        // window's rounded mask, so it never covers window content from below
+        // either; glow and shadow draw only outside the bordered rect.
         if let Some(frame) = &border {
             push_border(store, frame, &window, geo, config, out);
+        }
+        if let Some(program) = &glow {
+            push_glow(store, program, &window, geo, output_geo.loc, config, out);
         }
         if let Some(program) = &shadow {
             push_shadow(store, program, &window, geo, output_geo.loc, config, out);
@@ -587,11 +597,19 @@ fn shadow_program(
         return None;
     }
     store.shadows.retain(|w, _| live.contains(w));
+    ring_shadow_program(renderer, store)
+}
+
+/// The shadow ring program, compiled on first use; glow draws with it too.
+fn ring_shadow_program(
+    renderer: &mut GlesRenderer,
+    store: &mut BorderStore,
+) -> Option<smithay::backend::renderer::gles::GlesPixelProgram> {
     if store.shadow.is_none() {
         match effects::compile_shadow(renderer) {
             Ok(program) => store.shadow = Some(program),
             Err(err) => {
-                tracing::warn!(?err, "compiling the shadow shader; shadows disabled");
+                tracing::warn!(?err, "compiling the shadow shader; shadows and glow disabled");
                 return None;
             }
         }
@@ -599,18 +617,34 @@ fn shadow_program(
     store.shadow.clone()
 }
 
-/// Where one window's drop shadow goes and what it is shaded with: its
+/// The shadow program when border glow is on, with the stored glows of
+/// windows that are gone dropped (COMP-02 §9); `None` draws no glow.
+fn glow_program(
+    renderer: &mut GlesRenderer,
+    store: &mut BorderStore,
+    config: &Config,
+    live: &[Window],
+) -> Option<smithay::backend::renderer::gles::GlesPixelProgram> {
+    if !config.decoration.glow.on() {
+        store.glows.clear();
+        return None;
+    }
+    store.glows.retain(|w, _| live.contains(w));
+    ring_shadow_program(renderer, store)
+}
+
+/// Where one window's drop shadow or glow goes and what it is shaded with: its
 /// output-local area, grown from the bordered rect by `range`, and its
 /// `[range, radius]` uniforms. `geo` is global with the animation offset
 /// applied (COMP-02 §9).
 fn shadow_geometry(
     geo: Rectangle<i32, Logical>,
     output_loc: Point<i32, Logical>,
+    range: i32,
     config: &Config,
 ) -> (Rectangle<i32, Logical>, [f32; 2]) {
     // The shadow sits outside the border, so it grows from the bordered rect.
     let inset = config.general.border_size;
-    let range = config.decoration.shadow.range;
     // It hugs the border ring's outer edge, whose radius is the window's plus
     // the border width (see `push_border`); square stays square.
     let radius = match config.decoration.rounding {
@@ -641,9 +675,53 @@ fn push_shadow(
     config: &Config,
     out: &mut Vec<AbyssRenderElement>,
 ) {
-    let (area, params) = shadow_geometry(geo, output_loc, config);
-    let uniforms = || effects::shadow_uniforms(params[0], params[1]);
+    let (area, params) = shadow_geometry(geo, output_loc, config.decoration.shadow.range, config);
+    let uniforms = || effects::shadow_uniforms([0.0, 0.0, 0.0, effects::SHADOW_ALPHA], params[0], params[1]);
     let (element, applied) = store.shadows.entry(window.clone()).or_insert_with(|| {
+        (
+            PixelShaderElement::new(program.clone(), area, None, 1.0, uniforms(), Kind::Unspecified),
+            params,
+        )
+    });
+    element.resize(area, None);
+    if *applied != params {
+        element.update_uniforms(uniforms());
+        *applied = params;
+    }
+    out.push(AbyssRenderElement::Shader(element.clone()));
+}
+
+/// One window's border glow: the drop-shadow ring in the window's border
+/// colour, reaching `GLOW_RANGE` past the border (COMP-02 §9). It follows the
+/// border's focus crossfade, and a state with glow off crossfades to
+/// transparent, so glow fades in or out with focus. Stored and updated like
+/// `push_shadow`.
+fn push_glow(
+    store: &mut BorderStore,
+    program: &smithay::backend::renderer::gles::GlesPixelProgram,
+    window: &Window,
+    geo: Rectangle<i32, Logical>,
+    output_loc: Point<i32, Logical>,
+    config: &Config,
+    out: &mut Vec<AbyssRenderElement>,
+) {
+    let glow = &config.decoration.glow;
+    // Config colours are straight alpha; the shader wants premultiplied, and
+    // premultiplying before the crossfade keeps the fade to transparent linear.
+    let k = glow.strength as f32 / 100.0;
+    let on = |yes: bool, [r, g, b, a]: [f32; 4]| match yes {
+        true => [r * a * k, g * a * k, b * a * k, a * k],
+        false => [0.0; 4],
+    };
+    let color = store.anim.border_color(
+        window,
+        on(glow.active, config.general.col_active),
+        on(glow.inactive, config.general.col_inactive),
+    );
+    let (area, [range, radius]) = shadow_geometry(geo, output_loc, effects::GLOW_RANGE, config);
+    let params = [color[0], color[1], color[2], color[3], range, radius];
+    let uniforms = || effects::shadow_uniforms(color, range, radius);
+    let (element, applied) = store.glows.entry(window.clone()).or_insert_with(|| {
         (
             PixelShaderElement::new(program.clone(), area, None, 1.0, uniforms(), Kind::Unspecified),
             params,
@@ -948,17 +1026,19 @@ mod tests {
     #[test]
     fn shadow_hugs_the_bordered_rect() {
         let geo = Rectangle::new((100, 50).into(), (300, 200).into());
-        let (area, params) = shadow_geometry(geo, (40, 0).into(), &config(13, 6, 20));
+        let (area, params) = shadow_geometry(geo, (40, 0).into(), 20, &config(13, 6, 20));
         assert_eq!(area, Rectangle::new((34, 24).into(), (352, 252).into()));
         assert_eq!(params, [20.0, 19.0]);
-        let (_, params) = shadow_geometry(geo, (40, 0).into(), &config(0, 6, 20));
+        let (_, params) = shadow_geometry(geo, (40, 0).into(), 20, &config(0, 6, 20));
         assert_eq!(params, [20.0, 0.0], "square windows keep a square shadow");
     }
 
     #[test]
     fn shadow_is_only_rebuilt_when_its_inputs_change() {
         let geo = Rectangle::new((100, 50).into(), (300, 200).into());
-        let at = |geo, output: (i32, i32), cfg: &Config| shadow_geometry(geo, output.into(), cfg);
+        let at = |geo, output: (i32, i32), cfg: &Config| {
+            shadow_geometry(geo, output.into(), cfg.decoration.shadow.range, cfg)
+        };
         let base = config(13, 6, 20);
         let same = at(geo, (0, 0), &base);
         // A static window: nothing changes, so `resize` and `update_uniforms`
