@@ -264,7 +264,7 @@ pub const TABLE: &[Key] = &[
         Int(40),
         Abyss,
         Live,
-        "Width of the screen-edge band that drops a window as a full-height column or full-width row, logical px. 0 disables it.",
+        "Width of the edge strip a dragged window's centre aims at to drop it as a full-height column or full-width row, logical px. 0 disables edge drops.",
     ),
     // render
     k(
@@ -765,6 +765,14 @@ pub const TABLE: &[Key] = &[
         Live,
         "Disable the touchpad while typing.",
     ),
+    k(
+        "input.touchpad.click-method",
+        Ty::Enum(&["clickfinger", "button-areas"]),
+        Str("clickfinger"),
+        Abyss,
+        Live,
+        "Touchpad click method: finger count or bottom-corner button areas.",
+    ),
     // misc
     k(
         "misc.render-device",
@@ -875,8 +883,8 @@ pub struct Collection {
 
 pub const COLLECTIONS: &[Collection] = &[
     Collection { node: "bind", owner: Abyss, doc: "A key binding: `bind [\"<modifiers>\"] \"<keysym>\" { <action>; }`, e.g. `bind \"SUPER SHIFT\" \"Return\" { spawn \"foot\"; }`. `Super+Escape` and `Super+space` are reserved and cannot be bound." },
-    Collection { node: "gesture", owner: Abyss, doc: "A touchpad swipe binding: `gesture \"swipe\" <fingers> \"<direction>\" { <action>; }`. `fingers` is 3 or 4, `direction` is `left`, `right`, `up` or `down`, and the action is anything `bind` accepts. A bound finger count is the compositor's for the whole swipe; unbound swipes, pinches and holds reach the app. Defaults: 3-finger `left` runs `workspace-next`, 3-finger `right` runs `workspace-prev`. A `gesture` for the same fingers and direction replaces the default." },
-    Collection { node: "mousebind", owner: Abyss, doc: "A modifier + mouse-button binding: `mousebind \"<modifiers>\" \"<button>\" { <action>; }`. `button` is `left`, `right` or `middle`, and the action is `move-window` or `resize-window`. With exactly those modifiers held, pressing the button over a window drags it (move) or drags its nearest corner (resize); a tiled window is floated first. The press never reaches the client. At least one modifier is required. Defaults: `Alt` + `left` runs `move-window`, `Alt` + `right` runs `resize-window`. A `mousebind` for the same modifiers and button replaces the default." },
+    Collection { node: "gesture", owner: Abyss, doc: "A touchpad swipe binding: `gesture \"swipe\" <fingers> \"<direction>\" { <action>; }`. `fingers` is 3 or 4, `direction` is `left`, `right`, `up` or `down`, and the action is anything `bind` accepts. A bound finger count is the compositor's for the whole swipe; unbound swipes, pinches and holds reach the app. Defaults: 3-finger `left` runs `workspace-next`, 3-finger `right` runs `workspace-prev`. A `gesture` for the same fingers and direction replaces the default. A touchpad window drag: `gesture \"drag\" <fingers> \"<modifiers>\" { move-window; }`. `fingers` is 2, 3 or 4 and at least one modifier is required. With exactly those modifiers held when the fingers start moving, the drag moves the window under the pointer the way a `mousebind` move does, and none of it reaches the app; without them two-finger scrolling is untouched. A finger count cannot be both swiped and dragged. Default: `gesture \"drag\" 2 \"Super\" { move-window; }`. A drag for the same fingers replaces the default; `gesture \"drag\" <fingers> { none; }` switches it off." },
+    Collection { node: "mousebind", owner: Abyss, doc: "A modifier + mouse-button binding: `mousebind \"<modifiers>\" \"<button>\" { <action>; }`. `button` is `left`, `right` or `middle`, and the action is `move-window` or `resize-window`. With exactly those modifiers held, pressing the button over a window drags it (move) or drags its nearest corner (resize). Under the `radiant` layout a moved tile drags over its placeholder and lands on the drop the guides show; under the other layouts, and for a resize, a tiled window is floated first. The press never reaches the client. At least one modifier is required. Defaults: `Alt` + `left` runs `move-window`, `Alt` + `right` runs `resize-window`. A `mousebind` for the same modifiers and button replaces the default." },
     Collection { node: "output", owner: Abyss, doc: "Per-output settings: `output \"<glob>\" { … }`. The glob (`*` only) matches the connector name or the persistent identity; later blocks override earlier ones key by key." },
     Collection { node: "workspace", owner: Abyss, doc: "Per-workspace layout override." },
     Collection { node: "widget", owner: Abyss, doc: "A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget \"<name>\" { exec \"<argv0>\" \"<arg>\"…; interval-ms <ms>; }`; or `stream #true` instead of `interval-ms`, for a command that keeps running and prints one update per line; or `source \"<source>\"` with a `format` instead of `exec`. `bar.widgets.order` draws it as `custom:<name>`. Commands run argv-exec, never through a shell, off the draw path, with a timeout and a 4 KiB line cap, and are killed on reload or removal. A line of output is plain text or JSON `{text, detail, tooltip, state}`; it is shown as plain text, never markup, and never logged. A command has exactly your authority and gains nothing from the taskbar. A later block with the same name replaces an earlier one. `get_config` lists every block, in file order, under `collections.widget` as `{\"name\", \"kind\": \"exec\" | \"stream\" | \"source\", \"exec\": [argv] | null, \"interval-ms\": int | null, \"source\": string | null, \"format\": string | null, \"icon\": string | null, \"on-click\": [argv] | null, \"on-scroll-up\": [argv] | null, \"on-scroll-down\": [argv] | null, \"approval\": \"approved\", \"premade\": bool}`, every field always present: `exec` is set for `exec` and `stream`, `interval-ms` for `exec` only, `source` and `format` for `source` only; `premade` is true when the block is identical to the catalog block of the same name. Widgets are an add-on hook (ADR 0066): unless an installed add-on (the taskbar) turns on `taskbar-widgets`, `widget` blocks are ignored rather than refused, their `custom:` ids are dropped from `bar.widgets.*`, `collections.widget` is empty and `set_config_collection` for `widget` is refused. With the hook on, the premade catalog (`/usr/share/eclipse/widgets/*.kdl`, each file only `bar { widget … }`) is the lowest config layer, below `/etc/eclipse/abyss.kdl`, so `custom:<premade>` works with no block of your own and a block of the same name replaces it. Command widgets need your approval (ADR 0067): an `exec` or `stream` widget runs only if it is an unedited catalog block or you approved exactly this definition (name, argv, interval or stream, and actions) in the compositor-drawn prompt. Anything else, an edited premade or a new command, is withheld: it does not run, its `custom:` id stays and draws nothing, and `collections.widget` lists it as `{\"name\", \"approval\": \"pending\", \"premade\": false, \"altered\": bool}` with no command fields (`altered` is true for an edited premade). Any later edit withholds it again. Not now lasts for the session; the control-socket method `review_widget {\"name\"}` (owner only) brings the prompt back, returns `{\"name\", \"queued\": bool}`, never shows two prompts for one widget, and cannot approve anything itself. `approval`, `premade` and `altered` are ignored on write." },
@@ -1506,6 +1514,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "input.touchpad.natural-scroll" => V::Bool(c.input.touchpad.natural_scroll),
         "input.touchpad.tap-to-click" => V::Bool(c.input.touchpad.tap_to_click),
         "input.touchpad.dwt" => V::Bool(c.input.touchpad.dwt),
+        "input.touchpad.click-method" => V::Str(c.input.touchpad.click_method.clone()),
         "misc.render-device" => s(&c.misc.render_device),
         "misc.terminal-command" => s(&c.misc.terminal_command),
         "misc.scripted-input" => V::Bool(c.misc.scripted_input),

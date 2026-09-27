@@ -157,6 +157,11 @@ pub struct AbyssState {
     /// A touchpad swipe claimed by a gesture binding, from begin to end
     /// (COMP-04 §2). While set, the swipe's events do not reach any client.
     pub gesture_capture: Option<crate::input::GestureCapture>,
+    /// A touchpad drag gesture moving a window (COMP-04 §2, amended C-12).
+    pub gesture_drag: Option<crate::input::grabs::GestureDrag>,
+    /// A finger scroll sequence is in progress and is the app's, so a
+    /// modifier pressed mid-scroll does not turn its tail into a drag.
+    pub finger_scroll_forwarded: bool,
     /// The pinch or hold in progress was dropped at begin (lock or region
     /// select), so its end is dropped too.
     pub gesture_dropped: bool,
@@ -506,6 +511,8 @@ impl AbyssState {
             touch_points: Vec::new(),
             gesture_capture: None,
             gesture_dropped: false,
+            gesture_drag: None,
+            finger_scroll_forwarded: false,
             tablet_in_use: None,
             borders: crate::render::BorderStore::default(),
             annotations: crate::render::annotation::AnnotationStore::default(),

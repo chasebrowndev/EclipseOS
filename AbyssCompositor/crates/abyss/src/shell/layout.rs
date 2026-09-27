@@ -67,8 +67,8 @@ impl Side {
     }
 }
 
-/// Where a pointer sits inside a tile: one of the four triangles the
-/// diagonals cut it into, or the middle-third box.
+/// A drop onto a tile: split it on one of its four sides, or take its place
+/// (the centre).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Zone {
     Left,
@@ -659,27 +659,6 @@ pub fn dwindle_rects(n: usize, area: Rectangle<i32, Logical>, gap: i32) -> Vec<R
     out
 }
 
-/// Which zone of `rect` the pointer is in. The middle third on both axes is
-/// the centre; outside it, the diagonals decide.
-pub fn drop_zone(rect: Rectangle<i32, Logical>, pointer: Point<f64, Logical>) -> Zone {
-    let w = rect.size.w.max(1) as f64;
-    let h = rect.size.h.max(1) as f64;
-    let u = (pointer.x - rect.loc.x as f64) / w;
-    let v = (pointer.y - rect.loc.y as f64) / h;
-    let third = 1.0 / 3.0;
-    if (third..=2.0 * third).contains(&u) && (third..=2.0 * third).contains(&v) {
-        return Zone::Center;
-    }
-    // Above the main diagonal (v < u) and above the anti-diagonal (v < 1 - u)
-    // is the top triangle; the other three follow by symmetry.
-    match (v < u, v < 1.0 - u) {
-        (true, true) => Zone::Top,
-        (false, false) => Zone::Bottom,
-        (false, true) => Zone::Left,
-        (true, false) => Zone::Right,
-    }
-}
-
 /// Split `r` along one axis between children in proportion to `weights`,
 /// with `gap` between neighbours. Each share is floored and the last child
 /// takes the remainder, so the pieces always tile `r` exactly.
@@ -1039,29 +1018,6 @@ mod tests {
         // A share past the limit is clamped rather than squeezing 2 away.
         t.resize(&1, area, 10, (Some(100_000), None));
         assert_eq!(t.weight_of(&1), Some(20.0));
-    }
-
-    #[test]
-    fn drop_zone_diagonals_and_centre() {
-        let r = rect(100, 100, 300, 300);
-        let at = |x: f64, y: f64| drop_zone(r, (x, y).into());
-        assert_eq!(at(250.0, 250.0), Zone::Center);
-        assert_eq!(at(210.0, 210.0), Zone::Center);
-        assert_eq!(at(250.0, 110.0), Zone::Top);
-        assert_eq!(at(250.0, 390.0), Zone::Bottom);
-        assert_eq!(at(110.0, 250.0), Zone::Left);
-        assert_eq!(at(390.0, 250.0), Zone::Right);
-        // Outside the centre box, near a corner: the diagonal splits it.
-        assert_eq!(at(130.0, 120.0), Zone::Top);
-        assert_eq!(at(120.0, 130.0), Zone::Left);
-        assert_eq!(at(380.0, 370.0), Zone::Right);
-        assert_eq!(at(370.0, 380.0), Zone::Bottom);
-        // Just outside the middle third on one axis.
-        assert_eq!(at(250.0, 195.0), Zone::Top);
-        // Wide rectangles use proportional diagonals.
-        let wide = rect(0, 0, 900, 90);
-        assert_eq!(drop_zone(wide, (100.0, 45.0).into()), Zone::Left);
-        assert_eq!(drop_zone(wide, (450.0, 5.0).into()), Zone::Top);
     }
 
     #[test]

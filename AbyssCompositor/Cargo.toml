@@ -21,7 +21,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-journald = "0.3"
 anyhow = "1"
-thiserror = "2"
 xkbcommon = "0.8"
 kdl = "6"
 # Window-rule matchers (COMP-05 §4). Titles are client-controlled, so the

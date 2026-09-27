@@ -52,7 +52,7 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `general.col-inactive-border` | colour `#rrggbb[aa]` | `#161616ff` | live | Border colour of every unfocused window. |
 | `general.drop-guides` | bool | `#true` | live | Draw the drop zones and a ghost of where a dragged window will land (radiant layout). |
 | `general.drop-guide-color` | colour `#rrggbb[aa]` | `#e8a33dff` | live | Colour of the drop guides. |
-| `general.drop-edge-band` | int 0..512 | `40` | live | Width of the screen-edge band that drops a window as a full-height column or full-width row, logical px. 0 disables it. |
+| `general.drop-edge-band` | int 0..512 | `40` | live | Width of the edge strip a dragged window's centre aims at to drop it as a full-height column or full-width row, logical px. 0 disables edge drops. |
 
 ### `render`
 
@@ -155,6 +155,7 @@ Each animation is off until named in an `animation` node inside `animations { }`
 | `input.touchpad.natural-scroll` | bool | `#false` | live | Invert touchpad scroll direction. |
 | `input.touchpad.tap-to-click` | bool | `#false` | live | Treat a tap as a click. |
 | `input.touchpad.dwt` | bool | `#false` | live | Disable the touchpad while typing. |
+| `input.touchpad.click-method` | clickfinger \| button-areas | `"clickfinger"` | live | Touchpad click method: finger count or bottom-corner button areas. |
 
 ### `misc`
 
@@ -200,11 +201,11 @@ A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPE
 
 ### `gesture`
 
-A touchpad swipe binding: `gesture "swipe" <fingers> "<direction>" { <action>; }`. `fingers` is 3 or 4, `direction` is `left`, `right`, `up` or `down`, and the action is anything `bind` accepts. A bound finger count is the compositor's for the whole swipe; unbound swipes, pinches and holds reach the app. Defaults: 3-finger `left` runs `workspace-next`, 3-finger `right` runs `workspace-prev`. A `gesture` for the same fingers and direction replaces the default.
+A touchpad swipe binding: `gesture "swipe" <fingers> "<direction>" { <action>; }`. `fingers` is 3 or 4, `direction` is `left`, `right`, `up` or `down`, and the action is anything `bind` accepts. A bound finger count is the compositor's for the whole swipe; unbound swipes, pinches and holds reach the app. Defaults: 3-finger `left` runs `workspace-next`, 3-finger `right` runs `workspace-prev`. A `gesture` for the same fingers and direction replaces the default. A touchpad window drag: `gesture "drag" <fingers> "<modifiers>" { move-window; }`. `fingers` is 2, 3 or 4 and at least one modifier is required. With exactly those modifiers held when the fingers start moving, the drag moves the window under the pointer the way a `mousebind` move does, and none of it reaches the app; without them two-finger scrolling is untouched. A finger count cannot be both swiped and dragged. Default: `gesture "drag" 2 "Super" { move-window; }`. A drag for the same fingers replaces the default; `gesture "drag" <fingers> { none; }` switches it off.
 
 ### `mousebind`
 
-A modifier + mouse-button binding: `mousebind "<modifiers>" "<button>" { <action>; }`. `button` is `left`, `right` or `middle`, and the action is `move-window` or `resize-window`. With exactly those modifiers held, pressing the button over a window drags it (move) or drags its nearest corner (resize); a tiled window is floated first. The press never reaches the client. At least one modifier is required. Defaults: `Alt` + `left` runs `move-window`, `Alt` + `right` runs `resize-window`. A `mousebind` for the same modifiers and button replaces the default.
+A modifier + mouse-button binding: `mousebind "<modifiers>" "<button>" { <action>; }`. `button` is `left`, `right` or `middle`, and the action is `move-window` or `resize-window`. With exactly those modifiers held, pressing the button over a window drags it (move) or drags its nearest corner (resize). Under the `radiant` layout a moved tile drags over its placeholder and lands on the drop the guides show; under the other layouts, and for a resize, a tiled window is floated first. The press never reaches the client. At least one modifier is required. Defaults: `Alt` + `left` runs `move-window`, `Alt` + `right` runs `resize-window`. A `mousebind` for the same modifiers and button replaces the default.
 
 ### `output`
 

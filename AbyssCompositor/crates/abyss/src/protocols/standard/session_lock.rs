@@ -96,6 +96,7 @@ impl AbyssState {
         tracing::info!("session locked");
         // A window mid-drag goes back to its tile rather than landing blind.
         crate::shell::cancel_tile_drag(self);
+        self.gesture_drag = None;
         // Nothing behind the lock may keep focus, even for one frame.
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
