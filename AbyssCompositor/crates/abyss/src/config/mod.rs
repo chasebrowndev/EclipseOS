@@ -1929,6 +1929,18 @@ impl Config {
         {
             self.xwayland.enable = false;
         }
+        // A refused `widget` block is dropped whole, but its name was already
+        // claimed, so a `custom:<name>` placed by `order`/`important` survived
+        // validation. Drop those ids too: the bar never lists a widget that
+        // has no block (ADR 0064 with ADR 0065). Withholding (ADR 0067) runs
+        // later on what is left.
+        let blocks: Vec<String> = self.bar.custom_widgets.iter().map(|w| w.name.clone()).collect();
+        let listed = |id: &String| match id.strip_prefix(schema::BAR_WIDGET_CUSTOM_PREFIX) {
+            Some(name) => blocks.iter().any(|b| b == name),
+            None => true,
+        };
+        self.bar.widgets.order.retain(listed);
+        self.bar.widgets.important.retain(listed);
         if self.idle.lock_command.is_some() && self.idle.lock_timeout.is_some() {
             for e in &mut self.errors {
                 if e.fail_safe == Some(FailSafe::AutoLockOff) {
@@ -5213,6 +5225,19 @@ mod startup_tests {
         // A sibling that is merely misspelt does not.
         let mut cfg = abyss("misc {\n    render-devcie \"/dev/dri/card1\"\n}\n");
         assert_eq!(cfg.startup(), Startup::Start { ignored: 1 }, "{:?}", cfg.errors);
+    }
+
+    /// ADR 0064 with ADR 0065: an invalid widget block is dropped and so is
+    /// its id in `order`/`important`; the valid block beside it stays.
+    #[test]
+    fn a_rejected_widget_block_starts_without_it() {
+        let text = "bar {\n    widget \"ok\" {\n        exec \"date\"\n    }\n    widget \"bad\" {\n        exec 3\n    }\n    widgets {\n        order \"clock\" \"custom:ok\" \"custom:bad\"\n        important \"custom:bad\"\n    }\n}\n";
+        let mut cfg = abyss(text);
+        assert_eq!(cfg.startup(), Startup::Start { ignored: 2 }, "{:?}", cfg.errors);
+        let names: Vec<&str> = cfg.bar.custom_widgets.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(names, ["ok"]);
+        assert_eq!(cfg.bar.widgets.order, ["clock", "custom:ok"]);
+        assert!(cfg.bar.widgets.important.is_empty());
     }
 
     fn startup_summary(cfg: &Config) -> String {
