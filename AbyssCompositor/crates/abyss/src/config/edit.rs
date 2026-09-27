@@ -134,30 +134,44 @@ fn splice(text: &str, path: &str, rendered: &str, shape: Shape) -> Result<String
         // missing, at the end of the deepest block that does exist.
         Resolved::Missing {
             depth,
+            empty_block,
             insert_at,
             indent,
         } => {
-            let mut body = String::new();
-            for (i, part) in parts[depth..parts.len() - 1].iter().enumerate() {
-                body.push_str(&indent);
-                body.push_str(&"    ".repeat(i));
-                body.push_str(part);
-                body.push_str(" {\n");
+            // Every new line starts with `indent`; the body ends in a newline.
+            let build = |indent: &str| {
+                let mut body = String::new();
+                for (i, part) in parts[depth..parts.len() - 1].iter().enumerate() {
+                    body.push_str(indent);
+                    body.push_str(&"    ".repeat(i));
+                    body.push_str(part);
+                    body.push_str(" {\n");
+                }
+                let inner = "    ".repeat(parts.len() - 1 - depth);
+                body.push_str(indent);
+                body.push_str(&inner);
+                body.push_str(parts[parts.len() - 1]);
+                if !rendered.is_empty() {
+                    body.push(' ');
+                    body.push_str(rendered);
+                }
+                body.push('\n');
+                for i in (0..parts.len() - 1 - depth).rev() {
+                    body.push_str(indent);
+                    body.push_str(&"    ".repeat(i));
+                    body.push_str("}\n");
+                }
+                body
+            };
+            // The deepest existing block is empty (`bar {}`, `bar {\n}`):
+            // fill it between its braces, never after its `}`.
+            if let Some(block) = empty_block {
+                return Ok(append_child(text, block, |inner| {
+                    let body = build(inner);
+                    body[inner.len()..body.len() - 1].to_string()
+                }));
             }
-            let inner = "    ".repeat(parts.len() - 1 - depth);
-            body.push_str(&indent);
-            body.push_str(&inner);
-            body.push_str(parts[parts.len() - 1]);
-            if !rendered.is_empty() {
-                body.push(' ');
-                body.push_str(rendered);
-            }
-            body.push('\n');
-            for i in (0..parts.len() - 1 - depth).rev() {
-                body.push_str(&indent);
-                body.push_str(&"    ".repeat(i));
-                body.push_str("}\n");
-            }
+            let body = build(&indent);
             let mut out = String::with_capacity(text.len() + body.len());
             out.push_str(&text[..insert_at]);
             if insert_at > 0 && !text[..insert_at].ends_with('\n') {
@@ -175,9 +189,11 @@ enum Resolved<'a> {
     /// replace.
     Node(&'a KdlNode),
     /// Insert `parts[depth..]` at byte `insert_at`, with `indent` leading each
-    /// new line.
+    /// new line — unless the deepest existing block is empty, in which case it
+    /// is `empty_block` and the insertion goes between its braces.
     Missing {
         depth: usize,
+        empty_block: Option<&'a KdlNode>,
         insert_at: usize,
         indent: String,
     },
@@ -189,6 +205,8 @@ fn resolve<'a>(text: &str, doc: &'a KdlDocument, parts: &[&str]) -> Resolved<'a>
     let mut cur = doc;
     let mut depth = 0;
     let mut node: Option<&KdlNode> = None;
+    // The block whose children `cur` is; `None` while `cur` is the document.
+    let mut parent: Option<&KdlNode> = None;
     while let Some(found) = cur
         .nodes()
         .iter()
@@ -201,8 +219,16 @@ fn resolve<'a>(text: &str, doc: &'a KdlDocument, parts: &[&str]) -> Resolved<'a>
             break;
         }
         match found.children() {
-            Some(kids) => cur = kids,
-            None => break,
+            Some(kids) => {
+                cur = kids;
+                parent = Some(found);
+            }
+            // A braceless node where a block is needed is not that block:
+            // `cur` stays where it was, so a new block is written beside it.
+            None => {
+                depth -= 1;
+                break;
+            }
         }
     }
 
@@ -211,16 +237,19 @@ fn resolve<'a>(text: &str, doc: &'a KdlDocument, parts: &[&str]) -> Resolved<'a>
     }
 
     // `cur` is the deepest block that exists. Insert at the end of it, taking
-    // indentation from its last child so the new line sits with its siblings.
-    let (insert_at, indent) = match cur.nodes().last() {
-        Some(last) => {
+    // indentation from its last child so the new line sits with its siblings;
+    // an empty block has no child, so its braces are the anchor instead.
+    let (empty_block, insert_at, indent) = match (cur.nodes().last(), parent) {
+        (Some(last), _) => {
             let end = line_end(text, last);
-            (end, leading_indent(text, last.span().offset()))
+            (None, end, leading_indent(text, last.span().offset()))
         }
-        None => (text.len(), String::new()),
+        (None, Some(block)) => (Some(block), 0, String::new()),
+        (None, None) => (None, text.len(), String::new()),
     };
     Resolved::Missing {
         depth,
+        empty_block,
         insert_at,
         indent,
     }
@@ -817,6 +846,49 @@ misc {
         );
         let bare = set_list("", "bar.tray.hidden", &[]).unwrap();
         assert_eq!(bare, "bar {\n    tray {\n        hidden\n    }\n}\n");
+    }
+
+    /// An empty enclosing block is filled in place, never followed by the new
+    /// key at the top level (where the loader rejects it as unknown).
+    #[test]
+    fn an_empty_block_is_filled_in_place() {
+        let v = KdlValue::Integer(6);
+        for (text, want) in [
+            ("bar {}\n", "bar {\n    rounding 6\n}\n"),
+            ("bar {\n}\n", "bar {\n    rounding 6\n}\n"),
+            ("bar { }", "bar { \n    rounding 6\n}"),
+            (
+                "// top\nbar {} // c\ngeneral {\n    gaps-in 1\n}\n",
+                "// top\nbar {\n    rounding 6\n} // c\ngeneral {\n    gaps-in 1\n}\n",
+            ),
+            ("\tbar {\n\t}\n", "\tbar {\n\t\trounding 6\n\t}\n"),
+        ] {
+            let out = set_value(text, "bar.rounding", &v).unwrap();
+            assert_eq!(out, want, "from {text:?}");
+            out.parse::<KdlDocument>().unwrap();
+            // And it is now a plain in-place edit.
+            assert_eq!(set_value(&out, "bar.rounding", &v).unwrap(), out);
+        }
+        // Missing blocks under an empty one go inside it.
+        let out = set_list("bar {}\n", "bar.widgets.order", &strs(&["clock"])).unwrap();
+        assert_eq!(out, "bar {\n    widgets {\n        order clock\n    }\n}\n");
+        // An empty nested block.
+        let text = "bar {\n    position \"top\"\n    widgets {\n    }\n}\n";
+        let out = set_list(text, "bar.widgets.order", &strs(&["clock"])).unwrap();
+        assert_eq!(
+            out,
+            "bar {\n    position \"top\"\n    widgets {\n        order clock\n    }\n}\n"
+        );
+        let out = set_list("bar {\n    widgets {}\n}\n", "bar.widgets.order", &[]).unwrap();
+        assert_eq!(out, "bar {\n    widgets {\n        order\n    }\n}\n");
+    }
+
+    /// A braceless node where a block is needed is not that block: a new
+    /// block is written beside it, not the key at the node's level.
+    #[test]
+    fn a_leaf_is_not_taken_for_its_block() {
+        let out = set_value("bar\n", "bar.rounding", &KdlValue::Integer(6)).unwrap();
+        assert_eq!(out, "bar\nbar {\n    rounding 6\n}\n");
     }
 
     /// kdl renders a string as a bare identifier when it can, and quotes it

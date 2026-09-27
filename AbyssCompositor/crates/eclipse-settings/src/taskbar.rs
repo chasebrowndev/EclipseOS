@@ -32,6 +32,7 @@ use eclipse_ui::widget::{
 
 use crate::app::{App, Message};
 use crate::bar_preview::{self as bp, Cell, Knobs, Rung, Solved};
+use crate::conn::Problem;
 use crate::editor::{Editor, Field, Kind, Slot, SOURCES};
 use crate::schema::Row as Key;
 use crate::tray::Lane;
@@ -397,9 +398,11 @@ pub struct Bar {
     /// Every widget's approval state, withheld ones included: a withheld
     /// widget is absent from `customs` (abyss serves no command for it).
     pub(crate) statuses: Vec<WidgetStatus>,
-    /// The last Review answer per widget: `true` queued, `false` already
-    /// queued or on screen.
-    reviewed: Vec<(String, bool)>,
+    /// The last Review answer per widget: `Ok(true)` queued, `Ok(false)`
+    /// already queued or on screen, `Err` refused. Kept per widget so a
+    /// refusal is drawn on the row whose Review was pressed, not in the
+    /// pane's banner scrolled out of view above it.
+    reviewed: Vec<(String, Result<bool, Problem>)>,
     pub(crate) editor: Option<Editor>,
     offer: Option<String>,
     width: Option<f32>,
@@ -659,6 +662,52 @@ pub fn preview_env(app: &mut App) {
     if std::env::var_os("SETTINGS_PREVIEW_SWEEP").is_some() {
         app.bar.sweep = Some(Instant::now());
     }
+    // A withheld command widget, as abyss would report it: the approval
+    // states can be seen without a compositor that has the hook on.
+    if let Ok(name) = std::env::var("SETTINGS_PREVIEW_PENDING") {
+        if !app.bar.statuses.iter().any(|s| s.name == name) {
+            app.bar.statuses.push(WidgetStatus {
+                name,
+                approval: Approval::Pending,
+                premade: false,
+                altered: false,
+            });
+        }
+    }
+    // A press, through the real update path, so what it leaves behind can be
+    // captured with no input injected.
+    match std::env::var("SETTINGS_PREVIEW_PRESS").as_deref() {
+        Ok("review") => {
+            let pending = app.bar.statuses.iter().find(|s| s.approval == Approval::Pending);
+            if let Some(name) = pending.map(|s| s.name.clone()) {
+                let _ = update(app, Msg::Review(name));
+            }
+        }
+        Ok("review-denied") => {
+            let pending = app.bar.statuses.iter().find(|s| s.approval == Approval::Pending);
+            if let Some(name) = pending.map(|s| s.name.clone()) {
+                app.bar.reviewed.push((
+                    name,
+                    Err(Problem::Denied {
+                        path: None,
+                        reason: "add-on hook `taskbar-widgets` is off".into(),
+                    }),
+                ));
+            }
+        }
+        // Shift's own selection logic, with the order it would write landed
+        // locally: `bar.widgets.order` exists only while the taskbar hook is
+        // on, which a dev host with no add-on manifest cannot give.
+        Ok("later") => {
+            let o = order(app);
+            if let Some(o) = shift(&mut app.bar, &o, true) {
+                if let Some(k) = app.rows.iter_mut().find(|r| r.path == ORDER) {
+                    k.value = json!(o);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn select(app: &mut App, id: String) {
@@ -699,10 +748,32 @@ fn adopt(b: &mut Bar, order: &[String]) {
 
 /// The selection, or the first widget when nothing is selected yet.
 fn selected(app: &App) -> Option<String> {
-    if app.bar.editor.as_ref().is_some_and(Editor::is_new) {
+    pick(&app.bar, &order(app))
+}
+
+/// [`selected`] on the pane's state alone.
+fn pick(b: &Bar, order: &[String]) -> Option<String> {
+    if b.editor.as_ref().is_some_and(Editor::is_new) {
         return None;
     }
-    app.bar.selected.clone().or_else(|| order(app).first().cloned())
+    b.selected.clone().or_else(|| order.first().cloned())
+}
+
+/// Move the selected widget one place, and the order it leaves behind.
+/// The selection is pinned to the widget by id first: the fallback
+/// selection is "whatever is first", which would otherwise stay at the old
+/// index while the widget the owner was moving walks away from it.
+fn shift(b: &mut Bar, order: &[String], later: bool) -> Option<Vec<String>> {
+    let id = pick(b, order)?;
+    b.selected = Some(id.clone());
+    let at = order.iter().position(|x| *x == id)?;
+    let to = if later { at + 1 } else { at.checked_sub(1)? };
+    if to >= order.len() {
+        return None;
+    }
+    let mut o = order.to_vec();
+    o.swap(at, to);
+    Some(o)
 }
 
 /// The dry run: what the compositor would say to the block as it stands.
@@ -939,16 +1010,9 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
             }
         }
         Msg::Shift(later) => {
-            let Some(id) = selected(app) else {
-                return Task::none();
-            };
-            let mut o = order(app);
-            if let Some(at) = o.iter().position(|x| *x == id) {
-                let to = if later { at + 1 } else { at.wrapping_sub(1) };
-                if to < o.len() {
-                    o.swap(at, to);
-                    app.write(ORDER, json!(o));
-                }
+            let o = order(app);
+            if let Some(o) = shift(&mut app.bar, &o, later) {
+                app.write(ORDER, json!(o));
             }
         }
         Msg::Remove => {
@@ -977,6 +1041,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
             let Some(id) = selected(app) else {
                 return Task::none();
             };
+            app.bar.selected = Some(id.clone());
             let mut imp = important(app);
             imp.retain(|x| *x != id);
             if on {
@@ -1061,13 +1126,11 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
             }
             app.bar.offer = None;
         }
-        Msg::Review(name) => match app.conn.review_widget(&name) {
-            Ok(queued) => {
-                app.bar.reviewed.retain(|(n, _)| *n != name);
-                app.bar.reviewed.push((name, queued));
-            }
-            Err(p) => app.banner = Some(p),
-        },
+        Msg::Review(name) => {
+            let answer = app.conn.review_widget(&name);
+            app.bar.reviewed.retain(|(n, _)| *n != name);
+            app.bar.reviewed.push((name, answer));
+        }
     }
     Task::none()
 }
@@ -1133,16 +1196,19 @@ fn approval_row<'a>(app: &App, st: &WidgetStatus, named: bool) -> Element<'a, Me
     } else {
         r = r.push(tag(state, style)).push(Space::new().width(Length::Fill));
     }
+    let answer = app
+        .bar
+        .reviewed
+        .iter()
+        .find(|(n, _)| *n == st.name)
+        .map(|(_, a)| a)
+        .filter(|_| st.approval == Approval::Pending);
     if st.approval == Approval::Pending {
-        if let Some((_, queued)) = app.bar.reviewed.iter().find(|(n, _)| *n == st.name) {
-            r = r.push(caption(
-                if *queued {
-                    "prompt queued"
-                } else {
-                    "prompt already open"
-                }
-                .into(),
-            ));
+        match answer {
+            Some(Ok(true)) => r = r.push(caption("prompt queued".into())),
+            Some(Ok(false)) => r = r.push(caption("prompt already open".into())),
+            Some(Err(_)) => r = r.push(tag("prompt not shown", theme::text_danger)),
+            None => {}
         }
         r = r.push(pill("Review", false, bar_msg(Msg::Review(st.name.clone()))));
     }
@@ -1153,6 +1219,11 @@ fn approval_row<'a>(app: &App, st: &WidgetStatus, named: bool) -> Element<'a, Me
         } else {
             "It does not run until you approve it in the compositor's prompt."
         }));
+    }
+    // A refused Review is drawn here, under the control that asked, with the
+    // same rendering every refusal gets: DENIED and a config error alike.
+    if let Some(Err(p)) = answer {
+        c = c.push(config_error(&p.headline(), p.detail(), "", 0, 0));
     }
     padded(c)
 }
@@ -2121,6 +2192,28 @@ mod tests {
         b.editor = Some(Editor::new());
         adopt(&mut b, &ids(&["custom:load"]));
         assert!(b.editor.as_ref().is_some_and(Editor::is_new));
+    }
+
+    #[test]
+    fn later_on_the_default_selection_follows_the_widget_not_the_index() {
+        let mut b = bar_with(&["weather", "load"]);
+        let o = ids(&["custom:weather", "clock", "custom:load"]);
+        let moved = shift(&mut b, &o, true);
+        assert_eq!(moved, Some(ids(&["clock", "custom:weather", "custom:load"])));
+        let moved = moved.unwrap_or_default();
+        assert_eq!(pick(&b, &moved).as_deref(), Some("custom:weather"));
+        adopt(&mut b, &moved);
+        assert_eq!(open(&b), Some("weather"));
+    }
+
+    #[test]
+    fn a_shift_past_either_end_writes_nothing_and_keeps_the_selection() {
+        let mut b = bar_with(&[]);
+        let o = ids(&["clock", "tray"]);
+        assert_eq!(shift(&mut b, &o, false), None);
+        b.selected = Some("tray".into());
+        assert_eq!(shift(&mut b, &o, true), None);
+        assert_eq!(pick(&b, &o).as_deref(), Some("tray"));
     }
 
     #[test]

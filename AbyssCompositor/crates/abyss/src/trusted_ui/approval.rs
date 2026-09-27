@@ -175,18 +175,17 @@ pub fn answer(state: &mut AbyssState, choice: super::Choice) {
     // skipping this widget as "on screen".
     withhold::prompt_closed(state);
     match choice.role {
-        Role::Grant => match crate::config::approvals::record_approval(&w.name, w.hash) {
-            Ok(()) => {
-                tracing::info!(name = w.name, "command widget approved by the owner");
-                withhold::reapply(state);
+        Role::Grant => {
+            // The owner's answer holds for this session at once; the store
+            // is written off the loop (no fsync on the frame path). If it
+            // cannot be written, the widget is asked about again next session.
+            tracing::info!(name = w.name, "command widget approved by the owner");
+            if let Err(e) = crate::config::approvals::persist(&w.name, w.hash) {
+                tracing::error!(name = w.name, error = %e, "approval not stored; it lasts this session only");
             }
-            Err(e) => {
-                // Nothing recorded, nothing runs. Declined so it does not
-                // bounce straight back; Settings' Review re-queues it.
-                tracing::error!(name = w.name, error = %e, "approval not recorded");
-                state.widget_approvals.declined.insert((w.name, w.hash));
-            }
-        },
+            state.widget_approvals.granted.insert((w.name, w.hash));
+            withhold::reapply(state);
+        }
         Role::Other => {
             let done = match w.kind {
                 PendingKind::Altered => crate::ipc::config_rpc::revert_widget(state, &w.name),
@@ -342,6 +341,20 @@ mod tests {
         assert!(!h.state.trusted_ui.is_open());
         assert_eq!(live(&h), ["load", "x"]);
         assert!(h.state.widget_approvals.withheld.is_empty());
+        // Stored off the loop, so the next session starts with it approved.
+        crate::config::approvals::wait_written();
+        let x = h
+            .state
+            .config
+            .bar
+            .custom_widgets
+            .iter()
+            .find(|w| w.name == "x")
+            .unwrap();
+        assert_eq!(
+            crate::config::approvals::read().get("x"),
+            crate::config::widget_hash::hash(x)
+        );
         done(&file);
     }
 

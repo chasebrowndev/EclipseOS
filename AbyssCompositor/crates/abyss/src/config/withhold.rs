@@ -5,7 +5,8 @@
 //! Every road to a new command ends in `config::apply_loaded`: an inotify
 //! reload and a `set_config_collection` commit alike. There, [`settle`] keeps
 //! a command widget in the live config only if its canonical hash equals the
-//! catalog block of the same name or the owner's recorded approval. Anything
+//! catalog block of the same name, the owner's recorded approval, or an
+//! approval given this session (`widget_approvals.granted`). Anything
 //! else is withheld: removed from `bar.custom_widgets` (so `get_config` never
 //! serves its argv and the taskbar never runs it), remembered in
 //! `state.widget_approvals.withheld`, and queued once in
@@ -14,7 +15,8 @@
 //!
 //! This module decides and queues; it draws nothing and answers nothing. The
 //! prompt (Trusted UI, TCB) pulls from [`next_pending`], and on the owner's
-//! answer calls `approvals::record_approval`, `config_rpc::revert_widget` or
+//! answer inserts into `widget_approvals.granted` and calls
+//! `approvals::persist`, or calls `config_rpc::revert_widget` or
 //! `config_rpc::remove_widget`, or inserts into `widget_approvals.declined` for
 //! Not now.
 
@@ -75,6 +77,11 @@ pub struct WidgetApprovals {
     /// Not now, for this session. The surface inserts; `review_widget`
     /// removes. A declined (name, hash) stays withheld and is not queued.
     pub declined: HashSet<(String, WidgetHash)>,
+    /// Approvals the owner gave this session, live at once while
+    /// `approvals::persist` writes the store off the loop (and if that write
+    /// fails). Keyed by hash, so a later edit is withheld again. **Inserted
+    /// only by the Trusted UI approval surface** (`trusted_ui/`, ADR 0067).
+    pub granted: HashSet<(String, WidgetHash)>,
 }
 
 /// A command widget's display text: `argv`, then one labelled line per
@@ -168,6 +175,7 @@ pub(crate) fn settle(state: &mut AbyssState, next: &mut Config) {
         approvals::Approvals::default()
     };
     let catalog = &next.catalog;
+    let granted = &wa.granted;
     let mut withheld = Vec::new();
     let mut index = 0usize;
     next.bar.custom_widgets.retain(|w| {
@@ -177,7 +185,10 @@ pub(crate) fn settle(state: &mut AbyssState, next: &mut Config) {
             return true;
         };
         let premade = catalog.iter().find(|c| c.name == w.name);
-        if premade.and_then(widget_hash::hash) == Some(h) || approved.get(&w.name) == Some(h) {
+        if premade.and_then(widget_hash::hash) == Some(h)
+            || approved.get(&w.name) == Some(h)
+            || granted.contains(&(w.name.clone(), h))
+        {
             return true;
         }
         withheld.push((
@@ -310,5 +321,38 @@ mod tests {
         let t = command_text(&w(&long));
         assert_eq!(t.chars().count(), COMMAND_TEXT_MAX);
         assert!(t.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn a_session_grant_makes_exactly_that_hash_live() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        h.state.addons.hooks.insert(Hook::TaskbarWidgets);
+        approvals::set_test_path(None);
+        let cfg = |argv: &str| {
+            let c =
+                crate::config::tests::widgets_cfg(&format!("bar {{ widget \"x\" {{ exec \"{argv}\"; }} }}"));
+            assert!(c.errors.is_empty(), "{:?}", c.errors);
+            c
+        };
+        let mut next = cfg("date");
+        settle(&mut h.state, &mut next);
+        assert!(next.bar.custom_widgets.is_empty());
+        let hash = h.state.widget_approvals.withheld[0].1.hash;
+
+        h.state.widget_approvals.granted.insert(("x".into(), hash));
+        let mut next = cfg("date");
+        settle(&mut h.state, &mut next);
+        assert_eq!(next.bar.custom_widgets.len(), 1);
+        assert!(h.state.widget_approvals.withheld.is_empty());
+        assert!(h.state.widget_approvals.queue.is_empty());
+
+        // An edit is a new hash: withheld and queued again.
+        let mut next = cfg("uptime");
+        settle(&mut h.state, &mut next);
+        assert!(next.bar.custom_widgets.is_empty());
+        let wa = &h.state.widget_approvals;
+        assert_eq!(wa.withheld.len(), 1);
+        assert_ne!(wa.withheld[0].1.hash, hash);
+        assert_eq!(wa.queue.len(), 1);
     }
 }
