@@ -425,20 +425,24 @@ pub mod bar {
     /// The grip's column: wide enough to be a target at bar height, narrow
     /// enough that a compressed widget is a sliver and not a chip.
     pub const GRIP_W: f32 = 14.0;
-    /// One grip dot, square — hard-edged on purpose, so the grip reads as a
-    /// machined texture rather than a row of bullets.
-    pub const GRIP_DOT: f32 = 2.0;
-    /// Air between two grip dots, on both axes.
-    pub const GRIP_DOT_GAP: f32 = 2.0;
-    pub const GRIP_COLS: usize = 2;
-    pub const GRIP_ROWS: usize = 4;
+    /// The grip's stroke: one thin vertical `|`. Its ends are fully round
+    /// (radius half the stroke) — the owner asked for a thin, sleek, rounded
+    /// line, a deliberate exception to the hard-edged grid.
+    pub const GRIP_LINE_W: f32 = 2.0;
+    /// The line's length at rest. Short of the cell by a wide margin, so it
+    /// reads as a mark on the capsule and not a divider through it.
+    pub const GRIP_LINE_H: f32 = 12.0;
+    /// The line's length under the pointer.
+    pub const GRIP_LINE_H_HOVER: f32 = 14.0;
+    /// The line's length while held: it stretches as it is pulled.
+    pub const GRIP_LINE_H_ACTIVE: f32 = 16.0;
     /// Air between two widgets that are both compressed to their grips. A
     /// run of grips at the full [`GAP`] reads as a row of identical empty
     /// chips; closed up, it reads as one rack of handles — each still its
     /// own cell and its own drag.
     pub const GRIP_RUN_GAP: f32 = 1.0;
     /// How much of the cell ground (hairline and lift) a widget compressed
-    /// to its grip keeps, as a fraction. The grip's dots are the object; the
+    /// to its grip keeps, as a fraction. The grip's line is the object; the
     /// capsule around a lone grip is only there to say where it ends.
     pub const GRIP_GROUND: f32 = 0.4;
     /// Padding inside the shell, either side of the core and the revealed
