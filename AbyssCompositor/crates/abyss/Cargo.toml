@@ -37,6 +37,13 @@ regex.workspace = true
 serde_json.workspace = true
 blake3.workspace = true
 
+[dev-dependencies]
+# An in-process client for the state tests: the lock-screen focus rules can
+# only be exercised against real surfaces (COMP-06 §1, COMP-04 §7).
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+
 [features]
 default = ["winit", "drm", "headless"]
 # `winit.rs` binds wl_drm and imports dmabuf, both of which need the system

@@ -34,6 +34,9 @@ dependencies = [
  "tracing",
  "tracing-journald",
  "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-misc",
  "xkbcommon",
 ]
 

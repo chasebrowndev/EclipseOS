@@ -204,6 +204,10 @@ pub(crate) fn pointer_focus_ctx(state: &AbyssState, pos: Point<f64, Logical>) ->
 /// decided (ADR 0042); the move itself, and the focus-history write, are
 /// `focus_window`'s, which keybinds, IPC and activation also go through.
 pub fn apply_focus(state: &mut AbyssState, action: FocusAction, cause: FocusCause) {
+    // The locker holds the keyboard; `unlock` re-derives focus afterwards.
+    if state.lock.locked {
+        return;
+    }
     match action {
         FocusAction::Keep => {}
         FocusAction::Window(w) => {
@@ -227,6 +231,11 @@ pub fn focus_window(state: &mut AbyssState, window: &Window) {
 /// records the focus history and moves keyboard focus but leaves the floating
 /// stacking order alone; see [`FocusCause::raises`].
 pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool) {
+    // The locker holds the keyboard until unlock, whatever asks (a click, IPC,
+    // activation, a window mapping); `unlock` re-derives focus afterwards.
+    if state.lock.locked {
+        return;
+    }
     // Override-redirect menus/tooltips never take focus or activation; the owning client keeps it.
     if window.x11_surface().is_some_and(|x| x.is_override_redirect()) {
         return;
@@ -323,6 +332,10 @@ pub fn emit_focused_output_state(state: &mut AbyssState) {
 }
 
 pub fn focus_surface(state: &mut AbyssState, surface: Option<WlSurface>) {
+    // While locked only the locker's own surfaces may take the keyboard.
+    if state.lock.locked && !surface.as_ref().is_some_and(|s| state.lock.owns(s)) {
+        return;
+    }
     let keyboard = state.seat.get_keyboard().unwrap();
     keyboard.set_focus(state, surface.map(Into::into), SERIAL_COUNTER.next_serial());
 }
@@ -606,10 +619,11 @@ mod tests {
 /// mutating the seat. The pure table above covers the decision; this covers
 /// the gather, which is where the cross-output bug actually lived.
 ///
-/// Windows are deliberately absent: a `Window` needs a real `ToplevelSurface`
-/// with a committed buffer before `Space::element_under` will ever return it
-/// (smithay filters on `bbox()`), which needs a real client. Those cases are
-/// the conformance harness's job (COMP-15 §1), not this module's.
+/// A `Window` needs a real `ToplevelSurface` with a committed buffer before
+/// `Space::element_under` will ever return it (smithay filters on `bbox()`),
+/// so the tests that need windows drive a real in-process client
+/// (`client` below); the rest are the conformance harness's job
+/// (COMP-15 §1).
 #[cfg(test)]
 pub(crate) mod state_tests {
     use super::*;
@@ -629,8 +643,8 @@ pub(crate) mod state_tests {
         pub(crate) b: u64,
         // Dropped last; the state borrows nothing from them but the loop owns
         // the sources the state registered.
-        _loop: EventLoop<'static, AbyssState>,
-        _display: Display<AbyssState>,
+        event_loop: EventLoop<'static, AbyssState>,
+        display: Display<AbyssState>,
     }
 
     fn output(name: &str) -> Output {
@@ -695,8 +709,8 @@ pub(crate) mod state_tests {
             state,
             a: ids[0],
             b: ids[1],
-            _loop: event_loop,
-            _display: display,
+            event_loop,
+            display,
         }
     }
 
@@ -863,5 +877,444 @@ pub(crate) mod state_tests {
         for cause in [FocusCause::Pointer, FocusCause::WindowUnmap] {
             assert!(!cause.raises(), "{cause:?} must not raise");
         }
+    }
+
+    /// A real in-process Wayland client, for the rules that only hold against
+    /// real surfaces: the lock screen's.
+    mod client {
+        use std::os::fd::{AsFd, FromRawFd};
+        use std::os::unix::net::UnixStream;
+
+        use wayland_client::{
+            delegate_noop,
+            protocol::{
+                wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_output::WlOutput, wl_registry,
+                wl_seat::WlSeat, wl_shm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
+            },
+            Connection, Dispatch, EventQueue, Proxy, QueueHandle,
+        };
+        use wayland_protocols::ext::session_lock::v1::client::{
+            ext_session_lock_manager_v1::ExtSessionLockManagerV1,
+            ext_session_lock_surface_v1::{self, ExtSessionLockSurfaceV1},
+            ext_session_lock_v1::ExtSessionLockV1,
+        };
+        use wayland_protocols::xdg::shell::client::{
+            xdg_surface::{self, XdgSurface},
+            xdg_toplevel::XdgToplevel,
+            xdg_wm_base::{self, XdgWmBase},
+        };
+
+        use wayland_protocols_misc::zwp_input_method_v2::client::{
+            zwp_input_method_keyboard_grab_v2::{self, ZwpInputMethodKeyboardGrabV2},
+            zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+            zwp_input_method_v2::ZwpInputMethodV2,
+        };
+
+        use super::Harness;
+
+        #[derive(Default)]
+        pub struct Globals {
+            list: Vec<(u32, String, u32)>,
+            lock_size: Option<(u32, u32)>,
+            /// `key` events an input-method keyboard grab received.
+            pub grabbed_keys: usize,
+        }
+
+        pub struct Client {
+            conn: Connection,
+            queue: EventQueue<Globals>,
+            data: Globals,
+            compositor: Option<WlCompositor>,
+            shm: Option<wl_shm::WlShm>,
+            wm: Option<XdgWmBase>,
+            outputs: Vec<WlOutput>,
+            lock_manager: Option<ExtSessionLockManagerV1>,
+            seat: Option<WlSeat>,
+            im_manager: Option<ZwpInputMethodManagerV2>,
+        }
+
+        impl Dispatch<wl_registry::WlRegistry, ()> for Globals {
+            fn event(
+                g: &mut Self,
+                _: &wl_registry::WlRegistry,
+                event: wl_registry::Event,
+                _: &(),
+                _: &Connection,
+                _: &QueueHandle<Self>,
+            ) {
+                if let wl_registry::Event::Global {
+                    name,
+                    interface,
+                    version,
+                } = event
+                {
+                    g.list.push((name, interface, version));
+                }
+            }
+        }
+
+        impl Dispatch<XdgWmBase, ()> for Globals {
+            fn event(
+                _: &mut Self,
+                wm: &XdgWmBase,
+                event: xdg_wm_base::Event,
+                _: &(),
+                _: &Connection,
+                _: &QueueHandle<Self>,
+            ) {
+                if let xdg_wm_base::Event::Ping { serial } = event {
+                    wm.pong(serial);
+                }
+            }
+        }
+
+        impl Dispatch<XdgSurface, ()> for Globals {
+            fn event(
+                _: &mut Self,
+                xdg: &XdgSurface,
+                event: xdg_surface::Event,
+                _: &(),
+                _: &Connection,
+                _: &QueueHandle<Self>,
+            ) {
+                if let xdg_surface::Event::Configure { serial } = event {
+                    xdg.ack_configure(serial);
+                }
+            }
+        }
+
+        impl Dispatch<ExtSessionLockSurfaceV1, ()> for Globals {
+            fn event(
+                g: &mut Self,
+                surface: &ExtSessionLockSurfaceV1,
+                event: ext_session_lock_surface_v1::Event,
+                _: &(),
+                _: &Connection,
+                _: &QueueHandle<Self>,
+            ) {
+                if let ext_session_lock_surface_v1::Event::Configure {
+                    serial,
+                    width,
+                    height,
+                } = event
+                {
+                    surface.ack_configure(serial);
+                    g.lock_size = Some((width, height));
+                }
+            }
+        }
+
+        delegate_noop!(Globals: WlCompositor);
+        delegate_noop!(Globals: WlShmPool);
+        delegate_noop!(Globals: ExtSessionLockManagerV1);
+        delegate_noop!(Globals: ignore wl_shm::WlShm);
+        delegate_noop!(Globals: ignore WlBuffer);
+        delegate_noop!(Globals: ignore WlSurface);
+        delegate_noop!(Globals: ignore WlOutput);
+        delegate_noop!(Globals: ignore XdgToplevel);
+        delegate_noop!(Globals: ignore ExtSessionLockV1);
+        delegate_noop!(Globals: ignore WlSeat);
+        delegate_noop!(Globals: ZwpInputMethodManagerV2);
+        delegate_noop!(Globals: ignore ZwpInputMethodV2);
+
+        impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Globals {
+            fn event(
+                g: &mut Self,
+                _: &ZwpInputMethodKeyboardGrabV2,
+                event: zwp_input_method_keyboard_grab_v2::Event,
+                _: &(),
+                _: &Connection,
+                _: &QueueHandle<Self>,
+            ) {
+                if let zwp_input_method_keyboard_grab_v2::Event::Key { .. } = event {
+                    g.grabbed_keys += 1;
+                }
+            }
+        }
+
+        impl Client {
+            pub fn connect(h: &mut Harness) -> Self {
+                let (server, client) = UnixStream::pair().expect("socket pair");
+                h.state
+                    .display_handle
+                    .insert_client(server, crate::state::client_state())
+                    .expect("insert client");
+                let conn = Connection::from_socket(client).expect("connect");
+                let queue = conn.new_event_queue();
+                let registry = conn.display().get_registry(&queue.handle(), ());
+                let mut c = Self {
+                    conn,
+                    queue,
+                    data: Globals::default(),
+                    compositor: None,
+                    shm: None,
+                    wm: None,
+                    outputs: Vec::new(),
+                    lock_manager: None,
+                    seat: None,
+                    im_manager: None,
+                };
+                c.pump(h);
+                let qh = c.queue.handle();
+                for (name, interface, version) in std::mem::take(&mut c.data.list) {
+                    match interface.as_str() {
+                        "wl_compositor" => c.compositor = Some(registry.bind(name, version.min(5), &qh, ())),
+                        "wl_shm" => c.shm = Some(registry.bind(name, 1, &qh, ())),
+                        "xdg_wm_base" => c.wm = Some(registry.bind(name, 1, &qh, ())),
+                        "wl_output" => c.outputs.push(registry.bind(name, 1, &qh, ())),
+                        "wl_seat" => c.seat = Some(registry.bind(name, 1, &qh, ())),
+                        "zwp_input_method_manager_v2" => c.im_manager = Some(registry.bind(name, 1, &qh, ())),
+                        "ext_session_lock_manager_v1" => {
+                            c.lock_manager = Some(registry.bind(name, 1, &qh, ()))
+                        }
+                        _ => {}
+                    }
+                }
+                c.pump(h);
+                c
+            }
+
+            /// Run both ends until the traffic settles.
+            pub fn pump(&mut self, h: &mut Harness) {
+                for _ in 0..8 {
+                    self.conn.flush().expect("client flush");
+                    h.display.dispatch_clients(&mut h.state).expect("server dispatch");
+                    h.event_loop
+                        .dispatch(std::time::Duration::ZERO, &mut h.state)
+                        .expect("loop dispatch");
+                    h.display.flush_clients().expect("server flush");
+                    if let Some(guard) = self.conn.prepare_read() {
+                        let _ = guard.read();
+                    }
+                    self.queue
+                        .dispatch_pending(&mut self.data)
+                        .expect("client dispatch");
+                }
+            }
+
+            fn buffer(&self, w: i32, h: i32) -> WlBuffer {
+                let size = w * h * 4;
+                // SAFETY: an anonymous memfd; the name is a valid C string.
+                let fd = unsafe { libc::memfd_create(c"abyss-test".as_ptr(), 0) };
+                assert!(fd >= 0, "memfd_create");
+                // SAFETY: `fd` was just created and nothing else owns it.
+                let file = unsafe { std::fs::File::from_raw_fd(fd) };
+                file.set_len(size as u64).expect("size memfd");
+                let qh = self.queue.handle();
+                let pool = self
+                    .shm
+                    .as_ref()
+                    .expect("wl_shm")
+                    .create_pool(file.as_fd(), size, &qh, ());
+                let buffer = pool.create_buffer(0, w, h, w * 4, wl_shm::Format::Argb8888, &qh, ());
+                pool.destroy();
+                buffer
+            }
+
+            fn surface(&self) -> WlSurface {
+                self.compositor
+                    .as_ref()
+                    .expect("wl_compositor")
+                    .create_surface(&self.queue.handle(), ())
+            }
+
+            /// Map a 100x100 xdg toplevel; returns its surface's protocol id.
+            pub fn map_window(&mut self, h: &mut Harness) -> u32 {
+                let qh = self.queue.handle();
+                let surface = self.surface();
+                let xdg = self
+                    .wm
+                    .as_ref()
+                    .expect("xdg_wm_base")
+                    .get_xdg_surface(&surface, &qh, ());
+                let _toplevel = xdg.get_toplevel(&qh, ());
+                surface.commit();
+                self.pump(h);
+                surface.attach(Some(&self.buffer(100, 100)), 0, 0);
+                surface.commit();
+                self.pump(h);
+                surface.id().protocol_id()
+            }
+
+            /// An input method on the seat, with the keyboard grabbed.
+            pub fn grab_keyboard(&mut self, h: &mut Harness) -> ZwpInputMethodV2 {
+                let qh = self.queue.handle();
+                let im = self
+                    .im_manager
+                    .as_ref()
+                    .expect("zwp_input_method_manager_v2")
+                    .get_input_method(self.seat.as_ref().expect("wl_seat"), &qh, ());
+                self.regrab(h, &im);
+                im
+            }
+
+            pub fn regrab(&mut self, h: &mut Harness, im: &ZwpInputMethodV2) {
+                let _grab = im.grab_keyboard(&self.queue.handle(), ());
+                self.pump(h);
+            }
+
+            pub fn grabbed_keys(&self) -> usize {
+                self.data.grabbed_keys
+            }
+
+            pub fn lock(&mut self, h: &mut Harness) -> ExtSessionLockV1 {
+                let lock = self
+                    .lock_manager
+                    .as_ref()
+                    .expect("ext_session_lock_manager_v1")
+                    .lock(&self.queue.handle(), ());
+                self.pump(h);
+                lock
+            }
+
+            /// A lock surface on every output, each with a committed buffer.
+            pub fn lock_surfaces(&mut self, h: &mut Harness, lock: &ExtSessionLockV1) {
+                let qh = self.queue.handle();
+                for output in self.outputs.clone() {
+                    let surface = self.surface();
+                    let _lock_surface = lock.get_lock_surface(&surface, &output, &qh, ());
+                    self.data.lock_size = None;
+                    self.pump(h);
+                    let (w, ht) = self.data.lock_size.expect("lock surface configured");
+                    surface.attach(Some(&self.buffer(w as i32, ht as i32)), 0, 0);
+                    surface.commit();
+                    self.pump(h);
+                }
+            }
+        }
+    }
+
+    fn window_by_protocol_id(h: &Harness, id: u32) -> Window {
+        h.state
+            .space
+            .elements()
+            .find(|w| {
+                window_surface(w)
+                    .is_some_and(|s| smithay::reexports::wayland_server::Resource::id(&s).protocol_id() == id)
+            })
+            .cloned()
+            .expect("mapped window")
+    }
+
+    fn keyboard_on_lock_surface(h: &Harness) -> bool {
+        match h.state.seat.get_keyboard().unwrap().current_focus() {
+            Some(crate::protocols::standard::seat::KeyboardFocusTarget::Wl(s)) => h.state.lock.owns(&s),
+            _ => false,
+        }
+    }
+
+    /// Engaging the lock drops pointer focus from the surface behind it;
+    /// otherwise the next button goes to that app before any motion clears it.
+    #[test]
+    fn locking_clears_pointer_focus() {
+        let mut h = harness();
+        let mut c = client::Client::connect(&mut h);
+        let id = c.map_window(&mut h);
+        let window = window_by_protocol_id(&h, id);
+        let surface = window_surface(&window).expect("surface");
+        let pointer = h.state.seat.get_pointer().unwrap();
+        let loc = h.state.space.element_location(&window).expect("placed").to_f64();
+        pointer.motion(
+            &mut h.state,
+            Some((surface.clone(), loc)),
+            &smithay::input::pointer::MotionEvent {
+                location: loc,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: 0,
+            },
+        );
+        assert_eq!(pointer.current_focus(), Some(surface));
+
+        let _lock = c.lock(&mut h);
+        assert!(h.state.lock.locked);
+        assert_eq!(pointer.current_focus(), None);
+    }
+
+    /// An input-method keyboard grab gets every key whatever holds focus, so
+    /// under the lock it would receive the unlock password.
+    #[test]
+    fn no_keyboard_grab_survives_the_lock() {
+        use smithay::backend::input::KeyState;
+
+        let mut h = harness();
+        let mut c = client::Client::connect(&mut h);
+        let im = c.grab_keyboard(&mut h);
+        let keyboard = h.state.seat.get_keyboard().unwrap();
+        assert!(keyboard.is_grabbed(), "the input method holds a grab");
+
+        let lock = c.lock(&mut h);
+        c.lock_surfaces(&mut h, &lock);
+        assert!(!keyboard.is_grabbed(), "locking ends the grab");
+
+        // Grabbing again while locked lands, but no key reaches it.
+        c.regrab(&mut h, &im);
+        assert!(keyboard.is_grabbed());
+        let before = c.grabbed_keys();
+        // evdev KEY_A, as an xkb keycode.
+        h.state.keyboard_key(38u32.into(), KeyState::Pressed, 1);
+        h.state.keyboard_key(38u32.into(), KeyState::Released, 2);
+        c.pump(&mut h);
+        assert!(!keyboard.is_grabbed());
+        assert_eq!(c.grabbed_keys(), before, "no key reaches the input method");
+        assert!(keyboard_on_lock_surface(&h));
+    }
+
+    /// The reported hole: a click over a window behind the lock moved keyboard
+    /// focus to it, and the unlock password went to that app.
+    #[test]
+    fn a_click_under_the_lock_never_moves_keyboard_focus() {
+        use smithay::backend::input::ButtonState;
+
+        let mut h = harness();
+        let mut c = client::Client::connect(&mut h);
+        let first = c.map_window(&mut h);
+        let second = c.map_window(&mut h);
+        let windows = [
+            window_by_protocol_id(&h, first),
+            window_by_protocol_id(&h, second),
+        ];
+        let focused = h.state.focus.clone().expect("a mapped window is focused");
+        let other = windows
+            .iter()
+            .find(|w| **w != focused)
+            .expect("an unfocused window")
+            .clone();
+        let loc = h.state.space.element_location(&other).expect("placed");
+        let over_other = (loc + Point::from((10, 10))).to_f64();
+
+        let lock = c.lock(&mut h);
+        c.lock_surfaces(&mut h, &lock);
+        assert!(keyboard_on_lock_surface(&h), "the locker holds the keyboard");
+
+        // Ungated, this click takes focus: the rules alone say so.
+        assert_eq!(
+            decide_pointer_focus(&pointer_focus_ctx(&h.state, over_other)),
+            FocusAction::Window(other.clone())
+        );
+
+        h.state.pointer_moved(over_other, 1);
+        let pointer = h.state.seat.get_pointer().unwrap();
+        // The locker is keyboard-only (ADR 0024): no surface is under the pointer.
+        assert_eq!(
+            pointer.current_focus(),
+            None,
+            "motion under the lock reaches no surface"
+        );
+        h.state.pointer_button(0x110, ButtonState::Pressed, 2);
+        h.state.pointer_button(0x110, ButtonState::Released, 3);
+        assert!(keyboard_on_lock_surface(&h), "a click must not take the keyboard");
+        assert_eq!(
+            pointer.current_focus(),
+            None,
+            "a click under the lock reaches no surface"
+        );
+
+        // Defense in depth: the focus primitives refuse too.
+        focus_window(&mut h.state, &other);
+        assert!(keyboard_on_lock_surface(&h));
+        apply_focus(&mut h.state, FocusAction::Clear, FocusCause::Click);
+        assert!(keyboard_on_lock_surface(&h));
+        focus_surface(&mut h.state, window_surface(&other));
+        assert!(keyboard_on_lock_surface(&h));
     }
 }

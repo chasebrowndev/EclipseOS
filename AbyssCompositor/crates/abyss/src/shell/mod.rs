@@ -549,7 +549,11 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
         arrange(state);
         mark_urgent(state, &window);
     } else {
-        state.focus = Some(window.clone());
+        // Under the lock the window maps but focus stays with the locker;
+        // `unlock` re-derives it.
+        if !state.lock.locked {
+            state.focus = Some(window.clone());
+        }
         arrange(state);
         focus_window(state, &window);
     }
@@ -1052,7 +1056,9 @@ fn restore_floating(state: &mut AbyssState, window: &Window, p: Remembered) -> b
     // but its placement is final: a settle pass must not move it again.
     let _ = rules::apply(state, window);
     window.user_data().insert_if_missing(|| rules::Placed);
-    state.focus = Some(window.clone());
+    if !state.lock.locked {
+        state.focus = Some(window.clone());
+    }
     arrange(state);
     focus_window(state, window);
     let handle = state.ipc.handle_for(window);
@@ -1237,6 +1243,10 @@ fn grab_root_of(state: &AbyssState, surface: &WlSurface) -> WlSurface {
 /// `From<PopupKind>` for the seat's focus type, which the orphan rule forbids
 /// for `WlSurface`, so the stack is kept here instead.
 pub fn popup_grab_start(state: &mut AbyssState, popup: PopupSurface) {
+    // A grab would take the keyboard from the locker.
+    if state.lock.locked {
+        return;
+    }
     let surface = popup.wl_surface().clone();
     state.popup_grabs.push(popup);
     focus_surface(state, Some(surface));
@@ -2623,7 +2633,7 @@ pub fn focus_layer_if_wanted(state: &mut AbyssState, surface: &WlSurface) {
             .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
             .is_some_and(|l| l.can_receive_keyboard_focus())
     });
-    if wants {
+    if wants && !state.lock.locked {
         state.focus = None;
         focus_surface(state, Some(surface.clone()));
     }
