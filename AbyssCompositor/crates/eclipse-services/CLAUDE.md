@@ -1,18 +1,24 @@
 # eclipse-services — the userland's D-Bus services
 
 Read the root `CLAUDE.md` first. Governing spec: ADR 0038 (DE services),
-ADR 0051 (screensaver bridge), ADR 0053 (status actions, secret prompt).
+ADR 0051 (screensaver bridge), ADR 0053 (status actions, secret prompt),
+ADR 0065 (taskbar widgets: `media`, `audio`, `usage`, `custom`).
 
 - **Not TCB.** Ordinary services running as the human, outside `abyss`. They
   hold no capability and enforce no policy; a compromised service can annoy
   the human, not escalate. Anything that would need to be trusted belongs in
   `abyss/src/trusted_ui/` instead.
-- Lib plus one bin. The lib is linked by the panes (`notifications`, `tray`,
+- Lib plus two bins. The lib is linked by the panes (`notifications`, `tray`,
   `status`, `session`, `apps`); `src/bin/eclipse-screensaver.rs` owns
   `org.freedesktop.ScreenSaver` and forwards inhibits to the compositor
-  (`dist/eclipse-screensaver.service`).
+  (`dist/eclipse-screensaver.service`); `src/bin/eclipse-pairing.rs` is the
+  session's one BlueZ pairing agent and serves `org.eclipse.Services.Pairing`
+  (`dist/eclipse-pairing.service`, ADR 0066).
 - Deps stay at `zbus` (already in the tree via iced_layershell → mundy, so no
-  new supply chain), `eclipse-ipc` and `serde_json`. Blocking zbus only: iced
+  new supply chain), `eclipse-ipc` and `serde_json`, plus what ADR 0065
+  admits for the taskbar widgets: `pulseaudio` (pure-Rust PulseAudio
+  protocol, served by pipewire-pulse; no libclang), `realfft`, `libc`, and
+  `nvml-wrapper`/`nvml-wrapper-sys` (NVML `dlopen`ed at runtime). Blocking zbus only: iced
   runs no tokio runtime, so each server owns its own thread and talks to its
   GUI over a channel.
 - **`password`-role values** (wifi passphrase, Bluetooth PIN) travel only as

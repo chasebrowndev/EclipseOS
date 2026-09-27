@@ -32,6 +32,8 @@ regex = { version = "1", default-features = false, features = [
   "unicode-case",
 ] }
 serde_json = "1"
+# Command-widget approval hashes (ADR 0067). Same spec policyd pins.
+blake3 = { version = "1.8.7", default-features = false, features = ["std"] }
 
 [profile.release]
 debug = 1

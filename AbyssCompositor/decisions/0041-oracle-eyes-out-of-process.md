@@ -1,5 +1,5 @@
 # 0041 — Oracle-Eyes runs out of process, on two revocable capabilities
-Status: accepted
+Status: accepted; generalised by ADR 0066 (add-ons)
 Date: 2026-09-15
 Deciders: chase (owner), Claude (advisory)
 

@@ -15,7 +15,8 @@ use std::fmt::Write as _;
 use abyss::config::schema::{
     rule_owner, Collection, Dv, Form, Key, Owner, Reload, Ty, ANIMATIONS, ANIMATION_CURVES,
     ANIMATION_DEFAULT_CURVE, ANIMATION_DEFAULT_MS, ANIMATION_MAX_MS, BIND_ACTIONS, COLLECTIONS, LID_CLOSE,
-    OUTPUT_KEYS, OUTPUT_TRANSFORMS, REFUSED_MATCHERS, RULE_ACTION_FORMS, RULE_MATCHERS, TABLE,
+    OUTPUT_KEYS, OUTPUT_TRANSFORMS, REFUSED_MATCHERS, RULE_ACTION_FORMS, RULE_MATCHERS, TABLE, WIDGET_KEYS,
+    WIDGET_SOURCES,
 };
 
 fn ty(t: &Ty) -> String {
@@ -38,6 +39,10 @@ fn default(d: &Dv) -> String {
         Dv::Float(f) => format!("`{f}`"),
         Dv::Str(s) => format!("`\"{s}\"`"),
         Dv::EmptyList => "_empty_".into(),
+        Dv::List(l) => format!(
+            "`{}`",
+            l.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(" ")
+        ),
         Dv::Color([r, g, b, a]) => format!(
             "`#{:02x}{:02x}{:02x}{:02x}`",
             (r * 255.0) as u8,
@@ -167,6 +172,10 @@ fn collections(out: &mut String, cs: &[&Collection]) {
                 }
                 out.push('\n');
             }
+            "widget" => {
+                forms(out, "key", WIDGET_KEYS);
+                let _ = writeln!(out, "`<source>` is one of {}.\n", ticks(WIDGET_SOURCES));
+            }
             _ => {}
         }
     }
@@ -188,7 +197,17 @@ fn generate() -> String {
          both are hot-reloaded. `eclipse-ctl config list` prints this same table with the\n\
          values you actually have; `eclipse-ctl config migrate` splits a legacy\n\
          single-file `abyss.kdl` into the two.\n\n\
-         KDL v2: booleans are `#true` and `#false`, never bare `true`.\n\n",
+         KDL v2: booleans are `#true` and `#false`, never bare `true`.\n\n\
+         Add-ons are not configured here (ADR 0066). An installed add-on package's\n\
+         manifest in `/usr/share/eclipse/addons/` turns on hooks; no key in either file\n\
+         can. `get_config` reports them on every reply as `addons: [{\"id\", \"name\",\n\
+         \"hooks\": [..], \"capture_requested\": bool}]` and `hooks_on: [..]`, and\n\
+         `eclipse-ctl addons` prints the same.\n\n\
+         With the `taskbar-widgets` hook on, the premade widget catalog in\n\
+         `/usr/share/eclipse/widgets/*.kdl` is read first, below `/etc/eclipse/abyss.kdl`;\n\
+         a catalog file may hold only `bar { widget … }`. A command widget that is not\n\
+         an unedited premade runs only after you approve it in a compositor-drawn\n\
+         prompt (ADR 0067); see `widget` below and the `review_widget` method.\n\n",
     );
 
     for owner in [Owner::Abyss, Owner::Policy] {

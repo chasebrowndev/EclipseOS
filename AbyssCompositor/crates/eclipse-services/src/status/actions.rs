@@ -38,7 +38,8 @@ const DISCOVERY_TICK: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairingAgent {
     /// Register as the session's default Bluetooth agent. Exactly one process
-    /// should — the bar — or the prompts land in whichever registered last.
+    /// should — `eclipse-pairing` — or the prompts land in whichever
+    /// registered last.
     Register,
     /// Do not. `bt_answer` then forwards to the process that did, which is
     /// what `eclipse-secret-prompt` wants.

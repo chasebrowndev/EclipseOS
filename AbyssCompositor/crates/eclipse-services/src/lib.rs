@@ -10,8 +10,12 @@
 //! A compromised service can annoy the human, not escalate.
 
 pub mod apps;
+pub mod audio;
+pub mod custom;
+pub mod media;
 pub mod notifications;
 pub mod screensaver;
 pub mod session;
 pub mod status;
 pub mod tray;
+pub mod usage;

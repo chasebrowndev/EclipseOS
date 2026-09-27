@@ -1,362 +1,527 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Trusted UI (COMP-10 §3.10, ADR 0061). **TCB: owner review, line by line.**
+//! Trusted UI (COMP-10). TCB: every line here gets owner line-by-line review.
 //!
-//! One surface so far: the destructive-system-action confirmation. A root
-//! service (the installer's helper, D-07 §6) asks for a human-seat allow/deny
-//! before it erases a disk. The compositor draws the prompt itself, takes the
-//! keyboard, and answers only from a key the human pressed.
+//! A prompt is compositor-drawn and compositor-answered. No client asks for
+//! one, draws one or sees one:
 //!
-//! What this module refuses to be: a path from any client to an answer. The
-//! request arrives on a root-only socket ([`socket`]); the answer comes from
-//! [`on_key`] alone, which is reached only from the physical keyboard filter.
-//! There is no method, protocol request, config key or injection call that
-//! resolves a prompt, and nothing here logs what the human pressed.
+//! * **Seat.** While a prompt is up it takes the human seat's keyboard and
+//!   pointer (§4). Clients receive neither, and `keyboard_shortcuts_inhibit`
+//!   does not apply, because the filter runs before any client does. The
+//!   override chord still works (COMP-04 §6). Agent seats are not touched.
+//! * **Render.** The backends splice it in front-most, above the capture
+//!   indicator, and never into a capture target: `render/capture.rs` does
+//!   not name this module (a test checks that).
+//! * **Lock.** Under the session lock a prompt is neither drawn nor holding
+//!   the seat. A prompt that can grant must not be answerable by whoever is
+//!   at a locked machine. It stays pending and comes back on unlock, unless
+//!   the timeout runs out first.
+//! * **Timeout.** Unanswered, it resolves to its `Safe` button (§3.2: fails
+//!   closed). The clock runs under the lock too.
+//! * **Arming.** For [`ARM`] after it appears, only Escape counts. A key or
+//!   click already on its way (a `<Tab><space>` typed into a shell, a double
+//!   click) cannot answer a prompt the human has not seen (§3.2, §7).
 //!
-//! Fail-closed everywhere: any path that is not an explicit Allow key is Deny.
+//! One prompt at a time. `open` refuses a second, and the owner re-queues it.
+//!
+//! Owners: command-widget approval ([`approval`], §3.11, ADR 0067) and the
+//! destructive-system-action confirmation ([`erase`], §3.10, ADR 0061),
+//! asked for over the root-only [`socket`].
 
-pub mod draw;
+pub mod approval;
+pub mod erase;
+pub mod modal;
 pub mod socket;
 
-use std::{io::Write, net::Shutdown, os::unix::net::UnixStream, path::PathBuf, time::Duration};
-
-use smithay::{
-    input::keyboard::Keysym,
-    reexports::calloop::timer::{TimeoutAction, Timer},
+use std::{
+    collections::BTreeMap,
+    path::PathBuf,
+    time::{Duration, Instant},
 };
 
-use crate::state::AbyssState;
+use smithay::{
+    backend::{
+        allocator::Fourcc,
+        renderer::{
+            element::{
+                solid::{SolidColorBuffer, SolidColorRenderElement},
+                texture::{TextureBuffer, TextureRenderElement},
+                Kind,
+            },
+            gles::{GlesRenderer, GlesTexture},
+            ImportMem,
+        },
+    },
+    input::{keyboard::Keysym, pointer::MotionEvent},
+    output::Output,
+    reexports::calloop::timer::{TimeoutAction, Timer},
+    utils::{Logical, Point, Rectangle, Scale, Size, Transform, SERIAL_COUNTER},
+};
 
-/// How long a prompt waits for the human before it is a Deny (COMP-10 §3.2).
+use crate::{render::AbyssRenderElement, state::AbyssState};
+pub use modal::{Button, Modal, Role};
+
+/// §3.2: a prompt nobody answers fails closed after this long.
 pub const TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Longest by-id name accepted. Real ones are well under this.
-const MAX_DISK: usize = 200;
-const MAX_MODEL: usize = 64;
+/// How long a new prompt ignores everything but Escape.
+pub const ARM: Duration = Duration::from_millis(750);
 
-/// What the requester says it is about to do. Shown as its words, not ours:
-/// the compositor cannot verify any of it (ADR 0061).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Request {
-    /// `/dev/disk/by-id` name, charset-checked.
-    pub disk: String,
-    /// Already reduced by `text::sanitize_line`.
-    pub model: String,
-    pub size_bytes: u64,
-}
+/// Everything behind a prompt is dimmed, on every output, so it is plain that
+/// the session is waiting on the human and nothing behind it takes input.
+const DIM: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+const DIM_ALPHA: f32 = 0.6;
 
-impl Request {
-    /// Strict: the four known fields and nothing else, right types, bounded
-    /// lengths. `None` is a Deny at the door.
-    pub fn parse(line: &[u8]) -> Option<Request> {
-        let v: serde_json::Value = serde_json::from_slice(line).ok()?;
-        let o = v.as_object()?;
-        if o.len() != 4 || o.get("action")?.as_str()? != "erase-disk" {
-            return None;
-        }
-        let disk = o.get("disk")?.as_str()?;
-        if disk.is_empty()
-            || disk.len() > MAX_DISK
-            || !disk
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b':' | b'+' | b'-'))
-        {
-            return None;
-        }
-        let model = o.get("model")?.as_str()?;
-        if model.len() > MAX_MODEL {
-            return None;
-        }
-        let model = crate::render::text::sanitize_line(model).trim().to_string();
-        if model.is_empty() {
-            return None;
-        }
-        let size_bytes = o.get("size_bytes")?.as_u64().filter(|n| *n > 0)?;
-        Some(Request {
-            disk: disk.to_string(),
-            model,
-            size_bytes,
-        })
-    }
-}
-
+/// The answer to a prompt, handed to [`resolve`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Decision {
-    Allow,
-    Deny,
+pub struct Choice {
+    pub token: u64,
+    pub button: usize,
+    pub role: Role,
 }
 
-/// Which button has focus. Deny is where it starts: a reflexive Enter is a
-/// Deny, and Allow needs a deliberate Tab first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Focus {
-    Deny,
-    Allow,
+#[derive(Debug)]
+struct Open {
+    modal: modal::Modal,
+    layout: modal::Layout,
+    focus: usize,
+    /// The button a pointer press went down on. A click counts only if the
+    /// release lands on the same one, so a press already in flight when the
+    /// prompt appeared cannot answer it by being let go.
+    pressed: Option<usize>,
+    /// When it went up; input before `shown + ARM` is ignored.
+    shown: Instant,
 }
 
-/// What a key means while the prompt owns the seat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Key {
-    Deny,
-    Toggle,
-    Activate,
-    /// Swallowed: the prompt owns the seat outright, so nothing bound
-    /// elsewhere may fire underneath it.
-    Ignored,
-}
-
-pub fn key(sym: Keysym) -> Key {
-    match sym {
-        Keysym::Escape => Key::Deny,
-        Keysym::Tab | Keysym::ISO_Left_Tab | Keysym::Left | Keysym::Right => Key::Toggle,
-        Keysym::Return | Keysym::KP_Enter => Key::Activate,
-        _ => Key::Ignored,
-    }
-}
-
-struct Prompt {
-    id: u64,
-    request: Request,
-    focus: Focus,
-    /// A duplicate of the requester's socket. Written once, then shut down.
-    reply: UnixStream,
-    art: draw::ArtCache,
-    /// Whether the card has actually been put on a frame. Allow is refused
-    /// until it has: a human cannot approve what was never shown (an output
-    /// asleep, a failed upload).
-    drawn: bool,
-}
-
-#[derive(Default)]
+/// Trusted-UI state, owned by `AbyssState`.
+#[derive(Debug, Default)]
 pub struct TrustedUi {
-    prompt: Option<Prompt>,
-    next_id: u64,
-    /// The bound socket, so a clean exit can unlink it.
+    open: Option<Open>,
+    /// The uploaded panel per device scale, with the focus it was drawn with.
+    /// Kept across frames so the damage tracker sees the same element.
+    art: BTreeMap<usize, (usize, TextureBuffer<GlesTexture>)>,
+    /// One dim buffer per output size, for the same reason.
+    dim: BTreeMap<(i32, i32), SolidColorBuffer>,
+    /// The command-approval prompt's widget, if that is what is up.
+    asking: approval::Asking,
+    /// The erase prompt's requester, if that is what is up.
+    erase: erase::State,
+    /// The bound trusted socket, so a clean exit can unlink it.
     pub path: Option<PathBuf>,
 }
 
 impl TrustedUi {
-    /// Whether a prompt holds the seat. Read by every input path.
+    pub fn is_open(&self) -> bool {
+        self.open.is_some()
+    }
+
+    /// Whether a prompt is up or pending, locked or not. The injection and
+    /// client-focus paths refuse while it is: nothing scripted may steer
+    /// around a prompt, even one the lock is hiding.
     pub fn active(&self) -> bool {
-        self.prompt.is_some()
+        self.is_open()
+    }
+
+    /// The token of the prompt that is up, if any.
+    pub fn token(&self) -> Option<u64> {
+        self.open.as_ref().map(|o| o.modal.token)
     }
 }
 
-/// Tell the requester, then hang up. Errors are ignored: a requester that
-/// never hears back treats it as Deny (COMP-10 §3.10).
-pub(crate) fn reply(stream: &UnixStream, d: Decision) {
-    let line = match d {
-        Decision::Allow => "{\"decision\":\"allow\"}\n",
-        Decision::Deny => "{\"decision\":\"deny\"}\n",
-    };
-    let _ = (&mut &*stream).write_all(line.as_bytes());
-    let _ = stream.shutdown(Shutdown::Both);
+/// Whether a prompt holds the human seat right now. False under the lock.
+pub fn holds_seat(state: &AbyssState) -> bool {
+    state.trusted_ui.is_open() && !state.lock.locked
 }
 
-/// Put a prompt up. `false` (after a Deny to the requester) when one is
-/// already pending or the session is locked.
-pub fn begin(state: &mut AbyssState, request: Request, stream: UnixStream) -> bool {
-    if state.trusted_ui.prompt.is_some() || state.lock.locked {
-        reply(&stream, Decision::Deny);
+/// Put a prompt up. `false`, and nothing changes, if one is already up.
+pub fn open(state: &mut AbyssState, modal: modal::Modal) -> bool {
+    if state.trusted_ui.is_open() {
         return false;
     }
-    state.trusted_ui.next_id += 1;
-    let id = state.trusted_ui.next_id;
-    // No client keeps keyboard focus while the prompt is up, so no modifier or
-    // key event can reach one (COMP-10 §3.10).
-    if let Some(keyboard) = state.seat.get_keyboard() {
-        keyboard.set_focus(state, None, smithay::utils::SERIAL_COUNTER.next_serial());
-    }
-    state.trusted_ui.prompt = Some(Prompt {
-        id,
-        request,
-        focus: Focus::Deny,
-        reply: stream,
-        art: draw::ArtCache::default(),
-        drawn: false,
+    let token = modal.token;
+    let focus = modal.safe();
+    let layout = modal::layout(&modal);
+    state.trusted_ui.open = Some(Open {
+        modal,
+        layout,
+        focus,
+        pressed: None,
+        shown: Instant::now(),
     });
+    state.trusted_ui.art.clear();
     let timer = state
         .loop_handle
         .insert_source(Timer::from_duration(TIMEOUT), move |_, _, state| {
-            finish_if(state, id, Decision::Deny);
+            if state.trusted_ui.token() == Some(token) {
+                tracing::info!(token, "trusted prompt timed out; resolving to its safe button");
+                choose_safe(state);
+            }
             TimeoutAction::Drop
         });
-    if timer.is_err() {
-        // No timeout means no bound on how long the seat is held.
-        finish_if(state, id, Decision::Deny);
+    if let Err(e) = timer {
+        // No timeout means no fail-closed path; refuse rather than risk a
+        // prompt that holds the seat forever.
+        tracing::error!(?e, "trusted prompt timer; prompt refused");
+        state.trusted_ui.open = None;
         return false;
     }
-    tracing::info!("destructive-action prompt shown");
+    release_pointer_focus(state);
     crate::backend::damage_all(state);
     true
 }
 
-/// End prompt `id` with `d`, if it is still the one on screen.
-pub(crate) fn finish_if(state: &mut AbyssState, id: u64, d: Decision) {
-    if state.trusted_ui.prompt.as_ref().map(|p| p.id) != Some(id) {
-        return;
+/// Tests only: let the prompt that is up take input now.
+#[cfg(test)]
+pub(crate) fn arm_now(state: &mut AbyssState) {
+    if let Some(o) = state.trusted_ui.open.as_mut() {
+        o.shown = Instant::now() - ARM;
     }
-    let Some(p) = state.trusted_ui.prompt.take() else {
+}
+
+/// No client keeps pointer focus behind a prompt: it would otherwise still
+/// be hovered, and see the leave only when the prompt was gone.
+///
+/// A button held as the prompt opens has put a grab on the pointer (a click
+/// grab keeps focus on the pressed surface whatever the motion says), so the
+/// grab is ended too. Otherwise that client would keep getting motion
+/// until the release (COMP-10 §4).
+///
+/// The motion to nothing comes first: ending a grab restores focus to the
+/// pending one, and ending a drag drops it on its current target. Moved to
+/// nothing, the click grab restores to no surface and the drag is cancelled.
+pub fn release_pointer_focus(state: &mut AbyssState) {
+    let Some(pointer) = state.seat.get_pointer() else {
         return;
     };
-    reply(&p.reply, d);
-    tracing::info!(
-        allowed = d == Decision::Allow,
-        "destructive-action prompt answered"
+    let time = state.start_time.elapsed().as_millis() as u32;
+    let location = state.pointer_location;
+    pointer.motion(
+        state,
+        None,
+        &MotionEvent {
+            location,
+            serial: SERIAL_COUNTER.next_serial(),
+            time,
+        },
     );
-    // A locked session keeps the lock screen's focus, not a window behind it.
-    if !state.lock.locked {
-        crate::shell::refocus_topmost(state);
+    if pointer.is_grabbed() {
+        pointer.unset_grab(state, SERIAL_COUNTER.next_serial(), time);
     }
-    crate::backend::damage_all(state);
+    pointer.frame(state);
+    state.last_pointer_focus = None;
 }
 
-/// The requester went away: nothing to answer, so the prompt goes too.
-pub(crate) fn abandon(state: &mut AbyssState, id: u64) {
-    finish_if(state, id, Decision::Deny);
-}
-
-/// The one place an answer is produced. Called only from the physical
-/// keyboard filter.
-pub fn on_key(state: &mut AbyssState, k: Key) {
-    let Some(p) = state.trusted_ui.prompt.as_mut() else {
+/// A key while the prompt holds the seat.
+pub fn key(state: &mut AbyssState, sym: Keysym) {
+    let Some(o) = state.trusted_ui.open.as_mut() else {
         return;
     };
-    let id = p.id;
-    match k {
-        Key::Ignored => {}
-        Key::Deny => finish_if(state, id, Decision::Deny),
-        Key::Toggle => {
-            p.focus = match p.focus {
-                Focus::Deny => Focus::Allow,
-                Focus::Allow => Focus::Deny,
-            };
-            p.drawn = false;
+    let k = modal::key(sym);
+    if k != modal::Key::Escape && o.shown.elapsed() < ARM {
+        return;
+    }
+    match modal::apply(&o.modal, o.focus, k) {
+        modal::Outcome::Focus(i) => {
+            o.focus = i;
             crate::backend::damage_all(state);
         }
-        Key::Activate => {
-            let d = match p.focus {
-                Focus::Allow if p.drawn => Decision::Allow,
-                _ => Decision::Deny,
-            };
-            finish_if(state, id, d);
+        modal::Outcome::Choose(i) => choose(state, i),
+        modal::Outcome::Nothing => {}
+    }
+}
+
+/// A left-button press or release while the prompt holds the seat. Every
+/// other button is swallowed by the caller.
+pub fn button(state: &mut AbyssState, pressed: bool) {
+    let pos = state.pointer_location.to_i32_round::<i32>();
+    let under = state
+        .space
+        .outputs()
+        .filter_map(|out| panel_origin(state, out))
+        .find_map(|p| {
+            let o = state.trusted_ui.open.as_ref()?;
+            modal::hit(&o.layout, pos.x - p.x, pos.y - p.y)
+        });
+    let Some(o) = state.trusted_ui.open.as_mut() else {
+        return;
+    };
+    // §3.10: the erase prompt is keyboard-only. A click aimed at it is dropped.
+    if o.shown.elapsed() < ARM || o.modal.token >= erase::TOKEN_BASE {
+        o.pressed = None;
+        return;
+    }
+    if pressed {
+        o.pressed = under;
+        return;
+    }
+    if let Some(i) = o.pressed.take().filter(|&p| Some(p) == under) {
+        choose(state, i);
+    }
+}
+
+fn choose_safe(state: &mut AbyssState) {
+    if let Some(i) = state.trusted_ui.open.as_ref().map(|o| o.modal.safe()) {
+        choose(state, i);
+    }
+}
+
+/// Close the prompt with `button` as its answer and hand that to its owner.
+fn choose(state: &mut AbyssState, button: usize) {
+    let Some(o) = state.trusted_ui.open.take() else {
+        return;
+    };
+    state.trusted_ui.art.clear();
+    state.trusted_ui.dim.clear();
+    let Some(b) = o.modal.buttons().get(button) else {
+        return;
+    };
+    let choice = Choice {
+        token: o.modal.token,
+        button,
+        role: b.role,
+    };
+    crate::backend::damage_all(state);
+    resolve(state, choice);
+    // Whatever was waiting behind this prompt gets its turn.
+    approval::schedule(state);
+    // The pointer is re-evaluated as though it had just moved, so whatever is
+    // under it gets its enter now rather than on the next motion.
+    state.refresh_pointer_focus();
+}
+
+/// Where the answer goes. Owners of prompts are added here.
+fn resolve(state: &mut AbyssState, choice: Choice) {
+    tracing::debug!(token = choice.token, role = ?choice.role, "trusted prompt answered");
+    if approval::owns(state, choice.token) {
+        approval::answer(state, choice);
+    } else if erase::owns(state, choice.token) {
+        erase::answer(state, choice);
+    }
+}
+
+/// Take prompt `token` down without an answer: its owner withdrew the
+/// question. Nothing is resolved.
+fn cancel(state: &mut AbyssState, token: u64) {
+    if state.trusted_ui.token() != Some(token) {
+        return;
+    }
+    state.trusted_ui.open = None;
+    state.trusted_ui.art.clear();
+    state.trusted_ui.dim.clear();
+    crate::backend::damage_all(state);
+    state.refresh_pointer_focus();
+}
+
+/// The panel's top-left on `output`, in global logical coordinates: centred.
+fn panel_origin(state: &AbyssState, output: &Output) -> Option<Point<i32, Logical>> {
+    let o = state.trusted_ui.open.as_ref()?;
+    let geo = state.space.output_geometry(output)?;
+    Some(centre(geo, &o.layout))
+}
+
+fn centre(geo: Rectangle<i32, Logical>, layout: &modal::Layout) -> Point<i32, Logical> {
+    let (w, h) = (layout.w as i32, layout.h as i32);
+    (
+        geo.loc.x + ((geo.size.w - w) / 2).max(0),
+        geo.loc.y + ((geo.size.h - h) / 2).max(0),
+    )
+        .into()
+}
+
+/// The prompt's elements for one output, front-to-back: the panel, then the
+/// dim over everything else. Empty with no prompt, or under the lock.
+pub fn elements(
+    renderer: &mut GlesRenderer,
+    ui: &mut TrustedUi,
+    locked: bool,
+    output: &Output,
+    output_loc: Point<i32, Logical>,
+) -> Vec<AbyssRenderElement> {
+    if locked {
+        return Vec::new();
+    }
+    let Some(o) = ui.open.as_ref() else {
+        return Vec::new();
+    };
+    let Some(logical) = logical_size(output) else {
+        return Vec::new();
+    };
+    let fractional = output.current_scale().fractional_scale();
+    let scale = Scale::from(fractional);
+    // Whole device pixels, like the annotation cards: the font is a bitmap.
+    let dev = (fractional.round() as usize).max(1);
+
+    let mut out = Vec::with_capacity(2);
+    if ui.art.get(&dev).map(|(f, _)| *f != o.focus).unwrap_or(true) {
+        let raster = modal::rasterize(&o.modal, o.focus, dev);
+        match upload(renderer, &raster, dev) {
+            Some(buffer) => {
+                ui.art.insert(dev, (o.focus, buffer));
+            }
+            None => {
+                // No panel means no way to answer; the dim still holds the
+                // seat visibly and the timeout still resolves it.
+                tracing::error!("trusted prompt upload failed");
+                ui.art.remove(&dev);
+            }
         }
     }
+    if let Some((_, buffer)) = ui.art.get(&dev) {
+        let local = centre(Rectangle::new(output_loc, logical), &o.layout) - output_loc;
+        out.push(AbyssRenderElement::Texture(
+            TextureRenderElement::from_texture_buffer(
+                local.to_f64().to_physical(scale),
+                buffer,
+                None,
+                None,
+                None,
+                Kind::Unspecified,
+            ),
+        ));
+    }
+    let dim = ui
+        .dim
+        .entry((logical.w, logical.h))
+        .or_insert_with(|| SolidColorBuffer::new(logical, DIM));
+    out.push(AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
+        dim,
+        Point::from((0, 0)),
+        scale,
+        DIM_ALPHA,
+        Kind::Unspecified,
+    )));
+    out
+}
+
+/// The output's logical size, transformed as `space.output_geometry` is:
+/// the hit test in `button` centres on that, and the drawn panel must sit
+/// where it hits, rotated outputs included.
+fn logical_size(output: &Output) -> Option<Size<i32, Logical>> {
+    let mode = output.current_mode()?;
+    Some(
+        output
+            .current_transform()
+            .transform_size(mode.size)
+            .to_f64()
+            .to_logical(output.current_scale().fractional_scale())
+            .to_i32_round(),
+    )
+}
+
+fn upload(
+    renderer: &mut GlesRenderer,
+    raster: &crate::render::text::Raster,
+    bs: usize,
+) -> Option<TextureBuffer<GlesTexture>> {
+    let texture: GlesTexture = renderer
+        .import_memory(&raster.px, Fourcc::Abgr8888, (raster.w, raster.h).into(), false)
+        .ok()?;
+    Some(TextureBuffer::from_texture(
+        renderer,
+        texture,
+        bs as i32,
+        Transform::Normal,
+        None,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn line(s: &str) -> Vec<u8> {
-        s.as_bytes().to_vec()
-    }
-
-    const OK: &str = r#"{"action":"erase-disk","disk":"nvme-Samsung_SSD_980_S64DNX0R:1","model":"Samsung SSD 980","size_bytes":500107862016}"#;
-
     #[test]
-    fn a_well_formed_request_parses() {
-        let r = Request::parse(&line(OK)).unwrap();
-        assert_eq!(r.model, "Samsung SSD 980");
-        assert_eq!(r.size_bytes, 500107862016);
-    }
-
-    #[test]
-    fn anything_else_is_refused() {
-        for bad in [
-            "",
-            "not json",
-            "[]",
-            r#"{"action":"erase-disk"}"#,
-            // Unknown extra field.
-            r#"{"action":"erase-disk","disk":"a","model":"m","size_bytes":1,"x":1}"#,
-            // A different action must never be shown as an erase.
-            r#"{"action":"format","disk":"a","model":"m","size_bytes":1}"#,
-            // Path characters in the by-id name.
-            r#"{"action":"erase-disk","disk":"../sda","model":"m","size_bytes":1}"#,
-            r#"{"action":"erase-disk","disk":"a b","model":"m","size_bytes":1}"#,
-            r#"{"action":"erase-disk","disk":"","model":"m","size_bytes":1}"#,
-            // Wrong types and zero size.
-            r#"{"action":"erase-disk","disk":"a","model":5,"size_bytes":1}"#,
-            r#"{"action":"erase-disk","disk":"a","model":"m","size_bytes":"1"}"#,
-            r#"{"action":"erase-disk","disk":"a","model":"m","size_bytes":0}"#,
-            r#"{"action":"erase-disk","disk":"a","model":"m","size_bytes":-1}"#,
-            // Blank after sanitising.
-            r#"{"action":"erase-disk","disk":"a","model":"\u001b\u0000","size_bytes":1}"#,
-        ] {
-            assert!(Request::parse(&line(bad)).is_none(), "accepted: {bad:?}");
-        }
-        let long = format!(
-            r#"{{"action":"erase-disk","disk":"{}","model":"m","size_bytes":1}}"#,
-            "a".repeat(MAX_DISK + 1)
-        );
-        assert!(Request::parse(&line(&long)).is_none());
-    }
-
-    #[test]
-    fn model_text_is_reduced_before_it_is_stored() {
-        let r = Request::parse(&line(
-            r#"{"action":"erase-disk","disk":"a","model":"Disk\u001b[31m é","size_bytes":1}"#,
-        ))
-        .unwrap();
-        assert!(r.model.bytes().all(|b| (0x20..0x7f).contains(&b)));
-    }
-
-    #[test]
-    fn only_the_named_keys_mean_anything() {
-        assert_eq!(key(Keysym::Escape), Key::Deny);
-        assert_eq!(key(Keysym::Tab), Key::Toggle);
-        assert_eq!(key(Keysym::Return), Key::Activate);
-        for s in [Keysym::y, Keysym::space, Keysym::a, Keysym::F1, Keysym::BackSpace] {
-            assert_eq!(key(s), Key::Ignored, "{s:?} must not answer");
-        }
-    }
-
-    #[test]
-    fn the_capture_pass_cannot_see_the_prompt() {
+    fn the_capture_pass_cannot_see_trusted_ui() {
         let src = include_str!("../render/capture.rs");
         assert!(
             !src.contains("trusted_ui"),
-            "capture.rs names the prompt; a prompt in a capture would be read back as screen content"
+            "capture.rs names trusted_ui; a prompt must never reach a capture target"
         );
     }
 
     #[test]
-    fn the_prompt_sits_between_the_selector_and_the_indicator_in_every_backend() {
-        for (src, path, indicator_first) in [
+    fn prompts_are_front_most_in_every_backend() {
+        for (src, path, top_first) in [
             (include_str!("../backend/drm.rs"), "drm.rs", true),
             (include_str!("../backend/winit.rs"), "winit.rs", false),
             (include_str!("../backend/headless.rs"), "headless.rs", false),
         ] {
+            let ui = src
+                .find("trusted_ui::elements")
+                .unwrap_or_else(|| panic!("{path} does not draw trusted prompts"));
             let ind = src
                 .find("capture::indicator")
-                .unwrap_or_else(|| panic!("{path}: no indicator"));
-            let prompt = src
-                .find("trusted_ui::draw::elements")
-                .unwrap_or_else(|| panic!("{path} does not draw the prompt"));
-            let sel = src
-                .find("select::selector_elements")
-                .unwrap_or_else(|| panic!("{path}: no selector"));
-            // drm appends top-first; winit and headless splice at 0, which
-            // reverses source order.
-            assert_eq!(ind < prompt, indicator_first, "{path}: prompt vs indicator");
-            assert_eq!(prompt < sel, indicator_first, "{path}: prompt vs selector");
+                .unwrap_or_else(|| panic!("{path} does not draw the indicator"));
+            // drm appends top-first; winit and headless splice each pass in
+            // at index 0, which reverses source order.
+            assert_eq!(ui < ind, top_first, "{path}: a prompt is behind the indicator");
         }
     }
 
+    /// A button held down as the prompt opens leaves no client grab behind:
+    /// the pressed surface must not keep the pointer while the prompt is up.
     #[test]
-    fn nothing_but_the_keyboard_filter_answers() {
-        // `on_key` is the only producer of an answer; it must be reachable from
-        // the physical keyboard path and from nothing that takes remote input.
-        for (name, src) in [
-            ("ipc/methods.rs", include_str!("../ipc/methods.rs")),
-            ("ipc/gate.rs", include_str!("../ipc/gate.rs")),
-            ("ipc/mod.rs", include_str!("../ipc/mod.rs")),
-            ("input/inject.rs", include_str!("../input/inject.rs")),
-        ] {
-            assert!(
-                !src.contains("trusted_ui::on_key") && !src.contains("finish_if"),
-                "{name} can resolve a destructive-action prompt"
-            );
-        }
+    fn a_held_button_does_not_keep_a_client_grab_under_a_prompt() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let s = &mut h.state;
+        s.inject_pointer_button(0x110, true, 0);
+        let pointer = s.seat.get_pointer().unwrap();
+        assert!(pointer.is_grabbed(), "a press starts a click grab");
+        let m = Modal::new(
+            1,
+            "h",
+            None,
+            "b",
+            "l",
+            "x",
+            vec![Button {
+                label: "Not now",
+                role: Role::Safe,
+            }],
+        )
+        .unwrap();
+        assert!(open(s, m));
+        assert!(!pointer.is_grabbed(), "the prompt ended the grab");
+    }
+
+    #[test]
+    fn a_rotated_output_is_drawn_where_it_is_hit() {
+        use smithay::output::{Mode, PhysicalProperties, Subpixel};
+        let o = Output::new(
+            "t".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "t".into(),
+                model: "t".into(),
+            },
+        );
+        let mode = Mode {
+            size: (1920, 1080).into(),
+            refresh: 60_000,
+        };
+        o.change_current_state(Some(mode), Some(Transform::_90), None, None);
+        assert_eq!(logical_size(&o), Some(Size::from((1080, 1920))));
+    }
+
+    #[test]
+    fn the_panel_is_centred_and_never_off_the_top_left() {
+        let m = Modal::new(
+            1,
+            "h",
+            None,
+            "b",
+            "l",
+            "x",
+            vec![Button {
+                label: "Not now",
+                role: Role::Safe,
+            }],
+        )
+        .unwrap();
+        let l = modal::layout(&m);
+        let geo = Rectangle::new(Point::from((1920, 0)), Size::from((1920, 1080)));
+        let p = centre(geo, &l);
+        assert_eq!(p.x, 1920 + (1920 - l.w as i32) / 2);
+        let tiny = Rectangle::new(Point::from((0, 0)), Size::from((100, 100)));
+        assert_eq!(centre(tiny, &l), Point::from((0, 0)));
     }
 }

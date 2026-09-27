@@ -29,7 +29,8 @@ crates/
   eclipse-policy-viewer/  read-only policy.kdl inspector, deliberately powerless
   eclipse-secret-prompt/  one-shot wifi passphrase / Bluetooth PIN prompt (ADR 0053)
   eclipse-services/   D-Bus services: notifications, tray, status, session (ADR 0038);
-                      lib plus the eclipse-screensaver bin (ADR 0051)
+                      lib plus the eclipse-screensaver (ADR 0051) and
+                      eclipse-pairing (ADR 0066) bins
   wlcs-abyss/         wlcs conformance cdylib, drives the headless backend
   policyd/            policy + audit daemon            [TCB]
   policy-eval/        shared evaluator, linked by both [TCB]

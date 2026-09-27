@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Premade command widget — /usr/share/eclipse/widgets/uptime.kdl, shipped by
+// eclipseos-hyperion (ADR 0067). Approved by shipping: editing this block in
+// your own abyss.kdl makes it an altered premade and prompts before it runs.
+//
+// Time since boot, e.g. "up 3 hours, 12 minutes".
+bar {
+    widget "uptime" {
+        exec "uptime" "--pretty"
+        interval-ms "1m"
+    }
+}

@@ -9,7 +9,7 @@
 //!
 //! One line in, one line out, then the connection is shut. A requester that
 //! gets no line treats it as Deny. The compositor never trusts the request's
-//! content beyond drawing it (see [`super::Request`]).
+//! content beyond drawing it (see [`super::erase::Request`]).
 
 use std::{
     io::{ErrorKind, Read},
@@ -21,7 +21,7 @@ use std::{
 
 use smithay::reexports::calloop::{generic::Generic, Interest, LoopHandle, Mode, PostAction};
 
-use super::{abandon, begin, reply, Decision, Request};
+use super::erase::{abandon, ask, reply, Decision, Request};
 use crate::state::AbyssState;
 
 /// A request is one short line; anything longer is refused.
@@ -185,8 +185,8 @@ fn readable(state: &mut AbyssState, stream: &UnixStream, conn: &mut Conn) -> Pos
                 *conn = Conn::Done;
                 return PostAction::Remove;
             };
-            if begin(state, request, dup) {
-                *conn = Conn::Pending(state.trusted_ui.next_id);
+            if let Some(token) = ask(state, request, dup) {
+                *conn = Conn::Pending(token);
                 PostAction::Continue
             } else {
                 *conn = Conn::Done;
@@ -203,7 +203,8 @@ mod tests {
 
     use super::*;
     use crate::shell::focus::state_tests::harness;
-    use crate::trusted_ui::{on_key, Key};
+    use crate::trusted_ui::{arm_now, key};
+    use smithay::input::keyboard::Keysym;
 
     const REQ: &[u8] =
         b"{\"action\":\"erase-disk\",\"disk\":\"nvme-X_1\",\"model\":\"X\",\"size_bytes\":1000}\n";
@@ -229,6 +230,13 @@ mod tests {
         (!line.is_empty()).then_some(line.trim().to_string())
     }
 
+    /// A connected request with its prompt past the arming delay.
+    fn armed(state: &mut AbyssState) -> UnixStream {
+        let (client, ..) = connect(state, REQ);
+        arm_now(state);
+        client
+    }
+
     #[test]
     fn a_request_raises_the_prompt_and_enter_on_the_default_denies() {
         let mut h = harness();
@@ -236,37 +244,45 @@ mod tests {
         assert!(matches!(conn, Conn::Pending(_)));
         assert!(matches!(post, PostAction::Continue));
         assert!(h.state.trusted_ui.active());
-        assert!(h.state.input_captured());
-        // A reflexive Enter lands on Deny.
-        on_key(&mut h.state, Key::Activate);
+        assert!(crate::trusted_ui::holds_seat(&h.state));
+        arm_now(&mut h.state);
+        // A reflexive Enter lands on Keep disk.
+        key(&mut h.state, Keysym::Return);
         assert_eq!(answer(&client).as_deref(), Some(r#"{"decision":"deny"}"#));
         assert!(!h.state.trusted_ui.active());
     }
 
     #[test]
-    fn allow_needs_a_tab_then_enter() {
+    fn erase_needs_a_tab_then_space_and_enter_never_erases() {
         let mut h = harness();
-        let (client, ..) = connect(&mut h.state, REQ);
-        on_key(&mut h.state, Key::Toggle);
+        let client = armed(&mut h.state);
+        key(&mut h.state, Keysym::Tab);
         assert!(h.state.trusted_ui.active(), "Tab alone must not answer");
-        // The renderer has shown the Allow-focused card.
-        h.state.trusted_ui.prompt.as_mut().unwrap().drawn = true;
-        on_key(&mut h.state, Key::Activate);
+        key(&mut h.state, Keysym::Return);
+        assert!(h.state.trusted_ui.active(), "Enter on Erase must not answer");
+        key(&mut h.state, Keysym::space);
         assert_eq!(answer(&client).as_deref(), Some(r#"{"decision":"allow"}"#));
     }
 
     #[test]
-    fn allow_is_refused_until_the_card_has_been_drawn() {
+    fn nothing_answers_before_the_prompt_is_armed() {
         let mut h = harness();
         let (client, ..) = connect(&mut h.state, REQ);
-        h.state.trusted_ui.prompt.as_mut().unwrap().drawn = true;
-        on_key(&mut h.state, Key::Toggle);
-        assert!(
-            !h.state.trusted_ui.prompt.as_ref().unwrap().drawn,
-            "a focus change invalidates what was shown"
-        );
-        on_key(&mut h.state, Key::Activate);
-        assert_eq!(answer(&client).as_deref(), Some(r#"{"decision":"deny"}"#));
+        key(&mut h.state, Keysym::Tab);
+        key(&mut h.state, Keysym::space);
+        assert!(h.state.trusted_ui.active());
+        assert!(answer(&client).is_none());
+    }
+
+    #[test]
+    fn a_click_never_answers_the_erase_prompt() {
+        let mut h = harness();
+        let client = armed(&mut h.state);
+        key(&mut h.state, Keysym::Tab);
+        crate::trusted_ui::button(&mut h.state, true);
+        crate::trusted_ui::button(&mut h.state, false);
+        assert!(h.state.trusted_ui.active());
+        assert!(answer(&client).is_none());
     }
 
     /// A `Window` needs a real client, so the guard is pinned by source: the
@@ -282,17 +298,19 @@ mod tests {
     #[test]
     fn escape_denies_even_with_allow_focused() {
         let mut h = harness();
-        let (client, ..) = connect(&mut h.state, REQ);
-        on_key(&mut h.state, Key::Toggle);
-        on_key(&mut h.state, Key::Deny);
+        let client = armed(&mut h.state);
+        key(&mut h.state, Keysym::Tab);
+        key(&mut h.state, Keysym::Escape);
         assert_eq!(answer(&client).as_deref(), Some(r#"{"decision":"deny"}"#));
     }
 
     #[test]
     fn other_keys_never_answer() {
         let mut h = harness();
-        let (client, ..) = connect(&mut h.state, REQ);
-        on_key(&mut h.state, Key::Ignored);
+        let client = armed(&mut h.state);
+        for s in [Keysym::y, Keysym::a, Keysym::F1, Keysym::BackSpace] {
+            key(&mut h.state, s);
+        }
         assert!(h.state.trusted_ui.active());
         assert!(answer(&client).is_none());
     }
@@ -300,14 +318,13 @@ mod tests {
     #[test]
     fn a_second_request_is_denied_and_the_first_survives() {
         let mut h = harness();
-        let (first, ..) = connect(&mut h.state, REQ);
+        let first = armed(&mut h.state);
         let (second, _s, conn, post) = connect(&mut h.state, REQ);
         assert_eq!(answer(&second).as_deref(), Some(r#"{"decision":"deny"}"#));
         assert!(matches!(conn, Conn::Done) && matches!(post, PostAction::Remove));
         assert!(h.state.trusted_ui.active());
-        on_key(&mut h.state, Key::Toggle);
-        h.state.trusted_ui.prompt.as_mut().unwrap().drawn = true;
-        on_key(&mut h.state, Key::Activate);
+        key(&mut h.state, Keysym::Tab);
+        key(&mut h.state, Keysym::space);
         assert_eq!(answer(&first).as_deref(), Some(r#"{"decision":"allow"}"#));
     }
 
@@ -358,13 +375,21 @@ mod tests {
     }
 
     #[test]
-    fn the_timeout_denies_and_a_stale_one_does_nothing() {
+    fn the_timeout_answer_is_a_deny() {
         let mut h = harness();
         let (client, ..) = connect(&mut h.state, REQ);
-        let id = h.state.trusted_ui.next_id;
-        crate::trusted_ui::finish_if(&mut h.state, id + 1, Decision::Allow);
-        assert!(h.state.trusted_ui.active(), "a stale id must not end the prompt");
-        crate::trusted_ui::finish_if(&mut h.state, id, Decision::Deny);
+        let token = h.state.trusted_ui.token().unwrap();
+        // What the timer does: the Safe button, whatever has focus.
+        crate::trusted_ui::resolve(
+            &mut h.state,
+            crate::trusted_ui::Choice {
+                token: token + 1,
+                button: 1,
+                role: crate::trusted_ui::Role::Grant,
+            },
+        );
+        assert!(answer(&client).is_none(), "a stale token must not answer");
+        crate::trusted_ui::key(&mut h.state, Keysym::Escape);
         assert_eq!(answer(&client).as_deref(), Some(r#"{"decision":"deny"}"#));
     }
 }

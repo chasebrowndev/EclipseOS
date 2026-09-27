@@ -270,13 +270,14 @@ pub fn compile_shadow(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, G
     )
 }
 
-/// Uniforms for one drop shadow over its area (the bordered rect grown by
-/// `range`): `range` is how far it reaches and `radius` the corner radius it
-/// hugs, both logical.
-pub fn shadow_uniforms(range: f32, radius: f32) -> Vec<Uniform<'static>> {
+/// Uniforms for one drop shadow or glow over its area (the bordered rect grown
+/// by `range`): `color` is its premultiplied colour against the window edge,
+/// `range` how far it reaches and `radius` the corner radius it hugs, both
+/// logical.
+pub fn shadow_uniforms(color: [f32; 4], range: f32, radius: f32) -> Vec<Uniform<'static>> {
     vec![
         // Premultiplied, so the colour carries its own alpha.
-        Uniform::new("shadow_color", [0.0, 0.0, 0.0, SHADOW_ALPHA]),
+        Uniform::new("shadow_color", color),
         Uniform::new("blur", range),
         Uniform::new("radius", radius),
     ]
@@ -352,7 +353,11 @@ pub fn border_uniforms(color: [f32; 4], radius: f32, width: f32, scale: f32) -> 
 
 /// Opacity of the shadow directly against the window edge. Not configurable:
 /// `shadow { range }` is the only knob COMP-13 §1.1 gives.
-const SHADOW_ALPHA: f32 = 0.55;
+pub const SHADOW_ALPHA: f32 = 0.55;
+
+/// How far the border glow reaches past the border, logical px. Not
+/// configurable: `glow { strength }` scales intensity only (COMP-13 §1.1).
+pub const GLOW_RANGE: i32 = 24;
 
 #[cfg(test)]
 mod tests {

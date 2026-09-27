@@ -172,7 +172,8 @@ pub struct AbyssState {
     /// A modal region selection, while one is running (COMP-18 §1.3). The
     /// compositor owns the interaction so an addon never grabs the seat.
     pub region_select: crate::render::select::RegionSelect,
-    /// The compositor-drawn destructive-action prompt (COMP-10 §3.10).
+    /// The trusted prompt, while one is up or pending (COMP-10; the
+    /// destructive-action prompt, §3.10, runs on it too). TCB.
     pub trusted_ui: crate::trusted_ui::TrustedUi,
     /// A window being dragged onto the Radiant tree, while one is (COMP-05
     /// §3.1). Its drop guides are drawn from here.
@@ -293,6 +294,16 @@ pub struct AbyssState {
     /// the same second as the GUI must still win; a window would drop that
     /// edit, a hash cannot.
     pub config_written: std::collections::HashMap<std::path::PathBuf, u64>,
+    /// Installed add-ons and the hooks they turn on (ADR 0066). Empty until
+    /// `addons::start`; every hook is off by default.
+    pub addons: crate::addons::Addons,
+    /// A debounced re-read of the add-on directory is armed.
+    pub addons_pending: bool,
+    /// A debounced re-read after a widget catalog change is armed.
+    pub catalog_pending: bool,
+    /// Withheld command widgets, the prompt queue and the session's Not now
+    /// set (ADR 0067). Plain data; see `config::withhold`.
+    pub widget_approvals: crate::config::withhold::WidgetApprovals,
 }
 
 impl AbyssState {
@@ -521,6 +532,10 @@ impl AbyssState {
             config_dirty: None,
             config_timer: None,
             config_written: std::collections::HashMap::new(),
+            addons: crate::addons::Addons::default(),
+            addons_pending: false,
+            catalog_pending: false,
+            widget_approvals: Default::default(),
         }
     }
 
