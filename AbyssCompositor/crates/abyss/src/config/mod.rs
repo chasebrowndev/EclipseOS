@@ -3699,20 +3699,32 @@ mod tests {
             "/../../dist/pkg/eclipseos/PKGBUILD"
         ))
         .expect("PKGBUILD readable");
-        // Binaries the split packages install: `_bin NAME` and
-        // `for b in A B; do _bin "$b"; done`.
+        // `eclipseos-meta`'s `depends=( … )`. Its `optdepends` (the hyperion
+        // add-on, ADR 0066) are not the closure: a bind cannot rely on them.
+        let meta = &pkgbuild[pkgbuild.find("package_eclipseos-meta()").expect("meta package")..];
+        let depends = &meta[meta.find("depends=(").expect("meta depends") + 9..];
+        let depends: Vec<&str> = depends[..depends.find(')').unwrap()].split_whitespace().collect();
+        // Binaries the split packages in that closure install: `_bin NAME`
+        // and `for b in A B; do _bin "$b"; done`, under `package_NAME()`.
         let mut ours: Vec<&str> = Vec::new();
+        let mut in_closure = false;
         for line in pkgbuild.lines().map(str::trim) {
-            if let Some(names) = line.strip_prefix("for b in ") {
+            if let Some(pkg) = line.strip_prefix("package_") {
+                let pkg = pkg.split("()").next().unwrap_or_default();
+                in_closure = depends.contains(&pkg);
+            } else if !in_closure {
+                continue;
+            } else if let Some(names) = line.strip_prefix("for b in ") {
                 ours.extend(names.split(';').next().unwrap_or_default().split_whitespace());
             } else if let Some(name) = line.strip_prefix("_bin ") {
                 ours.push(name.split_whitespace().next().unwrap_or_default());
             }
         }
-        // `eclipseos-meta`'s `depends=( … )`.
-        let meta = &pkgbuild[pkgbuild.find("package_eclipseos-meta()").expect("meta package")..];
-        let depends = &meta[meta.find("depends=(").expect("meta depends") + 9..];
-        let depends: Vec<&str> = depends[..depends.find(')').unwrap()].split_whitespace().collect();
+        assert!(ours.contains(&"eclipse-launcher"), "PKGBUILD parse: {ours:?}");
+        assert!(
+            !ours.contains(&"hyperion"),
+            "hyperion is an add-on, not the closure"
+        );
         // Third-party binaries: (argv0, providing package). `base` is the
         // Arch base every image has.
         const EXTERNAL: &[(&str, &str)] = &[
