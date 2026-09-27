@@ -1032,7 +1032,7 @@ fn event(errors: &[ConfigError], startup: bool, leads_from: &[ConfigError]) -> s
     v
 }
 
-/// `abyss.kdl: 1 problem ignored — line 14: touchpad key needs a boolean: "click-method"`.
+/// `abyss.kdl: 1 problem ignored — line 14: touchpad key needs a boolean: "scroll-method"`.
 ///
 /// At startup a refusal that left a protection off ([`FailSafe`]) leads,
 /// named for what it switched off — `abyss.kdl: auto-lock is OFF — line 3: …`
@@ -5663,7 +5663,7 @@ mod startup_tests {
     #[test]
     fn an_unknown_touchpad_key_leaves_tap_to_click_alone() {
         let mut cfg = abyss(
-            "input {\n    touchpad {\n        tap-to-click #true\n        click-method \"button-areas\"\n    }\n}\n",
+            "input {\n    touchpad {\n        tap-to-click #true\n        scroll-method \"two-finger\"\n    }\n}\n",
         );
         assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
         assert_eq!(cfg.errors[0].line, 4);
@@ -5674,7 +5674,7 @@ mod startup_tests {
         let ev = error_event(&cfg.errors, true);
         assert_eq!(
             ev["summary"],
-            "abyss.kdl: 1 problem ignored \u{2014} line 4: touchpad key needs a boolean: \"click-method\""
+            "abyss.kdl: 1 problem ignored \u{2014} line 4: touchpad key needs a boolean: \"scroll-method\""
         );
         assert_eq!(ev["errors"].as_array().map(Vec::len), Some(1));
         assert_eq!(ev["line"], 4);
