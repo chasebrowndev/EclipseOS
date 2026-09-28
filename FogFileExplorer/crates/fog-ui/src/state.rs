@@ -15,8 +15,10 @@ pub enum Effect {
     Reveal(usize),
     /// A new folder is shown: reset the scroll, then reveal this row.
     Entered(usize),
-    /// Send `ListDir` for this path.
+    /// Send `Subscribe` for this path: a listing, then pushed diffs.
     List(Vec<u8>),
+    /// Stop the pushes for a listing we no longer show.
+    Unsubscribe(u64),
 }
 
 /// What the selection holds on to while a listing arrives in pieces.
@@ -132,7 +134,9 @@ impl Browser {
                     return Effect::Entered(self.selected);
                 }
                 if path != self.path {
-                    return Effect::None;
+                    // A navigation we moved on from: its subscription is ours
+                    // to end.
+                    return Effect::Unsubscribe(dir);
                 }
                 // A refresh of the shown folder. An older generation of the
                 // same listing is a reply that lost a race; drop it.
@@ -376,7 +380,7 @@ mod tests {
         let before = b.clone();
         assert_eq!(
             b.on_reply(snap("/etc", 9, 0, &[("x", Kind::File)], &[0])),
-            Effect::None
+            Effect::Unsubscribe(9)
         );
         assert_eq!(b, before);
         // A diff for another listing id is dropped too.

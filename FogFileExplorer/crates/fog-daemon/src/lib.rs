@@ -8,7 +8,10 @@
 
 pub mod backend;
 pub mod cache;
+mod list;
+pub mod meta;
 pub mod sort;
+pub mod watch;
 
 use std::ffi::OsStr;
 use std::fs::{self, DirBuilder, Permissions};
@@ -16,11 +19,11 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use fog_proto::{apply_diff, Entry, Reply, Request};
+use fog_proto::{Reply, Request};
 use rustix::io::Errno;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
@@ -37,6 +40,7 @@ pub struct Daemon {
     backend: Box<dyn Backend>,
     cache: Mutex<Cache>,
     next_dir: AtomicU64,
+    hub: watch::Hub,
 }
 
 impl Daemon {
@@ -45,6 +49,7 @@ impl Daemon {
             backend,
             cache: Mutex::new(cache),
             next_dir: AtomicU64::new(1),
+            hub: watch::Hub::default(),
         }
     }
 
@@ -58,11 +63,27 @@ impl Daemon {
         self.cache.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Serve one request from a connected `peer`: subscriptions need its
+    /// push channel, everything else goes to [`Self::handle`].
+    pub fn dispatch(&self, peer: &watch::Peer, req: Request) {
+        match req {
+            Request::Subscribe { path } => {
+                self.open_dir(path, Some(peer), &mut |r| send(&peer.tx, &r))
+            }
+            Request::Unsubscribe { dir } => self.unsubscribe(peer.id, dir),
+            req => self.handle(req, &mut |r| send(&peer.tx, &r)),
+        }
+    }
+
     /// Serve one request synchronously, emitting replies in order through
     /// `out`. Blocks on I/O: call from a blocking thread.
     pub fn handle(&self, req: Request, out: &mut dyn FnMut(Reply)) {
         match req {
-            Request::ListDir { path } => self.list_dir(path, out),
+            // Without a peer to push to, a subscription is a listing; the
+            // connection loop routes real ones to `dispatch`.
+            Request::ListDir { path } | Request::Subscribe { path } => {
+                self.open_dir(path, None, out)
+            }
             Request::Stat { path } => {
                 let reply = match abs(&path) {
                     Ok(p) => match self.backend.stat(p) {
@@ -74,157 +95,14 @@ impl Daemon {
                 out(reply);
             }
             // Watching, jobs, trash, places and open land in later units.
-            Request::Subscribe { path } | Request::Open { path, .. } => {
-                out(error(&path, &Errno::NOSYS.into()))
-            }
-            Request::Unsubscribe { .. }
-            | Request::Job(_)
+            Request::Open { path, .. } => out(error(&path, &Errno::NOSYS.into())),
+            Request::Unsubscribe { .. } => {}
+            Request::Job(_)
             | Request::JobControl { .. }
             | Request::Undo
             | Request::ListTrash
             | Request::Places => out(error(&[], &Errno::NOSYS.into())),
         }
-    }
-
-    fn list_dir(&self, raw: Vec<u8>, out: &mut dyn FnMut(Reply)) {
-        let path = match abs(&raw) {
-            Ok(p) => p,
-            Err(e) => return out(error(&raw, &e)),
-        };
-        let cached = self.cache().get(&raw);
-        match cached {
-            Some(old) => self.revalidate(&raw, path, old, out),
-            None => self.cold(&raw, path, out),
-        }
-    }
-
-    /// Cached: paint the cached listing, rescan, and send what changed.
-    fn revalidate(&self, raw: &[u8], path: &Path, old: Arc<Listing>, out: &mut dyn FnMut(Reply)) {
-        out(snapshot(raw, &old, true));
-        let new = match self.list_all(path) {
-            Ok(v) => v,
-            Err(e) => {
-                let mut c = self.cache();
-                if c.peek(raw).is_some_and(|l| Arc::ptr_eq(l, &old)) {
-                    c.remove(raw);
-                }
-                drop(c);
-                return out(error(raw, &e));
-            }
-        };
-        let (removed, added, changed) = diff(&old.entries, &new);
-        if removed.is_empty() && added.is_empty() && changed.is_empty() {
-            return;
-        }
-        let mut entries = old.entries.clone();
-        apply_diff(&mut entries, &removed, &added, &changed);
-        let order = sort::order(&entries);
-        let next = Arc::new(Listing {
-            dir: old.dir,
-            generation: old.generation + 1,
-            entries,
-            order,
-        });
-
-        // Another client may have bumped the generation meanwhile; keep theirs.
-        let current = {
-            let mut c = self.cache();
-            match c.peek(raw) {
-                Some(cur) if !Arc::ptr_eq(cur, &old) => Some(cur.clone()),
-                _ => {
-                    c.insert(raw.to_vec(), next.clone());
-                    None
-                }
-            }
-        };
-        match current {
-            Some(cur)
-                if !(cur.dir == next.dir
-                    && cur.generation == next.generation
-                    && cur.entries == next.entries) =>
-            {
-                out(snapshot(raw, &cur, true));
-            }
-            _ => out(Reply::DirDiff {
-                dir: next.dir,
-                generation: next.generation,
-                removed,
-                added,
-                changed,
-                order: next.order.clone(),
-                complete: true,
-            }),
-        }
-    }
-
-    /// Uncached: stream the first batch as a partial snapshot, complete with
-    /// one diff, then cache.
-    fn cold(&self, raw: &[u8], path: &Path, out: &mut dyn FnMut(Reply)) {
-        let dir = self.next_dir.fetch_add(1, Ordering::Relaxed);
-        let mut first: Option<Vec<Entry>> = None;
-        let mut rest = Vec::new();
-        let res = self.backend.list(path, &mut |b| {
-            if first.is_none() {
-                out(Reply::DirSnapshot {
-                    path: raw.to_vec(),
-                    dir,
-                    generation: 0,
-                    entries: b.clone(),
-                    order: sort::order(&b),
-                    complete: false,
-                });
-                first = Some(b);
-            } else {
-                rest.extend(b);
-            }
-        });
-        let tail = match res {
-            Ok(t) => t,
-            Err(e) => return out(error(raw, &e)),
-        };
-        let listing = match first {
-            None => {
-                let l = Listing {
-                    dir,
-                    generation: 0,
-                    order: sort::order(&tail),
-                    entries: tail,
-                };
-                out(snapshot(raw, &l, true));
-                l
-            }
-            Some(mut entries) => {
-                rest.extend(tail);
-                entries.extend_from_slice(&rest);
-                let order = sort::order(&entries);
-                out(Reply::DirDiff {
-                    dir,
-                    generation: 1,
-                    removed: Vec::new(),
-                    added: rest,
-                    changed: Vec::new(),
-                    order: order.clone(),
-                    complete: true,
-                });
-                Listing {
-                    dir,
-                    generation: 1,
-                    entries,
-                    order,
-                }
-            }
-        };
-        let mut c = self.cache();
-        if c.peek(raw).is_none() {
-            c.insert(raw.to_vec(), Arc::new(listing));
-        }
-    }
-
-    fn list_all(&self, path: &Path) -> io::Result<Vec<Entry>> {
-        let mut all = Vec::new();
-        let tail = self.backend.list(path, &mut |b| all.extend(b))?;
-        all.extend(tail);
-        Ok(all)
     }
 }
 
@@ -298,6 +176,7 @@ pub fn bind(path: &Path) -> io::Result<UnixListener> {
 /// are dropped.
 pub async fn serve(listener: UnixListener, daemon: Arc<Daemon>) -> io::Result<()> {
     let me = rustix::process::geteuid().as_raw();
+    watch::spawn(&daemon);
     loop {
         let stream = match listener.accept().await {
             Ok((s, _)) => s,
@@ -322,6 +201,7 @@ pub async fn serve(listener: UnixListener, daemon: Arc<Daemon>) -> io::Result<()
 async fn client(stream: UnixStream, daemon: Arc<Daemon>) {
     let (mut rd, mut wr) = stream.into_split();
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(CLIENT_QUEUE);
+    let peer = daemon.hub.peer(tx.clone());
     let writer = tokio::spawn(async move {
         while let Some(frame) = rx.recv().await {
             if wr.write_all(&frame).await.is_err() {
@@ -333,8 +213,8 @@ async fn client(stream: UnixStream, daemon: Arc<Daemon>) {
         match fog_proto::read_frame::<_, Request>(&mut rd).await {
             Ok(Some(req)) => {
                 let d = daemon.clone();
-                let tx = tx.clone();
-                tokio::task::spawn_blocking(move || d.handle(req, &mut |r| send(&tx, &r)));
+                let peer = peer.clone();
+                tokio::task::spawn_blocking(move || d.dispatch(&peer, req));
             }
             Ok(None) => break,
             Err(e) => {
@@ -343,6 +223,8 @@ async fn client(stream: UnixStream, daemon: Arc<Daemon>) {
             }
         }
     }
+    daemon.drop_peer(peer.id);
+    drop(peer);
     drop(tx);
     let _ = writer.await;
 }

@@ -87,13 +87,14 @@ impl App {
         }
     }
 
-    fn request(&mut self, path: Vec<u8>) {
+    fn request(&mut self, req: Request) {
         if let Some(link) = &self.link {
-            if link.send(Request::ListDir { path }).is_err() {
+            if link.send(req).is_err() {
                 self.link = None;
             }
         }
-        // Offline: the target is re-requested when the link comes up.
+        // Offline: the target is re-requested when the link comes up, and a
+        // new connection holds no subscriptions.
     }
 
     fn apply(&mut self, fx: Effect) -> Task<Message> {
@@ -103,7 +104,11 @@ impl App {
             Effect::Entered(i) => scroll_to(list_id(), AbsoluteOffset { x: 0.0, y: 0.0 })
                 .chain(scroll_into_view(list_id(), i, size::ROW_H)),
             Effect::List(path) => {
-                self.request(path);
+                self.request(Request::Subscribe { path });
+                Task::none()
+            }
+            Effect::Unsubscribe(dir) => {
+                self.request(Request::Unsubscribe { dir });
                 Task::none()
             }
         }
@@ -123,7 +128,15 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             app.fogd = Fogd::Down;
             Effect::None
         }
-        Message::Conn(conn::Event::Reply(r)) => app.browser.on_reply(r),
+        Message::Conn(conn::Event::Reply(r)) => {
+            // Entering a folder ends the subscription to the one we left.
+            let left = app.browser.dir;
+            let fx = app.browser.on_reply(r);
+            if let Some(dir) = left.filter(|&d| Some(d) != app.browser.dir) {
+                app.request(Request::Unsubscribe { dir });
+            }
+            fx
+        }
         // `key` is the key without modifiers; Shift+g must read as `G`.
         Message::Key(keyboard::Event::KeyPressed { modified_key, .. }) => {
             press(&mut app.browser, &modified_key)

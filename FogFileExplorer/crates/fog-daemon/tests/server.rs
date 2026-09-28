@@ -4,9 +4,11 @@
 
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use fog_daemon::{bind, serve, sort, Daemon, BATCH};
 use fog_proto::{apply_diff, read_frame, write_frame, Entry, Kind, Reply, Request};
@@ -53,6 +55,28 @@ impl Harness {
         })
         .await;
     }
+
+    /// Apply replies to `v` until `done` holds; fails after 5 s.
+    async fn until(&mut self, v: &mut View, done: impl Fn(&View) -> bool) {
+        let t = tokio::time::timeout(Duration::from_secs(5), async {
+            while !done(v) {
+                v.apply(self.recv().await);
+            }
+        })
+        .await;
+        assert!(t.is_ok(), "timed out; have {:?}", v.names());
+    }
+
+    /// Assert nothing arrives for a while.
+    async fn quiet(&mut self) {
+        if let Ok(r) = tokio::time::timeout(Duration::from_millis(300), self.recv()).await {
+            panic!("unexpected {r:?}");
+        }
+    }
+}
+
+fn raw(p: &Path) -> Vec<u8> {
+    p.as_os_str().as_bytes().to_vec()
 }
 
 /// Client-side view: entries + order, as the UI would hold them.
@@ -104,6 +128,14 @@ impl View {
         }
     }
 
+    fn meta_done(&self) -> bool {
+        self.complete && self.entries.iter().all(|e| e.mode.is_some())
+    }
+
+    fn get(&self, name: &str) -> Option<&Entry> {
+        self.entries.iter().find(|e| e.name == name.as_bytes())
+    }
+
     fn names(&self) -> Vec<String> {
         assert_eq!(self.order.len(), self.entries.len());
         self.order
@@ -149,6 +181,9 @@ async fn uncached_then_cached_with_diff() {
     assert!(v.complete);
     assert_eq!(v.generation, 0);
     assert_eq!(v.names(), ["zdir", "file2", "file10", "gone"]);
+    // Phase 2 follows as metadata-only diffs.
+    h.until(&mut v, View::meta_done).await;
+    assert!(v.generation >= 1);
     let dir = v.dir;
 
     fs::write(d.path().join("file1"), b"").unwrap();
@@ -157,43 +192,122 @@ async fn uncached_then_cached_with_diff() {
     fs::remove_dir(d.path().join("zdir")).unwrap();
     fs::write(d.path().join("zdir"), b"").unwrap();
 
+    // Cached snapshot first (the watcher may already have refreshed it),
+    // then whatever diff the mtime check finds.
     h.list(d.path()).await;
-    // Cached snapshot first, unchanged.
-    let snap = h.recv().await;
     let mut v2 = View::default();
-    v2.apply(snap);
+    v2.apply(h.recv().await);
     assert!(v2.complete);
     assert_eq!(v2.dir, dir);
-    assert_eq!(v2.names(), ["zdir", "file2", "file10", "gone"]);
-    // Then the diff.
-    let r = h.recv().await;
-    assert!(matches!(
-        r,
-        Reply::DirDiff {
-            generation: 1,
-            complete: true,
-            ..
-        }
-    ));
-    v2.apply(r);
+    let want = expected(d.path());
+    h.until(&mut v2, |v| v.names() == want && v.meta_done())
+        .await;
     assert_eq!(v2.names(), ["file1", "file2", "file10", "zdir"]);
-    assert_eq!(v2.names(), expected(d.path()));
 
-    // Unchanged: snapshot at generation 1 and nothing else. A Stat after it
-    // proves no diff was queued in between.
+    // Unchanged: the cached snapshot, metadata kept, and nothing else.
     h.list(d.path()).await;
     let mut v3 = View::default();
     v3.apply(h.recv().await);
-    assert_eq!(v3.generation, 1);
+    assert_eq!(v3.generation, v2.generation);
     assert_eq!(v3.names(), v2.names());
-    h.send(Request::Stat {
-        path: d.path().join("file1").as_os_str().as_bytes().to_vec(),
+    assert!(v3.meta_done());
+    h.quiet().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn phase2_metadata() {
+    let mut h = start().await;
+    let d = tempfile::tempdir().unwrap();
+    fs::write(d.path().join("f"), b"hello").unwrap();
+    fs::create_dir(d.path().join("sub")).unwrap();
+    std::os::unix::fs::symlink("f", d.path().join("l")).unwrap();
+
+    h.list(d.path()).await;
+    let mut v = View::default();
+    v.apply(h.recv().await);
+    assert!(
+        v.entries.iter().all(|e| e.mode.is_none()),
+        "phase 1 has no stat"
+    );
+    h.until(&mut v, View::meta_done).await;
+    for name in ["f", "sub", "l"] {
+        let e = v.get(name).unwrap();
+        let m = fs::symlink_metadata(d.path().join(name)).unwrap();
+        assert_eq!(e.mode, Some(m.mode()), "{name}");
+        assert_eq!(e.size, Some(m.size()), "{name}");
+        assert_eq!(
+            e.mtime_ns,
+            Some(i128::from(m.mtime()) * 1_000_000_000 + i128::from(m.mtime_nsec())),
+            "{name}"
+        );
+    }
+    assert_eq!(v.get("f").unwrap().size, Some(5));
+    assert_eq!(v.get("l").unwrap().mode.unwrap() & 0o170000, 0o120000);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subscribe_pushes_diffs() {
+    let mut h = start().await;
+    let d = tempfile::tempdir().unwrap();
+    fs::write(d.path().join("a"), b"").unwrap();
+
+    h.send(Request::Subscribe {
+        path: raw(d.path()),
     })
     .await;
-    match h.recv().await {
-        Reply::Stat(s) => assert_eq!(s.kind, Kind::File),
-        other => panic!("unexpected {other:?}"),
-    }
+    let mut v = View::default();
+    h.until(&mut v, View::meta_done).await;
+    assert_eq!(v.names(), ["a"]);
+
+    // Create: an added entry, stat'ed before it is pushed.
+    fs::write(d.path().join("b"), b"xy").unwrap();
+    h.until(&mut v, |v| v.get("b").is_some_and(|e| e.size == Some(2)))
+        .await;
+    assert_eq!(v.names(), ["a", "b"]);
+
+    // Rename: removed + added.
+    fs::rename(d.path().join("b"), d.path().join("c")).unwrap();
+    h.until(&mut v, |v| v.names() == ["a", "c"]).await;
+    assert_eq!(v.get("c").unwrap().size, Some(2));
+
+    // Content change: metadata only.
+    fs::write(d.path().join("c"), b"four").unwrap();
+    h.until(&mut v, |v| v.get("c").unwrap().size == Some(4))
+        .await;
+
+    // Delete.
+    fs::remove_file(d.path().join("a")).unwrap();
+    h.until(&mut v, |v| v.names() == ["c"]).await;
+    assert_eq!(v.names(), expected(d.path()));
+
+    // Unsubscribed: changes are no longer pushed.
+    h.send(Request::Unsubscribe { dir: v.dir }).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    fs::write(d.path().join("z"), b"").unwrap();
+    h.quiet().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subscribed_dir_removed_reports_error() {
+    let mut h = start().await;
+    let d = tempfile::tempdir().unwrap();
+    let sub = d.path().join("sub");
+    fs::create_dir(&sub).unwrap();
+    h.send(Request::Subscribe { path: raw(&sub) }).await;
+    let mut v = View::default();
+    v.apply(h.recv().await);
+    assert!(v.complete && v.entries.is_empty());
+    fs::remove_dir(&sub).unwrap();
+    let r = tokio::time::timeout(Duration::from_secs(5), h.recv())
+        .await
+        .unwrap();
+    assert_eq!(
+        r,
+        Reply::Error {
+            path: raw(&sub),
+            errno: 2
+        }
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -239,6 +353,9 @@ async fn large_dir_streams() {
     v.apply(r);
     let want: Vec<String> = (0..n).map(|i| format!("f{i}")).collect();
     assert_eq!(v.names(), want);
+    // Phase 2 fills every entry, in batches.
+    h.until(&mut v, View::meta_done).await;
+    assert!(v.generation >= 3);
 }
 
 #[tokio::test(flavor = "multi_thread")]

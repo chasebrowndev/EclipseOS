@@ -2,7 +2,7 @@
 
 //! LRU of directory listings (FOG §Performance model, technique 2).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use fog_proto::Entry;
@@ -15,6 +15,10 @@ pub struct Listing {
     pub generation: u64,
     pub entries: Vec<Entry>,
     pub order: Vec<u32>,
+    /// The directory's own mtime, taken just before the scan that produced
+    /// `entries`; re-entering compares it with one `statx`
+    /// (FOG §Performance model, technique 3).
+    pub mtime_ns: Option<i128>,
 }
 
 impl Listing {
@@ -37,7 +41,8 @@ struct Slot {
 }
 
 /// Listings keyed by raw path bytes, bounded by directory count and bytes.
-/// A single listing larger than the byte budget is not retained.
+/// A single listing larger than the byte budget is not retained, unless it
+/// is pinned: pinned (subscribed) listings are never evicted.
 pub struct Cache {
     max_dirs: usize,
     max_bytes: usize,
@@ -45,6 +50,7 @@ pub struct Cache {
     tick: u64,
     slots: HashMap<Vec<u8>, Slot>,
     lru: BTreeMap<u64, Vec<u8>>,
+    pinned: HashSet<Vec<u8>>,
 }
 
 impl Cache {
@@ -59,6 +65,7 @@ impl Cache {
             tick: 0,
             slots: HashMap::new(),
             lru: BTreeMap::new(),
+            pinned: HashSet::new(),
         }
     }
 
@@ -77,8 +84,9 @@ impl Cache {
         self.slots.get(path).map(|s| &s.listing)
     }
 
-    /// Insert or replace as most recently used, then evict to fit.
-    pub fn insert(&mut self, path: Vec<u8>, listing: Arc<Listing>) {
+    /// Insert or replace as most recently used, then evict unpinned
+    /// listings, oldest first, to fit. Returns the evicted paths.
+    pub fn insert(&mut self, path: Vec<u8>, listing: Arc<Listing>) -> Vec<Vec<u8>> {
         self.remove(&path);
         self.tick += 1;
         let bytes = listing.bytes() + path.len();
@@ -92,14 +100,32 @@ impl Cache {
                 bytes,
             },
         );
+        let mut evicted = Vec::new();
+        let mut kept = Vec::new();
         while self.slots.len() > self.max_dirs || self.bytes > self.max_bytes {
-            let Some((_, oldest)) = self.lru.pop_first() else {
+            let Some((tick, oldest)) = self.lru.pop_first() else {
                 break;
             };
+            if self.pinned.contains(&oldest) {
+                kept.push((tick, oldest));
+                continue;
+            }
             if let Some(s) = self.slots.remove(&oldest) {
                 self.bytes -= s.bytes;
             }
+            evicted.push(oldest);
         }
+        self.lru.extend(kept);
+        evicted
+    }
+
+    /// Exempt `path` from eviction while it has subscribers.
+    pub fn pin(&mut self, path: &[u8]) {
+        self.pinned.insert(path.to_vec());
+    }
+
+    pub fn unpin(&mut self, path: &[u8]) {
+        self.pinned.remove(path);
     }
 
     pub fn remove(&mut self, path: &[u8]) -> Option<Arc<Listing>> {
@@ -173,6 +199,7 @@ mod tests {
                 .map(|i| Entry::new(vec![b'a' + (i % 26) as u8; len], Kind::File))
                 .collect(),
             order: (0..names as u32).collect(),
+            mtime_ns: None,
         })
     }
 
@@ -206,6 +233,18 @@ mod tests {
         tiny.insert(b"/x".to_vec(), listing(1, 10, 10));
         assert!(tiny.is_empty());
         assert_eq!(tiny.bytes(), 0);
+    }
+
+    #[test]
+    fn pinned_is_never_evicted() {
+        let mut c = Cache::new(2, usize::MAX);
+        c.insert(b"/a".to_vec(), listing(1, 1, 1));
+        c.pin(b"/a");
+        c.insert(b"/b".to_vec(), listing(2, 1, 1));
+        assert_eq!(c.insert(b"/c".to_vec(), listing(3, 1, 1)), [b"/b".to_vec()]);
+        assert!(c.peek(b"/a").is_some());
+        c.unpin(b"/a");
+        assert_eq!(c.insert(b"/d".to_vec(), listing(4, 1, 1)), [b"/a".to_vec()]);
     }
 
     #[test]
