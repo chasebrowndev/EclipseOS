@@ -277,6 +277,49 @@ impl Default for Components {
     }
 }
 
+/// `wallpaper { ... }`. Read over the socket by the `eclipse-wallpaper`
+/// daemon; abyss draws nothing from it. `path` is not checked for existence:
+/// a missing file is the daemon's to fall back from.
+#[derive(Debug, Clone)]
+pub struct Wallpaper {
+    pub path: Option<String>,
+    /// One of [`schema::WALLPAPER_MODES`].
+    pub mode: String,
+    pub color: [f32; 4],
+    /// `output "<name>" { .. }` children in file order, one per name: a later
+    /// block for the same name overrides an earlier one key by key.
+    pub outputs: Vec<WallpaperOutput>,
+}
+
+impl Default for Wallpaper {
+    fn default() -> Self {
+        Self {
+            path: None,
+            mode: "fill".into(),
+            color: schema::WALLPAPER_DEFAULT_COLOR,
+            outputs: Vec::new(),
+        }
+    }
+}
+
+/// One per-output override inside `wallpaper`. Unset keys inherit the
+/// global ones; the daemon does the inheriting.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WallpaperOutput {
+    /// Connector name, as written; abyss does not match it against anything.
+    pub name: String,
+    pub path: Option<String>,
+    pub mode: Option<String>,
+    pub color: Option<[f32; 4]>,
+}
+
+/// One validated key of a `wallpaper` block or its `output` child.
+enum WallpaperKey {
+    Path(String),
+    Mode(String),
+    Color([f32; 4]),
+}
+
 /// `setup { ... }` (D-07 §4, COMP-17 §2.1). Written by `eclipse-setup` through
 /// COMP-13 §1.4 and read by nothing at runtime: a record, not a layer.
 #[derive(Debug, Clone)]
@@ -1387,6 +1430,7 @@ pub struct Config {
     pub setup: Setup,
     pub mode: Mode,
     pub components: Components,
+    pub wallpaper: Wallpaper,
     pub input: Input,
     pub binds: Vec<Bind>,
     /// Touchpad swipe bindings, one per `(fingers, direction)`: the defaults
@@ -1450,6 +1494,7 @@ impl Default for Config {
             setup: Setup::default(),
             mode: Mode::Hybrid,
             components: Components::default(),
+            wallpaper: Wallpaper::default(),
             input: Input::default(),
             binds: default_binds(),
             gesture_binds: default_gesture_binds(),
@@ -2256,6 +2301,7 @@ impl Config {
                     ),
                 },
                 "components" => self.apply_components(node),
+                "wallpaper" => self.apply_wallpaper(node),
                 "input" => self.apply_input(node),
                 "output" => self.apply_output(node),
                 "decoration" => self.apply_decoration(node),
@@ -3638,6 +3684,93 @@ impl Config {
         }
     }
 
+    fn apply_wallpaper(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            if n.name().value() == "output" {
+                self.apply_wallpaper_output(n);
+                continue;
+            }
+            match self.wallpaper_key(n, "wallpaper") {
+                Some(WallpaperKey::Path(p)) => self.wallpaper.path = Some(p),
+                Some(WallpaperKey::Mode(m)) => self.wallpaper.mode = m,
+                Some(WallpaperKey::Color(c)) => self.wallpaper.color = c,
+                None => {}
+            }
+        }
+    }
+
+    /// `wallpaper { output "<name>" { .. } }`: any subset of the global keys.
+    /// A later block for the same name overrides key by key.
+    fn apply_wallpaper_output(&mut self, node: &KdlNode) {
+        let Some(name) = arg(node).and_then(KdlValue::as_string) else {
+            self.reject(
+                node,
+                "wallpaper.output needs an output name, e.g. output \"DP-1\" { … }",
+            );
+            return;
+        };
+        let mut o = self
+            .wallpaper
+            .outputs
+            .iter()
+            .find(|o| o.name == name)
+            .cloned()
+            .unwrap_or_else(|| WallpaperOutput {
+                name: name.to_owned(),
+                ..WallpaperOutput::default()
+            });
+        for n in node.children().map(|c| c.nodes()).unwrap_or_default() {
+            match self.wallpaper_key(n, "wallpaper.output") {
+                Some(WallpaperKey::Path(p)) => o.path = Some(p),
+                Some(WallpaperKey::Mode(m)) => o.mode = Some(m),
+                Some(WallpaperKey::Color(c)) => o.color = Some(c),
+                None => {}
+            }
+        }
+        match self.wallpaper.outputs.iter_mut().find(|x| x.name == o.name) {
+            Some(slot) => *slot = o,
+            None => self.wallpaper.outputs.push(o),
+        }
+    }
+
+    /// One `path` / `mode` / `color` node, validated; `None` after a refusal.
+    fn wallpaper_key(&mut self, n: &KdlNode, prefix: &str) -> Option<WallpaperKey> {
+        let name = n.name().value();
+        let v = arg(n).and_then(KdlValue::as_string);
+        let parsed = match name {
+            "path" => v.map(|p| WallpaperKey::Path(p.to_owned())),
+            "mode" => v
+                .filter(|m| schema::WALLPAPER_MODES.contains(m))
+                .map(|m| WallpaperKey::Mode(m.to_owned())),
+            "color" => v.and_then(parse_color).map(WallpaperKey::Color),
+            _ => {
+                if prefix == "wallpaper" {
+                    self.unknown_key(n, prefix, "wallpaper key");
+                } else {
+                    self.reject(
+                        n,
+                        format!("unknown wallpaper.output key {name:?}; expected path, mode or color"),
+                    );
+                }
+                return None;
+            }
+        };
+        if parsed.is_none() {
+            let got = arg(n).map_or_else(|| "nothing".to_owned(), |v| v.to_string());
+            let msg = match name {
+                "path" => format!("{prefix}.path needs a string, got {got}"),
+                "mode" => format!(
+                    "{prefix}.mode: unknown value {got}; expected one of {}",
+                    schema::WALLPAPER_MODES.join(", ")
+                ),
+                _ => format!("{prefix}.color: {got} is not a colour; expected \"#rrggbb\""),
+            };
+            self.reject(n, msg);
+        }
+        parsed
+    }
+
     fn apply_setup(&mut self, node: &KdlNode) {
         let Some(children) = node.children() else { return };
         for n in children.nodes() {
@@ -4340,6 +4473,105 @@ mod tests {
             assert_eq!(k.reload, schema::Reload::Live, "{p}");
             assert_eq!(k.owner, schema::Owner::Abyss, "{p}");
         }
+    }
+
+    fn wallpaper_cfg(text: &str) -> Config {
+        let doc: KdlDocument = text.parse().unwrap();
+        let mut cfg = Config {
+            cur: Some((abyss_src("/etc/eclipse/abyss.kdl"), text.to_owned())),
+            ..Config::default()
+        };
+        cfg.apply(&doc, &mut Vec::new());
+        cfg
+    }
+
+    /// No `wallpaper` node: no image, `fill`, `#0b0906`, no overrides.
+    #[test]
+    fn wallpaper_defaults_when_absent() {
+        let cfg = wallpaper_cfg("general { gaps-in 4; }\n");
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.wallpaper.path, None);
+        assert_eq!(cfg.wallpaper.mode, "fill");
+        assert_eq!(cfg.wallpaper.color, parse_color("#0b0906").unwrap());
+        assert!(cfg.wallpaper.outputs.is_empty());
+        assert_eq!(schema::get(&cfg, "wallpaper.path"), Some(schema::Value::Null));
+    }
+
+    #[test]
+    fn wallpaper_parses_each_mode_and_keys() {
+        for m in ["fill", "fit", "center"] {
+            let cfg = wallpaper_cfg(&format!(
+                "wallpaper {{\n    path \"~/Pictures/x.png\"\n    mode \"{m}\"\n    color \"#102030\"\n}}\n"
+            ));
+            assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+            assert_eq!(cfg.wallpaper.mode, m);
+            // Not expanded and not checked for existence: the daemon's job.
+            assert_eq!(cfg.wallpaper.path.as_deref(), Some("~/Pictures/x.png"));
+            assert_eq!(cfg.wallpaper.color, parse_color("#102030").unwrap());
+            assert_eq!(
+                schema::get(&cfg, "wallpaper.mode"),
+                Some(schema::Value::Str(m.into()))
+            );
+        }
+    }
+
+    #[test]
+    fn wallpaper_refuses_bad_mode_and_color() {
+        let cfg = wallpaper_cfg(
+            "wallpaper {\n    mode \"stretch\"\n    color \"#0b09\"\n    path 3\n    size 2\n}\n",
+        );
+        assert_eq!(cfg.errors.len(), 4, "{:?}", cfg.errors);
+        let m = &cfg.errors[0].message;
+        assert!(
+            m.contains("wallpaper.mode") && m.contains("fill, fit, center"),
+            "{m}"
+        );
+        assert_eq!((cfg.errors[0].line, cfg.errors[0].col), (2, 5));
+        let m = &cfg.errors[1].message;
+        assert!(m.contains("wallpaper.color") && m.contains("#rrggbb"), "{m}");
+        assert!(cfg.errors[2].message.contains("wallpaper.path"));
+        assert!(cfg.errors[3].message.contains("size"));
+        // A refused value never lands.
+        assert_eq!(cfg.wallpaper.mode, "fill");
+        assert_eq!(cfg.wallpaper.color, schema::WALLPAPER_DEFAULT_COLOR);
+        assert_eq!(cfg.wallpaper.path, None);
+
+        let cfg = wallpaper_cfg("wallpaper {\n    output \"DP-1\" { mode \"tile\"; }\n}\n");
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        assert!(cfg.errors[0].message.contains("wallpaper.output.mode"));
+        assert_eq!(cfg.wallpaper.outputs[0].mode, None);
+    }
+
+    #[test]
+    fn wallpaper_per_output_override() {
+        let cfg = wallpaper_cfg(
+            "wallpaper {\n    path \"/a.png\"\n    output \"DP-1\" { mode \"fit\"; }\n    output \"HDMI-A-1\" { path \"/b.png\"; color \"#ffffff\"; }\n    output \"DP-1\" { color \"#000000\"; }\n}\n",
+        );
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.wallpaper.path.as_deref(), Some("/a.png"));
+        assert_eq!(cfg.wallpaper.mode, "fill");
+        // One entry per name, file order; the later DP-1 block adds a key
+        // without dropping the earlier one's.
+        assert_eq!(
+            cfg.wallpaper.outputs,
+            [
+                WallpaperOutput {
+                    name: "DP-1".into(),
+                    path: None,
+                    mode: Some("fit".into()),
+                    color: parse_color("#000000"),
+                },
+                WallpaperOutput {
+                    name: "HDMI-A-1".into(),
+                    path: Some("/b.png".into()),
+                    mode: None,
+                    color: parse_color("#ffffff"),
+                },
+            ]
+        );
+        let cfg = wallpaper_cfg("wallpaper {\n    output { mode \"fit\"; }\n}\n");
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        assert!(cfg.wallpaper.outputs.is_empty());
     }
 
     /// D-07 §4: `setup.*` parses, lives in `abyss.kdl` only, and an unknown or

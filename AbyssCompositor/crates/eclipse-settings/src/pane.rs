@@ -102,7 +102,7 @@ pub fn pane_for(path: &str) -> Option<Pane> {
     }
     let node = path.split('.').next().unwrap_or(path);
     match node {
-        "mode" | "components" => Some(Pane::Desktop),
+        "mode" | "components" | "wallpaper" => Some(Pane::Desktop),
         "general" => Some(Pane::Windows),
         "decoration" | "animations" => Some(Pane::Effects),
         "render" => Some(Pane::System),

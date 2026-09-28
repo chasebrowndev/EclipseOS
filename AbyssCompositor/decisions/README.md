@@ -65,6 +65,7 @@ writing a new ADR that says so.
 | 0063 | [`agentd` is the sole trusted emitter of agent file-activity events](0063-agent-file-activity.md) | proposed |
 | 0064 | [An invalid config at startup drops the bad nodes and starts](0064-start-on-invalid-config.md) | accepted |
 | 0065 | [Taskbar widgets, fluid bar motion, and the audio monitor tap](0065-taskbar-widgets.md) | accepted |
+| 0068 | [The wallpaper is a core daemon on the Background layer](0068-wallpaper-daemon.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering
