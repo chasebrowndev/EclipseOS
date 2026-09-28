@@ -808,6 +808,60 @@ pub fn list_row<'a, Message: 'a>(
     .into()
 }
 
+/// A setting that does not apply right now, drawn at reduced strength and
+/// still fully editable — never hidden. `dim == false` passes it through, so
+/// a row keeps its place in the widget tree as it dims and undims.
+///
+/// A widget ([`crate::widget::Veil`]) and not a styled container, because the
+/// dimming has to reach every control the row might hold, and iced styles
+/// each control separately: there is no container property that fades what
+/// is inside it.
+pub fn dimmed<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    dim: bool,
+) -> Element<'a, Message, Theme> {
+    crate::widget::Veil::new(content, dim.then_some(&color::VEIL[..]), radius::INSET).into()
+}
+
+/// A caption over a run of rows inside one panel — "Frost" above the rows
+/// that tune frost. Quieter than the panel's [`micro_label`] heading, and
+/// inset like a [`list_row`]'s label so it reads as belonging to the rows.
+pub fn row_caption<'a, Message: 'a>(caption: &str) -> Element<'a, Message, Theme> {
+    container(
+        text(caption.to_string())
+            .font(font::UI_MEDIUM)
+            .size(size::BODY_SMALL)
+            .style(theme::text_tertiary),
+    )
+    .padding([0.0, space::CARD])
+    .into()
+}
+
+/// The colour a colour field holds, as a small disc beside the field.
+/// Display only: the field is the editor. The hairline ring keeps a colour
+/// that matches the panel, or a transparent one, from vanishing; the top-edge
+/// highlight is the same light source every glass surface catches.
+pub fn swatch<'a, Message: 'a>(fill: Color) -> Element<'a, Message, Theme> {
+    container(Space::new())
+        .width(Length::Fixed(space::SWATCH))
+        .height(Length::Fixed(space::SWATCH))
+        .style(move |_t: &Theme| container::Style {
+            background: Some(iced::Background::Color(fill)),
+            border: iced::Border {
+                color: color::BORDER_STRONG,
+                width: space::HAIRLINE,
+                radius: radius::PILL.into(),
+            },
+            shadow: iced::Shadow {
+                color: color::HIGHLIGHT_SOFT,
+                offset: iced::Vector::new(0.0, -space::HAIRLINE),
+                blur_radius: 0.0,
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
 /// The mono right-hand side of a list row — a path, a rate, a device id.
 pub fn value<'a, Message: 'a>(v: &str) -> Element<'a, Message, Theme> {
     text(v.to_string())
@@ -1031,7 +1085,9 @@ pub fn content<'a, Message: 'a>(blocks: Vec<Element<'a, Message, Theme>>) -> Ele
 }
 
 /// [`content`] at a [`Density`]. The column fills a narrow window and stops
-/// at [`space::CONTENT_MAX`] in a wide one, centred in the room it is given.
+/// at [`space::CONTENT_MAX`] in a wide one, held against the sidebar with the
+/// pane's own padding: centred, a 2560px window opened a gap of several
+/// hundred pixels between the nav and the pane it selects.
 pub fn content_at<'a, Message: 'a>(
     density: Density,
     blocks: Vec<Element<'a, Message, Theme>>,
@@ -1046,7 +1102,7 @@ pub fn content_at<'a, Message: 'a>(
     };
     container(col)
         .padding(pad)
-        .center_x(Length::Fill)
+        .width(Length::Fill)
         .height(Length::Fill)
         .into()
 }

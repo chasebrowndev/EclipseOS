@@ -8,7 +8,8 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
-    Appearance,
+    Windows,
+    Effects,
     Desktop,
     Taskbar,
     Display,
@@ -23,7 +24,8 @@ pub enum Pane {
 impl Pane {
     /// Sidebar order.
     pub const ALL: &'static [Pane] = &[
-        Pane::Appearance,
+        Pane::Windows,
+        Pane::Effects,
         Pane::Desktop,
         Pane::Taskbar,
         Pane::Display,
@@ -37,7 +39,8 @@ impl Pane {
 
     pub fn title(self) -> &'static str {
         match self {
-            Pane::Appearance => "Appearance",
+            Pane::Windows => "Windows",
+            Pane::Effects => "Effects",
             Pane::Desktop => "Desktop",
             Pane::Taskbar => "Taskbar",
             Pane::Display => "Display",
@@ -52,14 +55,15 @@ impl Pane {
 
     pub fn subtitle(self) -> &'static str {
         match self {
-            Pane::Appearance => "Layout, borders, decoration and animation.",
+            Pane::Windows => "Layout, gaps, borders and focus.",
+            Pane::Effects => "Blur, glass, shadow, glow and motion.",
             Pane::Desktop => "How much desktop there is, and which apps run it.",
             Pane::Taskbar => "Widgets, their order, and how the bar gives way.",
             Pane::Display => "Outputs, modes and overscan calibration.",
             Pane::Network => "The wifi link, saved networks and paired devices.",
             Pane::Input => "Keyboard, pointer and touchpad.",
             Pane::Session => "Idle, lock and power.",
-            Pane::System => "Xwayland and the render device.",
+            Pane::System => "Xwayland, the render device and scanout.",
             Pane::Privacy => "Capture, clipboard and input scripting.",
             Pane::Addons => "Optional packages, and the hooks they switch on.",
         }
@@ -72,9 +76,14 @@ impl Pane {
 
     /// The pane named on the command line — its title, any case, hyphens
     /// optional (`addons` finds "Add-ons"). The taskbar opens
-    /// `eclipse-settings network` from its drawers.
+    /// `eclipse-settings network` from its drawers. `appearance` names the
+    /// pane that was split into Windows and Effects, and opens the first of
+    /// them, so a launcher entry or a habit written against it still lands.
     pub fn from_arg(arg: &str) -> Option<Pane> {
         let bare = |s: &str| s.replace('-', "").to_ascii_lowercase();
+        if bare(arg) == "appearance" {
+            return Some(Pane::Windows);
+        }
         Pane::ALL.iter().copied().find(|p| bare(p.title()) == bare(arg))
     }
 }
@@ -94,7 +103,9 @@ pub fn pane_for(path: &str) -> Option<Pane> {
     let node = path.split('.').next().unwrap_or(path);
     match node {
         "mode" | "components" => Some(Pane::Desktop),
-        "general" | "decoration" | "animations" | "render" => Some(Pane::Appearance),
+        "general" => Some(Pane::Windows),
+        "decoration" | "animations" => Some(Pane::Effects),
+        "render" => Some(Pane::System),
         "bar" => Some(Pane::Taskbar),
         "input" => Some(Pane::Input),
         "idle" => Some(Pane::Session),
@@ -110,7 +121,8 @@ pub fn pane_for(path: &str) -> Option<Pane> {
 /// "general". The drag-drop keys share `general` with the layout they serve
 /// but are one feature, so they get their own heading beneath it. Blur's
 /// per-mode sub-nodes (`decoration.blur.glass.*`, `.frost.*`) stay under
-/// "blur" beside the mode they tune, rather than as panels of their own.
+/// "blur" beside the mode they tune, rather than as panels of their own —
+/// captioned and dimmed there by mode (`schema::moded`).
 pub fn group_for(path: &str) -> &str {
     if path.starts_with("decoration.blur.") {
         return "blur";
@@ -136,6 +148,23 @@ mod tests {
         assert_eq!(Pane::from_arg("Add-ons"), Some(Pane::Addons));
         assert_eq!(Pane::from_arg("NETWORK"), Some(Pane::Network));
         assert_eq!(Pane::from_arg("nope"), None);
+    }
+
+    #[test]
+    fn appearance_still_opens_what_it_became() {
+        assert_eq!(Pane::from_arg("appearance"), Some(Pane::Windows));
+        assert_eq!(Pane::from_arg("Appearance"), Some(Pane::Windows));
+        assert_eq!(Pane::from_arg("effects"), Some(Pane::Effects));
+    }
+
+    #[test]
+    fn appearance_splits_into_windows_effects_and_system() {
+        assert_eq!(pane_for("general.gaps-in"), Some(Pane::Windows));
+        assert_eq!(pane_for("general.drop-guides"), Some(Pane::Windows));
+        assert_eq!(pane_for("decoration.blur.mode"), Some(Pane::Effects));
+        assert_eq!(pane_for("animations.enabled"), Some(Pane::Effects));
+        assert_eq!(pane_for("render.direct-scanout"), Some(Pane::System));
+        assert_eq!(&Pane::ALL[..2], &[Pane::Windows, Pane::Effects]);
     }
 
     #[test]

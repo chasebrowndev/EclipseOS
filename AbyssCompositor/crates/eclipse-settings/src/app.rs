@@ -21,8 +21,9 @@ use eclipse_ipc::EventKind;
 use eclipse_ui::theme;
 use eclipse_ui::tokens::space;
 use eclipse_ui::widget::{
-    big_value, content_at, hairline, header, list_row, micro_label, nav_item_at, panel, pill, pill_group,
-    sidebar_at, status_chip, subtitle, value as mono, Density, NumericSlider, Toggle,
+    big_value, content_at, dimmed, hairline, header, list_row, micro_label, nav_item_at, panel, pill,
+    pill_group, row_caption, sidebar_at, status_chip, subtitle, swatch, value as mono, Density,
+    NumericSlider, Toggle,
 };
 
 use crate::conn::{Conn, Problem};
@@ -168,7 +169,7 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
-        Self::with_pane(Pane::Appearance)
+        Self::with_pane(Pane::Windows)
     }
 
     /// Open on `pane` — `eclipse-settings network` from the taskbar.
@@ -760,25 +761,47 @@ fn banner(problem: &Problem, radius: f32) -> Element<'_, Message, Theme> {
     .into()
 }
 
-/// Every schema key this pane claims, grouped by node, in schema order.
+/// Every schema key this pane claims, grouped by node, in schema order —
+/// except a moded node's keys (`schema::moded`), which follow their `mode`
+/// picker in runs, one per set of modes they apply to, in mode order. A run
+/// the current mode does not use is dimmed, and stays editable.
 fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
     let mut groups: Vec<(&str, Vec<Element<'_, Message, Theme>>)> = Vec::new();
+    let mode_path = format!("{}.mode", crate::schema::BLUR);
+    let mode_key = app.key(&mode_path);
+    let modes: &[String] = match mode_key.map(|k| &k.control) {
+        Some(Control::Segmented(v) | Control::Dropdown(v)) => v,
+        _ => &[],
+    };
+    let current = mode_key.and_then(|k| k.value.as_str()).unwrap_or_default();
+    // (the modes a run applies to, its rows), in first-seen order.
+    let mut runs: Vec<(Vec<&str>, Vec<&Key>)> = Vec::new();
+    let mut runs_group = None;
+
     // The tray lists are drawn by `tray_hero`, their control; listing them
     // again here as read-only text would be the same setting twice.
     let shown = |k: &&Key| pane_for(&k.path) == Some(app.pane) && !k.path.starts_with("bar.tray.");
     for key in app.rows.iter().filter(shown) {
         let group = group_for(&key.path);
-        let rows = match groups.iter_mut().find(|(g, _)| *g == group) {
-            Some((_, rows)) => rows,
+        let rows = match groups.iter().position(|(g, _)| *g == group) {
+            Some(i) => &mut groups[i].1,
             None => {
                 groups.push((group, Vec::new()));
                 &mut groups.last_mut().expect("just pushed").1
             }
         };
+        if let Some(applies) = crate::schema::moded(crate::schema::BLUR, &key.path, modes) {
+            runs_group.get_or_insert(group);
+            match runs.iter_mut().find(|(a, _)| *a == applies) {
+                Some((_, keys)) => keys.push(key),
+                None => runs.push((applies, vec![key])),
+            }
+            continue;
+        }
         rows.push(list_row(&key.label(), control(app, key)));
         let blurb = match key.path.as_str() {
             "mode" => crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()),
-            "decoration.blur.mode" => crate::schema::blur_blurb(key.value.as_str().unwrap_or_default()),
+            p if p == mode_path => crate::schema::blur_blurb(current),
             _ => None,
         };
         if let Some(blurb) = blurb {
@@ -793,6 +816,35 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
                 .padding([0.0, space::CARD])
                 .into(),
             );
+        }
+    }
+
+    // In mode order: a run goes where the first mode it applies to is.
+    let first = |applies: &[&str]| {
+        applies
+            .first()
+            .and_then(|m| modes.iter().position(|v| v == m))
+            .unwrap_or(modes.len())
+    };
+    runs.sort_by_key(|(applies, _)| first(applies));
+    if let Some(rows) = runs_group.and_then(|g| groups.iter_mut().find(|(n, _)| *n == g)) {
+        for (applies, keys) in runs {
+            let caption = applies
+                .iter()
+                .map(|m| crate::schema::value_label(m))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            // The divider stops where the rows' labels do, so a run reads as a
+            // softer break inside the panel rather than a rule across it.
+            let divider = iced::widget::container(hairline()).padding([0.0, space::CARD]);
+            let mut run = Column::new().push(divider).spacing(space::ROW_Y);
+            if !caption.is_empty() {
+                run = run.push(row_caption(&caption));
+            }
+            for key in keys {
+                run = run.push(list_row(&key.label(), control(app, key)));
+            }
+            rows.1.push(dimmed(run, !applies.contains(&current)));
         }
     }
 
@@ -873,7 +925,7 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
             .into()
         }
 
-        Control::Text { .. } => {
+        Control::Text { color } => {
             let draft = app.drafts.get(&key.path);
             let shown = draft.cloned().unwrap_or_else(|| key.display());
             let submit = path.clone();
@@ -888,10 +940,26 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
                 input.on_submit(Message::Committed(submit)).into()
             };
             // `FIELD_W` when there is room, the row's width when there is not.
-            iced::widget::container(field)
+            let field = iced::widget::container(field)
                 .width(Length::Fill)
-                .max_width(space::FIELD_W)
-                .into()
+                .max_width(space::FIELD_W);
+            // A colour key shows the colour it holds now — what was written,
+            // not the draft — beside the field that edits it.
+            match color.then(|| crate::schema::rgba(&key.display())).flatten() {
+                Some([r, g, b, a]) => iced::widget::container(
+                    row![
+                        swatch(iced::Color::from_rgba8(r, g, b, f32::from(a) / 255.0)),
+                        field
+                    ]
+                    .spacing(space::CONTROL_GAP)
+                    .align_y(iced::Alignment::Center),
+                )
+                // The field's own cap, plus the swatch beside it.
+                .width(Length::Fill)
+                .max_width(space::FIELD_W + space::CONTROL_GAP + space::SWATCH)
+                .into(),
+                None => field.into(),
+            }
         }
 
         // `set_config_value` writes one scalar at a dotted path; a list needs

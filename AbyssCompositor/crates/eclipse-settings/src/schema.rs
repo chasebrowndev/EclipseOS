@@ -132,17 +132,65 @@ pub fn mode_blurb(value: &str) -> Option<&'static str> {
     }
 }
 
-/// What each blur mode draws, shown beneath `decoration.blur.mode`. The pane
-/// has no conditional rows, so this is also where it says which of the
-/// tunables beneath apply.
+/// What each blur mode draws, shown beneath `decoration.blur.mode`. Which of
+/// the rows beneath apply is said by dimming the rest (`moded`), not here.
 pub fn blur_blurb(value: &str) -> Option<&'static str> {
     match value {
         "off" => Some("Translucent surfaces show the desktop behind them unblurred."),
-        "blur" => Some("A plain blur of whatever is behind. Uses size and passes."),
-        "frost" => Some("Blur with a tint and fine grain. Also uses frost tint."),
-        "glass" => Some("Blur bent through a rounded bevel with a rim light. Also uses the glass rows."),
+        "blur" => Some("A plain blur of whatever is behind."),
+        "frost" => Some("Blur with a tint and fine grain."),
+        "glass" => Some("Blur bent through a rounded bevel, with a rim light."),
         _ => None,
     }
+}
+
+/// The node whose `mode` key decides which of its other keys apply.
+pub const BLUR: &str = "decoration.blur";
+
+/// The value of a node's `mode` key that turns the node off: nothing under
+/// it applies.
+const MODE_OFF: &str = "off";
+
+/// Which of a moded node's `modes` the key at `path` applies to, or `None`
+/// for a key outside `node` and for the `mode` key itself.
+///
+/// Read from the path alone: a key in a sub-node named for a mode
+/// (`decoration.blur.frost.tint`) tunes that mode only, and a key directly
+/// under the node (`decoration.blur.size`) tunes every mode but off. A key the
+/// compositor grows in either place is placed and dimmed with no change here.
+pub fn moded<'m>(node: &str, path: &str, modes: &'m [String]) -> Option<Vec<&'m str>> {
+    let rest = path.strip_prefix(node)?.strip_prefix('.')?;
+    if rest == "mode" {
+        return None;
+    }
+    let sub = rest.split_once('.').map(|(sub, _)| sub);
+    Some(
+        modes
+            .iter()
+            .map(String::as_str)
+            .filter(|m| match sub {
+                Some(sub) => *m == sub,
+                None => *m != MODE_OFF,
+            })
+            .collect(),
+    )
+}
+
+/// A `color` value as the wire spells it — `#rrggbb` or `#rrggbbaa` — as
+/// red, green, blue and alpha bytes. Anything else is `None`: the swatch is
+/// then left out, and the field beside it still says what is wrong.
+pub fn rgba(value: &str) -> Option<[u8; 4]> {
+    let hex = value.strip_prefix('#')?;
+    if !matches!(hex.len(), 6 | 8) || !hex.is_ascii() {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
+    Some([
+        byte(0)?,
+        byte(2)?,
+        byte(4)?,
+        if hex.len() == 8 { byte(6)? } else { 255 },
+    ])
 }
 
 /// A kebab-case config token as a person reads it: hyphens become spaces and
@@ -214,11 +262,35 @@ impl Row {
             // The blur group flattens its `glass` and `frost` sub-nodes
             // (`pane::group_for`), so the leaf alone would lose which mode a
             // row tunes.
-            "decoration.blur.glass.refraction" => "glass refraction",
-            "decoration.blur.glass.bevel" => "glass bevel",
-            "decoration.blur.glass.dispersion" => "glass dispersion",
-            "decoration.blur.glass.rim" => "glass rim light",
-            "decoration.blur.frost.tint" => "frost tint",
+            "decoration.blur.glass.refraction" => "Glass refraction",
+            "decoration.blur.glass.bevel" => "Glass bevel",
+            "decoration.blur.glass.dispersion" => "Glass dispersion",
+            "decoration.blur.glass.rim" => "Glass rim light",
+            "decoration.blur.frost.tint" => "Frost tint",
+            // Tokens abbreviated for a config file, or named for a mechanism
+            // rather than for what a person sees change.
+            "general.col-active-border" => "Active border colour",
+            "general.col-inactive-border" => "Inactive border colour",
+            "general.drop-guide-color" => "Drop guide colour",
+            "decoration.active-opacity" => "Active window opacity",
+            "decoration.inactive-opacity" => "Inactive window opacity",
+            "decoration.dim-inactive" => "Dim inactive windows",
+            "decoration.glow.active" => "Glow on the active window",
+            "decoration.glow.inactive" => "Glow on inactive windows",
+            "input.repeat-rate" => "Key repeat rate",
+            "input.repeat-delay" => "Key repeat delay",
+            "input.kb-layout" => "Keyboard layout",
+            "input.kb-variant" => "Keyboard variant",
+            "input.kb-options" => "Keyboard options",
+            "input.accel-profile" => "Pointer acceleration",
+            "input.touchpad.dwt" => "Disable while typing",
+            "idle.dpms-timeout-seconds" => "Screen off after (seconds)",
+            "idle.lock-timeout-seconds" => "Lock after (seconds)",
+            "capture.redact-app-id" => "Redact app IDs",
+            // A bare verb or state under its node's heading reads as an
+            // instruction or a report, not as a setting.
+            "xwayland.enable" => "Xwayland enabled",
+            "setup.complete" => "Setup complete",
             path => return Cow::Owned(sentence_case(path.rsplit('.').next().unwrap_or(path))),
         })
     }
@@ -297,8 +369,49 @@ mod tests {
         assert_eq!(row("bar.eye").label(), "Eye indicator");
         assert_eq!(row("mode").label(), "Interaction mode");
         assert_eq!(row("components.control-center").label(), "Control center");
-        assert_eq!(row("decoration.blur.glass.rim").label(), "glass rim light");
-        assert_eq!(row("decoration.blur.frost.tint").label(), "frost tint");
+        assert_eq!(row("decoration.blur.glass.rim").label(), "Glass rim light");
+        assert_eq!(row("decoration.blur.frost.tint").label(), "Frost tint");
+        assert_eq!(row("general.col-active-border").label(), "Active border colour");
+        assert_eq!(row("input.repeat-rate").label(), "Key repeat rate");
+    }
+
+    #[test]
+    fn every_label_starts_with_a_capital() {
+        for path in [
+            "decoration.blur.glass.refraction",
+            "decoration.blur.glass.bevel",
+            "decoration.blur.glass.dispersion",
+            "decoration.blur.glass.rim",
+            "decoration.blur.frost.tint",
+            "general.col-inactive-border",
+            "decoration.dim-inactive",
+        ] {
+            let row = Row::parse(&json!({"path": path, "file": "abyss", "type": "bool"})).expect("parses");
+            let label = row.label();
+            assert!(label.starts_with(char::is_uppercase), "{path} reads {label:?}");
+        }
+    }
+
+    #[test]
+    fn a_moded_key_applies_by_its_sub_node() {
+        let modes: Vec<String> = ["off", "blur", "frost", "glass"].map(String::from).into();
+        assert_eq!(moded(BLUR, "decoration.blur.mode", &modes), None);
+        assert_eq!(moded(BLUR, "decoration.rounding", &modes), None);
+        assert_eq!(
+            moded(BLUR, "decoration.blur.size", &modes),
+            Some(vec!["blur", "frost", "glass"])
+        );
+        assert_eq!(
+            moded(BLUR, "decoration.blur.frost.tint", &modes),
+            Some(vec!["frost"])
+        );
+        assert_eq!(
+            moded(BLUR, "decoration.blur.glass.rim", &modes),
+            Some(vec!["glass"])
+        );
+        // A sub-node no mode is named for applies to no mode, and says so by
+        // being dimmed under every one of them rather than by vanishing.
+        assert_eq!(moded(BLUR, "decoration.blur.smoke.depth", &modes), Some(vec![]));
     }
 
     #[test]
@@ -314,6 +427,15 @@ mod tests {
             .map(value_label)
             .collect();
         assert_eq!(blur, ["Off", "Blur", "Frost", "Liquid Glass"]);
+    }
+
+    #[test]
+    fn a_colour_parses_with_or_without_alpha() {
+        assert_eq!(rgba("#e8a33dff"), Some([0xe8, 0xa3, 0x3d, 0xff]));
+        assert_eq!(rgba("#e8a33d"), Some([0xe8, 0xa3, 0x3d, 0xff]));
+        assert_eq!(rgba("#e8a33d8"), None);
+        assert_eq!(rgba("e8a33dff"), None);
+        assert_eq!(rgba("#zz0000"), None);
     }
 
     #[test]

@@ -108,6 +108,28 @@ pub mod color {
     /// outline keeps describing the shape and the fill only says "the pointer
     /// is here".
     pub const LIFT_SOFT: Color = white(0.035);
+    /// Laid over a settings row that does not apply right now
+    /// ([`crate::widget::dimmed`]): a panel's own ground — [`BASE`], then
+    /// [`GLASS`] — repainted at [`VEIL_STRENGTH`], so the row fades toward the
+    /// card it sits on instead of greying into a slab of its own.
+    ///
+    /// The two layers and not one pre-mixed colour, because the renderer
+    /// blends in linear light: `GLASS` over `BASE` on screen is far lighter
+    /// than the same mix worked out in sRGB, and a pre-mixed veil showed as a
+    /// dark box. Repainting the same layers lands on the same ground however
+    /// the renderer blends.
+    pub const VEIL: [Color; 2] = [
+        Color {
+            a: VEIL_STRENGTH,
+            ..BASE
+        },
+        Color {
+            a: GLASS.a * VEIL_STRENGTH,
+            ..GLASS
+        },
+    ];
+    /// How far a [`VEIL`] fades what it covers toward the ground.
+    pub const VEIL_STRENGTH: f32 = 0.62;
     /// Sidebar ground: darker than the panes it sits beside.
     pub const SIDEBAR: Color = Color {
         r: 0.0,
@@ -193,7 +215,8 @@ pub mod space {
     pub const PANE_Y_COMPACT: f32 = 18.0;
     /// The widest the content column grows. Past this, rows stop being rows —
     /// a label at one edge of a 2000px card and its toggle at the other are
-    /// not visibly the same setting — so the column centres instead.
+    /// not visibly the same setting — so the column stops, and stays beside
+    /// the sidebar, rather than drifting into the middle of a wide window.
     pub const CONTENT_MAX: f32 = 880.0;
     /// A nav item's padding, and its compact form.
     pub const NAV_Y: f32 = 7.0;
@@ -232,6 +255,8 @@ pub mod space {
     pub const NUMBER_W: f32 = 64.0;
     /// A free-text field in a settings row.
     pub const FIELD_W: f32 = 220.0;
+    /// The square beside a colour field that shows the colour it holds.
+    pub const SWATCH: f32 = 18.0;
     /// A column of settings rows set beside a hero rather than filling the
     /// pane (the Taskbar's Motion band): exactly wide enough for a numeric
     /// row folded under its label, so the band wraps instead of squeezing it.
