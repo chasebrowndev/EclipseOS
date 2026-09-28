@@ -493,6 +493,24 @@ pub mod bar {
     /// to its grip keeps, as a fraction. The grip's line is the object; the
     /// capsule around a lone grip is only there to say where it ends.
     pub const GRIP_GROUND: f32 = 0.4;
+    /// How far short of its open body a dragged widget may be released and
+    /// still land Open, and the band in which a drag holds at Open.
+    ///
+    /// A drag on a grip is usually an *adjustment* — pulling a reveal out,
+    /// pushing it back — and the hand overshoots Open on the way back by a
+    /// few pixels plus whatever the fling adds. Four-fifths of an icon
+    /// ([`super::size::ICON`]) is past any overshoot of that kind (and four
+    /// times [`super::motion::TAP_SLOP`]), yet on the smallest widget — a
+    /// 30px network cell — closing still only asks for a push past half
+    /// the cell. Collapsed is reachable only by the pointer's own width
+    /// below this band; a fling never carries a release past Open into it.
+    pub const COLLAPSE_ALLOWANCE: f32 = super::size::ICON * 0.8;
+    /// The least air either side of a squeezed widget's lead content (its
+    /// mark, its art). The shell keeps the lead in view with this much
+    /// glass around it; narrower than that, the widget snaps to its grip.
+    /// The same air as between two cells, so a squeezed widget reads as
+    /// packed, never as cut.
+    pub const SQUEEZE_AIR: f32 = GAP;
     /// Padding inside the shell, either side of the core and the revealed
     /// section.
     pub const WIDGET_X: f32 = 8.0;

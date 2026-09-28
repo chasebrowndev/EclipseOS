@@ -24,6 +24,7 @@ pub fn spans(app: &App) -> Spans {
     Spans {
         core: space::MARK_CELL_W + bar::GAP + chars as f32 * bar::CHAR_W,
         revealed: 0.0,
+        lead: 0.0,
         present: app.battery.is_some(),
     }
 }

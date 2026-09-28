@@ -30,7 +30,7 @@ use crate::network::{self, Net};
 use crate::output::{Edge, Inset, Output};
 use crate::pane::{group_for, pane_for, Pane};
 use crate::schema::{Control, Row as Key};
-use crate::tray::{Lane, Tray};
+use crate::tray::{Tray, Writes};
 
 const TRAY_PINNED: &str = "bar.tray.pinned";
 const TRAY_HIDDEN: &str = "bar.tray.hidden";
@@ -73,9 +73,6 @@ pub enum Message {
     ForgetDevice(String),
     /// Select a tray entry, or clear the selection if it is the one selected.
     TraySelect(String),
-    TrayMove(String, Lane),
-    /// Move a pinned entry one place: `true` later, `false` earlier.
-    TrayShift(String, bool),
     /// The live tray ids from `tray::feed`; `None` when it could not start.
     TrayLive(Option<Vec<String>>),
     /// The Taskbar pane's own messages.
@@ -274,6 +271,16 @@ impl App {
             t.live = live.clone();
         }
         t
+    }
+
+    /// Write a tray move: only the lists it changed.
+    pub(crate) fn write_tray(&mut self, w: Writes) {
+        if let Some(p) = w.pinned {
+            self.write(TRAY_PINNED, json!(p));
+        }
+        if let Some(h) = w.hidden {
+            self.write(TRAY_HIDDEN, json!(h));
+        }
     }
 
     /// Write one scalar and fold the outcome into the banner.
@@ -559,21 +566,6 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::TraySelect(id) => {
             app.tray_sel = (app.tray_sel.as_deref() != Some(id.as_str())).then_some(id);
         }
-        Message::TrayMove(id, to) => {
-            // The selection stays on the entry, so a second move is one click.
-            let w = app.tray().moved(&id, to);
-            if let Some(p) = w.pinned {
-                app.write(TRAY_PINNED, json!(p));
-            }
-            if let Some(h) = w.hidden {
-                app.write(TRAY_HIDDEN, json!(h));
-            }
-        }
-        Message::TrayShift(id, later) => {
-            if let Some(p) = app.tray().shifted(&id, later) {
-                app.write(TRAY_PINNED, json!(p));
-            }
-        }
         Message::TrayLive(live) => app.tray_live = Some(live),
         Message::Bar(m) => return crate::taskbar::update(app, m),
     }
@@ -591,6 +583,7 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     }
     if app.pane == Pane::Taskbar {
         subs.push(crate::tray::feed());
+        subs.push(taskbar_keys());
         // The frame clock runs only while something in the picture moves.
         if app.bar.animating() {
             subs.push(iced::window::frames().map(|t| Message::Bar(crate::taskbar::Msg::Frame(t))));
@@ -607,6 +600,33 @@ fn blur() -> Subscription<Message> {
         iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_))
         | iced::Event::Touch(iced::touch::Event::FingerPressed { .. }) => Some(Message::NumberBlur),
         _ => None,
+    })
+}
+
+/// The Taskbar pane's keyboard: arrows move the selected widget (or tray
+/// entry), Delete takes it off, Escape drops a drag. Only keys nothing else
+/// took; the pane then asks the tree whether a text field is focused, since
+/// iced 0.14's `text_input` lets Up and Down through uncaptured.
+fn taskbar_keys() -> Subscription<Message> {
+    use crate::taskbar::{Msg, Stroke as K};
+    use iced::keyboard::{key::Named, Event, Key};
+    iced::event::listen_with(|event, status, _window| {
+        let iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. }) = event else {
+            return None;
+        };
+        if status == iced::event::Status::Captured || !modifiers.is_empty() {
+            return None;
+        }
+        let k = match key {
+            Key::Named(Named::ArrowLeft) => K::Left,
+            Key::Named(Named::ArrowRight) => K::Right,
+            Key::Named(Named::ArrowUp) => K::Up,
+            Key::Named(Named::ArrowDown) => K::Down,
+            Key::Named(Named::Delete | Named::Backspace) => K::Delete,
+            Key::Named(Named::Escape) => K::Escape,
+            _ => return None,
+        };
+        Some(Message::Bar(Msg::Key(k)))
     })
 }
 

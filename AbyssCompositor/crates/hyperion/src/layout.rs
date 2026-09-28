@@ -11,24 +11,30 @@
 //!
 //! As the bar runs out of room:
 //!
-//! 1. unpinned, non-important widgets compress to their grip, the last in
-//!    `bar.widgets.order` first — a widget is a convenience, a window is the
-//!    thing you are working in;
-//! 2. the chips step down the ladder, Full → Name → Icon → Bare;
-//! 3. a widget the human pinned open (or revealed) folds: its revealed
-//!    section first, then its core;
-//! 4. the chips that still do not fit become the `+N` cell.
+//! 1. important widgets never give way: they keep their core, always;
+//! 2. a widget the human opened (pinned Open or Revealed) keeps its pinned
+//!    width for as long as the chips can stay at least bare — a pin is the
+//!    human saying this widget matters more than the chips' labels;
+//! 3. everything else — every unpinned widget *and* every window chip —
+//!    shrinks together under one shared squeeze `k` in `0..=1`: a widget's
+//!    body is `k` of its open body, a chip's share is `k` of the way from
+//!    bare to full. `k` is the largest that fits, so nothing on the bar is
+//!    squeezed harder than its neighbours, and nothing gives way alone;
+//! 4. a widget whose share no longer holds its lead content (its icon, its
+//!    art) snaps to its grip, and the room it frees goes back into the same
+//!    `k` — capped at the snap point, so a snap never makes anything else
+//!    grow when a window is added;
+//! 5. only past unpinned widgets at their grips and chips at bare do pinned
+//!    widgets fold, revealed sections first, then cores;
+//! 6. the chips that still do not fit become the `+N` cell.
 //!
-//! Revealed sections are only ever shown because someone pulled them out, so
-//! "revealed folds first" is step 3's first half: a pin is the human saying
-//! this widget matters more than the chips' labels, and it keeps that promise
-//! until even bare chips would overflow. Important widgets never compress at
-//! all, and a widget that is not present (Now Playing with no player) takes
-//! nothing, not even a gap.
+//! A widget that is not present (Now Playing with no player) takes nothing,
+//! not even a gap.
 //!
-//! Each tier is granted as a *prefix* in `order` — the first widget that does
-//! not fit stops the tier — so that a narrower bar never opens a widget a
-//! wider one kept shut. That is the monotonicity the tests pin down.
+//! Pins are granted as a *prefix* in `order` — the first that does not fit
+//! stops the tier — and the squeeze is one number for everything, so a
+//! narrower bar or one more window never opens a widget or widens a chip.
+//! That is the monotonicity the tests pin down.
 
 use eclipse_ui::tokens::{bar, size};
 
@@ -97,6 +103,10 @@ pub struct WidgetIn {
     pub core: f32,
     /// The revealed section's own width; 0 for none.
     pub revealed: f32,
+    /// The leading run of the core that has to stay whole for a squeezed
+    /// widget to still say what it is — Now Playing's art. `0.0` is the
+    /// whole core: a lone mark cannot lose any of itself.
+    pub lead: f32,
     /// `bar.widgets.important`: never compressed.
     pub important: bool,
     /// Something to show. Absent widgets take no room at all.
@@ -107,12 +117,55 @@ pub struct WidgetIn {
 }
 
 impl WidgetIn {
-    /// Whether this widget draws a grip. A widget that can neither compress
-    /// nor reveal has nothing to drag, so it is a plain glass cell; anything
-    /// else gets one (ADR 0065: "one without a drag bar gets one when
-    /// compressed").
-    pub fn grip(&self) -> bool {
-        !self.important || self.revealed > 0.0
+    /// Whether this widget keeps a grip while it is open: only a revealed
+    /// section gives a grip something to pull out. Network, bluetooth, or
+    /// volume with no sink are plain glass cells until they are squeezed.
+    pub fn reveals(&self) -> bool {
+        self.revealed > 0.0
+    }
+
+    /// Whether a grip can ever show: it reveals, or it can be squeezed to
+    /// one (ADR 0065: "one without a drag bar gets one when compressed").
+    /// An important widget with nothing to reveal never has one.
+    pub fn grippable(&self) -> bool {
+        self.reveals() || !self.important
+    }
+
+    /// The narrowest a squeezed body may be before it snaps to its grip:
+    /// its lead content with [`bar::SQUEEZE_AIR`] either side. The shell
+    /// keeps the lead in view down to exactly this width.
+    pub fn floor(&self) -> f32 {
+        let lead = if self.lead > 0.0 {
+            self.lead.min(self.core)
+        } else {
+            self.core
+        };
+        (lead + 2.0 * bar::SQUEEZE_AIR).min(self.core_run())
+    }
+
+    /// The body at squeeze `k`: `k` of its open body, or nothing — the grip
+    /// alone — once that no longer holds its lead.
+    fn squeezed(&self, k: f32) -> f32 {
+        let body = k * self.core_run();
+        if body >= self.floor() {
+            body
+        } else {
+            0.0
+        }
+    }
+
+    /// The grip's column at `extent`. A widget that reveals always has
+    /// one; one that does not grows it only as its body closes below its
+    /// floor, so an open or squeezed network is a plain cell and one
+    /// squeezed shut is a grip — continuously, with no step in between.
+    pub fn grip_w(&self, extent: f32) -> f32 {
+        if self.reveals() {
+            bar::GRIP_W
+        } else if self.important {
+            0.0
+        } else {
+            bar::GRIP_W * self.closed(extent)
+        }
     }
 
     /// The core with its shell padding: the body width of an open widget.
@@ -143,13 +196,15 @@ impl WidgetIn {
         }
     }
 
-    /// How compressed it is at `extent`: `1.0` is the grip alone, `0.0` any
-    /// width at or past its core. A widget with no grip is never compressed.
+    /// How far it has closed onto its grip at `extent`: `1.0` is the grip
+    /// alone, `0.0` any width at or past its [`floor`](Self::floor). A
+    /// squeezed widget that still shows its lead is open, as far as its
+    /// ground and its neighbours' gaps are concerned.
     pub fn closed(&self, extent: f32) -> f32 {
-        if !self.grip() {
+        if !self.grippable() {
             return 0.0;
         }
-        1.0 - (extent / self.core_run()).clamp(0.0, 1.0)
+        1.0 - (extent / self.floor()).clamp(0.0, 1.0)
     }
 
     /// The whole cell's width with `extent` of body showing.
@@ -157,8 +212,7 @@ impl WidgetIn {
         if !self.present {
             return 0.0;
         }
-        let grip = if self.grip() { bar::GRIP_W } else { 0.0 };
-        (grip + extent.round()).round()
+        (self.grip_w(extent) + extent.round()).round()
     }
 }
 
@@ -181,6 +235,9 @@ pub enum State {
     Gone,
     /// Compressed to its grip.
     Grip,
+    /// Sharing the squeeze with the chips: narrower than its core, still
+    /// showing its lead.
+    Squeezed,
     /// Its core, and no more.
     Core,
     /// Core and revealed section.
@@ -217,6 +274,9 @@ pub struct Layout {
     pub hidden: usize,
     /// One per input widget, in the same order.
     pub widgets: Vec<WidgetOut>,
+    /// The shared squeeze the unpinned widgets and the chips are at: `1.0`
+    /// is nothing squeezed.
+    pub squeeze: f32,
 }
 
 impl Default for Layout {
@@ -226,6 +286,7 @@ impl Default for Layout {
             detail: Detail::Full,
             hidden: 0,
             widgets: Vec::new(),
+            squeeze: 1.0,
         }
     }
 }
@@ -249,6 +310,32 @@ fn chips_need(n: usize, each: f32) -> f32 {
     } else {
         n as f32 * each + (n - 1) as f32 * bar::GAP
     }
+}
+
+/// One chip's share of the strip at squeeze `k`: bare at 0, full at 1.
+/// Full and not [`bar::TASK_MAX`]: past Full a chip gains only air, so the
+/// chips spend that air before any widget loses a pixel of content.
+fn chip_share(k: f32) -> f32 {
+    bar::TASK_BARE + k * (bar::TASK_FULL - bar::TASK_BARE)
+}
+
+/// The largest `k` in `lo..=hi` for which `fits` holds, given it holds at
+/// `lo`. `fits` must be monotone: true below some point, false above.
+fn largest(lo: f32, hi: f32, fits: impl Fn(f32) -> bool) -> f32 {
+    if fits(hi) {
+        return hi;
+    }
+    let (mut lo, mut hi) = (lo, hi);
+    // Far past a pixel on the widest body the bar can hold.
+    for _ in 0..32 {
+        let mid = 0.5 * (lo + hi);
+        if fits(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
 }
 
 /// Solve the bar. Pure: same input, same answer, no clock, no I/O.
@@ -279,7 +366,6 @@ pub fn solve(input: Input<'_>) -> Layout {
     };
     let n = input.chips.len();
     let bare = chips_need(n, bar::TASK_BARE);
-    let full = chips_need(n, bar::TASK_FULL);
 
     // Raise `i` to `to` if the chips keep `floor` afterwards.
     let grant = |extent: &mut Vec<f32>, i: usize, to: f32, floor: f32| -> bool {
@@ -298,30 +384,73 @@ pub fn solve(input: Input<'_>) -> Layout {
 
     let settled = |w: &WidgetIn| w.present && w.live.is_none();
     // Pins, cores first and then reveals: the human's word beats the chips'
-    // labels, but not their existence.
+    // labels, but not their existence. Every unpinned widget is at its grip
+    // while this is decided — it is the squeeze's to give, not the pin's.
+    let mut folded = false;
     for (i, w) in ws.iter().enumerate() {
         if settled(w)
             && matches!(w.pin, Some(Pin::Open | Pin::Revealed))
             && !grant(&mut extent, i, w.core_run(), bare)
         {
+            folded = true;
             break;
         }
     }
     for (i, w) in ws.iter().enumerate() {
         if settled(w) && w.pin == Some(Pin::Revealed) && !grant(&mut extent, i, w.max_extent(), bare) {
-            break;
-        }
-    }
-    // Everything else opens only while the chips can stay whole.
-    for (i, w) in ws.iter().enumerate() {
-        if settled(w) && w.pin.is_none() && !w.important && !grant(&mut extent, i, w.core_run(), full) {
+            folded = true;
             break;
         }
     }
 
+    // Everything else shares one squeeze with the chips.
+    let squeezable: Vec<bool> = ws
+        .iter()
+        .map(|w| settled(w) && w.pin.is_none() && !w.important)
+        .collect();
+    let held = extent.clone();
+    let place = |k: f32, snapped: &[bool]| -> Vec<f32> {
+        let mut e = held.clone();
+        for (i, w) in ws.iter().enumerate() {
+            if squeezable[i] {
+                e[i] = if snapped[i] { 0.0 } else { w.squeezed(k) };
+            }
+        }
+        e
+    };
+    let fits = |k: f32, snapped: &[bool]| room(&place(k, snapped)) >= chips_need(n, chip_share(k));
+    let none = vec![false; ws.len()];
+    let floor_fits = fits(0.0, &none);
+    // A pin folded only because everything else was already at its floor:
+    // the room it gave up is the chips' `+N` margin, never a squeeze
+    // released, or one more window would widen everything the pin let go.
+    let first = if floor_fits && !folded {
+        largest(0.0, 1.0, |k| fits(k, &none))
+    } else {
+        0.0
+    };
+    // Whatever snapped to its grip on the way down stays there, and the
+    // room it freed goes back to everyone else — but never past the point
+    // it snapped at, or one more window could widen its neighbours.
+    let snapped: Vec<bool> = (0..ws.len())
+        .map(|i| squeezable[i] && ws[i].squeezed(first) <= 0.0)
+        .collect();
+    let cap = (0..ws.len())
+        .filter(|&i| snapped[i])
+        .map(|i| ws[i].floor() / ws[i].core_run())
+        .fold(1.0f32, f32::min)
+        .max(first);
+    let k = if floor_fits && !folded {
+        largest(first, cap, |k| fits(k, &snapped))
+    } else {
+        0.0
+    };
+    extent = place(k, &snapped);
+
     let avail = room(&extent);
     let mut layout = Layout {
         widgets: Vec::with_capacity(ws.len()),
+        squeeze: k,
         ..Layout::default()
     };
 
@@ -350,6 +479,8 @@ pub fn solve(input: Input<'_>) -> Layout {
             State::Grip
         } else if extent[i] > w.core_run() {
             State::Revealed
+        } else if extent[i] < w.core_run() {
+            State::Squeezed
         } else {
             State::Core
         };
@@ -366,6 +497,15 @@ pub fn solve(input: Input<'_>) -> Layout {
     if n == 0 {
         return layout;
     }
+    // Squeezed, the chips get their share and no more: the squeeze is one
+    // number, and a strip that also took the air a snapped widget left
+    // behind would be the one thing on the bar squeezed less than the rest.
+    // Unsqueezed, they may take the whole strip, up to the ladder's cap.
+    let avail = if floor_fits && k < 1.0 {
+        avail.min(chips_need(n, chip_share(k).floor()))
+    } else {
+        avail
+    };
     let (base, detail, shown) = ladder(avail, n);
     // The `+N` cell's room is not slack: it is spoken for.
     let strip = if shown < n {
@@ -534,6 +674,7 @@ mod tests {
         WidgetIn {
             core,
             revealed,
+            lead: 0.0,
             important,
             present: true,
             pin: None,
@@ -541,11 +682,14 @@ mod tests {
         }
     }
 
-    /// The default order's shape: now-playing, volume, network, bluetooth,
-    /// battery (important), tray, clock (important).
+    /// The default order's shape: now-playing (its art the lead), volume,
+    /// network, bluetooth, battery (important), tray, clock (important).
     fn defaults() -> Vec<WidgetIn> {
         vec![
-            w(180.0, 76.0, false),
+            WidgetIn {
+                lead: bar::ART,
+                ..w(180.0, 76.0, false)
+            },
             w(14.0, 92.0, false),
             w(14.0, 0.0, false),
             w(14.0, 0.0, false),
@@ -820,30 +964,38 @@ mod tests {
         }
     }
 
-    /// ADR 0065's order, swept across every width: unpinned widgets compress
-    /// to their grips before any chip leaves Full; a pinned widget folds only
-    /// once the chips are bare (or overflowing); and every pinned core is
-    /// kept before any pinned reveal. Important widgets hold throughout.
+    /// The owner's order, swept across every width: while anything is
+    /// squeezed, every unpinned widget that is not at its grip is at exactly
+    /// the shared `k` of its open body, and the chips at `k` of their way
+    /// from bare to full — nothing squeezed alone; a pinned widget folds only
+    /// once unpinned widgets are grips and chips bare (or overflowing); every
+    /// pinned core is kept before any pinned reveal. Important widgets hold.
     #[test]
-    fn the_order_is_compress_then_ladder_then_fold() {
+    fn the_order_is_squeeze_together_then_fold() {
         let mut widgets = defaults();
-        widgets[0].pin = Some(Pin::Revealed);
         widgets[1].pin = Some(Pin::Revealed);
+        widgets[5].pin = Some(Pin::Open);
         let mut saw = [false; 3];
         for n in [3usize, 8, 20, 60] {
             let cs = chips(n);
             for width in (300..=3400).step_by(7) {
                 let width = width as f32;
                 let l = solve_at(width, &cs, &widgets);
-                let unpinned_open = widgets
-                    .iter()
-                    .zip(&l.widgets)
-                    .any(|(w, o)| w.pin.is_none() && !w.important && o.state != State::Grip);
-                if l.detail != Detail::Full {
+                if l.squeeze < 1.0 && l.hidden == 0 {
                     saw[0] = true;
+                    let k = l.squeeze;
+                    for (w, o) in widgets.iter().zip(&l.widgets) {
+                        if w.pin.is_none() && !w.important && o.state != State::Grip {
+                            assert!(
+                                (o.extent - k * w.core_run()).abs() < 0.01,
+                                "{n} chips at {width}: {o:?} is not at k={k}"
+                            );
+                        }
+                    }
+                    let strip: f32 = l.chips.iter().map(|c| c.width).sum::<f32>() + (n - 1) as f32 * bar::GAP;
                     assert!(
-                        !unpinned_open,
-                        "{n} chips at {width}: laddered before compressing"
+                        strip <= chips_need(n, chip_share(k).floor()) + 0.01,
+                        "{n} chips at {width}: the strip took more than its share of k={k}"
                     );
                 }
                 // A pin folds only when its next step (the core, then the
@@ -953,35 +1105,101 @@ mod tests {
         assert_eq!(solve_at(1500.0, &cs, &widgets), solve_at(1500.0, &cs, &widgets));
     }
 
-    /// Widgets compress before chips leave Full, last in order first.
+    /// The chips' per-window share of the strip.
+    fn share(l: &Layout) -> f32 {
+        if l.chips.is_empty() {
+            return 0.0;
+        }
+        let n = l.chips.len() as f32;
+        l.chips.iter().map(|c| c.width).sum::<f32>() / n
+    }
+
+    /// One more window squeezes the unpinned widgets and the chips together
+    /// under one `k`: no widget and no chip share ever grows as windows are
+    /// added, and once the squeeze starts, widgets and chips both give.
     #[test]
-    fn widgets_give_way_before_chip_labels_last_first() {
+    fn adding_chips_squeezes_widgets_and_chips_together() {
         let widgets = defaults();
-        let cs = chips(8);
-        // Wide: everything open, chips full.
-        let l = solve_at(3000.0, &cs, &widgets);
-        assert!(l.widgets.iter().all(|w| w.state == State::Core));
-        assert_eq!(l.detail, Detail::Full);
-        // Find a width where one widget has compressed: it must be the last
-        // non-important one, and the chips must still be Full.
-        let mut seen = false;
-        for width in (1000..3000).rev() {
-            let l = solve_at(width as f32, &cs, &widgets);
-            let compressed: Vec<usize> = (0..widgets.len())
-                .filter(|&i| l.widgets[i].state == State::Grip)
-                .collect();
-            if compressed.len() == 1 {
-                assert_eq!(
-                    compressed,
-                    vec![5],
-                    "the tray, last non-important in order, goes first"
+        for width in [1280.0f32, 1920.0, 2560.0] {
+            let mut prev: Option<Layout> = None;
+            let mut both = false;
+            for n in 1..=40usize {
+                let l = solve_at(width, &chips(n), &widgets);
+                if let Some(p) = &prev {
+                    assert!(l.squeeze <= p.squeeze, "{n} at {width}: k grew");
+                    for (i, (a, b)) in p.widgets.iter().zip(&l.widgets).enumerate() {
+                        assert!(b.width <= a.width, "{n} at {width}: widget {i} widened");
+                    }
+                    if l.hidden == 0 && p.hidden == 0 {
+                        assert!(share(&l) <= share(p) + 0.01, "{n} at {width}: chips widened");
+                    }
+                    if l.squeeze < p.squeeze && p.squeeze < 1.0 && l.hidden == 0 {
+                        let squeezed = |o: &WidgetOut| o.state == State::Squeezed;
+                        let shrank = p
+                            .widgets
+                            .iter()
+                            .zip(&l.widgets)
+                            .any(|(a, b)| squeezed(a) && b.width < a.width);
+                        if shrank && share(&l) < share(p) {
+                            both = true;
+                        }
+                    }
+                }
+                prev = Some(l);
+            }
+            assert!(both, "at {width} a window shrank a widget and the chips at once");
+        }
+    }
+
+    /// A widget the human opened keeps its width, window after window, until
+    /// the chips are bare; only then does it fold.
+    #[test]
+    fn a_pinned_widget_holds_until_chips_are_bare() {
+        let mut widgets = defaults();
+        widgets[0].pin = Some(Pin::Open);
+        let open = widgets[0].width(widgets[0].core_run());
+        let mut folded = false;
+        for n in 1..=80usize {
+            let l = solve_at(1920.0, &chips(n), &widgets);
+            if l.widgets[0].width < open {
+                folded = true;
+                assert_eq!(l.squeeze, 0.0, "{n}: folded while anything could squeeze");
+                assert!(
+                    l.chips.iter().all(|c| c.width <= bar::TASK_BARE) || l.hidden > 0,
+                    "{n}: folded before the chips were bare: {l:?}"
                 );
-                assert_eq!(l.detail, Detail::Full);
-                seen = true;
-                break;
+            } else {
+                assert!(!folded, "{n}: a fold never reopens as windows are added");
+                assert_eq!(l.widgets[0].width, open, "{n}");
             }
         }
-        assert!(seen);
+        assert!(folded, "80 windows fold even a pin");
+    }
+
+    /// Network has no grip on a roomy bar, gains one once squeezed shut, and
+    /// is back to a plain cell at its core once pinned open.
+    #[test]
+    fn a_plain_widget_grows_a_grip_only_when_squeezed_shut() {
+        let mut widgets = defaults();
+        let net = &widgets[2];
+        assert!(!net.reveals() && net.grippable());
+        let roomy = solve_at(2560.0, &chips(1), &widgets);
+        assert_eq!(roomy.widgets[2].state, State::Core);
+        assert_eq!(net.grip_w(roomy.widgets[2].extent), 0.0, "open: no drag bar");
+        assert_eq!(roomy.widgets[2].width, net.core_run());
+        let crowded = solve_at(1280.0, &chips(20), &widgets);
+        assert_eq!(crowded.widgets[2].state, State::Grip);
+        assert_eq!(
+            crowded.widgets[2].width,
+            bar::GRIP_W,
+            "squeezed shut: the drag bar alone"
+        );
+        widgets[2].pin = Some(Pin::Open);
+        let reopened = solve_at(1280.0, &chips(20), &widgets);
+        assert_eq!(reopened.widgets[2].state, State::Core);
+        assert_eq!(widgets[2].grip_w(reopened.widgets[2].extent), 0.0);
+        // Important widgets with nothing to reveal never grow one at all.
+        assert!(!widgets[6].grippable());
     }
 
     /// A pin takes its room from the chips, which re-ladder.
@@ -990,11 +1208,11 @@ mod tests {
         let mut widgets = defaults();
         let cs = chips(20);
         let before = solve_at(1600.0, &cs, &widgets);
-        assert_eq!(before.widgets[0].state, State::Grip);
+        assert_ne!(before.widgets[0].state, State::Revealed);
         widgets[0].pin = Some(Pin::Revealed);
         let after = solve_at(1600.0, &cs, &widgets);
         assert_eq!(after.widgets[0].state, State::Revealed);
-        assert!(after.chips[0].width < before.chips[0].width);
+        assert!(share(&after) < share(&before));
         widgets[0].pin = Some(Pin::Collapsed);
         let wide = solve_at(3400.0, &chips(0), &widgets);
         assert_eq!(wide.widgets[0].state, State::Grip, "collapsed stays collapsed");

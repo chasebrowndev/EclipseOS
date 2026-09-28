@@ -115,6 +115,9 @@ pub fn spans(state: &State, cfg: &Cfg) -> Spans {
     Spans {
         core,
         revealed: TRANSPORT_W,
+        // Squeezed, the cover is what still says "this is the music"; with
+        // no cover the title is, and a title is never cut.
+        lead: if cfg.art { bar::ART } else { bar::MEDIA_TEXT_W },
         present: state.player.is_some(),
     }
 }

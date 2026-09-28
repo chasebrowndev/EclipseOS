@@ -27,7 +27,7 @@ use crate::conn::{BarConfig, BarPosition, Conn};
 use crate::icons::Icons;
 use crate::layout::{self, Pin};
 use crate::model::Snapshot;
-use crate::motion::{settle, Drag};
+use crate::motion::{detent, settle, Drag};
 use crate::widgets::{self, GripEv};
 
 /// The launcher binary the launcher button starts. The same name the
@@ -1609,14 +1609,23 @@ pub fn relayout(app: &App, bar: &mut Bar, now: Instant) {
             bar.motion.pins.remove(&key);
         }
         let spans = widgets::spans(app, id);
-        inputs.push(layout::WidgetIn {
+        let mut input = layout::WidgetIn {
             core: spans.core,
             revealed: spans.revealed,
+            lead: spans.lead,
             important: app.widget_cfg.important.contains(id),
             present: spans.present,
             pin: bar.motion.pins.get(&key).map(|(pin, _)| *pin),
-            live: bar.motion.drag.as_ref().filter(|d| d.key == key).map(Drag::live),
-        });
+            live: None,
+        };
+        // Open is a detent under the finger: see `motion::detent`.
+        input.live = bar
+            .motion
+            .drag
+            .as_ref()
+            .filter(|d| d.key == key)
+            .map(|d| detent(d.live(), input.core_run()));
+        inputs.push(input);
     }
     bar.widget_inputs = inputs;
     if bar.width <= 0.0 {
@@ -1716,7 +1725,7 @@ pub(crate) fn grip(app: &App, bar: &mut Bar, key: String, ev: GripEv, now: Insta
                 if input.revealed > 0.0 {
                     rests.push((Pin::Revealed, input.max_extent()));
                 }
-                settle(drag.live(), drag.velocity, &rests).unwrap_or(Pin::Open)
+                settle(drag.live(), drag.velocity, input.core_run(), &rests).unwrap_or(Pin::Open)
             };
             let category = widgets::category(app, &app.widget_cfg.order[index]);
             bar.motion.pins.insert(key.clone(), (pin, category));
@@ -1728,17 +1737,20 @@ pub(crate) fn grip(app: &App, bar: &mut Bar, key: String, ev: GripEv, now: Insta
     }
 }
 
-/// What a tap on a grip asks for: a compressed widget opens, an open one
-/// compresses, and an important one — which never compresses — toggles its
-/// revealed section instead.
+/// What a tap on a grip asks for, one rung at a time: Revealed closes to
+/// Open, Open collapses, and a collapsed or squeezed widget opens again. An
+/// important one — which never collapses — toggles Open ↔ Revealed.
 fn tap_pin(input: &layout::WidgetIn, extent: f32) -> Pin {
+    let revealed = input.reveals() && extent >= input.max_extent() - 0.5;
     let open = extent >= input.core_run() - 0.5;
     if input.important {
-        if extent >= input.max_extent() - 0.5 {
+        if revealed {
             Pin::Open
         } else {
             Pin::Revealed
         }
+    } else if revealed {
+        Pin::Open
     } else if open {
         Pin::Collapsed
     } else {
@@ -2388,6 +2400,42 @@ pub(crate) mod tests {
             trust: Trust::Secret,
         };
         assert_eq!(w.label(), "Protected window");
+    }
+
+    /// A tap walks one rung at a time: Revealed closes to Open, Open
+    /// collapses, and collapsed (or squeezed) opens again. An important
+    /// widget never collapses: it toggles Open and Revealed.
+    #[test]
+    fn a_tap_walks_revealed_open_collapsed_open() {
+        let w = layout::WidgetIn {
+            core: 14.0,
+            revealed: 92.0,
+            lead: 0.0,
+            important: false,
+            present: true,
+            pin: None,
+            live: None,
+        };
+        let at = |pin: Pin| match pin {
+            Pin::Revealed => w.max_extent(),
+            Pin::Open => w.core_run(),
+            Pin::Collapsed => 0.0,
+        };
+        let mut pin = Pin::Revealed;
+        let mut walked = vec![pin];
+        for _ in 0..3 {
+            pin = tap_pin(&w, at(pin));
+            walked.push(pin);
+        }
+        assert_eq!(walked, [Pin::Revealed, Pin::Open, Pin::Collapsed, Pin::Open]);
+        assert_eq!(
+            tap_pin(&w, w.core_run() / 2.0),
+            Pin::Open,
+            "squeezed: a tap opens it"
+        );
+        let important = layout::WidgetIn { important: true, ..w };
+        assert_eq!(tap_pin(&important, important.core_run()), Pin::Revealed);
+        assert_eq!(tap_pin(&important, important.max_extent()), Pin::Open);
     }
 
     /// The grip's three gestures: a tap on an open widget compresses it, a

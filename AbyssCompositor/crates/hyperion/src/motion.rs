@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use eclipse_ui::motion::{Animated, Motion};
-use eclipse_ui::tokens::motion as tok;
+use eclipse_ui::tokens::{bar, motion as tok};
 
 use crate::layout::{ChipOut, Pin, WidgetOut};
 use crate::model::Window;
@@ -139,13 +139,29 @@ impl Drag {
 }
 
 /// Where a released drag comes to rest: the nearest of `rests` to where its
-/// velocity would carry it.
-pub fn settle(extent: f32, velocity: f32, rests: &[(Pin, f32)]) -> Option<Pin> {
+/// velocity would carry it — except that Collapsed is a candidate only when
+/// the pointer's own width, with no lookahead, is below `open` by more than
+/// [`bar::COLLAPSE_ALLOWANCE`]. Adjusting a widget never lands it shut by
+/// accident, and a fling never carries past Open into Collapsed.
+pub fn settle(extent: f32, velocity: f32, open: f32, rests: &[(Pin, f32)]) -> Option<Pin> {
     let aim = extent + velocity * tok::FLING_LOOKAHEAD_S;
+    let shut = extent < open - bar::COLLAPSE_ALLOWANCE;
     rests
         .iter()
+        .filter(|(p, _)| *p != Pin::Collapsed || shut)
         .min_by(|a, b| (a.1 - aim).abs().total_cmp(&(b.1 - aim).abs()))
         .map(|(p, _)| *p)
+}
+
+/// The body a drag at `live` shows: Open is a light detent, so inside the
+/// allowance band just below `open` the body holds at `open` — what the
+/// release there will land on — and only a push past the band lets go.
+pub fn detent(live: f32, open: f32) -> f32 {
+    if live < open && live >= open - bar::COLLAPSE_ALLOWANCE {
+        open
+    } else {
+        live
+    }
 }
 
 /// Everything on the bar that moves.
@@ -575,9 +591,28 @@ mod tests {
     fn a_flick_carries_past_the_midpoint() {
         let rests = [(Pin::Collapsed, 0.0), (Pin::Open, 100.0), (Pin::Revealed, 200.0)];
         // Released at 40, short of halfway, but moving fast toward open.
-        assert_eq!(settle(40.0, 600.0, &rests), Some(Pin::Open));
-        assert_eq!(settle(40.0, 0.0, &rests), Some(Pin::Collapsed));
-        assert_eq!(settle(160.0, 0.0, &rests), Some(Pin::Revealed));
+        assert_eq!(settle(40.0, 600.0, 100.0, &rests), Some(Pin::Open));
+        assert_eq!(settle(40.0, 0.0, 100.0, &rests), Some(Pin::Collapsed));
+        assert_eq!(settle(160.0, 0.0, 100.0, &rests), Some(Pin::Revealed));
+    }
+
+    /// Released inside the allowance band below Open, a widget lands Open
+    /// even when flung hard rightward (toward shut); a fling from the reveal
+    /// range stops at Open; only the pointer's own width past the band can
+    /// collapse it.
+    #[test]
+    fn a_release_inside_the_allowance_lands_open() {
+        let open = 100.0;
+        let rests = [(Pin::Collapsed, 0.0), (Pin::Open, open), (Pin::Revealed, 200.0)];
+        let inside = open - bar::COLLAPSE_ALLOWANCE + 1.0;
+        assert_eq!(settle(inside, -5000.0, open, &rests), Some(Pin::Open));
+        assert_eq!(settle(150.0, -5000.0, open, &rests), Some(Pin::Open));
+        let past = open - bar::COLLAPSE_ALLOWANCE - 1.0;
+        assert_eq!(settle(past, -5000.0, open, &rests), Some(Pin::Collapsed));
+        // Mid-drag the band holds at Open, and lets go past it.
+        assert_eq!(detent(inside, open), open);
+        assert_eq!(detent(past, open), past);
+        assert_eq!(detent(150.0, open), 150.0);
     }
 
     #[test]

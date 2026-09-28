@@ -57,16 +57,25 @@ the room from everything else.
 
 Every widget is `[drag bar][core]` with an optional **revealed section**
 shown by dragging the bar left (Now Playing: back / play-pause / skip; System
-Usage: memory, GPU, disk). A widget **compresses** to its drag bar alone; one
-without a drag bar gets one when compressed. Now Playing with nothing playing
-compresses to **zero width**, animating out.
+Usage: memory, GPU, disk). Only a widget with a revealed section carries a
+drag bar at rest; one with nothing to extend into (Network, Bluetooth) is a
+plain cell. A widget **compresses** to its drag bar alone; one without a drag
+bar gains one once it is squeezed past its icon, and that bar opens it again.
+Now Playing with nothing playing compresses to **zero width**, animating out.
 
-**One layout solver** assigns every chip and widget its target x and width. As
-room shrinks: revealed sections fold first, then non-important widgets
-compress to their bars (last in `order` first), and only then do chips step
-down the ladder. Important widgets never compress.
-Dragging a compressed bar left takes room from the chips, which re-ladder;
-release snaps to the nearest state; dragging right collapses; a tap toggles.
+**One layout solver** assigns every chip and widget its target x and width.
+Important widgets never compress, and a widget the human opened (a tap or a
+drag) keeps its room while the chips can stay at their bare width. Everything
+else shrinks **together**: unpinned widgets and chips share one squeeze
+factor, so no single element looks out of scale beside its neighbours. A
+widget squeezed past its icon drops to its drag bar and gives the room back to
+the same share. Only past that do opened widgets fold, then chips overflow
+into `+N`.
+Dragging a compressed bar left takes room from the chips; release snaps to the
+nearest state, but a drag must end a clear allowance below the widget's core
+width before it collapses, and a fling never carries past open into collapsed.
+A tap steps down one state (revealed → open → collapsed) and opens a collapsed
+widget.
 Pointer and touch share one gesture path. Popup anchors read the same solver
 output.
 
@@ -152,3 +161,12 @@ Turning the key off closes the stream.
   tap moves under it.
 - Anyone proposes loading widget code in-process: that is ADR 0041's question
   and is not settled here.
+
+## Amendment (2026-09-28)
+
+Owner testing of the first build changed four behaviours, now in the body
+above: the drag bar only where there is something to reveal (or once
+squeezed), proportional crowding of unpinned widgets and chips instead of
+widgets-first, a collapse allowance on release, and a one-step tap ladder.
+The Settings Taskbar pane edits `order` and the tray lanes by drag and drop on
+its bar picture (D-05 §2); the writes are unchanged.

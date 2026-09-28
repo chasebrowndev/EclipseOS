@@ -51,8 +51,8 @@ bar. One popup exists across all bars, owned by the bar it opened from. Each bar
 shows its output's workspaces, window chips (focus, close, minimize, new
 instance via the matching `.desktop` entry), a clock, widgets (ADR 0065:
 Now Playing, System Usage, Volume, network, bluetooth, battery, tray, clock
-and user `widget` blocks; non-important ones compress to a
-drag bar as chips need the room), network/bluetooth/battery drawers, and the SNI tray with an
+and user `widget` blocks; non-important ones shrink together with the chips
+as room runs out, down to a drag bar), network/bluetooth/battery drawers, and the SNI tray with an
 overflow drawer. It folds per `bar.*` (ADR 0042). Chips and widgets are
 placed by one layout solver and move under `bar.motion.*` (ADR 0065). The event thread `poll`s the
 socket with a 500 ms ceiling and coalesces a burst into one refetch;

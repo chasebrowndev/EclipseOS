@@ -89,6 +89,7 @@ pub fn spans(state: &State, cfg: &Cfg) -> Spans {
     Spans {
         core: run(m.len() - revealed),
         revealed: run(revealed),
+        lead: bar::METER_W,
         present: true,
     }
 }

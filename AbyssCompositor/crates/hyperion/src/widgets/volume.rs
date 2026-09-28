@@ -100,6 +100,7 @@ pub fn spans(state: &State, _cfg: &Cfg) -> Spans {
         } else {
             0.0
         },
+        lead: 0.0,
         present: true,
     }
 }
