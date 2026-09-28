@@ -929,20 +929,27 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
             let draft = app.drafts.get(&key.path);
             let shown = draft.cloned().unwrap_or_else(|| key.display());
             let submit = path.clone();
-            let input = text_input(key.default.as_str().unwrap_or(""), &shown)
+            let invalid = app.invalid.contains(&key.path);
+            let mut input = text_input(key.default.as_str().unwrap_or(""), &shown)
                 .on_input(move |t| Message::Edited(path.clone(), t))
-                .style(theme::eclipse_input);
+                .style(if invalid {
+                    theme::eclipse_input_invalid
+                } else {
+                    theme::eclipse_input
+                });
             // A rejected draft has no commit path at all, rather than a
             // commit that fails after the fact.
-            let field: Element<'a, Message, Theme> = if app.invalid.contains(&key.path) {
-                row![input, mono("invalid")].spacing(space::CONTROL_GAP).into()
-            } else {
-                input.on_submit(Message::Committed(submit)).into()
-            };
+            if !invalid {
+                input = input.on_submit(Message::Committed(submit));
+            }
+            // One tree in both states: the verdict slot is always there,
+            // empty while the draft is good. Swapping the row in and out
+            // rebuilt the input and dropped keyboard focus mid-typing.
+            let field = verdict_row(input, invalid);
             // `FIELD_W` when there is room, the row's width when there is not.
             let field = iced::widget::container(field)
                 .width(Length::Fill)
-                .max_width(space::FIELD_W);
+                .max_width(space::FIELD_W + space::CONTROL_GAP + space::VERDICT_W);
             // A colour key shows the colour it holds now — what was written,
             // not the draft — beside the field that edits it.
             match color.then(|| crate::schema::rgba(&key.display())).flatten() {
@@ -956,7 +963,13 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
                 )
                 // The field's own cap, plus the swatch beside it.
                 .width(Length::Fill)
-                .max_width(space::FIELD_W + space::CONTROL_GAP + space::SWATCH)
+                .max_width(
+                    space::FIELD_W
+                        + space::CONTROL_GAP
+                        + space::VERDICT_W
+                        + space::CONTROL_GAP
+                        + space::SWATCH,
+                )
                 .into(),
                 None => field.into(),
             }
@@ -966,6 +979,23 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
         // the node editor. Shown so the setting is never hidden.
         Control::List => mono(&key.display()),
     }
+}
+
+/// A text field and the slot that says whether its draft is refused. The
+/// slot is always in the tree and always `VERDICT_W` wide, so the widget
+/// tree is the same shape in both states and iced keeps the input's focus.
+fn verdict_row<'a>(
+    input: iced::widget::TextInput<'a, Message, Theme>,
+    invalid: bool,
+) -> Element<'a, Message, Theme> {
+    row![
+        input,
+        iced::widget::container(mono(if invalid { "invalid" } else { "" }))
+            .width(Length::Fixed(space::VERDICT_W))
+    ]
+    .spacing(space::CONTROL_GAP)
+    .align_y(iced::Alignment::Center)
+    .into()
 }
 
 const INSET_SPAN: Span = Span {
@@ -1105,6 +1135,22 @@ mod tests {
         max: SCALE_MAX,
         integral: false,
     };
+
+    /// Tag and child count, all the way down: what iced's diff compares to
+    /// decide whether a widget's state (the input's focus) survives.
+    fn shape(t: &iced::advanced::widget::Tree) -> String {
+        let kids: Vec<String> = t.children.iter().map(shape).collect();
+        format!("{:?}[{}]", t.tag, kids.join(","))
+    }
+
+    #[test]
+    fn a_text_field_keeps_its_tree_shape_across_validity() {
+        let tree = |invalid| {
+            let el = verdict_row(text_input("", "#f0"), invalid);
+            shape(&iced::advanced::widget::Tree::new(&el))
+        };
+        assert_eq!(tree(false), tree(true));
+    }
 
     #[test]
     fn a_typed_number_is_clamped_to_the_sliders_range() {

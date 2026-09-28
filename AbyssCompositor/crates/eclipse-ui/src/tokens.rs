@@ -255,6 +255,10 @@ pub mod space {
     pub const NUMBER_W: f32 = 64.0;
     /// A free-text field in a settings row.
     pub const FIELD_W: f32 = 220.0;
+    /// The slot beside a free-text field that says "invalid" while its draft
+    /// is refused. Always reserved, empty or not: the field keeps one width
+    /// and one widget tree, so a draft that flips validity keeps the focus.
+    pub const VERDICT_W: f32 = 7.0 * super::canvas::MONO_CHAR_W;
     /// The square beside a colour field that shows the colour it holds.
     pub const SWATCH: f32 = 18.0;
     /// A column of settings rows set beside a hero rather than filling the
