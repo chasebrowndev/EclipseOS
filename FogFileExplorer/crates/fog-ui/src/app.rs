@@ -67,6 +67,10 @@ pub struct App {
     /// What Copy or Cut took. A paste with this empty reads the Wayland
     /// clipboard instead.
     pub clip: Option<Clip>,
+    /// The paths of the last cut pasted. The Wayland clipboard still lists
+    /// them after the move, and a paste of that is refused, not a copy of
+    /// sources that are gone.
+    pasted_cut: Option<Vec<Vec<u8>>>,
     pub tray: Tray,
     /// Jobs waiting on a conflict answer, oldest first; the first is shown.
     pub conflicts: Vec<Conflict>,
@@ -223,6 +227,7 @@ impl App {
             mods: Modifiers::empty(),
             script: script(),
             clip: None,
+            pasted_cut: None,
             tray: Tray::default(),
             conflicts: Vec::new(),
             trash: HashMap::new(),
@@ -341,12 +346,18 @@ impl App {
         self.overlay = Overlay::Confirm(Confirm::new(paths, names));
     }
 
-    /// Paste `clip` into the active folder. A cut is pasted once.
+    /// Paste `clip` into the active folder. A cut is pasted once; a cut
+    /// into the folder it is already in is no paste at all.
     fn paste(&mut self, clip: Clip) {
         let dest = self.tabs.active().path.clone();
-        self.submit(clip.job(dest));
+        let Some(job) = clip.job(dest) else {
+            self.notify(Notice::Hint("already in this folder"));
+            return;
+        };
+        self.submit(job);
         if clip.op == ClipOp::Cut {
             self.clip = None;
+            self.pasted_cut = Some(clip.paths);
         }
     }
 
@@ -611,6 +622,9 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::ClipRead(text) => {
             match text.as_deref().and_then(Clip::parse) {
+                Some(clip) if app.pasted_cut.as_ref() == Some(&clip.paths) => {
+                    app.notify(Notice::Hint("that cut was already pasted"));
+                }
                 Some(clip) => app.paste(clip),
                 None => app.notify(Notice::NothingToPaste),
             }
@@ -1036,6 +1050,7 @@ fn file_action(app: &mut App, a: Action) -> Option<Task<Message>> {
             let clip = Clip { op, paths };
             let text = clip.uri_list();
             app.clip = Some(clip);
+            app.pasted_cut = None;
             return Some(iced::clipboard::write(text));
         }
         Action::Paste if trash => b.notice = Some(Notice::Hint("paste does not go into the trash")),
@@ -1466,8 +1481,53 @@ mod tests {
         assert_eq!(kinds(&a), [JobKind::Copy]);
         // A cut is pasted once.
         press(&mut a, "ctrl+x");
+        a.clip.as_mut().unwrap().paths = vec![b"/x/a".to_vec()];
         press(&mut a, "ctrl+v");
         assert_eq!(a.clip, None);
+    }
+
+    #[test]
+    fn a_cut_into_its_own_folder_sends_no_job_and_stays_cut() {
+        let mut a = app();
+        listed(&mut a, &["a", "b"]);
+        press(&mut a, "ctrl+x");
+        press(&mut a, "ctrl+v");
+        reply(&mut a, Reply::JobAccepted { id: 1 });
+        assert!(kinds(&a).is_empty(), "no job was sent");
+        assert_eq!(
+            a.tabs.active().notice,
+            Some(Notice::Hint("already in this folder"))
+        );
+        assert_eq!(
+            a.clip,
+            Some(Clip {
+                op: ClipOp::Cut,
+                paths: vec![b"/w/a".to_vec()]
+            })
+        );
+    }
+
+    #[test]
+    fn a_pasted_cut_is_not_pasted_again_from_the_system_clipboard() {
+        let mut a = app();
+        listed(&mut a, &["a"]);
+        press(&mut a, "ctrl+x");
+        a.clip.as_mut().unwrap().paths = vec![b"/x/a".to_vec()];
+        let text = a.clip.as_ref().unwrap().uri_list();
+        press(&mut a, "ctrl+v");
+        reply(&mut a, Reply::JobAccepted { id: 1 });
+        assert_eq!(kinds(&a), [JobKind::Move]);
+        // Fog's clip is spent; the system clipboard still lists /x/a.
+        let _ = update(&mut a, Message::ClipRead(Some(text)));
+        assert_eq!(
+            a.tabs.active().notice,
+            Some(Notice::Hint("that cut was already pasted"))
+        );
+        assert_eq!(kinds(&a), [JobKind::Move]);
+        // Anything else on it still pastes.
+        let _ = update(&mut a, Message::ClipRead(Some("/y/b\n".into())));
+        reply(&mut a, Reply::JobAccepted { id: 2 });
+        assert_eq!(kinds(&a), [JobKind::Move, JobKind::Copy]);
     }
 
     #[test]

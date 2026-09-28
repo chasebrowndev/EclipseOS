@@ -238,6 +238,29 @@ fn tab_strip(app: &App) -> Element<'_, Message> {
     .into()
 }
 
+/// A tray row's subject: the path being worked on, else the first item the
+/// job named and how many more. An undo says what it undoes, as far as the
+/// tray knows.
+fn job_subject(j: &Job) -> String {
+    if !j.current.is_empty() {
+        return basename(&j.current);
+    }
+    let mut s = if j.subject.is_empty() {
+        String::new()
+    } else {
+        basename(&j.subject)
+    };
+    if j.count > 1 {
+        s.push_str(&format!(" +{}", group(j.count - 1)));
+    }
+    match (j.kind, j.undoes) {
+        (JobKind::Undo, Some(k)) => format!("undo {} {s}", k.label()),
+        (JobKind::Undo, None) => "undo last change".to_owned(),
+        (k, _) if s.is_empty() => k.label().to_owned(),
+        _ => s,
+    }
+}
+
 pub fn basename(path: &[u8]) -> String {
     match path.iter().rposition(|&c| c == b'/') {
         Some(i) if i + 1 < path.len() => String::from_utf8_lossy(&path[i + 1..]).into_owned(),
@@ -990,15 +1013,7 @@ fn job_row(j: &Job, cursor: bool, now: Instant) -> Element<'static, Message> {
         (None, None, color::TEXT_SECONDARY)
     };
     let failed = matches!(j.status, JobStatus::Failed { .. });
-    let mut what = if j.current.is_empty() {
-        let mut s = basename(&j.subject);
-        if j.count > 1 {
-            s.push_str(&format!(" +{}", group(j.count - 1)));
-        }
-        s
-    } else {
-        basename(&j.current)
-    };
+    let mut what = job_subject(j);
     if let JobStatus::Failed { msg, .. } = &j.status {
         what = format!("{what} — {msg}");
     }
@@ -1471,7 +1486,7 @@ fn chord_of(app: &App, t: Target) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{bytes, crumbs, group};
+    use super::{bytes, crumbs, group, job_subject};
 
     fn texts(v: Vec<(String, Option<Vec<u8>>)>) -> Vec<String> {
         v.into_iter().map(|c| c.0).collect()
@@ -1524,5 +1539,30 @@ mod tests {
         assert_eq!(group(1000), "1,000");
         assert_eq!(group(100_002), "100,002");
         assert_eq!(group(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn an_undo_row_names_what_it_undoes_never_slash() {
+        use crate::ops::Tray;
+        use fog_proto::{ConflictPolicy, JobSpec, JobStatus, Reply};
+        let now = std::time::Instant::now();
+        let state = |id, state| Reply::JobState { id, state };
+        let mut t = Tray::default();
+        t.undo();
+        t.on_reply(&state(1, JobStatus::Queued), now);
+        assert_eq!(job_subject(t.get(1).unwrap()), "undo last change");
+        t.submit(JobSpec::Trash {
+            paths: vec![b"/w/a.txt".to_vec()],
+            on_conflict: ConflictPolicy::Fail,
+        });
+        t.on_reply(&Reply::JobAccepted { id: 2 }, now);
+        t.on_reply(&state(2, JobStatus::Done), now);
+        assert_eq!(job_subject(t.get(2).unwrap()), "a.txt");
+        t.undo();
+        t.on_reply(&state(3, JobStatus::Queued), now);
+        assert_eq!(job_subject(t.get(3).unwrap()), "undo trash a.txt");
+        // Another client's job with nothing known yet.
+        t.on_reply(&state(4, JobStatus::Queued), now);
+        assert_eq!(job_subject(t.get(4).unwrap()), "job");
     }
 }

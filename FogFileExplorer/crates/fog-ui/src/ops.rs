@@ -99,6 +99,9 @@ pub struct Job {
     /// Items the spec named, and the first of them.
     pub count: usize,
     pub subject: Vec<u8>,
+    /// For an undo: the kind of our job it most likely reverses, whose
+    /// count and subject it took. `None` if we did not run one.
+    pub undoes: Option<JobKind>,
     pub status: JobStatus,
     pub bytes_done: u64,
     pub bytes_total: u64,
@@ -117,6 +120,7 @@ impl Job {
             kind,
             count: 0,
             subject: Vec::new(),
+            undoes: None,
             status: JobStatus::Queued,
             bytes_done: 0,
             bytes_total: 0,
@@ -193,6 +197,12 @@ pub struct Tray {
     outbox: VecDeque<JobSpec>,
     /// An `Undo` was sent and not answered: the next unknown job id is it.
     undoing: bool,
+    /// Our newest finished job that `fogd` journals as undoable, for the
+    /// undo's row: what an undo now would reverse, unless another client
+    /// changed something since.
+    last_done: Option<Job>,
+    /// `last_done`, taken by the `Undo` in flight.
+    undo_of: Option<Job>,
 }
 
 impl Tray {
@@ -209,6 +219,7 @@ impl Tray {
 
     pub fn undo(&mut self) -> Request {
         self.undoing = true;
+        self.undo_of = self.last_done.take();
         Request::Undo
     }
 
@@ -225,12 +236,16 @@ impl Tray {
         if let Some(i) = self.jobs.iter().position(|j| j.id == id) {
             return &mut self.jobs[i];
         }
-        let kind = if std::mem::take(&mut self.undoing) {
-            JobKind::Undo
-        } else {
-            JobKind::Other
-        };
-        self.jobs.push(Job::new(id, kind));
+        let mut j = Job::new(id, JobKind::Other);
+        if std::mem::take(&mut self.undoing) {
+            j.kind = JobKind::Undo;
+            if let Some(of) = self.undo_of.take() {
+                j.undoes = Some(of.kind);
+                j.count = of.count;
+                j.subject = of.subject;
+            }
+        }
+        self.jobs.push(j);
         let n = self.jobs.len() - 1;
         &mut self.jobs[n]
     }
@@ -286,13 +301,21 @@ impl Tray {
                     },
                     JobStatus::Done | JobStatus::Cancelled | JobStatus::Failed { .. } => {
                         j.ended = Some(now);
-                        TrayEvent::Ended(j.clone())
+                        let j = j.clone();
+                        // A permanent delete is never undone: undo passes it.
+                        if *state == JobStatus::Done
+                            && !matches!(j.kind, JobKind::Delete | JobKind::Undo | JobKind::Other)
+                        {
+                            self.last_done = Some(j.clone());
+                        }
+                        TrayEvent::Ended(j)
                     }
                     JobStatus::Queued | JobStatus::Paused => TrayEvent::None,
                 }
             }
             Reply::UndoResult { ok, reason } => {
                 self.undoing = false;
+                self.undo_of = None;
                 TrayEvent::Undone {
                     ok: *ok,
                     reason: reason.clone(),
@@ -758,6 +781,7 @@ mod tests {
         assert_eq!(t.undo(), Request::Undo);
         t.on_reply(&state(4, JobStatus::Queued), now);
         assert_eq!(t.get(4).unwrap().kind, JobKind::Undo);
+        assert_eq!(t.get(4).unwrap().undoes, None, "nothing of ours to undo");
         t.on_reply(&state(5, JobStatus::Queued), now);
         assert_eq!(t.get(5).unwrap().kind, JobKind::Other);
         let refused = Reply::UndoResult {
@@ -771,6 +795,40 @@ mod tests {
                 reason: Some("target changed since the operation".into())
             }
         );
+    }
+
+    #[test]
+    fn an_undo_takes_the_subject_of_our_last_finished_job() {
+        let mut t = Tray::default();
+        let now = Instant::now();
+        let mv = JobSpec::Move {
+            srcs: vec![b"/w/a.txt".to_vec(), b"/w/b".to_vec()],
+            dest: b"/x".to_vec(),
+            on_conflict: ConflictPolicy::Ask,
+        };
+        t.submit(mv);
+        t.on_reply(&Reply::JobAccepted { id: 1 }, now);
+        t.on_reply(&state(1, JobStatus::Done), now);
+        // A permanent delete after it is not what undo reverses.
+        t.submit(JobSpec::Delete {
+            paths: vec![b"/w/c".to_vec()],
+            on_conflict: ConflictPolicy::Fail,
+        });
+        t.on_reply(&Reply::JobAccepted { id: 2 }, now);
+        t.on_reply(&state(2, JobStatus::Done), now);
+        t.undo();
+        t.on_reply(&state(3, JobStatus::Running), now);
+        let u = t.get(3).unwrap();
+        assert_eq!(
+            (u.kind, u.undoes, u.count, u.subject.as_slice()),
+            (JobKind::Undo, Some(JobKind::Move), 2, &b"/w/a.txt"[..])
+        );
+        // Undone once: a second undo does not claim the same job.
+        t.on_reply(&state(3, JobStatus::Done), now);
+        t.undo();
+        t.on_reply(&state(4, JobStatus::Running), now);
+        let u = t.get(4).unwrap();
+        assert_eq!((u.kind, u.undoes, u.count), (JobKind::Undo, None, 0));
     }
 
     fn stat(path: &str, kind: Kind) -> StatReply {

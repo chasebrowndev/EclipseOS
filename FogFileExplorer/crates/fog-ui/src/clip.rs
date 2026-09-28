@@ -64,21 +64,28 @@ impl Clip {
 
     /// The job pasting this into `dest`: collisions ask the user, except a
     /// copy back into the folder it came from, which can only mean a
-    /// duplicate — keep both, as `name (2).ext`.
-    pub fn job(&self, dest: Vec<u8>) -> JobSpec {
-        let srcs = self.paths.clone();
+    /// duplicate — keep both, as `name (2).ext`. A cut of items already in
+    /// `dest` leaves them be; `None` if that is all of it.
+    pub fn job(&self, dest: Vec<u8>) -> Option<JobSpec> {
         let parent = |p: &[u8]| match p.iter().rposition(|&b| b == b'/') {
             Some(0) => b"/".to_vec(),
             Some(i) => p[..i].to_vec(),
             None => Vec::new(),
         };
+        let mut srcs = self.paths.clone();
+        if self.op == ClipOp::Cut {
+            srcs.retain(|s| parent(s) != dest);
+            if srcs.is_empty() {
+                return None;
+            }
+        }
         let duplicate = self.op == ClipOp::Copy && srcs.iter().all(|s| parent(s) == dest);
         let on_conflict = if duplicate {
             ConflictPolicy::Rename
         } else {
             ConflictPolicy::Ask
         };
-        match self.op {
+        Some(match self.op {
             ClipOp::Copy => JobSpec::Copy {
                 srcs,
                 dest,
@@ -89,7 +96,7 @@ impl Clip {
                 dest,
                 on_conflict,
             },
-        }
+        })
     }
 }
 
@@ -193,24 +200,24 @@ mod tests {
         let d = b"/dest".to_vec();
         assert_eq!(
             clip(ClipOp::Copy, &[b"/a"]).job(d.clone()),
-            JobSpec::Copy {
+            Some(JobSpec::Copy {
                 srcs: vec![b"/a".to_vec()],
                 dest: d.clone(),
                 on_conflict: ConflictPolicy::Ask
-            }
+            })
         );
         assert!(matches!(
             clip(ClipOp::Cut, &[b"/a"]).job(d),
-            JobSpec::Move {
+            Some(JobSpec::Move {
                 on_conflict: ConflictPolicy::Ask,
                 ..
-            }
+            })
         ));
     }
 
     #[test]
     fn copying_into_its_own_folder_keeps_both() {
-        let own = |c: &Clip, d: &[u8]| match c.job(d.to_vec()) {
+        let own = |c: &Clip, d: &[u8]| match c.job(d.to_vec()).unwrap() {
             JobSpec::Copy { on_conflict, .. } | JobSpec::Move { on_conflict, .. } => on_conflict,
             _ => unreachable!(),
         };
@@ -220,12 +227,26 @@ mod tests {
             own(&clip(ClipOp::Copy, &[b"/a"]), b"/"),
             ConflictPolicy::Rename
         );
-        // One from elsewhere, or a cut, and a clash is a real question.
+        // One from elsewhere, and a clash is a real question.
         let mixed = clip(ClipOp::Copy, &[b"/w/a", b"/x/b"]);
         assert_eq!(own(&mixed, b"/w"), ConflictPolicy::Ask);
+    }
+
+    #[test]
+    fn cutting_into_its_own_folder_moves_nothing_there() {
         assert_eq!(
-            own(&clip(ClipOp::Cut, &[b"/w/a"]), b"/w"),
-            ConflictPolicy::Ask
+            clip(ClipOp::Cut, &[b"/w/a", b"/w/b"]).job(b"/w".to_vec()),
+            None
+        );
+        assert_eq!(clip(ClipOp::Cut, &[b"/a"]).job(b"/".to_vec()), None);
+        // Only the ones from elsewhere move; a clash there still asks.
+        assert_eq!(
+            clip(ClipOp::Cut, &[b"/w/a", b"/x/b"]).job(b"/w".to_vec()),
+            Some(JobSpec::Move {
+                srcs: vec![b"/x/b".to_vec()],
+                dest: b"/w".to_vec(),
+                on_conflict: ConflictPolicy::Ask
+            })
         );
     }
 }

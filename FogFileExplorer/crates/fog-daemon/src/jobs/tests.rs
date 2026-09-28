@@ -556,6 +556,72 @@ fn undo_trash_restores() {
 }
 
 #[test]
+fn delete_in_trash_removes_the_trashinfo_too() {
+    let mut h = h();
+    fs::write(h.w("f"), b"F").unwrap();
+    fs::create_dir(h.w("d")).unwrap();
+    fs::write(h.w("d/x"), b"X").unwrap();
+    let spec = JobSpec::Trash {
+        paths: vec![b(&h.w("f")), b(&h.w("d"))],
+        on_conflict: P::Fail,
+    };
+    assert_eq!(h.run(spec), JobStatus::Done);
+    let home = h.dirs.data_home.join("Trash");
+    let ids: Vec<Vec<u8>> = h.trash_list().into_iter().map(|i| i.id).collect();
+    assert_eq!(ids.len(), 2);
+    let del = JobSpec::Delete {
+        paths: ids,
+        on_conflict: P::Fail,
+    };
+    assert_eq!(h.run(del), JobStatus::Done);
+    assert!(h.trash_list().is_empty());
+    assert_eq!(names(&home.join("files")), Vec::<String>::new());
+    assert_eq!(names(&home.join("info")), Vec::<String>::new());
+    // Journaled as permanent deletes: each item, then its info.
+    let j = h.jobs.inner().journal().unwrap();
+    let last = j.entries().last().unwrap();
+    assert!(!last.undoable);
+    let paths: Vec<Vec<u8>> = last
+        .items
+        .iter()
+        .map(|i| match i {
+            crate::journal::Item::Deleted { path } => path.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    let rel = |p: &str| b(&home.join(p));
+    let mut want = vec![
+        rel("files/f"),
+        rel("info/f.trashinfo"),
+        rel("files/d"),
+        rel("info/d.trashinfo"),
+    ];
+    let mut got = paths.clone();
+    want.sort();
+    got.sort();
+    assert_eq!(got, want);
+    // Deleting outside the trash touches no info.
+    fs::write(h.w("g"), b"G").unwrap();
+    let del = JobSpec::Delete {
+        paths: vec![b(&h.w("g"))],
+        on_conflict: P::Fail,
+    };
+    drop(j);
+    assert_eq!(h.run(del), JobStatus::Done);
+    assert_eq!(
+        h.jobs
+            .inner()
+            .journal()
+            .unwrap()
+            .entries()
+            .last()
+            .unwrap()
+            .items,
+        [crate::journal::Item::Deleted { path: b(&h.w("g")) }]
+    );
+}
+
+#[test]
 fn restore_conflict_keep_both() {
     let mut h = h();
     fs::write(h.w("f"), b"1").unwrap();

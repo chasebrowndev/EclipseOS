@@ -652,8 +652,17 @@ impl<'a> Runner<'a> {
                 let paths = paths.iter().map(|p| abs(p)).collect::<R<Vec<_>>>()?;
                 self.totals(&paths);
                 for p in paths {
+                    // An item in a trash `files/` dir takes its `.trashinfo`
+                    // with it, after the item, as restore does.
+                    let info = self.inner.trash.find(&ops::raw(&p)).ok().map(|f| f.info);
                     self.delete(&p)?;
                     self.items.push(Item::Deleted { path: ops::raw(&p) });
+                    if let Some(info) = info {
+                        at(fs::remove_file(&info), &info)?;
+                        self.items.push(Item::Deleted {
+                            path: ops::raw(&info),
+                        });
+                    }
                 }
                 Ok(())
             }
