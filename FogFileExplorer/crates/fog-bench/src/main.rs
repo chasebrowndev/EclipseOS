@@ -208,11 +208,16 @@ async fn wait_cached(daemon: &Daemon, raw: &[u8]) {
     }
 }
 
+/// The next listing frame; the `Sorted` that announces a listing's sort is
+/// skipped.
 async fn recv(conn: &mut UnixStream) -> Result<Reply> {
-    match read_frame(conn).await? {
-        Some(Reply::Error { errno, .. }) => bail!("fogd error: errno {errno}"),
-        Some(r) => Ok(r),
-        None => bail!("fogd closed the connection"),
+    loop {
+        match read_frame(conn).await? {
+            Some(Reply::Error { errno, .. }) => bail!("fogd error: errno {errno}"),
+            Some(Reply::Sorted { .. }) => {}
+            Some(r) => return Ok(r),
+            None => bail!("fogd closed the connection"),
+        }
     }
 }
 
