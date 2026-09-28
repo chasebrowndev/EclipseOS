@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, ensure, Context, Result};
 use fog_daemon::{bind, serve, Daemon};
-use fog_proto::{read_frame, write_frame, Reply, Request};
+use fog_proto::{apply_diff, read_frame, write_frame, Reply, Request};
 use tokio::net::UnixStream;
 
 const SIZES: [usize; 3] = [1_000, 10_000, 100_000];
@@ -37,6 +37,8 @@ const USAGE: &str = "usage: fog-bench [-n ITERATIONS] [--json]";
 enum Metric {
     ColdFirst,
     ColdComplete,
+    /// Phase 2 done: every entry has its statx metadata.
+    ColdMeta,
     WarmFirst,
 }
 
@@ -45,6 +47,7 @@ impl Metric {
         match self {
             Metric::ColdFirst => "cold_first",
             Metric::ColdComplete => "cold_complete",
+            Metric::ColdMeta => "cold_meta",
             Metric::WarmFirst => "warm_first",
         }
     }
@@ -141,12 +144,14 @@ async fn run(iters: usize) -> Result<Vec<Case>> {
 
         let mut first = Vec::with_capacity(iters);
         let mut complete = Vec::with_capacity(iters);
+        let mut meta = Vec::with_capacity(iters);
         // One untimed pass first: warms the page and dentry caches.
         for i in 0..=iters {
-            let (f, c) = list_cold(&mut conn, &daemon, &raw, n).await?;
+            let (f, c, m) = list_cold(&mut conn, &daemon, &raw, n).await?;
             if i > 0 {
                 first.push(f);
                 complete.push(c);
+                meta.push(m);
             }
         }
 
@@ -165,6 +170,7 @@ async fn run(iters: usize) -> Result<Vec<Case>> {
         for (metric, mut samples) in [
             (Metric::ColdFirst, first),
             (Metric::ColdComplete, complete),
+            (Metric::ColdMeta, meta),
             (Metric::WarmFirst, warm),
         ] {
             samples.sort_unstable();
@@ -210,18 +216,19 @@ async fn recv(conn: &mut UnixStream) -> Result<Reply> {
     }
 }
 
-/// Cold daemon cache: (time to first snapshot, time to complete listing).
+/// Cold daemon cache: (time to first snapshot, time to complete listing,
+/// time to phase-2 metadata for every entry).
 async fn list_cold(
     conn: &mut UnixStream,
     daemon: &Daemon,
     raw: &[u8],
     n: usize,
-) -> Result<(Duration, Duration)> {
+) -> Result<(Duration, Duration, Duration)> {
     daemon.cache().remove(raw);
     let t0 = Instant::now();
     write_frame(conn, &Request::ListDir { path: raw.to_vec() }).await?;
     let Reply::DirSnapshot {
-        entries,
+        mut entries,
         order,
         complete,
         ..
@@ -234,11 +241,15 @@ async fn list_cold(
         order.len() == entries.len(),
         "order/entries length mismatch"
     );
-    let mut total = entries.len();
-    let mut done = complete;
-    while !done {
+    let mut all = complete.then(|| t0.elapsed());
+    loop {
+        if all.is_some() && entries.iter().all(|e| e.mode.is_some()) {
+            break;
+        }
         let Reply::DirDiff {
+            removed,
             added,
+            changed,
             order,
             complete,
             ..
@@ -246,14 +257,20 @@ async fn list_cold(
         else {
             bail!("expected DirDiff");
         };
-        total += added.len();
-        ensure!(order.len() == total, "order/entries length mismatch");
-        done = complete;
+        apply_diff(&mut entries, &removed, &added, &changed);
+        ensure!(
+            order.len() == entries.len(),
+            "order/entries length mismatch"
+        );
+        if complete && all.is_none() {
+            all = Some(t0.elapsed());
+        }
     }
-    let all = t0.elapsed();
+    let meta = t0.elapsed();
+    let total = entries.len();
     ensure!(total == n, "listed {total} entries, expected {n}");
     wait_cached(daemon, raw).await;
-    Ok((first, all))
+    Ok((first, all.unwrap_or(meta), meta))
 }
 
 /// Warm daemon cache: time to the cached snapshot.
