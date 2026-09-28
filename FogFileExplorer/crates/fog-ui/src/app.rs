@@ -9,12 +9,13 @@
 //! value is the selected row (gold bar, gold name, faint gold ground).
 //! Nothing else is ever gold.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::Duration;
 
+use fog_config::{Action, Chord, Key as K, Mods, Target};
 use fog_proto::{Entry, Kind, Request};
 use fog_widgets::{scroll_into_view, virtual_list};
-use iced::keyboard::{self, key::Named, Key};
+use iced::keyboard::{self, key::Named, Key, Modifiers};
 use iced::widget::operation::{scroll_to, AbsoluteOffset};
 use iced::widget::responsive;
 use iced::widget::text::Wrapping;
@@ -33,6 +34,8 @@ fn list_id() -> Id {
 
 pub struct App {
     browser: Browser,
+    /// `keys { bind … }` from fog.kdl, loaded before iced starts.
+    keys: BTreeMap<Chord, Target>,
     link: Option<Link>,
     fogd: Fogd,
     /// Keys replayed one per [`SCRIPT_TICK`], for screenshots and probing
@@ -78,9 +81,10 @@ fn script() -> VecDeque<Key> {
 }
 
 impl App {
-    pub fn new(path: Vec<u8>) -> Self {
+    pub fn new(path: Vec<u8>, keys: BTreeMap<Chord, Target>) -> Self {
         Self {
             browser: Browser::new(path),
+            keys,
             link: None,
             fogd: Fogd::Connecting,
             script: script(),
@@ -124,33 +128,98 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             Effect::None
         }
         Message::Conn(conn::Event::Reply(r)) => app.browser.on_reply(r),
-        // `key` is the key without modifiers; Shift+g must read as `G`.
-        Message::Key(keyboard::Event::KeyPressed { modified_key, .. }) => {
-            press(&mut app.browser, &modified_key)
-        }
+        Message::Key(keyboard::Event::KeyPressed {
+            key,
+            modified_key,
+            modifiers,
+            ..
+        }) => match chord(&key, &modified_key, modifiers) {
+            Some(c) => press(&mut app.browser, &app.keys, c),
+            None => Effect::None,
+        },
         Message::Key(_) => Effect::None,
         // A shrinking window can leave the selection below the fold.
         Message::Resized if app.browser.len() > 0 => Effect::Reveal(app.browser.selected),
         Message::Resized => Effect::None,
         Message::Script => match app.script.pop_front() {
-            Some(key) => press(&mut app.browser, &key),
+            Some(key) => match chord(&key, &key, Modifiers::empty()) {
+                Some(c) => press(&mut app.browser, &app.keys, c),
+                None => Effect::None,
+            },
             None => Effect::None,
         },
     };
     app.apply(fx)
 }
 
-/// The M0 key map, hard-coded (config bindings are M1).
-fn press(b: &mut Browser, key: &Key) -> Effect {
-    match key.as_ref() {
-        Key::Character("j") | Key::Named(Named::ArrowDown) => b.step(1),
-        Key::Character("k") | Key::Named(Named::ArrowUp) => b.step(-1),
-        Key::Character("l") | Key::Named(Named::Enter) => b.open(),
-        Key::Character("h") | Key::Named(Named::Backspace) => b.parent(),
-        Key::Character("g") => b.first(),
-        Key::Character("G") => b.last(),
+/// Run the action bound to `c`. Actions the window has no behaviour for
+/// yet are ignored.
+fn press(b: &mut Browser, keys: &BTreeMap<Chord, Target>, c: Chord) -> Effect {
+    match keys.get(&c) {
+        Some(Target::Action(Action::Down)) => b.step(1),
+        Some(Target::Action(Action::Up)) => b.step(-1),
+        Some(Target::Action(Action::Open)) => b.open(),
+        Some(Target::Action(Action::Parent)) => b.parent(),
+        Some(Target::Action(Action::Top)) => b.first(),
+        Some(Target::Action(Action::Bottom)) => b.last(),
         _ => Effect::None,
     }
+}
+
+/// The config chord for a key press. With Ctrl, Alt or Super held the
+/// unmodified key names it (`ctrl+shift+n`, not a control character);
+/// otherwise the produced character does, so `G` and `:` read as typed.
+fn chord(key: &Key, modified: &Key, m: Modifiers) -> Option<Chord> {
+    let mods = Mods {
+        ctrl: m.control(),
+        alt: m.alt(),
+        shift: m.shift(),
+        logo: m.logo(),
+    };
+    let k = match (
+        mods.ctrl || mods.alt || mods.logo,
+        key.as_ref(),
+        modified.as_ref(),
+    ) {
+        (true, Key::Character(s), _) | (false, _, Key::Character(s)) => {
+            let mut cs = s.chars();
+            match (cs.next(), cs.next()) {
+                (Some(c), None) => K::Char(c),
+                _ => return None,
+            }
+        }
+        (_, Key::Named(n), _) | (_, _, Key::Named(n)) => match n {
+            Named::Enter => K::Enter,
+            Named::Backspace => K::Backspace,
+            Named::Tab => K::Tab,
+            Named::Space => K::Space,
+            Named::Delete => K::Delete,
+            Named::Insert => K::Insert,
+            Named::Home => K::Home,
+            Named::End => K::End,
+            Named::PageUp => K::PageUp,
+            Named::PageDown => K::PageDown,
+            Named::ArrowUp => K::Up,
+            Named::ArrowDown => K::Down,
+            Named::ArrowLeft => K::Left,
+            Named::ArrowRight => K::Right,
+            Named::F1 => K::F(1),
+            Named::F2 => K::F(2),
+            Named::F3 => K::F(3),
+            Named::F4 => K::F(4),
+            Named::F5 => K::F(5),
+            Named::F6 => K::F(6),
+            Named::F7 => K::F(7),
+            Named::F8 => K::F(8),
+            Named::F9 => K::F(9),
+            Named::F10 => K::F(10),
+            Named::F11 => K::F(11),
+            Named::F12 => K::F(12),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some(Chord::new(mods, k))
 }
 
 pub fn subscription(app: &App) -> Subscription<Message> {
@@ -411,6 +480,34 @@ fn group(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn key_presses_resolve_through_the_default_bindings() {
+        use super::{chord, Key, Modifiers, Named};
+        use fog_config::{Action, Target};
+        let keys = fog_config::defaults().keys;
+        let hit = |k: Key, m: Key, mods| keys.get(&chord(&k, &m, mods).unwrap()).cloned();
+        let act = |a| Some(Target::Action(a));
+        let ch = |s: &str| Key::Character(s.into());
+        assert_eq!(hit(ch("g"), ch("G"), Modifiers::SHIFT), act(Action::Bottom));
+        assert_eq!(hit(ch("g"), ch("g"), Modifiers::empty()), act(Action::Top));
+        assert_eq!(
+            hit(ch(";"), ch(":"), Modifiers::SHIFT),
+            act(Action::Palette)
+        );
+        let n = Modifiers::CTRL | Modifiers::SHIFT;
+        assert_eq!(hit(ch("n"), ch("\u{e}"), n), act(Action::NewFolder));
+        let del = Key::Named(Named::Delete);
+        assert_eq!(
+            hit(del.clone(), del.clone(), Modifiers::SHIFT),
+            act(Action::Delete)
+        );
+        let down = Key::Named(Named::ArrowDown);
+        assert_eq!(
+            hit(down.clone(), down, Modifiers::empty()),
+            act(Action::Down)
+        );
+    }
+
     #[test]
     fn path_elides_from_the_left() {
         use super::elide_left;

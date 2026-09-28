@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "crates/fog-proto",
+  "crates/fog-config",
   "crates/fog-daemon",
   "crates/fog-widgets",
   "crates/fog-ui",
@@ -17,6 +18,7 @@ repository = "https://github.com/chasebrowndev/eclipseos"
 
 [workspace.dependencies]
 fog-proto = { path = "crates/fog-proto" }
+fog-config = { path = "crates/fog-config" }
 fog-daemon = { path = "crates/fog-daemon" }
 fog-widgets = { path = "crates/fog-widgets" }
 # eclipse-ui's pin, but with the tokio executor: the UI's fogd connection is a
@@ -39,6 +41,8 @@ rustix = { version = "1", features = ["fs", "net", "process"] }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 thiserror = "2"
+# The compositor's pin (AbyssCompositor/Cargo.toml): KDL v2 syntax.
+kdl = "6"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

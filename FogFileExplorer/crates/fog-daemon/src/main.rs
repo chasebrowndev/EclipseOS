@@ -36,7 +36,14 @@ fn main() -> anyhow::Result<()> {
                     l
                 }
             };
-            serve(listener, Arc::new(Daemon::local())).await?;
+            let daemon = Arc::new(Daemon::local());
+            match fog_config::path() {
+                Some(p) => {
+                    fog_daemon::config::start(&daemon, p);
+                }
+                None => tracing::warn!("no XDG_CONFIG_HOME or HOME; using default config"),
+            }
+            serve(listener, daemon).await?;
             Ok(())
         })
 }

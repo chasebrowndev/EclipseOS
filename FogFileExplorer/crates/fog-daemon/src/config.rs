@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! `fog.kdl` in fogd (FOG §Configuration): loaded at start, applied, and
+//! hot-reloaded from an inotify watch on the config directory. The watch is
+//! its own, separate from the listing watcher. A rejected file is logged and
+//! broadcast as [`Reply::ConfigError`]; the last valid config stays active.
+
+use std::ffi::OsString;
+use std::io;
+use std::mem::MaybeUninit;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::thread;
+
+use fog_config::{Config, Error, Live};
+use fog_proto::Reply;
+use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
+use rustix::io::Errno;
+
+use crate::Daemon;
+
+/// Load `path` (defaults if it is missing or rejected), apply it to `daemon`
+/// and start watching it. Watch failures are logged: Fog runs on without
+/// hot reload rather than not at all.
+pub fn start(daemon: &Arc<Daemon>, path: PathBuf) -> Live {
+    let live = Live::new(match fog_config::load(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            rejected(daemon, &e);
+            fog_config::defaults()
+        }
+    });
+    apply(daemon, live.current());
+    if let Err(e) = watch(daemon.clone(), path, live.clone()) {
+        tracing::warn!(error = %e, "fog.kdl hot reload unavailable");
+    }
+    live
+}
+
+/// Push the config's daemon-side settings into `daemon`.
+pub fn apply(daemon: &Daemon, c: &Config) {
+    let p = &c.performance;
+    daemon.cache().set_limits(p.cache_dirs, p.cache_bytes());
+}
+
+/// Re-read `path` into `live`; on success apply it, on error log and
+/// broadcast, leaving `live` as it was.
+pub fn reload(daemon: &Daemon, path: &Path, live: &mut Live) {
+    match live.reload(path) {
+        Ok(true) => {
+            apply(daemon, live.current());
+            tracing::info!(path = %path.display(), "fog.kdl reloaded");
+        }
+        Ok(false) => {}
+        Err(e) => rejected(daemon, &e),
+    }
+}
+
+fn rejected(daemon: &Daemon, e: &Error) {
+    tracing::warn!(error = %e, "fog.kdl rejected; previous config stays active");
+    daemon.broadcast(Reply::ConfigError {
+        line: e.line,
+        col: e.col,
+        msg: e.msg.clone(),
+    });
+}
+
+/// Watch `path`'s directory (created if missing) on a dedicated thread and
+/// reload whenever `path` is written, renamed into place or removed.
+pub fn watch(
+    daemon: Arc<Daemon>,
+    path: PathBuf,
+    mut live: Live,
+) -> io::Result<thread::JoinHandle<()>> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(Errno::INVAL.into());
+    };
+    let name: OsString = name.to_owned();
+    std::fs::create_dir_all(dir)?;
+    let fd = inotify::init(CreateFlags::CLOEXEC)?;
+    inotify::add_watch(
+        &fd,
+        dir,
+        WatchFlags::CLOSE_WRITE
+            | WatchFlags::MOVED_TO
+            | WatchFlags::MOVED_FROM
+            | WatchFlags::DELETE
+            | WatchFlags::ONLYDIR,
+    )?;
+    thread::Builder::new()
+        .name("fog-config".into())
+        .spawn(move || {
+            let mut buf = [MaybeUninit::uninit(); 4096];
+            let mut rd = inotify::Reader::new(&fd, &mut buf);
+            loop {
+                let hit = match rd.next() {
+                    Ok(ev) => {
+                        ev.events().contains(ReadFlags::QUEUE_OVERFLOW)
+                            || ev
+                                .file_name()
+                                .is_some_and(|n| n.to_bytes() == name.as_bytes())
+                    }
+                    Err(Errno::INTR) => continue,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "fog.kdl watch ended");
+                        return;
+                    }
+                };
+                if hit {
+                    reload(&daemon, &path, &mut live);
+                }
+            }
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn hot_reload_applies_and_rejects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("eclipse").join("fog.kdl");
+        let daemon = Arc::new(Daemon::local());
+        let mut events = daemon.subscribe();
+
+        let live = start(&daemon, path.clone());
+        assert_eq!(live.current(), &fog_config::defaults());
+
+        std::fs::write(&path, "performance { cache-dirs 3 }\n").unwrap();
+        let t0 = std::time::Instant::now();
+        while daemon.cache().max_dirs() != 3 {
+            assert!(t0.elapsed() < Duration::from_secs(5), "reload not applied");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        std::fs::write(&path, "performance { cache-dirs 3 }\nbogus\n").unwrap();
+        let t0 = std::time::Instant::now();
+        let reply = loop {
+            match events.try_recv() {
+                Ok(r) => break r,
+                Err(_) => {
+                    assert!(t0.elapsed() < Duration::from_secs(5), "no ConfigError");
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        };
+        match reply {
+            Reply::ConfigError { line, col, .. } => assert_eq!((line, col), (2, 1)),
+            r => panic!("unexpected {r:?}"),
+        }
+        assert_eq!(daemon.cache().max_dirs(), 3, "old config stays active");
+    }
+}

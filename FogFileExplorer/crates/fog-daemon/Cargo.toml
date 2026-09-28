@@ -22,6 +22,7 @@ activity = []
 
 [dependencies]
 fog-proto.workspace = true
+fog-config.workspace = true
 tokio.workspace = true
 rustix.workspace = true
 tracing.workspace = true
