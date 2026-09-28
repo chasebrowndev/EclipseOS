@@ -57,8 +57,8 @@ pub(crate) struct Runner<'a> {
     id: JobId,
     pub(crate) inner: &'a Inner,
     ctl: &'a Ctl,
-    /// Undo runs quietly: no broadcasts.
-    quiet: bool,
+    /// This run's journal id (`Journal::begin`); 0 before it began.
+    pub(crate) run: u64,
     policy: ConflictPolicy,
     apply_all: Option<Resolution>,
 
@@ -89,12 +89,12 @@ pub(crate) struct Runner<'a> {
 }
 
 impl<'a> Runner<'a> {
-    pub(crate) fn new(inner: &'a Inner, id: JobId, ctl: &'a Ctl, quiet: bool) -> Self {
+    pub(crate) fn new(inner: &'a Inner, id: JobId, ctl: &'a Ctl) -> Self {
         Self {
             id,
             inner,
             ctl,
-            quiet,
+            run: 0,
             policy: ConflictPolicy::Fail,
             apply_all: None,
             bytes_done: 0,
@@ -117,16 +117,21 @@ impl<'a> Runner<'a> {
         }
     }
 
-    fn state(&self, state: JobStatus) {
-        if !self.quiet {
-            self.inner.emit(Reply::JobState { id: self.id, state });
-        }
+    pub(crate) fn state(&self, state: JobStatus) {
+        self.inner.emit(Reply::JobState { id: self.id, state });
+    }
+
+    /// Write a crash-recovery record for this run, durably.
+    fn note(&self, f: impl FnOnce(&mut crate::journal::Journal, u64) -> io::Result<()>) -> R<()> {
+        let r = self
+            .inner
+            .journal()
+            .map_err(io::Error::other)
+            .and_then(|mut j| f(&mut j, self.run));
+        r.map_err(|e| Fail::Io(e, PathBuf::from("undo journal")))
     }
 
     fn progress(&mut self, force: bool) {
-        if self.quiet {
-            return;
-        }
         let now = Instant::now();
         if !force && self.last_emit.is_some_and(|t| now - t < EMIT_EVERY) {
             return;
@@ -307,7 +312,10 @@ impl<'a> Runner<'a> {
         for k in 0u32.. {
             let aside = dir.join(format!(".fog-replaced-{}-{k}", self.id));
             match ops::rename_noreplace(target, &aside) {
-                Ok(()) => return Ok(aside),
+                Ok(()) => {
+                    self.note(|j, run| j.aside(run, target, &aside))?;
+                    return Ok(aside);
+                }
                 Err(e) if is_errno(&e, Errno::EXIST) => continue,
                 Err(e) => return Err(Fail::Io(e, target.to_path_buf())),
             }
@@ -355,10 +363,15 @@ impl<'a> Runner<'a> {
         }
     }
 
-    fn created(&mut self, p: &Path) {
+    /// `p` was just created. Outermost nodes are recorded for rollback and,
+    /// durably and before any data goes in, for crash recovery.
+    fn created(&mut self, p: &Path) -> R<()> {
         if self.depth == 0 {
             self.created.push(p.to_path_buf());
+            let ino = at(lstat(p), p)?.st_ino;
+            self.note(|j, run| j.created(run, p, ino))?;
         }
+        Ok(())
     }
 
     /// Copy one node (recursively for directories) to a new `target`.
@@ -383,7 +396,7 @@ impl<'a> Runner<'a> {
                         .open(target),
                     target,
                 )?;
-                self.created(target);
+                self.created(target)?;
                 let len = at(s.metadata(), src)?.len();
                 let mut fail = None;
                 let r = ops::copy_data(&s, &d, len, &mut |n| {
@@ -406,7 +419,7 @@ impl<'a> Runner<'a> {
             }
             FileType::Directory => {
                 at(DirBuilder::new().mode(0o700).create(target), target)?;
-                self.created(target);
+                self.created(target)?;
                 self.depth += 1;
                 let r = (|| {
                     for e in at(fs::read_dir(src), src)? {
@@ -425,7 +438,7 @@ impl<'a> Runner<'a> {
             FileType::Symlink => {
                 let l = at(fs::read_link(src), src)?;
                 at(std::os::unix::fs::symlink(&l, target), target)?;
-                self.created(target);
+                self.created(target)?;
                 at(ops::set_times(target, sst), target)?;
                 self.file_done(sst.st_size as u64);
             }
@@ -441,7 +454,7 @@ impl<'a> Runner<'a> {
                     .map_err(io::Error::from),
                     target,
                 )?;
-                self.created(target);
+                self.created(target)?;
                 self.file_done(0);
             }
             // Sockets and device nodes cannot be recreated unprivileged; fail
@@ -471,7 +484,7 @@ impl<'a> Runner<'a> {
             };
             match r {
                 Ok(()) => {
-                    self.created.push(target.clone());
+                    self.created(&target)?;
                     if let Some(a) = aside {
                         self.asides.push((target.clone(), a));
                     }
@@ -543,7 +556,9 @@ impl<'a> Runner<'a> {
                 }
             }
         }
-        // Past this point the copies are final: nothing is rolled back.
+        // Past this point the copies are final: nothing is rolled back, and
+        // crash recovery keeps them too.
+        self.note(|j, run| j.commit(run))?;
         self.created.clear();
         for (_, aside) in std::mem::take(&mut self.asides) {
             at(ops::remove_tree(&aside), &aside)?;
@@ -775,9 +790,15 @@ pub(crate) fn describe(f: &Fail) -> (i32, String) {
 
 /// Run a queued job to its end state and journal what it did.
 pub(crate) fn run_job(inner: &Inner, id: JobId, ctl: &Ctl, spec: JobSpec) {
-    let mut r = Runner::new(inner, id, ctl, false);
+    let mut r = Runner::new(inner, id, ctl);
     let delete = matches!(spec, JobSpec::Delete { .. });
-    let res = match inner.journal() {
+    // The intent is durable before anything is touched.
+    let begun = inner.journal().and_then(|mut j| {
+        j.begin(Some(&spec))
+            .map_err(|e| format!("journal write failed: {e}"))
+    });
+    match begun {
+        Ok(run) => r.run = run,
         Err(msg) => {
             r.state(JobStatus::Failed {
                 errno: Errno::IO.raw_os_error(),
@@ -785,12 +806,9 @@ pub(crate) fn run_job(inner: &Inner, id: JobId, ctl: &Ctl, spec: JobSpec) {
             });
             return;
         }
-        Ok(j) => {
-            drop(j);
-            r.state(JobStatus::Running);
-            r.checkpoint().and_then(|()| r.spec(spec))
-        }
-    };
+    }
+    r.state(JobStatus::Running);
+    let res = r.checkpoint().and_then(|()| r.spec(spec));
     if res.is_err() {
         r.rollback();
     }
@@ -817,6 +835,16 @@ pub(crate) fn run_job(inner: &Inner, id: JobId, ctl: &Ctl, spec: JobSpec) {
             };
         }
     }
+    r.end();
     r.progress(true);
     r.state(end);
+}
+
+impl Runner<'_> {
+    /// Close this run's intent; a failure only means recovery re-checks it.
+    pub(crate) fn end(&self) {
+        if let Err(Fail::Io(e, _)) = self.note(crate::journal::Journal::end) {
+            tracing::error!(run = self.run, error = %e, "journal end record failed");
+        }
+    }
 }

@@ -831,3 +831,98 @@ fn one_job_per_device_independent_devices_in_parallel() {
     assert_eq!(h.end(j2), JobStatus::Done);
     assert!(h.w("n").is_dir());
 }
+
+/// A daemon killed mid-copy (the paused job simply never resumes) leaves an
+/// intent in the journal; the next daemon removes the partial destination,
+/// puts the replaced original back and leaves the source alone.
+#[test]
+fn crash_mid_copy_is_reconciled_at_next_start() {
+    let mut h = h();
+    h.jobs
+        .inner()
+        .pause_after_chunks
+        .store(1, Ordering::Relaxed);
+    let src = h.w("big");
+    let data = write_big(&src, 24 << 20);
+    let dest = h.w("dest");
+    fs::create_dir(&dest).unwrap();
+    fs::write(dest.join("big"), b"OLD").unwrap();
+    fs::write(dest.join("other"), b"mine").unwrap();
+    let id = h.submit(copy(&[&src], &dest, P::Replace));
+    h.wait(id, |s| *s == JobStatus::Paused);
+    let part = fs::metadata(dest.join("big")).unwrap().len();
+    assert!(part > 3 && part < data.len() as u64, "partial {part}");
+    assert_eq!(names(&dest).len(), 3, "partial, aside and other");
+
+    // "Crash": a new daemon on the same state, the old worker frozen.
+    let again = Jobs::new(&h.dirs);
+    let log = again.inner().journal().unwrap().recovered().to_vec();
+    assert!(
+        log.iter().any(|l| l.starts_with("removed partial")),
+        "{log:?}"
+    );
+    assert!(log.iter().any(|l| l.starts_with("put back")), "{log:?}");
+    assert_eq!(names(&dest), vec!["big", "other"]);
+    assert_eq!(fs::read(dest.join("big")).unwrap(), b"OLD");
+    assert_eq!(fs::read(dest.join("other")).unwrap(), b"mine");
+    assert_eq!(fs::read(&src).unwrap(), data);
+    // Reconciled once: a further restart finds nothing to do.
+    drop(again);
+    let third = Jobs::new(&h.dirs);
+    assert!(third.inner().journal().unwrap().recovered().is_empty());
+}
+
+#[test]
+fn crash_mid_cross_device_move_keeps_sources() {
+    let mut h = h();
+    let Some(far) = other_device(h.d.path()) else {
+        eprintln!("skipped: no second filesystem at /dev/shm");
+        return;
+    };
+    h.jobs
+        .inner()
+        .pause_after_chunks
+        .store(2, Ordering::Relaxed);
+    let src = h.w("d");
+    fs::create_dir(&src).unwrap();
+    let a = write_big(&src.join("a"), 9 << 20);
+    let b2 = write_big(&src.join("b"), 9 << 20);
+    fs::write(far.path().join("before"), b"kept").unwrap();
+    let id = h.submit(mv(&[&src], far.path(), P::Fail));
+    h.wait(id, |s| *s == JobStatus::Paused);
+    assert!(far.path().join("d").exists());
+
+    let _again = Jobs::new(&h.dirs);
+    assert_eq!(names(far.path()), vec!["before"]);
+    assert_eq!(fs::read(far.path().join("before")).unwrap(), b"kept");
+    assert_eq!(fs::read(src.join("a")).unwrap(), a);
+    assert_eq!(fs::read(src.join("b")).unwrap(), b2);
+}
+
+#[test]
+fn undo_is_broadcast_as_a_job() {
+    let mut h = h();
+    fs::write(h.w("a"), b"A").unwrap();
+    let ren = JobSpec::Rename {
+        path: b(&h.w("a")),
+        new_name: b"b".to_vec(),
+        on_conflict: P::Fail,
+    };
+    assert_eq!(h.run(ren), JobStatus::Done);
+    let mut rx = h.jobs.subscribe();
+    h.undo().unwrap();
+    let mut states = Vec::new();
+    while let Ok(r) = rx.try_recv() {
+        if let Reply::JobState { state, .. } = r {
+            states.push(state);
+        }
+    }
+    assert_eq!(
+        states,
+        vec![JobStatus::Queued, JobStatus::Running, JobStatus::Done]
+    );
+    assert!(h.w("a").exists());
+    // Nothing left: refused at once, no job broadcast.
+    assert_eq!(h.undo().unwrap_err(), "nothing to undo");
+    assert!(rx.try_recv().is_err());
+}

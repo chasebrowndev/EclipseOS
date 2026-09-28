@@ -212,19 +212,36 @@ impl Jobs {
         ctl.cv.notify_all();
     }
 
-    /// `Undo`: runs on the queue like any job; replies `UndoResult` when done.
+    /// `Undo`: runs on the queue like any job, with `JobState` broadcasts
+    /// under its own id; replies `UndoResult` when done.
     pub fn undo(&self, out: &mut dyn FnMut(Reply)) {
-        let dev = self
-            .inner
-            .journal()
-            .ok()
-            .and_then(|j| j.last_undoable().map(undo::device_of));
+        let dev = match self.inner.journal() {
+            Err(e) => Err(e),
+            Ok(j) => j
+                .last_undoable()
+                .map(undo::device_of)
+                .ok_or_else(|| "nothing to undo".to_owned()),
+        };
+        let dev = match dev {
+            Ok(d) => d,
+            Err(reason) => {
+                return out(Reply::UndoResult {
+                    ok: false,
+                    reason: Some(reason),
+                })
+            }
+        };
+        let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
+        self.inner.emit(Reply::JobState {
+            id,
+            state: JobStatus::Queued,
+        });
         let (tx, rx) = std_mpsc::channel();
         let i = self.inner.clone();
         self.enqueue(
-            dev.unwrap_or(0),
+            dev,
             Box::new(move || {
-                let _ = tx.send(undo::undo(&i));
+                let _ = tx.send(undo::undo(&i, id));
             }),
         );
         let res = rx

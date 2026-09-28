@@ -8,6 +8,9 @@
 use std::fs;
 use std::path::Path;
 
+use fog_proto::{JobId, JobStatus};
+use rustix::io::Errno;
+
 use super::run::{at, describe, Op, Runner};
 use super::{Ctl, Inner};
 use crate::journal::{Entry, Item};
@@ -66,7 +69,24 @@ fn back(i: &Item) -> Option<&[u8]> {
     }
 }
 
-pub(crate) fn undo(inner: &Inner) -> Result<(), String> {
+/// Undo as job `id`: its states and progress are broadcast like any job's.
+pub(crate) fn undo(inner: &Inner, id: JobId) -> Result<(), String> {
+    let ctl = Ctl::default();
+    let mut r = Runner::new(inner, id, &ctl);
+    r.state(JobStatus::Running);
+    let res = check_and_apply(&mut r);
+    r.state(match &res {
+        Ok(()) => JobStatus::Done,
+        Err(msg) => JobStatus::Failed {
+            errno: Errno::CANCELED.raw_os_error(),
+            msg: msg.clone(),
+        },
+    });
+    res
+}
+
+fn check_and_apply(r: &mut Runner<'_>) -> Result<(), String> {
+    let inner = r.inner;
     let entry = {
         let j = inner.journal()?;
         j.last_undoable().cloned().ok_or("nothing to undo")?
@@ -97,22 +117,27 @@ pub(crate) fn undo(inner: &Inner) -> Result<(), String> {
         }
     }
 
-    let ctl = Ctl::default();
-    let mut r = Runner::new(inner, 0, &ctl, true);
+    r.run = inner
+        .journal()?
+        .begin(None)
+        .map_err(|e| format!("journal write failed: {e}"))?;
     let res = (|| {
         for i in entry.items.iter().rev() {
-            apply(&mut r, i)?;
+            apply(r, i)?;
         }
         r.commit()
     })();
     if let Err(f) = res {
         r.rollback();
+        r.end();
         return Err(format!("undo failed: {}", describe(&f).1));
     }
-    inner
+    let marked = inner
         .journal()?
         .mark_undone(entry.seq)
-        .map_err(|e| format!("journal write failed: {e}"))
+        .map_err(|e| format!("journal write failed: {e}"));
+    r.end();
+    marked
 }
 
 fn apply(r: &mut Runner<'_>, i: &Item) -> super::run::R<()> {

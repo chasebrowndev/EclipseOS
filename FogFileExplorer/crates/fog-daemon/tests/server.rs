@@ -361,13 +361,29 @@ async fn job_states_reach_every_client() {
         }
     }
     assert!(path.is_dir());
+    // Undo is broadcast like a job; its result goes to the asker.
     h.send(Request::Undo).await;
-    assert_eq!(
-        h.recv().await,
-        Reply::UndoResult {
-            ok: true,
-            reason: None
+    loop {
+        match h.recv().await {
+            Reply::UndoResult { ok, reason } => {
+                assert!(ok, "{reason:?}");
+                break;
+            }
+            Reply::JobState { .. } | Reply::JobProgress { .. } => {}
+            r => panic!("unexpected {r:?}"),
         }
-    );
+    }
     assert!(!path.exists());
+    let mut states = Vec::new();
+    while states.last() != Some(&JobStatus::Done) {
+        match o.recv().await {
+            Reply::JobState { state, .. } => states.push(state),
+            Reply::JobProgress { .. } => {}
+            r => panic!("unexpected {r:?}"),
+        }
+    }
+    assert_eq!(
+        states,
+        vec![JobStatus::Queued, JobStatus::Running, JobStatus::Done]
+    );
 }
