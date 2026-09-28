@@ -26,10 +26,10 @@ set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$here/.." && pwd)
 
-BINS='abyss hyperion eclipse-toasts eclipse-center eclipse-launcher
+BINS='abyss hyperion eclipse-toasts eclipse-wallpaper eclipse-center eclipse-launcher
       eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt
       eclipse-pairing'
-UNITS='hyperion.service eclipse-toasts.service eclipse-screensaver.service eclipse-pairing.service'
+UNITS='hyperion.service eclipse-toasts.service eclipse-wallpaper.service eclipse-screensaver.service eclipse-pairing.service'
 
 do_deps=1 do_build=1 assume_yes=0 uninstall=0
 for arg in "$@"; do
@@ -155,7 +155,7 @@ sudo install -Dm 0644 "$here/abyss.desktop" /usr/share/wayland-sessions/abyss.de
 #    shipped pointing at /usr/bin, which is where step 1 put the binaries.
 sudo install -Dm 0644 -t /usr/lib/systemd/user \
     "$here/abyss-session.target" "$here/hyperion.service" "$here/eclipse-toasts.service" \
-    "$here/eclipse-screensaver.service" "$here/eclipse-pairing.service"
+    "$here/eclipse-wallpaper.service" "$here/eclipse-screensaver.service" "$here/eclipse-pairing.service"
 
 # 4b. The taskbar's add-on manifest (ADR 0066). Without it abyss keeps its
 #     taskbar-widgets hook off; hosts read manifests only from this directory.

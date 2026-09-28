@@ -173,6 +173,18 @@ fn widget_json(w: &crate::config::CustomWidget) -> Value {
     })
 }
 
+/// One `wallpaper { output "<name>" { … } }` override as `get_config` serves
+/// it under `collections."wallpaper.output"`. Every field is present; `null`
+/// is a key the block leaves to the global one.
+fn wallpaper_output_json(o: &crate::config::WallpaperOutput) -> Value {
+    json!({
+        "output": o.name,
+        "path": o.path,
+        "mode": o.mode,
+        "color": o.color.map(color_hex),
+    })
+}
+
 /// The file on disk a key would be written to.
 ///
 /// A settings write comes from a human in a normal session, who cannot write
@@ -335,9 +347,16 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
     let (addons, hooks_on) = crate::addons::json(&state.addons);
     if only_path.is_none() && only_file != Some(ConfigFile::Policy) {
         let widgets = widgets_json(state);
+        let wallpapers: Vec<Value> = state
+            .config
+            .wallpaper
+            .outputs
+            .iter()
+            .map(wallpaper_output_json)
+            .collect();
         return Ok(json!({
             "keys": keys,
-            "collections": { "widget": widgets },
+            "collections": { "widget": widgets, "wallpaper.output": wallpapers },
             "addons": addons,
             "hooks_on": hooks_on,
         }));
@@ -1114,6 +1133,63 @@ mod tests {
             &json!({"path": "bar.eye", "value": "yes"}),
         )
         .is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `wallpaper.{path,mode,color}` round-trip through `set_config_value`
+    /// without touching a per-output block's keys of the same name, and the
+    /// overrides ride along under `collections."wallpaper.output"`.
+    #[test]
+    fn wallpaper_keys_round_trip_and_overrides_are_served() {
+        use crate::shell::focus::state_tests::Harness;
+        let mut h = crate::shell::focus::state_tests::harness();
+        let dir = std::env::temp_dir().join(format!("abyss-wallpaper-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+        std::fs::write(
+            &file,
+            "wallpaper {\n    output \"DP-1\" {\n        mode \"fit\"\n        color \"#112233\"\n    }\n}\n",
+        )
+        .unwrap();
+        h.state.config.explicit = Some(file.clone());
+        h.state.config = h.state.config.reload();
+
+        let row = |h: &mut Harness, path: &str| {
+            get_config(&mut h.state, Decision::Allow, &json!({"path": path}))
+                .ok()
+                .expect("readable")["keys"][0]
+                .clone()
+        };
+        assert_eq!(row(&mut h, "wallpaper.path")["value"], Value::Null);
+        assert_eq!(row(&mut h, "wallpaper.mode")["value"], json!("fill"));
+        assert_eq!(row(&mut h, "wallpaper.color")["value"], json!("#0b0906ff"));
+        assert_eq!(row(&mut h, "wallpaper.color")["default"], json!("#0b0906ff"));
+
+        for (path, v) in [
+            ("wallpaper.path", json!("~/Pictures/x.png")),
+            ("wallpaper.mode", json!("center")),
+            ("wallpaper.color", json!("#202122")),
+        ] {
+            let r = set_config_value(&mut h.state, Decision::Allow, &json!({"path": path, "value": v}));
+            assert!(r.is_ok(), "{path}: {:?}", r.err().map(|e| e.message));
+        }
+        assert_eq!(row(&mut h, "wallpaper.path")["value"], json!("~/Pictures/x.png"));
+        assert_eq!(row(&mut h, "wallpaper.mode")["value"], json!("center"));
+        assert_eq!(row(&mut h, "wallpaper.color")["value"], json!("#202122ff"));
+        assert!(set_config_value(
+            &mut h.state,
+            Decision::Allow,
+            &json!({"path": "wallpaper.mode", "value": "stretch"}),
+        )
+        .is_err());
+
+        let all = get_config(&mut h.state, Decision::Allow, &json!({}))
+            .ok()
+            .unwrap();
+        assert_eq!(
+            all["collections"]["wallpaper.output"],
+            json!([{"output": "DP-1", "path": null, "mode": "fit", "color": "#112233ff"}])
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -94,7 +94,7 @@ pub fn pane_for(path: &str) -> Option<Pane> {
     let node = path.split('.').next().unwrap_or(path);
     match node {
         "mode" | "components" => Some(Pane::Desktop),
-        "general" | "decoration" | "animations" | "render" => Some(Pane::Appearance),
+        "general" | "decoration" | "animations" | "render" | "wallpaper" => Some(Pane::Appearance),
         "bar" => Some(Pane::Taskbar),
         "input" => Some(Pane::Input),
         "idle" => Some(Pane::Session),
