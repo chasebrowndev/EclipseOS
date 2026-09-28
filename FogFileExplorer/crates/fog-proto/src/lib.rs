@@ -4,7 +4,8 @@
 //!
 //! A frame is a little-endian `u32` payload length followed by the postcard
 //! encoding of an [`Envelope`]. Every frame carries [`VERSION`]; a peer with a
-//! different major version is refused. Paths and names are raw bytes, never
+//! different major version (or, while major is 0, a different minor) is
+//! refused, see [`compatible`]. Paths and names are raw bytes, never
 //! assumed to be UTF-8.
 
 use std::borrow::Cow;
@@ -394,10 +395,18 @@ pub fn decode<T: DeserializeOwned>(frame: &[u8]) -> Result<T, FrameError> {
     decode_payload(payload)
 }
 
+/// Whether a peer speaking `theirs` can be decoded by `ours` (FOG
+/// §Architecture/IPC). Postcard is not self-describing, so while the major
+/// version is 0 any minor change may alter the layout and is refused; from
+/// 1.0 on only the major must match.
+pub fn compatible(theirs: Version, ours: Version) -> bool {
+    theirs.major == ours.major && (ours.major != 0 || theirs.minor == ours.minor)
+}
+
 fn decode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, FrameError> {
     // Envelope fields are serialized in order, so the version is a prefix.
     let (theirs, rest): (Version, _) = postcard::take_from_bytes(payload)?;
-    if theirs.major != VERSION.major {
+    if !compatible(theirs, VERSION) {
         return Err(FrameError::Version {
             theirs,
             ours: VERSION,
@@ -522,6 +531,30 @@ mod tests {
         assert!(matches!(
             read_frame::<_, Request>(&mut b).await,
             Err(FrameError::Version { .. })
+        ));
+    }
+
+    #[test]
+    fn zero_major_minor_mismatch_rejected() {
+        let v = |major, minor| Version { major, minor };
+        assert!(!compatible(v(0, 1), v(0, 2)));
+        assert!(!compatible(v(0, 2), v(0, 1)));
+        assert!(compatible(v(0, 2), v(0, 2)));
+        assert!(compatible(v(1, 3), v(1, 7)));
+        assert!(compatible(v(1, 7), v(1, 3)));
+        assert!(!compatible(v(2, 0), v(1, 0)));
+
+        // Over the wire: a 0.1 frame is refused by this 0.2 build.
+        let env = Envelope {
+            version: v(0, 1),
+            body: Request::Undo,
+        };
+        let payload = postcard::to_allocvec(&env).unwrap();
+        let mut frame = (payload.len() as u32).to_le_bytes().to_vec();
+        frame.extend_from_slice(&payload);
+        assert!(matches!(
+            decode::<Request>(&frame),
+            Err(FrameError::Version { theirs, .. }) if theirs == v(0, 1)
         ));
     }
 
