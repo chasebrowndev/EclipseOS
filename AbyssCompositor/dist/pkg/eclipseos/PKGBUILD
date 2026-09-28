@@ -11,7 +11,7 @@
 
 pkgbase=eclipseos
 pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-center
-         eclipseos-launcher eclipseos-desktop eclipseos-policyd eclipseos-setup eclipseos-meta)
+         eclipseos-launcher eclipseos-desktop eclipseos-policyd eclipseos-setup eclipseos-fog eclipseos-meta)
 pkgver=0.1.1
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
@@ -27,14 +27,20 @@ source=("git+https://github.com/chasebrowndev/EclipseOS.git#tag=v$pkgver")
 sha256sums=('SKIP')
 
 _src="EclipseOS/AbyssCompositor"
+# Fog is its own cargo workspace, a sibling of AbyssCompositor (FOG-SPEC.md).
+_fog="EclipseOS/FogFileExplorer"
 
 build() {
   cd "$_src"
   cargo build --release --workspace --bins --locked
+  cd "$srcdir/$_fog"
+  cargo build --release --bins --locked -p fog-daemon -p fog-ui
 }
 
 check() {
   cd "$_src"
+  cargo test --workspace --release --locked
+  cd "$srcdir/$_fog"
   cargo test --workspace --release --locked
 }
 
@@ -151,11 +157,30 @@ package_eclipseos-setup() {
     "$pkgdir/usr/share/polkit-1/actions/org.eclipse.install.apply.policy"
 }
 
+package_eclipseos-fog() {
+  pkgdesc="Fog, the EclipseOS file explorer (fogd daemon and fog-ui)"
+  depends=(wayland libxkbcommon mesa)
+
+  for b in fogd fog-ui; do
+    install -Dm0755 "$srcdir/$_fog/target/release/$b" "$pkgdir/usr/bin/$b"
+  done
+  for u in fogd.socket fogd.service; do
+    install -Dm0644 "$srcdir/$_fog/dist/$u" "$pkgdir/usr/lib/systemd/user/$u"
+  done
+  # Socket-activated at login for every user (FOG §Architecture, Lifecycle),
+  # by a shipped wants/ link as _want does, not a preset. sockets.target, not
+  # abyss-session.target: fogd needs no display, and fog-ui may start first.
+  install -d "$pkgdir/usr/lib/systemd/user/sockets.target.wants"
+  ln -sf ../fogd.socket "$pkgdir/usr/lib/systemd/user/sockets.target.wants/fogd.socket"
+  install -Dm0644 "$srcdir/$_fog/dist/os.eclipse.fog.desktop" \
+    "$pkgdir/usr/share/applications/os.eclipse.fog.desktop"
+}
+
 package_eclipseos-meta() {
   pkgdesc="EclipseOS base system (D-01 §1)"
   arch=(any)  # config and dependencies only, no ELF
   depends=(eclipseos-abyss eclipseos-toasts eclipseos-center
-           eclipseos-launcher eclipseos-desktop eclipseos-policyd
+           eclipseos-launcher eclipseos-desktop eclipseos-policyd eclipseos-fog
            greetd greetd-regreet cage
            networkmanager bluez bluez-utils upower pipewire pipewire-pulse wireplumber
            foot xdg-user-dirs brightnessctl playerctl)
