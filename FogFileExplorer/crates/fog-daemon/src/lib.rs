@@ -8,7 +8,11 @@
 
 pub mod backend;
 pub mod cache;
+pub mod jobs;
+pub mod journal;
+pub mod ops;
 pub mod sort;
+pub mod trash;
 
 use std::ffi::OsStr;
 use std::fs::{self, DirBuilder, Permissions};
@@ -24,10 +28,11 @@ use fog_proto::{apply_diff, Entry, Reply, Request};
 use rustix::io::Errno;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 pub use backend::{Backend, LocalBackend, BATCH};
 pub use cache::{diff, Cache, Listing};
+pub use jobs::{Dirs, Jobs};
 
 /// Frames queued per client before request handlers wait on the writer.
 const CLIENT_QUEUE: usize = 64;
@@ -37,6 +42,7 @@ pub struct Daemon {
     backend: Box<dyn Backend>,
     cache: Mutex<Cache>,
     next_dir: AtomicU64,
+    jobs: Jobs,
 }
 
 impl Daemon {
@@ -45,12 +51,25 @@ impl Daemon {
             backend,
             cache: Mutex::new(cache),
             next_dir: AtomicU64::new(1),
+            jobs: Jobs::unconfigured(),
         }
     }
 
-    /// [`LocalBackend`] with the default cache bounds.
+    /// Replace the job queue, e.g. with one on test directories.
+    pub fn with_jobs(mut self, jobs: Jobs) -> Self {
+        self.jobs = jobs;
+        self
+    }
+
+    /// The job queue, undo journal and trash.
+    pub fn jobs(&self) -> &Jobs {
+        &self.jobs
+    }
+
+    /// [`LocalBackend`] with the default cache bounds, and the job queue on
+    /// the XDG trash and journal. [`Daemon::new`] alone refuses jobs.
     pub fn local() -> Self {
-        Self::new(Box::new(LocalBackend), Cache::default())
+        Self::new(Box::new(LocalBackend), Cache::default()).with_jobs(Jobs::from_env())
     }
 
     /// The listing cache. Never hold the guard across an `.await`.
@@ -73,16 +92,15 @@ impl Daemon {
                 };
                 out(reply);
             }
-            // Watching, jobs, trash, places and open land in later units.
+            Request::Job(spec) => self.jobs.submit(spec, out),
+            Request::JobControl { id, action } => self.jobs.control(id, action, out),
+            Request::Undo => self.jobs.undo(out),
+            Request::ListTrash => self.jobs.list_trash(out),
+            // Watching, places and open land in later units.
             Request::Subscribe { path } | Request::Open { path, .. } => {
                 out(error(&path, &Errno::NOSYS.into()))
             }
-            Request::Unsubscribe { .. }
-            | Request::Job(_)
-            | Request::JobControl { .. }
-            | Request::Undo
-            | Request::ListTrash
-            | Request::Places => out(error(&[], &Errno::NOSYS.into())),
+            Request::Unsubscribe { .. } | Request::Places => out(error(&[], &Errno::NOSYS.into())),
         }
     }
 
@@ -322,6 +340,27 @@ pub async fn serve(listener: UnixListener, daemon: Arc<Daemon>) -> io::Result<()
 async fn client(stream: UnixStream, daemon: Arc<Daemon>) {
     let (mut rd, mut wr) = stream.into_split();
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(CLIENT_QUEUE);
+    // Job state and progress go to every client (FOG §File operations/Queue).
+    let mut events = daemon.jobs.subscribe();
+    let etx = tx.clone();
+    let events = tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(r) => match fog_proto::encode(&r) {
+                    Ok(f) => {
+                        if etx.send(f).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "job event not encodable"),
+                },
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::debug!(n, "client lagged; job events dropped");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
     let writer = tokio::spawn(async move {
         while let Some(frame) = rx.recv().await {
             if wr.write_all(&frame).await.is_err() {
@@ -343,6 +382,7 @@ async fn client(stream: UnixStream, daemon: Arc<Daemon>) {
             }
         }
     }
+    events.abort();
     drop(tx);
     let _ = writer.await;
 }

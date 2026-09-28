@@ -583,7 +583,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "fog-proto",
+ "libc",
+ "postcard",
  "rustix 1.1.5",
+ "serde",
  "tempfile",
  "tokio",
  "tracing",
