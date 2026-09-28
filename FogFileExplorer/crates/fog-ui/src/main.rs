@@ -7,8 +7,11 @@
 
 mod app;
 mod conn;
+mod edit;
+mod palette;
 mod state;
 mod theme;
+mod view;
 
 use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -82,12 +85,16 @@ fn main() -> iced::Result {
         }
         None => fog_config::defaults(),
     };
-    let keys = config.keys;
+    // The modified column's zone and `~`, likewise read up front.
+    let tz = jiff::tz::TimeZone::system();
+    let home = std::env::var_os("HOME")
+        .map(OsStringExt::into_vec)
+        .unwrap_or_else(|| b"/".to_vec());
 
     iced::application(
-        move || app::App::new(path.clone(), keys.clone()),
+        move || app::App::new(path.clone(), config.clone(), tz.clone(), home.clone()),
         app::update,
-        app::view,
+        view::view,
     )
     .title("Fog")
     .subscription(app::subscription)

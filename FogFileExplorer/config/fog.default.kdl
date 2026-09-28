@@ -61,6 +61,17 @@ keys {
     bind "ctrl+t" "new-tab"
     bind "ctrl+w" "close-tab"
     bind "ctrl+backslash" "split-toggle"
+    bind "ctrl+tab" "next-tab"
+    bind "ctrl+shift+tab" "prev-tab"
+    bind "ctrl+b" "toggle-sidebar"
+    bind "tab" "focus-places"
+
+    bind "alt+1" "sort-name"
+    bind "alt+2" "sort-size"
+    bind "alt+3" "sort-modified"
+    bind "alt+4" "sort-type"
+    bind "alt+r" "sort-reverse"
+    bind "alt+d" "sort-dirs-first"
 }
 
 // Agent job policy. Operations named here need a confirmation click when an

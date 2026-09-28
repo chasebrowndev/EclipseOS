@@ -14,7 +14,8 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use fog_proto::{apply_diff, Entry, Kind, Reply};
+use fog_proto::{apply_diff, Entry, Kind, Reply, Sort, SortKey};
+use rustix::io::Errno;
 
 use crate::cache::{diff, Listing};
 use crate::watch::{Dirty, Peer};
@@ -46,6 +47,7 @@ impl Daemon {
             match cached {
                 Some(old) => {
                     (d.out)(snapshot(&raw, &old, true));
+                    (d.out)(self.sorted(&raw, old.dir));
                     // One statx catches what changed while unwatched.
                     match meta::dir_mtime(path) {
                         Err(e) => return self.fail(&raw, &e, Some(&mut d)),
@@ -76,6 +78,61 @@ impl Daemon {
         self.phase2(&raw, path, &mut d);
     }
 
+    /// `SetSort`: remember the folder's sort, publish the new order as the
+    /// next generation (a diff with no entry changes) to every subscriber,
+    /// then send them and the requester `Sorted`. `peer` is the requester,
+    /// skipped by the push because it gets both in-line.
+    pub(crate) fn set_sort(
+        &self,
+        dir: u64,
+        sort: Sort,
+        peer: Option<u64>,
+        out: &mut dyn FnMut(Reply),
+    ) {
+        let Some(raw) = self.cache().path_of(dir) else {
+            return out(error(&[], &Errno::NOENT.into()));
+        };
+        let _g = self.hub.lock(&raw);
+        let cur = match self.cache().peek(&raw).cloned() {
+            Some(c) if c.dir == dir => c,
+            _ => return out(error(&[], &Errno::NOENT.into())),
+        };
+        self.remember_sort(&raw, sort);
+        let order = sort::order_by(&cur.entries, &sort);
+        if order != cur.order {
+            let generation = cur.generation + 1;
+            let reply = Reply::DirDiff {
+                dir,
+                generation,
+                removed: Vec::new(),
+                added: Vec::new(),
+                changed: Vec::new(),
+                order: order.clone(),
+                complete: true,
+            };
+            self.store(
+                &raw,
+                Arc::new(Listing {
+                    generation,
+                    order,
+                    ..Listing::clone(&cur)
+                }),
+            );
+            self.hub.broadcast(&raw, &reply, peer);
+            out(reply);
+        }
+        let sorted = Reply::Sorted { dir, sort };
+        self.hub.broadcast(&raw, &sorted, peer);
+        out(sorted);
+    }
+
+    fn sorted(&self, raw: &[u8], dir: u64) -> Reply {
+        Reply::Sorted {
+            dir,
+            sort: self.sort_of(raw),
+        }
+    }
+
     /// `Unsubscribe`: the listing stays cached (and watched) but may be
     /// evicted again.
     pub(crate) fn unsubscribe(&self, peer: u64, dir: u64) {
@@ -100,6 +157,7 @@ impl Daemon {
         let mtime_ns = meta::dir_mtime(path).ok();
         let mut first: Option<Vec<Entry>> = None;
         let mut rest = Vec::new();
+        let by = self.sort_of(raw);
         let res = self.backend.list(path, &mut |b| {
             if first.is_none() {
                 out(Reply::DirSnapshot {
@@ -107,9 +165,10 @@ impl Daemon {
                     dir,
                     generation: 0,
                     entries: b.clone(),
-                    order: sort::order(&b),
+                    order: sort::order_by(&b, &by),
                     complete: false,
                 });
+                out(Reply::Sorted { dir, sort: by });
                 first = Some(b);
             } else {
                 rest.extend(b);
@@ -127,17 +186,18 @@ impl Daemon {
                 let l = Listing {
                     dir,
                     generation: 0,
-                    order: sort::order(&tail),
+                    order: sort::order_by(&tail, &by),
                     entries: tail,
                     mtime_ns,
                 };
                 out(snapshot(raw, &l, true));
+                out(Reply::Sorted { dir, sort: by });
                 l
             }
             Some(mut entries) => {
                 rest.extend(tail);
                 entries.extend_from_slice(&rest);
-                let order = sort::order(&entries);
+                let order = sort::order_by(&entries, &by);
                 out(Reply::DirDiff {
                     dir,
                     generation: 1,
@@ -348,8 +408,11 @@ impl Daemon {
         }
         let mut entries = cur.entries.clone();
         apply_diff(&mut entries, &removed, &added, &changed);
-        let order = if resort || !removed.is_empty() || !added.is_empty() {
-            sort::order(&entries)
+        let by = self.sort_of(raw);
+        // Under any key but the name, new metadata can move a row.
+        let keyed = by.key != SortKey::Name && !changed.is_empty();
+        let order = if resort || keyed || !removed.is_empty() || !added.is_empty() {
+            sort::order_by(&entries, &by)
         } else {
             cur.order.clone()
         };

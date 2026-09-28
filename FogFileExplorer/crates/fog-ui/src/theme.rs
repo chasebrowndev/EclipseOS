@@ -3,7 +3,8 @@
 //! Every colour and size fog-ui draws with, in one place so M2 can replace
 //! this module with the EclipseOS theme (FOG §Visual design) without touching
 //! the views. Values follow the house style: warm near-black, white text at
-//! three alphas, one gold accent that marks only the selected row, hard edges.
+//! three alphas, one gold accent that marks only the focused cursor, hard
+//! edges.
 
 use iced::Color;
 
@@ -29,19 +30,28 @@ pub mod color {
     pub const BASE: Color = rgb(0x0b, 0x09, 0x06);
     /// Path bar and status line ground: one step above the list.
     pub const CHROME: Color = rgb(0x12, 0x10, 0x0b);
-    /// Rule between the chrome rows and the list.
-    pub const RULE: Color = white(0.10);
+    /// Rule between the chrome rows and the list. Grounds and rules are
+    /// opaque: iced blends in linear light, where a small white alpha over
+    /// near-black lands far brighter than it reads on paper.
+    pub const RULE: Color = rgb(0x2a, 0x27, 0x21);
 
     pub const TEXT: Color = white(1.0);
     pub const TEXT_SECONDARY: Color = white(0.64);
     pub const TEXT_TERTIARY: Color = white(0.40);
 
-    /// The single accent. In Fog it marks the selected row and nothing else.
+    /// Ground of the active tab: the tab opens onto the pane below it.
+    pub const TAB_ACTIVE: Color = CHROME;
+    /// Ground of the tab strip and idle tabs: a step below the chrome.
+    pub const TAB_STRIP: Color = rgb(0x0e, 0x0c, 0x08);
+
+    /// The single accent. It marks the cursor of whichever region has the
+    /// keyboard (the list, the places, the palette, the path caret) and
+    /// nothing else; the other regions' cursors go [`NEUTRAL`].
     pub const ACCENT: Color = rgb(0xf2, 0xc3, 0x3c);
     /// Accent as text, lifted for small sizes.
     pub const ACCENT_TEXT: Color = rgb(0xf5, 0xcf, 0x5c);
     /// Ground under the selected row.
-    pub const ACCENT_FILL: Color = Color { a: 0.05, ..ACCENT };
+    pub const ACCENT_FILL: Color = rgb(0x21, 0x1b, 0x0b);
 
     /// Errors and "fogd not running". Deliberately unlike the accent.
     pub const DANGER: Color = rgb(0xe0, 0x55, 0x3f);
@@ -50,6 +60,16 @@ pub mod color {
     /// the only gold.
     pub const NEUTRAL: Color = rgb(0x96, 0x91, 0x8a);
     pub const OK: Color = rgb(0x7f, 0xae, 0x5e);
+    /// Ground under marked rows and under an unfocused cursor: neutral, so
+    /// a selection never competes with the one gold value.
+    pub const MARK_FILL: Color = rgb(0x1b, 0x19, 0x15);
+    /// Dims the window under the palette.
+    pub const SCRIM: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.78,
+    };
 }
 
 /// The iced theme, for the widgets fog-ui does not style itself (the list's
@@ -83,8 +103,27 @@ pub mod size {
     pub const BAR_W: f32 = 3.0;
     /// One device-independent pixel: rules.
     pub const HAIRLINE: f32 = 1.0;
-    /// Width of the right-aligned kind tag column.
-    pub const TAG_W: f32 = 48.0;
+    /// The right-aligned data columns of the list.
+    pub const SIZE_W: f32 = 80.0;
+    pub const DATE_W: f32 = 132.0;
+    pub const TYPE_W: f32 = 64.0;
+    /// iced's embedded scrollbar width: the column header leaves it free so
+    /// its labels sit over the list's columns.
+    pub const SCROLLBAR_W: f32 = 10.0;
+    /// Column header height: tighter than a row, it is a caption.
+    pub const HEADER_H: f32 = 22.0;
+    /// Sidebar width, and the gap above each of its sections.
+    pub const SIDEBAR_W: f32 = 184.0;
+    pub const SECTION_GAP: f32 = 16.0;
+    /// Tab strip height and the widest a tab grows.
+    pub const TAB_H: f32 = 28.0;
+    pub const TAB_MAX_W: f32 = 200.0;
+    /// The palette overlay: width, distance from the top, rows shown.
+    pub const PALETTE_W: f32 = 560.0;
+    pub const PALETTE_TOP: f32 = 64.0;
+    pub const PALETTE_ROWS: usize = 12;
+    /// Text caret in the path bar and palette.
+    pub const CARET_W: f32 = 2.0;
     /// Advance of one monospace glyph, in ems: turns a width into a
     /// character budget for eliding the path bar. Slightly generous, so an
     /// estimate never clips the current folder.

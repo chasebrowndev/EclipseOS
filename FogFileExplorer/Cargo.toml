@@ -48,6 +48,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 libc = "0.2"
+# Local time for the modified column; the zone is read once, before iced
+# starts (the UI thread never does filesystem I/O).
+jiff = { version = "0.2", default-features = false, features = [
+  "std",
+  "tz-system",
+  "tzdb-zoneinfo",
+] }
 
 [profile.release]
 debug = 1

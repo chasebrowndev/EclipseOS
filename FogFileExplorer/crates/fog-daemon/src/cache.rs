@@ -79,6 +79,15 @@ impl Cache {
         Some(slot.listing.clone())
     }
 
+    /// The path of the cached listing numbered `dir`. A linear scan: the
+    /// cache holds a few hundred listings at most.
+    pub fn path_of(&self, dir: u64) -> Option<Vec<u8>> {
+        self.slots
+            .iter()
+            .find(|(_, s)| s.listing.dir == dir)
+            .map(|(p, _)| p.clone())
+    }
+
     /// Look up without touching recency.
     pub fn peek(&self, path: &[u8]) -> Option<&Arc<Listing>> {
         self.slots.get(path).map(|s| &s.listing)

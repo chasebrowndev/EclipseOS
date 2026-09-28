@@ -13,7 +13,7 @@ use std::time::Duration;
 use fog_daemon::{bind, serve, sort, Cache, Daemon, Dirs, Jobs, LocalBackend, BATCH};
 use fog_proto::{
     apply_diff, read_frame, write_frame, ConflictPolicy, Entry, JobSpec, JobStatus, Kind, Reply,
-    Request,
+    Request, Sort, SortKey,
 };
 use tokio::net::UnixStream;
 
@@ -103,6 +103,7 @@ struct View {
     entries: Vec<Entry>,
     order: Vec<u32>,
     complete: bool,
+    sort: Option<Sort>,
 }
 
 impl View {
@@ -122,6 +123,7 @@ impl View {
                     entries,
                     order,
                     complete,
+                    sort: None,
                 }
             }
             Reply::DirDiff {
@@ -139,6 +141,10 @@ impl View {
                 self.generation = generation;
                 self.order = order;
                 self.complete = complete;
+            }
+            Reply::Sorted { dir, sort } => {
+                assert_eq!(dir, self.dir);
+                self.sort = Some(sort);
             }
             other => panic!("unexpected {other:?}"),
         }
@@ -224,6 +230,8 @@ async fn uncached_then_cached_with_diff() {
     h.list(d.path()).await;
     let mut v3 = View::default();
     v3.apply(h.recv().await);
+    v3.apply(h.recv().await);
+    assert_eq!(v3.sort, Some(Sort::default()));
     assert_eq!(v3.generation, v2.generation);
     assert_eq!(v3.names(), v2.names());
     assert!(v3.meta_done());
@@ -313,6 +321,8 @@ async fn subscribed_dir_removed_reports_error() {
     let mut v = View::default();
     v.apply(h.recv().await);
     assert!(v.complete && v.entries.is_empty());
+    v.apply(h.recv().await);
+    assert!(v.sort.is_some());
     fs::remove_dir(&sub).unwrap();
     let r = tokio::time::timeout(Duration::from_secs(5), h.recv())
         .await
@@ -347,6 +357,8 @@ async fn large_dir_streams() {
         other => panic!("unexpected {other:?}"),
     }
     v.apply(first);
+    v.apply(h.recv().await);
+    assert!(v.sort.is_some());
     let partial = v.names();
     assert!(partial
         .windows(2)
@@ -410,6 +422,95 @@ async fn errors() {
         Reply::Error {
             path: b"relative/dir".to_vec(),
             errno: 22
+        }
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn set_sort_reorders_every_generation() {
+    let mut h = start().await;
+    let d = tempfile::tempdir().unwrap();
+    fs::write(d.path().join("a"), b"xxxxxxxxx").unwrap();
+    fs::write(d.path().join("b"), b"x").unwrap();
+    fs::write(d.path().join("c"), b"xxxxx").unwrap();
+    fs::create_dir(d.path().join("sub")).unwrap();
+    h.send(Request::Subscribe {
+        path: raw(d.path()),
+    })
+    .await;
+    let mut v = View::default();
+    h.until(&mut v, |v| v.meta_done() && v.sort.is_some()).await;
+    assert_eq!(v.sort, Some(Sort::default()));
+    assert_eq!(v.names(), ["sub", "a", "b", "c"]);
+
+    let by_size = Sort {
+        key: SortKey::Size,
+        reverse: true,
+        dirs_first: true,
+    };
+    h.send(Request::SetSort {
+        dir: v.dir,
+        sort: by_size,
+    })
+    .await;
+    let gen = v.generation;
+    h.until(&mut v, |v| v.sort == Some(by_size)).await;
+    assert_eq!(v.generation, gen + 1, "the new order is one generation");
+    assert_eq!(v.names(), ["sub", "a", "c", "b"]);
+
+    // The folder keeps its sort: a new entry lands by size, and a fresh
+    // listing is announced with it.
+    fs::write(d.path().join("d"), b"xxx").unwrap();
+    h.until(&mut v, |v| v.get("d").is_some_and(|e| e.size == Some(3)))
+        .await;
+    assert_eq!(v.names(), ["sub", "a", "c", "d", "b"]);
+    h.list(d.path()).await;
+    let mut again = View::default();
+    again.apply(h.recv().await);
+    again.apply(h.recv().await);
+    assert_eq!(again.sort, Some(by_size));
+    assert_eq!(again.names(), v.names());
+
+    h.send(Request::SetSort {
+        dir: 9999,
+        sort: by_size,
+    })
+    .await;
+    // Pushes for our subscription may interleave; the error is for no path.
+    let t = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Reply::Error { path, errno } = h.recv().await {
+                break (path, errno);
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(t, (vec![], 2));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fs_info_reads_statvfs() {
+    let mut h = start().await;
+    let d = tempfile::tempdir().unwrap();
+    h.send(Request::FsInfo {
+        path: raw(d.path()),
+    })
+    .await;
+    match h.recv().await {
+        Reply::FsInfo { path, free, total } => {
+            assert_eq!(path, raw(d.path()));
+            assert!(total > 0 && free <= total, "{free} / {total}");
+        }
+        r => panic!("unexpected {r:?}"),
+    }
+    let gone = raw(&d.path().join("nope"));
+    h.send(Request::FsInfo { path: gone.clone() }).await;
+    assert_eq!(
+        h.recv().await,
+        Reply::Error {
+            path: gone,
+            errno: 2
         }
     );
 }

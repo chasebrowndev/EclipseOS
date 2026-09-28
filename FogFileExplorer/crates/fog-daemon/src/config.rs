@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::thread;
 
 use fog_config::{Config, Error, Live};
-use fog_proto::Reply;
+use fog_proto::{Reply, Sort, SortKey};
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use rustix::io::Errno;
 
@@ -42,6 +42,22 @@ pub fn start(daemon: &Arc<Daemon>, path: PathBuf) -> Live {
 pub fn apply(daemon: &Daemon, c: &Config) {
     let p = &c.performance;
     daemon.cache().set_limits(p.cache_dirs, p.cache_bytes());
+    daemon.set_default_sort(default_sort(&c.view));
+}
+
+/// `view { sort "<key>" dirs-first=… }` as the wire sort. Names always
+/// compare naturally in `fogd`.
+pub fn default_sort(v: &fog_config::View) -> Sort {
+    Sort {
+        key: match v.sort {
+            fog_config::SortKey::Name => SortKey::Name,
+            fog_config::SortKey::Size => SortKey::Size,
+            fog_config::SortKey::Modified => SortKey::Modified,
+            fog_config::SortKey::Type => SortKey::Type,
+        },
+        reverse: false,
+        dirs_first: v.dirs_first,
+    }
 }
 
 /// Re-read `path` into `live`; on success apply it, on error log and
