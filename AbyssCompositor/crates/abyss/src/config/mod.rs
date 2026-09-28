@@ -64,6 +64,14 @@ pub enum LayoutKind {
 pub struct General {
     pub gaps_in: i32,
     pub gaps_out: i32,
+    /// Vertical (stacked-split) inner gap, logical px. `None` mirrors
+    /// [`General::gaps_in`] — the config never set `gaps-in-vertical`, so
+    /// resolve through [`General::gaps_in_y`] rather than this field
+    /// directly.
+    pub gaps_in_vertical: Option<i32>,
+    /// Vertical outer gap, logical px. `None` mirrors [`General::gaps_out`];
+    /// resolve through [`General::gaps_out_y`].
+    pub gaps_out_vertical: Option<i32>,
     pub border_size: i32,
     pub layout: LayoutKind,
     pub floating_placement: FloatingPlacement,
@@ -89,11 +97,29 @@ pub struct General {
     pub drop_edge_band: i32,
 }
 
+impl General {
+    /// The vertical inner gap, resolving `gaps-in-vertical` against
+    /// `gaps-in` (COMP-05 §3) when the config never set it — so a config that
+    /// only ever touches `gaps-in` renders identically whether or not the
+    /// vertical key exists.
+    pub fn gaps_in_y(&self) -> i32 {
+        self.gaps_in_vertical.unwrap_or(self.gaps_in)
+    }
+
+    /// The vertical outer gap, resolving `gaps-out-vertical` against
+    /// `gaps-out` the same way.
+    pub fn gaps_out_y(&self) -> i32 {
+        self.gaps_out_vertical.unwrap_or(self.gaps_out)
+    }
+}
+
 impl Default for General {
     fn default() -> Self {
         Self {
             gaps_in: 5,
             gaps_out: 10,
+            gaps_in_vertical: None,
+            gaps_out_vertical: None,
             border_size: 2,
             layout: LayoutKind::Radiant,
             floating_placement: FloatingPlacement::Centered,
@@ -2197,6 +2223,16 @@ impl Config {
                         self.reject(n, "gaps-out expects an integer");
                     }
                 }
+                "gaps-in-vertical" => {
+                    if !set_opt_i32(&mut self.general.gaps_in_vertical, n) {
+                        self.reject(n, "gaps-in-vertical expects an integer");
+                    }
+                }
+                "gaps-out-vertical" => {
+                    if !set_opt_i32(&mut self.general.gaps_out_vertical, n) {
+                        self.reject(n, "gaps-out-vertical expects an integer");
+                    }
+                }
                 "border-size" => {
                     if !set_i32(&mut self.general.border_size, n) {
                         self.reject(n, "border-size expects an integer");
@@ -3743,6 +3779,19 @@ fn set_i32(slot: &mut i32, node: &KdlNode) -> bool {
     }
 }
 
+/// As [`set_i32`], for a slot that defaults to mirroring another key rather
+/// than to a literal (`gaps-in-vertical`, `gaps-out-vertical`).
+#[must_use]
+fn set_opt_i32(slot: &mut Option<i32>, node: &KdlNode) -> bool {
+    match arg(node).and_then(KdlValue::as_integer) {
+        Some(v) => {
+            *slot = Some(v.clamp(0, 512) as i32);
+            true
+        }
+        None => false,
+    }
+}
+
 /// `#rrggbb`, `#rrggbbaa`, `0xaarrggbb` (Hyprland's form) or `rrggbb`.
 fn parse_color(s: &str) -> Option<[f32; 4]> {
     let t = s.trim();
@@ -5064,6 +5113,46 @@ mod tests {
         assert!(binds[0].mods.shift && binds[0].mods.logo);
     }
 
+    /// `gaps-in-vertical`/`gaps-out-vertical` mirror their horizontal
+    /// counterpart, including a horizontal value already customised away
+    /// from the default, until explicitly set — the resolver, not a
+    /// hardcoded literal, is what makes that true.
+    #[test]
+    fn vertical_gaps_mirror_horizontal_until_set() {
+        let doc: KdlDocument = "general { gaps-in 3; gaps-out 12 }\n".parse().unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.general.gaps_in_vertical, None);
+        assert_eq!(cfg.general.gaps_out_vertical, None);
+        assert_eq!(
+            cfg.general.gaps_in_y(),
+            3,
+            "mirrors the customised horizontal value"
+        );
+        assert_eq!(
+            cfg.general.gaps_out_y(),
+            12,
+            "mirrors the customised horizontal value"
+        );
+
+        let doc: KdlDocument =
+            "general { gaps-in 3; gaps-in-vertical 8; gaps-out 12; gaps-out-vertical 1 }\n"
+                .parse()
+                .unwrap();
+        cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.general.gaps_in_vertical, Some(8));
+        assert_eq!(cfg.general.gaps_in_y(), 8, "an explicit vertical value wins");
+        assert_eq!(cfg.general.gaps_out_vertical, Some(1));
+        assert_eq!(cfg.general.gaps_out_y(), 1, "an explicit vertical value wins");
+
+        // A config that never touches either vertical key renders identically
+        // to today: both resolve to their horizontal sibling's default.
+        let d = General::default();
+        assert_eq!(d.gaps_in_y(), d.gaps_in);
+        assert_eq!(d.gaps_out_y(), d.gaps_out);
+    }
+
     /// Both follow behaviours are on out of the box and both can be turned
     /// off: a move you cannot see reads as a move that did not happen, but
     /// someone who wants the cursor to stay put must be able to say so.
@@ -5656,6 +5745,11 @@ mod startup_tests {
         assert_eq!(cfg.general.gaps_in, 7, "the valid key applies");
         let d = General::default();
         assert_eq!(cfg.general.gaps_out, d.gaps_out, "untouched keys keep defaults");
+        assert_eq!(
+            cfg.general.gaps_in_y(),
+            7,
+            "the untouched vertical key still mirrors the valid horizontal one"
+        );
         assert_eq!(cfg.startup(), Startup::Start { ignored: 1 });
     }
 

@@ -161,9 +161,10 @@ fn accumulate_non_exclusive_zone(
 /// Usable tiling area: the usable area minus the outer gap.
 fn tiling_area(state: &AbyssState, output: &Output) -> Rectangle<i32, Logical> {
     let area = usable_area(state, output);
-    let g = state.config.general.gaps_out;
-    let loc = Point::from((area.loc.x + g, area.loc.y + g));
-    let size = Size::from(((area.size.w - 2 * g).max(1), (area.size.h - 2 * g).max(1)));
+    let gx = state.config.general.gaps_out;
+    let gy = state.config.general.gaps_out_y();
+    let loc = Point::from((area.loc.x + gx, area.loc.y + gy));
+    let size = Size::from(((area.size.w - 2 * gx).max(1), (area.size.h - 2 * gy).max(1)));
     Rectangle::new(loc, size)
 }
 
@@ -354,14 +355,15 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
     let kind = entry.workspaces[ws]
         .layout
         .unwrap_or_else(|| state.config.layout_for(ws + 1));
-    let gap = state.config.general.gaps_in;
+    let gap_x = state.config.general.gaps_in;
+    let gap_y = state.config.general.gaps_in_y();
     let border = state.config.general.border_size;
 
     let entry = state.outputs.get_mut(id).expect("checked above");
     let tiled: Vec<(Window, Rectangle<i32, Logical>)> = match kind {
-        LayoutKind::Radiant => entry.workspaces[ws].tiled.radiant(area, gap),
-        LayoutKind::Dwindle => entry.workspaces[ws].tiled.dwindle(area, gap),
-        LayoutKind::Master => entry.workspaces[ws].tiled.master(area, gap),
+        LayoutKind::Radiant => entry.workspaces[ws].tiled.radiant(area, gap_x, gap_y),
+        LayoutKind::Dwindle => entry.workspaces[ws].tiled.dwindle(area, gap_x, gap_y),
+        LayoutKind::Master => entry.workspaces[ws].tiled.master(area, gap_x, gap_y),
     };
     let floating: Vec<(Window, Rectangle<i32, Logical>)> = entry.workspaces[ws]
         .floating
@@ -2136,7 +2138,8 @@ pub(crate) fn drop_candidates<W: Clone + PartialEq>(
     window: &W,
     tiles: &[(W, Rectangle<i32, Logical>)],
     area: Rectangle<i32, Logical>,
-    gap: i32,
+    gap_x: i32,
+    gap_y: i32,
     band: i32,
 ) -> Vec<DropCandidate> {
     use layout::{Side, Zone};
@@ -2161,7 +2164,11 @@ pub(crate) fn drop_candidates<W: Clone + PartialEq>(
         if !apply_drop(&mut t, window, key, tiles) {
             return None;
         }
-        let ghost = t.radiant(area, gap).into_iter().find(|(w, _)| w == window)?.1;
+        let ghost = t
+            .radiant(area, gap_x, gap_y)
+            .into_iter()
+            .find(|(w, _)| w == window)?
+            .1;
         let aim = match key {
             DropKey::Band(side) => centre(band_strip(area, side, band)),
             _ => centre(ghost),
@@ -2198,11 +2205,12 @@ fn start_tile_drag(state: &mut AbyssState, window: &Window) {
     let output = entry.output.clone();
     let area = tiling_area(state, &output);
     let bounds = state.space.output_geometry(&output).unwrap_or_default();
-    let gap = state.config.general.gaps_in;
+    let gap_x = state.config.general.gaps_in;
+    let gap_y = state.config.general.gaps_in_y();
     let band = state.config.general.drop_edge_band;
     let tree = &state.outputs.get(id).expect("just resolved").workspaces[ws].tiled;
-    let tiles = tree.radiant(area, gap);
-    let candidates = drop_candidates(tree, window, &tiles, area, gap, band);
+    let tiles = tree.radiant(area, gap_x, gap_y);
+    let candidates = drop_candidates(tree, window, &tiles, area, gap_x, gap_y, band);
     if !floating {
         // The tile crop would clip the window to where it used to be.
         set_tile_clip(window, None);
@@ -2541,7 +2549,8 @@ pub fn resize_window(
         return Err("a tiled window cannot be resized under the dwindle layout");
     }
     let border = state.config.general.border_size;
-    let gap = state.config.general.gaps_in;
+    let gap_x = state.config.general.gaps_in;
+    let gap_y = state.config.general.gaps_in_y();
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
     // Callers name the window's own size; the tree deals in tiles, which are
@@ -2550,7 +2559,9 @@ pub fn resize_window(
 
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let changed = if tiled {
-        entry.workspaces[ws].tiled.resize(window, area, gap, want)
+        entry.workspaces[ws]
+            .tiled
+            .resize(window, area, gap_x, gap_y, want)
     } else if let Some(f) = entry.workspaces[ws]
         .floating
         .iter_mut()
@@ -2777,7 +2788,7 @@ mod tests {
         let mut t = layout::Tree::new();
         t.insert_at(1, layout::Target::Root, layout::Side::Right, 1.0);
         t.insert_at(2, layout::Target::Leaf(&1), layout::Side::Right, 1.0);
-        let tiles = t.radiant(rr(0, 0, 1000, 500), 0);
+        let tiles = t.radiant(rr(0, 0, 1000, 500), 0, 0);
         (t, tiles)
     }
 
@@ -2819,7 +2830,7 @@ mod tests {
     fn a_window_over_its_own_tile_stays_and_over_b_lands_where_it_points() {
         let (t, tiles) = two();
         let area = rr(0, 0, 1000, 500);
-        let c = drop_candidates(&t, &1, &tiles, area, 0, 40);
+        let c = drop_candidates(&t, &1, &tiles, area, 0, 0, 40);
         assert_eq!(c[0].key, DropKey::Stay, "home is first");
         assert_eq!(c[0].ghost, rr(0, 0, 500, 500));
         // Barely moved: home.
@@ -2854,7 +2865,7 @@ mod tests {
             DropKey::Tile(1, layout::Zone::Bottom),
             &tiles
         ));
-        let g = d.radiant(area, 0);
+        let g = d.radiant(area, 0, 0);
         assert_eq!(g, vec![(2, rr(0, 0, 1000, 250)), (1, rr(0, 250, 1000, 250))]);
 
         // Centre swaps.
@@ -2904,7 +2915,7 @@ mod tests {
     fn drop_candidates_precompute_exactly_what_a_drop_would_do() {
         let (t, tiles) = two();
         let area = rr(0, 0, 1000, 500);
-        let c = drop_candidates(&t, &1, &tiles, area, 0, 40);
+        let c = drop_candidates(&t, &1, &tiles, area, 0, 0, 40);
         // Home + 4 bands + 5 zones of tile 2; tile 1 is the dragged window's own.
         assert_eq!(c.len(), 10);
         assert!(c.iter().all(|x| !matches!(x.key, DropKey::Tile(0, _))));
@@ -2919,10 +2930,14 @@ mod tests {
         let left = c.iter().find(|x| x.key == DropKey::Band(layout::Side::Left));
         assert_eq!(left.map(|x| x.aim), Some(Point::from((20.0, 250.0))));
         // Band 0: no band targets at all.
-        assert_eq!(drop_candidates(&t, &1, &tiles, area, 0, 0).len(), 6);
+        assert_eq!(drop_candidates(&t, &1, &tiles, area, 0, 0, 0).len(), 6);
     }
 
     fn rect(t: &layout::Tree<u32>, w: u32, area: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
-        t.radiant(area, 0).into_iter().find(|(x, _)| *x == w).unwrap().1
+        t.radiant(area, 0, 0)
+            .into_iter()
+            .find(|(x, _)| *x == w)
+            .unwrap()
+            .1
     }
 }
