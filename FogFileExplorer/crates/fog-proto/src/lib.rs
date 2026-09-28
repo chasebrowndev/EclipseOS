@@ -76,6 +76,42 @@ impl Entry {
     pub fn display(&self) -> Cow<'_, str> {
         String::from_utf8_lossy(&self.name)
     }
+
+    /// The type column, shared by the UI's display and `fogd`'s
+    /// [`SortKey::Type`] so the two always agree: `dir`, `link`, the special
+    /// file kind from `mode`, a file's lower-cased extension, `exec` for an
+    /// executable without one, else `file`. Empty while a phase-1 `Unknown`
+    /// kind awaits `statx`.
+    pub fn type_label(&self) -> Cow<'_, str> {
+        const EXT_MAX: usize = 8;
+        match self.kind {
+            Kind::Dir => return "dir".into(),
+            Kind::Symlink => return "link".into(),
+            Kind::Unknown => return "".into(),
+            Kind::Other => {
+                return match self.mode.map(|m| m & 0o170000) {
+                    Some(0o010000) => "fifo",
+                    Some(0o140000) => "socket",
+                    Some(0o020000) => "char",
+                    Some(0o060000) => "block",
+                    _ => "other",
+                }
+                .into()
+            }
+            Kind::File => {}
+        }
+        let ext = match self.name.iter().rposition(|&b| b == b'.') {
+            Some(i) if i > 0 && i + 1 < self.name.len() => &self.name[i + 1..],
+            _ => &[][..],
+        };
+        if !ext.is_empty() && ext.len() <= EXT_MAX {
+            return String::from_utf8_lossy(ext).to_lowercase().into();
+        }
+        if self.mode.is_some_and(|m| m & 0o111 != 0) {
+            return "exec".into();
+        }
+        "file".into()
+    }
 }
 
 /// Daemon-assigned job id, unique for the life of `fogd`.
@@ -220,6 +256,38 @@ pub struct Place {
     pub path: Vec<u8>,
 }
 
+/// Column a listing is ordered by (FOG §UI and navigation/Views).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SortKey {
+    #[default]
+    Name,
+    Size,
+    Modified,
+    /// By [`Entry::type_label`].
+    Type,
+}
+
+/// A listing's display order, computed in `fogd` (FOG §Performance model,
+/// technique 7). Names always compare naturally and break every tie;
+/// `reverse` flips the key but never moves folders out of the front while
+/// `dirs_first` holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Sort {
+    pub key: SortKey,
+    pub reverse: bool,
+    pub dirs_first: bool,
+}
+
+impl Default for Sort {
+    fn default() -> Self {
+        Self {
+            key: SortKey::Name,
+            reverse: false,
+            dirs_first: true,
+        }
+    }
+}
+
 /// Client to `fogd`. Paths are absolute, raw bytes.
 ///
 /// `Subscribe` is answered like `ListDir`, then `fogd` keeps pushing
@@ -253,6 +321,20 @@ pub enum Request {
     },
     ListTrash,
     Places,
+    /// Order listing `dir`, and every later generation of it, by `sort`. The
+    /// sort belongs to the folder, not the client (FOG §Configuration:
+    /// per-folder view state): `fogd` publishes the new order to every
+    /// subscriber as a `DirDiff` with no entry changes, then `Sorted`. An
+    /// unknown `dir` is `Error { path: [], errno: ENOENT }`.
+    SetSort {
+        dir: u64,
+        sort: Sort,
+    },
+    /// Free and total space of the filesystem holding `path` (`statvfs`),
+    /// answered with `FsInfo`.
+    FsInfo {
+        path: Vec<u8>,
+    },
 }
 
 /// `fogd` to client.
@@ -319,6 +401,19 @@ pub enum Reply {
     /// `Open` launched a handler for `path`.
     Opened {
         path: Vec<u8>,
+    },
+    /// Listing `dir` is ordered by `sort`. Follows the first `DirSnapshot`
+    /// of every `ListDir` or `Subscribe`, and every `SetSort`.
+    Sorted {
+        dir: u64,
+        sort: Sort,
+    },
+    /// Space on the filesystem holding `path`, in bytes. `free` is what an
+    /// unprivileged user may still write (`f_bavail`).
+    FsInfo {
+        path: Vec<u8>,
+        free: u64,
+        total: u64,
     },
 }
 
@@ -610,6 +705,29 @@ mod tests {
     }
 
     #[test]
+    fn type_labels() {
+        let t = |name: &[u8], kind, mode| {
+            Entry {
+                mode,
+                ..e(name, kind)
+            }
+            .type_label()
+            .into_owned()
+        };
+        assert_eq!(t(b"src", Kind::Dir, None), "dir");
+        assert_eq!(t(b"l", Kind::Symlink, None), "link");
+        assert_eq!(t(b"?", Kind::Unknown, None), "");
+        assert_eq!(t(b"main.RS", Kind::File, None), "rs");
+        assert_eq!(t(b".bashrc", Kind::File, None), "file");
+        assert_eq!(t(b"trail.", Kind::File, None), "file");
+        assert_eq!(t(b"a.verylongext", Kind::File, None), "file");
+        assert_eq!(t(b"run", Kind::File, Some(0o100755)), "exec");
+        assert_eq!(t(b"p", Kind::Other, Some(0o010644)), "fifo");
+        assert_eq!(t(b"s", Kind::Other, Some(0o140755)), "socket");
+        assert_eq!(t(b"x", Kind::Other, None), "other");
+    }
+
+    #[test]
     fn apply_diff_changed_updates_in_place() {
         let mut v = vec![e(b"a", Kind::File), e(b"b", Kind::File)];
         let b2 = Entry {
@@ -705,6 +823,15 @@ mod tests {
             },
             Request::ListTrash,
             Request::Places,
+            Request::SetSort {
+                dir: 3,
+                sort: Sort {
+                    key: SortKey::Modified,
+                    reverse: true,
+                    dirs_first: false,
+                },
+            },
+            Request::FsInfo { path: p(b"/\xffm") },
         ];
         assert_eq!(ConflictPolicy::default(), ConflictPolicy::Fail);
         for r in reqs {
@@ -792,6 +919,15 @@ mod tests {
             },
             Reply::Opened {
                 path: b"/x.txt".to_vec(),
+            },
+            Reply::Sorted {
+                dir: 3,
+                sort: Sort::default(),
+            },
+            Reply::FsInfo {
+                path: b"/".to_vec(),
+                free: 1 << 30,
+                total: u64::MAX,
             },
         ];
         for r in &replies {

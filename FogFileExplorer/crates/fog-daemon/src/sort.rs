@@ -4,13 +4,59 @@
 
 use std::cmp::Ordering;
 
-use fog_proto::{Entry, Kind};
+use fog_proto::{Entry, Kind, Sort, SortKey};
 
 /// Display order of `entries` as an index permutation: directories first,
-/// then natural name order.
+/// then natural name order (the default [`Sort`]).
 pub fn order(entries: &[Entry]) -> Vec<u32> {
+    order_by(entries, &Sort::default())
+}
+
+/// Display order of `entries` under `sort`.
+///
+/// Size and mtime are phase-2 metadata: entries still without them sort
+/// after those that have them, in either direction, so a folder filling in
+/// never shuffles its known rows. Folders' own sizes mean nothing, so under
+/// [`SortKey::Size`] two folders compare by name.
+pub fn order_by(entries: &[Entry], sort: &Sort) -> Vec<u32> {
     let mut idx: Vec<u32> = (0..entries.len() as u32).collect();
-    idx.sort_unstable_by(|&a, &b| compare(&entries[a as usize], &entries[b as usize]));
+    // The type label allocates; compute it once per entry, not per compare.
+    let labels: Vec<_> = match sort.key {
+        SortKey::Type => entries.iter().map(Entry::type_label).collect(),
+        _ => Vec::new(),
+    };
+    let dir = |e: &Entry| e.kind == Kind::Dir;
+    idx.sort_unstable_by(|&ia, &ib| {
+        let (a, b) = (&entries[ia as usize], &entries[ib as usize]);
+        let group = if sort.dirs_first {
+            dir(b).cmp(&dir(a))
+        } else {
+            Ordering::Equal
+        };
+        // Known before unknown, whatever the direction.
+        let known = |x: bool, y: bool| y.cmp(&x);
+        let (unknown, key) = match sort.key {
+            SortKey::Name => (Ordering::Equal, Ordering::Equal),
+            SortKey::Size if dir(a) && dir(b) => (Ordering::Equal, Ordering::Equal),
+            SortKey::Size => (
+                known(a.size.is_some(), b.size.is_some()),
+                a.size.cmp(&b.size),
+            ),
+            SortKey::Modified => (
+                known(a.mtime_ns.is_some(), b.mtime_ns.is_some()),
+                a.mtime_ns.cmp(&b.mtime_ns),
+            ),
+            SortKey::Type => (
+                Ordering::Equal,
+                labels[ia as usize].cmp(&labels[ib as usize]),
+            ),
+        };
+        let name = natural(&a.name, &b.name);
+        let keyed = key.then(name);
+        group
+            .then(unknown)
+            .then(if sort.reverse { keyed.reverse() } else { keyed })
+    });
     idx
 }
 
@@ -106,5 +152,62 @@ mod tests {
             .map(|i| v[i as usize].name.as_slice())
             .collect();
         assert_eq!(names, [&b"adir"[..], b"zdir", b"b2", b"b10", b"link"]);
+    }
+
+    #[test]
+    fn keyed_orders() {
+        let f = |n: &str, size: Option<u64>, mt: Option<i128>| Entry {
+            size,
+            mtime_ns: mt,
+            mode: size.map(|_| 0o100644),
+            ..Entry::new(n.as_bytes().to_vec(), Kind::File)
+        };
+        let d = |n: &str| Entry {
+            size: Some(4096),
+            ..Entry::new(n.as_bytes().to_vec(), Kind::Dir)
+        };
+        let v = vec![
+            f("big.txt", Some(900), Some(3)),
+            d("zdir"),
+            f("small.rs", Some(10), Some(9)),
+            f("pending", None, None),
+            d("adir"),
+            f("mid.rs", Some(50), Some(1)),
+        ];
+        let by = |key, reverse, dirs_first| -> Vec<String> {
+            order_by(
+                &v,
+                &Sort {
+                    key,
+                    reverse,
+                    dirs_first,
+                },
+            )
+            .into_iter()
+            .map(|i| v[i as usize].display().into_owned())
+            .collect()
+        };
+        assert_eq!(
+            by(SortKey::Size, false, true),
+            ["adir", "zdir", "small.rs", "mid.rs", "big.txt", "pending"]
+        );
+        // Reversed: folders stay in front, unknown sizes stay last.
+        assert_eq!(
+            by(SortKey::Size, true, true),
+            ["zdir", "adir", "big.txt", "mid.rs", "small.rs", "pending"]
+        );
+        // Newest first, folders mixed in; no mtime yet sorts last.
+        assert_eq!(
+            by(SortKey::Modified, true, false),
+            ["small.rs", "big.txt", "mid.rs", "zdir", "pending", "adir"]
+        );
+        assert_eq!(
+            by(SortKey::Type, false, true),
+            ["adir", "zdir", "pending", "mid.rs", "small.rs", "big.txt"]
+        );
+        assert_eq!(
+            by(SortKey::Name, true, true),
+            ["zdir", "adir", "small.rs", "pending", "mid.rs", "big.txt"]
+        );
     }
 }

@@ -31,10 +31,21 @@ pub enum Action {
     NewTab,
     CloseTab,
     SplitToggle,
+    NextTab,
+    PrevTab,
+    ToggleSidebar,
+    /// Move the keyboard into the sidebar's places, or back to the list.
+    FocusPlaces,
+    SortName,
+    SortSize,
+    SortModified,
+    SortType,
+    SortReverse,
+    SortDirsFirst,
 }
 
 impl Action {
-    pub const ALL: [Action; 23] = [
+    pub const ALL: [Action; 33] = [
         Action::Down,
         Action::Up,
         Action::Open,
@@ -58,6 +69,16 @@ impl Action {
         Action::NewTab,
         Action::CloseTab,
         Action::SplitToggle,
+        Action::NextTab,
+        Action::PrevTab,
+        Action::ToggleSidebar,
+        Action::FocusPlaces,
+        Action::SortName,
+        Action::SortSize,
+        Action::SortModified,
+        Action::SortType,
+        Action::SortReverse,
+        Action::SortDirsFirst,
     ];
 
     /// The config and palette name.
@@ -86,6 +107,16 @@ impl Action {
             Action::NewTab => "new-tab",
             Action::CloseTab => "close-tab",
             Action::SplitToggle => "split-toggle",
+            Action::NextTab => "next-tab",
+            Action::PrevTab => "prev-tab",
+            Action::ToggleSidebar => "toggle-sidebar",
+            Action::FocusPlaces => "focus-places",
+            Action::SortName => "sort-name",
+            Action::SortSize => "sort-size",
+            Action::SortModified => "sort-modified",
+            Action::SortType => "sort-type",
+            Action::SortReverse => "sort-reverse",
+            Action::SortDirsFirst => "sort-dirs-first",
         }
     }
 
