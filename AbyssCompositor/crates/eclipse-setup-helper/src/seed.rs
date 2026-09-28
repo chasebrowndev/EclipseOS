@@ -46,7 +46,7 @@ enum Verdict {
 }
 
 /// The allowlist, and the whole of it: `input.kb-*`, `general.layout`,
-/// `decoration.rounding`, `decoration.blur.enabled`, `animations.enabled|animation`,
+/// `decoration.rounding`, `decoration.blur.{mode,enabled}`, `animations.enabled|animation`,
 /// `bar.position`, `mode`, `components.{bar,launcher,notifications,control-center}`,
 /// `setup.{complete,profile}`.
 /// Anything not named here is dropped, so a key added to the schema later (an
@@ -65,7 +65,7 @@ fn verdict(path: &[&str]) -> Verdict {
             Verdict::Full
         }
         ["decoration", "blur"] => Verdict::Partial,
-        ["decoration", "blur", "enabled"] => Verdict::Full,
+        ["decoration", "blur", "enabled" | "mode"] => Verdict::Full,
         ["components", "bar" | "launcher" | "notifications" | "control-center"] => Verdict::Full,
         ["setup", "complete" | "profile"] => Verdict::Full,
         _ => Verdict::Drop,
@@ -422,7 +422,7 @@ general {
 }
 decoration {
     rounding 10
-    blur { enabled #true }
+    blur { enabled #true; mode "glass"; }
 }
 animations {
     enabled #true
@@ -444,6 +444,7 @@ setup { complete #true; profile "standard" }
             "general.layout",
             "decoration.rounding",
             "decoration.blur.enabled",
+            "decoration.blur.mode",
             "animations.enabled",
             "animations.animation",
             "bar.position",

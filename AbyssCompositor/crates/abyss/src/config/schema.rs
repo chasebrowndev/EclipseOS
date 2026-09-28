@@ -640,13 +640,17 @@ pub const TABLE: &[Key] = &[
         "Strength of the darkening overlay on unfocused windows.",
     ),
     k(
-        "decoration.blur.enabled",
-        Ty::Bool,
-        Bool(true),
+        "decoration.blur.mode",
+        Ty::Enum(crate::config::BlurMode::NAMES),
+        Str("blur"),
         Abyss,
         Live,
-        "Dual-Kawase blur behind translucent windows and layer-shell surfaces. \
-       A layer blurs only where its opaque region leaves it uncovered.",
+        "What is drawn behind translucent windows and layer-shell surfaces: \
+       `off`, a plain dual-Kawase `blur`, `frost` (blur with a tint and fine \
+       grain) or `glass` (a blurred pane inside a rounded bevel that refracts \
+       the sharp backdrop, with a rim light; it holds a second backdrop \
+       texture per surface). A layer blurs only where its opaque region leaves it uncovered. \
+       Replaces the old `enabled` bool, which still loads (`#false` is `off`).",
     ),
     k(
         "decoration.blur.size",
@@ -663,6 +667,49 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Down/up-sample pairs in the blur chain.",
+    ),
+    k(
+        "decoration.blur.glass.refraction",
+        int(0, 64),
+        Int(16),
+        Abyss,
+        Live,
+        "`glass`: how far the bevel bends the backdrop, logical px at its \
+       steepest. 0 is flat glass.",
+    ),
+    k(
+        "decoration.blur.glass.bevel",
+        int(1, 128),
+        Int(22),
+        Abyss,
+        Live,
+        "`glass`: width of the rounded rim, logical px in from the edge. The \
+       rim shows the backdrop sharp and refracted, fading into the blurred \
+       interior.",
+    ),
+    k(
+        "decoration.blur.glass.dispersion",
+        PCT,
+        Float(0.25),
+        Abyss,
+        Live,
+        "`glass`: colour fringing in the bevel; 0.25 is crown glass, 0 none.",
+    ),
+    k(
+        "decoration.blur.glass.rim",
+        PCT,
+        Float(0.45),
+        Abyss,
+        Live,
+        "`glass`: strength of the warm rim light along the upper-left edges.",
+    ),
+    k(
+        "decoration.blur.frost.tint",
+        Ty::Color,
+        Color(crate::config::FROST_TINT),
+        Abyss,
+        Live,
+        "`frost`: colour mixed over the blurred backdrop; its alpha is how much.",
     ),
     k(
         "decoration.shadow.enabled",
@@ -1287,9 +1334,11 @@ pub const RULE_ACTION_FORMS: &[Form] = &[
     ),
     form(
         &["blur"],
-        "true | false",
-        &["blur true", "blur false"],
-        "Force blur on or off, overriding `decoration.blur.enabled`. An opaque window never blurs.",
+        "off | blur | frost | glass | true | false",
+        &["blur glass", "blur off", "blur true"],
+        "This window's blur mode, overriding `decoration.blur.mode`. `true` is \
+       the global mode (plain `blur` if that is `off`), `false` is `off`. An \
+       opaque window never blurs.",
     ),
     form(
         &["workspace"],
@@ -1512,6 +1561,12 @@ pub const BIND_ACTIONS: &[Form] = &[
 /// This is the other half of the write path: `get_config` answers with it, and
 /// the drift test below asserts it agrees with the `default` column on a
 /// default `Config` for every single row.
+/// Widen an f32 setting through its shortest decimal form, so `0.35` reads
+/// back as `0.35` rather than `0.3499999940395355`.
+fn widen(x: f32) -> f64 {
+    x.to_string().parse().unwrap_or(x as f64)
+}
+
 pub fn get(c: &Config, path: &str) -> Option<Value> {
     use Value as V;
     let s = |o: &Option<String>| o.clone().map_or(V::Null, V::Str);
@@ -1577,10 +1632,15 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
             .into(),
         ),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
-        "decoration.active-opacity" => V::Float(c.decoration.active_opacity as f64),
-        "decoration.inactive-opacity" => V::Float(c.decoration.inactive_opacity as f64),
-        "decoration.dim-inactive" => V::Float(c.decoration.dim_inactive as f64),
-        "decoration.blur.enabled" => V::Bool(c.decoration.blur.enabled),
+        "decoration.active-opacity" => V::Float(widen(c.decoration.active_opacity)),
+        "decoration.inactive-opacity" => V::Float(widen(c.decoration.inactive_opacity)),
+        "decoration.dim-inactive" => V::Float(widen(c.decoration.dim_inactive)),
+        "decoration.blur.mode" => V::Str(c.decoration.blur.mode.name().into()),
+        "decoration.blur.glass.refraction" => V::Int(c.decoration.blur.glass.refraction as i64),
+        "decoration.blur.glass.bevel" => V::Int(c.decoration.blur.glass.bevel as i64),
+        "decoration.blur.glass.dispersion" => V::Float(widen(c.decoration.blur.glass.dispersion)),
+        "decoration.blur.glass.rim" => V::Float(widen(c.decoration.blur.glass.rim)),
+        "decoration.blur.frost.tint" => V::Color(c.decoration.blur.frost.tint),
         "decoration.blur.size" => V::Int(c.decoration.blur.size as i64),
         "decoration.blur.passes" => V::Int(c.decoration.blur.passes as i64),
         "decoration.shadow.enabled" => V::Bool(c.decoration.shadow.enabled),

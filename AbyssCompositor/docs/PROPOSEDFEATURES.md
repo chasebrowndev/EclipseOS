@@ -75,6 +75,19 @@ defaults.
   hardcodes PulseAudio/PipeWire's CLI. A proper audio service belongs in the
   userland crates.
 
+## Screen capture
+
+- **A first-party capture / screenshot tool.** Today capture is whatever
+  `grim` or a portal client gets from `render/capture.rs`, which renders
+  surfaces only — no blur (or its frost/glass modes), rounding, shadow or
+  glow, so a screenshot never matches the screen (`KNOWNBUGS.md` CAP-01).
+  Owner direction (2026-09-27): build EclipseOS's own capture instead —
+  region / window / output shots and screencasts that render the real
+  composed look, with redaction applied *before* effects so a blurred secret
+  is still redacted. Capture is TCB (`render/capture.rs`), so this is main
+  thread + owner review, not a delegated job. Would also give agents a
+  faithful headless screenshot path instead of nesting winit inside headless.
+
 ## Install and boot
 
 - **A first-class GUI installer — no command line, ever.** The CLI

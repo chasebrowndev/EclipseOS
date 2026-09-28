@@ -6,18 +6,12 @@
 //! Nothing here is trusted UI — a notification is client-supplied text, and
 //! anything the compositor has to vouch for it draws itself.
 
-use eclipse_toasts::{app, view, WIDTH};
-use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
-use iced_layershell::settings::LayerShellSettings;
+use eclipse_toasts::{app, view};
+use iced_layershell::settings::{LayerShellSettings, StartMode};
 
 fn namespace() -> String {
     "eclipse-toasts".to_owned()
 }
-
-/// Gap between the bar's bottom edge and the first card.
-const TOP_MARGIN: i32 = eclipse_ui::tokens::bar::HEIGHT as i32 + 4;
-/// Gap between the cards and the right edge of the output.
-const RIGHT_MARGIN: i32 = 4;
 
 fn main() -> iced_layershell::Result {
     // The stack renders client-supplied text and nothing else. It has no
@@ -26,23 +20,17 @@ fn main() -> iced_layershell::Result {
     iced_layershell::disable_clipboard();
 
     let mut builder =
-        iced_layershell::build_pattern::application(app::App::new, namespace, app::update, view::view)
+        iced_layershell::build_pattern::daemon(app::App::new, namespace, app::update, view::view)
             .layer_settings(LayerShellSettings {
-                anchor: Anchor::Top | Anchor::Right,
-                // Above the bar and above fullscreen windows: a notification the human
-                // cannot see is a notification that did not happen.
-                layer: Layer::Overlay,
-                // Starts one pixel tall and is resized by `update` as cards arrive.
-                size: Some((WIDTH, 1)),
-                // Toasts never push windows around. The stack comes and goes several
-                // times a minute, and a reflow each time would be unusable.
-                exclusive_zone: 0,
-                margin: (TOP_MARGIN, RIGHT_MARGIN, 0, 0),
-                keyboard_interactivity: KeyboardInteractivity::None,
+                // No surface until there is something to show: `app::update`
+                // opens the stack with the first card and closes it with the
+                // last. Even a transparent pixel of it would be blurred by the
+                // compositor into a line across the corner (BLUR-02).
+                start_mode: StartMode::Background,
                 ..Default::default()
             })
             .style(view::style)
-            .theme(|_: &app::App| eclipse_ui::theme::theme())
+            .theme(|_: &app::App, _: iced::window::Id| eclipse_ui::theme::theme())
             .subscription(app::subscription)
             .antialiasing(true);
     for face in eclipse_ui::FONTS {

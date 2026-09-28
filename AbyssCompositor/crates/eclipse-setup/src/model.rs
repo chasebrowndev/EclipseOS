@@ -14,7 +14,7 @@
 //! leaves the model exactly once, inside [`Effect::Apply`], and both buffers
 //! that held it are empty afterwards.
 
-use crate::choices::{self, BarPosition, Choices, Mode, Tiling};
+use crate::choices::{self, BarPosition, Blur, Choices, Mode, Tiling};
 use crate::config::{self, WriteError};
 use crate::data::{self, Layout, LANGUAGES};
 use crate::helper::HelperEvent;
@@ -382,7 +382,7 @@ pub enum Message {
     /// Slot index into [`choices::SLOTS`] and one of that slot's choices.
     SetSlot(usize, &'static str),
     SetRounded(bool),
-    SetBlur(bool),
+    SetBlur(Blur),
     SetAnimations(bool),
     SetBarPosition(BarPosition),
     /// Tick or untick an application, by index into [`choices::APPS`].
@@ -1600,10 +1600,10 @@ mod tests {
             assert_eq!(keys, choices::SEED_KEYS, "{p:?}");
 
             // Picking the same one again keeps what was changed since.
-            m.choices.blur = false;
+            m.choices.blur = Blur::Off;
             let mut fx = Vec::new();
             m.set_profile(p, &mut fx);
-            assert!(fx.is_empty() && !m.choices.blur);
+            assert!(fx.is_empty() && m.choices.blur == Blur::Off);
         }
     }
 
@@ -1619,7 +1619,7 @@ mod tests {
             Message::SetSlot(2, "none"),
             Message::SetSlot(3, "none"),
             Message::SetRounded(false),
-            Message::SetBlur(false),
+            Message::SetBlur(Blur::Glass),
             Message::SetAnimations(true),
             Message::SetBarPosition(BarPosition::Bottom),
             Message::ToggleApp(0),
@@ -1637,7 +1637,7 @@ mod tests {
                 ("components.notifications", json!("none")),
                 ("components.control-center", json!("none")),
                 ("decoration.rounding", json!(0)),
-                ("decoration.blur.enabled", json!(false)),
+                ("decoration.blur.mode", json!("glass")),
                 ("animations.enabled", json!(true)),
                 ("bar.position", json!("bottom")),
             ],

@@ -21,8 +21,8 @@ use eclipse_ipc::EventKind;
 use eclipse_ui::theme;
 use eclipse_ui::tokens::space;
 use eclipse_ui::widget::{
-    big_value, content, hairline, header, list_row, micro_label, panel, pill, sidebar, status_chip, subtitle,
-    value as mono, NumericSlider, Toggle,
+    big_value, content_at, hairline, header, list_row, micro_label, nav_item_at, panel, pill, pill_group,
+    sidebar_at, status_chip, subtitle, value as mono, Density, NumericSlider, Toggle,
 };
 
 use crate::conn::{Conn, Problem};
@@ -669,9 +669,15 @@ fn events() -> Subscription<Message> {
 }
 
 pub fn view(app: &App) -> Element<'_, Message, Theme> {
+    // The frame is the only thing that reads the window's width; every row
+    // below folds on its own.
+    iced::widget::responsive(move |size| frame(app, Density::for_width(size.width))).into()
+}
+
+fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
     let nav: Vec<Element<'_, Message, Theme>> = Pane::ALL
         .iter()
-        .map(|p| eclipse_ui::widget::nav_item(p.title(), *p == app.pane, Message::Select(*p)))
+        .map(|p| nav_item_at(density, p.title(), *p == app.pane, Message::Select(*p)))
         .collect();
 
     let mut footer = vec![
@@ -722,8 +728,8 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
     }
 
     row![
-        sidebar(nav, footer),
-        scrollable(content(blocks))
+        sidebar_at(density, nav, footer),
+        scrollable(content_at(density, blocks))
             .id(SCROLL)
             .style(theme::eclipse_scrollable)
             .height(Length::Fill),
@@ -769,17 +775,24 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
                 &mut groups.last_mut().expect("just pushed").1
             }
         };
-        rows.push(list_row(key.label(), control(app, key)));
-        if key.path == "mode" {
-            if let Some(blurb) = crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()) {
-                rows.push(
+        rows.push(list_row(&key.label(), control(app, key)));
+        let blurb = match key.path.as_str() {
+            "mode" => crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()),
+            "decoration.blur.mode" => crate::schema::blur_blurb(key.value.as_str().unwrap_or_default()),
+            _ => None,
+        };
+        if let Some(blurb) = blurb {
+            // Inset like `list_row`'s label, so it reads as that row's caption.
+            rows.push(
+                iced::widget::container(
                     iced::widget::text(blurb)
                         .font(eclipse_ui::tokens::font::UI)
                         .size(eclipse_ui::tokens::size::BODY_SMALL)
-                        .style(theme::text_tertiary)
-                        .into(),
-                );
-            }
+                        .style(theme::text_tertiary),
+                )
+                .padding([0.0, space::CARD])
+                .into(),
+            );
         }
     }
 
@@ -839,15 +852,18 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
 
         Control::Segmented(values) => {
             let current = key.value.as_str().unwrap_or_default().to_string();
-            let mut r = Row::new().spacing(space::PILL_GAP);
-            for v in values {
-                r = r.push(pill(
-                    crate::schema::value_label(v),
-                    *v == current,
-                    Message::Chose(path.clone(), v.clone()),
-                ));
-            }
-            r.into()
+            pill_group(
+                values
+                    .iter()
+                    .map(|v| {
+                        pill(
+                            crate::schema::value_label(v),
+                            *v == current,
+                            Message::Chose(path.clone(), v.clone()),
+                        )
+                    })
+                    .collect(),
+            )
         }
 
         Control::Dropdown(values) => {
@@ -863,15 +879,19 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
             let submit = path.clone();
             let input = text_input(key.default.as_str().unwrap_or(""), &shown)
                 .on_input(move |t| Message::Edited(path.clone(), t))
-                .width(Length::Fixed(space::FIELD_W))
                 .style(theme::eclipse_input);
             // A rejected draft has no commit path at all, rather than a
             // commit that fails after the fact.
-            if app.invalid.contains(&key.path) {
-                row![input, mono("invalid")].spacing(10).into()
+            let field: Element<'a, Message, Theme> = if app.invalid.contains(&key.path) {
+                row![input, mono("invalid")].spacing(space::CONTROL_GAP).into()
             } else {
                 input.on_submit(Message::Committed(submit)).into()
-            }
+            };
+            // `FIELD_W` when there is room, the row's width when there is not.
+            iced::widget::container(field)
+                .width(Length::Fill)
+                .max_width(space::FIELD_W)
+                .into()
         }
 
         // `set_config_value` writes one scalar at a dotted path; a list needs
