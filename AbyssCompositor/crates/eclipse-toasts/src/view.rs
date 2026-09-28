@@ -42,19 +42,18 @@ fn card_height(notification: &Notification) -> f32 {
 
 /// The surface height for a given stack, in whole pixels.
 ///
-/// An empty stack asks for one pixel rather than zero: a zero-sized layer
-/// surface is a protocol error, and `events_transparent` is not an option here
-/// because the action buttons need the pointer.
+/// An empty stack is zero, meaning no surface at all: a zero-sized layer
+/// surface is a protocol error, so `app::update` closes it instead.
 pub fn height(drawn: &[Toast]) -> u32 {
     if drawn.is_empty() {
-        return 1;
+        return 0;
     }
     let cards: f32 = drawn.iter().map(|t| card_height(&t.notification)).sum();
     let gaps = GAP * (drawn.len() + 1) as f32;
     (cards + gaps).ceil() as u32
 }
 
-pub fn view(app: &crate::app::App) -> Element<'_, Message, Theme> {
+pub fn view(app: &crate::app::App, _id: iced::window::Id) -> Element<'_, Message, Theme> {
     let mut stack = Column::new().spacing(GAP).padding(GAP);
     for toast in app.drawn() {
         stack = stack.push(card(&toast.notification, app.glass_radius));
@@ -183,11 +182,10 @@ mod tests {
         }
     }
 
-    /// A zero-height layer surface is a protocol error, so an empty stack still
-    /// asks for a pixel.
+    /// An empty stack asks for no surface, not a pixel of one (BLUR-02).
     #[test]
-    fn an_empty_stack_still_asks_for_a_pixel() {
-        assert_eq!(height(&[]), 1);
+    fn an_empty_stack_asks_for_no_surface() {
+        assert_eq!(height(&[]), 0);
     }
 
     /// The card grows for what it actually holds — a notification with no body
