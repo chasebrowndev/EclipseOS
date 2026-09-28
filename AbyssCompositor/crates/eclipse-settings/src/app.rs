@@ -969,7 +969,7 @@ fn display_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
                 let invalid = draft.is_some_and(|d| INSET_SPAN.parse(d).is_none());
                 let typed = num.clone();
                 edges = edges.push(list_row(
-                    edge.label(),
+                    &crate::schema::sentence_case(edge.label()),
                     NumericSlider::new(
                         0.0..=INSET_MAX,
                         current,
@@ -993,7 +993,7 @@ fn display_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
             } else {
                 row![pill("Calibrate", false, Message::Calibrate(o.id, "start"))]
             }
-            .spacing(6);
+            .spacing(space::PILL_GAP);
 
             panel(
                 app.glass_radius,
@@ -1004,18 +1004,18 @@ fn display_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
                         big_value(&scale.to_string(), "x", o.focused),
                     ]
                     .align_y(iced::Alignment::Center),
-                    list_row("identity", mono(&o.identity)),
-                    list_row("mode", mono(&o.mode_display())),
-                    list_row("position", mono(&o.position_display())),
+                    list_row("Identity", mono(&o.identity)),
+                    list_row("Mode", mono(&o.mode_display())),
+                    list_row("Position", mono(&o.position_display())),
                     list_row(
-                        "enabled",
+                        "Enabled",
                         Toggle::new(o.enabled, {
                             let id = o.id;
                             move |on| Message::OutputEnabled(id, on)
                         }),
                     ),
-                    list_row("transform", transforms),
-                    list_row("scale", scale_control(app, o.id, scale)),
+                    list_row("Transform", transforms),
+                    list_row("Scale", scale_control(app, o.id, scale)),
                     hairline(),
                     micro_label("overscan"),
                     edges,
