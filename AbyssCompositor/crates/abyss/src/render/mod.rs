@@ -52,7 +52,7 @@ use smithay::{
     },
 };
 
-use crate::config::Config;
+use crate::config::{BlurMode, Config};
 
 smithay::backend::renderer::element::render_elements! {
     pub AbyssRenderElement<=GlesRenderer>;
@@ -72,8 +72,9 @@ smithay::backend::renderer::element::render_elements! {
 }
 
 /// A surface that wants a blurred backdrop: what it belongs to, the index in
-/// the element list directly below its surfaces, and the region it blurs.
-type BlurRequest = (blur::BlurKey, usize, Rectangle<i32, Physical>);
+/// the element list directly below its surfaces, the region it blurs and the
+/// mode it is drawn in (never `Off`).
+type BlurRequest = (blur::BlurKey, usize, Rectangle<i32, Physical>, BlurMode);
 
 /// Four solid quads (top, bottom, left, right) per window.
 type Border = [SolidColorBuffer; 4];
@@ -88,6 +89,10 @@ pub struct BorderStore {
     dims: HashMap<Window, SolidColorBuffer>,
     /// Rounded-corner texture program, compiled on the first frame that rounds.
     rounded: Option<smithay::backend::renderer::gles::GlesTexProgram>,
+    /// Frost and glass backdrop programs, compiled on the first frame that
+    /// draws a backdrop in that mode.
+    frost: Option<smithay::backend::renderer::gles::GlesTexProgram>,
+    glass: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     /// Drop-shadow pixel program, compiled on the first frame that shadows.
     shadow: Option<smithay::backend::renderer::gles::GlesPixelProgram>,
     /// Rounded border-ring program, compiled on the first frame that rounds.
@@ -151,7 +156,9 @@ pub fn collect_elements(
     // Filled front to back; `insert_blur` consumes it in reverse.
     let mut blur_requests: Vec<BlurRequest> = Vec::new();
 
-    let blur_layers = config.decoration.blur.enabled;
+    // Layers have no rules: they take the global mode.
+    let layer_mode = config.decoration.blur.mode;
+    let blur_layers = layer_mode != BlurMode::Off;
     let layers = |elements: &mut Vec<AbyssRenderElement>,
                   requests: &mut Vec<BlurRequest>,
                   which: &[Layer],
@@ -187,6 +194,7 @@ pub fn collect_elements(
                             blur::BlurKey::Layer(surface.clone()),
                             elements.len() + els.len(),
                             region,
+                            layer_mode,
                         ));
                     }
                 }
@@ -258,14 +266,15 @@ fn insert_blur(
     elements: &mut Vec<AbyssRenderElement>,
 ) {
     let cfg = &config.decoration.blur;
-    if !cfg.enabled {
-        // Switching blur off must not leave the chain sitting in GPU memory.
+    if requests.is_empty() {
+        // Nothing asked for a backdrop (blur `off`, or nothing translucent):
+        // the chain must not sit in GPU memory for a frame that draws none.
         store.blur.clear();
         return;
     }
     let deco = &config.decoration;
     let scale = Scale::from(output.current_scale().fractional_scale());
-    let live: Vec<blur::BlurKey> = requests.iter().map(|(key, _, _)| key.clone()).collect();
+    let live: Vec<blur::BlurKey> = requests.iter().map(|(key, _, _, _)| key.clone()).collect();
     store.blur.retain(&live);
 
     // Same framebuffer-space mask as `window_elements`: needs the output's own
@@ -273,8 +282,15 @@ fn insert_blur(
     let fb_height = effects::fb_y_mirrored(output.current_transform())
         .zip(output.current_mode())
         .map(|(mirrored, mode)| (mode.size.h, mirrored));
+    // The backdrop texture is the whole output in physical pixels.
+    let fb_size = output
+        .current_mode()
+        .map(|mode| output.current_transform().transform_size(mode.size))
+        .map(|size| (size.w, size.h))
+        .unwrap_or((1, 1));
+    let upscale = scale.x.max(scale.y);
 
-    for (key, index, region) in requests.into_iter().rev() {
+    for (key, index, region, mode) in requests.into_iter().rev() {
         // A toplevel reuses the radius its own corners are drawn with. A
         // layer-shell surface anchored to three-plus edges, or to both edges
         // of an axis, usually spans that axis corner-to-corner; fewer/adjacent
@@ -319,34 +335,60 @@ fn insert_blur(
             }
         };
 
-        let rounding = (radius > 0)
-            .then_some(())
-            .and(fb_height)
-            .and_then(|(fb_height, mirrored)| {
-                if store.rounded.is_none() {
-                    match effects::compile_rounded(renderer) {
-                        Ok(program) => store.rounded = Some(program),
-                        Err(err) => {
-                            tracing::warn!(
-                                ?err,
-                                "compiling the rounded-corner shader; blur rounding disabled"
-                            )
-                        }
+        // The final draw's program: plain `blur` only needs one to round
+        // (a square backdrop draws with smithay's own); frost and glass
+        // always do, radius 0 included. A rotated output (`fb_height` None)
+        // keeps the plain square backdrop in every mode.
+        let scaled_radius = (radius as f64 * upscale) as f32;
+        let program = fb_height.and_then(|(fb_height, mirrored)| {
+            let (slot, compile, what): (_, fn(&mut GlesRenderer) -> _, _) = match mode {
+                BlurMode::Off => return None,
+                BlurMode::Blur if radius <= 0 => return None,
+                BlurMode::Blur => (&mut store.rounded, effects::compile_rounded, "rounded-corner"),
+                BlurMode::Frost => (&mut store.frost, effects::compile_frost, "frost"),
+                BlurMode::Glass => (&mut store.glass, effects::compile_glass, "glass"),
+            };
+            if slot.is_none() {
+                match compile(renderer) {
+                    Ok(program) => *slot = Some(program),
+                    Err(err) => {
+                        tracing::warn!(?err, shader = what, "compiling a blur shader; plain backdrop")
                     }
                 }
-                store.rounded.clone().map(|program| {
-                    let scaled_radius = radius as f64 * scale.x.max(scale.y);
-                    let uniforms =
-                        effects::rounding_uniforms(region, fb_height, mirrored, scaled_radius as f32);
-                    (program, uniforms)
-                })
-            });
+            }
+            let program = slot.clone()?;
+            let uniforms = match mode {
+                BlurMode::Frost => {
+                    effects::frost_uniforms(region, fb_height, mirrored, scaled_radius, cfg.frost.tint)
+                }
+                BlurMode::Glass => effects::glass_uniforms(
+                    region,
+                    fb_height,
+                    mirrored,
+                    scaled_radius,
+                    fb_size,
+                    (cfg.glass.refraction as f64 * upscale) as f32,
+                    (cfg.glass.bevel as f64 * upscale) as f32,
+                    &cfg.glass,
+                ),
+                _ => effects::rounding_uniforms(region, fb_height, mirrored, scaled_radius),
+            };
+            Some((program, uniforms))
+        });
+        // COMP-02 §3: refraction samples up to this far outside the region,
+        // so damage that far out must invalidate the backdrop too.
+        // Glass also keeps the unblurred backdrop, for its refracting rim.
+        let glass = mode == BlurMode::Glass && program.is_some();
+        let reach = if glass {
+            effects::glass_reach(cfg.glass.refraction, upscale)
+        } else {
+            0
+        };
 
         let behind = &elements[index..];
-        if let Some(element) = store
-            .blur
-            .element(renderer, output, &key, region, behind, cfg, scale, rounding)
-        {
+        if let Some(element) = store.blur.element(
+            renderer, output, &key, region, behind, cfg, scale, program, reach, glass,
+        ) {
             elements.insert(index, AbyssRenderElement::Blur(element));
         }
     }
@@ -567,9 +609,9 @@ fn window_elements(
         // goes below the window's own border and shadow, so neither is
         // smeared into it; it covers the window rect only, which the ring
         // does not overlap.
-        let blur_wanted =
-            alpha < 1.0 && crate::shell::rules::blur_of(&window).unwrap_or(config.decoration.blur.enabled);
-        if blur_wanted {
+        let global = config.decoration.blur.mode;
+        let mode = crate::shell::rules::blur_of(&window).map_or(global, |rule| rule.resolve(global));
+        if alpha < 1.0 && mode != BlurMode::Off {
             blurred.push((
                 blur::BlurKey::Window(window.clone()),
                 out.len(),
@@ -577,6 +619,7 @@ fn window_elements(
                     phys(geo.loc - output_geo.loc, scale),
                     geo.size.to_f64().to_physical(scale).to_i32_round(),
                 ),
+                mode,
             ));
         }
     }
@@ -974,7 +1017,7 @@ pub fn presentation_feedback(
 /// dim and blur all mean we composite the window's pixels ourselves, and a
 /// buffer handed straight to a plane never passes through any of them.
 pub fn scanout_candidate(space: &Space<Window>, output: &Output, config: &Config) -> Option<WlSurface> {
-    if config.decoration.any_window_effect() || config.decoration.blur.enabled {
+    if config.decoration.any_window_effect() || config.decoration.blur.mode != BlurMode::Off {
         return None;
     }
     let geo = space.output_geometry(output)?;

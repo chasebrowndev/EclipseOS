@@ -91,6 +91,38 @@ impl BarPosition {
     }
 }
 
+/// `decoration.blur.mode`: what translucent surfaces show behind them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blur {
+    Off,
+    Blur,
+    Frost,
+    Glass,
+}
+
+impl Blur {
+    pub const ALL: [Blur; 4] = [Blur::Off, Blur::Blur, Blur::Frost, Blur::Glass];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Blur::Off => "off",
+            Blur::Blur => "blur",
+            Blur::Frost => "frost",
+            Blur::Glass => "glass",
+        }
+    }
+
+    /// The chip text, the same words the settings app puts on its pills.
+    pub fn label(self) -> &'static str {
+        match self {
+            Blur::Off => "Off",
+            Blur::Blur => "Blur",
+            Blur::Frost => "Frost",
+            Blur::Glass => "Liquid Glass",
+        }
+    }
+}
+
 /// A replaceable piece of the desktop (D-07 §4.1). The last choice is always
 /// [`NONE`], and it is the only entry that is not a catalog id.
 pub struct Slot {
@@ -196,7 +228,7 @@ pub struct Choices {
     /// One entry per [`SLOTS`] row: a member of that slot's `choices`.
     pub slots: [&'static str; 4],
     pub rounded: bool,
-    pub blur: bool,
+    pub blur: Blur,
     pub animations: bool,
     pub bar_position: BarPosition,
     /// One flag per [`APPS`] row.
@@ -225,7 +257,7 @@ impl Choices {
                 native("eclipse-center"),
             ],
             rounded: true,
-            blur: true,
+            blur: Blur::Blur,
             animations: false,
             bar_position: BarPosition::Top,
             apps,
@@ -270,7 +302,7 @@ impl Choices {
         json!(if self.rounded { ROUNDING_ON } else { 0 })
     }
     pub fn blur_value(&self) -> Value {
-        json!(self.blur)
+        json!(self.blur.id())
     }
     pub fn animations_value(&self) -> Value {
         json!(self.animations)
@@ -287,7 +319,7 @@ impl Choices {
 pub const MODE: &str = "mode";
 pub const LAYOUT: &str = "general.layout";
 pub const ROUNDING: &str = "decoration.rounding";
-pub const BLUR: &str = "decoration.blur.enabled";
+pub const BLUR: &str = "decoration.blur.mode";
 pub const ANIMATIONS: &str = "animations.enabled";
 pub const BAR_POSITION: &str = "bar.position";
 

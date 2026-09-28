@@ -180,6 +180,37 @@ pub mod space {
     /// item or a choice row. Three pixels, per the spec.
     pub const BAR_W: f32 = 3.0;
     pub const SIDEBAR_W: f32 = 214.0;
+    /// The sidebar below [`super::breakpoint::COMPACT`]: wide enough for the
+    /// longest pane title and a mono footer, and no wider — the icon squares
+    /// go, because they are placeholders and cost 25px of every row.
+    pub const SIDEBAR_W_COMPACT: f32 = 148.0;
+    /// The sidebar's own side padding, and its compact form.
+    pub const SIDEBAR_X: f32 = 12.0;
+    pub const SIDEBAR_X_COMPACT: f32 = 8.0;
+    /// Content column padding below the compact breakpoint: the 26/30 of a
+    /// 1120px window is a fifth of a 500px column.
+    pub const PANE_X_COMPACT: f32 = 16.0;
+    pub const PANE_Y_COMPACT: f32 = 18.0;
+    /// The widest the content column grows. Past this, rows stop being rows —
+    /// a label at one edge of a 2000px card and its toggle at the other are
+    /// not visibly the same setting — so the column centres instead.
+    pub const CONTENT_MAX: f32 = 880.0;
+    /// A nav item's padding, and its compact form.
+    pub const NAV_Y: f32 = 7.0;
+    pub const NAV_X: f32 = 10.0;
+    pub const NAV_Y_COMPACT: f32 = 5.0;
+    pub const NAV_X_COMPACT: f32 = 8.0;
+    /// Between a nav item's accent bar and its button, and between its icon
+    /// square and its label.
+    pub const NAV_BAR_GAP: f32 = 5.0;
+    pub const NAV_GLYPH_GAP: f32 = 10.0;
+    /// A folded row: the least air between a label and its control when they
+    /// share a line, and the air between them when the control drops below.
+    pub const FOLD_X: f32 = 16.0;
+    pub const FOLD_Y: f32 = 6.0;
+    /// Between a pane title and its subtitle, and between header controls.
+    pub const TITLE_GAP: f32 = 6.0;
+    pub const HEADER_GAP: f32 = 8.0;
     /// The square a small indicator mark (signal bars, battery gauge) is
     /// drawn into. Deliberately smaller than an icon: a mark reports a
     /// magnitude, it does not identify anything.
@@ -201,10 +232,17 @@ pub mod space {
     pub const NUMBER_W: f32 = 64.0;
     /// A free-text field in a settings row.
     pub const FIELD_W: f32 = 220.0;
+    /// A column of settings rows set beside a hero rather than filling the
+    /// pane (the Taskbar's Motion band): exactly wide enough for a numeric
+    /// row folded under its label, so the band wraps instead of squeezing it.
+    pub const CONTROL_COL_W: f32 = SLIDER_W + CONTROL_GAP + NUMBER_W + 2.0 * CARD;
     /// Between the two halves of one control (track and entry).
     pub const CONTROL_GAP: f32 = 10.0;
     /// Between the pills of one segmented choice.
     pub const PILL_GAP: f32 = 6.0;
+    /// A pill button's padding.
+    pub const PILL_Y: f32 = 6.0;
+    pub const PILL_X: f32 = 14.0;
     /// A hero's level bar: half the content column, so the reading beside it
     /// keeps the other half.
     pub const HERO_METER_W: f32 = 360.0;
@@ -225,6 +263,16 @@ pub mod space {
     pub const GRID_GAP: f32 = 10.0;
     /// Between the lines inside a status cell or an edge note.
     pub const LINE_GAP: f32 = 3.0;
+}
+
+/// Window widths at which a pane's frame changes shape. Only the frame: rows
+/// fold on their own width ([`crate::widget::fold`]), never on the window's.
+pub mod breakpoint {
+    /// Below this the sidebar compacts and the content padding tightens. The
+    /// spec window is 1120; at 900 its 214px sidebar plus 60px of padding is
+    /// already a third of the width, which is where the user's report of a
+    /// sidebar that "never yields" starts.
+    pub const COMPACT: f32 = 900.0;
 }
 
 pub mod size {

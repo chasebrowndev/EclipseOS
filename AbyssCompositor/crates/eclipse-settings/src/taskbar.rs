@@ -25,9 +25,9 @@ use eclipse_ui::theme;
 use eclipse_ui::tokens::{bar, canvas, color, font, size, space};
 use eclipse_ui::widget::{
     arg_chip, art_thumb, badge, bar_cell_frame, bar_sheet, battery_gauge, big_value, chip, config_error,
-    drag_bar, edge_note, elide, glide_track, hairline, inset, list_row, mark, micro_label, mini_meter,
-    outline, panel, pill, pin, placed, ring, track_label, value as mono, viz_bars, widget_shell, widget_tile,
-    Grip, NumericSlider, Toggle,
+    drag_bar, edge_note, elide, glide_track, hairline, halves, inset, list_row, mark, micro_label,
+    mini_meter, outline, panel, pill, pin, placed, ring, track_label, value as mono, viz_bars, widget_shell,
+    widget_tile, Grip, NumericSlider, Toggle,
 };
 
 use crate::app::{App, Message};
@@ -107,8 +107,8 @@ fn claimed(path: &str) -> bool {
 }
 
 /// A key as a person reads it on this pane.
-fn label(key: &Key) -> &str {
-    match key.path.as_str() {
+fn label(key: &Key) -> std::borrow::Cow<'_, str> {
+    std::borrow::Cow::Borrowed(match key.path.as_str() {
         "bar.position" => "Position",
         "bar.rounding" => "Corner radius",
         "bar.popup-anchor" => "Popups open",
@@ -133,8 +133,8 @@ fn label(key: &Key) -> &str {
         MOTION_ENABLED => "Animate",
         MOTION_DURATION => "Duration, ms",
         MOTION_CURVE => "Curve",
-        _ => key.label(),
-    }
+        _ => return key.label(),
+    })
 }
 
 /// One line under a widget's rows: what it does, or what it reads.
@@ -1654,7 +1654,7 @@ fn padded<'a>(e: impl Into<Element<'a, Message, Theme>>) -> Element<'a, Message,
 
 fn key_row<'a>(app: &'a App, path: &str) -> Option<Element<'a, Message, Theme>> {
     let key = app.key(path)?;
-    Some(list_row(label(key), crate::app::control(app, key)))
+    Some(list_row(&label(key), crate::app::control(app, key)))
 }
 
 /// The selected widget's sheet: where it sits, whether it gives way, and its
@@ -1723,10 +1723,14 @@ fn sheet(app: &App) -> Option<Element<'_, Message, Theme>> {
                         .font(font::UI)
                         .size(size::BODY)
                         .style(theme::text_primary),
-                    caption("never compresses: keeps its full size while everything else gives way".into()),
+                    // Prose, not a one-line reading: it wraps in a narrow card.
+                    text("never compresses: keeps its full size while everything else gives way")
+                        .font(font::DATA)
+                        .size(size::MICRO)
+                        .style(theme::text_tertiary),
                 ]
-                .spacing(space::HAIRLINE),
-                Space::new().width(Length::Fill),
+                .spacing(space::HAIRLINE)
+                .width(Length::Fill),
                 Toggle::new(imp, |on| bar_msg(Msg::Important(on))),
             ]
             .spacing(space::CONTROL_GAP)
@@ -2076,7 +2080,7 @@ fn motion_band(app: &App) -> Element<'_, Message, Theme> {
             ]
             .spacing(space::PILL_GAP)
             .width(Length::Fixed(space::FIELD_W / 2.0)),
-            container(controls).width(Length::Fill),
+            container(controls).width(Length::Fixed(space::CONTROL_COL_W)),
             column![
                 glide_track(app.bar.glide.value(), "demo"),
                 caption("slides on each change".into()),
@@ -2085,7 +2089,9 @@ fn motion_band(app: &App) -> Element<'_, Message, Theme> {
             .align_x(Alignment::Center),
         ]
         .spacing(space::BLOCK)
-        .align_y(Alignment::Center),
+        .align_y(Alignment::Center)
+        .wrap()
+        .vertical_spacing(space::BLOCK),
     )
     .padding([0.0, space::CARD])
     .width(Length::Fill)
@@ -2103,13 +2109,10 @@ fn settings(app: &App) -> Element<'_, Message, Theme> {
         }
         c.width(Length::Fill)
     };
-    let mut body = Column::new().push(
-        row![
-            group("appearance", APPEARANCE.to_vec()),
-            group("folding", FOLDING.to_vec())
-        ]
-        .spacing(space::BLOCK),
-    );
+    let mut body = Column::new().push(halves(
+        group("appearance", APPEARANCE.to_vec()),
+        group("folding", FOLDING.to_vec()),
+    ));
     let rest: Vec<&str> = app
         .rows
         .iter()

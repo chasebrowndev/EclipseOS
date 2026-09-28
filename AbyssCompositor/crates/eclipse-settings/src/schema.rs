@@ -6,6 +6,8 @@
 //! a key the compositor grows shows up here on the next connect, and
 //! `tests/coverage.rs` fails if this module has nothing to render it with.
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 
 /// Which file owns a key. The wire has no `owner` field; the `"file"` string
@@ -109,6 +111,12 @@ pub fn value_label(value: &str) -> &str {
         // Component slots: the ids are program names and read as themselves;
         // only the opt-out needs a word.
         "none" => "None",
+        // `decoration.blur.mode`: what is drawn behind translucency. `glass`
+        // is the refracting bevel, which people know by its product name.
+        "off" => "Off",
+        "blur" => "Blur",
+        "frost" => "Frost",
+        "glass" => "Liquid Glass",
         other => other,
     }
 }
@@ -121,6 +129,31 @@ pub fn mode_blurb(value: &str) -> Option<&'static str> {
         "hybrid" => Some("The bar also shows window chips, the tray and the clock."),
         "de" => Some("Hybrid, plus desktop icons and pointer-first navigation."),
         _ => None,
+    }
+}
+
+/// What each blur mode draws, shown beneath `decoration.blur.mode`. The pane
+/// has no conditional rows, so this is also where it says which of the
+/// tunables beneath apply.
+pub fn blur_blurb(value: &str) -> Option<&'static str> {
+    match value {
+        "off" => Some("Translucent surfaces show the desktop behind them unblurred."),
+        "blur" => Some("A plain blur of whatever is behind. Uses size and passes."),
+        "frost" => Some("Blur with a tint and fine grain. Also uses frost tint."),
+        "glass" => Some("Blur bent through a rounded bevel with a rim light. Also uses the glass rows."),
+        _ => None,
+    }
+}
+
+/// A kebab-case config token as a person reads it: hyphens become spaces and
+/// the first letter is capitalised. Nothing else changes, so `gaps-in` is
+/// "Gaps in" and an acronym the token already spells in capitals keeps them.
+pub fn sentence_case(token: &str) -> String {
+    let spaced = token.replace('-', " ");
+    let mut chars = spaced.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => spaced,
     }
 }
 
@@ -165,20 +198,29 @@ impl Row {
         })
     }
 
-    /// The last segment of the path, used as the row label — or, for the few
+    /// The last segment of the path in sentence case, used as the row label
+    /// (`focus-follows-mouse` reads "Focus follows mouse") — or, for the few
     /// keys whose last segment names a thing rather than a setting, a
     /// display form. `bar.eye` alone reads as a body part; what the switch
     /// governs is the indicator.
-    pub fn label(&self) -> &str {
-        match self.path.as_str() {
+    pub fn label(&self) -> Cow<'_, str> {
+        Cow::Borrowed(match self.path.as_str() {
             "bar.eye" => "Eye indicator",
             "mode" => "Interaction mode",
             "components.bar" => "Bar",
             "components.launcher" => "Launcher",
             "components.notifications" => "Notifications",
             "components.control-center" => "Control center",
-            path => path.rsplit('.').next().unwrap_or(path),
-        }
+            // The blur group flattens its `glass` and `frost` sub-nodes
+            // (`pane::group_for`), so the leaf alone would lose which mode a
+            // row tunes.
+            "decoration.blur.glass.refraction" => "glass refraction",
+            "decoration.blur.glass.bevel" => "glass bevel",
+            "decoration.blur.glass.dispersion" => "glass dispersion",
+            "decoration.blur.glass.rim" => "glass rim light",
+            "decoration.blur.frost.tint" => "frost tint",
+            path => return Cow::Owned(sentence_case(path.rsplit('.').next().unwrap_or(path))),
+        })
     }
 
     /// Policy-owned keys are read-only here by construction, not by a check at
@@ -246,10 +288,17 @@ mod tests {
             }))
             .expect("a bool row parses")
         };
-        assert_eq!(row("bar.fold-when-idle").label(), "fold-when-idle");
+        assert_eq!(row("bar.fold-when-idle").label(), "Fold when idle");
+        assert_eq!(
+            row("input.focus-follows-mouse-across-outputs").label(),
+            "Focus follows mouse across outputs"
+        );
+        assert_eq!(row("general.gaps-in").label(), "Gaps in");
         assert_eq!(row("bar.eye").label(), "Eye indicator");
         assert_eq!(row("mode").label(), "Interaction mode");
         assert_eq!(row("components.control-center").label(), "Control center");
+        assert_eq!(row("decoration.blur.glass.rim").label(), "glass rim light");
+        assert_eq!(row("decoration.blur.frost.tint").label(), "frost tint");
     }
 
     #[test]
@@ -260,6 +309,11 @@ mod tests {
         assert_eq!(value_label("radiant"), "Radiant (Default)");
         assert_eq!(value_label("dwindle"), "Dwindle Classic");
         assert_eq!(value_label("de"), "Desktop");
+        let blur: Vec<&str> = ["off", "blur", "frost", "glass"]
+            .into_iter()
+            .map(value_label)
+            .collect();
+        assert_eq!(blur, ["Off", "Blur", "Frost", "Liquid Glass"]);
     }
 
     #[test]

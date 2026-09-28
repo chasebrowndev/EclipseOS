@@ -90,6 +90,246 @@ pub fn compile_rounded(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, Gl
     )
 }
 
+/// Shared head of the frost and glass backdrop programs: smithay's texture
+/// interface (`tex`, `alpha`, `v_coords`, the debug `tint`) plus the rounded
+/// rectangle of [`rounding_uniforms`] and its signed distance.
+const BACKDROP_HEAD: &str = r#"#version 100
+
+//_DEFINES_
+
+#if defined(EXTERNAL)
+#extension GL_OES_EGL_image_external : require
+#endif
+
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+
+#if defined(EXTERNAL)
+uniform samplerExternalOES tex;
+#else
+uniform sampler2D tex;
+#endif
+
+uniform float alpha;
+varying vec2 v_coords;
+
+#if defined(DEBUG_FLAGS)
+uniform float tint;
+#endif
+
+uniform vec4 win_rect;
+uniform float radius;
+
+// Premultiply by `alpha` exactly as smithay's texture.frag does.
+vec4 finish(vec4 color) {
+#if defined(NO_ALPHA)
+    color = vec4(color.rgb, 1.0) * alpha;
+#else
+    color = color * alpha;
+#endif
+#if defined(DEBUG_FLAGS)
+    if (tint == 1.0)
+        color = vec4(0.0, 0.2, 0.0, 0.2) + color * 0.8;
+#endif
+    return color;
+}
+"#;
+
+/// Frost: the rounded mask, a tint mixed in by its own alpha, and a fine
+/// static grain hashed from the framebuffer position (COMP-02 §9).
+const FROST_BODY: &str = r#"
+uniform vec4 frost_tint;
+
+// Hoskins' hash12: no `sin`, so it holds up at mediump and large coords.
+float grain(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+    vec4 color = texture2D(tex, v_coords);
+    color.rgb = mix(color.rgb, frost_tint.rgb, frost_tint.a);
+    color.rgb = clamp(color.rgb + (grain(floor(gl_FragCoord.xy)) - 0.5) * 0.035, 0.0, 1.0);
+    color = finish(color);
+
+    vec2 half_size = win_rect.zw * 0.5;
+    vec2 p = gl_FragCoord.xy - (win_rect.xy + half_size);
+    float r = min(radius, min(half_size.x, half_size.y));
+    vec2 q = abs(p) - half_size + r;
+    float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+    gl_FragColor = color * (1.0 - smoothstep(-0.5, 0.5, d));
+}
+"#;
+
+/// Glass: the backdrop seen through a slab whose edge is a quarter-circle
+/// bevel. The bevel refracts the sharp backdrop (`sharp`, unit 1) and fades
+/// into the blurred one (`tex`) on the flat plateau. Everything is in physical pixels with a y-down axis (`y_sign`
+/// undoes the framebuffer mirroring of [`fb_y_mirrored`]), so the texture
+/// offset is just the pixel offset times `px_uv`.
+const GLASS_BODY: &str = r#"
+uniform vec2 px_uv;       // 1 / backdrop texture size
+uniform float y_sign;     // -1 when the framebuffer is y-mirrored
+uniform float strength;   // largest displacement, physical px
+uniform float bevel;      // rim width, physical px
+uniform float dispersion; // 0..1, 0.25 = eta 1.46/1.48/1.50
+uniform float rim;        // 0..1
+
+const float ETA = 1.48;
+const vec3 VIEW = vec3(0.0, 0.0, -1.0);
+const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // upper-left, y down
+const vec3 RIM = vec3(1.0, 0.88, 0.62);            // warm, gold-leaning
+const vec3 GLASS_TINT = vec3(1.0, 0.95, 0.85);
+
+// Unit 1: the unblurred backdrop, laid out exactly like `tex`.
+uniform sampler2D sharp;
+
+vec2 clamped(vec2 uv) {
+    return clamp(uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5);
+}
+vec4 blurred_at(vec2 uv) {
+    return texture2D(tex, clamped(uv));
+}
+vec4 sharp_at(vec2 uv) {
+    return texture2D(sharp, clamped(uv));
+}
+
+void main() {
+    vec2 half_size = win_rect.zw * 0.5;
+    vec2 p = gl_FragCoord.xy - (win_rect.xy + half_size);
+    p.y *= y_sign;
+    float r = min(radius, min(half_size.x, half_size.y));
+    vec2 q = abs(p) - half_size + r;
+    float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+
+    // Analytic gradient of the rounded-box SDF (points outward).
+    vec2 s = vec2(p.x < 0.0 ? -1.0 : 1.0, p.y < 0.0 ? -1.0 : 1.0);
+    vec2 grad;
+    if (q.x > 0.0 && q.y > 0.0) {
+        grad = normalize(q);
+    } else if (q.x > q.y) {
+        grad = vec2(1.0, 0.0);
+    } else {
+        grad = vec2(0.0, 1.0);
+    }
+    grad *= s;
+
+    // Height h(t) = sqrt(1 - (1-t)^2) over the bevel, so dH/dx = -h'(t) grad
+    // and the normal is (h'(t) grad, 1).
+    float t = clamp(-d / max(bevel, 1.0), 0.0, 1.0);
+    float u = 1.0 - t;
+    float slope = u / sqrt(max(1.0 - u * u, 1e-4));
+    vec3 n = normalize(vec3(grad * slope, 1.0));
+
+    // Normalised so the steepest point moves by exactly `strength`.
+    vec2 k = px_uv * strength / sqrt(1.0 - 1.0 / (ETA * ETA));
+    // The bevel refracts the sharp backdrop (with dispersion) and hands over
+    // to the blurred one as it flattens into the plateau.
+    vec4 color;
+    if (t < 1.0) {
+        float spread = 0.08 * dispersion;
+        vec2 uv = v_coords + refract(VIEW, n, 1.0 / ETA).xy * k;
+        vec4 g = sharp_at(uv);
+        float cr = sharp_at(v_coords + refract(VIEW, n, 1.0 / (ETA - spread)).xy * k).r;
+        float cb = sharp_at(v_coords + refract(VIEW, n, 1.0 / (ETA + spread)).xy * k).b;
+        color = mix(vec4(cr, g.g, cb, g.a), blurred_at(uv), smoothstep(0.4, 1.0, t));
+    } else {
+        color = blurred_at(v_coords);
+    }
+
+    color.rgb = mix(color.rgb, GLASS_TINT, 0.04);
+    float spec = pow(1.0 - n.z, 3.0) * max(dot(n.xy, LIGHT), 0.0);
+    color.rgb = min(color.rgb + RIM * (spec * rim), vec3(1.0));
+    color = finish(color);
+
+    gl_FragColor = color * (1.0 - smoothstep(-0.5, 0.5, d));
+}
+"#;
+
+/// Compile the frost backdrop program (COMP-02 §9). Cached by the caller.
+pub fn compile_frost(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    renderer.compile_custom_texture_shader(
+        format!("{BACKDROP_HEAD}{FROST_BODY}"),
+        &[
+            UniformName::new("win_rect", UniformType::_4f),
+            UniformName::new("radius", UniformType::_1f),
+            UniformName::new("frost_tint", UniformType::_4f),
+        ],
+    )
+}
+
+/// Compile the glass backdrop program (COMP-02 §9). Cached by the caller.
+pub fn compile_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    renderer.compile_custom_texture_shader(
+        format!("{BACKDROP_HEAD}{GLASS_BODY}"),
+        &[
+            UniformName::new("win_rect", UniformType::_4f),
+            UniformName::new("radius", UniformType::_1f),
+            UniformName::new("px_uv", UniformType::_2f),
+            UniformName::new("y_sign", UniformType::_1f),
+            UniformName::new("strength", UniformType::_1f),
+            UniformName::new("bevel", UniformType::_1f),
+            UniformName::new("dispersion", UniformType::_1f),
+            UniformName::new("rim", UniformType::_1f),
+            UniformName::new("sharp", UniformType::_1i),
+        ],
+    )
+}
+
+/// [`rounding_uniforms`] plus the frost tint (straight alpha, as configured).
+pub fn frost_uniforms(
+    rect: Rectangle<i32, Physical>,
+    fb_height: i32,
+    mirrored: bool,
+    radius: f32,
+    tint: [f32; 4],
+) -> Vec<Uniform<'static>> {
+    let mut u = rounding_uniforms(rect, fb_height, mirrored, radius);
+    u.push(Uniform::new("frost_tint", tint));
+    u
+}
+
+/// [`rounding_uniforms`] plus the glass parameters. `tex_size` is the
+/// backdrop texture (the whole output, physical px); `strength` and `bevel`
+/// are physical px.
+#[allow(clippy::too_many_arguments)]
+pub fn glass_uniforms(
+    rect: Rectangle<i32, Physical>,
+    fb_height: i32,
+    mirrored: bool,
+    radius: f32,
+    tex_size: (i32, i32),
+    strength: f32,
+    bevel: f32,
+    glass: &crate::config::GlassBlur,
+) -> Vec<Uniform<'static>> {
+    let mut u = rounding_uniforms(rect, fb_height, mirrored, radius);
+    u.extend([
+        Uniform::new(
+            "px_uv",
+            [1.0 / tex_size.0.max(1) as f32, 1.0 / tex_size.1.max(1) as f32],
+        ),
+        Uniform::new("y_sign", if mirrored { -1.0f32 } else { 1.0 }),
+        Uniform::new("strength", strength),
+        Uniform::new("bevel", bevel),
+        Uniform::new("dispersion", glass.dispersion),
+        Uniform::new("rim", glass.rim),
+        // Texture unit of the sharp backdrop (`BlurElement` binds it).
+        Uniform::new("sharp", 1i32),
+    ]);
+    u
+}
+
+/// How far past the blurred region the glass program samples, physical px:
+/// its displacement, with a margin for the widest dispersion (eta 1.40..1.56
+/// bends up to ~4% further than 1.48). Zero for every other mode.
+pub fn glass_reach(refraction: i32, scale: f64) -> i32 {
+    (refraction.max(0) as f64 * scale * 1.05).ceil() as i32
+}
+
 /// How the output's physical space maps onto `gl_FragCoord` for a frame
 /// rendered with `transform`, or `None` for a transform the mask does not
 /// handle (a rotated output keeps square corners rather than drawing the mask
@@ -365,6 +605,24 @@ mod tests {
 
     fn win_rect(uniforms: &[Uniform<'static>]) -> String {
         format!("{:?}", uniforms[0])
+    }
+
+    #[test]
+    fn glass_reads_the_sharp_backdrop_from_unit_1() {
+        // `BlurElement::draw` binds the sharp copy on TEXTURE1; the sampler
+        // uniform must point there or the rim samples an unbound unit.
+        let rect = Rectangle::new((0, 0).into(), (300, 200).into());
+        let got = glass_uniforms(
+            rect,
+            1080,
+            false,
+            13.0,
+            (1920, 1080),
+            16.0,
+            22.0,
+            &crate::config::GlassBlur::default(),
+        );
+        assert!(got.contains(&Uniform::new("sharp", 1i32)), "{got:?}");
     }
 
     #[test]
