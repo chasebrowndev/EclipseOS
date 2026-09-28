@@ -89,12 +89,13 @@ impl View {
                 generation,
                 removed,
                 added,
+                changed,
                 order,
                 complete,
             } => {
                 assert_eq!(dir, self.dir);
                 assert!(generation > self.generation);
-                apply_diff(&mut self.entries, &removed, &added);
+                apply_diff(&mut self.entries, &removed, &added, &changed);
                 self.generation = generation;
                 self.order = order;
                 self.complete = complete;
@@ -117,14 +118,14 @@ fn expected(dir: &Path) -> Vec<String> {
         .unwrap()
         .map(|e| {
             let e = e.unwrap();
-            Entry {
-                name: e.file_name().as_bytes().to_vec(),
-                kind: if e.file_type().unwrap().is_dir() {
+            Entry::new(
+                e.file_name().as_bytes().to_vec(),
+                if e.file_type().unwrap().is_dir() {
                     Kind::Dir
                 } else {
                     Kind::File
                 },
-            }
+            )
         })
         .collect();
     sort::order(&entries)
@@ -276,6 +277,15 @@ async fn errors() {
         Reply::Error {
             path: b"relative/dir".to_vec(),
             errno: 22
+        }
+    );
+    // v0.2 requests not implemented yet answer ENOSYS.
+    h.send(Request::Undo).await;
+    assert_eq!(
+        h.recv().await,
+        Reply::Error {
+            path: vec![],
+            errno: 38
         }
     );
 }

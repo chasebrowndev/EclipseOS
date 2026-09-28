@@ -148,6 +148,7 @@ impl Browser {
                 generation,
                 removed,
                 added,
+                changed,
                 order,
                 complete,
             } => {
@@ -163,7 +164,7 @@ impl Browser {
                     };
                 }
                 let keep = self.selected_name();
-                apply_diff(&mut self.entries, &removed, &added);
+                apply_diff(&mut self.entries, &removed, &added, &changed);
                 self.order = order;
                 self.generation = generation;
                 self.complete = complete;
@@ -176,7 +177,15 @@ impl Browser {
                 self.error = Some((path, errno));
                 Effect::None
             }
-            Reply::Stat(_) => Effect::None,
+            // Jobs, trash, places and config errors get views in later units.
+            Reply::Stat(_)
+            | Reply::JobAccepted { .. }
+            | Reply::JobProgress { .. }
+            | Reply::JobState { .. }
+            | Reply::UndoResult { .. }
+            | Reply::TrashList(_)
+            | Reply::PlacesList(_)
+            | Reply::ConfigError { .. } => Effect::None,
         }
     }
 
@@ -317,10 +326,7 @@ mod tests {
     use super::*;
 
     fn e(name: &str, kind: Kind) -> Entry {
-        Entry {
-            name: name.as_bytes().to_vec(),
-            kind,
-        }
+        Entry::new(name.as_bytes().to_vec(), kind)
     }
 
     fn snap(path: &str, dir: u64, gen: u64, names: &[(&str, Kind)], order: &[u32]) -> Reply {
@@ -379,6 +385,7 @@ mod tests {
             generation: 1,
             removed: vec![b"a".to_vec()],
             added: vec![],
+            changed: vec![],
             order: vec![],
             complete: true,
         });
@@ -399,6 +406,7 @@ mod tests {
             generation: 1,
             removed: vec![],
             added: vec![e("a", Kind::Dir), e("z", Kind::File)],
+            changed: vec![],
             order: vec![2, 1, 0, 3],
             complete: true,
         });
@@ -432,6 +440,7 @@ mod tests {
             generation: 1,
             removed: vec![],
             added: vec![e("a", Kind::File), e("b", Kind::File)],
+            changed: vec![],
             order: vec![2, 3, 1, 0],
             complete: true,
         });
@@ -457,6 +466,7 @@ mod tests {
             generation: 1,
             removed: vec![],
             added: vec![e("a", Kind::File), e("b", Kind::File)],
+            changed: vec![],
             order: vec![2, 3, 1, 0],
             complete: true,
         });
@@ -477,6 +487,7 @@ mod tests {
             generation: 1,
             removed: vec![],
             added: vec![e("a", Kind::Dir), e("src", Kind::Dir)],
+            changed: vec![],
             order: vec![1, 2, 0],
             complete: true,
         });
@@ -493,6 +504,7 @@ mod tests {
             generation: 1,
             removed: vec![],
             added: vec![e("b", Kind::File)],
+            changed: vec![],
             order: vec![0, 1],
             complete: true,
         });
@@ -501,6 +513,7 @@ mod tests {
             generation: 2,
             removed: vec![],
             added: vec![e("c", Kind::File)],
+            changed: vec![],
             order: vec![0, 1, 2],
             complete: true,
         });
@@ -515,6 +528,7 @@ mod tests {
             generation: 1,
             removed: vec![],
             added: vec![e("d", Kind::File)],
+            changed: vec![],
             order: vec![0, 1],
             complete: true,
         });
@@ -541,6 +555,7 @@ mod tests {
             generation: 1,
             removed: vec![b"a".to_vec()],
             added: vec![e("0", Kind::File), e("bb", Kind::File)],
+            changed: vec![],
             order: vec![2, 0, 3, 1],
             complete: true,
         });
@@ -553,6 +568,7 @@ mod tests {
             generation: 2,
             removed: vec![b"c".to_vec()],
             added: vec![],
+            changed: vec![],
             // entries are now [b, 0, bb]
             order: vec![1, 0, 2],
             complete: true,
@@ -571,6 +587,7 @@ mod tests {
             generation: 7,
             removed: vec![],
             added: vec![e("b", Kind::File)],
+            changed: vec![],
             order: vec![0, 1],
             complete: true,
         });

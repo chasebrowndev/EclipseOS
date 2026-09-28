@@ -93,10 +93,7 @@ mod tests {
 
     #[test]
     fn dirs_first_permutation() {
-        let e = |n: &str, k| Entry {
-            name: n.as_bytes().to_vec(),
-            kind: k,
-        };
+        let e = |n: &str, k| Entry::new(n.as_bytes().to_vec(), k);
         let v = vec![
             e("b10", Kind::File),
             e("zdir", Kind::Dir),

@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use fog_proto::{Entry, Kind};
+use fog_proto::Entry;
 
 /// One cached listing. `order` indexes `entries`; `entries` is in the same
 /// order every client holding this `generation` has.
@@ -130,33 +130,39 @@ impl Default for Cache {
 }
 
 /// What turns `old` into `new` under [`fog_proto::apply_diff`]: names that
-/// left (or changed kind), and entries that arrived (or changed kind).
-pub fn diff(old: &[Entry], new: &[Entry]) -> (Vec<Vec<u8>>, Vec<Entry>) {
-    let o: HashMap<&[u8], Kind> = old.iter().map(|e| (e.name.as_slice(), e.kind)).collect();
-    let n: HashMap<&[u8], Kind> = new.iter().map(|e| (e.name.as_slice(), e.kind)).collect();
+/// left (or changed kind), entries that arrived (or changed kind), and
+/// entries whose metadata alone changed.
+pub fn diff(old: &[Entry], new: &[Entry]) -> (Vec<Vec<u8>>, Vec<Entry>, Vec<Entry>) {
+    let o: HashMap<&[u8], &Entry> = old.iter().map(|e| (e.name.as_slice(), e)).collect();
+    let n: HashMap<&[u8], &Entry> = new.iter().map(|e| (e.name.as_slice(), e)).collect();
     let removed = old
         .iter()
-        .filter(|e| n.get(e.name.as_slice()) != Some(&e.kind))
+        .filter(|e| n.get(e.name.as_slice()).map(|n| n.kind) != Some(e.kind))
         .map(|e| e.name.clone())
         .collect();
-    let added = new
-        .iter()
-        .filter(|e| o.get(e.name.as_slice()) != Some(&e.kind))
-        .cloned()
-        .collect();
-    (removed, added)
+    let mut added = Vec::new();
+    let mut changed = Vec::new();
+    for e in new {
+        match o.get(e.name.as_slice()) {
+            Some(was) if was.kind == e.kind => {
+                if *was != e {
+                    changed.push(e.clone());
+                }
+            }
+            _ => added.push(e.clone()),
+        }
+    }
+    (removed, added, changed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fog_proto::Kind;
     use std::collections::HashSet;
 
     fn e(n: &str, k: Kind) -> Entry {
-        Entry {
-            name: n.as_bytes().to_vec(),
-            kind: k,
-        }
+        Entry::new(n.as_bytes().to_vec(), k)
     }
 
     fn listing(dir: u64, names: usize, len: usize) -> Arc<Listing> {
@@ -164,10 +170,7 @@ mod tests {
             dir,
             generation: 0,
             entries: (0..names)
-                .map(|i| Entry {
-                    name: vec![b'a' + (i % 26) as u8; len],
-                    kind: Kind::File,
-                })
+                .map(|i| Entry::new(vec![b'a' + (i % 26) as u8; len], Kind::File))
                 .collect(),
             order: (0..names as u32).collect(),
         })
@@ -229,18 +232,35 @@ mod tests {
             e("fresh", Kind::Symlink),
             e("keep", Kind::File),
         ];
-        let (removed, added) = diff(&old, &new);
+        let (removed, added, changed) = diff(&old, &new);
         let rs: HashSet<&[u8]> = removed.iter().map(Vec::as_slice).collect();
         assert_eq!(rs, HashSet::from([&b"gone"[..], b"morph"]));
         assert_eq!(added.len(), 2);
         assert!(added.contains(&e("morph", Kind::Dir)));
+        assert!(changed.is_empty());
 
         let mut applied = old.clone();
-        fog_proto::apply_diff(&mut applied, &removed, &added);
+        fog_proto::apply_diff(&mut applied, &removed, &added, &changed);
         let a: HashSet<Entry> = applied.into_iter().collect();
         let n: HashSet<Entry> = new.into_iter().collect();
         assert_eq!(a, n);
 
-        assert_eq!(diff(&old, &old), (vec![], vec![]));
+        assert_eq!(diff(&old, &old), (vec![], vec![], vec![]));
+    }
+
+    #[test]
+    fn diff_metadata_only_is_changed() {
+        let old = vec![e("f", Kind::File), e("g", Kind::File)];
+        let sized = Entry {
+            size: Some(3),
+            ..e("f", Kind::File)
+        };
+        let new = vec![sized.clone(), e("g", Kind::File)];
+        let (removed, added, changed) = diff(&old, &new);
+        assert!(removed.is_empty() && added.is_empty());
+        assert_eq!(changed, [sized]);
+        let mut applied = old.clone();
+        fog_proto::apply_diff(&mut applied, &removed, &added, &changed);
+        assert_eq!(applied, new);
     }
 }

@@ -73,6 +73,16 @@ impl Daemon {
                 };
                 out(reply);
             }
+            // Watching, jobs, trash, places and open land in later units.
+            Request::Subscribe { path } | Request::Open { path, .. } => {
+                out(error(&path, &Errno::NOSYS.into()))
+            }
+            Request::Unsubscribe { .. }
+            | Request::Job(_)
+            | Request::JobControl { .. }
+            | Request::Undo
+            | Request::ListTrash
+            | Request::Places => out(error(&[], &Errno::NOSYS.into())),
         }
     }
 
@@ -102,12 +112,12 @@ impl Daemon {
                 return out(error(raw, &e));
             }
         };
-        let (removed, added) = diff(&old.entries, &new);
-        if removed.is_empty() && added.is_empty() {
+        let (removed, added, changed) = diff(&old.entries, &new);
+        if removed.is_empty() && added.is_empty() && changed.is_empty() {
             return;
         }
         let mut entries = old.entries.clone();
-        apply_diff(&mut entries, &removed, &added);
+        apply_diff(&mut entries, &removed, &added, &changed);
         let order = sort::order(&entries);
         let next = Arc::new(Listing {
             dir: old.dir,
@@ -140,6 +150,7 @@ impl Daemon {
                 generation: next.generation,
                 removed,
                 added,
+                changed,
                 order: next.order.clone(),
                 complete: true,
             }),
@@ -191,6 +202,7 @@ impl Daemon {
                     generation: 1,
                     removed: Vec::new(),
                     added: rest,
+                    changed: Vec::new(),
                     order: order.clone(),
                     complete: true,
                 });
