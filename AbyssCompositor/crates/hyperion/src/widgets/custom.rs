@@ -120,6 +120,7 @@ pub fn spans(out: Option<&Output>, spec: &WidgetSpec) -> Spans {
     Spans {
         core: (icon_w(spec) + text).max(bar::MARK),
         revealed: detail(out).map_or(0.0, |d| text_w(&d)),
+        lead: 0.0,
         present: true,
     }
 }

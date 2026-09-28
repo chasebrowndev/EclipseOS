@@ -20,6 +20,7 @@ pub fn spans(_app: &App) -> Spans {
     Spans {
         core: bar::CLOCK_W - 2.0 * bar::WIDGET_X,
         revealed: 0.0,
+        lead: 0.0,
         present: true,
     }
 }

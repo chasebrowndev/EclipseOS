@@ -91,6 +91,7 @@ pub struct DragBar<'a, Message> {
     on_drag: Option<Box<dyn Fn(f32) -> Message + 'a>>,
     on_release: Option<Message>,
     opacity: f32,
+    width: f32,
 }
 
 /// A grip at rest, with no gesture wired. See [`DragBar`].
@@ -101,6 +102,7 @@ pub fn drag_bar<'a, Message>() -> DragBar<'a, Message> {
         on_drag: None,
         on_release: None,
         opacity: 1.0,
+        width: bar::GRIP_W,
     }
 }
 
@@ -135,6 +137,15 @@ impl<'a, Message> DragBar<'a, Message> {
     /// full ink while its cell closes over it. See [`ShellFrame::grip_alpha`].
     pub fn opacity(mut self, opacity: f32) -> Self {
         self.opacity = opacity.clamp(0.0, 1.0);
+        self
+    }
+
+    /// The column's width, [`bar::GRIP_W`] by default. A widget that grows
+    /// a grip only as it is squeezed shut narrows it to nothing while open:
+    /// the grip stays in the tree, so a drag that opens the widget past the
+    /// point its grip goes keeps following the finger.
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = width.clamp(0.0, bar::GRIP_W);
         self
     }
 
@@ -175,7 +186,7 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for DragBar<'_, Mess
     }
 
     fn size(&self) -> Size<Length> {
-        Size::new(Length::Fixed(bar::GRIP_W), Length::Fixed(bar::WIDGET_H))
+        Size::new(Length::Fixed(self.width), Length::Fixed(bar::WIDGET_H))
     }
 
     fn layout(
@@ -184,7 +195,7 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for DragBar<'_, Mess
         _renderer: &iced::Renderer,
         _limits: &layout::Limits,
     ) -> layout::Node {
-        layout::Node::new(Size::new(bar::GRIP_W, bar::WIDGET_H))
+        layout::Node::new(Size::new(self.width, bar::WIDGET_H))
     }
 
     fn update(
@@ -298,7 +309,7 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for DragBar<'_, Mess
         // The wash sits inside the shell's hairline and follows its left
         // corners, so a hovered grip is a lit end of the capsule rather than
         // a square pasted onto it.
-        if self.opacity <= 0.0 {
+        if self.opacity <= 0.0 || b.width <= bar::HAIRLINE {
             return;
         }
         let wash = look.wash().scale_alpha(self.opacity);
@@ -391,6 +402,13 @@ struct Clip<'a, Message> {
     ground: Option<bool>,
     /// The ground's opacity: its fill and hairline scale by this.
     opacity: f32,
+    /// Where the child sits, overriding `edge`: a squeezed shell pins its
+    /// core's leading part instead of sliding it out from under the grip.
+    anchor: Option<f32>,
+    /// Glass kept clear at the trailing edge: the content is cut this far
+    /// short of the bounds, so a squeezed body ends in air rather than
+    /// against the hairline.
+    trail: f32,
 }
 
 #[derive(Default)]
@@ -421,6 +439,9 @@ impl<'a, Message> Clip<'a, Message> {
     }
 
     fn offset(&self) -> f32 {
+        if let Some(x) = self.anchor {
+            return x;
+        }
         match self.edge {
             ClipEdge::Left => 0.0,
             ClipEdge::Right => self.visible - self.natural,
@@ -601,6 +622,10 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Clip<'_, Message> {
             );
         }
         let cursor = self.inner_cursor(layout, cursor);
+        let clip = Rectangle {
+            width: (clip.width - self.trail).max(0.0),
+            ..clip
+        };
         renderer.with_layer(clip, |r| {
             self.content.as_widget().draw(
                 &tree.children[0],
@@ -771,7 +796,9 @@ impl ShellSpan {
 /// and *clipped*, never squashed, as the width moves. The body is anchored to
 /// the right edge, so opening the core slides it out from under the grip and
 /// revealing slides the extra section out after it — the grip is a drawer
-/// handle, and the drawer comes out where you pull.
+/// handle, and the drawer comes out where you pull. Narrower than its core,
+/// the body instead holds the core's leading part still beside the grip and
+/// cuts the rest, so a squeezed widget keeps its icon whole.
 ///
 /// `core` and `revealed` are laid out at exactly `span.core` and
 /// `span.revealed`; text in them should not wrap.
@@ -781,6 +808,73 @@ pub fn widget_shell<'a, Message: 'a>(
     revealed: Option<Element<'a, Message, Theme>>,
     span: ShellSpan,
     frame: ShellFrame,
+) -> Element<'a, Message, Theme> {
+    let closed = 1.0 - frame.open.clamp(0.0, 1.0);
+    widget_shell_with(
+        grip,
+        core,
+        revealed,
+        span,
+        frame,
+        ShellLook {
+            grip_w: bar::GRIP_W,
+            closed,
+        },
+    )
+}
+
+/// How a [`widget_shell`] wears its grip, for a solver that decides that
+/// separately from the frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellLook {
+    /// The grip column's width, `0.0..=bar::GRIP_W`: a widget with nothing to
+    /// reveal has a grip only once it is squeezed past reading, and grows it
+    /// as it closes rather than popping one in.
+    pub grip_w: f32,
+    /// How shut the shell reads, `0.0..=1.0`: 1 keeps only
+    /// [`bar::GRIP_GROUND`] of the glass, so a run of grips is quiet.
+    pub closed: f32,
+}
+
+impl ShellSpan {
+    /// Where the body sits under its clip at `body_w`. Opened past the core it
+    /// is right-anchored — the drawer comes out of the grip. Squeezed under
+    /// the core it pins the core's leading part [`bar::SQUEEZE_AIR`] off the
+    /// grip and cuts the trailing part, so a squeezed widget shows its icon
+    /// whole instead of a sliver of its right end. Continuous at
+    /// `body_w == core_run`, where both are `-reveal_run`.
+    fn body_offset(self, body_w: f32) -> f32 {
+        let short = (self.core_run() - body_w).max(0.0);
+        if short > 0.0 {
+            let lead = (short / 2.0).min((bar::WIDGET_X - bar::SQUEEZE_AIR).max(0.0));
+            -self.reveal_run() - lead
+        } else {
+            body_w - self.natural_body()
+        }
+    }
+
+    /// How far short of the body's edge a squeeze cuts its content:
+    /// [`bar::SQUEEZE_AIR`] once squeezed, so the cut sits in glass, never on
+    /// the hairline. Continuous at `core_run`: until the squeeze has eaten
+    /// the trailing padding down to that air, the band holds only padding.
+    fn squeeze_trail(self, body_w: f32) -> f32 {
+        if body_w < self.core_run() {
+            bar::SQUEEZE_AIR
+        } else {
+            0.0
+        }
+    }
+}
+
+/// [`widget_shell`] with its grip column and ground set by `look` rather
+/// than read off the frame.
+pub fn widget_shell_with<'a, Message: 'a>(
+    grip: impl Into<Element<'a, Message, Theme>>,
+    core: impl Into<Element<'a, Message, Theme>>,
+    revealed: Option<Element<'a, Message, Theme>>,
+    span: ShellSpan,
+    frame: ShellFrame,
+    look: ShellLook,
 ) -> Element<'a, Message, Theme> {
     let fixed = |e: Element<'a, Message, Theme>, w: f32| {
         container(e)
@@ -798,6 +892,7 @@ pub fn widget_shell<'a, Message: 'a>(
     body = body.push(fixed(core.into(), span.core));
     body = body.push(Space::new().width(Length::Fixed(bar::WIDGET_X)));
 
+    let grip_w = look.grip_w.clamp(0.0, bar::GRIP_W);
     let body_w = span.body_at(frame);
     let inner = row![
         grip.into(),
@@ -809,19 +904,17 @@ pub fn widget_shell<'a, Message: 'a>(
             edge: ClipEdge::Right,
             ground: None,
             opacity: 1.0,
+            anchor: Some(span.body_offset(body_w)),
+            trail: span.squeeze_trail(body_w),
         }),
     ];
-    let natural = bar::GRIP_W + body_w;
-    let visible = span.width_at(frame);
+    let natural = grip_w + body_w;
+    let presence = frame.presence.clamp(0.0, 1.0);
+    let visible = (natural * presence).round();
+    let open = (1.0 - look.closed.clamp(0.0, 1.0)).max(frame.reveal.clamp(0.0, 1.0));
+    let ground = (bar::GRIP_GROUND + (1.0 - bar::GRIP_GROUND) * open) * presence;
 
-    glass_cell_faded(
-        inner,
-        natural,
-        visible,
-        false,
-        ClipEdge::Right,
-        frame.ground_alpha(),
-    )
+    glass_cell_faded(inner, natural, visible, false, ClipEdge::Right, ground)
 }
 
 /// A bare glass cell: `content` laid out at `natural` width, shown `visible`
@@ -865,6 +958,8 @@ pub fn glass_cell_faded<'a, Message: 'a>(
         edge,
         ground: Some(accent),
         opacity: opacity.clamp(0.0, 1.0),
+        anchor: None,
+        trail: 0.0,
     }))
     .width(Length::Fixed(visible))
     .height(Length::Fixed(bar::WIDGET_H))

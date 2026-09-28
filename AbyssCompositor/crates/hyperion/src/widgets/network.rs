@@ -18,6 +18,7 @@ pub fn spans(_app: &App) -> Spans {
     Spans {
         core: bar::MARK,
         revealed: 0.0,
+        lead: 0.0,
         present: true,
     }
 }
