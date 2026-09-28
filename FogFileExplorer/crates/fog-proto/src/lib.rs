@@ -316,6 +316,10 @@ pub enum Reply {
         col: u32,
         msg: String,
     },
+    /// `Open` launched a handler for `path`.
+    Opened {
+        path: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -785,6 +789,9 @@ mod tests {
                 line: 3,
                 col: 5,
                 msg: "unknown key `shwo-hidden`".into(),
+            },
+            Reply::Opened {
+                path: b"/x.txt".to_vec(),
             },
         ];
         for r in &replies {
