@@ -115,7 +115,7 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
-| `decoration.rounding` | int 0..512 | `13` | live | Corner radius in logical px; 0 disables. Also rounds the blur backdrop behind a layer-shell surface, except one that spans an output edge to edge (three anchors, or two opposite ones, with no positive exclusive zone), which stays square; the taskbar uses `bar.rounding`. |
+| `decoration.rounding` | int 0..64 | `13` | live | Corner radius in logical px; 0 disables. Also rounds the blur backdrop behind a layer-shell surface, except one that spans an output edge to edge (three anchors, or two opposite ones, with no positive exclusive zone), which stays square; the taskbar uses `bar.rounding`. |
 | `decoration.active-opacity` | float 0..1 | `1` | live | Alpha applied to the focused window. |
 | `decoration.inactive-opacity` | float 0..1 | `1` | live | Alpha applied to every unfocused window. |
 | `decoration.dim-inactive` | float 0..1 | `0` | live | Strength of the darkening overlay on unfocused windows. |
