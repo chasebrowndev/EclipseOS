@@ -23,7 +23,14 @@ fn main() -> anyhow::Result<()> {
         .block_on(async {
             let listener = bind(&path).with_context(|| format!("bind {}", path.display()))?;
             tracing::info!(socket = %path.display(), "fogd listening");
-            serve(listener, Arc::new(Daemon::local())).await?;
+            let daemon = Arc::new(Daemon::local());
+            match fog_config::path() {
+                Some(p) => {
+                    fog_daemon::config::start(&daemon, p);
+                }
+                None => tracing::warn!("no XDG_CONFIG_HOME or HOME; using default config"),
+            }
+            serve(listener, daemon).await?;
             Ok(())
         })
 }

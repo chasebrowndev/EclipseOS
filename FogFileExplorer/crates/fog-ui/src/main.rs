@@ -43,20 +43,35 @@ fn main() -> iced::Result {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     let path = resolve(&cwd, std::env::args_os().nth(1));
 
-    iced::application(move || app::App::new(path.clone()), app::update, app::view)
-        .title("Fog")
-        .subscription(app::subscription)
-        .theme(|_: &app::App| theme::iced_theme())
-        .default_font(Font::MONOSPACE)
-        .window(window::Settings {
-            size: Size::new(theme::size::WINDOW_W, theme::size::WINDOW_H),
-            platform_specific: window::settings::PlatformSpecific {
-                application_id: APP_ID.to_owned(),
-                ..Default::default()
-            },
-            ..window::Settings::default()
-        })
-        .run()
+    // Read before iced starts: the UI thread never does filesystem I/O.
+    let config = match fog_config::path().map(|p| fog_config::load(&p)) {
+        Some(Ok(c)) => c,
+        Some(Err(e)) => {
+            eprintln!("fog-ui: {e}; using defaults");
+            fog_config::defaults()
+        }
+        None => fog_config::defaults(),
+    };
+    let keys = config.keys;
+
+    iced::application(
+        move || app::App::new(path.clone(), keys.clone()),
+        app::update,
+        app::view,
+    )
+    .title("Fog")
+    .subscription(app::subscription)
+    .theme(|_: &app::App| theme::iced_theme())
+    .default_font(Font::MONOSPACE)
+    .window(window::Settings {
+        size: Size::new(theme::size::WINDOW_W, theme::size::WINDOW_H),
+        platform_specific: window::settings::PlatformSpecific {
+            application_id: APP_ID.to_owned(),
+            ..Default::default()
+        },
+        ..window::Settings::default()
+    })
+    .run()
 }
 
 #[cfg(test)]

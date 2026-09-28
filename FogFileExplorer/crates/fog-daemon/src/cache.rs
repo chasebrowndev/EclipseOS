@@ -102,6 +102,25 @@ impl Cache {
         }
     }
 
+    pub fn max_dirs(&self) -> usize {
+        self.max_dirs
+    }
+
+    /// New bounds (`performance { cache-dirs cache-mib }`); evicts the least
+    /// recently used listings until the cache fits.
+    pub fn set_limits(&mut self, max_dirs: usize, max_bytes: usize) {
+        self.max_dirs = max_dirs;
+        self.max_bytes = max_bytes;
+        while self.slots.len() > self.max_dirs || self.bytes > self.max_bytes {
+            let Some((_, oldest)) = self.lru.pop_first() else {
+                break;
+            };
+            if let Some(s) = self.slots.remove(&oldest) {
+                self.bytes -= s.bytes;
+            }
+        }
+    }
+
     pub fn remove(&mut self, path: &[u8]) -> Option<Arc<Listing>> {
         let s = self.slots.remove(path)?;
         self.lru.remove(&s.tick);

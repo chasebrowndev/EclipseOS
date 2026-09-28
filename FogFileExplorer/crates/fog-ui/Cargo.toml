@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 fog-proto.workspace = true
+fog-config.workspace = true
 fog-widgets.workspace = true
 iced.workspace = true
 tokio.workspace = true

@@ -8,6 +8,7 @@
 
 pub mod backend;
 pub mod cache;
+pub mod config;
 pub mod sort;
 
 use std::ffi::OsStr;
@@ -24,7 +25,7 @@ use fog_proto::{apply_diff, Entry, Reply, Request};
 use rustix::io::Errno;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 pub use backend::{Backend, LocalBackend, BATCH};
 pub use cache::{diff, Cache, Listing};
@@ -37,6 +38,8 @@ pub struct Daemon {
     backend: Box<dyn Backend>,
     cache: Mutex<Cache>,
     next_dir: AtomicU64,
+    /// Replies for every client, e.g. [`Reply::ConfigError`].
+    events: broadcast::Sender<Reply>,
 }
 
 impl Daemon {
@@ -45,6 +48,7 @@ impl Daemon {
             backend,
             cache: Mutex::new(cache),
             next_dir: AtomicU64::new(1),
+            events: broadcast::channel(16).0,
         }
     }
 
@@ -56,6 +60,15 @@ impl Daemon {
     /// The listing cache. Never hold the guard across an `.await`.
     pub fn cache(&self) -> MutexGuard<'_, Cache> {
         self.cache.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Send `r` to every connected client.
+    pub fn broadcast(&self, r: Reply) {
+        let _ = self.events.send(r);
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<Reply> {
+        self.events.subscribe()
     }
 
     /// Serve one request synchronously, emitting replies in order through
@@ -329,6 +342,7 @@ async fn client(stream: UnixStream, daemon: Arc<Daemon>) {
             }
         }
     });
+    let events = tokio::spawn(forward(daemon.subscribe(), tx.clone()));
     loop {
         match fog_proto::read_frame::<_, Request>(&mut rd).await {
             Ok(Some(req)) => {
@@ -343,8 +357,27 @@ async fn client(stream: UnixStream, daemon: Arc<Daemon>) {
             }
         }
     }
+    events.abort();
     drop(tx);
     let _ = writer.await;
+}
+
+/// Relay daemon-wide broadcasts into one client's queue.
+async fn forward(mut events: broadcast::Receiver<Reply>, tx: mpsc::Sender<Vec<u8>>) {
+    loop {
+        match events.recv().await {
+            Ok(r) => match fog_proto::encode(&r) {
+                Ok(f) => {
+                    if tx.send(f).await.is_err() {
+                        return;
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "broadcast not encodable"),
+            },
+            Err(broadcast::error::RecvError::Lagged(_)) => {}
+            Err(broadcast::error::RecvError::Closed) => return,
+        }
+    }
 }
 
 /// Encode and queue a reply from a blocking thread. A client that went away

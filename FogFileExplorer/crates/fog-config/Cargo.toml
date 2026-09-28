@@ -1,0 +1,13 @@
+[package]
+name = "fog-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fog's KDL configuration: typed parsing, merged over the shipped defaults (FOG §Configuration)."
+publish = false
+
+[dependencies]
+kdl.workspace = true
+thiserror.workspace = true
