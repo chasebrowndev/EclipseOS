@@ -9,6 +9,8 @@
 pub mod activate;
 pub mod backend;
 pub mod cache;
+pub mod open;
+pub mod places;
 pub mod sort;
 
 use std::ffi::OsStr;
@@ -74,16 +76,15 @@ impl Daemon {
                 };
                 out(reply);
             }
-            // Watching, jobs, trash, places and open land in later units.
-            Request::Subscribe { path } | Request::Open { path, .. } => {
-                out(error(&path, &Errno::NOSYS.into()))
-            }
+            Request::Open { path, app } => out(open_file(path, app.as_deref())),
+            Request::Places => out(Reply::PlacesList(places::current())),
+            // Watching, jobs and trash land in later units.
+            Request::Subscribe { path } => out(error(&path, &Errno::NOSYS.into())),
             Request::Unsubscribe { .. }
             | Request::Job(_)
             | Request::JobControl { .. }
             | Request::Undo
-            | Request::ListTrash
-            | Request::Places => out(error(&[], &Errno::NOSYS.into())),
+            | Request::ListTrash => out(error(&[], &Errno::NOSYS.into())),
         }
     }
 
@@ -226,6 +227,20 @@ impl Daemon {
         let tail = self.backend.list(path, &mut |b| all.extend(b))?;
         all.extend(tail);
         Ok(all)
+    }
+}
+
+/// Directories are refused (`EISDIR`): the UI navigates into them.
+fn open_file(raw: Vec<u8>, app: Option<&str>) -> Reply {
+    let res = abs(&raw).and_then(|p| {
+        if fs::metadata(p)?.is_dir() {
+            return Err(Errno::ISDIR.into());
+        }
+        open::open(&open::Xdg::from_env(), p, app)
+    });
+    match res {
+        Ok(()) => Reply::Opened { path: raw },
+        Err(e) => error(&raw, &e),
     }
 }
 

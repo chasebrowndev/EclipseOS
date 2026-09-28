@@ -196,7 +196,8 @@ impl Browser {
             | Reply::UndoResult { .. }
             | Reply::TrashList(_)
             | Reply::PlacesList(_)
-            | Reply::ConfigError { .. } => Effect::None,
+            | Reply::ConfigError { .. }
+            | Reply::Opened { .. } => Effect::None,
         }
     }
 
