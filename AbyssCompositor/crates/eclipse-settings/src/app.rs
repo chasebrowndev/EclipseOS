@@ -605,7 +605,8 @@ fn blur() -> Subscription<Message> {
 
 /// The Taskbar pane's keyboard: arrows move the selected widget (or tray
 /// entry), Delete takes it off, Escape drops a drag. Only keys nothing else
-/// took — a focused text field keeps its own arrows and Delete.
+/// took; the pane then asks the tree whether a text field is focused, since
+/// iced 0.14's `text_input` lets Up and Down through uncaptured.
 fn taskbar_keys() -> Subscription<Message> {
     use crate::taskbar::{Msg, Stroke as K};
     use iced::keyboard::{key::Named, Event, Key};

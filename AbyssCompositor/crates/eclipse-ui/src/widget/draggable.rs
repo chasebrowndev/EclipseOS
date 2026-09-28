@@ -113,6 +113,11 @@ impl<'a, Message> Draggable<'a, Message> {
     /// Draw as held, the ghost at `at`, when no press of its own is live.
     /// For a drag the caller is replaying (a debug preview), or one it has
     /// to keep drawing after the tree was rebuilt under it.
+    ///
+    /// While a press of its own is dragging, this is the caller's say on
+    /// whether the drag is still on: `None` hides the ghost at once (the
+    /// caller cancelled it), `Some` leaves it on the pointer. A caller with
+    /// a ghost therefore passes `Some` for as long as it holds the drag.
     pub fn lifted(mut self, at: Option<Point>) -> Self {
         self.lifted = at;
         self
@@ -197,7 +202,9 @@ impl<Message: Clone> Draggable<'_, Message> {
         }
         let hang = Vector::new(0.0, bounds.height + space::CHIP_GAP);
         match st.press {
-            Some(p) if p.dragging => Some(p.at - p.grab + hang),
+            // The caller dropped the drag (Escape) while the button is
+            // still down: the ghost goes now, not on release.
+            Some(p) if p.dragging => self.lifted.map(|_| p.at - p.grab + hang),
             Some(_) => None,
             None => self
                 .lifted

@@ -15,6 +15,8 @@
 
 use std::time::{Duration, Instant};
 
+use iced::advanced::widget::operation::{Focusable, Operation, Outcome};
+use iced::advanced::widget::Id;
 use iced::widget::{
     button, column, container, pick_list, row, sensor, text, text_input, Column, Row, Space, Stack,
 };
@@ -344,6 +346,9 @@ pub enum Msg {
     Zone(Zone, Rectangle),
     /// A key the pane did not otherwise take: the keyboard's way to move.
     Key(Stroke),
+    /// A non-Escape key, once the tree has said whether a text field has
+    /// the keyboard (`true`): then it moves nothing.
+    Keyed(Stroke, bool),
     Important(bool),
     Add(String),
     New,
@@ -709,6 +714,30 @@ fn tray_keyed(t: &Tray, id: &str, key: Stroke) -> Option<Writes> {
         Stroke::Delete => Some(t.moved(id, Lane::Hidden)),
         Stroke::Escape => None,
     }
+}
+
+/// Whether any text field in the tree has the keyboard. Unnamed fields
+/// count too, which `find_focused` would skip.
+struct Typing(bool);
+
+impl Operation<bool> for Typing {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<bool>)) {
+        operate(self);
+    }
+
+    fn focusable(&mut self, _id: Option<&Id>, _bounds: Rectangle, state: &mut dyn Focusable) {
+        self.0 |= state.is_focused();
+    }
+
+    fn finish(&self) -> Outcome<bool> {
+        Outcome::Some(self.0)
+    }
+}
+
+/// A selection key, unless a text field has the keyboard: then arrows,
+/// Delete and Backspace are the field's, in either lane.
+fn gated(key: Stroke, typing: bool) -> Option<Stroke> {
+    (!typing).then_some(key)
 }
 
 /// Do what a drop or a key decided.
@@ -1302,7 +1331,15 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
         Msg::Key(Stroke::Escape) => {
             app.bar.escaped = app.bar.drag.take().is_some();
         }
+        // iced 0.14's `text_input` leaves Up and Down uncaptured, so a
+        // focused field would let them through: ask the tree first.
         Msg::Key(k) => {
+            return iced::advanced::widget::operate(Typing(false)).map(move |t| bar_msg(Msg::Keyed(k, t)));
+        }
+        Msg::Keyed(k, typing) => {
+            let Some(k) = gated(k, typing) else {
+                return Task::none();
+            };
             let o = order(app);
             let tray = pick(&app.bar, &o).as_deref() == Some("tray");
             match app.tray_sel.clone().filter(|_| tray) {
@@ -2712,6 +2749,41 @@ mod tests {
             keyed(&mut b, &o, Stroke::Delete),
             Some(Landing::Remove("a".into()))
         );
+    }
+
+    #[test]
+    fn up_and_down_move_nothing_while_a_field_is_focused() {
+        // `a` is pinned on the bar and selected: Down would move it off.
+        let t = Tray::from_values(&serde_json::json!(["a", "b"]), &serde_json::json!([]));
+        for k in [Stroke::Up, Stroke::Down] {
+            assert_eq!(gated(k, true).and_then(|k| tray_keyed(&t, "a", k)), None);
+        }
+        assert!(gated(Stroke::Down, false)
+            .and_then(|k| tray_keyed(&t, "a", k))
+            .is_some());
+        // The widget lane's Delete is the field's too.
+        let mut b = bar_with(&[]);
+        b.selected = Some("clock".into());
+        let o = ids(&["clock", "tray"]);
+        assert_eq!(
+            gated(Stroke::Delete, true).and_then(|k| keyed(&mut b, &o, k)),
+            None
+        );
+        assert!(gated(Stroke::Delete, false)
+            .and_then(|k| keyed(&mut b, &o, k))
+            .is_some());
+    }
+
+    #[test]
+    fn a_focused_unnamed_field_counts_as_typing() {
+        type P = <iced::Renderer as iced::advanced::text::Renderer>::Paragraph;
+        let mut field = text_input::State::<P>::new();
+        let mut op = Typing(false);
+        op.focusable(None, Rectangle::default(), &mut field);
+        assert!(matches!(op.finish(), Outcome::Some(false)));
+        field.focus();
+        op.focusable(None, Rectangle::default(), &mut field);
+        assert!(matches!(op.finish(), Outcome::Some(true)));
     }
 
     #[test]
