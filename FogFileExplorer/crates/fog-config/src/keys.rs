@@ -27,6 +27,10 @@ pub enum Action {
     Delete,
     Undo,
     NewFolder,
+    /// Create an empty file, named inline like a new folder.
+    NewFile,
+    /// Put the selected trash items back where they were deleted from.
+    Restore,
     ToggleHidden,
     NewTab,
     CloseTab,
@@ -36,6 +40,8 @@ pub enum Action {
     ToggleSidebar,
     /// Move the keyboard into the sidebar's places, or back to the list.
     FocusPlaces,
+    /// Move the keyboard into the job tray, or back to the list.
+    FocusJobs,
     SortName,
     SortSize,
     SortModified,
@@ -45,7 +51,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 33] = [
+    pub const ALL: [Action; 36] = [
         Action::Down,
         Action::Up,
         Action::Open,
@@ -65,6 +71,8 @@ impl Action {
         Action::Delete,
         Action::Undo,
         Action::NewFolder,
+        Action::NewFile,
+        Action::Restore,
         Action::ToggleHidden,
         Action::NewTab,
         Action::CloseTab,
@@ -73,6 +81,7 @@ impl Action {
         Action::PrevTab,
         Action::ToggleSidebar,
         Action::FocusPlaces,
+        Action::FocusJobs,
         Action::SortName,
         Action::SortSize,
         Action::SortModified,
@@ -103,6 +112,8 @@ impl Action {
             Action::Delete => "delete",
             Action::Undo => "undo",
             Action::NewFolder => "new-folder",
+            Action::NewFile => "new-file",
+            Action::Restore => "restore",
             Action::ToggleHidden => "toggle-hidden",
             Action::NewTab => "new-tab",
             Action::CloseTab => "close-tab",
@@ -111,6 +122,7 @@ impl Action {
             Action::PrevTab => "prev-tab",
             Action::ToggleSidebar => "toggle-sidebar",
             Action::FocusPlaces => "focus-places",
+            Action::FocusJobs => "focus-jobs",
             Action::SortName => "sort-name",
             Action::SortSize => "sort-size",
             Action::SortModified => "sort-modified",

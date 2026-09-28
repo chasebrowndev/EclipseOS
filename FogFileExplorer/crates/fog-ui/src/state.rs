@@ -11,6 +11,9 @@ use std::collections::{BTreeSet, HashSet};
 
 use fog_proto::{apply_diff, Entry, Kind, Reply, Sort, SortKey};
 
+use crate::clip::ClipOp;
+use crate::ops::JobKind;
+
 /// What the app must do after a state change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
@@ -66,8 +69,21 @@ pub enum Notice {
     Ran(String),
     /// A custom action could not be started: name and reason.
     RunFailed(String, String),
+    /// A one-line hint about why an action did nothing here.
+    Hint(&'static str),
     /// An action this build has no behaviour for yet.
     Unavailable(&'static str),
+    /// Copy or Cut took this many items.
+    Clipboard(ClipOp, usize),
+    /// Paste found no files on either clipboard.
+    NothingToPaste,
+    /// A job of ours finished: its kind and how many items it named.
+    Done(JobKind, usize),
+    /// A job of ours failed: its kind and `fogd`'s message.
+    Failed(JobKind, String),
+    Undone,
+    /// `fogd` refused to undo, and why.
+    UndoRefused(String),
 }
 
 /// How a row was clicked.
@@ -115,6 +131,9 @@ pub struct Browser {
     pub notice: Option<Notice>,
     /// Free and total bytes on the shown folder's filesystem.
     pub space: Option<(u64, u64)>,
+    /// A name to put the cursor on once it shows up: what we just created
+    /// or renamed.
+    pub want: Option<Vec<u8>>,
 }
 
 impl Browser {
@@ -143,6 +162,7 @@ impl Browser {
             opening: None,
             notice: None,
             space: None,
+            want: None,
         }
     }
 
@@ -306,8 +326,8 @@ impl Browser {
                 }
                 Effect::None
             }
-            // Jobs, trash and config errors get views in later units; places
-            // belong to the window, not a tab.
+            // Jobs, trash and places belong to the window, not a tab;
+            // config errors get a view in a later unit.
             Reply::Stat(_)
             | Reply::JobAccepted { .. }
             | Reply::JobProgress { .. }
@@ -387,11 +407,17 @@ impl Browser {
 
     // Filter and hidden files.
 
-    /// Type-to-filter: add `s` and put the cursor on the first match.
+    /// Type-to-filter: add `s`. The cursor stays on its entry while that
+    /// still matches, else goes to the first match; marks and an open
+    /// visual range are kept.
     pub fn push_filter(&mut self, s: &str) -> Effect {
+        let keep = self.selected_name();
         self.filter.push_str(s);
         self.refilter();
-        self.jump(0)
+        match keep.and_then(|n| self.position(&n)) {
+            Some(i) => self.jump(i),
+            None => self.jump(0),
+        }
     }
 
     /// Backspace in the filter. The cursor stays on its entry if it still
@@ -540,16 +566,35 @@ impl Browser {
             .collect()
     }
 
-    /// What a custom action runs on: the selection, else the cursor's
-    /// entry, as absolute paths.
-    pub fn targets(&self) -> Vec<Vec<u8>> {
+    /// Bytes in the selection's files. A folder's own size is its
+    /// directory inode's, not its contents': it is not added.
+    pub fn selected_bytes(&self) -> Option<u64> {
+        let files: Vec<u64> = self
+            .selection()
+            .iter()
+            .filter(|e| e.kind != Kind::Dir)
+            .filter_map(|e| e.size)
+            .collect();
+        (!files.is_empty()).then(|| files.iter().sum())
+    }
+
+    /// What an action works on: the selection, else the cursor's entry.
+    pub fn picked(&self) -> Vec<&Entry> {
         let sel = self.selection();
-        let picked = if sel.is_empty() {
+        if sel.is_empty() {
             self.selected_entry().into_iter().collect()
         } else {
             sel
-        };
-        picked.iter().map(|e| join(&self.path, &e.name)).collect()
+        }
+    }
+
+    /// [`Self::picked`] as absolute paths: what a custom action runs on,
+    /// and what copy, cut, trash and delete take.
+    pub fn targets(&self) -> Vec<Vec<u8>> {
+        self.picked()
+            .iter()
+            .map(|e| join(&self.path, &e.name))
+            .collect()
     }
 
     // Sorting: asked of `fogd`, never done here.
@@ -623,6 +668,12 @@ impl Browser {
         self.selected = found
             .unwrap_or(self.selected)
             .min(self.visible.len().saturating_sub(1));
+        // A complete listing is the full order: the pin has placed the
+        // cursor, and from here it follows its entry, so a re-sort from
+        // another tab on this folder does not throw it back to the top.
+        if self.complete {
+            self.pin = Pin::Free;
+        }
     }
 
     /// [`Self::settle`] for an update of the shown folder: if the selected
@@ -630,6 +681,11 @@ impl Browser {
     fn settle_moved(&mut self, keep: Option<Vec<u8>>) -> Effect {
         let before = self.selected;
         self.settle(keep);
+        if let Some(i) = self.want.as_deref().and_then(|n| self.position(n)) {
+            self.want = None;
+            self.pin = Pin::Free;
+            self.selected = i;
+        }
         if self.selected == before {
             Effect::None
         } else {
@@ -1056,6 +1112,89 @@ mod tests {
     }
 
     #[test]
+    fn an_unmoved_cursor_follows_its_entry_when_another_tab_resorts() {
+        // A background tab on the same folder: entered, never moved.
+        let mut b = Browser::new(b"/d".to_vec());
+        b.on_reply(snap(
+            "/d",
+            2,
+            0,
+            &[("a", Kind::File), ("b", Kind::File), ("c", Kind::File)],
+            &[0, 1, 2],
+        ));
+        assert_eq!(sel(&b), "a");
+        // The other tab reverses the order: fogd resends it to both.
+        let fx = b.on_reply(Reply::DirDiff {
+            dir: 2,
+            generation: 1,
+            removed: vec![],
+            added: vec![],
+            changed: vec![],
+            order: vec![2, 1, 0],
+            complete: true,
+        });
+        assert_eq!(names(&b), ["c", "b", "a"]);
+        assert_eq!(sel(&b), "a");
+        assert_eq!(fx, Effect::Reveal(2));
+    }
+
+    #[test]
+    fn a_created_name_is_selected_when_it_arrives() {
+        let mut b = Browser::new(b"/d".to_vec());
+        b.on_reply(snap("/d", 2, 0, &[("a", Kind::File)], &[0]));
+        b.want = Some(b"new".to_vec());
+        // Not there yet: the wish waits.
+        b.on_reply(Reply::DirDiff {
+            dir: 2,
+            generation: 1,
+            removed: vec![],
+            added: vec![e("b", Kind::File)],
+            changed: vec![],
+            order: vec![0, 1],
+            complete: true,
+        });
+        assert_eq!(sel(&b), "a");
+        assert!(b.want.is_some());
+        let fx = b.on_reply(Reply::DirDiff {
+            dir: 2,
+            generation: 2,
+            removed: vec![],
+            added: vec![e("new", Kind::Dir)],
+            changed: vec![],
+            order: vec![0, 1, 2],
+            complete: true,
+        });
+        assert_eq!(sel(&b), "new");
+        assert_eq!(b.want, None);
+        assert_eq!(fx, Effect::Reveal(2));
+    }
+
+    #[test]
+    fn actions_pick_the_selection_else_the_cursor_and_size_only_files() {
+        let mut b = Browser::new(b"/d".to_vec());
+        let mut f = e("f", Kind::File);
+        f.size = Some(10);
+        let mut g = e("g", Kind::File);
+        g.size = Some(5);
+        let mut dir = e("sub", Kind::Dir);
+        dir.size = Some(4096);
+        b.on_reply(Reply::DirSnapshot {
+            path: b"/d".to_vec(),
+            dir: 2,
+            generation: 0,
+            entries: vec![dir, f, g],
+            order: vec![0, 1, 2],
+            complete: true,
+        });
+        assert_eq!(b.targets(), [b"/d/sub".to_vec()]);
+        assert_eq!(b.selected_bytes(), None);
+        b.select_all();
+        assert_eq!(b.targets().len(), 3);
+        // The folder's 4096 is its inode, not its contents.
+        assert_eq!(b.selected_bytes(), Some(15));
+    }
+
+    #[test]
     fn diff_with_a_generation_gap_asks_for_a_resync() {
         let mut b = Browser::new(b"/d".to_vec());
         b.on_reply(snap("/d", 2, 3, &[("a", Kind::File)], &[0]));
@@ -1261,10 +1400,13 @@ mod tests {
         b.step(2);
         assert_eq!(sel(&b), "docs");
 
-        // Fuzzy, case-insensitive; the order is never changed.
-        assert_eq!(b.push_filter("c"), Effect::Reveal(0));
+        // Fuzzy, case-insensitive; the order is never changed. The cursor
+        // stays on "docs" while it matches...
+        assert_eq!(b.push_filter("c"), Effect::Reveal(2));
         assert_eq!(names(&b), ["Cargo.toml", "crates", "docs"]);
-        b.push_filter("r");
+        assert_eq!(sel(&b), "docs");
+        // ...and goes to the first match once it does not.
+        assert_eq!(b.push_filter("r"), Effect::Reveal(0));
         assert_eq!(names(&b), ["Cargo.toml", "crates"]);
         b.step(1);
         assert_eq!(sel(&b), "crates");
@@ -1376,6 +1518,29 @@ mod tests {
         b.click(1, Click::Only);
         assert!(marked(&b).is_empty());
         assert_eq!(sel(&b), "b");
+    }
+
+    #[test]
+    fn filtering_keeps_an_open_range_and_the_marks() {
+        let mut b = listed(&[
+            ("a1", Kind::File),
+            ("b", Kind::File),
+            ("a2", Kind::File),
+            ("a3", Kind::File),
+        ]);
+        b.click(1, Click::Toggle);
+        b.step(-1);
+        b.visual();
+        b.step(2);
+        assert_eq!(marked(&b), ["a1", "b", "a2"]);
+        // "a" hides "b" but the range from a1 to a2 stays open, the cursor
+        // stays on a2, and b's mark survives the filter.
+        b.push_filter("a");
+        assert_eq!(names(&b), ["a1", "a2", "a3"]);
+        assert_eq!(sel(&b), "a2");
+        assert_eq!(b.anchor.as_deref(), Some(&b"a1"[..]));
+        assert_eq!(b.range(), Some((0, 1)));
+        assert_eq!(marked(&b), ["a1", "b", "a2"]);
     }
 
     #[test]

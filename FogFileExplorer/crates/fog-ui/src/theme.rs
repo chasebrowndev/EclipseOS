@@ -63,7 +63,14 @@ pub mod color {
     /// Ground under marked rows and under an unfocused cursor: neutral, so
     /// a selection never competes with the one gold value.
     pub const MARK_FILL: Color = rgb(0x1b, 0x19, 0x15);
-    /// Dims the window under the palette.
+    /// Ground of the job tray: the tab strip's lower step, so the tray
+    /// reads as its own band between the list and the status line.
+    pub const TRAY: Color = TAB_STRIP;
+    /// A progress bar's empty track and its filled part. Neutral: a job's
+    /// progress never takes the gold.
+    pub const TRACK: Color = RULE;
+    pub const PROGRESS: Color = NEUTRAL;
+    /// Dims the window under the palette and the dialogs.
     pub const SCRIM: Color = Color {
         r: 0.0,
         g: 0.0,
@@ -130,6 +137,18 @@ pub mod size {
     pub const MONO_ADVANCE: f32 = 0.62;
     /// Gap between status line segments.
     pub const GAP: f32 = 18.0;
+    /// The job tray: rows shown before it scrolls with its cursor, the
+    /// kind column, the byte or file count column, the ETA column, and the
+    /// height of each job's progress bar.
+    pub const TRAY_ROWS: usize = 4;
+    pub const KIND_W: f32 = 72.0;
+    pub const AMOUNT_W: f32 = 168.0;
+    pub const ETA_W: f32 = 72.0;
+    pub const PROGRESS_H: f32 = 2.0;
+    /// The trash view's "from" column: the folder an item was deleted from.
+    pub const FROM_W: f32 = 220.0;
+    /// The conflict and delete dialogs.
+    pub const DIALOG_W: f32 = 560.0;
     /// Initial window size.
     pub const WINDOW_W: f32 = 960.0;
     pub const WINDOW_H: f32 = 640.0;

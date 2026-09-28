@@ -6,8 +6,10 @@
 //! and sorting happens in `fogd`; this process only draws what it sends.
 
 mod app;
+mod clip;
 mod conn;
 mod edit;
+mod ops;
 mod palette;
 mod state;
 mod theme;

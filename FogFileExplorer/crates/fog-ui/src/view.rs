@@ -6,14 +6,20 @@
 //! every spare pixel. Around it the chrome changes silhouette at every step
 //! so nothing reads as a stack of panels: a rail of places on the left, then
 //! top to bottom a strip of tabs (only with more than one), the breadcrumb
-//! bar, a caption-height column header, the table, and a one-line status.
+//! bar, a caption-height column header, the table, the job tray (only while
+//! there are jobs: a lower band of meters, each row underlined by its
+//! progress), and a one-line status. The conflict and delete dialogs are
+//! centred boxes over a scrim, like the palette.
 //!
 //! One gold value, always: the cursor of whichever region has the keyboard
-//! (the list's row, the sidebar's place, the palette's pick, or the path
-//! editor's caret). Every other cursor and every mark goes neutral.
+//! (the list's row, the sidebar's place, the tray's job, the palette's or a
+//! dialog's pick, or the caret of the path or name being typed). Every other
+//! cursor, every mark and every progress bar goes neutral.
 
-use fog_config::Target;
-use fog_proto::{Entry, Kind, PlaceKind, SortKey};
+use std::time::{Duration, Instant};
+
+use fog_config::{Action, Target};
+use fog_proto::{Entry, JobStatus, Kind, SortKey, StatReply, TrashItem};
 use fog_widgets::virtual_list;
 use iced::widget::text::Wrapping;
 use iced::widget::{
@@ -23,10 +29,12 @@ use iced::{alignment, Background, Color, Element, Length, Size};
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
 
-use crate::app::{list_id, App, Focus, Fogd, Message, Overlay};
+use crate::app::{list_id, App, Focus, Fogd, JobCtl, Message, Overlay, SECTIONS};
+use crate::clip::ClipOp;
 use crate::edit::LineEdit;
+use crate::ops::{resolution_label, Confirm, Conflict, Job, JobKind, NameEntry, NameFor};
 use crate::palette::{Item, Palette};
-use crate::state::{Browser, Notice};
+use crate::state::{join, split_parent, Browser, Notice};
 use crate::theme::{color, size};
 
 pub fn view(app: &App) -> Element<'_, Message> {
@@ -35,22 +43,23 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if app.tabs.len() > 1 {
         main = main.push(tab_strip(app));
     }
-    main = main
-        .push(chrome(path_bar(app), Edge::Bottom))
-        .push(
-            responsive(move |room: Size| {
-                // iced's embedded scrollbar only takes width while the list
-                // overflows; the header's labels follow it.
-                let overflow = b.len() as f32 * size::ROW_H > room.height - size::HEADER_H;
-                column![
-                    header(app, overflow),
-                    container(list(app)).height(Length::Fill)
-                ]
-                .into()
-            })
-            .height(Length::Fill),
-        )
-        .push(chrome(status_line(app, b), Edge::Top));
+    main = main.push(chrome(path_bar(app), Edge::Bottom)).push(
+        responsive(move |room: Size| {
+            // iced's embedded scrollbar only takes width while the list
+            // overflows; the header's labels follow it.
+            let overflow = b.len() as f32 * size::ROW_H > room.height - size::HEADER_H;
+            column![
+                header(app, overflow),
+                container(list(app)).height(Length::Fill)
+            ]
+            .into()
+        })
+        .height(Length::Fill),
+    );
+    if !app.tray.jobs.is_empty() {
+        main = main.push(tray(app));
+    }
+    main = main.push(chrome(status_line(app, b), Edge::Top));
 
     let mut body = Row::new();
     if app.sidebar {
@@ -61,23 +70,64 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .height(Length::Fill)
         .style(|_| ground(color::BASE, Some(color::TEXT)));
 
+    // A waiting conflict outranks any overlay: its job is stalled on it.
+    if let Some(c) = app.conflicts.first() {
+        let content = conflict_dialog(app, c);
+        return modal(base, content, None);
+    }
     match &app.overlay {
         Overlay::Palette(p) => stack![
             base,
-            mouse_area(
-                container(Space::new())
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .style(|_| ground(color::SCRIM, None))
-            )
-            .on_press(Message::Dismiss),
+            scrim(Some(Message::Dismiss)),
             container(opaque(palette(app, p)))
                 .width(Length::Fill)
                 .padding([size::PALETTE_TOP, 0.0])
                 .align_x(alignment::Horizontal::Center),
         ]
         .into(),
+        Overlay::Confirm(c) => modal(base, confirm_dialog(c), Some(Message::Confirm(false))),
         _ => base.into(),
+    }
+}
+
+/// The dimmed window under an overlay; a click on it sends `dismiss`.
+fn scrim<'a>(dismiss: Option<Message>) -> Element<'a, Message> {
+    let s = mouse_area(
+        container(Space::new())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| ground(color::SCRIM, None)),
+    );
+    match dismiss {
+        Some(m) => s.on_press(m).into(),
+        None => s.into(),
+    }
+}
+
+/// A dialog centred over the scrim.
+fn modal<'a>(
+    base: impl Into<Element<'a, Message>>,
+    dialog: Element<'a, Message>,
+    dismiss: Option<Message>,
+) -> Element<'a, Message> {
+    stack![
+        base.into(),
+        scrim(dismiss),
+        container(opaque(dialog)).center(Length::Fill),
+    ]
+    .into()
+}
+
+/// The hard-edged box of the palette and the dialogs.
+fn boxed(_: &iced::Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(color::CHROME)),
+        border: iced::Border {
+            color: color::RULE,
+            width: size::HAIRLINE,
+            radius: 0.0.into(),
+        },
+        ..Default::default()
     }
 }
 
@@ -132,9 +182,14 @@ fn chrome(content: Element<'_, Message>, edge: Edge) -> Element<'_, Message> {
     }
 }
 
+/// Nothing modal is open: the regions' own cursors may take the gold.
+fn unobstructed(app: &App) -> bool {
+    matches!(app.overlay, Overlay::None) && app.conflicts.is_empty()
+}
+
 /// Which cursor is the gold one.
 fn list_focused(app: &App) -> bool {
-    app.focus == Focus::List && app.overlay == Overlay::None
+    app.focus == Focus::List && unobstructed(app)
 }
 
 // ---------------------------------------------------------------- tabs
@@ -183,7 +238,7 @@ fn tab_strip(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn basename(path: &[u8]) -> String {
+pub fn basename(path: &[u8]) -> String {
     match path.iter().rposition(|&c| c == b'/') {
         Some(i) if i + 1 < path.len() => String::from_utf8_lossy(&path[i + 1..]).into_owned(),
         _ => "/".to_owned(),
@@ -196,18 +251,9 @@ fn basename(path: &[u8]) -> String {
 /// the sidebar's own cursor gold only while it has the keyboard.
 fn sidebar(app: &App) -> Element<'_, Message> {
     let here = app.tabs.active().target();
-    let focused = app.focus == Focus::Places && app.overlay == Overlay::None;
-    let sections: [(&str, &[PlaceKind]); 4] = [
-        (
-            "places",
-            &[PlaceKind::Home, PlaceKind::UserDir, PlaceKind::Recent],
-        ),
-        ("bookmarks", &[PlaceKind::Bookmark]),
-        ("devices", &[PlaceKind::Mount]),
-        ("", &[PlaceKind::Trash]),
-    ];
+    let focused = app.focus == Focus::Places && unobstructed(app);
     let mut col = Column::new();
-    for (title, kinds) in sections {
+    for (title, kinds) in SECTIONS {
         let members: Vec<usize> = (0..app.places.len())
             .filter(|&i| kinds.contains(&app.places[i].kind))
             .collect();
@@ -286,6 +332,36 @@ fn path_bar(app: &App) -> Element<'_, Message> {
         return line_edit(&p.line, color::ACCENT, ghost);
     }
     let path = app.tabs.active().target().to_vec();
+    let crumbs = crumb_bar(path);
+    if !app.in_trash() {
+        return crumbs;
+    }
+    // In the trash the bar carries what can be done there.
+    let act = |name: &'static str, a: Action| {
+        mouse_area(row![
+            label(name, size::TEXT_SMALL, color::TEXT_SECONDARY),
+            label(
+                format!(" {}", chord_of(app, Target::Action(a))),
+                size::TEXT_SMALL,
+                color::TEXT_TERTIARY
+            ),
+        ])
+        .on_press(Message::Act(a))
+    };
+    row![
+        container(crumbs).width(Length::Fill),
+        row![
+            act("restore", Action::Restore),
+            act("delete permanently", Action::Delete)
+        ]
+        .spacing(size::GAP),
+    ]
+    .spacing(size::GAP)
+    .align_y(alignment::Vertical::Center)
+    .into()
+}
+
+fn crumb_bar<'a>(path: Vec<u8>) -> Element<'a, Message> {
     responsive(move |room: Size| {
         // The UI font is monospace, so a width is a character count.
         let fits = (room.width / (size::TEXT * size::MONO_ADVANCE)) as usize;
@@ -393,8 +469,34 @@ fn header(app: &App, scrollbar: bool) -> Element<'_, Message> {
                 .clip(true)
                 .into()
         }
+        Overlay::Name(
+            n @ NameEntry {
+                what: NameFor::Folder | NameFor::File,
+                ..
+            },
+        ) => {
+            let what = if n.what == NameFor::Folder {
+                "new folder  "
+            } else {
+                "new file  "
+            };
+            let mut r = row![
+                label(what, size::TEXT_SMALL, color::TEXT_TERTIARY),
+                line_edit(&n.line, color::ACCENT, String::new()),
+            ]
+            .align_y(alignment::Vertical::Center);
+            if let Some(e) = n.error {
+                r = r.push(label(format!("  {e}"), size::TEXT_SMALL, color::DANGER));
+            }
+            container(r)
+                .padding([0.0, size::PAD_X])
+                .width(Length::Fill)
+                .clip(true)
+                .into()
+        }
         _ => {
             let s = b.sort;
+            let trash = app.in_trash();
             let col = |name: &'static str, key: SortKey| {
                 let on = s.key == key;
                 let arrow = match (on, s.reverse) {
@@ -416,26 +518,47 @@ fn header(app: &App, scrollbar: bool) -> Element<'_, Message> {
                 mouse_area(t.width(w).align_x(alignment::Horizontal::Right))
                     .on_press(Message::Header(key))
             };
-            row![
-                mouse_area(
-                    container(col("name", SortKey::Name))
-                        .padding([0.0, size::PAD_X])
-                        .width(Length::Fill)
-                )
-                .on_press(Message::Header(SortKey::Name)),
-                right(col("size", SortKey::Size), size::SIZE_W, SortKey::Size),
-                right(
-                    col("modified", SortKey::Modified),
+            let mut r = row![mouse_area(
+                container(col("name", SortKey::Name))
+                    .padding([0.0, size::PAD_X])
+                    .width(Length::Fill)
+            )
+            .on_press(Message::Header(SortKey::Name))];
+            if trash {
+                r = r.push(
+                    label("from", size::TEXT_SMALL, color::TEXT_TERTIARY)
+                        .width(size::FROM_W)
+                        .align_x(alignment::Horizontal::Left),
+                );
+            }
+            r = r
+                .push(right(
+                    col("size", SortKey::Size),
+                    size::SIZE_W,
+                    SortKey::Size,
+                ))
+                .push(right(
+                    // fogd sorts the trash by the files' own times: the
+                    // label says what the column shows.
+                    col(
+                        if trash { "deleted" } else { "modified" },
+                        SortKey::Modified,
+                    ),
                     size::DATE_W,
-                    SortKey::Modified
-                ),
-                right(col("type", SortKey::Type), size::TYPE_W, SortKey::Type),
-                block(
-                    size::PAD_X - size::BAR_W + if scrollbar { size::SCROLLBAR_W } else { 0.0 },
-                    size::HAIRLINE,
-                    None
-                ),
-            ]
+                    SortKey::Modified,
+                ));
+            if !trash {
+                r = r.push(right(
+                    col("type", SortKey::Type),
+                    size::TYPE_W,
+                    SortKey::Type,
+                ));
+            }
+            r.push(block(
+                size::PAD_X - size::BAR_W + if scrollbar { size::SCROLLBAR_W } else { 0.0 },
+                size::HAIRLINE,
+                None,
+            ))
             .into()
         }
     };
@@ -466,13 +589,28 @@ fn list(app: &App) -> Element<'_, Message> {
     }
     let focused = list_focused(app);
     let tz = &app.tz;
+    let renaming = match &app.overlay {
+        Overlay::Name(NameEntry {
+            what: NameFor::Rename { path, .. },
+            line,
+            ..
+        }) => Some((path.as_slice(), line)),
+        _ => None,
+    };
+    let trash = app.in_trash().then_some(&app.trash);
     virtual_list(b.len(), size::ROW_H, move |i| {
         let cursor = match (i == b.selected, focused) {
             (false, _) => Cursor::No,
             (true, true) => Cursor::Focused,
             (true, false) => Cursor::Idle,
         };
-        let r = list_row(b.row(i), cursor, b.is_marked(i), tz);
+        let entry = b.row(i);
+        let path = || entry.map(|e| join(&b.path, &e.name)).unwrap_or_default();
+        let extra = Extra {
+            edit: renaming.filter(|(p, _)| *p == path()).map(|(_, l)| l),
+            trash: trash.map(|t| t.get(&path())),
+        };
+        let r = list_row(entry, cursor, b.is_marked(i), tz, extra);
         mouse_area(r)
             .on_press(Message::Row(i))
             .on_double_click(Message::OpenRow(i))
@@ -491,13 +629,23 @@ enum Cursor {
     Idle,
 }
 
+/// What a row shows beyond its entry.
+struct Extra<'a> {
+    /// The name being typed, while this row is renamed.
+    edit: Option<&'a LineEdit>,
+    /// In the trash view: the item's record, if `ListTrash` named it.
+    trash: Option<Option<&'a TrashItem>>,
+}
+
 /// One row: `[bar] name[/] … size modified type`. Folders read primary,
-/// files secondary; metadata still on its way from fogd reads `·`.
+/// files secondary; metadata still on its way from fogd reads `·`. In the
+/// trash a row is named by where it came from: `name from size deleted`.
 fn list_row(
     entry: Option<&Entry>,
     cursor: Cursor,
     marked: bool,
     tz: &TimeZone,
+    extra: Extra<'_>,
 ) -> Element<'static, Message> {
     let Some(entry) = entry else {
         return Space::new().into();
@@ -514,7 +662,16 @@ fn list_row(
         (Cursor::No, true) => (None, Some(color::MARK_FILL)),
         (Cursor::No, false) => (None, None),
     };
-    let mut name = row![label(entry.display().into_owned(), size::TEXT, name_color)];
+    let item = extra.trash.flatten();
+    let shown = match item {
+        Some(t) => basename(&t.original_path),
+        None => entry.display().into_owned(),
+    };
+    let mut name: Row<'static, Message> = match extra.edit {
+        // The caret is the gold while a name is typed; the row idles.
+        Some(line) => row![line_edit(line, color::ACCENT, String::new())],
+        None => row![label(shown, size::TEXT, name_color)],
+    };
     if is_dir {
         name = name.push(label("/", size::TEXT, color::TEXT_TERTIARY));
     }
@@ -523,22 +680,48 @@ fn list_row(
             .width(w)
             .align_x(alignment::Horizontal::Right)
     };
-    let kind = entry.type_label();
-    let body = row![
-        container(name).width(Length::Fill).clip(true),
-        data(size_text(entry), size::SIZE_W),
-        data(date_text(entry.mtime_ns, tz), size::DATE_W),
-        data(
-            if kind.is_empty() {
-                PENDING.to_owned()
-            } else {
-                kind.into_owned()
-            },
-            size::TYPE_W
-        ),
-    ]
-    .align_y(alignment::Vertical::Center)
-    .height(Length::Fill);
+    let mut body = row![container(name).width(Length::Fill).clip(true)];
+    match extra.trash {
+        Some(item) => {
+            let from = item
+                .and_then(|t| split_parent(&t.original_path))
+                // Elided from the left, like the path bar: the tail is what
+                // tells two trashed items' folders apart.
+                .map(|(dir, _)| {
+                    let fits = (size::FROM_W / (size::TEXT_SMALL * size::MONO_ADVANCE)) as usize;
+                    crumbs(&dir, fits).into_iter().map(|(t, _)| t).collect()
+                })
+                .unwrap_or_else(|| PENDING.to_owned());
+            let deleted = item
+                .and_then(|t| t.deleted_s)
+                .map(|s| i128::from(s) * 1_000_000_000);
+            body = body
+                .push(
+                    container(label(from, size::TEXT_SMALL, color::TEXT_TERTIARY))
+                        .width(size::FROM_W)
+                        .clip(true),
+                )
+                .push(data(size_text(entry), size::SIZE_W))
+                .push(data(date_text(deleted, tz), size::DATE_W));
+        }
+        None => {
+            let kind = entry.type_label();
+            body = body
+                .push(data(size_text(entry), size::SIZE_W))
+                .push(data(date_text(entry.mtime_ns, tz), size::DATE_W))
+                .push(data(
+                    if kind.is_empty() {
+                        PENDING.to_owned()
+                    } else {
+                        kind.into_owned()
+                    },
+                    size::TYPE_W,
+                ));
+        }
+    }
+    let body = body
+        .align_y(alignment::Vertical::Center)
+        .height(Length::Fill);
     container(row![
         block(size::BAR_W, Length::Fill, bar),
         container(body)
@@ -624,9 +807,11 @@ fn status_line<'a>(app: &'a App, b: &'a Browser) -> Element<'a, Message> {
     }
     let sel = b.selection();
     if !sel.is_empty() {
-        let total: u64 = sel.iter().filter_map(|e| e.size).sum();
         left = left.push(label(
-            format!("{} selected · {}", group(sel.len()), bytes(total)),
+            match b.selected_bytes() {
+                Some(n) => format!("{} selected · {}", group(sel.len()), bytes(n)),
+                None => format!("{} selected", group(sel.len())),
+            },
             size::TEXT_SMALL,
             color::TEXT,
         ));
@@ -634,7 +819,17 @@ fn status_line<'a>(app: &'a App, b: &'a Browser) -> Element<'a, Message> {
     if b.pending.is_some() || !b.complete {
         left = left.push(label("listing…", size::TEXT_SMALL, color::TEXT_TERTIARY));
     }
-    if let Some((path, errno)) = &b.error {
+    if let Overlay::Name(n) = &app.overlay {
+        let rename = matches!(n.what, NameFor::Rename { .. });
+        // A new name's error sits in the header beside it; an inline
+        // rename has no room in its row, so its error comes here.
+        let (s, c) = match n.error {
+            Some(e) if rename => (e.to_owned(), color::DANGER),
+            _ if rename => ("enter rename · esc cancel".to_owned(), color::TEXT_TERTIARY),
+            _ => ("enter create · esc cancel".to_owned(), color::TEXT_TERTIARY),
+        };
+        left = left.push(label(s, size::TEXT_SMALL, c));
+    } else if let Some((path, errno)) = &b.error {
         left = left.push(label(
             format!("{} — {}", strerror(*errno), String::from_utf8_lossy(path)),
             size::TEXT_SMALL,
@@ -652,7 +847,19 @@ fn status_line<'a>(app: &'a App, b: &'a Browser) -> Element<'a, Message> {
             color::TEXT_TERTIARY,
         ));
     }
-    right = right.push(label("0 jobs", size::TEXT_SMALL, color::TEXT_TERTIARY));
+    let live = app.tray.live();
+    right = right.push(label(
+        match live {
+            1 => "1 job".to_owned(),
+            n => format!("{} jobs", group(n)),
+        },
+        size::TEXT_SMALL,
+        if live > 0 {
+            color::TEXT_SECONDARY
+        } else {
+            color::TEXT_TERTIARY
+        },
+    ));
     if b.len() > 0 {
         right = right.push(label(
             format!("{} / {}", group(b.selected + 1), group(b.len())),
@@ -695,6 +902,30 @@ fn notice(n: &Notice) -> (String, Color) {
         Notice::Ran(name) => (format!("ran {name}"), color::TEXT_TERTIARY),
         Notice::RunFailed(name, why) => (format!("{name}: {why}"), color::DANGER),
         Notice::Unavailable(a) => (format!("{a}: not in this build"), color::TEXT_TERTIARY),
+        Notice::Hint(s) => ((*s).to_owned(), color::TEXT_TERTIARY),
+        Notice::Clipboard(op, n) => (
+            if *op == ClipOp::Cut {
+                format!("{} cut · paste to move", items(*n))
+            } else {
+                format!("{} on the clipboard", items(*n))
+            },
+            color::TEXT_SECONDARY,
+        ),
+        Notice::NothingToPaste => ("nothing to paste".to_owned(), color::TEXT_TERTIARY),
+        Notice::Done(k, n) => {
+            let verb = match k {
+                JobKind::Copy => "copied",
+                JobKind::Move => "moved",
+                JobKind::Trash => "moved to trash",
+                JobKind::Delete => "deleted permanently",
+                JobKind::Restore => "restored",
+                _ => "done:",
+            };
+            (format!("{verb} {}", items(*n)), color::TEXT_SECONDARY)
+        }
+        Notice::Failed(k, msg) => (format!("{} failed: {msg}", k.label()), color::DANGER),
+        Notice::Undone => ("undone".to_owned(), color::TEXT_SECONDARY),
+        Notice::UndoRefused(why) => (format!("cannot undo: {why}"), color::TEXT_SECONDARY),
     }
 }
 
@@ -709,6 +940,443 @@ pub fn group(n: usize) -> String {
         out.push(c);
     }
     out
+}
+
+// ---------------------------------------------------------------- tray
+
+/// The job tray: one meter per job, a lower band than the chrome. Each row
+/// reads `kind  file  amount  eta  controls` over a full-width progress
+/// bar. The cursor is gold only while the tray has the keyboard.
+fn tray(app: &App) -> Element<'_, Message> {
+    let focused = app.focus == Focus::Jobs && unobstructed(app);
+    let now = Instant::now();
+    let jobs = &app.tray.jobs;
+    let start = app.tray.cursor.saturating_sub(size::TRAY_ROWS - 1);
+    let mut col = Column::new();
+    for (i, j) in jobs.iter().enumerate().skip(start).take(size::TRAY_ROWS) {
+        col = col.push(job_row(j, focused && i == app.tray.cursor, now));
+    }
+    let hidden = jobs.len().saturating_sub(size::TRAY_ROWS);
+    if hidden > 0 {
+        let hint = chord_of(app, Target::Action(Action::FocusJobs));
+        col = col.push(
+            container(label(
+                format!("{} more · {hint}", group(hidden)),
+                size::TEXT_SMALL,
+                color::TEXT_TERTIARY,
+            ))
+            .padding([0.0, size::PAD_X])
+            .height(size::HEADER_H)
+            .align_y(alignment::Vertical::Center),
+        );
+    }
+    column![
+        rule_h(),
+        container(col)
+            .width(Length::Fill)
+            .style(|_| ground(color::TRAY, None)),
+    ]
+    .into()
+}
+
+fn job_row(j: &Job, cursor: bool, now: Instant) -> Element<'static, Message> {
+    let (bar, fill, kind_fg) = if cursor {
+        (
+            Some(color::ACCENT),
+            Some(color::ACCENT_FILL),
+            color::ACCENT_TEXT,
+        )
+    } else {
+        (None, None, color::TEXT_SECONDARY)
+    };
+    let failed = matches!(j.status, JobStatus::Failed { .. });
+    let mut what = if j.current.is_empty() {
+        let mut s = basename(&j.subject);
+        if j.count > 1 {
+            s.push_str(&format!(" +{}", group(j.count - 1)));
+        }
+        s
+    } else {
+        basename(&j.current)
+    };
+    if let JobStatus::Failed { msg, .. } = &j.status {
+        what = format!("{what} — {msg}");
+    }
+    let amount = if j.bytes_total > 0 {
+        format!("{} / {}", bytes(j.bytes_done), bytes(j.bytes_total))
+    } else if j.files_total > 0 {
+        format!(
+            "{} / {} files",
+            group(j.files_done as usize),
+            group(j.files_total as usize)
+        )
+    } else {
+        String::new()
+    };
+    let (state, state_fg) = match &j.status {
+        JobStatus::Queued => ("queued".to_owned(), color::TEXT_TERTIARY),
+        JobStatus::Running => (
+            j.eta(now).map(clock).unwrap_or_default(),
+            color::TEXT_TERTIARY,
+        ),
+        JobStatus::Paused => ("paused".to_owned(), color::TEXT),
+        JobStatus::Conflict { .. } => ("waiting".to_owned(), color::TEXT),
+        JobStatus::Done => ("done".to_owned(), color::TEXT_TERTIARY),
+        JobStatus::Failed { .. } => ("failed".to_owned(), color::DANGER),
+        JobStatus::Cancelled => ("cancelled".to_owned(), color::TEXT_TERTIARY),
+    };
+    let ctl = |key: &'static str, word: &'static str, c: JobCtl| {
+        mouse_area(row![
+            label(key, size::TEXT_SMALL, color::TEXT_TERTIARY),
+            label(format!(" {word}"), size::TEXT_SMALL, color::TEXT_SECONDARY),
+        ])
+        .on_press(Message::Job(j.id, c))
+    };
+    let mut controls = Row::new().spacing(size::GAP);
+    if j.live() {
+        let pause = if j.status == JobStatus::Paused {
+            "resume"
+        } else {
+            "pause"
+        };
+        controls =
+            controls
+                .push(ctl("p", pause, JobCtl::Pause))
+                .push(ctl("c", "cancel", JobCtl::Cancel));
+    } else {
+        controls = controls.push(ctl("x", "dismiss", JobCtl::Dismiss));
+    }
+    let right = |s: String, w: f32, c: Color| {
+        label(s, size::TEXT_SMALL, c)
+            .width(w)
+            .align_x(alignment::Horizontal::Right)
+    };
+    let body = row![
+        label(j.kind.label(), size::TEXT_SMALL, kind_fg).width(size::KIND_W),
+        container(label(
+            what,
+            size::TEXT,
+            if failed { color::DANGER } else { color::TEXT }
+        ))
+        .width(Length::Fill)
+        .clip(true),
+        right(amount, size::AMOUNT_W, color::TEXT_SECONDARY),
+        right(state, size::ETA_W, state_fg),
+        container(controls).padding([0.0, size::GAP]),
+    ]
+    .align_y(alignment::Vertical::Center)
+    .height(Length::Fill);
+    let line = container(row![
+        block(size::BAR_W, Length::Fill, bar),
+        container(body)
+            .padding([0.0, size::PAD_X - size::BAR_W])
+            .width(Length::Fill)
+            .height(Length::Fill),
+    ])
+    .width(Length::Fill)
+    .height(size::ROW_H)
+    .style(move |_| container::Style {
+        background: fill.map(Background::Color),
+        ..Default::default()
+    });
+    column![line, progress(j.fraction(), failed)].into()
+}
+
+/// A full-width meter: the done part over the track.
+fn progress<'a>(fraction: Option<f32>, failed: bool) -> Element<'a, Message> {
+    const STEPS: f32 = 1000.0;
+    let done = (fraction.unwrap_or(0.0).clamp(0.0, 1.0) * STEPS) as u16;
+    let rest = STEPS as u16 - done;
+    let tone = if failed {
+        color::DANGER
+    } else {
+        color::PROGRESS
+    };
+    let mut r = Row::new().height(size::PROGRESS_H);
+    if done > 0 {
+        r = r.push(block(
+            Length::FillPortion(done),
+            size::PROGRESS_H,
+            Some(tone),
+        ));
+    }
+    if rest > 0 {
+        r = r.push(block(
+            Length::FillPortion(rest),
+            size::PROGRESS_H,
+            Some(color::TRACK),
+        ));
+    }
+    r.into()
+}
+
+/// `0:42`, `12:05`, `1:02:03`.
+fn clock(d: Duration) -> String {
+    let s = d.as_secs();
+    if s >= 3600 {
+        format!("{}:{:02}:{:02} left", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02} left", s / 60, s % 60)
+    }
+}
+
+// ---------------------------------------------------------------- dialogs
+
+/// One of a dialog's choices: `key word`, the pick gold. Choices share
+/// the dialog's width equally.
+fn choice(
+    key: &'static str,
+    word: &'static str,
+    on: bool,
+    fg: Color,
+    press: Message,
+) -> Element<'static, Message> {
+    let (bar, fill, fg) = if on {
+        (
+            Some(color::ACCENT),
+            Some(color::ACCENT_FILL),
+            if fg == color::DANGER {
+                fg
+            } else {
+                color::ACCENT_TEXT
+            },
+        )
+    } else {
+        (None, None, fg)
+    };
+    let mut words = Row::new();
+    if !key.is_empty() {
+        words = words.push(label(
+            format!("{key} "),
+            size::TEXT_SMALL,
+            color::TEXT_TERTIARY,
+        ));
+    }
+    words = words.push(label(word, size::TEXT, fg));
+    let cell = container(row![
+        block(size::BAR_W, Length::Fill, bar),
+        container(words.align_y(alignment::Vertical::Center))
+            .padding([0.0, size::PAD_X - size::BAR_W])
+            .height(Length::Fill)
+            .align_y(alignment::Vertical::Center),
+    ])
+    .width(Length::Fill)
+    .height(size::ROW_H)
+    .style(move |_| container::Style {
+        background: fill.map(Background::Color),
+        ..Default::default()
+    });
+    mouse_area(cell).on_press(press).into()
+}
+
+/// Chrome padding around a dialog section.
+fn section<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    container(content)
+        .padding([size::CHROME_Y, size::PAD_X])
+        .width(Length::Fill)
+        .into()
+}
+
+/// A job found its destination taken: the two files side by side, then
+/// the choices. Skip is picked first; `a` applies the answer to the rest
+/// of this job's conflicts.
+fn conflict_dialog<'a>(app: &'a App, c: &'a Conflict) -> Element<'a, Message> {
+    let lossy = |p: Vec<u8>| String::from_utf8_lossy(&p).into_owned();
+    let dir = |p: &[u8]| split_parent(p).map(|(d, _)| lossy(d)).unwrap_or_default();
+    let waiting = app.conflicts.len();
+    let head = column![
+        row![
+            container(label(
+                format!("“{}” already exists", basename(&c.dest)),
+                size::TEXT,
+                color::TEXT
+            ))
+            .width(Length::Fill)
+            .clip(true),
+            label(
+                if waiting > 1 {
+                    format!("1 of {}", group(waiting))
+                } else {
+                    String::new()
+                },
+                size::TEXT_SMALL,
+                color::TEXT_TERTIARY
+            ),
+        ],
+        container(label(
+            format!("in {}", dir(&c.dest)),
+            size::TEXT_SMALL,
+            color::TEXT_TERTIARY
+        ))
+        .clip(true),
+    ];
+    let tz = &app.tz;
+    let side =
+        |title: &'static str, path: &[u8], st: Option<&StatReply>, other: Option<&StatReply>| {
+            let files = |s: &StatReply| s.kind != Kind::Dir;
+            let (size_s, date) = match st {
+                Some(s) if s.kind == Kind::Dir => {
+                    ("folder".to_owned(), date_text(Some(s.mtime_ns), tz))
+                }
+                Some(s) => (bytes(s.size), date_text(Some(s.mtime_ns), tz)),
+                None => (PENDING.to_owned(), PENDING.to_owned()),
+            };
+            let (larger, newer) = match (st, other) {
+                (Some(a), Some(b)) => (
+                    files(a) && files(b) && a.size > b.size,
+                    a.mtime_ns > b.mtime_ns,
+                ),
+                _ => (false, false),
+            };
+            let fact = |v: String, tag: bool, word: &'static str| {
+                row![
+                    label(v, size::TEXT_SMALL, color::TEXT_SECONDARY),
+                    label(
+                        if tag {
+                            format!("  {word}")
+                        } else {
+                            String::new()
+                        },
+                        size::TEXT_SMALL,
+                        color::TEXT
+                    ),
+                ]
+            };
+            container(column![
+                label(title, size::TEXT_SMALL, color::TEXT_TERTIARY),
+                // The header names the full folder; each side needs only its
+                // own folder's name to tell the two apart.
+                container(label(
+                    format!("{}/", basename(dir(path).as_bytes())),
+                    size::TEXT_SMALL,
+                    color::TEXT_SECONDARY
+                ))
+                .clip(true),
+                fact(size_s, larger, "larger"),
+                fact(date, newer, "newer"),
+            ])
+            .width(Length::Fill)
+        };
+    let sides = row![
+        side(
+            "existing",
+            &c.dest,
+            c.dest_stat.as_ref(),
+            c.src_stat.as_ref()
+        ),
+        side(
+            "incoming",
+            &c.src,
+            c.src_stat.as_ref(),
+            c.dest_stat.as_ref()
+        ),
+    ]
+    .spacing(size::GAP);
+    let mut choices = Row::new();
+    for r in c.choices() {
+        choices = choices.push(choice(
+            resolution_key(r),
+            resolution_label(r),
+            r == c.pick,
+            color::TEXT_SECONDARY,
+            Message::Resolve(r),
+        ));
+    }
+    let footer = row![
+        mouse_area(row![
+            label("a ", size::TEXT_SMALL, color::TEXT_TERTIARY),
+            label(
+                if c.apply_all {
+                    "apply to all: on"
+                } else {
+                    "apply to all: off"
+                },
+                size::TEXT_SMALL,
+                if c.apply_all {
+                    color::TEXT
+                } else {
+                    color::TEXT_SECONDARY
+                }
+            ),
+        ])
+        .on_press(Message::ApplyAll),
+        Space::new().width(Length::Fill),
+        label(
+            "enter choose · esc skip",
+            size::TEXT_SMALL,
+            color::TEXT_TERTIARY
+        ),
+    ];
+    container(column![
+        section(head),
+        rule_h(),
+        section(sides),
+        rule_h(),
+        choices,
+        rule_h(),
+        section(footer),
+    ])
+    .width(size::DIALOG_W)
+    .style(boxed)
+    .into()
+}
+
+/// The letter that picks `r` in the conflict dialog.
+fn resolution_key(r: fog_proto::Resolution) -> &'static str {
+    use fog_proto::Resolution as R;
+    match r {
+        R::Replace => "r",
+        R::Skip => "s",
+        R::KeepBoth => "k",
+        R::Merge => "m",
+    }
+}
+
+/// Permanent delete: what goes, that it cannot come back, and Cancel
+/// picked until the user moves to Delete.
+fn confirm_dialog(c: &Confirm) -> Element<'_, Message> {
+    let head = column![
+        label(c.headline(), size::TEXT, color::TEXT),
+        container(label(c.listing(), size::TEXT_SMALL, color::TEXT_SECONDARY)).clip(true),
+        label(
+            "this cannot be undone",
+            size::TEXT_SMALL,
+            color::TEXT_TERTIARY
+        ),
+    ];
+    let choices = row![
+        choice(
+            "esc",
+            "cancel",
+            !c.delete,
+            color::TEXT_SECONDARY,
+            Message::Confirm(false)
+        ),
+        choice(
+            "",
+            "delete permanently",
+            c.delete,
+            color::DANGER,
+            Message::Confirm(true)
+        ),
+    ];
+    container(column![
+        section(head),
+        rule_h(),
+        choices,
+        rule_h(),
+        section(row![
+            Space::new().width(Length::Fill),
+            label(
+                "← → choose · enter confirm",
+                size::TEXT_SMALL,
+                color::TEXT_TERTIARY
+            ),
+        ]),
+    ])
+    .width(size::DIALOG_W)
+    .style(boxed)
+    .into()
 }
 
 // ---------------------------------------------------------------- palette
@@ -788,15 +1456,7 @@ fn palette<'a>(app: &'a App, p: &'a Palette) -> Element<'a, Message> {
     }
     container(column![input, rule_h(), rows])
         .width(size::PALETTE_W)
-        .style(|_| container::Style {
-            background: Some(Background::Color(color::CHROME)),
-            border: iced::Border {
-                color: color::RULE,
-                width: size::HAIRLINE,
-                radius: 0.0.into(),
-            },
-            ..Default::default()
-        })
+        .style(boxed)
         .into()
 }
 

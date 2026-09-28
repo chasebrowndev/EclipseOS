@@ -5,18 +5,25 @@
 //! (FOG §UI and navigation). Drawing is in [`crate::view`].
 //!
 //! Keys are read with `keyboard::listen`, so every key reaches [`on_key`],
-//! which gives them to the innermost mode first: the palette, then the path
-//! editor, then the places sidebar, then the list (where a filter, once
-//! typed, takes printable keys before the bindings do).
+//! which gives them to the innermost mode first: a pending conflict, then
+//! the overlay (palette, path editor, inline name, delete confirmation),
+//! then the places sidebar or the job tray, then the list (where a filter,
+//! once typed, takes printable keys before the bindings do).
+//!
+//! File operations (FOG §File operations) are jobs sent to `fogd` through
+//! [`Tray`]; the app never touches the filesystem.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fog_config::{Action, Chord, Config, CustomAction, Key as K, Mods, Target};
-use fog_proto::{Place, Reply, Request, SortKey};
+use fog_proto::{
+    ConflictPolicy, JobId, JobSpec, JobStatus, Place, PlaceKind, Reply, Request, Resolution,
+    SortKey, TrashItem,
+};
 use fog_widgets::scroll_into_view;
 use iced::keyboard::{self, key::Named, Key, Modifiers};
 use iced::widget::operation::{scroll_to, AbsoluteOffset};
@@ -24,8 +31,10 @@ use iced::widget::Id;
 use iced::{window, Subscription, Task};
 use jiff::tz::TimeZone;
 
+use crate::clip::{Clip, ClipOp};
 use crate::conn::{self, Link};
 use crate::edit::{Edit, PathEdit};
+use crate::ops::{Confirm, Conflict, JobKind, NameEntry, Tray, TrayEvent};
 use crate::palette::{Item, Palette};
 use crate::state::{Browser, Click, Effect, Notice, Tabs};
 use crate::theme::size;
@@ -55,6 +64,15 @@ pub struct App {
     pub fogd: Fogd,
     /// Held modifiers, for Ctrl+ and Shift+click.
     mods: Modifiers,
+    /// What Copy or Cut took. A paste with this empty reads the Wayland
+    /// clipboard instead.
+    pub clip: Option<Clip>,
+    pub tray: Tray,
+    /// Jobs waiting on a conflict answer, oldest first; the first is shown.
+    pub conflicts: Vec<Conflict>,
+    /// `ListTrash`, by id (the item's path under `Trash/files`), for the
+    /// trash view's original locations and deletion dates.
+    pub trash: HashMap<Vec<u8>, TrashItem>,
     /// Keys replayed one per [`SCRIPT_TICK`], for screenshots and probing
     /// on hosts without input injection. Filled from `FOG_UI_SCRIPT` in
     /// debug builds only; always empty in release.
@@ -72,6 +90,8 @@ pub enum Fogd {
 pub enum Focus {
     List,
     Places,
+    /// The job tray.
+    Jobs,
 }
 
 /// What floats over the list and takes the keys.
@@ -80,6 +100,19 @@ pub enum Overlay {
     None,
     Path(PathEdit),
     Palette(Palette),
+    /// Renaming a row, or naming a new folder or file.
+    Name(NameEntry),
+    /// The permanent-delete confirmation.
+    Confirm(Confirm),
+}
+
+/// A tray button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobCtl {
+    /// Pause if running, resume if paused.
+    Pause,
+    Cancel,
+    Dismiss,
 }
 
 #[derive(Debug, Clone)]
@@ -103,9 +136,23 @@ pub enum Message {
     Paste(Option<String>),
     /// A custom action was spawned, or could not be.
     Ran(String, Result<(), String>),
+    /// The Wayland clipboard, read for a file paste.
+    ClipRead(Option<String>),
+    /// Clears finished jobs and refreshes ETAs while the tray is shown.
+    Tick(Instant),
+    Job(JobId, JobCtl),
+    /// A conflict dialog button.
+    Resolve(Resolution),
+    ApplyAll,
+    /// The delete confirmation's buttons: `true` deletes.
+    Confirm(bool),
+    /// A clickable hint that runs an action (the trash bar).
+    Act(Action),
 }
 
 const SCRIPT_TICK: Duration = Duration::from_millis(900);
+/// Tray refresh while jobs are shown.
+const TRAY_TICK: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone)]
 struct Scripted {
@@ -147,6 +194,10 @@ fn scripted(tok: &str) -> Option<Scripted> {
         "Space" => (Key::Named(Named::Space), Some(" ".to_owned())),
         "Up" => (Key::Named(Named::ArrowUp), None),
         "Down" => (Key::Named(Named::ArrowDown), None),
+        "Left" => (Key::Named(Named::ArrowLeft), None),
+        "Right" => (Key::Named(Named::ArrowRight), None),
+        "Delete" => (Key::Named(Named::Delete), None),
+        "F2" => (Key::Named(Named::F2), None),
         t => (Key::Character(t.into()), Some(t.to_owned())),
     };
     Some(Scripted { key, mods, text })
@@ -171,6 +222,131 @@ impl App {
             fogd: Fogd::Connecting,
             mods: Modifiers::empty(),
             script: script(),
+            clip: None,
+            tray: Tray::default(),
+            conflicts: Vec::new(),
+            trash: HashMap::new(),
+        }
+    }
+
+    /// The Trash place's folder (`…/Trash/files`), once places are known.
+    pub fn trash_dir(&self) -> Option<&[u8]> {
+        self.places
+            .iter()
+            .find(|p| p.kind == PlaceKind::Trash)
+            .map(|p| p.path.as_slice())
+    }
+
+    /// Whether the active tab shows the trash.
+    pub fn in_trash(&self) -> bool {
+        self.trash_dir() == Some(self.tabs.active().path.as_slice())
+    }
+
+    /// Hand `spec` to the tray, which sends it when nothing is in flight.
+    fn submit(&mut self, spec: JobSpec) {
+        if let Some(req) = self.tray.submit(spec) {
+            self.request(req);
+        }
+    }
+
+    fn notify(&mut self, n: Notice) {
+        self.tabs.active_mut().notice = Some(n);
+    }
+
+    /// Carry out what the tray made of a reply.
+    fn on_tray(&mut self, ev: TrayEvent) {
+        match ev {
+            TrayEvent::None => {}
+            TrayEvent::Send(req) => self.request(req),
+            TrayEvent::Conflict { id, src, dest } => {
+                self.conflicts.retain(|c| c.id != id);
+                let c = Conflict::new(id, src, dest);
+                for req in c.stats() {
+                    self.request(req);
+                }
+                self.conflicts.push(c);
+            }
+            TrayEvent::Ended(job) => {
+                self.conflicts.retain(|c| c.id != job.id);
+                let n = match (&job.status, job.kind) {
+                    (_, JobKind::Other | JobKind::Undo) => None,
+                    (JobStatus::Failed { msg, .. }, k) => Some(Notice::Failed(k, msg.clone())),
+                    (
+                        JobStatus::Done,
+                        k @ (JobKind::Copy
+                        | JobKind::Move
+                        | JobKind::Trash
+                        | JobKind::Delete
+                        | JobKind::Restore),
+                    ) => Some(Notice::Done(k, job.count)),
+                    _ => None,
+                };
+                if let Some(n) = n {
+                    self.notify(n);
+                }
+                if self.in_trash() {
+                    self.request(Request::ListTrash);
+                }
+            }
+            TrayEvent::Undone { ok, reason } => {
+                self.notify(if ok {
+                    Notice::Undone
+                } else {
+                    Notice::UndoRefused(reason.unwrap_or_else(|| "refused".into()))
+                });
+            }
+        }
+    }
+
+    /// Answer the shown conflict.
+    fn resolve(&mut self, choice: Resolution) {
+        let Some(req) = self.conflicts.first().and_then(|c| c.resolve(choice)) else {
+            return;
+        };
+        self.conflicts.remove(0);
+        self.request(req);
+    }
+
+    fn job_ctl(&mut self, id: JobId, ctl: JobCtl) {
+        let req = match ctl {
+            JobCtl::Pause => self.tray.toggle_pause(id),
+            JobCtl::Cancel => self.tray.cancel(id),
+            JobCtl::Dismiss => {
+                self.tray.dismiss(id);
+                None
+            }
+        };
+        if let Some(req) = req {
+            self.request(req);
+        }
+        if self.tray.jobs.is_empty() && self.focus == Focus::Jobs {
+            self.focus = Focus::List;
+        }
+    }
+
+    /// Ask to delete the picked rows permanently. In the trash they are
+    /// named by where they came from.
+    fn confirm_delete(&mut self) {
+        let paths = self.tabs.active().targets();
+        if paths.is_empty() {
+            return;
+        }
+        let names = paths
+            .iter()
+            .map(|p| {
+                let orig = self.trash.get(p).map(|t| t.original_path.as_slice());
+                crate::view::basename(orig.unwrap_or(p))
+            })
+            .collect();
+        self.overlay = Overlay::Confirm(Confirm::new(paths, names));
+    }
+
+    /// Paste `clip` into the active folder. A cut is pasted once.
+    fn paste(&mut self, clip: Clip) {
+        let dest = self.tabs.active().path.clone();
+        self.submit(clip.job(dest));
+        if clip.op == ClipOp::Cut {
+            self.clip = None;
         }
     }
 
@@ -194,6 +370,9 @@ impl App {
             Effect::Entered(i) => {
                 if let Some(b) = self.tabs.get(tab) {
                     let path = b.path.clone();
+                    if Some(path.as_slice()) == self.trash_dir() {
+                        self.request(Request::ListTrash);
+                    }
                     self.request(Request::FsInfo { path });
                 }
                 if active {
@@ -251,6 +430,26 @@ impl App {
     }
 }
 
+/// The sidebar's sections, top to bottom: a title and the kinds of place
+/// in it. [`App::places`] is kept sorted by section (stable within one),
+/// so drawing and the places cursor walk the same sequence.
+pub const SECTIONS: [(&str, &[PlaceKind]); 4] = [
+    (
+        "places",
+        &[PlaceKind::Home, PlaceKind::UserDir, PlaceKind::Recent],
+    ),
+    ("bookmarks", &[PlaceKind::Bookmark]),
+    ("devices", &[PlaceKind::Mount]),
+    ("", &[PlaceKind::Trash]),
+];
+
+fn section_of(kind: PlaceKind) -> usize {
+    SECTIONS
+        .iter()
+        .position(|(_, kinds)| kinds.contains(&kind))
+        .unwrap_or(SECTIONS.len())
+}
+
 fn rescroll(i: usize) -> Task<Message> {
     scroll_to(list_id(), AbsoluteOffset { x: 0.0, y: 0.0 }).chain(scroll_into_view(
         list_id(),
@@ -285,18 +484,46 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Conn(conn::Event::Down) => {
             app.link = None;
             app.fogd = Fogd::Down;
+            // A new fogd numbers jobs afresh; these can no longer be asked.
+            app.tray.reset();
+            app.conflicts.clear();
+            if app.focus == Focus::Jobs {
+                app.focus = Focus::List;
+            }
             Task::none()
         }
-        Message::Conn(conn::Event::Reply(Reply::PlacesList(places))) => {
+        Message::Conn(conn::Event::Reply(Reply::PlacesList(mut places))) => {
+            // Kept in drawn order, so the cursor walks what is on screen.
+            places.sort_by_key(|p| section_of(p.kind));
             app.place_sel = app.place_sel.min(places.len().saturating_sub(1));
             app.places = places;
+            if app.in_trash() {
+                app.request(Request::ListTrash);
+            }
+            Task::none()
+        }
+        Message::Conn(conn::Event::Reply(Reply::TrashList(items))) => {
+            app.trash = items.into_iter().map(|t| (t.id.clone(), t)).collect();
             Task::none()
         }
         Message::Conn(conn::Event::Reply(r)) => {
+            let ev = app.tray.on_reply(&r, Instant::now());
+            app.on_tray(ev);
+            if let Reply::Stat(st) = &r {
+                for c in &mut app.conflicts {
+                    c.on_stat(st);
+                }
+            }
+            // The trash folder changed: its items' origins may have too.
+            let trash_diff = matches!(&r, Reply::DirDiff { dir, .. }
+                if app.in_trash() && app.tabs.active().dir == Some(*dir));
             if let Overlay::Path(p) = &mut app.overlay {
                 p.on_reply(&r);
             }
             let fxs = app.tabs.on_reply(r);
+            if trash_diff {
+                app.request(Request::ListTrash);
+            }
             Task::batch(fxs.into_iter().map(|(t, fx)| app.apply(t, fx)))
         }
         Message::Key(keyboard::Event::ModifiersChanged(m)) => {
@@ -369,7 +596,8 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                     app.complete();
                 }
                 Overlay::Palette(p) => p.edit(Edit::Insert(line)),
-                Overlay::None => {}
+                Overlay::Name(n) => n.edit(Edit::Insert(line)),
+                Overlay::None | Overlay::Confirm(_) => {}
             }
             Task::none()
         }
@@ -380,6 +608,46 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                 Err(e) => Notice::RunFailed(name, e),
             });
             Task::none()
+        }
+        Message::ClipRead(text) => {
+            match text.as_deref().and_then(Clip::parse) {
+                Some(clip) => app.paste(clip),
+                None => app.notify(Notice::NothingToPaste),
+            }
+            Task::none()
+        }
+        Message::Tick(now) => {
+            app.tray.tick(now);
+            if app.tray.jobs.is_empty() && app.focus == Focus::Jobs {
+                app.focus = Focus::List;
+            }
+            Task::none()
+        }
+        Message::Job(id, ctl) => {
+            app.job_ctl(id, ctl);
+            Task::none()
+        }
+        Message::Resolve(choice) => {
+            app.resolve(choice);
+            Task::none()
+        }
+        Message::ApplyAll => {
+            if let Some(c) = app.conflicts.first_mut() {
+                c.apply_all = !c.apply_all;
+            }
+            Task::none()
+        }
+        Message::Confirm(delete) => {
+            if let Overlay::Confirm(c) = std::mem::replace(&mut app.overlay, Overlay::None) {
+                if delete {
+                    app.submit(c.job());
+                }
+            }
+            Task::none()
+        }
+        Message::Act(a) => {
+            app.overlay = Overlay::None;
+            run_action(app, a)
         }
     }
 }
@@ -436,6 +704,32 @@ pub fn on_key(
     let esc = matches!(key, Key::Named(Named::Escape));
     let enter = matches!(key, Key::Named(Named::Enter));
     let tab = matches!(key, Key::Named(Named::Tab));
+    let sideways = match key.as_ref() {
+        Key::Named(Named::ArrowLeft) => Some(-1),
+        Key::Named(Named::ArrowRight) => Some(1),
+        Key::Named(Named::Tab) => Some(if m.shift() { -1 } else { 1 }),
+        _ => step_of(key, m),
+    };
+
+    // A job waiting on a conflict comes before everything else.
+    if let Some(c) = app.conflicts.first_mut() {
+        let answer = if esc {
+            c.resolve(Resolution::Skip)
+        } else if enter {
+            c.resolve(c.pick)
+        } else if let Some(d) = sideways {
+            c.step(d);
+            None
+        } else {
+            typed(text, m).and_then(|t| c.key(t))
+        };
+        if let Some(req) = answer {
+            app.conflicts.remove(0);
+            app.request(req);
+        }
+        return Task::none();
+    }
+
     match &mut app.overlay {
         Overlay::Palette(p) => {
             let n = p.matches(&app.actions).len();
@@ -481,6 +775,41 @@ pub fn on_key(
             }
             return Task::none();
         }
+        Overlay::Name(n) => {
+            if esc {
+                app.overlay = Overlay::None;
+            } else if enter {
+                match n.submit() {
+                    Ok(None) => app.overlay = Overlay::None,
+                    Ok(Some((spec, name))) => {
+                        app.overlay = Overlay::None;
+                        app.tabs.active_mut().want = Some(name);
+                        app.submit(spec);
+                    }
+                    // Refused: the entry stays open and says why.
+                    Err(_) => {}
+                }
+            } else if is_paste(key, m) {
+                return iced::clipboard::read().map(Message::Paste);
+            } else if let Some(e) = edit_of(key, text, m) {
+                n.edit(e);
+            }
+            return Task::none();
+        }
+        Overlay::Confirm(c) => {
+            if esc {
+                app.overlay = Overlay::None;
+            } else if enter {
+                let spec = c.enter();
+                app.overlay = Overlay::None;
+                if let Some(spec) = spec {
+                    app.submit(spec);
+                }
+            } else if sideways.is_some() {
+                c.toggle();
+            }
+            return Task::none();
+        }
         Overlay::None => {}
     }
 
@@ -507,6 +836,34 @@ pub fn on_key(
                     return app.apply_active(fx);
                 }
             }
+            Some(t) => return run(app, t),
+            None => {}
+        }
+        return Task::none();
+    }
+
+    if app.focus == Focus::Jobs {
+        if esc {
+            app.focus = Focus::List;
+            return Task::none();
+        }
+        // The tray's own letters come first: they are shown next to it.
+        let ctl = match typed(text, m) {
+            Some("p" | " ") => Some(JobCtl::Pause),
+            Some("c") => Some(JobCtl::Cancel),
+            Some("x") => Some(JobCtl::Dismiss),
+            _ => None,
+        };
+        if let (Some(ctl), Some(id)) = (ctl, app.tray.at_cursor()) {
+            app.job_ctl(id, ctl);
+            return Task::none();
+        }
+        let n = app.tray.jobs.len() as isize;
+        match bound {
+            Some(Target::Action(Action::Down)) => app.tray.step(1),
+            Some(Target::Action(Action::Up)) => app.tray.step(-1),
+            Some(Target::Action(Action::Top)) => app.tray.step(-n),
+            Some(Target::Action(Action::Bottom)) => app.tray.step(n),
             Some(t) => return run(app, t),
             None => {}
         }
@@ -563,9 +920,11 @@ fn run(app: &mut App, t: Target) -> Task<Message> {
     }
 }
 
-/// Run a built-in action on the active tab. File operations belong to
-/// later units: they only say so in the status line.
+/// Run a built-in action on the active tab.
 pub fn run_action(app: &mut App, a: Action) -> Task<Message> {
+    if let Some(t) = file_action(app, a) {
+        return t;
+    }
     let b = app.tabs.active_mut();
     let fx = match a {
         Action::Down => b.step(1),
@@ -589,8 +948,12 @@ pub fn run_action(app: &mut App, a: Action) -> Task<Message> {
         Action::SortType => b.sort_by(SortKey::Type),
         Action::SortReverse => b.sort_reverse(),
         Action::SortDirsFirst => b.sort_dirs_first(),
-        Action::QuickLook
-        | Action::Copy
+        Action::QuickLook | Action::SplitToggle => {
+            b.notice = Some(Notice::Unavailable(a.name()));
+            Effect::None
+        }
+        // Handled by `file_action`.
+        Action::Copy
         | Action::Cut
         | Action::Paste
         | Action::Rename
@@ -598,10 +961,9 @@ pub fn run_action(app: &mut App, a: Action) -> Task<Message> {
         | Action::Delete
         | Action::Undo
         | Action::NewFolder
-        | Action::SplitToggle => {
-            b.notice = Some(Notice::Unavailable(a.name()));
-            Effect::None
-        }
+        | Action::NewFile
+        | Action::Restore
+        | Action::FocusJobs => Effect::None,
         Action::Palette => {
             app.overlay = Overlay::Palette(Palette::default());
             return Task::none();
@@ -651,6 +1013,88 @@ pub fn run_action(app: &mut App, a: Action) -> Task<Message> {
         }
     };
     app.apply_active(fx)
+}
+
+/// The file operations (FOG §File operations): each one ends as a job for
+/// `fogd`, a prompt that leads to one, or a clipboard write. `None` for
+/// every other action.
+fn file_action(app: &mut App, a: Action) -> Option<Task<Message>> {
+    let trash = app.in_trash();
+    let b = app.tabs.active_mut();
+    match a {
+        Action::Copy | Action::Cut => {
+            let paths = b.targets();
+            if paths.is_empty() {
+                return Some(Task::none());
+            }
+            let op = if a == Action::Copy {
+                ClipOp::Copy
+            } else {
+                ClipOp::Cut
+            };
+            b.notice = Some(Notice::Clipboard(op, paths.len()));
+            let clip = Clip { op, paths };
+            let text = clip.uri_list();
+            app.clip = Some(clip);
+            return Some(iced::clipboard::write(text));
+        }
+        Action::Paste if trash => b.notice = Some(Notice::Hint("paste does not go into the trash")),
+        Action::Paste => match app.clip.clone() {
+            Some(clip) => app.paste(clip),
+            None => return Some(iced::clipboard::read().map(Message::ClipRead)),
+        },
+        Action::Rename | Action::NewFolder | Action::NewFile if trash => {
+            b.notice = Some(Notice::Hint(
+                "the trash is changed by restore and delete only",
+            ));
+        }
+        Action::Rename => {
+            // One name is edited: the first picked row's.
+            let first = b.targets().into_iter().next();
+            if let Some(n) = first.and_then(NameEntry::rename) {
+                app.overlay = Overlay::Name(n);
+            }
+        }
+        Action::NewFolder | Action::NewFile => {
+            let dir = b.path.clone();
+            app.overlay = Overlay::Name(NameEntry::create(dir, a == Action::NewFolder));
+        }
+        // Trash is undoable, so it asks nothing. In the trash itself there
+        // is nowhere further to go: it becomes the confirmed delete.
+        Action::Trash if !trash => {
+            let paths = b.targets();
+            if !paths.is_empty() {
+                app.submit(JobSpec::Trash {
+                    paths,
+                    on_conflict: ConflictPolicy::Fail,
+                });
+            }
+        }
+        Action::Trash | Action::Delete => app.confirm_delete(),
+        Action::Restore if trash => {
+            let trash_ids = b.targets();
+            if !trash_ids.is_empty() {
+                app.submit(JobSpec::Restore {
+                    trash_ids,
+                    on_conflict: ConflictPolicy::Ask,
+                });
+            }
+        }
+        Action::Restore => b.notice = Some(Notice::Hint("restore works in the trash")),
+        Action::Undo => {
+            let req = app.tray.undo();
+            app.request(req);
+        }
+        Action::FocusJobs => {
+            app.focus = match app.focus {
+                Focus::Jobs => Focus::List,
+                _ if !app.tray.jobs.is_empty() => Focus::Jobs,
+                f => f,
+            };
+        }
+        _ => return None,
+    }
+    Some(Task::none())
 }
 
 /// Spawn custom action `i` on the executor, never the UI thread, with
@@ -760,19 +1204,18 @@ pub fn chord(key: &Key, modified: &Key, m: Modifiers) -> Option<Chord> {
 }
 
 pub fn subscription(app: &App) -> Subscription<Message> {
-    let base = [
+    let mut subs = vec![
         keyboard::listen().map(Message::Key),
         conn::subscription().map(Message::Conn),
         window::resize_events().map(|_| Message::Resized),
     ];
-    if app.script.is_empty() {
-        Subscription::batch(base)
-    } else {
-        Subscription::batch(
-            base.into_iter()
-                .chain([iced::time::every(SCRIPT_TICK).map(|_| Message::Script)]),
-        )
+    if !app.tray.jobs.is_empty() {
+        subs.push(iced::time::every(TRAY_TICK).map(Message::Tick));
     }
+    if !app.script.is_empty() {
+        subs.push(iced::time::every(SCRIPT_TICK).map(|_| Message::Script));
+    }
+    Subscription::batch(subs)
 }
 
 #[cfg(test)]
@@ -951,6 +1394,142 @@ mod tests {
         assert_eq!(a.tabs.active().target(), b"/home/u");
         press(&mut a, "ctrl+b");
         assert!(!a.sidebar);
+    }
+
+    fn reply(app: &mut App, r: Reply) {
+        let _ = update(app, Message::Conn(conn::Event::Reply(r)));
+    }
+
+    fn kinds(app: &App) -> Vec<JobKind> {
+        app.tray.jobs.iter().map(|j| j.kind).collect()
+    }
+
+    #[test]
+    fn trash_goes_at_once_and_delete_only_after_a_confirm() {
+        let mut a = app();
+        listed(&mut a, &["a", "b"]);
+        press(&mut a, "Delete");
+        reply(&mut a, Reply::JobAccepted { id: 1 });
+        assert_eq!(kinds(&a), [JobKind::Trash]);
+        // Shift+Delete asks; Enter on the default is cancel.
+        press(&mut a, "shift+Delete");
+        assert!(matches!(&a.overlay, Overlay::Confirm(c) if !c.delete));
+        press(&mut a, "Enter");
+        assert!(matches!(a.overlay, Overlay::None));
+        // Esc cancels too; only moving to "delete" and Enter deletes.
+        press(&mut a, "shift+Delete");
+        press(&mut a, "Esc");
+        press(&mut a, "shift+Delete");
+        press(&mut a, "Right");
+        press(&mut a, "Enter");
+        reply(&mut a, Reply::JobAccepted { id: 2 });
+        assert_eq!(kinds(&a), [JobKind::Trash, JobKind::Delete]);
+    }
+
+    #[test]
+    fn f2_renames_inline_and_refuses_a_slash() {
+        let mut a = app();
+        listed(&mut a, &["a", "b"]);
+        press(&mut a, "F2");
+        assert!(matches!(&a.overlay, Overlay::Name(n) if n.line.text() == "a"));
+        press(&mut a, "/");
+        press(&mut a, "Enter");
+        assert!(matches!(&a.overlay, Overlay::Name(n) if n.error.is_some()));
+        press(&mut a, "Backspace");
+        press(&mut a, "x");
+        press(&mut a, "Enter");
+        assert!(matches!(a.overlay, Overlay::None));
+        assert_eq!(a.tabs.active().want.as_deref(), Some(&b"ax"[..]));
+        reply(&mut a, Reply::JobAccepted { id: 1 });
+        assert_eq!(kinds(&a), [JobKind::Rename]);
+        // Esc leaves without a job.
+        press(&mut a, "ctrl+shift+n");
+        press(&mut a, "d");
+        press(&mut a, "Esc");
+        assert!(matches!(a.overlay, Overlay::None));
+    }
+
+    #[test]
+    fn copy_then_paste_asks_fogd_to_copy_here() {
+        let mut a = app();
+        listed(&mut a, &["a", "b"]);
+        press(&mut a, "ctrl+c");
+        assert_eq!(
+            a.clip,
+            Some(Clip {
+                op: ClipOp::Copy,
+                paths: vec![b"/w/a".to_vec()]
+            })
+        );
+        press(&mut a, "ctrl+v");
+        reply(&mut a, Reply::JobAccepted { id: 1 });
+        assert_eq!(kinds(&a), [JobKind::Copy]);
+        // A cut is pasted once.
+        press(&mut a, "ctrl+x");
+        press(&mut a, "ctrl+v");
+        assert_eq!(a.clip, None);
+    }
+
+    #[test]
+    fn a_conflict_takes_the_keys_until_answered() {
+        let mut a = app();
+        listed(&mut a, &["a"]);
+        press(&mut a, "ctrl+c");
+        press(&mut a, "ctrl+v");
+        reply(&mut a, Reply::JobAccepted { id: 7 });
+        let conflict = |a: &mut App| {
+            reply(
+                a,
+                Reply::JobState {
+                    id: 7,
+                    state: JobStatus::Conflict {
+                        src: b"/w/a".to_vec(),
+                        dest: b"/w/a".to_vec(),
+                    },
+                },
+            )
+        };
+        conflict(&mut a);
+        assert_eq!(a.conflicts.len(), 1);
+        // `j` is not a list move while the dialog is up.
+        press(&mut a, "j");
+        press(&mut a, "a");
+        assert!(a.conflicts[0].apply_all);
+        press(&mut a, "k");
+        assert!(a.conflicts.is_empty());
+        conflict(&mut a);
+        press(&mut a, "Esc");
+        assert!(a.conflicts.is_empty());
+    }
+
+    #[test]
+    fn places_are_walked_in_the_order_they_are_drawn() {
+        let mut a = app();
+        listed(&mut a, &["a"]);
+        let place = |kind, label: &str| Place {
+            kind,
+            label: label.into(),
+            path: format!("/{label}").into_bytes(),
+        };
+        // fogd's order: bookmarks before trash before mounts.
+        let _ = update(
+            &mut a,
+            Message::Conn(conn::Event::Reply(Reply::PlacesList(vec![
+                place(PlaceKind::Home, "home"),
+                place(PlaceKind::Bookmark, "mark"),
+                place(PlaceKind::Trash, "trash"),
+                place(PlaceKind::Mount, "usb"),
+                place(PlaceKind::UserDir, "docs"),
+            ]))),
+        );
+        let labels: Vec<&str> = a.places.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(labels, ["home", "docs", "mark", "usb", "trash"]);
+        press(&mut a, "Tab");
+        for _ in 0..3 {
+            press(&mut a, "j");
+        }
+        press(&mut a, "Enter");
+        assert_eq!(a.tabs.active().target(), b"/usb");
     }
 
     #[test]

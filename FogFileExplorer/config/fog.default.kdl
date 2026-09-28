@@ -56,6 +56,8 @@ keys {
     bind "shift+delete" "delete"
     bind "ctrl+z" "undo"
     bind "ctrl+shift+n" "new-folder"
+    bind "ctrl+alt+n" "new-file"
+    bind "ctrl+r" "restore"
 
     bind "ctrl+h" "toggle-hidden"
     bind "ctrl+t" "new-tab"
@@ -65,6 +67,7 @@ keys {
     bind "ctrl+shift+tab" "prev-tab"
     bind "ctrl+b" "toggle-sidebar"
     bind "tab" "focus-places"
+    bind "ctrl+j" "focus-jobs"
 
     bind "alt+1" "sort-name"
     bind "alt+2" "sort-size"
