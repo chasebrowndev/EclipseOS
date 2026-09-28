@@ -6,6 +6,7 @@
 //! All filesystem I/O and sorting runs on tokio's blocking pool; the reactor
 //! only moves frames.
 
+pub mod activate;
 pub mod backend;
 pub mod cache;
 pub mod sort;
