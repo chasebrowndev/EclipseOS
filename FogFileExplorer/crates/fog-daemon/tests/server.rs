@@ -10,11 +10,15 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use fog_daemon::{bind, serve, sort, Daemon, BATCH};
-use fog_proto::{apply_diff, read_frame, write_frame, Entry, Kind, Reply, Request};
+use fog_daemon::{bind, serve, sort, Cache, Daemon, Dirs, Jobs, LocalBackend, BATCH};
+use fog_proto::{
+    apply_diff, read_frame, write_frame, ConflictPolicy, Entry, JobSpec, JobStatus, Kind, Reply,
+    Request,
+};
 use tokio::net::UnixStream;
 
 struct Harness {
+    sock: std::path::PathBuf,
     _dir: tempfile::TempDir,
     stream: UnixStream,
 }
@@ -35,9 +39,21 @@ async fn start() -> Harness {
             & 0o777,
         0o700
     );
-    tokio::spawn(serve(listener, Arc::new(Daemon::local())));
+    // Trash and journal under the test's own XDG dirs, never the real ones.
+    let jobs = Jobs::new(&Dirs {
+        data_home: dir.path().join("data"),
+        state_home: dir.path().join("state"),
+    });
+    tokio::spawn(serve(
+        listener,
+        Arc::new(Daemon::new(Box::new(LocalBackend), Cache::default()).with_jobs(jobs)),
+    ));
     let stream = UnixStream::connect(&sock).await.unwrap();
-    Harness { _dir: dir, stream }
+    Harness {
+        sock,
+        _dir: dir,
+        stream,
+    }
 }
 
 impl Harness {
@@ -396,15 +412,6 @@ async fn errors() {
             errno: 22
         }
     );
-    // v0.2 requests not implemented yet answer ENOSYS.
-    h.send(Request::Undo).await;
-    assert_eq!(
-        h.recv().await,
-        Reply::Error {
-            path: vec![],
-            errno: 38
-        }
-    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -419,4 +426,72 @@ async fn live_socket_is_not_stolen() {
     drop(l);
     // Now stale: replaced.
     bind(&sock).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn job_states_reach_every_client() {
+    let mut h = start().await;
+    let other = UnixStream::connect(&h.sock).await.unwrap();
+    let mut o = Harness {
+        sock: h.sock.clone(),
+        _dir: tempfile::tempdir().unwrap(),
+        stream: other,
+    };
+    let work = tempfile::tempdir().unwrap();
+    let path = work.path().join("new");
+    // Round trips so both clients are subscribed before the job runs.
+    h.send(Request::Places).await;
+    h.recv().await;
+    o.send(Request::Places).await;
+    o.recv().await;
+    h.send(Request::Job(JobSpec::Mkdir {
+        path: path.as_os_str().as_bytes().to_vec(),
+        on_conflict: ConflictPolicy::Fail,
+    }))
+    .await;
+    let Reply::JobAccepted { id } = h.recv().await else {
+        panic!("JobAccepted first");
+    };
+    for c in [&mut h, &mut o] {
+        loop {
+            match c.recv().await {
+                Reply::JobState {
+                    id: i,
+                    state: JobStatus::Done,
+                } if i == id => break,
+                Reply::JobState { id: i, state } => {
+                    assert_eq!(i, id);
+                    assert!(matches!(state, JobStatus::Queued | JobStatus::Running));
+                }
+                Reply::JobProgress { id: i, .. } => assert_eq!(i, id),
+                r => panic!("unexpected {r:?}"),
+            }
+        }
+    }
+    assert!(path.is_dir());
+    // Undo is broadcast like a job; its result goes to the asker.
+    h.send(Request::Undo).await;
+    loop {
+        match h.recv().await {
+            Reply::UndoResult { ok, reason } => {
+                assert!(ok, "{reason:?}");
+                break;
+            }
+            Reply::JobState { .. } | Reply::JobProgress { .. } => {}
+            r => panic!("unexpected {r:?}"),
+        }
+    }
+    assert!(!path.exists());
+    let mut states = Vec::new();
+    while states.last() != Some(&JobStatus::Done) {
+        match o.recv().await {
+            Reply::JobState { state, .. } => states.push(state),
+            Reply::JobProgress { .. } => {}
+            r => panic!("unexpected {r:?}"),
+        }
+    }
+    assert_eq!(
+        states,
+        vec![JobStatus::Queued, JobStatus::Running, JobStatus::Done]
+    );
 }

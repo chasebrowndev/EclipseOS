@@ -10,11 +10,15 @@ pub mod activate;
 pub mod backend;
 pub mod cache;
 pub mod config;
+pub mod jobs;
+pub mod journal;
 mod list;
 pub mod meta;
 pub mod open;
+pub mod ops;
 pub mod places;
 pub mod sort;
+pub mod trash;
 pub mod watch;
 
 use std::ffi::OsStr;
@@ -35,6 +39,7 @@ use tokio::sync::{broadcast, mpsc};
 
 pub use backend::{Backend, LocalBackend, BATCH};
 pub use cache::{diff, Cache, Listing};
+pub use jobs::{Dirs, Jobs};
 
 /// Frames queued per client before request handlers wait on the writer.
 const CLIENT_QUEUE: usize = 64;
@@ -44,8 +49,8 @@ pub struct Daemon {
     backend: Box<dyn Backend>,
     cache: Mutex<Cache>,
     next_dir: AtomicU64,
-    /// Replies for every client, e.g. [`Reply::ConfigError`].
-    events: broadcast::Sender<Reply>,
+    /// Also carries every daemon-wide broadcast (see [`Daemon::broadcast`]).
+    jobs: Jobs,
     hub: watch::Hub,
 }
 
@@ -55,14 +60,26 @@ impl Daemon {
             backend,
             cache: Mutex::new(cache),
             next_dir: AtomicU64::new(1),
-            events: broadcast::channel(16).0,
+            jobs: Jobs::unconfigured(),
             hub: watch::Hub::default(),
         }
     }
 
-    /// [`LocalBackend`] with the default cache bounds.
+    /// Replace the job queue, e.g. with one on test directories.
+    pub fn with_jobs(mut self, jobs: Jobs) -> Self {
+        self.jobs = jobs;
+        self
+    }
+
+    /// The job queue, undo journal and trash.
+    pub fn jobs(&self) -> &Jobs {
+        &self.jobs
+    }
+
+    /// [`LocalBackend`] with the default cache bounds, and the job queue on
+    /// the XDG trash and journal. [`Daemon::new`] alone refuses jobs.
     pub fn local() -> Self {
-        Self::new(Box::new(LocalBackend), Cache::default())
+        Self::new(Box::new(LocalBackend), Cache::default()).with_jobs(Jobs::from_env())
     }
 
     /// The listing cache. Never hold the guard across an `.await`.
@@ -70,13 +87,14 @@ impl Daemon {
         self.cache.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Send `r` to every connected client.
+    /// Send `r` to every connected client, e.g. [`Reply::ConfigError`].
+    /// Shares the job queue's channel, so one relay per client carries both.
     pub fn broadcast(&self, r: Reply) {
-        let _ = self.events.send(r);
+        self.jobs.broadcast(r);
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Reply> {
-        self.events.subscribe()
+        self.jobs.subscribe()
     }
 
     /// Serve one request from a connected `peer`: subscriptions need its
@@ -112,11 +130,11 @@ impl Daemon {
             }
             Request::Open { path, app } => out(open_file(path, app.as_deref())),
             Request::Places => out(Reply::PlacesList(places::current())),
-            // Jobs and trash land in later units.
             Request::Unsubscribe { .. } => {}
-            Request::Job(_) | Request::JobControl { .. } | Request::Undo | Request::ListTrash => {
-                out(error(&[], &Errno::NOSYS.into()))
-            }
+            Request::Job(spec) => self.jobs.submit(spec, out),
+            Request::JobControl { id, action } => self.jobs.control(id, action, out),
+            Request::Undo => self.jobs.undo(out),
+            Request::ListTrash => self.jobs.list_trash(out),
         }
     }
 }
@@ -272,7 +290,9 @@ async fn forward(mut events: broadcast::Receiver<Reply>, tx: mpsc::Sender<Vec<u8
                 }
                 Err(e) => tracing::warn!(error = %e, "broadcast not encodable"),
             },
-            Err(broadcast::error::RecvError::Lagged(_)) => {}
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                tracing::debug!(n, "client lagged; broadcasts dropped");
+            }
             Err(broadcast::error::RecvError::Closed) => return,
         }
     }

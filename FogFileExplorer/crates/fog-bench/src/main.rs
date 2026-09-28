@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, ensure, Context, Result};
-use fog_daemon::{bind, serve, Daemon};
+use fog_daemon::{bind, serve, Cache, Daemon, LocalBackend};
 use fog_proto::{apply_diff, read_frame, write_frame, Reply, Request};
 use tokio::net::UnixStream;
 
@@ -132,7 +132,7 @@ async fn run(iters: usize) -> Result<Vec<Case>> {
         .prefix("fog-bench.")
         .tempdir_in("/tmp")?;
     let sock = root.path().join("fogd.sock");
-    let daemon = Arc::new(Daemon::local());
+    let daemon = Arc::new(Daemon::new(Box::new(LocalBackend), Cache::default()));
     let server = tokio::spawn(serve(bind(&sock)?, daemon.clone()));
     let mut conn = UnixStream::connect(&sock).await?;
 

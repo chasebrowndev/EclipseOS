@@ -123,7 +123,11 @@ mod tests {
     fn hot_reload_applies_and_rejects() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("eclipse").join("fog.kdl");
-        let daemon = Arc::new(Daemon::local());
+        // Not `local()`: tests never open the real journal.
+        let daemon = Arc::new(Daemon::new(
+            Box::new(crate::LocalBackend),
+            crate::Cache::default(),
+        ));
         let mut events = daemon.subscribe();
 
         let live = start(&daemon, path.clone());
