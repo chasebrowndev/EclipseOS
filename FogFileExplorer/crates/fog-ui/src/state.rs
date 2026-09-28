@@ -173,6 +173,17 @@ impl Browser {
                 if self.pending.take_if(|n| n.path == path).is_none() && path != self.path {
                     return Effect::None;
                 }
+                // The start path is a file (`fog-ui FILE`, or a file:// URI
+                // from the desktop entry): `fogd` answers ENOTDIR. Nothing is
+                // shown yet, so open its parent with the file selected.
+                let not_dir = std::io::Error::from_raw_os_error(errno).kind()
+                    == std::io::ErrorKind::NotADirectory;
+                if not_dir && self.dir.is_none() {
+                    if let Some((parent, name)) = split_parent(&path) {
+                        self.path = parent.clone();
+                        return self.navigate(parent, Some(name));
+                    }
+                }
                 self.error = Some((path, errno));
                 Effect::None
             }
@@ -631,6 +642,26 @@ mod tests {
         ));
         assert_eq!(fx, Effect::Entered(1));
         assert_eq!(sel(&b), "src");
+    }
+
+    #[test]
+    fn starting_on_a_file_opens_its_parent_with_the_file_selected() {
+        let mut b = Browser::new(b"/d/f".to_vec());
+        let fx = b.on_reply(Reply::Error {
+            path: b"/d/f".to_vec(),
+            errno: 20,
+        });
+        assert_eq!(fx, Effect::List(b"/d".to_vec()));
+        assert_eq!(b.target(), b"/d");
+        assert_eq!(b.error, None);
+        b.on_reply(snap(
+            "/d",
+            1,
+            0,
+            &[("a", Kind::File), ("f", Kind::File)],
+            &[0, 1],
+        ));
+        assert_eq!(sel(&b), "f");
     }
 
     #[test]
