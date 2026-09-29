@@ -3055,11 +3055,10 @@ impl Config {
                         self.reject(n, "repeat-rate expects an integer");
                     }
                 }
-                "repeat-delay" => {
-                    if !set_i32(&mut self.input.repeat_delay, n) {
-                        self.reject(n, "repeat-delay expects an integer");
-                    }
-                }
+                "repeat-delay" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (0..=5_000).contains(&v) => self.input.repeat_delay = v as i32,
+                    _ => self.reject(n, "repeat-delay must be an integer 0..=5000"),
+                },
                 "accel-profile" => match arg(n).and_then(KdlValue::as_string) {
                     Some(v @ ("flat" | "adaptive")) => self.input.accel_profile = v.to_string(),
                     other => self.reject(n, format!("unknown accel-profile {other:?}")),
@@ -4825,6 +4824,19 @@ mod tests {
         assert!(default_binds()
             .iter()
             .any(|b| b.key == Keysym::space && matches!(b.action, crate::input::Action::AgentAttention)));
+    }
+
+    /// Repeat delay takes the schema's full 0..=5000 ms, unclamped, and
+    /// refuses anything past it.
+    #[test]
+    fn repeat_delay_range() {
+        for (text, want, errs) in [("600", 600, 0), ("5000", 5000, 0), ("5001", 300, 1)] {
+            let doc: KdlDocument = format!("input {{ repeat-delay {text} }}").parse().unwrap();
+            let mut cfg = Config::default();
+            cfg.apply(&doc, &mut Vec::new());
+            assert_eq!(cfg.input.repeat_delay, want, "repeat-delay {text}");
+            assert_eq!(cfg.errors.len(), errs, "repeat-delay {text}");
+        }
     }
 
     #[test]
