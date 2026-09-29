@@ -11,7 +11,7 @@ fn main() -> iced::Result {
     let pane = std::env::args()
         .nth(1)
         .and_then(|a| Pane::from_arg(&a))
-        .unwrap_or(Pane::Appearance);
+        .unwrap_or(Pane::Windows);
     let mut builder = iced::application(move || app::boot(pane), app::update, app::view)
         .title("Eclipse Settings")
         .theme(|_: &App| eclipse_ui::theme::theme())
