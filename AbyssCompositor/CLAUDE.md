@@ -90,8 +90,10 @@ sees.
 
 Non-TCB work under `crates/abyss/src/{backend,outputs,input,shell,protocols,
 ipc,config,xwayland}/`, `crates/eclipse-ipc/`, `crates/eclipse-ctl/`, and
-`crates/eclipse-services/` goes to the `eclipse-backend` agent, not the main
-thread. Same standard as frontend: no change too small to exempt. TCB paths
+`crates/eclipse-services/` goes to the `eclipse-backend` agent when the change
+is medium or larger — the point is keeping the main context clean. Small
+changes (a default, a one-liner and its test/doc fallout) the main thread makes
+directly. Unlike frontend, size matters here. TCB paths
 (`policy/`, `trusted_ui/`, `audit/`, `render/capture.rs`) are never delegated
 to it — those stay with the main thread and owner review (F-07 §4).
 
@@ -124,9 +126,12 @@ file dumps until it compacts mid-task and loses the plan.
   rule. It returns the rule and its citation, which is also exactly what a PR
   body needs (`Implements COMP-08 §4`). Ask it **before** implementing a
   spec'd behaviour, not after the review catches the drift.
-- The counterweight: **no subagent for a direct lookup.** One grep, one
-  targeted read, one command runs inline — a cold agent re-derives context at
-  full price to answer something a single call would have.
+- The counterweight: **no subagent for a direct lookup or a small change.**
+  One grep, one targeted read, one command, a one-line edit runs inline — a
+  cold agent re-derives context at full price to do what a single call would
+  have. Subagents are for medium and larger changes, where keeping the main
+  context clean pays. The one exception: **all** frontend goes to
+  `eclipse-frontend`, every time, whatever the size.
 
 ## Commits & PRs (F-07 §5)
 - Conventional commits: `feat(abyss): …`, `fix(policyd): …`, `docs: …`.

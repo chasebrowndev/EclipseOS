@@ -637,7 +637,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.active-opacity",
         PCT,
-        Float(1.0),
+        Float(0.87),
         Abyss,
         Live,
         "Alpha applied to the focused window.",
@@ -1625,9 +1625,11 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
             .into(),
         ),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
-        "decoration.active-opacity" => V::Float(c.decoration.active_opacity as f64),
-        "decoration.inactive-opacity" => V::Float(c.decoration.inactive_opacity as f64),
-        "decoration.dim-inactive" => V::Float(c.decoration.dim_inactive as f64),
+        // f32 fractions go out as their shortest decimal, so 0.87 reads back
+        // as 0.87 rather than 0.8700000047683716.
+        "decoration.active-opacity" => V::Float(c.decoration.active_opacity.to_string().parse().unwrap()),
+        "decoration.inactive-opacity" => V::Float(c.decoration.inactive_opacity.to_string().parse().unwrap()),
+        "decoration.dim-inactive" => V::Float(c.decoration.dim_inactive.to_string().parse().unwrap()),
         "decoration.blur.enabled" => V::Bool(c.decoration.blur.enabled),
         "decoration.blur.size" => V::Int(c.decoration.blur.size as i64),
         "decoration.blur.passes" => V::Int(c.decoration.blur.passes as i64),

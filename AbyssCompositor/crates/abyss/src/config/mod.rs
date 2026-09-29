@@ -649,7 +649,7 @@ impl Default for Decoration {
     fn default() -> Self {
         Self {
             rounding: 13,
-            active_opacity: 1.0,
+            active_opacity: 0.87,
             inactive_opacity: 1.0,
             dim_inactive: 0.0,
             blur: Blur::default(),
@@ -4873,13 +4873,13 @@ mod tests {
         let cfg = Config::default();
         // Rounding ships on (13px) to match eclipse-ui's client-drawn glass
         // radius, so any_window_effect() is already true out of the box.
-        // Opacity and dim are still untouched: nothing here changes how solid
-        // a window looks.
+        // The focused window ships slightly translucent (0.87) so the default-on
+        // blur shows behind it; inactive opacity and dim are untouched.
         assert!(cfg.decoration.any_window_effect());
         assert!(!cfg.decoration.shadow.enabled);
         assert!(!cfg.decoration.glow.on());
         assert_eq!(cfg.decoration.rounding, 13);
-        assert_eq!(cfg.decoration.active_opacity, 1.0);
+        assert_eq!(cfg.decoration.active_opacity, 0.87);
         assert_eq!(cfg.decoration.inactive_opacity, 1.0);
         assert_eq!(cfg.decoration.dim_inactive, 0.0);
         // Animations off means no curve resolves even if one were parsed.
@@ -4917,7 +4917,7 @@ mod tests {
         cfg.apply(&doc, &mut Vec::new());
         // Every bad value keeps its default rather than half-applying.
         assert_eq!(cfg.decoration.rounding, 13);
-        assert_eq!(cfg.decoration.active_opacity, 1.0);
+        assert_eq!(cfg.decoration.active_opacity, 0.87);
         assert_eq!(cfg.decoration.inactive_opacity, 1.0);
         assert!(cfg.animations.curves.is_empty());
     }
