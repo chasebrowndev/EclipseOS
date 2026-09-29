@@ -140,6 +140,36 @@ impl Tray {
         }
     }
 
+    /// Drop `id` into `to` before the entry now at `at` in that lane (as
+    /// [`Tray::in_lane`] lists it, `id` included if it is there already).
+    /// Only the taskbar lane has an order to aim at; the drawer and the
+    /// hidden lane list in first-seen order, so a drop there is [`Tray::moved`].
+    pub fn dropped(&self, id: &str, to: Lane, at: usize) -> Writes {
+        if to != Lane::Taskbar {
+            return self.moved(id, to);
+        }
+        let mut w = self.moved(id, Lane::Taskbar);
+        let lane = self.taskbar();
+        let before = lane[at.min(lane.len())..].iter().find(|x| *x != id);
+        let mut pinned = self.wanted();
+        pinned.retain(|p| p != id);
+        let i = before
+            .and_then(|b| pinned.iter().position(|p| p == b))
+            .unwrap_or(pinned.len());
+        pinned.insert(i, id.to_owned());
+        w.pinned = (Some(&pinned) != self.pinned.as_ref()).then_some(pinned);
+        w
+    }
+
+    /// The lane one step down the list (`bar → drawer → hidden`) or up it,
+    /// for the keyboard. `None` past either end.
+    pub fn stepped(&self, id: &str, down: bool) -> Option<Writes> {
+        const LANES: [Lane; 3] = [Lane::Taskbar, Lane::Overflow, Lane::Hidden];
+        let at = LANES.iter().position(|l| *l == self.lane_of(id))?;
+        let to = if down { at + 1 } else { at.checked_sub(1)? };
+        LANES.get(to).map(|l| self.moved(id, *l))
+    }
+
     /// Move a pinned `id` one place earlier (`-1`) or later (`+1`) in the
     /// taskbar. `None` when it is not pinned or is already at that end.
     pub fn shifted(&self, id: &str, later: bool) -> Option<Vec<String>> {
@@ -308,5 +338,45 @@ mod tests {
             t.shifted("a", true),
             Some(vec!["c".into(), "b".into(), "a".into()])
         );
+    }
+
+    #[test]
+    fn a_drop_into_the_bar_lands_before_the_entry_under_it() {
+        let t = tray(json!(["a", "b", "c"]), json!(["h"]));
+        let w = t.dropped("h", Lane::Taskbar, 1);
+        assert_eq!(w.pinned, Some(ids(&["a", "h", "b", "c"])));
+        assert_eq!(w.hidden, Some(vec![]));
+        // Within the lane: `c` dropped at the front, and `a` past the end.
+        assert_eq!(
+            t.dropped("c", Lane::Taskbar, 0).pinned,
+            Some(ids(&["c", "a", "b"]))
+        );
+        assert_eq!(
+            t.dropped("a", Lane::Taskbar, 3).pinned,
+            Some(ids(&["b", "c", "a"]))
+        );
+        // Onto its own place: nothing to write.
+        assert_eq!(t.dropped("b", Lane::Taskbar, 1).pinned, None);
+        assert_eq!(t.dropped("b", Lane::Taskbar, 2).pinned, None);
+    }
+
+    #[test]
+    fn a_drop_into_the_drawer_or_hidden_is_a_move() {
+        let t = tray(json!(["a", "b"]), json!([]));
+        assert_eq!(t.dropped("a", Lane::Hidden, 0), t.moved("a", Lane::Hidden));
+        assert_eq!(t.dropped("b", Lane::Overflow, 5), t.moved("b", Lane::Overflow));
+    }
+
+    #[test]
+    fn stepping_walks_the_lanes_and_stops_at_the_ends() {
+        let t = tray(json!(["a"]), json!(["h"]));
+        assert_eq!(t.stepped("a", false), None);
+        assert_eq!(t.stepped("a", true), Some(t.moved("a", Lane::Overflow)));
+        assert_eq!(t.stepped("h", false), Some(t.moved("h", Lane::Overflow)));
+        assert_eq!(t.stepped("h", true), None);
+    }
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
     }
 }
