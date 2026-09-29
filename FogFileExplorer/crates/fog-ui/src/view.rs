@@ -1,31 +1,33 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Drawing (FOG §UI and navigation).
+//! Drawing (FOG §UI and navigation, §Visual design).
 //!
-//! Composition: the listing is the hero, a dense sortable table that takes
-//! every spare pixel. Around it the chrome changes silhouette at every step
-//! so nothing reads as a stack of panels: a rail of places on the left, then
-//! top to bottom a strip of tabs (only with more than one), the breadcrumb
-//! bar, a caption-height column header, the table, the job tray (only while
-//! there are jobs: a lower band of meters, each row underlined by its
-//! progress), and a one-line status. The conflict and delete dialogs are
-//! centred boxes over a scrim, like the palette.
+//! Composition: the listing is the hero, a dense sortable table laid bare on
+//! the window's tinted glass and given every spare pixel. Around it the
+//! chrome floats, and changes silhouette at every step so nothing reads as a
+//! stack of panels: a tall glass rail of places inset on the left; above the
+//! table a strip of bare tabs (only with more than one) and the path as a
+//! glass capsule; then caption-height column labels, the table, the job
+//! tray as a glass card of meters (only while there are jobs) and one line
+//! of bare status text. The palette, the name sheet and the dialogs are
+//! glass sheets over a light scrim, blurring a snapshot of the window.
 //!
 //! One gold value, always: the cursor of whichever region has the keyboard
-//! (the list's row, the sidebar's place, the tray's job, the palette's or a
-//! dialog's pick, or the caret of the path or name being typed). Every other
+//! (the list's pill, the sidebar's place, the tray's job, the palette's or a
+//! dialog's pick, or the caret of the path or name being typed). The active
+//! tab's marker is the only other gold, and it is small. Every other
 //! cursor, every mark and every progress bar goes neutral.
 
 use std::time::{Duration, Instant};
 
 use fog_config::{Action, Target};
 use fog_proto::{Entry, JobStatus, Kind, SortKey, StatReply, TrashItem};
-use fog_widgets::virtual_list;
+use fog_widgets::{glass, virtual_list};
 use iced::widget::text::Wrapping;
 use iced::widget::{
     column, container, mouse_area, opaque, responsive, row, stack, text, Column, Row, Space,
 };
-use iced::{alignment, Background, Color, Element, Length, Size};
+use iced::{alignment, Background, Border, Color, Element, Length, Padding, Shadow, Size};
 use jiff::tz::TimeZone;
 use jiff::Timestamp;
 
@@ -35,15 +37,17 @@ use crate::edit::LineEdit;
 use crate::ops::{resolution_label, Confirm, Conflict, Job, JobKind, NameEntry, NameFor};
 use crate::palette::{Item, Palette};
 use crate::state::{join, split_parent, Browser, Notice};
-use crate::theme::{color, size};
+use crate::theme::{alpha, color, font, look, motion, size};
 
 pub fn view(app: &App) -> Element<'_, Message> {
+    let l = look();
     let b = app.tabs.active();
+    let m = &app.motion;
     let mut main = Column::new();
     if app.tabs.len() > 1 {
         main = main.push(tab_strip(app));
     }
-    main = main.push(chrome(path_bar(app), Edge::Bottom)).push(
+    main = main.push(capsule(app)).push(
         responsive(move |room: Size| {
             // iced's embedded scrollbar only takes width while the list
             // overflows; the header's labels follow it.
@@ -57,77 +61,122 @@ pub fn view(app: &App) -> Element<'_, Message> {
         .height(Length::Fill),
     );
     if !app.tray.jobs.is_empty() {
-        main = main.push(tray(app));
+        main = main.push(tray(app, m.tray.value));
     }
-    main = main.push(chrome(status_line(app, b), Edge::Top));
+    main = main.push(
+        container(status_line(app, b))
+            .padding([size::CHROME_Y, size::PAD_X + size::PILL_X])
+            .width(Length::Fill),
+    );
 
     let mut body = Row::new();
-    if app.sidebar {
-        body = body.push(sidebar(app));
+    // Kept while it slides away, gone once it has.
+    if m.sidebar.value > REST {
+        body = body.push(sidebar(app, m.sidebar.value));
     }
     let base = container(body.push(main))
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(|_| ground(color::BASE, Some(color::TEXT)));
+        .style(move |_| ground(l.window, Some(color::TEXT)));
 
+    let k = m.sheet.value;
     // A waiting conflict outranks any overlay: its job is stalled on it.
     if let Some(c) = app.conflicts.first() {
-        let content = conflict_dialog(app, c);
-        return modal(base, content, None);
+        return modal(
+            app,
+            base,
+            conflict_dialog(app, c, ink(k)),
+            None,
+            Place::Centre,
+        );
     }
     match &app.overlay {
-        Overlay::Palette(p) => stack![
+        Overlay::Palette(p) => modal(
+            app,
             base,
-            scrim(Some(Message::Dismiss)),
-            container(opaque(palette(app, p)))
-                .width(Length::Fill)
-                .padding([size::PALETTE_TOP, 0.0])
-                .align_x(alignment::Horizontal::Center),
-        ]
-        .into(),
-        Overlay::Confirm(c) => modal(base, confirm_dialog(c), Some(Message::Confirm(false))),
+            palette(app, p, ink(k)),
+            Some(Message::Dismiss),
+            Place::Top,
+        ),
+        Overlay::Confirm(c) => modal(
+            app,
+            base,
+            confirm_dialog(c, ink(k)),
+            Some(Message::Confirm(false)),
+            Place::Centre,
+        ),
+        Overlay::Name(
+            n @ NameEntry {
+                what: NameFor::Folder | NameFor::File,
+                ..
+            },
+        ) => modal(app, base, name_sheet(n, ink(k)), None, Place::Top),
         _ => base.into(),
     }
 }
 
-/// The dimmed window under an overlay; a click on it sends `dismiss`.
-fn scrim<'a>(dismiss: Option<Message>) -> Element<'a, Message> {
+/// A spring this close to zero draws nothing.
+const REST: f32 = 0.01;
+
+/// Content opacity for a sheet or panel at spring value `k`: it trails the
+/// glass a little, so text never floats without its ground.
+fn ink(k: f32) -> f32 {
+    ((k - 0.2) / 0.8).clamp(0.0, 1.0)
+}
+
+/// `c` faded by `k`.
+fn fade(c: Color, k: f32) -> Color {
+    alpha(c, c.a * k)
+}
+
+#[derive(Clone, Copy)]
+enum Place {
+    /// Under the top edge, like the palette.
+    Top,
+    Centre,
+}
+
+/// A sheet floating over the window: a light scrim (a click on it sends
+/// `dismiss`), then the glass, blurring the window's snapshot, scaling and
+/// fading in on its spring.
+fn modal<'a>(
+    app: &'a App,
+    base: impl Into<Element<'a, Message>>,
+    sheet: Element<'a, Message>,
+    dismiss: Option<Message>,
+    at: Place,
+) -> Element<'a, Message> {
+    let l = look();
+    let m = &app.motion;
+    let k = m.sheet.value;
+    let scale = motion::SHEET_FROM + (1.0 - motion::SHEET_FROM) * k;
+    let panel = glass(opaque(sheet), l.sheet())
+        .backdrop(m.backdrop.clone())
+        .opacity(k)
+        .scale(scale);
+    let placed = container(panel).width(Length::Fill).height(Length::Fill);
+    let placed = match at {
+        Place::Top => placed
+            .padding(Padding::ZERO.top(size::PALETTE_TOP))
+            .align_x(alignment::Horizontal::Center),
+        Place::Centre => placed.center(Length::Fill),
+    };
+    stack![base.into(), scrim(dismiss, k.min(1.0)), placed].into()
+}
+
+/// The dimmed window under a sheet; a click on it sends `dismiss`. Opaque:
+/// the wheel does not scroll the list under a sheet (its snapshot would
+/// no longer match).
+fn scrim<'a>(dismiss: Option<Message>, k: f32) -> Element<'a, Message> {
     let s = mouse_area(
         container(Space::new())
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(|_| ground(color::SCRIM, None)),
+            .style(move |_| ground(fade(color::SCRIM, k), None)),
     );
     match dismiss {
-        Some(m) => s.on_press(m).into(),
-        None => s.into(),
-    }
-}
-
-/// A dialog centred over the scrim.
-fn modal<'a>(
-    base: impl Into<Element<'a, Message>>,
-    dialog: Element<'a, Message>,
-    dismiss: Option<Message>,
-) -> Element<'a, Message> {
-    stack![
-        base.into(),
-        scrim(dismiss),
-        container(opaque(dialog)).center(Length::Fill),
-    ]
-    .into()
-}
-
-/// The hard-edged box of the palette and the dialogs.
-fn boxed(_: &iced::Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(color::CHROME)),
-        border: iced::Border {
-            color: color::RULE,
-            width: size::HAIRLINE,
-            radius: 0.0.into(),
-        },
-        ..Default::default()
+        Some(m) => opaque(s.on_press(m)),
+        None => opaque(s),
     }
 }
 
@@ -139,11 +188,30 @@ fn ground(bg: Color, fg: Option<Color>) -> container::Style {
     }
 }
 
+/// A rounded wash: pills, the tray's meters, an inset field.
+fn pill(fill: Color, border: Color, glow: Option<Shadow>, radius: f32) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(fill)),
+        border: Border {
+            color: border,
+            width: if border.a > 0.0 { size::HAIRLINE } else { 0.0 },
+            radius: radius.into(),
+        },
+        shadow: glow.unwrap_or_default(),
+        ..Default::default()
+    }
+}
+
 fn label<'a>(s: impl text::IntoFragment<'a>, sz: f32, c: Color) -> text::Text<'a> {
     text(s).size(sz).color(c).wrapping(Wrapping::None)
 }
 
-/// A filled block: the accent bar, rules, the caret.
+/// Interface text: Instrument Sans.
+fn caption<'a>(s: impl text::IntoFragment<'a>, sz: f32, c: Color) -> text::Text<'a> {
+    label(s, sz, c).font(font::UI)
+}
+
+/// A filled block: rules, the caret, a meter.
 fn block<'a>(w: impl Into<Length>, h: impl Into<Length>, c: Option<Color>) -> Element<'a, Message> {
     container(Space::new())
         .width(w)
@@ -155,31 +223,8 @@ fn block<'a>(w: impl Into<Length>, h: impl Into<Length>, c: Option<Color>) -> El
         .into()
 }
 
-fn rule_h<'a>() -> Element<'a, Message> {
-    block(Length::Fill, size::HAIRLINE, Some(color::RULE))
-}
-
-fn rule_v<'a>() -> Element<'a, Message> {
-    block(size::HAIRLINE, Length::Fill, Some(color::RULE))
-}
-
-#[derive(Clone, Copy)]
-enum Edge {
-    Top,
-    Bottom,
-}
-
-/// A thin chrome row: lifted ground, hairline rule on the edge that meets
-/// the listing.
-fn chrome(content: Element<'_, Message>, edge: Edge) -> Element<'_, Message> {
-    let body = container(content)
-        .padding([size::CHROME_Y, size::PAD_X])
-        .width(Length::Fill)
-        .style(|_| ground(color::CHROME, None));
-    match edge {
-        Edge::Top => column![rule_h(), body].into(),
-        Edge::Bottom => column![body, rule_h()].into(),
-    }
+fn rule_h<'a>(k: f32) -> Element<'a, Message> {
+    block(Length::Fill, size::HAIRLINE, Some(fade(color::RULE, k)))
 }
 
 /// Nothing modal is open: the regions' own cursors may take the gold.
@@ -192,50 +237,77 @@ fn list_focused(app: &App) -> bool {
     app.focus == Focus::List && unobstructed(app)
 }
 
+/// How a cursor, mark or pick is drawn: the gold pill with its glow while
+/// its region has the keyboard, else a neutral wash.
+fn cursor_style(focused: bool) -> container::Style {
+    let l = look();
+    if focused {
+        pill(
+            color::ACCENT_FILL,
+            color::ACCENT_BORDER,
+            Some(l.glow()),
+            l.chip_radius,
+        )
+    } else {
+        pill(color::MARK_FILL, Color::TRANSPARENT, None, l.chip_radius)
+    }
+}
+
 // ---------------------------------------------------------------- tabs
 
-/// Tabs, only when there are two or more: a lower ground than the chrome,
-/// the active tab opening onto the path bar in the chrome's own colour.
+/// Tabs, only when there are two or more: bare names, the active one white
+/// over a short gold marker.
 fn tab_strip(app: &App) -> Element<'_, Message> {
-    let mut strip = Row::new().height(size::TAB_H);
+    let l = look();
+    let mut strip = Row::new()
+        .height(size::TAB_H)
+        .spacing(size::PILL_X)
+        .align_y(alignment::Vertical::Bottom);
     for (i, b) in app.tabs.iter().enumerate() {
         let on = i == app.tabs.index();
         let name = basename(b.target());
-        let tab = container(label(
-            name,
-            size::TEXT_SMALL,
-            if on {
-                color::TEXT
-            } else {
-                color::TEXT_TERTIARY
-            },
-        ))
-        .padding([0.0, size::PAD_X])
-        .max_width(size::TAB_MAX_W)
-        .height(Length::Fill)
-        .align_y(alignment::Vertical::Center)
-        .clip(true)
-        .style(move |_| {
-            ground(
+        let marker = container(Space::new())
+            .width(size::TAB_MARK_W)
+            .height(size::TAB_MARK_H)
+            .style(move |_| {
+                pill(
+                    if on {
+                        color::ACCENT
+                    } else {
+                        Color::TRANSPARENT
+                    },
+                    Color::TRANSPARENT,
+                    None,
+                    l.chip_radius,
+                )
+            });
+        let tab = column![
+            container(caption(
+                name,
+                size::TEXT_SMALL,
                 if on {
-                    color::TAB_ACTIVE
+                    color::TEXT
                 } else {
-                    color::TAB_STRIP
+                    color::TEXT_TERTIARY
                 },
-                None,
-            )
-        });
-        strip = strip
-            .push(mouse_area(tab).on_press(Message::Tab(i)))
-            .push(rule_v());
+            ))
+            .max_width(size::TAB_MAX_W)
+            .clip(true),
+            marker,
+        ]
+        .spacing(size::PILL_X / 2.0)
+        .align_x(alignment::Horizontal::Center)
+        .padding([0.0, size::PAD_X / 2.0]);
+        strip = strip.push(mouse_area(tab).on_press(Message::Tab(i)));
     }
-    column![
-        container(strip)
-            .width(Length::Fill)
-            .style(|_| ground(color::TAB_STRIP, None)),
-        rule_h(),
-    ]
-    .into()
+    container(strip)
+        .padding(
+            Padding::ZERO
+                .left(size::INSET + size::PILL_X)
+                .top(size::INSET / 2.0),
+        )
+        .width(Length::Fill)
+        .into()
 }
 
 /// A tray row's subject: the path being worked on, else the first item the
@@ -270,11 +342,15 @@ pub fn basename(path: &[u8]) -> String {
 
 // ---------------------------------------------------------------- sidebar
 
-/// The places rail: sections by kind, the current folder's place neutral,
-/// the sidebar's own cursor gold only while it has the keyboard.
-fn sidebar(app: &App) -> Element<'_, Message> {
+/// The places rail: a tall glass panel inset from the window's edges,
+/// sections by kind, the current folder's place a neutral pill, the
+/// sidebar's own cursor the gold one only while it has the keyboard. `k`
+/// is its spring: it slides in by width and fades.
+fn sidebar(app: &App, k: f32) -> Element<'_, Message> {
+    let l = look();
     let here = app.tabs.active().target();
     let focused = app.focus == Focus::Places && unobstructed(app);
+    let ink = ink(k);
     let mut col = Column::new();
     for (title, kinds) in SECTIONS {
         let members: Vec<usize> = (0..app.places.len())
@@ -286,10 +362,12 @@ fn sidebar(app: &App) -> Element<'_, Message> {
         col = col.push(block(Length::Fill, size::SECTION_GAP, None));
         if !title.is_empty() {
             col = col.push(
-                container(label(title, size::TEXT_SMALL, color::TEXT_TERTIARY))
-                    .padding([0.0, size::PAD_X])
-                    .height(size::HEADER_H)
-                    .align_y(alignment::Vertical::Center),
+                container(caption(
+                    title,
+                    size::CAPTION,
+                    fade(color::TEXT_TERTIARY, ink),
+                ))
+                .padding([0.0, size::PAD_X - size::PANEL_PAD + size::PILL_X]),
             );
         }
         for i in members {
@@ -297,62 +375,89 @@ fn sidebar(app: &App) -> Element<'_, Message> {
             let cursor = focused && i == app.place_sel;
             let current = p.path == here;
             col = col.push(
-                mouse_area(place_row(&p.label, cursor, current))
+                mouse_area(place_row(&p.label, cursor, current, ink))
                     .on_press(Message::Go(p.path.clone())),
             );
         }
     }
     if app.places.is_empty() {
         col = col.push(block(Length::Fill, size::SECTION_GAP, None)).push(
-            container(label("no places", size::TEXT_SMALL, color::TEXT_TERTIARY))
-                .padding([0.0, size::PAD_X]),
+            container(caption(
+                "no places",
+                size::TEXT_SMALL,
+                fade(color::TEXT_TERTIARY, ink),
+            ))
+            .padding([0.0, size::PAD_X]),
         );
     }
-    row![
+    let width = (size::SIDEBAR_W * k).max(0.0);
+    let rail = glass(
         container(col)
-            .width(size::SIDEBAR_W)
+            .padding(size::PANEL_PAD)
+            .width(Length::Fill)
             .height(Length::Fill)
-            .clip(true)
-            .style(|_| ground(color::CHROME, None)),
-        rule_v(),
-    ]
-    .into()
+            .clip(true),
+        l.panel(),
+    )
+    .opacity(k);
+    container(rail)
+        .padding(Padding::from(size::INSET).right(0.0))
+        .width(width + size::INSET)
+        .height(Length::Fill)
+        .clip(width < size::SIDEBAR_W)
+        .into()
 }
 
-fn place_row(name: &str, cursor: bool, current: bool) -> Element<'static, Message> {
-    let (bar, fill, fg) = match (cursor, current) {
-        (true, _) => (
-            Some(color::ACCENT),
-            Some(color::ACCENT_FILL),
-            color::ACCENT_TEXT,
-        ),
-        (false, true) => (Some(color::NEUTRAL), Some(color::MARK_FILL), color::TEXT),
-        (false, false) => (None, None, color::TEXT_SECONDARY),
+fn place_row(name: &str, cursor: bool, current: bool, k: f32) -> Element<'static, Message> {
+    let fg = match (cursor, current) {
+        (true, _) => color::ACCENT_TEXT,
+        (false, true) => color::TEXT,
+        (false, false) => color::TEXT_SECONDARY,
     };
-    container(row![
-        block(size::BAR_W, Length::Fill, bar),
-        container(label(name.to_owned(), size::TEXT, fg))
-            .padding([0.0, size::PAD_X - size::BAR_W])
-            .height(Length::Fill)
-            .align_y(alignment::Vertical::Center)
-            .clip(true),
-    ])
-    .width(Length::Fill)
-    .height(size::ROW_H)
-    .style(move |_| container::Style {
-        background: fill.map(Background::Color),
-        ..Default::default()
-    })
-    .into()
+    let style = move |_: &iced::Theme| {
+        if cursor || current {
+            cursor_style(cursor)
+        } else {
+            container::Style::default()
+        }
+    };
+    container(caption(name.to_owned(), size::TEXT, fade(fg, k)))
+        .padding([0.0, size::PILL_X * 2.0])
+        .width(Length::Fill)
+        .height(size::PLACE_H)
+        .align_y(alignment::Vertical::Center)
+        .clip(true)
+        .style(style)
+        .into()
 }
 
 // ---------------------------------------------------------------- path bar
+
+/// The path as a glass capsule over the table.
+fn capsule(app: &App) -> Element<'_, Message> {
+    let l = look();
+    let style = glass::Style {
+        radius: size::CAPSULE_H / 2.0,
+        ..l.panel()
+    };
+    container(glass(
+        container(path_bar(app))
+            .padding([0.0, size::PAD_X + size::PILL_X])
+            .height(size::CAPSULE_H)
+            .width(Length::Fill)
+            .align_y(alignment::Vertical::Center),
+        style,
+    ))
+    .padding(size::INSET)
+    .width(Length::Fill)
+    .into()
+}
 
 /// Breadcrumbs, or the path editor while it is open.
 fn path_bar(app: &App) -> Element<'_, Message> {
     if let Overlay::Path(p) = &app.overlay {
         let ghost = p.ghost(app.tabs.active().show_hidden).unwrap_or_default();
-        return line_edit(&p.line, color::ACCENT, ghost);
+        return line_edit(&p.line, color::ACCENT, ghost, 1.0);
     }
     let path = app.tabs.active().target().to_vec();
     let crumbs = crumb_bar(path);
@@ -362,7 +467,7 @@ fn path_bar(app: &App) -> Element<'_, Message> {
     // In the trash the bar carries what can be done there.
     let act = |name: &'static str, a: Action| {
         mouse_area(row![
-            label(name, size::TEXT_SMALL, color::TEXT_SECONDARY),
+            caption(name, size::TEXT_SMALL, color::TEXT_SECONDARY),
             label(
                 format!(" {}", chord_of(app, Target::Action(a))),
                 size::TEXT_SMALL,
@@ -386,7 +491,7 @@ fn path_bar(app: &App) -> Element<'_, Message> {
 
 fn crumb_bar<'a>(path: Vec<u8>) -> Element<'a, Message> {
     responsive(move |room: Size| {
-        // The UI font is monospace, so a width is a character count.
+        // The path font is monospace, so a width is a character count.
         let fits = (room.width / (size::TEXT * size::MONO_ADVANCE)) as usize;
         let parts = crumbs(&path, fits);
         let last = parts.len().saturating_sub(1);
@@ -410,14 +515,14 @@ fn crumb_bar<'a>(path: Vec<u8>) -> Element<'a, Message> {
 }
 
 /// One editable line: text, a caret in `caret`'s colour, then `ghost` (the
-/// completion Tab would take) in tertiary.
-fn line_edit<'a>(line: &LineEdit, caret: Color, ghost: String) -> Element<'a, Message> {
+/// completion Tab would take) in tertiary; all faded by `k`.
+fn line_edit<'a>(line: &LineEdit, caret: Color, ghost: String, k: f32) -> Element<'a, Message> {
     let (before, after) = line.halves();
     row![
-        label(before.to_owned(), size::TEXT, color::TEXT),
-        block(size::CARET_W, size::TEXT, Some(caret)),
-        label(after.to_owned(), size::TEXT, color::TEXT),
-        label(ghost, size::TEXT, color::TEXT_TERTIARY),
+        label(before.to_owned(), size::TEXT, fade(color::TEXT, k)),
+        block(size::CARET_W, size::TEXT, Some(fade(caret, k))),
+        label(after.to_owned(), size::TEXT, fade(color::TEXT, k)),
+        label(ghost, size::TEXT, fade(color::TEXT_TERTIARY, k)),
     ]
     .align_y(alignment::Vertical::Center)
     .into()
@@ -471,12 +576,17 @@ pub fn crumbs(path: &[u8], fits: usize) -> Vec<(String, Option<Vec<u8>>)> {
 /// completions while it is open. Clicking a label sorts by it (in fogd).
 fn header(app: &App, scrollbar: bool) -> Element<'_, Message> {
     let b = app.tabs.active();
+    let lead = size::PILL_X + size::PAD_X;
     let content: Element<'_, Message> = match &app.overlay {
         Overlay::Path(p) => {
             let cands = p.candidates(b.show_hidden);
             let mut r = Row::new().spacing(size::GAP);
             if cands.is_empty() {
-                r = r.push(label("no folders", size::TEXT_SMALL, color::TEXT_TERTIARY));
+                r = r.push(caption(
+                    "no folders",
+                    size::TEXT_SMALL,
+                    color::TEXT_TERTIARY,
+                ));
             }
             for (i, e) in cands.iter().enumerate() {
                 let fg = if i == p.pick % cands.len().max(1) {
@@ -487,32 +597,7 @@ fn header(app: &App, scrollbar: bool) -> Element<'_, Message> {
                 r = r.push(label(format!("{}/", e.display()), size::TEXT_SMALL, fg));
             }
             container(r)
-                .padding([0.0, size::PAD_X])
-                .width(Length::Fill)
-                .clip(true)
-                .into()
-        }
-        Overlay::Name(
-            n @ NameEntry {
-                what: NameFor::Folder | NameFor::File,
-                ..
-            },
-        ) => {
-            let what = if n.what == NameFor::Folder {
-                "new folder  "
-            } else {
-                "new file  "
-            };
-            let mut r = row![
-                label(what, size::TEXT_SMALL, color::TEXT_TERTIARY),
-                line_edit(&n.line, color::ACCENT, String::new()),
-            ]
-            .align_y(alignment::Vertical::Center);
-            if let Some(e) = n.error {
-                r = r.push(label(format!("  {e}"), size::TEXT_SMALL, color::DANGER));
-            }
-            container(r)
-                .padding([0.0, size::PAD_X])
+                .padding([0.0, lead])
                 .width(Length::Fill)
                 .clip(true)
                 .into()
@@ -527,11 +612,11 @@ fn header(app: &App, scrollbar: bool) -> Element<'_, Message> {
                     (true, false) => " ↑",
                     (true, true) => " ↓",
                 };
-                label(
+                caption(
                     format!("{name}{arrow}"),
                     size::TEXT_SMALL,
                     if on {
-                        color::TEXT
+                        color::TEXT_SECONDARY
                     } else {
                         color::TEXT_TERTIARY
                     },
@@ -543,13 +628,13 @@ fn header(app: &App, scrollbar: bool) -> Element<'_, Message> {
             };
             let mut r = row![mouse_area(
                 container(col("name", SortKey::Name))
-                    .padding([0.0, size::PAD_X])
+                    .padding([0.0, lead])
                     .width(Length::Fill)
             )
             .on_press(Message::Header(SortKey::Name))];
             if trash {
                 r = r.push(
-                    label("from", size::TEXT_SMALL, color::TEXT_TERTIARY)
+                    caption("from", size::TEXT_SMALL, color::TEXT_TERTIARY)
                         .width(size::FROM_W)
                         .align_x(alignment::Horizontal::Left),
                 );
@@ -578,7 +663,7 @@ fn header(app: &App, scrollbar: bool) -> Element<'_, Message> {
                 ));
             }
             r.push(block(
-                size::PAD_X - size::BAR_W + if scrollbar { size::SCROLLBAR_W } else { 0.0 },
+                lead + if scrollbar { size::SCROLLBAR_W } else { 0.0 },
                 size::HAIRLINE,
                 None,
             ))
@@ -590,7 +675,7 @@ fn header(app: &App, scrollbar: bool) -> Element<'_, Message> {
             .height(size::HEADER_H)
             .width(Length::Fill)
             .align_y(alignment::Vertical::Center),
-        rule_h(),
+        container(rule_h(1.0)).padding([0.0, lead]),
     ]
     .into()
 }
@@ -606,7 +691,7 @@ fn list(app: &App) -> Element<'_, Message> {
         } else {
             format!("nothing matches “{}”", b.filter)
         };
-        return container(label(msg, size::TEXT_SMALL, color::TEXT_TERTIARY))
+        return container(caption(msg, size::TEXT_SMALL, color::TEXT_TERTIARY))
             .center(Length::Fill)
             .into();
     }
@@ -621,6 +706,8 @@ fn list(app: &App) -> Element<'_, Message> {
         _ => None,
     };
     let trash = app.in_trash().then_some(&app.trash);
+    let m = &app.motion;
+    let hover = m.hovered.map(|i| (i, m.hover.value));
     virtual_list(b.len(), size::ROW_H, move |i| {
         let cursor = match (i == b.selected, focused) {
             (false, _) => Cursor::No,
@@ -632,12 +719,28 @@ fn list(app: &App) -> Element<'_, Message> {
         let extra = Extra {
             edit: renaming.filter(|(p, _)| *p == path()).map(|(_, l)| l),
             trash: trash.map(|t| t.get(&path())),
+            hover: hover.filter(|(h, _)| *h == i).map_or(0.0, |(_, k)| k),
         };
         let r = list_row(entry, cursor, b.is_marked(i), tz, extra);
         mouse_area(r)
             .on_press(Message::Row(i))
             .on_double_click(Message::OpenRow(i))
+            .on_enter(Message::Hover(i))
+            .on_exit(Message::Unhover(i))
             .into()
+    })
+    // The cursor's pill slides under the rows on its spring.
+    .underlay(m.pill.value, move || {
+        container(
+            container(Space::new())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(move |_| cursor_style(focused)),
+        )
+        .padding([size::HAIRLINE, size::PILL_X])
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     })
     .id(list_id())
     .into()
@@ -658,11 +761,14 @@ struct Extra<'a> {
     edit: Option<&'a LineEdit>,
     /// In the trash view: the item's record, if `ListTrash` named it.
     trash: Option<Option<&'a TrashItem>>,
+    /// The pointer's wash, 0 to 1.
+    hover: f32,
 }
 
-/// One row: `[bar] name[/] … size modified type`. Folders read primary,
-/// files secondary; metadata still on its way from fogd reads `·`. In the
-/// trash a row is named by where it came from: `name from size deleted`.
+/// One row: `name[/] … size modified type`. Folders read primary, files
+/// secondary; metadata still on its way from fogd reads `·`. In the trash a
+/// row is named by where it came from: `name from size deleted`. The
+/// cursor's pill is not the row's: it slides beneath (see [`list`]).
 fn list_row(
     entry: Option<&Entry>,
     cursor: Cursor,
@@ -679,11 +785,10 @@ fn list_row(
         (_, true) => color::TEXT,
         (_, false) => color::TEXT_SECONDARY,
     };
-    let (bar, fill) = match (cursor, marked) {
-        (Cursor::Focused, _) => (Some(color::ACCENT), Some(color::ACCENT_FILL)),
-        (Cursor::Idle, _) => (Some(color::NEUTRAL), Some(color::MARK_FILL)),
-        (Cursor::No, true) => (None, Some(color::MARK_FILL)),
-        (Cursor::No, false) => (None, None),
+    let fill = match (cursor, marked) {
+        (Cursor::No, true) => Some(color::MARK_FILL),
+        (Cursor::No, false) if extra.hover > 0.0 => Some(fade(color::HOVER, extra.hover)),
+        _ => None,
     };
     let item = extra.trash.flatten();
     let shown = match item {
@@ -692,8 +797,14 @@ fn list_row(
     };
     let mut name: Row<'static, Message> = match extra.edit {
         // The caret is the gold while a name is typed; the row idles.
-        Some(line) => row![line_edit(line, color::ACCENT, String::new())],
-        None => row![label(shown, size::TEXT, name_color)],
+        Some(line) => row![line_edit(line, color::ACCENT, String::new(), 1.0)],
+        None => row![
+            label(shown, size::TEXT, name_color).font(if cursor == Cursor::Focused {
+                font::DATA_MEDIUM
+            } else {
+                font::DATA
+            })
+        ],
     };
     if is_dir {
         name = name.push(label("/", size::TEXT, color::TEXT_TERTIARY));
@@ -745,19 +856,20 @@ fn list_row(
     let body = body
         .align_y(alignment::Vertical::Center)
         .height(Length::Fill);
-    container(row![
-        block(size::BAR_W, Length::Fill, bar),
+    let r = look().chip_radius;
+    container(
         container(body)
-            .padding([0.0, size::PAD_X - size::BAR_W])
+            .padding([0.0, size::PAD_X])
             .width(Length::Fill)
-            .height(Length::Fill),
-    ])
+            .height(Length::Fill)
+            .style(move |_| match fill {
+                Some(f) => pill(f, Color::TRANSPARENT, None, r),
+                None => container::Style::default(),
+            }),
+    )
+    .padding([size::HAIRLINE, size::PILL_X])
     .width(Length::Fill)
     .height(Length::Fill)
-    .style(move |_| container::Style {
-        background: fill.map(Background::Color),
-        ..Default::default()
-    })
     .into()
 }
 
@@ -967,50 +1079,52 @@ pub fn group(n: usize) -> String {
 
 // ---------------------------------------------------------------- tray
 
-/// The job tray: one meter per job, a lower band than the chrome. Each row
-/// reads `kind  file  amount  eta  controls` over a full-width progress
-/// bar. The cursor is gold only while the tray has the keyboard.
-fn tray(app: &App) -> Element<'_, Message> {
+/// The job tray: a glass card of meters under the table, one per job,
+/// each `kind  file  amount  eta  controls` over a rounded progress bar.
+/// The cursor is gold only while the tray has the keyboard. `k` is its
+/// spring: it fades and settles in when the first job arrives.
+fn tray(app: &App, k: f32) -> Element<'_, Message> {
+    let l = look();
     let focused = app.focus == Focus::Jobs && unobstructed(app);
     let now = Instant::now();
     let jobs = &app.tray.jobs;
+    let ink = ink(k);
     let start = app.tray.cursor.saturating_sub(size::TRAY_ROWS - 1);
-    let mut col = Column::new();
+    let mut col = Column::new().spacing(size::HAIRLINE * 2.0);
     for (i, j) in jobs.iter().enumerate().skip(start).take(size::TRAY_ROWS) {
-        col = col.push(job_row(j, focused && i == app.tray.cursor, now));
+        col = col.push(job_row(j, focused && i == app.tray.cursor, now, ink));
     }
     let hidden = jobs.len().saturating_sub(size::TRAY_ROWS);
     if hidden > 0 {
         let hint = chord_of(app, Target::Action(Action::FocusJobs));
         col = col.push(
-            container(label(
+            container(caption(
                 format!("{} more · {hint}", group(hidden)),
                 size::TEXT_SMALL,
-                color::TEXT_TERTIARY,
+                fade(color::TEXT_TERTIARY, ink),
             ))
             .padding([0.0, size::PAD_X])
             .height(size::HEADER_H)
             .align_y(alignment::Vertical::Center),
         );
     }
-    column![
-        rule_h(),
-        container(col)
-            .width(Length::Fill)
-            .style(|_| ground(color::TRAY, None)),
-    ]
-    .into()
+    let card = glass(
+        container(col).padding(size::PANEL_PAD).width(Length::Fill),
+        l.panel(),
+    )
+    .opacity(k)
+    .scale(motion::SHEET_FROM + (1.0 - motion::SHEET_FROM) * k);
+    container(card)
+        .padding(Padding::from(size::INSET).bottom(0.0))
+        .width(Length::Fill)
+        .into()
 }
 
-fn job_row(j: &Job, cursor: bool, now: Instant) -> Element<'static, Message> {
-    let (bar, fill, kind_fg) = if cursor {
-        (
-            Some(color::ACCENT),
-            Some(color::ACCENT_FILL),
-            color::ACCENT_TEXT,
-        )
+fn job_row(j: &Job, cursor: bool, now: Instant, k: f32) -> Element<'static, Message> {
+    let kind_fg = if cursor {
+        color::ACCENT_TEXT
     } else {
-        (None, None, color::TEXT_SECONDARY)
+        color::TEXT_SECONDARY
     };
     let failed = matches!(j.status, JobStatus::Failed { .. });
     let mut what = job_subject(j);
@@ -1042,8 +1156,12 @@ fn job_row(j: &Job, cursor: bool, now: Instant) -> Element<'static, Message> {
     };
     let ctl = |key: &'static str, word: &'static str, c: JobCtl| {
         mouse_area(row![
-            label(key, size::TEXT_SMALL, color::TEXT_TERTIARY),
-            label(format!(" {word}"), size::TEXT_SMALL, color::TEXT_SECONDARY),
+            label(key, size::TEXT_SMALL, fade(color::TEXT_TERTIARY, k)),
+            caption(
+                format!(" {word}"),
+                size::TEXT_SMALL,
+                fade(color::TEXT_SECONDARY, k)
+            ),
         ])
         .on_press(Message::Job(j.id, c))
     };
@@ -1062,67 +1180,71 @@ fn job_row(j: &Job, cursor: bool, now: Instant) -> Element<'static, Message> {
         controls = controls.push(ctl("x", "dismiss", JobCtl::Dismiss));
     }
     let right = |s: String, w: f32, c: Color| {
-        label(s, size::TEXT_SMALL, c)
+        label(s, size::TEXT_SMALL, fade(c, k))
             .width(w)
             .align_x(alignment::Horizontal::Right)
     };
     let body = row![
-        label(j.kind.label(), size::TEXT_SMALL, kind_fg).width(size::KIND_W),
+        caption(j.kind.label(), size::TEXT_SMALL, fade(kind_fg, k)).width(size::KIND_W),
         container(label(
             what,
             size::TEXT,
-            if failed { color::DANGER } else { color::TEXT }
+            fade(if failed { color::DANGER } else { color::TEXT }, k)
         ))
         .width(Length::Fill)
         .clip(true),
         right(amount, size::AMOUNT_W, color::TEXT_SECONDARY),
         right(state, size::ETA_W, state_fg),
-        container(controls).padding([0.0, size::GAP]),
+        container(controls).padding(Padding::ZERO.left(size::GAP)),
     ]
     .align_y(alignment::Vertical::Center)
-    .height(Length::Fill);
-    let line = container(row![
-        block(size::BAR_W, Length::Fill, bar),
-        container(body)
-            .padding([0.0, size::PAD_X - size::BAR_W])
-            .width(Length::Fill)
-            .height(Length::Fill),
-    ])
-    .width(Length::Fill)
-    .height(size::ROW_H)
-    .style(move |_| container::Style {
-        background: fill.map(Background::Color),
-        ..Default::default()
-    });
-    column![line, progress(j.fraction(), failed)].into()
+    .height(size::ROW_H);
+    container(column![body, progress(j.fraction(), failed, k)])
+        .padding([
+            size::HAIRLINE * 2.0,
+            size::PAD_X - size::PANEL_PAD + size::PILL_X,
+        ])
+        .width(Length::Fill)
+        .style(move |_| {
+            if cursor {
+                cursor_style(true)
+            } else {
+                container::Style::default()
+            }
+        })
+        .into()
 }
 
-/// A full-width meter: the done part over the track.
-fn progress<'a>(fraction: Option<f32>, failed: bool) -> Element<'a, Message> {
+/// A rounded meter: the done part over the track.
+fn progress<'a>(fraction: Option<f32>, failed: bool, k: f32) -> Element<'a, Message> {
     const STEPS: f32 = 1000.0;
     let done = (fraction.unwrap_or(0.0).clamp(0.0, 1.0) * STEPS) as u16;
-    let rest = STEPS as u16 - done;
-    let tone = if failed {
-        color::DANGER
-    } else {
-        color::PROGRESS
-    };
-    let mut r = Row::new().height(size::PROGRESS_H);
+    let tone = fade(
+        if failed {
+            color::DANGER
+        } else {
+            color::PROGRESS
+        },
+        k,
+    );
+    let r = size::PROGRESS_H / 2.0;
+    let mut bar = Row::new().height(size::PROGRESS_H);
     if done > 0 {
-        r = r.push(block(
-            Length::FillPortion(done),
-            size::PROGRESS_H,
-            Some(tone),
-        ));
+        bar = bar.push(
+            container(Space::new())
+                .width(Length::FillPortion(done))
+                .height(Length::Fill)
+                .style(move |_| pill(tone, Color::TRANSPARENT, None, r)),
+        );
     }
-    if rest > 0 {
-        r = r.push(block(
-            Length::FillPortion(rest),
-            size::PROGRESS_H,
-            Some(color::TRACK),
-        ));
+    if done < STEPS as u16 {
+        bar = bar.push(Space::new().width(Length::FillPortion(STEPS as u16 - done)));
     }
-    r.into()
+    let track = fade(color::TRACK, k);
+    container(bar)
+        .width(Length::Fill)
+        .style(move |_| pill(track, Color::TRANSPARENT, None, r))
+        .into()
 }
 
 /// `0:42`, `12:05`, `1:02:03`.
@@ -1135,96 +1257,103 @@ fn clock(d: Duration) -> String {
     }
 }
 
-// ---------------------------------------------------------------- dialogs
+// ---------------------------------------------------------------- sheets
 
-/// One of a dialog's choices: `key word`, the pick gold. Choices share
-/// the dialog's width equally.
+/// One of a dialog's choices: `key word`, the pick a gold pill, or a
+/// danger one when the choice destroys. Choices share the sheet's width
+/// equally.
 fn choice(
     key: &'static str,
     word: &'static str,
     on: bool,
     fg: Color,
     press: Message,
+    k: f32,
 ) -> Element<'static, Message> {
-    let (bar, fill, fg) = if on {
-        (
-            Some(color::ACCENT),
-            Some(color::ACCENT_FILL),
-            if fg == color::DANGER {
-                fg
-            } else {
-                color::ACCENT_TEXT
-            },
-        )
+    let danger = fg == color::DANGER;
+    let fg = if on && !danger {
+        color::ACCENT_TEXT
     } else {
-        (None, None, fg)
+        fg
     };
     let mut words = Row::new();
     if !key.is_empty() {
         words = words.push(label(
             format!("{key} "),
             size::TEXT_SMALL,
-            color::TEXT_TERTIARY,
+            fade(color::TEXT_TERTIARY, k),
         ));
     }
-    words = words.push(label(word, size::TEXT, fg));
-    let cell = container(row![
-        block(size::BAR_W, Length::Fill, bar),
-        container(words.align_y(alignment::Vertical::Center))
-            .padding([0.0, size::PAD_X - size::BAR_W])
-            .height(Length::Fill)
-            .align_y(alignment::Vertical::Center),
-    ])
-    .width(Length::Fill)
-    .height(size::ROW_H)
-    .style(move |_| container::Style {
-        background: fill.map(Background::Color),
-        ..Default::default()
-    });
+    words = words.push(caption(word, size::TEXT, fade(fg, k)).font(if on {
+        font::UI_MEDIUM
+    } else {
+        font::UI
+    }));
+    let cell = container(words.align_y(alignment::Vertical::Center))
+        .padding([size::CHOICE_PAD_Y, size::CHOICE_PAD_X])
+        .width(Length::Fill)
+        .height(size::ROW_H + size::CHOICE_PAD_Y)
+        .align_x(alignment::Horizontal::Center)
+        .align_y(alignment::Vertical::Center)
+        .style(move |_| match (on && k > 0.0, danger) {
+            (false, _) => container::Style::default(),
+            (true, false) => cursor_style(true),
+            (true, true) => pill(
+                color::DANGER_FILL,
+                color::DANGER_BORDER,
+                None,
+                look().chip_radius,
+            ),
+        });
     mouse_area(cell).on_press(press).into()
 }
 
-/// Chrome padding around a dialog section.
+/// Padding around a sheet's section.
 fn section<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     container(content)
-        .padding([size::CHROME_Y, size::PAD_X])
+        .padding([size::CHROME_Y * 1.5, size::SHEET_PAD])
         .width(Length::Fill)
         .into()
 }
 
 /// A job found its destination taken: the two files side by side, then
 /// the choices. Skip is picked first; `a` applies the answer to the rest
-/// of this job's conflicts.
-fn conflict_dialog<'a>(app: &'a App, c: &'a Conflict) -> Element<'a, Message> {
+/// of this job's conflicts. `k` fades the content in with its sheet.
+fn conflict_dialog<'a>(app: &'a App, c: &'a Conflict, k: f32) -> Element<'a, Message> {
     let lossy = |p: Vec<u8>| String::from_utf8_lossy(&p).into_owned();
     let dir = |p: &[u8]| split_parent(p).map(|(d, _)| lossy(d)).unwrap_or_default();
     let waiting = app.conflicts.len();
+    let f = |c: Color| fade(c, k);
     let head = column![
         row![
-            container(label(
-                format!("“{}” already exists", basename(&c.dest)),
-                size::TEXT,
-                color::TEXT
-            ))
+            container(
+                caption(
+                    format!("“{}” already exists", basename(&c.dest)),
+                    size::TEXT,
+                    f(color::TEXT)
+                )
+                .font(font::UI_SEMIBOLD)
+            )
             .width(Length::Fill)
             .clip(true),
-            label(
+            caption(
                 if waiting > 1 {
                     format!("1 of {}", group(waiting))
                 } else {
                     String::new()
                 },
                 size::TEXT_SMALL,
-                color::TEXT_TERTIARY
+                f(color::TEXT_TERTIARY)
             ),
         ],
         container(label(
             format!("in {}", dir(&c.dest)),
             size::TEXT_SMALL,
-            color::TEXT_TERTIARY
+            f(color::TEXT_TERTIARY)
         ))
         .clip(true),
-    ];
+    ]
+    .spacing(size::HAIRLINE * 2.0);
     let tz = &app.tz;
     let side =
         |title: &'static str, path: &[u8], st: Option<&StatReply>, other: Option<&StatReply>| {
@@ -1245,31 +1374,34 @@ fn conflict_dialog<'a>(app: &'a App, c: &'a Conflict) -> Element<'a, Message> {
             };
             let fact = |v: String, tag: bool, word: &'static str| {
                 row![
-                    label(v, size::TEXT_SMALL, color::TEXT_SECONDARY),
-                    label(
+                    label(v, size::TEXT_SMALL, f(color::TEXT_SECONDARY)),
+                    caption(
                         if tag {
                             format!("  {word}")
                         } else {
                             String::new()
                         },
                         size::TEXT_SMALL,
-                        color::TEXT
+                        f(color::TEXT)
                     ),
                 ]
             };
-            container(column![
-                label(title, size::TEXT_SMALL, color::TEXT_TERTIARY),
-                // The header names the full folder; each side needs only its
-                // own folder's name to tell the two apart.
-                container(label(
-                    format!("{}/", basename(dir(path).as_bytes())),
-                    size::TEXT_SMALL,
-                    color::TEXT_SECONDARY
-                ))
-                .clip(true),
-                fact(size_s, larger, "larger"),
-                fact(date, newer, "newer"),
-            ])
+            container(
+                column![
+                    caption(title, size::CAPTION, f(color::TEXT_TERTIARY)),
+                    // The header names the full folder; each side needs only
+                    // its own folder's name to tell the two apart.
+                    container(label(
+                        format!("{}/", basename(dir(path).as_bytes())),
+                        size::TEXT_SMALL,
+                        f(color::TEXT_SECONDARY)
+                    ))
+                    .clip(true),
+                    fact(size_s, larger, "larger"),
+                    fact(date, newer, "newer"),
+                ]
+                .spacing(size::HAIRLINE * 2.0),
+            )
             .width(Length::Fill)
         };
     let sides = row![
@@ -1287,7 +1419,7 @@ fn conflict_dialog<'a>(app: &'a App, c: &'a Conflict) -> Element<'a, Message> {
         ),
     ]
     .spacing(size::GAP);
-    let mut choices = Row::new();
+    let mut choices = Row::new().spacing(size::PILL_X);
     for r in c.choices() {
         choices = choices.push(choice(
             resolution_key(r),
@@ -1295,44 +1427,42 @@ fn conflict_dialog<'a>(app: &'a App, c: &'a Conflict) -> Element<'a, Message> {
             r == c.pick,
             color::TEXT_SECONDARY,
             Message::Resolve(r),
+            k,
         ));
     }
     let footer = row![
         mouse_area(row![
-            label("a ", size::TEXT_SMALL, color::TEXT_TERTIARY),
-            label(
+            label("a ", size::TEXT_SMALL, f(color::TEXT_TERTIARY)),
+            caption(
                 if c.apply_all {
                     "apply to all: on"
                 } else {
                     "apply to all: off"
                 },
                 size::TEXT_SMALL,
-                if c.apply_all {
+                f(if c.apply_all {
                     color::TEXT
                 } else {
                     color::TEXT_SECONDARY
-                }
+                })
             ),
         ])
         .on_press(Message::ApplyAll),
         Space::new().width(Length::Fill),
-        label(
+        caption(
             "enter choose · esc skip",
             size::TEXT_SMALL,
-            color::TEXT_TERTIARY
+            f(color::TEXT_TERTIARY)
         ),
     ];
     container(column![
         section(head),
-        rule_h(),
+        container(rule_h(k)).padding([0.0, size::SHEET_PAD]),
         section(sides),
-        rule_h(),
-        choices,
-        rule_h(),
+        container(choices).padding([0.0, size::PANEL_PAD]),
         section(footer),
     ])
     .width(size::DIALOG_W)
-    .style(boxed)
     .into()
 }
 
@@ -1349,71 +1479,122 @@ fn resolution_key(r: fog_proto::Resolution) -> &'static str {
 
 /// Permanent delete: what goes, that it cannot come back, and Cancel
 /// picked until the user moves to Delete.
-fn confirm_dialog(c: &Confirm) -> Element<'_, Message> {
+fn confirm_dialog(c: &Confirm, k: f32) -> Element<'_, Message> {
+    let f = |c: Color| fade(c, k);
     let head = column![
-        label(c.headline(), size::TEXT, color::TEXT),
-        container(label(c.listing(), size::TEXT_SMALL, color::TEXT_SECONDARY)).clip(true),
-        label(
+        caption(c.headline(), size::TEXT, f(color::TEXT)).font(font::UI_SEMIBOLD),
+        container(label(
+            c.listing(),
+            size::TEXT_SMALL,
+            f(color::TEXT_SECONDARY)
+        ))
+        .clip(true),
+        caption(
             "this cannot be undone",
             size::TEXT_SMALL,
-            color::TEXT_TERTIARY
+            f(color::TEXT_TERTIARY)
         ),
-    ];
+    ]
+    .spacing(size::HAIRLINE * 2.0);
     let choices = row![
         choice(
             "esc",
             "cancel",
             !c.delete,
             color::TEXT_SECONDARY,
-            Message::Confirm(false)
+            Message::Confirm(false),
+            k
         ),
         choice(
             "",
             "delete permanently",
             c.delete,
             color::DANGER,
-            Message::Confirm(true)
+            Message::Confirm(true),
+            k
         ),
-    ];
+    ]
+    .spacing(size::PILL_X);
     container(column![
         section(head),
-        rule_h(),
-        choices,
-        rule_h(),
+        container(choices).padding([0.0, size::PANEL_PAD]),
         section(row![
             Space::new().width(Length::Fill),
-            label(
+            caption(
                 "← → choose · enter confirm",
                 size::TEXT_SMALL,
-                color::TEXT_TERTIARY
+                f(color::TEXT_TERTIARY)
             ),
         ]),
     ])
     .width(size::DIALOG_W)
-    .style(boxed)
     .into()
 }
 
-// ---------------------------------------------------------------- palette
+/// Naming a new folder or file: a small sheet under the top edge, the
+/// caret the gold, an error below the line.
+fn name_sheet(n: &NameEntry, k: f32) -> Element<'_, Message> {
+    let what = if n.what == NameFor::Folder {
+        "new folder"
+    } else {
+        "new file"
+    };
+    let (hint, hint_fg) = match n.error {
+        Some(e) => (e.to_owned(), color::DANGER),
+        None => ("enter create · esc cancel".to_owned(), color::TEXT_TERTIARY),
+    };
+    container(
+        column![
+            caption(what, size::CAPTION, fade(color::TEXT_TERTIARY, k)),
+            field(line_edit(&n.line, color::ACCENT, String::new(), k), k),
+            caption(hint, size::TEXT_SMALL, fade(hint_fg, k)),
+        ]
+        .spacing(size::PILL_X),
+    )
+    .padding(size::SHEET_PAD)
+    .width(size::NAME_W)
+    .into()
+}
 
-/// The command palette: a hard-edged box over a scrim, the query on top,
-/// then the matches with their chords right-aligned. The pick is gold; the
-/// caret stays white so the pick keeps the only gold.
-fn palette<'a>(app: &'a App, p: &'a Palette) -> Element<'a, Message> {
+/// An inset input field inside a sheet.
+fn field<'a>(content: Element<'a, Message>, k: f32) -> Element<'a, Message> {
+    let l = look();
+    let (fill, border) = (fade(color::MARK_FILL, k), fade(color::BORDER, k));
+    container(content)
+        .padding([0.0, size::PAD_X - size::PILL_X])
+        .height(size::INPUT_H)
+        .width(Length::Fill)
+        .align_y(alignment::Vertical::Center)
+        .clip(true)
+        .style(move |_| pill(fill, border, None, l.inset_radius))
+        .into()
+}
+
+/// The command palette: a glass sheet under the top edge, the query in an
+/// inset field, then the matches with their chords right-aligned. The pick
+/// is the gold pill; the caret stays white so the pick keeps the only gold.
+fn palette<'a>(app: &'a App, p: &'a Palette, k: f32) -> Element<'a, Message> {
+    let f = |c: Color| fade(c, k);
     let items = p.matches(&app.actions);
     let pick = p.pick.min(items.len().saturating_sub(1));
     let start = pick.saturating_sub(size::PALETTE_ROWS - 1);
-    let input = container(row![
-        label(": ", size::TEXT, color::TEXT_TERTIARY),
-        line_edit(&p.line, color::TEXT, String::new()),
-    ])
-    .padding([size::CHROME_Y, size::PAD_X])
-    .width(Length::Fill);
+    let input = field(
+        row![
+            label(": ", size::TEXT, f(color::TEXT_TERTIARY)),
+            line_edit(&p.line, color::TEXT, String::new(), k),
+        ]
+        .into(),
+        k,
+    );
     let mut rows = Column::new();
     if items.is_empty() {
         rows = rows.push(
-            container(label("no match", size::TEXT_SMALL, color::TEXT_TERTIARY))
-                .padding([size::CHROME_Y, size::PAD_X]),
+            container(caption(
+                "no match",
+                size::TEXT_SMALL,
+                f(color::TEXT_TERTIARY),
+            ))
+            .padding([size::CHROME_Y, size::PAD_X - size::PILL_X]),
         );
     }
     for (i, item) in items
@@ -1437,41 +1618,36 @@ fn palette<'a>(app: &'a App, p: &'a Palette) -> Element<'a, Message> {
                 )
             }
         };
-        let (bar, fill, fg) = if on {
-            (
-                Some(color::ACCENT),
-                Some(color::ACCENT_FILL),
-                color::ACCENT_TEXT,
-            )
+        let fg = if on {
+            color::ACCENT_TEXT
         } else {
-            (None, None, color::TEXT_SECONDARY)
+            color::TEXT_SECONDARY
         };
-        let r = container(row![
-            block(size::BAR_W, Length::Fill, bar),
-            container(
-                row![
-                    container(label(name, size::TEXT, fg))
-                        .width(Length::Fill)
-                        .clip(true),
-                    label(hint, size::TEXT_SMALL, color::TEXT_TERTIARY),
-                ]
-                .align_y(alignment::Vertical::Center)
-            )
-            .padding([0.0, size::PAD_X - size::BAR_W])
-            .height(Length::Fill)
+        let r = container(
+            row![
+                container(caption(name, size::TEXT, f(fg)))
+                    .width(Length::Fill)
+                    .clip(true),
+                label(hint, size::TEXT_SMALL, f(color::TEXT_TERTIARY)),
+            ]
             .align_y(alignment::Vertical::Center),
-        ])
+        )
+        .padding([0.0, size::PAD_X - size::PILL_X])
         .width(Length::Fill)
         .height(size::ROW_H)
-        .style(move |_| container::Style {
-            background: fill.map(Background::Color),
-            ..Default::default()
+        .align_y(alignment::Vertical::Center)
+        .style(move |_| {
+            if on && k > 0.0 {
+                cursor_style(true)
+            } else {
+                container::Style::default()
+            }
         });
         rows = rows.push(mouse_area(r).on_press(Message::Run(*item)));
     }
-    container(column![input, rule_h(), rows])
+    container(column![input, rows].spacing(size::PILL_X))
+        .padding(size::PANEL_PAD)
         .width(size::PALETTE_W)
-        .style(boxed)
         .into()
 }
 

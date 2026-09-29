@@ -28,12 +28,15 @@ use fog_widgets::scroll_into_view;
 use iced::keyboard::{self, key::Named, Key, Modifiers};
 use iced::widget::operation::{scroll_to, AbsoluteOffset};
 use iced::widget::Id;
+use iced::window::Screenshot;
 use iced::{window, Subscription, Task};
 use jiff::tz::TimeZone;
 
+use crate::bench::Bench;
 use crate::clip::{Clip, ClipOp};
 use crate::conn::{self, Link};
 use crate::edit::{Edit, PathEdit};
+use crate::motion::{self, Motion};
 use crate::ops::{Confirm, Conflict, JobKind, NameEntry, Tray, TrayEvent};
 use crate::palette::{Item, Palette};
 use crate::state::{Browser, Click, Effect, Notice, Tabs};
@@ -81,6 +84,10 @@ pub struct App {
     /// on hosts without input injection. Filled from `FOG_UI_SCRIPT` in
     /// debug builds only; always empty in release.
     script: VecDeque<Scripted>,
+    /// Springs and the sheet's snapshot (FOG §Visual design).
+    pub motion: Motion,
+    /// `FOG_UI_BENCH_SCROLL`: a timed scroll for `fog-bench frames`.
+    bench: Option<Bench>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +159,13 @@ pub enum Message {
     Confirm(bool),
     /// A clickable hint that runs an action (the trash bar).
     Act(Action),
+    /// A frame is being drawn: step the springs.
+    Frame(Instant),
+    /// The window, snapshotted for the sheet that just opened.
+    Backdrop(Screenshot),
+    /// The pointer entered a row, or left row `usize`.
+    Hover(usize),
+    Unhover(usize),
 }
 
 const SCRIPT_TICK: Duration = Duration::from_millis(900);
@@ -231,6 +245,8 @@ impl App {
             tray: Tray::default(),
             conflicts: Vec::new(),
             trash: HashMap::new(),
+            motion: Motion::new(true),
+            bench: Bench::from_env(),
         }
     }
 
@@ -470,6 +486,60 @@ fn rescroll(i: usize) -> Task<Message> {
 }
 
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
+    let task = match message {
+        Message::Frame(now) => return frame(app, now),
+        Message::Backdrop(shot) => {
+            app.motion.backdrop(shot);
+            return Task::none();
+        }
+        Message::Hover(i) => {
+            app.motion.hover(Some(i));
+            return Task::none();
+        }
+        Message::Unhover(i) => {
+            if app.motion.hovered == Some(i) {
+                app.motion.hover(None);
+            }
+            return Task::none();
+        }
+        Message::Resized => {
+            app.motion.resized();
+            handle(app, Message::Resized)
+        }
+        m => handle(app, m),
+    };
+    let motion = motion::sync(app);
+    Task::batch([task, motion])
+}
+
+/// Step the springs, and the benchmark's scroll.
+fn frame(app: &mut App, now: Instant) -> Task<Message> {
+    app.motion.frame(now);
+    let rows = app.tabs.active().len();
+    let Some(b) = &mut app.bench else {
+        return Task::none();
+    };
+    if rows == 0 {
+        return Task::none();
+    }
+    if b.sheet && matches!(app.overlay, Overlay::None) {
+        app.overlay = Overlay::Palette(Palette::default());
+        let _ = motion::sync(app);
+        return Task::none();
+    }
+    let Some(b) = &mut app.bench else {
+        return Task::none();
+    };
+    match b.frame(now, rows, size::ROW_H) {
+        Some(y) => scroll_to(list_id(), AbsoluteOffset { x: 0.0, y }),
+        None => {
+            println!("{}", b.report());
+            iced::exit()
+        }
+    }
+}
+
+fn handle(app: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::Conn(conn::Event::Up(link)) => {
             app.link = Some(link);
@@ -662,6 +732,10 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Act(a) => {
             app.overlay = Overlay::None;
             run_action(app, a)
+        }
+        // Handled in `update`.
+        Message::Frame(_) | Message::Backdrop(_) | Message::Hover(_) | Message::Unhover(_) => {
+            Task::none()
         }
     }
 }
@@ -1229,6 +1303,9 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     }
     if !app.script.is_empty() {
         subs.push(iced::time::every(SCRIPT_TICK).map(|_| Message::Script));
+    }
+    if app.motion.busy() || app.bench.is_some() {
+        subs.push(window::frames().map(Message::Frame));
     }
     Subscription::batch(subs)
 }

@@ -10,8 +10,8 @@
 //! "Cold" means a cold daemon cache, not a cold page cache: dropping the
 //! page cache needs root, which Fog never has.
 //!
-//! TODO(FOG §Performance model, "Benchmarks in CI"): frame times while
-//! scrolling, once fog-ui exists.
+//! `fog-bench frames` measures scrolling frame times of fog-ui itself; see
+//! [`frames`].
 
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
@@ -24,6 +24,8 @@ use fog_daemon::{bind, serve, Cache, Daemon, LocalBackend};
 use fog_proto::{apply_diff, read_frame, write_frame, Reply, Request};
 use tokio::net::UnixStream;
 
+mod frames;
+
 const SIZES: [usize; 3] = [1_000, 10_000, 100_000];
 /// One entry in this many is a directory.
 const DIR_EVERY: usize = 50;
@@ -31,7 +33,7 @@ const FRAME: Duration = Duration::from_micros(16_700);
 const MS50: Duration = Duration::from_millis(50);
 const S1: Duration = Duration::from_secs(1);
 
-const USAGE: &str = "usage: fog-bench [-n ITERATIONS] [--json]";
+const USAGE: &str = "usage: fog-bench [-n ITERATIONS] [--json] | fog-bench frames [-h]";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Metric {
@@ -90,7 +92,11 @@ fn budget(entries: usize, metric: Metric) -> Option<Duration> {
 fn main() -> Result<()> {
     let mut iters = 20usize;
     let mut json = false;
-    let mut args = std::env::args().skip(1);
+    let mut args = std::env::args().skip(1).peekable();
+    if args.peek().is_some_and(|a| a == "frames") {
+        args.next();
+        return frames::main(args);
+    }
     while let Some(a) = args.next() {
         match a.as_str() {
             "-n" | "--iterations" => {
@@ -326,7 +332,7 @@ fn print_table(cases: &[Case], iters: usize) {
             budget,
         );
     }
-    println!("times in ms; scrolling frame times: TODO (FOG §Performance model)");
+    println!("times in ms; scrolling frame times: fog-bench frames");
 }
 
 fn print_json(cases: &[Case], iters: usize) {

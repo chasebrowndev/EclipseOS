@@ -9,6 +9,7 @@
 //! column. [`Live`] keeps the last valid config when a reload fails.
 
 mod keys;
+pub mod theme;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -24,6 +25,7 @@ pub const DEFAULT_KDL: &str = include_str!("../../../config/fog.default.kdl");
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub view: View,
+    pub appearance: Appearance,
     pub performance: Performance,
     /// Chord to what it runs; a user `bind` replaces the default per chord.
     pub keys: BTreeMap<Chord, Target>,
@@ -38,6 +40,15 @@ pub struct View {
     pub sort: SortKey,
     pub natural: bool,
     pub dirs_first: bool,
+}
+
+/// `appearance { … }` (FOG §Visual design, accessibility).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Appearance {
+    /// Springs snap straight to their target.
+    pub reduce_motion: bool,
+    /// No blur; every glass tint is opaque.
+    pub reduce_transparency: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +200,10 @@ impl Config {
                 natural: false,
                 dirs_first: false,
             },
+            appearance: Appearance {
+                reduce_motion: false,
+                reduce_transparency: false,
+            },
             performance: Performance {
                 cache_dirs: 1,
                 cache_mib: 1,
@@ -232,6 +247,7 @@ impl Config {
         for node in doc.nodes() {
             match node.name().value() {
                 "view" => self.view(node, cx)?,
+                "appearance" => self.appearance(node, cx)?,
                 "performance" => self.performance(node, cx)?,
                 "agents" => self.agents(node, cx)?,
                 "activity" => activity(node, cx)?,
@@ -280,6 +296,18 @@ impl Config {
                     }
                 }
                 k => return Err(cx.node(n, format!("unknown key `{k}` in `view`"))),
+            }
+        }
+        Ok(())
+    }
+
+    fn appearance(&mut self, node: &KdlNode, cx: &Cx) -> Result<(), Error> {
+        let a = &mut self.appearance;
+        for n in section(node, cx)? {
+            match n.name().value() {
+                "reduce-motion" => a.reduce_motion = boolean(single(n, cx)?, cx)?,
+                "reduce-transparency" => a.reduce_transparency = boolean(single(n, cx)?, cx)?,
+                k => return Err(cx.node(n, format!("unknown key `{k}` in `appearance`"))),
             }
         }
         Ok(())
@@ -576,6 +604,20 @@ mod tests {
         ] {
             assert_eq!(d.keys.get(&bind(c)), Some(&Target::Action(a)), "{c}");
         }
+    }
+
+    #[test]
+    fn appearance_keys_parse_and_reject_strangers() {
+        let d = defaults();
+        assert!(!d.appearance.reduce_motion && !d.appearance.reduce_transparency);
+        let c = parse("appearance {\n  reduce-motion #true\n}").unwrap();
+        assert!(c.appearance.reduce_motion && !c.appearance.reduce_transparency);
+        let c = parse("appearance { reduce-transparency #true }").unwrap();
+        assert!(c.appearance.reduce_transparency);
+        let e = parse("appearance {\n  reduce-blur #true\n}").unwrap_err();
+        assert_eq!((e.line, e.col), (2, 3), "{e}");
+        assert!(parse("appearance { reduce-motion \"yes\" }").is_err());
+        assert!(parse("appearance #true").is_err());
     }
 
     #[test]

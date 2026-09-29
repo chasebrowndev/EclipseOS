@@ -29,6 +29,9 @@ iced = { version = "0.14", default-features = false, features = [
   "wayland",
   "tokio",
 ] }
+# iced hides its renderer re-export; the glass widget needs the primitive
+# trait to draw its shader beside other content. Same crate iced resolves.
+iced_wgpu = { version = "0.14", default-features = false }
 tokio = { version = "1", features = [
   "rt-multi-thread",
   "net",

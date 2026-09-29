@@ -6,9 +6,11 @@
 //! and sorting happens in `fogd`; this process only draws what it sends.
 
 mod app;
+mod bench;
 mod clip;
 mod conn;
 mod edit;
+mod motion;
 mod ops;
 mod palette;
 mod state;
@@ -19,7 +21,7 @@ use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
 
-use iced::{window, Font, Size};
+use iced::{window, Size};
 
 /// Wayland app-id, so Radiant priorities and zones can target Fog.
 const APP_ID: &str = "os.eclipse.fog";
@@ -92,25 +94,41 @@ fn main() -> iced::Result {
     let home = std::env::var_os("HOME")
         .map(OsStringExt::into_vec)
         .unwrap_or_else(|| b"/".to_vec());
+    // The desktop's rounding, blur, opacity and motion, and the contrast
+    // floor over them (FOG §Visual design).
+    theme::init(theme::Look::new(
+        &fog_config::theme::load(&fog_config::theme::paths()),
+        config.appearance,
+    ));
 
-    iced::application(
+    let app = iced::application(
         move || app::App::new(path.clone(), config.clone(), tz.clone(), home.clone()),
         app::update,
         view::view,
-    )
-    .title("Fog")
-    .subscription(app::subscription)
-    .theme(|_: &app::App| theme::iced_theme())
-    .default_font(Font::MONOSPACE)
-    .window(window::Settings {
-        size: Size::new(theme::size::WINDOW_W, theme::size::WINDOW_H),
-        platform_specific: window::settings::PlatformSpecific {
-            application_id: APP_ID.to_owned(),
-            ..Default::default()
-        },
-        ..window::Settings::default()
-    })
-    .run()
+    );
+    theme::font::BYTES
+        .iter()
+        .fold(app, |app, face| app.font(*face))
+        .title("Fog")
+        .subscription(app::subscription)
+        .theme(|_: &app::App| theme::iced_theme())
+        .style(|_: &app::App, _| iced::theme::Style {
+            // The window's own ground is the tint the view paints; the
+            // compositor's blur shows through it.
+            background_color: iced::Color::TRANSPARENT,
+            text_color: theme::color::TEXT,
+        })
+        .default_font(theme::DEFAULT_FONT)
+        .window(window::Settings {
+            size: Size::new(theme::size::WINDOW_W, theme::size::WINDOW_H),
+            transparent: true,
+            platform_specific: window::settings::PlatformSpecific {
+                application_id: APP_ID.to_owned(),
+                ..Default::default()
+            },
+            ..window::Settings::default()
+        })
+        .run()
 }
 
 #[cfg(test)]

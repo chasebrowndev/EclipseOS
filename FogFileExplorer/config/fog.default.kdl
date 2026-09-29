@@ -12,6 +12,15 @@ view {
     sort "name" natural=#true dirs-first=#true
 }
 
+// Colours, radii, blur and tint come from the EclipseOS theme
+// ($XDG_CONFIG_HOME/eclipse/abyss.kdl `decoration`); these only turn effects off.
+appearance {
+    // Springs (panels, selection, hover, dialogs) jump to their end state.
+    reduce-motion #false
+    // No blur; glass becomes an opaque tint.
+    reduce-transparency #false
+}
+
 performance {
     // Listing cache bounds (§Performance model).
     cache-dirs 256
