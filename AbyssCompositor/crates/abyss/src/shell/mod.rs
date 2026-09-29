@@ -160,11 +160,43 @@ fn accumulate_non_exclusive_zone(
 
 /// Usable tiling area: the usable area minus the outer gap.
 fn tiling_area(state: &AbyssState, output: &Output) -> Rectangle<i32, Logical> {
-    let area = usable_area(state, output);
-    let gx = state.config.general.gaps_out;
-    let gy = state.config.general.gaps_out_y();
-    let loc = Point::from((area.loc.x + gx, area.loc.y + gy));
-    let size = Size::from(((area.size.w - 2 * gx).max(1), (area.size.h - 2 * gy).max(1)));
+    let geo = state.space.output_geometry(output).unwrap_or_default();
+    let g = &state.config.general;
+    inset_tiling(
+        geo,
+        usable_area(state, output),
+        (g.gaps_out, g.gaps_out_y()),
+        (g.gaps_in, g.gaps_in_y()),
+    )
+}
+
+/// Inset `area` by the outer gap on edges that meet the screen, and by the
+/// inner gap on edges an exclusive zone (the bar) has taken: a panel is a
+/// neighbour, so it sits one window gap away, not a screen-edge gap.
+fn inset_tiling(
+    output: Rectangle<i32, Logical>,
+    area: Rectangle<i32, Logical>,
+    (out_x, out_y): (i32, i32),
+    (in_x, in_y): (i32, i32),
+) -> Rectangle<i32, Logical> {
+    let pick = |taken: bool, inner: i32, outer: i32| if taken { inner } else { outer };
+    let left = pick(area.loc.x > output.loc.x, in_x, out_x);
+    let top = pick(area.loc.y > output.loc.y, in_y, out_y);
+    let right = pick(
+        area.loc.x + area.size.w < output.loc.x + output.size.w,
+        in_x,
+        out_x,
+    );
+    let bottom = pick(
+        area.loc.y + area.size.h < output.loc.y + output.size.h,
+        in_y,
+        out_y,
+    );
+    let loc = Point::from((area.loc.x + left, area.loc.y + top));
+    let size = Size::from((
+        (area.size.w - left - right).max(1),
+        (area.size.h - top - bottom).max(1),
+    ));
     Rectangle::new(loc, size)
 }
 
@@ -2680,6 +2712,22 @@ pub fn focus_layer_if_wanted(state: &mut AbyssState, surface: &WlSurface) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bar_edge_takes_the_inner_gap() {
+        let out = Rectangle::<i32, Logical>::new((0, 0).into(), (1000, 800).into());
+        // No zones: outer gap on every side.
+        assert_eq!(
+            inset_tiling(out, out, (10, 8), (5, 4)),
+            Rectangle::new((10, 8).into(), (980, 784).into())
+        );
+        // A 40px bar on top: the top edge is a neighbour, one window gap away.
+        let bar = Rectangle::new((0, 40).into(), (1000, 760).into());
+        assert_eq!(
+            inset_tiling(out, bar, (10, 8), (5, 4)),
+            Rectangle::new((10, 44).into(), (980, 748).into())
+        );
+    }
 
     #[test]
     fn tiled_ignores_min_floating_honours_it() {

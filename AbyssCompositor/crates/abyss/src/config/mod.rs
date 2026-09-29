@@ -692,7 +692,7 @@ impl Default for Decoration {
     fn default() -> Self {
         Self {
             rounding: 13,
-            active_opacity: 0.87,
+            active_opacity: 1.0,
             inactive_opacity: 1.0,
             dim_inactive: 0.0,
             blur: Blur::default(),
@@ -727,7 +727,8 @@ pub enum BlurMode {
     Blur,
     /// Blur with a tint mixed in and a fine grain over it.
     Frost,
-    /// Blur refracted through a rounded bevel, with dispersion and a rim light.
+    /// A saturated, smoked blur with a gentle bevel roll-off at the edge and
+    /// a neutral hairline rim.
     Glass,
 }
 
@@ -755,7 +756,7 @@ impl BlurMode {
     }
 }
 
-/// `blur { mode "blur"; size 8; passes 2; glass { … }; frost { … } }`.
+/// `blur { mode "blur"; size 8; passes 4; glass { … }; frost { … } }`.
 /// Dual-Kawase (COMP-02 §9). The legacy `enabled #true|#false` still parses
 /// (as `mode "blur"` / `mode "off"`); `eclipse-ctl config migrate` rewrites it.
 #[derive(Debug, Clone)]
@@ -772,34 +773,34 @@ impl Default for Blur {
         Self {
             mode: BlurMode::Blur,
             size: 8,
-            passes: 2,
+            passes: 4,
             glass: GlassBlur::default(),
             frost: FrostBlur::default(),
         }
     }
 }
 
-/// `blur { glass { refraction 16; bevel 22; dispersion 0.25; rim 0.45 } }`.
+/// `blur { glass { refraction 4; bevel 16; dispersion 0; rim 0.5 } }`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlassBlur {
-    /// Largest refraction displacement, logical px, at the steepest part of
-    /// the bevel.
+    /// Largest displacement of the blurred backdrop, logical px, at the
+    /// outermost edge of the bevel; the flat centre is never bent.
     pub refraction: i32,
-    /// Width of the rounded rim the refraction happens in, logical px.
+    /// Width of the edge band the backdrop rolls off in, logical px.
     pub bevel: i32,
-    /// Chromatic spread, 0.0..=1.0; 0.25 is crown glass (eta 1.46/1.48/1.50).
+    /// Chromatic spread in the bevel, 0.0..=1.0; off by default.
     pub dispersion: f32,
-    /// Strength of the warm specular rim light, 0.0..=1.0.
+    /// Strength of the neutral two-lobe hairline rim, 0.0..=1.0.
     pub rim: f32,
 }
 
 impl Default for GlassBlur {
     fn default() -> Self {
         Self {
-            refraction: 16,
-            bevel: 22,
-            dispersion: 0.25,
-            rim: 0.45,
+            refraction: 4,
+            bevel: 16,
+            dispersion: 0.0,
+            rim: 0.5,
         }
     }
 }
@@ -5288,13 +5289,13 @@ mod tests {
         let cfg = Config::default();
         // Rounding ships on (13px) to match eclipse-ui's client-drawn glass
         // radius, so any_window_effect() is already true out of the box.
-        // The focused window ships slightly translucent (0.87) so the default-on
-        // blur shows behind it; inactive opacity and dim are untouched.
+        // Content never fades: both opacities ship at 1.0, and blur follows
+        // the surface's opaque region instead; dim is untouched.
         assert!(cfg.decoration.any_window_effect());
         assert!(!cfg.decoration.shadow.enabled);
         assert!(!cfg.decoration.glow.on());
         assert_eq!(cfg.decoration.rounding, 13);
-        assert_eq!(cfg.decoration.active_opacity, 0.87);
+        assert_eq!(cfg.decoration.active_opacity, 1.0);
         assert_eq!(cfg.decoration.inactive_opacity, 1.0);
         assert_eq!(cfg.decoration.dim_inactive, 0.0);
         // Animations off means no curve resolves even if one were parsed.
@@ -5438,7 +5439,7 @@ mod tests {
         cfg.apply(&doc, &mut Vec::new());
         // Every bad value keeps its default rather than half-applying.
         assert_eq!(cfg.decoration.rounding, 13);
-        assert_eq!(cfg.decoration.active_opacity, 0.87);
+        assert_eq!(cfg.decoration.active_opacity, 1.0);
         assert_eq!(cfg.decoration.inactive_opacity, 1.0);
         assert!(cfg.animations.curves.is_empty());
     }

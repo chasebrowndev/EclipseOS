@@ -32,7 +32,7 @@ use smithay::{
             damage::OutputDamageTracker,
             element::{texture::TextureRenderElement, Element, Id, Kind, RenderElement, UnderlyingStorage},
             gles::{
-                ffi, GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
+                GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
                 UniformType,
             },
             utils::{CommitCounter, DamageSet, OpaqueRegions},
@@ -97,6 +97,24 @@ pub fn invalidates(
     damage.iter().any(|d| sampled.overlaps(*d))
 }
 
+/// The four strips of a `size` region that a glass bezel of width `inner`
+/// can show through over an opaque window, relative to the region's origin:
+/// top and bottom deep enough to hold the window's corners (`corner` is its
+/// physical radius), left and right `inner` wide, each with a pixel of margin
+/// for the window's antialiased edge. Disjoint, and clamped to `size`.
+pub fn ring_strips(size: Size<i32, Physical>, inner: i32, corner: i32) -> [Rectangle<i32, Physical>; 4] {
+    let (w, h) = (size.w.max(0), size.h.max(0));
+    let t = (inner + corner.max(0) + 1).clamp(0, h / 2);
+    let side = (inner + 1).clamp(0, w / 2);
+    let mid = h - 2 * t;
+    [
+        Rectangle::new((0, 0).into(), (w, t).into()),
+        Rectangle::new((0, h - t).into(), (w, t).into()),
+        Rectangle::new((0, t).into(), (side, mid).into()),
+        Rectangle::new((w - side, t).into(), (side, mid).into()),
+    ]
+}
+
 /// A blurred backdrop, drawn immediately beneath the window it belongs to.
 ///
 /// Drawing delegates to a plain [`TextureRenderElement`]; placement and damage
@@ -110,6 +128,9 @@ pub fn invalidates(
 /// backdrop was recomputed. `underlying_storage` is `None` so no backend ever
 /// mistakes this for a client buffer it could scan out.
 ///
+/// Under an opaque window's glass bezel (`ring`) only the ring's strips can
+/// ever show, so only they are reported damaged and only they are drawn.
+///
 /// Generic over the texture only so the placement is testable without a GPU.
 #[derive(Debug)]
 pub struct BlurElement<T: Texture = GlesTexture> {
@@ -118,9 +139,8 @@ pub struct BlurElement<T: Texture = GlesTexture> {
     commit: CommitCounter,
     program: Option<GlesTexProgram>,
     uniforms: Vec<Uniform<'static>>,
-    /// Glass only: the unblurred backdrop, bound to texture unit 1 for the
-    /// program's `sharp` sampler.
-    sharp: Option<T>,
+    /// An opaque window's bezel strips (see [`ring_strips`]), element-local.
+    ring: Option<[Rectangle<i32, Physical>; 4]>,
 }
 
 impl<T: Texture + Clone + 'static> BlurElement<T> {
@@ -167,7 +187,7 @@ impl<T: Texture + Clone + 'static> BlurElement<T> {
             commit: CommitCounter::default(),
             program: None,
             uniforms: Vec::new(),
-            sharp: None,
+            ring: None,
         }
     }
 }
@@ -202,8 +222,11 @@ impl<T: Texture + Clone + 'static> Element for BlurElement<T> {
             DamageSet::default()
         } else {
             // Expanded damage: the whole blurred region, not the region behind
-            // it that actually changed.
-            DamageSet::from_slice(&[Rectangle::from_size(self.geometry(scale).size)])
+            // it that actually changed — or, under an opaque bezel, the ring.
+            match &self.ring {
+                Some(strips) => DamageSet::from_slice(strips),
+                None => DamageSet::from_slice(&[Rectangle::from_size(self.geometry(scale).size)]),
+            }
         }
     }
 
@@ -220,24 +243,6 @@ impl<T: Texture + Clone + 'static> Element for BlurElement<T> {
     }
 }
 
-/// Bind `tex` (0 unbinds) as a linear, edge-clamped 2D texture on unit 1 and
-/// leave unit 0 active, as smithay expects.
-fn bind_unit1(gl: &ffi::Gles2, tex: ffi::types::GLuint) {
-    // SAFETY: plain GL state calls on the renderer's current context, from
-    // inside a frame; unit 0 is made active again before smithay draws.
-    unsafe {
-        gl.ActiveTexture(ffi::TEXTURE1);
-        gl.BindTexture(ffi::TEXTURE_2D, tex);
-        if tex != 0 {
-            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
-            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
-            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE as i32);
-            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE as i32);
-        }
-        gl.ActiveTexture(ffi::TEXTURE0);
-    }
-}
-
 impl RenderElement<GlesRenderer> for BlurElement<GlesTexture> {
     fn draw(
         &self,
@@ -247,20 +252,26 @@ impl RenderElement<GlesRenderer> for BlurElement<GlesTexture> {
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), GlesError> {
-        if let Some(program) = &self.program {
-            // smithay's texture draw only ever touches unit 0, so a second
-            // texture bound on unit 1 survives into it; the program reads it
-            // through its `sharp` sampler (set to 1 in the uniforms).
-            if let Some(sharp) = &self.sharp {
-                frame.with_context(|gl| bind_unit1(gl, sharp.tex_id()))?;
+        // An opaque bezel draws nothing inside its ring: skip those pixels.
+        let clipped: Vec<_>;
+        let damage = match &self.ring {
+            Some(strips) => {
+                clipped = damage
+                    .iter()
+                    .flat_map(|d| strips.iter().filter_map(move |s| s.intersection(*d)))
+                    .collect();
+                &clipped[..]
             }
+            None => damage,
+        };
+        if damage.is_empty() {
+            return Ok(());
+        }
+        if let Some(program) = &self.program {
             frame.override_default_tex_program(program.clone(), self.uniforms.clone());
             let res =
                 RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions);
             frame.clear_tex_program_override();
-            if self.sharp.is_some() {
-                frame.with_context(|gl| bind_unit1(gl, 0))?;
-            }
             res
         } else {
             RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions)
@@ -278,11 +289,34 @@ impl RenderElement<GlesRenderer> for BlurElement<GlesTexture> {
 /// A client declares its opacity through the surface's opaque region, so what
 /// is left of `region` after subtracting `opaque` is exactly the glass. An
 /// empty region is never blurred.
+///
+/// `radius` (physical px, 0 for square) is the corner radius the surface is
+/// masked with. Toolkits such as GTK4 leave their rounded corners out of the
+/// opaque region, and those corners are hidden by the mask anyway, so only
+/// the cross the corners leave — `region` inset by `radius` horizontally,
+/// then vertically — has to be covered.
 pub fn shows_through(
     region: Rectangle<i32, Physical>,
+    radius: i32,
     opaque: impl IntoIterator<Item = Rectangle<i32, Physical>>,
 ) -> bool {
-    !region.is_empty() && !region.subtract_rects(opaque).is_empty()
+    if region.is_empty() {
+        return false;
+    }
+    // At least a 1 px strip is left, so a tiny surface still tests its middle.
+    let r = radius.clamp(0, ((region.size.w.min(region.size.h) - 1) / 2).max(0));
+    let cross = [
+        Rectangle::new(
+            (region.loc.x + r, region.loc.y).into(),
+            (region.size.w - 2 * r, region.size.h).into(),
+        ),
+        Rectangle::new(
+            (region.loc.x, region.loc.y + r).into(),
+            (region.size.w, region.size.h - 2 * r).into(),
+        ),
+    ];
+    let cross = cross.into_iter().filter(|c| !c.is_empty());
+    !Rectangle::subtract_rects_many(cross, opaque).is_empty()
 }
 
 /// What a cached backdrop belongs to.
@@ -303,9 +337,6 @@ struct SurfaceBlur {
     damage: OutputDamageTracker,
     /// The upsampled result, held so the element can borrow it.
     result: Option<GlesTexture>,
-    /// Glass only: chain level 0 (the unblurred backdrop) copied out upright,
-    /// for the refracting rim. `None` in every other mode.
-    sharp: Option<GlesTexture>,
     /// Bumped whenever `result` was recomputed; drives [`BlurElement`] damage.
     commit: CommitCounter,
     /// A stable id so the damage tracker can follow this element across frames.
@@ -366,9 +397,9 @@ impl BlurStore {
     /// surface, in front-to-back order — exactly what the blur samples.
     /// `reach` is how far past `region` the final draw samples on top of the
     /// kernel (the glass refraction; 0 for every other mode), so damage that
-    /// far out invalidates too. `sharp` asks for an unblurred copy of the
-    /// backdrop alongside the blurred one (glass); without it any held copy
-    /// is freed.
+    /// far out invalidates too. `ring` is an opaque window's bezel, as
+    /// `(width, corner radius)` in physical px: only its strips are ever seen,
+    /// so only damage near them invalidates, and only they report damage.
     /// Returns `None` when nothing needs redrawing *and* nothing is cached, or
     /// when any GL step failed (blur is an effect; a failure drops the effect,
     /// never the frame).
@@ -384,7 +415,7 @@ impl BlurStore {
         scale: Scale<f64>,
         rounding: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
         reach: i32,
-        sharp: bool,
+        ring: Option<(i32, i32)>,
     ) -> Option<BlurElement>
     where
         E: Element + RenderElement<GlesRenderer>,
@@ -400,28 +431,31 @@ impl BlurStore {
         let entry = self.surfaces.entry(key.clone()).or_insert_with(|| SurfaceBlur {
             damage: OutputDamageTracker::from_output(output),
             result: None,
-            sharp: None,
             commit: CommitCounter::default(),
             id: Id::new(),
             look: Vec::new(),
         });
 
         // The invalidation rule: recompute only when damage behind this surface
-        // lands inside the region grown by the kernel radius.
+        // lands inside the region (or only the bezel's ring of it) grown by
+        // the kernel radius.
+        let strips = ring.map(|(inner, corner)| ring_strips(region.size, inner, corner));
         let dirty = {
             let (damage, _) = entry.damage.damage_output(1, behind).ok()?;
+            let radius = kernel_radius(blur).saturating_add(reach.max(0));
             match damage {
-                Some(rects) => invalidates(region, kernel_radius(blur).saturating_add(reach.max(0)), rects),
+                Some(rects) => match &strips {
+                    Some(strips) => strips
+                        .iter()
+                        .any(|s| invalidates(Rectangle::new(s.loc + region.loc, s.size), radius, rects)),
+                    None => invalidates(region, radius, rects),
+                },
                 // `None` means the tracker could not reason about damage; the
                 // fail-safe answer is "everything changed".
                 None => entry.result.is_none(),
             }
         };
-        if !sharp {
-            entry.sharp = None;
-        }
-
-        if dirty || entry.result.is_none() || (sharp && entry.sharp.is_none()) {
+        if dirty || entry.result.is_none() {
             let Self {
                 down,
                 up,
@@ -462,18 +496,6 @@ impl BlurStore {
                     return None;
                 }
             }
-            if sharp {
-                // Level 0 is untouched by the down/up passes, so it still
-                // holds this surface's backdrop. The downsample program at
-                // offset 0 is a straight copy with alpha forced to 1.
-                match copy_sharp(renderer, &chain[0], entry.sharp.take(), down.as_ref()?, orient) {
-                    Ok(t) => entry.sharp = Some(t),
-                    Err(err) => {
-                        tracing::warn!(?err, "copying the glass backdrop; blur skipped this frame");
-                        return None;
-                    }
-                }
-            }
         }
 
         let entry = self.surfaces.get_mut(key)?;
@@ -491,7 +513,7 @@ impl BlurStore {
         element.commit = entry.commit;
         element.program = program;
         element.uniforms = uniforms;
-        element.sharp = entry.sharp.clone();
+        element.ring = strips;
         Some(element)
     }
 
@@ -619,20 +641,6 @@ fn sized(
         Some(t) if t.size() == size => Ok(t),
         _ => Offscreen::<GlesTexture>::create_buffer(renderer, FORMAT, size),
     }
-}
-
-/// Copy the sharp backdrop (`level0`) into `reuse` or a fresh texture, under
-/// the same `orient` as the final upsample so the two textures line up.
-fn copy_sharp(
-    renderer: &mut GlesRenderer,
-    level0: &GlesTexture,
-    reuse: Option<GlesTexture>,
-    copy: &GlesTexProgram,
-    orient: Transform,
-) -> Result<GlesTexture, GlesError> {
-    let mut t = sized(renderer, reuse, level0.size())?;
-    blit(renderer, level0, &mut t, copy, 0.0, orient)?;
-    Ok(t)
 }
 
 /// Two distinct elements of `chain` as `(&src, &mut dst)`.
@@ -825,12 +833,61 @@ mod tests {
         assert!(invalidates(region, k + glass_reach(12, 1.0), &just_outside));
     }
 
+    /// An opaque window's bezel: the strips cover the ring and its corners,
+    /// never overlap, and leave the window's middle out.
+    #[test]
+    fn ring_strips_cover_only_the_bezel() {
+        // A 300x200 window inside a 6 px bezel, corner radius 9.
+        let size = Size::<i32, Physical>::from((312, 212));
+        let strips = ring_strips(size, 6, 9);
+        assert_eq!(
+            strips,
+            [
+                r(0, 0, 312, 16),
+                r(0, 196, 312, 16),
+                r(0, 16, 7, 180),
+                r(305, 16, 7, 180)
+            ]
+        );
+        for (i, a) in strips.iter().enumerate() {
+            for b in &strips[i + 1..] {
+                assert!(!a.overlaps(*b), "{a:?} overlaps {b:?}");
+            }
+        }
+        // Every bezel pixel is in a strip; the window's middle is in none.
+        let bezel = [
+            r(0, 0, 312, 6),
+            r(0, 206, 312, 6),
+            r(0, 6, 6, 200),
+            r(306, 6, 6, 200),
+        ];
+        assert!(Rectangle::subtract_rects_many(bezel, strips).is_empty());
+        assert!(strips.iter().all(|s| !s.overlaps(r(20, 20, 272, 172))));
+        // Damage in the window's middle does not invalidate a ring…
+        let k = 8;
+        let middle = [r(150, 100, 4, 4)];
+        assert!(!strips.iter().any(|s| invalidates(*s, k, &middle)));
+        // …but it does the whole region, and damage near the ring does both.
+        assert!(invalidates(r(0, 0, 312, 212), k, &middle));
+        assert!(strips.iter().any(|s| invalidates(*s, k, &[r(12, 100, 2, 2)])));
+    }
+
+    #[test]
+    fn ring_strips_clamp_to_a_tiny_region() {
+        for s in ring_strips(Size::from((10, 6)), 6, 9) {
+            assert!(s.loc.x >= 0 && s.loc.y >= 0 && s.size.w >= 0 && s.size.h >= 0);
+            assert!(s.loc.x + s.size.w <= 10 && s.loc.y + s.size.h <= 6);
+        }
+    }
+
     #[test]
     fn radius_grows_with_both_knobs() {
         assert_eq!(kernel_radius(&blur(8, 2)), 32);
         assert_eq!(kernel_radius(&blur(8, 3)), 64);
         assert_eq!(kernel_radius(&blur(16, 2)), 64);
         assert_eq!(kernel_radius(&blur(1, 1)), 2);
+        // The default is wide enough to erase fine backdrop structure.
+        assert_eq!(kernel_radius(&Blur::default()), 128);
     }
 
     #[test]
@@ -918,27 +975,50 @@ mod tests {
 
     #[test]
     fn a_surface_with_no_opaque_region_shows_through() {
-        assert!(shows_through(r(0, 0, 100, 44), []));
+        assert!(shows_through(r(0, 0, 100, 44), 0, []));
+        assert!(shows_through(r(0, 0, 100, 44), 13, []));
     }
 
     #[test]
     fn a_fully_opaque_surface_does_not() {
-        assert!(!shows_through(r(0, 0, 100, 44), [r(0, 0, 100, 44)]));
+        assert!(!shows_through(r(0, 0, 100, 44), 0, [r(0, 0, 100, 44)]));
     }
 
     #[test]
     fn a_partly_opaque_surface_still_does() {
-        assert!(shows_through(r(0, 0, 100, 44), [r(0, 0, 100, 43)]));
+        assert!(shows_through(r(0, 0, 100, 44), 0, [r(0, 0, 100, 43)]));
+        assert!(shows_through(r(0, 0, 100, 44), 8, [r(0, 0, 100, 30)]));
     }
 
     #[test]
     fn an_oversized_opaque_region_covers_the_surface() {
-        assert!(!shows_through(r(10, 10, 20, 20), [r(0, 0, 100, 100)]));
+        assert!(!shows_through(r(10, 10, 20, 20), 0, [r(0, 0, 100, 100)]));
     }
 
     #[test]
     fn an_empty_surface_is_never_blurred() {
-        assert!(!shows_through(r(0, 0, 0, 44), []));
+        assert!(!shows_through(r(0, 0, 0, 44), 0, []));
+        assert!(!shows_through(r(0, 0, 0, 44), 13, []));
+    }
+
+    /// GTK4/libadwaita leave their rounded corners out of the opaque region;
+    /// the mask hides those pixels, so they must not buy a backdrop pass.
+    #[test]
+    fn corners_left_out_under_the_mask_do_not_show_through() {
+        let region = r(100, 50, 300, 200);
+        // The opaque region as a cross plus the in-corner rows GTK emits:
+        // everything but the 8x8 corner squares.
+        let opaque = [r(108, 50, 284, 200), r(100, 58, 300, 184)];
+        assert!(!shows_through(region, 8, opaque));
+        assert!(!shows_through(region, 12, opaque), "a larger mask hides more");
+        assert!(shows_through(region, 0, opaque), "square corners would show");
+        assert!(shows_through(region, 4, opaque), "a smaller mask shows corner px");
+    }
+
+    #[test]
+    fn a_radius_past_half_the_surface_still_tests_its_middle() {
+        assert!(shows_through(r(0, 0, 20, 20), 50, []));
+        assert!(!shows_through(r(0, 0, 20, 20), 50, [r(0, 0, 20, 20)]));
     }
 
     /// Stands in for the output-sized chain texture; placement never reads it.

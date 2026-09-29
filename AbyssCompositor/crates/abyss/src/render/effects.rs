@@ -91,8 +91,8 @@ pub fn compile_rounded(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, Gl
 }
 
 /// Shared head of the frost and glass backdrop programs: smithay's texture
-/// interface (`tex`, `alpha`, `v_coords`, the debug `tint`) plus the rounded
-/// rectangle of [`rounding_uniforms`] and its signed distance.
+/// interface (`tex`, `alpha`, `v_coords`, the debug `tint`), the rounded
+/// rectangle of [`rounding_uniforms`], and a position hash both bodies use.
 const BACKDROP_HEAD: &str = r#"#version 100
 
 //_DEFINES_
@@ -136,12 +136,6 @@ vec4 finish(vec4 color) {
 #endif
     return color;
 }
-"#;
-
-/// Frost: the rounded mask, a tint mixed in by its own alpha, and a fine
-/// static grain hashed from the framebuffer position (COMP-02 §9).
-const FROST_BODY: &str = r#"
-uniform vec4 frost_tint;
 
 // Hoskins' hash12: no `sin`, so it holds up at mediump and large coords.
 float grain(vec2 p) {
@@ -149,6 +143,12 @@ float grain(vec2 p) {
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
 }
+"#;
+
+/// Frost: the rounded mask, a tint mixed in by its own alpha, and a fine
+/// static grain hashed from the framebuffer position (COMP-02 §9).
+const FROST_BODY: &str = r#"
+uniform vec4 frost_tint;
 
 void main() {
     vec4 color = texture2D(tex, v_coords);
@@ -165,36 +165,55 @@ void main() {
 }
 "#;
 
-/// Glass: the backdrop seen through a slab whose edge is a quarter-circle
-/// bevel. The bevel refracts the sharp backdrop (`sharp`, unit 1) and fades
-/// into the blurred one (`tex`) on the flat plateau. Everything is in physical pixels with a y-down axis (`y_sign`
-/// undoes the framebuffer mirroring of [`fb_y_mirrored`]), so the texture
-/// offset is just the pixel offset times `px_uv`.
+/// Glass: a calm, saturated, dark frosted pane (COMP-02 §9). Only the
+/// blurred backdrop (`tex`) is sampled. Inside the outer `bevel` it rolls off
+/// by at most `strength` px toward the centre, a lens that is felt rather
+/// than seen; the plateau is untouched. The colour is then saturated about
+/// Rec.709 luma, its highlights compressed and smoked toward a near-neutral
+/// `#0c0c0e`, and a crisp near-white hairline lit from the top-left (with a
+/// weaker bottom-right lobe) is laid along the mask edge. A ±0.5/255 dither
+/// removes 8-bit banding. Everything is in physical pixels with a y-down axis
+/// (`y_sign` undoes the framebuffer mirroring of [`fb_y_mirrored`]), so the
+/// texture offset is just the pixel offset times `px_uv`.
+///
+/// A window bezel (`inner` > 0) is the same glass laid as a ring of that width
+/// around the window: the roll-off spans only the ring, so nothing under the
+/// window is ever bent, a faint dark seam marks where glass meets content, and
+/// the hairline takes the window's border colour (`rim_color`, premultiplied,
+/// its alpha the line's strength). Over an opaque window nothing inside the
+/// ring is drawn at all. Off the bezel `rim_color` is opaque white, which is
+/// the neutral hairline unchanged.
 const GLASS_BODY: &str = r#"
 uniform vec2 px_uv;       // 1 / backdrop texture size
 uniform float y_sign;     // -1 when the framebuffer is y-mirrored
-uniform float strength;   // largest displacement, physical px
-uniform float bevel;      // rim width, physical px
-uniform float dispersion; // 0..1, 0.25 = eta 1.46/1.48/1.50
-uniform float rim;        // 0..1
+uniform float strength;   // largest displacement, physical px, at the edge
+uniform float bevel;      // roll-off band width, physical px
+uniform float dispersion; // 0..1, off by default
+uniform float rim;        // 0..1 hairline strength
+uniform vec4 rim_color;   // premultiplied hairline colour; opaque white off the bezel
+uniform float inner;      // bezel width, physical px; 0 off the bezel
+uniform float opaque;     // 1 when the window inside the bezel is opaque
 
-const float ETA = 1.48;
-const vec3 VIEW = vec3(0.0, 0.0, -1.0);
-const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // upper-left, y down
-const vec3 RIM = vec3(1.0, 0.88, 0.62);            // warm, gold-leaning
-const vec3 GLASS_TINT = vec3(1.0, 0.95, 0.85);
+const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // top-left, y down
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);    // Rec.709
+const float SATURATE = 1.7;
+const float COMPRESS = 1.0;  // highlight knee: c / (1 + COMPRESS * luma)
+const vec3 SMOKE = vec3(0.047, 0.047, 0.055);       // #0c0c0e
+const float SMOKE_MIX = 0.28;
+// Hairline alphas at rim 0.5: all-round base, top-left and bottom-right lobes.
+const float LINE_BASE = 0.05;
+const float LINE_TL = 0.13;
+const float LINE_BR = 0.035;
+// Bezel hairline, times the border colour's alpha: a crisp line all round,
+// brightest top-left.
+const float BEZEL_BASE = 0.4;
+const float BEZEL_TL = 0.5;
+const float BEZEL_BR = 0.1;
+// Darkening of the 1 px seam where the bezel meets the window.
+const float SEAM = 0.3;
 
-// Unit 1: the unblurred backdrop, laid out exactly like `tex`.
-uniform sampler2D sharp;
-
-vec2 clamped(vec2 uv) {
-    return clamp(uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5);
-}
 vec4 blurred_at(vec2 uv) {
-    return texture2D(tex, clamped(uv));
-}
-vec4 sharp_at(vec2 uv) {
-    return texture2D(sharp, clamped(uv));
+    return texture2D(tex, clamp(uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5));
 }
 
 void main() {
@@ -204,8 +223,14 @@ void main() {
     float r = min(radius, min(half_size.x, half_size.y));
     vec2 q = abs(p) - half_size + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+    // Under an opaque window only the ring (and the window's own antialiased
+    // edge) can show.
+    if (opaque > 0.5 && d < -inner - 1.0) {
+        gl_FragColor = vec4(0.0);
+        return;
+    }
 
-    // Analytic gradient of the rounded-box SDF (points outward).
+    // Outward normal of the rounded box, y down.
     vec2 s = vec2(p.x < 0.0 ? -1.0 : 1.0, p.y < 0.0 ? -1.0 : 1.0);
     vec2 grad;
     if (q.x > 0.0 && q.y > 0.0) {
@@ -217,33 +242,42 @@ void main() {
     }
     grad *= s;
 
-    // Height h(t) = sqrt(1 - (1-t)^2) over the bevel, so dH/dx = -h'(t) grad
-    // and the normal is (h'(t) grad, 1).
-    float t = clamp(-d / max(bevel, 1.0), 0.0, 1.0);
-    float u = 1.0 - t;
-    float slope = u / sqrt(max(1.0 - u * u, 1e-4));
-    vec3 n = normalize(vec3(grad * slope, 1.0));
-
-    // Normalised so the steepest point moves by exactly `strength`.
-    vec2 k = px_uv * strength / sqrt(1.0 - 1.0 / (ETA * ETA));
-    // The bevel refracts the sharp backdrop (with dispersion) and hands over
-    // to the blurred one as it flattens into the plateau.
-    vec4 color;
-    if (t < 1.0) {
-        float spread = 0.08 * dispersion;
-        vec2 uv = v_coords + refract(VIEW, n, 1.0 / ETA).xy * k;
-        vec4 g = sharp_at(uv);
-        float cr = sharp_at(v_coords + refract(VIEW, n, 1.0 / (ETA - spread)).xy * k).r;
-        float cb = sharp_at(v_coords + refract(VIEW, n, 1.0 / (ETA + spread)).xy * k).b;
-        color = mix(vec4(cr, g.g, cb, g.a), blurred_at(uv), smoothstep(0.4, 1.0, t));
-    } else {
-        color = blurred_at(v_coords);
+    // Roll-off: largest at the edge, easing to zero (and zero slope) where
+    // the bevel meets the plateau, so no line marks where the bend stops.
+    // A bezel bends across its own width only.
+    float band_w = inner > 0.0 ? inner : bevel;
+    float u = 1.0 - clamp(-d / max(band_w, 1.0), 0.0, 1.0);
+    vec2 bend = -grad * px_uv * (strength * u * u);
+    vec4 color = blurred_at(v_coords + bend);
+    if (dispersion > 0.0) {
+        float spread = 0.05 * dispersion;
+        color.r = blurred_at(v_coords + bend * (1.0 - spread)).r;
+        color.b = blurred_at(v_coords + bend * (1.0 + spread)).b;
     }
 
-    color.rgb = mix(color.rgb, GLASS_TINT, 0.04);
-    float spec = pow(1.0 - n.z, 3.0) * max(dot(n.xy, LIGHT), 0.0);
-    color.rgb = min(color.rgb + RIM * (spec * rim), vec3(1.0));
-    color = finish(color);
+    // Vibrancy: saturate, compress the highlights, smoke toward neutral.
+    vec3 c = color.rgb;
+    c = max(mix(vec3(dot(c, LUMA)), c, SATURATE), 0.0);
+    c = c / (1.0 + COMPRESS * dot(c, LUMA));
+    c = mix(c, SMOKE, SMOKE_MIX);
+
+    // Hairline: a 1.25 px band inside the mask edge.
+    float band = 1.0 - smoothstep(0.0, 1.25, -d);
+    float tl = max(dot(grad, LIGHT), 0.0);
+    float br = max(dot(grad, -LIGHT), 0.0);
+    float lobe = inner > 0.0
+        ? BEZEL_BASE + BEZEL_TL * tl + BEZEL_BR * br
+        : LINE_BASE + LINE_TL * tl + LINE_BR * br;
+    vec3 tint = rim_color.rgb / max(rim_color.a, 0.0001);
+    c = mix(c, tint, clamp(band * lobe * rim_color.a * rim * 2.0, 0.0, 1.0));
+
+    // Seam: a faint dark line just outside the window's own edge.
+    if (inner > 0.0) {
+        c *= 1.0 - SEAM * max(1.0 - abs(d + inner - 0.5), 0.0);
+    }
+
+    c += (grain(floor(gl_FragCoord.xy)) - 0.5) / 255.0;
+    color = finish(vec4(clamp(c, 0.0, 1.0), color.a));
 
     gl_FragColor = color * (1.0 - smoothstep(-0.5, 0.5, d));
 }
@@ -261,22 +295,28 @@ pub fn compile_frost(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, Gles
     )
 }
 
+/// The glass program's uniforms, in the order [`glass_uniforms`] sets them.
+const GLASS_UNIFORMS: [(&str, UniformType); 11] = [
+    ("win_rect", UniformType::_4f),
+    ("radius", UniformType::_1f),
+    ("px_uv", UniformType::_2f),
+    ("y_sign", UniformType::_1f),
+    ("strength", UniformType::_1f),
+    ("bevel", UniformType::_1f),
+    ("dispersion", UniformType::_1f),
+    ("rim", UniformType::_1f),
+    ("rim_color", UniformType::_4f),
+    ("inner", UniformType::_1f),
+    ("opaque", UniformType::_1f),
+];
+
 /// Compile the glass backdrop program (COMP-02 §9). Cached by the caller.
 pub fn compile_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
-    renderer.compile_custom_texture_shader(
-        format!("{BACKDROP_HEAD}{GLASS_BODY}"),
-        &[
-            UniformName::new("win_rect", UniformType::_4f),
-            UniformName::new("radius", UniformType::_1f),
-            UniformName::new("px_uv", UniformType::_2f),
-            UniformName::new("y_sign", UniformType::_1f),
-            UniformName::new("strength", UniformType::_1f),
-            UniformName::new("bevel", UniformType::_1f),
-            UniformName::new("dispersion", UniformType::_1f),
-            UniformName::new("rim", UniformType::_1f),
-            UniformName::new("sharp", UniformType::_1i),
-        ],
-    )
+    let names: Vec<_> = GLASS_UNIFORMS
+        .iter()
+        .map(|&(name, ty)| UniformName::new(name, ty))
+        .collect();
+    renderer.compile_custom_texture_shader(format!("{BACKDROP_HEAD}{GLASS_BODY}"), &names)
 }
 
 /// [`rounding_uniforms`] plus the frost tint (straight alpha, as configured).
@@ -294,7 +334,9 @@ pub fn frost_uniforms(
 
 /// [`rounding_uniforms`] plus the glass parameters. `tex_size` is the
 /// backdrop texture (the whole output, physical px); `strength` and `bevel`
-/// are physical px.
+/// are physical px. `bezel` is a window bezel's width (physical px), whether
+/// the window inside it is opaque, and its premultiplied hairline colour;
+/// `None` is plain glass with the neutral white hairline.
 #[allow(clippy::too_many_arguments)]
 pub fn glass_uniforms(
     rect: Rectangle<i32, Physical>,
@@ -305,7 +347,11 @@ pub fn glass_uniforms(
     strength: f32,
     bevel: f32,
     glass: &crate::config::GlassBlur,
+    bezel: Option<(i32, bool, [f32; 4])>,
 ) -> Vec<Uniform<'static>> {
+    let (inner, opaque, rim_color) = bezel.map_or((0.0, 0.0, [1.0; 4]), |(inner, opaque, rim)| {
+        (inner.max(0) as f32, if opaque { 1.0f32 } else { 0.0 }, rim)
+    });
     let mut u = rounding_uniforms(rect, fb_height, mirrored, radius);
     u.extend([
         Uniform::new(
@@ -317,15 +363,16 @@ pub fn glass_uniforms(
         Uniform::new("bevel", bevel),
         Uniform::new("dispersion", glass.dispersion),
         Uniform::new("rim", glass.rim),
-        // Texture unit of the sharp backdrop (`BlurElement` binds it).
-        Uniform::new("sharp", 1i32),
+        Uniform::new("rim_color", rim_color),
+        Uniform::new("inner", inner),
+        Uniform::new("opaque", opaque),
     ]);
     u
 }
 
 /// How far past the blurred region the glass program samples, physical px:
-/// its displacement, with a margin for the widest dispersion (eta 1.40..1.56
-/// bends up to ~4% further than 1.48). Zero for every other mode.
+/// its displacement, with a margin for the widest dispersion (up to 5%
+/// further). Zero for every other mode.
 pub fn glass_reach(refraction: i32, scale: f64) -> i32 {
     (refraction.max(0) as f64 * scale * 1.05).ceil() as i32
 }
@@ -464,7 +511,9 @@ impl RenderElement<GlesRenderer> for RoundedElement {
     }
 }
 
-const SHADOW_SRC: &str = r#"
+/// The glow ring: a smoothstep falloff around the bordered rect, symmetric,
+/// in the premultiplied `shadow_color` (COMP-02 §9).
+const RING_SRC: &str = r#"
 #ifdef GL_FRAGMENT_PRECISION_HIGH
 precision highp float;
 #else
@@ -492,16 +541,17 @@ void main() {
     vec2 q = abs(p) - half_inner + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
 
-    // `step` drops everything under the window: the shadow is a ring, so a
-    // translucent window is not darkened by its own shadow.
+    // `step` drops everything under the window: the glow is a ring, so a
+    // translucent window is not tinted by its own glow.
     float a = (1.0 - smoothstep(0.0, blur, d)) * step(0.0, d);
     gl_FragColor = shadow_color * (a * alpha);
 }
 "#;
 
-pub fn compile_shadow(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, GlesError> {
+/// Compile the glow ring program (COMP-02 §9).
+pub fn compile_ring(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, GlesError> {
     renderer.compile_custom_pixel_shader(
-        SHADOW_SRC,
+        RING_SRC,
         &[
             UniformName::new("shadow_color", UniformType::_4f),
             UniformName::new("blur", UniformType::_1f),
@@ -510,11 +560,11 @@ pub fn compile_shadow(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, G
     )
 }
 
-/// Uniforms for one drop shadow or glow over its area (the bordered rect grown
-/// by `range`): `color` is its premultiplied colour against the window edge,
+/// Uniforms for one glow ring over its area (the bordered rect grown by
+/// `range`): `color` is its premultiplied colour against the window edge,
 /// `range` how far it reaches and `radius` the corner radius it hugs, both
 /// logical.
-pub fn shadow_uniforms(color: [f32; 4], range: f32, radius: f32) -> Vec<Uniform<'static>> {
+pub fn ring_uniforms(color: [f32; 4], range: f32, radius: f32) -> Vec<Uniform<'static>> {
     vec![
         // Premultiplied, so the colour carries its own alpha.
         Uniform::new("shadow_color", color),
@@ -522,6 +572,100 @@ pub fn shadow_uniforms(color: [f32; 4], range: f32, radius: f32) -> Vec<Uniform<
         Uniform::new("radius", radius),
     ]
 }
+
+/// The drop shadow (COMP-02 §9): a tight contact layer and a wide ambient
+/// layer, each a gaussian-blurred rounded box offset downward, so the pane
+/// reads as lifted rather than outlined. Both are tapered to zero before the
+/// element edge, and nothing is drawn under the (unshifted) window, so a
+/// translucent window is not darkened by its own shadow. Worked in logical
+/// px, y down; the element is the bordered rect grown by `range` on every
+/// side and by `drop` more at the bottom.
+const SHADOW_SRC: &str = r#"
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+
+uniform vec2 size;
+uniform float alpha;
+varying vec2 v_coords;
+
+#if defined(DEBUG_FLAGS)
+uniform float tint;
+#endif
+
+uniform float range;
+uniform float radius;
+uniform float drop;
+uniform float focus; // 0 unfocused .. 1 focused, crossfading with the border
+
+float rounded_box(vec2 p, vec2 half_size, float r) {
+    vec2 q = abs(p) - half_size + r;
+    return length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+}
+
+// Winitzki's erf approximation; smooth, no tables.
+float erf_approx(float x) {
+    float x2 = x * x;
+    float e = exp(-x2 * (1.2732395 + 0.147 * x2) / (1.0 + 0.147 * x2));
+    return sign(x) * sqrt(max(1.0 - e, 0.0));
+}
+
+// Coverage of a rounded box blurred by a gaussian of `sigma`, at distance `d`.
+float soft(float d, float sigma) {
+    return 0.5 - 0.5 * erf_approx(d / (sigma * 1.41421356));
+}
+
+void main() {
+    vec2 p = v_coords * size;
+    vec2 centre = vec2(size.x * 0.5, (size.y - drop) * 0.5);
+    vec2 half_size = max(centre - vec2(range), vec2(0.0));
+    float r = min(radius, min(half_size.x, half_size.y));
+    float d_in = rounded_box(p - centre, half_size, r);
+
+    float contact_sigma = max(range * mix(0.07, 0.09, focus), 0.75);
+    float ambient_sigma = max(range * mix(0.24, 0.33, focus), 1.0);
+    float d_contact = rounded_box(p - centre - vec2(0.0, drop * 0.2), half_size, r);
+    float d_ambient = rounded_box(p - centre - vec2(0.0, drop), half_size, r);
+    float contact = soft(d_contact, contact_sigma) * mix(0.16, 0.22, focus);
+    float ambient = soft(d_ambient, ambient_sigma) * mix(0.26, 0.42, focus);
+    float a = 1.0 - (1.0 - contact) * (1.0 - ambient);
+
+    // Zero at the element edge (`d_ambient` >= range all round it).
+    a *= 1.0 - smoothstep(range * 0.5, range, d_ambient);
+    a *= step(0.0, d_in);
+    gl_FragColor = vec4(0.0, 0.0, 0.0, a * alpha);
+}
+"#;
+
+/// Compile the drop-shadow program (COMP-02 §9).
+pub fn compile_shadow(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, GlesError> {
+    renderer.compile_custom_pixel_shader(
+        SHADOW_SRC,
+        &[
+            UniformName::new("range", UniformType::_1f),
+            UniformName::new("radius", UniformType::_1f),
+            UniformName::new("drop", UniformType::_1f),
+            UniformName::new("focus", UniformType::_1f),
+        ],
+    )
+}
+
+/// Uniforms for one drop shadow: `[range, radius, drop]` from
+/// `shadow_geometry` (logical px) and the 0..1 `focus` weight.
+pub fn shadow_uniforms([range, radius, drop]: [f32; 3], focus: f32) -> Vec<Uniform<'static>> {
+    vec![
+        Uniform::new("range", range),
+        Uniform::new("radius", radius),
+        Uniform::new("drop", drop),
+        Uniform::new("focus", focus),
+    ]
+}
+
+/// How far the shadow drops below the window, as a share of its `range`.
+/// Not configurable: `shadow { range }` is the only knob COMP-13 §1.1 gives.
+pub const SHADOW_DROP: f32 = 0.3;
 
 const BORDER_SRC: &str = r#"
 #ifdef GL_FRAGMENT_PRECISION_HIGH
@@ -591,10 +735,6 @@ pub fn border_uniforms(color: [f32; 4], radius: f32, width: f32, scale: f32) -> 
     ]
 }
 
-/// Opacity of the shadow directly against the window edge. Not configurable:
-/// `shadow { range }` is the only knob COMP-13 §1.1 gives.
-pub const SHADOW_ALPHA: f32 = 0.55;
-
 /// How far the border glow reaches past the border, logical px. Not
 /// configurable: `glow { strength }` scales intensity only (COMP-13 §1.1).
 pub const GLOW_RANGE: i32 = 24;
@@ -608,9 +748,10 @@ mod tests {
     }
 
     #[test]
-    fn glass_reads_the_sharp_backdrop_from_unit_1() {
-        // `BlurElement::draw` binds the sharp copy on TEXTURE1; the sampler
-        // uniform must point there or the rim samples an unbound unit.
+    fn glass_sets_exactly_the_uniforms_it_compiles() {
+        // smithay rejects a uniform the program was not compiled with
+        // (`UnknownUniform`), and leaves one it was compiled with but never
+        // set at zero; the two lists must match name for name.
         let rect = Rectangle::new((0, 0).into(), (300, 200).into());
         let got = glass_uniforms(
             rect,
@@ -618,11 +759,61 @@ mod tests {
             false,
             13.0,
             (1920, 1080),
+            4.0,
             16.0,
-            22.0,
             &crate::config::GlassBlur::default(),
+            None,
         );
-        assert!(got.contains(&Uniform::new("sharp", 1i32)), "{got:?}");
+        let set: Vec<&str> = got.iter().map(|u| &*u.name).collect();
+        let compiled: Vec<&str> = GLASS_UNIFORMS.iter().map(|&(name, _)| name).collect();
+        assert_eq!(set, compiled);
+        // A bezel sets the same list, not a longer one.
+        let bezel = glass_uniforms(
+            rect,
+            1080,
+            false,
+            19.0,
+            (1920, 1080),
+            4.0,
+            6.0,
+            &crate::config::GlassBlur::default(),
+            Some((6, true, [0.43, 0.34, 0.11, 0.45])),
+        );
+        let set: Vec<&str> = bezel.iter().map(|u| &*u.name).collect();
+        assert_eq!(set, compiled);
+    }
+
+    #[test]
+    fn plain_glass_keeps_the_white_hairline() {
+        let rect = Rectangle::new((0, 0).into(), (300, 200).into());
+        let got = glass_uniforms(
+            rect,
+            1080,
+            false,
+            13.0,
+            (1920, 1080),
+            4.0,
+            16.0,
+            &crate::config::GlassBlur::default(),
+            None,
+        );
+        let find = |name: &str| format!("{:?}", got.iter().find(|u| u.name == name).unwrap());
+        assert_eq!(
+            find("rim_color"),
+            format!("{:?}", Uniform::new("rim_color", [1.0f32; 4]))
+        );
+        assert_eq!(find("inner"), format!("{:?}", Uniform::new("inner", 0.0f32)));
+        assert_eq!(find("opaque"), format!("{:?}", Uniform::new("opaque", 0.0f32)));
+    }
+
+    #[test]
+    fn the_shader_sources_keep_one_grain() {
+        // `grain` lives in the shared head; a second copy in a body would be
+        // a redefinition and the program would fail to compile.
+        for body in [FROST_BODY, GLASS_BODY] {
+            let src = format!("{BACKDROP_HEAD}{body}");
+            assert_eq!(src.matches("float grain(").count(), 1);
+        }
     }
 
     #[test]

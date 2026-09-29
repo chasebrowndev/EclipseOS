@@ -72,9 +72,134 @@ smithay::backend::renderer::element::render_elements! {
 }
 
 /// A surface that wants a blurred backdrop: what it belongs to, the index in
-/// the element list directly below its surfaces, the region it blurs and the
-/// mode it is drawn in (never `Off`).
-type BlurRequest = (blur::BlurKey, usize, Rectangle<i32, Physical>, BlurMode);
+/// the element list directly below its surfaces, the region it blurs, the
+/// mode it is drawn in (never `Off`), the logical corner radius its backdrop
+/// is masked with, and the window's glass bezel if it has one.
+type BlurRequest = (
+    blur::BlurKey,
+    usize,
+    Rectangle<i32, Physical>,
+    BlurMode,
+    i32,
+    Option<Bezel>,
+);
+
+/// A window's border drawn as a ring of glass instead of paint (COMP-02 §9).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Bezel {
+    /// Ring width, physical px: the border size at the output scale.
+    inner: i32,
+    /// Nothing shows through the window itself, so only the ring is glass.
+    opaque: bool,
+    /// The hairline colour, premultiplied: the border colour, crossfading
+    /// with focus like the painted border does.
+    rim: [f32; 4],
+}
+
+/// The bezel width (physical px) a window's border becomes, or `None` when it
+/// stays painted: only in `glass` mode, with the glass program available on
+/// this output, a border to replace, and a window that is not maximized or
+/// fullscreen (those have no border inset to fill).
+fn bezel_width(mode: BlurMode, glass: bool, fills_area: bool, border: i32, upscale: f64) -> Option<i32> {
+    (mode == BlurMode::Glass && glass && !fills_area && border > 0)
+        .then(|| ((border as f64 * upscale).round() as i32).max(1))
+}
+
+/// One window's backdrop, if it gets one: region, logical mask radius and
+/// the bezel's `(width, opaque)`. `rect` is the window's physical rect,
+/// `corner` its physical corner radius and `opaque` its opaque regions (see
+/// [`wants_backdrop`]). A bezel always asks — its ring is glass even over an
+/// opaque window — for the window rect grown by the bezel, rounded to the
+/// outer radius the painted border would have had; square stays square.
+type WindowBackdrop = (Rectangle<i32, Physical>, i32, Option<(i32, bool)>);
+
+#[allow(clippy::too_many_arguments)]
+fn window_backdrop(
+    mode: BlurMode,
+    alpha: f32,
+    rect: Rectangle<i32, Physical>,
+    corner: i32,
+    opaque: Vec<Rectangle<i32, Physical>>,
+    rounding: i32,
+    border: i32,
+    bezel: Option<i32>,
+) -> Option<WindowBackdrop> {
+    let translucent = wants_backdrop(mode, alpha, rect, corner, opaque);
+    match bezel {
+        Some(inner) if !rect.is_empty() => {
+            let radius = if rounding > 0 { rounding + border } else { 0 };
+            Some((blur::grow(rect, inner), radius, Some((inner, !translucent))))
+        }
+        _ => translucent.then_some((rect, rounding, None)),
+    }
+}
+
+/// Is `window` maximized or fullscreen, filling its area with no border inset?
+fn fills_area(window: &Window) -> bool {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+    if let Some(toplevel) = window.toplevel() {
+        let states = toplevel.current_state().states;
+        return states.contains(State::Maximized) || states.contains(State::Fullscreen);
+    }
+    window
+        .x11_surface()
+        .is_some_and(|x| x.is_maximized() || x.is_fullscreen())
+}
+
+/// Whether the glass program can draw on `output` this frame: compiled on
+/// first use, and never on a rotated output (see [`effects::fb_y_mirrored`]).
+fn glass_ready(renderer: &mut GlesRenderer, store: &mut BorderStore, output: &Output) -> bool {
+    if effects::fb_y_mirrored(output.current_transform()).is_none() || output.current_mode().is_none() {
+        return false;
+    }
+    if store.glass.is_none() {
+        match effects::compile_glass(renderer) {
+            Ok(program) => store.glass = Some(program),
+            Err(err) => tracing::warn!(?err, "compiling the glass shader; painted borders"),
+        }
+    }
+    store.glass.is_some()
+}
+
+/// The corner radius a layer-shell surface's backdrop is masked with.
+///
+/// A layer-shell surface anchored to three-plus edges, or to both edges of an
+/// axis, usually spans that axis corner-to-corner; fewer/adjacent anchors
+/// (launcher, toasts, notification centre) get the same radius as a window.
+///
+/// "Usually" because a 3-edge/opposite-pair anchor alone isn't proof of a
+/// flush slab: wlr-layer-shell's own `exclusive-zone` semantics carry that
+/// distinction already. `ExclusiveZone::DontCare` (or no reservation at all)
+/// means "extend it all the way to the edges it is anchored to" in the
+/// protocol's own words — a genuine flush edge, so it stays square. A
+/// *positive* exclusive zone instead asks the compositor to reserve a bounded
+/// strip, which is what a taskbar does — hyperion anchors top+left+right for
+/// layout (`size: (0, HEIGHT)` stretches it edge to edge) but reserves only
+/// `HEIGHT` px and draws a floating rounded pill inset within that strip, not
+/// a flush bar. No other layer client anchors 3+ edges with a positive
+/// exclusive zone today, so this shape structurally identifies the bar
+/// without a namespace/app-id check, and gets its own radius since its content
+/// draws at a different radius than every other pane's.
+fn layer_radius(surface: &smithay::desktop::LayerSurface, config: &Config) -> i32 {
+    let state = surface.cached_state();
+    let anchor = state.anchor;
+    let opposite_pair = (anchor.contains(Anchor::LEFT) && anchor.contains(Anchor::RIGHT))
+        || (anchor.contains(Anchor::TOP) && anchor.contains(Anchor::BOTTOM));
+    let edges = [Anchor::LEFT, Anchor::RIGHT, Anchor::TOP, Anchor::BOTTOM]
+        .into_iter()
+        .filter(|edge| anchor.contains(*edge))
+        .count();
+    let bounded_strip = matches!(state.exclusive_zone, ExclusiveZone::Exclusive(z) if z > 0);
+    if edges >= 3 || opposite_pair {
+        if bounded_strip {
+            config.bar.rounding as i32
+        } else {
+            0
+        }
+    } else {
+        config.decoration.rounding
+    }
+}
 
 /// Four solid quads (top, bottom, left, right) per window.
 type Border = [SolidColorBuffer; 4];
@@ -95,6 +220,8 @@ pub struct BorderStore {
     glass: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     /// Drop-shadow pixel program, compiled on the first frame that shadows.
     shadow: Option<smithay::backend::renderer::gles::GlesPixelProgram>,
+    /// Glow ring pixel program, compiled on the first frame that glows.
+    glow: Option<smithay::backend::renderer::gles::GlesPixelProgram>,
     /// Rounded border-ring program, compiled on the first frame that rounds.
     ring: Option<smithay::backend::renderer::gles::GlesPixelProgram>,
     /// One rounded border ring per window when rounding is on, kept alive
@@ -102,10 +229,10 @@ pub struct BorderStore {
     /// radius, width and scale are kept to skip no-op uniform updates.
     rings: HashMap<Window, (PixelShaderElement, [f32; 7])>,
     /// One drop shadow per window when shadows are on, kept alive between
-    /// frames for the same reason; the last-applied range and radius are kept
-    /// to skip no-op uniform updates.
-    shadows: HashMap<Window, (PixelShaderElement, [f32; 2])>,
-    /// One border glow per window when glow is on, drawn by the shadow
+    /// frames for the same reason; the last-applied range, radius, drop and
+    /// focus weight are kept to skip no-op uniform updates.
+    shadows: HashMap<Window, (PixelShaderElement, [f32; 4])>,
+    /// One border glow per window when glow is on, drawn by the ring
     /// program; the last-applied colour, range and radius are kept to skip
     /// no-op uniform updates.
     glows: HashMap<Window, (PixelShaderElement, [f32; 6])>,
@@ -125,6 +252,40 @@ impl BorderStore {
 
 fn phys(p: Point<i32, Logical>, scale: Scale<f64>) -> Point<i32, Physical> {
     p.to_f64().to_physical(scale).to_i32_round()
+}
+
+/// The opaque regions of a surface tree's elements, output-local physical.
+/// Each element reports them relative to its own location.
+fn opaque_of(
+    els: &[WaylandSurfaceRenderElement<GlesRenderer>],
+    scale: Scale<f64>,
+) -> Vec<Rectangle<i32, Physical>> {
+    els.iter()
+        .flat_map(|e| {
+            let at = e.geometry(scale).loc;
+            e.opaque_regions(scale)
+                .into_iter()
+                .map(move |r| Rectangle::new(r.loc + at, r.size))
+        })
+        .collect()
+}
+
+/// The window blur gate (COMP-02 §9): a window gets a backdrop when blur is
+/// on and anything shows through it, either because it is drawn below full
+/// alpha (a fade or an opacity rule) or because its opaque region leaves some
+/// of `region` uncovered. `radius` is the physical corner radius it is masked
+/// with (see [`blur::shows_through`]). An alpha-less buffer is wholly opaque
+/// and never pays for a pass.
+fn wants_backdrop(
+    mode: BlurMode,
+    alpha: f32,
+    region: Rectangle<i32, Physical>,
+    radius: i32,
+    opaque: Vec<Rectangle<i32, Physical>>,
+) -> bool {
+    mode != BlurMode::Off
+        && !region.is_empty()
+        && (alpha < 1.0 || blur::shows_through(region, radius, opaque))
 }
 
 /// Collect one frame's elements, front to back.
@@ -180,21 +341,14 @@ pub fn collect_elements(
                 // entirely, so a bar that paints a solid ground costs nothing.
                 if blur_layers {
                     let region = Rectangle::new(loc, geo.size.to_f64().to_physical(scale).to_i32_round());
-                    let opaque: Vec<_> = els
-                        .iter()
-                        .flat_map(|e| {
-                            let at = e.geometry(scale).loc;
-                            e.opaque_regions(scale)
-                                .into_iter()
-                                .map(move |r| Rectangle::new(r.loc + at, r.size))
-                        })
-                        .collect();
-                    if blur::shows_through(region, opaque) {
+                    if blur::shows_through(region, 0, opaque_of(&els, scale)) {
                         requests.push((
                             blur::BlurKey::Layer(surface.clone()),
                             elements.len() + els.len(),
                             region,
                             layer_mode,
+                            layer_radius(surface, config),
+                            None,
                         ));
                     }
                 }
@@ -272,9 +426,8 @@ fn insert_blur(
         store.blur.clear();
         return;
     }
-    let deco = &config.decoration;
     let scale = Scale::from(output.current_scale().fractional_scale());
-    let live: Vec<blur::BlurKey> = requests.iter().map(|(key, _, _, _)| key.clone()).collect();
+    let live: Vec<blur::BlurKey> = requests.iter().map(|(key, ..)| key.clone()).collect();
     store.blur.retain(&live);
 
     // Same framebuffer-space mask as `window_elements`: needs the output's own
@@ -290,51 +443,7 @@ fn insert_blur(
         .unwrap_or((1, 1));
     let upscale = scale.x.max(scale.y);
 
-    for (key, index, region, mode) in requests.into_iter().rev() {
-        // A toplevel reuses the radius its own corners are drawn with. A
-        // layer-shell surface anchored to three-plus edges, or to both edges
-        // of an axis, usually spans that axis corner-to-corner; fewer/adjacent
-        // anchors (launcher, toasts, notification centre) get the same radius
-        // as a window.
-        //
-        // "Usually" because a 3-edge/opposite-pair anchor alone isn't proof of
-        // a flush slab: wlr-layer-shell's own `exclusive-zone` semantics carry
-        // that distinction already. `ExclusiveZone::DontCare` (or no
-        // reservation at all) means "extend it all the way to the edges it is
-        // anchored to" in the protocol's own words — a genuine flush edge, so
-        // it stays square. A *positive* exclusive zone instead asks the
-        // compositor to reserve a bounded strip, which is what a taskbar does
-        // — hyperion anchors top+left+right for layout (`size: (0, HEIGHT)`
-        // stretches it edge to edge) but reserves only `HEIGHT` px and draws a
-        // floating rounded pill inset within that strip, not a flush bar. No
-        // other layer client anchors 3+ edges with a positive exclusive zone
-        // today, so this shape structurally identifies the bar without a
-        // namespace/app-id check, and gets its own radius since its content
-        // draws at a different radius than every other pane's.
-        let radius = match &key {
-            blur::BlurKey::Window(_) => deco.rounding,
-            blur::BlurKey::Layer(surface) => {
-                let state = surface.cached_state();
-                let anchor = state.anchor;
-                let opposite_pair = (anchor.contains(Anchor::LEFT) && anchor.contains(Anchor::RIGHT))
-                    || (anchor.contains(Anchor::TOP) && anchor.contains(Anchor::BOTTOM));
-                let edges = [Anchor::LEFT, Anchor::RIGHT, Anchor::TOP, Anchor::BOTTOM]
-                    .into_iter()
-                    .filter(|edge| anchor.contains(*edge))
-                    .count();
-                let bounded_strip = matches!(state.exclusive_zone, ExclusiveZone::Exclusive(z) if z > 0);
-                if edges >= 3 || opposite_pair {
-                    if bounded_strip {
-                        config.bar.rounding as i32
-                    } else {
-                        0
-                    }
-                } else {
-                    deco.rounding
-                }
-            }
-        };
-
+    for (key, index, region, mode, radius, bezel) in requests.into_iter().rev() {
         // The final draw's program: plain `blur` only needs one to round
         // (a square backdrop draws with smithay's own); frost and glass
         // always do, radius 0 included. A rotated output (`fb_height` None)
@@ -361,23 +470,34 @@ fn insert_blur(
                 BlurMode::Frost => {
                     effects::frost_uniforms(region, fb_height, mirrored, scaled_radius, cfg.frost.tint)
                 }
-                BlurMode::Glass => effects::glass_uniforms(
-                    region,
-                    fb_height,
-                    mirrored,
-                    scaled_radius,
-                    fb_size,
-                    (cfg.glass.refraction as f64 * upscale) as f32,
-                    (cfg.glass.bevel as f64 * upscale) as f32,
-                    &cfg.glass,
-                ),
+                BlurMode::Glass => {
+                    let refraction = (cfg.glass.refraction as f64 * upscale) as f32;
+                    // A bezel lenses gently: at most 4 px, across the ring only.
+                    let (strength, bevel) = match bezel {
+                        Some(b) => (
+                            refraction.min((BEZEL_REFRACTION * upscale) as f32),
+                            b.inner as f32,
+                        ),
+                        None => (refraction, (cfg.glass.bevel as f64 * upscale) as f32),
+                    };
+                    effects::glass_uniforms(
+                        region,
+                        fb_height,
+                        mirrored,
+                        scaled_radius,
+                        fb_size,
+                        strength,
+                        bevel,
+                        &cfg.glass,
+                        bezel.map(|b| (b.inner, b.opaque, b.rim)),
+                    )
+                }
                 _ => effects::rounding_uniforms(region, fb_height, mirrored, scaled_radius),
             };
             Some((program, uniforms))
         });
         // COMP-02 §3: refraction samples up to this far outside the region,
         // so damage that far out must invalidate the backdrop too.
-        // Glass also keeps the unblurred backdrop, for its refracting rim.
         let glass = mode == BlurMode::Glass && program.is_some();
         let reach = if glass {
             effects::glass_reach(cfg.glass.refraction, upscale)
@@ -385,14 +505,25 @@ fn insert_blur(
             0
         };
 
+        // Over an opaque window only the bezel's ring is ever seen.
+        let ring = bezel.filter(|b| b.opaque && glass).map(|b| {
+            (
+                b.inner,
+                (config.decoration.rounding.max(0) as f64 * upscale).ceil() as i32,
+            )
+        });
         let behind = &elements[index..];
         if let Some(element) = store.blur.element(
-            renderer, output, &key, region, behind, cfg, scale, program, reach, glass,
+            renderer, output, &key, region, behind, cfg, scale, program, reach, ring,
         ) {
             elements.insert(index, AbyssRenderElement::Blur(element));
         }
     }
 }
+
+/// A bezel's largest refraction, logical px: felt at the window edge, never a
+/// funhouse.
+const BEZEL_REFRACTION: f64 = 4.0;
 
 /// Per-window toplevel elements, front to back, with `decoration` opacity and
 /// `dim-inactive` applied (COMP-02 §9), pushed straight onto `out`.
@@ -446,6 +577,9 @@ fn window_elements(
     let border = border_frame(renderer, store, output_geo.loc, scale, output, config, &live);
     let shadow = shadow_program(renderer, store, config, &live);
     let glow = glow_program(renderer, store, config, &live);
+    let upscale = scale.x.max(scale.y);
+    // Compiled (and checked) only once some window actually wants a bezel.
+    let mut glass: Option<bool> = None;
 
     // `space.elements()` is bottom-to-top; frames are collected front-to-back.
     for window in live.into_iter().rev() {
@@ -543,6 +677,57 @@ fn window_elements(
             )
         });
 
+        // Blur follows what shows through the window, not a whole-window
+        // alpha (COMP-02 §9): decided here, on the raw surfaces, before the
+        // rounding and crop wrappers (which report no opaque region) consume
+        // them. A matched `windowrule "blur …"` overrides the global mode.
+        let global = config.decoration.blur.mode;
+        let mode = crate::shell::rules::blur_of(&window).map_or(global, |rule| rule.resolve(global));
+        let corner = match rounding {
+            Some(_) => (deco.rounding as f64 * scale.x.max(scale.y)).ceil() as i32,
+            None => 0,
+        };
+        let border_size = config.general.border_size;
+        let bezel = match border.is_some() && mode == BlurMode::Glass && geo.is_some() {
+            true => {
+                let ready = *glass.get_or_insert_with(|| glass_ready(renderer, store, output));
+                bezel_width(mode, ready, fills_area(&window), border_size, upscale)
+            }
+            false => None,
+        };
+        let backdrop = geo
+            .filter(|_| mode != BlurMode::Off)
+            .and_then(|geo| {
+                let rect = Rectangle::new(
+                    phys(geo.loc - output_geo.loc, scale),
+                    geo.size.to_f64().to_physical(scale).to_i32_round(),
+                );
+                window_backdrop(
+                    mode,
+                    alpha,
+                    rect,
+                    corner,
+                    opaque_of(&surfaces, scale),
+                    deco.rounding,
+                    border_size,
+                    bezel,
+                )
+            })
+            .map(|(region, radius, bezel)| {
+                let bezel = bezel.map(|(inner, opaque)| {
+                    // Config colours are straight alpha; premultiply before
+                    // the focus crossfade so it stays linear.
+                    let pm = |[r, g, b, a]: [f32; 4]| [r * a, g * a, b * a, a];
+                    let rim = store.anim.border_color(
+                        &window,
+                        pm(config.general.col_active),
+                        pm(config.general.col_inactive),
+                    );
+                    Bezel { inner, opaque, rim }
+                });
+                (region, radius, bezel)
+            });
+
         // Every surface of one window is masked by the same rectangle, so a
         // window with subsurfaces rounds as a single shape.
         match (&rounding, geo) {
@@ -591,9 +776,16 @@ fn window_elements(
         // Border, glow, then shadow, all directly under this window's
         // surfaces. The ring's inner edge is the exact complement of the
         // window's rounded mask, so it never covers window content from below
-        // either; glow and shadow draw only outside the bordered rect.
-        if let Some(frame) = &border {
-            push_border(store, frame, &window, geo, config, out);
+        // either; glow and shadow draw only outside the bordered rect. A glass
+        // bezel replaces the painted ring.
+        let bezeled = backdrop.as_ref().is_some_and(|(_, _, b)| b.is_some());
+        match &border {
+            Some(_) if bezeled => {
+                store.rings.remove(&window);
+                store.borders.remove(&window);
+            }
+            Some(frame) => push_border(store, frame, &window, geo, config, out),
+            None => {}
         }
         if let Some(program) = &glow {
             push_glow(store, program, &window, geo, output_geo.loc, config, out);
@@ -602,24 +794,19 @@ fn window_elements(
             push_shadow(store, program, &window, geo, output_geo.loc, config, out);
         }
 
-        // Blur samples what shows through the window's alpha, so a window drawn
-        // at full opacity gets no backdrop pass at all. A matched `windowrule
-        // "blur …"` overrides the global default, but never bypasses the
-        // alpha gate above: an opaque window is never blurred. The backdrop
-        // goes below the window's own border and shadow, so neither is
-        // smeared into it; it covers the window rect only, which the ring
-        // does not overlap.
-        let global = config.decoration.blur.mode;
-        let mode = crate::shell::rules::blur_of(&window).map_or(global, |rule| rule.resolve(global));
-        if alpha < 1.0 && mode != BlurMode::Off {
+        // An opaque window gets no backdrop pass at all (the gate above)
+        // unless its border is a glass bezel. The backdrop goes below the
+        // window's own border and shadow, so neither is smeared into it; it
+        // covers the window rect only, which the ring does not overlap — or,
+        // for a bezel, the bordered rect, which the shadow does not overlap.
+        if let Some((region, radius, bezel)) = backdrop {
             blurred.push((
                 blur::BlurKey::Window(window.clone()),
                 out.len(),
-                Rectangle::new(
-                    phys(geo.loc - output_geo.loc, scale),
-                    geo.size.to_f64().to_physical(scale).to_i32_round(),
-                ),
+                region,
                 mode,
+                radius,
+                bezel,
             ));
         }
     }
@@ -640,19 +827,11 @@ fn shadow_program(
         return None;
     }
     store.shadows.retain(|w, _| live.contains(w));
-    ring_shadow_program(renderer, store)
-}
-
-/// The shadow ring program, compiled on first use; glow draws with it too.
-fn ring_shadow_program(
-    renderer: &mut GlesRenderer,
-    store: &mut BorderStore,
-) -> Option<smithay::backend::renderer::gles::GlesPixelProgram> {
     if store.shadow.is_none() {
         match effects::compile_shadow(renderer) {
             Ok(program) => store.shadow = Some(program),
             Err(err) => {
-                tracing::warn!(?err, "compiling the shadow shader; shadows and glow disabled");
+                tracing::warn!(?err, "compiling the shadow shader; shadows disabled");
                 return None;
             }
         }
@@ -660,7 +839,7 @@ fn ring_shadow_program(
     store.shadow.clone()
 }
 
-/// The shadow program when border glow is on, with the stored glows of
+/// The glow ring program when border glow is on, with the stored glows of
 /// windows that are gone dropped (COMP-02 §9); `None` draws no glow.
 fn glow_program(
     renderer: &mut GlesRenderer,
@@ -673,19 +852,30 @@ fn glow_program(
         return None;
     }
     store.glows.retain(|w, _| live.contains(w));
-    ring_shadow_program(renderer, store)
+    if store.glow.is_none() {
+        match effects::compile_ring(renderer) {
+            Ok(program) => store.glow = Some(program),
+            Err(err) => {
+                tracing::warn!(?err, "compiling the glow shader; glow disabled");
+                return None;
+            }
+        }
+    }
+    store.glow.clone()
 }
 
 /// Where one window's drop shadow or glow goes and what it is shaded with: its
-/// output-local area, grown from the bordered rect by `range`, and its
-/// `[range, radius]` uniforms. `geo` is global with the animation offset
-/// applied (COMP-02 §9).
+/// output-local area, grown from the bordered rect by `range` and by `drop`
+/// more at the bottom, and its `[range, radius, drop]` uniforms. `geo` is
+/// global with the animation offset applied (COMP-02 §9). Glow passes
+/// `drop = 0`.
 fn shadow_geometry(
     geo: Rectangle<i32, Logical>,
     output_loc: Point<i32, Logical>,
     range: i32,
+    drop: i32,
     config: &Config,
-) -> (Rectangle<i32, Logical>, [f32; 2]) {
+) -> (Rectangle<i32, Logical>, [f32; 3]) {
     // The shadow sits outside the border, so it grows from the bordered rect.
     let inset = config.general.border_size;
     // It hugs the border ring's outer edge, whose radius is the window's plus
@@ -700,15 +890,26 @@ fn shadow_geometry(
             geo.loc.y - output_loc.y - inset - range,
         )
             .into(),
-        (geo.size.w + 2 * (inset + range), geo.size.h + 2 * (inset + range)).into(),
+        (
+            geo.size.w + 2 * (inset + range),
+            geo.size.h + 2 * (inset + range) + drop,
+        )
+            .into(),
     );
-    (area, [range as f32, radius as f32])
+    (area, [range as f32, radius as f32, drop as f32])
+}
+
+/// How far a shadow of `range` drops below its window, logical px.
+fn shadow_drop(range: i32) -> i32 {
+    (range as f32 * effects::SHADOW_DROP).round() as i32
 }
 
 /// One window's drop shadow. The stored element is reused so its Id, and with
 /// it damage tracking, is stable across frames: `resize` only bumps its commit
 /// when the area actually changes, and the uniforms are only replaced when
-/// range or radius do.
+/// range, radius or the focus weight do. Focus deepens the shadow, following
+/// the border's crossfade; the area is sized for the deepest case, so a
+/// focus change never resizes it.
 fn push_shadow(
     store: &mut BorderStore,
     program: &smithay::backend::renderer::gles::GlesPixelProgram,
@@ -718,8 +919,11 @@ fn push_shadow(
     config: &Config,
     out: &mut Vec<AbyssRenderElement>,
 ) {
-    let (area, params) = shadow_geometry(geo, output_loc, config.decoration.shadow.range, config);
-    let uniforms = || effects::shadow_uniforms([0.0, 0.0, 0.0, effects::SHADOW_ALPHA], params[0], params[1]);
+    let range = config.decoration.shadow.range;
+    let (area, geometry) = shadow_geometry(geo, output_loc, range, shadow_drop(range), config);
+    let focus = store.anim.border_color(window, [1.0, 0.0, 0.0, 0.0], [0.0; 4])[0];
+    let params = [geometry[0], geometry[1], geometry[2], focus];
+    let uniforms = || effects::shadow_uniforms(geometry, focus);
     let (element, applied) = store.shadows.entry(window.clone()).or_insert_with(|| {
         (
             PixelShaderElement::new(program.clone(), area, None, 1.0, uniforms(), Kind::Unspecified),
@@ -734,8 +938,7 @@ fn push_shadow(
     out.push(AbyssRenderElement::Shader(element.clone()));
 }
 
-/// One window's border glow: the drop-shadow ring in the window's border
-/// colour, reaching `GLOW_RANGE` past the border (COMP-02 §9). It follows the
+/// One window's border glow: a ring in the window's border colour, reaching `GLOW_RANGE` past the border (COMP-02 §9). It follows the
 /// border's focus crossfade, and a state with glow off crossfades to
 /// transparent, so glow fades in or out with focus. Stored and updated like
 /// `push_shadow`.
@@ -761,9 +964,9 @@ fn push_glow(
         on(glow.active, config.general.col_active),
         on(glow.inactive, config.general.col_inactive),
     );
-    let (area, [range, radius]) = shadow_geometry(geo, output_loc, effects::GLOW_RANGE, config);
+    let (area, [range, radius, _]) = shadow_geometry(geo, output_loc, effects::GLOW_RANGE, 0, config);
     let params = [color[0], color[1], color[2], color[3], range, radius];
-    let uniforms = || effects::shadow_uniforms(color, range, radius);
+    let uniforms = || effects::ring_uniforms(color, range, radius);
     let (element, applied) = store.glows.entry(window.clone()).or_insert_with(|| {
         (
             PixelShaderElement::new(program.clone(), area, None, 1.0, uniforms(), Kind::Unspecified),
@@ -1069,18 +1272,28 @@ mod tests {
     #[test]
     fn shadow_hugs_the_bordered_rect() {
         let geo = Rectangle::new((100, 50).into(), (300, 200).into());
-        let (area, params) = shadow_geometry(geo, (40, 0).into(), 20, &config(13, 6, 20));
-        assert_eq!(area, Rectangle::new((34, 24).into(), (352, 252).into()));
-        assert_eq!(params, [20.0, 19.0]);
-        let (_, params) = shadow_geometry(geo, (40, 0).into(), 20, &config(0, 6, 20));
-        assert_eq!(params, [20.0, 0.0], "square windows keep a square shadow");
+        let (area, params) = shadow_geometry(geo, (40, 0).into(), 20, 6, &config(13, 6, 20));
+        // Grown by range + border on every side, and by the drop at the bottom.
+        assert_eq!(area, Rectangle::new((34, 24).into(), (352, 258).into()));
+        assert_eq!(params, [20.0, 19.0, 6.0]);
+        let (_, params) = shadow_geometry(geo, (40, 0).into(), 20, 6, &config(0, 6, 20));
+        assert_eq!(params, [20.0, 0.0, 6.0], "square windows keep a square shadow");
+        let (area, params) = shadow_geometry(geo, (40, 0).into(), 24, 0, &config(13, 6, 20));
+        assert_eq!(
+            area,
+            Rectangle::new((30, 20).into(), (360, 260).into()),
+            "glow does not drop"
+        );
+        assert_eq!(params[2], 0.0);
+        assert_eq!(shadow_drop(20), 6);
     }
 
     #[test]
     fn shadow_is_only_rebuilt_when_its_inputs_change() {
         let geo = Rectangle::new((100, 50).into(), (300, 200).into());
         let at = |geo, output: (i32, i32), cfg: &Config| {
-            shadow_geometry(geo, output.into(), cfg.decoration.shadow.range, cfg)
+            let range = cfg.decoration.shadow.range;
+            shadow_geometry(geo, output.into(), range, shadow_drop(range), cfg)
         };
         let base = config(13, 6, 20);
         let same = at(geo, (0, 0), &base);
@@ -1097,8 +1310,84 @@ mod tests {
             ("rounding", at(geo, (0, 0), &config(8, 6, 20))),
             ("border", at(geo, (0, 0), &config(13, 3, 20))),
             ("range", at(geo, (0, 0), &config(13, 6, 40))),
+            ("drop", shadow_geometry(geo, (0, 0).into(), 20, 7, &base)),
         ] {
             assert_ne!(got, same, "{what} must update the shadow");
         }
+    }
+
+    fn r(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Physical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn an_opaque_window_at_full_alpha_gets_no_backdrop() {
+        let region = r(100, 50, 300, 200);
+        assert!(!wants_backdrop(BlurMode::Glass, 1.0, region, 0, vec![region]));
+        // GTK leaves its rounded corners out; the mask hides them anyway.
+        let cross = vec![r(113, 50, 274, 200), r(100, 63, 300, 174)];
+        assert!(!wants_backdrop(BlurMode::Glass, 1.0, region, 13, cross));
+    }
+
+    #[test]
+    fn a_translucent_window_gets_one() {
+        let region = r(100, 50, 300, 200);
+        // Faded (or an opacity rule): the explicit alpha gate, whatever smithay
+        // reports for the opaque region.
+        assert!(wants_backdrop(BlurMode::Blur, 0.9, region, 0, vec![region]));
+        // An ARGB client that declares no opaque region.
+        assert!(wants_backdrop(BlurMode::Glass, 1.0, region, 13, vec![]));
+        // A partly opaque one, e.g. a transparent sidebar.
+        assert!(wants_backdrop(
+            BlurMode::Frost,
+            1.0,
+            region,
+            13,
+            vec![r(180, 50, 220, 200)]
+        ));
+    }
+
+    #[test]
+    fn an_opaque_glass_window_with_a_border_gets_a_bezel() {
+        let rect = r(100, 50, 300, 200);
+        let bezel = bezel_width(BlurMode::Glass, true, false, 6, 1.0);
+        assert_eq!(bezel, Some(6));
+        let got = window_backdrop(BlurMode::Glass, 1.0, rect, 9, vec![rect], 9, 6, bezel);
+        // One request: the bordered rect, the outer radius, opaque inside.
+        assert_eq!(got, Some((r(94, 44, 312, 212), 15, Some((6, true)))));
+        // A translucent one keeps its glass inside the ring.
+        let got = window_backdrop(BlurMode::Glass, 0.8, rect, 9, vec![rect], 9, 6, bezel);
+        assert_eq!(got, Some((r(94, 44, 312, 212), 15, Some((6, false)))));
+        // Square windows keep a square bezel; HiDPI scales the width.
+        let got = window_backdrop(BlurMode::Glass, 1.0, rect, 0, vec![rect], 0, 6, bezel);
+        assert_eq!(got.map(|g| g.1), Some(0));
+        assert_eq!(bezel_width(BlurMode::Glass, true, false, 6, 1.5), Some(9));
+    }
+
+    #[test]
+    fn no_bezel_where_the_border_stays_painted() {
+        // Maximized/fullscreen, no border, no glass program, other modes.
+        assert_eq!(bezel_width(BlurMode::Glass, true, true, 6, 1.0), None);
+        assert_eq!(bezel_width(BlurMode::Glass, true, false, 0, 1.0), None);
+        assert_eq!(bezel_width(BlurMode::Glass, false, false, 6, 1.0), None);
+        for mode in [BlurMode::Off, BlurMode::Blur, BlurMode::Frost] {
+            assert_eq!(bezel_width(mode, true, false, 6, 1.0), None);
+        }
+        // Without a bezel the window rect is unchanged, and opaque asks nothing.
+        let rect = r(100, 50, 300, 200);
+        assert_eq!(
+            window_backdrop(BlurMode::Glass, 1.0, rect, 9, vec![rect], 9, 6, None),
+            None
+        );
+        assert_eq!(
+            window_backdrop(BlurMode::Frost, 0.8, rect, 9, vec![rect], 9, 6, None),
+            Some((rect, 9, None))
+        );
+    }
+
+    #[test]
+    fn blur_off_never_asks() {
+        let region = r(100, 50, 300, 200);
+        assert!(!wants_backdrop(BlurMode::Off, 0.5, region, 0, vec![]));
     }
 }

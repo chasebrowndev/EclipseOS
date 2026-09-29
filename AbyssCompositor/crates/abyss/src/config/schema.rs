@@ -225,7 +225,8 @@ pub const TABLE: &[Key] = &[
         Int(5),
         Abyss,
         Live,
-        "Gap between tiled windows, logical px.",
+        "Gap between tiled windows, logical px. A panel with an exclusive \
+       zone (the bar) counts as a neighbour, so it gets this gap too.",
     ),
     k(
         "general.gaps-out",
@@ -233,7 +234,7 @@ pub const TABLE: &[Key] = &[
         Int(10),
         Abyss,
         Live,
-        "Gap between the tiling area and the screen edge, logical px.",
+        "Gap between the tiling area and a bare screen edge, logical px.",
     ),
     k(
         "general.gaps-in-vertical",
@@ -668,7 +669,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.active-opacity",
         PCT,
-        Float(0.87),
+        Float(1.0),
         Abyss,
         Live,
         "Alpha applied to the focused window.",
@@ -697,10 +698,10 @@ pub const TABLE: &[Key] = &[
         Live,
         "What is drawn behind translucent windows and layer-shell surfaces: \
        `off`, a plain dual-Kawase `blur`, `frost` (blur with a tint and fine \
-       grain) or `glass` (a blurred pane inside a rounded bevel that refracts \
-       the sharp backdrop, with a rim light; it holds a second backdrop \
-       texture per surface). A layer blurs only where its opaque region leaves it uncovered. \
-       Replaces the old `enabled` bool, which still loads (`#false` is `off`).",
+       grain) or `glass` (a saturated, smoked blur whose edge band gently \
+       bends the blurred backdrop, under a neutral hairline rim). A window or \
+       layer blurs when it is drawn below full opacity or its opaque region \
+       leaves it uncovered. Replaces the old `enabled` bool, which still loads (`#false` is `off`).",
     ),
     k(
         "decoration.blur.size",
@@ -713,7 +714,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.blur.passes",
         int(1, 6),
-        Int(2),
+        Int(4),
         Abyss,
         Live,
         "Down/up-sample pairs in the blur chain.",
@@ -721,37 +722,37 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.blur.glass.refraction",
         int(0, 64),
-        Int(16),
+        Int(4),
         Abyss,
         Live,
-        "`glass`: how far the bevel bends the backdrop, logical px at its \
-       steepest. 0 is flat glass.",
+        "`glass`: how far the bevel bends the blurred backdrop, logical px at \
+       the outer edge. The centre is never bent; 0 is flat glass.",
     ),
     k(
         "decoration.blur.glass.bevel",
         int(1, 128),
-        Int(22),
+        Int(16),
         Abyss,
         Live,
-        "`glass`: width of the rounded rim, logical px in from the edge. The \
-       rim shows the backdrop sharp and refracted, fading into the blurred \
-       interior.",
+        "`glass`: width of the edge band the backdrop rolls off in, logical px \
+       in from the edge.",
     ),
     k(
         "decoration.blur.glass.dispersion",
         PCT,
-        Float(0.25),
+        Float(0.0),
         Abyss,
         Live,
-        "`glass`: colour fringing in the bevel; 0.25 is crown glass, 0 none.",
+        "`glass`: colour fringing in the bevel; 0 (the default) is none.",
     ),
     k(
         "decoration.blur.glass.rim",
         PCT,
-        Float(0.45),
+        Float(0.5),
         Abyss,
         Live,
-        "`glass`: strength of the warm rim light along the upper-left edges.",
+        "`glass`: strength of the neutral hairline rim, brightest along the \
+       top-left edges with a weaker lobe at the bottom-right.",
     ),
     k(
         "decoration.blur.frost.tint",
