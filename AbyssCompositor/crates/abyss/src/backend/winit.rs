@@ -216,7 +216,8 @@ pub fn service_captures(state: &mut AbyssState) {
     let Some(mut data) = state.winit.take() else {
         return;
     };
-    crate::render::capture::service(state, data.0.renderer());
+    let prompt = crate::trusted_ui::holds_seat(state);
+    crate::render::capture::service(state, data.0.renderer(), prompt);
     state.winit = Some(data);
 }
 
@@ -350,7 +351,8 @@ fn redraw(
     }
     // Authorised captures are serviced after submit, so a capture never delays
     // the frame the user is looking at.
-    crate::render::capture::service(state, backend.renderer());
+    let prompt = crate::trusted_ui::holds_seat(state);
+    crate::render::capture::service(state, backend.renderer(), prompt);
     // Best effort: winit gives us no page-flip timestamp, so the submit time is
     // reported without a hardware-completion flag.
     let now = state.clock.now();

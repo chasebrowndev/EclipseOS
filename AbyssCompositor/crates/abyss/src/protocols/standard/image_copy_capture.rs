@@ -559,6 +559,7 @@ fn capture_request(state: &mut AbyssState, resource: &ExtImageCopyCaptureFrameV1
         output_id,
         region,
         with_damage: !delivered,
+        overlay_cursor: false,
     });
     if let Some(session) = state.image_copy.sessions.get_mut(&sid) {
         session.delivered = true;

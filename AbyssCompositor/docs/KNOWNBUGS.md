@@ -20,6 +20,8 @@ BLUR-02 and TILE-01 were fixed on 2026-09-23 and removed. BLUR-02 came back and
 was fixed for real on 2026-09-28: the line was eclipse-toasts' idle 1 px
 transparent layer, which the compositor blurred; the stack now has no surface
 while empty.
+BLUR-01's fix (opaque sheets, because clients could not tell whether blur was on)
+is superseded on 2026-09-29 (C-14): panes read `decoration.blur.mode` and only tint.
 
 ---
 
@@ -70,9 +72,9 @@ taskbar window button or tray icon. No menu opens. **Proposed:** a long-press
 ## CAP-01: screenshots and screencasts drop every compositor effect
 
 `render/capture.rs:315` (`capture_elements`, TCB) builds its own pass list
-from surface elements only; it deliberately leaves out cursor, borders and
-trusted UI (the shell's content, not the compositor's chrome), and in doing so
-also loses blur and its frost/glass modes, rounding, shadow, glow and
+from surface elements only; it deliberately leaves out borders and trusted UI
+(the shell's content, not the compositor's chrome), and in doing so also
+loses blur and its frost/glass modes, rounding, shadow, glow and
 dim-inactive. A capture is therefore not what the user sees: translucent
 windows show the unblurred desktop through square corners. **Repro:** set
 `decoration.blur.mode "glass"`, make a window translucent, `grim` the output;
@@ -82,6 +84,15 @@ elements would have to be rebuilt over the *redacted* list (a blurred secret
 is still a secret). The owner's direction is a first-party capture tool — see
 `PROPOSEDFEATURES.md` "Screen capture" — which would own this. Visual checks
 meanwhile use a nested winit abyss captured from the outer compositor.
+
+**Cursor (fixed 2026-09-29):** `wlr_screencopy`'s `overlay_cursor` request
+flag was silently discarded, so no client — with or without the flag set —
+ever saw the pointer in a capture (COMP-02 §8 requires cursor-in-capture to be
+opt-in, not ambiently absent). `copy_one` now bakes the cursor in via
+`render::cursor::elements` when the client asked and no trusted prompt holds
+the seat. `ext_image_copy_capture_v1`'s separate pointer-cursor session
+(`image_copy_capture.rs`) remains a stub — see `PROPOSEDFEATURES.md` Phase 1
+M8 — since it needs a metadata cursor stream, not baked-in pixels.
 
 ## BLUR-03: a blurred rectangle frames the toast stack
 
@@ -94,6 +105,17 @@ behind them. Layers are blurred wherever they leave the surface uncovered
 around both cards. **Proposed:** none committed. Either the client tells the
 compositor where its glass is (`ext-background-effect-v1`, deferred from the
 blur-modes work) or each card becomes its own surface.
+
+## BLUR-04: two outputs of different sizes rebuild each other's backdrops
+
+Found 2026-09-29 by code review during the C-14 glass work; not yet seen on
+hardware. `BlurStore` is one store shared by every output, but `ensure_chain`
+sizes the chain to the output being drawn and the per-output `retain`/`clear`
+drop entries that belong to the others. With two outputs of different sizes
+each frame throws away the other output's cached backdrops, so every blurred
+surface re-renders its full chain every frame. **Repro:** two monitors of
+different resolution, a translucent window on each; watch GPU time. **Proposed:**
+key the chain and the cache by output.
 
 ---
 

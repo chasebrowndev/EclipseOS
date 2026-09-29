@@ -524,7 +524,8 @@ fn redraw(
     };
     let render_time = frame_start.elapsed();
     update_primary_scanout(&state.space, out, &rendered);
-    crate::render::capture::service(state, &mut data.renderer);
+    let prompt = crate::trusted_ui::holds_seat(state);
+    crate::render::capture::service(state, &mut data.renderer, prompt);
 
     // There is no page flip, so the frame is "presented" the moment it is
     // composited, and never with a hardware-completion flag.
