@@ -13,6 +13,7 @@ mod edit;
 mod motion;
 mod ops;
 mod palette;
+mod parts;
 mod state;
 mod theme;
 mod view;
@@ -96,10 +97,10 @@ fn main() -> iced::Result {
         .unwrap_or_else(|| b"/".to_vec());
     // The desktop's rounding, blur, opacity and motion, and the contrast
     // floor over them (FOG §Visual design).
-    theme::init(theme::Look::new(
-        &fog_config::theme::load(&fog_config::theme::paths()),
+    theme::init(
+        fog_config::theme::load(&fog_config::theme::paths()),
         config.appearance,
-    ));
+    );
 
     let app = iced::application(
         move || app::App::new(path.clone(), config.clone(), tz.clone(), home.clone()),

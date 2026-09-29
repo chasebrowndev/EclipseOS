@@ -118,6 +118,18 @@ impl Motion {
         }
     }
 
+    /// The look was rebuilt (fog.kdl reloaded). Without blur now, a sheet
+    /// drops its blurred snapshot, or stops waiting for one; springs that
+    /// can no longer move snap on the next frame.
+    pub fn restyled(&mut self) {
+        if look().blur.is_none() {
+            self.backdrop = None;
+            if self.waiting.take().is_some() {
+                go(&mut self.sheet, 1.0, bouncy(motion::SHEET));
+            }
+        }
+    }
+
     /// The window changed size: a snapshot no longer lines up.
     pub fn resized(&mut self) {
         self.backdrop = None;
@@ -171,6 +183,7 @@ pub fn sync(app: &mut App) -> Task<Message> {
     let here = (app.tabs.index(), b.path.clone());
     let cursor = b.selected as f32;
     let on = b.row(b.selected).map(|e| e.name.clone());
+    let rows = b.len();
     let l = look();
     let m = &mut app.motion;
 
@@ -184,6 +197,13 @@ pub fn sync(app: &mut App) -> Task<Message> {
         if tray { 1.0 } else { 0.0 },
         l.spring(motion::PANEL),
     );
+    // The row under the pointer is the pointer's: a new folder or tab, or
+    // a listing that shrank past it, leaves no wash on a row it never
+    // entered (its own `Unhover` never comes once the row is gone).
+    if m.pill_in.as_ref() != Some(&here) || m.hovered.is_some_and(|h| h >= rows) {
+        m.hovered = None;
+        m.hover.snap(0.0);
+    }
     let shifted = on.is_some() && on == m.pill_on && cursor != m.pill.target;
     m.pill_on = on;
     if m.pill_in.as_ref() != Some(&here) || shifted || (cursor - m.pill.value).abs() > PILL_JUMP {

@@ -78,6 +78,39 @@ impl H {
         })
     }
 
+    /// The end state of job `id` and its last progress before it:
+    /// `(files_done, files_total, files_skipped)`.
+    fn end_counts(&mut self, id: JobId) -> (JobStatus, Option<(u64, u64, u64)>) {
+        let end = Instant::now() + Duration::from_secs(20);
+        let mut last = None;
+        loop {
+            match self.rx.try_recv() {
+                Ok(Reply::JobProgress {
+                    id: i,
+                    files_done,
+                    files_total,
+                    files_skipped,
+                    ..
+                }) if i == id => last = Some((files_done, files_total, files_skipped)),
+                Ok(Reply::JobState { id: i, state })
+                    if i == id
+                        && matches!(
+                            state,
+                            JobStatus::Done | JobStatus::Failed { .. } | JobStatus::Cancelled
+                        ) =>
+                {
+                    return (state, last)
+                }
+                Ok(_) | Err(TryRecvError::Lagged(_)) => {}
+                Err(TryRecvError::Empty) => {
+                    assert!(Instant::now() < end, "timed out waiting on job {id}");
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Err(TryRecvError::Closed) => panic!("hub closed"),
+            }
+        }
+    }
+
     fn run(&mut self, spec: JobSpec) -> JobStatus {
         let id = self.submit(spec);
         self.end(id)
@@ -373,6 +406,53 @@ fn ask_resolutions_and_apply_all() {
         &mut |_| refused = true,
     );
     assert!(refused);
+}
+
+#[test]
+fn skips_are_reported_in_the_final_progress() {
+    let mut h = h();
+    let dest = h.w("dest");
+    fs::create_dir(&dest).unwrap();
+    // A folder of three files, already at the destination: Skip leaves the
+    // whole tree alone, and the job says so rather than looking copied.
+    fs::create_dir(h.w("bulk")).unwrap();
+    fs::create_dir(dest.join("bulk")).unwrap();
+    for n in ["f0", "f1", "f2"] {
+        fs::write(h.w("bulk").join(n), b"data").unwrap();
+    }
+    let id = h.submit(copy(&[&h.w("bulk")], &dest, P::Ask));
+    h.wait(id, |s| matches!(s, JobStatus::Conflict { .. }));
+    h.ctl(
+        id,
+        JobAction::Resolve {
+            choice: Resolution::Skip,
+            apply_all: false,
+        },
+    );
+    assert_eq!(h.end_counts(id), (JobStatus::Done, Some((3, 3, 3))));
+    assert!(names(&dest.join("bulk")).is_empty());
+
+    // One of two skipped: a partial skip.
+    fs::write(h.w("a"), b"new").unwrap();
+    fs::write(h.w("b"), b"new").unwrap();
+    fs::write(dest.join("b"), b"old").unwrap();
+    let (state, counts) = {
+        let id = h.submit(copy(&[&h.w("a"), &h.w("b")], &dest, P::Skip));
+        h.end_counts(id)
+    };
+    assert_eq!((state, counts), (JobStatus::Done, Some((2, 2, 1))));
+    assert_eq!(fs::read(dest.join("b")).unwrap(), b"old");
+
+    // Nothing in the way: nothing skipped.
+    let id = h.submit(copy(&[&h.w("a")], &h.w("bulk"), P::Ask));
+    assert_eq!(h.end_counts(id), (JobStatus::Done, Some((1, 1, 0))));
+
+    // A new folder whose name is taken, skipped.
+    let id = h.submit(JobSpec::Mkdir {
+        path: b(&dest.join("bulk")),
+        on_conflict: P::Skip,
+    });
+    assert_eq!(h.end_counts(id), (JobStatus::Done, Some((1, 1, 1))));
 }
 
 #[test]

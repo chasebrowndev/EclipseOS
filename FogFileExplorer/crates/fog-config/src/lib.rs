@@ -135,9 +135,14 @@ pub fn parse(text: &str) -> Result<Config, Error> {
 
 /// Load `path` over the defaults. A missing file is the defaults.
 pub fn load(path: &Path) -> Result<Config, Error> {
+    parse(&read(path)?)
+}
+
+/// The text of `path`, or `""` (the defaults) if it is missing.
+pub fn read(path: &Path) -> Result<String, Error> {
     match std::fs::read_to_string(path) {
-        Ok(text) => parse(&text),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(defaults()),
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
         Err(e) => Err(Error {
             line: 0,
             col: 0,

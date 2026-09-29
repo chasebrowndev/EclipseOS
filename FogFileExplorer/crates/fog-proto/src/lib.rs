@@ -371,13 +371,18 @@ pub enum Reply {
     JobAccepted {
         id: JobId,
     },
-    /// `current` is the path being worked on.
+    /// `current` is the path being worked on. `files_skipped` counts the
+    /// files a conflict answered with Skip left alone; they are included
+    /// in `files_done` (and their bytes in `bytes_done`), so a job that
+    /// skipped everything still reaches its totals. The last `JobProgress`
+    /// before a job's end state carries its final counts.
     JobProgress {
         id: JobId,
         bytes_done: u64,
         bytes_total: u64,
         files_done: u64,
         files_total: u64,
+        files_skipped: u64,
         current: Vec<u8>,
     },
     JobState {
@@ -414,6 +419,13 @@ pub enum Reply {
         path: Vec<u8>,
         free: u64,
         total: u64,
+    },
+    /// `fog.kdl` was reloaded and is now active (FOG §Configuration),
+    /// broadcast to every client. `text` is the file as `fogd` accepted it,
+    /// empty when it is missing (the defaults); a client lays it over the
+    /// defaults with `fog_config::parse` to restyle and rebind live.
+    ConfigReloaded {
+        text: String,
     },
 }
 
@@ -865,6 +877,7 @@ mod tests {
                 bytes_total: u64::MAX,
                 files_done: 1,
                 files_total: 3,
+                files_skipped: 1,
                 current: b"/src/\xff".to_vec(),
             },
             Reply::JobState {
@@ -928,6 +941,12 @@ mod tests {
                 path: b"/".to_vec(),
                 free: 1 << 30,
                 total: u64::MAX,
+            },
+            Reply::ConfigReloaded {
+                text: "appearance {\n    reduce-motion #true\n}\n".into(),
+            },
+            Reply::ConfigReloaded {
+                text: String::new(),
             },
         ];
         for r in &replies {

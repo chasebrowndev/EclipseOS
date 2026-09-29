@@ -79,6 +79,9 @@ pub enum Notice {
     NothingToPaste,
     /// A job of ours finished: its kind and how many items it named.
     Done(JobKind, usize),
+    /// A job of ours finished having changed nothing: every item it named
+    /// was skipped at a conflict.
+    Skipped(JobKind),
     /// A job of ours failed: its kind and `fogd`'s message.
     Failed(JobKind, String),
     Undone,
@@ -335,7 +338,8 @@ impl Browser {
             | Reply::UndoResult { .. }
             | Reply::TrashList(_)
             | Reply::PlacesList(_)
-            | Reply::ConfigError { .. } => Effect::None,
+            | Reply::ConfigError { .. }
+            | Reply::ConfigReloaded { .. } => Effect::None,
         }
     }
 

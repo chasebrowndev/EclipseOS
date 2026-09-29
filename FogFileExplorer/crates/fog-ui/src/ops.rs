@@ -62,7 +62,7 @@ impl JobKind {
             Self::Rename => "rename",
             Self::Trash => "trash",
             Self::Delete => "delete",
-            Self::Mkdir => "mkdir",
+            Self::Mkdir => "new folder",
             Self::CreateFile => "new file",
             Self::Restore => "restore",
             Self::Undo => "undo",
@@ -107,6 +107,8 @@ pub struct Job {
     pub bytes_total: u64,
     pub files_done: u64,
     pub files_total: u64,
+    /// Files a conflict's Skip left alone, counted in `files_done` too.
+    pub files_skipped: u64,
     /// The path being worked on, from the last `JobProgress`.
     pub current: Vec<u8>,
     started: Option<Instant>,
@@ -126,6 +128,7 @@ impl Job {
             bytes_total: 0,
             files_done: 0,
             files_total: 0,
+            files_skipped: 0,
             current: Vec::new(),
             started: None,
             ended: None,
@@ -138,6 +141,13 @@ impl Job {
             self.status,
             JobStatus::Queued | JobStatus::Running | JobStatus::Paused | JobStatus::Conflict { .. }
         )
+    }
+
+    /// Finished having changed nothing: every file it had was skipped.
+    pub fn skipped_all(&self) -> bool {
+        self.status == JobStatus::Done
+            && self.files_skipped > 0
+            && self.files_skipped >= self.files_total
     }
 
     /// Done so far, 0 to 1: by bytes when there are bytes to move, else by
@@ -190,6 +200,9 @@ pub enum TrayEvent {
 pub struct Tray {
     /// Oldest first.
     pub jobs: Vec<Job>,
+    /// The last jobs to go, as they were: the tray folds away showing
+    /// them rather than collapsing in one frame under the pointer.
+    pub gone: Vec<Job>,
     /// Index into `jobs`, while the tray has the keyboard.
     pub cursor: usize,
     /// Sent, not yet accepted.
@@ -275,6 +288,7 @@ impl Tray {
                 bytes_total,
                 files_done,
                 files_total,
+                files_skipped,
                 current,
             } => {
                 let j = self.entry(*id);
@@ -282,6 +296,7 @@ impl Tray {
                 j.bytes_total = *bytes_total;
                 j.files_done = *files_done;
                 j.files_total = *files_total;
+                j.files_skipped = *files_skipped;
                 j.current.clone_from(current);
                 j.started.get_or_insert(now);
                 TrayEvent::None
@@ -302,8 +317,11 @@ impl Tray {
                     JobStatus::Done | JobStatus::Cancelled | JobStatus::Failed { .. } => {
                         j.ended = Some(now);
                         let j = j.clone();
-                        // A permanent delete is never undone: undo passes it.
+                        // A permanent delete is never undone: undo passes it;
+                        // nor is a job that skipped everything, which
+                        // journaled nothing.
                         if *state == JobStatus::Done
+                            && !j.skipped_all()
                             && !matches!(j.kind, JobKind::Delete | JobKind::Undo | JobKind::Other)
                         {
                             self.last_done = Some(j.clone());
@@ -329,19 +347,30 @@ impl Tray {
     /// Failures stay until dismissed. Returns whether anything went.
     pub fn tick(&mut self, now: Instant) -> bool {
         let before = self.jobs.len();
-        self.jobs.retain(|j| {
+        self.keep(|j| {
             matches!(j.status, JobStatus::Failed { .. })
                 || j.ended.is_none_or(|t| now.duration_since(t) < LINGER)
         });
-        self.clamp();
         self.jobs.len() != before
+    }
+
+    /// Keep the jobs `f` accepts; if that empties the tray, what it last
+    /// showed becomes [`Tray::gone`].
+    fn keep(&mut self, f: impl Fn(&Job) -> bool) {
+        let (keep, gone): (Vec<_>, Vec<_>) = std::mem::take(&mut self.jobs)
+            .into_iter()
+            .partition(|j| f(j));
+        if keep.is_empty() && !gone.is_empty() {
+            self.gone = gone;
+        }
+        self.jobs = keep;
+        self.clamp();
     }
 
     /// Drop a job that is over (a failure, usually). Live jobs stay: they
     /// are cancelled, not dismissed.
     pub fn dismiss(&mut self, id: JobId) {
-        self.jobs.retain(|j| j.id != id || j.live());
-        self.clamp();
+        self.keep(|j| j.id != id || j.live());
     }
 
     /// Pause a running job, resume a paused one.
@@ -675,6 +704,7 @@ mod tests {
             bytes_total: total,
             files_done: 0,
             files_total: 1,
+            files_skipped: 0,
             current: b"/a/big".to_vec(),
         }
     }
@@ -760,8 +790,11 @@ mod tests {
         // The done job clears; the failure waits for dismissal.
         assert!(t.tick(end + LINGER));
         assert_eq!(t.jobs.iter().map(|j| j.id).collect::<Vec<_>>(), [2]);
+        assert!(t.gone.is_empty());
         t.dismiss(2);
         assert!(t.jobs.is_empty());
+        // The tray folds away showing what it last held.
+        assert_eq!(t.gone.iter().map(|j| j.id).collect::<Vec<_>>(), [2]);
     }
 
     #[test]

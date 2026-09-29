@@ -60,15 +60,21 @@ pub fn default_sort(v: &fog_config::View) -> Sort {
     }
 }
 
-/// Re-read `path` into `live`; on success apply it, on error log and
-/// broadcast, leaving `live` as it was.
+/// Re-read `path` into `live`; on success apply it and broadcast the text
+/// as [`Reply::ConfigReloaded`], so running UIs restyle and rebind; on error
+/// log and broadcast, leaving `live` as it was.
 pub fn reload(daemon: &Daemon, path: &Path, live: &mut Live) {
-    match live.reload(path) {
-        Ok(true) => {
+    let res = fog_config::read(path).and_then(|text| {
+        let changed = live.apply(fog_config::parse(&text))?;
+        Ok(changed.then_some(text))
+    });
+    match res {
+        Ok(Some(text)) => {
             apply(daemon, live.current());
             tracing::info!(path = %path.display(), "fog.kdl reloaded");
+            daemon.broadcast(Reply::ConfigReloaded { text });
         }
-        Ok(false) => {}
+        Ok(None) => {}
         Err(e) => rejected(daemon, &e),
     }
 }
@@ -149,12 +155,29 @@ mod tests {
         let live = start(&daemon, path.clone());
         assert_eq!(live.current(), &fog_config::defaults());
 
-        std::fs::write(&path, "performance { cache-dirs 3 }\n").unwrap();
+        let text = "performance { cache-dirs 3 }\nappearance { reduce-motion #true; }\n";
+        std::fs::write(&path, text).unwrap();
         let t0 = std::time::Instant::now();
         while daemon.cache().max_dirs() != 3 {
             assert!(t0.elapsed() < Duration::from_secs(5), "reload not applied");
             thread::sleep(Duration::from_millis(10));
         }
+        // Running UIs are told, with the text they lay over the defaults.
+        let t0 = std::time::Instant::now();
+        let pushed = loop {
+            match events.try_recv() {
+                Ok(Reply::ConfigReloaded { text }) => break text,
+                Ok(r) => panic!("unexpected {r:?}"),
+                Err(_) => {
+                    assert!(t0.elapsed() < Duration::from_secs(5), "no ConfigReloaded");
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        };
+        assert_eq!(pushed, text);
+        let over = fog_config::parse(&pushed).unwrap();
+        assert!(over.appearance.reduce_motion && !over.appearance.reduce_transparency);
+        assert_eq!(over.performance.cache_dirs, 3);
 
         std::fs::write(&path, "performance { cache-dirs 3 }\nbogus\n").unwrap();
         let t0 = std::time::Instant::now();

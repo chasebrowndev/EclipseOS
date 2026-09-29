@@ -66,6 +66,8 @@ pub(crate) struct Runner<'a> {
     bytes_total: u64,
     files_done: u64,
     files_total: u64,
+    /// Files a conflict's Skip left alone; also counted in `files_done`.
+    files_skipped: u64,
     current: PathBuf,
     last_emit: Option<Instant>,
     chunks: u64,
@@ -101,6 +103,7 @@ impl<'a> Runner<'a> {
             bytes_total: 0,
             files_done: 0,
             files_total: 0,
+            files_skipped: 0,
             current: PathBuf::new(),
             last_emit: None,
             chunks: 0,
@@ -143,6 +146,7 @@ impl<'a> Runner<'a> {
             bytes_total: self.bytes_total,
             files_done: self.files_done,
             files_total: self.files_total,
+            files_skipped: self.files_skipped,
             current: ops::raw(&self.current),
         });
     }
@@ -257,6 +261,7 @@ impl<'a> Runner<'a> {
                         Resolution::Skip => {
                             let (b, f) = ops::tree_size(src);
                             self.files_done += f;
+                            self.files_skipped += f;
                             self.bytes_done += b;
                             self.progress(false);
                             return Ok(());
@@ -513,7 +518,13 @@ impl<'a> Runner<'a> {
                     }
                     let ddir = lstat(&target).is_ok_and(|s| is_dir(&s));
                     match self.resolve(path, &target, dir && ddir)? {
-                        Resolution::Skip | Resolution::Merge => return Ok(()),
+                        // Nothing made: the existing one stands.
+                        Resolution::Merge => return Ok(()),
+                        Resolution::Skip => {
+                            self.files_skipped += 1;
+                            self.file_done(0);
+                            return Ok(());
+                        }
                         Resolution::KeepBoth => {
                             keep = Some(2);
                             target = parent.join(ops::path_of(&ops::keep_both_name(

@@ -10,10 +10,11 @@
 //! What the user can set, corner rounding, blur, window opacity, shadow and
 //! the animation switch, is read from `abyss.kdl` by
 //! [`fog_config::theme`] and turned into a [`Look`] at start-up, together
-//! with Fog's own `appearance` keys. Fog adds two tokens of its own: row
-//! height and the selection glow.
+//! with Fog's own `appearance` keys. Fog adds tokens of its own only for
+//! what a file manager has and a settings pane does not: row height, the
+//! icon stand-ins and the drag ghost.
 
-use std::sync::OnceLock;
+use std::sync::{OnceLock, PoisonError, RwLock};
 use std::time::Duration;
 
 use fog_config::theme::Theme;
@@ -21,7 +22,7 @@ use fog_config::Appearance;
 use fog_widgets::contrast::{self, Space, Surface};
 use fog_widgets::glass::Style;
 use fog_widgets::{Blur, Params};
-use iced::{Color, Font, Shadow, Vector};
+use iced::{Color, Font, Vector};
 
 /// `#rrggbb` at full opacity.
 const fn rgb(hex: u32) -> Color {
@@ -80,27 +81,34 @@ pub mod color {
     pub const RULE: Color = white(0.055);
     /// tokens `BORDER`: an outline around an inset field.
     pub const BORDER: Color = white(0.10);
+    /// tokens `BORDER_STRONG`: the drag ghost's edge.
+    pub const BORDER_STRONG: Color = white(0.16);
     /// tokens `HIGHLIGHT_STRONG`: a glass panel's lit rim.
     pub const RIM: Color = white(0.20);
+    /// tokens `SIDEBAR` (STYLE.md "Left sidebar: rgba(0,0,0,.4)"): the
+    /// places column, a shade over the window's own tint, no edge.
+    pub const SIDEBAR: Color = black(0.4);
+    /// tokens `GLASS`: the path field's fill, one step off the window.
+    pub const FIELD: Color = white(0.045);
+    /// tokens `MENU_GROUND`: the drag ghost's nearly opaque ground, legible
+    /// over rows, places or the desktop.
+    pub const MENU_GROUND: Color = rgb(0x17140f);
 
     /// tokens `TEXT`, `TEXT_SECONDARY`, `TEXT_TERTIARY`.
     pub const TEXT: Color = white(1.0);
     pub const TEXT_SECONDARY: Color = white(0.64);
     pub const TEXT_TERTIARY: Color = white(0.40);
 
-    /// tokens `ACCENT`. The single gold: the focused cursor's pill, the
+    /// tokens `ACCENT`. The single gold: the focused cursor's fill, the
     /// focus caret and the active tab's marker, nothing else.
     pub const ACCENT: Color = rgb(0xf2c33c);
     /// tokens `ACCENT_TEXT`: accent as text, lifted for small sizes.
     pub const ACCENT_TEXT: Color = rgb(0xf5cf5c);
-    /// tokens `ACCENT_FILL_STRONG`: the focused pill's wash.
+    /// tokens `ACCENT_FILL` (STYLE.md: accent tints ".09 fill"): the
+    /// focused cursor's wash, flat, with no edge and no glow. The name on
+    /// it takes [`ACCENT_TEXT`], which carries the gold.
     pub const ACCENT_FILL: Color = Color {
-        a: 0.16,
-        ..rgb(0xf2c33c)
-    };
-    /// tokens `ACCENT_BORDER`: the focused pill's hairline.
-    pub const ACCENT_BORDER: Color = Color {
-        a: 0.34,
+        a: 0.09,
         ..rgb(0xf2c33c)
     };
 
@@ -121,11 +129,18 @@ pub mod color {
     /// scrollbar. Not the accent.
     pub const NEUTRAL: Color = rgb(0x96918a);
 
-    /// tokens `LIFT`: an unfocused cursor's pill and marked rows. Neutral,
-    /// so a selection never competes with the one gold value.
+    /// tokens `LIFT`: an unfocused cursor's pill, marked rows, the current
+    /// place, and a drop target under the pointer. Neutral, so a selection
+    /// never competes with the one gold value.
     pub const MARK_FILL: Color = white(0.07);
-    /// tokens `LIFT_SOFT`: the row under the pointer.
+    /// tokens `LIFT_SOFT`: whatever is under the pointer: a row, a place, a
+    /// crumb, a column label, a button.
     pub const HOVER: Color = white(0.035);
+    /// Icon stand-ins (STYLE.md "small rounded rects stand in for icons"):
+    /// a folder in the warm neutral swatch, a file as a quiet outline.
+    pub const GLYPH_FOLDER: Color = rgb(0x96918a);
+    pub const GLYPH_FILE: Color = white(0.13);
+    pub const GLYPH_EDGE: Color = white(0.30);
     /// A progress bar's track and its filled part. Neutral: a job's
     /// progress never takes the gold.
     pub const TRACK: Color = white(0.08);
@@ -154,8 +169,8 @@ pub fn iced_theme() -> iced::Theme {
     )
 }
 
-/// tokens `font`: Instrument Sans for the interface, JetBrains Mono for
-/// data (names, sizes, dates, paths).
+/// tokens `font`: Instrument Sans for the interface and file names,
+/// JetBrains Mono for data (sizes, dates, paths, chords).
 pub mod font {
     use iced::font::{Family, Weight};
     use iced::Font;
@@ -180,7 +195,6 @@ pub mod font {
     pub const UI_MEDIUM: Font = sans(Weight::Medium);
     pub const UI_SEMIBOLD: Font = sans(Weight::Semibold);
     pub const DATA: Font = mono(Weight::Normal);
-    pub const DATA_MEDIUM: Font = mono(Weight::Medium);
 
     /// The faces, embedded from the desktop's vendored copies (Fog builds
     /// inside the EclipseOS tree; see the PKGBUILD).
@@ -194,14 +208,19 @@ pub mod font {
 }
 
 pub mod size {
-    /// Fog's own: row height of the file list, in logical pixels.
-    pub const ROW_H: f32 = 26.0;
+    /// Fog's own: row height of the file list, in logical pixels. Compact:
+    /// a list you scan, not a settings list.
+    pub const ROW_H: f32 = 24.0;
     /// Body and data text.
     pub const TEXT: f32 = 13.0;
     /// The status line and the kind tags: smaller, quieter.
     pub const TEXT_SMALL: f32 = 11.5;
     /// Section captions in the sidebar and headings in sheets.
     pub const CAPTION: f32 = 10.5;
+    /// tokens `size::MONO`: data (sizes, dates, paths, chords).
+    pub const MONO: f32 = 11.5;
+    /// tokens `size::MICRO`: the sidebar's uppercase mono section labels.
+    pub const MICRO: f32 = 10.0;
     /// Horizontal padding of every row and chrome line.
     pub const PAD_X: f32 = 14.0;
     /// Vertical padding of the status line.
@@ -211,8 +230,8 @@ pub mod size {
     pub const INSET: f32 = 8.0;
     /// Inner padding of a floating panel.
     pub const PANEL_PAD: f32 = 8.0;
-    /// Path capsule height.
-    pub const CAPSULE_H: f32 = 34.0;
+    /// Path field height.
+    pub const CAPSULE_H: f32 = 28.0;
     /// Horizontal inset of a pill inside its row.
     pub const PILL_X: f32 = 6.0;
     /// One device-independent pixel: rules and hairlines.
@@ -220,17 +239,37 @@ pub mod size {
     /// The right-aligned data columns of the list.
     pub const SIZE_W: f32 = 80.0;
     pub const DATE_W: f32 = 132.0;
-    pub const TYPE_W: f32 = 64.0;
+    pub const TYPE_W: f32 = 88.0;
+    /// Horizontal padding inside each list column and its label, so a
+    /// label's text sits over its column's.
+    pub const COL_PAD: f32 = 8.0;
+    /// Horizontal padding of a crumb and of a small text button: enough for
+    /// the hover wash to hold its text.
+    pub const CRUMB_X: f32 = 3.0;
     /// iced's embedded scrollbar width: the column header leaves it free so
     /// its labels sit over the list's columns.
     pub const SCROLLBAR_W: f32 = 10.0;
     /// Column header height: tighter than a row, it is a caption.
     pub const HEADER_H: f32 = 24.0;
-    /// Sidebar rail width, and the gap above each of its sections.
-    pub const SIDEBAR_W: f32 = 188.0;
+    /// tokens `space::SIDEBAR_W`, and the gap above each of its sections.
+    pub const SIDEBAR_W: f32 = 214.0;
     pub const SECTION_GAP: f32 = 14.0;
     /// A sidebar row.
-    pub const PLACE_H: f32 = 26.0;
+    pub const PLACE_H: f32 = 24.0;
+    /// tokens `space::BAR_W`: the gold bar at the left of the focused place.
+    pub const NAV_BAR_W: f32 = 3.0;
+    /// Icon stand-ins: a place's square, a folder's landscape rect and a
+    /// file's portrait one, their corner, and the gap after them.
+    pub const PLACE_GLYPH: f32 = 12.0;
+    pub const GLYPH_LONG: f32 = 14.0;
+    pub const GLYPH_SHORT: f32 = 11.0;
+    pub const GLYPH_R: f32 = 3.0;
+    pub const GLYPH_GAP: f32 = 8.0;
+    /// The drag ghost: its height, widest, and the gap it hangs below the
+    /// row it was taken from.
+    pub const GHOST_H: f32 = 28.0;
+    pub const GHOST_MAX_W: f32 = 280.0;
+    pub const GHOST_GAP: f32 = 6.0;
     /// Tab strip height, the widest a tab grows and its gold marker.
     pub const TAB_H: f32 = 30.0;
     pub const TAB_MAX_W: f32 = 200.0;
@@ -277,11 +316,11 @@ pub mod size {
 mod glass {
     /// Rim width.
     pub const RIM_W: f32 = 1.0;
-    /// White pooled at a panel's top edge.
-    pub const SHEEN: f32 = 0.05;
-    pub const SHEET_SHEEN: f32 = 0.08;
-    /// Grain amplitude.
-    pub const GRAIN: f32 = 0.010;
+    /// White pooled at a panel's top edge: none. STYLE.md lights a panel
+    /// with a 1px top-edge highlight (the rim), never a gradient.
+    pub const SHEEN: f32 = 0.0;
+    /// Grain amplitude: none on docked panels, which blur nothing.
+    pub const GRAIN: f32 = 0.0;
     /// Sheets float over a dark scrim, where grain reads as static: a
     /// breath of it keeps the blur from banding, no more.
     pub const SHEET_GRAIN: f32 = 0.003;
@@ -291,9 +330,6 @@ mod glass {
     /// Sheet shadow.
     pub const SHEET_SHADOW_Y: f32 = 22.0;
     pub const SHEET_SHADOW_BLUR: f32 = 56.0;
-    /// Fog's own: the focused pill's glow radius and strength.
-    pub const GLOW_BLUR: f32 = 14.0;
-    pub const GLOW_A: f32 = 0.24;
 }
 
 /// Motion: how long each spring takes to settle.
@@ -317,7 +353,7 @@ pub mod motion {
 const WINDOW_ALPHA: f32 = 0.72;
 
 /// What the theme, the compositor and the `appearance` keys make of the
-/// tokens, fixed at start-up.
+/// tokens: built at start-up, rebuilt when `appearance` is reloaded.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Look {
     /// The window tint.
@@ -428,11 +464,6 @@ impl Look {
             } else {
                 color::SURFACE
             },
-            sheen: if self.translucent {
-                glass::SHEET_SHEEN
-            } else {
-                0.0
-            },
             grain: if self.translucent {
                 glass::SHEET_GRAIN
             } else {
@@ -442,15 +473,6 @@ impl Look {
             shadow_offset: Vector::new(0.0, glass::SHEET_SHADOW_Y),
             shadow_blur: glass::SHEET_SHADOW_BLUR,
             ..self.panel()
-        }
-    }
-
-    /// The focused pill's glow.
-    pub fn glow(&self) -> Shadow {
-        Shadow {
-            color: alpha(color::ACCENT, glass::GLOW_A),
-            offset: Vector::ZERO,
-            blur_radius: glass::GLOW_BLUR,
         }
     }
 
@@ -464,20 +486,43 @@ impl Look {
     }
 }
 
-static LOOK: OnceLock<Look> = OnceLock::new();
+/// The desktop theme, read once before iced starts.
+static THEME: OnceLock<Theme> = OnceLock::new();
+/// The look now: rebuilt when fog.kdl's `appearance` changes.
+static LOOK: RwLock<Option<Look>> = RwLock::new(None);
 
-/// Fix the look; the first call wins. Before iced starts.
-pub fn init(look: Look) {
-    let _ = LOOK.set(look);
+/// Fix the desktop theme and the first look. Before iced starts; the first
+/// call's theme wins.
+pub fn init(theme: Theme, appearance: Appearance) {
+    let _ = THEME.set(theme);
+    set_appearance(appearance);
 }
 
-/// The look, or the defaults' (tests, and before [`init`]).
-pub fn look() -> &'static Look {
-    LOOK.get_or_init(Look::default)
+/// Rebuild the look for new `appearance` keys over the theme [`init`] read
+/// (fog.kdl hot reload). Returns whether it changed. The contrast floor is
+/// recomputed with it, so a live toggle never drops text below AA.
+pub fn set_appearance(appearance: Appearance) -> bool {
+    let theme = THEME.get_or_init(Theme::default);
+    let next = Look::new(theme, appearance);
+    let mut slot = LOOK.write().unwrap_or_else(PoisonError::into_inner);
+    let changed = *slot != Some(next);
+    *slot = Some(next);
+    changed
 }
 
-/// The default body font: data is mono.
-pub const DEFAULT_FONT: Font = font::DATA;
+/// The look, or the defaults' (tests, and before [`init`]). A copy: it can
+/// change between frames.
+pub fn look() -> Look {
+    if let Some(l) = *LOOK.read().unwrap_or_else(PoisonError::into_inner) {
+        return l;
+    }
+    let mut slot = LOOK.write().unwrap_or_else(PoisonError::into_inner);
+    *slot.get_or_insert_with(Look::default)
+}
+
+/// The default font: interface text, names included, is Instrument Sans;
+/// data (sizes, dates, paths, chords) asks for [`font::DATA`] by name.
+pub const DEFAULT_FONT: Font = font::UI;
 
 #[cfg(test)]
 mod tests {

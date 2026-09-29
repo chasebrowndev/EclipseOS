@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use fog_config::{Action, Chord, Config, CustomAction, Key as K, Mods, Target};
 use fog_proto::{
-    ConflictPolicy, JobId, JobSpec, JobStatus, Place, PlaceKind, Reply, Request, Resolution,
+    ConflictPolicy, JobId, JobSpec, JobStatus, Kind, Place, PlaceKind, Reply, Request, Resolution,
     SortKey, TrashItem,
 };
 use fog_widgets::scroll_into_view;
@@ -39,8 +39,8 @@ use crate::edit::{Edit, PathEdit};
 use crate::motion::{self, Motion};
 use crate::ops::{Confirm, Conflict, JobKind, NameEntry, Tray, TrayEvent};
 use crate::palette::{Item, Palette};
-use crate::state::{Browser, Click, Effect, Notice, Tabs};
-use crate::theme::size;
+use crate::state::{join, Browser, Click, Effect, Notice, Tabs};
+use crate::theme::{self, size};
 
 pub fn list_id() -> Id {
     Id::new("fog-list")
@@ -88,6 +88,29 @@ pub struct App {
     pub motion: Motion,
     /// `FOG_UI_BENCH_SCROLL`: a timed scroll for `fog-bench frames`.
     bench: Option<Bench>,
+    /// Rows in hand, dragged toward a folder or a place.
+    pub drag: Option<Drag>,
+    /// Escape dropped the drag in hand: the pointer's travel is ignored
+    /// until the button comes up (D-05 §2).
+    drag_escaped: bool,
+    /// The sidebar place under the pointer.
+    pub place_hover: Option<usize>,
+}
+
+/// A drag of rows: what they are, and what the ghost says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Drag {
+    pub paths: Vec<Vec<u8>>,
+    /// The first row's name, and whether it is a folder.
+    pub name: String,
+    pub dir: bool,
+}
+
+/// Where a drag would land if released now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DropAt {
+    Place(usize),
+    Row(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,6 +189,15 @@ pub enum Message {
     /// The pointer entered a row, or left row `usize`.
     Hover(usize),
     Unhover(usize),
+    /// Row `usize` is being dragged: the first of these starts the drag.
+    Lift(usize),
+    /// The drag's button came up.
+    Release,
+    /// The button went down again during a drag: its release was lost.
+    DragLost,
+    /// The pointer entered a place, or left place `usize`.
+    PlaceHover(usize),
+    PlaceUnhover(usize),
 }
 
 const SCRIPT_TICK: Duration = Duration::from_millis(900);
@@ -247,6 +279,93 @@ impl App {
             trash: HashMap::new(),
             motion: Motion::new(true),
             bench: Bench::from_env(),
+            drag: None,
+            drag_escaped: false,
+            place_hover: None,
+        }
+    }
+
+    /// Where the drag in hand would land now: the place under the pointer,
+    /// else the folder row under it. Never one of the dragged items, nor a
+    /// folder inside one of them, nor the folder they are already in.
+    pub fn drop_at(&self) -> Option<DropAt> {
+        let d = self.drag.as_ref()?;
+        let ok = |dest: &[u8]| {
+            dest != self.tabs.active().path.as_slice()
+                && !d.paths.iter().any(|p| {
+                    dest == p.as_slice()
+                        || (dest.starts_with(p) && dest.get(p.len()) == Some(&b'/'))
+                })
+        };
+        if let Some(i) = self.place_hover {
+            let p = self.places.get(i)?;
+            return (!matches!(p.kind, PlaceKind::Trash | PlaceKind::Recent) && ok(&p.path))
+                .then_some(DropAt::Place(i));
+        }
+        let i = self.motion.hovered?;
+        let b = self.tabs.active();
+        let e = b.row(i).filter(|e| e.kind == Kind::Dir)?;
+        ok(&join(&b.path, &e.name)).then_some(DropAt::Row(i))
+    }
+
+    /// The folder a [`DropAt`] names.
+    fn drop_dest(&self, at: &DropAt) -> Option<Vec<u8>> {
+        match at {
+            DropAt::Place(i) => self.places.get(*i).map(|p| p.path.clone()),
+            DropAt::Row(i) => {
+                let b = self.tabs.active();
+                b.row(*i).map(|e| join(&b.path, &e.name))
+            }
+        }
+    }
+
+    /// Row `i` is dragged: the first call picks up the selection if the row
+    /// is in it, else the row alone, selecting it.
+    fn lift(&mut self, i: usize) {
+        if self.drag.is_some() || self.drag_escaped {
+            return;
+        }
+        let b = self.tabs.active_mut();
+        if !b.is_marked(i) {
+            b.click(i, Click::Only);
+        }
+        let paths = b.targets();
+        let Some(first) = b.row(i) else {
+            return;
+        };
+        let mut name = first.display().into_owned();
+        if paths.len() > 1 {
+            name.push_str(&format!(" +{}", paths.len() - 1));
+        }
+        self.overlay = Overlay::None;
+        self.focus = Focus::List;
+        self.drag = Some(Drag {
+            paths,
+            name,
+            dir: first.kind == Kind::Dir,
+        });
+    }
+
+    /// The button came up: a drag over a target becomes a job there, a
+    /// move, or a copy with Ctrl held (D-05 §2; FOG §File operations: every
+    /// mutation is a job).
+    fn release(&mut self) {
+        self.drag_escaped = false;
+        let at = self.drop_at();
+        let Some(d) = self.drag.take() else {
+            return;
+        };
+        let Some(dest) = at.and_then(|a| self.drop_dest(&a)) else {
+            return;
+        };
+        let op = if self.mods.control() {
+            ClipOp::Copy
+        } else {
+            ClipOp::Cut
+        };
+        let clip = Clip { op, paths: d.paths };
+        if let Some(job) = clip.job(dest) {
+            self.submit(job);
         }
     }
 
@@ -261,6 +380,24 @@ impl App {
     /// Whether the active tab shows the trash.
     pub fn in_trash(&self) -> bool {
         self.trash_dir() == Some(self.tabs.active().path.as_slice())
+    }
+
+    /// fog.kdl changed under a running window (`fogd` pushed the text it
+    /// accepted): take its bindings, custom actions and `appearance` at
+    /// once. Parsing is CPU only; the file was read by `fogd`.
+    pub fn reconfigure(&mut self, text: &str) {
+        let c = match fog_config::parse(text) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("fog-ui: reloaded {e}; keeping the current config");
+                return;
+            }
+        };
+        self.keys = c.keys;
+        self.actions = c.actions;
+        if theme::set_appearance(c.appearance) {
+            self.motion.restyled();
+        }
     }
 
     /// Hand `spec` to the tray, which sends it when nothing is in flight.
@@ -289,9 +426,22 @@ impl App {
             }
             TrayEvent::Ended(job) => {
                 self.conflicts.retain(|c| c.id != job.id);
+                // An undone paste of a cut put the files back: that cut
+                // can be pasted again.
+                if job.kind == JobKind::Undo
+                    && job.undoes == Some(JobKind::Move)
+                    && job.status == JobStatus::Done
+                    && self
+                        .pasted_cut
+                        .as_ref()
+                        .is_some_and(|p| p.first() == Some(&job.subject))
+                {
+                    self.pasted_cut = None;
+                }
                 let n = match (&job.status, job.kind) {
                     (_, JobKind::Other | JobKind::Undo) => None,
                     (JobStatus::Failed { msg, .. }, k) => Some(Notice::Failed(k, msg.clone())),
+                    (_, k) if job.skipped_all() => Some(Notice::Skipped(k)),
                     (
                         JobStatus::Done,
                         k @ (JobKind::Copy
@@ -502,6 +652,29 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             return Task::none();
         }
+        Message::PlaceHover(i) => {
+            app.place_hover = Some(i);
+            return Task::none();
+        }
+        Message::PlaceUnhover(i) => {
+            if app.place_hover == Some(i) {
+                app.place_hover = None;
+            }
+            return Task::none();
+        }
+        Message::Lift(i) => {
+            app.lift(i);
+            Task::none()
+        }
+        Message::Release => {
+            app.release();
+            Task::none()
+        }
+        Message::DragLost => {
+            app.drag = None;
+            app.drag_escaped = false;
+            Task::none()
+        }
         Message::Resized => {
             app.motion.resized();
             handle(app, Message::Resized)
@@ -581,6 +754,10 @@ fn handle(app: &mut App, message: Message) -> Task<Message> {
             if app.in_trash() {
                 app.request(Request::ListTrash);
             }
+            Task::none()
+        }
+        Message::Conn(conn::Event::Reply(Reply::ConfigReloaded { text })) => {
+            app.reconfigure(&text);
             Task::none()
         }
         Message::Conn(conn::Event::Reply(Reply::TrashList(items))) => {
@@ -734,9 +911,15 @@ fn handle(app: &mut App, message: Message) -> Task<Message> {
             run_action(app, a)
         }
         // Handled in `update`.
-        Message::Frame(_) | Message::Backdrop(_) | Message::Hover(_) | Message::Unhover(_) => {
-            Task::none()
-        }
+        Message::Frame(_)
+        | Message::Backdrop(_)
+        | Message::Hover(_)
+        | Message::Unhover(_)
+        | Message::PlaceHover(_)
+        | Message::PlaceUnhover(_)
+        | Message::Lift(_)
+        | Message::Release
+        | Message::DragLost => Task::none(),
     }
 }
 
@@ -790,6 +973,11 @@ pub fn on_key(
     m: Modifiers,
 ) -> Task<Message> {
     let esc = matches!(key, Key::Named(Named::Escape));
+    // Escape drops a drag in hand, before anything else sees the key.
+    if esc && app.drag.take().is_some() {
+        app.drag_escaped = true;
+        return Task::none();
+    }
     let enter = matches!(key, Key::Named(Named::Enter));
     let tab = matches!(key, Key::Named(Named::Tab));
     let sideways = match key.as_ref() {
@@ -1304,6 +1492,20 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     if !app.script.is_empty() {
         subs.push(iced::time::every(SCRIPT_TICK).map(|_| Message::Script));
     }
+    if app.drag.is_some() || app.drag_escaped {
+        // The button may come up outside the row that took the press. A
+        // new press means its release was lost: the drag is dropped, not
+        // landed.
+        subs.push(iced::event::listen_with(|e, _, _| match e {
+            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                Some(Message::Release)
+            }
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
+                Some(Message::DragLost)
+            }
+            _ => None,
+        }));
+    }
     if app.motion.busy() || app.bench.is_some() {
         subs.push(window::frames().map(Message::Frame));
     }
@@ -1492,6 +1694,32 @@ mod tests {
         let _ = update(app, Message::Conn(conn::Event::Reply(r)));
     }
 
+    #[test]
+    fn a_reloaded_config_rebinds_keys_live() {
+        let mut a = app();
+        listed(&mut a, &["a", "b", "c"]);
+        press(&mut a, "ctrl+y");
+        assert_eq!(a.tabs.active().selected, 0, "ctrl+y is unbound by default");
+        // What fogd pushes after a valid edit of fog.kdl.
+        reply(
+            &mut a,
+            Reply::ConfigReloaded {
+                text: "keys {\n    bind \"ctrl+y\" \"down\"\n}\n".into(),
+            },
+        );
+        press(&mut a, "ctrl+y");
+        assert_eq!(a.tabs.active().selected, 1);
+        // Text that does not parse changes nothing.
+        reply(
+            &mut a,
+            Reply::ConfigReloaded {
+                text: "bogus\n".into(),
+            },
+        );
+        press(&mut a, "ctrl+y");
+        assert_eq!(a.tabs.active().selected, 2);
+    }
+
     fn kinds(app: &App) -> Vec<JobKind> {
         app.tray.jobs.iter().map(|j| j.kind).collect()
     }
@@ -1539,6 +1767,116 @@ mod tests {
         press(&mut a, "d");
         press(&mut a, "Esc");
         assert!(matches!(a.overlay, Overlay::None));
+    }
+
+    /// `/w` holding folders `d`, `dd` and a file `f`.
+    fn listed_with_dirs(app: &mut App) {
+        let e = |n: &str, k| Entry::new(n.as_bytes().to_vec(), k);
+        let _ = update(
+            app,
+            Message::Conn(conn::Event::Reply(Reply::DirSnapshot {
+                path: b"/w".to_vec(),
+                dir: 1,
+                generation: 0,
+                entries: vec![e("d", Kind::Dir), e("dd", Kind::Dir), e("f", Kind::File)],
+                order: vec![0, 1, 2],
+                complete: true,
+            })),
+        );
+    }
+
+    #[test]
+    fn a_row_dropped_on_a_folder_moves_and_with_ctrl_copies() {
+        let mut a = app();
+        listed_with_dirs(&mut a);
+        // Drag `f` over `d`: a move, the default.
+        let _ = update(&mut a, Message::Lift(2));
+        assert_eq!(a.drag.as_ref().unwrap().paths, [b"/w/f".to_vec()]);
+        let _ = update(&mut a, Message::Hover(0));
+        assert_eq!(a.drop_at(), Some(DropAt::Row(0)));
+        let _ = update(&mut a, Message::Release);
+        reply(&mut a, Reply::JobAccepted { id: 1 });
+        assert_eq!(kinds(&a), [JobKind::Move]);
+        assert!(a.drag.is_none());
+        // With Ctrl held, onto a place: a copy.
+        a.places = vec![Place {
+            kind: PlaceKind::UserDir,
+            label: "Docs".into(),
+            path: b"/docs".to_vec(),
+        }];
+        a.mods = Modifiers::CTRL;
+        let _ = update(&mut a, Message::Lift(2));
+        let _ = update(&mut a, Message::PlaceHover(0));
+        assert_eq!(a.drop_at(), Some(DropAt::Place(0)));
+        let _ = update(&mut a, Message::Release);
+        reply(&mut a, Reply::JobAccepted { id: 2 });
+        assert_eq!(kinds(&a), [JobKind::Move, JobKind::Copy]);
+    }
+
+    #[test]
+    fn a_drag_never_lands_on_itself_a_file_or_its_own_folder() {
+        let mut a = app();
+        listed_with_dirs(&mut a);
+        let _ = update(&mut a, Message::Lift(0));
+        // Over itself, over a file: nowhere.
+        let _ = update(&mut a, Message::Hover(0));
+        assert_eq!(a.drop_at(), None);
+        let _ = update(&mut a, Message::Hover(2));
+        assert_eq!(a.drop_at(), None);
+        // A place inside the dragged folder, or the folder it is in.
+        a.places = vec![
+            Place {
+                kind: PlaceKind::Bookmark,
+                label: "in".into(),
+                path: b"/w/d/sub".to_vec(),
+            },
+            Place {
+                kind: PlaceKind::Bookmark,
+                label: "here".into(),
+                path: b"/w".to_vec(),
+            },
+        ];
+        for i in 0..2 {
+            let _ = update(&mut a, Message::PlaceHover(i));
+            assert_eq!(a.drop_at(), None, "place {i}");
+            let _ = update(&mut a, Message::PlaceUnhover(i));
+        }
+        // A sibling whose name only starts the same is fine.
+        let _ = update(&mut a, Message::Hover(1));
+        assert_eq!(a.drop_at(), Some(DropAt::Row(1)));
+        let _ = update(&mut a, Message::Hover(2));
+        let _ = update(&mut a, Message::Release);
+        assert!(kinds(&a).is_empty(), "no job was sent");
+    }
+
+    #[test]
+    fn escape_drops_the_drag_until_the_button_comes_up() {
+        let mut a = app();
+        listed_with_dirs(&mut a);
+        let _ = update(&mut a, Message::Lift(2));
+        let _ = update(&mut a, Message::Hover(0));
+        press(&mut a, "Esc");
+        assert!(a.drag.is_none());
+        // Travel with the button still down does not pick it up again.
+        let _ = update(&mut a, Message::Lift(2));
+        assert!(a.drag.is_none());
+        let _ = update(&mut a, Message::Release);
+        assert!(kinds(&a).is_empty(), "no job was sent");
+        // The next press can drag again.
+        let _ = update(&mut a, Message::Lift(2));
+        assert!(a.drag.is_some());
+    }
+
+    #[test]
+    fn a_lost_release_drops_the_drag_instead_of_landing_it() {
+        let mut a = app();
+        listed_with_dirs(&mut a);
+        let _ = update(&mut a, Message::Lift(2));
+        let _ = update(&mut a, Message::Hover(0));
+        // The button went down again: the drag's release never came.
+        let _ = update(&mut a, Message::DragLost);
+        let _ = update(&mut a, Message::Release);
+        assert!(kinds(&a).is_empty(), "no job was sent");
     }
 
     #[test]
@@ -1605,6 +1943,62 @@ mod tests {
         let _ = update(&mut a, Message::ClipRead(Some("/y/b\n".into())));
         reply(&mut a, Reply::JobAccepted { id: 2 });
         assert_eq!(kinds(&a), [JobKind::Move, JobKind::Copy]);
+    }
+
+    #[test]
+    fn a_new_listing_leaves_no_hover_behind() {
+        let mut a = app();
+        listed_with_dirs(&mut a);
+        let _ = update(&mut a, Message::Hover(2));
+        // The folder shrank past the hovered row.
+        listed(&mut a, &["a"]);
+        assert_eq!(a.motion.hovered, None);
+        listed_with_dirs(&mut a);
+        let _ = update(&mut a, Message::Hover(0));
+        let _ = update(&mut a, Message::OpenRow(0));
+        reply(
+            &mut a,
+            Reply::DirSnapshot {
+                path: b"/w/d".to_vec(),
+                dir: 2,
+                generation: 0,
+                entries: vec![Entry::new(b"x".to_vec(), Kind::File)],
+                order: vec![0],
+                complete: true,
+            },
+        );
+        assert_eq!(a.tabs.active().path, b"/w/d");
+        assert_eq!(a.motion.hovered, None);
+    }
+
+    #[test]
+    fn an_undone_cut_paste_can_be_pasted_again() {
+        let mut a = app();
+        listed(&mut a, &["a"]);
+        press(&mut a, "ctrl+x");
+        a.clip.as_mut().unwrap().paths = vec![b"/x/a".to_vec()];
+        let text = a.clip.as_ref().unwrap().uri_list();
+        press(&mut a, "ctrl+v");
+        reply(&mut a, Reply::JobAccepted { id: 1 });
+        reply(
+            &mut a,
+            Reply::JobState {
+                id: 1,
+                state: JobStatus::Done,
+            },
+        );
+        press(&mut a, "ctrl+z");
+        for state in [JobStatus::Running, JobStatus::Done] {
+            reply(&mut a, Reply::JobState { id: 2, state });
+        }
+        // The files are back at /x: the cut pastes again.
+        let _ = update(&mut a, Message::ClipRead(Some(text)));
+        reply(&mut a, Reply::JobAccepted { id: 3 });
+        assert_eq!(kinds(&a).len(), 3);
+        assert_ne!(
+            a.tabs.active().notice,
+            Some(Notice::Hint("that cut was already pasted"))
+        );
     }
 
     #[test]
