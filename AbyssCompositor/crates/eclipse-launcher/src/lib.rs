@@ -5,8 +5,9 @@ pub mod app;
 pub mod conn;
 pub mod view;
 
-/// Width of the launcher's surface, including its outer padding.
-pub const WIDTH: u32 = 560;
+/// Width of the launcher's surface — which is the sheet itself, edge to edge:
+/// there is no outer padding for the compositor's blur to show through.
+pub const WIDTH: u32 = 540;
 
 /// How many result rows the surface is tall enough to hold.
 ///

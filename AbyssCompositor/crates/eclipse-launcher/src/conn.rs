@@ -8,10 +8,10 @@
 //! behavior every other pane in this repo gives its control-socket read.
 //!
 //! The launcher is spawned fresh by every keybind press and never stays open
-//! long enough to have a live-reconfigure channel, so `fetch_glass_radius` is
-//! read once here too, at the same startup moment as the terminal command; a
-//! `decoration.rounding` change reaches it on the next launch, not the
-//! current one.
+//! long enough to have a live-reconfigure channel, so `fetch_glass` (the
+//! radius and the blur mode) is read once here too, at the same startup
+//! moment as the terminal command; a `decoration` change reaches it on the
+//! next launch, not the current one.
 
 use serde_json::json;
 
@@ -31,8 +31,8 @@ pub fn fetch_terminal_command() -> Option<String> {
         .map(str::to_owned)
 }
 
-/// `None` on any failure — the caller keeps its compile-time token default.
-pub fn fetch_glass_radius() -> Option<f32> {
-    let mut client = eclipse_ipc::Client::connect().ok()?;
-    eclipse_ui::ipc::fetch_config_radius(&mut client, "decoration.rounding")
+/// `decoration.rounding` and whether blur is on; each `None` on any failure,
+/// and the caller keeps its compile-time default.
+pub fn fetch_glass() -> (Option<f32>, Option<bool>) {
+    eclipse_ui::ipc::fetch_glass()
 }

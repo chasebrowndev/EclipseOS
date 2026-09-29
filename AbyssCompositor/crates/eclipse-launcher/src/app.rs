@@ -49,9 +49,13 @@ pub struct App {
     /// shown and then refused.
     term: Option<String>,
     /// The band's glass radius, read once from `decoration.rounding` at
-    /// startup (BLUR-06). `crate::conn::fetch_glass_radius` is fail-soft, so
+    /// startup (BLUR-06). `crate::conn::fetch_glass` is fail-soft, so
     /// this falls back to the compile-time token when nothing answers.
     pub glass_radius: f32,
+    /// Whether the compositor's blur is behind the sheet, read at startup
+    /// alongside the radius; `false` when nothing answers, so the sheet
+    /// falls back to its opaque ground.
+    pub blur: bool,
 }
 
 impl Default for App {
@@ -63,7 +67,9 @@ impl Default for App {
 impl App {
     pub fn new() -> Self {
         let term = crate::conn::fetch_terminal_command();
-        let glass_radius = crate::conn::fetch_glass_radius().unwrap_or(eclipse_ui::tokens::radius::CARD);
+        let (radius, blur) = crate::conn::fetch_glass();
+        let glass_radius = radius.unwrap_or(eclipse_ui::tokens::radius::CARD);
+        let blur = blur.unwrap_or(false);
         let mut app = App {
             entries: apps::scan(term.as_deref()),
             query: String::new(),
@@ -72,6 +78,7 @@ impl App {
             problem: None,
             term,
             glass_radius,
+            blur,
         };
         app.refilter();
         app
@@ -231,6 +238,7 @@ mod tests {
             problem: None,
             term: None,
             glass_radius: eclipse_ui::tokens::radius::CARD,
+            blur: false,
         };
         app.refilter();
         app

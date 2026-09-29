@@ -284,6 +284,13 @@ pub struct App {
     ///
     /// [`bar_radius`]: App::bar_radius
     pub menu_radius: f32,
+    /// The compositor blurs under the bar (`decoration.blur.mode` is not
+    /// `"off"`): the bar lays only a light tint on its material. Off, or
+    /// with nothing answering, the bar paints the opaque fallback ground.
+    pub blur: bool,
+    /// The air around every bar's pill, from `general.gaps-out` (see
+    /// [`Air`]). Re-read on every config reload.
+    pub air: Air,
     /// `bar.widgets.*`, `bar.motion.*` and the `widget` blocks, re-read on
     /// every successful config reload.
     pub widget_cfg: widgets::Config,
@@ -391,17 +398,46 @@ pub struct FoldState {
     /// ever a fold: unfolding is immediate, because that is the direction a
     /// human is waiting on.
     pending: Option<(FoldTarget, std::time::Instant)>,
+    /// The air around the pill, following the compositor's outer gap.
+    pub air: Air,
 }
 
 impl Default for FoldState {
     fn default() -> Self {
-        FoldState {
-            target: FoldTarget::Shown,
-            height: crate::HEIGHT,
-            to_h: crate::HEIGHT,
-            slide: Slide::Rest,
-            pending: None,
+        FoldState::with_air(Air::default())
+    }
+}
+
+/// The air around the bar's pill, as layer-shell margin: `x` beside it and
+/// `y` between it and the screen edge it is anchored to.
+///
+/// Both follow the compositor's outer gap — `general.gaps-out` across and the
+/// effective `general.gaps-out-vertical` down — so the pill sits exactly as
+/// far from the screen edge as a window would. The gap *below* the pill is
+/// not ours: abyss insets the tiling area by `gaps-in` on an edge an
+/// exclusive zone took, since the bar is a neighbour. With nothing answering,
+/// the compile-time [`bar::MARGIN_X`]/[`bar::MARGIN_Y`] stand in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Air {
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Default for Air {
+    fn default() -> Self {
+        Air {
+            x: bar::MARGIN_X as i32,
+            y: bar::MARGIN_Y as i32,
         }
+    }
+}
+
+impl Air {
+    /// The strip a shown pill takes from its screen edge: the pill plus the
+    /// air between it and the edge. What the fold slide lands on, so the
+    /// last frame of an unfold and the settled pill reserve the same rows.
+    pub fn shown_height(self) -> u32 {
+        bar::PILL_H as u32 + self.y.max(0) as u32
     }
 }
 
@@ -429,10 +465,34 @@ pub struct Geometry {
 }
 
 impl FoldState {
+    /// A shown bar at rest with `air` around its pill.
+    pub fn with_air(air: Air) -> Self {
+        FoldState {
+            target: FoldTarget::Shown,
+            height: air.shown_height(),
+            to_h: air.shown_height(),
+            slide: Slide::Rest,
+            pending: None,
+            air,
+        }
+    }
+
+    /// Take new air (a config reload moved `gaps-out`). A shown bar at rest
+    /// moves straight to the new strip; one mid-slide lands on it.
+    pub fn set_air(&mut self, air: Air) {
+        if self.target == FoldTarget::Shown {
+            if self.height == self.to_h && matches!(self.slide, Slide::Rest) {
+                self.height = air.shown_height();
+            }
+            self.to_h = air.shown_height();
+        }
+        self.air = air;
+    }
+
     /// True when the full pill is drawn: shown, and the slide has landed.
     /// Anything else is the folded strip, whatever its height.
     pub fn pill(&self) -> bool {
-        self.target == FoldTarget::Shown && self.height == crate::HEIGHT
+        self.target == FoldTarget::Shown && self.height == self.air.shown_height()
     }
 
     /// The surface this state needs, anchored to `edge`.
@@ -440,25 +500,27 @@ impl FoldState {
     /// The drawn sheet fills its surface exactly: the compositor blurs the
     /// whole surface at `bar.rounding`, and any air left inside it would show
     /// as a blurred rim around the pill. So the float gap is layer-shell
-    /// margin — `MARGIN_X` on both sides always, and `MARGIN_Y` on the
+    /// margin — [`Air::x`] on both sides always, and [`Air::y`] on the
     /// anchored edge only while the pill is up (the folded strip sits flush
     /// against the edge, as it always has).
     ///
-    /// wlr-layer-shell adds the anchored edge's margin to the exclusive zone
-    /// (abyss: `shell::accumulate_non_exclusive_zone`), so the zone asked for
-    /// is the reserved strip less that margin, and tiled windows keep exactly
-    /// the gap they had. A hidden bar reserves nothing.
+    /// The zone is the surface's own height and no more: wlr-layer-shell adds
+    /// the anchored edge's margin to it (abyss:
+    /// `shell::accumulate_non_exclusive_zone`), and abyss then insets the
+    /// tiling area by `gaps-in` on the edge the zone took. So screen → pill
+    /// is `gaps-out`, pill → window is `gaps-in`, the same rhythm as window
+    /// → window. A hidden bar reserves nothing.
     pub fn geometry(&self, edge: BarPosition) -> Geometry {
-        let side = bar::MARGIN_X as i32;
+        let side = self.air.x;
         let (height, air) = if self.pill() {
-            (bar::PILL_H as u32, bar::MARGIN_Y as i32)
+            (bar::PILL_H as u32, self.air.y)
         } else {
             (self.height, 0)
         };
         let zone = if self.target == FoldTarget::Hidden && self.height == self.to_h {
             0
         } else {
-            height as i32 + air
+            height as i32
         };
         let margin = match edge {
             BarPosition::Top => (air, side, 0, side),
@@ -525,6 +587,8 @@ impl App {
         let menu_radius = conn
             .glass_radius("decoration.rounding")
             .unwrap_or(eclipse_ui::tokens::radius::CARD);
+        let blur = conn.blur().unwrap_or(false);
+        let air = conn.air().unwrap_or_default();
         // The focused output now, so a bar opened on any other one folds
         // from its first frame rather than on the next output event.
         let (_, focused) = conn.outputs();
@@ -554,6 +618,8 @@ impl App {
             preview: None,
             bar_radius,
             menu_radius,
+            blur,
+            air,
             widget_cfg,
             widgets: widgets::State::default(),
             streams: Vec::new(),
@@ -898,7 +964,8 @@ pub fn open_bar(app: &mut App, name: String, output_id: u64) -> Task<Message> {
         Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
     };
     let id = Id::unique();
-    let bar = Bar::new(id, name.clone(), output_id, app.widget_cfg.motion);
+    let mut bar = Bar::new(id, name.clone(), output_id, app.widget_cfg.motion);
+    bar.fold = FoldState::with_air(app.air);
     let geometry = bar.fold.geometry(app.edge);
     app.bars.insert(id, bar);
     let edge = match app.edge {
@@ -1118,7 +1185,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             let mut tasks = Vec::new();
             // A fold committed before the surface was configured has not
             // reached it yet; the surface is still the one it was asked as.
-            let asked = FoldState::default().geometry(app.edge);
+            let asked = FoldState::with_air(app.air).geometry(app.edge);
             if let Some(bar) = app
                 .bars
                 .get(&id)
@@ -1193,6 +1260,24 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             if let Some(radius) = app.conn.glass_radius("decoration.rounding") {
                 app.menu_radius = radius;
             }
+            if let Some(blur) = app.conn.blur() {
+                app.blur = blur;
+            }
+            // A new outer gap moves every pill now, not on its next fold:
+            // the surface is re-asked, and a raised eye is dropped so the
+            // fold pass below raises it again at the new offset.
+            let mut moved = Task::none();
+            if let Some(air) = app.conn.air().filter(|air| *air != app.air) {
+                app.air = air;
+                moved = each_bar(app, |app, bar| {
+                    bar.fold.set_air(app.air);
+                    let eye = match bar.eye_surface.take() {
+                        Some(id) => Task::done(Message::RemoveWindow(id)),
+                        None => Task::none(),
+                    };
+                    Task::batch([push_geometry(app, bar), eye])
+                });
+            }
             if app.fixture.is_none() {
                 app.widget_cfg = app.conn.widgets_config();
                 let motion = app.widget_cfg.motion;
@@ -1208,7 +1293,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                 app.focused_output = focused;
             }
             let screens = screens(app, SETTLE);
-            return Task::batch([screens, each_bar(app, fold_and_eye)]);
+            return Task::batch([moved, screens, each_bar(app, fold_and_eye)]);
         }
         // The radio verbs. Each is an action on the service and nothing else:
         // the drawer redraws from the `Update` the service answers with, not
@@ -1335,9 +1420,9 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
 }
 
 /// The height a target settles at.
-fn target_height(bar: &BarConfig, target: FoldTarget) -> u32 {
+fn target_height(bar: &BarConfig, target: FoldTarget, air: Air) -> u32 {
     match target {
-        FoldTarget::Shown => crate::HEIGHT,
+        FoldTarget::Shown => air.shown_height(),
         FoldTarget::Folded => bar.fold_height,
         FoldTarget::Hidden => HIDDEN_HEIGHT,
     }
@@ -1429,18 +1514,19 @@ fn fold_and_eye(app: &App, bar: &mut Bar) -> Task<Message> {
 /// pixel for pixel on the ring the bar draws centred in the button.
 ///
 /// The offsets are the pill's layer-shell margin plus the row's inset to the
-/// button: `MARGIN_X + EDGE` across, and down (or up) `MARGIN_Y` plus half
-/// the room the `PILL_H` row leaves around the `TASK_H` button.
+/// button: `air.x + EDGE` across, and down (or up) `air.y` plus half the
+/// room the `PILL_H` row leaves around the `TASK_H` button.
 fn eye_placement(
     edge: BarPosition,
+    air: Air,
 ) -> (
     iced_layershell::reexport::Anchor,
     (i32, i32, i32, i32),
     (u32, u32),
 ) {
     use iced_layershell::reexport::Anchor;
-    let left = (bar::MARGIN_X + bar::EDGE) as i32;
-    let off = (bar::MARGIN_Y + (bar::PILL_H - bar::TASK_H) / 2.0) as i32;
+    let left = air.x + bar::EDGE as i32;
+    let off = air.y + ((bar::PILL_H - bar::TASK_H) / 2.0) as i32;
     let size = (bar::TASK_MIN as u32, bar::TASK_H as u32);
     match edge {
         BarPosition::Top => (Anchor::Top | Anchor::Left, (off, 0, 0, left), size),
@@ -1468,7 +1554,7 @@ fn sync_eye(app: &App, bar: &mut Bar) -> Task<Message> {
     let want = app.bar.eye && !app.iris.is_plain() && bar.fold.pill();
     match (want, bar.eye_surface) {
         (true, None) => {
-            let (anchor, margin, size) = eye_placement(app.edge);
+            let (anchor, margin, size) = eye_placement(app.edge, bar.fold.air);
             let id = Id::unique();
             bar.eye_surface = Some(id);
             Task::done(Message::NewLayerShell {
@@ -1503,7 +1589,7 @@ fn commit(cfg: &BarConfig, fold: &mut FoldState, target: FoldTarget, now: std::t
     fold.pending = None;
     fold.target = target;
     let (at, speed) = slide_at(cfg, fold, now);
-    let to_h = target_height(cfg, target);
+    let to_h = target_height(cfg, target, fold.air);
     fold.to_h = to_h;
     let to = to_h as f32;
     fold.slide = if cfg.fold_duration_ms == 0 || at == to {
@@ -2313,7 +2399,7 @@ pub(crate) mod tests {
         // abyss omits a `hide-layer` surface only up to 64x64 logical px
         // (render/capture.rs `HIDE_LAYER_MAX`); past that it is captured.
         for edge in [BarPosition::Top, BarPosition::Bottom] {
-            let (_, _, (w, h)) = eye_placement(edge);
+            let (_, _, (w, h)) = eye_placement(edge, Air::default());
             assert!(w <= 64 && h <= 64);
         }
     }
@@ -2948,11 +3034,12 @@ mod fold_tests {
         assert!(!b.fold.animating());
     }
 
-    /// The pill fills its surface and the float gap is margin, yet the strip
-    /// a tiled window avoids is still the full `HEIGHT`: the compositor adds
-    /// the anchored edge's margin to the zone. A folded strip sits flush.
+    /// The pill fills its surface and the float gap is margin; the zone is
+    /// the pill alone, so the strip a tiled window avoids is the pill plus
+    /// the edge air (the compositor adds the anchored edge's margin, then
+    /// its own `gaps-in`). A folded strip sits flush.
     #[test]
-    fn the_gap_is_margin_and_the_reserved_strip_is_unchanged() {
+    fn the_gap_is_margin_and_the_zone_is_the_pill() {
         let shown = FoldState::default();
         let g = shown.geometry(BarPosition::Top);
         assert_eq!(g.height, bar::PILL_H as u32);
@@ -2965,10 +3052,29 @@ mod fold_tests {
                 bar::MARGIN_X as i32
             )
         );
+        assert_eq!(g.zone, bar::PILL_H as i32);
         assert_eq!(g.zone + g.margin.0, crate::HEIGHT as i32);
         let g = shown.geometry(BarPosition::Bottom);
         assert_eq!(g.margin.0, 0);
         assert_eq!(g.zone + g.margin.2, crate::HEIGHT as i32);
+
+        // The air follows the compositor's outer gap, and the unfold lands
+        // on exactly the strip the settled pill reserves.
+        let air = Air { x: 7, y: 12 };
+        let g = FoldState::with_air(air).geometry(BarPosition::Top);
+        assert_eq!(g.margin, (12, 7, 0, 7));
+        assert_eq!(g.zone, bar::PILL_H as i32);
+        assert_eq!(
+            target_height(&BarConfig::default(), FoldTarget::Shown, air),
+            air.shown_height()
+        );
+        let mut moved = FoldState::default();
+        moved.set_air(air);
+        assert!(
+            moved.pill(),
+            "a shown bar at rest stays a pill across a gap change"
+        );
+        assert_eq!(moved.geometry(BarPosition::Top), g);
 
         let (mut a, mut b) = folding_app();
         a.bar.fold_duration_ms = 0;
@@ -2984,8 +3090,17 @@ mod fold_tests {
     #[test]
     fn hidden_surrenders_the_exclusive_zone() {
         let bar = BarConfig::default();
-        assert_eq!(target_height(&bar, FoldTarget::Hidden), HIDDEN_HEIGHT);
-        assert_eq!(target_height(&bar, FoldTarget::Folded), bar.fold_height);
-        assert_eq!(target_height(&bar, FoldTarget::Shown), crate::HEIGHT);
+        assert_eq!(
+            target_height(&bar, FoldTarget::Hidden, Air::default()),
+            HIDDEN_HEIGHT
+        );
+        assert_eq!(
+            target_height(&bar, FoldTarget::Folded, Air::default()),
+            bar.fold_height
+        );
+        assert_eq!(
+            target_height(&bar, FoldTarget::Shown, Air::default()),
+            crate::HEIGHT
+        );
     }
 }

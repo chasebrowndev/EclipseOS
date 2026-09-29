@@ -23,7 +23,8 @@ pub mod services;
 pub mod view;
 pub mod widgets;
 
-/// Bar height in logical pixels, and therefore its exclusive zone.
+/// The strip a shown bar takes from its edge with the fallback air (see
+/// `app::Air`); live, the air follows `general.gaps-out`.
 ///
 /// The number itself is `tokens::bar::HEIGHT` — the layer surface wants a
 /// `u32` and the view wants an `f32`, and only one of them may be the source.

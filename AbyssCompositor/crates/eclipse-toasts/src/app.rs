@@ -15,9 +15,10 @@ use eclipse_services::notifications::{CloseReason, Event, Notification, Notifica
 const TICK: Duration = Duration::from_millis(200);
 
 /// Gap between the bar's bottom edge and the first card.
-const TOP_MARGIN: i32 = eclipse_ui::tokens::bar::HEIGHT as i32 + 4;
-/// Gap between the cards and the right edge of the output.
-const RIGHT_MARGIN: i32 = 4;
+const TOP_MARGIN: i32 = eclipse_ui::tokens::bar::SHEET_MARGIN_TOP;
+/// Gap between the cards and the right edge of the output: the bar
+/// capsule's own, so the stack lines up under its right end.
+const RIGHT_MARGIN: i32 = eclipse_ui::tokens::bar::SHEET_MARGIN_X;
 
 /// How many notifications are drawn at once. The rest wait their turn rather
 /// than being dropped — a queued notification the human never saw must not be
@@ -72,9 +73,12 @@ pub struct App {
     /// not ask the compositor to resize to the size it already has.
     height: u32,
     /// The card's glass radius, read once from `decoration.rounding` at
-    /// startup (BLUR-06). `crate::conn::fetch_glass_radius` is fail-soft, so
+    /// startup (BLUR-06). `crate::conn::fetch_glass` is fail-soft, so
     /// this falls back to the compile-time token when nothing answers.
     pub glass_radius: f32,
+    /// Whether the compositor's blur is behind the cards, read with the
+    /// radius; `false` when nothing answers, so the cards stay opaque.
+    pub blur: bool,
 }
 
 impl Default for App {
@@ -85,12 +89,14 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
+        let (radius, blur) = crate::conn::fetch_glass();
         App {
             service: eclipse_services::notifications::spawn().ok(),
             toasts: Vec::new(),
             surface: None,
             height: 0,
-            glass_radius: crate::conn::fetch_glass_radius().unwrap_or(eclipse_ui::tokens::radius::CARD),
+            glass_radius: radius.unwrap_or(eclipse_ui::tokens::radius::CARD),
+            blur: blur.unwrap_or(false),
         }
     }
 
@@ -283,6 +289,7 @@ mod tests {
             surface: None,
             height: 0,
             glass_radius: eclipse_ui::tokens::radius::CARD,
+            blur: false,
         }
     }
 

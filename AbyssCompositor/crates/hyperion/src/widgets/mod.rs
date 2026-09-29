@@ -428,9 +428,14 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
     let grip_w = input.grip_w(extent);
     let live = bar.motion.drag.as_ref().is_some_and(|d| d.key == key);
     let (press, drag_key, release) = (key.clone(), key.clone(), key);
+    let closed = input.closed(extent);
+    // Grips appear on hover only: at rest the bar is content on clear glass.
+    // A widget compressed to its grip keeps it in proportion to how shut it
+    // is, since the grip is then the whole of the widget.
     let grip = parts::drag_bar()
         .width(grip_w)
         .state(if live { Grip::Active } else { Grip::Rest })
+        .reveal_on_hover(closed)
         .opacity(frame.grip_alpha() * parts::lead(grip_w / bar::GRIP_W))
         .on_press(Message::Grip(press, GripEv::Press))
         .on_drag(move |dx| Message::Grip(drag_key.clone(), GripEv::Drag(dx)))
@@ -440,7 +445,6 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
         revealed: input.revealed,
     };
     let revealed = revealed.filter(|_| input.revealed > 0.0);
-    let closed = input.closed(extent);
     Some(Cell {
         presence,
         closed,

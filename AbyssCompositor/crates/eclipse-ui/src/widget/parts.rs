@@ -717,26 +717,35 @@ pub fn lit<'a, Message: 'a>(
 /// A glass sheet that floats over live wallpaper rather than inside a window:
 /// a toast card, the launcher, the control centre.
 ///
-/// A widget because the sheet is three things at once — the smoked ground of
-/// [`crate::theme::surface`], its border, and the [`lit`] top edge — and a
-/// caller that assembled two of the three would get the flat grey slab the
-/// style spec exists to prevent.
+/// A widget because the sheet's ground, edge and light source are decided
+/// together by one switch, `blur` ([`crate::ipc::fetch_blur`]). With the
+/// compositor's material on, the sheet is only the light tint of
+/// [`crate::theme::surface`]: abyss already draws the blur, the rim and the
+/// shadow underneath, and a client-drawn [`lit`] line on top would be a
+/// second, misplaced light source. With it off the sheet is opaque and
+/// carries its own hairline and [`lit`] top edge, because nothing else will.
 ///
-/// `radius` feeds both the container's own border radius and [`lit`]'s top
-/// edge, so the two can never drift apart — see [`panel`] for where the value
-/// itself comes from.
+/// `radius` is the compositor's live `decoration.rounding`. The sheet fills
+/// its layer surface edge to edge — the air around it is layer-shell margin,
+/// never padding inside the surface, since abyss blurs the whole surface and
+/// any clear band inside it shows as a blurred rim — so this is the same
+/// corner abyss masks the blur to. It also feeds [`lit`]'s inset, so the two
+/// cannot drift apart.
 pub fn surface<'a, Message: 'a>(
     radius: f32,
+    blur: bool,
     content: impl Into<Element<'a, Message, Theme>>,
 ) -> Element<'a, Message, Theme> {
-    lit(
-        container(content)
-            .padding(space::CARD)
-            .width(Length::Fill)
-            .style(crate::theme::surface(radius)),
-        radius,
-        color::HIGHLIGHT,
-    )
+    let sheet = container(content)
+        .padding(space::CARD)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(crate::theme::surface(radius, blur));
+    if blur {
+        sheet.into()
+    } else {
+        lit(sheet, radius, color::HIGHLIGHT)
+    }
 }
 
 /// A battery gauge: a hard-edged cell with a fill proportional to charge, and
@@ -820,7 +829,18 @@ pub fn dimmed<'a, Message: 'a>(
     content: impl Into<Element<'a, Message, Theme>>,
     dim: bool,
 ) -> Element<'a, Message, Theme> {
-    crate::widget::Veil::new(content, dim.then_some(&color::VEIL[..]), radius::INSET).into()
+    dimmed_at(content, dim, false)
+}
+
+/// [`dimmed`] on a column that may be translucent: `blur` picks the veil
+/// that repaints the tint rather than an opaque ground ([`color::VEIL_GLASS`]).
+pub fn dimmed_at<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    dim: bool,
+    blur: bool,
+) -> Element<'a, Message, Theme> {
+    let veil: &'static [iced::Color] = if blur { &color::VEIL_GLASS } else { &color::VEIL };
+    crate::widget::Veil::new(content, dim.then_some(veil), radius::INSET).into()
 }
 
 /// A caption over a run of rows inside one panel — "Frost" above the rows
@@ -1028,14 +1048,16 @@ pub fn sidebar<'a, Message: 'a>(
     items: Vec<Element<'a, Message, Theme>>,
     footer: Vec<(&'a str, String)>,
 ) -> Element<'a, Message, Theme> {
-    sidebar_at(Density::Regular, items, footer)
+    sidebar_at(Density::Regular, false, items, footer)
 }
 
 /// [`sidebar`] at a [`Density`]: [`space::SIDEBAR_W`] regular,
 /// [`space::SIDEBAR_W_COMPACT`] compact. Build its items with
-/// [`nav_item_at`] at the same density.
+/// [`nav_item_at`] at the same density. `blur` is whether the compositor's
+/// material is behind the window ([`crate::theme::sidebar`]).
 pub fn sidebar_at<'a, Message: 'a>(
     density: Density,
+    blur: bool,
     items: Vec<Element<'a, Message, Theme>>,
     footer: Vec<(&'a str, String)>,
 ) -> Element<'a, Message, Theme> {
@@ -1066,7 +1088,7 @@ pub fn sidebar_at<'a, Message: 'a>(
         );
     }
 
-    container(
+    let rail = container(
         column![nav, Space::new().height(Length::Fill), foot]
             .spacing(space::BLOCK)
             .width(Length::Fill),
@@ -1074,8 +1096,13 @@ pub fn sidebar_at<'a, Message: 'a>(
     .width(width)
     .height(Length::Fill)
     .padding([space::PANE_Y, pad_x])
-    .style(theme::sidebar)
-    .into()
+    .style(theme::sidebar(blur));
+    // The one line between the rail and the content: both are the same
+    // glass a step apart in density, so the edge is a hairline, not a slab
+    // meeting a slab.
+    row![rail, rule::vertical(space::HAIRLINE).style(theme::hairline)]
+        .height(Length::Fill)
+        .into()
 }
 
 /// The content column to the right of the sidebar: 26/30 padding, 18 between
@@ -1336,6 +1363,8 @@ pub struct NumericSlider<'a, Message> {
     on_release: Option<Message>,
     on_type: Box<dyn Fn(String) -> Message + 'a>,
     on_commit: Option<Message>,
+    /// `None`: no unit slot. `Some("")`: the slot, reserved and empty.
+    unit: Option<&'a str>,
 }
 
 impl<'a, Message: Clone + 'a> NumericSlider<'a, Message> {
@@ -1356,6 +1385,7 @@ impl<'a, Message: Clone + 'a> NumericSlider<'a, Message> {
             on_release: None,
             on_type: Box::new(on_type),
             on_commit: None,
+            unit: None,
         }
     }
 
@@ -1379,6 +1409,16 @@ impl<'a, Message: Clone + 'a> NumericSlider<'a, Message> {
     /// than a commit that fails after the fact.
     pub fn invalid(mut self, invalid: bool) -> Self {
         self.invalid = invalid;
+        self
+    }
+
+    /// The unit the reading is in ("px"), set after the entry in tertiary
+    /// ink so the number stays the thing read. Outside the entry, so typing
+    /// never has to step around it. Calling this at all reserves the slot —
+    /// `None` leaves it empty — so a panel mixing lengths and ratios keeps
+    /// its entries in one column.
+    pub fn unit(mut self, unit: Option<&'a str>) -> Self {
+        self.unit = Some(unit.unwrap_or_default());
         self
     }
 }
@@ -1412,10 +1452,19 @@ impl<'a, Message: Clone + 'a> From<NumericSlider<'a, Message>> for Element<'a, M
         // A fixed track, not a filling one: a `Shrink` row compresses its
         // main axis, so a fill child would get no width at all. [`fold`]
         // stacks the pair under its label when the row is too narrow.
-        row![track, entry]
+        let mut pair = row![track, entry]
             .spacing(space::CONTROL_GAP)
-            .align_y(Alignment::Center)
-            .into()
+            .align_y(Alignment::Center);
+        if let Some(unit) = n.unit {
+            pair = pair.push(
+                iced::widget::text(unit)
+                    .font(font::DATA)
+                    .size(size::MONO)
+                    .style(theme::text_tertiary)
+                    .width(Length::Fixed(space::UNIT_W)),
+            );
+        }
+        pair.into()
     }
 }
 
@@ -1446,7 +1495,9 @@ pub fn bar_sheet<'a, Message: 'a>(
             .height(Length::Fixed(bar::PILL_H))
             .align_y(Alignment::Center)
             .clip(true)
-            .style(theme::bar_ground(bar::RADIUS_SHEET)),
+            // Always the blur-off ground: this sheet is a picture inside an
+            // opaque pane, with no compositor material behind it.
+            .style(theme::bar_ground(bar::RADIUS_SHEET, false)),
         bar::RADIUS_SHEET,
         color::HIGHLIGHT_SOFT,
     )
@@ -1459,9 +1510,9 @@ pub fn bar_sheet<'a, Message: 'a>(
 /// through every value between two rungs of the chip ladder, and the content
 /// must be clipped at the cell's edge the whole way; a container that let its
 /// content decide its width would snap from rung to rung instead. The ground
-/// is the bar's own cell: a hairline and no fill at rest. `accent` outlines
-/// the cell in the accent border, for a pane whose single live value is on
-/// the bar.
+/// is the bar's own cell at rest ([`theme::bar_cell`]): the neutral glass
+/// lozenge, or the focused window's gold fill when `accent` is set, for a
+/// pane whose single live value is on the bar.
 pub fn bar_cell_frame<'a, Message: 'a>(
     content: impl Into<Element<'a, Message, Theme>>,
     width: f32,
@@ -1475,17 +1526,14 @@ pub fn bar_cell_frame<'a, Message: 'a>(
         .padding([0.0, bar::CELL_X.min(width / 2.0)])
         .align_y(Alignment::Center)
         .clip(true)
-        .style(move |_t: &Theme| container::Style {
-            border: iced::Border {
-                color: if accent {
-                    color::ACCENT_BORDER
-                } else {
-                    color::BORDER
-                },
-                width: bar::HAIRLINE,
-                radius: bar::RADIUS_CELL.into(),
-            },
-            ..container::Style::default()
+        .style(move |t: &Theme| {
+            let cell = theme::bar_cell(accent)(t, iced::widget::button::Status::Active);
+            container::Style {
+                background: cell.background,
+                border: cell.border,
+                shadow: cell.shadow,
+                ..container::Style::default()
+            }
         })
         .into()
 }

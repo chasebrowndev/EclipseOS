@@ -33,14 +33,17 @@ pub fn theme() -> Theme {
     )
 }
 
-/// A panel: the spec's glass — a thin white fill, a hairline border and a
-/// soft outer shadow.
+/// A panel: the spec's glass — a thin white fill and a hairline border. A
+/// tile inside a window, not a sheet floating over the desktop, so it casts
+/// no drop of its own: the window already has the compositor's shadow, and a
+/// 70px shadow per card under translucent glass is a grey bruise around
+/// every block.
 ///
 /// The fill is deliberately thin (`.045`, inside the spec's `.035–.06`). On a
-/// settings pane it composites over the warm base; on a layer surface it
-/// composites over the compositor's blur of whatever is behind. Depth is the
-/// border and the top edge highlight ([`crate::widget::lit`]) doing their
-/// job — never fill opacity, which is what turns glass back into grey paint.
+/// settings pane it composites over the content column's smoked glass (or
+/// its opaque fallback); on a layer surface over the compositor's blur of
+/// whatever is behind. Depth is the border doing its job — never fill
+/// opacity, which is what turns glass back into grey paint.
 ///
 /// `radius` is a parameter rather than [`radius::CARD`] baked in, because the
 /// glass this fn draws has to live-sync to the compositor's own
@@ -55,47 +58,40 @@ pub fn panel(radius: f32) -> impl Fn(&Theme) -> container::Style {
             width: space::HAIRLINE,
             radius: radius.into(),
         },
-        shadow: Shadow {
-            color: Color {
-                a: 0.88,
-                ..Color::BLACK
-            },
-            offset: Vector::new(0.0, 24.0),
-            blur_radius: 70.0,
-        },
         ..container::Style::default()
     }
 }
 
 /// A surface that floats over live wallpaper: a toast card, the launcher
 /// sheet, the control centre. Distinct from [`panel`] because it has no
-/// window ground underneath it — only the compositor's blur — so it carries
-/// its own smoked-glass tint and a stronger border to hold an edge against
-/// an arbitrary photograph.
+/// window ground underneath it — only the compositor's material.
 ///
-/// The background is [`color::GLASS_DEEP_BACKED`], not `GLASS_DEEP` itself:
-/// the compositor's blur-backdrop decision is geometric and compositor-side
-/// only (`shows_through` in `abyss/src/render/mod.rs`), so this client is
-/// never told whether it is about to happen. `GLASS_DEEP` alone has nothing
-/// opaque under it when blur is off or degrades, and reads as a broken
-/// translucent smear (BLUR-01). The backed token is `GLASS_DEEP` pre-composited
-/// over an opaque token, so the panel reads the same intentional solid glass
-/// either way.
-pub fn surface(radius: f32) -> impl Fn(&Theme) -> container::Style {
+/// `blur` is `decoration.blur.mode != "off"`, read over `get_config`
+/// ([`crate::ipc::fetch_blur`]). With it on, the compositor draws the whole
+/// material *under* this surface — blur, vibrancy, a near-white hairline rim
+/// and a soft offset shadow — so the client lays only a light tint
+/// ([`color::SHEET_TINT`]) and no border or shadow of its own: a second rim
+/// or a second shadow on top of the compositor's is exactly the doubled edge
+/// this avoids.
+///
+/// With it off there is nothing behind the tint, so the ground is the opaque
+/// [`color::GLASS_DEEP_BACKED`] (BLUR-01) and the client draws its own
+/// hairline to hold an edge against an arbitrary photograph.
+pub fn surface(radius: f32, blur: bool) -> impl Fn(&Theme) -> container::Style {
     move |_t: &Theme| container::Style {
-        background: Some(Background::Color(color::GLASS_DEEP_BACKED)),
+        background: Some(Background::Color(if blur {
+            color::SHEET_TINT
+        } else {
+            color::GLASS_DEEP_BACKED
+        })),
         border: Border {
-            color: color::BORDER_STRONG,
+            color: if blur {
+                Color::TRANSPARENT
+            } else {
+                color::BORDER_STRONG
+            },
             width: space::HAIRLINE,
             radius: radius.into(),
-        },
-        shadow: Shadow {
-            color: Color {
-                a: 0.9,
-                ..Color::BLACK
-            },
-            offset: Vector::new(0.0, 28.0),
-            blur_radius: 80.0,
         },
         ..container::Style::default()
     }
@@ -103,32 +99,37 @@ pub fn surface(radius: f32) -> impl Fn(&Theme) -> container::Style {
 
 /// A context menu's ground.
 ///
-/// [`surface`] with the transparency taken out of it. A menu is aimed at, not
-/// glanced at: the row under the pointer has to be the most definite thing on
-/// the screen for the moment it is open, and smoked glass over a paragraph of
-/// text is how a verb becomes unreadable. It keeps the surface's border and
-/// shadow, because it is still a sheet lying on the desktop.
+/// Opaque whatever the blur setting. A menu is aimed at, not glanced at: the
+/// row under the pointer has to be the most definite thing on the screen for
+/// the moment it is open, and smoked glass over a paragraph of text is how a
+/// verb becomes unreadable. It is also an xdg popup, which the compositor
+/// does not give the layer material, so it keeps [`surface`]'s blur-off
+/// hairline as its own edge.
 pub fn menu_surface(radius: f32) -> impl Fn(&Theme) -> container::Style {
     move |t: &Theme| container::Style {
         background: Some(Background::Color(color::MENU_GROUND)),
-        ..surface(radius)(t)
+        ..surface(radius, false)(t)
     }
 }
 
-/// The bar's ground: the same smoked glass as [`surface`], with no shadow of
-/// its own — a bar is an edge of the screen and not a floating sheet, so the
-/// hairline border and the highlight along its top are the whole of its
-/// depth. `radius` live-syncs to the compositor's `bar.rounding`, kept apart
-/// from [`panel`]/[`surface`]'s `decoration.rounding` because the bar sheet's
-/// corner is its own setting (COMP-13 §1.2).
-pub fn bar_ground(radius: f32) -> impl Fn(&Theme) -> container::Style {
+/// The bar's ground. `radius` live-syncs to the compositor's `bar.rounding`,
+/// kept apart from [`panel`]/[`surface`]'s `decoration.rounding` because the
+/// bar sheet's corner is its own setting (COMP-13 §1.2).
+///
+/// With `blur` on it is the thinnest glass on screen — [`color::BAR_TINT`]
+/// and no border, the compositor's rim and shadow being the whole of its
+/// edge. With it off it falls back to the opaque [`color::GLASS_DEEP_BACKED`]
+/// and a faint hairline (BLUR-01): the bar's silhouette should be read from
+/// its shape, not announced by its outline.
+pub fn bar_ground(radius: f32, blur: bool) -> impl Fn(&Theme) -> container::Style {
     move |_t: &Theme| container::Style {
-        background: Some(Background::Color(color::GLASS_DEEP)),
-        // The faint end of the spec's border range, not the strong one: the
-        // bar's silhouette should be read from its shape, not announced by
-        // its outline.
+        background: Some(Background::Color(if blur {
+            color::BAR_TINT
+        } else {
+            color::GLASS_DEEP_BACKED
+        })),
         border: Border {
-            color: color::HAIRLINE,
+            color: if blur { Color::TRANSPARENT } else { color::HAIRLINE },
             width: space::HAIRLINE,
             radius: radius.into(),
         },
@@ -153,20 +154,56 @@ pub fn inset(_t: &Theme) -> container::Style {
     }
 }
 
-/// The window ground.
-pub fn window(_t: &Theme) -> container::Style {
-    container::Style {
+/// The window ground, at `radius` — the compositor's live
+/// `decoration.rounding`, so the ground is concentric with the corner mask
+/// abyss cuts the window to.
+pub fn window(radius: f32) -> impl Fn(&Theme) -> container::Style {
+    move |_t: &Theme| container::Style {
         background: Some(Background::Color(color::BASE)),
-        border: border::rounded(radius::WINDOW),
+        border: border::rounded(radius),
         ..container::Style::default()
     }
 }
 
-/// The left sidebar: darker than anything beside it.
-pub fn sidebar(_t: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(color::SIDEBAR)),
+/// The left sidebar: darker than anything beside it. With `blur` on it is
+/// the translucent [`color::SIDEBAR`] over the compositor's blur — the one
+/// part of a settings window that lets the desktop through — and with it off
+/// the same colour pre-composited over the window base.
+pub fn sidebar(blur: bool) -> impl Fn(&Theme) -> container::Style {
+    move |_t: &Theme| container::Style {
+        background: Some(Background::Color(if blur {
+            color::SIDEBAR
+        } else {
+            color::SIDEBAR_BACKED
+        })),
         ..container::Style::default()
+    }
+}
+
+/// The content column beside a [`sidebar`], in a window that is itself
+/// transparent. With `blur` on it is [`color::CONTENT`] — the same smoked
+/// glass as the sidebar, a step lighter — so the window reads as one pane of
+/// glass with a hairline down it, not a glass rail beside an opaque slab.
+/// With it off there is nothing behind the window, and the ground is the
+/// opaque [`color::CONTENT_BACKED`]. Square: the compositor's corner mask
+/// rounds it.
+pub fn content_ground(blur: bool) -> impl Fn(&Theme) -> container::Style {
+    move |_t: &Theme| container::Style {
+        background: Some(Background::Color(if blur {
+            color::CONTENT
+        } else {
+            color::CONTENT_BACKED
+        })),
+        ..container::Style::default()
+    }
+}
+
+/// The window-level style of a transparent toplevel: no background, so the
+/// compositor's blur shows wherever a child does not paint.
+pub fn clear_window<S>(_state: &S, theme: &Theme) -> iced::theme::Style {
+    iced::theme::Style {
+        background_color: Color::TRANSPARENT,
+        text_color: theme.palette().text,
     }
 }
 
@@ -264,34 +301,87 @@ pub fn chip(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
     }
 }
 
-/// A cell on the taskbar: a window chip, a widget, a compressed widget's lone
-/// grip. One ground for all of them, so a chip and a widget sitting side by
-/// side on the bar read as one family (ADR 0065).
+/// Which of the bar cell's three looks a cell wears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CellTone {
+    /// Every cell at rest: the neutral glass lozenge.
+    #[default]
+    Plain,
+    /// The focused window, and the current workspace tile: the lozenge on a
+    /// gold fill with a gold label. Its rim stays neutral.
+    Focused,
+    /// A minimized window: no fill, a ghost rim, no shadow.
+    Away,
+}
+
+/// `true` is the focused cell, `false` a plain one — the two every caller
+/// but a minimized chip needs.
+impl From<bool> for CellTone {
+    fn from(accent: bool) -> Self {
+        if accent {
+            CellTone::Focused
+        } else {
+            CellTone::Plain
+        }
+    }
+}
+
+/// A cell on the taskbar: a window chip, a widget, a pager tile, the
+/// launcher. One ground for all of them, so a chip and a widget sitting side
+/// by side on the bar read as one family (ADR 0065).
 ///
-/// At rest the cell is a hairline and no fill — the bar's own glass shows
-/// through, and a lift per cell turns the row into grey boxes. The pointer
-/// brightens the edge and lays a soft wash; a press deepens the wash.
-/// `accent` is a window that is up: an accent edge, and an accent wash
-/// earned by the pointer, never a resting yellow fill.
-pub fn bar_cell(accent: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+/// Each is a small glass lozenge on the bar's glass: a faint white fill
+/// ([`color::CELL`]), a hairline just inside the edge ([`color::CELL_RIM`])
+/// and a soft drop under it ([`color::CELL_SHADOW`]). The pointer brightens
+/// the fill and the rim together; a press brightens the fill again. A
+/// [`CellTone::Focused`] cell rests on [`color::ACCENT_FILL`] with a gold
+/// label — the bar's one resting yellow besides the current workspace tile —
+/// and keeps the neutral rim: the accent is never an outline. A
+/// [`CellTone::Away`] (minimized) cell has no fill and no drop, only a ghost
+/// rim, and is lifted by the pointer like any other.
+pub fn bar_cell(tone: impl Into<CellTone>) -> impl Fn(&Theme, button::Status) -> button::Style {
+    let tone = tone.into();
     move |_t, status| {
-        let (background, edge) = match (accent, status) {
-            (true, button::Status::Hovered | button::Status::Pressed) => {
-                (color::ACCENT_WASH, color::ACCENT_BORDER)
+        let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let pressed = matches!(status, button::Status::Pressed);
+        let background = match (tone, status) {
+            (CellTone::Focused, button::Status::Pressed) => color::ACCENT_FILL_STRONG,
+            (CellTone::Focused, button::Status::Hovered) => color::ACCENT_FILL_HOVER,
+            (CellTone::Focused, _) => color::ACCENT_FILL,
+            (_, button::Status::Pressed) => color::CELL_PRESS,
+            (_, button::Status::Hovered) => color::CELL_HOVER,
+            (CellTone::Away, _) => Color::TRANSPARENT,
+            (CellTone::Plain, _) => color::CELL,
+        };
+        let rim = match (tone, lit) {
+            (_, true) => color::CELL_RIM_HOVER,
+            (CellTone::Away, false) => color::CELL_RIM_AWAY,
+            (_, false) => color::CELL_RIM,
+        };
+        // A pressed cell is pushed into the glass, and a minimized one at
+        // rest is not lifted off it at all: neither casts a drop.
+        let shadow = if pressed || (tone == CellTone::Away && !lit) {
+            Shadow::default()
+        } else {
+            Shadow {
+                color: color::CELL_SHADOW,
+                offset: Vector::new(0.0, bar::CELL_SHADOW_Y),
+                blur_radius: bar::CELL_SHADOW_BLUR,
             }
-            (true, _) => (Color::TRANSPARENT, color::ACCENT_BORDER),
-            (false, button::Status::Hovered) => (color::LIFT_SOFT, color::BORDER_STRONG),
-            (false, button::Status::Pressed) => (color::LIFT, color::BORDER_STRONG),
-            (false, _) => (Color::TRANSPARENT, color::BORDER),
         };
         button::Style {
             background: Some(Background::Color(background)),
-            text_color: if accent { color::ACCENT_TEXT } else { color::TEXT },
+            text_color: if tone == CellTone::Focused {
+                color::ACCENT_TEXT
+            } else {
+                color::TEXT
+            },
             border: Border {
-                color: edge,
-                width: bar::HAIRLINE,
+                color: rim,
+                width: space::HAIRLINE,
                 radius: bar::RADIUS_CELL.into(),
             },
+            shadow,
             ..button::Style::default()
         }
     }

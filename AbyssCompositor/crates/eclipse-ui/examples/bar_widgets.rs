@@ -237,7 +237,7 @@ fn strip<'a>(label: &str, cells: Vec<Element<'a, Msg, Theme>>) -> Element<'a, Ms
             .padding([0.0, bar::EDGE])
             .height(Length::Fixed(bar::PILL_H))
             .align_y(Alignment::Center)
-            .style(theme::bar_ground(bar::RADIUS_SHEET)),
+            .style(theme::bar_ground(bar::RADIUS_SHEET, false)),
         bar::RADIUS_SHEET,
         color::HIGHLIGHT_SOFT,
     );
@@ -312,7 +312,7 @@ fn view(s: &Sheet) -> Element<'_, Msg, Theme> {
         .padding([space::PANE_Y, space::PANE_X])
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(theme::window)
+        .style(theme::window(eclipse_ui::tokens::radius::WINDOW))
         .into()
 }
 
