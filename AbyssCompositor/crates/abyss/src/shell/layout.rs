@@ -268,7 +268,7 @@ impl<W: Clone + PartialEq> Tree<W> {
             .or_else(|| self.leaf_ids().last().copied())
             .unwrap_or(self.root);
         let rect = self
-            .geometries(area, 0)
+            .geometries(area, 0, 0)
             .into_iter()
             .find(|(id, _, _)| *id == target)
             .map(|(_, _, r)| r)
@@ -500,16 +500,18 @@ impl<W: Clone + PartialEq> Tree<W> {
         &mut self,
         window: &W,
         area: Rectangle<i32, Logical>,
-        gap: i32,
+        gap_x: i32,
+        gap_y: i32,
         want: (Option<i32>, Option<i32>),
     ) -> bool {
         let Some(leaf) = self.leaf_of(window) else {
             return false;
         };
-        let rects: Vec<(NodeId, Rectangle<i32, Logical>)> = self.node_rects(area, gap);
+        let rects: Vec<(NodeId, Rectangle<i32, Logical>)> = self.node_rects(area, gap_x, gap_y);
         let mut changed = false;
         for (horizontal, target) in [(true, want.0), (false, want.1)] {
             let Some(target) = target else { continue };
+            let gap = if horizontal { gap_x } else { gap_y };
             let mut child = leaf;
             let mut cur = self.parent(leaf);
             while cur != NIL {
@@ -552,17 +554,28 @@ impl<W: Clone + PartialEq> Tree<W> {
         children: &[NodeId],
         side_by_side: bool,
         rect: Rectangle<i32, Logical>,
-        gap: i32,
+        gap_x: i32,
+        gap_y: i32,
     ) -> Vec<Rectangle<i32, Logical>> {
         let weights: Vec<f64> = children
             .iter()
             .map(|c| self.get(*c).map(|n| n.weight).unwrap_or(1.0))
             .collect();
-        split_weighted(rect, side_by_side, &weights, gap)
+        split_weighted(
+            rect,
+            side_by_side,
+            &weights,
+            if side_by_side { gap_x } else { gap_y },
+        )
     }
 
     /// Rectangle of every node, containers included.
-    fn node_rects(&self, area: Rectangle<i32, Logical>, gap: i32) -> Vec<(NodeId, Rectangle<i32, Logical>)> {
+    fn node_rects(
+        &self,
+        area: Rectangle<i32, Logical>,
+        gap_x: i32,
+        gap_y: i32,
+    ) -> Vec<(NodeId, Rectangle<i32, Logical>)> {
         let mut out = Vec::new();
         if self.root == NIL {
             return out;
@@ -571,7 +584,7 @@ impl<W: Clone + PartialEq> Tree<W> {
         while let Some((id, rect)) = stack.pop() {
             out.push((id, rect));
             if let Some((children, side_by_side)) = self.children(id) {
-                let rects = self.child_rects(children, side_by_side, rect, gap);
+                let rects = self.child_rects(children, side_by_side, rect, gap_x, gap_y);
                 stack.extend(children.iter().copied().zip(rects).rev());
             }
         }
@@ -582,9 +595,10 @@ impl<W: Clone + PartialEq> Tree<W> {
     fn geometries(
         &self,
         area: Rectangle<i32, Logical>,
-        gap: i32,
+        gap_x: i32,
+        gap_y: i32,
     ) -> Vec<(NodeId, W, Rectangle<i32, Logical>)> {
-        self.node_rects(area, gap)
+        self.node_rects(area, gap_x, gap_y)
             .into_iter()
             .filter_map(|(id, r)| match &self.get(id)?.kind {
                 Kind::Leaf(w) => Some((id, w.clone(), r)),
@@ -593,37 +607,54 @@ impl<W: Clone + PartialEq> Tree<W> {
             .collect()
     }
 
-    /// Radiant: the tree itself, every container split by weight.
-    pub fn radiant(&self, area: Rectangle<i32, Logical>, gap: i32) -> Vec<(W, Rectangle<i32, Logical>)> {
-        self.geometries(area, gap)
+    /// Radiant: the tree itself, every container split by weight. `gap_x`
+    /// applies where a container's children sit side by side, `gap_y` where
+    /// they stack (COMP-05 §3).
+    pub fn radiant(
+        &self,
+        area: Rectangle<i32, Logical>,
+        gap_x: i32,
+        gap_y: i32,
+    ) -> Vec<(W, Rectangle<i32, Logical>)> {
+        self.geometries(area, gap_x, gap_y)
             .into_iter()
             .map(|(_, w, r)| (w, r))
             .collect()
     }
 
     /// Classic dwindle over the in-order window sequence; see [`dwindle_rects`].
-    pub fn dwindle(&self, area: Rectangle<i32, Logical>, gap: i32) -> Vec<(W, Rectangle<i32, Logical>)> {
+    pub fn dwindle(
+        &self,
+        area: Rectangle<i32, Logical>,
+        gap_x: i32,
+        gap_y: i32,
+    ) -> Vec<(W, Rectangle<i32, Logical>)> {
         let windows = self.windows();
-        let rects = dwindle_rects(windows.len(), area, gap);
+        let rects = dwindle_rects(windows.len(), area, gap_x, gap_y);
         windows.into_iter().zip(rects).collect()
     }
 
     /// Master: first window on the left half, the rest stacked on the right.
     /// With one window it fills the area.
-    pub fn master(&self, area: Rectangle<i32, Logical>, gap: i32) -> Vec<(W, Rectangle<i32, Logical>)> {
+    pub fn master(
+        &self,
+        area: Rectangle<i32, Logical>,
+        gap_x: i32,
+        gap_y: i32,
+    ) -> Vec<(W, Rectangle<i32, Logical>)> {
         let windows = self.windows();
         let mut out = Vec::with_capacity(windows.len());
         match windows.split_first() {
             None => {}
             Some((first, [])) => out.push((first.clone(), area)),
             Some((first, rest)) => {
-                let (left, right) = split_rect(area, true, 0.5, gap);
+                let (left, right) = split_rect(area, true, 0.5, gap_x);
                 out.push((first.clone(), left));
                 let n = rest.len() as i32;
-                let total_gap = gap * (n - 1);
+                let total_gap = gap_y * (n - 1);
                 let each = ((right.size.h - total_gap) / n).max(1);
                 for (i, w) in rest.iter().enumerate() {
-                    let y = right.loc.y + i as i32 * (each + gap);
+                    let y = right.loc.y + i as i32 * (each + gap_y);
                     let h = if i as i32 == n - 1 {
                         (right.loc.y + right.size.h - y).max(1)
                     } else {
@@ -643,8 +674,14 @@ impl<W: Clone + PartialEq> Tree<W> {
 /// Classic dwindle for `n` windows: window `i` takes the first half of what
 /// is left, split along the remaining rectangle's longer dimension, and the
 /// last window takes the remainder. Pure, and blind to weights and to the
-/// tree's shape.
-pub fn dwindle_rects(n: usize, area: Rectangle<i32, Logical>, gap: i32) -> Vec<Rectangle<i32, Logical>> {
+/// tree's shape. `gap_x` applies to a side-by-side split (the rectangle is
+/// wider than tall), `gap_y` to a stacked one.
+pub fn dwindle_rects(
+    n: usize,
+    area: Rectangle<i32, Logical>,
+    gap_x: i32,
+    gap_y: i32,
+) -> Vec<Rectangle<i32, Logical>> {
     let mut out = Vec::with_capacity(n);
     let mut rest = area;
     for i in 0..n {
@@ -652,7 +689,8 @@ pub fn dwindle_rects(n: usize, area: Rectangle<i32, Logical>, gap: i32) -> Vec<R
             out.push(rest);
             break;
         }
-        let (a, b) = split_rect(rest, rest.size.w >= rest.size.h, 0.5, gap);
+        let side_by_side = rest.size.w >= rest.size.h;
+        let (a, b) = split_rect(rest, side_by_side, 0.5, if side_by_side { gap_x } else { gap_y });
         out.push(a);
         rest = b;
     }
@@ -770,7 +808,7 @@ mod tests {
     }
 
     fn rect_of(t: &Tree<u32>, w: u32, gap: i32) -> Rectangle<i32, Logical> {
-        t.radiant(area(), gap)
+        t.radiant(area(), gap, gap)
             .into_iter()
             .find(|(x, _)| *x == w)
             .map(|(_, r)| r)
@@ -876,7 +914,7 @@ mod tests {
         t.insert_at(2, Target::Leaf(&1), Side::Right, 1.0);
         t.insert_at(3, Target::Leaf(&2), Side::Right, 2.0);
         let area = rect(0, 0, 1020, 500);
-        let got = t.radiant(area, 10);
+        let got = t.radiant(area, 10, 10);
         assert_eq!(
             got,
             vec![
@@ -942,7 +980,7 @@ mod tests {
         assert_eq!(rect_of(&t, 2, 0), area());
         t.remove(&2);
         assert!(t.windows().is_empty());
-        assert!(t.radiant(area(), 0).is_empty());
+        assert!(t.radiant(area(), 0, 0).is_empty());
     }
 
     #[test]
@@ -952,7 +990,7 @@ mod tests {
         assert_eq!(splits(&t), 1);
         assert_normalized(&t);
         let area = rect(0, 0, 1500, 900);
-        let got: Vec<_> = t.radiant(area, 0).into_iter().map(|(_, r)| r.size.w).collect();
+        let got: Vec<_> = t.radiant(area, 0, 0).into_iter().map(|(_, r)| r.size.w).collect();
         assert_eq!(got, vec![500, 500, 500]);
     }
 
@@ -1010,13 +1048,13 @@ mod tests {
     fn resize_solves_for_the_weight_and_clamps() {
         let mut t = tree(2);
         let area = rect(0, 0, 1010, 500);
-        assert!(t.resize(&1, area, 10, (Some(250), None)));
-        let got = t.radiant(area, 10);
+        assert!(t.resize(&1, area, 10, 10, (Some(250), None)));
+        let got = t.radiant(area, 10, 10);
         assert_eq!(got[0].1.size.w, 250);
         // Nothing stacks vertically: no container on that axis.
-        assert!(!t.resize(&1, area, 10, (None, Some(100))));
+        assert!(!t.resize(&1, area, 10, 10, (None, Some(100))));
         // A share past the limit is clamped rather than squeezing 2 away.
-        t.resize(&1, area, 10, (Some(100_000), None));
+        t.resize(&1, area, 10, 10, (Some(100_000), None));
         assert_eq!(t.weight_of(&1), Some(20.0));
     }
 
@@ -1041,11 +1079,11 @@ mod tests {
         ];
         for (n, want) in (1..=4).zip(want) {
             let t = tree(n);
-            let radiant: Vec<_> = t.radiant(area(), 10).into_iter().map(|(_, r)| r).collect();
+            let radiant: Vec<_> = t.radiant(area(), 10, 10).into_iter().map(|(_, r)| r).collect();
             assert_eq!(radiant, want, "radiant, {n} windows");
-            let classic: Vec<_> = t.dwindle(area(), 10).into_iter().map(|(_, r)| r).collect();
+            let classic: Vec<_> = t.dwindle(area(), 10, 10).into_iter().map(|(_, r)| r).collect();
             assert_eq!(classic, want, "dwindle, {n} windows");
-            assert_eq!(dwindle_rects(n as usize, area(), 10), want);
+            assert_eq!(dwindle_rects(n as usize, area(), 10, 10), want);
         }
     }
 
@@ -1054,8 +1092,8 @@ mod tests {
         let mut t = tree(3);
         t.adjust_weight(&1, 5);
         t.insert_at(4, Target::Root, Side::Top, 1.0);
-        let got: Vec<_> = t.dwindle(area(), 0).into_iter().collect();
-        let want = dwindle_rects(4, area(), 0);
+        let got: Vec<_> = t.dwindle(area(), 0, 0).into_iter().collect();
+        let want = dwindle_rects(4, area(), 0, 0);
         assert_eq!(got.iter().map(|(w, _)| *w).collect::<Vec<_>>(), vec![4, 1, 2, 3]);
         assert_eq!(got.into_iter().map(|(_, r)| r).collect::<Vec<_>>(), want);
     }
@@ -1066,5 +1104,36 @@ mod tests {
         t.insert(1, None, area(), far());
         t.insert(2, Some(&1), area(), (10.0, 10.0).into());
         assert_eq!(t.windows(), vec![2, 1]);
+    }
+
+    #[test]
+    fn radiant_applies_the_horizontal_gap_side_by_side_and_the_vertical_gap_stacked() {
+        // A side-by-side split (two columns): the gap between them is
+        // horizontal, so only `gap_x` should open a seam.
+        let mut cols = Tree::new();
+        cols.insert_at(1, Target::Root, Side::Right, 1.0);
+        cols.insert_at(2, Target::Leaf(&1), Side::Right, 1.0);
+        let area = rect(0, 0, 1000, 500);
+        let got = cols.radiant(area, 20, 0);
+        assert_eq!(got, vec![(1, rect(0, 0, 490, 500)), (2, rect(510, 0, 490, 500))]);
+        // The same tree with the horizontal gap zeroed and only the vertical
+        // gap set stays seamless: this split doesn't run along that axis.
+        let got = cols.radiant(area, 0, 20);
+        assert_eq!(got, vec![(1, rect(0, 0, 500, 500)), (2, rect(500, 0, 500, 500))]);
+
+        // A stacked split (two rows): the gap between them is vertical.
+        let mut rows = Tree::new();
+        rows.insert_at(1, Target::Root, Side::Bottom, 1.0);
+        rows.insert_at(2, Target::Leaf(&1), Side::Bottom, 1.0);
+        let got = rows.radiant(area, 0, 20);
+        assert_eq!(
+            got,
+            vec![(1, rect(0, 0, 1000, 240)), (2, rect(0, 260, 1000, 240))]
+        );
+        let got = rows.radiant(area, 20, 0);
+        assert_eq!(
+            got,
+            vec![(1, rect(0, 0, 1000, 250)), (2, rect(0, 250, 1000, 250))]
+        );
     }
 }

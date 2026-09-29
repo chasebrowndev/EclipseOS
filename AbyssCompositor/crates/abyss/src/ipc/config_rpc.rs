@@ -103,11 +103,22 @@ fn allow_file(outer: Decision, file: ConfigFile, access: Access, path: &str) -> 
     }
 }
 
-fn ty_json(ty: &schema::Ty) -> (&'static str, Value) {
+/// `path` only feeds the optional `drag-max` UI hint (schema::DRAG_MAX);
+/// the type and its `min`/`max` come from `ty` alone, and `max` is always
+/// the real, enforced validation bound — `drag-max` never changes it.
+fn ty_json(path: &str, ty: &schema::Ty) -> (&'static str, Value) {
     use schema::Ty::*;
     match ty {
         Bool => ("bool", Value::Null),
-        Int { min, max } => ("int", json!({"min": min, "max": max})),
+        Int { min, max } => {
+            let mut c = json!({"min": min, "max": max});
+            if let Some(dm) = schema::drag_max(path) {
+                c.as_object_mut()
+                    .expect("object")
+                    .insert("drag-max".into(), json!(dm));
+            }
+            ("int", c)
+        }
         Float { min, max } => ("float", json!({"min": min, "max": max})),
         Str => ("string", Value::Null),
         Enum(v) => ("enum", json!({"values": v})),
@@ -286,7 +297,7 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
             gate::check_config_file(outer, file, Access::Write),
             Decision::Allow
         );
-        let (ty, constraints) = ty_json(&key.ty);
+        let (ty, constraints) = ty_json(key.path, &key.ty);
         let default = default_json(&key.default);
         // A key in the closed file is listed, never read. The GUI shows it,
         // greyed, with its documentation — an invisible setting is worse than
@@ -987,6 +998,22 @@ mod tests {
         assert!(coerce_edit(&json!([]), &schema::Ty::StrList).is_ok());
         assert!(coerce_edit(&json!("a"), &schema::Ty::StrList).is_err());
         assert!(coerce_edit(&json!(["a", 1]), &schema::Ty::StrList).is_err());
+    }
+
+    /// `drag-max` rides along on the wire schema for the keys the catalog
+    /// names, and never for any other key; `min`/`max` — the real, enforced
+    /// bound — are unaffected either way.
+    #[test]
+    fn drag_max_hint_is_additive_and_only_on_named_keys() {
+        let key = lookup_key("general.gaps-in").ok().expect("in the schema");
+        let (_, c) = ty_json(key.path, &key.ty);
+        assert_eq!(c["min"], 0);
+        assert_eq!(c["max"], 512, "validation max is untouched by the hint");
+        assert_eq!(c["drag-max"], 64);
+
+        let key = lookup_key("input.repeat-rate").ok().expect("in the schema");
+        let (_, c) = ty_json(key.path, &key.ty);
+        assert!(c.get("drag-max").is_none(), "no hint for this key: {c}");
     }
 
     /// A settings write from a normal session must never target `/etc`: the

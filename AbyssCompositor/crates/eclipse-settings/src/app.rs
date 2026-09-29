@@ -300,7 +300,13 @@ impl App {
     fn span(&self, id: &Num) -> Option<Span> {
         match id {
             Num::Key(path) => match self.key(path).map(|k| &k.control) {
-                Some(Control::Slider { min, max, integral }) => Some(Span {
+                // The typed-input path always validates against the true
+                // `max`, never the slider's narrower `drag_max` — a drag
+                // stays fine-grained, but a typed number still reaches the
+                // real limit.
+                Some(Control::Slider {
+                    min, max, integral, ..
+                }) => Some(Span {
                     min: *min,
                     max: *max,
                     integral: *integral,
@@ -823,13 +829,22 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
     match &key.control {
         Control::Toggle => Toggle::new(key.as_bool(), move |on| Message::Toggled(path.clone(), on)).into(),
 
-        Control::Slider { min, max, integral } => {
+        Control::Slider {
+            min,
+            max,
+            integral,
+            drag_max,
+        } => {
             let current = app.live.get(&key.path).copied().unwrap_or_else(|| key.as_f64());
             let span = Span {
                 min: *min,
                 max: *max,
                 integral: *integral,
             };
+            // The knob drags across `drag_max` (fine-grained), but a typed
+            // draft above it still validates against the real `max` via
+            // `span` — `drag_max` narrows the track, not the value.
+            let drag_max = drag_max.unwrap_or(*max);
             let id = Num::Key(key.path.clone());
             let draft = app.nums.get(&id);
             let shown = draft.cloned().unwrap_or_else(|| span.format(current));
@@ -837,7 +852,7 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
             let typed = id.clone();
             let released = path.clone();
             NumericSlider::new(
-                *min..=*max,
+                *min..=drag_max,
                 current,
                 shown,
                 move |v| Message::SliderMoved(path.clone(), v),
@@ -1043,6 +1058,38 @@ mod tests {
         assert_eq!(INSET_SPAN.parse("999"), Some(INSET_MAX));
         assert_eq!(INSET_SPAN.parse("-4"), Some(0.0));
         assert_eq!(SCALE.parse("9"), Some(SCALE_MAX));
+    }
+
+    /// `drag_max` narrows the knob's own span, but the typed-input path
+    /// (`App::span`, and so `commit_num`'s clamp) must still validate against
+    /// the schema's real `max` — a drag stays fine-grained, a typed number
+    /// still reaches the true limit.
+    #[test]
+    fn a_typed_number_reaches_the_true_max_even_when_the_drag_span_is_narrower() {
+        let mut app = App::new();
+        app.rows.clear();
+        app.rows.push(Key {
+            path: "decoration.rounding".into(),
+            file: crate::schema::File::Abyss,
+            value: json!(4),
+            default: json!(4),
+            source: None,
+            readable: true,
+            writable: true,
+            doc: String::new(),
+            needs_restart: false,
+            control: Control::Slider {
+                min: 0.0,
+                max: 64.0,
+                integral: true,
+                drag_max: Some(16.0),
+            },
+        });
+
+        let id = Num::Key("decoration.rounding".to_string());
+        let span = app.span(&id).expect("a slider key has a span");
+        assert_eq!(span.max, 64.0, "typed validation ignores drag_max");
+        assert_eq!(span.parse("999"), Some(64.0));
     }
 
     #[test]

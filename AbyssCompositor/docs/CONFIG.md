@@ -53,6 +53,8 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | --- | --- | --- | --- | --- |
 | `general.gaps-in` | int 0..512 | `5` | live | Gap between tiled windows, logical px. |
 | `general.gaps-out` | int 0..512 | `10` | live | Gap between the tiling area and the screen edge, logical px. |
+| `general.gaps-in-vertical` | int 0..512 | _unset_ | live | Gap between tiled windows stacked one above the other, logical px. Unset mirrors `general.gaps-in`, so setting only the horizontal key still gaps both axes evenly. |
+| `general.gaps-out-vertical` | int 0..512 | _unset_ | live | Gap between the tiling area and the screen's top/bottom edge, logical px. Unset mirrors `general.gaps-out`. |
 | `general.border-size` | int 0..512 | `2` | live | Window border thickness, logical px. 0 disables borders. |
 | `general.layout` | radiant \| dwindle \| master | `"radiant"` | live | Default tiling layout for workspaces without their own. `radiant` is a weighted tree with drag-to-tile drop zones and per-window priority; `dwindle` is classic dwindle; `master` puts the first window on the left. |
 | `general.floating-placement` | centered \| pointer \| cascade | `"centered"` | live | Where a new floating window lands when no window rule places it. |

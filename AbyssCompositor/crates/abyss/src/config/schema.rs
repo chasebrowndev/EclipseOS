@@ -205,6 +205,25 @@ pub const TABLE: &[Key] = &[
         "Gap between the tiling area and the screen edge, logical px.",
     ),
     k(
+        "general.gaps-in-vertical",
+        int(0, 512),
+        Null,
+        Abyss,
+        Live,
+        "Gap between tiled windows stacked one above the other, logical px. \
+       Unset mirrors `general.gaps-in`, so setting only the horizontal key \
+       still gaps both axes evenly.",
+    ),
+    k(
+        "general.gaps-out-vertical",
+        int(0, 512),
+        Null,
+        Abyss,
+        Live,
+        "Gap between the tiling area and the screen's top/bottom edge, \
+       logical px. Unset mirrors `general.gaps-out`.",
+    ),
+    k(
         "general.border-size",
         int(0, 512),
         Int(2),
@@ -1008,6 +1027,33 @@ pub fn get_key(path: &str) -> Option<&'static Key> {
     TABLE.iter().find(|k| k.path == path)
 }
 
+/// A UI-only hint on top of an `Int` key's validation `max`: the top of a
+/// comfortable mouse-drag span for a Settings slider, for a key whose
+/// validation range is wide relative to its meaningful precision. Purely
+/// additive — [`Ty::Int`]'s `max` stays the real, enforced bound; this never
+/// tightens or loosens it, and a key absent here carries no hint at all.
+/// Sourced from this table rather than a [`Key`] field so the ~90 unrelated
+/// rows in [`TABLE`] don't all take a new column.
+pub const DRAG_MAX: &[(&str, i64)] = &[
+    ("general.gaps-in", 64),
+    ("general.gaps-in-vertical", 64),
+    ("general.gaps-out", 64),
+    ("general.gaps-out-vertical", 64),
+    ("general.border-size", 24),
+    // Edge-drop strip width (COMP-05 §3); default 40, so 200 is a 5x drag span.
+    ("general.drop-edge-band", 200),
+    // Matches `bar.rounding`'s own range (`int(0, 64)`).
+    ("decoration.rounding", 64),
+    ("idle.dpms-timeout-seconds", 3600),
+    ("idle.lock-timeout-seconds", 3600),
+    ("input.repeat-delay", 1000),
+];
+
+/// The drag-max hint for `path`, if any. See [`DRAG_MAX`].
+pub fn drag_max(path: &str) -> Option<i64> {
+    DRAG_MAX.iter().find(|(p, _)| *p == path).map(|(_, v)| *v)
+}
+
 /// A repeating construct: several nodes of the same name, each with its own
 /// identity. These are not settable through `set_config_value` v1 — editing one
 /// means naming *which* one, which is list-identity semantics and its own work
@@ -1580,6 +1626,8 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "components.control-center" => V::Str(c.components.control_center.clone()),
         "general.gaps-in" => V::Int(c.general.gaps_in as i64),
         "general.gaps-out" => V::Int(c.general.gaps_out as i64),
+        "general.gaps-in-vertical" => c.general.gaps_in_vertical.map_or(V::Null, |v| V::Int(v as i64)),
+        "general.gaps-out-vertical" => c.general.gaps_out_vertical.map_or(V::Null, |v| V::Int(v as i64)),
         "general.border-size" => V::Int(c.general.border_size as i64),
         "general.layout" => V::Str(layout_name(c.general.layout).into()),
         "general.floating-placement" => V::Str(floating_placement_name(c.general.floating_placement).into()),
@@ -1860,6 +1908,23 @@ mod tests {
         }
         for (a, _) in RULE_ACTIONS {
             assert!(seen.insert(a), "rule action collides with a key path: {a}");
+        }
+    }
+
+    /// A `drag-max` hint names a real `Int` key and never widens its
+    /// validation `max` — it is a UI-only tightening of the slider's drag
+    /// span, not a new bound.
+    #[test]
+    fn drag_max_hints_name_real_int_keys_within_their_range() {
+        for (path, dm) in DRAG_MAX {
+            let key = get_key(path).unwrap_or_else(|| panic!("drag-max hint for unknown key {path}"));
+            let Ty::Int { min, max } = key.ty else {
+                panic!("{path} has a drag-max hint but is not Ty::Int");
+            };
+            assert!(
+                *dm >= min && *dm <= max,
+                "{path}: drag-max {dm} outside the validated range {min}..={max}"
+            );
         }
     }
 

@@ -34,8 +34,17 @@ impl File {
 pub enum Control {
     /// `bool`
     Toggle,
-    /// `int` / `float` with bounds
-    Slider { min: f64, max: f64, integral: bool },
+    /// `int` / `float` with bounds. `drag_max` is the slider's own drag span
+    /// — absent for every key but the handful whose true `max` is far wider
+    /// than its meaningful precision (`general.gaps-in`, `decoration.rounding`,
+    /// `idle.dpms-timeout-seconds`, …), where it keeps a drag fine-grained
+    /// while a typed value still reaches `max`. `None` falls back to `max`.
+    Slider {
+        min: f64,
+        max: f64,
+        integral: bool,
+        drag_max: Option<f64>,
+    },
     /// `enum` with few enough variants to lay out side by side
     Segmented(Vec<String>),
     /// `enum` with too many variants for pills
@@ -59,7 +68,13 @@ pub fn control_for(ty: &str, constraints: &Value) -> Option<Control> {
     let num = |integral: bool| {
         let min = constraints.get("min")?.as_f64()?;
         let max = constraints.get("max")?.as_f64()?;
-        Some(Control::Slider { min, max, integral })
+        let drag_max = constraints.get("drag-max").and_then(Value::as_f64);
+        Some(Control::Slider {
+            min,
+            max,
+            integral,
+            drag_max,
+        })
     };
     match ty {
         "bool" => Some(Control::Toggle),
@@ -319,6 +334,30 @@ mod tests {
     #[test]
     fn a_number_without_bounds_has_no_slider() {
         assert_eq!(control_for("int", &Value::Null), None);
+    }
+
+    #[test]
+    fn drag_max_is_optional_and_falls_back_to_max() {
+        let plain = control_for("int", &json!({"min": 0, "max": 512}));
+        assert_eq!(
+            plain,
+            Some(Control::Slider {
+                min: 0.0,
+                max: 512.0,
+                integral: true,
+                drag_max: None
+            })
+        );
+        let narrowed = control_for("int", &json!({"min": 0, "max": 512, "drag-max": 32}));
+        assert_eq!(
+            narrowed,
+            Some(Control::Slider {
+                min: 0.0,
+                max: 512.0,
+                integral: true,
+                drag_max: Some(32.0)
+            })
+        );
     }
 
     #[test]
