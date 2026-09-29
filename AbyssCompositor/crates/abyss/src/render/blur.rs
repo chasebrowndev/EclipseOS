@@ -32,11 +32,11 @@ use smithay::{
             damage::OutputDamageTracker,
             element::{texture::TextureRenderElement, Element, Id, Kind, RenderElement, UnderlyingStorage},
             gles::{
-                GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
+                ffi, GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
                 UniformType,
             },
             utils::{CommitCounter, DamageSet, OpaqueRegions},
-            Bind, Frame, Offscreen, Renderer, Texture,
+            Bind, ContextId, Frame, Offscreen, Renderer, Texture,
         },
     },
     desktop::{LayerSurface, Window},
@@ -99,20 +99,80 @@ pub fn invalidates(
 
 /// A blurred backdrop, drawn immediately beneath the window it belongs to.
 ///
-/// Everything but damage delegates to a plain [`TextureRenderElement`]. The
+/// Drawing delegates to a plain [`TextureRenderElement`]; placement and damage
+/// do not. The element sits on exactly `region`, the physical rectangle the
+/// caller asked to blur, not on the inner element's geometry: that one is
+/// rebuilt from a *logical* size re-rounded at the live scale, which at a
+/// fractional scale lands a pixel off (a 5 px region at 1.9 becomes 6), so
+/// the backdrop was stretched and painted a row past its surface. The
 /// element's damage is *not* the texture's own damage: it is the invalidation
 /// rule above, folded into a commit counter that the caller bumps whenever the
 /// backdrop was recomputed. `underlying_storage` is `None` so no backend ever
 /// mistakes this for a client buffer it could scan out.
+///
+/// Generic over the texture only so the placement is testable without a GPU.
 #[derive(Debug)]
-pub struct BlurElement {
-    inner: TextureRenderElement<GlesTexture>,
+pub struct BlurElement<T: Texture = GlesTexture> {
+    inner: TextureRenderElement<T>,
+    region: Rectangle<i32, Physical>,
     commit: CommitCounter,
     program: Option<GlesTexProgram>,
     uniforms: Vec<Uniform<'static>>,
+    /// Glass only: the unblurred backdrop, bound to texture unit 1 for the
+    /// program's `sharp` sampler.
+    sharp: Option<T>,
 }
 
-impl Element for BlurElement {
+impl<T: Texture + Clone + 'static> BlurElement<T> {
+    /// Place `texture` (output-sized, physical, buffer scale 1) so the element
+    /// covers exactly `region` and samples exactly `region` of it.
+    fn placed(
+        id: Id,
+        context: ContextId<T>,
+        texture: T,
+        region: Rectangle<i32, Physical>,
+        scale: Scale<f64>,
+    ) -> Self {
+        // The chain texture is exactly `fb_size` (output physical pixels) and
+        // is built with a literal `texture_scale` of 1, so `Element::src()`
+        // hands this rectangle straight to the GPU with no further scaling. It
+        // must therefore already be in the texture's own buffer space, i.e.
+        // `region` unscaled.
+        let src = Rectangle::<f64, smithay::utils::Logical>::new(
+            (region.loc.x as f64, region.loc.y as f64).into(),
+            (region.size.w as f64, region.size.h as f64).into(),
+        );
+        // The inner element still wants a logical footprint. It only feeds the
+        // inner `geometry`, which this element never reports.
+        let size = Size::<i32, smithay::utils::Logical>::from((
+            (region.size.w as f64 / scale.x).round().max(1.0) as i32,
+            (region.size.h as f64 / scale.y).round().max(1.0) as i32,
+        ));
+        let inner = TextureRenderElement::from_static_texture(
+            id,
+            context,
+            region.loc.to_f64(),
+            texture,
+            1,
+            Transform::Normal,
+            None,
+            Some(src),
+            Some(size),
+            None,
+            Kind::Unspecified,
+        );
+        BlurElement {
+            inner,
+            region,
+            commit: CommitCounter::default(),
+            program: None,
+            uniforms: Vec::new(),
+            sharp: None,
+        }
+    }
+}
+
+impl<T: Texture + Clone + 'static> Element for BlurElement<T> {
     fn id(&self) -> &Id {
         self.inner.id()
     }
@@ -121,8 +181,8 @@ impl Element for BlurElement {
         self.commit
     }
 
-    fn location(&self, scale: Scale<f64>) -> Point<i32, Physical> {
-        self.inner.location(scale)
+    fn location(&self, _scale: Scale<f64>) -> Point<i32, Physical> {
+        self.region.loc
     }
 
     fn src(&self) -> Rectangle<f64, BufferCoords> {
@@ -133,8 +193,8 @@ impl Element for BlurElement {
         self.inner.transform()
     }
 
-    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
-        self.inner.geometry(scale)
+    fn geometry(&self, _scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        self.region
     }
 
     fn damage_since(&self, scale: Scale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
@@ -160,7 +220,25 @@ impl Element for BlurElement {
     }
 }
 
-impl RenderElement<GlesRenderer> for BlurElement {
+/// Bind `tex` (0 unbinds) as a linear, edge-clamped 2D texture on unit 1 and
+/// leave unit 0 active, as smithay expects.
+fn bind_unit1(gl: &ffi::Gles2, tex: ffi::types::GLuint) {
+    // SAFETY: plain GL state calls on the renderer's current context, from
+    // inside a frame; unit 0 is made active again before smithay draws.
+    unsafe {
+        gl.ActiveTexture(ffi::TEXTURE1);
+        gl.BindTexture(ffi::TEXTURE_2D, tex);
+        if tex != 0 {
+            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MIN_FILTER, ffi::LINEAR as i32);
+            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_MAG_FILTER, ffi::LINEAR as i32);
+            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE as i32);
+            gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE as i32);
+        }
+        gl.ActiveTexture(ffi::TEXTURE0);
+    }
+}
+
+impl RenderElement<GlesRenderer> for BlurElement<GlesTexture> {
     fn draw(
         &self,
         frame: &mut GlesFrame<'_, '_>,
@@ -170,10 +248,19 @@ impl RenderElement<GlesRenderer> for BlurElement {
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), GlesError> {
         if let Some(program) = &self.program {
+            // smithay's texture draw only ever touches unit 0, so a second
+            // texture bound on unit 1 survives into it; the program reads it
+            // through its `sharp` sampler (set to 1 in the uniforms).
+            if let Some(sharp) = &self.sharp {
+                frame.with_context(|gl| bind_unit1(gl, sharp.tex_id()))?;
+            }
             frame.override_default_tex_program(program.clone(), self.uniforms.clone());
             let res =
                 RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions);
             frame.clear_tex_program_override();
+            if self.sharp.is_some() {
+                frame.with_context(|gl| bind_unit1(gl, 0))?;
+            }
             res
         } else {
             RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions)
@@ -216,10 +303,18 @@ struct SurfaceBlur {
     damage: OutputDamageTracker,
     /// The upsampled result, held so the element can borrow it.
     result: Option<GlesTexture>,
+    /// Glass only: chain level 0 (the unblurred backdrop) copied out upright,
+    /// for the refracting rim. `None` in every other mode.
+    sharp: Option<GlesTexture>,
     /// Bumped whenever `result` was recomputed; drives [`BlurElement`] damage.
     commit: CommitCounter,
     /// A stable id so the damage tracker can follow this element across frames.
     id: Id,
+    /// The final draw's uniforms last frame. Each program has its own uniform
+    /// names (none for smithay's plain one), so this also stands for the
+    /// program: a mode switch or a tint/rim change bumps `commit` even though
+    /// the chain behind it did not change.
+    look: Vec<Uniform<'static>>,
 }
 
 /// Compiled programs, the offscreen chain and per-window state.
@@ -269,6 +364,11 @@ impl BlurStore {
     ///
     /// `behind` is the slice of the frame's element list that sits below the
     /// surface, in front-to-back order — exactly what the blur samples.
+    /// `reach` is how far past `region` the final draw samples on top of the
+    /// kernel (the glass refraction; 0 for every other mode), so damage that
+    /// far out invalidates too. `sharp` asks for an unblurred copy of the
+    /// backdrop alongside the blurred one (glass); without it any held copy
+    /// is freed.
     /// Returns `None` when nothing needs redrawing *and* nothing is cached, or
     /// when any GL step failed (blur is an effect; a failure drops the effect,
     /// never the frame).
@@ -283,6 +383,8 @@ impl BlurStore {
         blur: &Blur,
         scale: Scale<f64>,
         rounding: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
+        reach: i32,
+        sharp: bool,
     ) -> Option<BlurElement>
     where
         E: Element + RenderElement<GlesRenderer>,
@@ -298,8 +400,10 @@ impl BlurStore {
         let entry = self.surfaces.entry(key.clone()).or_insert_with(|| SurfaceBlur {
             damage: OutputDamageTracker::from_output(output),
             result: None,
+            sharp: None,
             commit: CommitCounter::default(),
             id: Id::new(),
+            look: Vec::new(),
         });
 
         // The invalidation rule: recompute only when damage behind this surface
@@ -307,14 +411,17 @@ impl BlurStore {
         let dirty = {
             let (damage, _) = entry.damage.damage_output(1, behind).ok()?;
             match damage {
-                Some(rects) => invalidates(region, kernel_radius(blur), rects),
+                Some(rects) => invalidates(region, kernel_radius(blur).saturating_add(reach.max(0)), rects),
                 // `None` means the tracker could not reason about damage; the
                 // fail-safe answer is "everything changed".
                 None => entry.result.is_none(),
             }
         };
+        if !sharp {
+            entry.sharp = None;
+        }
 
-        if dirty || entry.result.is_none() {
+        if dirty || entry.result.is_none() || (sharp && entry.sharp.is_none()) {
             let Self {
                 down,
                 up,
@@ -355,54 +462,37 @@ impl BlurStore {
                     return None;
                 }
             }
+            if sharp {
+                // Level 0 is untouched by the down/up passes, so it still
+                // holds this surface's backdrop. The downsample program at
+                // offset 0 is a straight copy with alpha forced to 1.
+                match copy_sharp(renderer, &chain[0], entry.sharp.take(), down.as_ref()?, orient) {
+                    Ok(t) => entry.sharp = Some(t),
+                    Err(err) => {
+                        tracing::warn!(?err, "copying the glass backdrop; blur skipped this frame");
+                        return None;
+                    }
+                }
+            }
         }
 
-        let entry = self.surfaces.get(key)?;
-        let texture = entry.result.clone()?;
-        // The chain texture is exactly `fb_size` (output physical pixels), and
-        // `from_static_texture` is built below with a literal `texture_scale`
-        // of 1, so `Element::src()` hands this rectangle straight to the GPU
-        // with no further scaling. It must therefore already be in the
-        // texture's own buffer space — i.e. `region` unscaled. Dividing by
-        // `scale` here (as before) under-sampled the backdrop at scale != 1.0,
-        // which is exactly the BLUR-02 offset bleed.
-        let src = Rectangle::<f64, smithay::utils::Logical>::new(
-            (region.loc.x as f64, region.loc.y as f64).into(),
-            (region.size.w as f64, region.size.h as f64).into(),
-        );
-        // `size` is different: it is the on-screen (logical) footprint, and
-        // `Element::geometry(scale)` re-multiplies it by the *live* scale
-        // every frame, so it has to be pre-divided here or the element would
-        // paint at double size. This asymmetry — buffer-space `src` vs.
-        // logical `size` — is the load-bearing part of this fix, not a
-        // leftover to "fix" together with `src`.
-        let size = Size::<i32, smithay::utils::Logical>::from((
-            (region.size.w as f64 / scale.x).round() as i32,
-            (region.size.h as f64 / scale.y).round() as i32,
-        ));
-        let inner = TextureRenderElement::from_static_texture(
-            entry.id.clone(),
-            renderer.context_id(),
-            region.loc.to_f64(),
-            texture,
-            1,
-            Transform::Normal,
-            None,
-            Some(src),
-            Some(size),
-            None,
-            Kind::Unspecified,
-        );
+        let entry = self.surfaces.get_mut(key)?;
         let (program, uniforms) = match rounding {
             Some((program, uniforms)) => (Some(program), uniforms),
             None => (None, Vec::new()),
         };
-        Some(BlurElement {
-            inner,
-            commit: entry.commit,
-            program,
-            uniforms,
-        })
+        if entry.look != uniforms {
+            entry.look.clone_from(&uniforms);
+            entry.commit.increment();
+        }
+        let texture = entry.result.clone()?;
+        let mut element =
+            BlurElement::placed(entry.id.clone(), renderer.context_id(), texture, region, scale);
+        element.commit = entry.commit;
+        element.program = program;
+        element.uniforms = uniforms;
+        element.sharp = entry.sharp.clone();
+        Some(element)
     }
 
     fn ensure_programs(&mut self, renderer: &mut GlesRenderer) -> Option<()> {
@@ -485,9 +575,6 @@ fn render_chain<E>(
 where
     E: Element + RenderElement<GlesRenderer>,
 {
-    let full = chain[0].size();
-    let full: Size<i32, Physical> = (full.w, full.h).into();
-
     // 1. The backdrop, rendered whole (`age = 0`): the chain texture is shared
     //    between windows, so partial damage would leave another window's
     //    backdrop in it.
@@ -514,26 +601,38 @@ where
         let (src, dst) = split_pair(chain, level + 1, level);
         blit(renderer, src, dst, up, offset, Transform::Normal)?;
     }
-    let mut result = match reuse {
-        Some(t)
-            if {
-                let s = t.size();
-                (s.w, s.h) == (full.w, full.h)
-            } =>
-        {
-            t
-        }
-        _ => Offscreen::<GlesTexture>::create_buffer(
-            renderer,
-            FORMAT,
-            full.to_logical(1).to_buffer(1, Transform::Normal),
-        )?,
-    };
+    let mut result = sized(renderer, reuse, chain[0].size())?;
     {
         let src = chain[1.min(passes)].clone();
         blit(renderer, &src, &mut result, up, offset, orient)?;
     }
     Ok(result)
+}
+
+/// `reuse` if it is already `size`, else a fresh offscreen texture of `size`.
+fn sized(
+    renderer: &mut GlesRenderer,
+    reuse: Option<GlesTexture>,
+    size: Size<i32, BufferCoords>,
+) -> Result<GlesTexture, GlesError> {
+    match reuse {
+        Some(t) if t.size() == size => Ok(t),
+        _ => Offscreen::<GlesTexture>::create_buffer(renderer, FORMAT, size),
+    }
+}
+
+/// Copy the sharp backdrop (`level0`) into `reuse` or a fresh texture, under
+/// the same `orient` as the final upsample so the two textures line up.
+fn copy_sharp(
+    renderer: &mut GlesRenderer,
+    level0: &GlesTexture,
+    reuse: Option<GlesTexture>,
+    copy: &GlesTexProgram,
+    orient: Transform,
+) -> Result<GlesTexture, GlesError> {
+    let mut t = sized(renderer, reuse, level0.size())?;
+    blit(renderer, level0, &mut t, copy, 0.0, orient)?;
+    Ok(t)
 }
 
 /// Two distinct elements of `chain` as `(&src, &mut dst)`.
@@ -704,10 +803,26 @@ mod tests {
 
     fn blur(size: i32, passes: i32) -> Blur {
         Blur {
-            enabled: true,
             size,
             passes,
+            ..Blur::default()
         }
+    }
+
+    /// COMP-02 §3: the glass refraction widens the invalidation reach by its
+    /// displacement (with the dispersion margin), scaled to physical px;
+    /// flat glass adds nothing.
+    #[test]
+    fn glass_refraction_widens_the_invalidation_reach() {
+        use crate::render::effects::glass_reach;
+        assert_eq!(glass_reach(0, 1.5), 0);
+        assert_eq!(glass_reach(12, 1.0), 13);
+        assert_eq!(glass_reach(12, 2.0), 26);
+        let region = r(100, 100, 200, 200);
+        let k = kernel_radius(&blur(8, 2));
+        let just_outside = [r(100 - k - 5, 150, 2, 2)];
+        assert!(!invalidates(region, k, &just_outside));
+        assert!(invalidates(region, k + glass_reach(12, 1.0), &just_outside));
     }
 
     #[test]
@@ -824,5 +939,63 @@ mod tests {
     #[test]
     fn an_empty_surface_is_never_blurred() {
         assert!(!shows_through(r(0, 0, 0, 44), []));
+    }
+
+    /// Stands in for the output-sized chain texture; placement never reads it.
+    #[derive(Debug, Clone)]
+    struct Backdrop(Size<i32, BufferCoords>);
+
+    impl Texture for Backdrop {
+        fn width(&self) -> u32 {
+            self.0.w as u32
+        }
+        fn height(&self) -> u32 {
+            self.0.h as u32
+        }
+        fn format(&self) -> Option<Fourcc> {
+            Some(FORMAT)
+        }
+    }
+
+    /// BLUR-02: a region on the output's top edge (and right edge) is drawn on
+    /// exactly that region and samples exactly that region of the backdrop,
+    /// nothing outside the texture, at every scale the owner's hardware uses.
+    #[test]
+    fn a_region_on_the_top_edge_is_placed_and_sampled_exactly() {
+        let fb = Size::<i32, BufferCoords>::from((2880, 1920));
+        // (scale, region): full-width strips at y = 0, a thin top-right strip
+        // like an idle toast surface, and odd heights that do not divide by the
+        // scale (a logical round trip turns 5 px at 1.9 into 6).
+        let cases = [
+            (1.0, r(0, 0, 2880, 30)),
+            (1.0, r(2476, 0, 404, 1)),
+            (1.5, r(0, 0, 2880, 45)),
+            (1.5, r(2274, 0, 606, 2)),
+            (1.5, r(2000, 0, 880, 7)),
+            (2.0, r(0, 0, 2880, 60)),
+            (2.0, r(2072, 0, 808, 2)),
+            (2.0, r(2000, 0, 880, 5)),
+            (1.9, r(2112, 0, 768, 5)),
+        ];
+        for (s, region) in cases {
+            let scale = Scale::from(s);
+            let el = BlurElement::placed(Id::new(), ContextId::new(), Backdrop(fb), region, scale);
+            assert_eq!(el.geometry(scale), region, "geometry at scale {s}");
+            assert_eq!(el.location(scale), region.loc, "location at scale {s}");
+            let src = el.src();
+            let want = Rectangle::<f64, BufferCoords>::new(
+                (region.loc.x as f64, region.loc.y as f64).into(),
+                (region.size.w as f64, region.size.h as f64).into(),
+            );
+            assert_eq!(src, want, "src at scale {s}");
+            assert!(
+                src.loc.x >= 0.0 && src.loc.y >= 0.0,
+                "src above/left of the texture at {s}"
+            );
+            assert!(
+                src.loc.x + src.size.w <= fb.w as f64 && src.loc.y + src.size.h <= fb.h as f64,
+                "src past the texture at {s}"
+            );
+        }
     }
 }

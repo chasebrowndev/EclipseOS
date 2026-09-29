@@ -3,6 +3,7 @@
 
 use std::time::{Duration, Instant};
 
+use iced::window::Id;
 use iced::{Subscription, Task};
 use iced_layershell::to_layer_message;
 
@@ -12,6 +13,11 @@ use eclipse_services::notifications::{CloseReason, Event, Notification, Notifica
 /// of time. Shorter than the bar's tick: a toast that lingers a visible beat
 /// after its lifetime reads as a stuck window.
 const TICK: Duration = Duration::from_millis(200);
+
+/// Gap between the bar's bottom edge and the first card.
+const TOP_MARGIN: i32 = eclipse_ui::tokens::bar::HEIGHT as i32 + 4;
+/// Gap between the cards and the right edge of the output.
+const RIGHT_MARGIN: i32 = 4;
 
 /// How many notifications are drawn at once. The rest wait their turn rather
 /// than being dropped — a queued notification the human never saw must not be
@@ -38,11 +44,14 @@ impl Toast {
     }
 }
 
-#[to_layer_message]
+#[to_layer_message(multi)]
 #[derive(Debug, Clone)]
 pub enum Message {
     /// Drain the bus and retire anything out of time.
     Tick,
+    /// A surface of ours went away, whether we closed it or the compositor
+    /// did (its output was unplugged).
+    Closed(Id),
     /// The human clicked the body of a notification.
     Dismiss(u32),
     /// The human clicked one of its buttons.
@@ -55,6 +64,10 @@ pub struct App {
     /// empty for the rest of its life rather than half-serving the session.
     pub service: Option<Notifications>,
     pub toasts: Vec<Toast>,
+    /// The stack's layer surface, while it has one. There is none while
+    /// nothing is drawn: an empty surface, however small, is still a region
+    /// the compositor blurs (BLUR-02).
+    surface: Option<Id>,
     /// The surface height last asked for, so a tick that changes nothing does
     /// not ask the compositor to resize to the size it already has.
     height: u32,
@@ -75,7 +88,8 @@ impl App {
         App {
             service: eclipse_services::notifications::spawn().ok(),
             toasts: Vec::new(),
-            height: 1,
+            surface: None,
+            height: 0,
             glass_radius: crate::conn::fetch_glass_radius().unwrap_or(eclipse_ui::tokens::radius::CARD),
         }
     }
@@ -152,26 +166,80 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             app.toasts.retain(|t| t.notification.id != id);
         }
+        Message::Closed(id) => {
+            // Forget it, so the next card opens a fresh one rather than
+            // resizing a surface that is gone.
+            if app.surface == Some(id) {
+                app.surface = None;
+                app.height = 0;
+            }
+        }
         // `to_layer_message` injects the layer-control variants. We send
-        // `SizeChange` ourselves below; the rest never arrive.
+        // them ourselves below; they never arrive here.
         _ => return Task::none(),
     }
+    sync_surface(app)
+}
 
+/// Make the surface match the stack: open it with the first card, resize it
+/// as cards come and go, close it with the last.
+///
+/// The surface is only as tall as what it holds, and an empty stack has no
+/// surface at all — not an invisible sheet over the corner swallowing the
+/// human's clicks, and not a transparent pixel for the compositor to blur.
+fn sync_surface(app: &mut App) -> Task<Message> {
+    use iced_layershell::reexport::{
+        Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
+    };
     let wanted = crate::view::height(app.drawn());
-    if wanted == app.height {
-        return Task::none();
+    match app.surface {
+        Some(id) if wanted == 0 => {
+            app.surface = None;
+            app.height = 0;
+            Task::done(Message::RemoveWindow(id))
+        }
+        Some(id) if wanted != app.height => {
+            app.height = wanted;
+            Task::done(Message::SizeChange {
+                id,
+                size: (crate::WIDTH, wanted),
+            })
+        }
+        None if wanted > 0 => {
+            let id = Id::unique();
+            app.surface = Some(id);
+            app.height = wanted;
+            Task::done(Message::NewLayerShell {
+                settings: NewLayerShellSettings {
+                    size: Some((crate::WIDTH, wanted)),
+                    anchor: Anchor::Top | Anchor::Right,
+                    // Above the bar and above fullscreen windows: a notification
+                    // the human cannot see is a notification that did not happen.
+                    layer: Layer::Overlay,
+                    // Toasts never push windows around. The stack comes and goes
+                    // several times a minute, and a reflow each time would be
+                    // unusable.
+                    exclusive_zone: Some(0),
+                    margin: Some((TOP_MARGIN, RIGHT_MARGIN, 0, 0)),
+                    keyboard_interactivity: KeyboardInteractivity::None,
+                    // Wherever the compositor puts new things, as before.
+                    output_option: OutputOption::Active,
+                    // The action buttons need the pointer.
+                    events_transparent: false,
+                    // The process namespace, which is what layer rules match.
+                    namespace: None,
+                },
+                id,
+            })
+        }
+        _ => Task::none(),
     }
-    app.height = wanted;
-    // The surface is only as tall as what it holds. An empty stack shrinks to a
-    // pixel rather than leaving an invisible sheet over the corner of the
-    // screen swallowing the human's clicks.
-    Task::done(Message::SizeChange((crate::WIDTH, wanted)))
 }
 
 /// One thread, one tick. The bus handle lives on `App` because the human's
 /// clicks have to reach it, so the thread here carries nothing but the beat.
 pub fn subscription(_app: &App) -> Subscription<Message> {
-    Subscription::run(|| {
+    let tick = Subscription::run(|| {
         iced::stream::channel(32, async move |mut sender| {
             std::thread::spawn(move || loop {
                 if sender.try_send(Message::Tick).is_err() {
@@ -180,7 +248,8 @@ pub fn subscription(_app: &App) -> Subscription<Message> {
                 std::thread::sleep(TICK);
             });
         })
-    })
+    });
+    Subscription::batch([tick, iced::window::close_events().map(Message::Closed)])
 }
 
 #[cfg(test)]
@@ -211,7 +280,8 @@ mod tests {
         App {
             service: None,
             toasts: Vec::new(),
-            height: 1,
+            surface: None,
+            height: 0,
             glass_radius: eclipse_ui::tokens::radius::CARD,
         }
     }
@@ -274,10 +344,22 @@ mod tests {
         assert!(a.toasts.is_empty());
     }
 
-    /// An empty stack must not leave a sheet over the corner of the screen.
+    /// An empty stack has no surface at all: even a transparent pixel of one
+    /// is a region the compositor blurs (BLUR-02). The first card opens it and
+    /// the last one closes it.
     #[test]
-    fn an_empty_stack_asks_for_no_room() {
-        let a = app();
-        assert_eq!(crate::view::height(a.drawn()), 1);
+    fn the_surface_exists_only_while_something_is_drawn() {
+        let mut a = app();
+        let _ = update(&mut a, Message::Tick);
+        assert!(a.surface.is_none());
+        post(&mut a.toasts, notification(7, None));
+        let _ = update(&mut a, Message::Tick);
+        let opened = a.surface.expect("the first card opens the surface");
+        post(&mut a.toasts, notification(8, None));
+        let _ = update(&mut a, Message::Tick);
+        assert_eq!(a.surface, Some(opened), "a second card resizes, not reopens");
+        let _ = update(&mut a, Message::Dismiss(7));
+        let _ = update(&mut a, Message::Dismiss(8));
+        assert!(a.surface.is_none());
     }
 }

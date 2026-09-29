@@ -672,21 +672,108 @@ impl Decoration {
     }
 }
 
-/// `blur { enabled #true; size 8; passes 2 }`. Dual-Kawase (COMP-02 §9).
+/// What is drawn behind a translucent surface (COMP-02 §9). Every mode but
+/// `Off` runs the same dual-Kawase chain; `Frost` and `Glass` only swap the
+/// program the blurred backdrop is finally drawn with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BlurMode {
+    /// No backdrop pass at all.
+    Off,
+    /// The plain blurred backdrop, masked to the surface's corners.
+    #[default]
+    Blur,
+    /// Blur with a tint mixed in and a fine grain over it.
+    Frost,
+    /// Blur refracted through a rounded bevel, with dispersion and a rim light.
+    Glass,
+}
+
+impl BlurMode {
+    /// Every mode, in the order a GUI shows them.
+    pub const NAMES: &'static [&'static str] = &["off", "blur", "frost", "glass"];
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "off" => Self::Off,
+            "blur" => Self::Blur,
+            "frost" => Self::Frost,
+            "glass" => Self::Glass,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Blur => "blur",
+            Self::Frost => "frost",
+            Self::Glass => "glass",
+        }
+    }
+}
+
+/// `blur { mode "blur"; size 8; passes 2; glass { … }; frost { … } }`.
+/// Dual-Kawase (COMP-02 §9). The legacy `enabled #true|#false` still parses
+/// (as `mode "blur"` / `mode "off"`); `eclipse-ctl config migrate` rewrites it.
 #[derive(Debug, Clone)]
 pub struct Blur {
-    pub enabled: bool,
+    pub mode: BlurMode,
     pub size: i32,
     pub passes: i32,
+    pub glass: GlassBlur,
+    pub frost: FrostBlur,
 }
 
 impl Default for Blur {
     fn default() -> Self {
         Self {
-            enabled: true,
+            mode: BlurMode::Blur,
             size: 8,
             passes: 2,
+            glass: GlassBlur::default(),
+            frost: FrostBlur::default(),
         }
+    }
+}
+
+/// `blur { glass { refraction 16; bevel 22; dispersion 0.25; rim 0.45 } }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlassBlur {
+    /// Largest refraction displacement, logical px, at the steepest part of
+    /// the bevel.
+    pub refraction: i32,
+    /// Width of the rounded rim the refraction happens in, logical px.
+    pub bevel: i32,
+    /// Chromatic spread, 0.0..=1.0; 0.25 is crown glass (eta 1.46/1.48/1.50).
+    pub dispersion: f32,
+    /// Strength of the warm specular rim light, 0.0..=1.0.
+    pub rim: f32,
+}
+
+impl Default for GlassBlur {
+    fn default() -> Self {
+        Self {
+            refraction: 16,
+            bevel: 22,
+            dispersion: 0.25,
+            rim: 0.45,
+        }
+    }
+}
+
+/// Default `frost.tint`: STYLE.md's `#1a1712` surface at 40%, straight alpha.
+pub const FROST_TINT: [f32; 4] = [0.102, 0.091, 0.071, 0.4];
+
+/// `blur { frost { tint "#1a171266" } }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrostBlur {
+    /// Mixed over the blurred backdrop; its alpha is the mix amount.
+    pub tint: [f32; 4],
+}
+
+impl Default for FrostBlur {
+    fn default() -> Self {
+        Self { tint: FROST_TINT }
     }
 }
 
@@ -829,15 +916,42 @@ pub enum RuleAction {
     /// does not speak `zwp_idle_inhibit_manager_v1` itself.
     IdleInhibit,
     Opacity(f32),
-    /// Force blur on/off for this window, overriding `decoration.blur.enabled`.
+    /// Pick this window's blur mode, overriding `decoration.blur.mode`.
     /// Still gated by translucency at render time — an opaque window never
-    /// blurs even with `blur true`.
-    Blur(bool),
+    /// blurs whatever the rule says.
+    Blur(BlurRule),
     /// Raise-only: `secret` or `private`. `public` is refused at parse time
     /// because a rule may never lower a sensitivity class.
     Sensitivity(String),
     NoAgent,
     NoFocusSteal,
+}
+
+/// A `windowrule "blur …"` value. `true` means "on, in the global mode" —
+/// which is plain `blur` when the global mode is `off`; `false` is `off`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlurRule {
+    On,
+    Mode(BlurMode),
+}
+
+impl BlurRule {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "true" => Some(Self::On),
+            "false" => Some(Self::Mode(BlurMode::Off)),
+            other => BlurMode::parse(other).map(Self::Mode),
+        }
+    }
+
+    /// The mode this rule selects under the global `decoration.blur.mode`.
+    pub fn resolve(self, global: BlurMode) -> BlurMode {
+        match self {
+            Self::On if global == BlurMode::Off => BlurMode::Blur,
+            Self::On => global,
+            Self::Mode(m) => m,
+        }
+    }
 }
 
 /// A COMP-05 §4 matcher pattern: a regular expression.
@@ -3127,11 +3241,26 @@ impl Config {
 
     fn apply_blur(&mut self, node: &KdlNode) {
         let Some(children) = node.children() else { return };
+        // An explicit `mode` is the newer word and wins wherever it sits.
+        let has_mode = children.nodes().iter().any(|n| n.name().value() == "mode");
         for n in children.nodes() {
             match n.name().value() {
+                // Legacy (before `mode`): kept so an old file still loads;
+                // `eclipse-ctl config migrate` rewrites it.
+                "enabled" if has_mode => {}
                 "enabled" => {
-                    self.decoration.blur.enabled = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
+                    self.decoration.blur.mode = if arg(n).and_then(KdlValue::as_bool).unwrap_or(true) {
+                        BlurMode::Blur
+                    } else {
+                        BlurMode::Off
+                    };
                 }
+                "mode" => match arg(n).and_then(KdlValue::as_string).and_then(BlurMode::parse) {
+                    Some(m) => self.decoration.blur.mode = m,
+                    None => self.reject(n, "blur mode must be \"off\", \"blur\", \"frost\" or \"glass\""),
+                },
+                "glass" => self.apply_glass(n),
+                "frost" => self.apply_frost(n),
                 "size" => match arg(n).and_then(KdlValue::as_integer) {
                     Some(v) if (1..=64).contains(&v) => self.decoration.blur.size = v as i32,
                     _ => self.reject(n, "blur size must be an integer 1..=64"),
@@ -3141,6 +3270,45 @@ impl Config {
                     _ => self.reject(n, "blur passes must be an integer 1..=6"),
                 },
                 _ => self.unknown_key(n, "decoration.blur", "blur key"),
+            }
+        }
+    }
+
+    fn apply_glass(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let glass = &mut self.decoration.blur.glass;
+            match n.name().value() {
+                "refraction" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (0..=64).contains(&v) => glass.refraction = v as i32,
+                    _ => self.reject(n, "glass refraction must be an integer 0..=64"),
+                },
+                "bevel" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (1..=128).contains(&v) => glass.bevel = v as i32,
+                    _ => self.reject(n, "glass bevel must be an integer 1..=128"),
+                },
+                "dispersion" => match arg(n).and_then(as_f64) {
+                    Some(v) if (0.0..=1.0).contains(&v) => glass.dispersion = v as f32,
+                    _ => self.reject(n, "glass dispersion must be 0.0..=1.0"),
+                },
+                "rim" => match arg(n).and_then(as_f64) {
+                    Some(v) if (0.0..=1.0).contains(&v) => glass.rim = v as f32,
+                    _ => self.reject(n, "glass rim must be 0.0..=1.0"),
+                },
+                _ => self.unknown_key(n, "decoration.blur.glass", "glass key"),
+            }
+        }
+    }
+
+    fn apply_frost(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "tint" => match arg(n).and_then(KdlValue::as_string).and_then(parse_color) {
+                    Some(c) => self.decoration.blur.frost.tint = c,
+                    None => self.reject(n, "bad color for \"frost tint\""),
+                },
+                _ => self.unknown_key(n, "decoration.blur.frost", "frost key"),
             }
         }
     }
@@ -3320,12 +3488,15 @@ impl Config {
                     return;
                 }
             },
-            ("blur", Some(p)) => match p.parse::<bool>() {
-                Ok(v) => RuleAction::Blur(v),
-                _ => {
+            ("blur", Some(p)) => match BlurRule::parse(p) {
+                Some(v) => RuleAction::Blur(v),
+                None => {
                     self.reject(
                         node,
-                        format!("windowrule blur must be true or false (action={})", action),
+                        format!(
+                            "windowrule blur must be true, false, off, blur, frost or glass (action={})",
+                            action
+                        ),
                     );
                     return;
                 }
@@ -4865,7 +5036,7 @@ mod tests {
         assert_eq!(cfg.decoration.active_opacity, 1.0);
         assert_eq!(cfg.decoration.inactive_opacity, 0.95);
         assert_eq!(cfg.decoration.dim_inactive, 0.2);
-        assert!(!cfg.decoration.blur.enabled);
+        assert_eq!(cfg.decoration.blur.mode, BlurMode::Off, "legacy `enabled #false`");
         assert_eq!((cfg.decoration.blur.size, cfg.decoration.blur.passes), (12, 3));
         assert!(cfg.decoration.shadow.enabled && cfg.decoration.shadow.range == 20);
         let g = &cfg.decoration.glow;
@@ -4904,7 +5075,113 @@ mod tests {
     /// this flips, the schema default column and `docs/CONFIG.md` flip with it.
     #[test]
     fn blur_ships_enabled() {
-        assert!(Config::default().decoration.blur.enabled);
+        assert_eq!(Config::default().decoration.blur.mode, BlurMode::Blur);
+    }
+
+    fn blur_cfg(text: &str) -> Config {
+        let doc: KdlDocument = text.parse().unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        cfg
+    }
+
+    #[test]
+    fn blur_mode_parses_every_mode() {
+        for (name, want) in [
+            ("off", BlurMode::Off),
+            ("blur", BlurMode::Blur),
+            ("frost", BlurMode::Frost),
+            ("glass", BlurMode::Glass),
+        ] {
+            let cfg = blur_cfg(&format!("decoration {{ blur {{ mode {name:?} }} }}\n"));
+            assert!(cfg.errors.is_empty(), "{name}: {:?}", cfg.errors);
+            assert_eq!(cfg.decoration.blur.mode, want);
+            assert_eq!(want.name(), name);
+        }
+        assert_eq!(BlurMode::NAMES, ["off", "blur", "frost", "glass"]);
+        let cfg = blur_cfg("decoration { blur { mode \"liquid\" } }\n");
+        assert_eq!(cfg.errors.len(), 1);
+        assert_eq!(
+            cfg.decoration.blur.mode,
+            BlurMode::Blur,
+            "a bad mode keeps the default"
+        );
+    }
+
+    /// The pre-`mode` bool still loads: false is `off`, true is plain `blur`.
+    #[test]
+    fn legacy_blur_enabled_maps_onto_mode() {
+        let cfg = blur_cfg("decoration { blur { enabled #false } }\n");
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.decoration.blur.mode, BlurMode::Off);
+        let cfg = blur_cfg("decoration { blur { enabled #true } }\n");
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.decoration.blur.mode, BlurMode::Blur);
+    }
+
+    /// An explicit `mode` wins over a legacy `enabled` in either order.
+    #[test]
+    fn blur_mode_wins_over_enabled_regardless_of_order() {
+        for text in [
+            "decoration { blur { mode \"glass\"; enabled #false } }\n",
+            "decoration { blur { enabled #false; mode \"glass\" } }\n",
+        ] {
+            let cfg = blur_cfg(text);
+            assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+            assert_eq!(cfg.decoration.blur.mode, BlurMode::Glass, "{text}");
+        }
+        let cfg = blur_cfg("decoration { blur { mode \"off\"; enabled #true } }\n");
+        assert_eq!(cfg.decoration.blur.mode, BlurMode::Off);
+    }
+
+    #[test]
+    fn glass_and_frost_tunables_parse_and_bad_ones_keep_defaults() {
+        let cfg = blur_cfg(
+            "decoration { blur {\n  glass { refraction 20; bevel 8; dispersion 0.5; rim 1.0 }\n  frost { tint \"#10203040\" }\n} }\n",
+        );
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        let g = &cfg.decoration.blur.glass;
+        assert_eq!((g.refraction, g.bevel, g.dispersion, g.rim), (20, 8, 0.5, 1.0));
+        assert_eq!(cfg.decoration.blur.frost.tint[3], 0x40 as f32 / 255.0);
+        let cfg = blur_cfg(
+            "decoration { blur {\n  glass { refraction 99; bevel 0; dispersion 2.0; rim -1.0; nope 1 }\n  frost { tint \"gold\" }\n} }\n",
+        );
+        assert_eq!(cfg.errors.len(), 6, "{:?}", cfg.errors);
+        assert_eq!(cfg.decoration.blur.glass, GlassBlur::default());
+        assert_eq!(cfg.decoration.blur.frost, FrostBlur::default());
+    }
+
+    #[test]
+    fn windowrule_blur_takes_a_mode_or_a_bool() {
+        for (value, want) in [
+            ("true", BlurRule::On),
+            ("false", BlurRule::Mode(BlurMode::Off)),
+            ("off", BlurRule::Mode(BlurMode::Off)),
+            ("blur", BlurRule::Mode(BlurMode::Blur)),
+            ("frost", BlurRule::Mode(BlurMode::Frost)),
+            ("glass", BlurRule::Mode(BlurMode::Glass)),
+        ] {
+            let cfg = blur_cfg(&format!("windowrule \"blur {value}\" {{ app-id \"a\"; }}\n"));
+            assert!(cfg.errors.is_empty(), "{value}: {:?}", cfg.errors);
+            assert!(
+                matches!(cfg.window_rules[0].action, RuleAction::Blur(got) if got == want),
+                "{value}: {:?}",
+                cfg.window_rules[0].action
+            );
+        }
+        let cfg = blur_cfg("windowrule \"blur maybe\" { app-id \"a\"; }\n");
+        assert!(cfg.window_rules.is_empty());
+        // `true` follows the global mode, falling back to plain blur when that is off.
+        assert_eq!(BlurRule::On.resolve(BlurMode::Glass), BlurMode::Glass);
+        assert_eq!(BlurRule::On.resolve(BlurMode::Off), BlurMode::Blur);
+        assert_eq!(
+            BlurRule::Mode(BlurMode::Off).resolve(BlurMode::Glass),
+            BlurMode::Off
+        );
+        assert_eq!(
+            BlurRule::Mode(BlurMode::Frost).resolve(BlurMode::Off),
+            BlurMode::Frost
+        );
     }
 
     #[test]

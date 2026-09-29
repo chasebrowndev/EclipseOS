@@ -108,8 +108,13 @@ pub fn pane_for(path: &str) -> Option<Pane> {
 /// Heading a key is grouped under inside its pane: the node prefix, so
 /// `decoration.blur.size` sits under "blur" and `general.gaps-in` under
 /// "general". The drag-drop keys share `general` with the layout they serve
-/// but are one feature, so they get their own heading beneath it.
+/// but are one feature, so they get their own heading beneath it. Blur's
+/// per-mode sub-nodes (`decoration.blur.glass.*`, `.frost.*`) stay under
+/// "blur" beside the mode they tune, rather than as panels of their own.
 pub fn group_for(path: &str) -> &str {
+    if path.starts_with("decoration.blur.") {
+        return "blur";
+    }
     if path == "mode" {
         return "interaction";
     }
@@ -143,6 +148,8 @@ mod tests {
     #[test]
     fn groups_come_from_the_node_prefix() {
         assert_eq!(group_for("decoration.blur.size"), "blur");
+        assert_eq!(group_for("decoration.blur.glass.refraction"), "blur");
+        assert_eq!(group_for("decoration.blur.frost.tint"), "blur");
         assert_eq!(group_for("general.gaps-in"), "general");
         assert_eq!(group_for("general.drop-edge-band"), "drag guides");
         assert_eq!(group_for("mode"), "interaction");
