@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 iced.workspace = true
+iced_wgpu.workspace = true
 
 [[example]]
 name = "virtual_list"

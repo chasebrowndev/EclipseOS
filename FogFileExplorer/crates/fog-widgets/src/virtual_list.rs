@@ -55,7 +55,7 @@ use iced::advanced::widget::operation::scrollable::{AbsoluteOffset, Scrollable a
 use iced::advanced::widget::{self, tree, Operation, Tree};
 use iced::advanced::{Clipboard, Shell, Widget};
 use iced::widget::scrollable::{self, Viewport};
-use iced::widget::{container, space, Column, Scrollable};
+use iced::widget::{container, space, Column, Scrollable, Stack};
 use iced::{Element, Event, Length, Rectangle, Size, Task, Vector};
 
 /// Screens of rows materialized above and below the viewport by default.
@@ -197,7 +197,14 @@ pub struct VirtualList<'a, Message, Theme = iced::Theme, Renderer = iced::Render
     height: Length,
     view_row: Box<dyn Fn(usize) -> Element<'a, Message, Theme, Renderer> + 'a>,
     on_scroll: Option<Rc<dyn Fn(Viewport) -> Message + 'a>>,
+    underlay: Option<Underlay<'a, Message, Theme, Renderer>>,
     content: Element<'a, Message, Theme, Renderer>,
+}
+
+/// One row-high element under the rows at a fractional row position.
+struct Underlay<'a, Message, Theme, Renderer> {
+    at: f32,
+    view: Box<dyn Fn() -> Element<'a, Message, Theme, Renderer> + 'a>,
 }
 
 impl<'a, Message, Theme, Renderer> VirtualList<'a, Message, Theme, Renderer>
@@ -219,6 +226,7 @@ where
             height: Length::Fill,
             view_row: Box::new(view_row),
             on_scroll: None,
+            underlay: None,
             content: Element::new(space()),
         }
     }
@@ -240,6 +248,22 @@ where
     /// the list tracks its own offset.
     pub fn on_scroll(mut self, f: impl Fn(Viewport) -> Message + 'a) -> Self {
         self.on_scroll = Some(Rc::new(f));
+        self
+    }
+
+    /// Draws `view` one row high under the rows, at row position `at`
+    /// (fractional: a selection pill sliding between rows). It scrolls with
+    /// the rows and is built whatever the materialized window, so it never
+    /// pops in; it takes no input the rows would.
+    pub fn underlay(
+        mut self,
+        at: f32,
+        view: impl Fn() -> Element<'a, Message, Theme, Renderer> + 'a,
+    ) -> Self {
+        self.underlay = Some(Underlay {
+            at,
+            view: Box::new(view),
+        });
         self
     }
 
@@ -279,10 +303,34 @@ where
             );
         }
         rows = rows.push(space().height(below));
+        let content: Element<'a, Message, Theme, Renderer> = match &self.underlay {
+            Some(u) if self.len > 0 => {
+                // A stack takes its first layer's size: the underlay's column
+                // spans the whole list, like the rows'.
+                let at = u.at.clamp(0.0, (self.len - 1) as f32) * self.row_height;
+                let rest = self.len as f32 * self.row_height - at - self.row_height;
+                Stack::new()
+                    .width(Length::Fill)
+                    .push(
+                        Column::new()
+                            .width(Length::Fill)
+                            .push(space().height(at))
+                            .push(
+                                container((u.view)())
+                                    .width(Length::Fill)
+                                    .height(self.row_height),
+                            )
+                            .push(space().height(rest.max(0.0))),
+                    )
+                    .push(rows)
+                    .into()
+            }
+            _ => rows.into(),
+        };
 
         // Embedded scrollbar: it takes layout width instead of floating over
         // the right-aligned columns of a file list.
-        let mut list = Scrollable::new(rows)
+        let mut list = Scrollable::new(content)
             .spacing(0.0)
             .width(Length::Fill)
             .height(Length::Fill);

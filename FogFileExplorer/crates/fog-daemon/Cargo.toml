@@ -22,11 +22,15 @@ activity = []
 
 [dependencies]
 fog-proto.workspace = true
+fog-config.workspace = true
 tokio.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, features = ["event"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow.workspace = true
+serde.workspace = true
+postcard.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

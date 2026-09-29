@@ -17,6 +17,7 @@ guide first; the rest is reference. Standalone cargo workspace (the spec's
 ## Crates
 
 - `fog-proto` — IPC message types, versioned framing; no I/O.
+- `fog-config` — `fog.kdl` parsing over the embedded `config/fog.default.kdl`; the `Action` names.
 - `fog-daemon` — `fogd`: backends, cache, watch, jobs, journal, thumbnails.
 - `fog-widgets` — virtual list, glass shader, reusable widgets.
 - `fog-ui` — iced app: windows, views, input, animation.

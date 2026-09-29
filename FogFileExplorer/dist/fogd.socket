@@ -1,0 +1,12 @@
+# Fog's daemon socket (FOG §Architecture: IPC, Lifecycle). The first client
+# to connect starts fogd.service, which takes this socket as fd 3.
+[Unit]
+Description=Fog filesystem daemon socket
+
+[Socket]
+ListenStream=%t/fog/fogd.sock
+SocketMode=0600
+DirectoryMode=0700
+
+[Install]
+WantedBy=sockets.target

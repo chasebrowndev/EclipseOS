@@ -55,10 +55,7 @@ impl Backend for LocalBackend {
             if name == b"." || name == b".." {
                 continue;
             }
-            cur.push(Entry {
-                name: name.to_vec(),
-                kind: kind_of(ent.file_type()),
-            });
+            cur.push(Entry::new(name.to_vec(), kind_of(ent.file_type())));
             if cur.len() == BATCH {
                 batch(std::mem::replace(&mut cur, Vec::with_capacity(BATCH)));
             }

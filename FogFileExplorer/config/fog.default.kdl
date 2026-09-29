@@ -1,0 +1,110 @@
+// Fog defaults (FOG §Configuration). Every option, with its default value.
+//
+// Copy what you want to change into $XDG_CONFIG_HOME/eclipse/fog.kdl; that
+// file only overrides. Unknown keys are errors, and while the file has an
+// error the previous valid config stays active. `bind` overrides per chord.
+
+view {
+    // "list", "grid" or "columns". Per-folder state overrides this.
+    default "list"
+    show-hidden #false
+    // "name", "size", "modified" or "type".
+    sort "name" natural=#true dirs-first=#true
+}
+
+// Colours, radii, blur and tint come from the EclipseOS theme
+// ($XDG_CONFIG_HOME/eclipse/abyss.kdl `decoration`); these only turn effects off.
+appearance {
+    // Springs (panels, selection, hover, dialogs) jump to their end state.
+    reduce-motion #false
+    // No blur; glass becomes an opaque tint.
+    reduce-transparency #false
+}
+
+performance {
+    // Listing cache bounds (§Performance model).
+    cache-dirs 256
+    cache-mib 64
+    prefetch-hover-ms 120
+    // "auto" is CPU cores minus one, or a positive count.
+    thumbnail-workers "auto"
+}
+
+// Chords are modifiers (ctrl, alt, shift, super) and one key joined by "+".
+// A key is one character ("G" is shift+g) or a name: enter, backspace, tab,
+// space, delete, insert, home, end, pageup, pagedown, up, down, left, right,
+// f1-f12, backslash, plus. Esc is the one hard-coded key.
+keys {
+    bind "j" "down"
+    bind "down" "down"
+    bind "k" "up"
+    bind "up" "up"
+    bind "l" "open"
+    bind "enter" "open"
+    bind "right" "open"
+    bind "h" "parent"
+    bind "backspace" "parent"
+    bind "left" "parent"
+    bind "g" "top"
+    bind "home" "top"
+    bind "G" "bottom"
+    bind "end" "bottom"
+
+    bind "ctrl+p" "palette"
+    bind ":" "palette"
+    bind "space" "quick-look"
+    bind "v" "visual"
+    bind "ctrl+a" "select-all"
+    bind "ctrl+l" "path-edit"
+
+    bind "ctrl+c" "copy"
+    bind "ctrl+x" "cut"
+    bind "ctrl+v" "paste"
+    bind "f2" "rename"
+    bind "delete" "trash"
+    bind "shift+delete" "delete"
+    bind "ctrl+z" "undo"
+    bind "ctrl+shift+n" "new-folder"
+    bind "ctrl+alt+n" "new-file"
+    bind "ctrl+r" "restore"
+
+    bind "ctrl+h" "toggle-hidden"
+    bind "ctrl+t" "new-tab"
+    bind "ctrl+w" "close-tab"
+    bind "ctrl+backslash" "split-toggle"
+    bind "ctrl+tab" "next-tab"
+    bind "ctrl+shift+tab" "prev-tab"
+    bind "ctrl+b" "toggle-sidebar"
+    bind "tab" "focus-places"
+    bind "ctrl+j" "focus-jobs"
+
+    bind "alt+1" "sort-name"
+    bind "alt+2" "sort-size"
+    bind "alt+3" "sort-modified"
+    bind "alt+4" "sort-type"
+    bind "alt+r" "sort-reverse"
+    bind "alt+d" "sort-dirs-first"
+}
+
+// Agent job policy. Operations named here need a confirmation click when an
+// agent asks for them: "replace", "trash", "move", "copy", "rename". It can
+// only tighten the built-in floor; "replace" is always confirmed.
+agents {
+    confirm "replace"
+}
+
+// Used only while the activity-lens hook is on; accepted and ignored here.
+activity {
+    user-lens-marks #true
+    default-view "map"
+    heat-decay-s 30
+    notify-task-end #false
+    retention-days 7
+}
+
+// Custom actions: shown in the palette and context menu, bindable by name.
+// None by default. For example:
+//
+// action "Open in Cataclysm" key="ctrl+alt+t" {
+//     run "cataclysm" "--cwd" "{cwd}"
+// }

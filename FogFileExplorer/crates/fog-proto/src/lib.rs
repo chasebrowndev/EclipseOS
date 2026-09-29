@@ -4,11 +4,12 @@
 //!
 //! A frame is a little-endian `u32` payload length followed by the postcard
 //! encoding of an [`Envelope`]. Every frame carries [`VERSION`]; a peer with a
-//! different major version is refused. Paths and names are raw bytes, never
+//! different major version (or, while major is 0, a different minor) is
+//! refused, see [`compatible`]. Paths and names are raw bytes, never
 //! assumed to be UTF-8.
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,7 @@ pub struct Version {
 }
 
 /// The version this build speaks.
-pub const VERSION: Version = Version { major: 0, minor: 1 };
+pub const VERSION: Version = Version { major: 0, minor: 2 };
 
 /// Largest payload accepted or produced, in bytes.
 pub const MAX_FRAME: u32 = 64 << 20;
@@ -45,31 +46,304 @@ pub enum Kind {
 }
 
 /// One directory entry. `name` is the raw file name bytes.
+///
+/// Phase 1 (`getdents64`) fills only `name` and `kind`; `size`, `mtime_ns`
+/// and `mode` stay `None` until phase-2 `statx` fills them through a
+/// `DirDiff`'s `changed` (FOG §Performance model).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Entry {
     pub name: Vec<u8>,
     pub kind: Kind,
+    pub size: Option<u64>,
+    pub mtime_ns: Option<i128>,
+    /// `st_mode`: file type and permission bits.
+    pub mode: Option<u32>,
 }
 
 impl Entry {
+    /// A phase-1 entry: name and kind, no metadata yet.
+    pub fn new(name: Vec<u8>, kind: Kind) -> Self {
+        Self {
+            name,
+            kind,
+            size: None,
+            mtime_ns: None,
+            mode: None,
+        }
+    }
+
     /// The name for display: lossy UTF-8.
     pub fn display(&self) -> Cow<'_, str> {
         String::from_utf8_lossy(&self.name)
     }
+
+    /// The type column, shared by the UI's display and `fogd`'s
+    /// [`SortKey::Type`] so the two always agree: `dir`, `link`, the special
+    /// file kind from `mode`, a file's lower-cased extension, `exec` for an
+    /// executable without one, else `file`. Empty while a phase-1 `Unknown`
+    /// kind awaits `statx`.
+    pub fn type_label(&self) -> Cow<'_, str> {
+        const EXT_MAX: usize = 8;
+        match self.kind {
+            Kind::Dir => return "dir".into(),
+            Kind::Symlink => return "link".into(),
+            Kind::Unknown => return "".into(),
+            Kind::Other => {
+                return match self.mode.map(|m| m & 0o170000) {
+                    Some(0o010000) => "fifo",
+                    Some(0o140000) => "socket",
+                    Some(0o020000) => "char",
+                    Some(0o060000) => "block",
+                    _ => "other",
+                }
+                .into()
+            }
+            Kind::File => {}
+        }
+        let ext = match self.name.iter().rposition(|&b| b == b'.') {
+            Some(i) if i > 0 && i + 1 < self.name.len() => &self.name[i + 1..],
+            _ => &[][..],
+        };
+        if !ext.is_empty() && ext.len() <= EXT_MAX {
+            return String::from_utf8_lossy(ext).to_lowercase().into();
+        }
+        if self.mode.is_some_and(|m| m & 0o111 != 0) {
+            return "exec".into();
+        }
+        "file".into()
+    }
+}
+
+/// Daemon-assigned job id, unique for the life of `fogd`.
+pub type JobId = u64;
+
+/// What a job does on a name collision (FOG §File operations/Conflicts).
+/// `Ask` pauses the job in [`JobStatus::Conflict`]; headless callers must
+/// pick one of the others, and `Fail` is their default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum ConflictPolicy {
+    Ask,
+    Skip,
+    /// Keep both: the incoming file becomes `name (2).ext`.
+    Rename,
+    Replace,
+    #[default]
+    Fail,
+}
+
+/// A mutation for `fogd`'s job queue (FOG §File operations/Queue). Every
+/// file change is one of these, whoever asks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JobSpec {
+    /// Copy `srcs` into the directory `dest`.
+    Copy {
+        srcs: Vec<Vec<u8>>,
+        dest: Vec<u8>,
+        on_conflict: ConflictPolicy,
+    },
+    /// Move `srcs` into the directory `dest`.
+    Move {
+        srcs: Vec<Vec<u8>>,
+        dest: Vec<u8>,
+        on_conflict: ConflictPolicy,
+    },
+    /// Rename in place; `new_name` is a single path component.
+    Rename {
+        path: Vec<u8>,
+        new_name: Vec<u8>,
+        on_conflict: ConflictPolicy,
+    },
+    Trash {
+        paths: Vec<Vec<u8>>,
+        on_conflict: ConflictPolicy,
+    },
+    /// Permanent delete: never undoable (FOG §File operations/Undo journal).
+    Delete {
+        paths: Vec<Vec<u8>>,
+        on_conflict: ConflictPolicy,
+    },
+    Mkdir {
+        path: Vec<u8>,
+        on_conflict: ConflictPolicy,
+    },
+    CreateFile {
+        path: Vec<u8>,
+        on_conflict: ConflictPolicy,
+    },
+    /// Restore [`TrashItem`]s, by `id`, to their original paths.
+    Restore {
+        trash_ids: Vec<Vec<u8>>,
+        on_conflict: ConflictPolicy,
+    },
+}
+
+/// Answer to a job paused in [`JobStatus::Conflict`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Resolution {
+    Replace,
+    Skip,
+    /// `name (2).ext`.
+    KeepBoth,
+    /// Directories only.
+    Merge,
+}
+
+/// Control of a queued or running job. Pause and cancel take effect between
+/// chunks and between files (FOG §File operations/Queue).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum JobAction {
+    Pause,
+    Resume,
+    Cancel,
+    /// `apply_all` answers every later conflict in the job the same way.
+    Resolve {
+        choice: Resolution,
+        apply_all: bool,
+    },
+}
+
+/// Job lifecycle (FOG §File operations state diagram).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JobStatus {
+    Queued,
+    Running,
+    Paused,
+    /// Waiting on [`JobAction::Resolve`]: `dest` already exists.
+    Conflict {
+        src: Vec<u8>,
+        dest: Vec<u8>,
+    },
+    Done,
+    Failed {
+        errno: i32,
+        msg: String,
+    },
+    Cancelled,
+}
+
+/// One item in the freedesktop trash (FOG §Filesystem backend/Trash).
+/// `id` is opaque to clients; it names the item in `JobSpec::Restore`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TrashItem {
+    pub id: Vec<u8>,
+    pub original_path: Vec<u8>,
+    /// `DeletionDate` from the `.trashinfo`, as Unix seconds.
+    pub deleted_s: Option<i64>,
+    pub kind: Kind,
+    pub size: Option<u64>,
+}
+
+/// Where a [`Place`] comes from (FOG §Desktop interop).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PlaceKind {
+    Home,
+    /// An XDG user dir (Documents, Downloads, ...).
+    UserDir,
+    /// `~/.config/gtk-3.0/bookmarks`.
+    Bookmark,
+    /// `recently-used.xbel`.
+    Recent,
+    Trash,
+    /// A udisks2 mount.
+    Mount,
+}
+
+/// A sidebar place.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Place {
+    pub kind: PlaceKind,
+    pub label: String,
+    pub path: Vec<u8>,
+}
+
+/// Column a listing is ordered by (FOG §UI and navigation/Views).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+pub enum SortKey {
+    #[default]
+    Name,
+    Size,
+    Modified,
+    /// By [`Entry::type_label`].
+    Type,
+}
+
+/// A listing's display order, computed in `fogd` (FOG §Performance model,
+/// technique 7). Names always compare naturally and break every tie;
+/// `reverse` flips the key but never moves folders out of the front while
+/// `dirs_first` holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Sort {
+    pub key: SortKey,
+    pub reverse: bool,
+    pub dirs_first: bool,
+}
+
+impl Default for Sort {
+    fn default() -> Self {
+        Self {
+            key: SortKey::Name,
+            reverse: false,
+            dirs_first: true,
+        }
+    }
 }
 
 /// Client to `fogd`. Paths are absolute, raw bytes.
+///
+/// `Subscribe` is answered like `ListDir`, then `fogd` keeps pushing
+/// `DirDiff`s for that listing's `dir` until `Unsubscribe`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
-    ListDir { path: Vec<u8> },
-    Stat { path: Vec<u8> },
+    ListDir {
+        path: Vec<u8>,
+    },
+    Stat {
+        path: Vec<u8>,
+    },
+    Subscribe {
+        path: Vec<u8>,
+    },
+    Unsubscribe {
+        dir: u64,
+    },
+    /// Answered with `JobAccepted`, then `JobProgress` and `JobState` pushes.
+    Job(JobSpec),
+    JobControl {
+        id: JobId,
+        action: JobAction,
+    },
+    /// Undo the newest journal entry; answered with `UndoResult`.
+    Undo,
+    /// Open with `app` (a `.desktop` id), else the `mimeapps.list` default.
+    Open {
+        path: Vec<u8>,
+        app: Option<String>,
+    },
+    ListTrash,
+    Places,
+    /// Order listing `dir`, and every later generation of it, by `sort`. The
+    /// sort belongs to the folder, not the client (FOG §Configuration:
+    /// per-folder view state): `fogd` publishes the new order to every
+    /// subscriber as a `DirDiff` with no entry changes, then `Sorted`. An
+    /// unknown `dir` is `Error { path: [], errno: ENOENT }`.
+    SetSort {
+        dir: u64,
+        sort: Sort,
+    },
+    /// Free and total space of the filesystem holding `path` (`statvfs`),
+    /// answered with `FsInfo`.
+    FsInfo {
+        path: Vec<u8>,
+    },
 }
 
 /// `fogd` to client.
 ///
 /// `order` is the display order as indices into the entry list. After a
 /// `DirDiff`, indices refer to the list produced by [`apply_diff`].
-/// `complete == false` means more entries follow as `DirDiff`s.
+/// `complete == false` means more entries follow as `DirDiff`s. A diff's
+/// `changed` carries new metadata for entries already held (matched by
+/// name); it never moves an index.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Reply {
     DirSnapshot {
@@ -85,6 +359,7 @@ pub enum Reply {
         generation: u64,
         removed: Vec<Vec<u8>>,
         added: Vec<Entry>,
+        changed: Vec<Entry>,
         order: Vec<u32>,
         complete: bool,
     },
@@ -92,6 +367,65 @@ pub enum Reply {
     Error {
         path: Vec<u8>,
         errno: i32,
+    },
+    JobAccepted {
+        id: JobId,
+    },
+    /// `current` is the path being worked on. `files_skipped` counts the
+    /// files a conflict answered with Skip left alone; they are included
+    /// in `files_done` (and their bytes in `bytes_done`), so a job that
+    /// skipped everything still reaches its totals. The last `JobProgress`
+    /// before a job's end state carries its final counts.
+    JobProgress {
+        id: JobId,
+        bytes_done: u64,
+        bytes_total: u64,
+        files_done: u64,
+        files_total: u64,
+        files_skipped: u64,
+        current: Vec<u8>,
+    },
+    JobState {
+        id: JobId,
+        state: JobStatus,
+    },
+    /// `reason` explains a refused undo (FOG §File operations/Undo journal).
+    UndoResult {
+        ok: bool,
+        reason: Option<String>,
+    },
+    TrashList(Vec<TrashItem>),
+    PlacesList(Vec<Place>),
+    /// `fog.kdl` was rejected and the previous valid config stays active
+    /// (FOG §Configuration). `line` and `col` are 1-based.
+    ConfigError {
+        line: u32,
+        col: u32,
+        msg: String,
+    },
+    /// `Open` launched a handler for `path`.
+    Opened {
+        path: Vec<u8>,
+    },
+    /// Listing `dir` is ordered by `sort`. Follows the first `DirSnapshot`
+    /// of every `ListDir` or `Subscribe`, and every `SetSort`.
+    Sorted {
+        dir: u64,
+        sort: Sort,
+    },
+    /// Space on the filesystem holding `path`, in bytes. `free` is what an
+    /// unprivileged user may still write (`f_bavail`).
+    FsInfo {
+        path: Vec<u8>,
+        free: u64,
+        total: u64,
+    },
+    /// `fog.kdl` was reloaded and is now active (FOG §Configuration),
+    /// broadcast to every client. `text` is the file as `fogd` accepted it,
+    /// empty when it is missing (the defaults); a client lays it over the
+    /// defaults with `fog_config::parse` to restyle and rebind live.
+    ConfigReloaded {
+        text: String,
     },
 }
 
@@ -105,12 +439,26 @@ pub struct StatReply {
 }
 
 /// Apply a diff: drop entries whose name is in `removed` (order preserved),
-/// then append `added`. Daemon and clients both use this so `order` indices
-/// agree on both sides.
-pub fn apply_diff(entries: &mut Vec<Entry>, removed: &[Vec<u8>], added: &[Entry]) {
+/// replace entries named in `changed` in place, then append `added`. Daemon
+/// and clients both use this so `order` indices agree on both sides. A
+/// `changed` entry with no match is ignored.
+pub fn apply_diff(
+    entries: &mut Vec<Entry>,
+    removed: &[Vec<u8>],
+    added: &[Entry],
+    changed: &[Entry],
+) {
     if !removed.is_empty() {
         let gone: HashSet<&[u8]> = removed.iter().map(Vec::as_slice).collect();
         entries.retain(|e| !gone.contains(e.name.as_slice()));
+    }
+    if !changed.is_empty() {
+        let new: HashMap<&[u8], &Entry> = changed.iter().map(|e| (e.name.as_slice(), e)).collect();
+        for e in entries.iter_mut() {
+            if let Some(&n) = new.get(e.name.as_slice()) {
+                e.clone_from(n);
+            }
+        }
     }
     entries.extend_from_slice(added);
 }
@@ -158,10 +506,18 @@ pub fn decode<T: DeserializeOwned>(frame: &[u8]) -> Result<T, FrameError> {
     decode_payload(payload)
 }
 
+/// Whether a peer speaking `theirs` can be decoded by `ours` (FOG
+/// §Architecture/IPC). Postcard is not self-describing, so while the major
+/// version is 0 any minor change may alter the layout and is refused; from
+/// 1.0 on only the major must match.
+pub fn compatible(theirs: Version, ours: Version) -> bool {
+    theirs.major == ours.major && (ours.major != 0 || theirs.minor == ours.minor)
+}
+
 fn decode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, FrameError> {
     // Envelope fields are serialized in order, so the version is a prefix.
     let (theirs, rest): (Version, _) = postcard::take_from_bytes(payload)?;
-    if theirs.major != VERSION.major {
+    if !compatible(theirs, VERSION) {
         return Err(FrameError::Version {
             theirs,
             ours: VERSION,
@@ -214,10 +570,7 @@ mod tests {
     use super::*;
 
     fn e(name: &[u8], kind: Kind) -> Entry {
-        Entry {
-            name: name.to_vec(),
-            kind,
-        }
+        Entry::new(name.to_vec(), kind)
     }
 
     #[tokio::test]
@@ -292,6 +645,30 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn zero_major_minor_mismatch_rejected() {
+        let v = |major, minor| Version { major, minor };
+        assert!(!compatible(v(0, 1), v(0, 2)));
+        assert!(!compatible(v(0, 2), v(0, 1)));
+        assert!(compatible(v(0, 2), v(0, 2)));
+        assert!(compatible(v(1, 3), v(1, 7)));
+        assert!(compatible(v(1, 7), v(1, 3)));
+        assert!(!compatible(v(2, 0), v(1, 0)));
+
+        // Over the wire: a 0.1 frame is refused by this 0.2 build.
+        let env = Envelope {
+            version: v(0, 1),
+            body: Request::Undo,
+        };
+        let payload = postcard::to_allocvec(&env).unwrap();
+        let mut frame = (payload.len() as u32).to_le_bytes().to_vec();
+        frame.extend_from_slice(&payload);
+        assert!(matches!(
+            decode::<Request>(&frame),
+            Err(FrameError::Version { theirs, .. }) if theirs == v(0, 1)
+        ));
+    }
+
     #[tokio::test]
     async fn oversized_length_refused() {
         let (mut a, mut b) = tokio::io::duplex(64);
@@ -331,10 +708,254 @@ mod tests {
             &mut v,
             &[b"b".to_vec(), b"zz".to_vec()],
             &[e(b"e", Kind::Symlink)],
+            &[],
         );
         let names: Vec<&[u8]> = v.iter().map(|e| e.name.as_slice()).collect();
         assert_eq!(names, [&b"a"[..], b"c", b"d", b"e"]);
-        apply_diff(&mut v, &[], &[]);
+        apply_diff(&mut v, &[], &[], &[]);
         assert_eq!(v.len(), 4);
+    }
+
+    #[test]
+    fn type_labels() {
+        let t = |name: &[u8], kind, mode| {
+            Entry {
+                mode,
+                ..e(name, kind)
+            }
+            .type_label()
+            .into_owned()
+        };
+        assert_eq!(t(b"src", Kind::Dir, None), "dir");
+        assert_eq!(t(b"l", Kind::Symlink, None), "link");
+        assert_eq!(t(b"?", Kind::Unknown, None), "");
+        assert_eq!(t(b"main.RS", Kind::File, None), "rs");
+        assert_eq!(t(b".bashrc", Kind::File, None), "file");
+        assert_eq!(t(b"trail.", Kind::File, None), "file");
+        assert_eq!(t(b"a.verylongext", Kind::File, None), "file");
+        assert_eq!(t(b"run", Kind::File, Some(0o100755)), "exec");
+        assert_eq!(t(b"p", Kind::Other, Some(0o010644)), "fifo");
+        assert_eq!(t(b"s", Kind::Other, Some(0o140755)), "socket");
+        assert_eq!(t(b"x", Kind::Other, None), "other");
+    }
+
+    #[test]
+    fn apply_diff_changed_updates_in_place() {
+        let mut v = vec![e(b"a", Kind::File), e(b"b", Kind::File)];
+        let b2 = Entry {
+            size: Some(9),
+            mtime_ns: Some(-5),
+            mode: Some(0o100644),
+            ..e(b"b", Kind::File)
+        };
+        apply_diff(
+            &mut v,
+            &[b"a".to_vec()],
+            &[e(b"c", Kind::Dir)],
+            &[b2.clone(), e(b"ghost", Kind::File)],
+        );
+        assert_eq!(v, [b2, e(b"c", Kind::Dir)]);
+    }
+
+    #[test]
+    fn v02_requests_round_trip() {
+        let p = |s: &[u8]| s.to_vec();
+        let reqs = vec![
+            Request::Subscribe { path: p(b"/\xffd") },
+            Request::Unsubscribe { dir: u64::MAX },
+            Request::Job(JobSpec::Copy {
+                srcs: vec![p(b"/a"), p(b"/\xfeb")],
+                dest: p(b"/d"),
+                on_conflict: ConflictPolicy::Ask,
+            }),
+            Request::Job(JobSpec::Move {
+                srcs: vec![p(b"/a")],
+                dest: p(b"/d"),
+                on_conflict: ConflictPolicy::Skip,
+            }),
+            Request::Job(JobSpec::Rename {
+                path: p(b"/a"),
+                new_name: p(b"b\xff"),
+                on_conflict: ConflictPolicy::Rename,
+            }),
+            Request::Job(JobSpec::Trash {
+                paths: vec![p(b"/a")],
+                on_conflict: ConflictPolicy::Replace,
+            }),
+            Request::Job(JobSpec::Delete {
+                paths: vec![],
+                on_conflict: ConflictPolicy::default(),
+            }),
+            Request::Job(JobSpec::Mkdir {
+                path: p(b"/n"),
+                on_conflict: ConflictPolicy::Fail,
+            }),
+            Request::Job(JobSpec::CreateFile {
+                path: p(b"/f"),
+                on_conflict: ConflictPolicy::Fail,
+            }),
+            Request::Job(JobSpec::Restore {
+                trash_ids: vec![p(b"t1"), p(b"t2")],
+                on_conflict: ConflictPolicy::Ask,
+            }),
+            Request::JobControl {
+                id: 1,
+                action: JobAction::Pause,
+            },
+            Request::JobControl {
+                id: 2,
+                action: JobAction::Resume,
+            },
+            Request::JobControl {
+                id: 3,
+                action: JobAction::Cancel,
+            },
+            Request::JobControl {
+                id: 4,
+                action: JobAction::Resolve {
+                    choice: Resolution::KeepBoth,
+                    apply_all: true,
+                },
+            },
+            Request::JobControl {
+                id: 5,
+                action: JobAction::Resolve {
+                    choice: Resolution::Merge,
+                    apply_all: false,
+                },
+            },
+            Request::Undo,
+            Request::Open {
+                path: p(b"/x.txt"),
+                app: Some("micro.desktop".into()),
+            },
+            Request::Open {
+                path: p(b"/x.txt"),
+                app: None,
+            },
+            Request::ListTrash,
+            Request::Places,
+            Request::SetSort {
+                dir: 3,
+                sort: Sort {
+                    key: SortKey::Modified,
+                    reverse: true,
+                    dirs_first: false,
+                },
+            },
+            Request::FsInfo { path: p(b"/\xffm") },
+        ];
+        assert_eq!(ConflictPolicy::default(), ConflictPolicy::Fail);
+        for r in reqs {
+            assert_eq!(decode::<Request>(&encode(&r).unwrap()).unwrap(), r);
+        }
+    }
+
+    #[tokio::test]
+    async fn v02_replies_round_trip() {
+        let (mut a, mut b) = tokio::io::duplex(1 << 16);
+        let full = Entry {
+            size: Some(u64::MAX),
+            mtime_ns: Some(i128::MIN),
+            mode: Some(0o40755),
+            ..e(b"\xffx", Kind::Dir)
+        };
+        let replies = vec![
+            Reply::DirDiff {
+                dir: 1,
+                generation: 2,
+                removed: vec![b"gone".to_vec()],
+                added: vec![e(b"new", Kind::File)],
+                changed: vec![full],
+                order: vec![1, 0],
+                complete: true,
+            },
+            Reply::JobAccepted { id: 7 },
+            Reply::JobProgress {
+                id: 7,
+                bytes_done: 8 << 20,
+                bytes_total: u64::MAX,
+                files_done: 1,
+                files_total: 3,
+                files_skipped: 1,
+                current: b"/src/\xff".to_vec(),
+            },
+            Reply::JobState {
+                id: 7,
+                state: JobStatus::Conflict {
+                    src: b"/a/f".to_vec(),
+                    dest: b"/b/f".to_vec(),
+                },
+            },
+            Reply::JobState {
+                id: 7,
+                state: JobStatus::Failed {
+                    errno: 28,
+                    msg: "no space".into(),
+                },
+            },
+            Reply::JobState {
+                id: 8,
+                state: JobStatus::Cancelled,
+            },
+            Reply::UndoResult {
+                ok: false,
+                reason: Some("target changed since the operation".into()),
+            },
+            Reply::UndoResult {
+                ok: true,
+                reason: None,
+            },
+            Reply::TrashList(vec![TrashItem {
+                id: b"f.txt".to_vec(),
+                original_path: b"/home/u/f.txt".to_vec(),
+                deleted_s: Some(1_790_000_000),
+                kind: Kind::File,
+                size: None,
+            }]),
+            Reply::PlacesList(vec![
+                Place {
+                    kind: PlaceKind::Home,
+                    label: "Home".into(),
+                    path: b"/home/u".to_vec(),
+                },
+                Place {
+                    kind: PlaceKind::Bookmark,
+                    label: "src".into(),
+                    path: b"/home/u/\xffsrc".to_vec(),
+                },
+            ]),
+            Reply::ConfigError {
+                line: 3,
+                col: 5,
+                msg: "unknown key `shwo-hidden`".into(),
+            },
+            Reply::Opened {
+                path: b"/x.txt".to_vec(),
+            },
+            Reply::Sorted {
+                dir: 3,
+                sort: Sort::default(),
+            },
+            Reply::FsInfo {
+                path: b"/".to_vec(),
+                free: 1 << 30,
+                total: u64::MAX,
+            },
+            Reply::ConfigReloaded {
+                text: "appearance {\n    reduce-motion #true\n}\n".into(),
+            },
+            Reply::ConfigReloaded {
+                text: String::new(),
+            },
+        ];
+        for r in &replies {
+            write_frame(&mut a, r).await.unwrap();
+        }
+        drop(a);
+        for r in replies {
+            assert_eq!(read_frame::<_, Reply>(&mut b).await.unwrap(), Some(r));
+        }
+        assert!(read_frame::<_, Reply>(&mut b).await.unwrap().is_none());
     }
 }
