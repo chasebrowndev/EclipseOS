@@ -19,10 +19,14 @@ use smithay::{
         gles::GlesRenderer,
     },
     delegate_session_lock,
+    input::pointer::MotionEvent,
     output::Output,
-    reexports::wayland_server::protocol::wl_output::WlOutput,
+    reexports::wayland_server::protocol::{wl_output::WlOutput, wl_surface::WlSurface},
     utils::{Logical, Point, Scale, Size, SERIAL_COUNTER},
-    wayland::session_lock::{LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker},
+    wayland::{
+        compositor::get_parent,
+        session_lock::{LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker},
+    },
 };
 
 use crate::{render::AbyssRenderElement, state::AbyssState};
@@ -67,6 +71,17 @@ impl LockState {
         entry
     }
 
+    /// Whether `surface` belongs to one of the locker's surfaces (the lock
+    /// surface itself or a subsurface of it). While locked, nothing else may
+    /// hold keyboard focus.
+    pub fn owns(&self, surface: &WlSurface) -> bool {
+        let mut root = surface.clone();
+        while let Some(parent) = get_parent(&root) {
+            root = parent;
+        }
+        self.surfaces.iter().any(|(_, s)| s.wl_surface() == &root)
+    }
+
     /// Drop state for an output that went away.
     pub fn forget_output(&mut self, output: &Output) {
         self.surfaces.retain(|(o, _)| o != output);
@@ -97,8 +112,30 @@ impl SessionLockHandler for AbyssState {
         tracing::info!("session locked");
         // Nothing behind the lock may keep focus, even for one frame.
         if let Some(keyboard) = self.seat.get_keyboard() {
+            // An input-method grab receives every key regardless of focus.
+            keyboard.unset_grab(self);
             keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
         }
+        self.region_select.cancel();
+        if let Some(pointer) = self.seat.get_pointer() {
+            let time = self.start_time.elapsed().as_millis() as u32;
+            // A button held across the lock leaves a click grab pinning pointer
+            // focus to the app, and a grab ignores the focus `motion` passes it.
+            // Clearing the pending focus first means ending the grab restores
+            // to nothing rather than back to the app.
+            pointer.motion(
+                self,
+                None,
+                &MotionEvent {
+                    location: self.pointer_location,
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time,
+                },
+            );
+            pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), time);
+            pointer.frame(self);
+        }
+        self.last_pointer_focus = None;
         crate::backend::damage_all(self);
         confirmation.lock();
     }

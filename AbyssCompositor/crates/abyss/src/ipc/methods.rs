@@ -383,7 +383,17 @@ fn unsubscribe(state: &mut AbyssState, conn: u64) -> Reply {
 
 // --------------------------------------------------------------- commands
 
+/// Focus cannot move while the session is locked (COMP-10 §5), so the
+/// focus-relative commands would act on the pre-lock window. Refuse instead.
+fn refuse_if_locked(state: &AbyssState) -> Result<(), RpcError> {
+    if state.lock.locked {
+        return Err(RpcError::denied("session is locked"));
+    }
+    Ok(())
+}
+
 fn focus_window(state: &mut AbyssState, params: &Value) -> Reply {
+    refuse_if_locked(state)?;
     let w = window_param(state, params)?;
     crate::shell::focus_window(state, &w);
     crate::backend::damage_all(state);
@@ -420,6 +430,7 @@ fn set_minimized(state: &mut AbyssState, params: &Value) -> Reply {
 }
 
 fn move_to_workspace(state: &mut AbyssState, params: &Value) -> Reply {
+    refuse_if_locked(state)?;
     let idx = u64_param(params, "workspace")? as usize;
     // A handle is optional: without one this moves the focused window, which
     // is what a keybind-shaped caller expects.
@@ -436,6 +447,7 @@ fn move_to_workspace(state: &mut AbyssState, params: &Value) -> Reply {
 }
 
 fn set_floating(state: &mut AbyssState, params: &Value) -> Reply {
+    refuse_if_locked(state)?;
     let want = bool_param(params, "floating")?;
     let w = window_param(state, params)?;
     if is_floating(state, &w) == want {
