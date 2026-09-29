@@ -7,6 +7,7 @@ mod draggable;
 mod fold;
 mod parts;
 mod toggle;
+mod veil;
 
 pub use bar_chart::{BarChart, Highlight};
 pub use bar_widget::*;
@@ -14,3 +15,4 @@ pub use draggable::*;
 pub use fold::Fold;
 pub use parts::*;
 pub use toggle::Toggle;
+pub use veil::Veil;
