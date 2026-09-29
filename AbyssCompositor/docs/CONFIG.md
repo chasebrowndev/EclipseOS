@@ -124,7 +124,7 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `decoration.rounding` | int 0..64 | `13` | live | Corner radius in logical px; 0 disables. Also rounds the blur backdrop behind a layer-shell surface, except one that spans an output edge to edge (three anchors, or two opposite ones, with no positive exclusive zone), which stays square; the taskbar uses `bar.rounding`. |
-| `decoration.active-opacity` | float 0..1 | `1` | live | Alpha applied to the focused window. |
+| `decoration.active-opacity` | float 0..1 | `0.87` | live | Alpha applied to the focused window. |
 | `decoration.inactive-opacity` | float 0..1 | `1` | live | Alpha applied to every unfocused window. |
 | `decoration.dim-inactive` | float 0..1 | `0` | live | Strength of the darkening overlay on unfocused windows. |
 | `decoration.blur.mode` | off \| blur \| frost \| glass | `"blur"` | live | What is drawn behind translucent windows and layer-shell surfaces: `off`, a plain dual-Kawase `blur`, `frost` (blur with a tint and fine grain) or `glass` (a blurred pane inside a rounded bevel that refracts the sharp backdrop, with a rim light; it holds a second backdrop texture per surface). A layer blurs only where its opaque region leaves it uncovered. Replaces the old `enabled` bool, which still loads (`#false` is `off`). |

@@ -668,7 +668,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.active-opacity",
         PCT,
-        Float(1.0),
+        Float(0.87),
         Abyss,
         Live,
         "Alpha applied to the focused window.",
