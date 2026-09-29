@@ -1789,11 +1789,8 @@ mod tests {
     #[test]
     fn numeric_bounds_are_accepted_by_the_parser() {
         use kdl::KdlValue as K;
-        // Known drift, reported rather than fixed: `set_i32` clamps to
-        // 0..=512 (a gaps cap), so a delay past 512 ms is silently lowered.
-        const KNOWN: &[&str] = &["input.repeat-delay"];
         let mut drift = Vec::new();
-        for key in TABLE.iter().filter(|k| !KNOWN.contains(&k.path)) {
+        for key in TABLE.iter() {
             let ends = match key.ty {
                 Ty::Int { min, max } => [K::Integer(min as i128), K::Integer(max as i128)],
                 Ty::Float { min, max } => [K::Float(min), K::Float(max)],
