@@ -10,7 +10,7 @@
 # can run our toasts under another bar, or another bar under abyss.
 
 pkgbase=eclipseos
-pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-center
+pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-wallpaper eclipseos-center
          eclipseos-launcher eclipseos-desktop eclipseos-policyd eclipseos-setup eclipseos-meta)
 pkgver=0.1.1
 pkgrel=1
@@ -95,6 +95,15 @@ package_eclipseos-toasts() {
   _want eclipse-toasts.service
 }
 
+package_eclipseos-wallpaper() {
+  pkgdesc="EclipseOS wallpaper daemon"
+  depends=(wayland libxkbcommon mesa)
+
+  _bin eclipse-wallpaper
+  _unit eclipse-wallpaper.service
+  _want eclipse-wallpaper.service
+}
+
 package_eclipseos-center() {
   pkgdesc="EclipseOS notification and status center"
   depends=(wayland libxkbcommon mesa networkmanager bluez upower)
@@ -154,7 +163,7 @@ package_eclipseos-setup() {
 package_eclipseos-meta() {
   pkgdesc="EclipseOS base system (D-01 §1)"
   arch=(any)  # config and dependencies only, no ELF
-  depends=(eclipseos-abyss eclipseos-toasts eclipseos-center
+  depends=(eclipseos-abyss eclipseos-toasts eclipseos-wallpaper eclipseos-center
            eclipseos-launcher eclipseos-desktop eclipseos-policyd
            greetd greetd-regreet cage
            networkmanager bluez bluez-utils upower pipewire pipewire-pulse wireplumber

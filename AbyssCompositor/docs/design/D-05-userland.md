@@ -174,6 +174,14 @@ target instead. Everything else is spawned by name, so `PATH` must carry it:
 `/usr/bin` packaged, `target/debug` under `dist/abyss-dev-session`. Default
 binds: `crates/abyss/src/config/mod.rs`. `.desktop` files: `dist/applications/`.
 
+**Wallpaper** is a core component (ADR 0068), not yet written:
+`eclipse-wallpaper`, a layer-shell client on `Background`, one surface per
+output, started by `eclipse-wallpaper.service`
+(`WantedBy=abyss-session.target`), package `eclipseos-wallpaper`, a dependency
+of `eclipseos-meta`. It reads the `wallpaper` node, reloads on `config` and
+follows `output` events. Default is a solid `color::BASE`; no image ships
+(D-01 §6.3).
+
 **None of these is TCB.** They hold no capability, enforce no policy, and are
 refused or obliged by the compositor like any client (ADR 0038). Trusted UI is
 compositor-drawn and never a layer-shell client; a DE binary that would need
@@ -218,7 +226,7 @@ it holds to the four §3 limits:
   This is the D-01 §1.3 substitution, said out loud.
 - No portal. `xdg-desktop-portal*` is not in `eclipseos-meta`.
 - No policy editor; that is COMP-10 §3.9, compositor-drawn, milestone 15.
-- No clipboard manager, OSD, wallpaper setter or desktop icons.
+- No clipboard manager, OSD or desktop icons.
 - No in-process widget plugins. Custom taskbar widgets are argv commands run
   off the draw path, or declarative (ADR 0065).
 - No add-on code in a host. An add-on is a package plus a manifest that turns

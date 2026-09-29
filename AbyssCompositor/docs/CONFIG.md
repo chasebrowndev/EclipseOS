@@ -47,6 +47,14 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `components.notifications` | eclipse-toasts \| mako \| none | `"eclipse-toasts"` | live | Which notification daemon `abyss-session` runs (COMP-17 §2.2). |
 | `components.control-center` | eclipse-center \| none | `"eclipse-center"` | live | Which control center `abyss-session` runs (COMP-17 §2.2). |
 
+### `wallpaper`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `wallpaper.path` | string | _unset_ | live | Image file drawn behind all windows. Unset or unreadable falls back to color. |
+| `wallpaper.mode` | fill \| fit \| center | `"fill"` | live | How the image is sized: `fill` covers the output and crops, `fit` letterboxes, `center` draws it at native size. |
+| `wallpaper.color` | colour `#rrggbb[aa]` | `#0b0906ff` | live | Solid background, and letterbox fill. |
+
 ### `general`
 
 | setting | type | default | reload | what it does |
@@ -314,6 +322,10 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `app-trust standard \| trusted` | `policy.kdl` | `app-trust standard`<br>`app-trust trusted` | Trust level (COMP-07 §2). Clamped to `standard` for X11 windows. |
 | `seat-compat lock \| multi` | `policy.kdl` | `seat-compat lock`<br>`seat-compat multi` | Seat concurrency (COMP-07 §6). Clamped to `lock` for X11 windows. |
 | `no-agent` | `policy.kdl` | `no-agent` | Hide the window from agents. |
+
+### `wallpaper.output`
+
+A per-output wallpaper override, written inside `wallpaper { }`: `output "<name>" { path "…"; mode "fit"; color "#rrggbb"; }`, any subset of the three keys, each validated as its `wallpaper.*` key is; a key left out inherits the global one. `<name>` is the connector name (`DP-1`). A later block for the same name overrides an earlier one key by key. KDL-only: not settable over the socket. `get_config` lists them, in file order, under `collections."wallpaper.output"` as `{"output", "path": string | null, "mode": string | null, "color": "#rrggbbaa" | null}`, every field always present; `null` means inherited.
 
 ## `policy.kdl`
 

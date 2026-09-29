@@ -19,7 +19,7 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 bin="$here/../target/release"
 home=$(getent passwd "$user" | cut -d: -f6)
 
-for b in abyss hyperion eclipse-toasts eclipse-center eclipse-launcher \
+for b in abyss hyperion eclipse-toasts eclipse-wallpaper eclipse-center eclipse-launcher \
          eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt \
          eclipse-pairing; do
     [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
@@ -27,7 +27,7 @@ done
 
 # 1. Binaries. Symlinks, so the session always runs what was last built.
 install -d /usr/local/bin
-for b in abyss hyperion eclipse-toasts eclipse-center eclipse-launcher \
+for b in abyss hyperion eclipse-toasts eclipse-wallpaper eclipse-center eclipse-launcher \
          eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt \
          eclipse-pairing; do
     ln -sfn "$bin/$b" "/usr/local/bin/$b"
@@ -45,7 +45,7 @@ sed -i 's|^Exec=.*|Exec=/usr/local/bin/abyss-session|' /usr/share/wayland-sessio
 dest="$home/.config/systemd/user"
 install -d -o "$user" -g "$user" "$dest"
 install -m 0644 -o "$user" -g "$user" "$here/abyss-session.target" "$dest/abyss-session.target"
-for unit in hyperion eclipse-toasts eclipse-screensaver eclipse-pairing; do
+for unit in hyperion eclipse-toasts eclipse-wallpaper eclipse-screensaver eclipse-pairing; do
     sed 's|/usr/bin/|/usr/local/bin/|' "$here/$unit.service" > "$dest/$unit.service"
     chown "$user:$user" "$dest/$unit.service"
 done
@@ -72,7 +72,7 @@ done
 #    already written and are read when their manager next starts.
 uid=$(id -u "$user")
 rt="/run/user/$uid"
-units="hyperion.service eclipse-toasts.service eclipse-screensaver.service eclipse-pairing.service"
+units="hyperion.service eclipse-toasts.service eclipse-wallpaper.service eclipse-screensaver.service eclipse-pairing.service"
 if [ -S "$rt/bus" ]; then
     as_user() {
         runuser -u "$user" -- env XDG_RUNTIME_DIR="$rt" DBUS_SESSION_BUS_ADDRESS="unix:path=$rt/bus" "$@"
