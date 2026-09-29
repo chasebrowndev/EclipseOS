@@ -625,7 +625,7 @@ pub const TABLE: &[Key] = &[
     // decoration
     k(
         "decoration.rounding",
-        int(0, 512),
+        int(0, 64),
         Int(13),
         Abyss,
         Live,
@@ -1879,6 +1879,72 @@ mod tests {
             };
             assert!(ok, "{}: wrote {want}, read back {got:?}", key.path);
         }
+    }
+
+    /// Apply a one-key config and return it, errors and all.
+    fn with_key(path: &str, v: &kdl::KdlValue) -> Config {
+        let text = edit::set_value("", path, v).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let doc: KdlDocument = text.parse().unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        cfg
+    }
+
+    /// Both ends of every numeric key's declared range are taken by the
+    /// parser as-is: not refused, not clamped. The settings slider and
+    /// `config set` are bounded by the schema, so a schema range wider than
+    /// the parser's is travel that gets turned down.
+    #[test]
+    fn numeric_bounds_are_accepted_by_the_parser() {
+        use kdl::KdlValue as K;
+        let mut drift = Vec::new();
+        for key in TABLE.iter() {
+            let ends = match key.ty {
+                Ty::Int { min, max } => [K::Integer(min as i128), K::Integer(max as i128)],
+                Ty::Float { min, max } => [K::Float(min), K::Float(max)],
+                _ => continue,
+            };
+            for v in ends {
+                let cfg = with_key(key.path, &v);
+                let got = get(&cfg, key.path);
+                let same = match (&got, &v) {
+                    (Some(Value::Int(a)), K::Integer(b)) => *a as i128 == *b,
+                    (Some(Value::Float(a)), K::Float(b)) => (a - b).abs() < 1e-6,
+                    // "0 disables" keys normalise 0 to unset.
+                    (Some(Value::Null), K::Integer(0)) => key.default == Dv::Null,
+                    _ => false,
+                };
+                if !cfg.errors.is_empty() || !same {
+                    drift.push(format!(
+                        "{}: wrote {v}, read {got:?}, errors {:?}",
+                        key.path, cfg.errors
+                    ));
+                }
+            }
+        }
+        assert!(
+            drift.is_empty(),
+            "schema bounds exceed the parser's:\n{}",
+            drift.join("\n")
+        );
+    }
+
+    /// `decoration.rounding` is refused, not clamped, one past its declared
+    /// max: the schema's max is exactly the parser's.
+    #[test]
+    fn decoration_rounding_max_is_the_parsers() {
+        let key = TABLE.iter().find(|k| k.path == "decoration.rounding").unwrap();
+        let Ty::Int { min, max } = key.ty else {
+            panic!("not an int key")
+        };
+        let refused = |v: i64| {
+            !with_key(key.path, &kdl::KdlValue::Integer(v as i128))
+                .errors
+                .is_empty()
+        };
+        assert!(!refused(max));
+        assert!(refused(max + 1));
+        assert!(refused(min - 1));
     }
 
     /// Side 3: `get` agrees with the `default` column on a default `Config`.
