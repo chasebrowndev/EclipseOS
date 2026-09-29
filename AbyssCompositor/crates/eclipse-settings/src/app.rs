@@ -487,6 +487,16 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                     _ => {}
                 }
             }
+            // Text drafts commit on focus loss too, under the same rules as
+            // Return: a refused draft stays a draft, unchanged text is not a
+            // write.
+            for (path, text) in std::mem::take(&mut app.drafts) {
+                if app.invalid.contains(&path) {
+                    app.drafts.insert(path, text);
+                } else if app.key(&path).is_some_and(|k| k.display() != text) {
+                    app.write(&path, Value::String(text));
+                }
+            }
         }
 
         Message::OutputEnabled(id, on) => app.set_output(id, "enabled", Value::Bool(on)),
@@ -843,15 +853,18 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
             let submit = path.clone();
             let input = text_input(key.default.as_str().unwrap_or(""), &shown)
                 .on_input(move |t| Message::Edited(path.clone(), t))
+                .on_submit(Message::Committed(submit))
                 .width(Length::Fixed(space::FIELD_W))
                 .style(theme::eclipse_input);
-            // A rejected draft has no commit path at all, rather than a
-            // commit that fails after the fact.
-            if app.invalid.contains(&key.path) {
-                row![input, mono("invalid")].spacing(10).into()
+            // The row is always the same shape so the input keeps its place
+            // in the tree — swapping it for a bare input drops focus on every
+            // valid/invalid flip. A rejected draft is refused in `Committed`.
+            let hint = if app.invalid.contains(&key.path) {
+                "invalid"
             } else {
-                input.on_submit(Message::Committed(submit)).into()
-            }
+                ""
+            };
+            row![input, mono(hint)].spacing(space::CONTROL_GAP).into()
         }
 
         // `set_config_value` writes one scalar at a dotted path; a list needs
