@@ -6,6 +6,8 @@
 //! a key the compositor grows shows up here on the next connect, and
 //! `tests/coverage.rs` fails if this module has nothing to render it with.
 
+use std::borrow::Cow;
+
 use serde_json::Value;
 
 /// Which file owns a key. The wire has no `owner` field; the `"file"` string
@@ -109,6 +111,12 @@ pub fn value_label(value: &str) -> &str {
         // Component slots: the ids are program names and read as themselves;
         // only the opt-out needs a word.
         "none" => "None",
+        // `decoration.blur.mode`: what is drawn behind translucency. `glass`
+        // is the refracting bevel, which people know by its product name.
+        "off" => "Off",
+        "blur" => "Blur",
+        "frost" => "Frost",
+        "glass" => "Liquid Glass",
         other => other,
     }
 }
@@ -121,6 +129,79 @@ pub fn mode_blurb(value: &str) -> Option<&'static str> {
         "hybrid" => Some("The bar also shows window chips, the tray and the clock."),
         "de" => Some("Hybrid, plus desktop icons and pointer-first navigation."),
         _ => None,
+    }
+}
+
+/// What each blur mode draws, shown beneath `decoration.blur.mode`. Which of
+/// the rows beneath apply is said by dimming the rest (`moded`), not here.
+pub fn blur_blurb(value: &str) -> Option<&'static str> {
+    match value {
+        "off" => Some("Translucent surfaces show the desktop behind them unblurred."),
+        "blur" => Some("A plain blur of whatever is behind."),
+        "frost" => Some("Blur with a tint and fine grain."),
+        "glass" => Some("Blur bent through a rounded bevel, with a rim light."),
+        _ => None,
+    }
+}
+
+/// The node whose `mode` key decides which of its other keys apply.
+pub const BLUR: &str = "decoration.blur";
+
+/// The value of a node's `mode` key that turns the node off: nothing under
+/// it applies.
+const MODE_OFF: &str = "off";
+
+/// Which of a moded node's `modes` the key at `path` applies to, or `None`
+/// for a key outside `node` and for the `mode` key itself.
+///
+/// Read from the path alone: a key in a sub-node named for a mode
+/// (`decoration.blur.frost.tint`) tunes that mode only, and a key directly
+/// under the node (`decoration.blur.size`) tunes every mode but off. A key the
+/// compositor grows in either place is placed and dimmed with no change here.
+pub fn moded<'m>(node: &str, path: &str, modes: &'m [String]) -> Option<Vec<&'m str>> {
+    let rest = path.strip_prefix(node)?.strip_prefix('.')?;
+    if rest == "mode" {
+        return None;
+    }
+    let sub = rest.split_once('.').map(|(sub, _)| sub);
+    Some(
+        modes
+            .iter()
+            .map(String::as_str)
+            .filter(|m| match sub {
+                Some(sub) => *m == sub,
+                None => *m != MODE_OFF,
+            })
+            .collect(),
+    )
+}
+
+/// A `color` value as the wire spells it — `#rrggbb` or `#rrggbbaa` — as
+/// red, green, blue and alpha bytes. Anything else is `None`: the swatch is
+/// then left out, and the field beside it still says what is wrong.
+pub fn rgba(value: &str) -> Option<[u8; 4]> {
+    let hex = value.strip_prefix('#')?;
+    if !matches!(hex.len(), 6 | 8) || !hex.is_ascii() {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
+    Some([
+        byte(0)?,
+        byte(2)?,
+        byte(4)?,
+        if hex.len() == 8 { byte(6)? } else { 255 },
+    ])
+}
+
+/// A kebab-case config token as a person reads it: hyphens become spaces and
+/// the first letter is capitalised. Nothing else changes, so `gaps-in` is
+/// "Gaps in" and an acronym the token already spells in capitals keeps them.
+pub fn sentence_case(token: &str) -> String {
+    let spaced = token.replace('-', " ");
+    let mut chars = spaced.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => spaced,
     }
 }
 
@@ -165,20 +246,53 @@ impl Row {
         })
     }
 
-    /// The last segment of the path, used as the row label — or, for the few
+    /// The last segment of the path in sentence case, used as the row label
+    /// (`focus-follows-mouse` reads "Focus follows mouse") — or, for the few
     /// keys whose last segment names a thing rather than a setting, a
     /// display form. `bar.eye` alone reads as a body part; what the switch
     /// governs is the indicator.
-    pub fn label(&self) -> &str {
-        match self.path.as_str() {
+    pub fn label(&self) -> Cow<'_, str> {
+        Cow::Borrowed(match self.path.as_str() {
             "bar.eye" => "Eye indicator",
             "mode" => "Interaction mode",
             "components.bar" => "Bar",
             "components.launcher" => "Launcher",
             "components.notifications" => "Notifications",
             "components.control-center" => "Control center",
-            path => path.rsplit('.').next().unwrap_or(path),
-        }
+            // The blur group flattens its `glass` and `frost` sub-nodes
+            // (`pane::group_for`), so the leaf alone would lose which mode a
+            // row tunes.
+            "decoration.blur.glass.refraction" => "Glass refraction",
+            "decoration.blur.glass.bevel" => "Glass bevel",
+            "decoration.blur.glass.dispersion" => "Glass dispersion",
+            "decoration.blur.glass.rim" => "Glass rim light",
+            "decoration.blur.frost.tint" => "Frost tint",
+            // Tokens abbreviated for a config file, or named for a mechanism
+            // rather than for what a person sees change.
+            "general.col-active-border" => "Active border colour",
+            "general.col-inactive-border" => "Inactive border colour",
+            "general.drop-guide-color" => "Drop guide colour",
+            "decoration.active-opacity" => "Active window opacity",
+            "decoration.inactive-opacity" => "Inactive window opacity",
+            "decoration.dim-inactive" => "Dim inactive windows",
+            "decoration.glow.active" => "Glow on the active window",
+            "decoration.glow.inactive" => "Glow on inactive windows",
+            "input.repeat-rate" => "Key repeat rate",
+            "input.repeat-delay" => "Key repeat delay",
+            "input.kb-layout" => "Keyboard layout",
+            "input.kb-variant" => "Keyboard variant",
+            "input.kb-options" => "Keyboard options",
+            "input.accel-profile" => "Pointer acceleration",
+            "input.touchpad.dwt" => "Disable while typing",
+            "idle.dpms-timeout-seconds" => "Screen off after (seconds)",
+            "idle.lock-timeout-seconds" => "Lock after (seconds)",
+            "capture.redact-app-id" => "Redact app IDs",
+            // A bare verb or state under its node's heading reads as an
+            // instruction or a report, not as a setting.
+            "xwayland.enable" => "Xwayland enabled",
+            "setup.complete" => "Setup complete",
+            path => return Cow::Owned(sentence_case(path.rsplit('.').next().unwrap_or(path))),
+        })
     }
 
     /// Policy-owned keys are read-only here by construction, not by a check at
@@ -246,10 +360,58 @@ mod tests {
             }))
             .expect("a bool row parses")
         };
-        assert_eq!(row("bar.fold-when-idle").label(), "fold-when-idle");
+        assert_eq!(row("bar.fold-when-idle").label(), "Fold when idle");
+        assert_eq!(
+            row("input.focus-follows-mouse-across-outputs").label(),
+            "Focus follows mouse across outputs"
+        );
+        assert_eq!(row("general.gaps-in").label(), "Gaps in");
         assert_eq!(row("bar.eye").label(), "Eye indicator");
         assert_eq!(row("mode").label(), "Interaction mode");
         assert_eq!(row("components.control-center").label(), "Control center");
+        assert_eq!(row("decoration.blur.glass.rim").label(), "Glass rim light");
+        assert_eq!(row("decoration.blur.frost.tint").label(), "Frost tint");
+        assert_eq!(row("general.col-active-border").label(), "Active border colour");
+        assert_eq!(row("input.repeat-rate").label(), "Key repeat rate");
+    }
+
+    #[test]
+    fn every_label_starts_with_a_capital() {
+        for path in [
+            "decoration.blur.glass.refraction",
+            "decoration.blur.glass.bevel",
+            "decoration.blur.glass.dispersion",
+            "decoration.blur.glass.rim",
+            "decoration.blur.frost.tint",
+            "general.col-inactive-border",
+            "decoration.dim-inactive",
+        ] {
+            let row = Row::parse(&json!({"path": path, "file": "abyss", "type": "bool"})).expect("parses");
+            let label = row.label();
+            assert!(label.starts_with(char::is_uppercase), "{path} reads {label:?}");
+        }
+    }
+
+    #[test]
+    fn a_moded_key_applies_by_its_sub_node() {
+        let modes: Vec<String> = ["off", "blur", "frost", "glass"].map(String::from).into();
+        assert_eq!(moded(BLUR, "decoration.blur.mode", &modes), None);
+        assert_eq!(moded(BLUR, "decoration.rounding", &modes), None);
+        assert_eq!(
+            moded(BLUR, "decoration.blur.size", &modes),
+            Some(vec!["blur", "frost", "glass"])
+        );
+        assert_eq!(
+            moded(BLUR, "decoration.blur.frost.tint", &modes),
+            Some(vec!["frost"])
+        );
+        assert_eq!(
+            moded(BLUR, "decoration.blur.glass.rim", &modes),
+            Some(vec!["glass"])
+        );
+        // A sub-node no mode is named for applies to no mode, and says so by
+        // being dimmed under every one of them rather than by vanishing.
+        assert_eq!(moded(BLUR, "decoration.blur.smoke.depth", &modes), Some(vec![]));
     }
 
     #[test]
@@ -260,6 +422,20 @@ mod tests {
         assert_eq!(value_label("radiant"), "Radiant (Default)");
         assert_eq!(value_label("dwindle"), "Dwindle Classic");
         assert_eq!(value_label("de"), "Desktop");
+        let blur: Vec<&str> = ["off", "blur", "frost", "glass"]
+            .into_iter()
+            .map(value_label)
+            .collect();
+        assert_eq!(blur, ["Off", "Blur", "Frost", "Liquid Glass"]);
+    }
+
+    #[test]
+    fn a_colour_parses_with_or_without_alpha() {
+        assert_eq!(rgba("#e8a33dff"), Some([0xe8, 0xa3, 0x3d, 0xff]));
+        assert_eq!(rgba("#e8a33d"), Some([0xe8, 0xa3, 0x3d, 0xff]));
+        assert_eq!(rgba("#e8a33d8"), None);
+        assert_eq!(rgba("e8a33dff"), None);
+        assert_eq!(rgba("#zz0000"), None);
     }
 
     #[test]

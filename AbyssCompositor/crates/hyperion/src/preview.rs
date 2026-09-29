@@ -5,9 +5,10 @@
 //! - `HYPERION_PREVIEW=widgets` — a strip of fixture windows and every
 //!   widget, media playing; `widgets-idle` is the same with no player.
 //! - `HYPERION_PREVIEW_CHIPS=3|8|20` — how many windows (default 8).
-//! - `HYPERION_PREVIEW_SCRIPT=grow|shrink|drag|drag-half|np-out|np-back|interrupt`
+//! - `HYPERION_PREVIEW_SCRIPT=grow|shrink|drag|drag-half|drag-hold|np-out|np-back|interrupt`
 //!   — a timed sequence, for frame captures: windows arriving or leaving one
-//!   by one, a grip dragged open (all the way, or let go half-way), the
+//!   by one, a grip dragged open (all the way, or let go half-way), a grip
+//!   pushed shut and held inside the collapse allowance and then past it, the
 //!   player stopping (and coming back with a new cover), and a compress sent
 //!   back open while it is still moving.
 //! - `HYPERION_PREVIEW_SLOW=<n>` — every movement `n` times slower, so a
@@ -253,6 +254,8 @@ fn plan(name: &str) -> Vec<(u32, Duration)> {
             .collect(),
         "drag" => (1..=DRAG_STEPS + 2).map(|n| (n, ms(40))).collect(),
         "drag-half" => (1..=DRAG_HALF_STEPS + 2).map(|n| (n, ms(40))).collect(),
+        // Press, push into the detent and hold, then push past it and hold.
+        "drag-hold" => vec![(1, ms(0)), (2, ms(40)), (3, ms(4000))],
         "np-out" => vec![(1, ms(0))],
         "np-back" => vec![(1, ms(0)), (2, ms(1600))],
         "interrupt" => vec![(1, ms(0)), (2, ms(350))],
@@ -322,6 +325,26 @@ pub fn step(app: &mut App, n: u32) {
             let mut bars = std::mem::take(&mut app.bars);
             for bar in bars.values_mut() {
                 crate::app::grip(app, bar, key.clone(), ev, now);
+            }
+            app.bars = bars;
+        }
+        "drag-hold" => {
+            let np = WidgetId::NowPlaying;
+            let index = app.widget_cfg.order.iter().position(|id| *id == np);
+            let mut bars = std::mem::take(&mut app.bars);
+            for bar in bars.values_mut() {
+                // Pushed from its rest (with room, the whole reveal) through
+                // the reveal to Open, into the allowance band (held there),
+                // then past it.
+                let above = index
+                    .and_then(|i| bar.widget_inputs.get(i))
+                    .map_or(0.0, |input| input.max_extent() - input.core_run());
+                let ev = match n {
+                    1 => GripEv::Press,
+                    2 => GripEv::Drag(above + bar::COLLAPSE_ALLOWANCE * 0.5),
+                    _ => GripEv::Drag(above + bar::COLLAPSE_ALLOWANCE * 1.5),
+                };
+                crate::app::grip(app, bar, np.key(), ev, now);
             }
             app.bars = bars;
         }

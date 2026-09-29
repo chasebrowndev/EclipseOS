@@ -1283,6 +1283,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "eclipse-wallpaper"
+version = "0.1.0"
+dependencies = [
+ "eclipse-ipc",
+ "eclipse-ui",
+ "iced",
+ "iced_layershell",
+ "image",
+ "serde_json",
+]
+
+[[package]]
 name = "eclipse-welcome"
 version = "0.1.0"
 dependencies = [

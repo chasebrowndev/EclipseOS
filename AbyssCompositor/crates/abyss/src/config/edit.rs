@@ -72,7 +72,28 @@ impl std::error::Error for EditError {}
 /// key already holds is byte-identical to the input — a slider dragged back to
 /// where it started must not churn the file.
 pub fn set_value(text: &str, path: &str, value: &KdlValue) -> Result<String, EditError> {
-    splice(text, path, &value.to_string(), Shape::Scalar)
+    let out = splice(text, path, &value.to_string(), Shape::Scalar)?;
+    drop_superseded(out, path)
+}
+
+/// Legacy keys a newer key replaces: writing the newer one removes the old,
+/// so the file says one thing (the parser already ignores the old one beside
+/// the new).
+const SUPERSEDES: &[(&str, &str)] = &[("decoration.blur.mode", "decoration.blur.enabled")];
+
+fn drop_superseded(text: String, path: &str) -> Result<String, EditError> {
+    let Some(&(_, legacy)) = SUPERSEDES.iter().find(|(new, _)| *new == path) else {
+        return Ok(text);
+    };
+    let doc = parse(&text)?;
+    let parts: Vec<&str> = legacy.split('.').collect();
+    let mut found = Vec::new();
+    nodes_at(&doc, &parts, &mut found);
+    if found.is_empty() {
+        return Ok(text);
+    }
+    let edits = found.into_iter().map(|n| removal(&text, n)).collect();
+    reparse(splice_all(&text, edits))
 }
 
 /// Set a list-valued key — one node carrying every item as a positional
@@ -731,6 +752,35 @@ misc {
         }
         assert!(!out.ends_with('\n'), "grew a trailing newline");
         out.parse::<KdlDocument>().expect("still parses");
+    }
+
+    /// Writing `decoration.blur.mode` removes the legacy `enabled` it
+    /// replaces, on its own line or inline, leaving the rest untouched.
+    #[test]
+    fn setting_blur_mode_drops_the_legacy_enabled() {
+        let mode = KdlValue::String("glass".into());
+        let text =
+            "decoration {\n    blur {\n        // mine\n        enabled #false\n        size 4\n    }\n}\n";
+        let out = set_value(text, "decoration.blur.mode", &mode).unwrap();
+        assert_eq!(
+            out,
+            "decoration {\n    blur {\n        // mine\n        size 4\n        mode glass\n    }\n}\n"
+        );
+        let out = set_value(
+            "decoration { blur { enabled #false; mode off } }\n",
+            "decoration.blur.mode",
+            &mode,
+        )
+        .unwrap();
+        // Inline, `removal` takes the node and its `;`, as for every inline removal.
+        assert_eq!(out, "decoration { blur {  mode glass } }\n");
+        // Other keys are untouched, and so is a file with no legacy node.
+        let text = "decoration {\n    blur {\n        mode off\n    }\n}\n";
+        let out = set_value(text, "decoration.blur.size", &KdlValue::Integer(4)).unwrap();
+        assert!(!out.contains("enabled"));
+        let text = "decoration { blur { enabled #false } }\n";
+        let out = set_value(text, "decoration.blur.size", &KdlValue::Integer(4)).unwrap();
+        assert!(out.contains("enabled #false"), "{out}");
     }
 
     /// The trap this module exists to avoid, asserted so a future refactor to

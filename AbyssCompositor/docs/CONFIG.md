@@ -47,6 +47,14 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `components.notifications` | eclipse-toasts \| mako \| none | `"eclipse-toasts"` | live | Which notification daemon `abyss-session` runs (COMP-17 §2.2). |
 | `components.control-center` | eclipse-center \| none | `"eclipse-center"` | live | Which control center `abyss-session` runs (COMP-17 §2.2). |
 
+### `wallpaper`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `wallpaper.path` | string | _unset_ | live | Image file drawn behind all windows. Unset or unreadable falls back to color. |
+| `wallpaper.mode` | fill \| fit \| center | `"fill"` | live | How the image is sized: `fill` covers the output and crops, `fit` letterboxes, `center` draws it at native size. |
+| `wallpaper.color` | colour `#rrggbb[aa]` | `#0b0906ff` | live | Solid background, and letterbox fill. |
+
 ### `general`
 
 | setting | type | default | reload | what it does |
@@ -117,9 +125,14 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `decoration.active-opacity` | float 0..1 | `1` | live | Alpha applied to the focused window. |
 | `decoration.inactive-opacity` | float 0..1 | `1` | live | Alpha applied to every unfocused window. |
 | `decoration.dim-inactive` | float 0..1 | `0` | live | Strength of the darkening overlay on unfocused windows. |
-| `decoration.blur.enabled` | bool | `#true` | live | Dual-Kawase blur behind translucent windows and layer-shell surfaces. A layer blurs only where its opaque region leaves it uncovered. |
+| `decoration.blur.mode` | off \| blur \| frost \| glass | `"blur"` | live | What is drawn behind translucent windows and layer-shell surfaces: `off`, a plain dual-Kawase `blur`, `frost` (blur with a tint and fine grain) or `glass` (a blurred pane inside a rounded bevel that refracts the sharp backdrop, with a rim light; it holds a second backdrop texture per surface). A layer blurs only where its opaque region leaves it uncovered. Replaces the old `enabled` bool, which still loads (`#false` is `off`). |
 | `decoration.blur.size` | int 1..64 | `8` | live | Blur kernel offset. Larger is softer and costs more. |
 | `decoration.blur.passes` | int 1..6 | `2` | live | Down/up-sample pairs in the blur chain. |
+| `decoration.blur.glass.refraction` | int 0..64 | `16` | live | `glass`: how far the bevel bends the backdrop, logical px at its steepest. 0 is flat glass. |
+| `decoration.blur.glass.bevel` | int 1..128 | `22` | live | `glass`: width of the rounded rim, logical px in from the edge. The rim shows the backdrop sharp and refracted, fading into the blurred interior. |
+| `decoration.blur.glass.dispersion` | float 0..1 | `0.25` | live | `glass`: colour fringing in the bevel; 0.25 is crown glass, 0 none. |
+| `decoration.blur.glass.rim` | float 0..1 | `0.45` | live | `glass`: strength of the warm rim light along the upper-left edges. |
+| `decoration.blur.frost.tint` | colour `#rrggbb[aa]` | `#1a171266` | live | `frost`: colour mixed over the blurred backdrop; its alpha is how much. |
 | `decoration.shadow.enabled` | bool | `#false` | live | Drop shadow behind windows. |
 | `decoration.shadow.range` | int 0..128 | `20` | live | Shadow falloff distance, logical px. |
 | `decoration.glow.enabled` | bool | `#false` | live | Glow around windows in their border colour. |
@@ -299,7 +312,7 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `position <X>,<Y>` | `abyss.kdl` | `position 100,-40` | Floating position in logical px. Implies `float`. |
 | `output <glob>` | `abyss.kdl` | `output HDMI-A-1` | Map on the output whose connector or identity matches. |
 | `opacity <0.0..1.0>` | `abyss.kdl` | `opacity 0.85` | Alpha for this window, replacing `decoration.active-opacity`/`inactive-opacity`. |
-| `blur true \| false` | `abyss.kdl` | `blur true`<br>`blur false` | Force blur on or off, overriding `decoration.blur.enabled`. An opaque window never blurs. |
+| `blur off \| blur \| frost \| glass \| true \| false` | `abyss.kdl` | `blur glass`<br>`blur off`<br>`blur true` | This window's blur mode, overriding `decoration.blur.mode`. `true` is the global mode (plain `blur` if that is `off`), `false` is `off`. An opaque window never blurs. |
 | `workspace <1..10>` | `abyss.kdl` | `workspace 2` | Map on this workspace. |
 | `no-focus-steal` | `abyss.kdl` | `no-focus-steal` | Do not take keyboard focus on map. |
 | `idle-inhibit` | `abyss.kdl` | `idle-inhibit` | Hold the idle timers off while the window is mapped. |
@@ -307,6 +320,10 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `app-trust standard \| trusted` | `policy.kdl` | `app-trust standard`<br>`app-trust trusted` | Trust level (COMP-07 §2). Clamped to `standard` for X11 windows. |
 | `seat-compat lock \| multi` | `policy.kdl` | `seat-compat lock`<br>`seat-compat multi` | Seat concurrency (COMP-07 §6). Clamped to `lock` for X11 windows. |
 | `no-agent` | `policy.kdl` | `no-agent` | Hide the window from agents. |
+
+### `wallpaper.output`
+
+A per-output wallpaper override, written inside `wallpaper { }`: `output "<name>" { path "…"; mode "fit"; color "#rrggbb"; }`, any subset of the three keys, each validated as its `wallpaper.*` key is; a key left out inherits the global one. `<name>` is the connector name (`DP-1`). A later block for the same name overrides an earlier one key by key. KDL-only: not settable over the socket. `get_config` lists them, in file order, under `collections."wallpaper.output"` as `{"output", "path": string | null, "mode": string | null, "color": "#rrggbbaa" | null}`, every field always present; `null` means inherited.
 
 ## `policy.kdl`
 

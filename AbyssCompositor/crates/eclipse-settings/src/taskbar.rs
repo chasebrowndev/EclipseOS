@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The Taskbar pane (ADR 0065, D-05 §4): a live picture of the bar, the
-//! widget lane under it, one sheet for whichever widget is selected, the bar's
-//! motion, and the bar's own appearance and folding.
+//! The Taskbar pane (ADR 0065, D-05 §4): a live picture of the bar that is
+//! also where its widgets are arranged — dragged along it to reorder, in from
+//! the picker under it to add, back out onto the picker to remove — one sheet
+//! for whichever widget is selected, the bar's motion, and the bar's own
+//! appearance and folding.
 //!
 //! Every `bar.*` key has a control here, and every one is still a schema row:
 //! the grouping below is the one place this crate names keys by hand, and a
@@ -13,21 +15,23 @@
 
 use std::time::{Duration, Instant};
 
+use iced::advanced::widget::operation::{Focusable, Operation, Outcome};
+use iced::advanced::widget::Id;
 use iced::widget::{
     button, column, container, pick_list, row, sensor, text, text_input, Column, Row, Space, Stack,
 };
-use iced::{Alignment, Element, Length, Size, Task, Theme};
+use iced::{Alignment, Element, Length, Point, Rectangle, Size, Task, Theme};
 use serde_json::{json, Value};
 
 use eclipse_ipc::{Approval, Widget, WidgetOp, WidgetStatus};
 use eclipse_ui::motion::{Animated, Curve, Motion};
 use eclipse_ui::theme;
-use eclipse_ui::tokens::{bar, canvas, color, font, size, space};
+use eclipse_ui::tokens::{bar, canvas, color, font, radius, size, space};
 use eclipse_ui::widget::{
     arg_chip, art_thumb, badge, bar_cell_frame, bar_sheet, battery_gauge, big_value, chip, config_error,
-    drag_bar, edge_note, elide, glide_track, hairline, inset, list_row, mark, micro_label, mini_meter,
-    outline, panel, pill, pin, placed, ring, track_label, value as mono, viz_bars, widget_shell, widget_tile,
-    Grip, NumericSlider, Toggle,
+    drag_bar, drag_ghost, draggable, drop_well, drop_zone, edge_note, edge_quad, elide, glide_track,
+    hairline, halves, inset, list_row, mark, micro_label, mini_meter, outline, panel, pill, pin, placed,
+    ring, track_label, viz_bars, widget_shell, Grip, NumericSlider, Toggle, Well,
 };
 
 use crate::app::{App, Message};
@@ -35,7 +39,7 @@ use crate::bar_preview::{self as bp, Cell, Knobs, Rung, Solved};
 use crate::conn::Problem;
 use crate::editor::{Editor, Field, Kind, Slot, SOURCES};
 use crate::schema::Row as Key;
-use crate::tray::Lane;
+use crate::tray::{Lane, Tray, Writes};
 
 pub const ORDER: &str = "bar.widgets.order";
 pub const IMPORTANT: &str = "bar.widgets.important";
@@ -107,8 +111,8 @@ fn claimed(path: &str) -> bool {
 }
 
 /// A key as a person reads it on this pane.
-fn label(key: &Key) -> &str {
-    match key.path.as_str() {
+fn label(key: &Key) -> std::borrow::Cow<'_, str> {
+    std::borrow::Cow::Borrowed(match key.path.as_str() {
         "bar.position" => "Position",
         "bar.rounding" => "Corner radius",
         "bar.popup-anchor" => "Popups open",
@@ -133,8 +137,8 @@ fn label(key: &Key) -> &str {
         MOTION_ENABLED => "Animate",
         MOTION_DURATION => "Duration, ms",
         MOTION_CURVE => "Curve",
-        _ => key.label(),
-    }
+        _ => return key.label(),
+    })
 }
 
 /// One line under a widget's rows: what it does, or what it reads.
@@ -330,15 +334,22 @@ pub enum Msg {
     WindowsTyped(String),
     WindowsCommitted,
     Select(String),
-    /// A lane tile's grip was pressed. The drag that follows carries no id:
-    /// iced keeps the grip's press by tree position, so the id is taken once.
-    Grab(String),
-    Drag(f32),
-    Drop,
-    Shift(bool),
-    Remove,
+    /// Something is in hand, with the pointer here. The first one starts
+    /// the drag.
+    Move(Payload, Point),
+    /// The drag ended with the pointer here: land it, if it is over
+    /// somewhere it can land.
+    Release(Point),
+    /// The drag ended without a release.
+    Cancel,
+    /// Where a drop target was laid out.
+    Zone(Zone, Rectangle),
+    /// A key the pane did not otherwise take: the keyboard's way to move.
+    Key(Stroke),
+    /// A non-Escape key, once the tree has said whether a text field has
+    /// the keyboard (`true`): then it moves nothing.
+    Keyed(Stroke, bool),
     Important(bool),
-    Picker,
     Add(String),
     New,
     Name(String),
@@ -363,11 +374,76 @@ pub enum Msg {
     Review(String),
 }
 
+/// What a drag carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Payload {
+    /// A widget on the bar, by id.
+    Cell(String),
+    /// A widget from the picker, not on the bar yet.
+    Pick(String),
+    /// A tray entry, from any of its three lanes.
+    Tray(String),
+}
+
+/// Where a drag lands if it is released now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// Between two cells: the slot, `0` before the first cell.
+    Bar(usize),
+    /// The picker: off the bar.
+    Picker,
+    /// A tray lane, before the entry now at that index in it.
+    Tray(Lane, usize),
+}
+
+/// A laid-out region a drop is aimed at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Zone {
+    Sheet,
+    Picker,
+    Lane(Lane),
+    Chip(String),
+}
+
+/// The keys the pane moves things with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stroke {
+    Left,
+    Right,
+    Up,
+    Down,
+    Delete,
+    Escape,
+}
+
+/// What a drop or a key does, as the pane's writes see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Landing {
+    Order(Vec<String>),
+    Remove(String),
+    Tray(String, Lane, usize),
+}
+
 #[derive(Debug, Clone)]
 struct Drag {
-    id: String,
-    from: usize,
-    to: usize,
+    what: Payload,
+    at: Point,
+}
+
+/// The drop targets, as last laid out.
+#[derive(Debug, Clone, Default)]
+struct Zones {
+    sheet: Option<Rectangle>,
+    picker: Option<Rectangle>,
+    lanes: Vec<(Lane, Rectangle)>,
+    chips: Vec<(String, Rectangle)>,
+}
+
+fn keep<K: PartialEq>(v: &mut Vec<(K, Rectangle)>, k: K, r: Rectangle) {
+    match v.iter_mut().find(|(x, _)| *x == k) {
+        Some(e) => e.1 = r,
+        None => v.push((k, r)),
+    }
 }
 
 /// One widget cell in flight.
@@ -393,7 +469,13 @@ pub struct Bar {
     windows_text: Option<String>,
     pub(crate) selected: Option<String>,
     drag: Option<Drag>,
-    picker: bool,
+    /// Escape dropped the drag in hand: the pointer's travel is ignored
+    /// until the button comes up.
+    escaped: bool,
+    zones: Zones,
+    /// Debug builds: a drag to hold mid-flight once the targets are laid
+    /// out (`SETTINGS_PREVIEW_DRAG`).
+    preview: Option<(Payload, Target)>,
     pub(crate) customs: Vec<Widget>,
     /// Every widget's approval state, withheld ones included: a withheld
     /// widget is absent from `customs` (abyss serves no command for it).
@@ -425,7 +507,9 @@ impl Default for Bar {
             windows_text: None,
             selected: None,
             drag: None,
-            picker: false,
+            escaped: false,
+            zones: Zones::default(),
+            preview: None,
             customs: Vec::new(),
             statuses: Vec::new(),
             reviewed: Vec::new(),
@@ -495,25 +579,203 @@ impl Bar {
         self.width.unwrap_or(canvas::SHEET_FALLBACK_W) - 2.0 * bar::EDGE
     }
 
-    /// The width of a lane tile when the lane holds `n`.
-    fn tile_w(&self, n: usize) -> f32 {
-        let n = n.max(1) as f32;
-        let room = self.inner() - 2.0 * canvas::DROP_MARK_W;
-        ((room - (n - 1.0) * canvas::TILE_GAP) / n).clamp(canvas::TILE_MIN_W, canvas::TILE_W)
+    /// Each widget cell's left edge and width inside the sheet, in order.
+    fn spans(&self, order: &[String]) -> Vec<(f32, f32)> {
+        order
+            .iter()
+            .filter_map(|id| self.cells.iter().find(|c| c.id == *id))
+            .map(|c| (c.x.value(), cell_w(c)))
+            .collect()
+    }
+
+    /// The cells' centres in layout space: the picture's hit test.
+    fn centres(&self, order: &[String], sheet: Rectangle) -> Vec<f32> {
+        self.spans(order)
+            .into_iter()
+            .map(|(x, w)| sheet.x + bar::EDGE + x + w / 2.0)
+            .collect()
     }
 }
 
-/// The order the picture draws: the configured one, or the one a drag in
-/// progress would write.
-fn drawn_order(app: &App) -> Vec<String> {
-    let mut o = order(app);
-    if let Some(d) = &app.bar.drag {
-        if let Some(at) = o.iter().position(|x| *x == d.id) {
-            let id = o.remove(at);
-            o.insert(d.to.min(o.len()), id);
+/// The slot a pointer at `x` names among cells centred at `centres` (left to
+/// right): how many of them it has passed. A cell is passed at its middle,
+/// so the slot changes where the drop would change the order.
+fn slot_at(centres: &[f32], x: f32) -> usize {
+    centres.iter().filter(|c| **c < x).count()
+}
+
+/// Where in a lane of chips a pointer at `at` falls, in reading order: the
+/// chips on rows above it, and those left of it on its own row. A pointer
+/// above or below every row is read as on the nearest one, so the lane's
+/// padding still aims.
+fn index_in(chips: &[Rectangle], at: Point) -> usize {
+    let (Some(top), Some(bottom)) = (
+        chips.iter().map(|r| r.y).reduce(f32::min),
+        chips.iter().map(|r| r.y + r.height).reduce(f32::max),
+    ) else {
+        return 0;
+    };
+    let y = at.y.clamp(top, bottom - 1.0);
+    chips
+        .iter()
+        .filter(|r| r.y + r.height <= y || (r.y <= y && r.center_x() < at.x))
+        .count()
+}
+
+/// What releasing `what` over `to` would do, or `None` for nothing: a drop
+/// back onto its own place, a pick onto the picker, anything onto a target
+/// that does not take it.
+fn landing(order: &[String], what: &Payload, to: Option<Target>) -> Option<Landing> {
+    match (what, to?) {
+        (Payload::Cell(id), Target::Bar(s)) => {
+            let from = order.iter().position(|x| x == id)?;
+            if s == from || s == from + 1 {
+                return None;
+            }
+            let mut o = order.to_vec();
+            o.remove(from);
+            o.insert(if s > from { s - 1 } else { s }, id.clone());
+            Some(Landing::Order(o))
+        }
+        (Payload::Cell(id), Target::Picker) => Some(Landing::Remove(id.clone())),
+        (Payload::Pick(id), Target::Bar(s)) if !order.contains(id) => {
+            let mut o = order.to_vec();
+            o.insert(s.min(o.len()), id.clone());
+            Some(Landing::Order(o))
+        }
+        (Payload::Tray(id), Target::Tray(lane, at)) => Some(Landing::Tray(id.clone(), lane, at)),
+        _ => None,
+    }
+}
+
+/// Where a drag with the pointer at `at` would land.
+fn target(app: &App, what: &Payload, at: Point) -> Option<Target> {
+    let z = &app.bar.zones;
+    match what {
+        Payload::Cell(_) | Payload::Pick(_) => {
+            if let Some(sheet) = z.sheet {
+                // A little above and below the picture still aims at it: the
+                // bar is thin, and a drop that misses it by a hair is a drop
+                // that did nothing.
+                let reach = Rectangle {
+                    y: sheet.y - space::ROW_Y,
+                    height: sheet.height + 2.0 * space::ROW_Y,
+                    ..sheet
+                };
+                if reach.contains(at) {
+                    let s = slot_at(&app.bar.centres(&order(app), sheet), at.x);
+                    return Some(Target::Bar(s));
+                }
+            }
+            let over_picker = z.picker.is_some_and(|r| r.contains(at));
+            (matches!(what, Payload::Cell(_)) && over_picker).then_some(Target::Picker)
+        }
+        Payload::Tray(_) => {
+            let (lane, _) = z.lanes.iter().find(|(_, r)| r.contains(at))?;
+            let t = app.tray();
+            let chips: Vec<Rectangle> = t
+                .in_lane(*lane)
+                .iter()
+                .filter_map(|id| z.chips.iter().find(|(c, _)| c == id).map(|(_, r)| *r))
+                .collect();
+            Some(Target::Tray(*lane, index_in(&chips, at)))
         }
     }
-    o
+}
+
+/// The drag in flight and where it would land, if it would land anywhere.
+fn aimed(app: &App) -> Option<(&Drag, Target)> {
+    let d = app.bar.drag.as_ref()?;
+    let t = target(app, &d.what, d.at)?;
+    landing(&order(app), &d.what, Some(t)).map(|_| (d, t))
+}
+
+/// The keyboard on the widget lane: Left and Right move the selection one
+/// place, Delete takes it off the bar.
+fn keyed(b: &mut Bar, order: &[String], key: Stroke) -> Option<Landing> {
+    match key {
+        Stroke::Left | Stroke::Right => shift(b, order, key == Stroke::Right).map(Landing::Order),
+        Stroke::Delete => pick(b, order)
+            .filter(|id| order.contains(id))
+            .map(Landing::Remove),
+        _ => None,
+    }
+}
+
+/// The keyboard on the selected tray entry: Left and Right along the bar
+/// lane, Up and Down between lanes, Delete hides it.
+fn tray_keyed(t: &Tray, id: &str, key: Stroke) -> Option<Writes> {
+    match key {
+        Stroke::Left | Stroke::Right => t.shifted(id, key == Stroke::Right).map(|p| Writes {
+            pinned: Some(p),
+            hidden: None,
+        }),
+        Stroke::Up | Stroke::Down => t.stepped(id, key == Stroke::Down),
+        Stroke::Delete => Some(t.moved(id, Lane::Hidden)),
+        Stroke::Escape => None,
+    }
+}
+
+/// Whether any text field in the tree has the keyboard. Unnamed fields
+/// count too, which `find_focused` would skip.
+struct Typing(bool);
+
+impl Operation<bool> for Typing {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<bool>)) {
+        operate(self);
+    }
+
+    fn focusable(&mut self, _id: Option<&Id>, _bounds: Rectangle, state: &mut dyn Focusable) {
+        self.0 |= state.is_focused();
+    }
+
+    fn finish(&self) -> Outcome<bool> {
+        Outcome::Some(self.0)
+    }
+}
+
+/// A selection key, unless a text field has the keyboard: then arrows,
+/// Delete and Backspace are the field's, in either lane.
+fn gated(key: Stroke, typing: bool) -> Option<Stroke> {
+    (!typing).then_some(key)
+}
+
+/// Do what a drop or a key decided.
+fn apply(app: &mut App, l: Landing) {
+    match l {
+        Landing::Order(o) => app.write(ORDER, json!(o)),
+        Landing::Remove(id) => remove(app, &id),
+        Landing::Tray(id, lane, at) => {
+            let w = app.tray().dropped(&id, lane, at);
+            app.write_tray(w);
+            app.tray_sel = Some(id);
+        }
+    }
+}
+
+/// Take `id` off the bar, and out of the important list with it. When it
+/// was the selection, its neighbour takes it, so a run of removals is a run
+/// of presses on one place.
+fn remove(app: &mut App, id: &str) {
+    let mut imp = important(app);
+    if imp.iter().any(|x| x == id) {
+        imp.retain(|x| x != id);
+        app.write(IMPORTANT, json!(imp));
+    }
+    let before = order(app);
+    let was_selected = pick(&app.bar, &before).as_deref() == Some(id);
+    let at = before.iter().position(|x| x == id).unwrap_or(0);
+    let mut o = before;
+    o.retain(|x| x != id);
+    app.write(ORDER, json!(o));
+    if was_selected {
+        let next = o.get(at.min(o.len().saturating_sub(1))).cloned();
+        app.bar.editor = None;
+        app.bar.selected = None;
+        if let Some(next) = next {
+            select(app, next);
+        }
+    }
 }
 
 /// Bring every animated value in line with the config and the knobs. Called
@@ -538,7 +800,7 @@ fn sync_with(app: &mut App, now: Instant, snap: bool) {
             app.bar.glide.set_target(t, now);
         }
     }
-    let order = drawn_order(app);
+    let order = order(app);
     let imp = important(app);
     let k = knobs(app);
     let cells: Vec<Cell> = order
@@ -602,6 +864,8 @@ fn sync_with(app: &mut App, now: Instant, snap: bool) {
     if snap {
         b.tick(now);
     }
+    // A held preview follows the cells it is aimed between as they settle.
+    place_preview(app);
 }
 
 /// Open the pane's debug states: selection, window count, an open editor.
@@ -616,7 +880,29 @@ pub fn preview_env(app: &mut App) {
     {
         app.bar.windows = canvas::WINDOWS_MAX.min(n);
     }
-    app.bar.picker = std::env::var_os("SETTINGS_PREVIEW_PICKER").is_some();
+    // A drag held mid-flight: `<id>@<slot>` a bar cell over a slot,
+    // `+<id>@<slot>` a picker widget over one, `-<id>` a bar cell over the
+    // picker, `tray:<id>@<bar|drawer|hidden>` a tray entry over a lane. The
+    // pointer is placed once the targets are laid out, so the real hit test
+    // decides what is drawn.
+    if let Ok(v) = std::env::var("SETTINGS_PREVIEW_DRAG") {
+        let slot = |s: &str| s.parse::<usize>().ok();
+        app.bar.preview = if let Some(id) = v.strip_prefix('-') {
+            Some((Payload::Cell(id.into()), Target::Picker))
+        } else if let Some((id, lane)) = v.strip_prefix("tray:").and_then(|r| r.split_once('@')) {
+            let lane = match lane {
+                "bar" => Lane::Taskbar,
+                "drawer" => Lane::Overflow,
+                _ => Lane::Hidden,
+            };
+            Some((Payload::Tray(id.into()), Target::Tray(lane, 0)))
+        } else if let Some((id, s)) = v.strip_prefix('+').and_then(|r| r.split_once('@')) {
+            slot(s).map(|s| (Payload::Pick(id.into()), Target::Bar(s)))
+        } else {
+            v.split_once('@')
+                .and_then(|(id, s)| slot(s).map(|s| (Payload::Cell(id.into()), Target::Bar(s))))
+        };
+    }
     match std::env::var("SETTINGS_PREVIEW_EDITOR").as_deref() {
         Ok("new") => {
             let _ = update(app, Msg::New);
@@ -717,7 +1003,36 @@ fn select(app: &mut App, id: String) {
         .map(Editor::from_widget);
     app.bar.selected = Some(id);
     app.bar.offer = None;
-    app.bar.picker = false;
+}
+
+/// Put a previewed drag's pointer where it names, once the targets it names
+/// are laid out.
+fn place_preview(app: &mut App) {
+    let Some((what, to)) = app.bar.preview.clone() else {
+        return;
+    };
+    let z = &app.bar.zones;
+    let at = match to {
+        Target::Bar(s) => z.sheet.map(|sheet| {
+            let c = app.bar.centres(&order(app), sheet);
+            let x = match (s.checked_sub(1).and_then(|i| c.get(i)), c.get(s)) {
+                (Some(a), Some(b)) => (a + b) / 2.0,
+                (None, Some(b)) => b - bar::WIDGET_H,
+                (Some(a), None) => a + bar::WIDGET_H,
+                (None, None) => sheet.center_x(),
+            };
+            Point::new(x, sheet.center_y())
+        }),
+        Target::Picker => z.picker.map(|r| r.center()),
+        Target::Tray(lane, _) => z
+            .lanes
+            .iter()
+            .find(|(l, _)| *l == lane)
+            .map(|(_, r)| Point::new(r.x + r.width - bar::WIDGET_H, r.center_y())),
+    };
+    if let Some(at) = at {
+        app.bar.drag = Some(Drag { what, at });
+    }
 }
 
 /// Give the selection its editor when nobody clicked it. The first widget
@@ -980,61 +1295,64 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
             }
         }
         Msg::Select(id) => select(app, id),
-        Msg::Grab(id) => {
-            let from = order(app).iter().position(|x| *x == id);
-            if let Some(from) = from {
-                app.bar.drag = Some(Drag {
-                    id: id.clone(),
-                    from,
-                    to: from,
-                });
-                select(app, id);
+        Msg::Move(what, at) => {
+            app.bar.preview = None;
+            if !app.bar.escaped {
+                app.bar.drag = Some(Drag { what, at });
             }
         }
-        Msg::Drag(dx) => {
-            let n = order(app).len();
-            let pitch = app.bar.tile_w(n) + canvas::TILE_GAP;
-            if let Some(d) = app.bar.drag.as_mut() {
-                let at = d.from as f32 + (dx / pitch).round();
-                d.to = at.clamp(0.0, n.saturating_sub(1) as f32) as usize;
-            }
-        }
-        Msg::Drop => {
-            if let Some(d) = app.bar.drag.take() {
-                if d.to != d.from {
-                    let mut o = order(app);
-                    let id = o.remove(d.from);
-                    o.insert(d.to.min(o.len()), id);
-                    app.write(ORDER, json!(o));
+        Msg::Release(at) => {
+            app.bar.escaped = false;
+            let Some(d) = app.bar.drag.take() else {
+                return Task::none();
+            };
+            let to = target(app, &d.what, at);
+            if let Some(l) = landing(&order(app), &d.what, to) {
+                apply(app, l);
+                if let Payload::Pick(id) = d.what {
+                    select(app, id);
                 }
             }
         }
-        Msg::Shift(later) => {
-            let o = order(app);
-            if let Some(o) = shift(&mut app.bar, &o, later) {
-                app.write(ORDER, json!(o));
-            }
+        Msg::Cancel => {
+            app.bar.drag = None;
+            app.bar.escaped = false;
         }
-        Msg::Remove => {
-            let Some(id) = selected(app) else {
+        Msg::Zone(z, r) => {
+            let zs = &mut app.bar.zones;
+            match z {
+                Zone::Sheet => zs.sheet = Some(r),
+                Zone::Picker => zs.picker = Some(r),
+                Zone::Lane(l) => keep(&mut zs.lanes, l, r),
+                Zone::Chip(id) => keep(&mut zs.chips, id, r),
+            }
+            place_preview(app);
+        }
+        Msg::Key(Stroke::Escape) => {
+            app.bar.escaped = app.bar.drag.take().is_some();
+        }
+        // iced 0.14's `text_input` leaves Up and Down uncaptured, so a
+        // focused field would let them through: ask the tree first.
+        Msg::Key(k) => {
+            return iced::advanced::widget::operate(Typing(false)).map(move |t| bar_msg(Msg::Keyed(k, t)));
+        }
+        Msg::Keyed(k, typing) => {
+            let Some(k) = gated(k, typing) else {
                 return Task::none();
             };
-            let mut imp = important(app);
-            if imp.contains(&id) {
-                imp.retain(|x| *x != id);
-                app.write(IMPORTANT, json!(imp));
-            }
-            let mut o = order(app);
-            let at = o.iter().position(|x| *x == id).unwrap_or(0);
-            o.retain(|x| *x != id);
-            app.write(ORDER, json!(o));
-            // The neighbour takes the selection, so a run of removals is a
-            // run of clicks on one place.
-            let next = o.get(at.min(o.len().saturating_sub(1))).cloned();
-            app.bar.editor = None;
-            app.bar.selected = None;
-            if let Some(next) = next {
-                select(app, next);
+            let o = order(app);
+            let tray = pick(&app.bar, &o).as_deref() == Some("tray");
+            match app.tray_sel.clone().filter(|_| tray) {
+                Some(id) => {
+                    if let Some(w) = tray_keyed(&app.tray(), &id, k) {
+                        app.write_tray(w);
+                    }
+                }
+                None => {
+                    if let Some(l) = keyed(&mut app.bar, &o, k) {
+                        apply(app, l);
+                    }
+                }
             }
         }
         Msg::Important(on) => {
@@ -1049,7 +1367,6 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
             }
             app.write(IMPORTANT, json!(imp));
         }
-        Msg::Picker => app.bar.picker = !app.bar.picker,
         Msg::Add(id) => {
             let mut o = order(app);
             if !o.contains(&id) {
@@ -1063,7 +1380,6 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
         Msg::New | Msg::Save | Msg::Delete | Msg::Review(_) if !crate::addons::taskbar_widgets_on(app) => {}
         Msg::New => {
             app.bar.editor = Some(Editor::new());
-            app.bar.picker = false;
             app.bar.offer = None;
         }
         Msg::Name(t) => edit(app, |e| e.name = t),
@@ -1137,10 +1453,12 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
 
 // ------------------------------------------------------------------ view
 //
-// Accent ledger: the one live yellow is the selected widget — its tile in the
-// lane and its outline on the bar picture, both inside the hero. The picture
-// itself is neutral: meters unaccented, the visualizer at rest, the launcher
-// ring in secondary ink. Controls keep their own on-state (toggles, sliders).
+// Accent ledger: the one live yellow is the selected widget's outline on the
+// bar picture, inside the hero. The picture itself is neutral: meters
+// unaccented, the visualizer at rest, the launcher ring in secondary ink.
+// A drag adds no yellow: the drop mark is white ink, the hole a cell leaves
+// is a strong hairline, and a drop well answers in ground and edge only.
+// Controls keep their own on-state (toggles, sliders).
 
 fn bar_msg(m: Msg) -> Message {
     Message::Bar(m)
@@ -1421,10 +1739,22 @@ fn picture(app: &App) -> Element<'_, Message, Theme> {
         ));
     }
     let sel = selected(app);
+    let held = |id: &str| matches!(&b.drag, Some(Drag { what: Payload::Cell(x), .. }) if x == id);
     for c in &b.cells {
         let presence = c.presence.value().clamp(0.0, 1.0);
         let x = c.x.value();
-        let body: Element<'_, Message, Theme> = if c.cell.grip() {
+        // The cell in hand leaves its place empty: an outline where it was,
+        // so the drop reads as moving it out of that hole. The draggable
+        // stays in the same layer, so iced keeps the press it is holding.
+        let body: Element<'_, Message, Theme> = if held(&c.id) {
+            outline(
+                cell_w(c),
+                bar::WIDGET_H,
+                bar::HAIRLINE,
+                color::BORDER_STRONG,
+                bar::RADIUS_CELL,
+            )
+        } else if c.cell.grip() {
             widget_shell(
                 drag_bar::<Message>().state(Grip::Rest),
                 core_of(app, &c.id),
@@ -1445,10 +1775,31 @@ fn picture(app: &App) -> Element<'_, Message, Theme> {
             .clip(true)
             .into()
         };
-        layers.push(placed(x, body));
-        if sel.as_deref() == Some(c.id.as_str()) && presence > 0.0 {
+        let what = Payload::Cell(c.id.clone());
+        let lifted = b.drag.as_ref().filter(|d| d.what == what).map(|d| d.at);
+        layers.push(placed(
+            x,
+            draggable(body)
+                .ghost(drag_ghost(core_of(app, &c.id), bar::RADIUS_CELL))
+                .lifted(lifted)
+                .on_move(move |p| bar_msg(Msg::Move(what.clone(), p)))
+                .on_release(|p| bar_msg(Msg::Release(p)))
+                .on_cancel(bar_msg(Msg::Cancel))
+                .on_click(bar_msg(Msg::Select(c.id.clone()))),
+        ));
+    }
+    // The selection's outline, and the drop mark, above every cell and
+    // after them in the stack: a layer that comes and goes ahead of a cell
+    // would move that cell's place in the tree, and with it the press iced
+    // keeps there.
+    if let Some(c) = b
+        .cells
+        .iter()
+        .find(|c| sel.as_deref() == Some(c.id.as_str()) && !held(&c.id))
+    {
+        if c.presence.value() > 0.0 {
             layers.push(placed(
-                x,
+                c.x.value(),
                 outline(
                     cell_w(c),
                     bar::WIDGET_H,
@@ -1459,16 +1810,35 @@ fn picture(app: &App) -> Element<'_, Message, Theme> {
             ));
         }
     }
+    if let Some((_, Target::Bar(slot))) = aimed(app) {
+        let spans = b.spans(&order(app));
+        let gap = |i: usize| match (i.checked_sub(1).and_then(|j| spans.get(j)), spans.get(i)) {
+            (_, Some((x, _))) if i == 0 => x - bar::GAP / 2.0,
+            (Some((x, w)), _) => x + w + bar::GAP / 2.0,
+            (None, _) => 0.0,
+        };
+        layers.push(placed(
+            gap(slot) - canvas::DROP_MARK_W / 2.0,
+            edge_quad(
+                Length::Fixed(canvas::DROP_MARK_W),
+                Length::Fixed(bar::WIDGET_H),
+                color::TEXT,
+            ),
+        ));
+    }
     let sheet = bar_sheet(
         Stack::with_children(layers)
             .width(Length::Fill)
             .height(Length::Fill),
         Length::Fill,
     );
-    sensor(sheet)
-        .on_show(|s| bar_msg(Msg::Measured(s)))
-        .on_resize(|s| bar_msg(Msg::Measured(s)))
-        .into()
+    drop_zone(
+        sensor(sheet)
+            .on_show(|s| bar_msg(Msg::Measured(s)))
+            .on_resize(|s| bar_msg(Msg::Measured(s))),
+        |r| bar_msg(Msg::Zone(Zone::Sheet, r)),
+    )
+    .into()
 }
 
 /// What the picture is showing, in words.
@@ -1495,69 +1865,28 @@ fn readout(app: &App) -> String {
     parts.join(" · ")
 }
 
-/// The lane: one tile per widget, in order, with a drop mark while one is
-/// dragged.
-fn lane_row(app: &App) -> Element<'_, Message, Theme> {
-    let o = order(app);
-    let imp = important(app);
-    let sel = selected(app);
-    let tile_w = app.bar.tile_w(o.len());
-    let drop_at = app
-        .bar
-        .drag
-        .as_ref()
-        .and_then(|d| (d.to != d.from).then_some(if d.to > d.from { d.to + 1 } else { d.to }));
-    let slot = |k: usize| -> Element<'_, Message, Theme> {
-        let w = if k == 0 || k == o.len() {
-            canvas::DROP_MARK_W
-        } else {
-            canvas::TILE_GAP
-        };
-        if drop_at == Some(k) {
-            container(eclipse_ui::widget::edge_quad(
-                Length::Fixed(canvas::DROP_MARK_W),
-                Length::Fixed(canvas::TILE_H),
-                color::TEXT,
-            ))
-            .width(Length::Fixed(w))
-            .align_x(Alignment::Center)
-            .into()
-        } else {
-            Space::new().width(Length::Fixed(w)).into()
-        }
-    };
-    let mut r = Row::new().align_y(Alignment::Center);
-    for (i, id) in o.iter().enumerate() {
-        r = r.push(slot(i));
-        let dragging = app.bar.drag.as_ref().is_some_and(|d| d.id == *id);
-        let grip = drag_bar()
-            .state(if dragging { Grip::Active } else { Grip::Rest })
-            .on_press(bar_msg(Msg::Grab(id.clone())))
-            .on_drag(|dx| bar_msg(Msg::Drag(dx)))
-            .on_release(bar_msg(Msg::Drop));
-        r = r.push(widget_tile(
-            grip,
-            &bp::title(id),
-            tile_w,
-            imp.contains(id),
-            sel.as_deref() == Some(id.as_str()),
-            bar_msg(Msg::Select(id.clone())),
-        ));
-    }
-    r = r.push(slot(o.len()));
-    r.into()
+/// A widget off the bar, as something to pick up. Its ghost is the widget
+/// as the bar would draw it, so what lands is seen before it does.
+fn pickable<'a>(app: &'a App, id: String, name: &str) -> Element<'a, Message, Theme> {
+    let what = Payload::Pick(id.clone());
+    let lifted = app.bar.drag.as_ref().filter(|d| d.what == what).map(|d| d.at);
+    draggable(chip(None, name, false, bar_msg(Msg::Add(id.clone()))))
+        .ghost(drag_ghost(core_of(app, &id), bar::RADIUS_CELL))
+        .lifted(lifted)
+        .on_move(move |p| bar_msg(Msg::Move(what.clone(), p)))
+        .on_release(|p| bar_msg(Msg::Release(p)))
+        .on_cancel(bar_msg(Msg::Cancel))
+        .on_click(bar_msg(Msg::Add(id)))
+        .into()
 }
 
+/// The widgets that are not on the bar, and the place a bar cell is dropped
+/// to take it off. Always under the picture: adding is a drag up into it.
 fn picker(app: &App) -> Element<'_, Message, Theme> {
     let o = order(app);
     let mut chips: Vec<Element<'_, Message, Theme>> = Vec::new();
     for id in bp::BUILTINS.iter().filter(|id| !o.iter().any(|x| x == *id)) {
-        chips.push(chip(
-            None,
-            &bp::title(id),
-            false,
-            bar_msg(Msg::Add((*id).to_owned())),
-        ));
+        chips.push(pickable(app, (*id).to_owned(), &bp::title(id)));
     }
     let on = crate::addons::taskbar_widgets_on(app);
     let customs = app.bar.customs.iter().map(|w| w.name.as_str());
@@ -1570,21 +1899,38 @@ fn picker(app: &App) -> Element<'_, Message, Theme> {
     for name in customs.chain(withheld).filter(|_| on) {
         let id = format!("{}{}", bp::CUSTOM, name);
         if !o.contains(&id) {
-            chips.push(chip(None, name, false, bar_msg(Msg::Add(id))));
+            chips.push(pickable(app, id, name));
         }
     }
-    let lead: Element<'_, Message, Theme> = if chips.is_empty() {
-        caption("every widget is on the bar".into())
-    } else {
-        Row::with_children(chips).spacing(space::CHIP_GAP).wrap().into()
+    let held = match &app.bar.drag {
+        Some(Drag {
+            what: Payload::Cell(id),
+            ..
+        }) => Some(id.as_str()),
+        _ => None,
     };
-    let mut r = row![container(lead).width(Length::Fill)]
-        .spacing(space::CONTROL_GAP)
-        .align_y(Alignment::Center);
+    let state = match (held, aimed(app)) {
+        (Some(_), Some((_, Target::Picker))) => Well::Hot,
+        (Some(_), _) => Well::Armed,
+        (None, _) => Well::Idle,
+    };
+    let hint = match held {
+        Some(id) => format!("drop here to take {} off the bar", bp::title(id)),
+        None if chips.is_empty() => "every widget is on the bar".to_owned(),
+        None => "drag onto the bar to add · click to add at the end".to_owned(),
+    };
+    let mut head = row![
+        micro_label("off the bar"),
+        caption(hint),
+        Space::new().width(Length::Fill)
+    ]
+    .spacing(space::CONTROL_GAP)
+    .align_y(Alignment::Center);
     if on {
-        r = r.push(pill("New custom widget", false, bar_msg(Msg::New)));
+        head = head.push(pill("New custom widget", false, bar_msg(Msg::New)));
     }
-    r.into()
+    let body = column![head, Row::with_children(chips).spacing(space::CHIP_GAP).wrap()].spacing(space::ROW_Y);
+    drop_zone(drop_well(body, state), |r| bar_msg(Msg::Zone(Zone::Picker, r))).into()
 }
 
 /// The hero: the bar as it will draw, the windows that squeeze it, and the
@@ -1607,12 +1953,7 @@ fn hero(app: &App) -> Element<'_, Message, Theme> {
     .on_commit(bar_msg(Msg::WindowsCommitted))
     .invalid(invalid);
 
-    let o = order(app);
-    let lane_note = match &b.drag {
-        Some(d) => format!("moving to {} of {}", d.to + 1, o.len()),
-        None => "left to right · drag a grip to reorder".to_owned(),
-    };
-    let mut col = column![
+    let col = column![
         row![
             micro_label("live bar"),
             Space::new().width(Length::Fill),
@@ -1620,28 +1961,17 @@ fn hero(app: &App) -> Element<'_, Message, Theme> {
         ]
         .align_y(Alignment::Center),
         picture(app),
-        row![prose("Open windows"), Space::new().width(Length::Fill), windows,]
-            .spacing(space::CONTROL_GAP)
-            .align_y(Alignment::Center),
-        hairline(),
         row![
-            micro_label("widgets"),
-            caption(lane_note),
+            caption("drag a widget along the bar to move it · click it to open its sheet".into()),
             Space::new().width(Length::Fill),
-            pill(
-                if b.picker { "Done" } else { "Add widget" },
-                false,
-                bar_msg(Msg::Picker)
-            ),
+            prose("Open windows"),
+            windows,
         ]
         .spacing(space::CONTROL_GAP)
         .align_y(Alignment::Center),
-        lane_row(app),
+        picker(app),
     ]
     .spacing(space::ROW_Y);
-    if b.picker {
-        col = col.push(picker(app));
-    }
     panel(app.glass_radius, col).into()
 }
 
@@ -1654,7 +1984,7 @@ fn padded<'a>(e: impl Into<Element<'a, Message, Theme>>) -> Element<'a, Message,
 
 fn key_row<'a>(app: &'a App, path: &str) -> Option<Element<'a, Message, Theme>> {
     let key = app.key(path)?;
-    Some(list_row(label(key), crate::app::control(app, key)))
+    Some(list_row(&label(key), crate::app::control(app, key)))
 }
 
 /// The selected widget's sheet: where it sits, whether it gives way, and its
@@ -1695,7 +2025,7 @@ fn sheet(app: &App) -> Option<Element<'_, Message, Theme>> {
     if custom.is_some_and(|n| premade(app, n)) {
         head = head.push(badge("Premade"));
     }
-    let mut head = head
+    let head = head
         .push(caption(match at {
             Some(i) => format!("{id} · {} of {}", i + 1, o.len()),
             None => id.clone(),
@@ -1703,15 +2033,10 @@ fn sheet(app: &App) -> Option<Element<'_, Message, Theme>> {
         .push(Space::new().width(Length::Fill))
         .spacing(space::CONTROL_GAP)
         .align_y(Alignment::Center);
-    if let Some(i) = at {
-        if i > 0 {
-            head = head.push(pill("Earlier", false, bar_msg(Msg::Shift(false))));
-        }
-        if i + 1 < o.len() {
-            head = head.push(pill("Later", false, bar_msg(Msg::Shift(true))));
-        }
-        head = head.push(pill("Remove", false, bar_msg(Msg::Remove)));
-    }
+    let head = match at {
+        Some(_) => head.push(caption("← → move · delete removes".into())),
+        None => head,
+    };
 
     let mut col = Column::new().push(padded(head)).push(hairline());
     if at.is_some() {
@@ -1723,10 +2048,14 @@ fn sheet(app: &App) -> Option<Element<'_, Message, Theme>> {
                         .font(font::UI)
                         .size(size::BODY)
                         .style(theme::text_primary),
-                    caption("never compresses: keeps its full size while everything else gives way".into()),
+                    // Prose, not a one-line reading: it wraps in a narrow card.
+                    text("never compresses: keeps its full size while everything else gives way")
+                        .font(font::DATA)
+                        .size(size::MICRO)
+                        .style(theme::text_tertiary),
                 ]
-                .spacing(space::HAIRLINE),
-                Space::new().width(Length::Fill),
+                .spacing(space::HAIRLINE)
+                .width(Length::Fill),
                 Toggle::new(imp, |on| bar_msg(Msg::Important(on))),
             ]
             .spacing(space::CONTROL_GAP)
@@ -1787,25 +2116,84 @@ fn caption_prose<'a>(t: &str) -> Element<'a, Message, Theme> {
         .into()
 }
 
-/// The tray's three lanes, flat inside the tray's sheet.
+/// The tray's three lanes, flat inside the tray's sheet. Each entry is
+/// dragged within its lane or into another; a click selects it for the
+/// keyboard.
 fn tray_rows(app: &App) -> Vec<Element<'_, Message, Theme>> {
     let t = app.tray();
     let sel = app.tray_sel.as_deref();
-    let chips = |ids: &[String], ordinal: bool| -> Element<'_, Message, Theme> {
-        if ids.is_empty() {
-            return caption("none".into());
-        }
-        Row::with_children(ids.iter().enumerate().map(|(i, id)| {
-            chip(
-                ordinal.then_some(i + 1),
-                id,
-                sel == Some(id.as_str()),
-                Message::TraySelect(id.clone()),
-            )
-        }))
-        .spacing(space::CHIP_GAP)
-        .wrap()
+    let aim = aimed(app);
+    let held = match &app.bar.drag {
+        Some(Drag {
+            what: Payload::Tray(id),
+            ..
+        }) => Some(id.clone()),
+        _ => None,
+    };
+    let entry = |i: usize, id: &str, ordinal: bool| -> Element<'_, Message, Theme> {
+        let what = Payload::Tray(id.to_owned());
+        let lifted = app.bar.drag.as_ref().filter(|d| d.what == what).map(|d| d.at);
+        let at_rest = chip(
+            ordinal.then_some(i + 1),
+            id,
+            sel == Some(id) && held.as_deref() != Some(id),
+            Message::TraySelect(id.to_owned()),
+        );
+        drop_zone(
+            draggable(at_rest)
+                .ghost(drag_ghost(tag(id, theme::text_primary), radius::CHIP))
+                .lifted(lifted)
+                .on_move(move |p| bar_msg(Msg::Move(what.clone(), p)))
+                .on_release(|p| bar_msg(Msg::Release(p)))
+                .on_cancel(bar_msg(Msg::Cancel))
+                .on_click(Message::TraySelect(id.to_owned())),
+            {
+                let id = id.to_owned();
+                move |r| bar_msg(Msg::Zone(Zone::Chip(id.clone()), r))
+            },
+        )
         .into()
+    };
+    let chips = |lane: Lane, ids: &[String], ordinal: bool| -> Element<'_, Message, Theme> {
+        let mark = match aim {
+            Some((_, Target::Tray(l, at))) if l == lane => Some(at),
+            _ => None,
+        };
+        // Only the bar lane keeps an order, so only it shows where in the
+        // order a drop lands. Every gap has its mark's room, lit or not: a
+        // mark that came and went between chips would move the chips after
+        // it in the tree, and the press iced keeps on the one in hand with
+        // them.
+        let gap = |k: usize| -> Element<'_, Message, Theme> {
+            let lit = lane == Lane::Taskbar && mark == Some(k);
+            let ink = if lit {
+                color::TEXT
+            } else {
+                iced::Color::TRANSPARENT
+            };
+            container(edge_quad(
+                Length::Fixed(canvas::DROP_MARK_W),
+                Length::Fixed(space::CHIP_H),
+                ink,
+            ))
+            .width(Length::Fixed(space::CHIP_GAP))
+            .align_x(Alignment::Center)
+            .into()
+        };
+        let mut r: Vec<Element<'_, Message, Theme>> = Vec::new();
+        for (i, id) in ids.iter().enumerate() {
+            r.push(gap(i));
+            r.push(entry(i, id, ordinal));
+        }
+        r.push(gap(ids.len()));
+        if ids.is_empty() && mark.is_none() {
+            r.push(caption("none".into()));
+        }
+        Row::with_children(r)
+            .align_y(Alignment::Center)
+            .wrap()
+            .vertical_spacing(space::CHIP_GAP)
+            .into()
     };
     let live = match &app.tray_live {
         None => "reading the tray".to_owned(),
@@ -1813,53 +2201,53 @@ fn tray_rows(app: &App) -> Vec<Element<'_, Message, Theme>> {
         Some(Some(l)) if l.len() == 1 => "1 app running".to_owned(),
         Some(Some(l)) => format!("{} apps running", l.len()),
     };
-    let lane = |name: &str, ids: Vec<String>, ordinal: bool| {
-        padded(
-            row![
-                container(micro_label(name)).width(Length::Fixed(space::FIELD_W / 2.0)),
-                chips(&ids, ordinal),
-            ]
-            .spacing(space::CONTROL_GAP)
-            .align_y(Alignment::Center),
+    let lane = |name: &str, lane: Lane, ids: Vec<String>, ordinal: bool| {
+        let state = match (&held, aim) {
+            (Some(_), Some((_, Target::Tray(l, _)))) if l == lane => Well::Hot,
+            (Some(_), _) => Well::Armed,
+            _ => Well::Idle,
+        };
+        drop_zone(
+            drop_well(
+                row![
+                    container(micro_label(name)).width(Length::Fixed(space::FIELD_W / 2.0)),
+                    chips(lane, &ids, ordinal),
+                ]
+                .spacing(space::CONTROL_GAP)
+                .align_y(Alignment::Center),
+                state,
+            ),
+            move |r| bar_msg(Msg::Zone(Zone::Lane(lane), r)),
         )
     };
-    let mut out = vec![
-        padded(row![
-            micro_label("status icons"),
-            Space::new().width(Length::Fill),
-            caption(live)
-        ]),
-        lane("on the bar", t.taskbar(), true),
-        lane("drawer", t.in_lane(Lane::Overflow), false),
-        lane("hidden", t.in_lane(Lane::Hidden), false),
-    ];
-    if let Some(id) = sel {
-        let at = t.lane_of(id);
-        let mut r = Row::new()
-            .push(mono(id))
-            .push(Space::new().width(Length::Fill))
-            .spacing(space::PILL_GAP)
-            .align_y(Alignment::Center);
-        if at == Lane::Taskbar {
-            if t.shifted(id, false).is_some() {
-                r = r.push(pill("Earlier", false, Message::TrayShift(id.to_owned(), false)));
-            }
-            if t.shifted(id, true).is_some() {
-                r = r.push(pill("Later", false, Message::TrayShift(id.to_owned(), true)));
-            }
-        }
-        for (to, name) in [
-            (Lane::Taskbar, "To bar"),
-            (Lane::Overflow, "To drawer"),
-            (Lane::Hidden, "Hide"),
-        ] {
-            if at != to {
-                r = r.push(pill(name, false, Message::TrayMove(id.to_owned(), to)));
-            }
-        }
-        out.push(padded(r));
-    }
-    out
+    let hint = match sel {
+        Some(id) => format!("{id} · ← → move · ↑ ↓ lane · delete hides"),
+        None => "drag an icon between lanes".to_owned(),
+    };
+    vec![
+        padded(
+            row![
+                micro_label("status icons"),
+                caption(live),
+                Space::new().width(Length::Fill),
+                caption(hint),
+            ]
+            .spacing(space::CONTROL_GAP),
+        ),
+        // Each lane is a well with the sheet's own inset, so the lanes are
+        // not padded again: their labels line up with the rows above.
+        container(
+            column![
+                lane("on the bar", Lane::Taskbar, t.taskbar(), true),
+                lane("drawer", Lane::Overflow, t.in_lane(Lane::Overflow), false),
+                lane("hidden", Lane::Hidden, t.in_lane(Lane::Hidden), false),
+            ]
+            .spacing(space::HAIRLINE),
+        )
+        .padding([space::ROW_Y, 0.0])
+        .width(Length::Fill)
+        .into(),
+    ]
 }
 
 fn errors_for<'a>(ed: &'a Editor, f: Field) -> Column<'a, Message, Theme> {
@@ -2076,7 +2464,7 @@ fn motion_band(app: &App) -> Element<'_, Message, Theme> {
             ]
             .spacing(space::PILL_GAP)
             .width(Length::Fixed(space::FIELD_W / 2.0)),
-            container(controls).width(Length::Fill),
+            container(controls).width(Length::Fixed(space::CONTROL_COL_W)),
             column![
                 glide_track(app.bar.glide.value(), "demo"),
                 caption("slides on each change".into()),
@@ -2085,7 +2473,9 @@ fn motion_band(app: &App) -> Element<'_, Message, Theme> {
             .align_x(Alignment::Center),
         ]
         .spacing(space::BLOCK)
-        .align_y(Alignment::Center),
+        .align_y(Alignment::Center)
+        .wrap()
+        .vertical_spacing(space::BLOCK),
     )
     .padding([0.0, space::CARD])
     .width(Length::Fill)
@@ -2103,13 +2493,10 @@ fn settings(app: &App) -> Element<'_, Message, Theme> {
         }
         c.width(Length::Fill)
     };
-    let mut body = Column::new().push(
-        row![
-            group("appearance", APPEARANCE.to_vec()),
-            group("folding", FOLDING.to_vec())
-        ]
-        .spacing(space::BLOCK),
-    );
+    let mut body = Column::new().push(halves(
+        group("appearance", APPEARANCE.to_vec()),
+        group("folding", FOLDING.to_vec()),
+    ));
     let rest: Vec<&str> = app
         .rows
         .iter()
@@ -2222,5 +2609,202 @@ mod tests {
         b.selected = Some("custom:load".into());
         adopt(&mut b, &ids(&["custom:weather", "custom:load"]));
         assert_eq!(open(&b), Some("load"));
+    }
+
+    fn at(x: f32, y: f32) -> Point {
+        Point::new(x, y)
+    }
+
+    #[test]
+    fn the_slot_is_the_number_of_centres_passed() {
+        let c = [10.0, 30.0, 50.0];
+        assert_eq!(slot_at(&c, 0.0), 0);
+        assert_eq!(slot_at(&c, 10.5), 1);
+        assert_eq!(slot_at(&c, 29.0), 1);
+        assert_eq!(slot_at(&c, 49.0), 2);
+        assert_eq!(slot_at(&c, 99.0), 3);
+        assert_eq!(slot_at(&[], 5.0), 0);
+    }
+
+    #[test]
+    fn a_chip_index_reads_rows_then_columns() {
+        let r = |x: f32, y: f32| Rectangle {
+            x,
+            y,
+            width: 20.0,
+            height: 10.0,
+        };
+        // Two on the first row, one on the second.
+        let chips = [r(0.0, 0.0), r(30.0, 0.0), r(0.0, 20.0)];
+        assert_eq!(index_in(&chips, at(5.0, 5.0)), 0);
+        assert_eq!(index_in(&chips, at(25.0, 5.0)), 1);
+        assert_eq!(index_in(&chips, at(99.0, 5.0)), 2);
+        assert_eq!(index_in(&chips, at(99.0, 25.0)), 3);
+        // Above every row reads as the first row.
+        assert_eq!(index_in(&chips, at(25.0, -8.0)), 1);
+        assert_eq!(index_in(&[], at(0.0, 0.0)), 0);
+    }
+
+    #[test]
+    fn a_cell_dropped_on_the_bar_reorders() {
+        let o = ids(&["a", "b", "c", "d"]);
+        let cell = Payload::Cell("b".into());
+        assert_eq!(
+            landing(&o, &cell, Some(Target::Bar(0))),
+            Some(Landing::Order(ids(&["b", "a", "c", "d"])))
+        );
+        assert_eq!(
+            landing(&o, &cell, Some(Target::Bar(4))),
+            Some(Landing::Order(ids(&["a", "c", "d", "b"])))
+        );
+        assert_eq!(
+            landing(&o, &cell, Some(Target::Bar(3))),
+            Some(Landing::Order(ids(&["a", "c", "b", "d"])))
+        );
+        // Either side of itself is its own place: nothing to write.
+        assert_eq!(landing(&o, &cell, Some(Target::Bar(1))), None);
+        assert_eq!(landing(&o, &cell, Some(Target::Bar(2))), None);
+        assert_eq!(landing(&o, &cell, None), None);
+    }
+
+    #[test]
+    fn a_pick_dropped_on_the_bar_adds_it_at_the_slot() {
+        let o = ids(&["a", "b"]);
+        assert_eq!(
+            landing(&o, &Payload::Pick("x".into()), Some(Target::Bar(1))),
+            Some(Landing::Order(ids(&["a", "x", "b"])))
+        );
+        assert_eq!(
+            landing(&o, &Payload::Pick("x".into()), Some(Target::Bar(9))),
+            Some(Landing::Order(ids(&["a", "b", "x"])))
+        );
+        // Already there, or dropped back on the picker: nothing.
+        assert_eq!(
+            landing(&o, &Payload::Pick("a".into()), Some(Target::Bar(0))),
+            None
+        );
+        assert_eq!(
+            landing(&o, &Payload::Pick("x".into()), Some(Target::Picker)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_cell_dropped_on_the_picker_is_removed() {
+        let o = ids(&["a", "b"]);
+        assert_eq!(
+            landing(&o, &Payload::Cell("b".into()), Some(Target::Picker)),
+            Some(Landing::Remove("b".into()))
+        );
+    }
+
+    #[test]
+    fn a_tray_entry_lands_only_in_a_tray_lane() {
+        let o = ids(&["a"]);
+        let t = Payload::Tray("steam".into());
+        assert_eq!(
+            landing(&o, &t, Some(Target::Tray(Lane::Hidden, 0))),
+            Some(Landing::Tray("steam".into(), Lane::Hidden, 0))
+        );
+        assert_eq!(landing(&o, &t, Some(Target::Bar(0))), None);
+        assert_eq!(
+            landing(
+                &o,
+                &Payload::Cell("a".into()),
+                Some(Target::Tray(Lane::Taskbar, 0))
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_tray_drop_writes_the_lane_and_the_place() {
+        let tray = Tray::from_values(&serde_json::json!(["a", "b"]), &serde_json::json!([]));
+        let w = tray.dropped("x", Lane::Taskbar, 0);
+        assert_eq!(w.pinned, Some(ids(&["x", "a", "b"])));
+        let w = tray.dropped("a", Lane::Hidden, 0);
+        assert_eq!(w.pinned, Some(ids(&["b"])));
+        assert_eq!(w.hidden, Some(ids(&["a"])));
+    }
+
+    #[test]
+    fn arrows_move_the_selection_and_delete_removes_it() {
+        let mut b = bar_with(&[]);
+        let o = ids(&["a", "b", "c"]);
+        b.selected = Some("b".into());
+        assert_eq!(
+            keyed(&mut b, &o, Stroke::Left),
+            Some(Landing::Order(ids(&["b", "a", "c"])))
+        );
+        assert_eq!(
+            keyed(&mut b, &o, Stroke::Right),
+            Some(Landing::Order(ids(&["a", "c", "b"])))
+        );
+        assert_eq!(
+            keyed(&mut b, &o, Stroke::Delete),
+            Some(Landing::Remove("b".into()))
+        );
+        assert_eq!(keyed(&mut b, &o, Stroke::Up), None);
+        // With nothing chosen, the first widget is the selection.
+        b.selected = None;
+        assert_eq!(keyed(&mut b, &o, Stroke::Left), None);
+        assert_eq!(
+            keyed(&mut b, &o, Stroke::Delete),
+            Some(Landing::Remove("a".into()))
+        );
+    }
+
+    #[test]
+    fn up_and_down_move_nothing_while_a_field_is_focused() {
+        // `a` is pinned on the bar and selected: Down would move it off.
+        let t = Tray::from_values(&serde_json::json!(["a", "b"]), &serde_json::json!([]));
+        for k in [Stroke::Up, Stroke::Down] {
+            assert_eq!(gated(k, true).and_then(|k| tray_keyed(&t, "a", k)), None);
+        }
+        assert!(gated(Stroke::Down, false)
+            .and_then(|k| tray_keyed(&t, "a", k))
+            .is_some());
+        // The widget lane's Delete is the field's too.
+        let mut b = bar_with(&[]);
+        b.selected = Some("clock".into());
+        let o = ids(&["clock", "tray"]);
+        assert_eq!(
+            gated(Stroke::Delete, true).and_then(|k| keyed(&mut b, &o, k)),
+            None
+        );
+        assert!(gated(Stroke::Delete, false)
+            .and_then(|k| keyed(&mut b, &o, k))
+            .is_some());
+    }
+
+    #[test]
+    fn a_focused_unnamed_field_counts_as_typing() {
+        type P = <iced::Renderer as iced::advanced::text::Renderer>::Paragraph;
+        let mut field = text_input::State::<P>::new();
+        let mut op = Typing(false);
+        op.focusable(None, Rectangle::default(), &mut field);
+        assert!(matches!(op.finish(), Outcome::Some(false)));
+        field.focus();
+        op.focusable(None, Rectangle::default(), &mut field);
+        assert!(matches!(op.finish(), Outcome::Some(true)));
+    }
+
+    #[test]
+    fn tray_keys_move_along_and_between_lanes() {
+        let t = Tray::from_values(&serde_json::json!(["a", "b"]), &serde_json::json!([]));
+        assert_eq!(
+            tray_keyed(&t, "a", Stroke::Right).and_then(|w| w.pinned),
+            Some(ids(&["b", "a"]))
+        );
+        assert_eq!(tray_keyed(&t, "a", Stroke::Left), None);
+        assert_eq!(
+            tray_keyed(&t, "a", Stroke::Down),
+            Some(t.moved("a", Lane::Overflow))
+        );
+        assert_eq!(tray_keyed(&t, "a", Stroke::Up), None);
+        assert_eq!(
+            tray_keyed(&t, "b", Stroke::Delete),
+            Some(t.moved("b", Lane::Hidden))
+        );
     }
 }

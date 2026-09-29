@@ -15,7 +15,7 @@ use std::cell::Cell;
 use smithay::desktop::Window;
 use smithay::reexports::wayland_server::Resource;
 
-use crate::config::{Matchers, RuleAction};
+use crate::config::{BlurRule, Matchers, RuleAction};
 use crate::state::AbyssState;
 use crate::xwayland::security::{AppTrust, SeatCompat};
 
@@ -23,9 +23,9 @@ use crate::xwayland::security::{AppTrust, SeatCompat};
 pub struct RuleOpacity(pub Cell<f32>);
 
 /// Per-window blur override set by a matched `blur` rule, read by the
-/// renderer. Only changes the on/off decision; an opaque window still never
+/// renderer. Picks the window's blur mode; an opaque window still never
 /// blurs (see `render::window_elements`).
-pub struct RuleBlur(pub Cell<bool>);
+pub struct RuleBlur(pub Cell<BlurRule>);
 
 /// Trust class pinned by an `app-trust` rule (COMP-05 §4). Consumed once
 /// COMP-08 gates agent actions on it.
@@ -77,7 +77,7 @@ pub fn any_opacity_override<'a>(mut windows: impl Iterator<Item = &'a Window>) -
 }
 
 /// The blur override a matched rule pinned on this window, if any.
-pub fn blur_of(window: &Window) -> Option<bool> {
+pub fn blur_of(window: &Window) -> Option<BlurRule> {
     window.user_data().get::<RuleBlur>().map(|b| b.0.get())
 }
 

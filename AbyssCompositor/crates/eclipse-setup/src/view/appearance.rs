@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Step 11: appearance (`decoration.rounding`, `decoration.blur.enabled`,
+//! Step 11: appearance (`decoration.rounding`, `decoration.blur.mode`,
 //! `animations.enabled`, `bar.position`).
 //!
 //! Hero: a small desktop that redraws as you choose, a bar strip and two
 //! tiled windows, so rounding and the bar's edge are seen rather than read.
-//! Under it one inset list of the four choices, each a pair of white chips.
+//! Under it one inset list of the four choices, each a row of white chips —
+//! a pair, except blur, whose four modes are still one decision.
 //! Scale, theme and pointer options are not here: `docs/CONFIG.md` has no
 //! global scale or theme key (scale is per output), and the input keys are not
 //! on the seed allowlist (D-07 §5), so offering them would be a choice that is
@@ -12,7 +13,7 @@
 //! The accented value: the bar's strip in the preview.
 
 use super::Body;
-use crate::choices::BarPosition;
+use crate::choices::{BarPosition, Blur};
 use crate::model::{Message, Model};
 use crate::parts::{self, El};
 use eclipse_ui::tokens::space;
@@ -44,6 +45,12 @@ pub fn body(m: &Model) -> Body<'_> {
             Message::SetBarPosition(BarPosition::Bottom),
         ))
         .into();
+    let blur: El<'_, Message> = Blur::ALL
+        .iter()
+        .fold(Row::new().spacing(space::PILL_GAP), |r, &b| {
+            r.push(parts::tab(b.label(), c.blur == b, Message::SetBlur(b)))
+        })
+        .into();
     let list = inset_list(
         "Look",
         vec![
@@ -51,7 +58,7 @@ pub fn body(m: &Model) -> Body<'_> {
                 "Rounded corners",
                 pair(c.rounded, "On", "Off", Message::SetRounded),
             ),
-            list_row("Blur behind glass", pair(c.blur, "On", "Off", Message::SetBlur)),
+            list_row("Translucency", blur),
             list_row(
                 "Window animations",
                 pair(c.animations, "On", "Off", Message::SetAnimations),

@@ -21,8 +21,9 @@ use eclipse_ipc::EventKind;
 use eclipse_ui::theme;
 use eclipse_ui::tokens::space;
 use eclipse_ui::widget::{
-    big_value, content, hairline, header, list_row, micro_label, panel, pill, sidebar, status_chip, subtitle,
-    value as mono, NumericSlider, Toggle,
+    big_value, content_at, dimmed, hairline, header, list_row, micro_label, nav_item_at, panel, pill,
+    pill_group, row_caption, sidebar_at, status_chip, subtitle, swatch, value as mono, Density,
+    NumericSlider, Toggle,
 };
 
 use crate::conn::{Conn, Problem};
@@ -30,7 +31,7 @@ use crate::network::{self, Net};
 use crate::output::{Edge, Inset, Output};
 use crate::pane::{group_for, pane_for, Pane};
 use crate::schema::{Control, Row as Key};
-use crate::tray::{Lane, Tray};
+use crate::tray::{Tray, Writes};
 
 const TRAY_PINNED: &str = "bar.tray.pinned";
 const TRAY_HIDDEN: &str = "bar.tray.hidden";
@@ -73,9 +74,6 @@ pub enum Message {
     ForgetDevice(String),
     /// Select a tray entry, or clear the selection if it is the one selected.
     TraySelect(String),
-    TrayMove(String, Lane),
-    /// Move a pinned entry one place: `true` later, `false` earlier.
-    TrayShift(String, bool),
     /// The live tray ids from `tray::feed`; `None` when it could not start.
     TrayLive(Option<Vec<String>>),
     /// The Taskbar pane's own messages.
@@ -171,7 +169,7 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
-        Self::with_pane(Pane::Appearance)
+        Self::with_pane(Pane::Windows)
     }
 
     /// Open on `pane` — `eclipse-settings network` from the taskbar.
@@ -274,6 +272,16 @@ impl App {
             t.live = live.clone();
         }
         t
+    }
+
+    /// Write a tray move: only the lists it changed.
+    pub(crate) fn write_tray(&mut self, w: Writes) {
+        if let Some(p) = w.pinned {
+            self.write(TRAY_PINNED, json!(p));
+        }
+        if let Some(h) = w.hidden {
+            self.write(TRAY_HIDDEN, json!(h));
+        }
     }
 
     /// Write one scalar and fold the outcome into the banner.
@@ -559,21 +567,6 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::TraySelect(id) => {
             app.tray_sel = (app.tray_sel.as_deref() != Some(id.as_str())).then_some(id);
         }
-        Message::TrayMove(id, to) => {
-            // The selection stays on the entry, so a second move is one click.
-            let w = app.tray().moved(&id, to);
-            if let Some(p) = w.pinned {
-                app.write(TRAY_PINNED, json!(p));
-            }
-            if let Some(h) = w.hidden {
-                app.write(TRAY_HIDDEN, json!(h));
-            }
-        }
-        Message::TrayShift(id, later) => {
-            if let Some(p) = app.tray().shifted(&id, later) {
-                app.write(TRAY_PINNED, json!(p));
-            }
-        }
         Message::TrayLive(live) => app.tray_live = Some(live),
         Message::Bar(m) => return crate::taskbar::update(app, m),
     }
@@ -591,6 +584,7 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     }
     if app.pane == Pane::Taskbar {
         subs.push(crate::tray::feed());
+        subs.push(taskbar_keys());
         // The frame clock runs only while something in the picture moves.
         if app.bar.animating() {
             subs.push(iced::window::frames().map(|t| Message::Bar(crate::taskbar::Msg::Frame(t))));
@@ -607,6 +601,33 @@ fn blur() -> Subscription<Message> {
         iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_))
         | iced::Event::Touch(iced::touch::Event::FingerPressed { .. }) => Some(Message::NumberBlur),
         _ => None,
+    })
+}
+
+/// The Taskbar pane's keyboard: arrows move the selected widget (or tray
+/// entry), Delete takes it off, Escape drops a drag. Only keys nothing else
+/// took; the pane then asks the tree whether a text field is focused, since
+/// iced 0.14's `text_input` lets Up and Down through uncaptured.
+fn taskbar_keys() -> Subscription<Message> {
+    use crate::taskbar::{Msg, Stroke as K};
+    use iced::keyboard::{key::Named, Event, Key};
+    iced::event::listen_with(|event, status, _window| {
+        let iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. }) = event else {
+            return None;
+        };
+        if status == iced::event::Status::Captured || !modifiers.is_empty() {
+            return None;
+        }
+        let k = match key {
+            Key::Named(Named::ArrowLeft) => K::Left,
+            Key::Named(Named::ArrowRight) => K::Right,
+            Key::Named(Named::ArrowUp) => K::Up,
+            Key::Named(Named::ArrowDown) => K::Down,
+            Key::Named(Named::Delete | Named::Backspace) => K::Delete,
+            Key::Named(Named::Escape) => K::Escape,
+            _ => return None,
+        };
+        Some(Message::Bar(Msg::Key(k)))
     })
 }
 
@@ -649,9 +670,15 @@ fn events() -> Subscription<Message> {
 }
 
 pub fn view(app: &App) -> Element<'_, Message, Theme> {
+    // The frame is the only thing that reads the window's width; every row
+    // below folds on its own.
+    iced::widget::responsive(move |size| frame(app, Density::for_width(size.width))).into()
+}
+
+fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
     let nav: Vec<Element<'_, Message, Theme>> = Pane::ALL
         .iter()
-        .map(|p| eclipse_ui::widget::nav_item(p.title(), *p == app.pane, Message::Select(*p)))
+        .map(|p| nav_item_at(density, p.title(), *p == app.pane, Message::Select(*p)))
         .collect();
 
     let mut footer = vec![
@@ -702,8 +729,8 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
     }
 
     row![
-        sidebar(nav, footer),
-        scrollable(content(blocks))
+        sidebar_at(density, nav, footer),
+        scrollable(content_at(density, blocks))
             .id(SCROLL)
             .style(theme::eclipse_scrollable)
             .height(Length::Fill),
@@ -734,32 +761,90 @@ fn banner(problem: &Problem, radius: f32) -> Element<'_, Message, Theme> {
     .into()
 }
 
-/// Every schema key this pane claims, grouped by node, in schema order.
+/// Every schema key this pane claims, grouped by node, in schema order —
+/// except a moded node's keys (`schema::moded`), which follow their `mode`
+/// picker in runs, one per set of modes they apply to, in mode order. A run
+/// the current mode does not use is dimmed, and stays editable.
 fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
     let mut groups: Vec<(&str, Vec<Element<'_, Message, Theme>>)> = Vec::new();
+    let mode_path = format!("{}.mode", crate::schema::BLUR);
+    let mode_key = app.key(&mode_path);
+    let modes: &[String] = match mode_key.map(|k| &k.control) {
+        Some(Control::Segmented(v) | Control::Dropdown(v)) => v,
+        _ => &[],
+    };
+    let current = mode_key.and_then(|k| k.value.as_str()).unwrap_or_default();
+    // (the modes a run applies to, its rows), in first-seen order.
+    let mut runs: Vec<(Vec<&str>, Vec<&Key>)> = Vec::new();
+    let mut runs_group = None;
+
     // The tray lists are drawn by `tray_hero`, their control; listing them
     // again here as read-only text would be the same setting twice.
     let shown = |k: &&Key| pane_for(&k.path) == Some(app.pane) && !k.path.starts_with("bar.tray.");
     for key in app.rows.iter().filter(shown) {
         let group = group_for(&key.path);
-        let rows = match groups.iter_mut().find(|(g, _)| *g == group) {
-            Some((_, rows)) => rows,
+        let rows = match groups.iter().position(|(g, _)| *g == group) {
+            Some(i) => &mut groups[i].1,
             None => {
                 groups.push((group, Vec::new()));
                 &mut groups.last_mut().expect("just pushed").1
             }
         };
-        rows.push(list_row(key.label(), control(app, key)));
-        if key.path == "mode" {
-            if let Some(blurb) = crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()) {
-                rows.push(
+        if let Some(applies) = crate::schema::moded(crate::schema::BLUR, &key.path, modes) {
+            runs_group.get_or_insert(group);
+            match runs.iter_mut().find(|(a, _)| *a == applies) {
+                Some((_, keys)) => keys.push(key),
+                None => runs.push((applies, vec![key])),
+            }
+            continue;
+        }
+        rows.push(list_row(&key.label(), control(app, key)));
+        let blurb = match key.path.as_str() {
+            "mode" => crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()),
+            p if p == mode_path => crate::schema::blur_blurb(current),
+            _ => None,
+        };
+        if let Some(blurb) = blurb {
+            // Inset like `list_row`'s label, so it reads as that row's caption.
+            rows.push(
+                iced::widget::container(
                     iced::widget::text(blurb)
                         .font(eclipse_ui::tokens::font::UI)
                         .size(eclipse_ui::tokens::size::BODY_SMALL)
-                        .style(theme::text_tertiary)
-                        .into(),
-                );
+                        .style(theme::text_tertiary),
+                )
+                .padding([0.0, space::CARD])
+                .into(),
+            );
+        }
+    }
+
+    // In mode order: a run goes where the first mode it applies to is.
+    let first = |applies: &[&str]| {
+        applies
+            .first()
+            .and_then(|m| modes.iter().position(|v| v == m))
+            .unwrap_or(modes.len())
+    };
+    runs.sort_by_key(|(applies, _)| first(applies));
+    if let Some(rows) = runs_group.and_then(|g| groups.iter_mut().find(|(n, _)| *n == g)) {
+        for (applies, keys) in runs {
+            let caption = applies
+                .iter()
+                .map(|m| crate::schema::value_label(m))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            // The divider stops where the rows' labels do, so a run reads as a
+            // softer break inside the panel rather than a rule across it.
+            let divider = iced::widget::container(hairline()).padding([0.0, space::CARD]);
+            let mut run = Column::new().push(divider).spacing(space::ROW_Y);
+            if !caption.is_empty() {
+                run = run.push(row_caption(&caption));
             }
+            for key in keys {
+                run = run.push(list_row(&key.label(), control(app, key)));
+            }
+            rows.1.push(dimmed(run, !applies.contains(&current)));
         }
     }
 
@@ -819,15 +904,18 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
 
         Control::Segmented(values) => {
             let current = key.value.as_str().unwrap_or_default().to_string();
-            let mut r = Row::new().spacing(space::PILL_GAP);
-            for v in values {
-                r = r.push(pill(
-                    crate::schema::value_label(v),
-                    *v == current,
-                    Message::Chose(path.clone(), v.clone()),
-                ));
-            }
-            r.into()
+            pill_group(
+                values
+                    .iter()
+                    .map(|v| {
+                        pill(
+                            crate::schema::value_label(v),
+                            *v == current,
+                            Message::Chose(path.clone(), v.clone()),
+                        )
+                    })
+                    .collect(),
+            )
         }
 
         Control::Dropdown(values) => {
@@ -837,20 +925,53 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
             .into()
         }
 
-        Control::Text { .. } => {
+        Control::Text { color } => {
             let draft = app.drafts.get(&key.path);
             let shown = draft.cloned().unwrap_or_else(|| key.display());
             let submit = path.clone();
-            let input = text_input(key.default.as_str().unwrap_or(""), &shown)
+            let invalid = app.invalid.contains(&key.path);
+            let mut input = text_input(key.default.as_str().unwrap_or(""), &shown)
                 .on_input(move |t| Message::Edited(path.clone(), t))
-                .width(Length::Fixed(space::FIELD_W))
-                .style(theme::eclipse_input);
+                .style(if invalid {
+                    theme::eclipse_input_invalid
+                } else {
+                    theme::eclipse_input
+                });
             // A rejected draft has no commit path at all, rather than a
             // commit that fails after the fact.
-            if app.invalid.contains(&key.path) {
-                row![input, mono("invalid")].spacing(10).into()
-            } else {
-                input.on_submit(Message::Committed(submit)).into()
+            if !invalid {
+                input = input.on_submit(Message::Committed(submit));
+            }
+            // One tree in both states: the verdict slot is always there,
+            // empty while the draft is good. Swapping the row in and out
+            // rebuilt the input and dropped keyboard focus mid-typing.
+            let field = verdict_row(input, invalid);
+            // `FIELD_W` when there is room, the row's width when there is not.
+            let field = iced::widget::container(field)
+                .width(Length::Fill)
+                .max_width(space::FIELD_W + space::CONTROL_GAP + space::VERDICT_W);
+            // A colour key shows the colour it holds now — what was written,
+            // not the draft — beside the field that edits it.
+            match color.then(|| crate::schema::rgba(&key.display())).flatten() {
+                Some([r, g, b, a]) => iced::widget::container(
+                    row![
+                        swatch(iced::Color::from_rgba8(r, g, b, f32::from(a) / 255.0)),
+                        field
+                    ]
+                    .spacing(space::CONTROL_GAP)
+                    .align_y(iced::Alignment::Center),
+                )
+                // The field's own cap, plus the swatch beside it.
+                .width(Length::Fill)
+                .max_width(
+                    space::FIELD_W
+                        + space::CONTROL_GAP
+                        + space::VERDICT_W
+                        + space::CONTROL_GAP
+                        + space::SWATCH,
+                )
+                .into(),
+                None => field.into(),
             }
         }
 
@@ -858,6 +979,23 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
         // the node editor. Shown so the setting is never hidden.
         Control::List => mono(&key.display()),
     }
+}
+
+/// A text field and the slot that says whether its draft is refused. The
+/// slot is always in the tree and always `VERDICT_W` wide, so the widget
+/// tree is the same shape in both states and iced keeps the input's focus.
+fn verdict_row<'a>(
+    input: iced::widget::TextInput<'a, Message, Theme>,
+    invalid: bool,
+) -> Element<'a, Message, Theme> {
+    row![
+        input,
+        iced::widget::container(mono(if invalid { "invalid" } else { "" }))
+            .width(Length::Fixed(space::VERDICT_W))
+    ]
+    .spacing(space::CONTROL_GAP)
+    .align_y(iced::Alignment::Center)
+    .into()
 }
 
 const INSET_SPAN: Span = Span {
@@ -929,7 +1067,7 @@ fn display_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
                 let invalid = draft.is_some_and(|d| INSET_SPAN.parse(d).is_none());
                 let typed = num.clone();
                 edges = edges.push(list_row(
-                    edge.label(),
+                    &crate::schema::sentence_case(edge.label()),
                     NumericSlider::new(
                         0.0..=INSET_MAX,
                         current,
@@ -953,7 +1091,7 @@ fn display_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
             } else {
                 row![pill("Calibrate", false, Message::Calibrate(o.id, "start"))]
             }
-            .spacing(6);
+            .spacing(space::PILL_GAP);
 
             panel(
                 app.glass_radius,
@@ -964,18 +1102,18 @@ fn display_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
                         big_value(&scale.to_string(), "x", o.focused),
                     ]
                     .align_y(iced::Alignment::Center),
-                    list_row("identity", mono(&o.identity)),
-                    list_row("mode", mono(&o.mode_display())),
-                    list_row("position", mono(&o.position_display())),
+                    list_row("Identity", mono(&o.identity)),
+                    list_row("Mode", mono(&o.mode_display())),
+                    list_row("Position", mono(&o.position_display())),
                     list_row(
-                        "enabled",
+                        "Enabled",
                         Toggle::new(o.enabled, {
                             let id = o.id;
                             move |on| Message::OutputEnabled(id, on)
                         }),
                     ),
-                    list_row("transform", transforms),
-                    list_row("scale", scale_control(app, o.id, scale)),
+                    list_row("Transform", transforms),
+                    list_row("Scale", scale_control(app, o.id, scale)),
                     hairline(),
                     micro_label("overscan"),
                     edges,
@@ -997,6 +1135,22 @@ mod tests {
         max: SCALE_MAX,
         integral: false,
     };
+
+    /// Tag and child count, all the way down: what iced's diff compares to
+    /// decide whether a widget's state (the input's focus) survives.
+    fn shape(t: &iced::advanced::widget::Tree) -> String {
+        let kids: Vec<String> = t.children.iter().map(shape).collect();
+        format!("{:?}[{}]", t.tag, kids.join(","))
+    }
+
+    #[test]
+    fn a_text_field_keeps_its_tree_shape_across_validity() {
+        let tree = |invalid| {
+            let el = verdict_row(text_input("", "#f0"), invalid);
+            shape(&iced::advanced::widget::Tree::new(&el))
+        };
+        assert_eq!(tree(false), tree(true));
+    }
 
     #[test]
     fn a_typed_number_is_clamped_to_the_sliders_range() {

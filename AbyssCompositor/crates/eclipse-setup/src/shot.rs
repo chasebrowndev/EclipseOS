@@ -9,7 +9,7 @@
 //! door the real app uses, so a screenshot cannot show a state the wizard cannot
 //! reach.
 
-use crate::choices::{BarPosition, Choices};
+use crate::choices::{BarPosition, Blur, Choices};
 use crate::helper::{fake_disks, HelperEvent};
 use crate::model::{Inputs, Message, Model, Secret, Step, ZoneClock};
 use crate::net::fake_snapshot;
@@ -186,6 +186,7 @@ pub fn fixture(name: &str) -> Option<Model> {
         "appearance-changed" => {
             walk(&mut m, Step::Appearance, true);
             m.update(Message::SetRounded(false));
+            m.update(Message::SetBlur(Blur::Glass));
             m.update(Message::SetBarPosition(BarPosition::Bottom));
         }
         "apps" => walk(&mut m, Step::Apps, true),

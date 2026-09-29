@@ -75,6 +75,34 @@ defaults.
   hardcodes PulseAudio/PipeWire's CLI. A proper audio service belongs in the
   userland crates.
 
+## Screen capture
+
+- **A first-party capture / screenshot tool.** Today capture is whatever
+  `grim` or a portal client gets from `render/capture.rs`, which renders
+  surfaces only — no blur (or its frost/glass modes), rounding, shadow or
+  glow, so a screenshot never matches the screen (`KNOWNBUGS.md` CAP-01).
+  Owner direction (2026-09-27): build EclipseOS's own capture instead —
+  region / window / output shots and screencasts that render the real
+  composed look, with redaction applied *before* effects so a blurred secret
+  is still redacted. Capture is TCB (`render/capture.rs`), so this is main
+  thread + owner review, not a delegated job. Would also give agents a
+  faithful headless screenshot path instead of nesting winit inside headless.
+
+## Wallpaper
+
+`eclipse-wallpaper` v1 (ADR 0068) draws one still image or a solid colour per
+output. Beyond that:
+
+- **Animated / GIF wallpapers.** Frame timing on the `Background` layer, paused
+  while the output is covered or off, so an idle desktop costs nothing. Reopens
+  ADR 0068.
+- **Directory slideshow on an interval.** `path` names a directory; the daemon
+  cycles its images every N minutes. Also reopens ADR 0068.
+- **Per-output picker in Settings.** v1 per-output overrides are KDL-only
+  (`output "<name>" { … }` inside `wallpaper`); the Desktop pane shows only
+  the global keys. Wants an output list and an image picker type, the same one
+  the splash entry below needs.
+
 ## Install and boot
 
 - **A first-class GUI installer — no command line, ever.** The CLI
@@ -174,6 +202,13 @@ first, then where the code goes, then the COMP-16 milestone.
   (autostart set, default binds, panel) that explicit config overrides. Does
   not exist; was out of scope by DE plan B7. `config/mod.rs`, `config/schema.rs`.
   *Phase 1, DE userland.*
+- **`eclipse-wallpaper` v1.** ADR 0068, D-05 §5. New crate
+  `crates/eclipse-wallpaper/`: layer-shell on `Background`, one surface per
+  output, image (`fill`/`fit`/`center`) or solid colour, reload on `config`,
+  reconcile on `output`. Schema keys `wallpaper.path`/`mode`/`color` and the
+  KDL-only `output` child in `config/schema.rs`; Appearance-pane rows in
+  eclipse-settings; `dist/` unit `eclipse-wallpaper.service` and split package
+  `eclipseos-wallpaper` under `eclipseos-meta`. *Phase 1, DE userland.*
 - **Taskbar clock: calendar drawer.** See Taskbar above;
   `crates/hyperion/src/view.rs`. *Phase 1, DE userland.*
 - **Re-verify, don't write:** `BLUR-02` (`KNOWNBUGS.md`, against `107b5de`)

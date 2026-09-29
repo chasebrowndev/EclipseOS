@@ -11,7 +11,8 @@ use iced::widget::{button, column, container, row, rule, stack, svg, text, Colum
 use iced::{Alignment, Color, Element, Font, Length, Theme};
 
 use crate::theme;
-use crate::tokens::{color, drawer, font, menu, radius, size, space};
+use crate::tokens::{breakpoint, color, drawer, font, menu, radius, size, space};
+use crate::widget::Fold;
 
 /// A glass panel. The one container every block on a pane sits in.
 ///
@@ -55,6 +56,10 @@ pub fn micro_label<'a, Message: 'a>(label: &str) -> Element<'a, Message, Theme> 
 
 /// A pane title with its one-line subtitle, and up to three controls at the
 /// right. The subtitle is where a pane is allowed to say one thing in yellow.
+///
+/// When the title block and the controls do not both fit on one line, the
+/// controls drop beneath the subtitle ([`fold`]) rather than squeezing it into
+/// a wrapped column beside them or running off the edge of the window.
 pub fn header<'a, Message: 'a>(
     title: &'a str,
     subtitle: impl Into<Element<'a, Message, Theme>>,
@@ -67,16 +72,69 @@ pub fn header<'a, Message: 'a>(
             .style(theme::text_primary),
         subtitle.into(),
     ]
-    .spacing(6);
+    .spacing(space::TITLE_GAP);
 
-    let mut right = Row::new().spacing(8).align_y(Alignment::Center);
-    for control in controls {
-        right = right.push(control);
-    }
-
-    row![left, Space::new().width(Length::Fill), right]
+    let right = Row::with_children(controls)
+        .spacing(space::HEADER_GAP)
         .align_y(Alignment::Center)
-        .into()
+        .wrap()
+        .vertical_spacing(space::HEADER_GAP);
+
+    Fold::new(left, right, space::FOLD_X, space::ROW_Y).into()
+}
+
+/// A lead and a trail on one line when both fit at their natural width, and
+/// the trail beneath the lead when they do not.
+///
+/// A widget and not a `row` because a row cannot change axis: given too
+/// little room it squeezes, which wraps a label into two lines and pushes a
+/// fixed-width control past the edge of its card. Nor is it iced's
+/// `responsive`, which rebuilds its content per layout and so cannot take an
+/// element the caller has already built — and every settings row is exactly
+/// that. The decision is made on the widget's *own* width, so a row folds
+/// because its card is narrow, whatever the window is doing.
+pub fn fold<'a, Message: 'a>(
+    lead: impl Into<Element<'a, Message, Theme>>,
+    trail: impl Into<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    Fold::new(lead, trail, space::FOLD_X, space::FOLD_Y).into()
+}
+
+/// Two equal columns of settings rows, stacked once a half could no longer
+/// hold a numeric row folded under its label ([`space::CONTROL_COL_W`]).
+///
+/// A widget for the same reason as [`fold`]: a `row` of two fill columns
+/// halves them however narrow the card gets, and past that point every
+/// slider's typed entry is cut off at the column edge.
+pub fn halves<'a, Message: 'a>(
+    left: impl Into<Element<'a, Message, Theme>>,
+    right: impl Into<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    Fold::halves(left, right, space::BLOCK, space::BLOCK, space::CONTROL_COL_W).into()
+}
+
+/// How much room the window gives the frame around a pane.
+///
+/// Only the frame reads this — sidebar width, content padding. Rows do not:
+/// they [`fold`] on their own width, which is the one that matters to them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Density {
+    /// The spec's frame: 214px sidebar, 26/30 content padding.
+    Regular,
+    /// A narrow window: a slimmer sidebar with no icon squares, tighter
+    /// padding.
+    Compact,
+}
+
+impl Density {
+    /// The density for a window `width` logical pixels wide.
+    pub fn for_width(width: f32) -> Self {
+        if width < breakpoint::COMPACT {
+            Density::Compact
+        } else {
+            Density::Regular
+        }
+    }
 }
 
 /// A subtitle line whose middle clause carries the accent.
@@ -731,25 +789,77 @@ pub fn battery_gauge_faded<'a, Message: 'a>(
     .into()
 }
 
-/// A list row: label at the left, mono value at the right.
+/// A list row: label at the left, mono value at the right — or, when the row
+/// is too narrow for both on one line, the value beneath the label ([`fold`]).
+/// Either way the value stays inside the row.
 pub fn list_row<'a, Message: 'a>(
     label: &str,
     value: impl Into<Element<'a, Message, Theme>>,
 ) -> Element<'a, Message, Theme> {
-    container(
-        row![
-            text(label.to_string())
-                .font(font::UI)
-                .size(size::BODY)
-                .style(theme::text_secondary),
-            Space::new().width(Length::Fill),
-            value.into(),
-        ]
-        .align_y(Alignment::Center),
-    )
+    container(fold(
+        text(label.to_string())
+            .font(font::UI)
+            .size(size::BODY)
+            .style(theme::text_secondary),
+        value,
+    ))
     .padding([space::ROW_Y, space::CARD])
     .width(Length::Fill)
     .into()
+}
+
+/// A setting that does not apply right now, drawn at reduced strength and
+/// still fully editable — never hidden. `dim == false` passes it through, so
+/// a row keeps its place in the widget tree as it dims and undims.
+///
+/// A widget ([`crate::widget::Veil`]) and not a styled container, because the
+/// dimming has to reach every control the row might hold, and iced styles
+/// each control separately: there is no container property that fades what
+/// is inside it.
+pub fn dimmed<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    dim: bool,
+) -> Element<'a, Message, Theme> {
+    crate::widget::Veil::new(content, dim.then_some(&color::VEIL[..]), radius::INSET).into()
+}
+
+/// A caption over a run of rows inside one panel — "Frost" above the rows
+/// that tune frost. Quieter than the panel's [`micro_label`] heading, and
+/// inset like a [`list_row`]'s label so it reads as belonging to the rows.
+pub fn row_caption<'a, Message: 'a>(caption: &str) -> Element<'a, Message, Theme> {
+    container(
+        text(caption.to_string())
+            .font(font::UI_MEDIUM)
+            .size(size::BODY_SMALL)
+            .style(theme::text_tertiary),
+    )
+    .padding([0.0, space::CARD])
+    .into()
+}
+
+/// The colour a colour field holds, as a small disc beside the field.
+/// Display only: the field is the editor. The hairline ring keeps a colour
+/// that matches the panel, or a transparent one, from vanishing; the top-edge
+/// highlight is the same light source every glass surface catches.
+pub fn swatch<'a, Message: 'a>(fill: Color) -> Element<'a, Message, Theme> {
+    container(Space::new())
+        .width(Length::Fixed(space::SWATCH))
+        .height(Length::Fixed(space::SWATCH))
+        .style(move |_t: &Theme| container::Style {
+            background: Some(iced::Background::Color(fill)),
+            border: iced::Border {
+                color: color::BORDER_STRONG,
+                width: space::HAIRLINE,
+                radius: radius::PILL.into(),
+            },
+            shadow: iced::Shadow {
+                color: color::HIGHLIGHT_SOFT,
+                offset: iced::Vector::new(0.0, -space::HAIRLINE),
+                blur_radius: 0.0,
+            },
+            ..container::Style::default()
+        })
+        .into()
 }
 
 /// The mono right-hand side of a list row — a path, a rate, a device id.
@@ -788,13 +898,14 @@ pub fn pill<'a, Message: Clone + 'a>(
             .font(font::UI_MEDIUM)
             .size(size::BODY_SMALL),
     )
-    .padding([6, 14])
+    .padding([space::PILL_Y, space::PILL_X])
     .on_press(on_press)
     .style(theme::pill(selected))
     .into()
 }
 
-/// A segmented choice: pills in a row, one of them accented.
+/// A segmented choice: pills in a row, one of them accented. The row wraps
+/// onto a second line rather than running past its panel.
 pub fn segmented<'a, T, Message>(
     options: &'a [(T, &'a str)],
     current: &T,
@@ -804,11 +915,26 @@ where
     T: PartialEq,
     Message: Clone + 'a,
 {
-    let mut r = Row::new().spacing(6);
-    for (v, label) in options {
-        r = r.push(pill(label, v == current, on_select(v)));
-    }
-    r.into()
+    pill_group(
+        options
+            .iter()
+            .map(|(v, label)| pill(label, v == current, on_select(v)))
+            .collect(),
+    )
+}
+
+/// Pills side by side, wrapping onto further lines when the row runs out.
+///
+/// A widget so that every exclusive choice in the desktop wraps the same way
+/// — `segmented` for a typed option list, a schema pane for its strings —
+/// instead of one of them remembering `.wrap()` and the next one clipping
+/// "Dwindle Classic" off the edge of a card.
+pub fn pill_group<'a, Message: 'a>(pills: Vec<Element<'a, Message, Theme>>) -> Element<'a, Message, Theme> {
+    Row::with_children(pills)
+        .spacing(space::PILL_GAP)
+        .wrap()
+        .vertical_spacing(space::PILL_GAP)
+        .into()
 }
 
 /// A sidebar nav item. The 3px accent bar is a sibling quad, because a
@@ -818,6 +944,18 @@ pub fn nav_item<'a, Message: Clone + 'a>(
     active: bool,
     on_press: Message,
 ) -> Element<'a, Message, Theme> {
+    nav_item_at(Density::Regular, label, active, on_press)
+}
+
+/// [`nav_item`] at a [`Density`]. Compact drops the icon square — it is a
+/// placeholder, and in a narrow sidebar the label is what identifies a pane.
+pub fn nav_item_at<'a, Message: Clone + 'a>(
+    density: Density,
+    label: &'a str,
+    active: bool,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
+    let compact = density == Density::Compact;
     let bar = container(Space::new())
         .width(space::BAR_W)
         .height(space::NAV_BAR_H)
@@ -854,24 +992,33 @@ pub fn nav_item<'a, Message: Clone + 'a>(
             ..container::Style::default()
         });
 
+    let name = text(label)
+        .font(if active { font::UI_MEDIUM } else { font::UI })
+        .size(size::BODY)
+        .wrapping(text::Wrapping::None);
+    let face: Element<'a, Message, Theme> = if compact {
+        name.into()
+    } else {
+        row![glyph, name]
+            .spacing(space::NAV_GLYPH_GAP)
+            .align_y(Alignment::Center)
+            .into()
+    };
+    let pad = if compact {
+        [space::NAV_Y_COMPACT, space::NAV_X_COMPACT]
+    } else {
+        [space::NAV_Y, space::NAV_X]
+    };
+
     row![
         bar,
-        button(
-            row![
-                glyph,
-                text(label)
-                    .font(if active { font::UI_MEDIUM } else { font::UI })
-                    .size(size::BODY),
-            ]
-            .spacing(10)
-            .align_y(Alignment::Center),
-        )
-        .padding([7, 10])
-        .width(Length::Fill)
-        .on_press(on_press)
-        .style(theme::nav(active)),
+        button(face)
+            .padding(pad)
+            .width(Length::Fill)
+            .on_press(on_press)
+            .style(theme::nav(active)),
     ]
-    .spacing(5)
+    .spacing(space::NAV_BAR_GAP)
     .align_y(Alignment::Center)
     .into()
 }
@@ -881,6 +1028,21 @@ pub fn sidebar<'a, Message: 'a>(
     items: Vec<Element<'a, Message, Theme>>,
     footer: Vec<(&'a str, String)>,
 ) -> Element<'a, Message, Theme> {
+    sidebar_at(Density::Regular, items, footer)
+}
+
+/// [`sidebar`] at a [`Density`]: [`space::SIDEBAR_W`] regular,
+/// [`space::SIDEBAR_W_COMPACT`] compact. Build its items with
+/// [`nav_item_at`] at the same density.
+pub fn sidebar_at<'a, Message: 'a>(
+    density: Density,
+    items: Vec<Element<'a, Message, Theme>>,
+    footer: Vec<(&'a str, String)>,
+) -> Element<'a, Message, Theme> {
+    let (width, pad_x) = match density {
+        Density::Regular => (space::SIDEBAR_W, space::SIDEBAR_X),
+        Density::Compact => (space::SIDEBAR_W_COMPACT, space::SIDEBAR_X_COMPACT),
+    };
     let mut nav = Column::new().spacing(2);
     for item in items {
         nav = nav.push(item);
@@ -909,9 +1071,9 @@ pub fn sidebar<'a, Message: 'a>(
             .spacing(space::BLOCK)
             .width(Length::Fill),
     )
-    .width(space::SIDEBAR_W)
+    .width(width)
     .height(Length::Fill)
-    .padding([space::PANE_Y, 12.0])
+    .padding([space::PANE_Y, pad_x])
     .style(theme::sidebar)
     .into()
 }
@@ -919,12 +1081,27 @@ pub fn sidebar<'a, Message: 'a>(
 /// The content column to the right of the sidebar: 26/30 padding, 18 between
 /// blocks.
 pub fn content<'a, Message: 'a>(blocks: Vec<Element<'a, Message, Theme>>) -> Element<'a, Message, Theme> {
-    let mut col = Column::new().spacing(space::BLOCK);
-    for b in blocks {
-        col = col.push(b);
-    }
+    content_at(Density::Regular, blocks)
+}
+
+/// [`content`] at a [`Density`]. The column fills a narrow window and stops
+/// at [`space::CONTENT_MAX`] in a wide one, held against the sidebar with the
+/// pane's own padding: centred, a 2560px window opened a gap of several
+/// hundred pixels between the nav and the pane it selects.
+pub fn content_at<'a, Message: 'a>(
+    density: Density,
+    blocks: Vec<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    let col = Column::with_children(blocks)
+        .spacing(space::BLOCK)
+        .width(Length::Fill)
+        .max_width(space::CONTENT_MAX);
+    let pad = match density {
+        Density::Regular => [space::PANE_Y, space::PANE_X],
+        Density::Compact => [space::PANE_Y_COMPACT, space::PANE_X_COMPACT],
+    };
     container(col)
-        .padding([space::PANE_Y, space::PANE_X])
+        .padding(pad)
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
@@ -1232,6 +1409,9 @@ impl<'a, Message: Clone + 'a> From<NumericSlider<'a, Message>> for Element<'a, M
             entry = entry.on_submit(commit);
         }
 
+        // A fixed track, not a filling one: a `Shrink` row compresses its
+        // main axis, so a fill child would get no width at all. [`fold`]
+        // stacks the pair under its label when the row is too narrow.
         row![track, entry]
             .spacing(space::CONTROL_GAP)
             .align_y(Alignment::Center)

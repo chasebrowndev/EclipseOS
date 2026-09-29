@@ -133,6 +133,11 @@ pub const COMPONENT_LAUNCHERS: &[&str] = &["eclipse-launcher", "fuzzel", "none"]
 pub const COMPONENT_NOTIFICATIONS: &[&str] = &["eclipse-toasts", "mako", "none"];
 pub const COMPONENT_CONTROL_CENTERS: &[&str] = &["eclipse-center", "none"];
 
+/// `wallpaper.mode` values, as `eclipse-wallpaper` draws them.
+pub const WALLPAPER_MODES: &[&str] = &["fill", "fit", "center"];
+/// `wallpaper.color` default, `#0b0906`.
+pub const WALLPAPER_DEFAULT_COLOR: [f32; 4] = [11.0 / 255.0, 9.0 / 255.0, 6.0 / 255.0, 1.0];
+
 /// Every scalar key `abyss` understands.
 ///
 /// `xwayland.enable` is `Abyss` and not `Policy` even though disabling X11 is
@@ -186,6 +191,32 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Which control center `abyss-session` runs (COMP-17 §2.2).",
+    ),
+    // wallpaper: read by the eclipse-wallpaper daemon; abyss draws nothing
+    k(
+        "wallpaper.path",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Image file drawn behind all windows. Unset or unreadable falls back to color.",
+    ),
+    k(
+        "wallpaper.mode",
+        Ty::Enum(WALLPAPER_MODES),
+        Str("fill"),
+        Abyss,
+        Live,
+        "How the image is sized: `fill` covers the output and crops, `fit` \
+       letterboxes, `center` draws it at native size.",
+    ),
+    k(
+        "wallpaper.color",
+        Ty::Color,
+        Color(WALLPAPER_DEFAULT_COLOR),
+        Abyss,
+        Live,
+        "Solid background, and letterbox fill.",
     ),
     // general
     k(
@@ -640,13 +671,17 @@ pub const TABLE: &[Key] = &[
         "Strength of the darkening overlay on unfocused windows.",
     ),
     k(
-        "decoration.blur.enabled",
-        Ty::Bool,
-        Bool(true),
+        "decoration.blur.mode",
+        Ty::Enum(crate::config::BlurMode::NAMES),
+        Str("blur"),
         Abyss,
         Live,
-        "Dual-Kawase blur behind translucent windows and layer-shell surfaces. \
-       A layer blurs only where its opaque region leaves it uncovered.",
+        "What is drawn behind translucent windows and layer-shell surfaces: \
+       `off`, a plain dual-Kawase `blur`, `frost` (blur with a tint and fine \
+       grain) or `glass` (a blurred pane inside a rounded bevel that refracts \
+       the sharp backdrop, with a rim light; it holds a second backdrop \
+       texture per surface). A layer blurs only where its opaque region leaves it uncovered. \
+       Replaces the old `enabled` bool, which still loads (`#false` is `off`).",
     ),
     k(
         "decoration.blur.size",
@@ -663,6 +698,49 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Down/up-sample pairs in the blur chain.",
+    ),
+    k(
+        "decoration.blur.glass.refraction",
+        int(0, 64),
+        Int(16),
+        Abyss,
+        Live,
+        "`glass`: how far the bevel bends the backdrop, logical px at its \
+       steepest. 0 is flat glass.",
+    ),
+    k(
+        "decoration.blur.glass.bevel",
+        int(1, 128),
+        Int(22),
+        Abyss,
+        Live,
+        "`glass`: width of the rounded rim, logical px in from the edge. The \
+       rim shows the backdrop sharp and refracted, fading into the blurred \
+       interior.",
+    ),
+    k(
+        "decoration.blur.glass.dispersion",
+        PCT,
+        Float(0.25),
+        Abyss,
+        Live,
+        "`glass`: colour fringing in the bevel; 0.25 is crown glass, 0 none.",
+    ),
+    k(
+        "decoration.blur.glass.rim",
+        PCT,
+        Float(0.45),
+        Abyss,
+        Live,
+        "`glass`: strength of the warm rim light along the upper-left edges.",
+    ),
+    k(
+        "decoration.blur.frost.tint",
+        Ty::Color,
+        Color(crate::config::FROST_TINT),
+        Abyss,
+        Live,
+        "`frost`: colour mixed over the blurred backdrop; its alpha is how much.",
     ),
     k(
         "decoration.shadow.enabled",
@@ -981,6 +1059,7 @@ pub const COLLECTIONS: &[Collection] = &[
     Collection { node: "workspace", owner: Abyss, doc: "Per-workspace layout override." },
     Collection { node: "widget", owner: Abyss, doc: "A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget \"<name>\" { exec \"<argv0>\" \"<arg>\"…; interval-ms <ms>; }`; or `stream #true` instead of `interval-ms`, for a command that keeps running and prints one update per line; or `source \"<source>\"` with a `format` instead of `exec`. `bar.widgets.order` draws it as `custom:<name>`. Commands run argv-exec, never through a shell, off the draw path, with a timeout and a 4 KiB line cap, and are killed on reload or removal. A line of output is plain text or JSON `{text, detail, tooltip, state}`; it is shown as plain text, never markup, and never logged. A command has exactly your authority and gains nothing from the taskbar. A later block with the same name replaces an earlier one. `get_config` lists every block, in file order, under `collections.widget` as `{\"name\", \"kind\": \"exec\" | \"stream\" | \"source\", \"exec\": [argv] | null, \"interval-ms\": int | null, \"source\": string | null, \"format\": string | null, \"icon\": string | null, \"on-click\": [argv] | null, \"on-scroll-up\": [argv] | null, \"on-scroll-down\": [argv] | null, \"approval\": \"approved\", \"premade\": bool}`, every field always present: `exec` is set for `exec` and `stream`, `interval-ms` for `exec` only, `source` and `format` for `source` only; `premade` is true when the block is identical to the catalog block of the same name. Widgets are an add-on hook (ADR 0066): unless an installed add-on (the taskbar) turns on `taskbar-widgets`, `widget` blocks are ignored rather than refused, their `custom:` ids are dropped from `bar.widgets.*`, `collections.widget` is empty and `set_config_collection` for `widget` is refused. With the hook on, the premade catalog (`/usr/share/eclipse/widgets/*.kdl`, each file only `bar { widget … }`) is the lowest config layer, below `/etc/eclipse/abyss.kdl`, so `custom:<premade>` works with no block of your own and a block of the same name replaces it. Command widgets need your approval (ADR 0067): an `exec` or `stream` widget runs only if it is an unedited catalog block or you approved exactly this definition (name, argv, interval or stream, and actions) in the compositor-drawn prompt. Anything else, an edited premade or a new command, is withheld: it does not run, its `custom:` id stays and draws nothing, and `collections.widget` lists it as `{\"name\", \"approval\": \"pending\", \"premade\": false, \"altered\": bool}` with no command fields (`altered` is true for an edited premade). Any later edit withholds it again. Not now lasts for the session; the control-socket method `review_widget {\"name\"}` (owner only) brings the prompt back, returns `{\"name\", \"queued\": bool}`, never shows two prompts for one widget, and cannot approve anything itself. `approval`, `premade` and `altered` are ignored on write." },
     Collection { node: "windowrule", owner: Abyss, doc: "A rule matched against windows at map time. Its *action* decides the owning file." },
+    Collection { node: "wallpaper.output", owner: Abyss, doc: "A per-output wallpaper override, written inside `wallpaper { }`: `output \"<name>\" { path \"…\"; mode \"fit\"; color \"#rrggbb\"; }`, any subset of the three keys, each validated as its `wallpaper.*` key is; a key left out inherits the global one. `<name>` is the connector name (`DP-1`). A later block for the same name overrides an earlier one key by key. KDL-only: not settable over the socket. `get_config` lists them, in file order, under `collections.\"wallpaper.output\"` as `{\"output\", \"path\": string | null, \"mode\": string | null, \"color\": \"#rrggbbaa\" | null}`, every field always present; `null` means inherited." },
 ];
 
 /// `windowrule` is the one construct whose criticality is mixed: `float` is
@@ -1287,9 +1366,11 @@ pub const RULE_ACTION_FORMS: &[Form] = &[
     ),
     form(
         &["blur"],
-        "true | false",
-        &["blur true", "blur false"],
-        "Force blur on or off, overriding `decoration.blur.enabled`. An opaque window never blurs.",
+        "off | blur | frost | glass | true | false",
+        &["blur glass", "blur off", "blur true"],
+        "This window's blur mode, overriding `decoration.blur.mode`. `true` is \
+       the global mode (plain `blur` if that is `off`), `false` is `off`. An \
+       opaque window never blurs.",
     ),
     form(
         &["workspace"],
@@ -1512,6 +1593,12 @@ pub const BIND_ACTIONS: &[Form] = &[
 /// This is the other half of the write path: `get_config` answers with it, and
 /// the drift test below asserts it agrees with the `default` column on a
 /// default `Config` for every single row.
+/// Widen an f32 setting through its shortest decimal form, so `0.35` reads
+/// back as `0.35` rather than `0.3499999940395355`.
+fn widen(x: f32) -> f64 {
+    x.to_string().parse().unwrap_or(x as f64)
+}
+
 pub fn get(c: &Config, path: &str) -> Option<Value> {
     use Value as V;
     let s = |o: &Option<String>| o.clone().map_or(V::Null, V::Str);
@@ -1523,6 +1610,9 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "components.launcher" => V::Str(c.components.launcher.clone()),
         "components.notifications" => V::Str(c.components.notifications.clone()),
         "components.control-center" => V::Str(c.components.control_center.clone()),
+        "wallpaper.path" => s(&c.wallpaper.path),
+        "wallpaper.mode" => V::Str(c.wallpaper.mode.clone()),
+        "wallpaper.color" => V::Color(c.wallpaper.color),
         "general.gaps-in" => V::Int(c.general.gaps_in as i64),
         "general.gaps-out" => V::Int(c.general.gaps_out as i64),
         "general.border-size" => V::Int(c.general.border_size as i64),
@@ -1577,10 +1667,15 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
             .into(),
         ),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
-        "decoration.active-opacity" => V::Float(c.decoration.active_opacity as f64),
-        "decoration.inactive-opacity" => V::Float(c.decoration.inactive_opacity as f64),
-        "decoration.dim-inactive" => V::Float(c.decoration.dim_inactive as f64),
-        "decoration.blur.enabled" => V::Bool(c.decoration.blur.enabled),
+        "decoration.active-opacity" => V::Float(widen(c.decoration.active_opacity)),
+        "decoration.inactive-opacity" => V::Float(widen(c.decoration.inactive_opacity)),
+        "decoration.dim-inactive" => V::Float(widen(c.decoration.dim_inactive)),
+        "decoration.blur.mode" => V::Str(c.decoration.blur.mode.name().into()),
+        "decoration.blur.glass.refraction" => V::Int(c.decoration.blur.glass.refraction as i64),
+        "decoration.blur.glass.bevel" => V::Int(c.decoration.blur.glass.bevel as i64),
+        "decoration.blur.glass.dispersion" => V::Float(widen(c.decoration.blur.glass.dispersion)),
+        "decoration.blur.glass.rim" => V::Float(widen(c.decoration.blur.glass.rim)),
+        "decoration.blur.frost.tint" => V::Color(c.decoration.blur.frost.tint),
         "decoration.blur.size" => V::Int(c.decoration.blur.size as i64),
         "decoration.blur.passes" => V::Int(c.decoration.blur.passes as i64),
         "decoration.shadow.enabled" => V::Bool(c.decoration.shadow.enabled),

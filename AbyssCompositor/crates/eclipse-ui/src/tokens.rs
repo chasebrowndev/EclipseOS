@@ -108,6 +108,28 @@ pub mod color {
     /// outline keeps describing the shape and the fill only says "the pointer
     /// is here".
     pub const LIFT_SOFT: Color = white(0.035);
+    /// Laid over a settings row that does not apply right now
+    /// ([`crate::widget::dimmed`]): a panel's own ground — [`BASE`], then
+    /// [`GLASS`] — repainted at [`VEIL_STRENGTH`], so the row fades toward the
+    /// card it sits on instead of greying into a slab of its own.
+    ///
+    /// The two layers and not one pre-mixed colour, because the renderer
+    /// blends in linear light: `GLASS` over `BASE` on screen is far lighter
+    /// than the same mix worked out in sRGB, and a pre-mixed veil showed as a
+    /// dark box. Repainting the same layers lands on the same ground however
+    /// the renderer blends.
+    pub const VEIL: [Color; 2] = [
+        Color {
+            a: VEIL_STRENGTH,
+            ..BASE
+        },
+        Color {
+            a: GLASS.a * VEIL_STRENGTH,
+            ..GLASS
+        },
+    ];
+    /// How far a [`VEIL`] fades what it covers toward the ground.
+    pub const VEIL_STRENGTH: f32 = 0.62;
     /// Sidebar ground: darker than the panes it sits beside.
     pub const SIDEBAR: Color = Color {
         r: 0.0,
@@ -180,6 +202,38 @@ pub mod space {
     /// item or a choice row. Three pixels, per the spec.
     pub const BAR_W: f32 = 3.0;
     pub const SIDEBAR_W: f32 = 214.0;
+    /// The sidebar below [`super::breakpoint::COMPACT`]: wide enough for the
+    /// longest pane title and a mono footer, and no wider — the icon squares
+    /// go, because they are placeholders and cost 25px of every row.
+    pub const SIDEBAR_W_COMPACT: f32 = 148.0;
+    /// The sidebar's own side padding, and its compact form.
+    pub const SIDEBAR_X: f32 = 12.0;
+    pub const SIDEBAR_X_COMPACT: f32 = 8.0;
+    /// Content column padding below the compact breakpoint: the 26/30 of a
+    /// 1120px window is a fifth of a 500px column.
+    pub const PANE_X_COMPACT: f32 = 16.0;
+    pub const PANE_Y_COMPACT: f32 = 18.0;
+    /// The widest the content column grows. Past this, rows stop being rows —
+    /// a label at one edge of a 2000px card and its toggle at the other are
+    /// not visibly the same setting — so the column stops, and stays beside
+    /// the sidebar, rather than drifting into the middle of a wide window.
+    pub const CONTENT_MAX: f32 = 880.0;
+    /// A nav item's padding, and its compact form.
+    pub const NAV_Y: f32 = 7.0;
+    pub const NAV_X: f32 = 10.0;
+    pub const NAV_Y_COMPACT: f32 = 5.0;
+    pub const NAV_X_COMPACT: f32 = 8.0;
+    /// Between a nav item's accent bar and its button, and between its icon
+    /// square and its label.
+    pub const NAV_BAR_GAP: f32 = 5.0;
+    pub const NAV_GLYPH_GAP: f32 = 10.0;
+    /// A folded row: the least air between a label and its control when they
+    /// share a line, and the air between them when the control drops below.
+    pub const FOLD_X: f32 = 16.0;
+    pub const FOLD_Y: f32 = 6.0;
+    /// Between a pane title and its subtitle, and between header controls.
+    pub const TITLE_GAP: f32 = 6.0;
+    pub const HEADER_GAP: f32 = 8.0;
     /// The square a small indicator mark (signal bars, battery gauge) is
     /// drawn into. Deliberately smaller than an icon: a mark reports a
     /// magnitude, it does not identify anything.
@@ -201,10 +255,23 @@ pub mod space {
     pub const NUMBER_W: f32 = 64.0;
     /// A free-text field in a settings row.
     pub const FIELD_W: f32 = 220.0;
+    /// The slot beside a free-text field that says "invalid" while its draft
+    /// is refused. Always reserved, empty or not: the field keeps one width
+    /// and one widget tree, so a draft that flips validity keeps the focus.
+    pub const VERDICT_W: f32 = 7.0 * super::canvas::MONO_CHAR_W;
+    /// The square beside a colour field that shows the colour it holds.
+    pub const SWATCH: f32 = 18.0;
+    /// A column of settings rows set beside a hero rather than filling the
+    /// pane (the Taskbar's Motion band): exactly wide enough for a numeric
+    /// row folded under its label, so the band wraps instead of squeezing it.
+    pub const CONTROL_COL_W: f32 = SLIDER_W + CONTROL_GAP + NUMBER_W + 2.0 * CARD;
     /// Between the two halves of one control (track and entry).
     pub const CONTROL_GAP: f32 = 10.0;
     /// Between the pills of one segmented choice.
     pub const PILL_GAP: f32 = 6.0;
+    /// A pill button's padding.
+    pub const PILL_Y: f32 = 6.0;
+    pub const PILL_X: f32 = 14.0;
     /// A hero's level bar: half the content column, so the reading beside it
     /// keeps the other half.
     pub const HERO_METER_W: f32 = 360.0;
@@ -225,6 +292,16 @@ pub mod space {
     pub const GRID_GAP: f32 = 10.0;
     /// Between the lines inside a status cell or an edge note.
     pub const LINE_GAP: f32 = 3.0;
+}
+
+/// Window widths at which a pane's frame changes shape. Only the frame: rows
+/// fold on their own width ([`crate::widget::fold`]), never on the window's.
+pub mod breakpoint {
+    /// Below this the sidebar compacts and the content padding tightens. The
+    /// spec window is 1120; at 900 its 214px sidebar plus 60px of padding is
+    /// already a third of the width, which is where the user's report of a
+    /// sidebar that "never yields" starts.
+    pub const COMPACT: f32 = 900.0;
 }
 
 pub mod size {
@@ -445,6 +522,24 @@ pub mod bar {
     /// to its grip keeps, as a fraction. The grip's line is the object; the
     /// capsule around a lone grip is only there to say where it ends.
     pub const GRIP_GROUND: f32 = 0.4;
+    /// How far short of its open body a dragged widget may be released and
+    /// still land Open, and the band in which a drag holds at Open.
+    ///
+    /// A drag on a grip is usually an *adjustment* — pulling a reveal out,
+    /// pushing it back — and the hand overshoots Open on the way back by a
+    /// few pixels plus whatever the fling adds. Four-fifths of an icon
+    /// ([`super::size::ICON`]) is past any overshoot of that kind (and four
+    /// times [`super::motion::TAP_SLOP`]), yet on the smallest widget — a
+    /// 30px network cell — closing still only asks for a push past half
+    /// the cell. Collapsed is reachable only by the pointer's own width
+    /// below this band; a fling never carries a release past Open into it.
+    pub const COLLAPSE_ALLOWANCE: f32 = super::size::ICON * 0.8;
+    /// The least air either side of a squeezed widget's lead content (its
+    /// mark, its art). The shell keeps the lead in view with this much
+    /// glass around it; narrower than that, the widget snaps to its grip.
+    /// The same air as between two cells, so a squeezed widget reads as
+    /// packed, never as cut.
+    pub const SQUEEZE_AIR: f32 = GAP;
     /// Padding inside the shell, either side of the core and the revealed
     /// section.
     pub const WIDGET_X: f32 = 8.0;

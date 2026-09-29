@@ -32,7 +32,7 @@ use iced::{Alignment, Element, Length, Theme};
 use eclipse_services::custom::{Kind, Output, WidgetSpec};
 use eclipse_ui::motion::Motion;
 use eclipse_ui::tokens::{bar, color};
-use eclipse_ui::widget::{self as parts, ClipEdge, Grip, ShellFrame, ShellSpan};
+use eclipse_ui::widget::{self as parts, ClipEdge, Grip, ShellFrame, ShellLook, ShellSpan};
 
 use crate::app::{App, Message};
 
@@ -107,6 +107,9 @@ pub struct Spans {
     pub core: f32,
     /// The revealed section's; 0 for none.
     pub revealed: f32,
+    /// The leading run of the core a squeezed widget must keep whole; 0 for
+    /// the whole core (see `layout::WidgetIn::lead`).
+    pub lead: f32,
     /// Anything to show at all. An absent widget animates out to zero.
     pub present: bool,
 }
@@ -391,9 +394,16 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
         },
         presence,
     };
-    let Parts { core, revealed } = parts(app, bar, id, frame);
+    // The ink reads the floor, not the core: a widget squeezed but still
+    // showing its lead is drawn at full ink, cut and not faded — a squeeze
+    // is deliberate, and only closing past the floor dims it to its grip.
+    let ink = ShellFrame {
+        open: (extent / input.floor().max(1.0)).clamp(0.0, 1.0),
+        ..frame
+    };
+    let Parts { core, revealed } = parts(app, bar, id, ink);
 
-    if !input.grip() {
+    if !input.grippable() {
         // Nothing to drag: an important widget with no revealed section is a
         // plain glass cell, clipped the same way while it comes and goes.
         let body = container(fixed(core, input.core)).padding([0.0, bar::WIDGET_X]);
@@ -412,11 +422,16 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
         });
     }
 
+    // A widget with nothing to reveal wears its grip only while squeezed past
+    // its floor, and grows it as it closes; the bar stays in the tree at zero
+    // width so a drag it started survives it.
+    let grip_w = input.grip_w(extent);
     let live = bar.motion.drag.as_ref().is_some_and(|d| d.key == key);
     let (press, drag_key, release) = (key.clone(), key.clone(), key);
     let grip = parts::drag_bar()
+        .width(grip_w)
         .state(if live { Grip::Active } else { Grip::Rest })
-        .opacity(frame.grip_alpha())
+        .opacity(frame.grip_alpha() * parts::lead(grip_w / bar::GRIP_W))
         .on_press(Message::Grip(press, GripEv::Press))
         .on_drag(move |dx| Message::Grip(drag_key.clone(), GripEv::Drag(dx)))
         .on_release(Message::Grip(release, GripEv::Release));
@@ -425,10 +440,11 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
         revealed: input.revealed,
     };
     let revealed = revealed.filter(|_| input.revealed > 0.0);
+    let closed = input.closed(extent);
     Some(Cell {
         presence,
-        closed: 1.0 - frame.open.max(frame.reveal),
-        element: parts::widget_shell(grip, core, revealed, span, frame),
+        closed,
+        element: parts::widget_shell_with(grip, core, revealed, span, frame, ShellLook { grip_w, closed }),
     })
 }
 

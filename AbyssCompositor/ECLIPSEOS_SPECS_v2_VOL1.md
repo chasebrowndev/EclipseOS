@@ -2663,6 +2663,23 @@ default; a layer anchored to three edges or to an opposite pair stays square,
 unless it holds a positive exclusive zone (the bar), which uses
 `bar.rounding`. The COMP-14 §6 shedding order is unchanged.
 
+*(added C-13, 2026-09-27)* Blur has a **mode**, `decoration.blur.mode`:
+`off | blur | frost | glass`, default `blur`. All three drawing modes share
+the dual-Kawase backdrop above and differ only in the shader that draws it
+under the surface: `blur` is the rounded mask alone; `frost` adds a tint
+(`decoration.blur.frost.tint`) and fine grain; `glass` ("Liquid Glass")
+refracts the backdrop through a rounded-box SDF bevel — the bevel band
+refracts the *unblurred* backdrop (level 0 of the chain, kept per glass
+surface only) and fades into the blurred backdrop across the interior — with
+chromatic dispersion in the bevel band and a specular rim
+(`decoration.blur.glass` tunables). `off` draws no backdrop and expands no damage. Every rule in
+this section — translucent-only, layer opaque regions, rounding, direct
+scanout, COMP-14 §6 shedding (which sheds every mode) — applies to all
+modes alike. Where glass samples beyond the kernel footprint, the §3
+damage expansion grows by its maximum refraction offset.
+`decoration.blur.enabled` is kept as a legacy alias (`false` ⇒ `off`,
+`true` ⇒ `blur`) and rewritten by `eclipse-ctl config migrate`.
+
 Animations are geometry-only in v1. **They must not affect what an agent
 sees**: `scene`/`get_tree` geometry reports the *target* geometry, not the
 interpolated one, so an agent never clicks where a window was mid-flight.
@@ -3341,6 +3358,9 @@ sensitivity, app-trust, seat-compat, no-agent, no-focus-steal, idle-inhibit.
 *(amended C-04, 2026-09-23)* As built (`RULE_ACTIONS`, `config/schema.rs`):
 actions add **`blur true|false`**, a per-window override of
 `decoration.blur.enabled` that never blurs an opaque window (COMP-02 §9).
+*(amended C-13, 2026-09-27)* `blur` also takes a mode,
+`off|blur|frost|glass`, overriding `decoration.blur.mode` for that window;
+`false` is `off`, and `true` is the global mode, or `blur` when that is `off`.
 `sensitivity` (raise-only: `private`, `secret`), `app-trust` (`standard`,
 `trusted`), `seat-compat` and `no-agent` are policy-owned and live in
 `policy.kdl`; the rest live in `abyss.kdl` (ADR 0037). `output` matches by
@@ -4907,7 +4927,7 @@ decoration {
     rounding 8
     active-opacity 1.0
     inactive-opacity 0.95
-    blur { enabled false; size 8; passes 2 }     // milestone 9b
+    blur { mode "glass"; size 8; passes 2 }      // C-13: off | blur | frost | glass
     shadow { enabled true; range 20 }
     glow { enabled false; active true; inactive true; strength 60 }  // C-11
 }
@@ -7274,6 +7294,7 @@ against source before it was written. Nothing was renumbered.
 | C-10 | COMP-05 §3.1 | *(2026-09-24, owner ruling)* **radiant** added as the default layout: weighted n-ary tree, per-window priority, drag-to-tile drop zones with guides (ADR 0058, supersedes the binary tree of ADR 0021, amends ADR 0057). `dwindle` kept as Dwindle Classic, `master` unchanged; drop zones and priority are radiant-only | yes |
 | C-11 | COMP-02 §4, §9; COMP-13 §1.1 | *(2026-09-25)* Border glow added: `decoration.glow { enabled; active; inactive; strength }`, the shadow shader in the border colour, outside-only, between shadow and border. Shadow row corrected from "nine-slice texture" to the SDF shader it is | yes |
 | C-12 | COMP-04 §2 | *(2026-09-24, owner ruling)* Bindable gestures gain `gesture "drag"`: modifier + 2/3/4-finger touchpad drag moves the window under the pointer, default Super + two fingers; two fingers claimed from finger scroll at its first event, without the modifiers scrolling is untouched; a finger count is swiped or dragged, not both (ADR 0059) | yes |
+| C-13 | COMP-02 §9; COMP-05 §4; COMP-13 §1.1 | *(2026-09-27, owner ruling)* Blur gains `decoration.blur.mode` `off\|blur\|frost\|glass` (default `blur`): frost and Liquid Glass are alternative final-draw shaders over the unchanged dual-Kawase backdrop; `enabled` kept as a legacy alias; the `blur` rule takes a mode; glass widens damage expansion by its refraction offset | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing

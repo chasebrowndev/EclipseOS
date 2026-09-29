@@ -16,7 +16,10 @@ HW-01 through HW-07 (the first Framework install, 2026-09-19) and PKG-01/PKG-02
 (updating a live install, 2026-09-22), PKG-03, PKG-04 and CFG-01 were fixed and removed on 2026-09-23; the
 rules they left behind are kept below. The full write-ups are in git history
 (this file at `20d8e3a`) and `docs/handoff/2026-09-19-greeter-to-abyss.md`.
-BLUR-02 and TILE-01 were fixed on 2026-09-23 and removed.
+BLUR-02 and TILE-01 were fixed on 2026-09-23 and removed. BLUR-02 came back and
+was fixed for real on 2026-09-28: the line was eclipse-toasts' idle 1 px
+transparent layer, which the compositor blurred; the stack now has no surface
+while empty.
 
 ---
 
@@ -59,6 +62,38 @@ with `mouse_area::on_right_press`, and a finger has no right button. iced 0.14's
 taskbar window button or tray icon. No menu opens. **Proposed:** a long-press
 (about 500 ms with no movement past a small slop) in hyperion that sends the same
 `Menu`/`TrayMenu` message.
+
+---
+
+# Screen capture — found building blur modes, 2026-09-27
+
+## CAP-01: screenshots and screencasts drop every compositor effect
+
+`render/capture.rs:315` (`capture_elements`, TCB) builds its own pass list
+from surface elements only; it deliberately leaves out cursor, borders and
+trusted UI (the shell's content, not the compositor's chrome), and in doing so
+also loses blur and its frost/glass modes, rounding, shadow, glow and
+dim-inactive. A capture is therefore not what the user sees: translucent
+windows show the unblurred desktop through square corners. **Repro:** set
+`decoration.blur.mode "glass"`, make a window translucent, `grim` the output;
+the backdrop is sharp and the corners square, identical in every mode.
+**Proposed:** none committed. Redaction must stay authoritative, so the effect
+elements would have to be rebuilt over the *redacted* list (a blurred secret
+is still a secret). The owner's direction is a first-party capture tool — see
+`PROPOSEDFEATURES.md` "Screen capture" — which would own this. Visual checks
+meanwhile use a nested winit abyss captured from the outer compositor.
+
+## BLUR-03: a blurred rectangle frames the toast stack
+
+Found 2026-09-28 fixing BLUR-02. While cards show, the compositor blurs the
+whole eclipse-toasts layer (404 x stack height), including the transparent
+gaps around and between the rounded cards, so a square blurred slab shows
+behind them. Layers are blurred wherever they leave the surface uncovered
+(`render/mod.rs:192`); the toasts surface is larger than what it draws.
+**Repro:** translucent window top-right, `notify-send` twice; see the slab
+around both cards. **Proposed:** none committed. Either the client tells the
+compositor where its glass is (`ext-background-effect-v1`, deferred from the
+blur-modes work) or each card becomes its own surface.
 
 ---
 

@@ -245,6 +245,60 @@ fn migrate_widgets(doc: &mut KdlDocument) -> bool {
     true
 }
 
+/// Rewrite the legacy `decoration { blur { enabled #true|#false } }` as
+/// `mode "blur"|"off"` (COMP-02 §9 blur modes). The node is edited in place so
+/// its comments and position survive; an existing `mode` is the human's newer
+/// word and wins, and the stale `enabled` is just dropped. Returns whether
+/// anything changed.
+fn migrate_blur_mode(doc: &mut KdlDocument) -> bool {
+    let mut changed = false;
+    for deco in doc
+        .nodes_mut()
+        .iter_mut()
+        .filter(|n| n.name().value() == "decoration")
+    {
+        let Some(children) = deco.children_mut().as_mut() else {
+            continue;
+        };
+        for blur in children
+            .nodes_mut()
+            .iter_mut()
+            .filter(|n| n.name().value() == "blur")
+        {
+            let Some(keys) = blur.children_mut().as_mut() else {
+                continue;
+            };
+            let has_mode = keys.nodes().iter().any(|n| n.name().value() == "mode");
+            let mut drop = false;
+            for node in keys
+                .nodes_mut()
+                .iter_mut()
+                .filter(|n| n.name().value() == "enabled")
+            {
+                changed = true;
+                if has_mode {
+                    drop = true;
+                    continue;
+                }
+                // A bare `enabled` meant true, as the parser reads it.
+                let on = node
+                    .entries()
+                    .iter()
+                    .find(|e| e.name().is_none())
+                    .and_then(|e| e.value().as_bool())
+                    .unwrap_or(true);
+                node.set_name("mode");
+                node.entries_mut().clear();
+                node.push(kdl::KdlEntry::new(if on { "blur" } else { "off" }));
+            }
+            if drop {
+                keys.nodes_mut().retain(|n| n.name().value() != "enabled");
+            }
+        }
+    }
+    changed
+}
+
 /// Returns `(abyss.kdl, policy.kdl, moved)` as text; `moved` is whether any
 /// node went to the policy side.
 fn split(doc: &KdlDocument, existing_policy: &KdlDocument) -> (String, String, bool) {
@@ -286,10 +340,11 @@ pub fn run(dry_run: bool) -> Result<String, String> {
         .map_err(|e| format!("{}: {e}", policy_path.display()))?;
 
     let widgets = migrate_widgets(&mut doc);
+    let blur = migrate_blur_mode(&mut doc);
     let (split_abyss, mut new_policy, moved) = split(&doc, &existing);
-    if !widgets && !moved {
+    if !widgets && !blur && !moved {
         return Ok(format!(
-            "{}: nothing to migrate — no policy settings or built-in tray ids found\n",
+            "{}: nothing to migrate — no policy settings, built-in tray ids or blur `enabled` found\n",
             abyss_path.display()
         ));
     }
@@ -333,8 +388,13 @@ pub fn run(dry_run: bool) -> Result<String, String> {
     }
     write(&abyss_path, &new_abyss)?;
     if !moved {
+        let what = match (widgets, blur) {
+            (true, true) => "built-in tray ids -> bar.widgets.order, blur enabled -> blur mode",
+            (true, false) => "built-in tray ids -> bar.widgets.order",
+            _ => "decoration.blur.enabled -> decoration.blur.mode",
+        };
         return Ok(format!(
-            "migrated: {} built-in tray ids -> bar.widgets.order (original saved as .bak)\n",
+            "migrated: {} {what} (original saved as .bak)\n",
             abyss_path.display()
         ));
     }
@@ -457,6 +517,39 @@ mod tests {
         let text = "bar {\n    tray {\n        pinned \"org.kde.x\"\n    }\n}\n";
         assert_eq!(widgets(text), (false, text.to_string()));
         assert!(!widgets("general {\n    gaps-in 5\n}\n").0);
+    }
+
+    fn blur(text: &str) -> (bool, String) {
+        let mut doc = parse(text);
+        let changed = migrate_blur_mode(&mut doc);
+        let out = doc.to_string();
+        out.parse::<KdlDocument>().expect("migrated text re-parses");
+        (changed, out)
+    }
+
+    #[test]
+    fn blur_enabled_becomes_a_mode() {
+        let (changed, out) = blur(
+            "decoration {\n    blur {\n        // mine\n        enabled #false\n        size 4\n    }\n}\n",
+        );
+        assert!(changed);
+        assert_eq!(
+            out,
+            "decoration {\n    blur {\n        // mine\n        mode off\n        size 4\n    }\n}\n"
+        );
+        let (_, out) = blur("decoration {\n    blur {\n        enabled #true\n    }\n}\n");
+        assert!(out.contains("mode blur\n"), "{out}");
+        let (_, out) = blur("decoration {\n    blur {\n        enabled\n    }\n}\n");
+        assert!(out.contains("mode blur\n"), "{out}");
+    }
+
+    #[test]
+    fn an_existing_blur_mode_wins_over_enabled() {
+        let (changed, out) =
+            blur("decoration {\n    blur {\n        mode glass\n        enabled #false\n    }\n}\n");
+        assert!(changed);
+        assert_eq!(out, "decoration {\n    blur {\n        mode glass\n    }\n}\n");
+        assert!(!blur("decoration {\n    blur {\n        mode frost\n    }\n}\n").0);
     }
 
     #[test]

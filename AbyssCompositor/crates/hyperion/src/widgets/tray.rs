@@ -54,6 +54,7 @@ pub fn spans(app: &App) -> Spans {
     Spans {
         core: marks_w(pinned.len()) + bar::ARROW_W,
         revealed: 0.0,
+        lead: 0.0,
         present: !pinned.is_empty() || !overflow.is_empty(),
     }
 }
