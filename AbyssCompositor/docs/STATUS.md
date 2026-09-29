@@ -455,6 +455,10 @@ Still deferred:
 - **Milestone 6 gate** — suspend/resume across a real logind cycle, laptop lid
   open/close (this machine has no lid; needs different hardware or a synthetic
   ACPI event).
+- **Liquid Glass on a real fractional-scale panel** — `decoration.blur.mode
+  "glass"` was checked only in a nested winit abyss at scales 1 and 1.5. It has
+  not been seen on KMS at a fractional scale, and its frame time against `blur`
+  has not been measured on real KMS (M9f harness; C-13, #47).
 - **VRR** — `vrr_capable`/`vrr_enabled` paths have never seen a VRR panel.
 - **NVIDIA modeset refusal** — `check_nvidia_modeset` (`backend/drm.rs:139`)
   reads `/sys/module/nvidia_drm/parameters/modeset` and refuses to start when

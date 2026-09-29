@@ -67,6 +67,21 @@ defaults.
     open (answers sent early are refused). That is the same trust level as the
     user's own session, but it should be narrowed to the prompt's own connection.
 
+## Liquid Glass, what's left
+
+Blur modes `off | blur | frost | glass` shipped in #47 (C-13, COMP-02 §9).
+These parts of the per-surface refraction plan were deliberately left for
+separate work:
+
+- **Clients say where their glass is.** Add `ext-background-effect-v1`, and
+  possibly an `eclipse_glass_v1` for shape and material. Today the compositor
+  blurs the whole uncovered surface, which is what causes BLUR-03 (`KNOWNBUGS.md`).
+- **Glass that morphs** between shapes as a surface changes.
+- **A luminance event**, so a client can tell whether the backdrop behind its
+  glass is light or dark and pick legible text.
+- **Cheaper snapshots.** Each glass surface keeps a full-output sharp copy
+  (about 8 MB at 1080p). Rework this if many glass surfaces become common.
+
 ## Window management
 
 - **Per-window mute needs a real audio abstraction.** `hyperion/src/audio.rs`
@@ -189,8 +204,8 @@ first, then where the code goes, then the COMP-16 milestone.
   *Phase 1, DE userland.*
 - **Taskbar clock: calendar drawer.** See Taskbar above;
   `crates/hyperion/src/view.rs`. *Phase 1, DE userland.*
-- **Re-verify, don't write:** `BLUR-02` (`KNOWNBUGS.md`, against `107b5de`)
-  and the ghost-window entry above (against `8f76207`).
+- **Re-verify, don't write:** the ghost-window entry above (against
+  `8f76207`). BLUR-02 was fixed again at `227c678` (#47).
 - **Manual gates** (COMP-16 table; `docs/STATUS.md` "Deferred hardware
   verification"): M3 with three monitors on a real TTY, hotplug and
   dock/undock; M4 with Firefox and mpv on real KMS, measured against the M9f
