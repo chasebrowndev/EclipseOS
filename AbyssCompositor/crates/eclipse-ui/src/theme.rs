@@ -307,8 +307,9 @@ pub enum CellTone {
     /// Every cell at rest: the neutral glass lozenge.
     #[default]
     Plain,
-    /// The focused window, and the current workspace tile: the lozenge on a
-    /// gold fill with a gold label. Its rim stays neutral.
+    /// The focused window, and the current workspace tile: the lozenge
+    /// catching gold light — a thin gold tint, a gold label and a gold glow
+    /// under it. Its rim stays neutral, only brighter.
     Focused,
     /// A minimized window: no fill, a ghost rim, no shadow.
     Away,
@@ -340,9 +341,11 @@ impl From<bool> for CellTone {
 /// ([`color::CELL`]), a hairline just inside the edge ([`color::CELL_RIM`])
 /// and a soft drop under it ([`color::CELL_SHADOW`]). The pointer brightens
 /// the fill and the rim together; a press brightens the fill again. A
-/// [`CellTone::Focused`] cell rests on [`color::ACCENT_FILL`] with a gold
-/// label — the bar's one resting yellow besides the current workspace tile —
-/// and keeps the neutral rim: the accent is never an outline. A
+/// [`CellTone::Focused`] cell is the same glass catching gold light: a thin
+/// gold tint ([`color::CELL_FOCUS`]), a gold label, a brighter but still
+/// neutral rim ([`color::CELL_FOCUS_RIM`]) and a soft gold glow in place of
+/// the drop ([`color::CELL_FOCUS_GLOW`]) — the bar's one resting yellow
+/// besides the current workspace tile. The accent is never an outline. A
 /// [`CellTone::Away`] (minimized) cell has no fill and no drop, only a ghost
 /// rim, and is lifted by the pointer like any other.
 pub fn bar_cell(tone: impl Into<CellTone>) -> impl Fn(&Theme, button::Status) -> button::Style {
@@ -366,15 +369,17 @@ pub fn glass_cell(
         let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let pressed = matches!(status, button::Status::Pressed);
         let background = match (tone, status) {
-            (CellTone::Focused, button::Status::Pressed) => color::ACCENT_FILL_STRONG,
-            (CellTone::Focused, button::Status::Hovered) => color::ACCENT_FILL_HOVER,
-            (CellTone::Focused, _) => color::ACCENT_FILL,
+            (CellTone::Focused, button::Status::Pressed) => color::CELL_FOCUS_PRESS,
+            (CellTone::Focused, button::Status::Hovered) => color::CELL_FOCUS_HOVER,
+            (CellTone::Focused, _) => color::CELL_FOCUS,
             (_, button::Status::Pressed) => color::CELL_PRESS,
             (_, button::Status::Hovered) => color::CELL_HOVER,
             (CellTone::Away | CellTone::Latent, _) => Color::TRANSPARENT,
             (CellTone::Plain, _) => color::CELL,
         };
         let rim = match (tone, lit) {
+            (CellTone::Focused, true) => color::CELL_FOCUS_RIM_HOVER,
+            (CellTone::Focused, false) => color::CELL_FOCUS_RIM,
             (_, true) => color::CELL_RIM_HOVER,
             (CellTone::Away, false) => color::CELL_RIM_AWAY,
             (CellTone::Latent, false) => Color::TRANSPARENT,
@@ -385,6 +390,18 @@ pub fn glass_cell(
         let resting = matches!(tone, CellTone::Away | CellTone::Latent) && !lit;
         let shadow = if pressed || resting {
             Shadow::default()
+        } else if tone == CellTone::Focused {
+            // The focused cell catches gold light: the drop under it is a
+            // soft glow, not a darker shadow.
+            Shadow {
+                color: if lit {
+                    color::CELL_FOCUS_GLOW_HOVER
+                } else {
+                    color::CELL_FOCUS_GLOW
+                },
+                offset: Vector::new(0.0, bar::CELL_GLOW_Y),
+                blur_radius: bar::CELL_GLOW_BLUR,
+            }
         } else {
             Shadow {
                 color: color::CELL_SHADOW,
@@ -602,3 +619,45 @@ pub fn eclipse_scrollable(_t: &Theme, status: scrollable::Status) -> scrollable:
 
 /// Default text size for a pane's body copy, for `iced::Settings`.
 pub const DEFAULT_TEXT_SIZE: f32 = size::BODY;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn focused(status: button::Status) -> button::Style {
+        glass_cell(CellTone::Focused, bar::RADIUS_CELL)(&theme(), status)
+    }
+
+    fn fill(s: &button::Style) -> Color {
+        match s.background {
+            Some(Background::Color(c)) => c,
+            _ => Color::TRANSPARENT,
+        }
+    }
+
+    #[test]
+    fn a_focused_cell_lifts_under_the_pointer_and_sinks_when_pressed() {
+        let rest = focused(button::Status::Active);
+        let hover = focused(button::Status::Hovered);
+        let press = focused(button::Status::Pressed);
+        assert!(fill(&rest).a < fill(&hover).a && fill(&hover).a < fill(&press).a);
+        assert!(rest.border.color.a < hover.border.color.a);
+        assert!(rest.shadow.color.a < hover.shadow.color.a);
+        assert_eq!(press.shadow.color.a, 0.0);
+    }
+
+    #[test]
+    fn a_focused_cell_glows_gold_but_its_rim_stays_neutral() {
+        for status in [
+            button::Status::Active,
+            button::Status::Hovered,
+            button::Status::Pressed,
+        ] {
+            let rim = focused(status).border.color;
+            assert_eq!((rim.r, rim.g, rim.b), (1.0, 1.0, 1.0));
+        }
+        let glow = focused(button::Status::Active).shadow.color;
+        let gold = color::ACCENT;
+        assert_eq!((glow.r, glow.g, glow.b), (gold.r, gold.g, gold.b));
+    }
+}

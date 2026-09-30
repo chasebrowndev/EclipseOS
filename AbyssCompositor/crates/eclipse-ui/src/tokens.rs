@@ -124,6 +124,29 @@ pub mod color {
         b: 0.0,
         a: 0.30,
     };
+    /// The focused cell (the focused window's chip, the current workspace
+    /// tile, the launcher's selected row) is the same glass lozenge catching
+    /// gold light, not a lozenge painted gold. The light is three things:
+    /// a thin gold tint the backdrop still shows through
+    /// ([`CELL_FOCUS`]), a neutral hairline brighter than a plain cell's, as
+    /// the lit edge of the glass ([`CELL_FOCUS_RIM`]), and a soft gold glow
+    /// in place of the neutral drop ([`CELL_FOCUS_GLOW`]). A glow is blurred
+    /// light under the glass, not a stroke on it: the rim stays white, so the
+    /// accent is still never an outline.
+    ///
+    /// Linear-light alphas like the rest of the cell tokens: `.09` gold here
+    /// reads as a ~30% opaque khaki slab, which is the flat look this
+    /// replaced.
+    pub const CELL_FOCUS: Color = Color { a: 0.05, ..ACCENT };
+    pub const CELL_FOCUS_HOVER: Color = Color { a: 0.075, ..ACCENT };
+    pub const CELL_FOCUS_PRESS: Color = Color { a: 0.10, ..ACCENT };
+    pub const CELL_FOCUS_RIM: Color = white(0.045);
+    pub const CELL_FOCUS_RIM_HOVER: Color = white(0.07);
+    /// The glow under a focused cell, at rest and under the pointer. Pressed,
+    /// the cell is pushed into the glass and casts nothing, like any cell.
+    /// Geometry in [`super::bar`].
+    pub const CELL_FOCUS_GLOW: Color = Color { a: 0.12, ..ACCENT };
+    pub const CELL_FOCUS_GLOW_HOVER: Color = Color { a: 0.18, ..ACCENT };
     /// The ground under a floating sheet that must stay readable over any
     /// wallpaper — a context menu, a tray drawer. Nearly opaque on purpose:
     /// a menu is a mark rail, and a mark rail that lets the desktop through
@@ -221,11 +244,6 @@ pub mod color {
     pub const ACCENT_BORDER: Color = Color { a: 0.28, ..ACCENT };
     /// The faintest accent ground — a wash under a whole row, not a fill.
     pub const ACCENT_WASH: Color = Color { a: 0.035, ..ACCENT };
-    /// The pressed/active accent ground, one step above [`ACCENT_FILL`].
-    pub const ACCENT_FILL_STRONG: Color = Color { a: 0.18, ..ACCENT };
-    /// A focused bar chip under the pointer: between [`ACCENT_FILL`] at rest
-    /// and [`ACCENT_FILL_STRONG`] pressed.
-    pub const ACCENT_FILL_HOVER: Color = Color { a: 0.13, ..ACCENT };
     /// How far a minimized window's chip — label and icon — fades. The
     /// spec's tertiary text value, so a minimized chip reads as the same
     /// quiet tier as every other tertiary mark.
@@ -480,6 +498,12 @@ pub mod bar {
     /// enough to read as a floating card.
     pub const CELL_SHADOW_Y: f32 = 1.0;
     pub const CELL_SHADOW_BLUR: f32 = 6.0;
+    /// The gold glow under a focused cell
+    /// ([`super::color::CELL_FOCUS_GLOW`]): wider than the drop, so it reads
+    /// as light pooling under the glass rather than a darker shadow, and
+    /// sitting the same pixel low, so the lozenge still looks lifted.
+    pub const CELL_GLOW_Y: f32 = 4.0;
+    pub const CELL_GLOW_BLUR: f32 = 10.0;
     /// Air between a floating sheet (center, toasts) and the screen edge or
     /// the bar strip, as layer-shell margin. The bar's own side margin, so a
     /// sheet under the bar lines up with the capsule's right end.
