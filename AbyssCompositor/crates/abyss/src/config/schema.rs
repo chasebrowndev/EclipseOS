@@ -230,7 +230,7 @@ pub const TABLE: &[Key] = &[
     k(
         "general.gaps-out",
         int(0, 512),
-        Int(10),
+        Int(3),
         Abyss,
         Live,
         "Gap between the tiling area and the screen edge, logical px.",
@@ -238,26 +238,25 @@ pub const TABLE: &[Key] = &[
     k(
         "general.gaps-in-vertical",
         int(0, 512),
-        Null,
+        Int(3),
         Abyss,
         Live,
         "Gap between tiled windows stacked one above the other, logical px. \
-       Unset mirrors `general.gaps-in`, so setting only the horizontal key \
-       still gaps both axes evenly.",
+       Ships at 3 (C-16), independent of `general.gaps-in`.",
     ),
     k(
         "general.gaps-out-vertical",
         int(0, 512),
-        Null,
+        Int(7),
         Abyss,
         Live,
         "Gap between the tiling area and the screen's top/bottom edge, \
-       logical px. Unset mirrors `general.gaps-out`.",
+       logical px. Ships at 7 (C-16), independent of `general.gaps-out`.",
     ),
     k(
         "general.border-size",
         int(0, 512),
-        Int(2),
+        Int(1),
         Abyss,
         Live,
         "Window border thickness, logical px. 0 disables borders.",
@@ -337,7 +336,7 @@ pub const TABLE: &[Key] = &[
     k(
         "general.col-active-border",
         Ty::Color,
-        Color([0.91, 0.64, 0.24, 1.0]),
+        Color([242.0 / 255.0, 195.0 / 255.0, 60.0 / 255.0, 115.0 / 255.0]),
         Abyss,
         Live,
         "Border colour of the focused window.",
@@ -345,7 +344,7 @@ pub const TABLE: &[Key] = &[
     k(
         "general.col-inactive-border",
         Ty::Color,
-        Color([0.09, 0.09, 0.09, 1.0]),
+        Color([1.0, 1.0, 1.0, 26.0 / 255.0]),
         Abyss,
         Live,
         "Border colour of every unfocused window.",
@@ -657,7 +656,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.rounding",
         int(0, 64),
-        Int(13),
+        Int(9),
         Abyss,
         Live,
         "Corner radius in logical px; 0 disables. Also rounds the blur backdrop \
@@ -692,7 +691,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.blur.mode",
         Ty::Enum(crate::config::BlurMode::NAMES),
-        Str("blur"),
+        Str("glass"),
         Abyss,
         Live,
         "What is drawn behind translucent windows and layer-shell surfaces: \
@@ -764,7 +763,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.shadow.enabled",
         Ty::Bool,
-        Bool(false),
+        Bool(true),
         Abyss,
         Live,
         "Drop shadow behind windows.",
@@ -772,7 +771,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.shadow.range",
         int(0, 128),
-        Int(20),
+        Int(16),
         Abyss,
         Live,
         "Shadow falloff distance, logical px.",
