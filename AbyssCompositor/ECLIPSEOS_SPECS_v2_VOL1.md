@@ -1721,8 +1721,7 @@ touching protocol code.
   outputs.
 - Layout, human workspaces (decided 2026-09-04, Hyprland-style UX):
   **dwindle** (binary-split tiling) as default, **master** as alternative,
-  floating layer, gaps *(C-15: an edge an exclusive zone took is inset by
-  `gaps-in`, a screen edge by `gaps-out`)*, per-workspace layout selection. "Hyprland-style"
+  floating layer, gaps, per-workspace layout selection. "Hyprland-style"
   is a statement about human UX only; nothing from Hyprland's code,
   architecture, or IPC is inherited.
 - Layout, agent workspaces (proposed): **no tiling.** Each toplevel gets
@@ -7305,7 +7304,7 @@ against source before it was written. Nothing was renumbered.
 | C-12 | COMP-04 §2 | *(2026-09-24, owner ruling)* Bindable gestures gain `gesture "drag"`: modifier + 2/3/4-finger touchpad drag moves the window under the pointer, default Super + two fingers; two fingers claimed from finger scroll at its first event, without the modifiers scrolling is untouched; a finger count is swiped or dragged, not both (ADR 0059) | yes |
 | C-13 | COMP-02 §9; COMP-05 §4; COMP-13 §1.1 | *(2026-09-27, owner ruling)* Blur gains `decoration.blur.mode` `off\|blur\|frost\|glass` (default `blur`): frost and Liquid Glass are alternative final-draw shaders over the unchanged dual-Kawase backdrop; `enabled` kept as a legacy alias; the `blur` rule takes a mode; glass widens damage expansion by its refraction offset | yes |
 | C-14 | COMP-02 §9 | *(2026-09-29, owner ruling)* One macOS-like material: a toplevel blurs where its opaque region leaves gaps, not only at alpha < 1 (default `active-opacity` 1.0, content never faded); glass bends the blurred backdrop only (no level-0 copy) and adds vibrancy, a neutral two-lobe hairline rim and dither; glass defaults refraction 4, bevel 16, dispersion 0, rim 0.5; blur default 4 passes; shadow becomes two offset gaussian layers, deeper on focus | yes |
-| C-15 | COMP-02 §9, COMP-05 | *(2026-09-29, owner ruling)* In glass mode the window border is a glass bezel: `border-size` is its width and the border colours tint its rim light (gold on focus). Tiling: an edge an exclusive zone has taken (the bar) is inset by `gaps-in`, not `gaps-out` — a panel is a neighbour | yes |
+| C-15 | COMP-02 §9 | *(2026-09-29, owner ruling)* In glass mode the window border is a glass bezel: `border-size` is its width and the border colours tint its rim light (gold on focus). The bar's own margins follow `gaps-out`, so screen→bar matches windows→screen; the tiling area is unchanged (a window still shrinks by exactly the exclusive zone, as wlcs asserts) | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing

@@ -225,8 +225,7 @@ pub const TABLE: &[Key] = &[
         Int(5),
         Abyss,
         Live,
-        "Gap between tiled windows, logical px. A panel with an exclusive \
-       zone (the bar) counts as a neighbour, so it gets this gap too.",
+        "Gap between tiled windows, logical px.",
     ),
     k(
         "general.gaps-out",
@@ -234,7 +233,7 @@ pub const TABLE: &[Key] = &[
         Int(10),
         Abyss,
         Live,
-        "Gap between the tiling area and a bare screen edge, logical px.",
+        "Gap between the tiling area and the screen edge, logical px.",
     ),
     k(
         "general.gaps-in-vertical",
