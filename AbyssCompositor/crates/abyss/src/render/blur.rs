@@ -41,7 +41,8 @@ use smithay::{
     },
     desktop::{LayerSurface, Window},
     output::Output,
-    utils::{Buffer as BufferCoords, Physical, Point, Rectangle, Scale, Size, Transform},
+    utils::{Buffer as BufferCoords, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
+    wayland::compositor::{RectangleKind, RegionAttributes},
 };
 
 use crate::config::Blur;
@@ -319,6 +320,121 @@ pub fn shows_through(
     !Rectangle::subtract_rects_many(cross, opaque).is_empty()
 }
 
+/// Most boxes a shaped backdrop unions.
+pub const MAX_SHAPE: usize = 4;
+
+/// A layer surface's glass cut to its input region (Vol 1 §5.2: blur behind
+/// layer-shell follows the surface's own shape, not its bounding box).
+///
+/// A layer client that sets its input region to 2..=4 plain rectangles — a
+/// bar pill with a panel hanging off it — gets its backdrop masked to the
+/// union of those rectangles, each rounded by the surface's corner radius
+/// and joined by a polynomial smooth-min of width `fillet`, so a concave
+/// fillet forms wherever two boxes meet (see [`shape_sd`]). Everything else
+/// (no input region, one rectangle, more than four, or any subtracted
+/// rectangle) is not a shape and keeps the single rounded box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shape {
+    /// Output-local physical rectangles; the first `len` are live.
+    rects: [Rectangle<i32, Physical>; MAX_SHAPE],
+    len: usize,
+    /// Smooth-min width `k`, physical px (`bar.rounding` at the output scale).
+    pub fillet: f32,
+}
+
+impl Shape {
+    /// The shape of a layer surface whose input region is `region`, or `None`
+    /// for the plain single-box path.
+    ///
+    /// `region` is surface-local and logical (`None` is the protocol's
+    /// infinite region); `size` is the surface's logical size and `loc` its
+    /// output-local physical origin. Each `Add` rectangle is clipped to the
+    /// surface and converted edge by edge, so rectangles that touch in
+    /// logical space still touch in physical space. Empty rectangles are
+    /// ignored; a `Subtract` or a fifth non-empty rectangle means no shape.
+    pub fn from_region(
+        region: Option<&RegionAttributes>,
+        size: Size<i32, Logical>,
+        loc: Point<i32, Physical>,
+        scale: Scale<f64>,
+        fillet: f32,
+    ) -> Option<Shape> {
+        let region = region?;
+        let bounds = Rectangle::<i32, Logical>::from_size(size);
+        let mut rects = [Rectangle::default(); MAX_SHAPE];
+        let mut len = 0;
+        for (kind, rect) in &region.rects {
+            if matches!(kind, RectangleKind::Subtract) {
+                return None;
+            }
+            let Some(r) = rect.intersection(bounds).filter(|r| !r.is_empty()) else {
+                continue;
+            };
+            if len == MAX_SHAPE {
+                return None;
+            }
+            let x = |v: i32| loc.x + (v as f64 * scale.x).round() as i32;
+            let y = |v: i32| loc.y + (v as f64 * scale.y).round() as i32;
+            let (x0, y0) = (x(r.loc.x), y(r.loc.y));
+            let (x1, y1) = (x(r.loc.x + r.size.w), y(r.loc.y + r.size.h));
+            rects[len] = Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into());
+            len += 1;
+        }
+        (len >= 2).then_some(Shape {
+            rects,
+            len,
+            fillet: fillet.max(0.0),
+        })
+    }
+
+    /// The live rectangles, output-local physical.
+    pub fn rects(&self) -> &[Rectangle<i32, Physical>] {
+        &self.rects[..self.len]
+    }
+}
+
+/// Signed distance from `p` (output-local physical px) to `shape`, negative
+/// inside: each box rounded by `radius` (clamped to its half size), unioned
+/// in order by the polynomial smooth-min `min(a, b) - h² k / 4` with
+/// `h = max(k - |a - b|, 0) / k` and `k = shape.fillet`.
+///
+/// This is the mask the shaped backdrop programs draw (`SHAPE_FNS` in
+/// [`crate::render::effects`], line for line). A client that paints a fill
+/// under the same shape uses the same formula so its tint meets the blur's
+/// edge.
+pub fn shape_sd(shape: &Shape, radius: f32, p: (f32, f32)) -> f32 {
+    let box_sd = |b: &Rectangle<i32, Physical>| {
+        let (hx, hy) = (b.size.w as f32 * 0.5, b.size.h as f32 * 0.5);
+        let r = radius.min(hx.min(hy)).max(0.0);
+        let qx = (p.0 - (b.loc.x as f32 + hx)).abs() - hx + r;
+        let qy = (p.1 - (b.loc.y as f32 + hy)).abs() - hy + r;
+        qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r
+    };
+    let k = shape.fillet;
+    let smin = |a: f32, b: f32| {
+        if k <= 0.0 {
+            return a.min(b);
+        }
+        let h = (k - (a - b).abs()).max(0.0) / k;
+        a.min(b) - h * h * k * 0.25
+    };
+    let mut rects = shape.rects().iter();
+    let mut d = rects.next().map_or(f32::INFINITY, box_sd);
+    for b in rects {
+        d = smin(d, box_sd(b));
+    }
+    d
+}
+
+/// [`shows_through`] for a shaped surface: only the shape's boxes can be
+/// seen, so it shows through when any of them is left uncovered.
+pub fn shape_shows_through(shape: &Shape, opaque: &[Rectangle<i32, Physical>]) -> bool {
+    shape
+        .rects()
+        .iter()
+        .any(|r| shows_through(*r, 0, opaque.iter().copied()))
+}
+
 /// What a cached backdrop belongs to.
 ///
 /// Windows and layer-shell surfaces both get blurred (Vol 1 §5.2: "background
@@ -400,6 +516,9 @@ impl BlurStore {
     /// far out invalidates too. `ring` is an opaque window's bezel, as
     /// `(width, corner radius)` in physical px: only its strips are ever seen,
     /// so only damage near them invalidates, and only they report damage.
+    /// `shape` is a shaped layer's boxes: only damage within reach of one of
+    /// them (grown by the fillet, which can only fill in between them)
+    /// invalidates.
     /// Returns `None` when nothing needs redrawing *and* nothing is cached, or
     /// when any GL step failed (blur is an effect; a failure drops the effect,
     /// never the frame).
@@ -416,6 +535,7 @@ impl BlurStore {
         rounding: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
         reach: i32,
         ring: Option<(i32, i32)>,
+        shape: Option<&Shape>,
     ) -> Option<BlurElement>
     where
         E: Element + RenderElement<GlesRenderer>,
@@ -444,11 +564,15 @@ impl BlurStore {
             let (damage, _) = entry.damage.damage_output(1, behind).ok()?;
             let radius = kernel_radius(blur).saturating_add(reach.max(0));
             match damage {
-                Some(rects) => match &strips {
-                    Some(strips) => strips
+                Some(rects) => match (&strips, shape) {
+                    (Some(strips), _) => strips
                         .iter()
                         .any(|s| invalidates(Rectangle::new(s.loc + region.loc, s.size), radius, rects)),
-                    None => invalidates(region, radius, rects),
+                    (None, Some(shape)) => {
+                        let radius = radius.saturating_add(shape.fillet.ceil() as i32);
+                        shape.rects().iter().any(|b| invalidates(*b, radius, rects))
+                    }
+                    (None, None) => invalidates(region, radius, rects),
                 },
                 // `None` means the tracker could not reason about damage; the
                 // fail-safe answer is "everything changed".
@@ -1013,6 +1137,114 @@ mod tests {
         assert!(!shows_through(region, 12, opaque), "a larger mask hides more");
         assert!(shows_through(region, 0, opaque), "square corners would show");
         assert!(shows_through(region, 4, opaque), "a smaller mask shows corner px");
+    }
+
+    /// `(add, (x, y, w, h))`: one region rect, surface-local.
+    type RegionRect = (bool, (i32, i32, i32, i32));
+
+    fn region(rects: &[RegionRect]) -> RegionAttributes {
+        RegionAttributes {
+            rects: rects
+                .iter()
+                .map(|&(add, (x, y, w, h))| {
+                    let kind = if add {
+                        RectangleKind::Add
+                    } else {
+                        RectangleKind::Subtract
+                    };
+                    (kind, Rectangle::new((x, y).into(), (w, h).into()))
+                })
+                .collect(),
+        }
+    }
+
+    fn shape_of(rects: &[RegionRect], scale: f64, fillet: f32) -> Option<Shape> {
+        let region = region(rects);
+        Shape::from_region(
+            Some(&region),
+            Size::from((400, 300)),
+            Point::from((0, 0)),
+            Scale::from(scale),
+            fillet,
+        )
+    }
+
+    /// Vol 1 §5.2: only a finite region of 2..=4 added boxes is a shape;
+    /// everything else keeps the old single-box path.
+    #[test]
+    fn only_a_small_set_of_boxes_is_a_shape() {
+        // The protocol's infinite region (no `set_input_region`).
+        let none = Shape::from_region(
+            None,
+            Size::from((400, 300)),
+            Point::from((0, 0)),
+            Scale::from(1.0),
+            20.0,
+        );
+        assert_eq!(none, None);
+        let pill = (true, (0, 0, 400, 40));
+        let panel = (true, (100, 40, 200, 200));
+        assert_eq!(shape_of(&[pill], 1.0, 20.0), None, "one box is the plain path");
+        assert_eq!(shape_of(&[pill, (false, (0, 0, 10, 10))], 1.0, 20.0), None);
+        assert_eq!(shape_of(&[pill; 5], 1.0, 20.0), None, "five boxes");
+        let two = shape_of(&[pill, panel], 1.0, 20.0).expect("pill and panel");
+        assert_eq!(two.rects(), &[r(0, 0, 400, 40), r(100, 40, 200, 200)]);
+        assert!(shape_of(&[pill; 4], 1.0, 20.0).is_some());
+        // Empty boxes and boxes wholly off the surface do not count.
+        assert_eq!(
+            shape_of(&[pill, (true, (500, 0, 10, 10)), (true, (0, 0, 0, 5))], 1.0, 20.0),
+            None
+        );
+    }
+
+    #[test]
+    fn a_shape_is_clipped_and_placed_edge_by_edge() {
+        let region = region(&[(true, (0, 0, 400, 40)), (true, (101, 40, 399, 500))]);
+        let shape = Shape::from_region(
+            Some(&region),
+            Size::from((400, 300)),
+            Point::from((10, 20)),
+            Scale::from(1.5),
+            30.0,
+        )
+        .unwrap();
+        // Clipped to 400x300, scaled by edges (101 * 1.5 = 151.5 → 152), and
+        // the two boxes still meet at y = 60 + 20.
+        assert_eq!(shape.rects(), &[r(10, 20, 600, 60), r(162, 80, 448, 390)]);
+        assert_eq!(shape.fillet, 30.0);
+    }
+
+    /// The mask's signed distance: inside a box, inside the concave fillet
+    /// where two boxes meet (outside both boxes), and outside the union.
+    #[test]
+    fn the_shape_sdf_fills_the_join_and_nothing_else() {
+        let shape = shape_of(&[(true, (0, 0, 400, 40)), (true, (100, 40, 200, 200))], 1.0, 20.0).unwrap();
+        let radius = 12.0;
+        let plain = shape_of(&[(true, (0, 0, 400, 40)), (true, (100, 40, 200, 200))], 1.0, 0.0).unwrap();
+        // Inside the pill and inside the panel.
+        assert!(shape_sd(&shape, radius, (200.0, 20.0)) < -10.0);
+        assert!(shape_sd(&shape, radius, (200.0, 150.0)) < -10.0);
+        // In the concave corner under the pill, right of the panel: outside
+        // both boxes (the plain union), inside the fillet.
+        assert!(shape_sd(&plain, radius, (303.0, 43.0)) > 2.0);
+        assert!(shape_sd(&shape, radius, (303.0, 43.0)) < 0.0);
+        // Outside the union: beside the panel, beyond the fillet's reach, and
+        // the pill's own rounded outer corner.
+        assert!(shape_sd(&shape, radius, (380.0, 100.0)) > 20.0);
+        assert!(shape_sd(&shape, radius, (1.0, 1.0)) > 0.0);
+        assert!(shape_sd(&shape, radius, (200.0, 260.0)) > 0.0);
+    }
+
+    #[test]
+    fn a_shape_shows_through_unless_every_box_is_covered() {
+        let shape = shape_of(&[(true, (0, 0, 400, 40)), (true, (100, 40, 200, 200))], 1.0, 20.0).unwrap();
+        assert!(shape_shows_through(&shape, &[]));
+        assert!(shape_shows_through(&shape, &[r(0, 0, 400, 40)]));
+        // Covering the two boxes is enough; the rest of the surface is cut.
+        assert!(!shape_shows_through(
+            &shape,
+            &[r(0, 0, 400, 40), r(100, 40, 200, 200)]
+        ));
     }
 
     #[test]

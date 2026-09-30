@@ -137,6 +137,35 @@ pub fn bar_ground(radius: f32, blur: bool) -> impl Fn(&Theme) -> container::Styl
     }
 }
 
+/// The folded bar's ground: [`bar_ground`]'s sheet seen edge-on, as a
+/// dormant bar cell — the same tint, ringed by the ghost rim a minimized
+/// chip wears ([`color::CELL_RIM_AWAY`]), with blur on as well as off.
+///
+/// The one place a glass surface carries its own rim, because at 2–16 px the
+/// compositor's rim and shadow do not read: the strip was a flat band with
+/// nothing to say where it ends. The rim follows the capsule, so it is the
+/// curve at either end that the eye picks up, not a straight edge. `radius`
+/// is the caller's, already clamped to half the strip's height so this ring
+/// and the compositor's mask share one outline. `rim` in `0..=1` is how much
+/// of the ring shows: the caller fades it in as the pill thins into the
+/// strip, so the ring never pops onto a sheet that still looks like the pill.
+pub fn bar_folded(radius: f32, blur: bool, rim: f32) -> impl Fn(&Theme) -> container::Style {
+    move |t: &Theme| container::Style {
+        border: Border {
+            // Blur off, the pill already wears a hairline of the same weight,
+            // so there is nothing to fade in.
+            color: if blur {
+                color::CELL_RIM_AWAY.scale_alpha(rim)
+            } else {
+                color::CELL_RIM_AWAY
+            },
+            width: space::HAIRLINE,
+            radius: radius.into(),
+        },
+        ..bar_ground(radius, blur)(t)
+    }
+}
+
 /// One level of inset inside a panel. The spec's limit — there is no
 /// `inset_inside_inset`, on purpose.
 pub fn inset(_t: &Theme) -> container::Style {

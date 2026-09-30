@@ -446,6 +446,9 @@ pub struct Bar {
     /// Where the bar's popups open: under the cell that was clicked, or at
     /// the pointer.
     pub popup_anchor: BarPopupAnchor,
+    /// Which launcher the eclipse button and `eclipse-launcher` open: the
+    /// centred sheet, or the bar's own start menu (`bar.open-launcher`).
+    pub launcher_style: BarLauncherStyle,
     /// `eye`: whether the taskbar draws its status eye on the eclipse mark.
     /// Stored only; the taskbar sources the eye's state itself (ADR 0055).
     pub eye: bool,
@@ -482,6 +485,24 @@ pub enum BarPopupAnchor {
     #[default]
     Cell,
     Pointer,
+}
+
+/// `bar { launcher-style "centered" | "menu" }`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BarLauncherStyle {
+    #[default]
+    Centered,
+    Menu,
+}
+
+impl BarLauncherStyle {
+    /// The KDL spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            BarLauncherStyle::Centered => "centered",
+            BarLauncherStyle::Menu => "menu",
+        }
+    }
 }
 
 /// `bar { tray { pinned …; hidden … } }`. Ids only — the compositor neither
@@ -656,6 +677,7 @@ impl Default for Bar {
             tray: BarTray::default(),
             clock: BarClock::default(),
             popup_anchor: BarPopupAnchor::Cell,
+            launcher_style: BarLauncherStyle::Centered,
             eye: true,
             widgets: BarWidgets::default(),
             motion: BarMotion::default(),
@@ -2543,6 +2565,17 @@ impl Config {
                         n,
                         format!(
                             "bar popup-anchor must be \"cell\" or \"pointer\", keeping default (other={:?})",
+                            other
+                        ),
+                    ),
+                },
+                "launcher-style" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("centered") => self.bar.launcher_style = BarLauncherStyle::Centered,
+                    Some("menu") => self.bar.launcher_style = BarLauncherStyle::Menu,
+                    other => self.reject(
+                        n,
+                        format!(
+                            "bar launcher-style must be \"centered\" or \"menu\", keeping default (other={:?})",
                             other
                         ),
                     ),
@@ -4816,6 +4849,33 @@ mod tests {
 
         let c = cfg("bar { clock { hour-24 #true } }\n");
         assert_eq!(c.errors.len(), 1, "{:?}", c.errors);
+    }
+
+    /// `bar.launcher-style`: centred by default, `menu` parses, and a bad
+    /// style is rejected without moving off the default.
+    #[test]
+    fn bar_launcher_style_parses() {
+        fn cfg(text: &str) -> Config {
+            let doc: KdlDocument = text.parse().unwrap();
+            let mut cfg = Config::default();
+            cfg.apply(&doc, &mut Vec::new());
+            cfg
+        }
+        assert_eq!(Config::default().bar.launcher_style, BarLauncherStyle::Centered);
+
+        let c = cfg("bar { launcher-style \"menu\" }\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert_eq!(c.bar.launcher_style, BarLauncherStyle::Menu);
+        assert_eq!(c.bar.launcher_style.name(), "menu");
+
+        let c = cfg("bar { launcher-style \"sideways\" }\n");
+        assert_eq!(c.errors.len(), 1);
+        assert!(
+            c.errors[0].message.contains("\"centered\" or \"menu\""),
+            "{}",
+            c.errors[0].message
+        );
+        assert_eq!(c.bar.launcher_style, BarLauncherStyle::Centered);
     }
 
     /// `bar.eye`: on by default, a bare node is on, `#false` turns it off.

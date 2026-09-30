@@ -474,7 +474,8 @@ pub const TABLE: &[Key] = &[
         Int(20),
         Abyss,
         Live,
-        "Corner radius in logical px for the taskbar's own blur backdrop.",
+        "Corner radius in logical px for the taskbar's own blur backdrop, \
+       and the width of the curved fillets where a shaped layer's boxes meet.",
     ),
     k(
         "bar.clock.hour-12",
@@ -501,6 +502,15 @@ pub const TABLE: &[Key] = &[
         Live,
         "Where taskbar popups open: under the cell that was clicked, or at \
        the pointer.",
+    ),
+    k(
+        "bar.launcher-style",
+        Ty::Enum(&["centered", "menu"]),
+        Str("centered"),
+        Abyss,
+        Live,
+        "Which launcher the eclipse button and Super+R open: the centred \
+       sheet, or a start menu that grows out of the bar.",
     ),
     k(
         "bar.eye",
@@ -698,7 +708,9 @@ pub const TABLE: &[Key] = &[
        grain) or `glass` (a saturated, smoked blur whose edge band gently \
        bends the blurred backdrop, under a neutral hairline rim). A window or \
        layer blurs when it is drawn below full opacity or its opaque region \
-       leaves it uncovered. Replaces the old `enabled` bool, which still loads (`#false` is `off`).",
+       leaves it uncovered. A layer's glass follows its input region: two to \
+       four boxes are blurred as their union, joined by curved fillets \
+       `bar.rounding` wide. Replaces the old `enabled` bool, which still loads (`#false` is `off`).",
     ),
     k(
         "decoration.blur.size",
@@ -1712,6 +1724,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
             }
             .into(),
         ),
+        "bar.launcher-style" => V::Str(c.bar.launcher_style.name().into()),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.active-opacity" => V::Float(widen(c.decoration.active_opacity)),
         "decoration.inactive-opacity" => V::Float(widen(c.decoration.inactive_opacity)),

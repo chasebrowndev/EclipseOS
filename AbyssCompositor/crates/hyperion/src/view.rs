@@ -82,9 +82,7 @@
 //! in this file is a bug, because the tokens are the only transcription of
 //! `docs/STYLE.md`.
 
-use iced::widget::{
-    button, canvas, column, container, image, mouse_area, row, svg, text, Column, Row, Space,
-};
+use iced::widget::{button, canvas, container, image, mouse_area, row, svg, text, Column, Row, Space};
 use iced::{Alignment, Color, Element, Length, Theme};
 
 use eclipse_ui::theme;
@@ -140,38 +138,52 @@ fn surface(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message, 
     bar_row(app, bar)
 }
 
-/// The bar shrunk to a rule along the top of an output nobody is looking at.
+/// The bar shrunk to a thin capsule on an output nobody is looking at.
 ///
 /// A folded bar is a *state*, not a smaller bar: at `fold_height` (2..=16 px)
 /// there is no room for a cell, and a clock cut off at its waist reads as a
-/// bug. So the strip keeps only what makes the bar the bar — the tinted sheet
-/// of [`theme::bar_ground`] (lit along its top only in the blur-off
-/// fallback), and a dormant hairline along
-/// its bottom — and drops every zone.
+/// bug. So the strip keeps only what makes the bar the bar — the pill's
+/// tinted glass, floating in the pill's own air — and drops every zone.
 ///
-/// Every part of it is `Fill` or a hairline, so the two pixels at the bottom
-/// of the setting's range are squeezed out of the glass and never out of a
-/// fixed child: the strip cannot overflow its own surface at any height.
+/// It is the pill seen edge-on, so it keeps the pill's shape: a capsule with
+/// half-round ends, ringed by the dormant rim of [`theme::bar_folded`]. The
+/// radius is clamped to half the strip's height here, the same clamp the
+/// compositor's mask applies, so ring and blur share one outline at every
+/// frame of the slide and the corners round off continuously as the pill
+/// shrinks. What it no longer draws is a full-width hairline: a line one
+/// pixel tall has no room to curve, so it ran square past the capsule's
+/// ends and was the straight edge the eye saw.
+///
+/// Nothing on it is the accent: a folded bar is by construction the output
+/// the pointer is not on, and the ledger's one live yellow belongs to a live
+/// value, never to the dormant head.
+///
+/// The sheet is `Fill` and its ring is a border, so the two pixels at the
+/// bottom of the setting's range are squeezed out of the glass and never out
+/// of a fixed child: the strip cannot overflow its own surface at any height.
 fn folded_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element<'a, Message, Theme> {
-    let edges = column![
-        Space::new().width(Length::Fill).height(Length::Fill),
-        parts::quad(
-            Length::Fill,
-            Length::Fixed(bar::HAIRLINE),
-            // Deliberately *not* the accent: a folded bar is by construction
-            // the output the pointer is not on, and the ledger's one live
-            // yellow belongs to a live value, never to the dormant head.
-            color::HIGHLIGHT_SOFT,
-            app.bar_radius,
-        ),
-    ];
+    // The animated height, not the settled one: during a slide the strip
+    // must fill exactly the surface the compositor just sized.
+    let h = bar.fold.sheet_height() as f32;
+    let radius = app.bar_radius.min(h / 2.0);
+    // How far the slide has got from the pill to the strip, 0 at the pill's
+    // height and 1 at the fold height. The rim and the light come in with
+    // it, so the first frame after the cells go is still the pill's plain
+    // glass, and the last frame before they return is too.
+    let thin = app.bar.fold_height as f32;
+    let folded = ((bar::PILL_H - h) / (bar::PILL_H - thin).max(1.0)).clamp(0.0, 1.0);
 
-    let sheet = glass(
-        app,
-        container(edges)
+    // Lit along its top in both modes, unlike the pill: the compositor's rim
+    // is the pill's light source, and at this height it does not read. The
+    // line stops where the end curves begin, so the strip is a lens lit from
+    // above over a ghost rim — depth, not a wireframe outline.
+    let sheet = parts::lit(
+        container(Space::new().width(Length::Fill).height(Length::Fill))
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(theme::bar_ground(app.bar_radius, app.blur)),
+            .style(theme::bar_folded(radius, app.blur, folded)),
+        radius,
+        color::HIGHLIGHT_SOFT.scale_alpha(folded),
     );
 
     // The horizontal inset is the unfolded bar's layer-shell margin, so the
@@ -179,9 +191,7 @@ fn folded_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element
     // object. The surface *is* the sheet.
     container(sheet)
         .width(Length::Fill)
-        // The animated height, not the settled one: during a slide the strip
-        // must fill exactly the surface the compositor just sized.
-        .height(Length::Fixed(bar.fold.height as f32))
+        .height(Length::Fixed(h))
         .into()
 }
 

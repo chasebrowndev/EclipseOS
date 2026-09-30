@@ -79,6 +79,11 @@ pub const TABLE: &[Entry] = &[
     // Privileged: it can only keep the screen on, which any client can already
     // do with `zwp_idle_inhibit_v1`, and it lapses with the connection.
     e("set_idle_inhibit", Kind::Command, true),
+    // Open the bar's start menu (`bar.launcher-style "menu"`). Command and not
+    // Privileged: it is the eclipse button / Super+R, a thing the human already
+    // does, and it only rebroadcasts on the `launcher` event stream; the
+    // compositor holds no launcher state and the bar decides what opens.
+    e("open_launcher", Kind::Command, true),
     // Config read/write (COMP-13 §1.4). `set_config_value` is Command and not
     // Privileged on purpose: it edits the same keys a human edits in a text
     // editor, and the file it may touch is decided by `CONFIG_FILES`, not by
@@ -360,6 +365,20 @@ mod tests {
         assert_eq!(check(&owner(), 1000, &cfg, "set_idle_inhibit"), Decision::Allow);
         assert!(matches!(
             check(&other, 1000, &cfg, "set_idle_inhibit"),
+            Decision::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn open_launcher_is_an_owner_only_command() {
+        let cfg = Config::default();
+        let other = Peer { uid: 1001, ..owner() };
+        let entry = TABLE.iter().find(|e| e.method == "open_launcher").expect("row");
+        assert_eq!(entry.kind, Kind::Command);
+        assert!(entry.implemented);
+        assert_eq!(check(&owner(), 1000, &cfg, "open_launcher"), Decision::Allow);
+        assert!(matches!(
+            check(&other, 1000, &cfg, "open_launcher"),
             Decision::Deny(_)
         ));
     }
