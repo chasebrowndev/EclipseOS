@@ -154,18 +154,13 @@ impl WidgetIn {
         }
     }
 
-    /// The grip's column at `extent`. A widget that reveals always has
-    /// one; one that does not grows it only as its body closes below its
-    /// floor, so an open or squeezed network is a plain cell and one
-    /// squeezed shut is a grip — continuously, with no step in between.
+    /// The grip's column at `extent`: it grows only as the body closes below
+    /// its floor, so an open or squeezed widget is a plain cell and one
+    /// squeezed shut is a grip — continuously, with no step in between. A
+    /// widget that reveals still has a grip while open, drawn over its
+    /// leading pad on hover (`widgets::shell`), with no column of its own.
     pub fn grip_w(&self, extent: f32) -> f32 {
-        if self.reveals() {
-            bar::GRIP_W
-        } else if self.important {
-            0.0
-        } else {
-            bar::GRIP_W * self.closed(extent)
-        }
+        bar::GRIP_W * self.closed(extent)
     }
 
     /// The core with its shell padding: the body width of an open widget.

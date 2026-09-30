@@ -373,16 +373,20 @@ impl Conn {
 
     /// The air around the pill (`general.gaps-out`, and the effective
     /// `general.gaps-out-vertical` — unset reads `null` and mirrors the
-    /// horizontal key, as the compositor resolves it). `None` when nothing
+    /// horizontal key, as the compositor resolves it), and the effective
+    /// `general.gaps-in-vertical` below it. `None` when nothing
     /// answers, so the caller keeps what it had.
     pub fn air(&mut self) -> Option<crate::app::Air> {
         self.ensure();
         let client = self.client.as_mut()?;
         let x = eclipse_ui::ipc::fetch_config_radius(client, "general.gaps-out")?;
         let y = eclipse_ui::ipc::fetch_config_radius(client, "general.gaps-out-vertical").unwrap_or(x);
+        let gi = eclipse_ui::ipc::fetch_config_radius(client, "general.gaps-in").unwrap_or(y);
+        let inner = eclipse_ui::ipc::fetch_config_radius(client, "general.gaps-in-vertical").unwrap_or(gi);
         Some(crate::app::Air {
             x: x.round() as i32,
             y: y.round() as i32,
+            inner: inner.round() as i32,
         })
     }
 

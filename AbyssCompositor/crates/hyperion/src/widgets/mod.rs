@@ -271,6 +271,8 @@ pub enum GripEv {
     /// Travel since the press; negative is leftward, the reveal direction.
     Drag(f32),
     Release,
+    /// The pointer came onto (`true`) or left the widget's cell.
+    Hover(bool),
 }
 
 /// Fold a feed into the state it belongs to.
@@ -422,21 +424,40 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
         });
     }
 
-    // A widget with nothing to reveal wears its grip only while squeezed past
-    // its floor, and grows it as it closes; the bar stays in the tree at zero
-    // width so a drag it started survives it.
+    // The grip's column grows only as the widget squeezes past its floor;
+    // the bar stays in the tree at zero width so a drag it started survives
+    // it. A widget that reveals keeps a grip while open too, drawn over its
+    // leading pad as the cell eases a little wider under the pointer, so no
+    // empty glass waits for a grip that shows only on hover.
     let grip_w = input.grip_w(extent);
     let live = bar.motion.drag.as_ref().is_some_and(|d| d.key == key);
-    let (press, drag_key, release) = (key.clone(), key.clone(), key);
+    let hover = if live {
+        1.0
+    } else {
+        anim.hover.value().clamp(0.0, 1.0)
+    };
+    let (press, drag_key, release) = (key.clone(), key.clone(), key.clone());
     let closed = input.closed(extent);
+    let overlay = input.reveals();
+    let look = ShellLook {
+        grip_w,
+        closed,
+        slide: bar::GRIP_HOVER_SLIDE * hover,
+        overlay,
+    };
     // Grips appear on hover only: at rest the bar is content on clear glass.
     // A widget compressed to its grip keeps it in proportion to how shut it
     // is, since the grip is then the whole of the widget.
+    let reach = if overlay {
+        1.0
+    } else {
+        parts::lead(grip_w / bar::GRIP_W)
+    };
     let grip = parts::drag_bar()
-        .width(grip_w)
+        .width(look.grip_column())
         .state(if live { Grip::Active } else { Grip::Rest })
         .reveal_on_hover(closed)
-        .opacity(frame.grip_alpha() * parts::lead(grip_w / bar::GRIP_W))
+        .opacity(frame.grip_alpha() * reach)
         .on_press(Message::Grip(press, GripEv::Press))
         .on_drag(move |dx| Message::Grip(drag_key.clone(), GripEv::Drag(dx)))
         .on_release(Message::Grip(release, GripEv::Release));
@@ -445,10 +466,19 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
         revealed: input.revealed,
     };
     let revealed = revealed.filter(|_| input.revealed > 0.0);
+    let element = parts::widget_shell_with(grip, core, revealed, span, frame, look);
+    let element = if overlay {
+        iced::widget::mouse_area(element)
+            .on_enter(Message::Grip(key.clone(), GripEv::Hover(true)))
+            .on_exit(Message::Grip(key, GripEv::Hover(false)))
+            .into()
+    } else {
+        element
+    };
     Some(Cell {
         presence,
         closed,
-        element: parts::widget_shell_with(grip, core, revealed, span, frame, ShellLook { grip_w, closed }),
+        element,
     })
 }
 

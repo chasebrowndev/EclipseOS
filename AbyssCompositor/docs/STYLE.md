@@ -22,7 +22,10 @@ yellow accent. Use this as art direction; do not copy any specific screen.
   fill, 1px inside hairline rgba(255,255,255,.10), 0 1px 6px rgba(0,0,0,.30). Hover .08 fill /
   .14 hairline; press .12 fill, no shadow. The focused chip and the active workspace take the
   accent tint fill with a neutral hairline; a minimized chip has no fill, a .05 hairline, dimmed
-  text. The grip is part of its cell: it paints no ground, only its dots brighten on hover
+  text. The grip is part of its cell: it paints no ground, only its line brightens on hover.
+  A widget that reveals reserves no grip column while open: the grip draws over its leading
+  pad and the cell eases 8px wider under the pointer. Alphas above are sRGB intent; iced
+  blends in linear light, so `tokens.rs` carries the linear equivalents
 - Accent: #f2c33c. Tints: rgba(242,195,60,.09) fill, .24-.32 border, #f5cf5c for text
 - Text: #fff primary, rgba(255,255,255,.64) secondary, rgba(255,255,255,.4) tertiary
 - Neutral swatch grey: #96918a (warm, not #8f8f96)

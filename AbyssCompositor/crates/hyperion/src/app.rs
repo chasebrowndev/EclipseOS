@@ -413,14 +413,15 @@ impl Default for FoldState {
 ///
 /// Both follow the compositor's outer gap — `general.gaps-out` across and the
 /// effective `general.gaps-out-vertical` down — so the pill sits exactly as
-/// far from the screen edge as a window would. The gap *below* the pill is
-/// not ours: abyss insets the tiling area by `gaps-in` on an edge an
-/// exclusive zone took, since the bar is a neighbour. With nothing answering,
-/// the compile-time [`bar::MARGIN_X`]/[`bar::MARGIN_Y`] stand in.
+/// far from the screen edge as a window would. `inner` is the effective
+/// `general.gaps-in-vertical`: the bar is a neighbour, so the gap below the
+/// pill is the gap between stacked windows. With nothing answering, the
+/// compile-time [`bar::MARGIN_X`]/[`bar::MARGIN_Y`] stand in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Air {
     pub x: i32,
     pub y: i32,
+    pub inner: i32,
 }
 
 impl Default for Air {
@@ -428,6 +429,7 @@ impl Default for Air {
         Air {
             x: bar::MARGIN_X as i32,
             y: bar::MARGIN_Y as i32,
+            inner: bar::MARGIN_Y as i32,
         }
     }
 }
@@ -504,23 +506,23 @@ impl FoldState {
     /// anchored edge only while the pill is up (the folded strip sits flush
     /// against the edge, as it always has).
     ///
-    /// The zone is the surface's own height and no more: wlr-layer-shell adds
-    /// the anchored edge's margin to it (abyss:
+    /// wlr-layer-shell adds the anchored edge's margin to the zone (abyss:
     /// `shell::accumulate_non_exclusive_zone`), and abyss then insets the
-    /// tiling area by `gaps-in` on the edge the zone took. So screen → pill
-    /// is `gaps-out`, pill → window is `gaps-in`, the same rhythm as window
-    /// → window. A hidden bar reserves nothing.
+    /// tiling area by `gaps-out-vertical` on every edge. The pill's zone
+    /// trades that inset for [`Air::inner`], so screen → pill is
+    /// `gaps-out-vertical` and pill → window is `gaps-in-vertical`, the same
+    /// rhythm as window → window. A hidden bar reserves nothing.
     pub fn geometry(&self, edge: BarPosition) -> Geometry {
         let side = self.air.x;
-        let (height, air) = if self.pill() {
-            (bar::PILL_H as u32, self.air.y)
+        let (height, air, below) = if self.pill() {
+            (bar::PILL_H as u32, self.air.y, self.air.inner - self.air.y)
         } else {
-            (self.height, 0)
+            (self.height, 0, 0)
         };
         let zone = if self.target == FoldTarget::Hidden && self.height == self.to_h {
             0
         } else {
-            height as i32
+            (height as i32 + below).max(0)
         };
         let margin = match edge {
             BarPosition::Top => (air, side, 0, side),
@@ -1782,6 +1784,7 @@ fn tap_wanted(app: &App) -> bool {
 /// a tap and toggles instead.
 pub(crate) fn grip(app: &App, bar: &mut Bar, key: String, ev: GripEv, now: Instant) {
     match ev {
+        GripEv::Hover(on) => bar.motion.hover(&key, on, now),
         GripEv::Press => {
             let start = bar.motion.widgets.get(&key).map_or(0.0, |w| w.extent.value());
             bar.motion.drag = Some(Drag::new(key, start, now));
@@ -3060,10 +3063,19 @@ mod fold_tests {
 
         // The air follows the compositor's outer gap, and the unfold lands
         // on exactly the strip the settled pill reserves.
-        let air = Air { x: 7, y: 12 };
+        let air = Air {
+            x: 7,
+            y: 12,
+            inner: 12,
+        };
         let g = FoldState::with_air(air).geometry(BarPosition::Top);
         assert_eq!(g.margin, (12, 7, 0, 7));
         assert_eq!(g.zone, bar::PILL_H as i32);
+        // Pill → window takes `gaps-in-vertical` in place of the tiling
+        // area's `gaps-out-vertical` inset.
+        let tight = Air { x: 7, y: 9, inner: 6 };
+        let t = FoldState::with_air(tight).geometry(BarPosition::Top);
+        assert_eq!(t.margin.0 + t.zone + tight.y, 9 + bar::PILL_H as i32 + 6);
         assert_eq!(
             target_height(&BarConfig::default(), FoldTarget::Shown, air),
             air.shown_height()

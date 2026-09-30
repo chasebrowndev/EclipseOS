@@ -823,6 +823,8 @@ pub fn widget_shell<'a, Message: 'a>(
         ShellLook {
             grip_w: bar::GRIP_W,
             closed,
+            slide: 0.0,
+            overlay: false,
         },
     )
 }
@@ -838,6 +840,26 @@ pub struct ShellLook {
     /// How shut the shell reads, `0.0..=1.0`: 1 keeps only
     /// [`bar::GRIP_GROUND`] of the glass, so a run of grips is quiet.
     pub closed: f32,
+    /// Extra leading room, `0.0..=bar::GRIP_HOVER_SLIDE`, eased in while
+    /// the pointer is on an overlaid grip's cell.
+    pub slide: f32,
+    /// Draw the grip over the leading clear run (the column, the slide and
+    /// the body's own pad) instead of in a column of its own, so an open
+    /// widget reserves no empty glass for a grip that shows only on hover.
+    pub overlay: bool,
+}
+
+impl ShellLook {
+    /// The width to give the grip ([`DragBar::width`]): its column, or with
+    /// `overlay` the whole leading clear run, capped at [`bar::GRIP_W`].
+    pub fn grip_column(self) -> f32 {
+        let column = self.grip_w.clamp(0.0, bar::GRIP_W);
+        if self.overlay {
+            (column + self.slide.max(0.0) + bar::WIDGET_X).min(bar::GRIP_W)
+        } else {
+            column
+        }
+    }
 }
 
 impl ShellSpan {
@@ -896,22 +918,29 @@ pub fn widget_shell_with<'a, Message: 'a>(
     body = body.push(fixed(core.into(), span.core));
     body = body.push(Space::new().width(Length::Fixed(bar::WIDGET_X)));
 
-    let grip_w = look.grip_w.clamp(0.0, bar::GRIP_W);
+    let slide = if look.overlay {
+        look.slide.clamp(0.0, bar::GRIP_HOVER_SLIDE)
+    } else {
+        0.0
+    };
+    let grip_w = look.grip_w.clamp(0.0, bar::GRIP_W) + slide;
     let body_w = span.body_at(frame);
-    let inner = row![
-        grip.into(),
-        Element::new(Clip {
-            content: body.into(),
-            natural: span.natural_body(),
-            visible: body_w,
-            height: bar::WIDGET_H,
-            edge: ClipEdge::Right,
-            ground: None,
-            opacity: 1.0,
-            anchor: Some(span.body_offset(body_w)),
-            trail: span.squeeze_trail(body_w),
-        }),
-    ];
+    let clip = Element::new(Clip {
+        content: body.into(),
+        natural: span.natural_body(),
+        visible: body_w,
+        height: bar::WIDGET_H,
+        edge: ClipEdge::Right,
+        ground: None,
+        opacity: 1.0,
+        anchor: Some(span.body_offset(body_w)),
+        trail: span.squeeze_trail(body_w),
+    });
+    let inner: Element<'a, Message, Theme> = if look.overlay {
+        iced::widget::stack![row![Space::new().width(Length::Fixed(grip_w)), clip], grip.into()].into()
+    } else {
+        row![grip.into(), clip].into()
+    };
     let natural = grip_w + body_w;
     let presence = frame.presence.clamp(0.0, 1.0);
     let visible = (natural * presence).round();

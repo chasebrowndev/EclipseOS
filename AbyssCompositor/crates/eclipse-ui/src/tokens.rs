@@ -99,17 +99,24 @@ pub mod color {
     /// inside its edge, and a soft shadow under it ([`CELL_SHADOW`]). The
     /// three move together with the pointer, so a hovered cell reads as the
     /// same tile lifted a little, never as a grey slab dropped on the bar.
-    pub const CELL: Color = white(0.05);
-    pub const CELL_HOVER: Color = white(0.08);
-    pub const CELL_PRESS: Color = white(0.12);
+    ///
+    /// These alphas are for iced's *linear* blending (the workspace builds
+    /// iced without `web-colors`): over the bar's near-black glass a white
+    /// at `a` lands near sRGB white at `8a`, so `.05` would read as a 25%
+    /// grey slab. Each value here is STYLE.md's sRGB figure brought back to
+    /// linear light — `.006` reads as `.05`, and so on — so the cell stays
+    /// glass the backdrop shows through.
+    pub const CELL: Color = white(0.006);
+    pub const CELL_HOVER: Color = white(0.012);
+    pub const CELL_PRESS: Color = white(0.02);
     /// The cell's inside hairline at rest, and under the pointer (and
     /// pressed). Neutral on every cell, the focused chip included: the
     /// accent goes on a fill and a label, never on an outline.
-    pub const CELL_RIM: Color = white(0.10);
-    pub const CELL_RIM_HOVER: Color = white(0.14);
+    pub const CELL_RIM: Color = white(0.016);
+    pub const CELL_RIM_HOVER: Color = white(0.026);
     /// A minimized window's chip: no fill, only this ghost of a rim, so the
     /// put-away window is still a place to click and nothing more.
-    pub const CELL_RIM_AWAY: Color = white(0.05);
+    pub const CELL_RIM_AWAY: Color = white(0.006);
     /// The soft drop under a bar cell. Geometry in [`super::bar`].
     pub const CELL_SHADOW: Color = Color {
         r: 0.0,
@@ -601,6 +608,10 @@ pub mod bar {
     /// The grip's column: wide enough to be a target at bar height, narrow
     /// enough that a compressed widget is a sliver and not a chip.
     pub const GRIP_W: f32 = 14.0;
+    /// How far an open widget's cell eases wider under the pointer. Its grip
+    /// reserves no column while hidden and draws over the leading pad; this
+    /// small give makes room for the line without moving the bar much.
+    pub const GRIP_HOVER_SLIDE: f32 = 8.0;
     /// The grip's stroke: one thin vertical `|`. Its ends are fully round
     /// (radius half the stroke) — the owner asked for a thin, sleek, rounded
     /// line, a deliberate exception to the hard-edged grid.
