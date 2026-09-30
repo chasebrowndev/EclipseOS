@@ -15,7 +15,8 @@ yellow accent. Use this as art direction; do not copy any specific screen.
   from the sidebar by a 1px hairline, not by a change of ground.
 - Panel borders: 1px solid rgba(255,255,255,.08-.16)
 - Top edge highlight: inset 0 1px 0 rgba(255,255,255,.07-.2) — only on the blur-off fallback;
-  on glass the compositor's rim lights the edge
+  on glass the compositor's rim lights the edge. Exception: the taskbar's folded strip
+  (2-16px tall) keeps its painted top light on glass too, since the rim barely shows there
 - Outer shadow: 0 24-40px 60-90px -20px rgba(0,0,0,.85-.92) — the window's, drawn by the
   compositor. Cards inside a window carry no drop shadow: white fill + hairline only
 - Bar cells (task chips, pager tiles, launcher) are small glass lozenges: rgba(255,255,255,.05)
