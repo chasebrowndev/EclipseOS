@@ -314,7 +314,13 @@ pub fn launch(entry: &Entry, term: Option<&str>) -> std::io::Result<()> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map(|_| ())
+        .map(|mut child| {
+            // A long-lived caller (the taskbar's menu) would otherwise keep
+            // every exited app as a zombie; reap it off-thread.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        })
 }
 
 #[cfg(test)]

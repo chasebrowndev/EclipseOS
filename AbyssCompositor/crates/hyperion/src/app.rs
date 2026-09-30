@@ -1297,6 +1297,9 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                 }
             };
         }
+        // A stray `open_launcher` under the centred style is not ours:
+        // `eclipse-launcher` only sends it when the style is the menu.
+        Message::MenuOpen(_) if app.bar.launcher != LauncherStyle::Menu => {}
         Message::MenuOpen(output) => {
             // The bar on the output the keybind was pressed on; an
             // unresolved bar (`output_id` 0) is anyone's.
