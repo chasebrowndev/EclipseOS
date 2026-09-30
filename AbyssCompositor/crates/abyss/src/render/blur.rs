@@ -365,6 +365,13 @@ impl Shape {
         let mut len = 0;
         for (kind, rect) in &region.rects {
             if matches!(kind, RectangleKind::Subtract) {
+                // Clients (iced_layershell) replace a region by subtracting the
+                // whole surface before adding the new rects, and the history
+                // stays in the region: a covering subtract is a reset.
+                if rect.contains_rect(bounds) {
+                    len = 0;
+                    continue;
+                }
                 return None;
             }
             let Some(r) = rect.intersection(bounds).filter(|r| !r.is_empty()) else {
@@ -1190,6 +1197,16 @@ mod tests {
         let two = shape_of(&[pill, panel], 1.0, 20.0).expect("pill and panel");
         assert_eq!(two.rects(), &[r(0, 0, 400, 40), r(100, 40, 200, 200)]);
         assert!(shape_of(&[pill; 4], 1.0, 20.0).is_some());
+        // A subtract covering the surface is a reset (iced_layershell's
+        // replace), however much history came before it.
+        let reset = (false, (0, 0, 400, 300));
+        let replaced = shape_of(&[pill, pill, pill, reset, pill, panel], 1.0, 20.0).expect("reset");
+        assert_eq!(replaced.rects(), &[r(0, 0, 400, 40), r(100, 40, 200, 200)]);
+        assert_eq!(
+            shape_of(&[pill, panel, reset], 1.0, 20.0),
+            None,
+            "reset to nothing"
+        );
         // Empty boxes and boxes wholly off the surface do not count.
         assert_eq!(
             shape_of(&[pill, (true, (500, 0, 10, 10)), (true, (0, 0, 0, 5))], 1.0, 20.0),
