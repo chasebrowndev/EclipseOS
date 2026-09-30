@@ -386,8 +386,9 @@ pub enum FoldTarget {
 /// decision still waiting out its grace window.
 pub struct FoldState {
     pub target: FoldTarget,
-    /// Current surface height in logical pixels — what the view draws into and
-    /// what the exclusive zone is set from, so the two can never disagree.
+    /// Current strip height in logical pixels, the sheet plus the air between
+    /// it and the screen edge. The view draws into [`FoldState::sheet_height`]
+    /// and the exclusive zone is set from it, so the two can never disagree.
     pub height: u32,
     to_h: u32,
     /// The slide itself, in fractional pixels so a reversal starts from where
@@ -438,7 +439,12 @@ impl Air {
     /// air between it and the edge. What the fold slide lands on, so the
     /// last frame of an unfold and the settled pill reserve the same rows.
     pub fn shown_height(self) -> u32 {
-        bar::PILL_H as u32 + self.y.max(0) as u32
+        bar::PILL_H as u32 + self.edge()
+    }
+
+    /// The air between the sheet and its screen edge, never negative.
+    fn edge(self) -> u32 {
+        self.y.max(0) as u32
     }
 }
 
@@ -481,11 +487,23 @@ impl FoldState {
     /// Take new air (a config reload moved `gaps-out`). A shown bar at rest
     /// moves straight to the new strip; one mid-slide lands on it.
     pub fn set_air(&mut self, air: Air) {
-        if self.target == FoldTarget::Shown {
-            if self.height == self.to_h && matches!(self.slide, Slide::Rest) {
-                self.height = air.shown_height();
+        let at_rest = self.height == self.to_h && matches!(self.slide, Slide::Rest);
+        match self.target {
+            FoldTarget::Shown => {
+                if at_rest {
+                    self.height = air.shown_height();
+                }
+                self.to_h = air.shown_height();
             }
-            self.to_h = air.shown_height();
+            // The folded strip floats in the same air, so it moves with it.
+            FoldTarget::Folded => {
+                let to_h = (self.to_h - self.air.edge()) + air.edge();
+                if at_rest {
+                    self.height = to_h;
+                }
+                self.to_h = to_h;
+            }
+            FoldTarget::Hidden => {}
         }
         self.air = air;
     }
@@ -496,14 +514,32 @@ impl FoldState {
         self.target == FoldTarget::Shown && self.height == self.air.shown_height()
     }
 
+    /// The height of the drawn sheet: the strip less the air between it and
+    /// its screen edge. What the view fills and the surface is sized to.
+    pub fn sheet_height(&self) -> u32 {
+        if self.target == FoldTarget::Hidden {
+            self.height
+        } else {
+            self.height.saturating_sub(self.air.edge()).max(1)
+        }
+    }
+
     /// The surface this state needs, anchored to `edge`.
     ///
     /// The drawn sheet fills its surface exactly: the compositor blurs the
     /// whole surface at `bar.rounding`, and any air left inside it would show
     /// as a blurred rim around the pill. So the float gap is layer-shell
-    /// margin — [`Air::x`] on both sides always, and [`Air::y`] on the
-    /// anchored edge only while the pill is up (the folded strip sits flush
-    /// against the edge, as it always has).
+    /// margin — [`Air::x`] on both sides and [`Air::y`] on the anchored edge,
+    /// the pill and the folded strip alike.
+    ///
+    /// The strip floats in the pill's air rather than sitting flush against
+    /// the screen edge: flush, its capsule ends were cut in half by the edge
+    /// and it read as a straight rule. And because the margin never changes,
+    /// the fold is one capsule shrinking in place — the height and the
+    /// compositor's `min(bar.rounding, h / 2)` mask radius both move
+    /// continuously through the slide, with no jump to the edge where the
+    /// pill gives way to the strip. Only a hidden bar, which draws nothing,
+    /// drops its air.
     ///
     /// wlr-layer-shell adds the anchored edge's margin to the zone (abyss:
     /// `shell::accumulate_non_exclusive_zone`), and abyss then insets the
@@ -513,10 +549,18 @@ impl FoldState {
     /// rhythm as window → window. A hidden bar reserves nothing.
     pub fn geometry(&self, edge: BarPosition) -> Geometry {
         let side = self.air.x;
-        let (height, air, below) = if self.pill() {
-            (bar::PILL_H as u32, self.air.y, self.air.inner - self.air.y)
+        let height = self.sheet_height();
+        let air = if self.target == FoldTarget::Hidden {
+            0
         } else {
-            (self.height, 0, 0)
+            self.air.edge() as i32
+        };
+        // Only the landed pill trades the tiling inset for `gaps-in`; the
+        // folded strip keeps the plain edge rhythm.
+        let below = if self.pill() {
+            self.air.inner - self.air.y
+        } else {
+            0
         };
         let zone = if self.target == FoldTarget::Hidden && self.height == self.to_h {
             0
@@ -1425,11 +1469,12 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
     Task::none()
 }
 
-/// The height a target settles at.
+/// The height a target settles at: the strip from the screen edge, sheet
+/// plus air.
 fn target_height(bar: &BarConfig, target: FoldTarget, air: Air) -> u32 {
     match target {
         FoldTarget::Shown => air.shown_height(),
-        FoldTarget::Folded => bar.fold_height,
+        FoldTarget::Folded => bar.fold_height + air.edge(),
         FoldTarget::Hidden => HIDDEN_HEIGHT,
     }
 }
@@ -3051,14 +3096,14 @@ mod fold_tests {
         a.bar.fold_duration_ms = 0;
         commit(&a.bar, &mut b.fold, FoldTarget::Folded, std::time::Instant::now());
         advance(&a.bar, &mut b.fold, std::time::Instant::now());
-        assert_eq!(b.fold.height, a.bar.fold_height);
+        assert_eq!(b.fold.sheet_height(), a.bar.fold_height);
         assert!(!b.fold.animating());
     }
 
     /// The pill fills its surface and the float gap is margin; the zone is
     /// the pill alone, so the strip a tiled window avoids is the pill plus
     /// the edge air (the compositor adds the anchored edge's margin, then
-    /// its own `gaps-in`). A folded strip sits flush.
+    /// its own `gaps-in`). A folded strip floats in the same air.
     #[test]
     fn the_gap_is_margin_and_the_zone_is_the_pill() {
         let shown = FoldState::default();
@@ -3113,7 +3158,49 @@ mod fold_tests {
         let g = b.fold.geometry(BarPosition::Top);
         assert_eq!(g.height, a.bar.fold_height);
         assert_eq!(g.zone, a.bar.fold_height as i32);
-        assert_eq!((g.margin.0, g.margin.2), (0, 0));
+        assert_eq!((g.margin.0, g.margin.2), (bar::MARGIN_Y as i32, 0));
+    }
+
+    /// The fold is one capsule shrinking in place: every frame of the slide
+    /// keeps the pill's air, so the sheet never jumps to the screen edge
+    /// where the pill gives way to the strip, and the strip plus its air is
+    /// exactly the height the slide is at.
+    #[test]
+    fn the_fold_slides_in_place_without_a_jump() {
+        let (mut a, mut b) = folding_app();
+        a.bar.fold_duration_ms = 200;
+        let t0 = std::time::Instant::now();
+        let first = b.fold.geometry(BarPosition::Top);
+        commit(&a.bar, &mut b.fold, FoldTarget::Folded, t0);
+        assert_eq!(
+            b.fold.geometry(BarPosition::Top),
+            first,
+            "committing a fold moves nothing"
+        );
+        for n in (8..=400).step_by(8) {
+            advance(&a.bar, &mut b.fold, t0 + std::time::Duration::from_millis(n));
+            let g = b.fold.geometry(BarPosition::Top);
+            assert_eq!(g.margin, first.margin, "the air holds at {n} ms");
+            assert_eq!(g.height + g.margin.0 as u32, b.fold.height);
+        }
+        assert_eq!(b.fold.sheet_height(), a.bar.fold_height);
+    }
+
+    /// A gap change reaches a folded strip too: it floats in the new air at
+    /// the same height.
+    #[test]
+    fn a_folded_strip_follows_the_air() {
+        let (mut a, mut b) = folding_app();
+        a.bar.fold_duration_ms = 0;
+        commit(&a.bar, &mut b.fold, FoldTarget::Folded, std::time::Instant::now());
+        b.fold.set_air(Air {
+            x: 3,
+            y: 12,
+            inner: 12,
+        });
+        let g = b.fold.geometry(BarPosition::Bottom);
+        assert_eq!(g.height, a.bar.fold_height);
+        assert_eq!(g.margin, (0, 3, 12, 3));
     }
 
     /// `Hidden` gives the zone up entirely; `Folded` keeps its sliver.
@@ -3126,7 +3213,7 @@ mod fold_tests {
         );
         assert_eq!(
             target_height(&bar, FoldTarget::Folded, Air::default()),
-            bar.fold_height
+            bar.fold_height + bar::MARGIN_Y as u32
         );
         assert_eq!(
             target_height(&bar, FoldTarget::Shown, Air::default()),
