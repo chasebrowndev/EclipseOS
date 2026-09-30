@@ -311,7 +311,8 @@ pub fn collect_elements(
     fullscreen: bool,
 ) -> Vec<AbyssRenderElement> {
     let scale = Scale::from(output.current_scale().fractional_scale());
-    let output_loc = space.output_geometry(output).map(|g| g.loc).unwrap_or_default();
+    let output_geo = space.output_geometry(output).unwrap_or_default();
+    let output_loc = output_geo.loc;
     let mut elements: Vec<AbyssRenderElement> = Vec::new();
     // (window, index in `elements` directly below its surfaces, region).
     // Filled front to back; `insert_blur` consumes it in reverse.
@@ -339,7 +340,14 @@ pub fn collect_elements(
                 // opaque region; anything it leaves uncovered is glass and
                 // wants a backdrop. COMP-02 §9: opaque surfaces are skipped
                 // entirely, so a bar that paints a solid ground costs nothing.
-                if blur_layers {
+                // *(C-17)* Nor does a surface anchored to all four edges and
+                // as big as the output: that is a scrim or a selection overlay
+                // (slurp), not a sheet, and glass behind it would smear the
+                // whole output it asks the human to read. A sized sheet merely
+                // centred by those anchors still gets its glass.
+                let scrim =
+                    surface.cached_state().anchor.contains(Anchor::all()) && geo.size == output_geo.size;
+                if blur_layers && !scrim {
                     let region = Rectangle::new(loc, geo.size.to_f64().to_physical(scale).to_i32_round());
                     if blur::shows_through(region, 0, opaque_of(&els, scale)) {
                         requests.push((
