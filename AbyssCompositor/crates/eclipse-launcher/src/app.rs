@@ -208,6 +208,9 @@ pub fn subscription(_app: &App) -> Subscription<Message> {
         // decline, and `iced_layershell` only tears down its own bookkeeping
         // for it; leaving is our job.
         iced::Event::Window(iced::window::Event::Closed) => Some(Message::Close),
+        // A click anywhere else took the keyboard: dismissed, like the
+        // taskbar's start menu.
+        iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::Close),
         _ => None,
     })
 }

@@ -45,9 +45,11 @@ fn main() -> iced_layershell::Result {
             size: Some((WIDTH, view::surface_height())),
             exclusive_zone: 0,
             margin: (0, 0, 0, 0),
-            // Unlike the other surfaces, a launcher is nothing but
-            // keyboard: it must take it, and give it back on exit.
-            keyboard_interactivity: KeyboardInteractivity::Exclusive,
+            // A launcher is nothing but keyboard, and abyss hands an
+            // on-demand layer the keyboard when it maps. On-demand rather
+            // than exclusive so a click anywhere else takes it back, and the
+            // focus loss closes us (`app::subscription`).
+            keyboard_interactivity: KeyboardInteractivity::OnDemand,
             ..Default::default()
         })
         .style(view::style)
