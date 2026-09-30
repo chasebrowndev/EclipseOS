@@ -440,9 +440,8 @@ pub const TABLE: &[Key] = &[
         Ty::Enum(&["top", "bottom"]),
         Str("top"),
         Abyss,
-        NeedsRestart,
-        "Which edge of every output the taskbar is anchored to. Takes effect \
-       the next time the taskbar starts, not on a live reload.",
+        Live,
+        "Which edge of every output the taskbar is anchored to.",
     ),
     k(
         "bar.tray.pinned",

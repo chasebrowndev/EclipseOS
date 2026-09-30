@@ -241,10 +241,9 @@ pub struct App {
     pub popup: Option<Popup>,
     /// The `bar.*` settings, re-read on every successful config reload.
     pub bar: BarConfig,
-    /// The edge the surface is anchored to, fixed at startup like the anchor
-    /// itself (`bar.position` is `reload: restart`). The float gap is a
-    /// layer-shell margin on this edge, so it must not follow a reload that
-    /// the anchor did not.
+    /// The edge the surface is anchored to. A reload that changes
+    /// `bar.position` moves it and re-asks every bar's anchor in the same
+    /// pass, so the float-gap margin never lands on the other edge.
     pub edge: BarPosition,
     /// The last `output` event's payload, kept because the fold decision is
     /// recomputed on ticks and reloads, not only when the event arrives.
@@ -959,21 +958,16 @@ fn recheck() -> Task<Message> {
 /// Ask for a bar on `name` and start its state.
 ///
 /// The first frame's geometry is the one every fold step asks for, so the
-/// first frame and a settled unfold cannot disagree. The anchor is the edge
-/// read at startup (`bar.position` is `reload: restart`), plus both sides.
+/// first frame and a settled unfold cannot disagree. The anchor is
+/// [`bar_anchor`]; a reload that moves the edge re-asks it in
+/// [`push_geometry`].
 pub fn open_bar(app: &mut App, name: String, output_id: u64) -> Task<Message> {
-    use iced_layershell::reexport::{
-        Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
-    };
+    use iced_layershell::reexport::{KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption};
     let id = Id::unique();
     let mut bar = Bar::new(id, name.clone(), output_id, app.widget_cfg.motion);
     bar.fold = FoldState::with_air(app.air);
     let geometry = bar.fold.geometry(app.edge);
     app.bars.insert(id, bar);
-    let edge = match app.edge {
-        BarPosition::Top => Anchor::Top,
-        BarPosition::Bottom => Anchor::Bottom,
-    };
     Task::done(Message::NewLayerShell {
         settings: NewLayerShellSettings {
             // Width 0 means "as wide as the output, less the side margins".
@@ -983,7 +977,7 @@ pub fn open_bar(app: &mut App, name: String, output_id: u64) -> Task<Message> {
             // rather than under it.
             size: Some((0, geometry.height)),
             layer: Layer::Top,
-            anchor: edge | Anchor::Left | Anchor::Right,
+            anchor: bar_anchor(app.edge),
             exclusive_zone: Some(geometry.zone),
             margin: Some(geometry.margin),
             // The bar is pointer-driven. It must never take the keyboard
@@ -1265,13 +1259,22 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             if let Some(blur) = app.conn.blur() {
                 app.blur = blur;
             }
-            // A new outer gap moves every pill now, not on its next fold:
-            // the surface is re-asked, and a raised eye is dropped so the
-            // fold pass below raises it again at the new offset.
+            // A new outer gap or edge moves every pill now, not on its next
+            // fold: the surface is re-asked, and a raised eye is dropped so
+            // the fold pass below raises it again at the new offset. A popup
+            // hangs from the old edge, so an edge move closes it.
             let mut moved = Task::none();
-            if let Some(air) = app.conn.air().filter(|air| *air != app.air) {
-                app.air = air;
-                moved = each_bar(app, |app, bar| {
+            let air = app.conn.air().filter(|air| *air != app.air);
+            let edge_moved = app.bar.position != app.edge;
+            if air.is_some() || edge_moved {
+                if let Some(air) = air {
+                    app.air = air;
+                }
+                if edge_moved {
+                    app.edge = app.bar.position;
+                    moved = dismiss(app);
+                }
+                let each = each_bar(app, |app, bar| {
                     bar.fold.set_air(app.air);
                     let eye = match bar.eye_surface.take() {
                         Some(id) => Task::done(Message::RemoveWindow(id)),
@@ -1279,6 +1282,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                     };
                     Task::batch([push_geometry(app, bar), eye])
                 });
+                moved = Task::batch([moved, each]);
             }
             if app.fixture.is_none() {
                 app.widget_cfg = app.conn.widgets_config();
@@ -1492,6 +1496,10 @@ fn push_geometry(app: &App, bar: &Bar) -> Task<Message> {
     }
     let id = bar.id;
     Task::batch([
+        Task::done(Message::AnchorChange {
+            id,
+            anchor: bar_anchor(app.edge),
+        }),
         Task::done(Message::SizeChange {
             id,
             size: (0, g.height),
@@ -1502,6 +1510,16 @@ fn push_geometry(app: &App, bar: &Bar) -> Task<Message> {
             zone_size: g.zone,
         }),
     ])
+}
+
+/// The bar's edge plus both sides: as wide as the output.
+fn bar_anchor(edge: BarPosition) -> iced_layershell::reexport::Anchor {
+    use iced_layershell::reexport::Anchor;
+    let edge = match edge {
+        BarPosition::Top => Anchor::Top,
+        BarPosition::Bottom => Anchor::Bottom,
+    };
+    edge | Anchor::Left | Anchor::Right
 }
 
 /// A fold step, then the eye brought in line with it: the eye rides only on

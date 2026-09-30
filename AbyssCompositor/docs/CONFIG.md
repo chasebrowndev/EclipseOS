@@ -95,7 +95,7 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `bar.idle-seconds` | int 5..600 | `30` | live | Seconds without any human input, pointer motion included, before the taskbar folds when fold-when-idle is on. |
 | `bar.fold-duration-ms` | int 0..1000 | `150` | live | How long the taskbar takes to slide open or shut. Height and exclusive zone animate together, so tiled windows reflow with it. Zero snaps. |
 | `bar.fold-curve` | linear \| ease-in \| ease-out \| ease-in-out | `"ease-out"` | live | Easing applied to the taskbar's fold slide. |
-| `bar.position` | top \| bottom | `"top"` | restart | Which edge of every output the taskbar is anchored to. Takes effect the next time the taskbar starts, not on a live reload. |
+| `bar.position` | top \| bottom | `"top"` | live | Which edge of every output the taskbar is anchored to. |
 | `bar.tray.pinned` | list of strings | _unset_ | live | StatusNotifierItem ids shown on the taskbar itself, in this order; an app goes by its own id. Unset means the taskbar's built-in order; an empty list pins nothing. Anything neither pinned nor hidden sits in the overflow drawer. The built-in applets are widgets now (`bar.widgets.order`): their old ids here (network, bluetooth, battery, volume) still load, with a deprecation warning, and `eclipse-ctl config migrate` moves them. |
 | `bar.tray.hidden` | list of strings | _empty_ | live | StatusNotifierItem ids never shown, on the taskbar or in its overflow drawer. Hidden wins over pinned when an id is in both. A built-in applet id here is deprecated the same way as in `pinned`: leave it out of `bar.widgets.order` instead. |
 | `bar.rounding` | int 0..64 | `20` | live | Corner radius in logical px for the taskbar's own blur backdrop. |

@@ -87,10 +87,8 @@ impl FoldCurve {
     }
 }
 
-/// The edge the bar's layer surface anchors to. `bar.position` is
-/// `reload: restart` (COMP-13 §1.4) — the layer surface's anchor is set once
-/// in `main::bar` before the window exists, so this field is read at startup
-/// only and is not updated by `Config` events the way the fold keys are.
+/// The edge the bar's layer surface anchors to. `bar.position` is live
+/// (COMP-13 §1.4): a reload that changes it re-asks every bar's anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BarPosition {
     Top,
