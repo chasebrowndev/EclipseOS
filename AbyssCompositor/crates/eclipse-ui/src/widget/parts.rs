@@ -1227,6 +1227,90 @@ pub fn prompt_band<'a, Message: 'a>(
         .into()
 }
 
+/// A glass cell's look, at rest, as a container ground rather than a button's.
+///
+/// [`theme::glass_cell`] is a button style because nearly every glass cell is
+/// pressed; the few that are not (a prompt, a keycap) still have to be the
+/// same material, so they take the same style at `Active` rather than a
+/// hand-copied fill, rim and drop that would drift from it.
+fn glass_ground(tone: theme::CellTone, radius: f32) -> impl Fn(&Theme) -> container::Style {
+    move |t: &Theme| {
+        let cell = theme::glass_cell(tone, radius)(t, button::Status::Active);
+        container::Style {
+            background: cell.background,
+            border: cell.border,
+            shadow: cell.shadow,
+            ..container::Style::default()
+        }
+    }
+}
+
+/// The prompt cell: [`prompt_band`]'s hero — one live line of input at hero
+/// scale, a mono marker at its left, an optional reading at its right — cut
+/// from the glass-cell material ([`theme::glass_cell`]) instead of a stroked
+/// band.
+///
+/// A widget for the reason [`prompt_band`] is one (it is a hero shape, not a
+/// styled field), and separate from it because the two grounds belong to two
+/// kinds of surface. The band's strong frame holds an edge on an opaque pane;
+/// on a floating glass sheet a stroke used as structure fights the
+/// compositor's own rim, so here the depth is the cell's faint fill, its
+/// inside hairline and its soft drop — the same lozenge as a taskbar chip, at
+/// the sheet's inset radius. The field inside should use
+/// [`crate::theme::prompt_input`]; the cell is already the box.
+pub fn prompt_cell<'a, Message: 'a>(
+    marker: &str,
+    field: impl Into<Element<'a, Message, Theme>>,
+    trailing: Option<Element<'a, Message, Theme>>,
+) -> container::Container<'a, Message, Theme> {
+    let mut r = row![
+        text(marker.to_string())
+            .font(font::DATA_MEDIUM)
+            .size(size::PROMPT)
+            .style(theme::text_tertiary),
+        container(field.into()).width(Length::Fill),
+    ]
+    .spacing(space::CARD * 0.75)
+    .align_y(Alignment::Center);
+    if let Some(t) = trailing {
+        r = r.push(t);
+    }
+
+    container(r)
+        .padding([space::ROW_Y, space::CARD])
+        .width(Length::Fill)
+        .align_y(Alignment::Center)
+        .style(glass_ground(theme::CellTone::Plain, radius::INSET))
+}
+
+/// A key and what it does: `esc close`, with the key in a small glass cap.
+///
+/// A widget because a hint line is a sentence of alternating keys and verbs,
+/// and a key typed as plain text (`enter run`) reads as two words of prose.
+/// The cap is the glass cell at keycap scale — never accented: a hint is
+/// furniture and must not spend a pane's yellow.
+pub fn key_hint<'a, Message: 'a>(key: &str, verb: &str) -> Element<'a, Message, Theme> {
+    row![
+        container(
+            text(key.to_string())
+                .font(font::DATA_MEDIUM)
+                .size(size::MICRO)
+                .style(theme::text_secondary)
+                .wrapping(text::Wrapping::None),
+        )
+        .padding([space::BADGE_Y, space::BADGE_X])
+        .style(glass_ground(theme::CellTone::Plain, radius::KEYCAP)),
+        text(verb.to_string())
+            .font(font::DATA)
+            .size(size::MICRO)
+            .style(theme::text_tertiary)
+            .wrapping(text::Wrapping::None),
+    ]
+    .spacing(space::KEY_GAP)
+    .align_y(Alignment::Center)
+    .into()
+}
+
 /// One object on a spatial canvas: a mono name, with its position in an
 /// ordered lane as a tertiary ordinal before it.
 ///

@@ -312,6 +312,12 @@ pub enum CellTone {
     Focused,
     /// A minimized window: no fill, a ghost rim, no shadow.
     Away,
+    /// A member of a list of cells, at rest: no fill, no rim, no drop —
+    /// nothing at all until the pointer lands on it, when it lifts into the
+    /// [`CellTone::Plain`] lozenge. Eight rows each wearing a rim is eight
+    /// outlines ruled down a sheet, which is the stroke-as-structure look
+    /// the glass replaced; only the rows that mean something show a ground.
+    Latent,
 }
 
 /// `true` is the focused cell, `false` a plain one — the two every caller
@@ -340,6 +346,21 @@ impl From<bool> for CellTone {
 /// [`CellTone::Away`] (minimized) cell has no fill and no drop, only a ghost
 /// rim, and is lifted by the pointer like any other.
 pub fn bar_cell(tone: impl Into<CellTone>) -> impl Fn(&Theme, button::Status) -> button::Style {
+    glass_cell(tone, bar::RADIUS_CELL)
+}
+
+/// [`bar_cell`]'s material at any corner: the one glass cell of the desktop.
+///
+/// The bar's cells are capsules because they are concentric with the bar's
+/// capsule; a cell on a floating sheet (a launcher row, its prompt) is
+/// concentric with the sheet instead, so the radius is the caller's and
+/// everything else — fill, inside rim, drop, how the pointer lifts it, where
+/// the gold goes — is this one function, so a launcher row and a taskbar chip
+/// cannot drift into two materials.
+pub fn glass_cell(
+    tone: impl Into<CellTone>,
+    radius: f32,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
     let tone = tone.into();
     move |_t, status| {
         let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
@@ -350,17 +371,19 @@ pub fn bar_cell(tone: impl Into<CellTone>) -> impl Fn(&Theme, button::Status) ->
             (CellTone::Focused, _) => color::ACCENT_FILL,
             (_, button::Status::Pressed) => color::CELL_PRESS,
             (_, button::Status::Hovered) => color::CELL_HOVER,
-            (CellTone::Away, _) => Color::TRANSPARENT,
+            (CellTone::Away | CellTone::Latent, _) => Color::TRANSPARENT,
             (CellTone::Plain, _) => color::CELL,
         };
         let rim = match (tone, lit) {
             (_, true) => color::CELL_RIM_HOVER,
             (CellTone::Away, false) => color::CELL_RIM_AWAY,
+            (CellTone::Latent, false) => Color::TRANSPARENT,
             (_, false) => color::CELL_RIM,
         };
-        // A pressed cell is pushed into the glass, and a minimized one at
-        // rest is not lifted off it at all: neither casts a drop.
-        let shadow = if pressed || (tone == CellTone::Away && !lit) {
+        // A pressed cell is pushed into the glass, and a minimized or latent
+        // one at rest is not lifted off it at all: neither casts a drop.
+        let resting = matches!(tone, CellTone::Away | CellTone::Latent) && !lit;
+        let shadow = if pressed || resting {
             Shadow::default()
         } else {
             Shadow {
@@ -379,7 +402,7 @@ pub fn bar_cell(tone: impl Into<CellTone>) -> impl Fn(&Theme, button::Status) ->
             border: Border {
                 color: rim,
                 width: space::HAIRLINE,
-                radius: bar::RADIUS_CELL.into(),
+                radius: radius.into(),
             },
             shadow,
             ..button::Style::default()

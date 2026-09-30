@@ -268,6 +268,10 @@ pub mod radius {
     /// A badge: nearly square, so a label that classifies an object never
     /// reads as a chip you can pick or a pill you can press.
     pub const BADGE: f32 = 3.0;
+    /// A keycap in a hint line: rounder than a badge, so it reads as a key
+    /// and not as a label, and far short of a pill, so it never reads as a
+    /// button.
+    pub const KEYCAP: f32 = 5.0;
 }
 
 pub mod space {
@@ -375,6 +379,11 @@ pub mod space {
     pub const GRID_GAP: f32 = 10.0;
     /// Between the lines inside a status cell or an edge note.
     pub const LINE_GAP: f32 = 3.0;
+    /// Between a keycap and the verb it performs, and between two such
+    /// hints on one line: close enough that a key belongs to its verb, far
+    /// enough that the next key does not.
+    pub const KEY_GAP: f32 = 6.0;
+    pub const HINT_GAP: f32 = 14.0;
 }
 
 /// Window widths at which a pane's frame changes shape. Only the frame: rows
