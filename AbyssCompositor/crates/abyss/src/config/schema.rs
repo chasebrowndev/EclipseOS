@@ -318,14 +318,6 @@ pub const TABLE: &[Key] = &[
         "Clear keyboard focus when the pointer enters an output whose workspace has no focusable window. Off keeps the previous focus.",
     ),
     k(
-        "general.focus-follows-mouse-layers",
-        Ty::Bool,
-        Bool(true),
-        Abyss,
-        Live,
-        "Let pointer motion take focus back from an on-demand layer surface such as the bar. Exclusive layer surfaces are never affected.",
-    ),
-    k(
         "general.refocus-on-scene-change",
         Ty::Bool,
         Bool(true),
@@ -1681,7 +1673,6 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "general.cursor-follows-moved-window" => V::Bool(c.general.cursor_follows_moved_window),
         "general.follow-window-to-workspace" => V::Bool(c.general.follow_window_to_workspace),
         "general.unfocus-on-empty-workspace" => V::Bool(c.general.unfocus_on_empty_workspace),
-        "general.focus-follows-mouse-layers" => V::Bool(c.general.focus_follows_mouse_layers),
         "general.refocus-on-scene-change" => V::Bool(c.general.refocus_on_scene_change),
         "general.col-active-border" => V::Color(c.general.col_active),
         "general.col-inactive-border" => V::Color(c.general.col_inactive),

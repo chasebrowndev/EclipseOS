@@ -24,7 +24,7 @@ use smithay::{
     wayland::{
         compositor::with_states,
         shell::{
-            wlr_layer::{Anchor, ExclusiveZone, Layer, LayerSurfaceData},
+            wlr_layer::{Anchor, ExclusiveZone, KeyboardInteractivity, Layer, LayerSurfaceData},
             xdg::{PopupSurface, SurfaceCachedState, XdgPopupSurfaceData, XdgToplevelSurfaceData},
         },
     },
@@ -694,6 +694,23 @@ pub fn surface_under(
     state: &AbyssState,
     pos: Point<f64, Logical>,
 ) -> Option<(WlSurface, Point<f64, Logical>)> {
+    hit_under(state, pos).map(|(s, p, _)| (s, p))
+}
+
+/// The layer surface that owns the topmost surface at `pos`, if that surface
+/// belongs to a layer surface at all (its own tree or one of its popups). A
+/// toplevel stacked above a bottom/background layer hides it, exactly as
+/// [`surface_under`] resolves it.
+pub fn layer_at(state: &AbyssState, pos: Point<f64, Logical>) -> Option<DesktopLayerSurface> {
+    hit_under(state, pos).and_then(|(_, _, l)| l)
+}
+
+/// [`surface_under`], also naming the layer surface hit, so the focus rules
+/// can tell a layer from a toplevel without a second (allocating) lookup.
+fn hit_under(
+    state: &AbyssState,
+    pos: Point<f64, Logical>,
+) -> Option<(WlSurface, Point<f64, Logical>, Option<DesktopLayerSurface>)> {
     let output = output_at(state, pos)?;
     let output_loc = state
         .space
@@ -707,14 +724,14 @@ pub fn surface_under(
             if let Some(l) = layer_under(&map, layer, local) {
                 let geo = layer_geometry(&map, l).unwrap_or_default();
                 if let Some((s, p)) = l.surface_under(local - geo.loc.to_f64(), WindowSurfaceType::ALL) {
-                    return Some((s, (output_loc + geo.loc + p).to_f64()));
+                    return Some((s, (output_loc + geo.loc + p).to_f64(), Some(l.clone())));
                 }
             }
         }
     }
     if let Some((window, loc)) = state.space.element_under(pos) {
         if let Some((s, p)) = window.surface_under(pos - loc.to_f64(), WindowSurfaceType::ALL) {
-            return Some((s, (loc + p).to_f64()));
+            return Some((s, (loc + p).to_f64(), None));
         }
     }
     let map = layer_map_for_output(&output);
@@ -722,7 +739,7 @@ pub fn surface_under(
         if let Some(l) = layer_under(&map, layer, local) {
             let geo = layer_geometry(&map, l).unwrap_or_default();
             if let Some((s, p)) = l.surface_under(local - geo.loc.to_f64(), WindowSurfaceType::ALL) {
-                return Some((s, (output_loc + geo.loc + p).to_f64()));
+                return Some((s, (output_loc + geo.loc + p).to_f64(), Some(l.clone())));
             }
         }
     }
@@ -1224,6 +1241,7 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
         if send_initial {
             focus_layer_if_wanted(state, surface);
         }
+        follow_interactivity(state, &output, surface, send_initial);
     }
 
     if let Some(popup) = state.popups.find_popup(surface) {
@@ -2735,6 +2753,58 @@ pub fn spawn(command: &str) {
     cmd.process_group(0);
     if let Err(e) = cmd.spawn() {
         tracing::error!(command, %e, "spawn failed");
+    }
+}
+
+/// The keyboard interactivity a layer surface had at its previous commit.
+#[derive(Default)]
+struct SeenInteractivity(Cell<Option<KeyboardInteractivity>>);
+
+/// Act on a mapped layer surface changing its keyboard interactivity
+/// (wlr-layer-shell `set_keyboard_interactivity`). Mapping is handled by
+/// [`focus_layer_if_wanted`]; this is the same rule for a surface that asks
+/// later — a bar opening its menu, say (COMP-05 §5):
+///
+/// - `none` to `on_demand`/`exclusive`: it takes the keyboard, as it would
+///   have had it mapped that way.
+/// - to `none` while holding the keyboard: it loses it, and focus goes back to
+///   the focused output's workspace ([`refocus_topmost`]). The protocol says
+///   the compositor "should never assign it the keyboard focus".
+pub(crate) fn follow_interactivity(
+    state: &mut AbyssState,
+    output: &Output,
+    surface: &WlSurface,
+    initial: bool,
+) {
+    let Some(layer) = layer_map_for_output(output)
+        .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+        .cloned()
+    else {
+        return;
+    };
+    let now = layer.cached_state().keyboard_interactivity;
+    layer.user_data().insert_if_missing(SeenInteractivity::default);
+    let Some(before) = layer
+        .user_data()
+        .get::<SeenInteractivity>()
+        .map(|s| s.0.replace(Some(now)))
+    else {
+        return;
+    };
+    if initial || before.is_none() || before == Some(now) {
+        return;
+    }
+    let holds = focused_layer(state).as_ref() == Some(&layer);
+    match now {
+        KeyboardInteractivity::None if holds => {
+            tracing::debug!("layer surface gave up keyboard interactivity; refocusing");
+            refocus_topmost(state);
+        }
+        KeyboardInteractivity::OnDemand | KeyboardInteractivity::Exclusive if !holds => {
+            tracing::debug!(interactivity = ?now, "layer surface asked for the keyboard");
+            focus_layer_if_wanted(state, surface);
+        }
+        _ => {}
     }
 }
 

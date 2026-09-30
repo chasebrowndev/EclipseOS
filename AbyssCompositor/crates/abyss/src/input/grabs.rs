@@ -930,15 +930,20 @@ pub fn end_drag_gesture(state: &mut AbyssState, cancelled: bool) {
 /// smithay holds across a grab's own callbacks. Checking
 /// `pointer_grab_active` first short-circuits the one re-entrant case.
 pub fn drag_active(state: &AbyssState) -> bool {
-    if state.pointer_grab_active
+    drag_active_but_click(state) || state.seat.get_pointer().is_some_and(|p| p.is_grabbed())
+}
+
+/// [`drag_active`] without `PointerHandle::is_grabbed`, for the click-to-focus
+/// decision. A button press installs smithay's implicit click grab before
+/// click-to-focus runs, so `is_grabbed` is true for every plain click; read
+/// there, it made the press its own "drag" and froze focus whenever the
+/// keyboard's owner was on no output — an on-demand layer surface holding it.
+pub fn drag_active_but_click(state: &AbyssState) -> bool {
+    state.pointer_grab_active
         || state.touch_grab_active
         || state.gesture_drag.is_some()
         || !state.popup_grabs.is_empty()
         || state.dnd_icon.is_some()
-    {
-        return true;
-    }
-    state.seat.get_pointer().is_some_and(|p| p.is_grabbed())
 }
 
 #[cfg(test)]

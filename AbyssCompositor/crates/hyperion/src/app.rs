@@ -1781,10 +1781,12 @@ fn toggle_start(app: &mut App, id: Id) -> Task<Message> {
         bar.menu.open(entries, term, now);
         Task::batch([
             // The keyboard, held until the menu closes: the query is typed
-            // here, and Escape and the arrows must reach it.
+            // here, and Escape and the arrows must reach it. On-demand, so
+            // a click on a window takes it back and the leave closes us;
+            // hover never does (abyss `shell::focus`).
             Task::done(Message::KeyboardInteractivityChange {
                 id,
-                keyboard_interactivity: iced_layershell::reexport::KeyboardInteractivity::Exclusive,
+                keyboard_interactivity: iced_layershell::reexport::KeyboardInteractivity::OnDemand,
             }),
             iced::widget::operation::focus(crate::menu::INPUT_ID),
             push_size(app, bar),

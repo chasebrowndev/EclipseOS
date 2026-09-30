@@ -71,7 +71,7 @@ impl AbyssState {
             // bug passes WLCS and still ships.
             let pos = self.pointer_location;
             let action =
-                crate::shell::focus::decide_pointer_focus(&crate::shell::focus::pointer_focus_ctx(self, pos));
+                crate::shell::focus::decide_pointer_focus(&crate::shell::focus::click_focus_ctx(self, pos));
             crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Click);
         }
         pointer.button(
@@ -139,7 +139,7 @@ impl AbyssState {
             // As above: one focus path, shared with the pointer. The context is
             // built at the touch point, not at `pointer_location` — touch has
             // no cursor.
-            let action = crate::shell::focus::decide_pointer_focus(&crate::shell::focus::pointer_focus_ctx(
+            let action = crate::shell::focus::decide_pointer_focus(&crate::shell::focus::click_focus_ctx(
                 self, location,
             ));
             crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Touch);

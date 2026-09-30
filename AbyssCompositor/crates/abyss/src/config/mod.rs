@@ -78,7 +78,6 @@ pub struct General {
     pub focus_follows_mouse: bool,
     pub focus_follows_mouse_across_outputs: bool,
     pub unfocus_on_empty_workspace: bool,
-    pub focus_follows_mouse_layers: bool,
     pub refocus_on_scene_change: bool,
     /// Warp the pointer onto a window a keybind just moved, so the cursor is
     /// never left behind on the workspace or display the window came from.
@@ -126,7 +125,6 @@ impl Default for General {
             focus_follows_mouse: true,
             focus_follows_mouse_across_outputs: true,
             unfocus_on_empty_workspace: true,
-            focus_follows_mouse_layers: true,
             refocus_on_scene_change: true,
             cursor_follows_moved_window: true,
             follow_window_to_workspace: true,
@@ -2447,10 +2445,10 @@ impl Config {
                         self.general.unfocus_on_empty_workspace = b;
                     }
                 }
+                // Removed: hover never takes the keyboard from an on-demand
+                // layer now, only a click does (wlr-layer-shell `on_demand`).
                 "focus-follows-mouse-layers" => {
-                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
-                        self.general.focus_follows_mouse_layers = b;
-                    }
+                    tracing::warn!("deprecated: general.focus-follows-mouse-layers is ignored");
                 }
                 "refocus-on-scene-change" => {
                     if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
