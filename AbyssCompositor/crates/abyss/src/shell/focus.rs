@@ -886,7 +886,7 @@ pub(crate) mod state_tests {
 
     /// A real in-process Wayland client, for the rules that only hold against
     /// real surfaces: the lock screen's.
-    mod client {
+    pub(crate) mod client {
         use std::os::fd::{AsFd, FromRawFd};
         use std::os::unix::net::UnixStream;
 
@@ -905,7 +905,7 @@ pub(crate) mod state_tests {
         };
         use wayland_protocols::xdg::shell::client::{
             xdg_surface::{self, XdgSurface},
-            xdg_toplevel::XdgToplevel,
+            xdg_toplevel::{self, XdgToplevel},
             xdg_wm_base::{self, XdgWmBase},
         };
 
@@ -923,6 +923,16 @@ pub(crate) mod state_tests {
             lock_size: Option<(u32, u32)>,
             /// `key` events an input-method keyboard grab received.
             pub grabbed_keys: usize,
+            /// Every `xdg_toplevel.configure` size, as (toplevel id, w, h).
+            configures: Vec<(u32, i32, i32)>,
+        }
+
+        /// A toplevel's three client objects, for tests that drive its
+        /// handshake one request at a time.
+        pub struct Toplevel {
+            pub surface: WlSurface,
+            pub xdg: XdgSurface,
+            pub toplevel: XdgToplevel,
         }
 
         pub struct Client {
@@ -1016,7 +1026,20 @@ pub(crate) mod state_tests {
         delegate_noop!(Globals: ignore WlBuffer);
         delegate_noop!(Globals: ignore WlSurface);
         delegate_noop!(Globals: ignore WlOutput);
-        delegate_noop!(Globals: ignore XdgToplevel);
+        impl Dispatch<XdgToplevel, ()> for Globals {
+            fn event(
+                g: &mut Self,
+                toplevel: &XdgToplevel,
+                event: xdg_toplevel::Event,
+                _: &(),
+                _: &Connection,
+                _: &QueueHandle<Self>,
+            ) {
+                if let xdg_toplevel::Event::Configure { width, height, .. } = event {
+                    g.configures.push((toplevel.id().protocol_id(), width, height));
+                }
+            }
+        }
         delegate_noop!(Globals: ignore ExtSessionLockV1);
         delegate_noop!(Globals: ignore WlSeat);
         delegate_noop!(Globals: ZwpInputMethodManagerV2);
@@ -1139,6 +1162,48 @@ pub(crate) mod state_tests {
                 surface.commit();
                 self.pump(h);
                 surface.id().protocol_id()
+            }
+
+            /// `get_toplevel` and nothing else, delivered: the compositor has
+            /// seen the role but not the initial commit.
+            pub fn create_toplevel(&mut self, h: &mut Harness) -> Toplevel {
+                let qh = self.queue.handle();
+                let surface = self.surface();
+                let xdg = self
+                    .wm
+                    .as_ref()
+                    .expect("xdg_wm_base")
+                    .get_xdg_surface(&surface, &qh, ());
+                let toplevel = xdg.get_toplevel(&qh, ());
+                self.pump(h);
+                Toplevel {
+                    surface,
+                    xdg,
+                    toplevel,
+                }
+            }
+
+            /// Commit `surface` as it stands and deliver it.
+            pub fn commit(&mut self, h: &mut Harness, surface: &WlSurface) {
+                surface.commit();
+                self.pump(h);
+            }
+
+            /// Attach a 100x100 buffer, commit and deliver: the map.
+            pub fn attach(&mut self, h: &mut Harness, surface: &WlSurface) {
+                surface.attach(Some(&self.buffer(100, 100)), 0, 0);
+                self.commit(h, surface);
+            }
+
+            /// Every size `toplevel` has been configured with, oldest first.
+            pub fn configured_sizes(&self, toplevel: &XdgToplevel) -> Vec<(i32, i32)> {
+                let id = toplevel.id().protocol_id();
+                self.data
+                    .configures
+                    .iter()
+                    .filter(|(t, _, _)| *t == id)
+                    .map(|&(_, w, h)| (w, h))
+                    .collect()
             }
 
             /// An input method on the seat, with the keyboard grabbed.

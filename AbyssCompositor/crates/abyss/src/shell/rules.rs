@@ -34,15 +34,18 @@ pub struct RuleTrust(pub Cell<AppTrust>);
 /// Seat concurrency pinned by a `seat-compat` rule (COMP-04 §8).
 pub struct RuleSeat(pub Cell<SeatCompat>);
 
-/// Marker that a window's placement is final. An xdg_toplevel is created
-/// before the client has sent any of its state — `app_id`, `title`,
-/// `set_parent`, min/max size — so placement is re-decided on each commit
-/// until the window settles, and never after: at the first commit whose
-/// placement differs from the default (it is re-installed exactly once), or
-/// at the first commit carrying a buffer (the map) once any rule has an
-/// identity to match on. An X11 window has set its properties before it asks
-/// to be mapped, so it settles at [`apply`] unless a rule still waits on a
-/// name.
+/// Marker that a window's placement is final. An xdg_toplevel is placed at
+/// its initial commit, by which point xdg-shell has applied the `app_id`,
+/// `title`, `set_parent` and min/max size sent before it, so [`apply`] sees
+/// them and a window placed off the default settles right there. Two facts
+/// can still arrive later: the fixed-size float default only counts once a
+/// buffer is attached, and some clients name themselves after the initial
+/// commit. So a window placed at the default is re-decided on each commit
+/// until it settles, and never after: at the first commit whose placement
+/// differs from the default (it is re-installed exactly once), or at the
+/// first commit carrying a buffer (the map) once any rule has an identity to
+/// match on. An X11 window has set its properties before it asks to be
+/// mapped, so it settles at [`apply`] unless a rule still waits on a name.
 pub struct Placed;
 
 /// Marker for `windowrule "no-agent"`: the window is absent from every agent's
@@ -108,7 +111,20 @@ pub fn hidden_from_agents(window: &Window) -> bool {
 /// Evaluate every rule against a newly mapped window.
 pub fn apply(state: &mut AbyssState, window: &Window) -> Placement {
     let (placement, named) = evaluate(state, window, true);
-    if window.toplevel().is_none() && (state.config.window_rules.is_empty() || named) {
+    let rules = !state.config.window_rules.is_empty();
+    let settled = match window.toplevel() {
+        None => !rules || named,
+        // Installed off the default at its initial commit, a toplevel is
+        // settled now; a later pass returning the same placement would only
+        // re-install it.
+        Some(t) => settles(
+            placement != Placement::default(),
+            super::has_buffer(t.wl_surface()),
+            rules,
+            named,
+        ),
+    };
+    if settled {
         window.user_data().insert_if_missing(|| Placed);
     }
     placement
