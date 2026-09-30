@@ -21,6 +21,7 @@ pub const KINDS: &[EventKind] = &[
     EventKind::Output,
     EventKind::ConfigError,
     EventKind::Config,
+    EventKind::Launcher,
 ];
 
 /// What the bar reads out of `bar.*` once, at startup, and again on every
@@ -47,6 +48,17 @@ pub struct BarConfig {
     pub popup_anchor: Anchor,
     /// `bar.eye`: let Oracle-Eyes' beacon open the eclipse into an eye.
     pub eye: bool,
+    /// `bar.launcher-style`: what the eclipse button opens.
+    pub launcher: LauncherStyle,
+}
+
+/// `bar.launcher-style`: the separate centred launcher, or the start menu
+/// the bar grows out of its own eclipse cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LauncherStyle {
+    #[default]
+    Centered,
+    Menu,
 }
 
 /// Where each tray entry lives. `pinned: None` is "unset" — the taskbar's own
@@ -109,6 +121,7 @@ impl Default for BarConfig {
             date_mdy: eclipse_ui::tokens::clock::DATE_MDY,
             popup_anchor: eclipse_ui::tokens::popup::ANCHOR,
             eye: true,
+            launcher: LauncherStyle::Centered,
         }
     }
 }
@@ -297,6 +310,11 @@ impl Conn {
                     Some("pointer") => cfg.popup_anchor = Anchor::Pointer,
                     _ => {}
                 },
+                Some("bar.launcher-style") => match value.and_then(Value::as_str) {
+                    Some("menu") => cfg.launcher = LauncherStyle::Menu,
+                    Some("centered") => cfg.launcher = LauncherStyle::Centered,
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -394,6 +412,21 @@ impl Conn {
         self.ensure();
         let client = self.client.as_mut()?;
         eclipse_ui::ipc::fetch_blur(client)
+    }
+
+    /// `misc.terminal-command` (TERM-01), read when the start menu opens:
+    /// with none set, `Terminal=true` entries are left out of the list, as
+    /// in `eclipse-launcher`. `None` on any failure.
+    pub fn terminal_command(&mut self) -> Option<String> {
+        self.ensure();
+        let reply = self.call("get_config", json!({ "path": "misc.terminal-command" }))?;
+        reply
+            .get("keys")?
+            .as_array()?
+            .first()?
+            .get("value")?
+            .as_str()
+            .map(str::to_owned)
     }
 }
 

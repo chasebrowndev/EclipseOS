@@ -2006,3 +2006,146 @@ pub fn edge_note<'a, Message: 'a>(headline: &str, body: &str, edge: Color) -> El
     .width(Length::Fill)
     .into()
 }
+
+/// Where a [`shaped_sheet`] hangs: the edge its pill sits on, which is the
+/// bar's edge. The panel grows away from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SheetEdge {
+    Top,
+    Bottom,
+}
+
+/// The outline of a pill with a panel growing out of its left end: the bar
+/// with its start menu open.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SheetShape {
+    /// The pill's height; the panel is everything past it.
+    pub pill_h: f32,
+    /// The panel's width, from the sheet's left edge.
+    pub panel_w: f32,
+    /// The glass radius, clamped per corner to what each box has room for.
+    pub radius: f32,
+    /// The size of the curve that joins the pill's free edge to the panel's
+    /// side, where the two meet in a concave corner.
+    pub fillet: f32,
+    pub edge: SheetEdge,
+}
+
+/// The ground of a bar whose pill has grown a panel: one sheet in the shape
+/// of their union, with a curved fillet where the panel leaves the pill.
+///
+/// A widget and not a styled container because a container is one rounded
+/// box, and this ground is not a box: two boxes of glass laid under one
+/// another would paint their overlap twice as dark, and the concave corner
+/// between them would be a hard right angle where the compositor's mask
+/// (abyss: `render/blur.rs`, a smooth union of the input region's boxes)
+/// rounds it. So the outline is traced as a single path — the pill's four
+/// corners, the fillet as a quadratic curve (which lands on the mask's
+/// smooth-min contour for two perpendicular edges), the panel's two far
+/// corners — and filled once, in the bar's own tint. With blur off it is the
+/// darker fallback ground with the hairline traced along the same outline.
+pub fn shaped_sheet<'a, Message: 'a>(shape: SheetShape, blur: bool) -> Element<'a, Message, Theme> {
+    iced::widget::canvas(ShapedSheet { shape, blur })
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+struct ShapedSheet {
+    shape: SheetShape,
+    blur: bool,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for ShapedSheet {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas;
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let path = sheet_outline(self.shape, bounds.width, bounds.height);
+        let fill = if self.blur {
+            color::BAR_TINT
+        } else {
+            color::GLASS_DEEP_BACKED
+        };
+        frame.fill(&path, fill);
+        if !self.blur {
+            frame.stroke(
+                &path,
+                canvas::Stroke::default()
+                    .with_color(color::HAIRLINE)
+                    .with_width(space::HAIRLINE),
+            );
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
+/// [`shaped_sheet`]'s outline in a `w`×`h` box. With no room below the pill
+/// it is the pill alone.
+pub fn sheet_outline(shape: SheetShape, w: f32, h: f32) -> iced::widget::canvas::Path {
+    use iced::Point;
+    let SheetShape {
+        pill_h,
+        panel_w,
+        radius,
+        fillet,
+        edge,
+    } = shape;
+    let pill_h = pill_h.min(h);
+    let panel_w = panel_w.min(w);
+    // Mirrored for a bottom bar: the pill sits on the bottom edge and the
+    // panel grows up from it. `arc_to` is tangent-based, so the same corner
+    // sequence traces either way up.
+    let at = |x: f32, y: f32| match edge {
+        SheetEdge::Top => Point::new(x, y),
+        SheetEdge::Bottom => Point::new(x, h - y),
+    };
+    let rp = radius.min(pill_h / 2.0).min(w / 2.0).max(0.0);
+    let drop = h - pill_h;
+    iced::widget::canvas::Path::new(|b| {
+        if drop <= 0.0 {
+            b.move_to(at(rp, 0.0));
+            b.line_to(at(w - rp, 0.0));
+            b.arc_to(at(w, 0.0), at(w, rp), rp);
+            b.line_to(at(w, h - rp));
+            b.arc_to(at(w, h), at(w - rp, h), rp);
+            b.line_to(at(rp, h));
+            b.arc_to(at(0.0, h), at(0.0, h - rp), rp);
+            b.line_to(at(0.0, rp));
+            b.arc_to(at(0.0, 0.0), at(rp, 0.0), rp);
+            b.close();
+            return;
+        }
+        // The panel's far corners have only the drop below the pill to turn
+        // in while it is still opening; the fillet takes what they leave.
+        let rb = radius.min(panel_w / 2.0).min(drop).max(0.0);
+        let kf = fillet.min(drop - rb).min(w - panel_w - rp).max(0.0);
+        // The panel is the one box at the top-left corner, so its radius —
+        // clamped to its own size, as the mask clamps it — is the corner's.
+        let top_left = radius.min(panel_w / 2.0).min(h / 2.0).max(0.0);
+        b.move_to(at(top_left, 0.0));
+        b.line_to(at(w - rp, 0.0));
+        b.arc_to(at(w, 0.0), at(w, rp), rp);
+        b.line_to(at(w, pill_h - rp));
+        b.arc_to(at(w, pill_h), at(w - rp, pill_h), rp);
+        b.line_to(at(panel_w + kf, pill_h));
+        if kf > 0.0 {
+            b.quadratic_curve_to(at(panel_w, pill_h), at(panel_w, pill_h + kf));
+        }
+        b.line_to(at(panel_w, h - rb));
+        b.arc_to(at(panel_w, h), at(panel_w - rb, h), rb);
+        b.line_to(at(rb, h));
+        b.arc_to(at(0.0, h), at(0.0, h - rb), rb);
+        b.line_to(at(0.0, top_left));
+        b.arc_to(at(0.0, 0.0), at(top_left, 0.0), top_left);
+        b.close();
+    })
+}

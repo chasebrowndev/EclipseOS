@@ -14,6 +14,7 @@ pub mod conn;
 pub mod eye;
 pub mod icons;
 pub mod layout;
+pub mod menu;
 pub mod model;
 pub mod motion;
 #[cfg(debug_assertions)]

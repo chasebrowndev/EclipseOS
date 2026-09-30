@@ -65,7 +65,13 @@ const DEFAULT_IMPORTANT: [&str; 2] = ["clock", "battery"];
 
 /// The bar's appearance, and how it folds away. Everything else under `bar`
 /// belongs to a widget's sheet, the motion band, or the tray.
-const APPEARANCE: [&str; 4] = ["bar.position", "bar.rounding", "bar.eye", "bar.popup-anchor"];
+const APPEARANCE: [&str; 5] = [
+    "bar.position",
+    "bar.rounding",
+    "bar.eye",
+    "bar.popup-anchor",
+    "bar.launcher-style",
+];
 const FOLDING: [&str; 6] = [
     "bar.fold-when-inactive",
     "bar.fold-when-idle",
@@ -116,6 +122,7 @@ fn label(key: &Key) -> std::borrow::Cow<'_, str> {
         "bar.position" => "Position",
         "bar.rounding" => "Corner radius",
         "bar.popup-anchor" => "Popups open",
+        "bar.launcher-style" => "Launcher",
         "bar.fold-when-inactive" => "Fold when inactive",
         "bar.fold-when-idle" => "Fold when idle",
         "bar.idle-seconds" => "Idle after, s",
@@ -187,6 +194,7 @@ pub fn stand_in(rows: &mut Vec<Key>) {
         b("bar.clock.hour-12", true),
         b("bar.clock.date-mdy", true),
         e("bar.popup-anchor", "cell", &["cell", "pointer"]),
+        e("bar.launcher-style", "centered", &["centered", "menu"]),
         b("bar.eye", true),
         l(ORDER, json!(DEFAULT_ORDER)),
         l(IMPORTANT, json!(DEFAULT_IMPORTANT)),

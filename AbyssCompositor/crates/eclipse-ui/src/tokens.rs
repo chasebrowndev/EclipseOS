@@ -742,6 +742,43 @@ pub mod bar {
     pub const MEDIA_TEXT_W: f32 = 132.0;
     /// Between a two-line label's title and its subtitle.
     pub const LABEL_LINE_GAP: f32 = 1.0;
+
+    // ------------------------------------------------ start menu (launcher-style "menu")
+
+    /// The eclipse cell's width while the start menu is open: the ring plus
+    /// the search field it widens into. The pager and the chips are pushed
+    /// right by the difference to [`TASK_MIN`].
+    pub const SEARCH_W: f32 = 360.0;
+    /// The panel the bar grows into, measured from the pill's own left edge:
+    /// the search cell with the row's [`EDGE`] inset on both sides, so the
+    /// result rows line up under the field edge for edge.
+    pub const PANEL_W: f32 = EDGE + SEARCH_W + EDGE;
+    /// Result rows the panel shows at once; more scroll with the selection.
+    pub const MENU_ROWS: usize = 8;
+    /// One result row: a chip's height, so the panel reads as the bar's own
+    /// cells stacked rather than a second pane's.
+    pub const MENU_ROW_H: f32 = TASK_H;
+    /// Air between two rows, so two lit cells never merge into one slab.
+    pub const MENU_ROW_GAP: f32 = 2.0;
+    /// Width of a row's name column, so every note starts at one x.
+    pub const MENU_NAME_W: f32 = 150.0;
+    /// Characters of a name that fit [`MENU_NAME_W`] at body size before it
+    /// ends in an ellipsis rather than being cut through a glyph.
+    pub const MENU_NAME_CHARS: usize = 20;
+    /// The same for a row's note, in the rest of the row.
+    pub const MENU_NOTE_CHARS: usize = 28;
+    /// The key-hint line at the panel's foot.
+    pub const MENU_FOOTER_H: f32 = 24.0;
+    /// How far the panel extends past the pill, fully revealed: the rows, the
+    /// footer, and [`EDGE`] of air above, between and below them. A constant,
+    /// so a keystroke that changes how many rows match never resizes the
+    /// surface under the pointer.
+    pub const PANEL_H: f32 = EDGE
+        + MENU_ROWS as f32 * MENU_ROW_H
+        + (MENU_ROWS - 1) as f32 * MENU_ROW_GAP
+        + EDGE
+        + MENU_FOOTER_H
+        + EDGE;
 }
 
 /// The bar, as a settings pane draws it: a live preview strip, the lane of

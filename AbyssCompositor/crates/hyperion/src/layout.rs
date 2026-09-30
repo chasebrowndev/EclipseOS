@@ -38,6 +38,13 @@
 
 use eclipse_ui::tokens::{bar, size};
 
+/// The eclipse cell's width with the start menu `reveal` of the way open:
+/// the launcher button at 0, the search field at 1. The pager and the chips
+/// follow it right, since the row lays them out after it.
+pub fn eclipse_w(reveal: f32) -> f32 {
+    bar::TASK_MIN + (bar::SEARCH_W - bar::TASK_MIN) * reveal.clamp(0.0, 1.0)
+}
+
 /// How many characters of a title survive before the ellipsis. The clamp is
 /// in characters and not pixels because iced has no eliding text and the row
 /// must stay a pure function of the snapshot — a measured elide would depend
