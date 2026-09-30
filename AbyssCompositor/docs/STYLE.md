@@ -15,14 +15,21 @@ yellow accent. Use this as art direction; do not copy any specific screen.
   from the sidebar by a 1px hairline, not by a change of ground.
 - Panel borders: 1px solid rgba(255,255,255,.08-.16)
 - Top edge highlight: inset 0 1px 0 rgba(255,255,255,.07-.2) — only on the blur-off fallback;
-  on glass the compositor's rim lights the edge
+  on glass the compositor's rim lights the edge. Exception: the taskbar's folded strip
+  (2-16px tall) keeps its painted top light on glass too, since the rim barely shows there
 - Outer shadow: 0 24-40px 60-90px -20px rgba(0,0,0,.85-.92) — the window's, drawn by the
   compositor. Cards inside a window carry no drop shadow: white fill + hairline only
 - Bar cells (task chips, pager tiles, launcher) are small glass lozenges: rgba(255,255,255,.05)
   fill, 1px inside hairline rgba(255,255,255,.10), 0 1px 6px rgba(0,0,0,.30). Hover .08 fill /
-  .14 hairline; press .12 fill, no shadow. The focused chip and the active workspace take the
-  accent tint fill with a neutral hairline; a minimized chip has no fill, a .05 hairline, dimmed
-  text. The grip is part of its cell: it paints no ground, only its dots brighten on hover
+  .14 hairline; press .12 fill, no shadow. The focused chip, the active workspace and the
+  launcher's selected row are the same glass catching gold light: a thin accent tint the
+  backdrop shows through, a neutral hairline a step brighter than a plain cell's, and a soft accent
+  glow set 4px low with a 10px blur in place of the neutral drop, so the gold pools under
+  the cell and never rings it; a minimized chip has no fill, a .05 hairline, dimmed
+  text. The grip is part of its cell: it paints no ground, only its line brightens on hover.
+  A widget that reveals reserves no grip column while open: the grip draws over its leading
+  pad and the cell eases 8px wider under the pointer. Alphas above are sRGB intent; iced
+  blends in linear light, so `tokens.rs` carries the linear equivalents
 - Accent: #f2c33c. Tints: rgba(242,195,60,.09) fill, .24-.32 border, #f5cf5c for text
 - Text: #fff primary, rgba(255,255,255,.64) secondary, rgba(255,255,255,.4) tertiary
 - Neutral swatch grey: #96918a (warm, not #8f8f96)

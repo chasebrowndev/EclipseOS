@@ -99,17 +99,24 @@ pub mod color {
     /// inside its edge, and a soft shadow under it ([`CELL_SHADOW`]). The
     /// three move together with the pointer, so a hovered cell reads as the
     /// same tile lifted a little, never as a grey slab dropped on the bar.
-    pub const CELL: Color = white(0.05);
-    pub const CELL_HOVER: Color = white(0.08);
-    pub const CELL_PRESS: Color = white(0.12);
+    ///
+    /// These alphas are for iced's *linear* blending (the workspace builds
+    /// iced without `web-colors`): over the bar's near-black glass a white
+    /// at `a` lands near sRGB white at `8a`, so `.05` would read as a 25%
+    /// grey slab. Each value here is STYLE.md's sRGB figure brought back to
+    /// linear light — `.006` reads as `.05`, and so on — so the cell stays
+    /// glass the backdrop shows through.
+    pub const CELL: Color = white(0.006);
+    pub const CELL_HOVER: Color = white(0.012);
+    pub const CELL_PRESS: Color = white(0.02);
     /// The cell's inside hairline at rest, and under the pointer (and
     /// pressed). Neutral on every cell, the focused chip included: the
     /// accent goes on a fill and a label, never on an outline.
-    pub const CELL_RIM: Color = white(0.10);
-    pub const CELL_RIM_HOVER: Color = white(0.14);
+    pub const CELL_RIM: Color = white(0.016);
+    pub const CELL_RIM_HOVER: Color = white(0.026);
     /// A minimized window's chip: no fill, only this ghost of a rim, so the
     /// put-away window is still a place to click and nothing more.
-    pub const CELL_RIM_AWAY: Color = white(0.05);
+    pub const CELL_RIM_AWAY: Color = white(0.006);
     /// The soft drop under a bar cell. Geometry in [`super::bar`].
     pub const CELL_SHADOW: Color = Color {
         r: 0.0,
@@ -117,6 +124,29 @@ pub mod color {
         b: 0.0,
         a: 0.30,
     };
+    /// The focused cell (the focused window's chip, the current workspace
+    /// tile, the launcher's selected row) is the same glass lozenge catching
+    /// gold light, not a lozenge painted gold. The light is three things:
+    /// a thin gold tint the backdrop still shows through
+    /// ([`CELL_FOCUS`]), a neutral hairline brighter than a plain cell's, as
+    /// the lit edge of the glass ([`CELL_FOCUS_RIM`]), and a soft gold glow
+    /// in place of the neutral drop ([`CELL_FOCUS_GLOW`]). A glow is blurred
+    /// light under the glass, not a stroke on it: the rim stays white, so the
+    /// accent is still never an outline.
+    ///
+    /// Linear-light alphas like the rest of the cell tokens: `.09` gold here
+    /// reads as a ~30% opaque khaki slab, which is the flat look this
+    /// replaced.
+    pub const CELL_FOCUS: Color = Color { a: 0.05, ..ACCENT };
+    pub const CELL_FOCUS_HOVER: Color = Color { a: 0.075, ..ACCENT };
+    pub const CELL_FOCUS_PRESS: Color = Color { a: 0.10, ..ACCENT };
+    pub const CELL_FOCUS_RIM: Color = white(0.045);
+    pub const CELL_FOCUS_RIM_HOVER: Color = white(0.07);
+    /// The glow under a focused cell, at rest and under the pointer. Pressed,
+    /// the cell is pushed into the glass and casts nothing, like any cell.
+    /// Geometry in [`super::bar`].
+    pub const CELL_FOCUS_GLOW: Color = Color { a: 0.12, ..ACCENT };
+    pub const CELL_FOCUS_GLOW_HOVER: Color = Color { a: 0.18, ..ACCENT };
     /// The ground under a floating sheet that must stay readable over any
     /// wallpaper — a context menu, a tray drawer. Nearly opaque on purpose:
     /// a menu is a mark rail, and a mark rail that lets the desktop through
@@ -214,11 +244,6 @@ pub mod color {
     pub const ACCENT_BORDER: Color = Color { a: 0.28, ..ACCENT };
     /// The faintest accent ground — a wash under a whole row, not a fill.
     pub const ACCENT_WASH: Color = Color { a: 0.035, ..ACCENT };
-    /// The pressed/active accent ground, one step above [`ACCENT_FILL`].
-    pub const ACCENT_FILL_STRONG: Color = Color { a: 0.18, ..ACCENT };
-    /// A focused bar chip under the pointer: between [`ACCENT_FILL`] at rest
-    /// and [`ACCENT_FILL_STRONG`] pressed.
-    pub const ACCENT_FILL_HOVER: Color = Color { a: 0.13, ..ACCENT };
     /// How far a minimized window's chip — label and icon — fades. The
     /// spec's tertiary text value, so a minimized chip reads as the same
     /// quiet tier as every other tertiary mark.
@@ -261,6 +286,10 @@ pub mod radius {
     /// A badge: nearly square, so a label that classifies an object never
     /// reads as a chip you can pick or a pill you can press.
     pub const BADGE: f32 = 3.0;
+    /// A keycap in a hint line: rounder than a badge, so it reads as a key
+    /// and not as a label, and far short of a pill, so it never reads as a
+    /// button.
+    pub const KEYCAP: f32 = 5.0;
 }
 
 pub mod space {
@@ -368,6 +397,11 @@ pub mod space {
     pub const GRID_GAP: f32 = 10.0;
     /// Between the lines inside a status cell or an edge note.
     pub const LINE_GAP: f32 = 3.0;
+    /// Between a keycap and the verb it performs, and between two such
+    /// hints on one line: close enough that a key belongs to its verb, far
+    /// enough that the next key does not.
+    pub const KEY_GAP: f32 = 6.0;
+    pub const HINT_GAP: f32 = 14.0;
 }
 
 /// Window widths at which a pane's frame changes shape. Only the frame: rows
@@ -464,6 +498,12 @@ pub mod bar {
     /// enough to read as a floating card.
     pub const CELL_SHADOW_Y: f32 = 1.0;
     pub const CELL_SHADOW_BLUR: f32 = 6.0;
+    /// The gold glow under a focused cell
+    /// ([`super::color::CELL_FOCUS_GLOW`]): wider than the drop, so it reads
+    /// as light pooling under the glass rather than a darker shadow, and
+    /// sitting the same pixel low, so the lozenge still looks lifted.
+    pub const CELL_GLOW_Y: f32 = 4.0;
+    pub const CELL_GLOW_BLUR: f32 = 10.0;
     /// Air between a floating sheet (center, toasts) and the screen edge or
     /// the bar strip, as layer-shell margin. The bar's own side margin, so a
     /// sheet under the bar lines up with the capsule's right end.
@@ -601,6 +641,10 @@ pub mod bar {
     /// The grip's column: wide enough to be a target at bar height, narrow
     /// enough that a compressed widget is a sliver and not a chip.
     pub const GRIP_W: f32 = 14.0;
+    /// How far an open widget's cell eases wider under the pointer. Its grip
+    /// reserves no column while hidden and draws over the leading pad; this
+    /// small give makes room for the line without moving the bar much.
+    pub const GRIP_HOVER_SLIDE: f32 = 8.0;
     /// The grip's stroke: one thin vertical `|`. Its ends are fully round
     /// (radius half the stroke) — the owner asked for a thin, sleek, rounded
     /// line, a deliberate exception to the hard-edged grid.
@@ -698,6 +742,43 @@ pub mod bar {
     pub const MEDIA_TEXT_W: f32 = 132.0;
     /// Between a two-line label's title and its subtitle.
     pub const LABEL_LINE_GAP: f32 = 1.0;
+
+    // ------------------------------------------------ start menu (launcher-style "menu")
+
+    /// The eclipse cell's width while the start menu is open: the ring plus
+    /// the search field it widens into. The pager and the chips are pushed
+    /// right by the difference to [`TASK_MIN`].
+    pub const SEARCH_W: f32 = 360.0;
+    /// The panel the bar grows into, measured from the pill's own left edge:
+    /// the search cell with the row's [`EDGE`] inset on both sides, so the
+    /// result rows line up under the field edge for edge.
+    pub const PANEL_W: f32 = EDGE + SEARCH_W + EDGE;
+    /// Result rows the panel shows at once; more scroll with the selection.
+    pub const MENU_ROWS: usize = 8;
+    /// One result row: a chip's height, so the panel reads as the bar's own
+    /// cells stacked rather than a second pane's.
+    pub const MENU_ROW_H: f32 = TASK_H;
+    /// Air between two rows, so two lit cells never merge into one slab.
+    pub const MENU_ROW_GAP: f32 = 2.0;
+    /// Width of a row's name column, so every note starts at one x.
+    pub const MENU_NAME_W: f32 = 150.0;
+    /// Characters of a name that fit [`MENU_NAME_W`] at body size before it
+    /// ends in an ellipsis rather than being cut through a glyph.
+    pub const MENU_NAME_CHARS: usize = 20;
+    /// The same for a row's note, in the rest of the row.
+    pub const MENU_NOTE_CHARS: usize = 28;
+    /// The key-hint line at the panel's foot.
+    pub const MENU_FOOTER_H: f32 = 24.0;
+    /// How far the panel extends past the pill, fully revealed: the rows, the
+    /// footer, and [`EDGE`] of air above, between and below them. A constant,
+    /// so a keystroke that changes how many rows match never resizes the
+    /// surface under the pointer.
+    pub const PANEL_H: f32 = EDGE
+        + MENU_ROWS as f32 * MENU_ROW_H
+        + (MENU_ROWS - 1) as f32 * MENU_ROW_GAP
+        + EDGE
+        + MENU_FOOTER_H
+        + EDGE;
 }
 
 /// The bar, as a settings pane draws it: a live preview strip, the lane of

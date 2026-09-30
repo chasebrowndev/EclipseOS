@@ -59,6 +59,11 @@
 //! custom widget's `critical` state may go `DANGER`, which is the one alarm
 //! and not an accent.
 //!
+//! The start menu (`bar.launcher-style "menu"`) is its own pane with its own
+//! ledger: the selected result row is its one live yellow, the same focused
+//! cell the launcher lights. The search field it grows out of is not lit,
+//! and the mark keeps its ring. A terminal-only row stays grey when selected.
+//!
 //! ## Glass
 //!
 //! The bar is a floating capsule of liquid glass. With the compositor's blur
@@ -82,14 +87,15 @@
 //! in this file is a bug, because the tokens are the only transcription of
 //! `docs/STYLE.md`.
 
+use iced::widget::text::Wrapping;
 use iced::widget::{
-    button, canvas, column, container, image, mouse_area, row, svg, text, Column, Row, Space,
+    button, canvas, container, image, mouse_area, row, stack, svg, text, text_input, Column, Row, Space,
 };
 use iced::{Alignment, Color, Element, Length, Theme};
 
-use eclipse_ui::theme;
-use eclipse_ui::tokens::{bar, color, drawer, font, menu, size, space};
-use eclipse_ui::widget::{self as parts, ClipEdge};
+use eclipse_ui::theme::{self, CellTone};
+use eclipse_ui::tokens::{bar, color, drawer, font, menu, radius, size, space};
+use eclipse_ui::widget::{self as parts, ClipEdge, SheetEdge, SheetShape};
 
 use crate::app::Message;
 use crate::icons::Icon;
@@ -140,38 +146,52 @@ fn surface(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message, 
     bar_row(app, bar)
 }
 
-/// The bar shrunk to a rule along the top of an output nobody is looking at.
+/// The bar shrunk to a thin capsule on an output nobody is looking at.
 ///
 /// A folded bar is a *state*, not a smaller bar: at `fold_height` (2..=16 px)
 /// there is no room for a cell, and a clock cut off at its waist reads as a
-/// bug. So the strip keeps only what makes the bar the bar — the tinted sheet
-/// of [`theme::bar_ground`] (lit along its top only in the blur-off
-/// fallback), and a dormant hairline along
-/// its bottom — and drops every zone.
+/// bug. So the strip keeps only what makes the bar the bar — the pill's
+/// tinted glass, floating in the pill's own air — and drops every zone.
 ///
-/// Every part of it is `Fill` or a hairline, so the two pixels at the bottom
-/// of the setting's range are squeezed out of the glass and never out of a
-/// fixed child: the strip cannot overflow its own surface at any height.
+/// It is the pill seen edge-on, so it keeps the pill's shape: a capsule with
+/// half-round ends, ringed by the dormant rim of [`theme::bar_folded`]. The
+/// radius is clamped to half the strip's height here, the same clamp the
+/// compositor's mask applies, so ring and blur share one outline at every
+/// frame of the slide and the corners round off continuously as the pill
+/// shrinks. What it no longer draws is a full-width hairline: a line one
+/// pixel tall has no room to curve, so it ran square past the capsule's
+/// ends and was the straight edge the eye saw.
+///
+/// Nothing on it is the accent: a folded bar is by construction the output
+/// the pointer is not on, and the ledger's one live yellow belongs to a live
+/// value, never to the dormant head.
+///
+/// The sheet is `Fill` and its ring is a border, so the two pixels at the
+/// bottom of the setting's range are squeezed out of the glass and never out
+/// of a fixed child: the strip cannot overflow its own surface at any height.
 fn folded_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element<'a, Message, Theme> {
-    let edges = column![
-        Space::new().width(Length::Fill).height(Length::Fill),
-        parts::quad(
-            Length::Fill,
-            Length::Fixed(bar::HAIRLINE),
-            // Deliberately *not* the accent: a folded bar is by construction
-            // the output the pointer is not on, and the ledger's one live
-            // yellow belongs to a live value, never to the dormant head.
-            color::HIGHLIGHT_SOFT,
-            app.bar_radius,
-        ),
-    ];
+    // The animated height, not the settled one: during a slide the strip
+    // must fill exactly the surface the compositor just sized.
+    let h = bar.fold.sheet_height() as f32;
+    let radius = app.bar_radius.min(h / 2.0);
+    // How far the slide has got from the pill to the strip, 0 at the pill's
+    // height and 1 at the fold height. The rim and the light come in with
+    // it, so the first frame after the cells go is still the pill's plain
+    // glass, and the last frame before they return is too.
+    let thin = app.bar.fold_height as f32;
+    let folded = ((bar::PILL_H - h) / (bar::PILL_H - thin).max(1.0)).clamp(0.0, 1.0);
 
-    let sheet = glass(
-        app,
-        container(edges)
+    // Lit along its top in both modes, unlike the pill: the compositor's rim
+    // is the pill's light source, and at this height it does not read. The
+    // line stops where the end curves begin, so the strip is a lens lit from
+    // above over a ghost rim — depth, not a wireframe outline.
+    let sheet = parts::lit(
+        container(Space::new().width(Length::Fill).height(Length::Fill))
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(theme::bar_ground(app.bar_radius, app.blur)),
+            .style(theme::bar_folded(radius, app.blur, folded)),
+        radius,
+        color::HIGHLIGHT_SOFT.scale_alpha(folded),
     );
 
     // The horizontal inset is the unfolded bar's layer-shell margin, so the
@@ -179,15 +199,13 @@ fn folded_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element
     // object. The surface *is* the sheet.
     container(sheet)
         .width(Length::Fill)
-        // The animated height, not the settled one: during a slide the strip
-        // must fill exactly the surface the compositor just sized.
-        .height(Length::Fixed(bar.fold.height as f32))
+        .height(Length::Fixed(h))
         .into()
 }
 
 fn bar_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element<'a, Message, Theme> {
     let mut bar_row = Row::new()
-        .push(launcher_button())
+        .push(eclipse_cell(bar))
         .push(Space::new().width(Length::Fixed(bar::ZONE_GAP)))
         .push(pager(app, bar))
         .push(Space::new().width(Length::Fixed(bar::ZONE_GAP)))
@@ -228,6 +246,9 @@ fn bar_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element<'a
     // surface at `bar.rounding`, so the float gap around the pill is
     // layer-shell margin (`FoldState::geometry`) and never padding in here —
     // padding is how a blurred rim came to show outside the pill.
+    if bar.menu.showing() {
+        return start_sheet(app, bar, bar_row.into());
+    }
     glass(
         app,
         container(bar_row)
@@ -279,6 +300,243 @@ fn launcher_button() -> Element<'static, Message, Theme> {
         .style(launcher_style)
         .on_press(Message::Launch)
         .into()
+}
+
+// -------------------------------------------------------------- start menu
+
+/// The far-left cell: the launcher button, or — while the start menu is out
+/// or on its way in — that same button widened into the search field.
+fn eclipse_cell(bar: &crate::app::Bar) -> Element<'_, Message, Theme> {
+    if bar.menu.showing() {
+        search_cell(bar)
+    } else {
+        launcher_button()
+    }
+}
+
+/// The launcher button grown into the menu's search field.
+///
+/// The ring does not move: it keeps the button's own `TASK_MIN` box at the
+/// cell's left, so the eye surface laid over it stays pixel for pixel on
+/// it, and the field opens to its right as the cell widens (`eclipse_w`).
+/// Still the same lozenge and still a button — a press on the ring (or on
+/// the glass around the field) closes the menu again, the way the button
+/// opened it; a press on the field is the field's.
+fn search_cell(bar: &crate::app::Bar) -> Element<'_, Message, Theme> {
+    let width = crate::layout::eclipse_w(bar.menu.reveal.value());
+    let mark = container(parts::ring(bar::EYE_DISC, bar::RING, color::ACCENT))
+        .center_x(Length::Fixed(bar::TASK_MIN))
+        .center_y(Length::Fill);
+    let field = text_input("search applications", &bar.menu.query)
+        .id(crate::menu::INPUT_ID)
+        .on_input(Message::MenuQuery)
+        // iced's `text_input` takes Enter itself, so the menu's Enter is
+        // wired here rather than in the key subscription.
+        .on_submit(Message::MenuActivate)
+        .size(size::BODY)
+        .font(font::UI)
+        .padding(iced::Padding::ZERO)
+        .width(Length::Fill)
+        .style(theme::prompt_input);
+    let content = row![mark, field, Space::new().width(Length::Fixed(bar::CELL_X))]
+        .align_y(Alignment::Center)
+        .height(Length::Fill);
+
+    button(content)
+        .width(Length::Fixed(width))
+        .height(Length::Fixed(bar::TASK_H))
+        .padding(0)
+        .clip(true)
+        .style(launcher_style)
+        .on_press(Message::Launch)
+        .into()
+}
+
+/// The bar with its start menu out: one sheet in the shape of the pill and
+/// the panel together, the pill's row on it and the panel's list beside it.
+///
+/// The ground is [`parts::shaped_sheet`], traced to the same union abyss
+/// blurs under the input region `app::sync_region` sends — a pill, a panel
+/// the search field's width plus the bar's edge on either side, and a
+/// `bar.rounding` fillet in the concave corner where they meet — so the
+/// tint and the glass share one outline. The panel is cut to however much
+/// of it the surface holds, from the pill's side outward, so it rolls out
+/// of the pill rather than dropping in from the far end.
+fn start_sheet<'a>(
+    app: &'a crate::app::App,
+    on: &'a crate::app::Bar,
+    pill_row: Element<'a, Message, Theme>,
+) -> Element<'a, Message, Theme> {
+    let top = app.edge == crate::conn::BarPosition::Top;
+    let shape = SheetShape {
+        pill_h: bar::PILL_H,
+        panel_w: bar::PANEL_W,
+        radius: app.bar_radius,
+        fillet: app.bar_radius,
+        edge: if top { SheetEdge::Top } else { SheetEdge::Bottom },
+    };
+    let pill = container(pill_row)
+        .width(Length::Fill)
+        .height(Length::Fixed(bar::PILL_H));
+    let panel = container(start_panel(on))
+        .width(Length::Fixed(bar::PANEL_W))
+        .height(Length::Fixed(on.menu.extent() as f32))
+        .align_y(if top { Alignment::Start } else { Alignment::End })
+        .clip(true);
+    let body = if top {
+        Column::new().push(pill).push(panel)
+    } else {
+        Column::new().push(panel).push(pill)
+    };
+    stack![parts::shaped_sheet(shape, app.blur), body]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// The panel at full size: a column of results the search field's width,
+/// under it and flush with it, and a footer of key hints.
+///
+/// The results are `eclipse-launcher`'s rows, drawn here again rather than
+/// imported (ADR 0052): the same glass cells, the same name, note and
+/// identifier, the same scroll that keeps the selection on screen. The
+/// selected row is the panel's one yellow.
+fn start_panel(on: &crate::app::Bar) -> Element<'_, Message, Theme> {
+    let m = &on.menu;
+    let offset = m.scroll();
+    let mut rows = Column::new().spacing(bar::MENU_ROW_GAP);
+    for (slot, &i) in m.matched.iter().enumerate().skip(offset).take(bar::MENU_ROWS) {
+        rows = rows.push(start_row(&m.entries[i], slot, slot == m.selected));
+    }
+    if m.matched.is_empty() {
+        let why = if m.entries.is_empty() {
+            "no applications installed"
+        } else {
+            "nothing matches"
+        };
+        rows = rows.push(
+            container(
+                text(why)
+                    .size(size::BODY)
+                    .font(font::UI)
+                    .color(color::TEXT_TERTIARY),
+            )
+            .height(Length::Fixed(bar::MENU_ROW_H))
+            .padding([0.0, space::CARD])
+            .align_y(Alignment::Center),
+        );
+    }
+    let list_h = bar::MENU_ROWS as f32 * bar::MENU_ROW_H + (bar::MENU_ROWS - 1) as f32 * bar::MENU_ROW_GAP;
+    Column::new()
+        .push(container(rows).height(Length::Fixed(list_h)))
+        .push(Space::new().height(Length::Fixed(bar::EDGE)))
+        .push(start_footer(m))
+        .padding(bar::EDGE)
+        .width(Length::Fixed(bar::PANEL_W))
+        .height(Length::Fixed(bar::PANEL_H))
+        .into()
+}
+
+/// One result: `eclipse-launcher`'s row look at the bar's row height.
+/// `index` is into the matches, not a slot on screen, so a click runs the
+/// row it lands on.
+fn start_row(
+    entry: &eclipse_services::apps::Entry,
+    index: usize,
+    selected: bool,
+) -> Element<'static, Message, Theme> {
+    // A terminal-only entry is listed and greyed, and the greying wins over
+    // the selection: a selected row that cannot launch must not read as one
+    // that can.
+    let live = selected && !entry.terminal;
+    let name = text(parts::elide(&entry.name, bar::MENU_NAME_CHARS))
+        .size(size::BODY)
+        .font(if selected { font::UI_MEDIUM } else { font::UI })
+        .wrapping(Wrapping::None)
+        .color(if entry.terminal {
+            color::TEXT_TERTIARY
+        } else if live {
+            color::ACCENT_TEXT
+        } else {
+            color::TEXT
+        });
+    let note = if entry.terminal {
+        "needs a terminal".to_owned()
+    } else {
+        entry.comment.clone().unwrap_or_default()
+    };
+    let note = text(parts::elide(&note, bar::MENU_NOTE_CHARS))
+        .size(size::BODY_SMALL)
+        .font(font::UI)
+        .wrapping(Wrapping::None)
+        .color(if entry.terminal {
+            color::TEXT_TERTIARY
+        } else {
+            color::TEXT_SECONDARY
+        });
+    let line = row![
+        container(name).width(Length::Fixed(bar::MENU_NAME_W)).clip(true),
+        container(note).width(Length::Fill).clip(true),
+    ]
+    .spacing(bar::GAP)
+    .align_y(Alignment::Center);
+    let tone = if live {
+        CellTone::Focused
+    } else if selected {
+        CellTone::Plain
+    } else {
+        CellTone::Latent
+    };
+    button(container(line).height(Length::Fill).align_y(Alignment::Center))
+        .width(Length::Fill)
+        .height(Length::Fixed(bar::MENU_ROW_H))
+        .padding([0.0, space::CARD])
+        .style(theme::glass_cell(tone, radius::INSET))
+        .on_press(Message::MenuLaunch(index))
+        .into()
+}
+
+/// A refusal, verbatim, or the keys; how much of the list is off the panel
+/// at the right. Only the keys are capped.
+fn start_footer(m: &crate::menu::Menu) -> Element<'_, Message, Theme> {
+    let left: Element<'_, Message, Theme> = match m.problem.as_ref() {
+        Some(problem) => text(problem.clone())
+            .size(size::BODY_SMALL)
+            .font(font::DATA)
+            .wrapping(Wrapping::None)
+            .color(color::DANGER)
+            .into(),
+        None => Row::new()
+            .spacing(space::HINT_GAP)
+            .align_y(Alignment::Center)
+            .push(parts::key_hint("\u{2191}\u{2193}", "select"))
+            .push(parts::key_hint("enter", "run"))
+            .push(parts::key_hint("esc", "close"))
+            .into(),
+    };
+    let above = m.scroll();
+    let below = m.matched.len().saturating_sub(above + bar::MENU_ROWS);
+    let tally = match (above, below) {
+        (0, 0) => String::new(),
+        (0, below) => format!("+{below}"),
+        (above, 0) => format!("{above}+"),
+        (above, below) => format!("{above}+ \u{00b7} +{below}"),
+    };
+    container(
+        row![
+            container(left).width(Length::Fill).clip(true),
+            text(tally)
+                .size(size::MONO)
+                .font(font::DATA)
+                .color(color::TEXT_TERTIARY),
+        ]
+        .spacing(bar::GAP)
+        .align_y(Alignment::Center),
+    )
+    .height(Length::Fixed(bar::MENU_FOOTER_H))
+    .padding([0.0, space::CARD])
+    .align_y(Alignment::Center)
+    .into()
 }
 
 /// Oracle-Eyes' status (ADR 0055), on the eye's own surface over the
@@ -508,7 +766,11 @@ fn tasks<'a>(app: &'a crate::app::App, on: &'a crate::app::Bar) -> Element<'a, M
 pub(crate) fn strip_left(app: &crate::app::App, on: &crate::app::Bar) -> f32 {
     let count = live_workspaces(&app.snapshot, on.output_id).count() as f32;
     let pager = (count * bar::PAGER_W + (count - 1.0).max(0.0) * bar::GAP).max(0.0);
-    bar::EDGE + bar::TASK_MIN + bar::ZONE_GAP + pager + bar::ZONE_GAP
+    // Where the eclipse cell is going, not where it is: the solver shares out
+    // the room the open (or closed) menu leaves, once, and the row carries
+    // the chips along while the cell grows.
+    let eclipse = crate::layout::eclipse_w(on.menu.reveal.target());
+    bar::EDGE + eclipse + bar::ZONE_GAP + pager + bar::ZONE_GAP
 }
 
 /// The horizontal span of the chip a window is drawn as: `(left, right)`,

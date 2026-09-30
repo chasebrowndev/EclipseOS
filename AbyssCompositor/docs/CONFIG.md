@@ -60,10 +60,10 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `general.gaps-in` | int 0..512 | `5` | live | Gap between tiled windows, logical px. |
-| `general.gaps-out` | int 0..512 | `10` | live | Gap between the tiling area and the screen edge, logical px. |
-| `general.gaps-in-vertical` | int 0..512 | _unset_ | live | Gap between tiled windows stacked one above the other, logical px. Unset mirrors `general.gaps-in`, so setting only the horizontal key still gaps both axes evenly. |
-| `general.gaps-out-vertical` | int 0..512 | _unset_ | live | Gap between the tiling area and the screen's top/bottom edge, logical px. Unset mirrors `general.gaps-out`. |
-| `general.border-size` | int 0..512 | `2` | live | Window border thickness, logical px. 0 disables borders. |
+| `general.gaps-out` | int 0..512 | `3` | live | Gap between the tiling area and the screen edge, logical px. |
+| `general.gaps-in-vertical` | int 0..512 | `3` | live | Gap between tiled windows stacked one above the other, logical px. Ships at 3 (C-16), independent of `general.gaps-in`. |
+| `general.gaps-out-vertical` | int 0..512 | `7` | live | Gap between the tiling area and the screen's top/bottom edge, logical px. Ships at 7 (C-16), independent of `general.gaps-out`. |
+| `general.border-size` | int 0..512 | `1` | live | Window border thickness, logical px. 0 disables borders. |
 | `general.layout` | radiant \| dwindle \| master | `"radiant"` | live | Default tiling layout for workspaces without their own. `radiant` is a weighted tree with drag-to-tile drop zones and per-window priority; `dwindle` is classic dwindle; `master` puts the first window on the left. |
 | `general.floating-placement` | centered \| pointer \| cascade | `"centered"` | live | Where a new floating window lands when no window rule places it. |
 | `general.focus-follows-mouse` | bool | `#true` | live | Move keyboard focus to the window under the pointer. |
@@ -71,10 +71,9 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `general.cursor-follows-moved-window` | bool | `#true` | live | Move the pointer onto a window when a keybind moves it, instead of leaving the cursor behind. |
 | `general.follow-window-to-workspace` | bool | `#true` | live | Follow a window sent to another workspace or display, instead of staying where you are. |
 | `general.unfocus-on-empty-workspace` | bool | `#true` | live | Clear keyboard focus when the pointer enters an output whose workspace has no focusable window. Off keeps the previous focus. |
-| `general.focus-follows-mouse-layers` | bool | `#true` | live | Let pointer motion take focus back from an on-demand layer surface such as the bar. Exclusive layer surfaces are never affected. |
 | `general.refocus-on-scene-change` | bool | `#true` | live | Re-evaluate focus when windows appear or disappear under a stationary pointer. |
-| `general.col-active-border` | colour `#rrggbb[aa]` | `#e8a33dff` | live | Border colour of the focused window. |
-| `general.col-inactive-border` | colour `#rrggbb[aa]` | `#161616ff` | live | Border colour of every unfocused window. |
+| `general.col-active-border` | colour `#rrggbb[aa]` | `#f2c33c73` | live | Border colour of the focused window. |
+| `general.col-inactive-border` | colour `#rrggbb[aa]` | `#ffffff1a` | live | Border colour of every unfocused window. |
 | `general.drop-guides` | bool | `#true` | live | Draw the drop zones and a ghost of where a dragged window will land (radiant layout). |
 | `general.drop-guide-color` | colour `#rrggbb[aa]` | `#e8a33dff` | live | Colour of the drop guides. |
 | `general.drop-edge-band` | int 0..512 | `40` | live | Width of the edge strip a dragged window's centre aims at to drop it as a full-height column or full-width row, logical px. 0 disables edge drops. |
@@ -95,13 +94,14 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `bar.idle-seconds` | int 5..600 | `30` | live | Seconds without any human input, pointer motion included, before the taskbar folds when fold-when-idle is on. |
 | `bar.fold-duration-ms` | int 0..1000 | `150` | live | How long the taskbar takes to slide open or shut. Height and exclusive zone animate together, so tiled windows reflow with it. Zero snaps. |
 | `bar.fold-curve` | linear \| ease-in \| ease-out \| ease-in-out | `"ease-out"` | live | Easing applied to the taskbar's fold slide. |
-| `bar.position` | top \| bottom | `"top"` | restart | Which edge of every output the taskbar is anchored to. Takes effect the next time the taskbar starts, not on a live reload. |
+| `bar.position` | top \| bottom | `"top"` | live | Which edge of every output the taskbar is anchored to. |
 | `bar.tray.pinned` | list of strings | _unset_ | live | StatusNotifierItem ids shown on the taskbar itself, in this order; an app goes by its own id. Unset means the taskbar's built-in order; an empty list pins nothing. Anything neither pinned nor hidden sits in the overflow drawer. The built-in applets are widgets now (`bar.widgets.order`): their old ids here (network, bluetooth, battery, volume) still load, with a deprecation warning, and `eclipse-ctl config migrate` moves them. |
 | `bar.tray.hidden` | list of strings | _empty_ | live | StatusNotifierItem ids never shown, on the taskbar or in its overflow drawer. Hidden wins over pinned when an id is in both. A built-in applet id here is deprecated the same way as in `pinned`: leave it out of `bar.widgets.order` instead. |
-| `bar.rounding` | int 0..64 | `20` | live | Corner radius in logical px for the taskbar's own blur backdrop. |
+| `bar.rounding` | int 0..64 | `20` | live | Corner radius in logical px for the taskbar's own blur backdrop, and the width of the curved fillets where a shaped layer's boxes meet. |
 | `bar.clock.hour-12` | bool | `#true` | live | Show the taskbar clock in 12-hour time with AM/PM; off is 24-hour. |
 | `bar.clock.date-mdy` | bool | `#true` | live | Write the taskbar date month/day/year; off is ISO year-month-day (2026-09-23). |
 | `bar.popup-anchor` | cell \| pointer | `"cell"` | live | Where taskbar popups open: under the cell that was clicked, or at the pointer. |
+| `bar.launcher-style` | centered \| menu | `"centered"` | live | Which launcher the eclipse button and Super+R open: the centred sheet, or a start menu that grows out of the bar. |
 | `bar.eye` | bool | `#true` | live | Show the Oracle-Eyes status eye on the taskbar's eclipse mark. The compositor only stores this; the taskbar reads Oracle-Eyes' own status socket (ADR 0055). |
 | `bar.widgets.order` | list of strings | `"now-playing" "volume" "network" "bluetooth" "battery" "tray" "clock"` | live | Widgets drawn after the task strip, left to right (ADR 0065). Built-in ids: now-playing, system-usage, volume, network, bluetooth, battery, tray (the StatusNotifierItems and their overflow drawer) and clock; `custom:<name>` names a `widget` block in `bar`. A widget left out is not drawn. An unknown id, a repeated one, or a `custom:` naming no `widget` block is refused. |
 | `bar.widgets.important` | list of strings | `"clock" "battery"` | live | Widgets that never compress: when the bar runs short of room they keep their full size and everything else gives way first. Same ids as `bar.widgets.order`. |
@@ -123,11 +123,11 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
-| `decoration.rounding` | int 0..64 | `13` | live | Corner radius in logical px; 0 disables. Also rounds the blur backdrop behind a layer-shell surface, except one that spans an output edge to edge (three anchors, or two opposite ones, with no positive exclusive zone), which stays square; the taskbar uses `bar.rounding`. |
+| `decoration.rounding` | int 0..64 | `9` | live | Corner radius in logical px; 0 disables. Also rounds the blur backdrop behind a layer-shell surface, except one that spans an output edge to edge (three anchors, or two opposite ones, with no positive exclusive zone), which stays square; the taskbar uses `bar.rounding`. |
 | `decoration.active-opacity` | float 0..1 | `1` | live | Alpha applied to the focused window. |
 | `decoration.inactive-opacity` | float 0..1 | `1` | live | Alpha applied to every unfocused window. |
 | `decoration.dim-inactive` | float 0..1 | `0` | live | Strength of the darkening overlay on unfocused windows. |
-| `decoration.blur.mode` | off \| blur \| frost \| glass | `"blur"` | live | What is drawn behind translucent windows and layer-shell surfaces: `off`, a plain dual-Kawase `blur`, `frost` (blur with a tint and fine grain) or `glass` (a saturated, smoked blur whose edge band gently bends the blurred backdrop, under a neutral hairline rim). A window or layer blurs when it is drawn below full opacity or its opaque region leaves it uncovered. Replaces the old `enabled` bool, which still loads (`#false` is `off`). |
+| `decoration.blur.mode` | off \| blur \| frost \| glass | `"glass"` | live | What is drawn behind translucent windows and layer-shell surfaces: `off`, a plain dual-Kawase `blur`, `frost` (blur with a tint and fine grain) or `glass` (a saturated, smoked blur whose edge band gently bends the blurred backdrop, under a neutral hairline rim). A window or layer blurs when it is drawn below full opacity or its opaque region leaves it uncovered. A layer's glass follows its input region: two to four boxes are blurred as their union, joined by curved fillets `bar.rounding` wide. Replaces the old `enabled` bool, which still loads (`#false` is `off`). |
 | `decoration.blur.size` | int 1..64 | `8` | live | Blur kernel offset. Larger is softer and costs more. |
 | `decoration.blur.passes` | int 1..6 | `4` | live | Down/up-sample pairs in the blur chain. |
 | `decoration.blur.glass.refraction` | int 0..64 | `4` | live | `glass`: how far the bevel bends the blurred backdrop, logical px at the outer edge. The centre is never bent; 0 is flat glass. |
@@ -135,8 +135,8 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `decoration.blur.glass.dispersion` | float 0..1 | `0` | live | `glass`: colour fringing in the bevel; 0 (the default) is none. |
 | `decoration.blur.glass.rim` | float 0..1 | `0.5` | live | `glass`: strength of the neutral hairline rim, brightest along the top-left edges with a weaker lobe at the bottom-right. |
 | `decoration.blur.frost.tint` | colour `#rrggbb[aa]` | `#1a171266` | live | `frost`: colour mixed over the blurred backdrop; its alpha is how much. |
-| `decoration.shadow.enabled` | bool | `#false` | live | Drop shadow behind windows. |
-| `decoration.shadow.range` | int 0..128 | `20` | live | Shadow falloff distance, logical px. |
+| `decoration.shadow.enabled` | bool | `#true` | live | Drop shadow behind windows. |
+| `decoration.shadow.range` | int 0..128 | `16` | live | Shadow falloff distance, logical px. |
 | `decoration.glow.enabled` | bool | `#false` | live | Glow around windows in their border colour. |
 | `decoration.glow.active` | bool | `#true` | live | Glow on the focused window. |
 | `decoration.glow.inactive` | bool | `#true` | live | Glow on unfocused windows. |

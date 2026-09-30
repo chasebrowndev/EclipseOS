@@ -26,11 +26,13 @@ use crate::{
 /// toplevel surface), exactly as `workspace::FocusHistory<T>` is; everything
 /// outside the tests uses the `Window` default.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FocusAction<W = Window> {
+pub enum FocusAction<W = Window, L = WlSurface> {
     /// Leave focus exactly where it is. Not "refocus what is focused" — a
     /// genuine no-op, so it cannot raise, re-emit or re-order history.
     Keep,
     Window(W),
+    /// A click gave the keyboard to a layer surface that accepts it.
+    Layer(L),
     /// Nothing focused: an empty workspace on the output the human moved to.
     Clear,
 }
@@ -64,14 +66,31 @@ impl FocusCause {
     }
 }
 
-/// Everything [`decide_pointer_focus`] is allowed to look at. Deliberately
-/// plain data: no `&AbyssState`, no smithay handles beyond the window type.
+/// The layer surface whose surface is topmost under the pointer.
 #[derive(Debug, Clone)]
-pub(crate) struct PointerFocusCtx<W = Window> {
+pub(crate) struct LayerUnder<L = WlSurface> {
+    /// Its root surface: what a click hands the keyboard to.
+    pub surface: L,
+    pub interactivity: KeyboardInteractivity,
+    /// It is the layer surface holding the keyboard right now.
+    pub holds_keyboard: bool,
+}
+
+/// Everything [`decide_pointer_focus`] is allowed to look at. Deliberately
+/// plain data: no `&AbyssState`, no smithay handles beyond the window and
+/// layer surface types.
+#[derive(Debug, Clone)]
+pub(crate) struct PointerFocusCtx<W = Window, L = WlSurface> {
     /// Output under the pointer. `None` when the pointer is over no output.
     pub pointer_output: Option<u64>,
-    /// Topmost toplevel under the pointer, if any.
+    /// Topmost toplevel under the pointer, if any. `None` when a layer
+    /// surface stacked above it takes the pointer instead (`layer_under`).
     pub window_under: Option<W>,
+    /// Topmost surface under the pointer belongs to this layer surface.
+    pub layer_under: Option<LayerUnder<L>>,
+    /// The decision is for a button press (or touch-down, or tablet tip),
+    /// not pointer motion or a scene change.
+    pub click: bool,
     /// The currently focused window, and the output that owns it.
     pub focused: Option<W>,
     pub focused_output: Option<u64>,
@@ -88,8 +107,6 @@ pub(crate) struct PointerFocusCtx<W = Window> {
     pub focus_follows_mouse_across_outputs: bool,
     /// `general.unfocus-on-empty-workspace`
     pub unfocus_on_empty_workspace: bool,
-    /// `general.focus-follows-mouse-layers`
-    pub focus_follows_mouse_layers: bool,
     /// `general.refocus-on-scene-change`. Not consulted by the pointer rules;
     /// it gates the *scene-change* refocus path in
     /// `AbyssState::refresh_pointer_focus`, which reads it off this context.
@@ -99,7 +116,9 @@ pub(crate) struct PointerFocusCtx<W = Window> {
 }
 
 /// Pure. The whole pointer-focus rule set, in precedence order.
-pub(crate) fn decide_pointer_focus<W: Clone + PartialEq>(ctx: &PointerFocusCtx<W>) -> FocusAction<W> {
+pub(crate) fn decide_pointer_focus<W: Clone + PartialEq, L: Clone>(
+    ctx: &PointerFocusCtx<W, L>,
+) -> FocusAction<W, L> {
     // 1. A trusted-UI prompt owns the seat. First, and above every config key:
     //    configuration must never be able to un-protect a prompt (COMP-10 §4).
     if ctx.prompt_grab_active {
@@ -116,22 +135,64 @@ pub(crate) fn decide_pointer_focus<W: Clone + PartialEq>(ctx: &PointerFocusCtx<W
 
     // 3. A layer surface holding the keyboard blocks FFM. `Exclusive` is the
     //    launcher: letting a toplevel behind it take the keyboard is what made
-    //    Escape and typing do nothing. `OnDemand` may lose it, if configured.
+    //    Escape and typing do nothing — and a click does not take it either
+    //    (wlr-layer-shell: the seat "will always give exclusive keyboard focus"
+    //    to it).
+    //
+    //    `OnDemand` is released by a click only, never by hover: the protocol
+    //    leaves the mechanism to the compositor and names exactly this one,
+    //    "requiring a click even if focus follows the mouse normally". FFM
+    //    (COMP-04 §7, COMP-05 §5) is about toplevels; a menu being typed into
+    //    must not lose the keyboard to the pointer crossing a window. A click
+    //    anywhere but the layer itself moves focus as a click would, so the
+    //    layer gets its leave: to another focusable layer surface, to the
+    //    window clicked, else back to the workspace's focus head (or nothing).
     match ctx.layer_interactivity {
         Some(KeyboardInteractivity::Exclusive) => return FocusAction::Keep,
-        Some(KeyboardInteractivity::OnDemand) if !ctx.focus_follows_mouse_layers => return FocusAction::Keep,
+        Some(KeyboardInteractivity::OnDemand) => {
+            if !ctx.click {
+                return FocusAction::Keep;
+            }
+            if let Some(l) = ctx.layer_under.as_ref() {
+                if l.holds_keyboard {
+                    return FocusAction::Keep;
+                }
+                if l.interactivity != KeyboardInteractivity::None {
+                    return FocusAction::Layer(l.surface.clone());
+                }
+            } else if let Some(w) = ctx.window_under.as_ref() {
+                // Not "unless already focused": the keyboard is on the layer,
+                // whatever `focused` still names.
+                return FocusAction::Window(w.clone());
+            }
+            return match ctx.pointer_output_focus_head.as_ref() {
+                Some(head) => FocusAction::Window(head.clone()),
+                None => FocusAction::Clear,
+            };
+        }
         _ => {}
     }
 
-    // 4. A window under the pointer takes it, unless it already has it.
-    if let Some(w) = ctx.window_under.as_ref() {
+    // 4. A click on a layer surface that accepts the keyboard gives it the
+    //    keyboard (`on_demand`'s "click to focus"). Hover never does, and a
+    //    click on a `none` surface is empty space to the rules below.
+    if let Some(l) = ctx.layer_under.as_ref() {
+        if ctx.click && !l.holds_keyboard && l.interactivity != KeyboardInteractivity::None {
+            return FocusAction::Layer(l.surface.clone());
+        }
+    }
+
+    // 5. A window under the pointer takes it, unless it already has it. A
+    //    layer surface stacked over the window hides it: hover across a panel
+    //    never focuses the toplevel underneath.
+    if let Some(w) = ctx.window_under.as_ref().filter(|_| ctx.layer_under.is_none()) {
         if ctx.focused.as_ref() == Some(w) {
             return FocusAction::Keep;
         }
         return FocusAction::Window(w.clone());
     }
 
-    // 5. Nothing has the keyboard, or something that is not a toplevel does —
+    // 6. Nothing has the keyboard, or something that is not a toplevel does —
     //    an on-demand layer surface the human clicked, say. There is no window
     //    focus to move and none to clear, so the empty-space rules below have
     //    nothing to say: clearing here would take the keyboard away from a
@@ -141,7 +202,7 @@ pub(crate) fn decide_pointer_focus<W: Clone + PartialEq>(ctx: &PointerFocusCtx<W
         return FocusAction::Keep;
     }
 
-    // 6. The pointer is over no output at all — a gap between monitors, or
+    // 7. The pointer is over no output at all — a gap between monitors, or
     //    past the edge of every one. There is no output to move to, so there
     //    is nothing to decide: dragging the cursor through dead space must
     //    never defocus (it is the exact inverse of the stickiness rule below).
@@ -149,7 +210,7 @@ pub(crate) fn decide_pointer_focus<W: Clone + PartialEq>(ctx: &PointerFocusCtx<W
         return FocusAction::Keep;
     }
 
-    // 7. Empty space. On the focused window's own output this changes nothing
+    // 8. Empty space. On the focused window's own output this changes nothing
     //    — a gap on your own monitor never defocuses (Hyprland's feel).
     if ctx.pointer_output == ctx.focused_output {
         return FocusAction::Keep;
@@ -166,6 +227,16 @@ pub(crate) fn decide_pointer_focus<W: Clone + PartialEq>(ctx: &PointerFocusCtx<W
     }
 }
 
+/// [`pointer_focus_ctx`] for a button press, touch-down or tablet tip: the
+/// only input that may take the keyboard from an on-demand layer surface.
+pub(crate) fn click_focus_ctx(state: &AbyssState, pos: Point<f64, Logical>) -> PointerFocusCtx {
+    PointerFocusCtx {
+        click: true,
+        drag_active: crate::input::grabs::drag_active_but_click(state),
+        ..pointer_focus_ctx(state, pos)
+    }
+}
+
 /// Build a [`PointerFocusCtx`] from live state. Not pure, and deliberately the
 /// only impure part: it reads, it does not decide.
 pub(crate) fn pointer_focus_ctx(state: &AbyssState, pos: Point<f64, Logical>) -> PointerFocusCtx {
@@ -177,24 +248,32 @@ pub(crate) fn pointer_focus_ctx(state: &AbyssState, pos: Point<f64, Logical>) ->
         .and_then(|id| state.outputs.get(id))
         .and_then(|e| e.workspace().focus_head());
     let g = &state.config.general;
+    let held = crate::shell::focused_layer(state);
+    let layer_under = crate::shell::layer_at(state, pos).map(|l| LayerUnder {
+        surface: l.wl_surface().clone(),
+        interactivity: l.cached_state().keyboard_interactivity,
+        holds_keyboard: held.as_ref() == Some(&l),
+    });
     PointerFocusCtx {
         pointer_output,
         // Override-redirect menus/tooltips are not focus targets: the pointer
-        // over one keeps the owning client's focus.
+        // over one keeps the owning client's focus. A layer surface on top
+        // hides whatever window is behind it.
         window_under: state
             .space
             .element_under(pos)
+            .filter(|_| layer_under.is_none())
             .filter(|(w, _)| !w.x11_surface().is_some_and(|x| x.is_override_redirect()))
             .map(|(w, _)| w.clone()),
+        layer_under,
+        click: false,
         focused,
         focused_output,
-        layer_interactivity: crate::shell::focused_layer(state)
-            .map(|l| l.cached_state().keyboard_interactivity),
+        layer_interactivity: held.map(|l| l.cached_state().keyboard_interactivity),
         drag_active: crate::input::grabs::drag_active(state),
         prompt_grab_active: crate::trusted_ui::holds_seat(state),
         focus_follows_mouse_across_outputs: g.focus_follows_mouse_across_outputs,
         unfocus_on_empty_workspace: g.unfocus_on_empty_workspace,
-        focus_follows_mouse_layers: g.focus_follows_mouse_layers,
         refocus_on_scene_change: g.refocus_on_scene_change,
         pointer_output_focus_head,
     }
@@ -213,6 +292,10 @@ pub fn apply_focus(state: &mut AbyssState, action: FocusAction, cause: FocusCaus
         FocusAction::Window(w) => {
             tracing::debug!(?cause, "focus moves to a window");
             focus_window_raising(state, &w, cause.raises());
+        }
+        FocusAction::Layer(surface) => {
+            tracing::debug!(?cause, "focus moves to a layer surface");
+            crate::shell::focus_layer_if_wanted(state, &surface);
         }
         FocusAction::Clear => {
             tracing::debug!(?cause, "focus cleared");
@@ -377,7 +460,7 @@ pub fn refocus_topmost(state: &mut AbyssState) {
 mod tests {
     use super::*;
 
-    type Ctx = PointerFocusCtx<u32>;
+    type Ctx = PointerFocusCtx<u32, u32>;
 
     /// The defaults every case starts from: pointer and focus on output 1, a
     /// focused window, no layer, no grab, every config key at its `true`
@@ -386,6 +469,8 @@ mod tests {
         PointerFocusCtx {
             pointer_output: Some(1),
             window_under: None,
+            layer_under: None,
+            click: false,
             focused: Some(10),
             focused_output: Some(1),
             layer_interactivity: None,
@@ -393,14 +478,21 @@ mod tests {
             prompt_grab_active: false,
             focus_follows_mouse_across_outputs: true,
             unfocus_on_empty_workspace: true,
-            focus_follows_mouse_layers: true,
             refocus_on_scene_change: true,
             pointer_output_focus_head: None,
         }
     }
 
+    fn layer(surface: u32, interactivity: KeyboardInteractivity, holds_keyboard: bool) -> LayerUnder<u32> {
+        LayerUnder {
+            surface,
+            interactivity,
+            holds_keyboard,
+        }
+    }
+
     /// Every rule as a row: a name, the context, the verdict.
-    fn table() -> Vec<(&'static str, Ctx, FocusAction<u32>)> {
+    fn table() -> Vec<(&'static str, Ctx, FocusAction<u32, u32>)> {
         vec![
             (
                 "empty space on the focused output keeps focus",
@@ -494,23 +586,161 @@ mod tests {
                 FocusAction::Keep,
             ),
             (
-                "an on-demand layer surface may lose the keyboard to FFM",
+                "an exclusive layer surface keeps the keyboard through a click on a window",
                 Ctx {
                     window_under: Some(11),
+                    layer_interactivity: Some(KeyboardInteractivity::Exclusive),
+                    click: true,
+                    ..ctx()
+                },
+                FocusAction::Keep,
+            ),
+            (
+                "an exclusive layer surface keeps the keyboard through a click on another layer",
+                Ctx {
+                    layer_under: Some(layer(7, KeyboardInteractivity::OnDemand, false)),
+                    layer_interactivity: Some(KeyboardInteractivity::Exclusive),
+                    click: true,
+                    ..ctx()
+                },
+                FocusAction::Keep,
+            ),
+            (
+                // The start menu being typed into; the pointer crosses a window.
+                "hover over a window keeps an on-demand layer focused",
+                Ctx {
+                    window_under: Some(11),
+                    focused: None,
+                    focused_output: None,
                     layer_interactivity: Some(KeyboardInteractivity::OnDemand),
+                    ..ctx()
+                },
+                FocusAction::Keep,
+            ),
+            (
+                "hover onto another output keeps an on-demand layer focused",
+                Ctx {
+                    pointer_output: Some(2),
+                    pointer_output_focus_head: Some(20),
+                    window_under: Some(20),
+                    layer_interactivity: Some(KeyboardInteractivity::OnDemand),
+                    ..ctx()
+                },
+                FocusAction::Keep,
+            ),
+            (
+                "a click on a window moves the keyboard off an on-demand layer",
+                Ctx {
+                    window_under: Some(11),
+                    focused: None,
+                    focused_output: None,
+                    layer_interactivity: Some(KeyboardInteractivity::OnDemand),
+                    click: true,
                     ..ctx()
                 },
                 FocusAction::Window(11),
             ),
             (
-                "focus-follows-mouse-layers=false pins an on-demand layer",
+                // `focused` still naming the window is not "already focused":
+                // the keyboard is on the layer.
+                "a click on the last-focused window still takes the keyboard back",
                 Ctx {
-                    window_under: Some(11),
+                    window_under: Some(10),
                     layer_interactivity: Some(KeyboardInteractivity::OnDemand),
-                    focus_follows_mouse_layers: false,
+                    click: true,
+                    ..ctx()
+                },
+                FocusAction::Window(10),
+            ),
+            (
+                "a click inside the on-demand layer itself keeps it",
+                Ctx {
+                    layer_under: Some(layer(7, KeyboardInteractivity::OnDemand, true)),
+                    layer_interactivity: Some(KeyboardInteractivity::OnDemand),
+                    click: true,
                     ..ctx()
                 },
                 FocusAction::Keep,
+            ),
+            (
+                "a click on another focusable layer hands it the keyboard",
+                Ctx {
+                    layer_under: Some(layer(8, KeyboardInteractivity::OnDemand, false)),
+                    layer_interactivity: Some(KeyboardInteractivity::OnDemand),
+                    click: true,
+                    ..ctx()
+                },
+                FocusAction::Layer(8),
+            ),
+            (
+                "a click on a none layer returns the keyboard to the workspace head",
+                Ctx {
+                    layer_under: Some(layer(9, KeyboardInteractivity::None, false)),
+                    focused: None,
+                    focused_output: None,
+                    pointer_output_focus_head: Some(10),
+                    layer_interactivity: Some(KeyboardInteractivity::OnDemand),
+                    click: true,
+                    ..ctx()
+                },
+                FocusAction::Window(10),
+            ),
+            (
+                "a click on an empty workspace clears the keyboard off an on-demand layer",
+                Ctx {
+                    focused: None,
+                    focused_output: None,
+                    layer_interactivity: Some(KeyboardInteractivity::OnDemand),
+                    click: true,
+                    ..ctx()
+                },
+                FocusAction::Clear,
+            ),
+            (
+                "hover over a panel never focuses the window behind it",
+                Ctx {
+                    window_under: Some(11),
+                    layer_under: Some(layer(9, KeyboardInteractivity::None, false)),
+                    ..ctx()
+                },
+                FocusAction::Keep,
+            ),
+            (
+                "hover over an on-demand layer does not give it the keyboard",
+                Ctx {
+                    layer_under: Some(layer(8, KeyboardInteractivity::OnDemand, false)),
+                    ..ctx()
+                },
+                FocusAction::Keep,
+            ),
+            (
+                "a click on an on-demand layer gives it the keyboard",
+                Ctx {
+                    layer_under: Some(layer(8, KeyboardInteractivity::OnDemand, false)),
+                    click: true,
+                    ..ctx()
+                },
+                FocusAction::Layer(8),
+            ),
+            (
+                "a click on a none layer leaves window focus alone",
+                Ctx {
+                    layer_under: Some(layer(9, KeyboardInteractivity::None, false)),
+                    click: true,
+                    ..ctx()
+                },
+                FocusAction::Keep,
+            ),
+            (
+                // A wallpaper is a layer too; it must not stop cross-output FFM.
+                "a background layer on another output still takes that output's head",
+                Ctx {
+                    pointer_output: Some(2),
+                    pointer_output_focus_head: Some(20),
+                    layer_under: Some(layer(9, KeyboardInteractivity::None, false)),
+                    ..ctx()
+                },
+                FocusAction::Window(20),
             ),
             (
                 // COMP-05 §5: a drag must not cross an output boundary.
@@ -762,9 +992,11 @@ pub(crate) mod state_tests {
         // saw the *other* output's empty workspace, not the focused one's.
         assert_eq!(decide_pointer_focus(&ctx), FocusAction::Keep);
         assert_eq!(
-            decide_pointer_focus(&PointerFocusCtx::<u32> {
+            decide_pointer_focus(&PointerFocusCtx::<u32, WlSurface> {
                 pointer_output: ctx.pointer_output,
                 window_under: None,
+                layer_under: None,
+                click: false,
                 focused: Some(10),
                 focused_output: Some(h.a),
                 layer_interactivity: None,
@@ -772,7 +1004,6 @@ pub(crate) mod state_tests {
                 prompt_grab_active: ctx.prompt_grab_active,
                 focus_follows_mouse_across_outputs: ctx.focus_follows_mouse_across_outputs,
                 unfocus_on_empty_workspace: ctx.unfocus_on_empty_workspace,
-                focus_follows_mouse_layers: ctx.focus_follows_mouse_layers,
                 refocus_on_scene_change: ctx.refocus_on_scene_change,
                 pointer_output_focus_head: None,
             }),
@@ -886,7 +1117,7 @@ pub(crate) mod state_tests {
 
     /// A real in-process Wayland client, for the rules that only hold against
     /// real surfaces: the lock screen's.
-    mod client {
+    pub(crate) mod client {
         use std::os::fd::{AsFd, FromRawFd};
         use std::os::unix::net::UnixStream;
 
@@ -905,7 +1136,7 @@ pub(crate) mod state_tests {
         };
         use wayland_protocols::xdg::shell::client::{
             xdg_surface::{self, XdgSurface},
-            xdg_toplevel::XdgToplevel,
+            xdg_toplevel::{self, XdgToplevel},
             xdg_wm_base::{self, XdgWmBase},
         };
 
@@ -913,6 +1144,11 @@ pub(crate) mod state_tests {
             zwp_input_method_keyboard_grab_v2::{self, ZwpInputMethodKeyboardGrabV2},
             zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
             zwp_input_method_v2::ZwpInputMethodV2,
+        };
+
+        use wayland_protocols_wlr::layer_shell::v1::client::{
+            zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
+            zwlr_layer_surface_v1::{self, ZwlrLayerSurfaceV1},
         };
 
         use super::Harness;
@@ -923,6 +1159,18 @@ pub(crate) mod state_tests {
             lock_size: Option<(u32, u32)>,
             /// `key` events an input-method keyboard grab received.
             pub grabbed_keys: usize,
+            /// `zwlr_layer_surface_v1.configure` events acked so far.
+            layer_configures: usize,
+            /// Every `xdg_toplevel.configure` size, as (toplevel id, w, h).
+            configures: Vec<(u32, i32, i32)>,
+        }
+
+        /// A toplevel's three client objects, for tests that drive its
+        /// handshake one request at a time.
+        pub struct Toplevel {
+            pub surface: WlSurface,
+            pub xdg: XdgSurface,
+            pub toplevel: XdgToplevel,
         }
 
         pub struct Client {
@@ -936,6 +1184,7 @@ pub(crate) mod state_tests {
             lock_manager: Option<ExtSessionLockManagerV1>,
             seat: Option<WlSeat>,
             im_manager: Option<ZwpInputMethodManagerV2>,
+            layer_shell: Option<ZwlrLayerShellV1>,
         }
 
         impl Dispatch<wl_registry::WlRegistry, ()> for Globals {
@@ -1016,11 +1265,41 @@ pub(crate) mod state_tests {
         delegate_noop!(Globals: ignore WlBuffer);
         delegate_noop!(Globals: ignore WlSurface);
         delegate_noop!(Globals: ignore WlOutput);
-        delegate_noop!(Globals: ignore XdgToplevel);
+        impl Dispatch<XdgToplevel, ()> for Globals {
+            fn event(
+                g: &mut Self,
+                toplevel: &XdgToplevel,
+                event: xdg_toplevel::Event,
+                _: &(),
+                _: &Connection,
+                _: &QueueHandle<Self>,
+            ) {
+                if let xdg_toplevel::Event::Configure { width, height, .. } = event {
+                    g.configures.push((toplevel.id().protocol_id(), width, height));
+                }
+            }
+        }
         delegate_noop!(Globals: ignore ExtSessionLockV1);
         delegate_noop!(Globals: ignore WlSeat);
         delegate_noop!(Globals: ZwpInputMethodManagerV2);
         delegate_noop!(Globals: ignore ZwpInputMethodV2);
+        delegate_noop!(Globals: ZwlrLayerShellV1);
+
+        impl Dispatch<ZwlrLayerSurfaceV1, ()> for Globals {
+            fn event(
+                g: &mut Self,
+                surface: &ZwlrLayerSurfaceV1,
+                event: zwlr_layer_surface_v1::Event,
+                _: &(),
+                _: &Connection,
+                _: &QueueHandle<Self>,
+            ) {
+                if let zwlr_layer_surface_v1::Event::Configure { serial, .. } = event {
+                    surface.ack_configure(serial);
+                    g.layer_configures += 1;
+                }
+            }
+        }
 
         impl Dispatch<ZwpInputMethodKeyboardGrabV2, ()> for Globals {
             fn event(
@@ -1058,6 +1337,7 @@ pub(crate) mod state_tests {
                     lock_manager: None,
                     seat: None,
                     im_manager: None,
+                    layer_shell: None,
                 };
                 c.pump(h);
                 let qh = c.queue.handle();
@@ -1069,6 +1349,9 @@ pub(crate) mod state_tests {
                         "wl_output" => c.outputs.push(registry.bind(name, 1, &qh, ())),
                         "wl_seat" => c.seat = Some(registry.bind(name, 1, &qh, ())),
                         "zwp_input_method_manager_v2" => c.im_manager = Some(registry.bind(name, 1, &qh, ())),
+                        "zwlr_layer_shell_v1" => {
+                            c.layer_shell = Some(registry.bind(name, version.min(4), &qh, ()))
+                        }
                         "ext_session_lock_manager_v1" => {
                             c.lock_manager = Some(registry.bind(name, 1, &qh, ()))
                         }
@@ -1141,6 +1424,48 @@ pub(crate) mod state_tests {
                 surface.id().protocol_id()
             }
 
+            /// `get_toplevel` and nothing else, delivered: the compositor has
+            /// seen the role but not the initial commit.
+            pub fn create_toplevel(&mut self, h: &mut Harness) -> Toplevel {
+                let qh = self.queue.handle();
+                let surface = self.surface();
+                let xdg = self
+                    .wm
+                    .as_ref()
+                    .expect("xdg_wm_base")
+                    .get_xdg_surface(&surface, &qh, ());
+                let toplevel = xdg.get_toplevel(&qh, ());
+                self.pump(h);
+                Toplevel {
+                    surface,
+                    xdg,
+                    toplevel,
+                }
+            }
+
+            /// Commit `surface` as it stands and deliver it.
+            pub fn commit(&mut self, h: &mut Harness, surface: &WlSurface) {
+                surface.commit();
+                self.pump(h);
+            }
+
+            /// Attach a 100x100 buffer, commit and deliver: the map.
+            pub fn attach(&mut self, h: &mut Harness, surface: &WlSurface) {
+                surface.attach(Some(&self.buffer(100, 100)), 0, 0);
+                self.commit(h, surface);
+            }
+
+            /// Every size `toplevel` has been configured with, oldest first.
+            pub fn configured_sizes(&self, toplevel: &XdgToplevel) -> Vec<(i32, i32)> {
+                let id = toplevel.id().protocol_id();
+                self.data
+                    .configures
+                    .iter()
+                    .filter(|(t, _, _)| *t == id)
+                    .map(|&(_, w, h)| (w, h))
+                    .collect()
+            }
+
             /// An input method on the seat, with the keyboard grabbed.
             pub fn grab_keyboard(&mut self, h: &mut Harness) -> ZwpInputMethodV2 {
                 let qh = self.queue.handle();
@@ -1156,6 +1481,39 @@ pub(crate) mod state_tests {
             pub fn regrab(&mut self, h: &mut Harness, im: &ZwpInputMethodV2) {
                 let _grab = im.grab_keyboard(&self.queue.handle(), ());
                 self.pump(h);
+            }
+
+            /// Map a 50x50 top-layer surface in the bottom-right corner of the
+            /// first output, with the given keyboard interactivity.
+            pub fn map_layer(
+                &mut self,
+                h: &mut Harness,
+                interactivity: zwlr_layer_surface_v1::KeyboardInteractivity,
+            ) -> (WlSurface, ZwlrLayerSurfaceV1) {
+                let qh = self.queue.handle();
+                let surface = self.surface();
+                let layer = self
+                    .layer_shell
+                    .as_ref()
+                    .expect("zwlr_layer_shell_v1")
+                    .get_layer_surface(
+                        &surface,
+                        self.outputs.first(),
+                        zwlr_layer_shell_v1::Layer::Top,
+                        "test".into(),
+                        &qh,
+                        (),
+                    );
+                layer.set_size(50, 50);
+                layer
+                    .set_anchor(zwlr_layer_surface_v1::Anchor::Bottom | zwlr_layer_surface_v1::Anchor::Right);
+                layer.set_keyboard_interactivity(interactivity);
+                let before = self.data.layer_configures;
+                self.commit(h, &surface);
+                assert!(self.data.layer_configures > before, "layer surface configured");
+                surface.attach(Some(&self.buffer(50, 50)), 0, 0);
+                self.commit(h, &surface);
+                (surface, layer)
             }
 
             pub fn grabbed_keys(&self) -> usize {
@@ -1321,5 +1679,134 @@ pub(crate) mod state_tests {
         assert!(keyboard_on_lock_surface(&h));
         focus_surface(&mut h.state, window_surface(&other));
         assert!(keyboard_on_lock_surface(&h));
+    }
+
+    use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::KeyboardInteractivity as ClientKi;
+
+    fn keyboard_on_window(h: &Harness, window: &Window) -> bool {
+        match h.state.seat.get_keyboard().unwrap().current_focus() {
+            Some(KeyboardFocusTarget::Wl(s)) => window_surface(window).as_ref() == Some(&s),
+            _ => false,
+        }
+    }
+
+    fn keyboard_on_layer(h: &Harness) -> bool {
+        crate::shell::focused_layer(&h.state).is_some()
+    }
+
+    /// A mapped window and a point over it that no layer surface covers.
+    fn window_and_point(h: &mut Harness, c: &mut client::Client) -> (Window, Point<f64, Logical>) {
+        let id = c.map_window(h);
+        let window = window_by_protocol_id(h, id);
+        let loc = h.state.space.element_location(&window).expect("placed");
+        let over = (loc + Point::from((10, 10))).to_f64();
+        (window, over)
+    }
+
+    /// A point over the test layer surface: 10px in from the bottom-right
+    /// corner of whichever output it landed on.
+    fn over_layer(h: &Harness) -> Point<f64, Logical> {
+        for e in h.state.outputs.iter() {
+            let g = h.state.space.output_geometry(&e.output).expect("mapped");
+            let p: Point<f64, Logical> =
+                ((g.loc.x + g.size.w - 10) as f64, (g.loc.y + g.size.h - 10) as f64).into();
+            if crate::shell::layer_at(&h.state, p).is_some() {
+                return p;
+            }
+        }
+        panic!("the layer surface is under no output corner");
+    }
+
+    fn press(h: &mut Harness, c: &mut client::Client, t: u32) {
+        use smithay::backend::input::ButtonState;
+        h.state.pointer_button(0x110, ButtonState::Pressed, t);
+        h.state.pointer_button(0x110, ButtonState::Released, t + 1);
+        c.pump(h);
+    }
+
+    /// The start menu: an on-demand layer surface being typed into keeps the
+    /// keyboard while the pointer crosses a window, loses it to a click on the
+    /// window, and a click on the layer gives it back (wlr-layer-shell
+    /// `on_demand`, "requiring a click even if focus follows the mouse").
+    #[test]
+    fn an_on_demand_layer_is_released_by_a_click_not_by_hover() {
+        let mut h = harness();
+        let mut c = client::Client::connect(&mut h);
+        let (window, over_window) = window_and_point(&mut h, &mut c);
+        let (_surface, _layer) = c.map_layer(&mut h, ClientKi::OnDemand);
+        assert!(keyboard_on_layer(&h), "mapping on-demand takes the keyboard");
+        assert!(crate::shell::layer_at(&h.state, over_window).is_none());
+        assert!(h.state.config.general.focus_follows_mouse);
+
+        h.state.pointer_moved(over_window, 1);
+        c.pump(&mut h);
+        assert!(
+            keyboard_on_layer(&h),
+            "hover over a window keeps the layer focused"
+        );
+
+        press(&mut h, &mut c, 2);
+        assert!(
+            !keyboard_on_layer(&h),
+            "a click on a window takes the keyboard off the layer"
+        );
+        assert!(keyboard_on_window(&h, &window));
+        assert_eq!(h.state.focus.as_ref(), Some(&window));
+
+        // Hovering the layer does not give it the keyboard; clicking it does.
+        let on_layer = over_layer(&h);
+        h.state.pointer_moved(on_layer, 4);
+        c.pump(&mut h);
+        assert!(
+            keyboard_on_window(&h, &window),
+            "hover over a layer never takes focus"
+        );
+        press(&mut h, &mut c, 5);
+        assert!(
+            keyboard_on_layer(&h),
+            "a click on an on-demand layer takes the keyboard"
+        );
+    }
+
+    /// wlr-layer-shell `exclusive` is unchanged: neither hover nor a click on
+    /// a window takes the keyboard from it.
+    #[test]
+    fn an_exclusive_layer_keeps_the_keyboard_through_hover_and_click() {
+        let mut h = harness();
+        let mut c = client::Client::connect(&mut h);
+        let (_window, over_window) = window_and_point(&mut h, &mut c);
+        let (_surface, _layer) = c.map_layer(&mut h, ClientKi::Exclusive);
+        assert!(keyboard_on_layer(&h));
+
+        h.state.pointer_moved(over_window, 1);
+        c.pump(&mut h);
+        assert!(keyboard_on_layer(&h), "hover keeps an exclusive layer focused");
+        press(&mut h, &mut c, 2);
+        assert!(keyboard_on_layer(&h), "a click keeps an exclusive layer focused");
+    }
+
+    /// A mapped layer surface that changes its interactivity: asking for the
+    /// keyboard takes it, giving it up hands it back to the workspace.
+    #[test]
+    fn an_interactivity_change_moves_the_keyboard() {
+        let mut h = harness();
+        let mut c = client::Client::connect(&mut h);
+        let (window, _) = window_and_point(&mut h, &mut c);
+        let (surface, layer) = c.map_layer(&mut h, ClientKi::None);
+        assert!(!keyboard_on_layer(&h), "a none layer never takes the keyboard");
+        assert!(keyboard_on_window(&h, &window));
+
+        layer.set_keyboard_interactivity(ClientKi::OnDemand);
+        c.commit(&mut h, &surface);
+        assert!(keyboard_on_layer(&h), "none -> on_demand takes the keyboard");
+
+        layer.set_keyboard_interactivity(ClientKi::None);
+        c.commit(&mut h, &surface);
+        assert!(!keyboard_on_layer(&h), "-> none gives it up");
+        assert!(keyboard_on_window(&h, &window), "back to the workspace's head");
+
+        layer.set_keyboard_interactivity(ClientKi::Exclusive);
+        c.commit(&mut h, &surface);
+        assert!(keyboard_on_layer(&h), "none -> exclusive takes the keyboard");
     }
 }

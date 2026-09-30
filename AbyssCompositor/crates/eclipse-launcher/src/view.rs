@@ -1,21 +1,33 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The launcher pane: a header strip, a prompt band, a result list, a footer.
+//! The launcher pane: a header strip, a prompt cell, a run of result cells,
+//! a hint line — four blocks on one sheet of glass, none of them framed.
 //!
-//! Composition (`docs/COMPOSITION.md`): the hero is a **prompt band** — a
-//! tall bordered block holding the live query at hero type size, a mono
-//! marker at its left and the cursor's position in the match list at its
-//! right. It is the block this pane is about, and it deliberately shares no
-//! silhouette with the hairline list beneath it. The strip above and the line
-//! below are borderless, so the four blocks read as strip / band / list /
-//! line rather than as a stack of panels.
+//! The sheet is the compositor's material under a light tint
+//! (`parts::surface`), and everything on it is cut from the one glass-cell
+//! material the taskbar's chips are (`theme::glass_cell`): a faint white
+//! fill, a hairline just inside the edge and a soft one-pixel drop. No
+//! stroke on this pane is structure — no bordered band, no rules between
+//! rows, no frame around the list. What separates things is air, and depth
+//! is a cell lifting off the glass.
+//!
+//! Composition (`docs/COMPOSITION.md`): the hero is the **prompt cell** — the
+//! live query at hero type in the tallest lozenge on the sheet, a mono marker
+//! at its left and the cursor's place in the match list at its right. Under
+//! it the results are a **run of latent cells**: at rest a row is only its
+//! text on the glass, and it becomes a cell only when it means something —
+//! under the pointer it lifts into the white lozenge without taking the
+//! selection, and the selected row rests as the gold one. So the four blocks read as strip / lozenge /
+//! floating run / line, and the hero is the only cell that is always there.
+//! The strip and the line are plain text on the glass; the hint line's keys
+//! sit in small glass caps (`parts::key_hint`), never accented.
 //!
 //! **The accent ledger: the one live yellow is the selected result row** —
-//! its 3px bar, its ground tint and its name. That row is what Enter runs,
-//! which is the only state this pane has — the drawn window scrolls with
-//! `selected` (see `scroll`) precisely so that the statement stays true past
-//! the eighth match. The band's border is
-//! `BORDER_STRONG`, the header chip is mono grey, and a refusal is `DANGER`,
-//! which is its own channel and not the accent.
+//! its gold cell ground, its name and its identifier. That row is what Enter
+//! runs, which is the only state this pane has — the drawn window scrolls
+//! with `selected` (see `scroll`) precisely so that the statement stays true
+//! past the eighth match. A selected row that cannot launch (a terminal-only
+//! entry) wears the neutral cell instead, and a refusal is `DANGER`, which
+//! is its own channel and not the accent.
 //!
 //! Every colour and size comes from `eclipse_ui`; a literal anywhere in here
 //! is a bug, with the exception of the layout metrics named at the top of the
@@ -23,11 +35,12 @@
 //! live in a styling token.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{container, mouse_area, row, text, text_input, Column, Space};
+use iced::widget::{button, container, row, text, text_input, Column, Row, Space};
 use iced::{Alignment, Color, Element, Length, Theme};
 
 use eclipse_services::apps::Entry;
-use eclipse_ui::tokens::{color, font, size, space};
+use eclipse_ui::theme::{self, CellTone};
+use eclipse_ui::tokens::{color, font, radius, size, space};
 use eclipse_ui::widget as parts;
 
 use crate::app::{App, Message, INPUT_ID};
@@ -35,12 +48,14 @@ use crate::{MAX_ROWS, WIDTH};
 
 /// Height of the header strip: a micro label beside a two-line status chip.
 const HEADER_H: f32 = 32.0;
-/// Height of the hero band, its border and padding included.
+/// Height of the hero prompt cell, its padding included.
 const BAND_H: f32 = 52.0;
-/// Height of one result row.
+/// Height of one result cell.
 const ROW_H: f32 = 40.0;
-/// The hairline drawn above every row but the first.
-const HAIR: f32 = 1.0;
+/// The air between two result cells. Air, not a rule: two lit cells side by
+/// side (the selection and the row under the pointer) need a sliver of glass
+/// between them or their drops merge into one slab.
+const ROW_GAP: f32 = 2.0;
 /// Width of the name column. A list whose second column starts at a
 /// different x on every row is not a list, so this is a layout metric and not
 /// a styling token.
@@ -63,7 +78,7 @@ pub fn surface_height() -> u32 {
         + BAND_H
         + space::BLOCK
         + ROW_H * MAX_ROWS as f32
-        + HAIR * (MAX_ROWS - 1) as f32
+        + ROW_GAP * (MAX_ROWS - 1) as f32
         + space::BLOCK
         + PROBLEM_H)
         .ceil() as u32
@@ -73,7 +88,7 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
     let body = Column::new()
         .spacing(space::BLOCK)
         .push(header(app))
-        .push(band(app))
+        .push(prompt(app))
         .push(results(app))
         .push(footer(app));
 
@@ -86,7 +101,8 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
 }
 
 /// The header strip: what this surface is, and the machine's own reading of
-/// the index it is searching.
+/// the index it is searching. Plain text on the glass — the chip reports, it
+/// is not a cell.
 fn header(app: &App) -> Element<'_, Message, Theme> {
     let state = if app.query.is_empty() {
         "all applications".to_owned()
@@ -111,7 +127,7 @@ fn header(app: &App) -> Element<'_, Message, Theme> {
 /// The hero. The query at hero scale, with the cursor's place in the match
 /// list at the right so that arrowing has a readable effect even when the
 /// selected row is the one already on screen.
-fn band(app: &App) -> Element<'_, Message, Theme> {
+fn prompt(app: &App) -> Element<'_, Message, Theme> {
     let field = text_input("search applications", &app.query)
         .id(INPUT_ID)
         .on_input(Message::Query)
@@ -120,10 +136,10 @@ fn band(app: &App) -> Element<'_, Message, Theme> {
         .on_submit(Message::Activate)
         .size(size::PROMPT)
         .font(font::UI)
-        // The band is the box and does the padding; a field that padded
+        // The cell is the box and does the padding; a field that padded
         // itself as well would sit off-centre inside it.
         .padding(iced::Padding::ZERO)
-        .style(eclipse_ui::theme::prompt_input);
+        .style(theme::prompt_input);
 
     let position = if app.matched.is_empty() {
         "no match".to_owned()
@@ -135,9 +151,8 @@ fn band(app: &App) -> Element<'_, Message, Theme> {
         .font(font::DATA)
         .color(color::TEXT_TERTIARY);
 
-    container(parts::prompt_band("/", field, Some(position.into())))
+    parts::prompt_cell("/", field, Some(position.into()))
         .height(Length::Fixed(BAND_H))
-        .align_y(Alignment::Center)
         .into()
 }
 
@@ -154,43 +169,36 @@ fn scroll(app: &App) -> usize {
 }
 
 /// The visible slice of the match list, always `MAX_ROWS` tall.
+///
+/// No container: the rows float on the sheet itself. A frame around them
+/// would be a stroke doing the job the air between the blocks already does,
+/// and a card holding cells is the card-in-card the spec rules out.
 fn results(app: &App) -> Element<'_, Message, Theme> {
     let offset = scroll(app);
-    let mut col = Column::new();
+    let mut col = Column::new().spacing(ROW_GAP);
     for slot in 0..MAX_ROWS {
         let index = offset + slot;
-        // A hairline only between rows that exist. Ruling the empty tail as
-        // well draws a ladder of blank rows, which reads as eight results of
-        // which six failed to load.
-        if slot > 0 && index < app.matched.len() {
-            col = col.push(parts::hairline());
-        } else if slot > 0 {
-            col = col.push(container(Space::new()).height(Length::Fixed(HAIR)));
-        }
         col = match app.matched.get(index) {
             Some(&entry) => col.push(entry_row(&app.entries[entry], index, index == app.selected)),
             // An empty slot rather than a shorter list: the panel is a fixed
             // height, and rows that slide up as you type are rows you misclick.
-            None => col.push(
-                container(Space::new())
-                    .height(Length::Fixed(ROW_H))
-                    .width(Length::Fill),
-            ),
+            None => col.push(Space::new().height(Length::Fixed(ROW_H)).width(Length::Fill)),
         };
     }
-    parts::inset(col).into()
+    col.into()
 }
 
 /// One row. `index` is an index into `matched`, not a slot on screen: the
-/// drawn window scrolls, so a hover has to name the match it is over.
+/// drawn window scrolls, so a click has to name the match it lands on.
 fn entry_row(entry: &Entry, index: usize, selected: bool) -> Element<'static, Message, Theme> {
     // A terminal-only entry is listed and greyed: `apps::launch` will refuse
     // it, and a row that is simply missing teaches the human nothing. The
     // greying wins over the selection: a selected row that cannot launch must
     // not read as a selected row that can.
+    let live = selected && !entry.terminal;
     let name_tint = if entry.terminal {
         color::TEXT_TERTIARY
-    } else if selected {
+    } else if live {
         color::ACCENT_TEXT
     } else {
         color::TEXT
@@ -222,7 +230,7 @@ fn entry_row(entry: &Entry, index: usize, selected: bool) -> Element<'static, Me
     // The identifier is on the selected row only. It is what will actually be
     // spawned, so it belongs beside the choice — and printing all eight makes
     // a column of mono noise that reads louder than the names it labels.
-    let tail: Element<'static, Message, Theme> = if selected && !entry.terminal {
+    let tail: Element<'static, Message, Theme> = if live {
         text(entry.id.trim_end_matches(".desktop").to_owned())
             .size(size::MONO)
             .font(font::DATA)
@@ -248,32 +256,34 @@ fn entry_row(entry: &Entry, index: usize, selected: bool) -> Element<'static, Me
     ]
     .align_y(Alignment::Center);
 
-    let line = container(line)
-        .height(Length::Fixed(ROW_H))
-        .width(Length::Fill)
-        // The bar occupies the first 3px of the row, so the text keeps the
-        // same left edge whether or not this row is the selected one.
-        .padding(iced::Padding {
-            right: space::CARD,
-            left: space::CARD - space::BAR_W,
-            ..iced::Padding::ZERO
-        })
-        .align_y(Alignment::Center);
+    // Gold for the row Enter runs, the neutral lozenge for a selected row
+    // that cannot run, and nothing at all for the rest until the pointer
+    // lifts them — the taskbar chip's glass cell, at the sheet's inset
+    // radius.
+    let tone = if live {
+        CellTone::Focused
+    } else if selected {
+        CellTone::Plain
+    } else {
+        CellTone::Latent
+    };
 
-    // The terminal row keeps its mouse area on purpose: clicking it must put
-    // the refusal on the footer rather than being silently inert.
-    mouse_area(
-        container(parts::choice_row(line, selected))
-            .height(Length::Fixed(ROW_H))
-            .width(Length::Fill),
-    )
-    .on_enter(Message::Select(index))
-    .on_press(Message::Activate)
-    .into()
+    // The terminal row stays pressable on purpose: clicking it must put the
+    // refusal on the footer rather than being silently inert. The press names
+    // its row — the pointer may rest on a row the arrow keys have since moved
+    // off, and a click runs what it lands on, not what the keyboard chose.
+    let cell = button(container(line).height(Length::Fill).align_y(Alignment::Center))
+        .width(Length::Fill)
+        .height(Length::Fixed(ROW_H))
+        .padding([0.0, space::CARD])
+        .style(theme::glass_cell(tone, radius::INSET))
+        .on_press(Message::Launch(index));
+
+    cell.into()
 }
 
 /// The refusal or the key hints at the left, how much of the list is off the
-/// bottom at the right.
+/// bottom at the right. Plain text on the glass; only the keys are capped.
 fn footer(app: &App) -> Element<'_, Message, Theme> {
     let left: Element<'_, Message, Theme> = match app.problem.as_ref() {
         // Verbatim, and in the warning colour: the human asked for something
@@ -283,13 +293,12 @@ fn footer(app: &App) -> Element<'_, Message, Theme> {
             .font(font::DATA)
             .color(color::DANGER)
             .into(),
-        // Not `micro_label`: its per-character tracking is for one- or
-        // two-word labels, and applied to a sentence it reads as a ransom
-        // note.
-        None => text("\u{2191}\u{2193} select \u{00b7} enter run \u{00b7} esc close")
-            .size(size::MICRO)
-            .font(font::DATA)
-            .color(color::TEXT_TERTIARY)
+        None => Row::new()
+            .spacing(space::HINT_GAP)
+            .align_y(Alignment::Center)
+            .push(parts::key_hint("\u{2191}\u{2193}", "select"))
+            .push(parts::key_hint("enter", "run"))
+            .push(parts::key_hint("esc", "close"))
             .into(),
     };
 
@@ -317,7 +326,6 @@ fn footer(app: &App) -> Element<'_, Message, Theme> {
 
     container(row![left, Space::new().width(Length::Fill), right].align_y(Alignment::Center))
         .height(Length::Fixed(PROBLEM_H))
-        .padding([0.0, space::CARD])
         .align_y(Alignment::Center)
         .into()
 }

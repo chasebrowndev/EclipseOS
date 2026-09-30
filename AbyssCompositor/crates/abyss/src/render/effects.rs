@@ -68,15 +68,145 @@ void main() {
         color = vec4(0.0, 0.2, 0.0, 0.2) + color * 0.8;
 #endif
 
+#ifdef SHAPED
+    float d = shape_sd(gl_FragCoord.xy);
+#else
     vec2 half_size = win_rect.zw * 0.5;
     vec2 p = gl_FragCoord.xy - (win_rect.xy + half_size);
     float r = min(radius, min(half_size.x, half_size.y));
     vec2 q = abs(p) - half_size + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+#endif
 
     gl_FragColor = color * (1.0 - smoothstep(-0.5, 0.5, d));
 }
 "#;
+
+/// The line every mask program declares its corner radius on; the shape
+/// functions are spliced in right after it (see [`shaped_source`]).
+const RADIUS_DECL: &str = "uniform float radius;\n";
+
+/// A layer's glass shape (Vol 1 §5.2, [`crate::render::blur::Shape`]): up to
+/// four boxes in `gl_FragCoord` space (`x y w h`, as [`rounding_uniforms`]
+/// places `win_rect`), each rounded by `radius`, unioned in order by a
+/// polynomial smooth-min of width `fillet`. `boxes` is how many are live
+/// (2..=4). Mirrored line for line by [`crate::render::blur::shape_sd`].
+const SHAPE_FNS: &str = r#"
+#define SHAPED 1
+uniform vec4 box0;
+uniform vec4 box1;
+uniform vec4 box2;
+uniform vec4 box3;
+uniform float boxes;
+uniform float fillet;
+
+float box_sd(vec2 f, vec4 b) {
+    vec2 h = b.zw * 0.5;
+    float r = min(radius, min(h.x, h.y));
+    vec2 q = abs(f - (b.xy + h)) - h + r;
+    return length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+}
+
+float smin(float a, float b) {
+    if (fillet <= 0.0)
+        return min(a, b);
+    float h = max(fillet - abs(a - b), 0.0) / fillet;
+    return min(a, b) - h * h * fillet * 0.25;
+}
+
+float shape_sd(vec2 f) {
+    float d = smin(box_sd(f, box0), box_sd(f, box1));
+    if (boxes > 2.5)
+        d = smin(d, box_sd(f, box2));
+    if (boxes > 3.5)
+        d = smin(d, box_sd(f, box3));
+    return d;
+}
+"#;
+
+/// The shaped variant of one of the mask programs: the shape functions and
+/// `SHAPED` defined right after its `radius` uniform.
+fn shaped_source(src: &str) -> String {
+    src.replacen(RADIUS_DECL, &format!("{RADIUS_DECL}{SHAPE_FNS}"), 1)
+}
+
+/// The shape's own uniforms, in the order [`shape_uniforms`] sets them.
+const SHAPE_UNIFORMS: [(&str, UniformType); 6] = [
+    ("box0", UniformType::_4f),
+    ("box1", UniformType::_4f),
+    ("box2", UniformType::_4f),
+    ("box3", UniformType::_4f),
+    ("boxes", UniformType::_1f),
+    ("fillet", UniformType::_1f),
+];
+
+fn with_shape(base: &[(&'static str, UniformType)]) -> Vec<UniformName<'static>> {
+    base.iter()
+        .chain(SHAPE_UNIFORMS.iter())
+        .map(|&(name, ty)| UniformName::new(name, ty))
+        .collect()
+}
+
+/// The shaped rounded-corner program (plain `blur` mode). Cached by the caller.
+pub fn compile_rounded_shaped(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    renderer.compile_custom_texture_shader(
+        shaped_source(ROUNDED_TEX_SRC),
+        &with_shape(&[("win_rect", UniformType::_4f), ("radius", UniformType::_1f)]),
+    )
+}
+
+/// The shaped frost program. Cached by the caller.
+pub fn compile_frost_shaped(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    renderer.compile_custom_texture_shader(
+        shaped_source(&format!("{BACKDROP_HEAD}{FROST_BODY}")),
+        &with_shape(&[
+            ("win_rect", UniformType::_4f),
+            ("radius", UniformType::_1f),
+            ("frost_tint", UniformType::_4f),
+        ]),
+    )
+}
+
+/// The shaped glass program. Cached by the caller.
+pub fn compile_glass_shaped(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    renderer.compile_custom_texture_shader(
+        shaped_source(&format!("{BACKDROP_HEAD}{GLASS_BODY}")),
+        &with_shape(&GLASS_UNIFORMS),
+    )
+}
+
+/// The shape uniforms appended to a mask program's own: the boxes placed in
+/// `gl_FragCoord` space exactly as [`rounding_uniforms`] places `win_rect`,
+/// unused slots zeroed (`boxes` says how many are live).
+pub fn shape_uniforms(
+    shape: &crate::render::blur::Shape,
+    fb_height: i32,
+    mirrored: bool,
+) -> [Uniform<'static>; 6] {
+    let mut boxes = [[0.0f32; 4]; 4];
+    for (slot, rect) in boxes.iter_mut().zip(shape.rects()) {
+        let y = if mirrored {
+            fb_height - rect.loc.y - rect.size.h
+        } else {
+            rect.loc.y
+        };
+        *slot = [
+            rect.loc.x as f32,
+            y as f32,
+            rect.size.w as f32,
+            rect.size.h as f32,
+        ];
+    }
+    let [b0, b1, b2, b3] = boxes;
+    [
+        Uniform::new("box0", b0),
+        Uniform::new("box1", b1),
+        Uniform::new("box2", b2),
+        Uniform::new("box3", b3),
+        Uniform::new("boxes", shape.rects().len() as f32),
+        Uniform::new("fillet", shape.fillet),
+    ]
+}
 
 /// Compile the rounded-corner texture program. Cached by the caller; the
 /// compile only happens on the first frame that actually rounds something.
@@ -156,11 +286,15 @@ void main() {
     color.rgb = clamp(color.rgb + (grain(floor(gl_FragCoord.xy)) - 0.5) * 0.035, 0.0, 1.0);
     color = finish(color);
 
+#ifdef SHAPED
+    float d = shape_sd(gl_FragCoord.xy);
+#else
     vec2 half_size = win_rect.zw * 0.5;
     vec2 p = gl_FragCoord.xy - (win_rect.xy + half_size);
     float r = min(radius, min(half_size.x, half_size.y));
     vec2 q = abs(p) - half_size + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+#endif
     gl_FragColor = color * (1.0 - smoothstep(-0.5, 0.5, d));
 }
 "#;
@@ -216,13 +350,27 @@ vec4 blurred_at(vec2 uv) {
     return texture2D(tex, clamp(uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5));
 }
 
+#ifdef SHAPED
+// Outward normal of the shape, y down, by central differences.
+vec2 shape_grad(vec2 f) {
+    vec2 g = vec2(shape_sd(f + vec2(0.5, 0.0)) - shape_sd(f - vec2(0.5, 0.0)),
+                  shape_sd(f + vec2(0.0, 0.5)) - shape_sd(f - vec2(0.0, 0.5)));
+    g.y *= y_sign;
+    return length(g) > 0.01 ? normalize(g) : vec2(0.0, -1.0);
+}
+#endif
+
 void main() {
+#ifdef SHAPED
+    float d = shape_sd(gl_FragCoord.xy);
+#else
     vec2 half_size = win_rect.zw * 0.5;
     vec2 p = gl_FragCoord.xy - (win_rect.xy + half_size);
     p.y *= y_sign;
     float r = min(radius, min(half_size.x, half_size.y));
     vec2 q = abs(p) - half_size + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+#endif
     // Under an opaque window only the ring (and the window's own antialiased
     // edge) can show.
     if (opaque > 0.5 && d < -inner - 1.0) {
@@ -230,6 +378,9 @@ void main() {
         return;
     }
 
+#ifdef SHAPED
+    vec2 grad = shape_grad(gl_FragCoord.xy);
+#else
     // Outward normal of the rounded box, y down.
     vec2 s = vec2(p.x < 0.0 ? -1.0 : 1.0, p.y < 0.0 ? -1.0 : 1.0);
     vec2 grad;
@@ -241,6 +392,7 @@ void main() {
         grad = vec2(0.0, 1.0);
     }
     grad *= s;
+#endif
 
     // Roll-off: largest at the edge, easing to zero (and zero slope) where
     // the bevel meets the plateau, so no line marks where the bend stops.
@@ -781,6 +933,91 @@ mod tests {
         );
         let set: Vec<&str> = bezel.iter().map(|u| &*u.name).collect();
         assert_eq!(set, compiled);
+    }
+
+    /// The shaped programs splice the shape in exactly once; the plain ones
+    /// never define `SHAPED`, so they preprocess to the single-box program.
+    #[test]
+    fn only_the_shaped_sources_define_the_shape() {
+        let plain = [
+            ROUNDED_TEX_SRC.to_string(),
+            format!("{BACKDROP_HEAD}{FROST_BODY}"),
+            format!("{BACKDROP_HEAD}{GLASS_BODY}"),
+        ];
+        for src in &plain {
+            assert_eq!(src.matches(RADIUS_DECL).count(), 1);
+            assert!(!src.contains("#define SHAPED"));
+            let shaped = shaped_source(src);
+            assert_eq!(shaped.matches("#define SHAPED").count(), 1);
+            assert_eq!(shaped.matches("float shape_sd(").count(), 1);
+            // Defined before any body uses it.
+            assert!(shaped.find("#define SHAPED").unwrap() < shaped.find("#ifdef SHAPED").unwrap());
+        }
+    }
+
+    #[test]
+    fn shaped_glass_sets_exactly_the_uniforms_it_compiles() {
+        let region = smithay::wayland::compositor::RegionAttributes {
+            rects: vec![
+                (
+                    smithay::wayland::compositor::RectangleKind::Add,
+                    Rectangle::new((0, 0).into(), (400, 40).into()),
+                ),
+                (
+                    smithay::wayland::compositor::RectangleKind::Add,
+                    Rectangle::new((100, 40).into(), (200, 200).into()),
+                ),
+            ],
+        };
+        let shape = crate::render::blur::Shape::from_region(
+            Some(&region),
+            (400, 300).into(),
+            (0, 0).into(),
+            Scale::from(1.0),
+            20.0,
+        )
+        .unwrap();
+        let rect = Rectangle::new((0, 0).into(), (400, 300).into());
+        let mut got = glass_uniforms(
+            rect,
+            1080,
+            true,
+            20.0,
+            (1920, 1080),
+            4.0,
+            16.0,
+            &crate::config::GlassBlur::default(),
+            None,
+        );
+        got.extend(shape_uniforms(&shape, 1080, true));
+        let set: Vec<String> = got.iter().map(|u| u.name.to_string()).collect();
+        let compiled: Vec<String> = with_shape(&GLASS_UNIFORMS)
+            .iter()
+            .map(|u| u.name.to_string())
+            .collect();
+        assert_eq!(set, compiled);
+        // Boxes are mirrored into gl_FragCoord space like `win_rect`; the
+        // unused slots are zero and `boxes` counts the live ones.
+        let find = |name: &str| format!("{:?}", got.iter().find(|u| u.name == name).unwrap());
+        assert_eq!(
+            find("box1"),
+            format!("{:?}", Uniform::new("box1", [100.0f32, 840.0, 200.0, 200.0]))
+        );
+        assert_eq!(find("box2"), format!("{:?}", Uniform::new("box2", [0.0f32; 4])));
+        assert_eq!(find("boxes"), format!("{:?}", Uniform::new("boxes", 2.0f32)));
+        // A different shape is a different look (it bumps the backdrop's commit).
+        let other = crate::render::blur::Shape::from_region(
+            Some(&region),
+            (400, 100).into(),
+            (0, 0).into(),
+            Scale::from(1.0),
+            20.0,
+        )
+        .unwrap();
+        assert_ne!(
+            format!("{:?}", shape_uniforms(&shape, 1080, true)),
+            format!("{:?}", shape_uniforms(&other, 1080, true))
+        );
     }
 
     #[test]

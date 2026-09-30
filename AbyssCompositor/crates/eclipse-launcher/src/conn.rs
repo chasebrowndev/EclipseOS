@@ -36,3 +36,40 @@ pub fn fetch_terminal_command() -> Option<String> {
 pub fn fetch_glass() -> (Option<f32>, Option<bool>) {
     eclipse_ui::ipc::fetch_glass()
 }
+
+/// `bar.launcher-style` is `"menu"`: the taskbar's start menu is the launcher
+/// on this desktop, so the keybind that spawns this binary should open that
+/// menu rather than a second, centred one. `false` on any failure.
+pub fn menu_style() -> bool {
+    let Ok(mut client) = eclipse_ipc::Client::connect() else {
+        return false;
+    };
+    client
+        .call("get_config", json!({ "path": "bar.launcher-style" }))
+        .ok()
+        .and_then(|reply| {
+            reply
+                .get("keys")?
+                .as_array()?
+                .first()?
+                .get("value")?
+                .as_str()
+                .map(|style| style == "menu")
+        })
+        .unwrap_or(false)
+}
+
+/// Ask the compositor to open the bar's menu on the focused output. `true`
+/// only when a bar was listening to take it (`delivered`); anything else —
+/// no socket, a refusal, no bar running — is `false`, and the caller falls
+/// back to drawing the centred launcher itself.
+pub fn open_bar_menu() -> bool {
+    let Ok(mut client) = eclipse_ipc::Client::connect() else {
+        return false;
+    };
+    client
+        .call("open_launcher", json!({}))
+        .ok()
+        .and_then(|reply| reply.get("delivered")?.as_bool())
+        .unwrap_or(false)
+}

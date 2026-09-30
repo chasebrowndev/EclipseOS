@@ -38,6 +38,13 @@
 
 use eclipse_ui::tokens::{bar, size};
 
+/// The eclipse cell's width with the start menu `reveal` of the way open:
+/// the launcher button at 0, the search field at 1. The pager and the chips
+/// follow it right, since the row lays them out after it.
+pub fn eclipse_w(reveal: f32) -> f32 {
+    bar::TASK_MIN + (bar::SEARCH_W - bar::TASK_MIN) * reveal.clamp(0.0, 1.0)
+}
+
 /// How many characters of a title survive before the ellipsis. The clamp is
 /// in characters and not pixels because iced has no eliding text and the row
 /// must stay a pure function of the snapshot — a measured elide would depend
@@ -154,18 +161,13 @@ impl WidgetIn {
         }
     }
 
-    /// The grip's column at `extent`. A widget that reveals always has
-    /// one; one that does not grows it only as its body closes below its
-    /// floor, so an open or squeezed network is a plain cell and one
-    /// squeezed shut is a grip — continuously, with no step in between.
+    /// The grip's column at `extent`: it grows only as the body closes below
+    /// its floor, so an open or squeezed widget is a plain cell and one
+    /// squeezed shut is a grip — continuously, with no step in between. A
+    /// widget that reveals still has a grip while open, drawn over its
+    /// leading pad on hover (`widgets::shell`), with no column of its own.
     pub fn grip_w(&self, extent: f32) -> f32 {
-        if self.reveals() {
-            bar::GRIP_W
-        } else if self.important {
-            0.0
-        } else {
-            bar::GRIP_W * self.closed(extent)
-        }
+        bar::GRIP_W * self.closed(extent)
     }
 
     /// The core with its shell padding: the body width of an open widget.

@@ -47,6 +47,7 @@ use smithay::{
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Physical, Point, Rectangle, Scale},
     wayland::{
+        compositor::{with_states, SurfaceAttributes},
         dmabuf::DmabufFeedback,
         shell::wlr_layer::{Anchor, ExclusiveZone, Layer},
     },
@@ -74,7 +75,8 @@ smithay::backend::renderer::element::render_elements! {
 /// A surface that wants a blurred backdrop: what it belongs to, the index in
 /// the element list directly below its surfaces, the region it blurs, the
 /// mode it is drawn in (never `Off`), the logical corner radius its backdrop
-/// is masked with, and the window's glass bezel if it has one.
+/// is masked with, the window's glass bezel if it has one, and the layer's
+/// input-region shape if it has one (Vol 1 §5.2).
 type BlurRequest = (
     blur::BlurKey,
     usize,
@@ -82,6 +84,7 @@ type BlurRequest = (
     BlurMode,
     i32,
     Option<Bezel>,
+    Option<blur::Shape>,
 );
 
 /// A window's border drawn as a ring of glass instead of paint (COMP-02 §9).
@@ -218,6 +221,9 @@ pub struct BorderStore {
     /// draws a backdrop in that mode.
     frost: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     glass: Option<smithay::backend::renderer::gles::GlesTexProgram>,
+    /// The same three (blur, frost, glass) masked to a layer's input-region
+    /// shape (Vol 1 §5.2), compiled on the first frame that draws one.
+    shaped: [Option<smithay::backend::renderer::gles::GlesTexProgram>; 3],
     /// Drop-shadow pixel program, compiled on the first frame that shadows.
     shadow: Option<smithay::backend::renderer::gles::GlesPixelProgram>,
     /// Glow ring pixel program, compiled on the first frame that glows.
@@ -311,7 +317,8 @@ pub fn collect_elements(
     fullscreen: bool,
 ) -> Vec<AbyssRenderElement> {
     let scale = Scale::from(output.current_scale().fractional_scale());
-    let output_loc = space.output_geometry(output).map(|g| g.loc).unwrap_or_default();
+    let output_geo = space.output_geometry(output).unwrap_or_default();
+    let output_loc = output_geo.loc;
     let mut elements: Vec<AbyssRenderElement> = Vec::new();
     // (window, index in `elements` directly below its surfaces, region).
     // Filled front to back; `insert_blur` consumes it in reverse.
@@ -339,9 +346,36 @@ pub fn collect_elements(
                 // opaque region; anything it leaves uncovered is glass and
                 // wants a backdrop. COMP-02 §9: opaque surfaces are skipped
                 // entirely, so a bar that paints a solid ground costs nothing.
-                if blur_layers {
+                // *(C-17)* Nor does a surface anchored to all four edges and
+                // as big as the output: that is a scrim or a selection overlay
+                // (slurp), not a sheet, and glass behind it would smear the
+                // whole output it asks the human to read. A sized sheet merely
+                // centred by those anchors still gets its glass.
+                let scrim =
+                    surface.cached_state().anchor.contains(Anchor::all()) && geo.size == output_geo.size;
+                if blur_layers && !scrim {
                     let region = Rectangle::new(loc, geo.size.to_f64().to_physical(scale).to_i32_round());
-                    if blur::shows_through(region, 0, opaque_of(&els, scale)) {
+                    // Vol 1 §5.2: a layer whose input region is 2..=4 boxes
+                    // (a bar pill and the panel hanging off it) gets glass in
+                    // that shape, joined by `bar.rounding` fillets; any other
+                    // region keeps the single rounded box.
+                    let fillet = (config.bar.rounding as f64 * scale.x.max(scale.y)) as f32;
+                    let shape = with_states(surface.wl_surface(), |states| {
+                        let mut attrs = states.cached_state.get::<SurfaceAttributes>();
+                        blur::Shape::from_region(
+                            attrs.current().input_region.as_ref(),
+                            geo.size,
+                            loc,
+                            scale,
+                            fillet,
+                        )
+                    });
+                    let opaque = opaque_of(&els, scale);
+                    let shows = match &shape {
+                        Some(shape) => blur::shape_shows_through(shape, &opaque),
+                        None => blur::shows_through(region, 0, opaque),
+                    };
+                    if shows {
                         requests.push((
                             blur::BlurKey::Layer(surface.clone()),
                             elements.len() + els.len(),
@@ -349,6 +383,7 @@ pub fn collect_elements(
                             layer_mode,
                             layer_radius(surface, config),
                             None,
+                            shape,
                         ));
                     }
                 }
@@ -443,19 +478,36 @@ fn insert_blur(
         .unwrap_or((1, 1));
     let upscale = scale.x.max(scale.y);
 
-    for (key, index, region, mode, radius, bezel) in requests.into_iter().rev() {
+    for (key, index, region, mode, radius, bezel, shape) in requests.into_iter().rev() {
         // The final draw's program: plain `blur` only needs one to round
         // (a square backdrop draws with smithay's own); frost and glass
-        // always do, radius 0 included. A rotated output (`fb_height` None)
-        // keeps the plain square backdrop in every mode.
+        // always do, radius 0 included. A shaped layer (Vol 1 §5.2) takes
+        // the shaped variant of its mode's program, plain `blur` included.
+        // A rotated output (`fb_height` None) keeps the plain square
+        // backdrop in every mode.
         let scaled_radius = (radius as f64 * upscale) as f32;
         let program = fb_height.and_then(|(fb_height, mirrored)| {
-            let (slot, compile, what): (_, fn(&mut GlesRenderer) -> _, _) = match mode {
-                BlurMode::Off => return None,
-                BlurMode::Blur if radius <= 0 => return None,
-                BlurMode::Blur => (&mut store.rounded, effects::compile_rounded, "rounded-corner"),
-                BlurMode::Frost => (&mut store.frost, effects::compile_frost, "frost"),
-                BlurMode::Glass => (&mut store.glass, effects::compile_glass, "glass"),
+            let (slot, compile, what): (_, fn(&mut GlesRenderer) -> _, _) = match (mode, shape.is_some()) {
+                (BlurMode::Off, _) => return None,
+                (BlurMode::Blur, false) if radius <= 0 => return None,
+                (BlurMode::Blur, false) => (&mut store.rounded, effects::compile_rounded, "rounded-corner"),
+                (BlurMode::Frost, false) => (&mut store.frost, effects::compile_frost, "frost"),
+                (BlurMode::Glass, false) => (&mut store.glass, effects::compile_glass, "glass"),
+                (BlurMode::Blur, true) => (
+                    &mut store.shaped[0],
+                    effects::compile_rounded_shaped,
+                    "shaped rounded-corner",
+                ),
+                (BlurMode::Frost, true) => (
+                    &mut store.shaped[1],
+                    effects::compile_frost_shaped,
+                    "shaped frost",
+                ),
+                (BlurMode::Glass, true) => (
+                    &mut store.shaped[2],
+                    effects::compile_glass_shaped,
+                    "shaped glass",
+                ),
             };
             if slot.is_none() {
                 match compile(renderer) {
@@ -466,7 +518,7 @@ fn insert_blur(
                 }
             }
             let program = slot.clone()?;
-            let uniforms = match mode {
+            let mut uniforms = match mode {
                 BlurMode::Frost => {
                     effects::frost_uniforms(region, fb_height, mirrored, scaled_radius, cfg.frost.tint)
                 }
@@ -494,6 +546,11 @@ fn insert_blur(
                 }
                 _ => effects::rounding_uniforms(region, fb_height, mirrored, scaled_radius),
             };
+            // The boxes ride in the uniforms, so a new shape changes the
+            // backdrop's `look` and bumps its commit.
+            if let Some(shape) = &shape {
+                uniforms.extend(effects::shape_uniforms(shape, fb_height, mirrored));
+            }
             Some((program, uniforms))
         });
         // COMP-02 §3: refraction samples up to this far outside the region,
@@ -514,7 +571,17 @@ fn insert_blur(
         });
         let behind = &elements[index..];
         if let Some(element) = store.blur.element(
-            renderer, output, &key, region, behind, cfg, scale, program, reach, ring,
+            renderer,
+            output,
+            &key,
+            region,
+            behind,
+            cfg,
+            scale,
+            program,
+            reach,
+            ring,
+            shape.as_ref(),
         ) {
             elements.insert(index, AbyssRenderElement::Blur(element));
         }
@@ -807,6 +874,7 @@ fn window_elements(
                 mode,
                 radius,
                 bezel,
+                None,
             ));
         }
     }

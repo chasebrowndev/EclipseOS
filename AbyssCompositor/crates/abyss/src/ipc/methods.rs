@@ -54,6 +54,8 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "annotation_clear" => annotation_clear(state, conn, params),
         // Idle inhibit held by the calling connection (ADR 0051).
         "set_idle_inhibit" => set_idle_inhibit(state, conn, params),
+        // The bar's start menu, relayed on the `launcher` event stream.
+        "open_launcher" => open_launcher(state, params),
         // Config read/write (COMP-13 §1.4). The outer gate already returned
         // `Allow` to reach this line; `config_rpc` tightens onto it per file.
         "get_config" | "set_config_value" | "set_config_collection" | "validate_config" | "review_widget" => {
@@ -347,6 +349,7 @@ const EVENTS: &[&str] = &[
     "config-error",
     "config",
     "keybind",
+    "launcher",
 ];
 
 fn subscribe(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {
@@ -875,6 +878,36 @@ fn set_idle_inhibit(state: &mut AbyssState, conn: u64, params: &Value) -> Reply 
     let inhibit = bool_param(params, "inhibit")?;
     state.idle.set_conn_inhibit(conn, inhibit);
     Ok(json!({"ok": true, "inhibit": inhibit}))
+}
+
+/// Ask the bar to open its start menu (`bar.launcher-style "menu"`,
+/// COMP-13 §2.1). `output` is an output id as `get_outputs` reports it;
+/// absent or null means the focused output, so exactly one bar opens. The
+/// compositor keeps no launcher state: it names the output and relays the
+/// request as a `launcher` event, `{"action": "open", "output": id,
+/// "output_name": connector}`. `delivered` says whether anything was
+/// subscribed to hear it, so a caller with no bar running can fall back to
+/// the centred launcher instead of doing nothing.
+fn open_launcher(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &["output"])?;
+    let entry = match params_obj(params).get("output") {
+        None | Some(Value::Null) => state
+            .outputs
+            .focused()
+            .ok_or_else(|| RpcError::invalid_params("no output is attached"))?,
+        Some(_) => state
+            .outputs
+            .get(u64_param(params, "output")?)
+            .ok_or_else(|| RpcError::invalid_params("no such output"))?,
+    };
+    let (id, name) = (entry.id, entry.connector.clone());
+    let delivered = super::has_subscriber(state, "launcher");
+    super::emit(
+        state,
+        "launcher",
+        json!({"action": "open", "output": id, "output_name": name}),
+    );
+    Ok(json!({"ok": true, "output": id, "output_name": name, "delivered": delivered}))
 }
 
 #[cfg(test)]

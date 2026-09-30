@@ -230,7 +230,7 @@ pub const TABLE: &[Key] = &[
     k(
         "general.gaps-out",
         int(0, 512),
-        Int(10),
+        Int(3),
         Abyss,
         Live,
         "Gap between the tiling area and the screen edge, logical px.",
@@ -238,26 +238,25 @@ pub const TABLE: &[Key] = &[
     k(
         "general.gaps-in-vertical",
         int(0, 512),
-        Null,
+        Int(3),
         Abyss,
         Live,
         "Gap between tiled windows stacked one above the other, logical px. \
-       Unset mirrors `general.gaps-in`, so setting only the horizontal key \
-       still gaps both axes evenly.",
+       Ships at 3 (C-16), independent of `general.gaps-in`.",
     ),
     k(
         "general.gaps-out-vertical",
         int(0, 512),
-        Null,
+        Int(7),
         Abyss,
         Live,
         "Gap between the tiling area and the screen's top/bottom edge, \
-       logical px. Unset mirrors `general.gaps-out`.",
+       logical px. Ships at 7 (C-16), independent of `general.gaps-out`.",
     ),
     k(
         "general.border-size",
         int(0, 512),
-        Int(2),
+        Int(1),
         Abyss,
         Live,
         "Window border thickness, logical px. 0 disables borders.",
@@ -319,14 +318,6 @@ pub const TABLE: &[Key] = &[
         "Clear keyboard focus when the pointer enters an output whose workspace has no focusable window. Off keeps the previous focus.",
     ),
     k(
-        "general.focus-follows-mouse-layers",
-        Ty::Bool,
-        Bool(true),
-        Abyss,
-        Live,
-        "Let pointer motion take focus back from an on-demand layer surface such as the bar. Exclusive layer surfaces are never affected.",
-    ),
-    k(
         "general.refocus-on-scene-change",
         Ty::Bool,
         Bool(true),
@@ -337,7 +328,7 @@ pub const TABLE: &[Key] = &[
     k(
         "general.col-active-border",
         Ty::Color,
-        Color([0.91, 0.64, 0.24, 1.0]),
+        Color([242.0 / 255.0, 195.0 / 255.0, 60.0 / 255.0, 115.0 / 255.0]),
         Abyss,
         Live,
         "Border colour of the focused window.",
@@ -345,7 +336,7 @@ pub const TABLE: &[Key] = &[
     k(
         "general.col-inactive-border",
         Ty::Color,
-        Color([0.09, 0.09, 0.09, 1.0]),
+        Color([1.0, 1.0, 1.0, 26.0 / 255.0]),
         Abyss,
         Live,
         "Border colour of every unfocused window.",
@@ -441,9 +432,8 @@ pub const TABLE: &[Key] = &[
         Ty::Enum(&["top", "bottom"]),
         Str("top"),
         Abyss,
-        NeedsRestart,
-        "Which edge of every output the taskbar is anchored to. Takes effect \
-       the next time the taskbar starts, not on a live reload.",
+        Live,
+        "Which edge of every output the taskbar is anchored to.",
     ),
     k(
         "bar.tray.pinned",
@@ -476,7 +466,8 @@ pub const TABLE: &[Key] = &[
         Int(20),
         Abyss,
         Live,
-        "Corner radius in logical px for the taskbar's own blur backdrop.",
+        "Corner radius in logical px for the taskbar's own blur backdrop, \
+       and the width of the curved fillets where a shaped layer's boxes meet.",
     ),
     k(
         "bar.clock.hour-12",
@@ -503,6 +494,15 @@ pub const TABLE: &[Key] = &[
         Live,
         "Where taskbar popups open: under the cell that was clicked, or at \
        the pointer.",
+    ),
+    k(
+        "bar.launcher-style",
+        Ty::Enum(&["centered", "menu"]),
+        Str("centered"),
+        Abyss,
+        Live,
+        "Which launcher the eclipse button and Super+R open: the centred \
+       sheet, or a start menu that grows out of the bar.",
     ),
     k(
         "bar.eye",
@@ -657,7 +657,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.rounding",
         int(0, 64),
-        Int(13),
+        Int(9),
         Abyss,
         Live,
         "Corner radius in logical px; 0 disables. Also rounds the blur backdrop \
@@ -692,7 +692,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.blur.mode",
         Ty::Enum(crate::config::BlurMode::NAMES),
-        Str("blur"),
+        Str("glass"),
         Abyss,
         Live,
         "What is drawn behind translucent windows and layer-shell surfaces: \
@@ -700,7 +700,9 @@ pub const TABLE: &[Key] = &[
        grain) or `glass` (a saturated, smoked blur whose edge band gently \
        bends the blurred backdrop, under a neutral hairline rim). A window or \
        layer blurs when it is drawn below full opacity or its opaque region \
-       leaves it uncovered. Replaces the old `enabled` bool, which still loads (`#false` is `off`).",
+       leaves it uncovered. A layer's glass follows its input region: two to \
+       four boxes are blurred as their union, joined by curved fillets \
+       `bar.rounding` wide. Replaces the old `enabled` bool, which still loads (`#false` is `off`).",
     ),
     k(
         "decoration.blur.size",
@@ -764,7 +766,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.shadow.enabled",
         Ty::Bool,
-        Bool(false),
+        Bool(true),
         Abyss,
         Live,
         "Drop shadow behind windows.",
@@ -772,7 +774,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.shadow.range",
         int(0, 128),
-        Int(20),
+        Int(16),
         Abyss,
         Live,
         "Shadow falloff distance, logical px.",
@@ -1671,7 +1673,6 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "general.cursor-follows-moved-window" => V::Bool(c.general.cursor_follows_moved_window),
         "general.follow-window-to-workspace" => V::Bool(c.general.follow_window_to_workspace),
         "general.unfocus-on-empty-workspace" => V::Bool(c.general.unfocus_on_empty_workspace),
-        "general.focus-follows-mouse-layers" => V::Bool(c.general.focus_follows_mouse_layers),
         "general.refocus-on-scene-change" => V::Bool(c.general.refocus_on_scene_change),
         "general.col-active-border" => V::Color(c.general.col_active),
         "general.col-inactive-border" => V::Color(c.general.col_inactive),
@@ -1714,6 +1715,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
             }
             .into(),
         ),
+        "bar.launcher-style" => V::Str(c.bar.launcher_style.name().into()),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.active-opacity" => V::Float(widen(c.decoration.active_opacity)),
         "decoration.inactive-opacity" => V::Float(widen(c.decoration.inactive_opacity)),

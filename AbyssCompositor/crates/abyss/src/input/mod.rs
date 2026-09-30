@@ -1022,7 +1022,7 @@ impl AbyssState {
             TabletToolTipState::Down => {
                 let pos = self.pointer_location;
                 let action = crate::shell::focus::decide_pointer_focus(
-                    &crate::shell::focus::pointer_focus_ctx(self, pos),
+                    &crate::shell::focus::click_focus_ctx(self, pos),
                 );
                 crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Click);
                 tool.tip_down(SERIAL_COUNTER.next_serial(), event.time_msec());
@@ -1104,7 +1104,7 @@ impl AbyssState {
         if pressed && self.popup_grabs.is_empty() {
             let pos = self.pointer_location;
             let action =
-                crate::shell::focus::decide_pointer_focus(&crate::shell::focus::pointer_focus_ctx(self, pos));
+                crate::shell::focus::decide_pointer_focus(&crate::shell::focus::click_focus_ctx(self, pos));
             crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Click);
         }
         // A press outside the grab dismisses it, and must be delivered first:

@@ -566,6 +566,11 @@ pub fn emit_to(state: &mut AbyssState, conn: u64, kind: &str, params: Value) {
     c.enqueue(&line, true);
 }
 
+/// Whether any live connection is subscribed to `kind`.
+pub fn has_subscriber(state: &AbyssState, kind: &str) -> bool {
+    state.ipc.conns.iter().any(|c| wants(c, kind))
+}
+
 fn wants(c: &Conn, kind: &str) -> bool {
     !c.dead && c.subs.iter().any(|s| s == kind)
 }

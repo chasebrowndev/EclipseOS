@@ -24,6 +24,15 @@ fn boot() -> (app::App, Task<app::Message>) {
 }
 
 fn main() -> iced_layershell::Result {
+    // `bar.launcher-style "menu"`: the bar's start menu is the launcher, and
+    // this keybind only asks for it. A bar that took the request is the whole
+    // answer; with no bar listening, draw the centred launcher as always.
+    // `--centered` is the bar starting us because it cannot show its menu
+    // (folded, hidden): asking it again would bounce straight back.
+    let centered = std::env::args().skip(1).any(|a| a == "--centered");
+    if !centered && eclipse_launcher::conn::menu_style() && eclipse_launcher::conn::open_bar_menu() {
+        return Ok(());
+    }
     // Deliberately no `disable_clipboard()`, unlike the bar's menus: the
     // filter field is a place a human will paste into.
     let mut builder = iced_layershell::build_pattern::application(boot, namespace, app::update, view::view)

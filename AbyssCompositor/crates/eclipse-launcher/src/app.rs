@@ -20,12 +20,14 @@ pub const INPUT_ID: &str = "launcher-query";
 pub enum Message {
     /// The filter field changed.
     Query(String),
-    /// A row was pointed at.
-    Select(usize),
     /// The selection moved by a row: -1 up, 1 down.
     Move(i32),
     /// Run whatever is selected.
     Activate,
+    /// A row was clicked: run that row. Not `Activate`, because the arrow
+    /// keys may have moved the selection off the row the pointer rests on,
+    /// and a click runs what it lands on.
+    Launch(usize),
     /// Dismiss without running anything.
     Close,
 }
@@ -144,16 +146,6 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             app.selected = 0;
             app.refilter();
         }
-        Message::Select(index) => {
-            if index < app.matched.len() {
-                app.selected = index;
-                // The old refusal was about the row we just left.
-                app.problem = None;
-            }
-            // A hover arrives from the pointer, which may have pressed on the
-            // way in and taken the caret out of the field with it.
-            return refocus();
-        }
         Message::Move(delta) => {
             app.problem = None;
             if app.matched.is_empty() {
@@ -179,6 +171,12 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             // stopped accepting keystrokes while still looking live is worse
             // than one that closed.
             return refocus();
+        }
+        Message::Launch(index) => {
+            if index < app.matched.len() {
+                app.selected = index;
+            }
+            return update(app, Message::Activate);
         }
         Message::Close => return quit(),
         // `to_layer_message` injects the layer-control variants. The surface
@@ -276,7 +274,7 @@ mod tests {
     #[test]
     fn a_narrowing_query_pulls_the_selection_back() {
         let mut app = app(vec![entry("Files", false), entry("Firefox", false)]);
-        let _ = update(&mut app, Message::Select(1));
+        let _ = update(&mut app, Message::Move(1));
         let _ = update(&mut app, Message::Query("firef".to_owned()));
         assert!(app.selected < app.matched.len());
     }
@@ -290,6 +288,22 @@ mod tests {
         assert!(app.problem.is_some());
         let _ = update(&mut app, Message::Move(1));
         assert!(app.problem.is_none());
+    }
+
+    /// A click runs the row it lands on, even when the arrow keys have moved
+    /// the selection elsewhere since the pointer arrived there.
+    #[test]
+    fn a_click_runs_the_row_it_lands_on() {
+        let mut app = app(vec![entry("Btop", true), entry("Files", false)]);
+        let _ = update(&mut app, Message::Move(1));
+        let _ = update(&mut app, Message::Move(-1));
+        let files = app
+            .matched
+            .iter()
+            .position(|&i| app.entries[i].name == "Files")
+            .unwrap();
+        let _ = update(&mut app, Message::Launch(files));
+        assert_eq!(app.selected, files);
     }
 
     /// An injected layer variant must be a no-op, not a panic.

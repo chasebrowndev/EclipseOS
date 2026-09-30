@@ -24,7 +24,7 @@ use smithay::{
     wayland::{
         compositor::with_states,
         shell::{
-            wlr_layer::{Anchor, ExclusiveZone, Layer, LayerSurfaceData},
+            wlr_layer::{Anchor, ExclusiveZone, KeyboardInteractivity, Layer, LayerSurfaceData},
             xdg::{PopupSurface, SurfaceCachedState, XdgPopupSurfaceData, XdgToplevelSurfaceData},
         },
     },
@@ -694,6 +694,23 @@ pub fn surface_under(
     state: &AbyssState,
     pos: Point<f64, Logical>,
 ) -> Option<(WlSurface, Point<f64, Logical>)> {
+    hit_under(state, pos).map(|(s, p, _)| (s, p))
+}
+
+/// The layer surface that owns the topmost surface at `pos`, if that surface
+/// belongs to a layer surface at all (its own tree or one of its popups). A
+/// toplevel stacked above a bottom/background layer hides it, exactly as
+/// [`surface_under`] resolves it.
+pub fn layer_at(state: &AbyssState, pos: Point<f64, Logical>) -> Option<DesktopLayerSurface> {
+    hit_under(state, pos).and_then(|(_, _, l)| l)
+}
+
+/// [`surface_under`], also naming the layer surface hit, so the focus rules
+/// can tell a layer from a toplevel without a second (allocating) lookup.
+fn hit_under(
+    state: &AbyssState,
+    pos: Point<f64, Logical>,
+) -> Option<(WlSurface, Point<f64, Logical>, Option<DesktopLayerSurface>)> {
     let output = output_at(state, pos)?;
     let output_loc = state
         .space
@@ -707,14 +724,14 @@ pub fn surface_under(
             if let Some(l) = layer_under(&map, layer, local) {
                 let geo = layer_geometry(&map, l).unwrap_or_default();
                 if let Some((s, p)) = l.surface_under(local - geo.loc.to_f64(), WindowSurfaceType::ALL) {
-                    return Some((s, (output_loc + geo.loc + p).to_f64()));
+                    return Some((s, (output_loc + geo.loc + p).to_f64(), Some(l.clone())));
                 }
             }
         }
     }
     if let Some((window, loc)) = state.space.element_under(pos) {
         if let Some((s, p)) = window.surface_under(pos - loc.to_f64(), WindowSurfaceType::ALL) {
-            return Some((s, (loc + p).to_f64()));
+            return Some((s, (loc + p).to_f64(), None));
         }
     }
     let map = layer_map_for_output(&output);
@@ -722,7 +739,7 @@ pub fn surface_under(
         if let Some(l) = layer_under(&map, layer, local) {
             let geo = layer_geometry(&map, l).unwrap_or_default();
             if let Some((s, p)) = l.surface_under(local - geo.loc.to_f64(), WindowSurfaceType::ALL) {
-                return Some((s, (output_loc + geo.loc + p).to_f64()));
+                return Some((s, (output_loc + geo.loc + p).to_f64(), Some(l.clone())));
             }
         }
     }
@@ -911,8 +928,8 @@ impl ToplevelMap {
 }
 
 /// Forget any unmap bookkeeping on `surface`. Called when a fresh
-/// `xdg_toplevel` takes the surface, which is placed by `new_toplevel`; a
-/// stale `unmapped` flag would otherwise place it a second time.
+/// `xdg_toplevel` takes the surface; its initial commit places it, and a stale
+/// `had_buffer`/`unmapped` flag would read that commit as an unmap or remap.
 pub fn reset_toplevel_map(surface: &WlSurface) {
     with_states(surface, |states| {
         if let Some(m) = states.data_map.get::<Cell<ToplevelMap>>() {
@@ -946,7 +963,7 @@ fn toplevel_transition(surface: &WlSurface) -> Option<MapTransition> {
 /// xdg-shell: attaching a null buffer unmaps the toplevel. Release its tile
 /// (the sibling takes the space) and drop the `Window`; the client may remap
 /// it later. A floating window's placement is remembered on the surface so
-/// `remap_toplevel` can put it back; a tiled one re-tiles.
+/// `map_toplevel` can put it back; a tiled one re-tiles.
 fn unmap_toplevel(state: &mut AbyssState, surface: &WlSurface) {
     let window = window_for_surface(state, surface).or_else(|| {
         // Rare path: on a hidden workspace or minimized, so not in `space`.
@@ -994,10 +1011,34 @@ fn floating_placement(state: &AbyssState, window: &Window) -> Option<Remembered>
     })
 }
 
-/// The first commit after an unmap: place the toplevel again and send it the
-/// fresh initial configure the protocol requires. A window that floated goes
-/// back to the rectangle it left; anything else is placed as a new window.
-fn remap_toplevel(state: &mut AbyssState, surface: &WlSurface, placement: Option<Remembered>) {
+/// True on a commit of an xdg toplevel that is still owed its initial
+/// configure: the client's initial commit, or the first after an unmap. No
+/// allocation: one role lookup, then one data-map lookup for toplevels only.
+fn awaiting_initial_configure(surface: &WlSurface) -> bool {
+    if smithay::wayland::compositor::get_role(surface)
+        != Some(smithay::wayland::shell::xdg::XDG_TOPLEVEL_ROLE)
+    {
+        return false;
+    }
+    with_states(surface, |states| {
+        states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()
+            .is_some_and(|d| !d.lock().unwrap().initial_configure_sent)
+    })
+}
+
+/// Map an xdg toplevel on the commit that asks for its initial configure —
+/// its first commit ever, or the first after an unmap — and send that
+/// configure with the size the shell chose (COMP-05 §3). `new_toplevel` only
+/// prepares the surface: placing it there, before the client has sent its
+/// `app_id`, `title`, `set_parent` or min/max size, tiled every dialog and
+/// float-rule window first and squeezed its neighbours for one configure. By
+/// the initial commit xdg-shell has all of that applied, so rules and the
+/// dialog default see real facts, and a toplevel destroyed before it commits
+/// never touches the layout. A window that floated before an unmap goes back
+/// to the rectangle it left; anything else is placed as a new window.
+fn map_toplevel(state: &mut AbyssState, surface: &WlSurface, placement: Option<Remembered>) {
     let Some(toplevel) = state
         .xdg_shell_state
         .toplevel_surfaces()
@@ -1014,11 +1055,22 @@ fn remap_toplevel(state: &mut AbyssState, surface: &WlSurface, placement: Option
     {
         return;
     }
-    tracing::debug!(restored = placement.is_some(), "xdg_toplevel remapping");
+    tracing::debug!(restored = placement.is_some(), "xdg_toplevel mapping");
+    // A new toplevel breaks an active popup grab (COMP-06 §4).
     popup_grab_dismiss(state);
-    toplevel.with_pending_state(|s| {
-        s.states
-            .set(smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Activated);
+    // Fullscreen/maximize asked for before this commit had no window to act
+    // on and were parked in the pending state (see `maximize_toplevel`).
+    // Take them out so the placement configure does not carry them
+    // unapplied, and replay them once the window exists.
+    let (fullscreen, fullscreen_output, maximized) = toplevel.with_pending_state(|s| {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+        let requested = (
+            s.states.unset(State::Fullscreen),
+            s.fullscreen_output.take(),
+            s.states.unset(State::Maximized),
+        );
+        s.states.set(State::Activated);
+        requested
     });
     let window = Window::new_wayland_window(toplevel.clone());
     // The commit handler only refreshes windows it already found in the
@@ -1029,6 +1081,12 @@ fn remap_toplevel(state: &mut AbyssState, surface: &WlSurface, placement: Option
     match placement {
         Some(p) if restore_floating(state, &window, p) => {}
         _ => place_new_window(state, window),
+    }
+    if maximized {
+        maximize_toplevel(state, &toplevel);
+    }
+    if fullscreen {
+        fullscreen_toplevel(state, &toplevel, fullscreen_output.as_ref());
     }
     if !toplevel.is_initial_configure_sent() {
         toplevel.send_configure();
@@ -1082,7 +1140,8 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
             unmap_toplevel(state, surface);
             return;
         }
-        Some(MapTransition::Remap(placement)) => remap_toplevel(state, surface, placement),
+        Some(MapTransition::Remap(placement)) => map_toplevel(state, surface, placement),
+        None if awaiting_initial_configure(surface) => map_toplevel(state, surface, None),
         None => {}
     }
 
@@ -1167,12 +1226,22 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
                 }
             }
         }
-        if arranged || send_initial {
+        // smithay's `arrange` reports only a layer whose *size* changed. A bar
+        // that keeps its height but moves its exclusive zone or margin (a
+        // hyperion fold landing) moves the tiling area all the same, and
+        // without this the windows keep the stale one.
+        let area_moved = state
+            .outputs
+            .iter()
+            .find(|e| e.output == output)
+            .is_some_and(|e| e.workspaces[e.active].last_area != Some(tiling_area(state, &output)));
+        if arranged || send_initial || area_moved {
             arrange(state);
         }
         if send_initial {
             focus_layer_if_wanted(state, surface);
         }
+        follow_interactivity(state, &output, surface, send_initial);
     }
 
     if let Some(popup) = state.popups.find_popup(surface) {
@@ -1578,6 +1647,11 @@ pub fn toggle_floating(state: &mut AbyssState) {
 /// border — the raw protocol contract, not abyss's own tiling style.
 /// Policy: a startup request from a not-yet-mapped tiled window (e.g. a restored
 /// session state) is ignored and it keeps its tile; later requests are honoured.
+///
+/// A toplevel still owed its initial configure has no `Window` yet — its
+/// initial commit places it (`map_toplevel`). Its state requests until then
+/// are parked in its pending state, and `map_toplevel` replays them once the
+/// window exists; the same holds for the other three requests below.
 pub fn maximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::shell::xdg::ToplevelSurface) {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
 
@@ -1587,6 +1661,9 @@ pub fn maximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::she
         .find(|w| w.toplevel() == Some(surface))
         .cloned()
     else {
+        if !surface.is_initial_configure_sent() {
+            surface.with_pending_state(|s| s.states.set(State::Maximized));
+        }
         return;
     };
     if state.maximized.contains_key(&window) {
@@ -1643,6 +1720,9 @@ pub fn unmaximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::s
         .find(|w| w.toplevel() == Some(surface))
         .cloned()
     else {
+        if !surface.is_initial_configure_sent() {
+            surface.with_pending_state(|s| s.states.unset(State::Maximized));
+        }
         return;
     };
     let Some(restore) = state.maximized.remove(&window) else {
@@ -1748,6 +1828,12 @@ pub fn fullscreen_toplevel(
         .find(|w| w.toplevel() == Some(surface))
         .cloned()
     else {
+        if !surface.is_initial_configure_sent() {
+            surface.with_pending_state(|s| {
+                s.states.set(State::Fullscreen);
+                s.fullscreen_output = target.cloned();
+            });
+        }
         return;
     };
     if state.fullscreen.contains_key(&window) {
@@ -1803,6 +1889,12 @@ pub fn unfullscreen_toplevel(
         .find(|w| w.toplevel() == Some(surface))
         .cloned()
     else {
+        if !surface.is_initial_configure_sent() {
+            surface.with_pending_state(|s| {
+                s.states.unset(State::Fullscreen);
+                s.fullscreen_output = None;
+            });
+        }
         return;
     };
     let Some(restore) = state.fullscreen.remove(&window) else {
@@ -2664,6 +2756,58 @@ pub fn spawn(command: &str) {
     }
 }
 
+/// The keyboard interactivity a layer surface had at its previous commit.
+#[derive(Default)]
+struct SeenInteractivity(Cell<Option<KeyboardInteractivity>>);
+
+/// Act on a mapped layer surface changing its keyboard interactivity
+/// (wlr-layer-shell `set_keyboard_interactivity`). Mapping is handled by
+/// [`focus_layer_if_wanted`]; this is the same rule for a surface that asks
+/// later — a bar opening its menu, say (COMP-05 §5):
+///
+/// - `none` to `on_demand`/`exclusive`: it takes the keyboard, as it would
+///   have had it mapped that way.
+/// - to `none` while holding the keyboard: it loses it, and focus goes back to
+///   the focused output's workspace ([`refocus_topmost`]). The protocol says
+///   the compositor "should never assign it the keyboard focus".
+pub(crate) fn follow_interactivity(
+    state: &mut AbyssState,
+    output: &Output,
+    surface: &WlSurface,
+    initial: bool,
+) {
+    let Some(layer) = layer_map_for_output(output)
+        .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+        .cloned()
+    else {
+        return;
+    };
+    let now = layer.cached_state().keyboard_interactivity;
+    layer.user_data().insert_if_missing(SeenInteractivity::default);
+    let Some(before) = layer
+        .user_data()
+        .get::<SeenInteractivity>()
+        .map(|s| s.0.replace(Some(now)))
+    else {
+        return;
+    };
+    if initial || before.is_none() || before == Some(now) {
+        return;
+    }
+    let holds = focused_layer(state).as_ref() == Some(&layer);
+    match now {
+        KeyboardInteractivity::None if holds => {
+            tracing::debug!("layer surface gave up keyboard interactivity; refocusing");
+            refocus_topmost(state);
+        }
+        KeyboardInteractivity::OnDemand | KeyboardInteractivity::Exclusive if !holds => {
+            tracing::debug!(interactivity = ?now, "layer surface asked for the keyboard");
+            focus_layer_if_wanted(state, surface);
+        }
+        _ => {}
+    }
+}
+
 /// Give keyboard focus to a newly mapped layer surface that asks for it.
 pub fn focus_layer_if_wanted(state: &mut AbyssState, surface: &WlSurface) {
     let wants = state.outputs.iter().any(|e| {
@@ -2939,5 +3083,166 @@ mod tests {
             .find(|(x, _)| *x == w)
             .unwrap()
             .1
+    }
+}
+
+/// Placement waits for the initial commit (COMP-05 §3/§4), driven end to end
+/// by a real client: the bug was a toplevel tiled at `get_toplevel` time, which
+/// squeezed its neighbour for one configure before rules moved it off.
+#[cfg(test)]
+mod initial_commit_placement {
+    use super::*;
+    use crate::shell::focus::state_tests::{
+        client::{Client, Toplevel},
+        harness, Harness,
+    };
+
+    fn window_of(h: &Harness, t: &Toplevel) -> Option<Window> {
+        use wayland_client::Proxy;
+        let id = t.surface.id().protocol_id();
+        owned_windows(&h.state).into_iter().find(|w| {
+            window_surface(w)
+                .is_some_and(|s| smithay::reexports::wayland_server::Resource::id(&s).protocol_id() == id)
+        })
+    }
+
+    fn floats(h: &Harness, window: &Window) -> bool {
+        h.state.outputs.iter().any(|e| {
+            e.workspaces
+                .iter()
+                .any(|ws| ws.floating.iter().any(|f| &f.window == window))
+        })
+    }
+
+    /// A tiled neighbour, mapped and settled; returns it and its tile size.
+    fn neighbour(h: &mut Harness, c: &mut Client) -> (Toplevel, (i32, i32)) {
+        let n = c.create_toplevel(h);
+        c.commit(h, &n.surface);
+        c.attach(h, &n.surface);
+        let size = *c
+            .configured_sizes(&n.toplevel)
+            .last()
+            .expect("neighbour configured");
+        let window = window_of(h, &n).expect("neighbour placed");
+        assert!(!floats(h, &window), "the neighbour tiles");
+        (n, size)
+    }
+
+    /// The shipped rules, exactly as `/etc/eclipse/abyss.kdl` states them.
+    fn shipped_rules() -> Vec<crate::config::WindowRule> {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../dist/etc/abyss.kdl");
+        let text = std::fs::read_to_string(path).expect("shipped abyss.kdl");
+        let errors = crate::config::Config::check_text(
+            std::path::Path::new(path),
+            crate::config::schema::Owner::Abyss,
+            &text,
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+        crate::config::Config::load(Some(std::path::Path::new(path))).window_rules
+    }
+
+    #[test]
+    fn a_float_rule_on_app_id_never_squeezes_the_neighbour() {
+        let mut h = harness();
+        h.state.config.window_rules = shipped_rules();
+        let mut c = Client::connect(&mut h);
+        let (n, tile) = neighbour(&mut h, &mut c);
+
+        // wl-copy's handshake: the role first, its identity after, as separate
+        // requests; the compositor sees `get_toplevel` on its own.
+        let t = c.create_toplevel(&mut h);
+        assert!(
+            window_of(&h, &t).is_none(),
+            "nothing is placed before the initial commit"
+        );
+        t.toplevel.set_app_id("io.github.bugaevc.wl-clipboard".into());
+        t.toplevel.set_title("wl-clipboard".into());
+        c.commit(&mut h, &t.surface);
+        let window = window_of(&h, &t).expect("placed at the initial commit");
+        assert!(floats(&h, &window), "the shipped rule floats wl-clipboard");
+        assert!(
+            !c.configured_sizes(&t.toplevel).is_empty(),
+            "initial configure sent"
+        );
+        c.attach(&mut h, &t.surface);
+        assert!(floats(&h, &window), "still floating once mapped");
+
+        let sizes = c.configured_sizes(&n.toplevel);
+        assert!(
+            sizes.iter().all(|&s| s == tile),
+            "the neighbour was resized: {sizes:?}"
+        );
+    }
+
+    #[test]
+    fn a_parented_toplevel_floats_without_resizing_the_neighbour() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, tile) = neighbour(&mut h, &mut c);
+
+        let t = c.create_toplevel(&mut h);
+        t.toplevel.set_parent(Some(&n.toplevel));
+        c.commit(&mut h, &t.surface);
+        let window = window_of(&h, &t).expect("placed at the initial commit");
+        assert!(floats(&h, &window), "a dialog floats by default");
+        c.attach(&mut h, &t.surface);
+        assert!(floats(&h, &window));
+
+        let sizes = c.configured_sizes(&n.toplevel);
+        assert!(
+            sizes.iter().all(|&s| s == tile),
+            "the neighbour was resized: {sizes:?}"
+        );
+    }
+
+    /// `set_fullscreen` before the initial commit has no window to act on
+    /// yet; it is parked and honoured when the commit places the window.
+    #[test]
+    fn fullscreen_asked_before_the_initial_commit_is_honoured_at_it() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let t = c.create_toplevel(&mut h);
+        t.toplevel.set_fullscreen(None);
+        c.pump(&mut h);
+        assert!(window_of(&h, &t).is_none());
+        c.commit(&mut h, &t.surface);
+        let window = window_of(&h, &t).expect("placed at the initial commit");
+        assert!(h.state.fullscreen.contains_key(&window), "fullscreen replayed");
+        let output = h.state.outputs.focused().expect("output").output.clone();
+        let full = h.state.space.output_geometry(&output).expect("mapped").size;
+        assert_eq!(
+            c.configured_sizes(&t.toplevel).last(),
+            Some(&(full.w, full.h)),
+            "the last configure before the map is the fullscreen size"
+        );
+    }
+
+    #[test]
+    fn a_toplevel_destroyed_before_its_initial_commit_never_touches_the_layout() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, _) = neighbour(&mut h, &mut c);
+        let before = c.configured_sizes(&n.toplevel).len();
+        let focus = h.state.focus.clone();
+        let _ = crate::ipc::capture::take();
+
+        let t = c.create_toplevel(&mut h);
+        t.toplevel.destroy();
+        t.xdg.destroy();
+        t.surface.destroy();
+        c.pump(&mut h);
+
+        assert_eq!(owned_windows(&h.state).len(), 1, "only the neighbour");
+        assert_eq!(h.state.focus, focus, "focus never moved");
+        assert_eq!(
+            c.configured_sizes(&n.toplevel).len(),
+            before,
+            "the neighbour was not reconfigured"
+        );
+        let window_events: Vec<_> = crate::ipc::capture::take()
+            .into_iter()
+            .filter(|(kind, _)| kind == "window")
+            .collect();
+        assert!(window_events.is_empty(), "{window_events:?}");
     }
 }

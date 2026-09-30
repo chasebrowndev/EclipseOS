@@ -49,6 +49,9 @@ pub enum EventKind {
     Config,
     /// A chord the compositor forwards rather than acting on (COMP-18 §4).
     Keybind,
+    /// `open_launcher` relayed to the bar (`bar.launcher-style "menu"`):
+    /// `{"action": "open", "output": <id>, "output_name": "<connector>"}`.
+    Launcher,
 }
 
 impl EventKind {
@@ -61,6 +64,7 @@ impl EventKind {
         EventKind::ConfigError,
         EventKind::Config,
         EventKind::Keybind,
+        EventKind::Launcher,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -73,6 +77,7 @@ impl EventKind {
             EventKind::ConfigError => "config-error",
             EventKind::Config => "config",
             EventKind::Keybind => "keybind",
+            EventKind::Launcher => "launcher",
         }
     }
 

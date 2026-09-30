@@ -137,6 +137,35 @@ pub fn bar_ground(radius: f32, blur: bool) -> impl Fn(&Theme) -> container::Styl
     }
 }
 
+/// The folded bar's ground: [`bar_ground`]'s sheet seen edge-on, as a
+/// dormant bar cell — the same tint, ringed by the ghost rim a minimized
+/// chip wears ([`color::CELL_RIM_AWAY`]), with blur on as well as off.
+///
+/// The one place a glass surface carries its own rim, because at 2–16 px the
+/// compositor's rim and shadow do not read: the strip was a flat band with
+/// nothing to say where it ends. The rim follows the capsule, so it is the
+/// curve at either end that the eye picks up, not a straight edge. `radius`
+/// is the caller's, already clamped to half the strip's height so this ring
+/// and the compositor's mask share one outline. `rim` in `0..=1` is how much
+/// of the ring shows: the caller fades it in as the pill thins into the
+/// strip, so the ring never pops onto a sheet that still looks like the pill.
+pub fn bar_folded(radius: f32, blur: bool, rim: f32) -> impl Fn(&Theme) -> container::Style {
+    move |t: &Theme| container::Style {
+        border: Border {
+            // Blur off, the pill already wears a hairline of the same weight,
+            // so there is nothing to fade in.
+            color: if blur {
+                color::CELL_RIM_AWAY.scale_alpha(rim)
+            } else {
+                color::CELL_RIM_AWAY
+            },
+            width: space::HAIRLINE,
+            radius: radius.into(),
+        },
+        ..bar_ground(radius, blur)(t)
+    }
+}
+
 /// One level of inset inside a panel. The spec's limit — there is no
 /// `inset_inside_inset`, on purpose.
 pub fn inset(_t: &Theme) -> container::Style {
@@ -307,11 +336,18 @@ pub enum CellTone {
     /// Every cell at rest: the neutral glass lozenge.
     #[default]
     Plain,
-    /// The focused window, and the current workspace tile: the lozenge on a
-    /// gold fill with a gold label. Its rim stays neutral.
+    /// The focused window, and the current workspace tile: the lozenge
+    /// catching gold light — a thin gold tint, a gold label and a gold glow
+    /// under it. Its rim stays neutral, only brighter.
     Focused,
     /// A minimized window: no fill, a ghost rim, no shadow.
     Away,
+    /// A member of a list of cells, at rest: no fill, no rim, no drop —
+    /// nothing at all until the pointer lands on it, when it lifts into the
+    /// [`CellTone::Plain`] lozenge. Eight rows each wearing a rim is eight
+    /// outlines ruled down a sheet, which is the stroke-as-structure look
+    /// the glass replaced; only the rows that mean something show a ground.
+    Latent,
 }
 
 /// `true` is the focused cell, `false` a plain one — the two every caller
@@ -334,34 +370,67 @@ impl From<bool> for CellTone {
 /// ([`color::CELL`]), a hairline just inside the edge ([`color::CELL_RIM`])
 /// and a soft drop under it ([`color::CELL_SHADOW`]). The pointer brightens
 /// the fill and the rim together; a press brightens the fill again. A
-/// [`CellTone::Focused`] cell rests on [`color::ACCENT_FILL`] with a gold
-/// label — the bar's one resting yellow besides the current workspace tile —
-/// and keeps the neutral rim: the accent is never an outline. A
+/// [`CellTone::Focused`] cell is the same glass catching gold light: a thin
+/// gold tint ([`color::CELL_FOCUS`]), a gold label, a brighter but still
+/// neutral rim ([`color::CELL_FOCUS_RIM`]) and a soft gold glow in place of
+/// the drop ([`color::CELL_FOCUS_GLOW`]) — the bar's one resting yellow
+/// besides the current workspace tile. The accent is never an outline. A
 /// [`CellTone::Away`] (minimized) cell has no fill and no drop, only a ghost
 /// rim, and is lifted by the pointer like any other.
 pub fn bar_cell(tone: impl Into<CellTone>) -> impl Fn(&Theme, button::Status) -> button::Style {
+    glass_cell(tone, bar::RADIUS_CELL)
+}
+
+/// [`bar_cell`]'s material at any corner: the one glass cell of the desktop.
+///
+/// The bar's cells are capsules because they are concentric with the bar's
+/// capsule; a cell on a floating sheet (a launcher row, its prompt) is
+/// concentric with the sheet instead, so the radius is the caller's and
+/// everything else — fill, inside rim, drop, how the pointer lifts it, where
+/// the gold goes — is this one function, so a launcher row and a taskbar chip
+/// cannot drift into two materials.
+pub fn glass_cell(
+    tone: impl Into<CellTone>,
+    radius: f32,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
     let tone = tone.into();
     move |_t, status| {
         let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let pressed = matches!(status, button::Status::Pressed);
         let background = match (tone, status) {
-            (CellTone::Focused, button::Status::Pressed) => color::ACCENT_FILL_STRONG,
-            (CellTone::Focused, button::Status::Hovered) => color::ACCENT_FILL_HOVER,
-            (CellTone::Focused, _) => color::ACCENT_FILL,
+            (CellTone::Focused, button::Status::Pressed) => color::CELL_FOCUS_PRESS,
+            (CellTone::Focused, button::Status::Hovered) => color::CELL_FOCUS_HOVER,
+            (CellTone::Focused, _) => color::CELL_FOCUS,
             (_, button::Status::Pressed) => color::CELL_PRESS,
             (_, button::Status::Hovered) => color::CELL_HOVER,
-            (CellTone::Away, _) => Color::TRANSPARENT,
+            (CellTone::Away | CellTone::Latent, _) => Color::TRANSPARENT,
             (CellTone::Plain, _) => color::CELL,
         };
         let rim = match (tone, lit) {
+            (CellTone::Focused, true) => color::CELL_FOCUS_RIM_HOVER,
+            (CellTone::Focused, false) => color::CELL_FOCUS_RIM,
             (_, true) => color::CELL_RIM_HOVER,
             (CellTone::Away, false) => color::CELL_RIM_AWAY,
+            (CellTone::Latent, false) => Color::TRANSPARENT,
             (_, false) => color::CELL_RIM,
         };
-        // A pressed cell is pushed into the glass, and a minimized one at
-        // rest is not lifted off it at all: neither casts a drop.
-        let shadow = if pressed || (tone == CellTone::Away && !lit) {
+        // A pressed cell is pushed into the glass, and a minimized or latent
+        // one at rest is not lifted off it at all: neither casts a drop.
+        let resting = matches!(tone, CellTone::Away | CellTone::Latent) && !lit;
+        let shadow = if pressed || resting {
             Shadow::default()
+        } else if tone == CellTone::Focused {
+            // The focused cell catches gold light: the drop under it is a
+            // soft glow, not a darker shadow.
+            Shadow {
+                color: if lit {
+                    color::CELL_FOCUS_GLOW_HOVER
+                } else {
+                    color::CELL_FOCUS_GLOW
+                },
+                offset: Vector::new(0.0, bar::CELL_GLOW_Y),
+                blur_radius: bar::CELL_GLOW_BLUR,
+            }
         } else {
             Shadow {
                 color: color::CELL_SHADOW,
@@ -379,7 +448,7 @@ pub fn bar_cell(tone: impl Into<CellTone>) -> impl Fn(&Theme, button::Status) ->
             border: Border {
                 color: rim,
                 width: space::HAIRLINE,
-                radius: bar::RADIUS_CELL.into(),
+                radius: radius.into(),
             },
             shadow,
             ..button::Style::default()
@@ -579,3 +648,45 @@ pub fn eclipse_scrollable(_t: &Theme, status: scrollable::Status) -> scrollable:
 
 /// Default text size for a pane's body copy, for `iced::Settings`.
 pub const DEFAULT_TEXT_SIZE: f32 = size::BODY;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn focused(status: button::Status) -> button::Style {
+        glass_cell(CellTone::Focused, bar::RADIUS_CELL)(&theme(), status)
+    }
+
+    fn fill(s: &button::Style) -> Color {
+        match s.background {
+            Some(Background::Color(c)) => c,
+            _ => Color::TRANSPARENT,
+        }
+    }
+
+    #[test]
+    fn a_focused_cell_lifts_under_the_pointer_and_sinks_when_pressed() {
+        let rest = focused(button::Status::Active);
+        let hover = focused(button::Status::Hovered);
+        let press = focused(button::Status::Pressed);
+        assert!(fill(&rest).a < fill(&hover).a && fill(&hover).a < fill(&press).a);
+        assert!(rest.border.color.a < hover.border.color.a);
+        assert!(rest.shadow.color.a < hover.shadow.color.a);
+        assert_eq!(press.shadow.color.a, 0.0);
+    }
+
+    #[test]
+    fn a_focused_cell_glows_gold_but_its_rim_stays_neutral() {
+        for status in [
+            button::Status::Active,
+            button::Status::Hovered,
+            button::Status::Pressed,
+        ] {
+            let rim = focused(status).border.color;
+            assert_eq!((rim.r, rim.g, rim.b), (1.0, 1.0, 1.0));
+        }
+        let glow = focused(button::Status::Active).shadow.color;
+        let gold = color::ACCENT;
+        assert_eq!((glow.r, glow.g, glow.b), (gold.r, gold.g, gold.b));
+    }
+}

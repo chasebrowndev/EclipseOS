@@ -78,7 +78,6 @@ pub struct General {
     pub focus_follows_mouse: bool,
     pub focus_follows_mouse_across_outputs: bool,
     pub unfocus_on_empty_workspace: bool,
-    pub focus_follows_mouse_layers: bool,
     pub refocus_on_scene_change: bool,
     /// Warp the pointer onto a window a keybind just moved, so the cursor is
     /// never left behind on the workspace or display the window came from.
@@ -117,22 +116,22 @@ impl Default for General {
     fn default() -> Self {
         Self {
             gaps_in: 5,
-            gaps_out: 10,
-            gaps_in_vertical: None,
-            gaps_out_vertical: None,
-            border_size: 2,
+            gaps_out: 3,
+            gaps_in_vertical: Some(3),
+            gaps_out_vertical: Some(7),
+            border_size: 1,
             layout: LayoutKind::Radiant,
             floating_placement: FloatingPlacement::Centered,
             focus_follows_mouse: true,
             focus_follows_mouse_across_outputs: true,
             unfocus_on_empty_workspace: true,
-            focus_follows_mouse_layers: true,
             refocus_on_scene_change: true,
             cursor_follows_moved_window: true,
             follow_window_to_workspace: true,
-            // eclipse amber on near-black
-            col_active: [0.91, 0.64, 0.24, 1.0],
-            col_inactive: [0.09, 0.09, 0.09, 1.0],
+            // #f2c33c73 / #ffffff1a: a translucent accent and a faint white
+            // hairline, which glass mode turns into the bezel (C-15, C-16)
+            col_active: [242.0 / 255.0, 195.0 / 255.0, 60.0 / 255.0, 115.0 / 255.0],
+            col_inactive: [1.0, 1.0, 1.0, 26.0 / 255.0],
             drop_guides: true,
             drop_guide_color: [0.91, 0.64, 0.24, 1.0],
             drop_edge_band: 40,
@@ -445,6 +444,9 @@ pub struct Bar {
     /// Where the bar's popups open: under the cell that was clicked, or at
     /// the pointer.
     pub popup_anchor: BarPopupAnchor,
+    /// Which launcher the eclipse button and `eclipse-launcher` open: the
+    /// centred sheet, or the bar's own start menu (`bar.open-launcher`).
+    pub launcher_style: BarLauncherStyle,
     /// `eye`: whether the taskbar draws its status eye on the eclipse mark.
     /// Stored only; the taskbar sources the eye's state itself (ADR 0055).
     pub eye: bool,
@@ -481,6 +483,24 @@ pub enum BarPopupAnchor {
     #[default]
     Cell,
     Pointer,
+}
+
+/// `bar { launcher-style "centered" | "menu" }`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BarLauncherStyle {
+    #[default]
+    Centered,
+    Menu,
+}
+
+impl BarLauncherStyle {
+    /// The KDL spelling.
+    pub fn name(self) -> &'static str {
+        match self {
+            BarLauncherStyle::Centered => "centered",
+            BarLauncherStyle::Menu => "menu",
+        }
+    }
 }
 
 /// `bar { tray { pinned …; hidden … } }`. Ids only — the compositor neither
@@ -655,6 +675,7 @@ impl Default for Bar {
             tray: BarTray::default(),
             clock: BarClock::default(),
             popup_anchor: BarPopupAnchor::Cell,
+            launcher_style: BarLauncherStyle::Centered,
             eye: true,
             widgets: BarWidgets::default(),
             motion: BarMotion::default(),
@@ -691,7 +712,7 @@ pub struct Decoration {
 impl Default for Decoration {
     fn default() -> Self {
         Self {
-            rounding: 13,
+            rounding: 9,
             active_opacity: 1.0,
             inactive_opacity: 1.0,
             dim_inactive: 0.0,
@@ -771,7 +792,7 @@ pub struct Blur {
 impl Default for Blur {
     fn default() -> Self {
         Self {
-            mode: BlurMode::Blur,
+            mode: BlurMode::Glass,
             size: 8,
             passes: 4,
             glass: GlassBlur::default(),
@@ -832,8 +853,8 @@ pub struct Shadow {
 impl Default for Shadow {
     fn default() -> Self {
         Self {
-            enabled: false,
-            range: 20,
+            enabled: true,
+            range: 16,
         }
     }
 }
@@ -2424,10 +2445,10 @@ impl Config {
                         self.general.unfocus_on_empty_workspace = b;
                     }
                 }
+                // Removed: hover never takes the keyboard from an on-demand
+                // layer now, only a click does (wlr-layer-shell `on_demand`).
                 "focus-follows-mouse-layers" => {
-                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
-                        self.general.focus_follows_mouse_layers = b;
-                    }
+                    tracing::warn!("deprecated: general.focus-follows-mouse-layers is ignored");
                 }
                 "refocus-on-scene-change" => {
                     if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
@@ -2542,6 +2563,17 @@ impl Config {
                         n,
                         format!(
                             "bar popup-anchor must be \"cell\" or \"pointer\", keeping default (other={:?})",
+                            other
+                        ),
+                    ),
+                },
+                "launcher-style" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("centered") => self.bar.launcher_style = BarLauncherStyle::Centered,
+                    Some("menu") => self.bar.launcher_style = BarLauncherStyle::Menu,
+                    other => self.reject(
+                        n,
+                        format!(
+                            "bar launcher-style must be \"centered\" or \"menu\", keeping default (other={:?})",
                             other
                         ),
                     ),
@@ -4817,6 +4849,33 @@ mod tests {
         assert_eq!(c.errors.len(), 1, "{:?}", c.errors);
     }
 
+    /// `bar.launcher-style`: centred by default, `menu` parses, and a bad
+    /// style is rejected without moving off the default.
+    #[test]
+    fn bar_launcher_style_parses() {
+        fn cfg(text: &str) -> Config {
+            let doc: KdlDocument = text.parse().unwrap();
+            let mut cfg = Config::default();
+            cfg.apply(&doc, &mut Vec::new());
+            cfg
+        }
+        assert_eq!(Config::default().bar.launcher_style, BarLauncherStyle::Centered);
+
+        let c = cfg("bar { launcher-style \"menu\" }\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert_eq!(c.bar.launcher_style, BarLauncherStyle::Menu);
+        assert_eq!(c.bar.launcher_style.name(), "menu");
+
+        let c = cfg("bar { launcher-style \"sideways\" }\n");
+        assert_eq!(c.errors.len(), 1);
+        assert!(
+            c.errors[0].message.contains("\"centered\" or \"menu\""),
+            "{}",
+            c.errors[0].message
+        );
+        assert_eq!(c.bar.launcher_style, BarLauncherStyle::Centered);
+    }
+
     /// `bar.eye`: on by default, a bare node is on, `#false` turns it off.
     #[test]
     fn bar_eye_parses() {
@@ -5287,14 +5346,15 @@ mod tests {
     #[test]
     fn decoration_defaults_round_but_are_otherwise_no_effect() {
         let cfg = Config::default();
-        // Rounding ships on (13px) to match eclipse-ui's client-drawn glass
-        // radius, so any_window_effect() is already true out of the box.
-        // Content never fades: both opacities ship at 1.0, and blur follows
-        // the surface's opaque region instead; dim is untouched.
+        // Rounding (9px) and the shadow ship on (C-16), so any_window_effect()
+        // is already true out of the box. Content never fades: both
+        // opacities ship at 1.0, and blur follows the surface's opaque region
+        // instead; dim is untouched.
         assert!(cfg.decoration.any_window_effect());
-        assert!(!cfg.decoration.shadow.enabled);
+        assert!(cfg.decoration.shadow.enabled);
+        assert_eq!(cfg.decoration.shadow.range, 16);
         assert!(!cfg.decoration.glow.on());
-        assert_eq!(cfg.decoration.rounding, 13);
+        assert_eq!(cfg.decoration.rounding, 9);
         assert_eq!(cfg.decoration.active_opacity, 1.0);
         assert_eq!(cfg.decoration.inactive_opacity, 1.0);
         assert_eq!(cfg.decoration.dim_inactive, 0.0);
@@ -5302,13 +5362,14 @@ mod tests {
         assert!(!cfg.animations.enabled);
     }
 
-    /// Blur is the one decoration that ships on: translucent surfaces get a
-    /// Dual-Kawase pass without being asked. It costs a render pass, so it is
-    /// called out here rather than folded into the no-effect test above --- if
-    /// this flips, the schema default column and `docs/CONFIG.md` flip with it.
+    /// Blur ships on, in glass mode (C-16): translucent surfaces get the
+    /// Liquid Glass pass without being asked. It costs a render pass, so it
+    /// is called out here rather than folded into the no-effect test above
+    /// --- if this flips, the schema default column and `docs/CONFIG.md` flip
+    /// with it.
     #[test]
     fn blur_ships_enabled() {
-        assert_eq!(Config::default().decoration.blur.mode, BlurMode::Blur);
+        assert_eq!(Config::default().decoration.blur.mode, BlurMode::Glass);
     }
 
     fn blur_cfg(text: &str) -> Config {
@@ -5336,7 +5397,7 @@ mod tests {
         assert_eq!(cfg.errors.len(), 1);
         assert_eq!(
             cfg.decoration.blur.mode,
-            BlurMode::Blur,
+            BlurMode::Glass,
             "a bad mode keeps the default"
         );
     }
@@ -5438,7 +5499,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.apply(&doc, &mut Vec::new());
         // Every bad value keeps its default rather than half-applying.
-        assert_eq!(cfg.decoration.rounding, 13);
+        assert_eq!(cfg.decoration.rounding, 9);
         assert_eq!(cfg.decoration.active_opacity, 1.0);
         assert_eq!(cfg.decoration.inactive_opacity, 1.0);
         assert!(cfg.animations.curves.is_empty());
@@ -5635,14 +5696,20 @@ mod tests {
         assert!(binds[0].mods.shift && binds[0].mods.logo);
     }
 
-    /// `gaps-in-vertical`/`gaps-out-vertical` mirror their horizontal
-    /// counterpart, including a horizontal value already customised away
-    /// from the default, until explicitly set — the resolver, not a
-    /// hardcoded literal, is what makes that true.
+    /// The vertical gaps ship set (C-16), independent of the horizontal
+    /// ones. Unset, `gaps-in-vertical`/`gaps-out-vertical` still mirror their
+    /// horizontal counterpart, including a horizontal value already
+    /// customised away from the default — the resolver, not a hardcoded
+    /// literal, is what makes that true.
     #[test]
     fn vertical_gaps_mirror_horizontal_until_set() {
+        let d = General::default();
+        assert_eq!((d.gaps_in_y(), d.gaps_out_y()), (3, 7));
+
         let doc: KdlDocument = "general { gaps-in 3; gaps-out 12 }\n".parse().unwrap();
         let mut cfg = Config::default();
+        cfg.general.gaps_in_vertical = None;
+        cfg.general.gaps_out_vertical = None;
         cfg.apply(&doc, &mut Vec::new());
         assert_eq!(cfg.general.gaps_in_vertical, None);
         assert_eq!(cfg.general.gaps_out_vertical, None);
@@ -5667,12 +5734,6 @@ mod tests {
         assert_eq!(cfg.general.gaps_in_y(), 8, "an explicit vertical value wins");
         assert_eq!(cfg.general.gaps_out_vertical, Some(1));
         assert_eq!(cfg.general.gaps_out_y(), 1, "an explicit vertical value wins");
-
-        // A config that never touches either vertical key renders identically
-        // to today: both resolve to their horizontal sibling's default.
-        let d = General::default();
-        assert_eq!(d.gaps_in_y(), d.gaps_in);
-        assert_eq!(d.gaps_out_y(), d.gaps_out);
     }
 
     /// Both follow behaviours are on out of the box and both can be turned
@@ -6268,9 +6329,8 @@ mod startup_tests {
         let d = General::default();
         assert_eq!(cfg.general.gaps_out, d.gaps_out, "untouched keys keep defaults");
         assert_eq!(
-            cfg.general.gaps_in_y(),
-            7,
-            "the untouched vertical key still mirrors the valid horizontal one"
+            cfg.general.gaps_in_vertical, d.gaps_in_vertical,
+            "the untouched vertical key keeps its default"
         );
         assert_eq!(cfg.startup(), Startup::Start { ignored: 1 });
     }

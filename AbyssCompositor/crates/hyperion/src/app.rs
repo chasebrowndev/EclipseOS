@@ -23,7 +23,7 @@ use iced_layershell::to_layer_message;
 use eclipse_services::status::{Battery, Bluetooth, Network, Update};
 use eclipse_ui::tokens::{self, bar};
 
-use crate::conn::{BarConfig, BarPosition, Conn};
+use crate::conn::{BarConfig, BarPosition, Conn, LauncherStyle};
 use crate::icons::Icons;
 use crate::layout::{self, Pin};
 use crate::model::Snapshot;
@@ -140,6 +140,10 @@ pub enum Message {
     /// parent bar as inside the popup's grab (`shell::popup_grab_button_press`),
     /// so the compositor will not dismiss it for us.
     BarPress(iced::window::Id, Option<iced::Point>),
+    /// A press a cell took (a chip, a pager tile, a widget). The cell acts
+    /// as usual; the start menu, if open and the press was outside its
+    /// panel, closes alongside.
+    CellPress(iced::window::Id, Option<iced::Point>),
     /// The pointer moved over a surface. The bar tracks it because a popup is
     /// positioned by a rectangle in its parent's coordinates, and the press
     /// that opens the menu is the only thing that knows where that is.
@@ -147,10 +151,27 @@ pub enum Message {
     /// A surface went away — the compositor dismissed the popup, say.
     Closed(iced::window::Id),
     /// The bar's surface was sized. The task strip's whole ladder hangs off
-    /// this number.
-    Sized(iced::window::Id, f32),
-    /// The launcher button was clicked.
+    /// the width; the height says how far out the start menu's panel is, and
+    /// is when its input region can be sent (see [`sync_region`]).
+    Sized(iced::window::Id, iced::Size),
+    /// The launcher button was clicked: the start menu, or with
+    /// `bar.launcher-style "centered"` the separate launcher.
     Launch,
+    /// The compositor's `launcher` event (`open_launcher`, which the
+    /// launcher keybind calls in menu style): toggle the start menu on the
+    /// bar of this output.
+    MenuOpen(u64),
+    /// The start menu's search field changed.
+    MenuQuery(String),
+    /// An arrow key on a surface, and which: moves the start menu's
+    /// selection by that many rows.
+    MenuMove(iced::window::Id, i32),
+    /// Enter in the search field: run the selected entry.
+    MenuActivate,
+    /// A result row was clicked. An index into the matches.
+    MenuLaunch(usize),
+    /// A surface lost the keyboard. A bar that loses it closes its menu.
+    Unfocused(iced::window::Id),
     /// The system bus said something about network, bluetooth or battery.
     Status(Update),
     /// The compositor restated the focused output (ADR 0042). Everything the
@@ -241,10 +262,9 @@ pub struct App {
     pub popup: Option<Popup>,
     /// The `bar.*` settings, re-read on every successful config reload.
     pub bar: BarConfig,
-    /// The edge the surface is anchored to, fixed at startup like the anchor
-    /// itself (`bar.position` is `reload: restart`). The float gap is a
-    /// layer-shell margin on this edge, so it must not follow a reload that
-    /// the anchor did not.
+    /// The edge the surface is anchored to. A reload that changes
+    /// `bar.position` moves it and re-asks every bar's anchor in the same
+    /// pass, so the float-gap margin never lands on the other edge.
     pub edge: BarPosition,
     /// The last `output` event's payload, kept because the fold decision is
     /// recomputed on ticks and reloads, not only when the event arrives.
@@ -272,6 +292,10 @@ pub struct App {
     /// Debug builds only: the popup `HYPERION_PREVIEW` asked for, opened on
     /// the first event that names the bar's surface. Always `None` in release.
     pub preview: Option<Preview>,
+    /// Debug builds only: `HYPERION_PREVIEW_MENU`'s query, for the start
+    /// menu to open with on the first bar that is sized. Always `None` in
+    /// release.
+    pub menu_preview: Option<String>,
     /// The bar sheet's own glass radius, live-synced to `bar.rounding`
     /// (BLUR-06) — distinct from [`menu_radius`] because the bar's corner is
     /// its own setting, not `decoration.rounding`.
@@ -341,6 +365,8 @@ pub struct Bar {
     pub layout: layout::Layout,
     /// How far everything has got there.
     pub motion: crate::motion::Bar,
+    /// The start menu, with `bar.launcher-style "menu"`.
+    pub menu: crate::menu::Menu,
 }
 
 impl Bar {
@@ -359,6 +385,7 @@ impl Bar {
             widget_inputs: Vec::new(),
             layout: layout::Layout::default(),
             motion: m,
+            menu: crate::menu::Menu::new(motion),
         }
     }
 }
@@ -387,8 +414,9 @@ pub enum FoldTarget {
 /// decision still waiting out its grace window.
 pub struct FoldState {
     pub target: FoldTarget,
-    /// Current surface height in logical pixels — what the view draws into and
-    /// what the exclusive zone is set from, so the two can never disagree.
+    /// Current strip height in logical pixels, the sheet plus the air between
+    /// it and the screen edge. The view draws into [`FoldState::sheet_height`]
+    /// and the exclusive zone is set from it, so the two can never disagree.
     pub height: u32,
     to_h: u32,
     /// The slide itself, in fractional pixels so a reversal starts from where
@@ -413,14 +441,15 @@ impl Default for FoldState {
 ///
 /// Both follow the compositor's outer gap — `general.gaps-out` across and the
 /// effective `general.gaps-out-vertical` down — so the pill sits exactly as
-/// far from the screen edge as a window would. The gap *below* the pill is
-/// not ours: abyss insets the tiling area by `gaps-in` on an edge an
-/// exclusive zone took, since the bar is a neighbour. With nothing answering,
-/// the compile-time [`bar::MARGIN_X`]/[`bar::MARGIN_Y`] stand in.
+/// far from the screen edge as a window would. `inner` is the effective
+/// `general.gaps-in-vertical`: the bar is a neighbour, so the gap below the
+/// pill is the gap between stacked windows. With nothing answering, the
+/// compile-time [`bar::MARGIN_X`]/[`bar::MARGIN_Y`] stand in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Air {
     pub x: i32,
     pub y: i32,
+    pub inner: i32,
 }
 
 impl Default for Air {
@@ -428,6 +457,7 @@ impl Default for Air {
         Air {
             x: bar::MARGIN_X as i32,
             y: bar::MARGIN_Y as i32,
+            inner: bar::MARGIN_Y as i32,
         }
     }
 }
@@ -437,7 +467,12 @@ impl Air {
     /// air between it and the edge. What the fold slide lands on, so the
     /// last frame of an unfold and the settled pill reserve the same rows.
     pub fn shown_height(self) -> u32 {
-        bar::PILL_H as u32 + self.y.max(0) as u32
+        bar::PILL_H as u32 + self.edge()
+    }
+
+    /// The air between the sheet and its screen edge, never negative.
+    fn edge(self) -> u32 {
+        self.y.max(0) as u32
     }
 }
 
@@ -480,11 +515,23 @@ impl FoldState {
     /// Take new air (a config reload moved `gaps-out`). A shown bar at rest
     /// moves straight to the new strip; one mid-slide lands on it.
     pub fn set_air(&mut self, air: Air) {
-        if self.target == FoldTarget::Shown {
-            if self.height == self.to_h && matches!(self.slide, Slide::Rest) {
-                self.height = air.shown_height();
+        let at_rest = self.height == self.to_h && matches!(self.slide, Slide::Rest);
+        match self.target {
+            FoldTarget::Shown => {
+                if at_rest {
+                    self.height = air.shown_height();
+                }
+                self.to_h = air.shown_height();
             }
-            self.to_h = air.shown_height();
+            // The folded strip floats in the same air, so it moves with it.
+            FoldTarget::Folded => {
+                let to_h = (self.to_h - self.air.edge()) + air.edge();
+                if at_rest {
+                    self.height = to_h;
+                }
+                self.to_h = to_h;
+            }
+            FoldTarget::Hidden => {}
         }
         self.air = air;
     }
@@ -495,32 +542,58 @@ impl FoldState {
         self.target == FoldTarget::Shown && self.height == self.air.shown_height()
     }
 
+    /// The height of the drawn sheet: the strip less the air between it and
+    /// its screen edge. What the view fills and the surface is sized to.
+    pub fn sheet_height(&self) -> u32 {
+        if self.target == FoldTarget::Hidden {
+            self.height
+        } else {
+            self.height.saturating_sub(self.air.edge()).max(1)
+        }
+    }
+
     /// The surface this state needs, anchored to `edge`.
     ///
     /// The drawn sheet fills its surface exactly: the compositor blurs the
     /// whole surface at `bar.rounding`, and any air left inside it would show
     /// as a blurred rim around the pill. So the float gap is layer-shell
-    /// margin — [`Air::x`] on both sides always, and [`Air::y`] on the
-    /// anchored edge only while the pill is up (the folded strip sits flush
-    /// against the edge, as it always has).
+    /// margin — [`Air::x`] on both sides and [`Air::y`] on the anchored edge,
+    /// the pill and the folded strip alike.
     ///
-    /// The zone is the surface's own height and no more: wlr-layer-shell adds
-    /// the anchored edge's margin to it (abyss:
+    /// The strip floats in the pill's air rather than sitting flush against
+    /// the screen edge: flush, its capsule ends were cut in half by the edge
+    /// and it read as a straight rule. And because the margin never changes,
+    /// the fold is one capsule shrinking in place — the height and the
+    /// compositor's `min(bar.rounding, h / 2)` mask radius both move
+    /// continuously through the slide, with no jump to the edge where the
+    /// pill gives way to the strip. Only a hidden bar, which draws nothing,
+    /// drops its air.
+    ///
+    /// wlr-layer-shell adds the anchored edge's margin to the zone (abyss:
     /// `shell::accumulate_non_exclusive_zone`), and abyss then insets the
-    /// tiling area by `gaps-in` on the edge the zone took. So screen → pill
-    /// is `gaps-out`, pill → window is `gaps-in`, the same rhythm as window
-    /// → window. A hidden bar reserves nothing.
+    /// tiling area by `gaps-out-vertical` on every edge. The pill's zone
+    /// trades that inset for [`Air::inner`], so screen → pill is
+    /// `gaps-out-vertical` and pill → window is `gaps-in-vertical`, the same
+    /// rhythm as window → window. A hidden bar reserves nothing.
     pub fn geometry(&self, edge: BarPosition) -> Geometry {
         let side = self.air.x;
-        let (height, air) = if self.pill() {
-            (bar::PILL_H as u32, self.air.y)
+        let height = self.sheet_height();
+        let air = if self.target == FoldTarget::Hidden {
+            0
         } else {
-            (self.height, 0)
+            self.air.edge() as i32
+        };
+        // Only the landed pill trades the tiling inset for `gaps-in`; the
+        // folded strip keeps the plain edge rhythm.
+        let below = if self.pill() {
+            self.air.inner - self.air.y
+        } else {
+            0
         };
         let zone = if self.target == FoldTarget::Hidden && self.height == self.to_h {
             0
         } else {
-            height as i32
+            (height as i32 + below).max(0)
         };
         let margin = match edge {
             BarPosition::Top => (air, side, 0, side),
@@ -616,6 +689,7 @@ impl App {
             tray,
             mode,
             preview: None,
+            menu_preview: None,
             bar_radius,
             menu_radius,
             blur,
@@ -696,6 +770,9 @@ pub const SECRET_PROMPT: &str = "eclipse-secret-prompt";
 /// behind it and no way to click. Debug builds only.
 #[cfg(debug_assertions)]
 fn preview(app: &mut App) {
+    // `HYPERION_PREVIEW_MENU=<query>`: the start menu, open on that query
+    // (empty for the A-to-Z list), since nothing can click the button.
+    app.menu_preview = std::env::var("HYPERION_PREVIEW_MENU").ok();
     let Ok(which) = std::env::var("HYPERION_PREVIEW") else {
         return;
     };
@@ -957,21 +1034,16 @@ fn recheck() -> Task<Message> {
 /// Ask for a bar on `name` and start its state.
 ///
 /// The first frame's geometry is the one every fold step asks for, so the
-/// first frame and a settled unfold cannot disagree. The anchor is the edge
-/// read at startup (`bar.position` is `reload: restart`), plus both sides.
+/// first frame and a settled unfold cannot disagree. The anchor is
+/// [`bar_anchor`]; a reload that moves the edge re-asks it in
+/// [`push_geometry`].
 pub fn open_bar(app: &mut App, name: String, output_id: u64) -> Task<Message> {
-    use iced_layershell::reexport::{
-        Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
-    };
+    use iced_layershell::reexport::{KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption};
     let id = Id::unique();
     let mut bar = Bar::new(id, name.clone(), output_id, app.widget_cfg.motion);
     bar.fold = FoldState::with_air(app.air);
     let geometry = bar.fold.geometry(app.edge);
     app.bars.insert(id, bar);
-    let edge = match app.edge {
-        BarPosition::Top => Anchor::Top,
-        BarPosition::Bottom => Anchor::Bottom,
-    };
     Task::done(Message::NewLayerShell {
         settings: NewLayerShellSettings {
             // Width 0 means "as wide as the output, less the side margins".
@@ -981,7 +1053,7 @@ pub fn open_bar(app: &mut App, name: String, output_id: u64) -> Task<Message> {
             // rather than under it.
             size: Some((0, geometry.height)),
             layer: Layer::Top,
-            anchor: edge | Anchor::Left | Anchor::Right,
+            anchor: bar_anchor(app.edge),
             exclusive_zone: Some(geometry.zone),
             margin: Some(geometry.margin),
             // The bar is pointer-driven. It must never take the keyboard
@@ -1133,6 +1205,21 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             return dismiss;
         }
         Message::Dismiss => return dismiss(app),
+        Message::CellPress(id, point) => {
+            if let Some(point) = point {
+                let _ = step(app, Message::Pointer(id, point), at);
+            }
+            let now = Instant::now();
+            return each_bar(app, |_, bar| {
+                // The search cell and the rows are the menu's own cells.
+                let in_menu = bar.id == id && bar.cursor.x < bar::PANEL_W;
+                if bar.menu.open && !in_menu {
+                    close_start(bar, now)
+                } else {
+                    Task::none()
+                }
+            });
+        }
         Message::BarPress(id, point) => {
             if let Some(point) = point {
                 let _ = step(app, Message::Pointer(id, point), at);
@@ -1144,6 +1231,15 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             let on_eye = app.bars.values().any(|b| b.eye_surface == Some(id));
             if on_popup || on_eye {
                 return Task::none();
+            }
+            // Bare glass inside the start menu — between rows, on the footer
+            // — is still the menu; anywhere else on a bar closes it.
+            let in_menu = app
+                .bars
+                .get(&id)
+                .is_some_and(|b| b.menu.open && b.cursor.x < bar::PANEL_W);
+            if in_menu {
+                return dismiss_popup(app);
             }
             return dismiss(app);
         }
@@ -1175,14 +1271,22 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         // A popup is its own surface and its own width, and so is an eye;
         // only a bar's counts.
-        Message::Sized(id, width) => {
-            let Some(first) = with_bar(app, id, |_, bar| {
-                bar.width = width;
-                !std::mem::replace(&mut bar.mapped, true)
+        Message::Sized(id, size) => {
+            let Some((first, region)) = with_bar(app, id, |app, bar| {
+                bar.width = size.width;
+                let first = !std::mem::replace(&mut bar.mapped, true);
+                (first, sync_region(app, bar, size.height))
             }) else {
                 return Task::none();
             };
-            let mut tasks = Vec::new();
+            let mut tasks = vec![region];
+            #[cfg(debug_assertions)]
+            if let Some(query) = app.menu_preview.take() {
+                tasks.push(toggle_start(app, id));
+                if let Some(bar) = app.bars.get_mut(&id) {
+                    bar.menu.set_query(query);
+                }
+            }
             // A fold committed before the surface was configured has not
             // reached it yet; the surface is still the one it was asked as.
             let asked = FoldState::with_air(app.air).geometry(app.edge);
@@ -1204,8 +1308,70 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         // Nothing on the socket changed, so this one does not refetch.
         Message::Launch => {
-            spawn_once(LAUNCHER, &[]);
+            return match at {
+                Some(at) if app.bar.launcher == LauncherStyle::Menu => toggle_start(app, at),
+                _ => {
+                    spawn_once(LAUNCHER, &[CENTERED]);
+                    Task::none()
+                }
+            };
+        }
+        // A stray `open_launcher` under the centred style is not ours:
+        // `eclipse-launcher` only sends it when the style is the menu.
+        Message::MenuOpen(_) if app.bar.launcher != LauncherStyle::Menu => {}
+        Message::MenuOpen(output) => {
+            // The bar on the output the keybind was pressed on; an
+            // unresolved bar (`output_id` 0) is anyone's.
+            let on = app
+                .bars
+                .values()
+                .find(|b| b.output_id == output)
+                .or_else(|| app.bars.values().find(|b| b.output_id == 0))
+                .map(|b| b.id);
+            return match on {
+                Some(id) => toggle_start(app, id),
+                None => {
+                    spawn_once(LAUNCHER, &[CENTERED]);
+                    Task::none()
+                }
+            };
+        }
+        Message::MenuQuery(query) => {
+            if let Some(bar) = at.and_then(|at| app.bars.get_mut(&at)) {
+                bar.menu.set_query(query);
+            }
             return Task::none();
+        }
+        Message::MenuMove(id, delta) => {
+            if let Some(bar) = owner(app, id).and_then(|at| app.bars.get_mut(&at)) {
+                if bar.menu.open {
+                    bar.menu.step(delta);
+                }
+            }
+            return Task::none();
+        }
+        Message::MenuActivate => {
+            let Some(at) = at else { return Task::none() };
+            let selected = app.bars.get(&at).map_or(0, |b| b.menu.selected);
+            return run_entry(app, at, selected);
+        }
+        Message::MenuLaunch(index) => {
+            let Some(at) = at else { return Task::none() };
+            return run_entry(app, at, index);
+        }
+        // With the keyboard held exclusively this comes only when the bar
+        // gives it back, or the compositor takes it for something that
+        // outranks a layer surface (a trusted prompt, the lock).
+        Message::Unfocused(id) => {
+            let now = Instant::now();
+            return with_bar(app, id, |_, bar| {
+                if bar.menu.open {
+                    close_start(bar, now)
+                } else {
+                    Task::none()
+                }
+            })
+            .unwrap_or_else(Task::none);
         }
         // The system bus is not the compositor: fold the reading in and stop,
         // rather than falling through to a refetch the socket never asked for.
@@ -1263,26 +1429,44 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             if let Some(blur) = app.conn.blur() {
                 app.blur = blur;
             }
-            // A new outer gap moves every pill now, not on its next fold:
-            // the surface is re-asked, and a raised eye is dropped so the
-            // fold pass below raises it again at the new offset.
+            // A new outer gap or edge moves every pill now, not on its next
+            // fold: the surface is re-asked, and a raised eye is dropped so
+            // the fold pass below raises it again at the new offset. A popup
+            // hangs from the old edge, so an edge move closes it.
             let mut moved = Task::none();
-            if let Some(air) = app.conn.air().filter(|air| *air != app.air) {
-                app.air = air;
-                moved = each_bar(app, |app, bar| {
+            // Back to the centred launcher: an open start menu goes.
+            if app.bar.launcher != LauncherStyle::Menu {
+                moved = dismiss(app);
+            }
+            let air = app.conn.air().filter(|air| *air != app.air);
+            let edge_moved = app.bar.position != app.edge;
+            if air.is_some() || edge_moved {
+                if let Some(air) = air {
+                    app.air = air;
+                }
+                if edge_moved {
+                    app.edge = app.bar.position;
+                    moved = Task::batch([moved, dismiss(app)]);
+                }
+                let each = each_bar(app, |app, bar| {
                     bar.fold.set_air(app.air);
+                    // Boxes for the old edge or the old air: the next open
+                    // sends fresh ones.
+                    bar.menu.region = None;
                     let eye = match bar.eye_surface.take() {
                         Some(id) => Task::done(Message::RemoveWindow(id)),
                         None => Task::none(),
                     };
                     Task::batch([push_geometry(app, bar), eye])
                 });
+                moved = Task::batch([moved, each]);
             }
             if app.fixture.is_none() {
                 app.widget_cfg = app.conn.widgets_config();
                 let motion = app.widget_cfg.motion;
                 for bar in app.bars.values_mut() {
                     bar.motion.set_motion(motion);
+                    bar.menu.reveal.set_motion(motion);
                 }
                 crate::services::configure(&app.widget_cfg);
             }
@@ -1395,12 +1579,25 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         Message::Frame => {
             let now = Instant::now();
+            let mut sized = Vec::new();
             for bar in app.bars.values_mut() {
                 bar.motion.tick(now);
+                // The panel's extent is the surface's height: a frame that
+                // moved it by a pixel re-asks the size, and only then.
+                let before = bar.menu.extent();
+                bar.menu.reveal.tick(now);
+                if bar.menu.extent() != before {
+                    sized.push(bar.id);
+                }
             }
             #[cfg(debug_assertions)]
             crate::preview::frame(app, now);
-            return Task::none();
+            let tasks: Vec<_> = sized
+                .into_iter()
+                .filter_map(|id| app.bars.get(&id))
+                .map(|bar| push_size(app, bar))
+                .collect();
+            return Task::batch(tasks);
         }
         Message::Script(n) => {
             #[cfg(debug_assertions)]
@@ -1419,11 +1616,12 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
     Task::none()
 }
 
-/// The height a target settles at.
+/// The height a target settles at: the strip from the screen edge, sheet
+/// plus air.
 fn target_height(bar: &BarConfig, target: FoldTarget, air: Air) -> u32 {
     match target {
         FoldTarget::Shown => air.shown_height(),
-        FoldTarget::Folded => bar.fold_height,
+        FoldTarget::Folded => bar.fold_height + air.edge(),
         FoldTarget::Hidden => HIDDEN_HEIGHT,
     }
 }
@@ -1490,10 +1688,11 @@ fn push_geometry(app: &App, bar: &Bar) -> Task<Message> {
     }
     let id = bar.id;
     Task::batch([
-        Task::done(Message::SizeChange {
+        Task::done(Message::AnchorChange {
             id,
-            size: (0, g.height),
+            anchor: bar_anchor(app.edge),
         }),
+        push_size(app, bar),
         Task::done(Message::MarginChange { id, margin: g.margin }),
         Task::done(Message::ExclusiveZoneChange {
             id,
@@ -1502,11 +1701,184 @@ fn push_geometry(app: &App, bar: &Bar) -> Task<Message> {
     ])
 }
 
+/// The surface's height alone: the fold's sheet plus however much of the
+/// start menu's panel is out. The panel never adds to the exclusive zone —
+/// it floats over the windows, it does not push them.
+fn push_size(app: &App, bar: &Bar) -> Task<Message> {
+    if !bar.mapped {
+        return Task::none();
+    }
+    let g = bar.fold.geometry(app.edge);
+    Task::done(Message::SizeChange {
+        id: bar.id,
+        size: (0, g.height + bar.menu.extent()),
+    })
+}
+
+/// `--centered`: the launcher draws itself even with `bar.launcher-style
+/// "menu"`. The bar passes it whenever it starts the launcher, because the
+/// bar has already decided — without it a menu-style launcher would ask the
+/// bar for its menu, and the bar that could not show one would start it
+/// again.
+pub const CENTERED: &str = "--centered";
+
+/// Send the start menu's input region once the surface has reached a size
+/// the region may be sent at (`h`, logical), and only if the boxes differ
+/// from the last ones sent.
+///
+/// The region is the pointer's and the glass's at once: abyss draws a layer
+/// whose input region is 2..=4 boxes as their smooth union, so the blur
+/// follows the pill and the panel rather than filling the surface's whole
+/// width under the panel.
+///
+/// The timing is dictated by the transport. `iced_layershell` keeps one
+/// `wl_region` for the life of the process, and before each callback
+/// subtracts the surface's size *as of its last configure*; abyss reads a
+/// subtract that covers the surface as a reset and any other as "no shape"
+/// (`render::blur::Shape::from_region`). So a region sent at a small height
+/// leaves a subtract in the history that does not cover the surface once it
+/// grows, and the glass falls back to one rounded box for good. On a top
+/// bar the boxes do not depend on the height at all (`menu::region`), so
+/// they are sent once, at the fully open height, and every smaller height
+/// is the same boxes cut shorter. A bottom bar's pill rides the surface's
+/// far edge, so its region is re-sent at both ends of the slide — correct
+/// input at rest, at the cost of the fallback box on later openings (see
+/// the report on the compositor contract).
+///
+/// A bar whose menu has never been out sends nothing and keeps the plain
+/// whole-surface shape.
+fn sync_region(app: &App, bar: &mut Bar, h: f32) -> Task<Message> {
+    if !bar.menu.open && bar.menu.region.is_none() {
+        return Task::none();
+    }
+    let h = h.round().max(0.0) as u32;
+    let rest = bar.fold.geometry(app.edge).height;
+    let full = rest + bar::PANEL_H.round() as u32;
+    let top = app.edge == BarPosition::Top;
+    let send = if top {
+        h == full
+    } else {
+        h == full || (!bar.menu.open && h == rest)
+    };
+    if !send {
+        return Task::none();
+    }
+    let rects = crate::menu::region(top, app.bar_radius, h);
+    if bar.menu.region.as_ref() == Some(&rects) {
+        return Task::none();
+    }
+    bar.menu.region = Some(rects.clone());
+    let callback = iced_layershell::actions::ActionCallback::new(move |region| {
+        // The whole plane first, not just the surface: a box from an
+        // earlier, taller send must not survive into this one.
+        region.subtract(0, 0, crate::menu::BIG, crate::menu::BIG);
+        for &(x, y, w, h) in &rects {
+            region.add(x, y, w, h);
+        }
+    });
+    Task::done(Message::SetInputRegion { id: bar.id, callback })
+}
+
+/// The launcher button, or the launcher keybind in menu style: open this
+/// bar's start menu, or close it if it is the one already open.
+fn toggle_start(app: &mut App, id: Id) -> Task<Message> {
+    let now = Instant::now();
+    if app.bars.get(&id).is_some_and(|b| b.menu.open) {
+        return with_bar(app, id, |_, bar| close_start(bar, now)).unwrap_or_else(Task::none);
+    }
+    // Only a bar showing its pill has a button to grow from; a folded or
+    // hidden one hands the request to the centred launcher.
+    if !app.bars.get(&id).is_some_and(|b| b.fold.pill()) {
+        spawn_once(LAUNCHER, &[CENTERED]);
+        return Task::none();
+    }
+    // One menu at a time, and never a popup over it.
+    let closed = dismiss(app);
+    let term = app.conn.terminal_command();
+    let entries = eclipse_services::apps::scan(term.as_deref());
+    let open = with_bar(app, id, |app, bar| {
+        bar.menu.open(entries, term, now);
+        Task::batch([
+            // The keyboard, held until the menu closes: the query is typed
+            // here, and Escape and the arrows must reach it. On-demand, so
+            // a click on a window takes it back and the leave closes us;
+            // hover never does (abyss `shell::focus`).
+            Task::done(Message::KeyboardInteractivityChange {
+                id,
+                keyboard_interactivity: iced_layershell::reexport::KeyboardInteractivity::OnDemand,
+            }),
+            iced::widget::operation::focus(crate::menu::INPUT_ID),
+            push_size(app, bar),
+        ])
+    })
+    .unwrap_or_else(Task::none);
+    Task::batch([closed, open])
+}
+
+/// Start the menu's slide back into the button and give the keyboard back.
+fn close_start(bar: &mut Bar, now: Instant) -> Task<Message> {
+    bar.menu.close(now);
+    Task::done(Message::KeyboardInteractivityChange {
+        id: bar.id,
+        keyboard_interactivity: iced_layershell::reexport::KeyboardInteractivity::None,
+    })
+}
+
+/// Run the `index`th match on the bar's menu: close on success, and on a
+/// refusal stay open with the reason on the footer.
+fn run_entry(app: &mut App, at: Id, index: usize) -> Task<Message> {
+    let now = Instant::now();
+    with_bar(app, at, |_, bar| {
+        let menu = &mut bar.menu;
+        if !menu.open {
+            return Task::none();
+        }
+        menu.selected = index.min(menu.matched.len().saturating_sub(1));
+        let Some(entry) = menu.current() else {
+            return Task::none();
+        };
+        match launch_entry(entry, menu.term.as_deref()) {
+            Ok(()) => close_start(bar, now),
+            Err(e) => {
+                menu.problem = Some(format!("cannot start {}: {e}", entry.name));
+                Task::none()
+            }
+        }
+    })
+    .unwrap_or_else(Task::none)
+}
+
+#[cfg(not(test))]
+fn launch_entry(entry: &eclipse_services::apps::Entry, term: Option<&str>) -> std::io::Result<()> {
+    eclipse_services::apps::launch(entry, term)
+}
+
+#[cfg(test)]
+fn launch_entry(_entry: &eclipse_services::apps::Entry, _term: Option<&str>) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// The bar's edge plus both sides: as wide as the output.
+fn bar_anchor(edge: BarPosition) -> iced_layershell::reexport::Anchor {
+    use iced_layershell::reexport::Anchor;
+    let edge = match edge {
+        BarPosition::Top => Anchor::Top,
+        BarPosition::Bottom => Anchor::Bottom,
+    };
+    edge | Anchor::Left | Anchor::Right
+}
+
 /// A fold step, then the eye brought in line with it: the eye rides only on
 /// a full pill, so a fold drops it and an unfold that lands raises it again.
 fn fold_and_eye(app: &App, bar: &mut Bar) -> Task<Message> {
     let fold = fold(app, bar);
-    Task::batch([fold, sync_eye(app, bar)])
+    // The menu grows out of the pill; a bar folding or hiding takes it in.
+    let menu = if bar.menu.open && bar.fold.target != FoldTarget::Shown {
+        close_start(bar, Instant::now())
+    } else {
+        Task::none()
+    };
+    Task::batch([fold, menu, sync_eye(app, bar)])
 }
 
 /// Where the eye's surface sits: the launcher button's own box, anchored to
@@ -1782,6 +2154,7 @@ fn tap_wanted(app: &App) -> bool {
 /// a tap and toggles instead.
 pub(crate) fn grip(app: &App, bar: &mut Bar, key: String, ev: GripEv, now: Instant) {
     match ev {
+        GripEv::Hover(on) => bar.motion.hover(&key, on, now),
         GripEv::Press => {
             let start = bar.motion.widgets.get(&key).map_or(0.0, |w| w.extent.value());
             bar.motion.drag = Some(Drag::new(key, start, now));
@@ -1851,7 +2224,24 @@ fn window(app: &App, handle: u64) -> Option<&crate::model::Window> {
 /// Close the open popup, whichever bar it hangs from, and forget a menu
 /// still on its way. `RemoveWindow` is the macro's own name for closing a
 /// surface it created.
+///
+/// The start menu goes with it: every path here is the human doing something
+/// else — Escape, a click on bare bar, a chip's action, a popup opening.
 fn dismiss(app: &mut App) -> Task<Message> {
+    let popup = dismiss_popup(app);
+    let now = Instant::now();
+    let menus = each_bar(app, |_, bar| {
+        if bar.menu.open {
+            close_start(bar, now)
+        } else {
+            Task::none()
+        }
+    });
+    Task::batch([popup, menus])
+}
+
+/// [`dismiss`] for the popup alone.
+fn dismiss_popup(app: &mut App) -> Task<Message> {
     app.pending_menu = None;
     match app.popup.take() {
         Some(popup) => Task::done(Message::RemoveWindow(popup.id)),
@@ -2111,7 +2501,12 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     }
     // The bars' own motion clock, on the same rule: frames only while a
     // chip or a widget is moving or a grip is held, on any bar.
-    if app.bars.values().any(|b| b.motion.animating()) || fixture_moves(app) {
+    if app
+        .bars
+        .values()
+        .any(|b| b.motion.animating() || b.menu.reveal.animating())
+        || fixture_moves(app)
+    {
         subs.push(frames());
     }
     #[cfg(debug_assertions)]
@@ -2169,6 +2564,7 @@ fn frames() -> Subscription<Message> {
 /// of a popup's anchor.
 fn pointer() -> Subscription<Message> {
     use iced::event::Status;
+    use iced::keyboard::key::Named;
     iced::event::listen_with(|event, status, id| match event {
         // A press no cell took is a press on bare bar: it closes the popup.
         // Only uncaptured ones — a press a cell took has already acted, and
@@ -2176,27 +2572,41 @@ fn pointer() -> Subscription<Message> {
         iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) if status == Status::Ignored => {
             Some(Message::BarPress(id, None))
         }
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::CellPress(id, None)),
         iced::Event::Touch(iced::touch::Event::FingerPressed { position, .. })
             if status == Status::Ignored =>
         {
             Some(Message::BarPress(id, Some(position)))
         }
-        // A finger is the pointer too: a tap must anchor the popup it opens.
+        iced::Event::Touch(iced::touch::Event::FingerPressed { position, .. }) => {
+            Some(Message::CellPress(id, Some(position)))
+        }
+        // A finger is the pointer too; its press moves it above, with the
+        // press, so a tap still anchors the popup it opens.
         iced::Event::Mouse(iced::mouse::Event::CursorMoved { position })
-        | iced::Event::Touch(
-            iced::touch::Event::FingerPressed { position, .. }
-            | iced::touch::Event::FingerMoved { position, .. },
-        ) => Some(Message::Pointer(id, position)),
+        | iced::Event::Touch(iced::touch::Event::FingerMoved { position, .. }) => {
+            Some(Message::Pointer(id, position))
+        }
         // The popup's grab holds the keyboard, so Escape arrives on the
         // popup's own surface.
         iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
             key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
             ..
         }) => Some(Message::Dismiss),
+        // The start menu's selection. Whichever surface has the keyboard, the
+        // message names it, and only a bar with its menu open acts on it.
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(named @ (Named::ArrowUp | Named::ArrowDown)),
+            ..
+        }) => Some(Message::MenuMove(
+            id,
+            if named == Named::ArrowUp { -1 } else { 1 },
+        )),
+        iced::Event::Window(iced::window::Event::Unfocused) => Some(Message::Unfocused(id)),
         // The surface's own size, which is where the task strip's condensation
         // ladder gets its "what fits" from.
         iced::Event::Window(iced::window::Event::Opened { size, .. })
-        | iced::Event::Window(iced::window::Event::Resized(size)) => Some(Message::Sized(id, size.width)),
+        | iced::Event::Window(iced::window::Event::Resized(size)) => Some(Message::Sized(id, size)),
         _ => None,
     })
 }
@@ -2264,6 +2674,15 @@ fn compositor() -> Subscription<Message> {
                                             })
                                             .unwrap_or(Message::Refresh),
                                         eclipse_ipc::EventKind::Config => Message::Reconfigured,
+                                        // `open_launcher`: the start menu on
+                                        // the named output.
+                                        eclipse_ipc::EventKind::Launcher => match (
+                                            event.data.get("action").and_then(serde_json::Value::as_str),
+                                            event.data.get("output").and_then(serde_json::Value::as_u64),
+                                        ) {
+                                            (Some("open"), Some(output)) => Message::MenuOpen(output),
+                                            _ => continue,
+                                        },
                                         _ => Message::Refresh,
                                     };
                                     if matches!(message, Message::Refresh) {
@@ -2694,6 +3113,30 @@ pub(crate) mod tests {
         assert!(a.popup.is_none(), "Escape's message closes it");
     }
 
+    /// A press a cell took — a chip, a tile, a widget — closes the start menu
+    /// too, on any bar; one on the menu's own cells does not.
+    #[test]
+    fn a_press_on_a_cell_closes_the_start_menu() {
+        let mut a = app();
+        let (one, two) = (bar_on(&mut a, "DP-1", 1), bar_on(&mut a, "DP-2", 2));
+        let open = |a: &mut App| {
+            let bar = a.bars.get_mut(&one).unwrap();
+            bar.menu.open(Vec::new(), None, Instant::now());
+            bar.menu.open
+        };
+        let is_open = |a: &App| a.bars[&one].menu.open;
+        assert!(open(&mut a));
+        a.bars.get_mut(&one).unwrap().cursor = iced::Point::new(bar::PANEL_W / 2.0, 10.0);
+        let _ = step(&mut a, Message::CellPress(one, None), None);
+        assert!(is_open(&a), "a press on the search cell or a row keeps it");
+        a.bars.get_mut(&one).unwrap().cursor = iced::Point::new(bar::PANEL_W + 40.0, 10.0);
+        let _ = step(&mut a, Message::CellPress(one, None), None);
+        assert!(!is_open(&a), "a chip on its own bar closes it");
+        open(&mut a);
+        let _ = step(&mut a, Message::CellPress(two, None), None);
+        assert!(!is_open(&a), "a cell on another bar closes it");
+    }
+
     /// A message from inside a popup acts for the bar the popup hangs from,
     /// and a bar that goes takes its popup with it and leaves the rest.
     #[test]
@@ -3030,14 +3473,14 @@ mod fold_tests {
         a.bar.fold_duration_ms = 0;
         commit(&a.bar, &mut b.fold, FoldTarget::Folded, std::time::Instant::now());
         advance(&a.bar, &mut b.fold, std::time::Instant::now());
-        assert_eq!(b.fold.height, a.bar.fold_height);
+        assert_eq!(b.fold.sheet_height(), a.bar.fold_height);
         assert!(!b.fold.animating());
     }
 
     /// The pill fills its surface and the float gap is margin; the zone is
     /// the pill alone, so the strip a tiled window avoids is the pill plus
     /// the edge air (the compositor adds the anchored edge's margin, then
-    /// its own `gaps-in`). A folded strip sits flush.
+    /// its own `gaps-in`). A folded strip floats in the same air.
     #[test]
     fn the_gap_is_margin_and_the_zone_is_the_pill() {
         let shown = FoldState::default();
@@ -3060,10 +3503,19 @@ mod fold_tests {
 
         // The air follows the compositor's outer gap, and the unfold lands
         // on exactly the strip the settled pill reserves.
-        let air = Air { x: 7, y: 12 };
+        let air = Air {
+            x: 7,
+            y: 12,
+            inner: 12,
+        };
         let g = FoldState::with_air(air).geometry(BarPosition::Top);
         assert_eq!(g.margin, (12, 7, 0, 7));
         assert_eq!(g.zone, bar::PILL_H as i32);
+        // Pill → window takes `gaps-in-vertical` in place of the tiling
+        // area's `gaps-out-vertical` inset.
+        let tight = Air { x: 7, y: 9, inner: 6 };
+        let t = FoldState::with_air(tight).geometry(BarPosition::Top);
+        assert_eq!(t.margin.0 + t.zone + tight.y, 9 + bar::PILL_H as i32 + 6);
         assert_eq!(
             target_height(&BarConfig::default(), FoldTarget::Shown, air),
             air.shown_height()
@@ -3083,7 +3535,49 @@ mod fold_tests {
         let g = b.fold.geometry(BarPosition::Top);
         assert_eq!(g.height, a.bar.fold_height);
         assert_eq!(g.zone, a.bar.fold_height as i32);
-        assert_eq!((g.margin.0, g.margin.2), (0, 0));
+        assert_eq!((g.margin.0, g.margin.2), (bar::MARGIN_Y as i32, 0));
+    }
+
+    /// The fold is one capsule shrinking in place: every frame of the slide
+    /// keeps the pill's air, so the sheet never jumps to the screen edge
+    /// where the pill gives way to the strip, and the strip plus its air is
+    /// exactly the height the slide is at.
+    #[test]
+    fn the_fold_slides_in_place_without_a_jump() {
+        let (mut a, mut b) = folding_app();
+        a.bar.fold_duration_ms = 200;
+        let t0 = std::time::Instant::now();
+        let first = b.fold.geometry(BarPosition::Top);
+        commit(&a.bar, &mut b.fold, FoldTarget::Folded, t0);
+        assert_eq!(
+            b.fold.geometry(BarPosition::Top),
+            first,
+            "committing a fold moves nothing"
+        );
+        for n in (8..=400).step_by(8) {
+            advance(&a.bar, &mut b.fold, t0 + std::time::Duration::from_millis(n));
+            let g = b.fold.geometry(BarPosition::Top);
+            assert_eq!(g.margin, first.margin, "the air holds at {n} ms");
+            assert_eq!(g.height + g.margin.0 as u32, b.fold.height);
+        }
+        assert_eq!(b.fold.sheet_height(), a.bar.fold_height);
+    }
+
+    /// A gap change reaches a folded strip too: it floats in the new air at
+    /// the same height.
+    #[test]
+    fn a_folded_strip_follows_the_air() {
+        let (mut a, mut b) = folding_app();
+        a.bar.fold_duration_ms = 0;
+        commit(&a.bar, &mut b.fold, FoldTarget::Folded, std::time::Instant::now());
+        b.fold.set_air(Air {
+            x: 3,
+            y: 12,
+            inner: 12,
+        });
+        let g = b.fold.geometry(BarPosition::Bottom);
+        assert_eq!(g.height, a.bar.fold_height);
+        assert_eq!(g.margin, (0, 3, 12, 3));
     }
 
     /// `Hidden` gives the zone up entirely; `Folded` keeps its sliver.
@@ -3096,7 +3590,7 @@ mod fold_tests {
         );
         assert_eq!(
             target_height(&bar, FoldTarget::Folded, Air::default()),
-            bar.fold_height
+            bar.fold_height + bar::MARGIN_Y as u32
         );
         assert_eq!(
             target_height(&bar, FoldTarget::Shown, Air::default()),

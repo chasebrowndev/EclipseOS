@@ -8,7 +8,18 @@
 // is a default you have to delete to get back to; a default that lives in the
 // schema is one you never see. Everything abyss ships is in the schema.
 
-// It is empty on purpose, with no exceptions left: the terminal bind used to
-// live here on the theory that the schema cannot know what is installed, but
-// eclipseos-meta installs foot, so the schema can and does know. A default
-// stated in two places is a default that drifts.
+// The terminal bind used to live here on the theory that the schema cannot
+// know what is installed, but eclipseos-meta installs foot, so the schema can
+// and does know. A default stated in two places is a default that drifts.
+//
+// The one exception is a window rule: rules are a list, not a schema key, and
+// every file's rules are appended, so yours still apply after these and a
+// later `tile` rule for the same app-id overrides this one.
+
+// wl-copy (wl-clipboard) cannot use data control, which is allowlist-only
+// (ADR 0022), so it maps a throwaway toplevel just to get keyboard focus,
+// sets the selection and destroys it at once. Tiled, it squeezes the
+// neighbouring tiles for a frame on every copy — and a terminal that copies
+// on select runs it constantly. Float only: it needs the keyboard focus, so
+// no `no-focus-steal`.
+windowrule "float" { app-id "^io\\.github\\.bugaevc\\.wl-clipboard$"; }

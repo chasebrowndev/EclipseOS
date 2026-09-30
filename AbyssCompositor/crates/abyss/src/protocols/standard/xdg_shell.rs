@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use smithay::{
     delegate_xdg_shell,
-    desktop::{PopupKind, Window},
+    desktop::PopupKind,
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel, wayland_server::protocol::wl_seat::WlSeat,
     },
@@ -17,16 +17,14 @@ impl XdgShellHandler for AbyssState {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        // A new toplevel breaks an active popup grab (COMP-06 §4).
-        crate::shell::popup_grab_dismiss(self);
+        // Nothing is placed yet: the client has not sent its app_id, title,
+        // parent or size limits, and rules placed on empty facts tiled every
+        // dialog first. The initial commit places the window
+        // (`shell::handle_commit`); one destroyed before it never touches
+        // the layout.
         // A surface can take a new xdg_toplevel after its old one died; stale
-        // unmap tracking from that one would place this window twice.
+        // unmap tracking from that one would misread the initial commit.
         crate::shell::reset_toplevel_map(surface.wl_surface());
-        surface.with_pending_state(|s| {
-            s.states.set(xdg_toplevel::State::Activated);
-        });
-        let window = Window::new_wayland_window(surface);
-        crate::shell::place_new_window(self, window);
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {

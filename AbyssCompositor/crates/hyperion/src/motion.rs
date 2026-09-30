@@ -88,6 +88,9 @@ impl Chip {
 pub struct Widget {
     pub extent: Animated,
     pub presence: Animated,
+    /// The pointer on the cell, eased: how far an overlaid grip's slide is
+    /// open (`bar::GRIP_HOVER_SLIDE`).
+    pub hover: Animated,
 }
 
 /// A grip being dragged.
@@ -217,6 +220,7 @@ impl Bar {
         for w in self.widgets.values_mut() {
             w.extent.set_motion(motion);
             w.presence.set_motion(motion);
+            w.hover.set_motion(motion);
         }
     }
 
@@ -325,6 +329,7 @@ impl Bar {
             let w = self.widgets.entry(key.clone()).or_insert_with(|| Widget {
                 extent: Animated::new(out.extent, motion),
                 presence: Animated::new(0.0, motion),
+                hover: Animated::new(0.0, motion),
             });
             if *present {
                 // A widget arriving from nothing arrives at its own width.
@@ -355,6 +360,7 @@ impl Bar {
         for w in self.widgets.values_mut() {
             w.extent.tick(now);
             w.presence.tick(now);
+            w.hover.tick(now);
         }
         self.art.tick(now);
     }
@@ -367,7 +373,15 @@ impl Bar {
             || self
                 .widgets
                 .values()
-                .any(|w| w.extent.animating() || w.presence.animating())
+                .any(|w| w.extent.animating() || w.presence.animating() || w.hover.animating())
+    }
+
+    /// The pointer came onto (`on`) or left `key`'s cell.
+    pub fn hover(&mut self, key: &str, on: bool, now: Instant) {
+        let snap = self.motion.snaps();
+        if let Some(w) = self.widgets.get_mut(key) {
+            aim(&mut w.hover, if on { 1.0 } else { 0.0 }, snap, now);
+        }
     }
 
     /// Let go of the grip: move `key`'s body to `target` at the finger's speed.
