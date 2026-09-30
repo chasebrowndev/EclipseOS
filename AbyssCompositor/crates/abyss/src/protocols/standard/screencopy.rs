@@ -22,6 +22,12 @@
 //! object (the protocol requires it) with no target and sends `failed` at
 //! once, so no `buffer` event, no offscreen texture and no queue entry ever
 //! exist for it.
+//!
+//! `overlay_cursor` is the client's opt-in to bake the pointer into the copy
+//! (COMP-02 §8: excluded unless asked). It rides on [`Target`] from the
+//! `capture_output`/`capture_output_region` request through to the
+//! [`capture::Pending`] the `copy` request queues, and a trusted prompt
+//! holding the seat still overrides it (`render::capture::copy_one`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -109,6 +115,8 @@ pub struct Target {
     pub output_id: u64,
     /// Output-local, physical.
     pub region: Rectangle<i32, Physical>,
+    /// The client's `overlay_cursor` ask (COMP-02 §8: opt-in, never ambient).
+    pub overlay_cursor: bool,
 }
 
 #[derive(Debug)]
@@ -182,21 +190,27 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for AbyssState {
         data_init: &mut DataInit<'_, Self>,
     ) {
         use zwlr_screencopy_manager_v1::Request;
-        let (frame, output, region, with_damage) = match request {
+        let (frame, output, region, with_damage, overlay_cursor) = match request {
             Request::CaptureOutput {
                 frame,
-                overlay_cursor: _,
+                overlay_cursor,
                 output,
-            } => (frame, output, None, false),
+            } => (frame, output, None, false, overlay_cursor != 0),
             Request::CaptureOutputRegion {
                 frame,
-                overlay_cursor: _,
+                overlay_cursor,
                 output,
                 x,
                 y,
                 width,
                 height,
-            } => (frame, output, Some((x, y, width, height)), false),
+            } => (
+                frame,
+                output,
+                Some((x, y, width, height)),
+                false,
+                overlay_cursor != 0,
+            ),
             Request::Destroy => return,
             _ => return,
         };
@@ -287,6 +301,7 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for AbyssState {
                 target: Some(Target {
                     output_id,
                     region: rect,
+                    overlay_cursor,
                 }),
                 used: AtomicBool::new(false),
                 with_damage,
@@ -355,6 +370,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for AbyssState {
             output_id: target.output_id,
             region: target.region,
             with_damage: with_damage || data.with_damage,
+            overlay_cursor: target.overlay_cursor,
         });
         crate::backend::damage_all(state);
     }

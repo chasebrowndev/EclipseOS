@@ -2639,23 +2639,26 @@ surface never contributes a pixel without `capture.secret`.
 
 ~~All optional, all off by default until 9b, all designed for now:~~
 *(amended C-01, 2026-09-23)* All optional and all built (9b is at parity).
-Defaults (`config/schema.rs`): **blur on** (`decoration.blur`, size 8, 2
-passes), **rounding 13**, border 2; shadows, glow, dim-inactive and
+Defaults (`config/schema.rs`): **blur on** (`decoration.blur`, size 8,
+~~2~~ *(C-14)* 4 passes), **rounding 13**, border 2; shadows, glow, dim-inactive and
 animations off; active and inactive opacity 1.0.
 
 | Effect | Implementation | Cost note |
 |---|---|---|
 | Rounded corners | Fragment-shader mask in the surface pass | Negligible; disables direct scanout for that surface |
-| Borders | Quad pass around surface geometry | Negligible |
-| Shadows | ~~Pre-blurred nine-slice texture~~ *(C-11)* SDF pixel shader over the bordered rect grown by `range`; drawn only outside it, so a translucent window is not darkened by its own shadow | Cheap; expands damage |
-| Glow *(added C-11)* | The shadow's pixel shader, tinted with the window's border colour (following its focus crossfade) and scaled by `strength`; reaches a fixed 24 logical px, drawn only outside the bordered rect, below the border and surface; `active` / `inactive` gate it per focus state | Cheap; expands damage |
+| Borders | Quad pass around surface geometry. *(C-15)* In `glass` mode a tiled or floating window's border is a glass bezel instead: its backdrop grows by `border-size` (radius rounding + border), the painted ring is skipped, the lens bends only inside the ring, the hairline takes the border colour (following the focus crossfade) and a faint seam marks where glass meets content. An opaque window gets a ring-only backdrop; maximized, fullscreen and rotated outputs keep the painted border | Negligible; a bezel on an opaque window costs a ring-only blur and damages only the four ring strips |
+| Shadows | ~~Pre-blurred nine-slice texture~~ *(C-11)* SDF pixel shader over the bordered rect grown by `range`; drawn only outside it, so a translucent window is not darkened by its own shadow. *(C-14)* Two gaussian layers — a tight contact shadow and a wide ambient one — dropped downward by ≈0.3·`range`, still excluded under the unshifted rect; deeper and wider on the focused window, following the border's focus crossfade | Cheap; expands damage (grown downward by the drop) |
+| Glow *(added C-11)* | The shadow's ~~pixel shader~~ *(C-14)* original single-ring pixel shader (not the dropped two-layer one), tinted with the window's border colour (following its focus crossfade) and scaled by `strength`; reaches a fixed 24 logical px, drawn only outside the bordered rect, below the border and surface; `active` / `inactive` gate it per focus state | Cheap; expands damage |
 | Dim inactive | Colour multiply in the surface pass | Negligible |
 | Blur | Dual-Kawase downsample/upsample, N passes on the region behind translucent surfaces | Expensive; expands damage by kernel radius; disables direct scanout; skipped entirely when the blurred surface is opaque |
 | Animations | Interpolated geometry driven by the frame clock | Forces repaint while running; must not extend past the animation |
 
 *(added C-01, 2026-09-23)* Blur applies only behind a translucent surface.
 A toplevel is translucent when its alpha (`active-opacity` /
-`inactive-opacity`, or an `opacity` rule) is below 1.0; a `blur` rule
+`inactive-opacity`, or an `opacity` rule) is below 1.0 *(C-14)* **or** its
+surfaces' opaque region leaves part of its geometry uncovered (ignoring the
+corners the rounding mask hides); a buffer without an alpha channel counts
+as fully opaque. Content is never faded to obtain glass. A `blur` rule
 (COMP-05 §4) overrides the global switch for that window but never blurs an
 opaque one. Layer-shell surfaces get a backdrop wherever their opaque region
 leaves glass. Rounding applies to that backdrop: `decoration.rounding` by
@@ -2668,11 +2671,16 @@ unless it holds a positive exclusive zone (the bar), which uses
 the dual-Kawase backdrop above and differ only in the shader that draws it
 under the surface: `blur` is the rounded mask alone; `frost` adds a tint
 (`decoration.blur.frost.tint`) and fine grain; `glass` ("Liquid Glass")
-refracts the backdrop through a rounded-box SDF bevel — the bevel band
+refracts the backdrop through a rounded-box SDF bevel — ~~the bevel band
 refracts the *unblurred* backdrop (level 0 of the chain, kept per glass
-surface only) and fades into the blurred backdrop across the interior — with
-chromatic dispersion in the bevel band and a specular rim
-(`decoration.blur.glass` tunables). `off` draws no backdrop and expands no damage. Every rule in
+surface only) and fades into the blurred backdrop across the interior~~
+*(C-14)* the bevel bends the *blurred* backdrop only, a gentle roll-off
+confined to the bevel with the interior undistorted — with
+chromatic dispersion in the bevel band (default 0) and a specular rim
+(`decoration.blur.glass` tunables). *(C-14)* Glass also applies vibrancy
+(saturation ≈1.7 about Rec.709 luma, soft luminance compression, a
+near-neutral smoke), a near-white hairline rim of ≈1.25 physical px with a
+top-left and a weaker bottom-right lobe, and ±0.5/255 dither against banding. `off` draws no backdrop and expands no damage. Every rule in
 this section — translucent-only, layer opaque regions, rounding, direct
 scanout, COMP-14 §6 shedding (which sheds every mode) — applies to all
 modes alike. Where glass samples beyond the kernel footprint, the §3
@@ -7295,6 +7303,8 @@ against source before it was written. Nothing was renumbered.
 | C-11 | COMP-02 §4, §9; COMP-13 §1.1 | *(2026-09-25)* Border glow added: `decoration.glow { enabled; active; inactive; strength }`, the shadow shader in the border colour, outside-only, between shadow and border. Shadow row corrected from "nine-slice texture" to the SDF shader it is | yes |
 | C-12 | COMP-04 §2 | *(2026-09-24, owner ruling)* Bindable gestures gain `gesture "drag"`: modifier + 2/3/4-finger touchpad drag moves the window under the pointer, default Super + two fingers; two fingers claimed from finger scroll at its first event, without the modifiers scrolling is untouched; a finger count is swiped or dragged, not both (ADR 0059) | yes |
 | C-13 | COMP-02 §9; COMP-05 §4; COMP-13 §1.1 | *(2026-09-27, owner ruling)* Blur gains `decoration.blur.mode` `off\|blur\|frost\|glass` (default `blur`): frost and Liquid Glass are alternative final-draw shaders over the unchanged dual-Kawase backdrop; `enabled` kept as a legacy alias; the `blur` rule takes a mode; glass widens damage expansion by its refraction offset | yes |
+| C-14 | COMP-02 §9 | *(2026-09-29, owner ruling)* One macOS-like material: a toplevel blurs where its opaque region leaves gaps, not only at alpha < 1 (default `active-opacity` 1.0, content never faded); glass bends the blurred backdrop only (no level-0 copy) and adds vibrancy, a neutral two-lobe hairline rim and dither; glass defaults refraction 4, bevel 16, dispersion 0, rim 0.5; blur default 4 passes; shadow becomes two offset gaussian layers, deeper on focus | yes |
+| C-15 | COMP-02 §9 | *(2026-09-29, owner ruling)* In glass mode the window border is a glass bezel: `border-size` is its width and the border colours tint its rim light (gold on focus). The bar's own margins follow `gaps-out`, so screen→bar matches windows→screen; the tiling area is unchanged (a window still shrinks by exactly the exclusive zone, as wlcs asserts) | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing

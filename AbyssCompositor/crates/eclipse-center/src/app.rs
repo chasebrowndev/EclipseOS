@@ -56,9 +56,12 @@ pub struct App {
     /// decision explained in our words instead of its own is a worse answer.
     pub problem: Option<String>,
     /// The panel's glass radius, read once from `decoration.rounding` at
-    /// startup (BLUR-06). `crate::conn::fetch_glass_radius` is fail-soft, so
+    /// startup (BLUR-06). `crate::conn::fetch_glass` is fail-soft, so
     /// this falls back to the compile-time token when nothing answers.
     pub glass_radius: f32,
+    /// Whether the compositor's blur is behind the sheet, read with the
+    /// radius; `false` when nothing answers, so the sheet stays opaque.
+    pub blur: bool,
 }
 
 impl Default for App {
@@ -74,6 +77,7 @@ impl App {
             .as_ref()
             .map(|s| ACTIONS.iter().map(|&a| (a, s.availability(a))).collect())
             .unwrap_or_default();
+        let (radius, blur) = crate::conn::fetch_glass();
         App {
             session,
             offered,
@@ -81,7 +85,8 @@ impl App {
             bluetooth: Bluetooth::default(),
             battery: None,
             problem: None,
-            glass_radius: crate::conn::fetch_glass_radius().unwrap_or(eclipse_ui::tokens::radius::CARD),
+            glass_radius: radius.unwrap_or(eclipse_ui::tokens::radius::CARD),
+            blur: blur.unwrap_or(false),
         }
     }
 }
@@ -153,6 +158,7 @@ mod tests {
             battery: None,
             problem: None,
             glass_radius: eclipse_ui::tokens::radius::CARD,
+            blur: false,
         };
         let _ = update(&mut app, Message::Perform(Action::PowerOff));
         assert!(app.problem.is_some());

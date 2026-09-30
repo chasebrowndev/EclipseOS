@@ -60,14 +60,6 @@ impl Grip {
             Grip::Active => bar::GRIP_LINE_H_ACTIVE,
         }
     }
-
-    fn wash(self) -> Color {
-        match self {
-            Grip::Rest => Color::TRANSPARENT,
-            Grip::Hover => color::LIFT_SOFT,
-            Grip::Active => color::LIFT,
-        }
-    }
 }
 
 /// The grip: one thin vertical line — a `|` with round ends — centred in a
@@ -85,6 +77,13 @@ impl Grip {
 /// [`bar::GRIP_LINE_H_ACTIVE`]); it never becomes anything but one line. It
 /// is also the whole of a compressed widget, so it is drawn to stand alone: a
 /// slim capsule with a mark in it, never an empty sliver.
+///
+/// It draws no ground of its own. The grip sits inside its cell's glass
+/// ([`glass_cell`]), and that cell already reads the pointer: hovering the
+/// grip lights the whole cell, and a drag holds it at the press state. A
+/// second fill here could only ever disagree with the cell's capsule — a
+/// narrower column cannot carry the cell's radius, so it poked past the
+/// curve and seamed against the cell's own hover.
 pub struct DragBar<'a, Message> {
     floor: Grip,
     on_press: Option<Message>,
@@ -92,6 +91,9 @@ pub struct DragBar<'a, Message> {
     on_release: Option<Message>,
     opacity: f32,
     width: f32,
+    /// Ink kept at rest while the pointer is nowhere on the cell, as a
+    /// fraction: `1.0` always shows the line, `0.0` shows it only on hover.
+    rest_ink: f32,
 }
 
 /// A grip at rest, with no gesture wired. See [`DragBar`].
@@ -103,6 +105,7 @@ pub fn drag_bar<'a, Message>() -> DragBar<'a, Message> {
         on_release: None,
         opacity: 1.0,
         width: bar::GRIP_W,
+        rest_ink: 1.0,
     }
 }
 
@@ -146,6 +149,21 @@ impl<'a, Message> DragBar<'a, Message> {
     /// point its grip goes keeps following the finger.
     pub fn width(mut self, width: f32) -> Self {
         self.width = width.clamp(0.0, bar::GRIP_W);
+        self
+    }
+
+    /// Show the line only while the pointer is on the cell the grip sits in,
+    /// keeping `rest` (`0.0..=1.0`) of its ink otherwise.
+    ///
+    /// On borderless glass a resting `|` beside every widget is a column of
+    /// marks nobody asked for: the widget reads as a widget from its content,
+    /// and the grip only needs to exist once a hand is near it. A compressed
+    /// widget is its grip alone, so a caller passes how shut it is as `rest`
+    /// and a closed widget keeps its mark. "On the cell" is the viewport the
+    /// enclosing [`glass_cell`] draws its content into — the cell's visible
+    /// bounds — so the grip lights with the ground it sits on.
+    pub fn reveal_on_hover(mut self, rest: f32) -> Self {
+        self.rest_ink = rest.clamp(0.0, 1.0);
         self
     }
 
@@ -300,38 +318,20 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for DragBar<'_, Mess
         _style: &renderer::Style,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        _viewport: &Rectangle,
+        viewport: &Rectangle,
     ) {
         let b = layout.bounds();
         let st = tree.state.downcast_ref::<GripState>();
         let look = st.look(self.floor, self.wired() && cursor.is_over(b));
+        let ink = if look == Grip::Rest && !cursor.is_over(*viewport) {
+            self.opacity * self.rest_ink
+        } else {
+            self.opacity
+        };
 
-        // The wash sits inside the shell's hairline and follows its left
-        // corners, so a hovered grip is a lit end of the capsule rather than
-        // a square pasted onto it.
-        if self.opacity <= 0.0 || b.width <= bar::HAIRLINE {
+        // A column narrower than the stroke has no room for it.
+        if self.opacity <= 0.0 || b.width < bar::GRIP_LINE_W {
             return;
-        }
-        let wash = look.wash().scale_alpha(self.opacity);
-        if wash.a > 0.0 {
-            let inset = bar::HAIRLINE;
-            let r = (bar::RADIUS_WIDGET - inset).max(0.0);
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds: Rectangle {
-                        x: b.x + inset,
-                        y: b.y + inset,
-                        width: b.width - inset,
-                        height: b.height - 2.0 * inset,
-                    },
-                    border: Border {
-                        radius: iced::border::Radius::default().top_left(r).bottom_left(r),
-                        ..Border::default()
-                    },
-                    ..renderer::Quad::default()
-                },
-                wash,
-            );
         }
 
         // One thin `|`, pill-capped. Whole-pixel x so the stroke lands on
@@ -351,7 +351,7 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for DragBar<'_, Mess
                 },
                 ..renderer::Quad::default()
             },
-            look.ink().scale_alpha(self.opacity),
+            look.ink().scale_alpha(ink),
         );
     }
 }
@@ -398,9 +398,9 @@ struct Clip<'a, Message> {
     visible: f32,
     height: f32,
     edge: ClipEdge,
-    /// `Some(accent)` draws the bar cell ground.
-    ground: Option<bool>,
-    /// The ground's opacity: its fill and hairline scale by this.
+    /// `Some(tone)` draws the bar cell ground.
+    ground: Option<crate::theme::CellTone>,
+    /// The ground's opacity: its fill, hairline and drop scale by this.
     opacity: f32,
     /// Where the child sits, overriding `edge`: a squeezed shell pins its
     /// core's leading part instead of sliding it out from under the grip.
@@ -598,9 +598,9 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Clip<'_, Message> {
         let Some(clip) = bounds.intersection(viewport) else {
             return;
         };
-        if let (Some(accent), true) = (self.ground, bounds.width >= 1.0 && self.opacity > 0.0) {
+        if let (Some(tone), true) = (self.ground, bounds.width >= 1.0 && self.opacity > 0.0) {
             let st = tree.state.downcast_ref::<CellState>();
-            let look = crate::theme::bar_cell(accent)(theme, st.status(cursor.is_over(bounds)));
+            let look = crate::theme::bar_cell(tone)(theme, st.status(cursor.is_over(bounds)));
             // A cell narrower than its corners is a capsule, not a pinched
             // square: the radius never exceeds half the short side.
             let r = bar::RADIUS_CELL.min(bounds.width / 2.0).min(bounds.height / 2.0);
@@ -615,6 +615,10 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Clip<'_, Message> {
                         color: look.border.color.scale_alpha(self.opacity),
                         width: look.border.width,
                         radius: r.into(),
+                    },
+                    shadow: iced::Shadow {
+                        color: look.shadow.color.scale_alpha(self.opacity),
+                        ..look.shadow
                     },
                     ..renderer::Quad::default()
                 },
@@ -918,8 +922,8 @@ pub fn widget_shell_with<'a, Message: 'a>(
 }
 
 /// A bare glass cell: `content` laid out at `natural` width, shown `visible`
-/// wide on the bar cell ground, pinned at `edge`. `accent` is a window that
-/// is up.
+/// wide on the bar cell ground, pinned at `edge`. `tone` is the cell's look
+/// ([`crate::theme::CellTone`]; `true` is the focused window).
 ///
 /// What [`widget_shell`] draws its ground with, exposed for the cells that
 /// are not widgets — the window chips — and for a widget that has nothing to
@@ -930,10 +934,10 @@ pub fn glass_cell<'a, Message: 'a>(
     content: impl Into<Element<'a, Message, Theme>>,
     natural: f32,
     visible: f32,
-    accent: bool,
+    tone: impl Into<crate::theme::CellTone>,
     edge: ClipEdge,
 ) -> Element<'a, Message, Theme> {
-    glass_cell_faded(content, natural, visible, accent, edge, 1.0)
+    glass_cell_faded(content, natural, visible, tone, edge, 1.0)
 }
 
 /// [`glass_cell`] with its ground (fill and hairline) at `opacity`, for a
@@ -945,7 +949,7 @@ pub fn glass_cell_faded<'a, Message: 'a>(
     content: impl Into<Element<'a, Message, Theme>>,
     natural: f32,
     visible: f32,
-    accent: bool,
+    tone: impl Into<crate::theme::CellTone>,
     edge: ClipEdge,
     opacity: f32,
 ) -> Element<'a, Message, Theme> {
@@ -956,7 +960,7 @@ pub fn glass_cell_faded<'a, Message: 'a>(
         visible,
         height: bar::WIDGET_H,
         edge,
-        ground: Some(accent),
+        ground: Some(tone.into()),
         opacity: opacity.clamp(0.0, 1.0),
         anchor: None,
         trail: 0.0,

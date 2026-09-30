@@ -15,10 +15,12 @@ fn namespace() -> String {
     "eclipse-center".to_owned()
 }
 
-/// Gap between the bar's bottom edge and the panel.
-const TOP_MARGIN: i32 = eclipse_ui::tokens::bar::HEIGHT as i32 + 4;
-/// Gap between the panel and the right edge of the output.
-const RIGHT_MARGIN: i32 = 4;
+/// Gap between the bar's bottom edge and the panel. Layer-shell margin, not
+/// padding inside the surface: the compositor blurs the whole surface.
+const TOP_MARGIN: i32 = eclipse_ui::tokens::bar::SHEET_MARGIN_TOP;
+/// Gap between the panel and the right edge of the output — the bar
+/// capsule's own, so the panel's right edge lines up under it.
+const RIGHT_MARGIN: i32 = eclipse_ui::tokens::bar::SHEET_MARGIN_X;
 
 fn main() -> iced_layershell::Result {
     // A menu has no business holding the selection.

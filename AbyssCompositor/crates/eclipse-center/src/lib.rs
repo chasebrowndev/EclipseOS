@@ -5,5 +5,5 @@ pub mod app;
 pub mod conn;
 pub mod view;
 
-/// Width of the panel's surface, including its outer padding.
-pub const WIDTH: u32 = 380;
+/// Width of the panel's surface — the sheet itself, edge to edge.
+pub const WIDTH: u32 = 360;

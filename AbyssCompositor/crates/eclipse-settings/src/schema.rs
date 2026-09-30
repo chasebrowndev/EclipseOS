@@ -302,6 +302,12 @@ impl Row {
             "idle.dpms-timeout-seconds" => "Screen off after (seconds)",
             "idle.lock-timeout-seconds" => "Lock after (seconds)",
             "capture.redact-app-id" => "Redact app IDs",
+            // Gaps are named for where the air is, not for the mechanism;
+            // the vertical pair only shows once set apart (`mirror_of`).
+            "general.gaps-in" => "Between windows",
+            "general.gaps-out" => "Screen edges",
+            "general.gaps-in-vertical" => "Between rows",
+            "general.gaps-out-vertical" => "Top and bottom",
             // A bare verb or state under its node's heading reads as an
             // instruction or a report, not as a setting.
             "xwayland.enable" => "Xwayland enabled",
@@ -340,6 +346,22 @@ impl Row {
     pub fn as_f64(&self) -> f64 {
         self.value.as_f64().unwrap_or(0.0)
     }
+
+    /// The key this one follows while unset: `general.gaps-in-vertical`
+    /// mirrors `general.gaps-in` until it is given a value of its own. Read
+    /// from the shape the schema gives such a key (an `-vertical` twin whose
+    /// default is unset), not from a list kept here.
+    pub fn mirror_of(&self) -> Option<&str> {
+        self.path
+            .strip_suffix("-vertical")
+            .filter(|_| self.default.is_null())
+    }
+
+    /// The unit a number is in, when its doc names one. Every length in the
+    /// compositor's schema is documented as "logical px".
+    pub fn unit(&self) -> Option<&'static str> {
+        self.doc.contains("logical px").then_some("px")
+    }
 }
 
 /// Parse a whole `get_config` reply, dropping rows this build cannot render.
@@ -368,6 +390,24 @@ mod tests {
     }
 
     #[test]
+    fn an_unset_vertical_twin_mirrors_its_key_and_lengths_are_px() {
+        let row = |path: &str, default: Value, doc: &str| {
+            Row::parse(&json!({
+                "path": path, "file": "abyss", "type": "int",
+                "constraints": { "min": 0, "max": 512 },
+                "value": null, "default": default, "doc": doc,
+            }))
+            .expect("an int row parses")
+        };
+        let v = row("general.gaps-out-vertical", Value::Null, "Gap, logical px.");
+        assert_eq!(v.mirror_of(), Some("general.gaps-out"));
+        assert_eq!(v.unit(), Some("px"));
+        let plain = row("general.gaps-out", json!(10), "Gap, logical px.");
+        assert_eq!(plain.mirror_of(), None);
+        assert_eq!(row("input.repeat-rate", json!(25), "Per second.").unit(), None);
+    }
+
+    #[test]
     fn a_label_is_the_last_segment_unless_it_names_a_thing() {
         let row = |path: &str| {
             Row::parse(&json!({
@@ -380,7 +420,7 @@ mod tests {
             row("input.focus-follows-mouse-across-outputs").label(),
             "Focus follows mouse across outputs"
         );
-        assert_eq!(row("general.gaps-in").label(), "Gaps in");
+        assert_eq!(row("general.gaps-in").label(), "Between windows");
         assert_eq!(row("bar.eye").label(), "Eye indicator");
         assert_eq!(row("mode").label(), "Interaction mode");
         assert_eq!(row("components.control-center").label(), "Control center");

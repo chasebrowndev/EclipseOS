@@ -79,8 +79,11 @@ separate work:
 - **Glass that morphs** between shapes as a surface changes.
 - **A luminance event**, so a client can tell whether the backdrop behind its
   glass is light or dark and pick legible text.
-- **Cheaper snapshots.** Each glass surface keeps a full-output sharp copy
-  (about 8 MB at 1080p). Rework this if many glass surfaces become common.
+- **Floating-layer shadows** (launcher, center, toasts). Keep them per
+  `LayerSurface` in `BorderStore` (a `HashMap` pruned by `alive()`), reusing the
+  layer classification `insert_blur` does in `render/mod.rs`, and draw the shadow
+  before the blur element. Blocked on BLUR-03: the toast surface is bigger than
+  its cards, so the shadow would frame the whole block.
 
 ## Window management
 

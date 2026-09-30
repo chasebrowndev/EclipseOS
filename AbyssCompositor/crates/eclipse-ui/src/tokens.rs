@@ -76,6 +76,47 @@ pub mod color {
     /// opaque. Use this, not `GLASS_DEEP` directly, for a surface's own
     /// background — see the note on [`super::over_opaque`] (BLUR-01).
     pub const GLASS_DEEP_BACKED: Color = super::over_opaque(GLASS_DEEP, SURFACE_1);
+    /// The tint a floating sheet (launcher, center, toast, menu) lays over
+    /// the compositor's material when `decoration.blur` is on.
+    ///
+    /// Light on purpose. The compositor now draws the whole material under
+    /// the client — blur, vibrancy, a near-white rim and a soft shadow — so
+    /// the client only has to darken the backdrop enough for text. Anything
+    /// heavier buries the blur, and the sheet reads as a dark slab again.
+    pub const SHEET_TINT: Color = Color {
+        a: 0.34,
+        ..rgb(0x17140f)
+    };
+    /// The bar capsule's tint over the same material. Lighter than
+    /// [`SHEET_TINT`]: the bar is one dense row of short labels at the top
+    /// edge, and it should read as the thinnest pane of glass on screen.
+    pub const BAR_TINT: Color = Color {
+        a: 0.22,
+        ..rgb(0x17140f)
+    };
+    /// A bar cell — chip, widget, pager tile, launcher — is a small glass
+    /// lozenge on the bar's glass: a faint white fill, a hairline just
+    /// inside its edge, and a soft shadow under it ([`CELL_SHADOW`]). The
+    /// three move together with the pointer, so a hovered cell reads as the
+    /// same tile lifted a little, never as a grey slab dropped on the bar.
+    pub const CELL: Color = white(0.05);
+    pub const CELL_HOVER: Color = white(0.08);
+    pub const CELL_PRESS: Color = white(0.12);
+    /// The cell's inside hairline at rest, and under the pointer (and
+    /// pressed). Neutral on every cell, the focused chip included: the
+    /// accent goes on a fill and a label, never on an outline.
+    pub const CELL_RIM: Color = white(0.10);
+    pub const CELL_RIM_HOVER: Color = white(0.14);
+    /// A minimized window's chip: no fill, only this ghost of a rim, so the
+    /// put-away window is still a place to click and nothing more.
+    pub const CELL_RIM_AWAY: Color = white(0.05);
+    /// The soft drop under a bar cell. Geometry in [`super::bar`].
+    pub const CELL_SHADOW: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.30,
+    };
     /// The ground under a floating sheet that must stay readable over any
     /// wallpaper — a context menu, a tray drawer. Nearly opaque on purpose:
     /// a menu is a mark rail, and a mark rail that lets the desktop through
@@ -128,6 +169,15 @@ pub mod color {
             ..GLASS
         },
     ];
+    /// [`VEIL`] on a translucent column ([`CONTENT`] over the compositor's
+    /// blur). There the ground is the backdrop, which no client can repaint:
+    /// `BASE` lands as a dark box and a repainted white tint as a light one
+    /// (the renderer blends in linear light). Only the column's own dark
+    /// tint, at the veil's strength, fades a row without drawing a slab.
+    pub const VEIL_GLASS: [Color; 1] = [Color {
+        a: CONTENT.a * VEIL_STRENGTH,
+        ..CONTENT
+    }];
     /// How far a [`VEIL`] fades what it covers toward the ground.
     pub const VEIL_STRENGTH: f32 = 0.62;
     /// Sidebar ground: darker than the panes it sits beside.
@@ -137,6 +187,22 @@ pub mod color {
         b: 0.0,
         a: 0.4,
     };
+    /// [`SIDEBAR`] over [`BASE`], opaque: the sidebar's ground when there is
+    /// no compositor blur behind the window to show through it.
+    pub const SIDEBAR_BACKED: Color = super::over_opaque(SIDEBAR, BASE);
+    /// The content column beside the sidebar, over the compositor's blur:
+    /// the same smoked glass, a step lighter than [`SIDEBAR`] so the nav
+    /// still reads as the darker rail, and dense enough that body text
+    /// holds over a bright wallpaper. With it the window is one pane of
+    /// glass, split by a hairline, instead of a glass rail beside a slab.
+    pub const CONTENT: Color = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.28,
+    };
+    /// [`CONTENT`] over [`BASE`], opaque: the column's ground with blur off.
+    pub const CONTENT_BACKED: Color = super::over_opaque(CONTENT, BASE);
 
     /// The single accent. See `accent discipline` in the spec: it marks state
     /// and one live value per screen, and is never decorative.
@@ -150,6 +216,13 @@ pub mod color {
     pub const ACCENT_WASH: Color = Color { a: 0.035, ..ACCENT };
     /// The pressed/active accent ground, one step above [`ACCENT_FILL`].
     pub const ACCENT_FILL_STRONG: Color = Color { a: 0.18, ..ACCENT };
+    /// A focused bar chip under the pointer: between [`ACCENT_FILL`] at rest
+    /// and [`ACCENT_FILL_STRONG`] pressed.
+    pub const ACCENT_FILL_HOVER: Color = Color { a: 0.13, ..ACCENT };
+    /// How far a minimized window's chip — label and icon — fades. The
+    /// spec's tertiary text value, so a minimized chip reads as the same
+    /// quiet tier as every other tertiary mark.
+    pub const DIM: f32 = 0.40;
 
     pub const TEXT: Color = white(1.0);
     pub const TEXT_SECONDARY: Color = white(0.64);
@@ -253,6 +326,9 @@ pub mod space {
     /// The typed-entry box beside that track: wide enough for a signed
     /// four-digit reading, narrow enough that it reads as a readout.
     pub const NUMBER_W: f32 = 64.0;
+    /// The unit after that entry ("px"). Reserved on every settings slider,
+    /// unit or not, so the entries of one panel stand in one column.
+    pub const UNIT_W: f32 = 2.0 * super::canvas::MONO_CHAR_W;
     /// A free-text field in a settings row.
     pub const FIELD_W: f32 = 220.0;
     /// The slot beside a free-text field that says "invalid" while its draft
@@ -264,7 +340,7 @@ pub mod space {
     /// A column of settings rows set beside a hero rather than filling the
     /// pane (the Taskbar's Motion band): exactly wide enough for a numeric
     /// row folded under its label, so the band wraps instead of squeezing it.
-    pub const CONTROL_COL_W: f32 = SLIDER_W + CONTROL_GAP + NUMBER_W + 2.0 * CARD;
+    pub const CONTROL_COL_W: f32 = SLIDER_W + CONTROL_GAP + NUMBER_W + CONTROL_GAP + UNIT_W + 2.0 * CARD;
     /// Between the two halves of one control (track and entry).
     pub const CONTROL_GAP: f32 = 10.0;
     /// Between the pills of one segmented choice.
@@ -328,9 +404,11 @@ pub mod size {
 /// still here rather than in the bar crate so that a second edge surface
 /// (a dock, a second monitor's bar) cannot drift from it.
 pub mod bar {
-    /// Bar height in logical pixels, and therefore its exclusive zone. Tall
-    /// enough for a two-line clock and an icon-led task button.
-    pub const HEIGHT: f32 = PILL_H + 2.0 * MARGIN_Y;
+    /// The strip a shown bar takes from its screen edge with the fallback
+    /// air: the pill plus [`MARGIN_Y`] above it. The exclusive zone itself
+    /// is [`PILL_H`] alone — layer-shell adds the edge margin, and the
+    /// compositor adds `gaps-in` below, the bar being a neighbour.
+    pub const HEIGHT: f32 = PILL_H + MARGIN_Y;
     /// The thickness of an edge marker on the bar. The bar itself no longer
     /// draws a rule top or bottom — see [`PILL_H`].
     pub const HAIRLINE: f32 = 1.0;
@@ -347,7 +425,10 @@ pub mod bar {
     ///
     /// Applied as layer-shell margin, never as padding inside the surface:
     /// the compositor blurs the whole surface at `bar.rounding`, so any air
-    /// drawn inside it shows as a blurred rim around the pill.
+    /// drawn inside it shows as a blurred rim around the pill. Live, the bar
+    /// follows `general.gaps-out` (and `gaps-out-vertical`) instead, so the
+    /// pill sits as far from the screen edge as a window does; these are the
+    /// fallback when nothing answers.
     pub const MARGIN_X: f32 = 10.0;
     pub const MARGIN_Y: f32 = 6.0;
     /// The y of the bar sheet's bottom edge, in surface-local coordinates:
@@ -366,12 +447,30 @@ pub mod bar {
     pub const PAGER_W: f32 = 24.0;
     pub const PAGER_H: f32 = 24.0;
 
-    /// Radii, on the spec's inset-chip scale (9-11). A bar cell is a chip:
-    /// it is small, it sits on glass, and it is never a card. The bar's own
-    /// outline is a pill — [`RADIUS_SHEET`], half its height.
+    /// Radii. The bar's own outline is a pill — [`RADIUS_SHEET`], half its
+    /// height — and every cell inside it is concentric with that pill: a
+    /// cell is inset `(PILL_H - TASK_H) / 2` from the capsule edge, so its
+    /// radius is the capsule's minus that inset, which is half its own
+    /// height. Chips and widgets therefore read as capsules nested in the
+    /// capsule, never as squares dropped onto it.
     pub const RADIUS_SHEET: f32 = PILL_H / 2.0;
-    pub const RADIUS_CELL: f32 = 11.0;
-    pub const RADIUS_TILE: f32 = 9.0;
+    pub const RADIUS_CELL: f32 = TASK_H / 2.0;
+    /// A pager tile is the exception: a truly concentric 24px tile would be
+    /// a circle, and the launcher mark is the bar's only circle. A small
+    /// squircle keeps the pager legible as "numbered places", not buttons.
+    pub const RADIUS_TILE: f32 = 8.0;
+    /// The drop under a bar cell ([`super::color::CELL_SHADOW`]): a pixel
+    /// down and a short blur — enough to lift a lozenge off the glass, not
+    /// enough to read as a floating card.
+    pub const CELL_SHADOW_Y: f32 = 1.0;
+    pub const CELL_SHADOW_BLUR: f32 = 6.0;
+    /// Air between a floating sheet (center, toasts) and the screen edge or
+    /// the bar strip, as layer-shell margin. The bar's own side margin, so a
+    /// sheet under the bar lines up with the capsule's right end.
+    pub const SHEET_MARGIN_X: i32 = MARGIN_X as i32;
+    /// A sheet's top margin under the bar: the capsule's bottom edge plus
+    /// [`MARGIN_X`], so the air above the sheet matches the air beside it.
+    pub const SHEET_MARGIN_TOP: i32 = (MARGIN_Y + PILL_H + MARGIN_X) as i32;
     /// The rounded square a stand-in icon is drawn into, matching the
     /// reference panes' 6px-on-18px placeholder squares.
     pub const RADIUS_ICON: f32 = 6.0;

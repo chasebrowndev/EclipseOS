@@ -6,10 +6,23 @@ yellow accent. Use this as art direction; do not copy any specific screen.
 ## Colour
 - Window / desktop base: #0b0906 (warm near-black — never blue-grey)
 - Secondary surfaces behind glass: #12100b, #1a1712, #1c1913
-- Glass panels: rgba(255,255,255,.035) to .06 fill, backdrop-filter: blur(28-56px) saturate(120-170%)
+- Glass panels: rgba(255,255,255,.035) to .06 fill, backdrop-filter: blur(28-56px) saturate(120-170%).
+  The compositor draws the material (blur, saturation, hairline rim, shadow) under the
+  surface (COMP-02 §9, C-14); a client only lays the light tint on top and must not paint
+  an opaque ground while blur is on. Radii stay concentric with the compositor's mask.
+  One material per window: in Settings the content column is a rgba(0,0,0,.28) tint on
+  the same blur as the sidebar (opaque #0b0906-backed equivalent with blur off), parted
+  from the sidebar by a 1px hairline, not by a change of ground.
 - Panel borders: 1px solid rgba(255,255,255,.08-.16)
-- Top edge highlight: inset 0 1px 0 rgba(255,255,255,.07-.2)
-- Outer shadow: 0 24-40px 60-90px -20px rgba(0,0,0,.85-.92)
+- Top edge highlight: inset 0 1px 0 rgba(255,255,255,.07-.2) — only on the blur-off fallback;
+  on glass the compositor's rim lights the edge
+- Outer shadow: 0 24-40px 60-90px -20px rgba(0,0,0,.85-.92) — the window's, drawn by the
+  compositor. Cards inside a window carry no drop shadow: white fill + hairline only
+- Bar cells (task chips, pager tiles, launcher) are small glass lozenges: rgba(255,255,255,.05)
+  fill, 1px inside hairline rgba(255,255,255,.10), 0 1px 6px rgba(0,0,0,.30). Hover .08 fill /
+  .14 hairline; press .12 fill, no shadow. The focused chip and the active workspace take the
+  accent tint fill with a neutral hairline; a minimized chip has no fill, a .05 hairline, dimmed
+  text. The grip is part of its cell: it paints no ground, only its dots brighten on hover
 - Accent: #f2c33c. Tints: rgba(242,195,60,.09) fill, .24-.32 border, #f5cf5c for text
 - Text: #fff primary, rgba(255,255,255,.64) secondary, rgba(255,255,255,.4) tertiary
 - Neutral swatch grey: #96918a (warm, not #8f8f96)

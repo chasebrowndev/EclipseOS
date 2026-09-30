@@ -260,6 +260,11 @@ pub struct Pending {
     /// Region of the output to copy, output-local and physical.
     pub region: Rectangle<i32, Physical>,
     pub with_damage: bool,
+    /// Bake the pointer cursor into the copy (`wlr_screencopy`'s
+    /// `overlay_cursor`, COMP-02 §8). `ext_image_copy_capture_v1` frames never
+    /// set this — that protocol's cursor mechanism is a separate session, not
+    /// a flag on the main frame.
+    pub overlay_cursor: bool,
 }
 
 /// Is this surface sensitive at *surface* granularity? Ratchet rule
@@ -602,7 +607,11 @@ pub fn indicator(output: &Output, active: bool) -> Vec<AbyssRenderElement> {
 
 /// Service every queued capture. Called once per composite, from the backend
 /// that owns the renderer — the only place a `GlesRenderer` is reachable.
-pub fn service(state: &mut AbyssState, renderer: &mut GlesRenderer) {
+///
+/// `seat_held_by_prompt` names no module on purpose: this file must never
+/// import the compositor's modal-prompt code, so the backend computes the
+/// answer and hands it down as a plain bool instead.
+pub fn service(state: &mut AbyssState, renderer: &mut GlesRenderer, seat_held_by_prompt: bool) {
     if state.captures.is_empty() {
         return;
     }
@@ -618,7 +627,7 @@ pub fn service(state: &mut AbyssState, renderer: &mut GlesRenderer) {
             p.sink.failed();
             continue;
         }
-        match copy_one(state, renderer, &p) {
+        match copy_one(state, renderer, &p, seat_held_by_prompt) {
             Ok(transform) => {
                 let now = std::time::Duration::from(state.clock.now());
                 p.sink.ready(p.region, transform, p.with_damage, now);
@@ -632,8 +641,21 @@ pub fn service(state: &mut AbyssState, renderer: &mut GlesRenderer) {
     }
 }
 
+/// COMP-02 §8: cursor is opt-in, never ambient. `overlay_cursor` is the
+/// client's ask; a prompt holding the seat still wins over it, the same as
+/// it wins over the client's own cursor surface on screen (never let a
+/// capture target learn that a prompt is active from the pointer).
+fn cursor_overlay_active(overlay_cursor: bool, seat_held_by_prompt: bool) -> bool {
+    overlay_cursor && !seat_held_by_prompt
+}
+
 /// Returns the output transform the contents were rendered through.
-fn copy_one(state: &AbyssState, renderer: &mut GlesRenderer, p: &Pending) -> anyhow::Result<Transform> {
+fn copy_one(
+    state: &AbyssState,
+    renderer: &mut GlesRenderer,
+    p: &Pending,
+    seat_held_by_prompt: bool,
+) -> anyhow::Result<Transform> {
     let Some(entry) = state.outputs.get(p.output_id) else {
         anyhow::bail!("output gone");
     };
@@ -642,7 +664,20 @@ fn copy_one(state: &AbyssState, renderer: &mut GlesRenderer, p: &Pending) -> any
         .current_mode()
         .ok_or_else(|| anyhow::anyhow!("output has no mode"))?;
 
-    let (elements, redacted) = capture_elements(renderer, state, &output);
+    let (mut elements, redacted) = capture_elements(renderer, state, &output);
+    if cursor_overlay_active(p.overlay_cursor, seat_held_by_prompt) {
+        let scale = Scale::from(output.current_scale().fractional_scale());
+        let output_loc = state
+            .space
+            .output_geometry(&output)
+            .map(|g| g.loc)
+            .unwrap_or_default();
+        let cursor_pos = state.pointer_location - output_loc.to_f64();
+        let mut fallback = crate::render::cursor::Fallback::default();
+        let cursor_elements =
+            crate::render::cursor::elements(renderer, &state.cursor_status, &mut fallback, cursor_pos, scale);
+        elements.splice(0..0, cursor_elements);
+    }
     if !redacted.is_empty() {
         let rects: usize = redacted.iter().map(|r| r.rects.len()).sum();
         tracing::info!(
@@ -735,8 +770,8 @@ fn write_shm(buffer: &WlBuffer, region: Rectangle<i32, Physical>, pixels: &[u8])
 #[cfg(test)]
 mod tests {
     use super::{
-        hide_layer, is_sensitive, node_rects, resolve_nodes, NodeVerdict, RedactReason, SemanticTree,
-        HIDE_LAYER_MAX,
+        cursor_overlay_active, hide_layer, is_sensitive, node_rects, resolve_nodes, NodeVerdict,
+        RedactReason, SemanticTree, HIDE_LAYER_MAX,
     };
     use smithay::utils::{Logical, Rectangle};
 
@@ -749,6 +784,21 @@ mod tests {
             generation,
             secret: secret.to_vec(),
         }
+    }
+
+    #[test]
+    fn cursor_overlay_requires_the_client_to_ask() {
+        assert!(!cursor_overlay_active(false, false));
+    }
+
+    #[test]
+    fn cursor_overlay_follows_the_ask() {
+        assert!(cursor_overlay_active(true, false));
+    }
+
+    #[test]
+    fn a_prompt_holding_the_seat_overrides_the_ask() {
+        assert!(!cursor_overlay_active(true, true));
     }
 
     #[test]

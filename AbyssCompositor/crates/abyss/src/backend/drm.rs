@@ -974,7 +974,8 @@ fn service_captures(state: &mut AbyssState) {
         return;
     }
     let Some(mut drm) = state.drm.take() else { return };
-    crate::render::capture::service(state, &mut drm.renderer);
+    let prompt = crate::trusted_ui::holds_seat(state);
+    crate::render::capture::service(state, &mut drm.renderer, prompt);
     state.drm = Some(drm);
 }
 

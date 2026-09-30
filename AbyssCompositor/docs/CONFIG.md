@@ -124,16 +124,16 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `decoration.rounding` | int 0..64 | `13` | live | Corner radius in logical px; 0 disables. Also rounds the blur backdrop behind a layer-shell surface, except one that spans an output edge to edge (three anchors, or two opposite ones, with no positive exclusive zone), which stays square; the taskbar uses `bar.rounding`. |
-| `decoration.active-opacity` | float 0..1 | `0.87` | live | Alpha applied to the focused window. |
+| `decoration.active-opacity` | float 0..1 | `1` | live | Alpha applied to the focused window. |
 | `decoration.inactive-opacity` | float 0..1 | `1` | live | Alpha applied to every unfocused window. |
 | `decoration.dim-inactive` | float 0..1 | `0` | live | Strength of the darkening overlay on unfocused windows. |
-| `decoration.blur.mode` | off \| blur \| frost \| glass | `"blur"` | live | What is drawn behind translucent windows and layer-shell surfaces: `off`, a plain dual-Kawase `blur`, `frost` (blur with a tint and fine grain) or `glass` (a blurred pane inside a rounded bevel that refracts the sharp backdrop, with a rim light; it holds a second backdrop texture per surface). A layer blurs only where its opaque region leaves it uncovered. Replaces the old `enabled` bool, which still loads (`#false` is `off`). |
+| `decoration.blur.mode` | off \| blur \| frost \| glass | `"blur"` | live | What is drawn behind translucent windows and layer-shell surfaces: `off`, a plain dual-Kawase `blur`, `frost` (blur with a tint and fine grain) or `glass` (a saturated, smoked blur whose edge band gently bends the blurred backdrop, under a neutral hairline rim). A window or layer blurs when it is drawn below full opacity or its opaque region leaves it uncovered. Replaces the old `enabled` bool, which still loads (`#false` is `off`). |
 | `decoration.blur.size` | int 1..64 | `8` | live | Blur kernel offset. Larger is softer and costs more. |
-| `decoration.blur.passes` | int 1..6 | `2` | live | Down/up-sample pairs in the blur chain. |
-| `decoration.blur.glass.refraction` | int 0..64 | `16` | live | `glass`: how far the bevel bends the backdrop, logical px at its steepest. 0 is flat glass. |
-| `decoration.blur.glass.bevel` | int 1..128 | `22` | live | `glass`: width of the rounded rim, logical px in from the edge. The rim shows the backdrop sharp and refracted, fading into the blurred interior. |
-| `decoration.blur.glass.dispersion` | float 0..1 | `0.25` | live | `glass`: colour fringing in the bevel; 0.25 is crown glass, 0 none. |
-| `decoration.blur.glass.rim` | float 0..1 | `0.45` | live | `glass`: strength of the warm rim light along the upper-left edges. |
+| `decoration.blur.passes` | int 1..6 | `4` | live | Down/up-sample pairs in the blur chain. |
+| `decoration.blur.glass.refraction` | int 0..64 | `4` | live | `glass`: how far the bevel bends the blurred backdrop, logical px at the outer edge. The centre is never bent; 0 is flat glass. |
+| `decoration.blur.glass.bevel` | int 1..128 | `16` | live | `glass`: width of the edge band the backdrop rolls off in, logical px in from the edge. |
+| `decoration.blur.glass.dispersion` | float 0..1 | `0` | live | `glass`: colour fringing in the bevel; 0 (the default) is none. |
+| `decoration.blur.glass.rim` | float 0..1 | `0.5` | live | `glass`: strength of the neutral hairline rim, brightest along the top-left edges with a weaker lobe at the bottom-right. |
 | `decoration.blur.frost.tint` | colour `#rrggbb[aa]` | `#1a171266` | live | `frost`: colour mixed over the blurred backdrop; its alpha is how much. |
 | `decoration.shadow.enabled` | bool | `#false` | live | Drop shadow behind windows. |
 | `decoration.shadow.range` | int 0..128 | `20` | live | Shadow falloff distance, logical px. |

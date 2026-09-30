@@ -18,8 +18,6 @@ use eclipse_ui::widget as parts;
 use crate::app::{App, Message, ACTIONS};
 use crate::WIDTH;
 
-/// Padding between the panel and the edge of its surface.
-const OUTER: f32 = 10.0;
 /// Height of one row, status or action.
 const ROW_H: f32 = 36.0;
 /// Height of a block's heading row.
@@ -47,8 +45,7 @@ fn block_h(rows: usize) -> f32 {
 /// size before the boot fn runs, so a height that depended on logind's answers
 /// would need a `SizeChange` round trip on every open.
 pub fn surface_height() -> u32 {
-    (OUTER * 2.0
-        + space::CARD * 2.0
+    (space::CARD * 2.0
         + block_h(STATUS_ROWS)
         + space::BLOCK
         + block_h(ACTIONS.len())
@@ -64,9 +61,10 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
         .push(session(app))
         .push(problem(app));
 
-    container(parts::surface(app.glass_radius, body))
+    // The sheet is the whole surface; its air is layer-shell margin (see
+    // `main.rs`), so the compositor's blur mask and this corner coincide.
+    container(parts::surface(app.glass_radius, app.blur, body))
         .width(Length::Fixed(WIDTH as f32))
-        .padding(OUTER)
         .into()
 }
 

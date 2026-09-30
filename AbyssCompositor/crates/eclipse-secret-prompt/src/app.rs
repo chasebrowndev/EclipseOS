@@ -228,7 +228,7 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
         .padding([space::PANE_Y, space::PANE_X])
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(theme::window)
+        .style(theme::window(eclipse_ui::tokens::radius::WINDOW))
         .into()
 }
 

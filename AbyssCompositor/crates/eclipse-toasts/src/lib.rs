@@ -15,5 +15,5 @@ pub mod app;
 pub mod conn;
 pub mod view;
 
-/// Width of the stack's surface, including its outer padding.
-pub const WIDTH: u32 = 404;
+/// Width of the stack's surface — the cards' own width, edge to edge.
+pub const WIDTH: u32 = 384;

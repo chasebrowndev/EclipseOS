@@ -21,7 +21,7 @@ use eclipse_ipc::EventKind;
 use eclipse_ui::theme;
 use eclipse_ui::tokens::space;
 use eclipse_ui::widget::{
-    big_value, content_at, dimmed, hairline, header, list_row, micro_label, nav_item_at, panel, pill,
+    big_value, content_at, dimmed_at, hairline, header, list_row, micro_label, nav_item_at, panel, pill,
     pill_group, row_caption, sidebar_at, status_chip, subtitle, swatch, value as mono, Density,
     NumericSlider, Toggle,
 };
@@ -41,12 +41,29 @@ const TRAY_HIDDEN: &str = "bar.tray.hidden";
 /// wait is an ordinary sleep on an ordinary thread.
 const POLL: Duration = Duration::from_millis(250);
 
+/// The least time between two writes of one held slider: live enough that
+/// the gaps move under the finger, sparse enough that a drag does not splice
+/// the KDL file once per pixel.
+const LIVE_WRITE_EVERY: Duration = Duration::from_millis(100);
+
+/// The last write a held slider made.
+struct LiveWrite {
+    at: std::time::Instant,
+    sent: Value,
+    /// It was refused. The banner says so once; the drag stops writing until
+    /// release, which tries again and reports again.
+    failed: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Select(Pane),
     Toggled(String, bool),
     SliderMoved(String, f64),
     SliderReleased(String),
+    /// Give every unset mirror key on the pane (`Key::mirror_of`) a value
+    /// of its own — the one it currently mirrors — so its row shows.
+    SetApart,
     Chose(String, String),
     Edited(String, String),
     Committed(String),
@@ -134,9 +151,12 @@ pub struct App {
     /// Text typed into a numeric entry, per control. Absent means "show the
     /// value the slider is at".
     nums: HashMap<Num, String>,
-    /// Slider position while the knob is held. The write happens on release —
-    /// a drag must not splice the KDL file once per pixel.
+    /// Slider position while the knob is held. It is what the slider shows
+    /// until release, so the compositor echoing a live write back (a
+    /// `Config` event, a `refresh`) can never pull the knob from the finger.
     pub(crate) live: HashMap<String, f64>,
+    /// The throttled writes of the sliders being held, per path.
+    live_writes: HashMap<String, LiveWrite>,
     outputs: Vec<Output>,
     insets: HashMap<u64, Inset>,
     scales: HashMap<u64, f64>,
@@ -154,6 +174,11 @@ pub struct App {
     /// so a live-reload can never leave this pane's glass drifted from the
     /// compositor's blur backdrop behind it.
     pub(crate) glass_radius: f32,
+    /// Whether the compositor's blur is behind the window
+    /// (`decoration.blur.mode != "off"`), synced like `glass_radius`. The
+    /// window is transparent, so this decides whether the sidebar is
+    /// translucent glass or its opaque backed fallback.
+    pub(crate) blur: bool,
     /// The Taskbar pane's picture, lane and editor.
     pub(crate) bar: crate::taskbar::Bar,
     /// Installed add-ons and the hooks they turn on (ADR 0066). `None` until
@@ -176,6 +201,7 @@ impl App {
     pub fn with_pane(pane: Pane) -> Self {
         let mut conn = Conn::new();
         let glass_radius = conn.glass_radius().unwrap_or(eclipse_ui::tokens::radius::CARD);
+        let blur = conn.blur().unwrap_or(false);
         let mut app = App {
             conn,
             rows: Vec::new(),
@@ -183,6 +209,7 @@ impl App {
             drafts: HashMap::new(),
             invalid: HashSet::new(),
             live: HashMap::new(),
+            live_writes: HashMap::new(),
             nums: HashMap::new(),
             outputs: Vec::new(),
             insets: HashMap::new(),
@@ -194,6 +221,7 @@ impl App {
             tray_sel: None,
             tray_live: None,
             glass_radius,
+            blur,
             bar: crate::taskbar::Bar::default(),
             addons: None,
         };
@@ -294,6 +322,54 @@ impl App {
             }
             Err(e) => self.banner = Some(e),
         }
+    }
+
+    /// A slider reading as the JSON its key takes: whole for an int key.
+    fn slider_json(&self, path: &str, v: f64) -> Value {
+        match self.key(path).map(|k| &k.control) {
+            Some(Control::Slider { integral: true, .. }) => json!(v.round() as i64),
+            _ => json!(v),
+        }
+    }
+
+    /// What a key amounts to right now: its own value, or — unset and
+    /// mirroring another (`Key::mirror_of`) — the value it mirrors.
+    pub(crate) fn effective(&self, key: &Key) -> f64 {
+        match key.mirror_of().filter(|_| key.value.is_null()) {
+            Some(source) => self.key(source).map_or(0.0, Key::as_f64),
+            None => key.as_f64(),
+        }
+    }
+
+    /// A held slider's throttled write: at most one per `LIVE_WRITE_EVERY`,
+    /// none when the value has not changed, and no `reload` — that would
+    /// clear `live` and drop the knob. The release makes the final write.
+    fn write_live(&mut self, path: &str, v: f64) {
+        let now = std::time::Instant::now();
+        let json = self.slider_json(path, v);
+        if let Some(last) = self.live_writes.get(path) {
+            if last.failed || last.sent == json || now.duration_since(last.at) < LIVE_WRITE_EVERY {
+                return;
+            }
+        }
+        let failed = match self.conn.set(path, json.clone()) {
+            Ok(restart) => {
+                self.restart_pending |= restart;
+                false
+            }
+            Err(e) => {
+                self.banner = Some(e);
+                true
+            }
+        };
+        self.live_writes.insert(
+            path.to_owned(),
+            LiveWrite {
+                at: now,
+                sent: json,
+                failed,
+            },
+        );
     }
 
     /// The range a typed draft is checked against: the same one its slider
@@ -438,19 +514,28 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::Toggled(path, on) => app.write(&path, Value::Bool(on)),
 
         Message::SliderMoved(path, v) => {
+            // A key its schema says needs a restart gains nothing from a
+            // live write but a pile of "restart to apply" churn.
+            if app.key(&path).is_some_and(|k| !k.needs_restart && !k.locked()) {
+                app.write_live(&path, v);
+            }
             app.live.insert(path, v);
         }
         Message::SliderReleased(path) => {
+            app.live_writes.remove(&path);
             if let Some(v) = app.live.remove(&path) {
-                let integral = matches!(
-                    app.key(&path).map(|k| &k.control),
-                    Some(Control::Slider { integral: true, .. })
-                );
-                let json = if integral {
-                    json!(v.round() as i64)
-                } else {
-                    json!(v)
-                };
+                let json = app.slider_json(&path, v);
+                app.write(&path, json);
+            }
+        }
+        Message::SetApart => {
+            let apart: Vec<(String, Value)> = app
+                .rows
+                .iter()
+                .filter(|k| pane_for(&k.path) == Some(app.pane) && hidden_mirror(k))
+                .map(|k| (k.path.clone(), app.slider_json(&k.path, app.effective(k))))
+                .collect();
+            for (path, json) in apart {
                 app.write(&path, json);
             }
         }
@@ -557,6 +642,9 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             EventKind::Config => {
                 if let Some(radius) = app.conn.glass_radius() {
                     app.glass_radius = radius;
+                }
+                if let Some(blur) = app.conn.blur() {
+                    app.blur = blur;
                 }
                 app.refresh();
                 crate::taskbar::follow_config(app);
@@ -734,12 +822,20 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         _ => blocks.extend(schema_pane(app)),
     }
 
+    // The window is transparent (`main.rs`): with blur on, sidebar and
+    // content are one pane of smoked glass a step apart in density; with it
+    // off both fall back to opaque grounds.
     row![
-        sidebar_at(density, nav, footer),
-        scrollable(content_at(density, blocks))
-            .id(SCROLL)
-            .style(theme::eclipse_scrollable)
-            .height(Length::Fill),
+        sidebar_at(density, app.blur, nav, footer),
+        iced::widget::container(
+            scrollable(content_at(density, blocks))
+                .id(SCROLL)
+                .style(theme::eclipse_scrollable)
+                .height(Length::Fill),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(theme::content_ground(app.blur)),
     ]
     .into()
 }
@@ -787,6 +883,7 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
     // The tray lists are drawn by `tray_hero`, their control; listing them
     // again here as read-only text would be the same setting twice.
     let shown = |k: &&Key| pane_for(&k.path) == Some(app.pane) && !k.path.starts_with("bar.tray.");
+    let mut set_apart = false;
     for key in app.rows.iter().filter(shown) {
         let group = group_for(&key.path);
         let rows = match groups.iter().position(|(g, _)| *g == group) {
@@ -796,6 +893,27 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
                 &mut groups.last_mut().expect("just pushed").1
             }
         };
+        // An unset mirror would be a second slider reading the same number
+        // as the key above it. It folds into one row that says so, and
+        // offers to set it apart — hidden as a control, never as a setting.
+        if hidden_mirror(key) {
+            if !set_apart {
+                set_apart = true;
+                rows.push(list_row(
+                    "Vertical gaps",
+                    row![
+                        iced::widget::text("Same as above")
+                            .font(eclipse_ui::tokens::font::UI)
+                            .size(eclipse_ui::tokens::size::BODY_SMALL)
+                            .style(theme::text_tertiary),
+                        pill("Set separately", false, Message::SetApart),
+                    ]
+                    .spacing(space::CONTROL_GAP)
+                    .align_y(iced::Alignment::Center),
+                ));
+            }
+            continue;
+        }
         if let Some(applies) = crate::schema::moded(crate::schema::BLUR, &key.path, modes) {
             runs_group.get_or_insert(group);
             match runs.iter_mut().find(|(a, _)| *a == applies) {
@@ -850,7 +968,7 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
             for key in keys {
                 run = run.push(list_row(&key.label(), control(app, key)));
             }
-            rows.1.push(dimmed(run, !applies.contains(&current)));
+            rows.1.push(dimmed_at(run, !applies.contains(&current), app.blur));
         }
     }
 
@@ -864,6 +982,13 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
             panel(app.glass_radius, col).into()
         })
         .collect()
+}
+
+/// An unset key that mirrors another (`Key::mirror_of`) and can be written:
+/// its row is folded into the "set separately" affordance. A locked one
+/// stays a read-only row, since the affordance could not act on it.
+fn hidden_mirror(key: &Key) -> bool {
+    key.mirror_of().is_some() && key.value.is_null() && !key.locked()
 }
 
 /// The one place a schema type becomes a widget.
@@ -887,7 +1012,11 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
             integral,
             drag_max,
         } => {
-            let current = app.live.get(&key.path).copied().unwrap_or_else(|| key.as_f64());
+            let current = app
+                .live
+                .get(&key.path)
+                .copied()
+                .unwrap_or_else(|| app.effective(key));
             let span = Span {
                 min: *min,
                 max: *max,
@@ -914,6 +1043,7 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
             .on_release(Message::SliderReleased(released))
             .on_commit(Message::NumberCommitted(id))
             .invalid(invalid)
+            .unit(key.unit())
             .into()
         }
 

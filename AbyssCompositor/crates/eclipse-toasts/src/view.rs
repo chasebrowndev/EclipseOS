@@ -15,7 +15,10 @@ use eclipse_ui::tokens::{color, font, size, space};
 use crate::app::{Message, Toast};
 use crate::WIDTH;
 
-/// Space between cards, and around the stack.
+/// Space between cards. There is none around the stack: the first card's
+/// top and right edges are the surface's, and the air to the screen edge is
+/// layer-shell margin (`app::TOP_MARGIN`), because the compositor blurs the
+/// whole surface and a clear band inside it would show as a blurred rim.
 const GAP: f32 = 10.0;
 /// Height of the summary line's row.
 const SUMMARY_H: f32 = 20.0;
@@ -49,19 +52,19 @@ pub fn height(drawn: &[Toast]) -> u32 {
         return 0;
     }
     let cards: f32 = drawn.iter().map(|t| card_height(&t.notification)).sum();
-    let gaps = GAP * (drawn.len() + 1) as f32;
+    let gaps = GAP * (drawn.len() - 1) as f32;
     (cards + gaps).ceil() as u32
 }
 
 pub fn view(app: &crate::app::App, _id: iced::window::Id) -> Element<'_, Message, Theme> {
-    let mut stack = Column::new().spacing(GAP).padding(GAP);
+    let mut stack = Column::new().spacing(GAP);
     for toast in app.drawn() {
-        stack = stack.push(card(&toast.notification, app.glass_radius));
+        stack = stack.push(card(&toast.notification, app.glass_radius, app.blur));
     }
     container(stack).width(Length::Fixed(WIDTH as f32)).into()
 }
 
-fn card(notification: &Notification, radius: f32) -> Element<'_, Message, Theme> {
+fn card(notification: &Notification, radius: f32, blur: bool) -> Element<'_, Message, Theme> {
     let mut body = Column::new();
 
     // Critical is the one thing allowed off the neutral palette here, for the
@@ -127,7 +130,7 @@ fn card(notification: &Notification, radius: f32) -> Element<'_, Message, Theme>
             .width(Length::Fill)
             .height(Length::Fixed(card_height(notification)))
             .padding(space::CARD)
-            .style(eclipse_ui::theme::surface(radius)),
+            .style(eclipse_ui::theme::surface(radius, blur)),
     )
     .on_press(Message::Dismiss(notification.id))
     .into()

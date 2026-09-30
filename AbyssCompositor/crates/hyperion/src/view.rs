@@ -17,21 +17,29 @@
 //!
 //! ## The accent ledger
 //!
-//! Yellow means **up**. By explicit direction the accent is not focus and not
-//! "one live thing": every window that is on the current workspace and has not
-//! been sent away wears it, and a minimized window does not. The chip is
-//! present either way — it is the only way back from minimized — so the accent
-//! is the whole of the difference between a window that is on screen and a
-//! window that is put away, and the chip is a toggle between those two states.
+//! Yellow means **focus**. This replaces the earlier "yellow means up" rule,
+//! by the owner's direction for the liquid-glass re-skin: with every on-screen
+//! window gold, a busy workspace was a strip of yellow and the one window the
+//! keyboard is actually talking to was not marked at all. A chip now wears
+//! one of three states, and only the first is yellow:
 //!
-//! The current workspace tile keeps its yellow on the same reasoning: "which
-//! desktop am I on" is the same kind of fact as "what is up on it". The two
-//! never compete for area — the tile is 24px, the chips are a strip.
+//! - **focused** — gold: an `ACCENT_FILL` ground at rest, deepened by the
+//!   pointer, and an `ACCENT_TEXT` label. One chip at most;
+//! - **on screen** — neutral white: the plain glass lozenge every bar cell
+//!   wears and a full-white label, lifted by the pointer like the rest;
+//! - **minimized** — dimmed: no fill, only a ghost rim, label at
+//!   `TEXT_TERTIARY` and icon at `color::DIM`, so a put-away window reads
+//!   as the quiet placeholder it is.
+//!   The chip is present either way — it is the only way back.
 //!
-//! A chip spends its yellow the way the reference panes spend theirs on a
-//! selected pill — an `ACCENT_BORDER` edge and an `ACCENT_TEXT` label, with the
-//! ground earned by the pointer — and not on a 2px underline, which on a
-//! rounded chip read as a sticker bolted to the bottom.
+//! The current workspace tile keeps its yellow: "which desktop am I on" is
+//! the same kind of fact as "which window has focus", and the two never
+//! compete for area — the tile is 24px, the focused chip is one cell.
+//!
+//! A chip spends its yellow on a fill and a label, not on an outline — every
+//! cell's hairline stays neutral white, the focused one's included — and not
+//! on a 2px underline, which on a rounded chip read as a sticker bolted to
+//! the bottom.
 //!
 //! The launcher mark is the third and last, also by explicit direction: the
 //! corona is the desktop's own mark, and a white ring read as a disabled
@@ -53,11 +61,22 @@
 //!
 //! ## Glass
 //!
-//! The bar is a translucent sheet over the compositor's blur of whatever is
-//! behind it, never an opaque ground. Its depth is three things: the smoked
-//! fill of `theme::bar_ground`, the inset highlight along its top edge, and
-//! the hairline along its bottom. Cells are rounded chips lying *on* that
-//! sheet, on the spec's 9–11 inset-chip radius scale.
+//! The bar is a floating capsule of liquid glass. With the compositor's blur
+//! on, abyss draws the material under it — blur, vibrancy, a near-white rim
+//! and a soft shadow — and the bar lays only the light tint of
+//! `theme::bar_ground` on top: no border and no lit top line of its own, which
+//! would be a second, misplaced edge over the compositor's rim. With blur off
+//! it falls back to a darker ground, a hairline and the lit top edge
+//! ([`App::blur`](crate::app::App::blur)).
+//!
+//! Every cell is a small glass lozenge concentric with the capsule — a faint
+//! white fill, a hairline just inside its edge and a soft one-pixel drop
+//! (`theme::bar_cell`) — inset `(PILL_H - TASK_H) / 2` from the capsule's
+//! edge, so its radius is half its height (`bar::RADIUS_CELL`). The pointer
+//! brightens fill and hairline together; a widget's grip appears only while
+//! the pointer is on it, and lights the whole cell rather than a patch of
+//! its own. The launcher mark is the row's only circle, and pager tiles
+//! stay small squircles (`bar::RADIUS_TILE`).
 //!
 //! Every colour and size comes from `eclipse_ui::tokens` — a literal anywhere
 //! in this file is a bug, because the tokens are the only transcription of
@@ -125,8 +144,9 @@ fn surface(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message, 
 ///
 /// A folded bar is a *state*, not a smaller bar: at `fold_height` (2..=16 px)
 /// there is no room for a cell, and a clock cut off at its waist reads as a
-/// bug. So the strip keeps only what makes the bar the bar — the smoked sheet
-/// of [`theme::bar_ground`], its lit top edge, and a dormant hairline along
+/// bug. So the strip keeps only what makes the bar the bar — the tinted sheet
+/// of [`theme::bar_ground`] (lit along its top only in the blur-off
+/// fallback), and a dormant hairline along
 /// its bottom — and drops every zone.
 ///
 /// Every part of it is `Fill` or a hairline, so the two pixels at the bottom
@@ -146,13 +166,12 @@ fn folded_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element
         ),
     ];
 
-    let sheet = parts::lit(
+    let sheet = glass(
+        app,
         container(edges)
             .width(Length::Fill)
             .height(Length::Fill)
-            .style(theme::bar_ground(app.bar_radius)),
-        app.bar_radius,
-        color::HIGHLIGHT_SOFT,
+            .style(theme::bar_ground(app.bar_radius, app.blur)),
     );
 
     // The horizontal inset is the unfolded bar's layer-shell margin, so the
@@ -201,54 +220,40 @@ fn bar_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element<'a
         .align_y(Alignment::Center)
         .height(Length::Fixed(bar::PILL_H));
 
-    // A wide pill floating in the strip it reserves, not a slab bounded by
-    // two hard rules. The rules were the loudest marks on the desktop and
-    // `docs/STYLE.md` never asked for them — it describes rounded, bordered,
-    // softly-lit panels and nothing else. What survives of the edge is the
-    // faintest of the spec's own top-highlight range and a hairline border,
-    // which is the difference between glass and a grey rectangle; it is not a
-    // licence to frost the whole bar.
+    // A wide capsule floating in the strip it reserves, not a slab bounded
+    // by two hard rules. Its edge is the compositor's rim when blur is on,
+    // and the fallback hairline and lit top line when it is off (`glass`).
     //
     // The pill fills its surface edge to edge. The compositor blurs the whole
     // surface at `bar.rounding`, so the float gap around the pill is
     // layer-shell margin (`FoldState::geometry`) and never padding in here —
     // padding is how a blurred rim came to show outside the pill.
-    parts::lit(
+    glass(
+        app,
         container(bar_row)
             .width(Length::Fill)
-            .style(theme::bar_ground(app.bar_radius)),
-        app.bar_radius,
-        color::HIGHLIGHT_SOFT,
+            .style(theme::bar_ground(app.bar_radius, app.blur)),
     )
 }
 
-/// The ground under a bar cell: a chip on glass.
-///
-/// Hover and press are *layered* lifts and not fill swaps — the fill, the
-/// border and the top highlight move together, which is what reads as the
-/// chip rising out of the sheet. A lone grey rectangle appearing under the
-/// pointer is the thing this replaced.
-fn cell_style(fill: Color, edge: Color) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_t: &Theme, status: button::Status| {
-        let (background, border) = match status {
-            // The fill stays under the outline it sits inside — see
-            // `color::LIFT_SOFT`. Hover brightens the *edge*; the wash only
-            // says where the pointer is.
-            button::Status::Hovered => (color::LIFT_SOFT, color::BORDER_STRONG),
-            button::Status::Pressed => (color::LIFT, color::BORDER_STRONG),
-            _ => (fill, edge),
-        };
-        button::Style {
-            background: Some(iced::Background::Color(background)),
-            text_color: color::TEXT,
-            border: iced::Border {
-                color: border,
-                width: bar::HAIRLINE,
-                radius: bar::RADIUS_CELL.into(),
-            },
-            ..button::Style::default()
-        }
+/// The bar's sheet with its light source: none of its own over the
+/// compositor's material, the faint lit top line in the blur-off fallback.
+fn glass<'a>(
+    app: &crate::app::App,
+    sheet: impl Into<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    if app.blur {
+        sheet.into()
+    } else {
+        parts::lit(sheet, app.bar_radius, color::HIGHLIGHT_SOFT)
     }
+}
+
+/// The launcher button's ground: the same glass lozenge every chip and
+/// widget wears (`theme::bar_cell`), so the pointer lifts it the same way.
+/// Never the accent — the mark itself is the yellow.
+fn launcher_style(t: &Theme, status: button::Status) -> button::Style {
+    theme::bar_cell(false)(t, status)
 }
 
 // ---------------------------------------------------------------- launcher
@@ -271,7 +276,7 @@ fn launcher_button() -> Element<'static, Message, Theme> {
         .width(Length::Fixed(bar::TASK_MIN))
         .height(Length::Fixed(bar::TASK_H))
         .padding(0)
-        .style(cell_style(Color::TRANSPARENT, Color::TRANSPARENT))
+        .style(launcher_style)
         .on_press(Message::Launch)
         .into()
 }
@@ -337,7 +342,9 @@ impl canvas::Program<Message> for EyeMark {
 // ------------------------------------------------------------------ pager
 
 /// One tile per workspace, in wire order. Plasma's pager: the current desktop
-/// is accented, an occupied one is outlined, an empty one is dim.
+/// is accented, an occupied one reads in secondary ink, an empty one is dim.
+/// No tile has an outline: the pointer lifts the glass under it, as it does
+/// under every bar cell.
 ///
 /// The current desktop is the bar's *second* yellow, by explicit direction:
 /// "which desktop am I on" is live state of the same kind as "which window
@@ -401,12 +408,12 @@ fn active_workspace(snapshot: &Snapshot, output: u64) -> Option<usize> {
 
 fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
     let ws_active = ws.active;
-    let (fill, border, tint) = if ws.active {
-        (color::ACCENT_FILL, color::ACCENT_BORDER, color::ACCENT_TEXT)
+    let tint = if ws.active {
+        color::ACCENT_TEXT
     } else if ws.windows > 0 {
-        (Color::TRANSPARENT, color::BORDER, color::TEXT_SECONDARY)
+        color::TEXT_SECONDARY
     } else {
-        (Color::TRANSPARENT, color::HAIRLINE, color::TEXT_TERTIARY)
+        color::TEXT_TERTIARY
     };
     let face = if ws.active { font::DATA_MEDIUM } else { font::DATA };
     let label = text(ws.index.to_string())
@@ -418,22 +425,13 @@ fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
         .width(Length::Fixed(bar::PAGER_W))
         .height(Length::Fixed(bar::PAGER_H))
         .padding(0)
-        .style(move |_t: &Theme, status: button::Status| {
-            let background = match status {
-                button::Status::Hovered | button::Status::Pressed if !ws_active => color::LIFT_STRONG,
-                button::Status::Hovered | button::Status::Pressed => color::ACCENT_FILL_STRONG,
-                _ => fill,
-            };
-            button::Style {
-                background: Some(iced::Background::Color(background)),
-                text_color: tint,
-                border: iced::Border {
-                    color: border,
-                    width: bar::HAIRLINE,
-                    radius: bar::RADIUS_TILE.into(),
-                },
-                ..button::Style::default()
-            }
+        .style(move |t: &Theme, status: button::Status| {
+            // The bar cell's glass lozenge and lifts, on the tile's smaller
+            // squircle corner.
+            let mut style = theme::bar_cell(ws_active)(t, status);
+            style.text_color = tint;
+            style.border.radius = bar::RADIUS_TILE.into();
+            style
         })
         .on_press(Message::Switch(ws.index))
         .into()
@@ -614,10 +612,10 @@ fn task_chip(
 ) -> Element<'_, Message, Theme> {
     let w = &chip.window;
     let width = chip.content;
-    // Up or put away — see the accent ledger. A minimized window reads as a
-    // chip with no state on it at all, which is the point: it is a placeholder
-    // for something that is not on the screen.
+    // Focused, on screen, or put away — see the accent ledger. Only the
+    // focused chip is gold; a minimized one is dimmed (`chip_face`).
     let up = !w.minimized;
+    let accent = focused && up;
     // Ink leads the glass: an arriving chip's face shows once there is room
     // to read it, a closing one's is gone before the edge reaches a glyph.
     let presence = chip.presence.value().clamp(0.0, 1.0);
@@ -630,11 +628,18 @@ fn task_chip(
         // legible at once — two labels on one gridline read as one garbled
         // word — and the crossover is a brief quiet, not a double exposure.
         Some(prev) if swap < 1.0 => iced::widget::stack![
-            chip_face(w, icon.clone(), prev, visible, up, ink * parts::lead(1.0 - swap)),
-            chip_face(w, icon, width, visible, up, ink * parts::lead(swap)),
+            chip_face(
+                w,
+                icon.clone(),
+                prev,
+                visible,
+                accent,
+                ink * parts::lead(1.0 - swap)
+            ),
+            chip_face(w, icon, width, visible, accent, ink * parts::lead(swap)),
         ]
         .into(),
-        _ => chip_face(w, icon, width, visible, up, ink),
+        _ => chip_face(w, icon, width, visible, accent, ink),
     };
     let body = container(body)
         .width(Length::Fixed(natural))
@@ -665,7 +670,14 @@ fn task_chip(
             .on_right_press(Message::Menu(w.handle))
             .into()
     };
-    parts::glass_cell_faded(face, width, visible, up, ClipEdge::Left, presence)
+    let tone = if accent {
+        theme::CellTone::Focused
+    } else if w.minimized {
+        theme::CellTone::Away
+    } else {
+        theme::CellTone::Plain
+    };
+    parts::glass_cell_faded(face, width, visible, tone, ClipEdge::Left, presence)
 }
 
 /// One face of a window chip, laid out at the content width `width` and drawn
@@ -681,20 +693,23 @@ fn chip_face(
     icon: Icon,
     width: f32,
     visible: f32,
-    up: bool,
+    accent: bool,
     alpha: f32,
 ) -> Element<'_, Message, Theme> {
-    let (tint, face) = if up {
-        (color::ACCENT_TEXT, font::UI_MEDIUM)
+    // Gold for focus, white for on screen, dimmed for put away.
+    let (tint, face, icon_alpha) = if accent {
+        (color::ACCENT_TEXT, font::UI_MEDIUM, alpha)
+    } else if w.minimized {
+        (color::TEXT_TERTIARY, font::UI, alpha * color::DIM)
     } else {
-        (color::TEXT_SECONDARY, font::UI)
+        (color::TEXT, font::UI, alpha)
     };
     // The rung is this chip's own business: the width it got buys a rung,
     // and the words this window wants to say decide whether it can use it.
     let detail = chip_detail(w.label(), w.name(), width);
     let mut face_row = Row::new().spacing(bar::GAP + bar::GAP).align_y(Alignment::Center);
     if detail != Detail::Bare {
-        face_row = face_row.push(icon_view(icon, alpha));
+        face_row = face_row.push(icon_view(icon, icon_alpha));
     }
     // The second rung says the application, the first says the document: three
     // terminals condense to three `kitty`s rather than three copies of the
@@ -778,8 +793,8 @@ fn separators(items: &[crate::app::Item]) -> usize {
 ///
 /// ## The accent ledger
 ///
-/// **Nothing here is yellow.** On the bar, yellow means a window is up
-/// (`bar_row`'s ledger); a menu shows no window's state, only offers to change
+/// **Nothing here is yellow.** On the bar, yellow means focus (the
+/// module's accent ledger); a menu shows no window's state, only offers to change
 /// it, so spending the accent on a hover or a heading would be decoration —
 /// exactly what the style spec forbids. The pointer is answered with a white
 /// lift, `Close` with a red one, and that is all the colour the menu owns.

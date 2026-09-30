@@ -370,6 +370,29 @@ impl Conn {
         let client = self.client.as_mut()?;
         eclipse_ui::ipc::fetch_config_radius(client, path)
     }
+
+    /// The air around the pill (`general.gaps-out`, and the effective
+    /// `general.gaps-out-vertical` — unset reads `null` and mirrors the
+    /// horizontal key, as the compositor resolves it). `None` when nothing
+    /// answers, so the caller keeps what it had.
+    pub fn air(&mut self) -> Option<crate::app::Air> {
+        self.ensure();
+        let client = self.client.as_mut()?;
+        let x = eclipse_ui::ipc::fetch_config_radius(client, "general.gaps-out")?;
+        let y = eclipse_ui::ipc::fetch_config_radius(client, "general.gaps-out-vertical").unwrap_or(x);
+        Some(crate::app::Air {
+            x: x.round() as i32,
+            y: y.round() as i32,
+        })
+    }
+
+    /// Whether the compositor blurs under the bar (`decoration.blur.mode`
+    /// is not `"off"`). `None` when nothing answers.
+    pub fn blur(&mut self) -> Option<bool> {
+        self.ensure();
+        let client = self.client.as_mut()?;
+        eclipse_ui::ipc::fetch_blur(client)
+    }
 }
 
 /// `bar.widgets.*`, `bar.motion.*` and `collections.widget` out of a

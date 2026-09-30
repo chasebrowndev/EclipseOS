@@ -225,6 +225,13 @@ impl Conn {
         eclipse_ui::ipc::fetch_config_radius(client, "decoration.rounding")
     }
 
+    /// Whether the compositor's blur is on (`decoration.blur.mode`). `None`
+    /// on any failure, so the caller keeps whatever value it already had.
+    pub fn blur(&mut self) -> Option<bool> {
+        let client = self.client.as_mut()?;
+        eclipse_ui::ipc::fetch_blur(client)
+    }
+
     /// Write one scalar. Returns whether the change needs a restart to apply.
     pub fn set(&mut self, path: &str, value: Value) -> Result<bool, Problem> {
         let reply = self.call("set_config_value", json!({ "path": path, "value": value }))?;

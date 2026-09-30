@@ -33,8 +33,6 @@ use eclipse_ui::widget as parts;
 use crate::app::{App, Message, INPUT_ID};
 use crate::{MAX_ROWS, WIDTH};
 
-/// Padding between the panel and the edge of its surface.
-const OUTER: f32 = 10.0;
 /// Height of the header strip: a micro label beside a two-line status chip.
 const HEADER_H: f32 = 32.0;
 /// Height of the hero band, its border and padding included.
@@ -59,8 +57,7 @@ const PROBLEM_H: f32 = 28.0;
 /// before the boot fn runs, so a height that depended on how many entries
 /// matched would need a `SizeChange` round trip on every keystroke.
 pub fn surface_height() -> u32 {
-    (OUTER * 2.0
-        + space::CARD * 2.0
+    (space::CARD * 2.0
         + HEADER_H
         + space::BLOCK
         + BAND_H
@@ -80,9 +77,11 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
         .push(results(app))
         .push(footer(app));
 
-    container(parts::surface(app.glass_radius, body))
+    // The sheet is the whole surface: the compositor masks it to
+    // `decoration.rounding` and draws its material underneath, so there is
+    // no outer padding for a blurred rim to show through.
+    container(parts::surface(app.glass_radius, app.blur, body))
         .width(Length::Fixed(WIDTH as f32))
-        .padding(OUTER)
         .into()
 }
 

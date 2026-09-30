@@ -110,7 +110,7 @@ pub fn view(m: &Model) -> El<'_, Message> {
     container(main.width(Length::Fill))
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(theme::window)
+        .style(theme::window(eclipse_ui::tokens::radius::WINDOW))
         .into()
 }
 

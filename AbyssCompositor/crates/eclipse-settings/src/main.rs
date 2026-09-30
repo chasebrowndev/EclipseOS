@@ -15,6 +15,10 @@ fn main() -> iced::Result {
     let mut builder = iced::application(move || app::boot(pane), app::update, app::view)
         .title("Eclipse Settings")
         .theme(|_: &App| eclipse_ui::theme::theme())
+        // Transparent, so the compositor's blur shows through; the panes tint
+        // it, opaque only when blur is off (`app::view`).
+        .transparent(true)
+        .style(eclipse_ui::theme::clear_window)
         .subscription(app::subscription)
         .window_size((1100.0, 760.0))
         .antialiasing(true);
