@@ -140,6 +140,10 @@ pub enum Message {
     /// parent bar as inside the popup's grab (`shell::popup_grab_button_press`),
     /// so the compositor will not dismiss it for us.
     BarPress(iced::window::Id, Option<iced::Point>),
+    /// A press a cell took (a chip, a pager tile, a widget). The cell acts
+    /// as usual; the start menu, if open and the press was outside its
+    /// panel, closes alongside.
+    CellPress(iced::window::Id, Option<iced::Point>),
     /// The pointer moved over a surface. The bar tracks it because a popup is
     /// positioned by a rectangle in its parent's coordinates, and the press
     /// that opens the menu is the only thing that knows where that is.
@@ -1201,6 +1205,21 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             return dismiss;
         }
         Message::Dismiss => return dismiss(app),
+        Message::CellPress(id, point) => {
+            if let Some(point) = point {
+                let _ = step(app, Message::Pointer(id, point), at);
+            }
+            let now = Instant::now();
+            return each_bar(app, |_, bar| {
+                // The search cell and the rows are the menu's own cells.
+                let in_menu = bar.id == id && bar.cursor.x < bar::PANEL_W;
+                if bar.menu.open && !in_menu {
+                    close_start(bar, now)
+                } else {
+                    Task::none()
+                }
+            });
+        }
         Message::BarPress(id, point) => {
             if let Some(point) = point {
                 let _ = step(app, Message::Pointer(id, point), at);
@@ -2553,17 +2572,21 @@ fn pointer() -> Subscription<Message> {
         iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) if status == Status::Ignored => {
             Some(Message::BarPress(id, None))
         }
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::CellPress(id, None)),
         iced::Event::Touch(iced::touch::Event::FingerPressed { position, .. })
             if status == Status::Ignored =>
         {
             Some(Message::BarPress(id, Some(position)))
         }
-        // A finger is the pointer too: a tap must anchor the popup it opens.
+        iced::Event::Touch(iced::touch::Event::FingerPressed { position, .. }) => {
+            Some(Message::CellPress(id, Some(position)))
+        }
+        // A finger is the pointer too; its press moves it above, with the
+        // press, so a tap still anchors the popup it opens.
         iced::Event::Mouse(iced::mouse::Event::CursorMoved { position })
-        | iced::Event::Touch(
-            iced::touch::Event::FingerPressed { position, .. }
-            | iced::touch::Event::FingerMoved { position, .. },
-        ) => Some(Message::Pointer(id, position)),
+        | iced::Event::Touch(iced::touch::Event::FingerMoved { position, .. }) => {
+            Some(Message::Pointer(id, position))
+        }
         // The popup's grab holds the keyboard, so Escape arrives on the
         // popup's own surface.
         iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -3088,6 +3111,30 @@ pub(crate) mod tests {
         a.popup = Some(menu(menu_id));
         let _ = step(&mut a, Message::Dismiss, None);
         assert!(a.popup.is_none(), "Escape's message closes it");
+    }
+
+    /// A press a cell took — a chip, a tile, a widget — closes the start menu
+    /// too, on any bar; one on the menu's own cells does not.
+    #[test]
+    fn a_press_on_a_cell_closes_the_start_menu() {
+        let mut a = app();
+        let (one, two) = (bar_on(&mut a, "DP-1", 1), bar_on(&mut a, "DP-2", 2));
+        let open = |a: &mut App| {
+            let bar = a.bars.get_mut(&one).unwrap();
+            bar.menu.open(Vec::new(), None, Instant::now());
+            bar.menu.open
+        };
+        let is_open = |a: &App| a.bars[&one].menu.open;
+        assert!(open(&mut a));
+        a.bars.get_mut(&one).unwrap().cursor = iced::Point::new(bar::PANEL_W / 2.0, 10.0);
+        let _ = step(&mut a, Message::CellPress(one, None), None);
+        assert!(is_open(&a), "a press on the search cell or a row keeps it");
+        a.bars.get_mut(&one).unwrap().cursor = iced::Point::new(bar::PANEL_W + 40.0, 10.0);
+        let _ = step(&mut a, Message::CellPress(one, None), None);
+        assert!(!is_open(&a), "a chip on its own bar closes it");
+        open(&mut a);
+        let _ = step(&mut a, Message::CellPress(two, None), None);
+        assert!(!is_open(&a), "a cell on another bar closes it");
     }
 
     /// A message from inside a popup acts for the bar the popup hangs from,
