@@ -236,3 +236,17 @@ ClientSurfaceEventsTest.frame_timestamp_increases
 #
 # Removed by: no milestone assigned yet -- COMP-06 wl_shm validation.
 BadBufferTest.test_truncated_shm_file
+
+# ---------------------------------------------------------------------------
+# 19. A configure before the client's initial commit.
+#
+# Both tests expect xdg_surface.configure (and wm_capabilities, which smithay
+# sends with it) with no wl_surface.commit at all; one even attaches a buffer
+# first. xdg-shell has the client make an initial bufferless commit and the
+# compositor answer it with the configure. abyss places a toplevel at that
+# commit, once its app_id, parent and rules are known (COMP-05 §4); the old
+# configure at get_toplevel time tiled every dialog first.
+#
+# Removed by: never, unless wlcs adds the initial commit to these tests.
+XdgSurfaceStableTest.gets_configure_event
+XdgToplevelStableTest.wm_capabilities_are_sent
