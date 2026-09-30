@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The launcher pane: a header strip, a prompt cell, a run of result cells,
-//! a hint line — four blocks on one sheet of glass, none of them framed.
+//! The launcher pane: a prompt cell, a run of result cells, a hint line —
+//! three blocks on one sheet of glass, none of them framed.
 //!
 //! The sheet is the compositor's material under a light tint
 //! (`parts::surface`), and everything on it is cut from the one glass-cell
@@ -12,22 +12,27 @@
 //!
 //! Composition (`docs/COMPOSITION.md`): the hero is the **prompt cell** — the
 //! live query at hero type in the tallest lozenge on the sheet, a mono marker
-//! at its left and the cursor's place in the match list at its right. Under
+//! at its left and the cursor's place in the match list at its right, which
+//! doubles as the machine's reading of the index (`1 / 37`). There is no
+//! header strip above it: a launcher is a prompt, and a title plus a
+//! two-line status chip stacked over the prompt read as a debug panel. Under
 //! it the results are a **run of latent cells**: at rest a row is only its
 //! text on the glass, and it becomes a cell only when it means something —
 //! under the pointer it lifts into the white lozenge without taking the
-//! selection, and the selected row rests as the gold one. So the four blocks read as strip / lozenge /
-//! floating run / line, and the hero is the only cell that is always there.
-//! The strip and the line are plain text on the glass; the hint line's keys
-//! sit in small glass caps (`parts::key_hint`), never accented.
+//! selection, and the selected row rests as the focused one. So the three
+//! blocks read as lozenge / floating run / line, and the hero is the only
+//! cell that is always there. The hint line's keys sit in small glass caps
+//! (`parts::key_hint`), never accented.
 //!
-//! **The accent ledger: the one live yellow is the selected result row** —
-//! its gold cell ground, its name and its identifier. That row is what Enter
-//! runs, which is the only state this pane has — the drawn window scrolls
-//! with `selected` (see `scroll`) precisely so that the statement stays true
-//! past the eighth match. A selected row that cannot launch (a terminal-only
-//! entry) wears the neutral cell instead, and a refusal is `DANGER`, which
-//! is its own channel and not the accent.
+//! **The accent ledger: the one live yellow is the selected row's name.**
+//! Its cell is the focused glass — a clearer white fill and rim, no gold
+//! ground and no glow — and its identifier sits beside it in tertiary mono.
+//! That row is what Enter runs, which is the only state this pane has — the
+//! drawn window scrolls with `selected` (see `scroll`) precisely so that the
+//! statement stays true past the last drawn row. A selected row that cannot
+//! launch (a terminal-only entry) wears the plain cell and a grey name
+//! instead, and a refusal is `DANGER`, which is its own channel and not the
+//! accent.
 //!
 //! Every colour and size comes from `eclipse_ui`; a literal anywhere in here
 //! is a bug, with the exception of the layout metrics named at the top of the
@@ -46,12 +51,10 @@ use eclipse_ui::widget as parts;
 use crate::app::{App, Message, INPUT_ID};
 use crate::{MAX_ROWS, WIDTH};
 
-/// Height of the header strip: a micro label beside a two-line status chip.
-const HEADER_H: f32 = 32.0;
 /// Height of the hero prompt cell, its padding included.
 const BAND_H: f32 = 52.0;
 /// Height of one result cell.
-const ROW_H: f32 = 40.0;
+const ROW_H: f32 = 36.0;
 /// The air between two result cells. Air, not a rule: two lit cells side by
 /// side (the selection and the row under the pointer) need a sliver of glass
 /// between them or their drops merge into one slab.
@@ -73,8 +76,6 @@ const PROBLEM_H: f32 = 28.0;
 /// matched would need a `SizeChange` round trip on every keystroke.
 pub fn surface_height() -> u32 {
     (space::CARD * 2.0
-        + HEADER_H
-        + space::BLOCK
         + BAND_H
         + space::BLOCK
         + ROW_H * MAX_ROWS as f32
@@ -87,7 +88,6 @@ pub fn surface_height() -> u32 {
 pub fn view(app: &App) -> Element<'_, Message, Theme> {
     let body = Column::new()
         .spacing(space::BLOCK)
-        .push(header(app))
         .push(prompt(app))
         .push(results(app))
         .push(footer(app));
@@ -98,30 +98,6 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
     container(parts::surface(app.glass_radius, app.blur, body))
         .width(Length::Fixed(WIDTH as f32))
         .into()
-}
-
-/// The header strip: what this surface is, and the machine's own reading of
-/// the index it is searching. Plain text on the glass — the chip reports, it
-/// is not a cell.
-fn header(app: &App) -> Element<'_, Message, Theme> {
-    let state = if app.query.is_empty() {
-        "all applications".to_owned()
-    } else {
-        format!("{} matching", app.matched.len())
-    };
-    let measure = format!("{} indexed", app.entries.len());
-
-    container(
-        row![
-            parts::micro_label("launch"),
-            Space::new().width(Length::Fill),
-            parts::status_chip(&state, &measure),
-        ]
-        .align_y(Alignment::Center),
-    )
-    .height(Length::Fixed(HEADER_H))
-    .align_y(Alignment::Center)
-    .into()
 }
 
 /// The hero. The query at hero scale, with the cursor's place in the match
@@ -230,12 +206,13 @@ fn entry_row(entry: &Entry, index: usize, selected: bool) -> Element<'static, Me
     // The identifier is on the selected row only. It is what will actually be
     // spawned, so it belongs beside the choice — and printing all eight makes
     // a column of mono noise that reads louder than the names it labels.
+    // Tertiary, not gold: the name already carries the row's one yellow.
     let tail: Element<'static, Message, Theme> = if live {
         text(entry.id.trim_end_matches(".desktop").to_owned())
             .size(size::MONO)
             .font(font::DATA)
             .wrapping(Wrapping::None)
-            .color(color::ACCENT_TEXT)
+            .color(color::TEXT_TERTIARY)
             .into()
     } else {
         Space::new().into()
@@ -256,10 +233,10 @@ fn entry_row(entry: &Entry, index: usize, selected: bool) -> Element<'static, Me
     ]
     .align_y(Alignment::Center);
 
-    // Gold for the row Enter runs, the neutral lozenge for a selected row
-    // that cannot run, and nothing at all for the rest until the pointer
-    // lifts them — the taskbar chip's glass cell, at the sheet's inset
-    // radius.
+    // The focused glass for the row Enter runs, the plain lozenge for a
+    // selected row that cannot run, and nothing at all for the rest until
+    // the pointer lifts them — the taskbar chip's glass cell, at the sheet's
+    // inset radius.
     let tone = if live {
         CellTone::Focused
     } else if selected {

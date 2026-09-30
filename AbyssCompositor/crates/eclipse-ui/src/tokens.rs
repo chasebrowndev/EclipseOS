@@ -125,28 +125,22 @@ pub mod color {
         a: 0.30,
     };
     /// The focused cell (the focused window's chip, the current workspace
-    /// tile, the launcher's selected row) is the same glass lozenge catching
-    /// gold light, not a lozenge painted gold. The light is three things:
-    /// a thin gold tint the backdrop still shows through
-    /// ([`CELL_FOCUS`]), a neutral hairline brighter than a plain cell's, as
-    /// the lit edge of the glass ([`CELL_FOCUS_RIM`]), and a soft gold glow
-    /// in place of the neutral drop ([`CELL_FOCUS_GLOW`]). A glow is blurred
-    /// light under the glass, not a stroke on it: the rim stays white, so the
-    /// accent is still never an outline.
+    /// tile, the launcher's selected row) is the same glass lozenge, only a
+    /// step clearer: a slightly brighter white fill ([`CELL_FOCUS`]) and a
+    /// crisper white rim ([`CELL_FOCUS_RIM`]), with the gold on its label
+    /// alone. No gold ground and no glow: gold light under or around a cell
+    /// reads as a smeared halo on glass, and a gold tint over a dark
+    /// backdrop turns olive. The label says which cell; the material only
+    /// says "this one is lifted".
     ///
-    /// Linear-light alphas like the rest of the cell tokens: `.09` gold here
-    /// reads as a ~30% opaque khaki slab, which is the flat look this
-    /// replaced.
-    pub const CELL_FOCUS: Color = Color { a: 0.05, ..ACCENT };
-    pub const CELL_FOCUS_HOVER: Color = Color { a: 0.075, ..ACCENT };
-    pub const CELL_FOCUS_PRESS: Color = Color { a: 0.10, ..ACCENT };
-    pub const CELL_FOCUS_RIM: Color = white(0.045);
-    pub const CELL_FOCUS_RIM_HOVER: Color = white(0.07);
-    /// The glow under a focused cell, at rest and under the pointer. Pressed,
-    /// the cell is pushed into the glass and casts nothing, like any cell.
-    /// Geometry in [`super::bar`].
-    pub const CELL_FOCUS_GLOW: Color = Color { a: 0.12, ..ACCENT };
-    pub const CELL_FOCUS_GLOW_HOVER: Color = Color { a: 0.18, ..ACCENT };
+    /// Linear-light alphas like the rest of the cell tokens. Each state sits
+    /// a step above the plain cell's same state, so a hovered plain cell
+    /// never reads as the focused one.
+    pub const CELL_FOCUS: Color = white(0.014);
+    pub const CELL_FOCUS_HOVER: Color = white(0.02);
+    pub const CELL_FOCUS_PRESS: Color = white(0.028);
+    pub const CELL_FOCUS_RIM: Color = white(0.04);
+    pub const CELL_FOCUS_RIM_HOVER: Color = white(0.055);
     /// The ground under a floating sheet that must stay readable over any
     /// wallpaper — a context menu, a tray drawer. Nearly opaque on purpose:
     /// a menu is a mark rail, and a mark rail that lets the desktop through
@@ -498,12 +492,6 @@ pub mod bar {
     /// enough to read as a floating card.
     pub const CELL_SHADOW_Y: f32 = 1.0;
     pub const CELL_SHADOW_BLUR: f32 = 6.0;
-    /// The gold glow under a focused cell
-    /// ([`super::color::CELL_FOCUS_GLOW`]): wider than the drop, so it reads
-    /// as light pooling under the glass rather than a darker shadow, and
-    /// sitting the same pixel low, so the lozenge still looks lifted.
-    pub const CELL_GLOW_Y: f32 = 4.0;
-    pub const CELL_GLOW_BLUR: f32 = 10.0;
     /// Air between a floating sheet (center, toasts) and the screen edge or
     /// the bar strip, as layer-shell margin. The bar's own side margin, so a
     /// sheet under the bar lines up with the capsule's right end.

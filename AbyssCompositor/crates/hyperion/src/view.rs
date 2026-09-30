@@ -23,8 +23,8 @@
 //! keyboard is actually talking to was not marked at all. A chip now wears
 //! one of three states, and only the first is yellow:
 //!
-//! - **focused** — gold: an `ACCENT_FILL` ground at rest, deepened by the
-//!   pointer, and an `ACCENT_TEXT` label. One chip at most;
+//! - **focused** — the plain lozenge a step clearer (`CELL_FOCUS` fill and
+//!   rim, both white) with an `ACCENT_TEXT` label. One chip at most;
 //! - **on screen** — neutral white: the plain glass lozenge every bar cell
 //!   wears and a full-white label, lifted by the pointer like the rest;
 //! - **minimized** — dimmed: no fill, only a ghost rim, label at
@@ -36,10 +36,10 @@
 //! the same kind of fact as "which window has focus", and the two never
 //! compete for area — the tile is 24px, the focused chip is one cell.
 //!
-//! A chip spends its yellow on a fill and a label, not on an outline — every
-//! cell's hairline stays neutral white, the focused one's included — and not
-//! on a 2px underline, which on a rounded chip read as a sticker bolted to
-//! the bottom.
+//! A chip spends its yellow on its label alone — not on a fill, which over
+//! dark glass turns olive; not on a glow, which smears past the cell's edge;
+//! not on an outline; and not on a 2px underline, which on a rounded chip
+//! read as a sticker bolted to the bottom.
 //!
 //! The launcher mark is the third and last, also by explicit direction: the
 //! corona is the desktop's own mark, and a white ring read as a disabled
