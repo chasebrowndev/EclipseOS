@@ -1167,7 +1167,16 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
                 }
             }
         }
-        if arranged || send_initial {
+        // smithay's `arrange` reports only a layer whose *size* changed. A bar
+        // that keeps its height but moves its exclusive zone or margin (a
+        // hyperion fold landing) moves the tiling area all the same, and
+        // without this the windows keep the stale one.
+        let area_moved = state
+            .outputs
+            .iter()
+            .find(|e| e.output == output)
+            .is_some_and(|e| e.workspaces[e.active].last_area != Some(tiling_area(state, &output)));
+        if arranged || send_initial || area_moved {
             arrange(state);
         }
         if send_initial {
