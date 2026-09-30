@@ -883,8 +883,19 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
     // The tray lists are drawn by `tray_hero`, their control; listing them
     // again here as read-only text would be the same setting twice.
     let shown = |k: &&Key| pane_for(&k.path) == Some(app.pane) && !k.path.starts_with("bar.tray.");
+    let mut keys: Vec<&Key> = app.rows.iter().filter(shown).collect();
+    // The launcher style is a `bar` key (so last in schema order) but a
+    // sub-choice of the Launcher slot: it reads directly beneath that row.
+    if let Some(i) = keys.iter().position(|k| k.path == crate::pane::LAUNCHER_STYLE) {
+        let style = keys.remove(i);
+        let at = keys
+            .iter()
+            .position(|k| k.path == "components.launcher")
+            .map_or(keys.len(), |j| j + 1);
+        keys.insert(at, style);
+    }
     let mut set_apart = false;
-    for key in app.rows.iter().filter(shown) {
+    for key in keys {
         let group = group_for(&key.path);
         let rows = match groups.iter().position(|(g, _)| *g == group) {
             Some(i) => &mut groups[i].1,
