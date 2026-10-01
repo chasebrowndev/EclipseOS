@@ -2325,8 +2325,14 @@ actionable error rather than a backtrace.
 **Decided 2026-09-05: the compositor starts without `policyd` and runs in
 degraded mode. No agent connection is accepted until policy is live.**
 
+**Amended 2026-09-30 (ADR 0069, Appendix F): the agent stack is an add-on.**
+The rows below apply only while the `agents` hook (ADR 0066) is on. With it
+off, which is the default whenever `eclipseos-agents` is not installed, there is
+nothing to degrade from. That is the normal state, and no indicator is shown.
+
 | Condition | Behaviour |
 |---|---|
+| `agents` hook off | Full human desktop. No privileged socket is created and no agent or `eclipse_semantic_v1` global is advertised on any socket. abyss does not try to reach `policyd`. No "agents disabled" indicator, no `agent-override`/`agent-attention` default binds, and `get_agents` is refused as hook-bound. Turning the hook off while agents are live behaves as "`agentd` dies" (below), and then the socket is removed. |
 | `policyd` not yet connected | Full human desktop. Privileged socket exists but `create_agent` fails with `POLICY_UNAVAILABLE`. Trusted UI shows a persistent "agents disabled" indicator. |
 | `policyd` connects, pushes signed table | Agents may connect. Indicator clears. |
 | `policyd` dies while agents are live | **Fail closed for agents:** all agent seats paused (as in human override, C-00 §4.5), in-flight requests return `paused`, no new requests accepted. Human session continues untouched. Reconnect resumes. |
@@ -7375,6 +7381,27 @@ same day. Appendix D is reserved for the D-07 batch.
 | E-01 | COMP-18 §3 | Annotation methods, binds and region select are add-on hooks (ADR 0066), off unless an installed manifest names them. A manifest never grants capture | yes |
 | E-02 | COMP-10 §3.11 | New surface: command approval for taskbar command widgets (ADR 0067). Compositor-initiated; no client may request it | yes |
 | E-03 | COMP-10 §3.10 | On merging with D-07 (DA-05), the destructive-action prompt runs on §3.11's modal primitive: the granting Erase button needs Tab then Space (Enter never grants), input is ignored for the arming delay, and it is drawn front-most with the other prompts, above the §3.6 indicator. Owner review pending on the indicator ordering | yes |
+
+---
+
+# Appendix F — amendment record, 2026-09-30
+
+**Applied inline to this volume on 2026-09-30**, from an owner ruling of the
+same day (ADR 0069).
+
+| ID | Target | Change | Applied |
+|---|---|---|---|
+| F-01 | COMP-01 §6; ADR 0066 hook table | The agent stack is one add-on, `eclipseos-agents`: `policyd`, `agentd`, `brokerd`, the egress proxy, `registryd`, the inference router, the MCP surface and `cataclysm`. It enables a new `agents` hook. The compositor half (privileged socket, agent globals, grant verification, scope filtering, the COMP-11 table, the `eclipse_semantic_v1` server) stays compiled in and dormant. With the hook off there is no socket, no globals, no `policyd` link and no indicator, and that is the normal state, not degraded mode | yes |
+| F-02 | D-07 §4.4 | `policyd` leaves the floor. The Agentic profile installs `eclipseos-agents`; no other profile does. Enabling it later is `pacman -S eclipseos-agents` until COMP-10's trusted admin prompt makes a Settings button possible | yes |
+| F-03 | COMP-16 Phase 2; COMP-15 §2 | Phase 2 suites run in CI with the `agents` hook on. One added test: with the hook off, no agent global is reachable and no agent socket file exists | yes |
+| F-04 | ADR 0066 add-ons | `fog-activity` depends on `eclipseos-agents` | yes |
+
+## Open decisions this appendix leaves standing
+
+1. **Policy key delivery.** COMP-01 §6 reads the `policyd` key from
+   `/etc/eclipse/policyd.pub`, while `policyd` generates its issuer key per user
+   under `~/.local/state`. Which one gives way is settled in the M11 plan.
+2. **The Settings enable button** waits on the trusted admin prompt (COMP-10).
 
 ---
 
