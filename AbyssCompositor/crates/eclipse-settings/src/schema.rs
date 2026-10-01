@@ -126,6 +126,9 @@ pub fn value_label(value: &str) -> &str {
         // Component slots: the ids are program names and read as themselves;
         // only the opt-out needs a word.
         "none" => "None",
+        // `bar.launcher-style`: `menu` is the bar's start menu. `centered`
+        // is left as itself — `floating-placement` spells it the same.
+        "menu" => "start menu",
         // `decoration.blur.mode`: what is drawn behind translucency. `glass`
         // is the refracting bevel, which people know by its product name.
         "off" => "Off",
@@ -272,6 +275,7 @@ impl Row {
             "mode" => "Interaction mode",
             "components.bar" => "Bar",
             "components.launcher" => "Launcher",
+            "bar.launcher-style" => "Launcher style",
             "components.notifications" => "Notifications",
             "components.control-center" => "Control center",
             // The blur group flattens its `glass` and `frost` sub-nodes

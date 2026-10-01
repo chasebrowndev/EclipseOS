@@ -15,4 +15,4 @@ pub const WIDTH: u32 = 540;
 /// surface fixes its size before the boot fn runs, so the height cannot
 /// depend on how many entries matched. Fewer matches leave the tail empty;
 /// more are cut off, and the view says how many.
-pub const MAX_ROWS: usize = 8;
+pub const MAX_ROWS: usize = 6;

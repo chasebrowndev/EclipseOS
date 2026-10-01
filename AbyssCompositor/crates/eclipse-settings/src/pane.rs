@@ -88,6 +88,11 @@ impl Pane {
     }
 }
 
+/// `bar.launcher-style`: the centred launcher or the bar's start menu. It is
+/// a `bar` key but reads as part of `components.launcher`, so the Desktop
+/// pane shows it in the components group, directly under that row.
+pub const LAUNCHER_STYLE: &str = "bar.launcher-style";
+
 /// The pane a dotted config path belongs to, or `None` if nothing claims it.
 ///
 /// Matching is on the leading node except where one node splits across panes:
@@ -98,6 +103,9 @@ pub fn pane_for(path: &str) -> Option<Pane> {
         "misc.render-device" => return Some(Pane::System),
         "misc.terminal-command" => return Some(Pane::System),
         "misc.scripted-input" => return Some(Pane::Privacy),
+        // How Super+R opens the launcher: a sub-choice of the Launcher slot,
+        // so it sits beside it rather than with the bar's looks.
+        LAUNCHER_STYLE => return Some(Pane::Desktop),
         _ => {}
     }
     let node = path.split('.').next().unwrap_or(path);
@@ -129,6 +137,9 @@ pub fn group_for(path: &str) -> &str {
     }
     if path == "mode" {
         return "interaction";
+    }
+    if path == LAUNCHER_STYLE {
+        return "components";
     }
     if path.starts_with("general.drop-") {
         return "drag guides";
@@ -172,6 +183,13 @@ mod tests {
         assert_eq!(pane_for("misc.render-device"), Some(Pane::System));
         assert_eq!(pane_for("misc.scripted-input"), Some(Pane::Privacy));
         assert_eq!(pane_for("misc.something-new"), None);
+    }
+
+    #[test]
+    fn launcher_style_sits_with_the_launcher_slot() {
+        assert_eq!(pane_for(LAUNCHER_STYLE), Some(Pane::Desktop));
+        assert_eq!(group_for(LAUNCHER_STYLE), "components");
+        assert_eq!(pane_for("bar.position"), Some(Pane::Taskbar));
     }
 
     #[test]
