@@ -3022,12 +3022,13 @@ libinput event → session filter (paused during VT switch)
 - Per-device config (COMP-13): accel profile and speed, natural scroll,
   tap-to-click, tap-and-drag, disable-while-typing, click method, scroll
   method, calibration.
-  *(amended C-03, 2026-09-23)* As built the settings are global, not
-  per-device: `input { accel-profile "flat"|"adaptive"; touchpad {
-  natural-scroll; tap-to-click; dwt } }`, applied to every libinput device
-  that supports them. Click method is fixed to clickfinger. **Code owed:**
-  accel speed, tap-and-drag, configurable click method, scroll method,
-  touchscreen/tablet calibration, per-device overrides.
+  *(amended C-03, 2026-09-23; built 2026-09-30)* Global keys under
+  `input { }` (`accel-profile`, `accel-speed`, `scroll-method`, and
+  `touchpad { natural-scroll; tap-to-click; tap-and-drag; dwt;
+  click-method; scroll-method }`) apply to every libinput device that
+  supports them. A `device "<libinput name>" { }` block overrides them key
+  by key for that device; `calibration` (six floats) is accepted only
+  inside a device block.
 - **Touchpad gestures are required, not optional** (laptops are a target,
   COMP-01 §4.1): 3/4-finger swipe and pinch, delivered to
   `zwp_pointer_gestures` for clients and bindable for compositor actions
@@ -7292,7 +7293,7 @@ against source before it was written. Nothing was renumbered.
 |---|---|---|---|
 | C-01 | COMP-02 §9 | Effects ratified as built: blur on and rounding 13 by default; shadow, dim, animations off. Blur only behind translucent surfaces; layer-shell surfaces get blur and rounding (edge-to-edge layers square, the bar uses `bar.rounding`). COMP-14 §6 shedding order unchanged | yes |
 | C-02 | COMP-02 §4 | Layer order as built: per-window blur/shadow/border/dim, IME popup, annotation pass (COMP-18 §1.1), region selector, TrustedUI last. Drag icon recorded as not yet drawn | yes |
-| C-03 | COMP-04 §2 | Bindable gestures are 3/4-finger swipe only; a bound finger count is the compositor's; pinch and hold pass through. Touch and tablet as built. Device settings global; accel speed, tap-and-drag, click method, scroll method, calibration, per-device overrides moved to code owed | yes |
+| C-03 | COMP-04 §2 | Bindable gestures are 3/4-finger swipe only; a bound finger count is the compositor's; pinch and hold pass through. Touch and tablet as built. Device settings global with per-device `device` blocks; calibration per device only | yes |
 | C-04 | COMP-05 §3.1, §4 | `blur` rule action; policy-owned actions in `policy.kdl`; `launching-principal` refused until COMP-08. Dialogs and fixed-size toplevels float by default (ADR 0053). Maximize semantics as built | yes |
 | C-05 | COMP-13 §1.1, §2.1, §2.2 | Example split into `abyss.kdl` and `policy.kdl` (ADR 0037); `agents {}` marked Phase 2; reserved SUPER+space added; `xwayland` is a node. Method table gains `annotation_*`, `set_idle_inhibit`, `set_minimized`, `calibrate_output`, config methods, `unsubscribe`; `config`/`keybind` events and the `window` title change; move-to-output recorded as a bind action (ADR 0049). `scripted-input` is policy-owned | yes |
 | C-06 | Planning index D-05, Z-01; C-00 §5.5, §17; COMP-17 §4, §6; Appendix B open decision 4 | Native Rust userland (ADR 0038), one crate per component (ADR 0052/0053): `hyperion` and the `eclipse-*` panes. COMP-17 open decision 1 and Appendix B open decision 4 resolved | yes |

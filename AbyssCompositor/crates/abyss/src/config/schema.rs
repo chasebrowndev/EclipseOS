@@ -899,6 +899,24 @@ pub const TABLE: &[Key] = &[
         "Pointer acceleration profile.",
     ),
     k(
+        "input.accel-speed",
+        Ty::Float { min: -1.0, max: 1.0 },
+        Float(0.0),
+        Abyss,
+        Live,
+        "Pointer speed, -1 slowest to 1 fastest; 0 is the device's default.",
+    ),
+    k(
+        "input.scroll-method",
+        Ty::Enum(&["default", "none", "on-button-down"]),
+        Str("default"),
+        Abyss,
+        Live,
+        "Scroll method for mice and trackpoints (touchpads have their own): \
+       `on-button-down` scrolls by moving while the middle button is held, \
+       `default` keeps each device's own.",
+    ),
+    k(
         "input.touchpad.natural-scroll",
         Ty::Bool,
         Bool(false),
@@ -929,6 +947,22 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Touchpad click method: finger count or bottom-corner button areas.",
+    ),
+    k(
+        "input.touchpad.tap-and-drag",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Tap, then tap and hold, to drag.",
+    ),
+    k(
+        "input.touchpad.scroll-method",
+        Ty::Enum(&["two-finger", "edge", "none"]),
+        Str("two-finger"),
+        Abyss,
+        Live,
+        "Touchpad scrolling: two fingers, one finger along the edge, or off.",
     ),
     // misc
     k(
@@ -1107,6 +1141,7 @@ pub const COLLECTIONS: &[Collection] = &[
     Collection { node: "workspace", owner: Abyss, doc: "Per-workspace layout override." },
     Collection { node: "widget", owner: Abyss, doc: "A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget \"<name>\" { exec \"<argv0>\" \"<arg>\"…; interval-ms <ms>; }`; or `stream #true` instead of `interval-ms`, for a command that keeps running and prints one update per line; or `source \"<source>\"` with a `format` instead of `exec`. `bar.widgets.order` draws it as `custom:<name>`. Commands run argv-exec, never through a shell, off the draw path, with a timeout and a 4 KiB line cap, and are killed on reload or removal. A line of output is plain text or JSON `{text, detail, tooltip, state}`; it is shown as plain text, never markup, and never logged. A command has exactly your authority and gains nothing from the taskbar. A later block with the same name replaces an earlier one. `get_config` lists every block, in file order, under `collections.widget` as `{\"name\", \"kind\": \"exec\" | \"stream\" | \"source\", \"exec\": [argv] | null, \"interval-ms\": int | null, \"source\": string | null, \"format\": string | null, \"icon\": string | null, \"on-click\": [argv] | null, \"on-scroll-up\": [argv] | null, \"on-scroll-down\": [argv] | null, \"approval\": \"approved\", \"premade\": bool}`, every field always present: `exec` is set for `exec` and `stream`, `interval-ms` for `exec` only, `source` and `format` for `source` only; `premade` is true when the block is identical to the catalog block of the same name. Widgets are an add-on hook (ADR 0066): unless an installed add-on (the taskbar) turns on `taskbar-widgets`, `widget` blocks are ignored rather than refused, their `custom:` ids are dropped from `bar.widgets.*`, `collections.widget` is empty and `set_config_collection` for `widget` is refused. With the hook on, the premade catalog (`/usr/share/eclipse/widgets/*.kdl`, each file only `bar { widget … }`) is the lowest config layer, below `/etc/eclipse/abyss.kdl`, so `custom:<premade>` works with no block of your own and a block of the same name replaces it. Command widgets need your approval (ADR 0067): an `exec` or `stream` widget runs only if it is an unedited catalog block or you approved exactly this definition (name, argv, interval or stream, and actions) in the compositor-drawn prompt. Anything else, an edited premade or a new command, is withheld: it does not run, its `custom:` id stays and draws nothing, and `collections.widget` lists it as `{\"name\", \"approval\": \"pending\", \"premade\": false, \"altered\": bool}` with no command fields (`altered` is true for an edited premade). Any later edit withholds it again. Not now lasts for the session; the control-socket method `review_widget {\"name\"}` (owner only) brings the prompt back, returns `{\"name\", \"queued\": bool}`, never shows two prompts for one widget, and cannot approve anything itself. `approval`, `premade` and `altered` are ignored on write." },
     Collection { node: "windowrule", owner: Abyss, doc: "A rule matched against windows at map time. Its *action* decides the owning file." },
+    Collection { node: "input.device", owner: Abyss, doc: "Per-device pointer settings, written inside `input { }`: `device \"<name>\" { accel-profile \"flat\"; accel-speed -0.3; scroll-method \"on-button-down\"; touchpad { tap-to-click #true; scroll-method \"edge\"; } calibration 1 0 0 0 1 0; }`. `<name>` is the libinput device name, matched exactly (`libinput list-devices` prints it); every device of that name gets the block. Any subset of `accel-profile`, `accel-speed`, `scroll-method` and a `touchpad { }` with any of the `input.touchpad.*` keys, each validated as its global key is; a key left out inherits the global one, and a key set here wins over it. `touchpad` keys reach only a touchpad, `scroll-method` only a device that is not one. `calibration a b c d e f` is libinput's 2x3 calibration matrix for a touchscreen or tablet, row-major, six numbers; it is only allowed in a device block, and a device without one keeps its default matrix. A later block for the same name overrides an earlier one key by key. KDL-only: not settable over the socket, and not listed by `get_config`." },
     Collection { node: "wallpaper.output", owner: Abyss, doc: "A per-output wallpaper override, written inside `wallpaper { }`: `output \"<name>\" { path \"…\"; mode \"fit\"; color \"#rrggbb\"; }`, any subset of the three keys, each validated as its `wallpaper.*` key is; a key left out inherits the global one. `<name>` is the connector name (`DP-1`). A later block for the same name overrides an earlier one key by key. KDL-only: not settable over the socket. `get_config` lists them, in file order, under `collections.\"wallpaper.output\"` as `{\"output\", \"path\": string | null, \"mode\": string | null, \"color\": \"#rrggbbaa\" | null}`, every field always present; `null` means inherited." },
 ];
 
@@ -1771,6 +1806,10 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "input.touchpad.tap-to-click" => V::Bool(c.input.touchpad.tap_to_click),
         "input.touchpad.dwt" => V::Bool(c.input.touchpad.dwt),
         "input.touchpad.click-method" => V::Str(c.input.touchpad.click_method.clone()),
+        "input.touchpad.tap-and-drag" => V::Bool(c.input.touchpad.tap_and_drag),
+        "input.touchpad.scroll-method" => V::Str(c.input.touchpad.scroll_method.clone()),
+        "input.accel-speed" => V::Float(c.input.accel_speed),
+        "input.scroll-method" => V::Str(c.input.scroll_method.clone()),
         "misc.render-device" => s(&c.misc.render_device),
         "misc.terminal-command" => s(&c.misc.terminal_command),
         "misc.scripted-input" => V::Bool(c.misc.scripted_input),

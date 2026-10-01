@@ -206,12 +206,6 @@ first, then where the code goes, then the COMP-16 milestone.
   never produces a frame (`protocols/standard/image_copy_capture.rs:329`,
   `:344`). Behind the same fail-closed gate and the `capture.cursor` policy.
   *Phase 1, M8.*
-- **Per-device input settings.** COMP-04 §2: accel speed, tap-and-drag, click
-  method, scroll
-  method, touchscreen/tablet calibration, per-device overrides. Today only
-  global `accel-profile` and touchpad natural-scroll/tap/dwt exist.
-  `crates/abyss/src/input/mod.rs`, `config/mod.rs` + `config/schema.rs`.
-  *Phase 1 (COMP-04 is a Phase 1 document).*
 - **The `mode` key.** COMP-17 §2: `mode "wm" | "de"` selects defaults
   (autostart set, default binds, panel) that explicit config overrides. Does
   not exist; was out of scope by DE plan B7. `config/mod.rs`, `config/schema.rs`.

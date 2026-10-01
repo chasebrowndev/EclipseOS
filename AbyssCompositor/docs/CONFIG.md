@@ -182,10 +182,14 @@ Each animation is off until named in an `animation` node inside `animations { }`
 | `input.repeat-rate` | int 0..255 | `40` | live | Key repeats per second. |
 | `input.repeat-delay` | int 0..5000 | `300` | live | Milliseconds held before a key starts repeating. |
 | `input.accel-profile` | adaptive \| flat | `"adaptive"` | live | Pointer acceleration profile. |
+| `input.accel-speed` | float -1..1 | `0` | live | Pointer speed, -1 slowest to 1 fastest; 0 is the device's default. |
+| `input.scroll-method` | default \| none \| on-button-down | `"default"` | live | Scroll method for mice and trackpoints (touchpads have their own): `on-button-down` scrolls by moving while the middle button is held, `default` keeps each device's own. |
 | `input.touchpad.natural-scroll` | bool | `#false` | live | Invert touchpad scroll direction. |
 | `input.touchpad.tap-to-click` | bool | `#false` | live | Treat a tap as a click. |
 | `input.touchpad.dwt` | bool | `#false` | live | Disable the touchpad while typing. |
 | `input.touchpad.click-method` | clickfinger \| button-areas | `"clickfinger"` | live | Touchpad click method: finger count or bottom-corner button areas. |
+| `input.touchpad.tap-and-drag` | bool | `#true` | live | Tap, then tap and hold, to drag. |
+| `input.touchpad.scroll-method` | two-finger \| edge \| none | `"two-finger"` | live | Touchpad scrolling: two fingers, one finger along the edge, or off. |
 
 ### `misc`
 
@@ -323,6 +327,10 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `seat-compat lock \| multi` | `policy.kdl` | `seat-compat lock`<br>`seat-compat multi` | Seat concurrency (COMP-07 §6). Clamped to `lock` for X11 windows. |
 | `no-agent` | `policy.kdl` | `no-agent` | Hide the window from agents. |
 | `irreversible-capable true \| false` | `policy.kdl` | `irreversible-capable true`<br>`irreversible-capable false` | Pin whether the window counts as able to take irreversible actions (S-06 §3.3): coordinate-only or low-confidence agent input to it then prompts. Without a rule it is true for apps whose desktop entry lists `WebBrowser`, `Email`, `TerminalEmulator` or `FileManager`, false otherwise. |
+
+### `input.device`
+
+Per-device pointer settings, written inside `input { }`: `device "<name>" { accel-profile "flat"; accel-speed -0.3; scroll-method "on-button-down"; touchpad { tap-to-click #true; scroll-method "edge"; } calibration 1 0 0 0 1 0; }`. `<name>` is the libinput device name, matched exactly (`libinput list-devices` prints it); every device of that name gets the block. Any subset of `accel-profile`, `accel-speed`, `scroll-method` and a `touchpad { }` with any of the `input.touchpad.*` keys, each validated as its global key is; a key left out inherits the global one, and a key set here wins over it. `touchpad` keys reach only a touchpad, `scroll-method` only a device that is not one. `calibration a b c d e f` is libinput's 2x3 calibration matrix for a touchscreen or tablet, row-major, six numbers; it is only allowed in a device block, and a device without one keeps its default matrix. A later block for the same name overrides an earlier one key by key. KDL-only: not settable over the socket, and not listed by `get_config`.
 
 ### `wallpaper.output`
 
