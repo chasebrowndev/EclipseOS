@@ -28,6 +28,7 @@ use crate::icons::Icons;
 use crate::layout::{self, Pin};
 use crate::model::Snapshot;
 use crate::motion::{detent, settle, Drag};
+use crate::program::Programs;
 use crate::widgets::{self, GripEv};
 
 /// The launcher binary the launcher button starts. The same name the
@@ -248,6 +249,9 @@ pub struct App {
     /// the view. A directory walk in the draw path would be a frame hitch per
     /// window.
     pub icons: Icons,
+    /// Terminal → foreground program, re-read from `/proc` with every
+    /// snapshot; only the desktop-file name lookup is cached.
+    pub programs: Programs,
     /// One bar per output, keyed by its layer surface.
     pub bars: HashMap<Id, Bar>,
     /// `--output NAME`: one bar on that connector and no reconciling. A
@@ -673,6 +677,7 @@ impl App {
             bluetooth: Bluetooth::default(),
             battery: None,
             icons: Icons::new(),
+            programs: Programs::new(),
             bars: HashMap::new(),
             pin: None,
             seen: HashMap::new(),
@@ -700,6 +705,7 @@ impl App {
             fixture: None,
         };
         app.icons.warm(&app.snapshot.windows);
+        app.programs.fill(&mut app.snapshot.windows);
         #[cfg(debug_assertions)]
         preview(&mut app);
         if app.fixture.is_none() {
@@ -811,6 +817,7 @@ fn preview(app: &mut App) {
             focused: handle == 2,
             minimized: false,
             pid: None,
+            program: None,
             trust: crate::model::Trust::Private,
         };
         let workspace = |index: usize, active: bool, windows: usize| crate::model::Workspace {
@@ -2037,6 +2044,7 @@ fn refetch(app: &mut App) {
     }
     app.snapshot = app.conn.snapshot();
     app.icons.warm(&app.snapshot.windows);
+    app.programs.fill(&mut app.snapshot.windows);
 }
 
 /// Re-solve every bar, then open or close the monitor tap for all of them.
@@ -2902,6 +2910,7 @@ pub(crate) mod tests {
             focused: true,
             minimized: false,
             pid: None,
+            program: None,
             trust: Trust::Secret,
         };
         assert_eq!(w.label(), "Protected window");

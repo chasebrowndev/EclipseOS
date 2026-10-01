@@ -1475,6 +1475,7 @@ mod tests {
             focused: false,
             minimized,
             pid: None,
+            program: None,
             trust: crate::model::Trust::Private,
         }
     }

@@ -76,6 +76,7 @@ fn window(i: usize, output: u64) -> Window {
         // A few put away, so the ledger's "up" reads as a difference.
         minimized: i % 5 == 3,
         pid: None,
+        program: None,
         trust: Trust::Private,
     }
 }

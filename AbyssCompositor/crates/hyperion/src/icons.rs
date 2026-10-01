@@ -248,6 +248,7 @@ mod tests {
             focused: false,
             minimized: false,
             pid: None,
+            program: None,
             trust,
         }
     }

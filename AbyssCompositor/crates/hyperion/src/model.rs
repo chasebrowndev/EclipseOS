@@ -90,6 +90,12 @@ pub struct Window {
     /// The client's pid, when the compositor could resolve one. Used to tie a
     /// window to the audio streams that process owns.
     pub pid: Option<i32>,
+    /// The program in the foreground of this window's terminal, already
+    /// resolved to its display name (`Claude Code`, `sleep`). Filled from
+    /// `/proc` by [`crate::program::Programs::fill`] on every snapshot, never
+    /// for a `secret` window; `None` for anything that is not a terminal with
+    /// a busy shell.
+    pub program: Option<String>,
     pub trust: Trust,
 }
 
@@ -113,15 +119,24 @@ impl Window {
     /// The chip's condensed label: the application, not the document.
     ///
     /// The second rung of the condensation ladder — `kitty`, never
-    /// `~/syncedprojects/… — zsh`. The `app_id` is what a window has in common
-    /// with the other windows of its program, so it is the part of the label
-    /// that stays useful once there is no room for the rest.
+    /// `~/syncedprojects/… — zsh`. In order:
     ///
-    /// A `secret` window answers with its placeholder here too: the trust
-    /// check is in [`Window::label`] and this defers to it rather than
-    /// reaching past it to a client-controlled string.
+    /// 1. a `secret` window answers with its placeholder: the trust check is
+    ///    in [`Window::label`] and this defers to it rather than reaching past
+    ///    it to a client-controlled string;
+    /// 2. the terminal's foreground [`Window::program`] — `claude` running in
+    ///    `foot` is the thing the human is looking at, not the terminal;
+    /// 3. the `app_id`, which is what a window has in common with the other
+    ///    windows of its program;
+    /// 4. [`Window::label`].
     pub fn name(&self) -> &str {
-        if self.trust == Trust::Secret || self.app_id.is_empty() {
+        if self.trust == Trust::Secret {
+            return self.label();
+        }
+        if let Some(program) = self.program.as_deref().filter(|p| !p.is_empty()) {
+            return program;
+        }
+        if self.app_id.is_empty() {
             return self.label();
         }
         &self.app_id
@@ -177,6 +192,7 @@ pub fn parse_windows(v: &Value) -> Vec<Window> {
                         focused: w.get("focused").and_then(Value::as_bool).unwrap_or(false),
                         minimized: w.get("minimized").and_then(Value::as_bool).unwrap_or(false),
                         pid: w.get("pid").and_then(Value::as_i64).map(|p| p as i32),
+                        program: None,
                         trust: Trust::parse(w.get("trust").and_then(Value::as_str)),
                     })
                 })
@@ -242,6 +258,32 @@ mod tests {
         assert_eq!(wins[0].name(), "kitty");
         assert_eq!(wins[1].name(), "Protected window");
         assert_eq!(wins[2].name(), "scratch");
+    }
+
+    /// A terminal's foreground program outranks its app_id, an empty one
+    /// does not, and the label (the expanded rung) never sees it.
+    #[test]
+    fn the_foreground_program_outranks_the_app_id() {
+        let mut wins = parse_windows(&json!([
+            {"handle": 1, "app_id": "foot", "title": "~ — zsh"},
+            {"handle": 2, "app_id": "", "title": "scratch"}
+        ]));
+        wins[0].program = Some("Claude Code".into());
+        wins[1].program = Some(String::new());
+        assert_eq!(wins[0].name(), "Claude Code");
+        assert_eq!(wins[0].label(), "~ — zsh");
+        assert_eq!(wins[1].name(), "scratch");
+    }
+
+    /// Belt and braces: even if a program were somehow filled in for a
+    /// `secret` window, the condensed rung still shows only the placeholder.
+    #[test]
+    fn a_secret_window_never_shows_its_program() {
+        let mut wins = parse_windows(&json!([
+            {"handle": 1, "app_id": "foot", "title": "t", "trust": "secret"}
+        ]));
+        wins[0].program = Some("claude".into());
+        assert_eq!(wins[0].name(), "Protected window");
     }
 
     #[test]
