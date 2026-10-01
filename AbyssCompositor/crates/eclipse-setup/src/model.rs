@@ -1236,6 +1236,8 @@ impl Model {
             carry_network: self.carry_network,
             profile: self.profile,
             candidates: self.choices.candidates(),
+            // D-07 §4.4 "Stack": no step-12 toggle yet, so the profile decides.
+            agents: self.profile.agents_default(),
         };
         // The password leaves the model here and nowhere else. Both buffers are
         // emptied, whether or not the helper ever answers.

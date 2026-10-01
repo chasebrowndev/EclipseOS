@@ -85,7 +85,7 @@ noto-fonts
 noto-fonts-emoji
 ttf-jetbrains-mono-nerd
 
-## EclipseOS itself (D-01 §1) — pulls abyss, desktop and policyd
+## EclipseOS itself (D-01 §1) — pulls abyss and desktop; the agents add-on is per profile (ADR 0069)
 eclipseos-meta
 
 # NetworkManager runs on iwd here so the live medium's saved wifi carries over.

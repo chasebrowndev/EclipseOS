@@ -371,6 +371,7 @@ mod tests {
             carry_network: true,
             profile: Profile::Standard,
             candidates: vec!["hyperion".into()],
+            agents: false,
         }
     }
 

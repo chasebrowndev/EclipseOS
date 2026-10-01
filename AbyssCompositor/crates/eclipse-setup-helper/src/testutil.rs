@@ -251,6 +251,7 @@ pub fn req() -> eclipse_setup_plan::Request {
             carry_network: false,
             profile: Profile::Standard,
             candidates: vec!["hyperion".into(), "eclipse-toasts".into()],
+            agents: false,
         },
         password: zeroize::Zeroizing::new("correct horse".into()),
     }

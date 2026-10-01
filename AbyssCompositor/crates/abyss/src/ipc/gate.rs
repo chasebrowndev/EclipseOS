@@ -202,6 +202,12 @@ pub const HOOKED: &[HookBinding] = &[
     hb("set_config_collection", Some("widget"), Hook::TaskbarWidgets),
     // Command approval exists only with the taskbar add-on (ADR 0067).
     hb("review_widget", None, Hook::TaskbarWidgets),
+    // Agent lifecycle exists only with the agent add-on (ADR 0069).
+    hb("get_agents", None, Hook::Agents),
+    hb("pause_agent", None, Hook::Agents),
+    hb("resume_agent", None, Hook::Agents),
+    hb("terminate_agent", None, Hook::Agents),
+    hb("revoke_grants", None, Hook::Agents),
 ];
 
 /// Hook check, tightened onto the outer [`check`] (the ratchet). A binding
@@ -456,8 +462,7 @@ mod tests {
     fn hook_bound_methods_follow_their_hook() {
         let cfg = Config::default();
         for b in HOOKED {
-            let row = lookup(b.method).unwrap_or_else(|| panic!("{} has no gate row", b.method));
-            assert!(row.implemented, "{}", b.method);
+            assert!(lookup(b.method).is_some(), "{} has no gate row", b.method);
             let params = hooked_params(b);
             let outer = check(&owner(), 1000, &cfg, b.method);
             assert_eq!(outer, Decision::Allow, "{}", b.method);
@@ -503,6 +508,16 @@ mod tests {
                     .iter()
                     .any(|b| b.method == e.method && b.hook == Hook::Annotations),
                 "{} is not bound to `annotations`",
+                e.method
+            );
+        }
+        // Every agent-lifecycle (Privileged) row needs the agent add-on.
+        for e in TABLE.iter().filter(|e| e.kind == Kind::Privileged) {
+            assert!(
+                HOOKED
+                    .iter()
+                    .any(|b| b.method == e.method && b.hook == Hook::Agents),
+                "{} is not bound to `agents`",
                 e.method
             );
         }

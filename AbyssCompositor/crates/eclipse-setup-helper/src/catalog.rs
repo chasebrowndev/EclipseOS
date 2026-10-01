@@ -152,6 +152,11 @@ pub const FLOOR_UNITS: &[&str] = &[
     "fstrim.timer",
 ];
 
+/// The agent stack add-on (ADR 0069), installed only when the plan's `agents`
+/// flag is set (D-07 §4.4 "Stack"). A constant like the catalog: the flag is a
+/// yes/no, never a name.
+pub const AGENTS_PACKAGE: &str = "eclipseos-agents";
+
 /// More than there are slots is already nonsense.
 const MAX_CANDIDATES: usize = 32;
 
@@ -215,6 +220,7 @@ mod tests {
                 assert!(valid_pkg_name(p), "{p}");
             }
         }
+        assert!(valid_pkg_name(AGENTS_PACKAGE));
         for u in FLOOR_UNITS {
             assert!(valid_pkg_name(u), "{u}");
         }

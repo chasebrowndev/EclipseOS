@@ -23,6 +23,14 @@ pub enum Profile {
     Agentic,
 }
 
+impl Profile {
+    /// D-07 §4.4 "Stack": whether the `eclipseos-agents` add-on (ADR 0069) is
+    /// preselected. On for Agentic only; the user can change it in step 12.
+    pub fn agents_default(self) -> bool {
+        matches!(self, Profile::Agentic)
+    }
+}
+
 /// Everything the helper acts on, all validated by the helper itself (D-07
 /// §4.2, §4.3, §6). Nothing here is trusted because the UI validated it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +55,10 @@ pub struct Plan {
     /// Catalog ids only. The helper resolves them; it takes no package or unit
     /// name from its caller.
     pub candidates: Vec<String>,
+    /// Install the agent stack add-on (D-07 §4.4 "Stack", ADR 0069). The UI
+    /// seeds it from [`Profile::agents_default`]; absent on the wire means no.
+    #[serde(default)]
+    pub agents: bool,
 }
 
 /// The stdin frame: the plan plus the one secret.
@@ -210,9 +222,22 @@ mod tests {
             carry_network: true,
             profile: Profile::Standard,
             candidates: vec!["hyperion".into()],
+            agents: false,
         };
         let j = serde_json::to_string(&plan).unwrap();
         assert!(!j.contains("password"));
         assert_eq!(serde_json::from_str::<Plan>(&j).unwrap(), plan);
+    }
+
+    #[test]
+    fn agents_default_on_for_agentic_only_and_absent_is_off() {
+        assert!(Profile::Agentic.agents_default());
+        for p in [Profile::Minimal, Profile::Standard, Profile::Full] {
+            assert!(!p.agents_default(), "{p:?}");
+        }
+        // A plan from before the field existed still parses, as "no agents".
+        let old = r#"{"disk_by_id":"d","hostname":"h","username":"u","locale":"en_US.UTF-8",
+            "timezone":"UTC","keymap":"us","carry_network":true,"profile":"agentic","candidates":[]}"#;
+        assert!(!serde_json::from_str::<Plan>(old).unwrap().agents);
     }
 }
