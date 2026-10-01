@@ -1226,6 +1226,7 @@ dependencies = [
  "eclipse-ui",
  "iced",
  "serde_json",
+ "zbus",
 ]
 
 [[package]]

@@ -360,6 +360,19 @@ pub mod space {
     pub const VERDICT_W: f32 = 7.0 * super::canvas::MONO_CHAR_W;
     /// The square beside a colour field that shows the colour it holds.
     pub const SWATCH: f32 = 18.0;
+    /// The air between a swatch button's disc and its rim, so the rim that
+    /// answers hover and the open state sits clear of the disc's own ring.
+    pub const SWATCH_PAD: f32 = 3.0;
+    /// The colour picker: its square's and strips' width (a field's width, so
+    /// it sits under the field it edits), the square's height, a hue or alpha
+    /// strip's height, the gap between them, and the knob that marks a value.
+    pub const PICKER_W: f32 = FIELD_W;
+    pub const PICKER_SV_H: f32 = 132.0;
+    pub const PICKER_BAR_H: f32 = 14.0;
+    pub const PICKER_GAP: f32 = 10.0;
+    pub const PICKER_KNOB: f32 = 6.0;
+    /// The knob's dark outline, so its white ring reads on a pale colour.
+    pub const PICKER_KNOB_EDGE: f32 = 1.5;
     /// A column of settings rows set beside a hero rather than filling the
     /// pane (the Taskbar's Motion band): exactly wide enough for a numeric
     /// row folded under its label, so the band wraps instead of squeezing it.
