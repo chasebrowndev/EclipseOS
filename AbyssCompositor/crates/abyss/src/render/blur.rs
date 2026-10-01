@@ -30,7 +30,10 @@ use smithay::{
         allocator::Fourcc,
         renderer::{
             damage::OutputDamageTracker,
-            element::{texture::TextureRenderElement, Element, Id, Kind, RenderElement, UnderlyingStorage},
+            element::{
+                texture::TextureRenderElement, utils::CropRenderElement, Element, Id, Kind, RenderElement,
+                UnderlyingStorage,
+            },
             gles::{
                 GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
                 UniformType,
@@ -51,7 +54,7 @@ use crate::config::Blur;
 const FORMAT: Fourcc = Fourcc::Xbgr8888;
 
 /// Clear colour for the backdrop pass. Opaque black: the backdrop is a full
-/// output-sized image and every visible pixel is overdrawn by an element.
+/// image and every visible pixel is overdrawn by an element.
 const CLEAR: smithay::backend::renderer::Color32F =
     smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, 1.0);
 
@@ -80,6 +83,50 @@ pub fn grow(rect: Rectangle<i32, Physical>, radius: i32) -> Rectangle<i32, Physi
         )
             .into(),
     )
+}
+
+/// The part of the output a blur of `region` has to compute: `region` grown by
+/// `radius` and clamped to the `fb` output, as `(tex, phys)`. `phys` is that
+/// rectangle in output-local physical pixels; `tex` is the same pixels in the
+/// backdrop texture, which is stored bottom row first when `mirrored`
+/// (`Flipped180`, see [`crate::render::effects::fb_y_mirrored`]).
+///
+/// `tex` is snapped outwards to the chain's coarsest level (`1 << passes`
+/// px), so every level samples the same pixel grid as an output-sized chain
+/// would: a window dragged across the output does not swim, and an edge that
+/// meets the output edge still clamps exactly where the full chain did.
+/// `None` when nothing of the grown region is on the output.
+pub fn crop_rects(
+    region: Rectangle<i32, Physical>,
+    radius: i32,
+    fb: Size<i32, Physical>,
+    passes: usize,
+    mirrored: bool,
+) -> Option<(Rectangle<i32, Physical>, Rectangle<i32, Physical>)> {
+    let want = grow(region, radius).intersection(Rectangle::from_size(fb))?;
+    if want.is_empty() {
+        return None;
+    }
+    let y = if mirrored {
+        fb.h - (want.loc.y + want.size.h)
+    } else {
+        want.loc.y
+    };
+    let d = 1i32 << passes.min(6);
+    let snap = |lo: i32, len: i32, max: i32| {
+        let a = lo.div_euclid(d) * d;
+        let b = if lo + len >= max {
+            max
+        } else {
+            ((lo + len + d - 1).div_euclid(d) * d).min(max)
+        };
+        (a, b - a)
+    };
+    let (x, w) = snap(want.loc.x, want.size.w, fb.w);
+    let (ty, h) = snap(y, want.size.h, fb.h);
+    let tex = Rectangle::new((x, ty).into(), (w, h).into());
+    let py = if mirrored { fb.h - (ty + h) } else { ty };
+    Some((tex, Rectangle::new((x, py).into(), (w, h).into())))
 }
 
 /// The blur invalidation rule (COMP-02 §3).
@@ -145,22 +192,23 @@ pub struct BlurElement<T: Texture = GlesTexture> {
 }
 
 impl<T: Texture + Clone + 'static> BlurElement<T> {
-    /// Place `texture` (output-sized, physical, buffer scale 1) so the element
-    /// covers exactly `region` and samples exactly `region` of it.
+    /// Place `texture` (physical, buffer scale 1, upright, its top-left at
+    /// `origin` in the output) so the element covers exactly `region` and
+    /// samples exactly `region` of it.
     fn placed(
         id: Id,
         context: ContextId<T>,
         texture: T,
+        origin: Point<i32, Physical>,
         region: Rectangle<i32, Physical>,
         scale: Scale<f64>,
     ) -> Self {
-        // The chain texture is exactly `fb_size` (output physical pixels) and
-        // is built with a literal `texture_scale` of 1, so `Element::src()`
-        // hands this rectangle straight to the GPU with no further scaling. It
-        // must therefore already be in the texture's own buffer space, i.e.
-        // `region` unscaled.
+        // The result texture is built with a literal `texture_scale` of 1, so
+        // `Element::src()` hands this rectangle straight to the GPU with no
+        // further scaling. It must therefore already be in the texture's own
+        // buffer space, i.e. `region` unscaled and relative to `origin`.
         let src = Rectangle::<f64, smithay::utils::Logical>::new(
-            (region.loc.x as f64, region.loc.y as f64).into(),
+            ((region.loc.x - origin.x) as f64, (region.loc.y - origin.y) as f64).into(),
             (region.size.w as f64, region.size.h as f64).into(),
         );
         // The inner element still wants a logical footprint. It only feeds the
@@ -460,6 +508,9 @@ struct SurfaceBlur {
     damage: OutputDamageTracker,
     /// The upsampled result, held so the element can borrow it.
     result: Option<GlesTexture>,
+    /// The output rectangle `result` covers (see [`crop_rects`]). A region
+    /// that needs a different one recomputes even if nothing behind it moved.
+    crop: Option<Rectangle<i32, Physical>>,
     /// Bumped whenever `result` was recomputed; drives [`BlurElement`] damage.
     commit: CommitCounter,
     /// A stable id so the damage tracker can follow this element across frames.
@@ -476,9 +527,13 @@ struct SurfaceBlur {
 pub struct BlurStore {
     down: Option<GlesTexProgram>,
     up: Option<GlesTexProgram>,
-    /// Level 0 is the full-size backdrop; level `n` is half of level `n-1`.
-    chain: Vec<GlesTexture>,
+    /// The backdrop, output-sized; only the blurred region of it is drawn.
+    level0: Option<GlesTexture>,
+    /// Levels `1..=passes` sized for a crop (level `n` is half of `n-1`),
+    /// kept per crop size so windows that alternate do not reallocate.
+    chain: HashMap<(i32, i32), Vec<GlesTexture>>,
     chain_size: Size<i32, Physical>,
+    chain_passes: usize,
     /// Renders the backdrop into level 0. Always driven with `age = 0`, so its
     /// own damage history is never consulted and it can be shared by every
     /// blurred window on the output.
@@ -489,7 +544,7 @@ pub struct BlurStore {
 impl std::fmt::Debug for BlurStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BlurStore")
-            .field("levels", &self.chain.len())
+            .field("chains", &self.chain.len())
             .field("surfaces", &self.surfaces.len())
             .finish()
     }
@@ -509,6 +564,7 @@ impl BlurStore {
     /// sit in GPU memory for a config that no longer draws them.
     pub fn clear(&mut self) {
         self.chain.clear();
+        self.level0 = None;
         self.chain_size = Size::default();
         self.surfaces.clear();
         self.backdrop = None;
@@ -553,11 +609,18 @@ impl BlurStore {
             return None;
         }
         self.ensure_programs(renderer)?;
-        self.ensure_chain(renderer, fb_size, blur.passes.clamp(1, 6) as usize)?;
+        let passes = blur.passes.clamp(1, 6) as usize;
+        self.ensure_chain(renderer, fb_size, passes)?;
+        let mirrored = crate::render::effects::fb_y_mirrored(output.current_transform()) == Some(true);
+        // Only this much of the backdrop is ever sampled (kernel plus the
+        // final draw's own reach), so only this much is computed.
+        let sampled = kernel_radius(blur).saturating_add(reach.max(0));
+        let (tex, crop) = crop_rects(region, sampled, fb_size, passes, mirrored)?;
 
         let entry = self.surfaces.entry(key.clone()).or_insert_with(|| SurfaceBlur {
             damage: OutputDamageTracker::from_output(output),
             result: None,
+            crop: None,
             commit: CommitCounter::default(),
             id: Id::new(),
             look: Vec::new(),
@@ -586,15 +649,30 @@ impl BlurStore {
                 None => entry.result.is_none(),
             }
         };
-        if dirty || entry.result.is_none() {
+        if dirty || entry.result.is_none() || entry.crop != Some(crop) {
             let Self {
                 down,
                 up,
+                level0,
                 chain,
                 backdrop,
                 surfaces,
                 ..
             } = self;
+            if chain.len() >= MAX_CHAINS && !chain.contains_key(&(crop.size.w, crop.size.h)) {
+                chain.clear();
+            }
+            if let std::collections::hash_map::Entry::Vacant(slot) = chain.entry((crop.size.w, crop.size.h)) {
+                match alloc_levels(renderer, crop.size, passes) {
+                    Ok(levels) => {
+                        slot.insert(levels);
+                    }
+                    Err(err) => {
+                        tracing::warn!(?err, "allocating the blur chain; blur skipped this frame");
+                        return None;
+                    }
+                }
+            }
             let entry = surfaces.get_mut(key)?;
             let tracker = backdrop.get_or_insert_with(|| OutputDamageTracker::from_output(output));
             // The backdrop is drawn with the output's own transform (so the
@@ -610,7 +688,9 @@ impl BlurStore {
             match render_chain(
                 renderer,
                 tracker,
-                chain,
+                level0.as_mut()?,
+                chain.get_mut(&(crop.size.w, crop.size.h))?,
+                (tex, crop),
                 down.as_ref()?,
                 up.as_ref()?,
                 behind,
@@ -620,6 +700,7 @@ impl BlurStore {
             ) {
                 Ok(texture) => {
                     entry.result = Some(texture);
+                    entry.crop = Some(crop);
                     entry.commit.increment();
                 }
                 Err(err) => {
@@ -639,8 +720,14 @@ impl BlurStore {
             entry.commit.increment();
         }
         let texture = entry.result.clone()?;
-        let mut element =
-            BlurElement::placed(entry.id.clone(), renderer.context_id(), texture, region, scale);
+        let mut element = BlurElement::placed(
+            entry.id.clone(),
+            renderer.context_id(),
+            texture,
+            crop.loc,
+            region,
+            scale,
+        );
         element.commit = entry.commit;
         element.program = program;
         element.uniforms = uniforms;
@@ -676,30 +763,50 @@ impl BlurStore {
         fb_size: Size<i32, Physical>,
         passes: usize,
     ) -> Option<()> {
-        if self.chain_size == fb_size && self.chain.len() == passes + 1 {
+        if self.chain_size == fb_size && self.chain_passes == passes && self.level0.is_some() {
             return Some(());
         }
         self.chain.clear();
+        self.level0 = None;
         self.surfaces.clear();
         self.backdrop = None;
-        for level in 0..=passes {
-            let size = level_size(fb_size, level);
-            match Offscreen::<GlesTexture>::create_buffer(
-                renderer,
-                FORMAT,
-                size.to_logical(1).to_buffer(1, Transform::Normal),
-            ) {
-                Ok(t) => self.chain.push(t),
-                Err(err) => {
-                    tracing::warn!(?err, "allocating the blur chain; blur disabled");
-                    self.chain.clear();
-                    return None;
-                }
+        match Offscreen::<GlesTexture>::create_buffer(
+            renderer,
+            FORMAT,
+            fb_size.to_logical(1).to_buffer(1, Transform::Normal),
+        ) {
+            Ok(t) => self.level0 = Some(t),
+            Err(err) => {
+                tracing::warn!(?err, "allocating the blur backdrop; blur disabled");
+                return None;
             }
         }
         self.chain_size = fb_size;
+        self.chain_passes = passes;
         Some(())
     }
+}
+
+/// Most distinct crop sizes whose chains are kept before the pool is reset.
+const MAX_CHAINS: usize = 16;
+
+/// Levels `1..=passes` of a chain whose level 0 covers `crop`.
+fn alloc_levels(
+    renderer: &mut GlesRenderer,
+    crop: Size<i32, Physical>,
+    passes: usize,
+) -> Result<Vec<GlesTexture>, GlesError> {
+    (1..=passes)
+        .map(|level| {
+            Offscreen::<GlesTexture>::create_buffer(
+                renderer,
+                FORMAT,
+                level_size(crop, level)
+                    .to_logical(1)
+                    .to_buffer(1, Transform::Normal),
+            )
+        })
+        .collect()
 }
 
 /// Size of chain level `level`, never smaller than 1x1.
@@ -717,7 +824,9 @@ fn sample_offset(blur: &Blur) -> f32 {
 fn render_chain<E>(
     renderer: &mut GlesRenderer,
     backdrop: &mut OutputDamageTracker,
-    chain: &mut [GlesTexture],
+    level0: &mut GlesTexture,
+    mid: &mut [GlesTexture],
+    (tex, crop): (Rectangle<i32, Physical>, Rectangle<i32, Physical>),
     down: &GlesTexProgram,
     up: &GlesTexProgram,
     behind: &[E],
@@ -730,34 +839,56 @@ where
 {
     // 1. The backdrop, rendered whole (`age = 0`): the chain texture is shared
     //    between windows, so partial damage would leave another window's
-    //    backdrop in it.
+    //    backdrop in it. Each element is cut to `crop` so only the part the
+    //    blur samples is drawn; the texture itself stays output-sized, which
+    //    keeps `gl_FragCoord` (the elements' rounding masks) where they expect.
     {
-        let (head, _) = chain.split_at_mut(1);
-        let mut fb = Bind::bind(renderer, &mut head[0])?;
+        let cropped: Vec<_> = behind
+            .iter()
+            .filter_map(|e| CropRenderElement::from_element(e, Scale::from(1.0), crop))
+            .collect();
+        let mut fb = Bind::bind(renderer, level0)?;
         backdrop
-            .render_output(renderer, &mut fb, 0, behind, CLEAR)
+            .render_output(renderer, &mut fb, 0, &cropped, CLEAR)
             .map_err(|_| GlesError::UnknownPixelFormat)?;
     }
 
     let offset = sample_offset(blur);
-    let passes = chain.len() - 1;
+    let passes = mid.len();
 
-    // 2. Downsample.
-    for level in 1..=passes {
-        let (src, dst) = split_pair(chain, level - 1, level);
-        blit(renderer, src, dst, down, offset, Transform::Normal)?;
+    // 2. Downsample. Level 1 reads just `tex` of the backdrop.
+    let tex = Rectangle::<f64, BufferCoords>::new(
+        (tex.loc.x as f64, tex.loc.y as f64).into(),
+        (tex.size.w as f64, tex.size.h as f64).into(),
+    );
+    blit(
+        renderer,
+        level0,
+        &mut mid[0],
+        down,
+        offset,
+        Transform::Normal,
+        Some(tex),
+    )?;
+    for level in 1..passes {
+        let (src, dst) = split_pair(mid, level - 1, level);
+        blit(renderer, src, dst, down, offset, Transform::Normal, None)?;
     }
 
     // 3. Upsample. The last step writes into the per-window result texture so
     //    the element can hold it while the chain is reused for the next window.
     for level in (1..passes).rev() {
-        let (src, dst) = split_pair(chain, level + 1, level);
-        blit(renderer, src, dst, up, offset, Transform::Normal)?;
+        let (src, dst) = split_pair(mid, level, level - 1);
+        blit(renderer, src, dst, up, offset, Transform::Normal, None)?;
     }
-    let mut result = sized(renderer, reuse, chain[0].size())?;
+    let mut result = sized(
+        renderer,
+        reuse,
+        crop.size.to_logical(1).to_buffer(1, Transform::Normal),
+    )?;
     {
-        let src = chain[1.min(passes)].clone();
-        blit(renderer, &src, &mut result, up, offset, orient)?;
+        let src = mid[0].clone();
+        blit(renderer, &src, &mut result, up, offset, orient, None)?;
     }
     Ok(result)
 }
@@ -787,7 +918,8 @@ fn split_pair(chain: &mut [GlesTexture], src: usize, dst: usize) -> (&GlesTextur
 }
 
 /// One Kawase pass: draw the whole of `src` over the whole of `dst`, sampling
-/// `src` under `transform` (`Normal` except for the final, upright-ing pass).
+/// `src` (or just its `from` rectangle) under `transform` (`Normal` except for
+/// the final, upright-ing pass). The half-pixel is always one of `src`'s own.
 fn blit(
     renderer: &mut GlesRenderer,
     src: &GlesTexture,
@@ -795,6 +927,7 @@ fn blit(
     program: &GlesTexProgram,
     offset: f32,
     transform: Transform,
+    from: Option<Rectangle<f64, BufferCoords>>,
 ) -> Result<(), GlesError> {
     let src_size = src.size();
     let dst_size = dst.size();
@@ -807,7 +940,7 @@ fn blit(
     let mut frame = renderer.render(&mut fb, (dst_size.w, dst_size.h).into(), Transform::Normal)?;
     frame.render_texture_from_to(
         src,
-        Rectangle::from_size((src_size.w as f64, src_size.h as f64).into()),
+        from.unwrap_or_else(|| Rectangle::from_size((src_size.w as f64, src_size.h as f64).into())),
         dest,
         &[dest],
         &[],
@@ -1308,7 +1441,14 @@ mod tests {
         ];
         for (s, region) in cases {
             let scale = Scale::from(s);
-            let el = BlurElement::placed(Id::new(), ContextId::new(), Backdrop(fb), region, scale);
+            let el = BlurElement::placed(
+                Id::new(),
+                ContextId::new(),
+                Backdrop(fb),
+                (0, 0).into(),
+                region,
+                scale,
+            );
             assert_eq!(el.geometry(scale), region, "geometry at scale {s}");
             assert_eq!(el.location(scale), region.loc, "location at scale {s}");
             let src = el.src();
@@ -1326,5 +1466,77 @@ mod tests {
                 "src past the texture at {s}"
             );
         }
+    }
+
+    /// A cropped result texture is sampled at the region's offset into it.
+    #[test]
+    fn a_cropped_result_is_sampled_relative_to_its_origin() {
+        let region = r(1000, 500, 400, 300);
+        let (_, crop) = crop_rects(region, 64, Size::from((1920, 1080)), 3, false).unwrap();
+        let tex = Backdrop(Size::from((crop.size.w, crop.size.h)));
+        let scale = Scale::from(1.0);
+        let el = BlurElement::placed(Id::new(), ContextId::new(), tex, crop.loc, region, scale);
+        assert_eq!(el.geometry(scale), region);
+        let want = Rectangle::<f64, BufferCoords>::new(
+            (
+                (region.loc.x - crop.loc.x) as f64,
+                (region.loc.y - crop.loc.y) as f64,
+            )
+                .into(),
+            (400.0, 300.0).into(),
+        );
+        assert_eq!(el.src(), want);
+        assert!(crop.contains_rect(grow(region, 64)));
+    }
+
+    #[test]
+    fn the_crop_covers_the_kernel_snapped_to_the_chain_grid() {
+        let fb = Size::from((1920, 1080));
+        let region = r(1003, 501, 400, 300);
+        for passes in 1..=6usize {
+            let d = 1 << passes;
+            let (tex, crop) = crop_rects(region, 40, fb, passes, false).unwrap();
+            assert_eq!(tex, crop, "unmirrored: same rectangle");
+            assert!(crop.contains_rect(grow(region, 40)), "passes {passes}");
+            assert_eq!(crop.loc.x % d, 0);
+            assert_eq!(crop.loc.y % d, 0);
+            assert_eq!((crop.loc.x + crop.size.w) % d, 0);
+            assert_eq!((crop.loc.y + crop.size.h) % d, 0);
+        }
+    }
+
+    #[test]
+    fn the_crop_clamps_to_the_output_edges() {
+        let fb = Size::from((1920, 1080));
+        // Touching every edge: the crop is the whole output, odd size included.
+        let (_, crop) = crop_rects(r(0, 0, 1920, 1080), 64, fb, 3, false).unwrap();
+        assert_eq!(crop, r(0, 0, 1920, 1080));
+        let odd = Size::from((1001, 777));
+        let (_, crop) = crop_rects(r(900, 700, 101, 77), 64, odd, 3, false).unwrap();
+        assert_eq!(crop.loc.x + crop.size.w, 1001);
+        assert_eq!(crop.loc.y + crop.size.h, 777);
+        // Overhanging and fully off-screen regions.
+        let (_, crop) = crop_rects(r(-100, -50, 300, 200), 16, fb, 2, false).unwrap();
+        assert_eq!(crop.loc, (0, 0).into());
+        assert!(crop_rects(r(5000, 5000, 10, 10), 16, fb, 2, false).is_none());
+    }
+
+    /// Under `Flipped180` the backdrop texture is stored bottom row first: the
+    /// texture rectangle is the physical one mirrored in y, and snaps on the
+    /// texture's own grid.
+    #[test]
+    fn a_mirrored_crop_is_mirrored_in_the_texture_and_snapped_there() {
+        let fb = Size::from((1920, 1080));
+        let region = r(1003, 40, 400, 300);
+        let (tex, crop) = crop_rects(region, 40, fb, 3, true).unwrap();
+        assert_eq!(tex.loc.y % 8, 0);
+        assert_eq!((tex.loc.y + tex.size.h) % 8, 0);
+        assert_eq!(tex.loc.y, 1080 - (crop.loc.y + crop.size.h));
+        assert_eq!(tex.size, crop.size);
+        assert!(crop.contains_rect(grow(region, 40).intersection(r(0, 0, 1920, 1080)).unwrap()));
+        // A region on the physical top edge sits on the texture's last row.
+        let (tex, crop) = crop_rects(r(0, 0, 400, 30), 8, fb, 1, true).unwrap();
+        assert_eq!(crop.loc.y, 0);
+        assert_eq!(tex.loc.y + tex.size.h, 1080);
     }
 }
