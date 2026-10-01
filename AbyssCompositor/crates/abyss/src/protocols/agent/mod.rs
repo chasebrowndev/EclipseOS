@@ -36,6 +36,7 @@ use ec_protocols::agent::server::{
     eclipse_scene_v1::{self, EclipseSceneV1},
 };
 use policy_eval::scope::SCENE_READ;
+use policy_eval::Class;
 use smithay::desktop::Window;
 use smithay::reexports::calloop::{generic::Generic, Interest, Mode, PostAction, RegistrationToken};
 use smithay::reexports::wayland_server::{
@@ -44,7 +45,7 @@ use smithay::reexports::wayland_server::{
 };
 
 use crate::addons::Hook;
-use crate::policy::{scene, AdmitError, Agent};
+use crate::policy::{scene, AdmitError, Agent, Views};
 use crate::state::{AbyssState, ClientState};
 
 #[cfg(test)]
@@ -520,28 +521,7 @@ fn answer(
                 let Ok(handle) = u32::try_from(handle) else {
                     continue;
                 };
-                let t = facts(state, handle, &window);
-                scene.toplevel(
-                    req_id,
-                    t.handle,
-                    t.app_id,
-                    t.title,
-                    t.pid,
-                    t.workspace,
-                    t.output,
-                    t.x,
-                    t.y,
-                    t.w,
-                    t.h,
-                    t.scale,
-                    t.states,
-                    SENSITIVITY_SECRET,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                );
+                send_toplevel(state, scene, req_id, handle, &window);
             }
             scene.toplevels_done(req_id);
         }
@@ -553,7 +533,7 @@ fn answer(
                 return;
             };
             if !scene::readable(state, views.read, &window) {
-                result(scene, req_id, Status::NoCapability, SCENE_READ);
+                result(scene, req_id, unreadable(views), SCENE_READ);
                 return;
             }
             send_detail(state, scene, req_id, handle, &window);
@@ -571,7 +551,7 @@ fn answer(
                 return;
             };
             if !scene::readable(state, views.read, &window) {
-                result(scene, req_id, Status::NoCapability, SCENE_READ);
+                result(scene, req_id, unreadable(views), SCENE_READ);
                 return;
             }
             scene.hit(req_id, handle, local.x as i32, local.y as i32, 0, 0);
@@ -580,12 +560,27 @@ fn answer(
     }
 }
 
-/// `eclipse_scene_v1.sensitivity.secret`. Every window is `secret` to
-/// agents until the COMP-11 table exists (S-05 §8), so it is all a listing
-/// can carry; the filter's own class is not exposed to this layer.
-const SENSITIVITY_SECRET: u32 = 2;
+/// A visible window `scene.read` does not reach: out of scope when a grant
+/// holds `scene.read` at all, otherwise the capability is missing (S-01 §3,
+/// COMP-08 §2.1).
+fn unreadable(views: Views<'_>) -> Status {
+    if views.read_held {
+        Status::OutOfScope
+    } else {
+        Status::NoCapability
+    }
+}
 
-/// What `toplevel` and `toplevel_detail` share.
+/// `eclipse_scene_v1.sensitivity` for a window the agent can see.
+fn sensitivity(state: &AbyssState, window: &Window) -> u32 {
+    match scene::class(state, window) {
+        Class::Public => 0,
+        Class::Private => 1,
+        Class::Secret => 2,
+    }
+}
+
+/// What a `toplevel` event carries.
 struct Facts {
     handle: u32,
     app_id: String,
@@ -656,11 +651,9 @@ fn facts(state: &AbyssState, handle: u32, window: &Window) -> Facts {
     }
 }
 
-fn send_detail(state: &AbyssState, scene: &EclipseSceneV1, req_id: u32, handle: u32, window: &Window) {
+fn send_toplevel(state: &AbyssState, scene: &EclipseSceneV1, req_id: u32, handle: u32, window: &Window) {
     let t = facts(state, handle, window);
-    // Server-side decorations are not drawn yet, so the decorated rect is the
-    // window's own. Popups and per-seat focus arrive with their milestones.
-    scene.toplevel_detail(
+    scene.toplevel(
         req_id,
         t.handle,
         t.app_id,
@@ -674,16 +667,30 @@ fn send_detail(state: &AbyssState, scene: &EclipseSceneV1, req_id: u32, handle: 
         t.h,
         t.scale,
         t.states,
-        SENSITIVITY_SECRET,
+        sensitivity(state, window),
         0,
         0,
         0,
         0,
         0,
-        t.x,
-        t.y,
-        t.w,
-        t.h,
+    );
+}
+
+/// `get_toplevel`'s answer: the listing's `toplevel`, then what only
+/// `scene.read` adds. One event cannot carry both (libwayland caps an event
+/// at 20 arguments).
+fn send_detail(state: &AbyssState, scene: &EclipseSceneV1, req_id: u32, handle: u32, window: &Window) {
+    send_toplevel(state, scene, req_id, handle, window);
+    // Server-side decorations are not drawn yet, so the decorated rect is the
+    // window's own. Popups and per-seat focus arrive with their milestones.
+    let geo = state.space.element_geometry(window).unwrap_or_default();
+    scene.toplevel_detail(
+        req_id,
+        handle,
+        geo.loc.x,
+        geo.loc.y,
+        geo.size.w,
+        geo.size.h,
         Vec::new(),
         Vec::new(),
     );

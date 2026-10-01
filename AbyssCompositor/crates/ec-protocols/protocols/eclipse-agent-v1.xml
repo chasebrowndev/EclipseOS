@@ -207,29 +207,15 @@
     </request>
 
     <event name="toplevel_detail">
-      <description summary="get_toplevel's answer">
-        popups is an array of native-endian u32 handles. focused_by_seats is
-        a list of seat names, each NUL-terminated.
+      <description summary="get_toplevel's answer, after a toplevel event">
+        get_toplevel answers with a toplevel event carrying the same req_id,
+        then this event with what scene.read adds (one event cannot carry
+        both: libwayland caps an event at 20 arguments). popups is an array
+        of native-endian u32 handles. focused_by_seats is a list of seat
+        names, each NUL-terminated.
       </description>
       <arg name="req_id" type="uint"/>
       <arg name="handle" type="uint"/>
-      <arg name="app_id" type="string"/>
-      <arg name="title" type="string"/>
-      <arg name="pid" type="uint"/>
-      <arg name="workspace" type="uint"/>
-      <arg name="output" type="uint"/>
-      <arg name="x" type="int"/>
-      <arg name="y" type="int"/>
-      <arg name="w" type="int"/>
-      <arg name="h" type="int"/>
-      <arg name="scale" type="fixed"/>
-      <arg name="states" type="uint"/>
-      <arg name="sensitivity" type="uint"/>
-      <arg name="semantic" type="uint"/>
-      <arg name="parent" type="uint"/>
-      <arg name="generation" type="uint"/>
-      <arg name="app_trust" type="uint"/>
-      <arg name="launched_by_self" type="uint"/>
       <arg name="decor_x" type="int"/>
       <arg name="decor_y" type="int"/>
       <arg name="decor_w" type="int"/>

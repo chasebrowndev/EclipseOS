@@ -141,6 +141,12 @@ pub fn readable(state: &AbyssState, read: &SceneView, window: &Window) -> bool {
     visible(state, read, window)
 }
 
+/// The class a window [`list`], [`resolve`] or [`hit`] returned carries on
+/// the wire. Never `secret`: those are never returned.
+pub fn class(state: &AbyssState, window: &Window) -> Class {
+    class_of(state, window)
+}
+
 /// `hit_test`: the topmost toplevel at `pos` if it exists for this agent,
 /// with the point in its local coordinates. A layer surface (bar, overlay)
 /// on top, or an invisible window on top, is `None` (handle 0): the agent

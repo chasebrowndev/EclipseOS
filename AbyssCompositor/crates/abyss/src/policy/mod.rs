@@ -48,6 +48,11 @@ pub struct Views<'a> {
     /// `scene.read`: which of those may be read in detail. Only consulted
     /// through [`scene::readable`].
     pub read: &'a SceneView,
+    /// Some live grant names `scene.read` at all, so a window [`read`]
+    /// misses is `out_of_scope` rather than `no_capability` (S-01 §3).
+    ///
+    /// [`read`]: Views::read
+    pub read_held: bool,
 }
 
 /// The principal prefix every agent grant carries (S-01 §4).
@@ -105,9 +110,14 @@ impl Agent {
         if self.grants.len() != before {
             self.recompile();
         }
+        let read_held = self
+            .grants
+            .iter()
+            .any(|g| g.capabilities.iter().any(|c| c.name == SCENE_READ));
         (!self.grants.is_empty()).then_some(Views {
             list: &self.view,
             read: &self.read,
+            read_held,
         })
     }
 
