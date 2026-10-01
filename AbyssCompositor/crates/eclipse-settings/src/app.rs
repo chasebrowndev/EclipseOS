@@ -775,17 +775,7 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         .map(|p| nav_item_at(density, p.title(), *p == app.pane, Message::Select(*p)))
         .collect();
 
-    let mut footer = vec![
-        (
-            "socket",
-            if app.conn.is_connected() {
-                "connected".to_string()
-            } else {
-                "offline".to_string()
-            },
-        ),
-        ("keys", app.rows.len().to_string()),
-    ];
+    let mut footer = Vec::new();
     if app.restart_pending {
         footer.push(("restart", "required".into()));
     }
