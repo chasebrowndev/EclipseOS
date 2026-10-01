@@ -20,6 +20,9 @@ enum BackendKind {
     Headless,
 }
 
+#[cfg(not(any(feature = "winit", feature = "drm", feature = "headless")))]
+compile_error!("ec-abyss needs at least one backend feature: winit, drm or headless");
+
 /// Nest under an existing session when there is one; otherwise drive KMS.
 fn default_backend() -> BackendKind {
     let nested = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();

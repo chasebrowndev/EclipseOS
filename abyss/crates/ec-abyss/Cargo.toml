@@ -6,8 +6,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-# Never published; `publish = false` also keeps `cargo deny` from flagging
-# the path dependencies (as in policyd).
+# Never published; also what lets cargo-deny's `allow-wildcard-paths` cover the
+# path dependencies.
 publish = false
 
 # lib + bin: the conformance harness (COMP-15 §1) links the compositor and

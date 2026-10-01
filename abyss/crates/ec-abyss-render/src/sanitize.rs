@@ -27,7 +27,7 @@
 //! controls: the tracker composes its own rectangles too, and only clamps them
 //! to the output, where a degenerate one inside the output survives
 //! ([`Rectangle::overlaps`] is true for a zero-height rectangle within a taller
-//! one). [`crate::backend::drm`] handles that residue by redrawing in full
+//! one). `backend::drm` in ec-abyss handles that residue by redrawing in full
 //! after a refused commit, rather than resubmitting the rejected blob.
 //!
 //! Beyond empties, [`Sanitized`] confines damage and opaque regions to the

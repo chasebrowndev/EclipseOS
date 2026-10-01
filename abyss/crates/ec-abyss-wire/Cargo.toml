@@ -6,6 +6,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# Never published; keeps cargo-deny's `allow-wildcard-paths` applicable.
+publish = false
 
 [lib]
 name = "ec_abyss_wire"
