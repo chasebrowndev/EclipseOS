@@ -241,6 +241,9 @@ pub struct AbyssState {
     /// Written only by the link in `policy/`.
     pub policy_key: Option<policy_eval::VerifyingKey>,
     pub policy_link: crate::policy::link::Link,
+    /// The privileged agent socket, its manager global and every admitted
+    /// agent object (COMP-08). Empty while the `agents` hook is off.
+    pub agents: crate::protocols::agent::Agents,
 
     /// Live capture allowlist, shared with the `zwlr_screencopy_v1` bind
     /// filter. Written by the config reload path.
@@ -542,6 +545,7 @@ impl AbyssState {
             sensitive: HashSet::new(),
             policy_key: None,
             policy_link: Default::default(),
+            agents: Default::default(),
             session_lock_state,
             lock: Default::default(),
             idle: Default::default(),
@@ -576,6 +580,9 @@ pub struct ClientState {
     /// Set when the client connected through a `wp_security_context` socket:
     /// the sandbox engine, app id and instance id it was launched under.
     pub security_context: Option<smithay::wayland::security_context::SecurityContext>,
+    /// Connected through the privileged agent socket (COMP-08 preamble). The
+    /// agent globals' `can_view` admits only these clients.
+    pub agent: bool,
 }
 
 impl ClientData for ClientState {

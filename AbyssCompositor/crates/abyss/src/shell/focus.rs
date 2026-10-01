@@ -949,6 +949,21 @@ pub(crate) mod state_tests {
         }
     }
 
+    impl Harness {
+        /// One server turn: read every client, run the loop once, flush.
+        /// For tests that drive their own `wayland-client` connection.
+        pub(crate) fn dispatch(&mut self) {
+            self.display
+                .dispatch_clients(&mut self.state)
+                .expect("server dispatch");
+            self.event_loop
+                .dispatch(std::time::Duration::ZERO, &mut self.state)
+                .expect("loop dispatch");
+            self.display.flush_clients().expect("server flush");
+            crate::protocols::agent::flush(&mut self.state);
+        }
+    }
+
     /// A point inside `id`'s geometry, as the space actually laid it out — the
     /// arrangement is the compositor's to choose, so we ask rather than assume.
     fn inside(h: &Harness, id: u64) -> Point<f64, Logical> {

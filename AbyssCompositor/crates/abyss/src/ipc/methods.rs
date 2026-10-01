@@ -149,7 +149,7 @@ pub(crate) fn identity_of(window: &Window) -> (Option<String>, Option<String>) {
 }
 
 /// The pid behind a window's client, if the surface still has one.
-fn pid_of(state: &AbyssState, window: &Window) -> Option<i32> {
+pub(crate) fn pid_of(state: &AbyssState, window: &Window) -> Option<i32> {
     crate::shell::window_surface(window)
         .and_then(|s| s.client())
         .and_then(|c| c.get_credentials(&state.display_handle).ok())
@@ -157,7 +157,7 @@ fn pid_of(state: &AbyssState, window: &Window) -> Option<i32> {
 }
 
 /// Where a window lives, as `(output id, 1-based workspace)`.
-fn location_of(state: &AbyssState, window: &Window) -> Option<(u64, usize)> {
+pub(crate) fn location_of(state: &AbyssState, window: &Window) -> Option<(u64, usize)> {
     for entry in state.outputs.iter() {
         for (i, ws) in entry.workspaces.iter().enumerate() {
             if ws.all_windows().iter().any(|w| w == window) {
@@ -168,7 +168,7 @@ fn location_of(state: &AbyssState, window: &Window) -> Option<(u64, usize)> {
     None
 }
 
-fn is_floating(state: &AbyssState, window: &Window) -> bool {
+pub(crate) fn is_floating(state: &AbyssState, window: &Window) -> bool {
     state.outputs.iter().any(|e| {
         e.workspaces
             .iter()

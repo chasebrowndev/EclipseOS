@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["bench", "crates/abyss", "crates/ec-cataclysm-pub", "crates/eclipse-center", "crates/eclipse-ctl", "crates/eclipse-ipc", "crates/eclipse-launcher", "crates/eclipse-policy-viewer", "crates/eclipse-secret-prompt", "crates/eclipse-services", "crates/eclipse-setup", "crates/eclipse-setup-helper", "crates/eclipse-setup-plan", "crates/eclipse-settings", "crates/eclipse-toasts", "crates/eclipse-ui", "crates/eclipse-wallpaper", "crates/eclipse-welcome", "crates/hyperion", "crates/policy-eval", "crates/policyd", "crates/wlcs-abyss"]
+members = ["bench", "crates/abyss", "crates/ec-agentd", "crates/ec-cataclysm-pub", "crates/ec-protocols", "crates/eclipse-center", "crates/eclipse-ctl", "crates/eclipse-ipc", "crates/eclipse-launcher", "crates/eclipse-policy-viewer", "crates/eclipse-secret-prompt", "crates/eclipse-services", "crates/eclipse-setup", "crates/eclipse-setup-helper", "crates/eclipse-setup-plan", "crates/eclipse-settings", "crates/eclipse-toasts", "crates/eclipse-ui", "crates/eclipse-wallpaper", "crates/eclipse-welcome", "crates/hyperion", "crates/policy-eval", "crates/policyd", "crates/wlcs-abyss"]
 # `cargo run -- --backend winit` is the documented dev loop (CLAUDE.md, and
 # docs/BUILDING.md). Once the workspace held more than one binary that line
 # became ambiguous; this keeps a bare `cargo run` meaning the compositor.

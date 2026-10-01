@@ -22,7 +22,10 @@ Read the root `CLAUDE.md` first. This file only adds crate-local rules.
 - `policy/` (TCB): per-agent grant admission (`mod.rs`) and the agent scene
   filter (`scene.rs`), the one choke point every agent-facing window path
   goes through. Scopes themselves are evaluated in `policy-eval`.
-- Not yet present: `protocols/agent/`, `protocols/semantic/`, `audit/`.
+- `protocols/agent/`: the privileged `ec-agent.sock` (hook-gated, 0600,
+  `SO_PEERCRED` uid) and the `eclipse_agent_v1` handlers. Not TCB: it calls
+  `policy::Agent` and `policy::scene` and decides nothing itself.
+- Not yet present: `protocols/semantic/`, `audit/`.
   When they land they go there, not elsewhere.
 - Human keystrokes are never logged by content. Log keysym names only behind `trace`.
 - Logs go to journald: `journalctl --user -t abyss -o cat --since "5 min ago"`.

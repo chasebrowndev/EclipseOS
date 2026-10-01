@@ -1,0 +1,270 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<protocol name="eclipse_agent_v1">
+  <copyright>
+    Copyright 2026 The EclipseOS authors.
+
+    Licensed under the Apache License, Version 2.0 (F-05 §3, §4): protocol
+    definitions are permissive so agents may be written under any licence.
+  </copyright>
+
+  <description summary="privileged agent protocol (COMP-08)">
+    Served only on the privileged agent socket,
+    $XDG_RUNTIME_DIR/eclipse/ec-agent.sock (COMP-08 preamble, F-06), and only
+    while the `agents` add-on hook is on (ADR 0069). A client of the public
+    wayland-N socket never sees these globals (C-00 §8.1).
+
+    The sole intended client is agentd. Every eclipse_agent_v1 object speaks
+    for exactly one agent principal, bound by the signed grant it was created
+    with.
+
+    This is the M11 subset (COMP-16): admission and the read-only scene
+    queries list_toplevels, get_toplevel and hit_test. The remaining COMP-08
+    interfaces arrive with their milestones.
+  </description>
+
+  <interface name="eclipse_agent_manager_v1" version="1">
+    <description summary="creates agent objects from signed grants (COMP-08 §1)"/>
+
+    <enum name="error">
+      <entry name="invalid_grant" value="0"
+             summary="the grant failed signature, expiry or principal checks"/>
+      <entry name="policy_unavailable" value="1"
+             summary="policyd is not connected; no grant can be verified (COMP-01 §6)"/>
+    </enum>
+
+    <request name="create_agent">
+      <description summary="admit one agent">
+        grant is a COSE_Sign1 CBOR grant signed by policyd (S-01 §4). The
+        compositor verifies signature, expiry and principal. Failure is the
+        protocol error invalid_grant, or policy_unavailable while policyd is
+        not connected.
+      </description>
+      <arg name="id" type="new_id" interface="eclipse_agent_v1"/>
+      <arg name="grant" type="array"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="release the manager; agent objects are unaffected"/>
+    </request>
+
+    <event name="revoked">
+      <description summary="policyd revoked a principal (informational to agentd)"/>
+      <arg name="principal" type="string"/>
+      <arg name="reason" type="uint"/>
+    </event>
+
+    <event name="dedupe_window">
+      <description summary="how long (agent, req_id) results are kept (COMP-08 §2.2)">
+        Sent once on bind.
+      </description>
+      <arg name="seconds" type="uint"/>
+    </event>
+  </interface>
+
+  <interface name="eclipse_agent_v1" version="1">
+    <description summary="one agent principal (COMP-08 §2)"/>
+
+    <enum name="error">
+      <entry name="invalid_grant" value="0"
+             summary="add_grant: the grant failed verification or names another principal"/>
+      <entry name="policy_unavailable" value="1"
+             summary="add_grant: policyd is not connected"/>
+    </enum>
+
+    <enum name="status">
+      <description summary="result.status, shared by every interface (COMP-08 §2.1)"/>
+      <entry name="ok" value="0"/>
+      <entry name="no_capability" value="1" summary="detail: capability name"/>
+      <entry name="out_of_scope" value="2" summary="detail: scope that failed"/>
+      <entry name="rate_limited" value="3" summary="detail: retry_after_ms"/>
+      <entry name="stale_generation" value="4" summary="detail: current generation"/>
+      <entry name="focus_lost" value="5"/>
+      <entry name="client_gone" value="6"/>
+      <entry name="client_timeout" value="7"/>
+      <entry name="no_such_action" value="8"/>
+      <entry name="sensitivity_denied" value="9" summary="detail: class"/>
+      <entry name="policy_denied" value="10" summary="detail: reason_code"/>
+      <entry name="prompt_denied" value="11"/>
+      <entry name="prompt_timeout" value="12"/>
+      <entry name="revoked" value="13"/>
+      <entry name="paused" value="14"/>
+      <entry name="invalid_argument" value="15"/>
+      <entry name="quota_exceeded" value="16" summary="detail: quota name"/>
+      <entry name="duplicate" value="17"/>
+      <entry name="deferred_timeout" value="18"/>
+      <entry name="class_changed" value="19"/>
+      <entry name="broker_locked" value="20"/>
+      <entry name="secret_rotated" value="21"/>
+      <entry name="batch_exhausted" value="22"/>
+      <entry name="circuit_breaker" value="23"/>
+      <entry name="provenance_required" value="24"/>
+      <entry name="task_closed" value="25"/>
+    </enum>
+
+    <request name="get_scene">
+      <description summary="the perception interface (COMP-08 §3)"/>
+      <arg name="id" type="new_id" interface="eclipse_scene_v1"/>
+    </request>
+
+    <request name="add_grant">
+      <description summary="an additional signed grant for the same principal">
+        Failure is the protocol error invalid_grant, or policy_unavailable
+        while policyd is not connected.
+      </description>
+      <arg name="grant" type="array"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="revokes everything this object holds"/>
+    </request>
+
+    <event name="result">
+      <description summary="the outcome of a request that produced no data event">
+        status is an eclipse_agent_v1.status value. focus_handle, generation
+        and latency_us are 0 until the acting interfaces exist.
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="status" type="uint"/>
+      <arg name="detail" type="string"/>
+      <arg name="focus_handle" type="uint"/>
+      <arg name="generation" type="uint"/>
+      <arg name="latency_us" type="uint"/>
+    </event>
+  </interface>
+
+  <interface name="eclipse_scene_v1" version="1">
+    <description summary="read-only scene queries (COMP-08 §3)">
+      Every response is filtered to the agent's scene.list scope and
+      sensitivity class. A handle the agent cannot see, whether out of scope,
+      no-agent or never existed, is answered exactly like an unknown one:
+      result status invalid_argument, detail "handle" (F-07).
+
+      A successful query ends in its data event (toplevels_done,
+      toplevel_detail, hit); a refused one ends in exactly one result event
+      instead. The provenance event (M12) is not sent yet.
+
+      Fields not yet backed by compositor state carry placeholders: semantic,
+      generation, app_trust and parent are 0, launched_by_self is 0.
+    </description>
+
+    <enum name="sensitivity">
+      <entry name="public" value="0"/>
+      <entry name="private" value="1"/>
+      <entry name="secret" value="2"/>
+    </enum>
+
+    <enum name="state">
+      <entry name="maximized" value="1"/>
+      <entry name="fullscreen" value="2"/>
+      <entry name="focused" value="4"/>
+      <entry name="floating" value="8"/>
+      <entry name="minimized" value="16"/>
+    </enum>
+
+    <request name="destroy" type="destructor"/>
+
+    <request name="list_toplevels">
+      <description summary="every toplevel that exists for this agent">
+        filter is a KDL filter in the S-01 §3 scope grammar. Only the empty
+        string is accepted at M11; anything else is invalid_argument with
+        detail "filter".
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="filter" type="string"/>
+    </request>
+
+    <event name="toplevel">
+      <arg name="req_id" type="uint"/>
+      <arg name="handle" type="uint"/>
+      <arg name="app_id" type="string"/>
+      <arg name="title" type="string"/>
+      <arg name="pid" type="uint"/>
+      <arg name="workspace" type="uint"/>
+      <arg name="output" type="uint"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="w" type="int"/>
+      <arg name="h" type="int"/>
+      <arg name="scale" type="fixed"/>
+      <arg name="states" type="uint"/>
+      <arg name="sensitivity" type="uint"/>
+      <arg name="semantic" type="uint"/>
+      <arg name="parent" type="uint"/>
+      <arg name="generation" type="uint"/>
+      <arg name="app_trust" type="uint"/>
+      <arg name="launched_by_self" type="uint"/>
+    </event>
+
+    <event name="toplevels_done">
+      <arg name="req_id" type="uint"/>
+    </event>
+
+    <request name="get_toplevel">
+      <description summary="one toplevel, in detail (needs scene.read)"/>
+      <arg name="req_id" type="uint"/>
+      <arg name="handle" type="uint"/>
+    </request>
+
+    <event name="toplevel_detail">
+      <description summary="get_toplevel's answer">
+        popups is an array of native-endian u32 handles. focused_by_seats is
+        a list of seat names, each NUL-terminated.
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="handle" type="uint"/>
+      <arg name="app_id" type="string"/>
+      <arg name="title" type="string"/>
+      <arg name="pid" type="uint"/>
+      <arg name="workspace" type="uint"/>
+      <arg name="output" type="uint"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="w" type="int"/>
+      <arg name="h" type="int"/>
+      <arg name="scale" type="fixed"/>
+      <arg name="states" type="uint"/>
+      <arg name="sensitivity" type="uint"/>
+      <arg name="semantic" type="uint"/>
+      <arg name="parent" type="uint"/>
+      <arg name="generation" type="uint"/>
+      <arg name="app_trust" type="uint"/>
+      <arg name="launched_by_self" type="uint"/>
+      <arg name="decor_x" type="int"/>
+      <arg name="decor_y" type="int"/>
+      <arg name="decor_w" type="int"/>
+      <arg name="decor_h" type="int"/>
+      <arg name="popups" type="array"/>
+      <arg name="focused_by_seats" type="array"/>
+    </event>
+
+    <request name="hit_test">
+      <description summary="what a click at (x, y) would hit (needs scene.read)">
+        Global logical coordinates. When the topmost thing at the point is
+        not a toplevel this agent can see, hit carries handle 0.
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+    </request>
+
+    <event name="hit">
+      <arg name="req_id" type="uint"/>
+      <arg name="handle" type="uint"/>
+      <arg name="local_x" type="int"/>
+      <arg name="local_y" type="int"/>
+      <arg name="node" type="uint"/>
+      <arg name="generation" type="uint"/>
+    </event>
+
+    <event name="result">
+      <description summary="same shape and status values as eclipse_agent_v1.result"/>
+      <arg name="req_id" type="uint"/>
+      <arg name="status" type="uint"/>
+      <arg name="detail" type="string"/>
+      <arg name="focus_handle" type="uint"/>
+      <arg name="generation" type="uint"/>
+      <arg name="latency_us" type="uint"/>
+    </event>
+  </interface>
+</protocol>
