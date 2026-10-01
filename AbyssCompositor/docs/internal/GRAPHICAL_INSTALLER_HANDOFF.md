@@ -18,7 +18,7 @@ D-07 …`.
   §8 failure, §10 tests, §11 open decisions).
 - `decisions/0060-setup-profiles.md` is the ADR. COMP-17 §2.1/§2.2 and
   Appendix D DA-01/03/04 in `ECLIPSEOS_SPECS_v2_VOL1.md` are the spec side.
-- `claude/DESKTOP_PROFILES_PLAN.md` DP-7 (slots, setup floor) and DP-8
+- `docs/design/DP-4-desktop-profiles.md` DP-7 (slots, setup floor) and DP-8
   (installer and setup) are the work items, unstarted.
 
 **Built and working:**

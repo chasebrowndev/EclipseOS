@@ -44,7 +44,7 @@ journalctl --user -t abyss -f    # logs
 | [docs/STATUS.md](docs/STATUS.md) | what is built, what is stubbed, what is verified |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | crate layout, module map, trust boundaries |
 | [docs/BUILDING.md](docs/BUILDING.md) | dependencies, build, run, logs |
-| [docs/HANDOFF.md](docs/HANDOFF.md) | rolling session log: what changed, what broke, traps |
+| [docs/internal/HANDOFF.md](docs/internal/HANDOFF.md) | rolling session log: what changed, what broke, traps |
 | [decisions/](decisions/) | architecture decision records |
 | [CLAUDE.md](CLAUDE.md) | invariants (for humans and AI assistants alike) |
 | `ECLIPSEOS_SPECS_v2_VOL1.md` | the specification bundle; authoritative |

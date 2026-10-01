@@ -180,7 +180,7 @@ ci/                            wlcs skip list, GUI-coverage exceptions
 dist/                          session, units, PKGBUILD, repo, ISO, /etc defaults
 decisions/                     ADRs (F-08 format)
 docs/ARCHITECTURE.md, BUILDING.md, STATUS.md, KNOWNBUGS.md,
-     PROPOSEDFEATURES.md, HANDOFF.md (+ handoff/ archive), CONFIG.md,
+     PROPOSEDFEATURES.md, internal/HANDOFF.md (+ internal/handoff/ archive), CONFIG.md,
      STYLE.md, COMPOSITION.md, design/ (D-NN)
 ```
 Per-crate `CLAUDE.md` names the governing spec, local invariants, and whether

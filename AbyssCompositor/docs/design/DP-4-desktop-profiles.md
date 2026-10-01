@@ -11,7 +11,7 @@ Series naming: the work items were renamed **D1–D6 → DP-1–DP-6** to stop
 colliding with Tier 6's D-01–D-08 distribution documents.
 
 - **D-0n** — Tier 6 distribution documents (base package set, repo, ISO,
-  installer, default userland). See `claude/OS_WORK.md`.
+  installer, default userland). See `docs/internal/OS_WORK.md`.
 - **DP-n** — the work items below. Mostly compositor code.
 
 ## What this is
@@ -43,7 +43,7 @@ settings GUI out of the TCB entirely, and the policy editor that replaces it
 belongs to milestone 15's existing trusted-UI work.
 
 **Two of these items are really distribution work.** DP-4 (taskbar) is OS-2 in
-`claude/OS_WORK.md`, and DP-6 (desktop icons) is D-05 userland. They are
+`docs/internal/OS_WORK.md`, and DP-6 (desktop icons) is D-05 userland. They are
 described here because they are part of what DE mode *means*, but they are not
 abyss code.
 
@@ -228,7 +228,7 @@ taskbar; users see "taskbar"), `eclipse-toasts`, `eclipse-center`,
 third-party bar or shell.
 
 **This is D-05 default-userland work, not compositor work.** It is tracked as
-OS-2 in `claude/OS_WORK.md`, which carries the implementation notes. It appears
+OS-2 in `docs/internal/OS_WORK.md`, which carries the implementation notes. It appears
 here because a taskbar is most of what "DE mode" means to a user.
 
 It is also **dual-purpose**: a taskbar consuming `ext_foreign_toplevel_list` is

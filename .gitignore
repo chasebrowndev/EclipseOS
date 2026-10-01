@@ -1,3 +1,6 @@
 /target
 *.swp
 .claude/
+*.qcow2
+tray_keys
+__pycache__/

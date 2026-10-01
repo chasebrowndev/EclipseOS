@@ -1,7 +1,7 @@
 # Phase 2 — the agent protocol: bucket, location, and starting sequence
 
-> **How to use this file.** This is `PLAN.md` at the repo root
-> (`AbyssCompositor/PLAN.md`), a working handoff document, not a spec and not a
+> **How to use this file.** This is `PLAN.md` under `docs/internal/`
+> (`AbyssCompositor/docs/internal/PLAN.md`), a working handoff document, not a spec and not a
 > source of truth. `docs/` is the source of truth once code exists (F-07 §7).
 >
 > - **As work lands, write it into the real files, not here.** Each milestone's
@@ -23,7 +23,7 @@ new directory?
 
 **Answers, with citations:**
 
-- **Bucket:** neither OS/distribution nor DE. `claude/OS_WORK.md` draws the three
+- **Bucket:** neither OS/distribution nor DE. `docs/internal/OS_WORK.md` draws the three
   lines explicitly and says it out loud: *"System services are not distribution
   work. `policyd` and `agentd` are daemons, so they read as 'OS', but they are
   Tier 2–3 and sequenced as Phase 2 milestones. They are the product; the distro
@@ -209,7 +209,7 @@ if you want a second front.
 - `crates/eclipse-ipc` and `eclipse-ctl` patterns for JSON-RPC framing are the
   model for `agentd`'s human-facing surfaces — but the privileged socket is a
   separate listener, never the same one.
-- KDL editing traps are already catalogued in `docs/HANDOFF.md` (silent
+- KDL editing traps are already catalogued in `docs/internal/HANDOFF.md` (silent
   `set_value()`, `From<i128>`, never `autoformat()` a user file) — read it before
   touching policy-file serialization.
 

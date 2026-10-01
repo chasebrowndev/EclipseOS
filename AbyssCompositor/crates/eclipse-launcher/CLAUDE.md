@@ -3,7 +3,7 @@
 Its own crate and package so it installs without the taskbar (ADR 0052).
 Never depend on `hyperion`.
 
-Read the root `CLAUDE.md` first. Governing spec: DP-4 (`claude/DESKTOP_PROFILES_PLAN.md`), ADR 0038.
+Read the root `CLAUDE.md` first. Governing spec: DP-4 (`docs/design/DP-4-desktop-profiles.md`), ADR 0038.
 
 - **Not TCB.** An ordinary layer-shell Wayland client with no authority of
   its own. Anything here that would only be safe if it could be

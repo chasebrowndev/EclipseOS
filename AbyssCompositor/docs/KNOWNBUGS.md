@@ -15,7 +15,7 @@ BLUR-01, LAUNCH-05, and TERM-01 were fixed on 2026-09-22 and removed.
 HW-01 through HW-07 (the first Framework install, 2026-09-19) and PKG-01/PKG-02
 (updating a live install, 2026-09-22), PKG-03, PKG-04 and CFG-01 were fixed and removed on 2026-09-23; the
 rules they left behind are kept below. The full write-ups are in git history
-(this file at `20d8e3a`) and `docs/handoff/2026-09-19-greeter-to-abyss.md`.
+(this file at `20d8e3a`) and `docs/internal/handoff/2026-09-19-greeter-to-abyss.md`.
 BLUR-02 and TILE-01 were fixed on 2026-09-23 and removed. BLUR-02 came back and
 was fixed for real on 2026-09-28: the line was eclipse-toasts' idle 1 px
 transparent layer, which the compositor blurred; the stack now has no surface

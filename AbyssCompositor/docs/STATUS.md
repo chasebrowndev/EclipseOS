@@ -46,7 +46,7 @@ taskbar), `eclipse-toasts`, `eclipse-center`, `eclipse-launcher`,
 (ADR 0053) and `eclipse-services` (D-Bus services plus the
 `eclipse-screensaver` bin, ADR 0051). Oracle-Eyes, the COMP-18 addon, is a
 separate cargo workspace beside this one (`../Oracle-Eyes/`). See
-`docs/HANDOFF.md` for where the work stands and what comes next.
+`docs/internal/HANDOFF.md` for where the work stands and what comes next.
 
 Phase 1 of COMP-16 is substantially built: milestones 1–9b all have code,
 seven of them are exercised, three carry hardware gates that have never been
@@ -159,7 +159,7 @@ parallel one.
 
 | Unit | State | Evidence |
 |---|---|---|
-| A0 KDL round-trip spike | **done** | verdict at the foot of `docs/handoff/2026-09-11.md`: byte-splice edits round-trip, the `value_repr` trap is real and is handled |
+| A0 KDL round-trip spike | **done** | verdict at the foot of `docs/internal/handoff/2026-09-11.md`: byte-splice edits round-trip, the `value_repr` trap is real and is handled |
 | A1 declarative schema | **done** | `config/schema.rs`, three-sided anti-drift over `schema::KEYS` (`ac3cb4f`) |
 | A2 `abyss.kdl` / `policy.kdl` split | **done** | `a95d657`, ADR 0037. Ownership is refused in both directions at parse time, naming the other file |
 | A3 config over the socket | **done** | `ipc/config_rpc.rs`, per-file gate rows, `Policy` rows default-closed (`b63b6ac`) |
@@ -485,7 +485,7 @@ In rough order:
    wanted by the target too). `eclipse-ctl config validate` checks
    `~/.config/eclipse/abyss.kdl`. *(2026-09-23: the dev host now runs abyss as
    its session, and the 2026-09-19 Framework install reached a working
-   session from greetd — see `docs/handoff/2026-09-19-greeter-to-abyss.md`.)*
+   session from greetd — see `docs/internal/handoff/2026-09-19-greeter-to-abyss.md`.)*
 
    **The seat question is answered, and the answer is "nothing special".**
    The 2026-09-10 boot needed root and `LIBSEAT_BACKEND=seatd` only because
@@ -659,7 +659,7 @@ the tree:
 
 `docs/design/D-01-base-system.md` is written (2026-09-18) — the first Tier 6
 document and the first thing in `docs/design/` that is not the pane mockup. It
-covers all six agenda items from `claude/OS_WORK.md`: base package set, kernel,
+covers all six agenda items from `docs/internal/OS_WORK.md`: base package set, kernel,
 init and systemd layout, filesystem layout, user and group model, shipped
 defaults.
 

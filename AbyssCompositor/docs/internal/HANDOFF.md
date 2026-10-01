@@ -3,7 +3,7 @@
 
 ## State as of 2026-09-23
 
-Earlier handoffs are archived under `docs/handoff/` (`2026-09-11.md` is the
+Earlier handoffs are archived under `docs/internal/handoff/` (`2026-09-11.md` is the
 long-running one this file used to be; `2026-09-19-greeter-to-abyss.md` is
 resolved). `docs/STATUS.md` is the progress record; this file is only "where
 are we, what next".

@@ -201,7 +201,7 @@ working configuration without editing a file.*
 
 The desktop-profiles plan originally numbered its items **D1–D6**, colliding
 with Tier 6's **D-01–D-08**. That series is now **DP-1–DP-6**
-(`claude/DESKTOP_PROFILES_PLAN.md`).
+(`docs/design/DP-4-desktop-profiles.md`).
 
 - **D-0n** — Tier 6 distribution documents. This file.
 - **DP-n** — desktop profile work items. Mostly compositor code.
