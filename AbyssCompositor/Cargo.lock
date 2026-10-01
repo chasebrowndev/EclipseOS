@@ -1142,6 +1142,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-cataclysm-pub"
+version = "0.1.0"
+
+[[package]]
 name = "eclipse-center"
 version = "0.1.0"
 dependencies = [
