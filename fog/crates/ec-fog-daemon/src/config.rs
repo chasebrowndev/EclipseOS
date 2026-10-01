@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! `fog.kdl` in fogd (FOG §Configuration): loaded at start, applied, and
+//! `fog.kdl` in ec-fogd (FOG §Configuration): loaded at start, applied, and
 //! hot-reloaded from an inotify watch on the config directory. The watch is
 //! its own, separate from the listing watcher. A rejected file is logged and
 //! broadcast as [`Reply::ConfigError`]; the last valid config stays active.
@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 
-use fog_config::{Config, Error, Live};
-use fog_proto::{Reply, Sort, SortKey};
+use ec_fog_config::{Config, Error, Live};
+use ec_fog_proto::{Reply, Sort, SortKey};
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use rustix::io::Errno;
 
@@ -24,11 +24,11 @@ use crate::Daemon;
 /// and start watching it. Watch failures are logged: Fog runs on without
 /// hot reload rather than not at all.
 pub fn start(daemon: &Arc<Daemon>, path: PathBuf) -> Live {
-    let live = Live::new(match fog_config::load(&path) {
+    let live = Live::new(match ec_fog_config::load(&path) {
         Ok(c) => c,
         Err(e) => {
             rejected(daemon, &e);
-            fog_config::defaults()
+            ec_fog_config::defaults()
         }
     });
     apply(daemon, live.current());
@@ -46,14 +46,14 @@ pub fn apply(daemon: &Daemon, c: &Config) {
 }
 
 /// `view { sort "<key>" dirs-first=… }` as the wire sort. Names always
-/// compare naturally in `fogd`.
-pub fn default_sort(v: &fog_config::View) -> Sort {
+/// compare naturally in `ec-fogd`.
+pub fn default_sort(v: &ec_fog_config::View) -> Sort {
     Sort {
         key: match v.sort {
-            fog_config::SortKey::Name => SortKey::Name,
-            fog_config::SortKey::Size => SortKey::Size,
-            fog_config::SortKey::Modified => SortKey::Modified,
-            fog_config::SortKey::Type => SortKey::Type,
+            ec_fog_config::SortKey::Name => SortKey::Name,
+            ec_fog_config::SortKey::Size => SortKey::Size,
+            ec_fog_config::SortKey::Modified => SortKey::Modified,
+            ec_fog_config::SortKey::Type => SortKey::Type,
         },
         reverse: false,
         dirs_first: v.dirs_first,
@@ -64,8 +64,8 @@ pub fn default_sort(v: &fog_config::View) -> Sort {
 /// as [`Reply::ConfigReloaded`], so running UIs restyle and rebind; on error
 /// log and broadcast, leaving `live` as it was.
 pub fn reload(daemon: &Daemon, path: &Path, live: &mut Live) {
-    let res = fog_config::read(path).and_then(|text| {
-        let changed = live.apply(fog_config::parse(&text))?;
+    let res = ec_fog_config::read(path).and_then(|text| {
+        let changed = live.apply(ec_fog_config::parse(&text))?;
         Ok(changed.then_some(text))
     });
     match res {
@@ -111,7 +111,7 @@ pub fn watch(
             | WatchFlags::ONLYDIR,
     )?;
     thread::Builder::new()
-        .name("fog-config".into())
+        .name("ec-fog-config".into())
         .spawn(move || {
             let mut buf = [MaybeUninit::uninit(); 4096];
             let mut rd = inotify::Reader::new(&fd, &mut buf);
@@ -153,7 +153,7 @@ mod tests {
         let mut events = daemon.subscribe();
 
         let live = start(&daemon, path.clone());
-        assert_eq!(live.current(), &fog_config::defaults());
+        assert_eq!(live.current(), &ec_fog_config::defaults());
 
         let text = "performance { cache-dirs 3 }\nappearance { reduce-motion #true; }\n";
         std::fs::write(&path, text).unwrap();
@@ -175,7 +175,7 @@ mod tests {
             }
         };
         assert_eq!(pushed, text);
-        let over = fog_config::parse(&pushed).unwrap();
+        let over = ec_fog_config::parse(&pushed).unwrap();
         assert!(over.appearance.reduce_motion && !over.appearance.reduce_transparency);
         assert_eq!(over.performance.cache_dirs, 3);
 

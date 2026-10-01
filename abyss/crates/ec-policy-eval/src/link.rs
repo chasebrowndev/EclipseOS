@@ -3,7 +3,7 @@
 //! verifying key (F-05, COMP-01 §6).
 //!
 //! The offer carries no authority of its own. abyss trusts it only because
-//! of who sent it (the peer checks in `abyss::policy::link`), and only the
+//! of who sent it (the peer checks in `ec_abyss::policy::link`), and only the
 //! first time: a different key on a later connection is refused.
 //!
 //! `{"key": bstr .size 32, "v": 1}`, canonical CBOR (ADR 0044).

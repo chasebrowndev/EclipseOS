@@ -26,10 +26,10 @@ set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$here/.." && pwd)
 
-BINS='abyss hyperion eclipse-toasts eclipse-wallpaper eclipse-center eclipse-launcher
-      eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt
-      eclipse-pairing'
-UNITS='hyperion.service eclipse-toasts.service eclipse-wallpaper.service eclipse-screensaver.service eclipse-pairing.service'
+BINS='ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher
+      ec-settings ec-policy-viewer ec-ctl ec-screensaver ec-secret-prompt
+      ec-pairing'
+UNITS='ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service'
 
 do_deps=1 do_build=1 assume_yes=0 uninstall=0
 for arg in "$@"; do
@@ -58,9 +58,9 @@ if [ "$uninstall" -eq 1 ]; then
                $(for u in $UNITS; do printf '/usr/lib/systemd/user/%s ' "$u"; done) \
                /usr/lib/systemd/user/abyss-session.target \
                /usr/share/eclipse/addons/hyperion.kdl \
-               /usr/share/applications/eclipse-center.desktop \
-               /usr/share/applications/eclipse-policy-viewer.desktop \
-               /usr/share/applications/eclipse-settings.desktop
+               /usr/share/applications/ec-center.desktop \
+               /usr/share/applications/ec-policy-viewer.desktop \
+               /usr/share/applications/ec-settings.desktop
     sudo rm -rf /usr/share/eclipse/widgets
     systemctl --user daemon-reload 2>/dev/null || true
     echo "Removed. /etc/eclipse/ and your ~/.config/eclipse/ were left alone."
@@ -142,7 +142,7 @@ say "installing to /usr"
 sudo install -Dm 0755 -t /usr/bin $(for b in $BINS; do printf '%s ' "$bin/$b"; done)
 
 # 2. The login wrapper. It sets the environment that is knowable before the
-#    compositor runs; the systemd/D-Bus handoff happens inside abyss --session,
+#    compositor runs; the systemd/D-Bus handoff happens inside ec-abyss --session,
 #    because WAYLAND_DISPLAY does not exist until the socket does (ADR 0032).
 sudo install -Dm 0755 "$here/abyss-session" /usr/bin/abyss-session
 
@@ -154,8 +154,8 @@ sudo install -Dm 0644 "$here/abyss.desktop" /usr/share/wayland-sessions/abyss.de
 # 4. User units, system-wide so every account on the box gets them. These are
 #    shipped pointing at /usr/bin, which is where step 1 put the binaries.
 sudo install -Dm 0644 -t /usr/lib/systemd/user \
-    "$here/abyss-session.target" "$here/hyperion.service" "$here/eclipse-toasts.service" \
-    "$here/eclipse-wallpaper.service" "$here/eclipse-screensaver.service" "$here/eclipse-pairing.service"
+    "$here/abyss-session.target" "$here/ec-hyperion-bar.service" "$here/ec-toasts.service" \
+    "$here/ec-wallpaper.service" "$here/ec-screensaver.service" "$here/ec-pairing.service"
 
 # 4b. The taskbar's add-on manifest (ADR 0066). Without it abyss keeps its
 #     taskbar-widgets hook off; hosts read manifests only from this directory.
@@ -212,7 +212,7 @@ override chord and is reserved, everything else is rebindable.
 
 If the session fails to start, log in to a text console (Ctrl+Alt+F2) and read:
 
-  journalctl --user -t abyss -b
+  journalctl --user -t ec-abyss -b
 
 This checkout is no longer referenced by anything and can be deleted.
 EOF

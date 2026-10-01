@@ -1,10 +1,10 @@
 # 0053 — The status service gains actions; secrets go through their own prompt process
-Status: accepted; amended by 0066 (the pairing agent moves out of hyperion to `eclipse-pairing`)
+Status: accepted; amended by 0066 (the pairing agent moves out of hyperion to `ec-pairing`)
 Date: 2026-09-21
 Deciders: chase (owner), Claude (advisory)
 
 ## Context
-`eclipse-services::status` was a read-only feed: battery, network and
+`ec-services::status` was a read-only feed: battery, network and
 bluetooth state went in over D-Bus and came out as `Update`s. The taskbar's wifi
 and bluetooth drawers could show state but not change it, so a user could not
 join a network or pair a device without a terminal. PROPOSEDFEATURES recorded
@@ -36,14 +36,14 @@ NetworkManager over D-Bus directly, and bluetooth talks to BlueZ, including an
 `org.bluez.Agent1` for pairing. Neither shells out. Actions are for the
 human-driven UI process only.
 
-**Secrets.** Option 3. `eclipse-secret-prompt` is its own crate and binary
+**Secrets.** Option 3. `ec-secret-prompt` is its own crate and binary
 (ADR 0052). It shows one password field, hands the value straight to the
 service action, overwrites it, and exits. The taskbar starts it with the network
 or device to prompt for, but never sees the secret. S-05 §2 wants
 authentication surfaces classified `secret` as a whole surface. The app cannot
 declare that itself until COMP-09 lands, so the shipped `/etc/eclipse/policy.kdl`
 does it with an owner rule on the exact app-id:
-`windowrule "sensitivity secret" { app-id "^eclipse-secret-prompt$"; }`.
+`windowrule "sensitivity secret" { app-id "^ec-secret-prompt$"; }`.
 
 This is compliant: the `password`-role rule governs what the compositor,
 the semantic tree and audit deliver (COMP-09 §1/§3, S-04 §2). An application
@@ -71,6 +71,6 @@ the deliberately empty shipped `abyss.kdl`.
   requests, for yes/no confirmation, and to show a code. The bars send the pair
   action but never act as the agent. A displayed pairing code is not a secret,
   so it reaches the prompt on argv.
-- The tray host (`eclipse-services::tray`) shares this shape. It is a
+- The tray host (`ec-services::tray`) shares this shape. It is a
   StatusNotifierWatcher and host on the service's own runtime, and it reports
   items and menus back as updates. Activate and menu clicks are actions.

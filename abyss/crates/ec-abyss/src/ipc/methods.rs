@@ -960,7 +960,7 @@ mod tests {
     #[test]
     fn overscan_round_trips_through_the_reported_row() {
         // What `set_output` accepts is exactly what a `get_outputs` row
-        // reports, edge for edge, so eclipse-settings can read one and hand it
+        // reports, edge for edge, so ec-settings can read one and hand it
         // straight back.
         let written = json!({"top": 12, "right": 3, "bottom": 7, "left": 0});
         let parsed = parse_overscan(json!({"overscan": written.clone()}).as_object().expect("object"))
@@ -1207,7 +1207,7 @@ mod tests {
                 s,
                 "abyss.kdl: auto-lock is OFF \u{2014} line 3: idle lock-command needs a string argument; \
                  2 problems, change not applied \u{2014} line 3: idle lock-command needs a string argument \
-                 (and 1 more; `eclipse-ctl config validate` lists them)",
+                 (and 1 more; `ec-ctl config validate` lists them)",
             );
         }
 

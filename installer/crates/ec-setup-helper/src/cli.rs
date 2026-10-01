@@ -2,7 +2,7 @@
 //! The command line: two subcommands and no options. Nothing the caller puts in
 //! argv or the environment selects a path, a disk, a package or a command.
 //!
-//! * `list-disks`: unprivileged. Prints a JSON array of `eclipse_setup_plan::Disk`
+//! * `list-disks`: unprivileged. Prints a JSON array of `ec_setup_plan::Disk`
 //!   from the helper's own listing, the boot medium's disk excluded.
 //! * `apply`: one JSON `Request` on stdin (at most [`MAX_REQUEST_BYTES`]), one
 //!   `Progress` JSON object per line on stdout.
@@ -10,7 +10,7 @@
 use crate::apply::apply;
 use crate::disks;
 use crate::env::Env;
-use eclipse_setup_plan::{Progress, Request, Stage};
+use ec_setup_plan::{Progress, Request, Stage};
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use zeroize::Zeroizing;
@@ -66,7 +66,7 @@ pub fn run(
                 Err(_) => EXIT_FAILED,
             },
             Err(e) => {
-                let _ = writeln!(stderr, "eclipse-setup-helper: {e}");
+                let _ = writeln!(stderr, "ec-setup-helper: {e}");
                 EXIT_FAILED
             }
         },
@@ -84,7 +84,7 @@ pub fn run(
             }
         },
         _ => {
-            let _ = writeln!(stderr, "usage: eclipse-setup-helper list-disks | apply");
+            let _ = writeln!(stderr, "usage: ec-setup-helper list-disks | apply");
             EXIT_USAGE
         }
     }
@@ -144,7 +144,7 @@ mod tests {
     fn list_disks_prints_the_offered_disks_only() {
         let (code, out, _) = drive(&["list-disks"], b"", 1000, false);
         assert_eq!(code, EXIT_OK);
-        let v: Vec<eclipse_setup_plan::Disk> = serde_json::from_str(&out).unwrap();
+        let v: Vec<ec_setup_plan::Disk> = serde_json::from_str(&out).unwrap();
         let ids: Vec<_> = v.iter().map(|d| d.by_id.as_str()).collect();
         assert_eq!(ids, ["ata-Samsung_SSD_S1", "nvme-Some_NVMe_1"]);
     }

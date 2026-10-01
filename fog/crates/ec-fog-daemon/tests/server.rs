@@ -10,8 +10,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use fog_daemon::{bind, serve, sort, Cache, Daemon, Dirs, Jobs, LocalBackend, BATCH};
-use fog_proto::{
+use ec_fog_daemon::{bind, serve, sort, Cache, Daemon, Dirs, Jobs, LocalBackend, BATCH};
+use ec_fog_proto::{
     apply_diff, read_frame, write_frame, ConflictPolicy, Entry, JobSpec, JobStatus, Kind, Reply,
     Request, Sort, SortKey,
 };

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The one call that hands the secret on (ADR 0053).
 //!
-//! Wifi goes to NetworkManager through `eclipse_services::status::Actions`,
+//! Wifi goes to NetworkManager through `ec_services::status::Actions`,
 //! and the answer is the join's own result. Bluetooth goes to whichever
-//! process holds the pairing agent (`eclipse-pairing`), over the
+//! process holds the pairing agent (`ec-pairing`), over the
 //! session-bus door `org.eclipse.Services.Pairing`. Both block, so both run
 //! off the UI thread (see `app::update`).
 //!
@@ -12,7 +12,7 @@
 
 use std::time::{Duration, Instant};
 
-use eclipse_services::status::{self, ConnectError, Event, PairingAgent};
+use ec_services::status::{self, ConnectError, Event, PairingAgent};
 
 use crate::{wipe, Target};
 

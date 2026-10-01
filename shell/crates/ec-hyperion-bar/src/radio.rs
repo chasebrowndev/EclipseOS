@@ -1,31 +1,31 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The radio and tray models the drawers draw, and the actions they send.
 //!
-//! Both halves are `eclipse_services` (ADR 0053): `status::Actions` for wifi
+//! Both halves are `ec_services` (ADR 0053): `status::Actions` for wifi
 //! and bluetooth, `tray` for StatusNotifierItems. They are started once per
 //! bar process, on first use, and report back on their own channels, which the
 //! compositor thread drains and converts into [`Feed`]s — so the icon lookups
 //! a tray item needs happen there, never in `update` or the view. Under test
 //! neither is started: the bar's tests never touch a bus.
 //!
-//! This module is not BlueZ's pairing agent. `eclipse-pairing` is (one agent
+//! This module is not BlueZ's pairing agent. `ec-pairing` is (one agent
 //! per session, its own process), and it starts the secret prompt itself.
 //!
 //! Nothing in this module ever holds a secret. A network that needs one is
-//! handed to `eclipse-secret-prompt`, a separate process whose whole surface
+//! handed to `ec-secret-prompt`, a separate process whose whole surface
 //! is `secret`, and the passphrase goes from there to the service without
 //! passing through the bar.
 
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
-use eclipse_services::status::{Actions, ConnectError, Event, Events};
-use eclipse_services::tray::{MenuKind, Pixmap, Tray, TrayUpdate, TrayUpdates};
+use ec_services::status::{Actions, ConnectError, Event, Events};
+use ec_services::tray::{MenuKind, Pixmap, Tray, TrayUpdate, TrayUpdates};
 use iced::widget::image;
 
 /// The service's own shapes, which already carry exactly what the drawers
 /// draw: no strength, band or rate (those live in Settings → Network).
-pub use eclipse_services::status::{BtDevice, BtKind, WifiNetwork};
+pub use ec_services::status::{BtDevice, BtKind, WifiNetwork};
 
 /// One StatusNotifierItem. The icon is resolved when the item arrives, never
 /// from the view — a theme walk in the draw path is a frame hitch.
@@ -281,18 +281,17 @@ fn services() -> &'static Services {
 fn start() -> Services {
     // Each half is optional: no system bus means no radios, no session bus
     // means no tray, and neither takes the other down.
-    let (actions, events) =
-        match eclipse_services::status::actions(eclipse_services::status::PairingAgent::None) {
-            Ok((a, e)) => (Some(a), Some(e)),
-            Err(e) => {
-                eprintln!("hyperion: radio actions unavailable: {e}");
-                (None, None)
-            }
-        };
-    let (tray, updates) = match eclipse_services::tray::spawn() {
+    let (actions, events) = match ec_services::status::actions(ec_services::status::PairingAgent::None) {
+        Ok((a, e)) => (Some(a), Some(e)),
+        Err(e) => {
+            eprintln!("ec-hyperion-bar: radio actions unavailable: {e}");
+            (None, None)
+        }
+    };
+    let (tray, updates) = match ec_services::tray::spawn() {
         Ok((t, u)) => (Some(t), Some(u)),
         Err(e) => {
-            eprintln!("hyperion: tray unavailable: {e}");
+            eprintln!("ec-hyperion-bar: tray unavailable: {e}");
             (None, None)
         }
     };
@@ -361,21 +360,21 @@ fn from_event(event: Event) -> Option<Feed> {
             // The SSID is not named: stderr is a journal, and which networks
             // the user tried is theirs.
             Err(ConnectError::Failed(reason)) => {
-                eprintln!("hyperion: wifi join failed: {reason}");
+                eprintln!("ec-hyperion-bar: wifi join failed: {reason}");
                 None
             }
         },
         Event::BtPair {
             result: Err(reason), ..
         } => {
-            eprintln!("hyperion: bluetooth pairing failed: {reason}");
+            eprintln!("ec-hyperion-bar: bluetooth pairing failed: {reason}");
             None
         }
         Event::Failed { action, reason } => {
-            eprintln!("hyperion: {action} failed: {reason}");
+            eprintln!("ec-hyperion-bar: {action} failed: {reason}");
             None
         }
-        // Settings' business, or the pairing agent's (`eclipse-pairing`).
+        // Settings' business, or the pairing agent's (`ec-pairing`).
         _ => None,
     }
 }
@@ -407,7 +406,7 @@ fn from_tray(update: TrayUpdate) -> Feed {
 /// The service's menu in the sheet's terms. A rule at either end, or next to
 /// another rule, divides nothing and is dropped — apps hide the entries
 /// between two rules and leave both behind.
-fn menu_entries(entries: Vec<eclipse_services::tray::MenuEntry>) -> Vec<MenuEntry> {
+fn menu_entries(entries: Vec<ec_services::tray::MenuEntry>) -> Vec<MenuEntry> {
     let mut out: Vec<MenuEntry> = Vec::with_capacity(entries.len());
     for e in entries {
         let rule = e.kind == MenuKind::Separator;
@@ -472,7 +471,7 @@ pub mod actions {
         radio(|a| a.bt_disconnect(addr.to_owned()));
     }
     /// A PIN or passkey the device asks for goes to the pairing agent
-    /// (`eclipse-pairing`), which starts the prompt; the bar never sees it.
+    /// (`ec-pairing`), which starts the prompt; the bar never sees it.
     pub fn pair(addr: &str) {
         radio(|a| a.bt_pair(addr.to_owned()));
     }
@@ -492,8 +491,8 @@ pub mod actions {
 mod tests {
     use super::*;
 
-    fn raw(id: i32, kind: MenuKind) -> eclipse_services::tray::MenuEntry {
-        eclipse_services::tray::MenuEntry {
+    fn raw(id: i32, kind: MenuKind) -> ec_services::tray::MenuEntry {
+        ec_services::tray::MenuEntry {
             id,
             label: String::new(),
             enabled: true,

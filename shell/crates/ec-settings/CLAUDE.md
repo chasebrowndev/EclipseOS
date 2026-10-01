@@ -1,4 +1,4 @@
-# eclipse-settings — the settings app
+# ec-settings — the settings app
 
 Read the root `CLAUDE.md` first. Governing spec: COMP-17 §3 (DP-5).
 
@@ -20,5 +20,5 @@ Read the root `CLAUDE.md` first. Governing spec: COMP-17 §3 (DP-5).
   here and in every other DE app.
 - The calibration overlay on the Display pane is compositor-drawn
   (COMP-03 §1.1). This pane sends `calibrate_output` verbs and shows numbers.
-- No literal colour, radius or size: `eclipse_ui::tokens` is the only source.
+- No literal colour, radius or size: `ec_ui::tokens` is the only source.
 - Every `.rs` starts with `// SPDX-License-Identifier: AGPL-3.0-only`.

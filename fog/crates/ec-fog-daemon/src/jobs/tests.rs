@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime};
 
-use fog_proto::{ConflictPolicy as P, JobAction, JobId, JobSpec, JobStatus, Reply, Resolution};
+use ec_fog_proto::{ConflictPolicy as P, JobAction, JobId, JobSpec, JobStatus, Reply, Resolution};
 use tokio::sync::broadcast::error::TryRecvError;
 
 use super::{Dirs, Jobs};
@@ -131,7 +131,7 @@ impl H {
         res.expect("UndoResult")
     }
 
-    fn trash_list(&self) -> Vec<fog_proto::TrashItem> {
+    fn trash_list(&self) -> Vec<ec_fog_proto::TrashItem> {
         let mut out = Vec::new();
         self.jobs.list_trash(&mut |r| {
             if let Reply::TrashList(l) = r {
@@ -592,7 +592,7 @@ fn trash_list_restore_and_undo() {
         .iter()
         .find(|i| i.original_path == b(&canon.join("f.txt")))
         .unwrap();
-    assert_eq!(f.kind, fog_proto::Kind::File);
+    assert_eq!(f.kind, ec_fog_proto::Kind::File);
     assert!(f.deleted_s.is_some());
 
     // Restore one; the other stays listed.
@@ -604,7 +604,7 @@ fn trash_list_restore_and_undo() {
     assert_eq!(fs::read(h.w("f.txt")).unwrap(), b"F");
     let l = h.trash_list();
     assert_eq!(l.len(), 1);
-    assert_eq!(l[0].kind, fog_proto::Kind::Dir);
+    assert_eq!(l[0].kind, ec_fog_proto::Kind::Dir);
 
     // Undo the restore (trashes it again, same inode and mtime), then undo
     // the trash (restores both).

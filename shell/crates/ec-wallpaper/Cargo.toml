@@ -1,5 +1,5 @@
 [package]
-name = "eclipse-wallpaper"
+name = "ec-wallpaper"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,21 +11,21 @@ description = "The Eclipse wallpaper: a Background-layer surface per output, a c
 publish = false
 
 [lib]
-name = "eclipse_wallpaper"
+name = "ec_wallpaper"
 path = "src/lib.rs"
 
 [[bin]]
-name = "eclipse-wallpaper"
+name = "ec-wallpaper"
 path = "src/main.rs"
 
 [dependencies]
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "image-without-codecs"] }
 iced_layershell = "0.19.1"
-eclipse-ui = { path = "../ec-ui" }
-eclipse-ipc = { path = "../../../abyss/crates/ec-ipc" }
+ec-ui = { path = "../ec-ui" }
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 serde_json.workspace = true
 # Decoded here rather than by the renderer so that a missing or corrupt file
 # is known — and logged — before a surface draws, and so that one decode
 # serves every output showing the same path. PNG and JPEG are what wallpapers
-# are; iced's own `image` feature (on through eclipse-ui) unifies in the rest.
+# are; iced's own `image` feature (on through ec-ui) unifies in the rest.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

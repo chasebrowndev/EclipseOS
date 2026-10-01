@@ -19,17 +19,17 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 bin="$here/../target/release"
 home=$(getent passwd "$user" | cut -d: -f6)
 
-for b in abyss hyperion eclipse-toasts eclipse-wallpaper eclipse-center eclipse-launcher \
-         eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt \
-         eclipse-pairing; do
+for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher \
+         ec-settings ec-policy-viewer ec-ctl ec-screensaver ec-secret-prompt \
+         ec-pairing; do
     [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
 done
 
 # 1. Binaries. Symlinks, so the session always runs what was last built.
 install -d /usr/local/bin
-for b in abyss hyperion eclipse-toasts eclipse-wallpaper eclipse-center eclipse-launcher \
-         eclipse-settings eclipse-policy-viewer eclipse-ctl eclipse-screensaver eclipse-secret-prompt \
-         eclipse-pairing; do
+for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher \
+         ec-settings ec-policy-viewer ec-ctl ec-screensaver ec-secret-prompt \
+         ec-pairing; do
     ln -sfn "$bin/$b" "/usr/local/bin/$b"
 done
 install -m 0755 "$here/abyss-session" /usr/local/bin/abyss-session
@@ -40,12 +40,12 @@ install -d /usr/share/wayland-sessions
 install -m 0644 "$here/abyss.desktop" /usr/share/wayland-sessions/abyss.desktop
 sed -i 's|^Exec=.*|Exec=/usr/local/bin/abyss-session|' /usr/share/wayland-sessions/abyss.desktop
 
-# 3. The user units abyss --session pulls in once its socket exists. These are
+# 3. The user units ec-abyss --session pulls in once its socket exists. These are
 #    the shipped files with /usr/bin rewritten to /usr/local/bin to match (1).
 dest="$home/.config/systemd/user"
 install -d -o "$user" -g "$user" "$dest"
 install -m 0644 -o "$user" -g "$user" "$here/abyss-session.target" "$dest/abyss-session.target"
-for unit in hyperion eclipse-toasts eclipse-wallpaper eclipse-screensaver eclipse-pairing; do
+for unit in ec-hyperion-bar ec-toasts ec-wallpaper ec-screensaver ec-pairing; do
     sed 's|/usr/bin/|/usr/local/bin/|' "$here/$unit.service" > "$dest/$unit.service"
     chown "$user:$user" "$dest/$unit.service"
 done
@@ -72,7 +72,7 @@ done
 #    already written and are read when their manager next starts.
 uid=$(id -u "$user")
 rt="/run/user/$uid"
-units="hyperion.service eclipse-toasts.service eclipse-wallpaper.service eclipse-screensaver.service eclipse-pairing.service"
+units="ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service"
 if [ -S "$rt/bus" ]; then
     as_user() {
         runuser -u "$user" -- env XDG_RUNTIME_DIR="$rt" DBUS_SESSION_BUS_ADDRESS="unix:path=$rt/bus" "$@"

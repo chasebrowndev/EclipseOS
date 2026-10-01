@@ -6,7 +6,7 @@ Deciders: chase (owner), Claude (advisory)
 ## Context
 ADR 0038 settled that the EclipseOS userland is native Rust on iced 0.14 with
 `iced_layershell`, rather than Quickshell/QML. Adding the first crate that
-depends on iced (`eclipse-ui`) pulls in wgpu and cosmic-text, and with them
+depends on iced (`ec-ui`) pulls in wgpu and cosmic-text, and with them
 four things the `cargo deny` gate rejects:
 
 - `paste 1.0.15` — RUSTSEC-2024-0436, unmaintained.

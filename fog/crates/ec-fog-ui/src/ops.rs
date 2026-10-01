@@ -3,9 +3,9 @@
 //! File operations as the UI sees them (FOG §File operations): the job
 //! tray, the conflict dialog, the permanent-delete confirmation and inline
 //! name entry. Pure state like [`crate::state`]: every mutation leaves as a
-//! [`Request`] for `fogd`'s job queue, never as filesystem I/O here.
+//! [`Request`] for `ec-fogd`'s job queue, never as filesystem I/O here.
 //!
-//! `fogd` answers `Job` with `JobAccepted` on our connection but broadcasts
+//! `ec-fogd` answers `Job` with `JobAccepted` on our connection but broadcasts
 //! `JobState` and `JobProgress` to everyone, and it serves requests on a
 //! pool, so two jobs sent back to back could be accepted out of order. The
 //! tray therefore keeps one submission in flight and holds the rest until
@@ -15,7 +15,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use fog_proto::{
+use ec_fog_proto::{
     ConflictPolicy, JobAction, JobId, JobSpec, JobStatus, Kind, Reply, Request, Resolution,
     StatReply,
 };
@@ -189,7 +189,7 @@ pub enum TrayEvent {
     },
     /// A job of ours ended (done, failed or cancelled).
     Ended(Job),
-    /// `fogd` answered `Undo`.
+    /// `ec-fogd` answered `Undo`.
     Undone {
         ok: bool,
         reason: Option<String>,
@@ -210,7 +210,7 @@ pub struct Tray {
     outbox: VecDeque<JobSpec>,
     /// An `Undo` was sent and not answered: the next unknown job id is it.
     undoing: bool,
-    /// Our newest finished job that `fogd` journals as undoable, for the
+    /// Our newest finished job that `ec-fogd` journals as undoable, for the
     /// undo's row: what an undo now would reverse, unless another client
     /// changed something since.
     last_done: Option<Job>,
@@ -405,7 +405,7 @@ impl Tray {
         self.cursor = self.cursor.min(self.jobs.len().saturating_sub(1));
     }
 
-    /// The connection to `fogd` went away: its job ids mean nothing to the
+    /// The connection to `ec-fogd` went away: its job ids mean nothing to the
     /// next one, and a submission in flight may or may not have landed.
     pub fn reset(&mut self) {
         *self = Self::default();

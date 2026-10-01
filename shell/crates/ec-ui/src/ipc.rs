@@ -5,7 +5,7 @@
 //! compositor's `decoration.rounding` (or, for hyperion's bar sheet,
 //! `bar.rounding`) so the client-drawn glass can never drift from the blur
 //! backdrop the compositor draws behind it. This mirrors
-//! `eclipse-launcher`'s `fetch_terminal_command` (TERM-01): an unset key, a
+//! `ec-launcher`'s `fetch_terminal_command` (TERM-01): an unset key, a
 //! socket nothing is listening on, and a denied query all collapse to the
 //! same answer, `None`, so every caller falls back to its own compile-time
 //! token ([`crate::tokens::radius::CARD`] or
@@ -15,7 +15,7 @@ use serde_json::json;
 
 /// Read `path` (e.g. `"decoration.rounding"`) as an `f32`. `None` on any
 /// failure — no connection, no such key, or a value that is not a number.
-pub fn fetch_config_radius(client: &mut eclipse_ipc::Client, path: &str) -> Option<f32> {
+pub fn fetch_config_radius(client: &mut ec_ipc::Client, path: &str) -> Option<f32> {
     let reply = client.call("get_config", json!({ "path": path })).ok()?;
     let value = reply.get("keys")?.as_array()?.first()?.get("value")?;
     value
@@ -33,7 +33,7 @@ pub fn fetch_config_radius(client: &mut eclipse_ipc::Client, path: &str) -> Opti
 /// the tint lands on nothing (BLUR-01). A caller with no answer treats it as
 /// off — an opaque sheet with blur behind it is merely plain, a translucent
 /// one with nothing behind it is broken.
-pub fn fetch_blur(client: &mut eclipse_ipc::Client) -> Option<bool> {
+pub fn fetch_blur(client: &mut ec_ipc::Client) -> Option<bool> {
     let reply = client
         .call("get_config", json!({ "path": "decoration.blur.mode" }))
         .ok()?;
@@ -49,7 +49,7 @@ pub fn fetch_blur(client: &mut eclipse_ipc::Client) -> Option<bool> {
 /// `decoration.rounding` and [`fetch_blur`] over one short-lived connection.
 /// Each half is `None` when the socket or the key is not there.
 pub fn fetch_glass() -> (Option<f32>, Option<bool>) {
-    match eclipse_ipc::Client::connect() {
+    match ec_ipc::Client::connect() {
         Ok(mut client) => (
             fetch_config_radius(&mut client, "decoration.rounding"),
             fetch_blur(&mut client),

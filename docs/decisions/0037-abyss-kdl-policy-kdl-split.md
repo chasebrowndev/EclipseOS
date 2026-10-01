@@ -38,7 +38,7 @@ Enforcement sits at three granularities, because ownership is not uniformly per-
 An explicit `--config` names an `abyss.kdl` only; `policy.kdl` stays on the search path, so
 a command-line flag cannot swap the policy file.
 
-There is no auto-migration. `eclipse-ctl config migrate` will do the local file surgery,
+There is no auto-migration. `ec-ctl config migrate` will do the local file surgery,
 preserving each node's leading trivia, backing up both files, and refusing to commit if
 either result fails to re-parse.
 

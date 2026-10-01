@@ -54,6 +54,6 @@ serve a reader that does not exist.
   decide, plus what S-04 §1.1 names. Human text is neither.
 
 ## Revisit when
-`eclipse-audit trace` (milestone 12) needs to show a statement beside a task
+`ec-audit trace` (milestone 12) needs to show a statement beside a task
 and the `prompt` records turn out not to cover the case — for instance a task
 that was opened and closed without ever prompting.

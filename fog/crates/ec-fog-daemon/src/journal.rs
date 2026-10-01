@@ -22,7 +22,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use fog_proto::JobSpec;
+use ec_fog_proto::JobSpec;
 use serde::{Deserialize, Serialize};
 
 use crate::ops;
@@ -459,7 +459,7 @@ mod tests {
         let spec = JobSpec::Copy {
             srcs: vec![ops::raw(&src)],
             dest: ops::raw(&dest),
-            on_conflict: fog_proto::ConflictPolicy::Fail,
+            on_conflict: ec_fog_proto::ConflictPolicy::Fail,
         };
         let mut j = Journal::open(&p, 0).unwrap();
         let run = j.begin(Some(&spec)).unwrap();

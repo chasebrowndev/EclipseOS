@@ -11,9 +11,9 @@ use std::path::PathBuf;
 use iced::widget::Row;
 use iced::Alignment;
 
-use eclipse_services::usage::Sample;
-use eclipse_ui::tokens::bar;
-use eclipse_ui::widget::{self as parts, ShellFrame};
+use ec_services::usage::Sample;
+use ec_ui::tokens::bar;
+use ec_ui::widget::{self as parts, ShellFrame};
 
 use super::{Action, Parts, Spans};
 

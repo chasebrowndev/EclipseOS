@@ -21,9 +21,9 @@
 
 use std::time::{Duration, Instant};
 
-use fog_config::{Action, Target};
-use fog_proto::{Entry, JobStatus, Kind, SortKey, StatReply, TrashItem};
-use fog_widgets::{draggable, elide, glass, virtual_list};
+use ec_fog_config::{Action, Target};
+use ec_fog_proto::{Entry, JobStatus, Kind, SortKey, StatReply, TrashItem};
+use ec_fog_widgets::{draggable, elide, glass, virtual_list};
 use iced::widget::text::Wrapping;
 use iced::widget::{
     column, container, mouse_area, opaque, responsive, row, stack, text, Column, Row, Space,
@@ -659,7 +659,7 @@ pub fn crumbs(path: &[u8], fits: usize) -> Vec<(String, Option<Vec<u8>>)> {
 // ---------------------------------------------------------------- header
 
 /// Caption-height column labels over the table, or the path editor's
-/// completions while it is open. Clicking a label sorts by it (in fogd).
+/// completions while it is open. Clicking a label sorts by it (in ec-fogd).
 fn header(app: &App, scrollbar: bool) -> Element<'_, Message> {
     let b = app.tabs.active();
     let lead = size::PILL_X + size::PAD_X;
@@ -692,7 +692,7 @@ fn header(app: &App, scrollbar: bool) -> Element<'_, Message> {
             let s = b.sort;
             let trash = app.in_trash();
             // A column label: quiet, the sorted one a step up, each a hover
-            // target that sorts by it (in fogd).
+            // target that sorts by it (in ec-fogd).
             let col = |name: &'static str, key: SortKey, w: Length, at| {
                 let on = s.key == key;
                 let arrow = match (on, s.reverse) {
@@ -728,7 +728,7 @@ fn header(app: &App, scrollbar: bool) -> Element<'_, Message> {
             }
             r = r
                 .push(col("size", SortKey::Size, size::SIZE_W.into(), right))
-                // fogd sorts the trash by the files' own times: the label
+                // ec-fogd sorts the trash by the files' own times: the label
                 // says what the column shows.
                 .push(col(
                     if trash { "deleted" } else { "modified" },
@@ -990,7 +990,7 @@ fn list_row(
 }
 
 /// The kind column, in words: `Folder`, `Link`, an extension in capitals
-/// (`PDF`), `Program`, `Document`. The sort key stays fogd's `type_label`;
+/// (`PDF`), `Program`, `Document`. The sort key stays ec-fogd's `type_label`;
 /// this only names it.
 pub fn kind_text(e: &Entry) -> String {
     match e.kind {
@@ -1010,7 +1010,7 @@ pub fn kind_text(e: &Entry) -> String {
     }
 }
 
-/// Metadata fogd has not sent yet.
+/// Metadata ec-fogd has not sent yet.
 const PENDING: &str = "·";
 
 fn size_text(e: &Entry) -> String {
@@ -1141,7 +1141,11 @@ fn status_line<'a>(app: &'a App, b: &'a Browser) -> Element<'a, Message> {
             ));
         }
         Fogd::Down => {
-            right = right.push(caption("fogd not running", size::TEXT_SMALL, color::DANGER));
+            right = right.push(caption(
+                "ec-fogd not running",
+                size::TEXT_SMALL,
+                color::DANGER,
+            ));
         }
     }
     // The left side yields and clips; the right side never does.
@@ -1645,8 +1649,8 @@ fn conflict_dialog<'a>(app: &'a App, c: &'a Conflict, k: f32) -> Element<'a, Mes
 }
 
 /// The letter that picks `r` in the conflict dialog.
-fn resolution_key(r: fog_proto::Resolution) -> &'static str {
-    use fog_proto::Resolution as R;
+fn resolution_key(r: ec_fog_proto::Resolution) -> &'static str {
+    use ec_fog_proto::Resolution as R;
     match r {
         R::Replace => "r",
         R::Skip => "s",
@@ -1849,7 +1853,7 @@ fn chord_of(app: &App, t: Target) -> String {
 #[cfg(test)]
 mod tests {
     use super::{bytes, crumbs, group, job_amount, job_subject, kind_text};
-    use fog_proto::{Entry, Kind};
+    use ec_fog_proto::{Entry, Kind};
 
     fn texts(v: Vec<(String, Option<Vec<u8>>)>) -> Vec<String> {
         v.into_iter().map(|c| c.0).collect()
@@ -1907,7 +1911,7 @@ mod tests {
     #[test]
     fn an_undo_row_names_what_it_undoes_never_slash() {
         use crate::ops::Tray;
-        use fog_proto::{ConflictPolicy, JobSpec, JobStatus, Reply};
+        use ec_fog_proto::{ConflictPolicy, JobSpec, JobStatus, Reply};
         let now = std::time::Instant::now();
         let state = |id, state| Reply::JobState { id, state };
         let mut t = Tray::default();
@@ -1932,7 +1936,7 @@ mod tests {
     #[test]
     fn a_new_folder_is_named_not_counted() {
         use crate::ops::Tray;
-        use fog_proto::{ConflictPolicy, JobSpec, JobStatus, Reply};
+        use ec_fog_proto::{ConflictPolicy, JobSpec, JobStatus, Reply};
         let now = std::time::Instant::now();
         let mut t = Tray::default();
         t.submit(JobSpec::Mkdir {
@@ -1968,7 +1972,7 @@ mod tests {
     #[test]
     fn a_folder_copy_is_named_by_its_source_not_its_last_file() {
         use crate::ops::Tray;
-        use fog_proto::{ConflictPolicy, JobSpec, JobStatus, Reply};
+        use ec_fog_proto::{ConflictPolicy, JobSpec, JobStatus, Reply};
         let now = std::time::Instant::now();
         let progress = |id, current: &[u8], skipped| Reply::JobProgress {
             id,

@@ -1,6 +1,6 @@
 [package]
 name = "ec-audit"
-description = "eclipse-audit: verify, trace and query the policyd audit store (S-04 §4, §5)"
+description = "ec-audit: verify, trace and query the policyd audit store (S-04 §4, §5)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,10 +11,10 @@ repository.workspace = true
 publish = false
 
 [[bin]]
-name = "eclipse-audit"
+name = "ec-audit"
 path = "src/main.rs"
 
 [dependencies]
-policyd = { path = "../ec-policyd" }
-policy-eval = { path = "../ec-policy-eval" }
+ec-policyd = { path = "../ec-policyd" }
+ec-policy-eval = { path = "../ec-policy-eval" }
 serde_json.workspace = true

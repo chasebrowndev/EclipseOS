@@ -18,22 +18,22 @@ docs/                 specs and this document
 decisions/            ADRs (F-08 format)
 crates/
   abyss/             compositor                       [TCB]
-  eclipse-ctl/        human CLI over the COMP-13 IPC socket
-  eclipse-ipc/        blocking client for the COMP-13 §2 socket, no async runtime
-  eclipse-ui/         DE design system: tokens, type, widgets over iced 0.14
+  ec-ctl/        human CLI over the COMP-13 IPC socket
+  ec-ipc/        blocking client for the COMP-13 §2 socket, no async runtime
+  ec-ui/         DE design system: tokens, type, widgets over iced 0.14
   hyperion/           the taskbar (internal name; users see "taskbar") (DP-4)
-  eclipse-toasts/     notification toasts, layer-shell (DP-5)
-  eclipse-center/     notification + status center, layer-shell (DP-5)
-  eclipse-launcher/   application launcher, layer-shell (DP-5)
-  eclipse-settings/   settings panes; every write via set_config_value (COMP-17 §3)
-  eclipse-policy-viewer/  read-only policy.kdl inspector, deliberately powerless
-  eclipse-secret-prompt/  one-shot wifi passphrase / Bluetooth PIN prompt (ADR 0053)
-  eclipse-services/   D-Bus services: notifications, tray, status, session (ADR 0038);
-                      lib plus the eclipse-screensaver (ADR 0051) and
-                      eclipse-pairing (ADR 0066) bins
-  wlcs-abyss/         wlcs conformance cdylib, drives the headless backend
+  ec-toasts/     notification toasts, layer-shell (DP-5)
+  ec-center/     notification + status center, layer-shell (DP-5)
+  ec-launcher/   application launcher, layer-shell (DP-5)
+  ec-settings/   settings panes; every write via set_config_value (COMP-17 §3)
+  ec-policy-viewer/  read-only policy.kdl inspector, deliberately powerless
+  ec-secret-prompt/  one-shot wifi passphrase / Bluetooth PIN prompt (ADR 0053)
+  ec-services/   D-Bus services: notifications, tray, status, session (ADR 0038);
+                      lib plus the ec-screensaver (ADR 0051) and
+                      ec-pairing (ADR 0066) bins
+  ec-abyss-wlcs/         wlcs conformance cdylib, drives the headless backend
   policyd/            policy + audit daemon            [TCB]
-  policy-eval/        shared evaluator, linked by both [TCB]
+  ec-policy-eval/        shared evaluator, linked by both [TCB]
   agentd/             agent gateway                            (not yet)
   registryd/          perception aggregation                   (not yet)
   proto-agent/        eclipse_agent_v1 bindings (generated)    (not yet)
@@ -53,7 +53,7 @@ The fifteen crates above without a `(not yet)` marker exist today (plus
 `bench/`, the sixteenth workspace member); everything marked `(not yet)` is
 Phase 2 or later (see `docs/STATUS.md`). All of them are `AGPL-3.0-only` via
 `license.workspace = true` — the Apache-2.0 half of the F-05 §3 split has no
-code yet. None of the DE crates (`eclipse-ui` through `eclipse-services`) is
+code yet. None of the DE crates (`ec-ui` through `ec-services`) is
 TCB. TCB crates
 get a line-by-line owner review on every change (F-07 §4).
 
@@ -94,7 +94,7 @@ SPDX header naming which.
 | `trusted_ui/` (destructive-action prompt only) | COMP-10 | Compositor-drawn consent prompts, agent-activity indicator, emergency panel. Never a client (ADR 0009). So far only the destructive-system-action confirmation (§3.10, ADR 0061) and its root-only `trusted.sock`; the rest is not yet. |
 | `policy/` (not yet) | COMP-11 | The compiled enforcement table and `check()`; today a stub in `state.rs`. Fail-closed; no state mutation before `Allow`; `defer` may only tighten. |
 | `audit/` (not yet) | COMP-12 | Audit and provenance event emission. Never records human input by content. |
-| `ipc/` | COMP-13 | Human JSON-RPC socket and its gate table — the taskbar, the launcher, settings, `eclipse-ctl`. Unprivileged, human-principal only. |
+| `ipc/` | COMP-13 | Human JSON-RPC socket and its gate table — the taskbar, the launcher, settings, `ec-ctl`. Unprivileged, human-principal only. |
 | `config/` | COMP-13 | KDL parse, validate, hot-reload (ADR 0016), in-place edit for `set_config_value`. A bad config never takes down a live session. |
 | `xwayland/` | COMP-07 | X11 client support, window identity mapping, scaling. |
 | `state.rs` | COMP-01 | `AbyssState` itself: the single owner of everything above. |

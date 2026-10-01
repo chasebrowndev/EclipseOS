@@ -17,10 +17,10 @@ use iced::widget::{column, pick_list, row, scrollable, text_input, Column, Row, 
 use iced::{Element, Length, Subscription, Task, Theme};
 use serde_json::{json, Value};
 
-use eclipse_ipc::EventKind;
-use eclipse_ui::theme;
-use eclipse_ui::tokens::space;
-use eclipse_ui::widget::{
+use ec_ipc::EventKind;
+use ec_ui::theme;
+use ec_ui::tokens::space;
+use ec_ui::widget::{
     big_value, color_picker, content_at, dimmed_at, hairline, header, list_row, micro_label, nav_item_at,
     panel, pill, pill_group, row_caption, sidebar_at, status_chip, subtitle, swatch_button, value as mono,
     Density, NumericSlider, Toggle,
@@ -92,7 +92,7 @@ pub enum Message {
     /// The Network pane's feed connected; its action handle.
     NetReady(network::Handle),
     NetDown(String),
-    Net(eclipse_services::status::Event),
+    Net(ec_services::status::Event),
     ForgetWifi(String),
     ForgetDevice(String),
     /// Select a tray entry, or clear the selection if it is the one selected.
@@ -191,7 +191,7 @@ pub struct App {
     pub(crate) bar: crate::taskbar::Bar,
     /// Installed add-ons and the hooks they turn on (ADR 0066). `None` until
     /// the compositor answers.
-    pub(crate) addons: Option<eclipse_ipc::Addons>,
+    pub(crate) addons: Option<ec_ipc::Addons>,
 }
 
 impl Default for App {
@@ -205,10 +205,10 @@ impl App {
         Self::with_pane(Pane::Windows)
     }
 
-    /// Open on `pane` — `eclipse-settings network` from the taskbar.
+    /// Open on `pane` — `ec-settings network` from the taskbar.
     pub fn with_pane(pane: Pane) -> Self {
         let mut conn = Conn::new();
-        let glass_radius = conn.glass_radius().unwrap_or(eclipse_ui::tokens::radius::CARD);
+        let glass_radius = conn.glass_radius().unwrap_or(ec_ui::tokens::radius::CARD);
         let blur = conn.blur().unwrap_or(false);
         let mut app = App {
             conn,
@@ -766,7 +766,7 @@ fn events() -> Subscription<Message> {
                 let mut client = None;
                 loop {
                     if client.is_none() {
-                        if let Ok(mut c) = eclipse_ipc::Client::connect() {
+                        if let Ok(mut c) = ec_ipc::Client::connect() {
                             if c.subscribe(&[EventKind::Output, EventKind::ConfigError, EventKind::Config])
                                 .is_ok()
                             {
@@ -886,8 +886,8 @@ fn banner(problem: &Problem, radius: f32) -> Element<'_, Message, Theme> {
             .align_y(iced::Alignment::Center),
             hairline(),
             iced::widget::text(problem.detail().to_string())
-                .font(eclipse_ui::tokens::font::UI)
-                .size(eclipse_ui::tokens::size::BODY_SMALL)
+                .font(ec_ui::tokens::font::UI)
+                .size(ec_ui::tokens::size::BODY_SMALL)
                 .style(theme::text_secondary),
         ]
         .spacing(space::ROW_Y),
@@ -946,8 +946,8 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
                     "Vertical gaps",
                     row![
                         iced::widget::text("Same as above")
-                            .font(eclipse_ui::tokens::font::UI)
-                            .size(eclipse_ui::tokens::size::BODY_SMALL)
+                            .font(ec_ui::tokens::font::UI)
+                            .size(ec_ui::tokens::size::BODY_SMALL)
                             .style(theme::text_tertiary),
                         pill("Set separately", false, Message::SetApart),
                     ]
@@ -976,8 +976,8 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
             rows.push(
                 iced::widget::container(
                     iced::widget::text(blurb)
-                        .font(eclipse_ui::tokens::font::UI)
-                        .size(eclipse_ui::tokens::size::BODY_SMALL)
+                        .font(ec_ui::tokens::font::UI)
+                        .size(ec_ui::tokens::size::BODY_SMALL)
                         .style(theme::text_tertiary),
                 )
                 .padding([0.0, space::CARD])

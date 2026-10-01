@@ -19,7 +19,7 @@ use crate::runner::{Cmd, Tool};
 use crate::seed;
 use crate::stages::{self, Prepared};
 use crate::validate::{self, Validated};
-use eclipse_setup_plan::{Plan, Progress, Request, Stage};
+use ec_setup_plan::{Plan, Progress, Request, Stage};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -340,7 +340,7 @@ mod tests {
     use crate::env::Paths;
     use crate::runner::Runner;
     use crate::testutil::{live, my_uid, req, FakeRunner, LSBLK};
-    use eclipse_setup_plan::Disk;
+    use ec_setup_plan::Disk;
     use std::collections::BTreeSet;
     use std::path::Path;
 
@@ -805,7 +805,7 @@ mod tests {
     /// which the UI seeds from the profile (on for Agentic only).
     #[test]
     fn agents_package_is_installed_only_when_the_plan_asks() {
-        use eclipse_setup_plan::Profile;
+        use ec_setup_plan::Profile;
         let cases = [
             (Profile::Agentic, Profile::Agentic.agents_default(), true),
             (Profile::Agentic, false, false),

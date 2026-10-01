@@ -7,9 +7,9 @@
 use iced::widget::{text, Row};
 use iced::Alignment;
 
-use eclipse_services::status::{Battery, Charge};
-use eclipse_ui::tokens::{bar, color, font, size, space};
-use eclipse_ui::widget::{self as parts, ShellFrame};
+use ec_services::status::{Battery, Charge};
+use ec_ui::tokens::{bar, color, font, size, space};
+use ec_ui::widget::{self as parts, ShellFrame};
 
 use super::{Parts, Spans};
 use crate::app::App;

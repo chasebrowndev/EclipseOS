@@ -13,8 +13,8 @@ use ec_protocols::agent::client::{
     eclipse_scene_v1::{self, EclipseSceneV1},
 };
 use ed25519_dalek::{Signer, SigningKey};
-use policy_eval::grant::{cose_sign1, protected_header, sig_structure};
-use policy_eval::{Capability, Constraints, Grant, Ulid};
+use ec_policy_eval::grant::{cose_sign1, protected_header, sig_structure};
+use ec_policy_eval::{Capability, Constraints, Grant, Ulid};
 use wayland_client::{
     protocol::wl_registry::{self, WlRegistry},
     Connection, Dispatch, EventQueue, QueueHandle,
@@ -407,7 +407,7 @@ fn requests_while_policyd_is_down_are_paused() {
 /// `lifecycle` record.
 #[test]
 fn every_scene_request_is_request_decision_result() {
-    use policy_eval::audit::Kind;
+    use ec_policy_eval::audit::Kind;
     let (mut h, _path) = hooked("audit.sock", true);
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());

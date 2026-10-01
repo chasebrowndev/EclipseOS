@@ -29,8 +29,8 @@ Read the root `CLAUDE.md` first. This file only adds crate-local rules.
   stall the agent when the socket is full; human records ring, never wait.
 - Not yet present: `protocols/semantic/`. When it lands it goes there.
 - Human keystrokes are never logged by content. Log keysym names only behind `trace`.
-- Logs go to journald: `journalctl --user -t abyss -o cat --since "5 min ago"`.
-- Nested test under the host session (itself abyss): `./target/debug/abyss --backend winit & pid=$!`,
+- Logs go to journald: `journalctl --user -t ec-abyss -o cat --since "5 min ago"`.
+- Nested test under the host session (itself abyss): `./target/debug/ec-abyss --backend winit & pid=$!`,
   then point a client (`foot`) at the nested socket it logs. Kill by `$pid`, never
-  `pkill -x abyss` (root `CLAUDE.md`). DRM backend must be tested on a real TTY.
+  `pkill -x ec-abyss` (root `CLAUDE.md`). DRM backend must be tested on a real TTY.
 - `cargo build` must be warning-free; CI runs clippy with `-D warnings`.

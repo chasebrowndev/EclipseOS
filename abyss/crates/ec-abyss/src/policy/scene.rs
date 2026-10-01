@@ -14,8 +14,8 @@
 //! [`hit`] returns `None` (handle 0) when the topmost window is invisible,
 //! rather than reaching through it to one beneath.
 
-use policy_eval::scope::{OutputFacts, WorkspaceFacts};
-use policy_eval::{Class, SceneView, WindowFacts};
+use ec_policy_eval::scope::{OutputFacts, WorkspaceFacts};
+use ec_policy_eval::{Class, SceneView, WindowFacts};
 use smithay::desktop::{Window, WindowSurface};
 use smithay::utils::{IsAlive, Logical, Point};
 use smithay::wayland::compositor::with_states;
@@ -175,7 +175,7 @@ pub fn hit(
 pub mod test_class {
     use std::cell::RefCell;
 
-    use policy_eval::Class;
+    use ec_policy_eval::Class;
     use smithay::desktop::Window;
 
     thread_local! {

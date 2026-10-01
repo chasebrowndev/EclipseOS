@@ -1,5 +1,5 @@
 [package]
-name = "eclipse-launcher"
+name = "ec-launcher"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,17 +11,17 @@ description = "The Eclipse application launcher: type, pick, run."
 publish = false
 
 [lib]
-name = "eclipse_launcher"
+name = "ec_launcher"
 path = "src/lib.rs"
 
 [[bin]]
-name = "eclipse-launcher"
+name = "ec-launcher"
 path = "src/main.rs"
 
 [dependencies]
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
 iced_layershell = "0.19.1"
-eclipse-ui = { path = "../ec-ui" }
-eclipse-services = { path = "../ec-services" }
-eclipse-ipc = { path = "../../../abyss/crates/ec-ipc" }
+ec-ui = { path = "../ec-ui" }
+ec-services = { path = "../ec-services" }
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 serde_json.workspace = true

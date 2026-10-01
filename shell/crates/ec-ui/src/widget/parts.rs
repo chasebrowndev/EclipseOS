@@ -18,7 +18,7 @@ use crate::widget::Fold;
 ///
 /// `radius` is the caller's live-synced glass radius (`decoration.rounding`),
 /// or [`radius::CARD`] before the first fetch answers — see
-/// `eclipse_ui::ipc::fetch_config_radius`.
+/// `ec_ui::ipc::fetch_config_radius`.
 pub fn panel<'a, Message: 'a>(
     radius: f32,
     content: impl Into<Element<'a, Message, Theme>>,

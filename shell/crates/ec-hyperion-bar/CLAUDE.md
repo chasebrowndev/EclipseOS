@@ -2,7 +2,7 @@
 
 Internal name only: users see it as "the taskbar", and every user-facing
 string says so. Toasts, the control center and the launcher are their own
-crates (`eclipse-toasts`, `eclipse-center`, `eclipse-launcher`) and must
+crates (`ec-toasts`, `ec-center`, `ec-launcher`) and must
 never depend on this one (ADR 0052).
 
 Read the root `CLAUDE.md` first. Governing spec: DP-4 (`docs/design/DP-4-desktop-profiles.md`), ADR 0038.
@@ -17,10 +17,10 @@ Read the root `CLAUDE.md` first. Governing spec: DP-4 (`docs/design/DP-4-desktop
   when nothing is listening. That is the screenshot loop's enabling fact, and
   it must stay true.
 - **Never fail silently.** `DENIED (-32000)` and the `ConfigError` object
-  render the same way here as in `eclipse-settings`.
+  render the same way here as in `ec-settings`.
 - **Human input is never logged by content** (root invariant). No tracing of
   what was typed.
-- No literal colour, radius or size: `eclipse_ui::tokens` is the only source,
-  and `eclipse_ui::widget` is the composition vocabulary. See
+- No literal colour, radius or size: `ec_ui::tokens` is the only source,
+  and `ec_ui::widget` is the composition vocabulary. See
   `docs/STYLE.md` and `docs/COMPOSITION.md` before writing a view.
 - Every `.rs` starts with `// SPDX-License-Identifier: AGPL-3.0-only`.

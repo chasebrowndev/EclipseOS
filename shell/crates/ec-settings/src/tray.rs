@@ -200,13 +200,13 @@ pub fn feed() -> Subscription<Message> {
     Subscription::run(|| {
         iced::stream::channel(8, async move |mut sender| {
             std::thread::spawn(move || {
-                let Ok(updates) = eclipse_services::tray::observe() else {
+                let Ok(updates) = ec_services::tray::observe() else {
                     let _ = sender.try_send(Message::TrayLive(None));
                     return;
                 };
                 loop {
                     let alive = match updates.recv_timeout(TICK) {
-                        Some(eclipse_services::tray::TrayUpdate::Items(items)) => {
+                        Some(ec_services::tray::TrayUpdate::Items(items)) => {
                             let ids = live_ids(items.into_iter().map(|i| i.id));
                             match sender.try_send(Message::TrayLive(Some(ids))) {
                                 Ok(()) => true,

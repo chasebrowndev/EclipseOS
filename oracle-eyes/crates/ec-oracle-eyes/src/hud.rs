@@ -15,9 +15,9 @@ pub trait Control {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String>;
 }
 
-impl Control for eclipse_ipc::Client {
+impl Control for ec_ipc::Client {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
-        eclipse_ipc::Client::call(self, method, params).map_err(|e| e.to_string())
+        ec_ipc::Client::call(self, method, params).map_err(|e| e.to_string())
     }
 }
 

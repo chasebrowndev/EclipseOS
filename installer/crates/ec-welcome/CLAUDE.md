@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
-# eclipse-welcome — the welcome screen (first-run step 0)
+# ec-welcome — the welcome screen (first-run step 0)
 
 Read the root `CLAUDE.md` first. Governing spec: `docs/design/D-07-first-run.md`
 step 0 ("the eclipse animation, greetings in ten languages, press Space").
@@ -8,8 +8,8 @@ Native Rust, not a webview: ADR 0038 (`decisions/0038-de-userland-is-native-rust
 - **Not TCB.** An ordinary Wayland client (fullscreen xdg-toplevel) with no
   authority of its own. **No network. Writes nothing** — not config, not state.
   `--reconfigure` skips it entirely (that is the caller's decision, not ours).
-- **It is a lib and a bin.** `eclipse_welcome::Welcome` is embeddable (the
-  first-run flow can host it as step 0); `eclipse-welcome` is the standalone
+- **It is a lib and a bin.** `ec_welcome::Welcome` is embeddable (the
+  first-run flow can host it as step 0); `ec-welcome` is the standalone
   binary. The hand-off is `Message::Begin`; the bin exits 0 on it.
 - **Reference:** `reference/welcome.html` is the design. The timings, easings
   and the `SPEED = 0.9` clock are ported verbatim into `timeline.rs`
@@ -40,7 +40,7 @@ Native Rust, not a webview: ADR 0038 (`decisions/0038-de-userland-is-native-rust
 ## Deliberate deviations from the pane rules
 
 - This is a full-screen cinematic, not a settings pane, so it does not use
-  `eclipse_ui` widgets or `docs/COMPOSITION.md` anatomy. `palette.rs` is the
+  `ec_ui` widgets or `docs/COMPOSITION.md` anatomy. `palette.rs` is the
   only file with colour literals. Its gold is the reference's `#f4bb3c`, not
   the `ACCENT` token (`#f2c33c`); the two are 1 unit apart per channel but the
   reference is the source of truth here and this is not a themed surface.
@@ -80,7 +80,7 @@ ISO will).
 
 ## Screenshots and visual checks: offscreen only
 
-`eclipse-welcome --size 1920x1080 --scale 1.5 --at 5.9 --shot out.png` renders
+`ec-welcome --size 1920x1080 --scale 1.5 --at 5.9 --shot out.png` renders
 one frozen frame **offscreen** (`iced::advanced::renderer::Headless`, wgpu, no
 window, no compositor, no display) and exits; the PNG is `size * scale`
 physical pixels (`--fade 0..1` overlays the exit fade). Run it with

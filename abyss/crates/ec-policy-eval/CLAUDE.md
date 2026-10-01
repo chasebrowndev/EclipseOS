@@ -1,4 +1,4 @@
-# policy-eval — the one policy evaluator, linked by two processes
+# ec-policy-eval — the one policy evaluator, linked by two processes
 
 Read the root `CLAUDE.md` first.
 

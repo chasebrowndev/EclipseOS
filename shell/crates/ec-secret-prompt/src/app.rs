@@ -15,9 +15,9 @@ use std::fmt;
 use iced::widget::{column, container, row, text, text_input, Space};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 
-use eclipse_ui::theme;
-use eclipse_ui::tokens::{font, secret, size, space};
-use eclipse_ui::widget::{micro_label, pill, prompt_band};
+use ec_ui::theme;
+use ec_ui::tokens::{font, secret, size, space};
+use ec_ui::widget::{micro_label, pill, prompt_band};
 
 use crate::{service, Buffer, Target};
 
@@ -228,7 +228,7 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
         .padding([space::PANE_Y, space::PANE_X])
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(theme::window(eclipse_ui::tokens::radius::WINDOW))
+        .style(theme::window(ec_ui::tokens::radius::WINDOW))
         .into()
 }
 

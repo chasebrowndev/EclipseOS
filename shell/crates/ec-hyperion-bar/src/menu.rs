@@ -3,9 +3,9 @@
 //! widens into a search field and the pill grows a panel of applications
 //! under (or, on a bottom bar, over) it.
 //!
-//! The list is `eclipse-launcher`'s — the same `.desktop` scan, the same
+//! The list is `ec-launcher`'s — the same `.desktop` scan, the same
 //! substring match and the same ranking — reimplemented over
-//! `eclipse_services::apps` rather than imported, because the launcher is its
+//! `ec_services::apps` rather than imported, because the launcher is its
 //! own package and the bar must not depend on it (ADR 0052).
 //!
 //! This file is the state and its pure rules; the bar surface's size, input
@@ -13,9 +13,9 @@
 
 use std::time::Instant;
 
-use eclipse_services::apps::{self, Entry};
-use eclipse_ui::motion::{Animated, Motion};
-use eclipse_ui::tokens::bar;
+use ec_services::apps::{self, Entry};
+use ec_ui::motion::{Animated, Motion};
+use ec_ui::tokens::bar;
 
 /// The search field's widget id: the menu focuses it on opening, so the
 /// first key typed after the click or the keybind is part of the query.

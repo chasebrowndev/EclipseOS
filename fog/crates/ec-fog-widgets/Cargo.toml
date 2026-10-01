@@ -1,5 +1,5 @@
 [package]
-name = "fog-widgets"
+name = "ec-fog-widgets"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

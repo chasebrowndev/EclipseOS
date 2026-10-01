@@ -9,8 +9,8 @@ use super::{list_box, Body};
 use crate::data::LANGUAGES;
 use crate::model::{Message, Model};
 use crate::parts;
-use eclipse_ui::theme;
-use eclipse_ui::tokens::{font, size};
+use ec_ui::theme;
+use ec_ui::tokens::{font, size};
 use iced::widget::{row, text, Column, Space};
 use iced::{Alignment, Length};
 

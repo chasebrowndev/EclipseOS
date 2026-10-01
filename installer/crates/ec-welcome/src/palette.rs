@@ -3,7 +3,7 @@
 //!
 //! This is the only file in the crate with colour literals. They are the
 //! reference's own (gold `#f4bb3c` on `#060505`..`#1c1915`), not
-//! `eclipse_ui::tokens`: the welcome is brand art shown before any pane
+//! `ec_ui::tokens`: the welcome is brand art shown before any pane
 //! exists, its gold is the logo's gold (the O in `eclipseos-logo.png` is drawn
 //! in it), and it has no dependency on the design system to stay embeddable.
 //! The style rules that do carry over are kept: warm near-black, one gold, no

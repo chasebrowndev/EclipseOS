@@ -1,4 +1,4 @@
-# eclipse-toasts — the notification stack
+# ec-toasts — the notification stack
 
 Its own crate and package so it installs without the taskbar (ADR 0052).
 Never depend on `hyperion`.
@@ -13,9 +13,9 @@ Read the root `CLAUDE.md` first. Governing spec: DP-4 (`docs/design/DP-4-desktop
   required to develop against it. With nothing listening on the
   bus it renders empty rather than failing — the screenshot loop depends on it.
 - **Never fail silently.** `DENIED (-32000)` and the `ConfigError` object
-  render the same way here as in `eclipse-settings`.
+  render the same way here as in `ec-settings`.
 - **Human input is never logged by content** (root invariant). No tracing of what was typed.
-- No literal colour, radius or size: `eclipse_ui::tokens` is the only source,
-  and `eclipse_ui::widget` is the composition vocabulary. See
+- No literal colour, radius or size: `ec_ui::tokens` is the only source,
+  and `ec_ui::widget` is the composition vocabulary. See
   `docs/STYLE.md` and `docs/COMPOSITION.md` before writing a view.
 - Every `.rs` starts with `// SPDX-License-Identifier: AGPL-3.0-only`.

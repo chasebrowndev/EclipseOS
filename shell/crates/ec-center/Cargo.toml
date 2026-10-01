@@ -1,5 +1,5 @@
 [package]
-name = "eclipse-center"
+name = "ec-center"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,16 +11,16 @@ description = "The Eclipse control center: session status and power actions, spa
 publish = false
 
 [lib]
-name = "eclipse_center"
+name = "ec_center"
 path = "src/lib.rs"
 
 [[bin]]
-name = "eclipse-center"
+name = "ec-center"
 path = "src/main.rs"
 
 [dependencies]
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
 iced_layershell = "0.19.1"
-eclipse-ui = { path = "../ec-ui" }
-eclipse-services = { path = "../ec-services" }
-eclipse-ipc = { path = "../../../abyss/crates/ec-ipc" }
+ec-ui = { path = "../ec-ui" }
+ec-services = { path = "../ec-services" }
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }

@@ -5,7 +5,7 @@
 //! nested (winit) session needs: logging, the Wayland display and core
 //! globals, the public socket, one seat, and a render loop.
 
-use abyss::{backend, config};
+use ec_abyss::{backend, config};
 
 use anyhow::Result;
 use tracing_subscriber::{prelude::*, EnvFilter};
@@ -162,9 +162,9 @@ fn main() -> Result<()> {
     // ADR 0067: with the taskbar add-on installed, the premade widget catalog
     // is the lowest config layer, so a `custom:<premade>` id validates at
     // startup. `addons::start` re-reads the hooks and settles the rest.
-    let catalog_layer = abyss::addons::Addons::load()
+    let catalog_layer = ec_abyss::addons::Addons::load()
         .hooks
-        .is_on(abyss::addons::Hook::TaskbarWidgets);
+        .is_on(ec_abyss::addons::Hook::TaskbarWidgets);
     let mut config = config::Config::load_with(args.config.as_deref(), catalog_layer);
     // COMP-01 §5 step 3 / COMP-13 §1.2, amended by ADR 0064: validation is
     // still total and every refusal is still reported, but a rejected node is
@@ -176,11 +176,11 @@ fn main() -> Result<()> {
     // auto-lock off and a refused xwayland setting starts with Xwayland off;
     // `startup()` settles both and the summary leads with them.
     for e in &config.errors {
-        eprintln!("abyss: {e}");
+        eprintln!("ec-abyss: {e}");
     }
     match config.startup() {
         config::Startup::Refuse { fatal } => {
-            eprintln!("abyss: refusing to start: {fatal} config error(s) have no safe default (ADR 0064)");
+            eprintln!("ec-abyss: refusing to start: {fatal} config error(s) have no safe default (ADR 0064)");
             std::process::exit(1);
         }
         config::Startup::Start { ignored: 0 } => {}

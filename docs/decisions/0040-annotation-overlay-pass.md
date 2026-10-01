@@ -48,7 +48,7 @@ policy.
    Oracle-Eyes can draw a pixel — and then permanently weakens the anti-spoof
    anchor it depends on.
 2. **A layer-shell overlay client**, like the DE's bar and launcher. Cheapest,
-   and reuses the `eclipse-ui` design system so no text rendering is needed. But
+   and reuses the `ec-ui` design system so no text rendering is needed. But
    `capture_elements()` walks the layer surfaces, so the overlay appears in other
    clients' screenshots and in Oracle-Eyes' own reads. Both properties would have
    to be bolted back on as policy exceptions, which is the fragile direction.

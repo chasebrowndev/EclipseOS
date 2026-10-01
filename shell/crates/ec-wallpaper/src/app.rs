@@ -2,7 +2,7 @@
 //! The daemon: one Background-layer surface per output, kept in step with the
 //! compositor's output list, and the decoded pictures they share.
 //!
-//! The output-following half is hyperion's (`hyperion::app::reconcile`), and
+//! The output-following half is hyperion's (`ec_hyperion_bar::app::reconcile`), and
 //! kept deliberately the same shape: a pure [`reconcile`] over the connector
 //! names, a settle delay for a freshly hotplugged output, and an empty list
 //! read as "no answer" rather than "every monitor went away".
@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use eclipse_ipc::{Client, EventKind};
+use ec_ipc::{Client, EventKind};
 use iced::widget::image::Handle;
 use iced::window::Id;
 use iced::{Size, Subscription, Task};
@@ -102,7 +102,7 @@ impl App {
         match client.call(method, params) {
             Ok(v) => Some(v),
             Err(e) => {
-                if matches!(e, eclipse_ipc::Error::Connect(_) | eclipse_ipc::Error::Io(_)) {
+                if matches!(e, ec_ipc::Error::Connect(_) | ec_ipc::Error::Io(_)) {
                     self.client = None;
                 }
                 None
@@ -349,7 +349,7 @@ pub fn read_picture(path: &Path) -> Option<Picture> {
         }
         Err(e) => {
             eprintln!(
-                "eclipse-wallpaper: warning: {}: {e}; showing the colour only",
+                "ec-wallpaper: warning: {}: {e}; showing the colour only",
                 path.display()
             );
             None
@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn a_bad_file_is_none_not_a_panic() {
-        assert!(read_picture(Path::new("/nonexistent/eclipse-wallpaper.png")).is_none());
+        assert!(read_picture(Path::new("/nonexistent/ec-wallpaper.png")).is_none());
         let dir = std::env::temp_dir().join(format!("eclipse-wallpaper-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("tmp");
         let bad = dir.join("corrupt.png");

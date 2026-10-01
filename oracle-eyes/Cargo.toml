@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "AGPL-3.0-only"
-# Nothing here goes to crates.io: eclipse-ipc is a path dependency on the
+# Nothing here goes to crates.io: ec-ipc is a path dependency on the
 # sibling compositor workspace, which crates.io would reject anyway.
 publish = false
 repository = "https://github.com/chasebrowndev/eclipseos"
@@ -17,7 +17,7 @@ repository = "https://github.com/chasebrowndev/eclipseos"
 # on the sibling workspace rather than a copy: the protocol has exactly one
 # definition, and a drift between the two halves would show up as a runtime
 # refusal rather than a build error.
-eclipse-ipc = { path = "../abyss/crates/ec-ipc" }
+ec-ipc = { path = "../abyss/crates/ec-ipc" }
 serde_json = "1"
 libc = "0.2"
 # Config is KDL for the same reason the compositor's is: one syntax across

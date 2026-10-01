@@ -7,7 +7,7 @@ use crate::catalog::{Catalog, Entry};
 use crate::disks::{self, DiskEntry};
 use crate::env::{Env, Paths};
 use crate::error::{io, Error, Result};
-use eclipse_setup_plan::{
+use ec_setup_plan::{
     check_password, valid_by_id, valid_hostname, valid_keymap, valid_username, Plan, Request,
 };
 use std::fs;

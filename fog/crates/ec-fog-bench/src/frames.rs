@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! `fog-bench frames`: scrolling frame times of the real fog-ui over a
+//! `ec-fog-bench frames`: scrolling frame times of the real ec-fog-ui over a
 //! 10,000-entry folder (FOG §Performance model: 60 fps while scrolling).
 //!
-//! fogd runs in-process on a private runtime directory; fog-ui is spawned
+//! ec-fogd runs in-process on a private runtime directory; ec-fog-ui is spawned
 //! against it with `FOG_UI_BENCH_SCROLL`, scrolls a fixed step per frame and
 //! prints its frame intervals as one JSON line. Run twice: the list alone,
 //! and with the blurred palette sheet held open over it.
@@ -17,13 +17,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use fog_daemon::{bind, serve, Cache, Daemon, LocalBackend};
+use ec_fog_daemon::{bind, serve, Cache, Daemon, LocalBackend};
 
-const USAGE: &str = "usage: fog-bench frames [-n FRAMES] [--ui PATH] [--json]";
+const USAGE: &str = "usage: ec-fog-bench frames [-n FRAMES] [--ui PATH] [--json]";
 const ENTRIES: usize = 10_000;
 /// A frame is late when it missed a 60 Hz vblank: 1.5 frame periods.
 const LATE_MS: f64 = 1000.0 / 60.0 * 1.5;
-/// fog-ui's startup and warm-up, on top of the timed frames.
+/// ec-fog-ui's startup and warm-up, on top of the timed frames.
 const GRACE: Duration = Duration::from_secs(60);
 
 pub fn main(mut args: impl Iterator<Item = String>) -> Result<()> {
@@ -49,19 +49,19 @@ pub fn main(mut args: impl Iterator<Item = String>) -> Result<()> {
         }
     }
     let Some(display) = display() else {
-        println!("fog-bench frames: skipped, no WAYLAND_DISPLAY");
+        println!("ec-fog-bench frames: skipped, no WAYLAND_DISPLAY");
         return Ok(());
     };
     let ui = match ui {
         Some(p) => p,
         None => std::env::current_exe()?
             .parent()
-            .context("fog-bench has no directory")?
-            .join("fog-ui"),
+            .context("ec-fog-bench has no directory")?
+            .join("ec-fog-ui"),
     };
 
     let root = tempfile::Builder::new()
-        .prefix("fog-bench.")
+        .prefix("ec-fog-bench.")
         .tempdir_in("/tmp")?;
     let dir = root.path().join(format!("d{ENTRIES}"));
     crate::populate(&dir, ENTRIES)?;
@@ -93,7 +93,7 @@ pub fn main(mut args: impl Iterator<Item = String>) -> Result<()> {
             }
             if std::time::Instant::now() > deadline {
                 child.kill()?;
-                bail!("fog-ui did not finish its run");
+                bail!("ec-fog-ui did not finish its run");
             }
             std::thread::sleep(Duration::from_millis(100));
         };
@@ -103,7 +103,7 @@ pub fn main(mut args: impl Iterator<Item = String>) -> Result<()> {
             .lines()
             .rev()
             .find(|l| l.starts_with("{\"frames\""))
-            .with_context(|| format!("fog-ui printed no report ({status})"))?;
+            .with_context(|| format!("ec-fog-ui printed no report ({status})"))?;
         rows.push(line.to_owned());
     }
     server.abort();
@@ -119,7 +119,9 @@ pub fn main(mut args: impl Iterator<Item = String>) -> Result<()> {
             rows.join(",")
         );
     } else {
-        println!("fog-bench frames: fog-ui scrolling {ENTRIES} entries, {frames} frames per run");
+        println!(
+            "ec-fog-bench frames: ec-fog-ui scrolling {ENTRIES} entries, {frames} frames per run"
+        );
         for r in &rows {
             println!("{r}");
         }
@@ -135,7 +137,7 @@ pub fn main(mut args: impl Iterator<Item = String>) -> Result<()> {
 }
 
 /// The compositor socket as an absolute path: the child gets its own
-/// `XDG_RUNTIME_DIR` for fogd, so a relative name would not resolve.
+/// `XDG_RUNTIME_DIR` for ec-fogd, so a relative name would not resolve.
 fn display() -> Option<PathBuf> {
     let d = PathBuf::from(std::env::var_os("WAYLAND_DISPLAY").filter(|d| !d.is_empty())?);
     if d.is_absolute() {
@@ -144,7 +146,7 @@ fn display() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join(d))
 }
 
-/// A number field of fog-ui's flat JSON report.
+/// A number field of ec-fog-ui's flat JSON report.
 fn field(line: &str, key: &str) -> Option<f64> {
     let rest = &line[line.find(&format!("\"{key}\":"))? + key.len() + 3..];
     rest[..rest.find([',', '}'])?].parse().ok()

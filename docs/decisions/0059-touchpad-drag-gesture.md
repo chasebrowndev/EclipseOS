@@ -36,7 +36,7 @@ A drag for the same finger count replaces the default in place, and
 `gesture "drag" <fingers> { none; }` (modifiers optional) removes it. A finger
 count is either swiped or dragged, never both, since the begin cannot tell
 them apart; whichever node comes second is refused at load and by
-`eclipse-ctl config validate`.
+`ec-ctl config validate`.
 
 Ownership is decided once, at the gesture's first event, and held to its end,
 the same rule as a bound swipe: with exactly the modifiers held, not under the

@@ -1142,7 +1142,7 @@ mod tests {
 
     // ---------------------------------------------------------- scene dump
     //
-    // `ABYSS_DUMP_ANNOTATIONS=<dir> cargo test -p abyss annotation_scenes`
+    // `ABYSS_DUMP_ANNOTATIONS=<dir> cargo test -p ec-abyss annotation_scenes`
     // writes each scene below as a PPM: a fake page, and every raster `draw`
     // produces for it composited in place. It is how placement and styling
     // are judged -- by looking -- and without the variable set it still runs

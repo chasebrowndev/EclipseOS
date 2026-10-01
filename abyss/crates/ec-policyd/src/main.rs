@@ -12,8 +12,8 @@
 //! queue; a full queue stops a connection thread reading, which fills the
 //! socket, which is the backpressure abyss stalls the agent on.
 
-use policy_eval::audit::{Emission, MAX_EMISSION};
-use policyd::tasks;
+use ec_policy_eval::audit::{Emission, MAX_EMISSION};
+use ec_policyd::tasks;
 
 use std::fs;
 use std::io::Read;
@@ -76,7 +76,7 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let offer = policy_eval::link::encode_key_offer(&key.verifying_key());
+    let offer = ec_policy_eval::link::encode_key_offer(&key.verifying_key());
     // A store that will not open is fatal, not a warning: without the journal
     // there is nothing to make a grant accountable to.
     let mut store = match tasks::TaskStore::open(&dir, key) {
@@ -230,8 +230,8 @@ fn accept(packet: &[u8]) -> Option<Emission> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use policy_eval::audit::Kind;
-    use policy_eval::cbor::enc;
+    use ec_policy_eval::audit::Kind;
+    use ec_policy_eval::cbor::enc;
 
     fn emission(kind: Kind) -> Emission {
         Emission {

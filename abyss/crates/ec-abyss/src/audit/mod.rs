@@ -34,9 +34,9 @@
 use std::collections::VecDeque;
 use std::os::fd::OwnedFd;
 
-use policy_eval::audit::{Kind, VERSION};
-use policy_eval::cbor::Writer;
-use policy_eval::Ulid;
+use ec_policy_eval::audit::{Kind, VERSION};
+use ec_policy_eval::cbor::Writer;
+use ec_policy_eval::Ulid;
 use rustix::net::{send, SendFlags};
 use smithay::reexports::calloop::{generic::Generic, Interest, Mode, PostAction, RegistrationToken};
 
@@ -44,7 +44,7 @@ use crate::addons::Hook;
 use crate::state::AbyssState;
 
 #[cfg(test)]
-use policy_eval::audit::Emission;
+use ec_policy_eval::audit::Emission;
 
 /// Human-side records held while `policyd` cannot take them (COMP-12 §7
 /// open decision 1, settled at 4096 by VOL1 F-14).
@@ -499,7 +499,7 @@ pub fn focus(state: &mut AbyssState, to: Option<u64>, cause: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use policy_eval::cbor::Reader;
+    use ec_policy_eval::cbor::Reader;
 
     fn pair() -> (OwnedFd, OwnedFd) {
         use rustix::net::{socketpair, AddressFamily, SocketFlags, SocketType};
@@ -514,7 +514,7 @@ mod tests {
 
     fn drain(fd: &OwnedFd) -> Vec<Emission> {
         let mut out = Vec::new();
-        let mut buf = vec![0u8; policy_eval::audit::MAX_EMISSION];
+        let mut buf = vec![0u8; ec_policy_eval::audit::MAX_EMISSION];
         while let Ok((n, _)) = rustix::net::recv(fd, &mut buf[..], rustix::net::RecvFlags::DONTWAIT) {
             out.push(Emission::decode(&buf[..n]).unwrap());
         }

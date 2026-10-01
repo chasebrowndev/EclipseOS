@@ -21,8 +21,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use eclipse_ui::motion::{Animated, Motion};
-use eclipse_ui::tokens::{bar, motion as tok};
+use ec_ui::motion::{Animated, Motion};
+use ec_ui::tokens::{bar, motion as tok};
 
 use crate::layout::{ChipOut, Pin, WidgetOut};
 use crate::model::Window;

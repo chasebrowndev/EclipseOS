@@ -95,8 +95,8 @@ a system gets; nothing else turns an add-on on.
 **The add-ons.**
 - **hyperion** enables `taskbar-widgets`. `eclipseos-meta` lists it as an
   optional dependency, not a hard one. The pairing agent moves out to
-  `eclipse-pairing`, a small eclipse-services binary with its own user unit,
-  shipped with `eclipse-secret-prompt` in `eclipseos-desktop`, so Bluetooth
+  `ec-pairing`, a small ec-services binary with its own user unit,
+  shipped with `ec-secret-prompt` in `eclipseos-desktop`, so Bluetooth
   pairing works without a taskbar. The StatusNotifierWatcher stays in hyperion:
   without a tray host nothing needs it.
 - **Oracle Eyes** enables `annotations` and `region-select` and requests capture.
@@ -108,14 +108,14 @@ a system gets; nothing else turns an add-on on.
 
 ## Consequences
 - abyss gains a manifest loader and a hook set on `AbyssState`, the gate gains
-  a hook check, `get_config` reports installed add-ons, and `eclipse-ctl addons`
+  a hook check, `get_config` reports installed add-ons, and `ec-ctl addons`
   lists them. Fog gains the same loader for its own hooks.
 - The annotation binds, the region selector and the widget collection keep their
   code but do nothing on a system without the add-on. This is the "no bloat"
   line: the host keeps a switched-off hook, never an add-on's logic.
 - `eclipseos-hyperion` is no longer required. A session without it starts;
   Super+E/R/N still reach the launcher and the center (built-in binds).
-- `eclipse-pairing` and `eclipse-secret-prompt` move to `eclipseos-desktop`.
+- `ec-pairing` and `ec-secret-prompt` move to `eclipseos-desktop`.
 - COMP-18 §3 and FOG-SPEC ("Agent activity") are amended to match. ADR 0041's
   decision stands and is now one instance of this one.
 - Adding a hook is a host change with its own review; an add-on cannot add one.

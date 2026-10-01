@@ -45,7 +45,7 @@ Supporting facts, verified in `v2_parser.rs:543`: an entry's span starts
 Prohibited on this path, ever: `autoformat*`, `clear_format_recursive`,
 `ensure_v1`/`ensure_v2` on the whole document. They are whole-document
 reformatters; a config file is a human's file. The document model is used only
-by `eclipse-ctl config migrate`, where a one-time reformat of the moved node is
+by `ec-ctl config migrate`, where a one-time reformat of the moved node is
 acceptable and stated up front.
 
 Absent keys are inserted at the end of the owning block, indented from the

@@ -1,4 +1,4 @@
-# systemd user target started by `abyss --session` once its Wayland socket
+# systemd user target started by `ec-abyss --session` once its Wayland socket
 # exists. Install to ~/.config/systemd/user/abyss-session.target.
 #
 # Binding it to graphical-session.target means ordinary user services declaring

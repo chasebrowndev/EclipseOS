@@ -1,5 +1,5 @@
 [package]
-name = "eclipse-welcome"
+name = "ec-welcome"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,11 +10,11 @@ description = "The EclipseOS welcome screen: the eclipse animation, greetings in
 publish = false
 
 [lib]
-name = "eclipse_welcome"
+name = "ec_welcome"
 path = "src/lib.rs"
 
 [[bin]]
-name = "eclipse-welcome"
+name = "ec-welcome"
 path = "src/main.rs"
 
 [dependencies]

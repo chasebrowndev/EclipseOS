@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 #
-# Install to: /usr/lib/systemd/system/eclipse-shutdown-splash.service
+# Install to: /usr/lib/systemd/system/ec-shutdown-splash.service
 #
 # Does nothing at boot. At shutdown it is stopped after greetd and every login
 # session (units stop in reverse start order), so its ExecStop draws the logo

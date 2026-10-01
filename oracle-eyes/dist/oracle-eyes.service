@@ -1,7 +1,7 @@
 # The Oracle-Eyes annotation daemon. Install to
 # ~/.config/systemd/user/oracle-eyes.service.
 #
-# Started by abyss-session.target, which `abyss --session` starts once its
+# Started by abyss-session.target, which `ec-abyss --session` starts once its
 # Wayland socket exists and WAYLAND_DISPLAY has been imported into the user
 # manager — so this unit can rely on the variable being set.
 #
@@ -16,7 +16,7 @@ Requisite=abyss-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/oracle-eyes
+ExecStart=/usr/bin/ec-oracle-eyes
 Restart=on-failure
 RestartSec=2
 Slice=session.slice

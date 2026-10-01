@@ -9,8 +9,8 @@
 use iced::{Subscription, Task};
 use iced_layershell::to_layer_message;
 
-use eclipse_services::session::{Action, Availability, Session};
-use eclipse_services::status::{Battery, Bluetooth, Network, Update};
+use ec_services::session::{Action, Availability, Session};
+use ec_services::status::{Battery, Bluetooth, Network, Update};
 
 /// How long the status thread sleeps between passes. The panel is on screen
 /// for seconds at a time, so this only has to be faster than a human.
@@ -85,7 +85,7 @@ impl App {
             bluetooth: Bluetooth::default(),
             battery: None,
             problem: None,
-            glass_radius: radius.unwrap_or(eclipse_ui::tokens::radius::CARD),
+            glass_radius: radius.unwrap_or(ec_ui::tokens::radius::CARD),
             blur: blur.unwrap_or(false),
         }
     }
@@ -126,7 +126,7 @@ pub fn subscription(_app: &App) -> Subscription<Message> {
     Subscription::run(|| {
         iced::stream::channel(32, async move |mut sender| {
             std::thread::spawn(move || {
-                let Ok(status) = eclipse_services::status::spawn() else {
+                let Ok(status) = ec_services::status::spawn() else {
                     return;
                 };
                 loop {
@@ -157,7 +157,7 @@ mod tests {
             bluetooth: Bluetooth::default(),
             battery: None,
             problem: None,
-            glass_radius: eclipse_ui::tokens::radius::CARD,
+            glass_radius: ec_ui::tokens::radius::CARD,
             blur: false,
         };
         let _ = update(&mut app, Message::Perform(Action::PowerOff));

@@ -11,9 +11,9 @@
 use iced::widget::{image, Row};
 use iced::Alignment;
 
-use eclipse_services::media::{NowPlaying, Playback};
-use eclipse_ui::tokens::bar;
-use eclipse_ui::widget::{self as parts, ShellFrame, TRANSPORT_W};
+use ec_services::media::{NowPlaying, Playback};
+use ec_ui::tokens::bar;
+use ec_ui::widget::{self as parts, ShellFrame, TRANSPORT_W};
 
 use super::{Action, Feed as Routed, Parts, Spans};
 use crate::app::Message;

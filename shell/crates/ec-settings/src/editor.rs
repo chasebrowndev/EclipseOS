@@ -9,7 +9,7 @@
 //! Commands are argv lists, one chip per argument. There is no shell anywhere
 //! on this path: what the chips say is what runs, as the user.
 
-use eclipse_ipc::{Widget, WidgetKind, WriteResult};
+use ec_ipc::{Widget, WidgetKind, WriteResult};
 use serde_json::Value;
 
 use crate::conn::Problem;
@@ -371,8 +371,8 @@ impl Editor {
     /// Format `{}` with a stand-in reading, so the format field shows what
     /// the bar will — through the bar's own function, units and all.
     pub fn format_preview(&self) -> String {
-        let r = eclipse_ui::reading::Readings::sample();
-        eclipse_ui::reading::line(&self.source, &self.format, &r).unwrap_or_else(|| self.format.clone())
+        let r = ec_ui::reading::Readings::sample();
+        ec_ui::reading::line(&self.source, &self.format, &r).unwrap_or_else(|| self.format.clone())
     }
 }
 

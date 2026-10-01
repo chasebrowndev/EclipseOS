@@ -11,13 +11,13 @@
 //! It posts straight into the GUI's channel rather than over the bus, under a
 //! fixed id outside the range the D-Bus side hands out in practice (it counts
 //! up from 1). Nothing but a text line is carried; the compositor already
-//! logged the full list, and `eclipse-ctl config validate` repeats it.
+//! logged the full list, and `ec-ctl config validate` repeats it.
 
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
 
-use eclipse_ipc::EventKind;
+use ec_ipc::EventKind;
 use serde_json::Value;
 
 use super::{CloseReason, Event, Notification, Urgency};
@@ -38,7 +38,7 @@ pub(super) fn spawn(events: Sender<Event>) {
 
 fn run(events: &Sender<Event>) {
     loop {
-        if let Ok(mut client) = eclipse_ipc::Client::connect() {
+        if let Ok(mut client) = ec_ipc::Client::connect() {
             if client
                 .subscribe(&[EventKind::ConfigError, EventKind::Config])
                 .is_ok()
@@ -53,7 +53,7 @@ fn run(events: &Sender<Event>) {
 }
 
 /// Forward events until the socket dies (`true`) or the GUI is gone (`false`).
-fn pump(client: &mut eclipse_ipc::Client, events: &Sender<Event>) -> bool {
+fn pump(client: &mut ec_ipc::Client, events: &Sender<Event>) -> bool {
     loop {
         let Ok(ev) = client.wait_event() else {
             return true;
@@ -75,7 +75,7 @@ fn to_event(kind: EventKind, data: &Value) -> Option<Event> {
                 .get("summary")
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty())
-                .unwrap_or("The config has errors; run `eclipse-ctl config validate`.")
+                .unwrap_or("The config has errors; run `ec-ctl config validate`.")
                 .to_owned();
             Some(Event::Posted(Box::new(Notification {
                 id: CONFIG_ID,
@@ -130,6 +130,6 @@ mod tests {
         let Some(Event::Posted(n)) = to_event(EventKind::ConfigError, &json!({"errors": []})) else {
             panic!("config-error must post");
         };
-        assert!(n.body.contains("eclipse-ctl config validate"));
+        assert!(n.body.contains("ec-ctl config validate"));
     }
 }

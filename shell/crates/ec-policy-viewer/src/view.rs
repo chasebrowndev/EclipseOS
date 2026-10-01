@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The three sections: capture, data control, security window rules.
 //!
-//! Every colour, size and spacing comes from `eclipse_ui::tokens`. The accent
+//! Every colour, size and spacing comes from `ec_ui::tokens`. The accent
 //! is spent once per section, on the sentence that says what the section
 //! currently permits — nothing else in this window is yellow.
 
 use iced::widget::{column, scrollable, text, Column};
 use iced::{Element, Length, Theme};
 
-use eclipse_ui::theme;
-use eclipse_ui::tokens::{font, size, space};
-use eclipse_ui::widget::{content, hairline, inset_list, list_row, panel, value};
+use ec_ui::theme;
+use ec_ui::tokens::{font, size, space};
+use ec_ui::widget::{content, hairline, inset_list, list_row, panel, value};
 
 use crate::app::Message;
 use crate::read::{Allowlist, FileState, Policy, Rule};

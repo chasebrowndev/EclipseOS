@@ -12,7 +12,7 @@ use crate::error::{io, Error, Result};
 use crate::hw::Ucode;
 use crate::runner::{Cmd, Tool};
 use crate::target::{self, TargetFile};
-use eclipse_setup_plan::{Plan, Request};
+use ec_setup_plan::{Plan, Request};
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn package_set_adds_catalog_packages_once() {
         let es = Catalog::builtin()
-            .resolve(&["hyperion".into(), "eclipse-toasts".into()])
+            .resolve(&["ec-hyperion-bar".into(), "ec-toasts".into()])
             .unwrap();
         let s = package_set(vec!["base".into(), "eclipseos-hyperion".into()], &es, false);
         assert_eq!(s, ["base", "eclipseos-hyperion", "eclipseos-toasts"]);
@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn units_are_floor_plus_catalog_and_nothing_else() {
-        let es = Catalog::builtin().resolve(&["hyperion".into()]).unwrap();
+        let es = Catalog::builtin().resolve(&["ec-hyperion-bar".into()]).unwrap();
         assert_eq!(unit_list(&es), FLOOR_UNITS);
     }
 }

@@ -22,7 +22,7 @@ re-encodes differently is a verification failure, not a cosmetic difference.
 One profile, RFC 8949 §4.2.1 core deterministic encoding, governs all three
 surfaces: shortest-form integer heads, definite lengths only, map keys sorted
 by encoded bytes, no tags, no indefinite items, no floats. It is implemented
-by hand in `policy-eval::cbor`, and the decoder **rejects** any input that is
+by hand in `ec-policy-eval::cbor`, and the decoder **rejects** any input that is
 not in the profile rather than accepting and normalising it.
 
 Rejecting is the point. A decoder that accepts sloppy input and a hasher that

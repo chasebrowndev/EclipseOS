@@ -42,8 +42,8 @@ session you are running in, mid-command, and looks like a mysterious external
 SIGKILL (exit 137). This has already happened more than once.
 
 - Kill a spawned test process by the pid you captured when you spawned it
-  (`./target/debug/abyss ... & pid=$!` then `kill $pid`), never by process
-  name. `pkill -x abyss` is **not** safe on a host whose session is abyss.
+  (`./target/debug/ec-abyss ... & pid=$!` then `kill $pid`), never by process
+  name. `pkill -x ec-abyss` is **not** safe on a host whose session is abyss.
 - Never `pkill -f`.
 - Xwayland on the host belongs to the host session. Leave it alone.
 
@@ -55,7 +55,7 @@ cargo build --workspace --all-targets
 cargo test --workspace
 cargo deny check advisories bans licenses sources
 cargo run -- --backend winit    # nested window under the host session (abyss)
-journalctl --user -t abyss -f  # logs (tracing → journald)
+journalctl --user -t ec-abyss -f  # logs (tracing → journald)
 ```
 The first five are exactly what CI runs (`../.github/workflows/gate.yml` — the
 workflows sit at the repository root, one level above this crate tree). If you
@@ -145,7 +145,7 @@ file dumps until it compacts mid-task and loses the plan.
   The `spec-trail` job in `gate.yml` blocks the PR without it.
 - A PR that changes specified behavior updates the doc in the same PR, or says
   why not.
-- TCB areas (`abyss` enforcement path, `policyd`, `policy-eval`, `sandbox`)
+- TCB areas (`abyss` enforcement path, `policyd`, `ec-policy-eval`, `sandbox`)
   get a line-by-line owner review. No exceptions.
 
 ## Where things are
@@ -167,16 +167,16 @@ abyss/crates/ec-abyss/src/xwayland/    COMP-07
 abyss/crates/ec-policyd/, abyss/crates/ec-policy-eval/   A-04, S-01 §4, S-04 §4  policy daemon + shared types (TCB)
 abyss/crates/ec-protocols/          eclipse_agent_v1 XML + bindings (Apache-2.0)
 abyss/crates/ec-agentd/             agentd skeleton (M11)
-abyss/crates/ec-audit/              eclipse-audit: verify, trace, query the audit store (S-04 §4–§5)
+abyss/crates/ec-audit/              ec-audit: verify, trace, query the audit store (S-04 §4–§5)
 abyss/crates/ec-ipc/           control-socket client + types
 abyss/crates/ec-ctl/           CLI over the control socket, config migrate
 abyss/crates/ec-abyss-wlcs/            WLCS conformance shim
 shell/crates/ec-services/      D-Bus services: notifications, tray, status, screensaver
 shell/crates/ec-ui/            shared iced theme/tokens/widgets
-crates/{hyperion,eclipse-toasts,eclipse-center,eclipse-launcher,
-        eclipse-settings,eclipse-policy-viewer,eclipse-secret-prompt}/  DE panes
-bench/                         COMP-16 M9f frame-time harness
-ci/                            wlcs skip list, GUI-coverage exceptions
+shell/crates/{ec-hyperion-bar,ec-toasts,ec-center,ec-launcher,
+        ec-settings,ec-policy-viewer,ec-secret-prompt}/  DE panes
+abyss/bench/                   COMP-16 M9f frame-time harness
+abyss/ci/                      wlcs skip list, GUI-coverage exceptions
 packaging/                          session, units, PKGBUILD, repo, ISO, /etc defaults
 decisions/                     ADRs (F-08 format)
 docs/ARCHITECTURE.md, BUILDING.md, STATUS.md, KNOWNBUGS.md,

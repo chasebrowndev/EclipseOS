@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# ADR 0069: binaries and units gained the ec- prefix. Packaged abyss-session
+# target.wants links move with the package; links a user created by hand under
+# ~/.config/systemd/user do not, so say so instead of touching home dirs.
+
+post_upgrade() {
+  if [ "$(vercmp "$2" 0.1.1)" -le 0 ]; then
+    echo ":: EclipseOS units were renamed (hyperion -> ec-hyperion-bar, eclipse-* -> ec-*, policyd -> ec-policyd)."
+    echo "   If you enabled any by hand, run per user:"
+    echo "   systemctl --user disable hyperion eclipse-toasts eclipse-wallpaper eclipse-pairing eclipse-screensaver policyd"
+    echo "   systemctl --user enable ec-hyperion-bar ec-toasts ec-wallpaper ec-pairing ec-screensaver ec-policyd"
+    echo "   Legacy component ids in abyss.kdl keep working for one release."
+  fi
+}

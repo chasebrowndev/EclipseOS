@@ -124,7 +124,7 @@ jobs:
           cmake --build ../target/wlcs-build -j"$(nproc)"
 
       - name: build the integration
-        run: cargo build -p wlcs-abyss
+        run: cargo build -p ec-abyss-wlcs
 
       # Software GL: no /dev/dri on the runner.
       - name: run the suite
@@ -134,7 +134,7 @@ jobs:
           RUST_BACKTRACE: "1"
         run: |
           skip=$(grep -vE '^\s*(#|$)' ci/wlcs-skip.txt | paste -sd: -)
-          ../target/wlcs-build/wlcs ../target/debug/libwlcs_abyss.so \
+          ../target/wlcs-build/wlcs ../target/debug/libec_abyss_wlcs.so \
             --gtest_filter="-${skip}"
 
   oracle-eyes:
@@ -248,7 +248,7 @@ jobs:
           head="${{ github.event.pull_request.head.sha }}"
           changed=$(git diff --name-only "$base" "$head")
           tcb=$(echo "$changed" | grep -E \
-            '^(abyss/crates/ec-(policyd|policy-eval|sandbox|brokerd)/|installer/crates/ec-setup-helper/|packaging/polkit/|abyss/crates/ec-abyss/src/(policy|trusted_ui|audit)/|abyss/crates/ec-abyss/src/render/capture\.rs$|AbyssCompositor/(crates/(policyd|policy-eval|sandbox|brokerd|eclipse-setup-helper)/|dist/polkit/|crates/abyss/src/(policy|trusted_ui|audit)/|crates/abyss/src/render/capture\.rs$))' \
+            '^(abyss/crates/ec-(policyd|policy-eval|sandbox|brokerd)/|installer/crates/ec-setup-helper/|packaging/polkit/|abyss/crates/ec-abyss/src/(policy|trusted_ui|audit)/|abyss/crates/ec-abyss/src/render/capture\.rs$|AbyssCompositor/(crates/(policyd|ec-policy-eval|sandbox|brokerd|ec-setup-helper)/|dist/polkit/|crates/abyss/src/(policy|trusted_ui|audit)/|crates/abyss/src/render/capture\.rs$))' \
             || true)
           if [ -n "$tcb" ]; then
             echo "::warning title=TCB path touched::Line-by-line owner review required (F-07 §4)"

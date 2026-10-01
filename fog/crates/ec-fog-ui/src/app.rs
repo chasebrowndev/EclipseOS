@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The window's behaviour: `fogd` replies routed to the tabs, keys resolved
+//! The window's behaviour: `ec-fogd` replies routed to the tabs, keys resolved
 //! through fog.kdl's bindings, mouse input, and custom actions
 //! (FOG §UI and navigation). Drawing is in [`crate::view`].
 //!
@@ -10,7 +10,7 @@
 //! then the places sidebar or the job tray, then the list (where a filter,
 //! once typed, takes printable keys before the bindings do).
 //!
-//! File operations (FOG §File operations) are jobs sent to `fogd` through
+//! File operations (FOG §File operations) are jobs sent to `ec-fogd` through
 //! [`Tray`]; the app never touches the filesystem.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -19,12 +19,12 @@ use std::os::unix::ffi::OsStringExt;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use fog_config::{Action, Chord, Config, CustomAction, Key as K, Mods, Target};
-use fog_proto::{
+use ec_fog_config::{Action, Chord, Config, CustomAction, Key as K, Mods, Target};
+use ec_fog_proto::{
     ConflictPolicy, JobId, JobSpec, JobStatus, Kind, Place, PlaceKind, Reply, Request, Resolution,
     SortKey, TrashItem,
 };
-use fog_widgets::scroll_into_view;
+use ec_fog_widgets::scroll_into_view;
 use iced::keyboard::{self, key::Named, Key, Modifiers};
 use iced::widget::operation::{scroll_to, AbsoluteOffset};
 use iced::widget::Id;
@@ -86,7 +86,7 @@ pub struct App {
     script: VecDeque<Scripted>,
     /// Springs and the sheet's snapshot (FOG §Visual design).
     pub motion: Motion,
-    /// `FOG_UI_BENCH_SCROLL`: a timed scroll for `fog-bench frames`.
+    /// `FOG_UI_BENCH_SCROLL`: a timed scroll for `ec-fog-bench frames`.
     bench: Option<Bench>,
     /// Rows in hand, dragged toward a folder or a place.
     pub drag: Option<Drag>,
@@ -382,14 +382,14 @@ impl App {
         self.trash_dir() == Some(self.tabs.active().path.as_slice())
     }
 
-    /// fog.kdl changed under a running window (`fogd` pushed the text it
+    /// fog.kdl changed under a running window (`ec-fogd` pushed the text it
     /// accepted): take its bindings, custom actions and `appearance` at
-    /// once. Parsing is CPU only; the file was read by `fogd`.
+    /// once. Parsing is CPU only; the file was read by `ec-fogd`.
     pub fn reconfigure(&mut self, text: &str) {
-        let c = match fog_config::parse(text) {
+        let c = match ec_fog_config::parse(text) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("fog-ui: reloaded {e}; keeping the current config");
+                eprintln!("ec-fog-ui: reloaded {e}; keeping the current config");
                 return;
             }
         };
@@ -738,7 +738,7 @@ fn handle(app: &mut App, message: Message) -> Task<Message> {
         Message::Conn(conn::Event::Down) => {
             app.link = None;
             app.fogd = Fogd::Down;
-            // A new fogd numbers jobs afresh; these can no longer be asked.
+            // A new ec-fogd numbers jobs afresh; these can no longer be asked.
             app.tray.reset();
             app.conflicts.clear();
             if app.focus == Focus::Jobs {
@@ -1292,7 +1292,7 @@ pub fn run_action(app: &mut App, a: Action) -> Task<Message> {
 }
 
 /// The file operations (FOG §File operations): each one ends as a job for
-/// `fogd`, a prompt that leads to one, or a clipboard write. `None` for
+/// `ec-fogd`, a prompt that leads to one, or a clipboard write. `None` for
 /// every other action.
 fn file_action(app: &mut App, a: Action) -> Option<Task<Message>> {
     let trash = app.in_trash();
@@ -1515,12 +1515,12 @@ pub fn subscription(app: &App) -> Subscription<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fog_proto::{Entry, Kind};
+    use ec_fog_proto::{Entry, Kind};
 
     fn app() -> App {
         App::new(
             b"/w".to_vec(),
-            fog_config::defaults(),
+            ec_fog_config::defaults(),
             TimeZone::UTC,
             b"/home/u".to_vec(),
         )
@@ -1550,7 +1550,7 @@ mod tests {
 
     #[test]
     fn key_presses_resolve_through_the_default_bindings() {
-        let keys = fog_config::defaults().keys;
+        let keys = ec_fog_config::defaults().keys;
         let hit = |k: Key, m: Key, mods| keys.get(&chord(&k, &m, mods).unwrap()).cloned();
         let act = |a| Some(Target::Action(a));
         let ch = |s: &str| Key::Character(s.into());
@@ -1667,12 +1667,12 @@ mod tests {
             &mut a,
             Message::Conn(conn::Event::Reply(Reply::PlacesList(vec![
                 Place {
-                    kind: fog_proto::PlaceKind::Home,
+                    kind: ec_fog_proto::PlaceKind::Home,
                     label: "Home".into(),
                     path: b"/home/u".to_vec(),
                 },
                 Place {
-                    kind: fog_proto::PlaceKind::Trash,
+                    kind: ec_fog_proto::PlaceKind::Trash,
                     label: "Trash".into(),
                     path: b"/home/u/.local/share/Trash/files".to_vec(),
                 },
@@ -1700,7 +1700,7 @@ mod tests {
         listed(&mut a, &["a", "b", "c"]);
         press(&mut a, "ctrl+y");
         assert_eq!(a.tabs.active().selected, 0, "ctrl+y is unbound by default");
-        // What fogd pushes after a valid edit of fog.kdl.
+        // What ec-fogd pushes after a valid edit of fog.kdl.
         reply(
             &mut a,
             Reply::ConfigReloaded {
@@ -2042,7 +2042,7 @@ mod tests {
             label: label.into(),
             path: format!("/{label}").into_bytes(),
         };
-        // fogd's order: bookmarks before trash before mounts.
+        // ec-fogd's order: bookmarks before trash before mounts.
         let _ = update(
             &mut a,
             Message::Conn(conn::Event::Reply(Reply::PlacesList(vec![

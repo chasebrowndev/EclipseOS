@@ -11,8 +11,8 @@ use crate::helper::{self, Env, FakeCfg};
 use crate::model::{Effect, Inputs, Key, Message, Model, Step};
 use crate::net::{self, Link, Snapshot};
 use crate::sys;
-use eclipse_ui::theme;
-use eclipse_welcome::Welcome;
+use ec_ui::theme;
+use ec_welcome::Welcome;
 use iced::futures::channel::oneshot;
 use iced::futures::StreamExt;
 use iced::keyboard::{self, key::Named};
@@ -21,7 +21,7 @@ use serde_json::Value;
 use std::sync::mpsc;
 
 /// The application id the compositor's window rules see.
-pub const APP_ID: &str = "eclipse-setup";
+pub const APP_ID: &str = "ec-setup";
 
 /// The installer's default UI scale: the token sizes are tuned for a desktop
 /// pane, and a full-screen wizard read from arm's length wants more.
@@ -42,7 +42,7 @@ impl Default for Options {
     fn default() -> Self {
         Options {
             fake: None,
-            reduced_motion: eclipse_welcome::reduced_motion_from_env(),
+            reduced_motion: ec_welcome::reduced_motion_from_env(),
             size: None,
             scale: DEFAULT_SCALE,
         }
@@ -51,7 +51,7 @@ impl Default for Options {
 
 #[derive(Debug, Clone)]
 pub enum Msg {
-    Welcome(eclipse_welcome::Message),
+    Welcome(ec_welcome::Message),
     Wizard(Message),
 }
 
@@ -130,7 +130,7 @@ impl App {
 
     pub fn update(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
-            Msg::Welcome(eclipse_welcome::Message::Begin) => self.wizard(Message::Begin),
+            Msg::Welcome(ec_welcome::Message::Begin) => self.wizard(Message::Begin),
             Msg::Welcome(m) => self.welcome.update(m).map(Msg::Welcome),
             Msg::Wizard(m) => self.wizard(m),
         }
@@ -288,7 +288,7 @@ pub fn run(options: Options) -> iced::Result {
         .window(settings)
         .scale_factor(move |_| scale)
         .antialiasing(true);
-    for font in eclipse_ui::FONTS {
+    for font in ec_ui::FONTS {
         app = app.font(*font);
     }
     app.run()

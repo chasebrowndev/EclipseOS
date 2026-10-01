@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! systemd socket activation for fogd (FOG §Architecture: Lifecycle).
+//! systemd socket activation for ec-fogd (FOG §Architecture: Lifecycle).
 //! sd_listen_fds(3) in a few lines instead of a dependency.
 
 use std::io;
@@ -17,7 +17,7 @@ fn activated(listen_pid: Option<&str>, listen_fds: Option<&str>, pid: u32) -> bo
         && listen_fds.and_then(|n| n.parse::<u32>().ok()).unwrap_or(0) >= 1
 }
 
-/// The listening socket systemd passed on fd 3 (fogd.socket), if any. The
+/// The listening socket systemd passed on fd 3 (ec-fogd.socket), if any. The
 /// `LISTEN_*` variables are cleared so children don't inherit them. Call
 /// before spawning threads; wrap with `tokio::net::UnixListener::from_std`.
 pub fn inherited_listener() -> io::Result<Option<UnixListener>> {
@@ -34,7 +34,7 @@ pub fn inherited_listener() -> io::Result<Option<UnixListener>> {
         return Ok(None);
     }
     // SAFETY: systemd hands fd 3 to this process (LISTEN_PID matched) and
-    // nothing else in fogd opens or owns it; ownership is taken exactly once
+    // nothing else in ec-fogd opens or owns it; ownership is taken exactly once
     // because the variables were just cleared.
     let fd = unsafe { OwnedFd::from_raw_fd(LISTEN_FDS_START) };
     if !rustix::fs::FileType::from_raw_mode(rustix::fs::fstat(&fd)?.st_mode).is_socket() {

@@ -13,12 +13,12 @@
 //! - `lazy` caches a subtree keyed by a hash of its dependencies. It skips
 //!   rebuilding an *unchanged* subtree, but the cached subtree still holds
 //!   every row, so the first build and every change (a sort, a diff from
-//!   `fogd`, a selection move) cost O(n).
+//!   `ec-fogd`, a selection move) cost O(n).
 //! - `responsive` hands its closure the available size during layout, which
 //!   is half of what a virtual list needs; it knows nothing about the scroll
 //!   offset.
 //!
-//! So `fog-widgets` ships its own. It is a thin custom [`Widget`] wrapped
+//! So `ec-fog-widgets` ships its own. It is a thin custom [`Widget`] wrapped
 //! around iced's own `scrollable`, which keeps the scrollbar, wheel, drag,
 //! kinetic and `scroll_to` behaviour identical to every other iced list:
 //!

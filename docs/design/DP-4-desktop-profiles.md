@@ -83,8 +83,8 @@ wrap plus corner markers), the wrap wired into both `backend/drm.rs` and
 `calibrate.rs` as a seat-grabbing state machine, per-panel persistence keyed by
 EDID identity with hand-written config winning over saved state, both IPC
 methods (`set_output` with `overscan`, `calibrate_output` with
-`start`/`commit`/`cancel`), and the `eclipse-ctl output ID overscan` and
-`eclipse-ctl output ID calibrate` verbs.
+`start`/`commit`/`cancel`), and the `ec-ctl output ID overscan` and
+`ec-ctl output ID calibrate` verbs.
 
 Calibration is compositor-drawn rather than a layer-shell client, because the
 overlay grabs the seat and paints in the coordinate space it is remapping. See
@@ -170,7 +170,7 @@ anyone rebind them in any file.
 - **Migration.** Existing configs carry capture allowlists and security window
   rules in one file. Given the project's posture of refusing to start rather
   than guessing, the right handling is a precise startup error naming each
-  misplaced key and its destination, plus an `eclipse-ctl config migrate`
+  misplaced key and its destination, plus an `ec-ctl config migrate`
   command that performs the split once. Not a silent auto-migration.
 - **Reads, not just writes.** Whether an untrusted client may *read*
   `policy.kdl` is a separate decision from whether it may write it. Default to
@@ -195,7 +195,7 @@ anyone rebind them in any file.
    reloads.
 3. **Gate rows** in `ipc/gate.rs`, per file and per direction.
 4. **One declarative schema** (COMP-13 §1.5). The parser validates from it,
-   `eclipse-ctl` enumerates from it, and DP-5 *generates* its controls from it.
+   `ec-ctl` enumerates from it, and DP-5 *generates* its controls from it.
    Parity between the two front ends is generated rather than maintained; a
    hand-built GUI guarantees drift.
 
@@ -223,8 +223,8 @@ restart.
 Taskbar with a real window list, tray, clock, launcher, notifications. It began
 as an extension of the `eclipse` Quickshell config. ADR 0038 moved it to native
 Rust/iced, and ADR 0052 split it into one crate per component: `hyperion` (the
-taskbar; users see "taskbar"), `eclipse-toasts`, `eclipse-center`,
-`eclipse-launcher`. Each is its own package, so any one of them can run under a
+taskbar; users see "taskbar"), `ec-toasts`, `ec-center`,
+`ec-launcher`. Each is its own package, so any one of them can run under a
 third-party bar or shell.
 
 **This is D-05 default-userland work, not compositor work.** It is tracked as
@@ -287,15 +287,15 @@ installer pacstraps instead of `eclipseos-meta`. Backend agent for the schema an
 session start; `packaging/` is the parent's.
 
 **Gate:** change `components.bar` from `hyperion` to `none` and back with
-`eclipse-ctl`. The bar leaves and returns without a restart.
+`ec-ctl`. The bar leaves and returns without a restart.
 
 ## DP-8 — Graphical installer and setup *(D-07)*
 
-`eclipse-setup` with `--install` and `--reconfigure` (frontend agent: every
-view), `eclipse-setup-helper` + polkit actions `org.eclipse.install.apply`
+`ec-setup` with `--install` and `--reconfigure` (frontend agent: every
+view), `ec-setup-helper` + polkit actions `org.eclipse.install.apply`
 (live medium only) and `org.eclipse.setup.apply` (parent: a root binary is
-reviewed line by line; add to `tcb-review`), `eclipse-ctl setup reset`,
-`setup.profile`/`setup.complete`/`setup.pending-preset` keys. `eclipse-welcome` (native iced canvas port of the welcome animation; step 0, embeddable as a lib). ISO work in
+reviewed line by line; add to `tcb-review`), `ec-ctl setup reset`,
+`setup.profile`/`setup.complete`/`setup.pending-preset` keys. `ec-welcome` (native iced canvas port of the welcome animation; step 0, embeddable as a lib). ISO work in
 `packaging/iso/` (parent): `liveuser`, greetd autologin, live-only polkit rule, tty2
 root shell, on-medium local repo. The phrase and policy preset are handled on
 the installed system after milestone 15 (D-07 §4.5).

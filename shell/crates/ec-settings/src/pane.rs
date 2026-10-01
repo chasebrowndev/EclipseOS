@@ -76,7 +76,7 @@ impl Pane {
 
     /// The pane named on the command line — its title, any case, hyphens
     /// optional (`addons` finds "Add-ons"). The taskbar opens
-    /// `eclipse-settings network` from its drawers. `appearance` names the
+    /// `ec-settings network` from its drawers. `appearance` names the
     /// pane that was split into Windows and Effects, and opens the first of
     /// them, so a launcher entry or a habit written against it still lands.
     pub fn from_arg(arg: &str) -> Option<Pane> {

@@ -28,7 +28,7 @@ during setup as defaults, with every value then refinable individually.
    live medium is the desktop, so choices are seen before they are committed.
 5. **A second wizard after the first login** on the installed system. Rejected
    as the primary path: it splits setup across a reboot and loses the preview.
-   It survives as `eclipse-setup --reconfigure`.
+   It survives as `ec-setup --reconfigure`.
 
 For Agentic's policy: (a) locked down only, (b) a looser preset applied by the
 profile, (c) both offered, the preset opt-in and applied only through the
@@ -36,7 +36,7 @@ trusted policy editor.
 
 ## Decision
 Option 4 with policy option (c). The live ISO autologins an unprivileged
-`liveuser` into an abyss session that runs `eclipse-setup --install`: language,
+`liveuser` into an abyss session that runs `ec-setup --install`: language,
 keyboard, timezone, network, disk (whole-disk erase in v1), identity, profile,
 mode, components, apps, appearance, displays, agents, review, install. Choices
 apply live where possible. One root helper with two polkit actions does the
@@ -57,10 +57,10 @@ must not be the origin of anything the installed compositor trusts.
 - COMP-17 §2.1/§2.2 (v0.2), COMP-10 §2 (DA-03), D-07 written, D-03 §4/§5 and
   D-05 amended. Appendix D records it.
 - Owed code: `components {}` in the schema and `abyss-session` starting from it
-  (replacing the fixed `.wants/` links); `eclipse-setup` (frontend agent);
-  `eclipse-setup-helper` + two polkit actions (small root binary taking a
+  (replacing the fixed `.wants/` links); `ec-setup` (frontend agent);
+  `ec-setup-helper` + two polkit actions (small root binary taking a
   structured plan and catalog ids only, added to `gate.yml`'s `tcb-review` paths
-  when it lands); the candidate catalog; `eclipse-ctl setup reset`; the
+  when it lands); the candidate catalog; `ec-ctl setup reset`; the
   `eclipseos-base` floor and an on-medium local repo of its closure so the
   floor installs offline; a `liveuser` greetd session on the ISO; the TTY
   script kept as a fallback front end of the same helper.

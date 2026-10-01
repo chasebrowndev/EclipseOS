@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `eclipse-secret-prompt` — one password field, then exit (ADR 0053).
+//! `ec-secret-prompt` — one password field, then exit (ADR 0053).
 //!
 //! The taskbar starts this process with the network or device to prompt for
 //! and never sees what is typed: the value goes from the field straight to
@@ -14,7 +14,7 @@ use std::fmt;
 
 /// The exact app-id `/etc/eclipse/policy.kdl` matches to classify this window
 /// `secret`. Changing it silently drops the classification.
-pub const APP_ID: &str = "eclipse-secret-prompt";
+pub const APP_ID: &str = "ec-secret-prompt";
 
 /// What BlueZ asked for. A PIN is legacy pairing's free text; a passkey is
 /// the six-digit number SSP shows on the other device. The last three carry
@@ -61,7 +61,7 @@ const PIN_MAX: usize = 16;
 /// A passkey is 0–999999, typed as up to six digits.
 const PASSKEY_DIGITS: usize = 6;
 
-const USAGE: &str = "usage: eclipse-secret-prompt wifi <ssid> | bt <addr> pin|passkey|authorize \
+const USAGE: &str = "usage: ec-secret-prompt wifi <ssid> | bt <addr> pin|passkey|authorize \
                      | bt <addr> confirm <passkey> | bt <addr> show <code>";
 
 /// One to six ASCII digits, as a passkey.

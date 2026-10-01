@@ -7,7 +7,7 @@ use crate::config::{self, Writer};
 use crate::helper::{self, Env, FakeCfg};
 use crate::model::{Effect, Inputs, Message, Model, Phase, Secret, Step, ZoneClock};
 use crate::{net, sys};
-use eclipse_setup_plan::Stage;
+use ec_setup_plan::Stage;
 use iced::futures::StreamExt;
 use std::collections::VecDeque;
 use std::time::Duration;

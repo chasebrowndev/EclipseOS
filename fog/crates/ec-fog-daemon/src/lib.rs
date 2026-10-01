@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! fogd library: backends, cache and the socket server (FOG §Architecture,
+//! ec-fogd library: backends, cache and the socket server (FOG §Architecture,
 //! §Filesystem backend, §Performance model).
 //!
 //! All filesystem I/O and sorting runs on tokio's blocking pool; the reactor
@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use std::collections::HashMap;
 
-use fog_proto::{Reply, Request, Sort};
+use ec_fog_proto::{Reply, Request, Sort};
 use rustix::io::Errno;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
@@ -309,7 +309,7 @@ async fn client(stream: UnixStream, daemon: Arc<Daemon>) {
     });
     let events = tokio::spawn(forward(daemon.subscribe(), tx.clone()));
     loop {
-        match fog_proto::read_frame::<_, Request>(&mut rd).await {
+        match ec_fog_proto::read_frame::<_, Request>(&mut rd).await {
             Ok(Some(req)) => {
                 let d = daemon.clone();
                 let peer = peer.clone();
@@ -333,7 +333,7 @@ async fn client(stream: UnixStream, daemon: Arc<Daemon>) {
 async fn forward(mut events: broadcast::Receiver<Reply>, tx: mpsc::Sender<Vec<u8>>) {
     loop {
         match events.recv().await {
-            Ok(r) => match fog_proto::encode(&r) {
+            Ok(r) => match ec_fog_proto::encode(&r) {
                 Ok(f) => {
                     if tx.send(f).await.is_err() {
                         return;
@@ -352,7 +352,7 @@ async fn forward(mut events: broadcast::Receiver<Reply>, tx: mpsc::Sender<Vec<u8
 /// Encode and queue a reply from a blocking thread. A client that went away
 /// is ignored.
 fn send(tx: &mpsc::Sender<Vec<u8>>, r: &Reply) {
-    let frame = match fog_proto::encode(r) {
+    let frame = match ec_fog_proto::encode(r) {
         Ok(f) => f,
         Err(e) => {
             tracing::warn!(error = %e, "reply not encodable");
@@ -363,7 +363,7 @@ fn send(tx: &mpsc::Sender<Vec<u8>>, r: &Reply) {
                 },
                 errno: Errno::FBIG.raw_os_error(),
             };
-            match fog_proto::encode(&fallback) {
+            match ec_fog_proto::encode(&fallback) {
                 Ok(f) => f,
                 Err(_) => return,
             }

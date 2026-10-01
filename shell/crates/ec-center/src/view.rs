@@ -2,7 +2,7 @@
 //! The control center's one panel.
 //!
 //! Two blocks: what the session is doing, and how to end it. Every colour and
-//! size comes from `eclipse_ui`; a literal anywhere in here is a bug, with the
+//! size comes from `ec_ui`; a literal anywhere in here is a bug, with the
 //! exception of the layout metrics named at the top of the file, which the
 //! surface height is derived from and which therefore cannot live in a styling
 //! token.
@@ -10,10 +10,10 @@
 use iced::widget::{container, mouse_area, row, text, Column, Space};
 use iced::{Alignment, Color, Element, Length, Theme};
 
-use eclipse_services::session::{Action, Availability};
-use eclipse_services::status::{Battery, Bluetooth, Charge, Network};
-use eclipse_ui::tokens::{color, font, size, space};
-use eclipse_ui::widget as parts;
+use ec_services::session::{Action, Availability};
+use ec_services::status::{Battery, Bluetooth, Charge, Network};
+use ec_ui::tokens::{color, font, size, space};
+use ec_ui::widget as parts;
 
 use crate::app::{App, Message, ACTIONS};
 use crate::WIDTH;
@@ -72,7 +72,7 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
 fn status(app: &App) -> Element<'_, Message, Theme> {
     let battery_low = app
         .battery
-        .is_some_and(|b| b.percent <= LOW && b.state == eclipse_services::status::Charge::Discharging);
+        .is_some_and(|b| b.percent <= LOW && b.state == ec_services::status::Charge::Discharging);
     let rows = vec![
         reading("Network", network_text(&app.network), false),
         reading(

@@ -22,10 +22,10 @@
 //!   who could choose would choose the one with the budget left.
 
 use crate::audit::{Kind, Record, Store, StoreError};
-use policy_eval::audit::Emission;
-use policy_eval::cbor::{enc, MapBuilder, Reader, Writer};
-use policy_eval::grant::{cose_sign1, protected_header, sig_structure};
-use policy_eval::{cbor, CloseReason, Counters, Grant, Origin, Task, TaskEvent, TaskState, Ulid};
+use ec_policy_eval::audit::Emission;
+use ec_policy_eval::cbor::{enc, MapBuilder, Reader, Writer};
+use ec_policy_eval::grant::{cose_sign1, protected_header, sig_structure};
+use ec_policy_eval::{cbor, CloseReason, Counters, Grant, Origin, Task, TaskEvent, TaskState, Ulid};
 use std::path::Path;
 
 /// Why a grant was issued: the `reason` of its `grant` record (S-04 §1.1).
@@ -383,7 +383,8 @@ impl TaskStore {
         // The issuer stamps `issued_ms`; a requester-supplied one could be set
         // forward to make a long unattended window measure short.
         grant.issued_ms = now_ms;
-        if grant.unattended && grant.expires_ms.saturating_sub(now_ms) > policy_eval::grant::UNATTENDED_MAX_MS
+        if grant.unattended
+            && grant.expires_ms.saturating_sub(now_ms) > ec_policy_eval::grant::UNATTENDED_MAX_MS
         {
             return Err(TaskError::UnattendedTooLong);
         }
@@ -568,7 +569,7 @@ fn replay_revoked(body: &[u8]) -> cbor::Result<Vec<Ulid>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use policy_eval::{Capability, Constraints};
+    use ec_policy_eval::{Capability, Constraints};
     use std::fs;
     use std::path::PathBuf;
 
@@ -839,7 +840,7 @@ mod tests {
     fn an_emission_is_chained_into_the_journal() {
         let dir = tmp("emission");
         let mut s = store(&dir);
-        let e = policy_eval::audit::Emission {
+        let e = ec_policy_eval::audit::Emission {
             kind: Kind::Decision,
             principal: "agent:a".into(),
             grant_id: None,

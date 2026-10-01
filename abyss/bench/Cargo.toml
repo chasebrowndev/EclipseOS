@@ -1,5 +1,5 @@
 [package]
-name = "abyss-bench"
+name = "ec-abyss-bench"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,9 +12,9 @@ publish = false
 # interval and discard tail outliers by design, which is the one statistic the
 # spec never asks for. See decisions/0043-hand-rolled-bench-harness.md.
 [lib]
-name = "abyss_bench"
+name = "ec_abyss_bench"
 path = "src/lib.rs"
 
 [[bin]]
-name = "abyss-bench"
+name = "ec-abyss-bench"
 path = "src/main.rs"

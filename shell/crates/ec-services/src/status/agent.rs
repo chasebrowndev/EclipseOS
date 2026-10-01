@@ -10,7 +10,7 @@
 //! task, so a human taking thirty seconds to find a PIN holds up nothing else
 //! on the connection.
 //!
-//! The PIN itself is typed into `eclipse-secret-prompt`, a separate process
+//! The PIN itself is typed into `ec-secret-prompt`, a separate process
 //! (ADR 0053). It reaches this process over the session bus — `Pairing.Answer`
 //! — which is only accepted while a prompt for that exact device is pending.
 
@@ -232,7 +232,7 @@ impl Agent {
     }
 }
 
-/// The session-bus door `eclipse-secret-prompt` answers through.
+/// The session-bus door `ec-secret-prompt` answers through.
 pub(super) struct Pairing {
     pub(super) prompts: Prompts,
 }

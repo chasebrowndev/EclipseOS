@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Natural sort, computed in `fogd` (FOG §Performance model, technique 7).
+//! Natural sort, computed in `ec-fogd` (FOG §Performance model, technique 7).
 
 use std::cmp::Ordering;
 
-use fog_proto::{Entry, Kind, Sort, SortKey};
+use ec_fog_proto::{Entry, Kind, Sort, SortKey};
 
 /// Display order of `entries` as an index permutation: directories first,
 /// then natural name order (the default [`Sort`]).

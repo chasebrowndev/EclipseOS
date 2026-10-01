@@ -11,7 +11,7 @@ use super::Body;
 use crate::choices::APPS;
 use crate::model::{Message, Model};
 use crate::parts::{self, El};
-use eclipse_ui::tokens::{color, space};
+use ec_ui::tokens::{color, space};
 use iced::widget::{row, Column, Row};
 use iced::Length;
 

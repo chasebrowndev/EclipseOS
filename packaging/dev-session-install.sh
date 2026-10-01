@@ -10,7 +10,7 @@ dest="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$dest"
 
 cp "$here/abyss-session.target" "$dest/"
-for unit in hyperion eclipse-toasts eclipse-wallpaper eclipse-screensaver eclipse-pairing; do
+for unit in ec-hyperion-bar ec-toasts ec-wallpaper ec-screensaver ec-pairing; do
     sed "s|/usr/bin/|$bin/|" "$here/$unit.service" > "$dest/$unit.service"
 done
 
@@ -21,6 +21,6 @@ mkdir -p "$apps"
 cp "$here"/applications/*.desktop "$apps/"
 
 systemctl --user daemon-reload
-systemctl --user enable hyperion.service eclipse-toasts.service eclipse-wallpaper.service eclipse-screensaver.service \
-    eclipse-pairing.service
+systemctl --user enable ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service \
+    ec-pairing.service
 echo "installed into $dest, ExecStart -> $bin"

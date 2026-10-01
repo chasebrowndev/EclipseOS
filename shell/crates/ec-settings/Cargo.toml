@@ -1,5 +1,5 @@
 [package]
-name = "eclipse-settings"
+name = "ec-settings"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,23 +11,23 @@ description = "The Eclipse settings app: every abyss.kdl setting, without a text
 publish = false
 
 [lib]
-name = "eclipse_settings"
+name = "ec_settings"
 path = "src/lib.rs"
 
 [[bin]]
-name = "eclipse-settings"
+name = "ec-settings"
 path = "src/main.rs"
 
 [dependencies]
-# Pinned to match eclipse-ui exactly. `wayland` and `thread-pool` are both
+# Pinned to match ec-ui exactly. `wayland` and `thread-pool` are both
 # load-bearing: without the first, winit does not compile at all; without a
 # futures executor, iced fires a compile_error!. See ADR 0039.
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
-eclipse-ui = { path = "../ec-ui" }
-eclipse-ipc = { path = "../../../abyss/crates/ec-ipc" }
+ec-ui = { path = "../ec-ui" }
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 # The Network pane reads the link and forgets profiles and devices through the
 # status service's action handle.
-eclipse-services = { path = "../ec-services" }
+ec-services = { path = "../ec-services" }
 zbus = "5.19"
 serde_json.workspace = true
 
@@ -35,4 +35,4 @@ serde_json.workspace = true
 # Only so `tests/coverage.rs` can walk the compositor's config schema and
 # assert this app renders a control for every key in it. Not linked into the
 # shipped binary.
-abyss = { path = "../../../abyss/crates/ec-abyss" }
+ec-abyss = { path = "../../../abyss/crates/ec-abyss" }

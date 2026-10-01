@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Sizes the wizard needs that `eclipse_ui::tokens` has no name for.
+//! Sizes the wizard needs that `ec_ui::tokens` has no name for.
 //!
 //! The wizard is a full-screen toplevel, not a settings pane, so a few of its
 //! measures (the width of the column it centres, how tall a hero is) have no

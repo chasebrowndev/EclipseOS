@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `eclipse-toasts` — the notification stack, top-right.
+//! `ec-toasts` — the notification stack, top-right.
 //!
 //! A layer surface of its own rather than a popup of the bar: its height
 //! changes with what it holds, and it must be able to outlive a bar restart.
 //! Nothing here is trusted UI — a notification is client-supplied text, and
 //! anything the compositor has to vouch for it draws itself.
 
-use eclipse_toasts::{app, view};
+use ec_toasts::{app, view};
 use iced_layershell::settings::{LayerShellSettings, StartMode};
 
 fn namespace() -> String {
-    "eclipse-toasts".to_owned()
+    "ec-toasts".to_owned()
 }
 
 fn main() -> iced_layershell::Result {
@@ -30,10 +30,10 @@ fn main() -> iced_layershell::Result {
                 ..Default::default()
             })
             .style(view::style)
-            .theme(|_: &app::App, _: iced::window::Id| eclipse_ui::theme::theme())
+            .theme(|_: &app::App, _: iced::window::Id| ec_ui::theme::theme())
             .subscription(app::subscription)
             .antialiasing(true);
-    for face in eclipse_ui::FONTS {
+    for face in ec_ui::FONTS {
         builder = builder.font(*face);
     }
     builder.run()

@@ -9,14 +9,14 @@
 //! Run it by hand:
 //!
 //! ```text
-//! cargo test -p eclipse-services --test live_bus -- --ignored
+//! cargo test -p ec-services --test live_bus -- --ignored
 //! ```
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use eclipse_services::notifications::{self, CloseReason, Event, Urgency};
+use ec_services::notifications::{self, CloseReason, Event, Urgency};
 
 /// A `dbus-daemon` of our own, killed when the guard drops.
 struct PrivateBus(Child);
@@ -120,7 +120,7 @@ fn the_name_is_never_stolen_from_a_running_daemon() {
 #[test]
 #[ignore = "reads the host's system bus"]
 fn the_system_bus_answers_what_the_bar_asks_it() {
-    use eclipse_services::status;
+    use ec_services::status;
 
     let status = status::spawn().expect("system bus");
 
@@ -142,7 +142,7 @@ fn the_system_bus_answers_what_the_bar_asks_it() {
 #[test]
 #[ignore = "reads the host's system bus"]
 fn logind_says_what_it_would_allow() {
-    use eclipse_services::session::{Action, Availability, Session};
+    use ec_services::session::{Action, Availability, Session};
 
     let session = Session::connect().expect("system bus");
 
@@ -166,7 +166,7 @@ fn logind_says_what_it_would_allow() {
 #[test]
 #[ignore = "needs dbus-daemon; spawns a private bus"]
 fn an_inhibit_holds_until_the_client_leaves_the_bus() {
-    use eclipse_services::screensaver;
+    use ec_services::screensaver;
     use std::sync::mpsc;
 
     let (_bus, address) = private_bus();

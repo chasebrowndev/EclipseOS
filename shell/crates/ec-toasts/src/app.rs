@@ -7,7 +7,7 @@ use iced::window::Id;
 use iced::{Subscription, Task};
 use iced_layershell::to_layer_message;
 
-use eclipse_services::notifications::{CloseReason, Event, Notification, Notifications};
+use ec_services::notifications::{CloseReason, Event, Notification, Notifications};
 
 /// How often the stack wakes to drain the bus and retire whatever has run out
 /// of time. Shorter than the bar's tick: a toast that lingers a visible beat
@@ -15,10 +15,10 @@ use eclipse_services::notifications::{CloseReason, Event, Notification, Notifica
 const TICK: Duration = Duration::from_millis(200);
 
 /// Gap between the bar's bottom edge and the first card.
-const TOP_MARGIN: i32 = eclipse_ui::tokens::bar::SHEET_MARGIN_TOP;
+const TOP_MARGIN: i32 = ec_ui::tokens::bar::SHEET_MARGIN_TOP;
 /// Gap between the cards and the right edge of the output: the bar
 /// capsule's own, so the stack lines up under its right end.
-const RIGHT_MARGIN: i32 = eclipse_ui::tokens::bar::SHEET_MARGIN_X;
+const RIGHT_MARGIN: i32 = ec_ui::tokens::bar::SHEET_MARGIN_X;
 
 /// How many notifications are drawn at once. The rest wait their turn rather
 /// than being dropped — a queued notification the human never saw must not be
@@ -91,11 +91,11 @@ impl App {
     pub fn new() -> Self {
         let (radius, blur) = crate::conn::fetch_glass();
         App {
-            service: eclipse_services::notifications::spawn().ok(),
+            service: ec_services::notifications::spawn().ok(),
             toasts: Vec::new(),
             surface: None,
             height: 0,
-            glass_radius: radius.unwrap_or(eclipse_ui::tokens::radius::CARD),
+            glass_radius: radius.unwrap_or(ec_ui::tokens::radius::CARD),
             blur: blur.unwrap_or(false),
         }
     }
@@ -261,7 +261,7 @@ pub fn subscription(_app: &App) -> Subscription<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eclipse_services::notifications::{Action, Urgency};
+    use ec_services::notifications::{Action, Urgency};
 
     fn notification(id: u32, expires_in: Option<Duration>) -> Notification {
         Notification {
@@ -288,7 +288,7 @@ mod tests {
             toasts: Vec::new(),
             surface: None,
             height: 0,
-            glass_radius: eclipse_ui::tokens::radius::CARD,
+            glass_radius: ec_ui::tokens::radius::CARD,
             blur: false,
         }
     }

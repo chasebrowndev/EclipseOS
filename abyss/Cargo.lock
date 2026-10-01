@@ -3,36 +3,6 @@
 version = 4
 
 [[package]]
-name = "abyss"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "calloop 0.14.4",
- "ec-protocols",
- "ed25519-dalek",
- "kdl",
- "libc",
- "policy-eval",
- "regex",
- "rustix 1.1.4",
- "serde_json",
- "smithay",
- "tracing",
- "tracing-journald",
- "tracing-subscriber",
- "wayland-client",
- "wayland-protocols",
- "wayland-protocols-misc",
- "wayland-protocols-wlr",
- "xkbcommon",
-]
-
-[[package]]
-name = "abyss-bench"
-version = "0.1.0"
-
-[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -525,6 +495,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-abyss"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "calloop 0.14.4",
+ "ec-policy-eval",
+ "ec-protocols",
+ "ed25519-dalek",
+ "kdl",
+ "libc",
+ "regex",
+ "rustix 1.1.4",
+ "serde_json",
+ "smithay",
+ "tracing",
+ "tracing-journald",
+ "tracing-subscriber",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-misc",
+ "wayland-protocols-wlr",
+ "xkbcommon",
+]
+
+[[package]]
+name = "ec-abyss-bench"
+version = "0.1.0"
+
+[[package]]
+name = "ec-abyss-wlcs"
+version = "0.1.0"
+dependencies = [
+ "ec-abyss",
+ "wayland-sys",
+ "wlcs",
+]
+
+[[package]]
 name = "ec-agentd"
 version = "0.1.0"
 dependencies = [
@@ -536,14 +545,56 @@ dependencies = [
 name = "ec-audit"
 version = "0.1.0"
 dependencies = [
- "policy-eval",
- "policyd",
+ "ec-policy-eval",
+ "ec-policyd",
  "serde_json",
 ]
 
 [[package]]
 name = "ec-cataclysm-pub"
 version = "0.1.0"
+
+[[package]]
+name = "ec-ctl"
+version = "0.1.0"
+dependencies = [
+ "ec-abyss",
+ "kdl",
+ "libc",
+ "serde_json",
+]
+
+[[package]]
+name = "ec-ipc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+]
+
+[[package]]
+name = "ec-policy-eval"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek",
+ "regex",
+]
+
+[[package]]
+name = "ec-policyd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "ec-policy-eval",
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "libc",
+ "rustix 1.1.4",
+ "tracing",
+ "zstd",
+]
 
 [[package]]
 name = "ec-protocols"
@@ -553,24 +604,6 @@ dependencies = [
  "wayland-client",
  "wayland-scanner",
  "wayland-server",
-]
-
-[[package]]
-name = "eclipse-ctl"
-version = "0.1.0"
-dependencies = [
- "abyss",
- "kdl",
- "libc",
- "serde_json",
-]
-
-[[package]]
-name = "eclipse-ipc"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde_json",
 ]
 
 [[package]]
@@ -1419,30 +1452,6 @@ name = "plain"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
-
-[[package]]
-name = "policy-eval"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "ed25519-dalek",
- "regex",
-]
-
-[[package]]
-name = "policyd"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "ed25519-dalek",
- "getrandom 0.4.3",
- "libc",
- "policy-eval",
- "rustix 1.1.4",
- "tracing",
- "zstd",
-]
 
 [[package]]
 name = "polling"
@@ -2624,15 +2633,6 @@ dependencies = [
  "memoffset 0.9.1",
  "nix",
  "wayland-sys",
-]
-
-[[package]]
-name = "wlcs-abyss"
-version = "0.1.0"
-dependencies = [
- "abyss",
- "wayland-sys",
- "wlcs",
 ]
 
 [[package]]

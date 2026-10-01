@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Every colour, radius, size, font and motion curve fog-ui draws with
+//! Every colour, radius, size, font and motion curve ec-fog-ui draws with
 //! (FOG §Visual design). Nothing outside this module names a literal.
 //!
 //! **Where the values come from.** EclipseOS has no colour or font KDL: the
@@ -9,7 +9,7 @@
 //! [`font`] mirror it value for value (each constant names its source).
 //! What the user can set, corner rounding, blur, window opacity, shadow and
 //! the animation switch, is read from `abyss.kdl` by
-//! [`fog_config::theme`] and turned into a [`Look`] at start-up, together
+//! [`ec_fog_config::theme`] and turned into a [`Look`] at start-up, together
 //! with Fog's own `appearance` keys. Fog adds tokens of its own only for
 //! what a file manager has and a settings pane does not: row height, the
 //! icon stand-ins and the drag ghost.
@@ -17,11 +17,11 @@
 use std::sync::{OnceLock, PoisonError, RwLock};
 use std::time::Duration;
 
-use fog_config::theme::Theme;
-use fog_config::Appearance;
-use fog_widgets::contrast::{self, Space, Surface};
-use fog_widgets::glass::Style;
-use fog_widgets::{Blur, Params};
+use ec_fog_config::theme::Theme;
+use ec_fog_config::Appearance;
+use ec_fog_widgets::contrast::{self, Space, Surface};
+use ec_fog_widgets::glass::Style;
+use ec_fog_widgets::{Blur, Params};
 use iced::{Color, Font, Vector};
 
 /// `#rrggbb` at full opacity.
@@ -153,7 +153,7 @@ pub mod color {
     pub const SHEET_SHADOW: Color = black(0.62);
 }
 
-/// The iced theme, for the widgets fog-ui does not style itself (the list's
+/// The iced theme, for the widgets ec-fog-ui does not style itself (the list's
 /// scrollbar): generated from the colours above.
 pub fn iced_theme() -> iced::Theme {
     iced::Theme::custom(
@@ -377,7 +377,7 @@ impl Default for Look {
     }
 }
 
-/// Text alphas fog-ui draws on the window tint.
+/// Text alphas ec-fog-ui draws on the window tint.
 const TEXTS: [(contrast::Rgb, f32); 3] = [
     (contrast::WHITE, color::TEXT.a),
     (contrast::WHITE, color::TEXT_SECONDARY.a),
@@ -527,7 +527,7 @@ pub const DEFAULT_FONT: Font = font::UI;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fog_widgets::contrast::{over, ratio, AA, WORST};
+    use ec_fog_widgets::contrast::{over, ratio, AA, WORST};
 
     fn theme(opacity: f32) -> Theme {
         Theme {

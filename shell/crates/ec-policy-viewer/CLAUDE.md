@@ -1,4 +1,4 @@
-# eclipse-policy-viewer — what the policy currently permits
+# ec-policy-viewer — what the policy currently permits
 
 Read the root `CLAUDE.md` first. Governing spec: COMP-17 (DP-5), B6.
 
@@ -14,7 +14,7 @@ Read the root `CLAUDE.md` first. Governing spec: COMP-17 (DP-5), B6.
   the reason. An empty allowlist renders a sentence, never a blank list.
 - **Fail-closed reading**: an unreadable file is reported as granting nothing,
   never as granting everything.
-- No literal colour, radius or size: `eclipse_ui::tokens` only. `view.rs` is
+- No literal colour, radius or size: `ec_ui::tokens` only. `view.rs` is
   currently a stack of uniform panels with no hero block — see
   `docs/COMPOSITION.md`; this is a known composition bug, not the house style
   (re-checked 2026-09-23: still true).

@@ -9,7 +9,7 @@
 use super::Body;
 use crate::model::{ids, Key, Message, Model, Secret};
 use crate::parts::{self, El};
-use eclipse_ui::tokens::space;
+use ec_ui::tokens::space;
 use iced::widget::Column;
 
 pub fn body(m: &Model) -> Body<'_> {

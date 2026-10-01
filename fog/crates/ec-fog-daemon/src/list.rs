@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use fog_proto::{apply_diff, Entry, Kind, Reply, Sort, SortKey};
+use ec_fog_proto::{apply_diff, Entry, Kind, Reply, Sort, SortKey};
 use rustix::io::Errno;
 
 use crate::cache::{diff, Listing};

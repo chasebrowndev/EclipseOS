@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! fog-ui: the iced frontend for Fog (FOG §UI and navigation).
+//! ec-fog-ui: the iced frontend for Fog (FOG §UI and navigation).
 //!
-//! `fog-ui [PATH]` — opens PATH, or the current directory. All listing I/O
-//! and sorting happens in `fogd`; this process only draws what it sends.
+//! `ec-fog-ui [PATH]` — opens PATH, or the current directory. All listing I/O
+//! and sorting happens in `ec-fogd`; this process only draws what it sends.
 
 mod app;
 mod bench;
@@ -82,13 +82,13 @@ fn main() -> iced::Result {
     let path = resolve(&cwd, std::env::args_os().nth(1));
 
     // Read before iced starts: the UI thread never does filesystem I/O.
-    let config = match fog_config::path().map(|p| fog_config::load(&p)) {
+    let config = match ec_fog_config::path().map(|p| ec_fog_config::load(&p)) {
         Some(Ok(c)) => c,
         Some(Err(e)) => {
-            eprintln!("fog-ui: {e}; using defaults");
-            fog_config::defaults()
+            eprintln!("ec-fog-ui: {e}; using defaults");
+            ec_fog_config::defaults()
         }
-        None => fog_config::defaults(),
+        None => ec_fog_config::defaults(),
     };
     // The modified column's zone and `~`, likewise read up front.
     let tz = jiff::tz::TimeZone::system();
@@ -98,7 +98,7 @@ fn main() -> iced::Result {
     // The desktop's rounding, blur, opacity and motion, and the contrast
     // floor over them (FOG §Visual design).
     theme::init(
-        fog_config::theme::load(&fog_config::theme::paths()),
+        ec_fog_config::theme::load(&ec_fog_config::theme::paths()),
         config.appearance,
     );
 

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The root helper, from the client's side (D-07 §6), and the fake one.
 //!
-//! **Real.** Disks come from `eclipse-setup-helper list-disks`, which is
+//! **Real.** Disks come from `ec-setup-helper list-disks`, which is
 //! unprivileged and prints JSON `Vec<Disk>`; the wizard never lists `/dev`
 //! itself and never lets the user type a device path. Apply is
-//! `pkexec /usr/bin/eclipse-setup-helper apply` with exactly one JSON
+//! `pkexec /usr/bin/ec-setup-helper apply` with exactly one JSON
 //! [`Request`] on its stdin, then stdin closed, and one [`Progress`] JSON per
 //! line coming back on stdout. Fixed argv, no shell, no environment, stderr
 //! discarded (it could quote anything). The request is never logged, never
@@ -16,7 +16,7 @@
 //! events. It is what the whole flow is developed and tested against without
 //! root, and it never is the default. It touches no disk and no network.
 
-use eclipse_setup_plan::{
+use ec_setup_plan::{
     check_password, valid_by_id, valid_hostname, valid_keymap, valid_username, Disk, Partition, Plan,
     Progress, Request, Stage,
 };
@@ -28,9 +28,9 @@ use zeroize::Zeroizing;
 
 /// Where the packaged helper lives. `pkexec` needs the absolute path: polkit
 /// keys its policy on it (`org.freedesktop.policykit.exec.path`).
-pub const HELPER_PATH: &str = "/usr/bin/eclipse-setup-helper";
+pub const HELPER_PATH: &str = "/usr/bin/ec-setup-helper";
 /// `list-disks` is unprivileged, so it is found on `PATH` like any tool.
-pub const HELPER_NAME: &str = "eclipse-setup-helper";
+pub const HELPER_NAME: &str = "ec-setup-helper";
 
 const GIB: u64 = 1 << 30;
 
@@ -357,7 +357,7 @@ pub fn reboot(env: &Env) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eclipse_setup_plan::Profile;
+    use ec_setup_plan::Profile;
     use iced::futures::StreamExt;
 
     fn plan() -> Plan {
@@ -370,7 +370,7 @@ mod tests {
             keymap: "us".into(),
             carry_network: true,
             profile: Profile::Standard,
-            candidates: vec!["hyperion".into()],
+            candidates: vec!["ec-hyperion-bar".into()],
             agents: false,
         }
     }

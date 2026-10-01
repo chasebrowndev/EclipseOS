@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! A specimen sheet of the bar widget vocabulary (ADR 0065): every primitive
-//! in `eclipse_ui::widget`'s bar set, in every state, at bar height.
+//! in `ec_ui::widget`'s bar set, in every state, at bar height.
 //!
-//! `cargo run -p eclipse-ui --example bar_widgets`
+//! `cargo run -p ec-ui --example bar_widgets`
 //!
 //! It is a screenshot subject, so it is deterministic unless asked not to be:
 //! `BAR_WIDGETS_FREEZE=<open>,<reveal>` pins the animated strip's frame
@@ -18,10 +18,10 @@
 
 use std::time::{Duration, Instant};
 
-use eclipse_ui::motion::{Animated, Motion};
-use eclipse_ui::theme;
-use eclipse_ui::tokens::{bar, color, space};
-use eclipse_ui::widget::{
+use ec_ui::motion::{Animated, Motion};
+use ec_ui::theme;
+use ec_ui::tokens::{bar, color, space};
+use ec_ui::widget::{
     art_handle, art_thumb, drag_bar, lit, micro_label, mini_meter, track_label, transport, viz_bars,
     volume_slider, widget_shell, Grip, ShellFrame, ShellSpan, TRANSPORT_W, VOLUME_SLIDER_W,
 };
@@ -312,7 +312,7 @@ fn view(s: &Sheet) -> Element<'_, Msg, Theme> {
         .padding([space::PANE_Y, space::PANE_X])
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(theme::window(eclipse_ui::tokens::radius::WINDOW))
+        .style(theme::window(ec_ui::tokens::radius::WINDOW))
         .into()
 }
 
@@ -327,7 +327,7 @@ fn main() -> iced::Result {
         .theme(|_: &Sheet| theme::theme())
         .window_size((1120.0, 420.0))
         .antialiasing(true);
-    for face in eclipse_ui::FONTS {
+    for face in ec_ui::FONTS {
         app = app.font(*face);
     }
     app.run()

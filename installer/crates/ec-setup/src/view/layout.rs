@@ -10,7 +10,7 @@ use super::Body;
 use crate::choices::Tiling;
 use crate::model::{Message, Model};
 use crate::parts::{self, El};
-use eclipse_ui::tokens::{color, font, size, space};
+use ec_ui::tokens::{color, font, size, space};
 use iced::widget::{column, text, Row};
 use iced::Length;
 

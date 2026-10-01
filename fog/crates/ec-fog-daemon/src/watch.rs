@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Subscriptions and directory watching (FOG §Performance model,
-//! technique 3; §Architecture: "after the first full listing, `fogd` pushes
+//! technique 3; §Architecture: "after the first full listing, `ec-fogd` pushes
 //! only diffs").
 //!
 //! Every cached or subscribed directory gets an inotify watch; eviction from
@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use fog_proto::Reply;
+use ec_fog_proto::Reply;
 use rustix::event::{poll, PollFd, PollFlags, Timespec};
 use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 use rustix::io::Errno;
@@ -282,7 +282,7 @@ impl Hub {
         for s in subs.iter().filter(|s| Some(s.peer) != skip) {
             let f = match &frame {
                 Some(f) => f,
-                None => match fog_proto::encode(r) {
+                None => match ec_fog_proto::encode(r) {
                     Ok(f) => frame.insert(f),
                     Err(e) => return tracing::warn!(error = %e, "push not encodable"),
                 },

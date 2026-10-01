@@ -15,8 +15,8 @@
 use iced::widget::{button, container, image, mouse_area, Row};
 use iced::{Alignment, Color, Element, Length, Theme};
 
-use eclipse_ui::tokens::{bar, color, drawer};
-use eclipse_ui::widget::{self as parts, ShellFrame};
+use ec_ui::tokens::{bar, color, drawer};
+use ec_ui::widget::{self as parts, ShellFrame};
 
 use super::{Parts, Spans};
 use crate::app::{App, Drawer, Message};

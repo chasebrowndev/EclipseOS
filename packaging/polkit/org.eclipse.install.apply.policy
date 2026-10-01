@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <!--
-  D-07 §6. The install action of eclipse-setup-helper: disk, identity, locale,
+  D-07 §6. The install action of ec-setup-helper: disk, identity, locale,
   timezone, the install itself. Fail-closed everywhere it is not explicitly
   allowed: all three defaults are "no". The only rule that allows it lives in
   the ISO's airootfs and requires an active, local liveuser session. The helper
@@ -24,6 +24,6 @@
       <allow_inactive>no</allow_inactive>
       <allow_active>no</allow_active>
     </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/eclipse-setup-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/ec-setup-helper</annotate>
   </action>
 </policyconfig>

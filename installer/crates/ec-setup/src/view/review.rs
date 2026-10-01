@@ -14,9 +14,9 @@ use crate::choices::NONE;
 use crate::data::{format_size, CARDS, LANGUAGES};
 use crate::model::{ids, Key, Message, Model};
 use crate::parts::{self, El, Tone};
-use eclipse_ui::theme;
-use eclipse_ui::tokens::{color, font, size, space};
-use eclipse_ui::widget::{micro_label, prompt_band};
+use ec_ui::theme;
+use ec_ui::tokens::{color, font, size, space};
+use ec_ui::widget::{micro_label, prompt_band};
 use iced::widget::{column, row, text_input};
 use iced::Length;
 

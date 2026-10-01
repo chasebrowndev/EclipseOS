@@ -7,7 +7,7 @@
 //! *suggestion*: the helper validates locale and timezone against its own lists
 //! (D-07 §6), so a wrong entry here is a refusal there, never an injection.
 
-use eclipse_setup_plan::Profile;
+use ec_setup_plan::Profile;
 
 /// One language the wizard can install for: locale, its own name for itself,
 /// the English name, and the keyboard layout people who speak it usually have.
@@ -249,7 +249,7 @@ pub fn scan_keymaps(root: &std::path::Path) -> Vec<String> {
                     walk(&e.path(), depth + 1, out);
                 }
             } else if let Some(name) = e.file_name().to_str().and_then(|n| n.strip_suffix(".map.gz")) {
-                if eclipse_setup_plan::valid_keymap(name) {
+                if ec_setup_plan::valid_keymap(name) {
                     out.push(name.to_owned());
                 }
             }
@@ -587,10 +587,10 @@ pub fn status_word(p: Profile) -> Option<&'static str> {
 /// What Standard seeds, in the config file's words (COMP-17 §2.1 table).
 pub const STANDARD_SEEDS: [(&str, &str); 8] = [
     ("mode", "hybrid"),
-    ("components.bar", "hyperion"),
-    ("components.launcher", "eclipse-launcher"),
-    ("components.notifications", "eclipse-toasts"),
-    ("components.control-center", "eclipse-center"),
+    ("components.bar", "ec-hyperion-bar"),
+    ("components.launcher", "ec-launcher"),
+    ("components.notifications", "ec-toasts"),
+    ("components.control-center", "ec-center"),
     ("terminal", "foot"),
     ("agent stack", "off"),
     ("policy starting point", "locked down"),
@@ -629,10 +629,10 @@ mod tests {
     fn candidates_are_only_catalog_ids() {
         use crate::choices::{Choices, APPS, SLOTS};
         let mut catalog: Vec<&str> = vec![
-            "hyperion",
-            "eclipse-launcher",
-            "eclipse-toasts",
-            "eclipse-center",
+            "ec-hyperion-bar",
+            "ec-launcher",
+            "ec-toasts",
+            "ec-center",
             "waybar",
             "quickshell",
             "fuzzel",
@@ -670,11 +670,11 @@ mod tests {
         }
         assert_eq!(
             Choices::for_profile(Profile::Minimal).candidates(),
-            ["eclipse-launcher"]
+            ["ec-launcher"]
         );
         assert_eq!(
             Choices::for_profile(Profile::Standard).candidates(),
-            ["hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center"]
+            ["ec-hyperion-bar", "ec-launcher", "ec-toasts", "ec-center"]
         );
     }
 

@@ -19,27 +19,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
-name = "abyss"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "calloop 0.14.4",
- "ec-protocols",
- "kdl",
- "libc",
- "policy-eval",
- "regex",
- "rustix 1.1.4",
- "serde_json",
- "smithay",
- "tracing",
- "tracing-journald",
- "tracing-subscriber",
- "xkbcommon",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1128,6 +1107,92 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-abyss"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "calloop 0.14.4",
+ "ec-policy-eval",
+ "ec-protocols",
+ "kdl",
+ "libc",
+ "regex",
+ "rustix 1.1.4",
+ "serde_json",
+ "smithay",
+ "tracing",
+ "tracing-journald",
+ "tracing-subscriber",
+ "xkbcommon",
+]
+
+[[package]]
+name = "ec-center"
+version = "0.1.0"
+dependencies = [
+ "ec-ipc",
+ "ec-services",
+ "ec-ui",
+ "iced",
+ "iced_layershell",
+]
+
+[[package]]
+name = "ec-hyperion-bar"
+version = "0.1.0"
+dependencies = [
+ "ec-ipc",
+ "ec-services",
+ "ec-ui",
+ "freedesktop-icons",
+ "iced",
+ "iced_layershell",
+ "image",
+ "libc",
+ "serde_json",
+]
+
+[[package]]
+name = "ec-ipc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+]
+
+[[package]]
+name = "ec-launcher"
+version = "0.1.0"
+dependencies = [
+ "ec-ipc",
+ "ec-services",
+ "ec-ui",
+ "iced",
+ "iced_layershell",
+ "serde_json",
+]
+
+[[package]]
+name = "ec-policy-eval"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek",
+ "regex",
+]
+
+[[package]]
+name = "ec-policy-viewer"
+version = "0.1.0"
+dependencies = [
+ "ec-ipc",
+ "ec-ui",
+ "iced",
+ "kdl",
+]
+
+[[package]]
 name = "ec-protocols"
 version = "0.1.0"
 dependencies = [
@@ -1137,61 +1202,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "eclipse-center"
+name = "ec-secret-prompt"
 version = "0.1.0"
 dependencies = [
- "eclipse-ipc",
- "eclipse-services",
- "eclipse-ui",
- "iced",
- "iced_layershell",
-]
-
-[[package]]
-name = "eclipse-ipc"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde_json",
-]
-
-[[package]]
-name = "eclipse-launcher"
-version = "0.1.0"
-dependencies = [
- "eclipse-ipc",
- "eclipse-services",
- "eclipse-ui",
- "iced",
- "iced_layershell",
- "serde_json",
-]
-
-[[package]]
-name = "eclipse-policy-viewer"
-version = "0.1.0"
-dependencies = [
- "eclipse-ipc",
- "eclipse-ui",
- "iced",
- "kdl",
-]
-
-[[package]]
-name = "eclipse-secret-prompt"
-version = "0.1.0"
-dependencies = [
- "eclipse-services",
- "eclipse-ui",
+ "ec-services",
+ "ec-ui",
  "iced",
  "zbus",
 ]
 
 [[package]]
-name = "eclipse-services"
+name = "ec-services"
 version = "0.1.0"
 dependencies = [
- "eclipse-ipc",
+ "ec-ipc",
  "libc",
  "nvml-wrapper",
  "nvml-wrapper-sys",
@@ -1202,44 +1226,44 @@ dependencies = [
 ]
 
 [[package]]
-name = "eclipse-settings"
+name = "ec-settings"
 version = "0.1.0"
 dependencies = [
- "abyss",
- "eclipse-ipc",
- "eclipse-services",
- "eclipse-ui",
+ "ec-abyss",
+ "ec-ipc",
+ "ec-services",
+ "ec-ui",
  "iced",
  "serde_json",
  "zbus",
 ]
 
 [[package]]
-name = "eclipse-toasts"
+name = "ec-toasts"
 version = "0.1.0"
 dependencies = [
- "eclipse-ipc",
- "eclipse-services",
- "eclipse-ui",
+ "ec-ipc",
+ "ec-services",
+ "ec-ui",
  "iced",
  "iced_layershell",
 ]
 
 [[package]]
-name = "eclipse-ui"
+name = "ec-ui"
 version = "0.1.0"
 dependencies = [
- "eclipse-ipc",
+ "ec-ipc",
  "iced",
  "serde_json",
 ]
 
 [[package]]
-name = "eclipse-wallpaper"
+name = "ec-wallpaper"
 version = "0.1.0"
 dependencies = [
- "eclipse-ipc",
- "eclipse-ui",
+ "ec-ipc",
+ "ec-ui",
  "iced",
  "iced_layershell",
  "image",
@@ -1953,21 +1977,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17"
 dependencies = [
  "typenum",
-]
-
-[[package]]
-name = "hyperion"
-version = "0.1.0"
-dependencies = [
- "eclipse-ipc",
- "eclipse-services",
- "eclipse-ui",
- "freedesktop-icons",
- "iced",
- "iced_layershell",
- "image",
- "libc",
- "serde_json",
 ]
 
 [[package]]
@@ -3645,15 +3654,6 @@ dependencies = [
  "fdeflate",
  "flate2",
  "miniz_oxide 0.8.9",
-]
-
-[[package]]
-name = "policy-eval"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "ed25519-dalek",
- "regex",
 ]
 
 [[package]]

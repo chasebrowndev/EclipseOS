@@ -20,8 +20,8 @@ use iced_layershell::actions::IcedNewPopupSettings;
 use iced_layershell::reexport::PopupGravity;
 use iced_layershell::to_layer_message;
 
-use eclipse_services::status::{Battery, Bluetooth, Network, Update};
-use eclipse_ui::tokens::{self, bar};
+use ec_services::status::{Battery, Bluetooth, Network, Update};
+use ec_ui::tokens::{self, bar};
 
 use crate::conn::{BarConfig, BarPosition, Conn, LauncherStyle};
 use crate::icons::Icons;
@@ -34,7 +34,7 @@ use crate::widgets::{self, GripEv};
 /// The launcher binary the launcher button starts. The same name the
 /// compositor's default keybind spawns (`abyss` config `Action::Spawn`), so
 /// the button and the chord are one path and cannot drift.
-pub const LAUNCHER: &str = "eclipse-launcher";
+pub const LAUNCHER: &str = "ec-launcher";
 
 /// The longest the event thread waits between passes when the compositor is
 /// quiet. Short enough that the clock's minute boundary is never more than
@@ -197,7 +197,7 @@ pub enum Message {
     /// The wi-fi drawer's switch.
     WifiEnable(bool),
     /// A network row was clicked. A secured network with no saved profile
-    /// hands off to `eclipse-secret-prompt` instead of joining.
+    /// hands off to `ec-secret-prompt` instead of joining.
     WifiConnect(String),
     /// The current network's Disconnect.
     WifiDisconnect,
@@ -221,7 +221,7 @@ pub enum Message {
     /// A widget's service reported, or the human used a widget (ADR 0065).
     Widget(widgets::Feed),
     /// The playback streams, which the per-window mute reads.
-    Streams(Vec<eclipse_services::audio::Stream>),
+    Streams(Vec<ec_services::audio::Stream>),
     /// A widget's grip, by widget key.
     Grip(String, GripEv),
     /// One frame of the bar's motion. Only sent while something moves.
@@ -326,7 +326,7 @@ pub struct App {
     /// same readings, and a click on any of them acts once.
     pub widgets: widgets::State,
     /// The audio service's playback streams, for the per-window mute.
-    pub streams: Vec<eclipse_services::audio::Stream>,
+    pub streams: Vec<ec_services::audio::Stream>,
     /// Debug previews only: when a widget fixture started. A fixture bar
     /// neither refetches nor starts services — the fixture stands in for
     /// both.
@@ -374,7 +374,7 @@ pub struct Bar {
 }
 
 impl Bar {
-    pub fn new(id: Id, output_name: String, output_id: u64, motion: eclipse_ui::motion::Motion) -> Self {
+    pub fn new(id: Id, output_name: String, output_id: u64, motion: ec_ui::motion::Motion) -> Self {
         let mut m = crate::motion::Bar::default();
         m.set_motion(motion);
         Bar {
@@ -485,13 +485,13 @@ impl Air {
 /// A leg that starts from rest follows the configured `bar.fold-curve`, so the
 /// key keeps its meaning. A leg that interrupts a slide still in flight — the
 /// pointer came back before the fold landed — is handed to an
-/// [`Animated`](eclipse_ui::motion::Animated) spring seeded with the speed the
+/// [`Animated`](ec_ui::motion::Animated) spring seeded with the speed the
 /// bar had, so the reversal has neither a position jump nor a velocity kink.
 #[derive(Debug, Clone, Copy)]
 enum Slide {
     Rest,
     Curve { from: f32, started: std::time::Instant },
-    Spring(eclipse_ui::motion::Animated),
+    Spring(ec_ui::motion::Animated),
 }
 
 /// What the bar's layer surface is asked for: its height, its exclusive zone
@@ -660,10 +660,10 @@ impl App {
         let mode = conn.mode();
         let bar_radius = conn
             .glass_radius("bar.rounding")
-            .unwrap_or(eclipse_ui::tokens::bar::RADIUS_SHEET);
+            .unwrap_or(ec_ui::tokens::bar::RADIUS_SHEET);
         let menu_radius = conn
             .glass_radius("decoration.rounding")
-            .unwrap_or(eclipse_ui::tokens::radius::CARD);
+            .unwrap_or(ec_ui::tokens::radius::CARD);
         let blur = conn.blur().unwrap_or(false);
         let air = conn.air().unwrap_or_default();
         // The focused output now, so a bar opened on any other one folds
@@ -756,7 +756,7 @@ fn spawn_once(bin: &'static str, args: &[&str]) {
         // The bar cannot narrate this in a 44px row, but it must not swallow
         // it either: stderr is the bar's journal unit. Only the binary is
         // named — the arguments may carry an SSID.
-        Err(e) => eprintln!("hyperion: cannot start {bin}: {e}"),
+        Err(e) => eprintln!("ec-hyperion-bar: cannot start {bin}: {e}"),
     }
 }
 
@@ -764,11 +764,11 @@ fn spawn_once(bin: &'static str, args: &[&str]) {
 fn spawn_once(_bin: &'static str, _args: &[&str]) {}
 
 /// The Settings binary a drawer's link starts, with the pane as its argument.
-pub const SETTINGS: &str = "eclipse-settings";
+pub const SETTINGS: &str = "ec-settings";
 
 /// The password prompt: a separate process whose whole surface is `secret`
 /// (ADR 0053), so the passphrase never passes through the bar.
-pub const SECRET_PROMPT: &str = "eclipse-secret-prompt";
+pub const SECRET_PROMPT: &str = "ec-secret-prompt";
 
 /// `HYPERION_PREVIEW=network|bluetooth|overflow|traymenu|bar` fills the radios and the
 /// tray with a fixture and, for a drawer, opens it as soon as the bar has a
@@ -887,7 +887,7 @@ pub(crate) fn send(sender: &mut iced::futures::channel::mpsc::Sender<Message>, m
 
 /// Sleep until the compositor has something to say, or `timeout` passes.
 /// Without a connection there is nothing to wake on, so it is a plain sleep.
-fn wait(client: Option<&eclipse_ipc::Client>, timeout: std::time::Duration) {
+fn wait(client: Option<&ec_ipc::Client>, timeout: std::time::Duration) {
     let Some(c) = client else {
         std::thread::sleep(timeout);
         return;
@@ -1324,7 +1324,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             };
         }
         // A stray `open_launcher` under the centred style is not ours:
-        // `eclipse-launcher` only sends it when the style is the menu.
+        // `ec-launcher` only sends it when the style is the menu.
         Message::MenuOpen(_) if app.bar.launcher != LauncherStyle::Menu => {}
         Message::MenuOpen(output) => {
             // The bar on the output the keybind was pressed on; an
@@ -1802,7 +1802,7 @@ fn toggle_start(app: &mut App, id: Id) -> Task<Message> {
     // One menu at a time, and never a popup over it.
     let closed = dismiss(app);
     let term = app.conn.terminal_command();
-    let entries = eclipse_services::apps::scan(term.as_deref());
+    let entries = ec_services::apps::scan(term.as_deref());
     let open = with_bar(app, id, |app, bar| {
         bar.menu.open(entries, term, now);
         Task::batch([
@@ -1856,12 +1856,12 @@ fn run_entry(app: &mut App, at: Id, index: usize) -> Task<Message> {
 }
 
 #[cfg(not(test))]
-fn launch_entry(entry: &eclipse_services::apps::Entry, term: Option<&str>) -> std::io::Result<()> {
-    eclipse_services::apps::launch(entry, term)
+fn launch_entry(entry: &ec_services::apps::Entry, term: Option<&str>) -> std::io::Result<()> {
+    ec_services::apps::launch(entry, term)
 }
 
 #[cfg(test)]
-fn launch_entry(_entry: &eclipse_services::apps::Entry, _term: Option<&str>) -> std::io::Result<()> {
+fn launch_entry(_entry: &ec_services::apps::Entry, _term: Option<&str>) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -1964,7 +1964,7 @@ fn sync_eye(app: &App, bar: &mut Bar) -> Task<Message> {
 /// mid-slide becomes a spring that keeps the bar's current speed, so it
 /// neither jumps back to the old end nor stops dead before turning.
 fn commit(cfg: &BarConfig, fold: &mut FoldState, target: FoldTarget, now: std::time::Instant) {
-    use eclipse_ui::motion::{Animated, Curve, Motion};
+    use ec_ui::motion::{Animated, Curve, Motion};
     fold.pending = None;
     fold.target = target;
     let (at, speed) = slide_at(cfg, fold, now);
@@ -2471,7 +2471,7 @@ fn radio(app: &mut App, feed: crate::radio::Feed) -> Task<Message> {
 
 /// Start a second copy of the application a window belongs to.
 ///
-/// The join is the desktop entry: `eclipse-services` already scans and launches
+/// The join is the desktop entry: `ec-services` already scans and launches
 /// them, and an `app_id` is by convention the entry's own basename, so the
 /// match is `<app_id>.desktop` against `Entry::id`. No entry means the window
 /// was not started from one — nothing to repeat, and guessing at an argv from a
@@ -2483,14 +2483,14 @@ fn new_instance(app_id: Option<String>) {
     // No terminal command sourced here: a second instance is started without
     // asking the compositor anything, same as before `misc.terminal-command`
     // existed, so a `Terminal=true` entry still does not relaunch from the
-    // taskbar (TERM-01 only changes what `eclipse-launcher` offers to run).
-    let entries = eclipse_services::apps::scan(None);
+    // taskbar (TERM-01 only changes what `ec-launcher` offers to run).
+    let entries = ec_services::apps::scan(None);
     let Some(entry) = entries.iter().find(|e| e.id.eq_ignore_ascii_case(&wanted)) else {
-        eprintln!("hyperion: no desktop entry for {app_id}");
+        eprintln!("ec-hyperion-bar: no desktop entry for {app_id}");
         return;
     };
-    if let Err(e) = eclipse_services::apps::launch(entry, None) {
-        eprintln!("hyperion: cannot start {}: {e}", entry.id);
+    if let Err(e) = ec_services::apps::launch(entry, None) {
+        eprintln!("ec-hyperion-bar: cannot start {}: {e}", entry.id);
     }
 }
 
@@ -2634,14 +2634,14 @@ fn compositor() -> Subscription<Message> {
                 // One system-bus connection for all three watchers. A machine
                 // without a system bus simply never sends a status message;
                 // the compositor half of this thread is unaffected.
-                let status = eclipse_services::status::spawn().ok();
+                let status = ec_services::status::spawn().ok();
                 // Wifi, bluetooth and the tray: the services behind the
                 // drawers' actions, whose answers come back here.
                 let feeds = crate::radio::take_feeds();
                 let mut minute = String::new();
                 loop {
                     if client.is_none() {
-                        if let Ok(mut c) = eclipse_ipc::Client::connect() {
+                        if let Ok(mut c) = ec_ipc::Client::connect() {
                             if c.subscribe(crate::conn::KINDS).is_ok() {
                                 client = Some(c);
                                 // A fresh connection means the bar may have
@@ -2663,7 +2663,7 @@ fn compositor() -> Subscription<Message> {
                                     // every other kind means "state moved",
                                     // which is one refetch.
                                     let message = match event.kind {
-                                        eclipse_ipc::EventKind::Output => event
+                                        ec_ipc::EventKind::Output => event
                                             .data
                                             .get("focused")
                                             .and_then(serde_json::Value::as_u64)
@@ -2681,10 +2681,10 @@ fn compositor() -> Subscription<Message> {
                                                     .unwrap_or(false),
                                             })
                                             .unwrap_or(Message::Refresh),
-                                        eclipse_ipc::EventKind::Config => Message::Reconfigured,
+                                        ec_ipc::EventKind::Config => Message::Reconfigured,
                                         // `open_launcher`: the start menu on
                                         // the named output.
-                                        eclipse_ipc::EventKind::Launcher => match (
+                                        ec_ipc::EventKind::Launcher => match (
                                             event.data.get("action").and_then(serde_json::Value::as_str),
                                             event.data.get("output").and_then(serde_json::Value::as_u64),
                                         ) {
@@ -2783,7 +2783,7 @@ pub(crate) mod tests {
 
     fn now_playing(a: &mut App) {
         use crate::widgets::{now_playing, Feed};
-        use eclipse_services::media::{NowPlaying, Playback};
+        use ec_services::media::{NowPlaying, Playback};
         widgets::update(
             &mut a.widgets,
             Feed::NowPlaying(now_playing::Feed::Player(Some(NowPlaying {
@@ -2962,7 +2962,7 @@ pub(crate) mod tests {
         let id = bar_on(&mut a, "DP-1", 0);
         widgets::update(
             &mut a.widgets,
-            Feed::Volume(volume::Feed::Sink(Some(eclipse_services::audio::Sink {
+            Feed::Volume(volume::Feed::Sink(Some(ec_services::audio::Sink {
                 volume: 0.5,
                 muted: false,
                 description: "Speakers".into(),
@@ -3344,12 +3344,7 @@ mod fold_tests {
         let mut a = App::new();
         a.bar = cfg(true, false);
         a.focused_output = 7;
-        let b = Bar::new(
-            Id::unique(),
-            "DP-1".into(),
-            7,
-            eclipse_ui::motion::Motion::DEFAULT,
-        );
+        let b = Bar::new(Id::unique(), "DP-1".into(), 7, ec_ui::motion::Motion::DEFAULT);
         (a, b)
     }
 

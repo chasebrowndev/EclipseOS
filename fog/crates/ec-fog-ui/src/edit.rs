@@ -3,12 +3,12 @@
 //! One-line text editing for the path bar and the palette, and the path
 //! editor's completion (FOG §UI and navigation).
 //!
-//! Plain state, not an iced `text_input`: fog-ui reads every key through
+//! Plain state, not an iced `text_input`: ec-fog-ui reads every key through
 //! `keyboard::listen`, and a focused `text_input` would swallow Esc and the
-//! bindings. Completion reads a `fogd` listing of the folder being typed in
+//! bindings. Completion reads a `ec-fogd` listing of the folder being typed in
 //! (`ListDir`), never the filesystem: the UI thread does no I/O.
 
-use fog_proto::{apply_diff, Entry, Kind, Reply};
+use ec_fog_proto::{apply_diff, Entry, Kind, Reply};
 
 /// An edit to a [`LineEdit`], as the app maps keys to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,7 +89,7 @@ impl LineEdit {
     }
 }
 
-/// The folder listing completion reads, as `fogd` sent it.
+/// The folder listing completion reads, as `ec-fogd` sent it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Held {
     path: Vec<u8>,
@@ -142,7 +142,7 @@ impl PathEdit {
         Some(dir)
     }
 
-    /// A new `fogd` connection: ask for the listing again on the next
+    /// A new `ec-fogd` connection: ask for the listing again on the next
     /// [`Self::want`].
     pub fn forget(&mut self) {
         self.held = None;
@@ -207,7 +207,7 @@ impl PathEdit {
     }
 
     /// Folders in the typed folder whose name starts with the partial name
-    /// (ASCII case folded), in `fogd`'s order. Dot folders only when asked
+    /// (ASCII case folded), in `ec-fogd`'s order. Dot folders only when asked
     /// for, by `show_hidden` or a typed leading `.`.
     pub fn candidates(&self, show_hidden: bool) -> Vec<&Entry> {
         let (Some(h), Some((dir, part))) = (&self.held, self.split()) else {
@@ -267,7 +267,7 @@ impl PathEdit {
 }
 
 /// `.` dropped, `..` popped, repeated and trailing `/` removed, like
-/// `fog-ui`'s start-path resolution. `path` is absolute.
+/// `ec-fog-ui`'s start-path resolution. `path` is absolute.
 pub fn normalize(path: &[u8]) -> Vec<u8> {
     let mut parts: Vec<&[u8]> = Vec::new();
     for c in path.split(|&b| b == b'/') {
@@ -348,7 +348,7 @@ mod tests {
         // A snapshot for some other folder is not completion's.
         p.on_reply(&snap("/elsewhere", &[("src", Kind::Dir)]));
         assert!(p.candidates(false).is_empty());
-        // fogd's order is reversed insertion here; completion keeps it.
+        // ec-fogd's order is reversed insertion here; completion keeps it.
         p.on_reply(&snap(
             "/home/u",
             &[

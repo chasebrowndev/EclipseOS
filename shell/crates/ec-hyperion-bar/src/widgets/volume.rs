@@ -8,9 +8,9 @@
 use iced::mouse::ScrollDelta;
 use iced::widget::mouse_area;
 
-use eclipse_services::audio::Sink;
-use eclipse_ui::tokens::{bar, color};
-use eclipse_ui::widget::{self as parts, ShellFrame, VOLUME_SLIDER_W};
+use ec_services::audio::Sink;
+use ec_ui::tokens::{bar, color};
+use ec_ui::widget::{self as parts, ShellFrame, VOLUME_SLIDER_W};
 
 use super::{Action, Feed as Routed, Parts, Spans};
 use crate::app::Message;

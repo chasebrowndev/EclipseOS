@@ -1,5 +1,5 @@
 [package]
-name = "hyperion"
+name = "ec-hyperion-bar"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,11 +11,11 @@ description = "Hyperion, the Eclipse taskbar: a layer surface that lists windows
 publish = false
 
 [lib]
-name = "hyperion"
+name = "ec_hyperion_bar"
 path = "src/lib.rs"
 
 [[bin]]
-name = "hyperion"
+name = "ec-hyperion-bar"
 path = "src/main.rs"
 
 [dependencies]
@@ -24,11 +24,11 @@ path = "src/main.rs"
 # `canvas` draws the eclipse mark as an eye: a disc with an even-odd pupil.
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "svg", "image-without-codecs", "canvas"] }
 iced_layershell = "0.19.1"
-eclipse-ui = { path = "../ec-ui" }
-eclipse-ipc = { path = "../../../abyss/crates/ec-ipc" }
+ec-ui = { path = "../ec-ui" }
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 # The system-status watchers (ADR 0038), the wifi/bluetooth actions the drawers
 # send and the SNI tray host (ADR 0053). Secrets never pass through the bar.
-eclipse-services = { path = "../ec-services" }
+ec-services = { path = "../ec-services" }
 serde_json.workspace = true
 # `clock.rs` formats wall-clock time through `localtime_r`, so that the bar
 # follows the user's zone and DST without carrying a time crate.

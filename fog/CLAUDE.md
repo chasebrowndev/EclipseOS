@@ -6,22 +6,22 @@ guide first; the rest is reference. Standalone cargo workspace (the spec's
 
 ## Invariants (never violate)
 
-- `fogd` never runs with privileges. Only `fog-elevate` runs as root, and only for the lifetime of one elevated tab.
-- The UI thread never does filesystem I/O or sorting. All of it happens in `fogd`.
+- `ec-fogd` never runs with privileges. Only `fog-elevate` runs as root, and only for the lifetime of one elevated tab.
+- The UI thread never does filesystem I/O or sorting. All of it happens in `ec-fogd`.
 - Every mutation goes through the job queue and the undo journal. No direct writes from the UI, CLI or portal.
 - Renames use `RENAME_NOREPLACE`. No code path may silently overwrite a file.
 - Unknown config keys are errors, and the last valid config stays active.
-- `fog`, `fogd` and `fog-ui` contain no `agentd` client code; only the `fog-activityd` add-on daemon does (ADR 0066).
+- `fog`, `ec-fogd` and `ec-fog-ui` contain no `agentd` client code; only the `fog-activityd` add-on daemon does (ADR 0066).
 - Agents never reach `fogd.sock`. Agent calls arrive only via `agentd`.
 
 ## Crates
 
-- `fog-proto` — IPC message types, versioned framing; no I/O.
-- `fog-config` — `fog.kdl` parsing over the embedded `config/fog.default.kdl`; the `Action` names.
-- `fog-daemon` — `fogd`: backends, cache, watch, jobs, journal, thumbnails.
-- `fog-widgets` — virtual list, glass shader, reusable widgets.
-- `fog-ui` — iced app: windows, views, input, animation.
-- `fog-bench` — latency and frame-time benchmarks against §Performance model.
+- `ec-fog-proto` — IPC message types, versioned framing; no I/O.
+- `ec-fog-config` — `fog.kdl` parsing over the embedded `config/fog.default.kdl`; the `Action` names.
+- `ec-fog-daemon` — `ec-fogd`: backends, cache, watch, jobs, journal, thumbnails.
+- `ec-fog-widgets` — virtual list, glass shader, reusable widgets.
+- `ec-fog-ui` — iced app: windows, views, input, animation.
+- `ec-fog-bench` — latency and frame-time benchmarks against §Performance model.
 
 ## Features
 

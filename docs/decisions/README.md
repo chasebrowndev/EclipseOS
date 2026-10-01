@@ -52,7 +52,7 @@ writing a new ADR that says so.
 | 0044 | [One canonical CBOR profile, hand-rolled, for grants, audit and sockets](0044-canonical-cbor-profile.md) | accepted |
 | 0045 | [Grants are COSE_Sign1 over canonical CBOR, Ed25519, embedded payload](0045-grant-signing-cose-sign1.md) | accepted |
 | 0046 | [The S-04 §4 audit store is the task/counter journal, built at milestone 10](0046-shared-audit-store-at-m10.md) | accepted |
-| 0047 | [The `policy-eval` API surface: what the two processes are allowed to share](0047-policy-eval-api-surface.md) | accepted |
+| 0047 | [The `ec-policy-eval` API surface: what the two processes are allowed to share](0047-policy-eval-api-surface.md) | accepted |
 | 0048 | [A task's statement is journalled as a hash, and does not survive a restart](0048-task-statement-is-hashed-not-journalled.md) | accepted |
 | 0049 | [Outputs carry a number; Ctrl+Super+[N] moves a window to display N](0049-output-number-and-move-to-output.md) | accepted |
 | 0050 | [Oracle-Eyes may call `get_outputs`](0050-oracle-eyes-reads-get-outputs.md) | accepted |

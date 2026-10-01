@@ -5,7 +5,7 @@ Ideas parked deliberately, not forgotten. Nothing here is scheduled.
 ## A settings-plugin system for EclipseOS
 
 Oracle-Eyes has no settings UI of its own and cannot get one from
-`eclipse-settings`: that crate is closed and schema-driven entirely off the
+`ec-settings`: that crate is closed and schema-driven entirely off the
 compositor's `get_config {schema: true}` (see its `CLAUDE.md` — "there is no
 hand-written key list in this crate," and `tests/coverage.rs` ratchets its
 coverage of *compositor* keys only). There is currently no mechanism anywhere

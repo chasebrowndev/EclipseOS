@@ -2,7 +2,7 @@
 //! Human control socket (COMP-13 §2).
 //!
 //! A line-delimited JSON-RPC 2.0 server on `$XDG_RUNTIME_DIR/eclipse/abyss.sock`,
-//! mode 0600, for bars, launchers, scripts and `eclipse-ctl`.
+//! mode 0600, for bars, launchers, scripts and `ec-ctl`.
 //!
 //! It is an ordinary calloop source on the compositor's own loop, not a
 //! thread: reads are non-blocking and a request is dispatched between two

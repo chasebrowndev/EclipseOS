@@ -4,7 +4,7 @@ Date: 2026-09-24
 Deciders: chase (owner), Claude (advisory)
 
 ## Context
-D-07 §6 has a root `eclipse-setup-helper` that must not repartition a disk on the
+D-07 §6 has a root `ec-setup-helper` that must not repartition a disk on the
 say-so of a client: a typed disk name proves nothing against a `liveuser` process
 that sends the right string. It therefore asks the compositor for a human-seat
 allow/deny. The spec had no channel for that. The human control socket is gated on

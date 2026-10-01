@@ -9,12 +9,12 @@
 //! a bar per output the control socket lists, closing and opening bars as
 //! monitors come and go (see `app::reconcile`). The shared services and the
 //! control-socket connection each exist once, whatever the number of screens.
-//! The BlueZ pairing agent is not here: it is `eclipse-pairing` (ADR 0066).
+//! The BlueZ pairing agent is not here: it is `ec-pairing` (ADR 0066).
 //!
 //! `--output <NAME>` pins the process to one bar on that connector and never
 //! reconciles: a debug path, not how the session runs it.
 
-use hyperion::{app, view};
+use ec_hyperion_bar::{app, view};
 use iced_layershell::settings::{LayerShellSettings, StartMode};
 
 fn namespace() -> String {
@@ -27,13 +27,13 @@ fn main() -> iced_layershell::Result {
         Some("--output") => match args.next() {
             Some(name) => Some(name),
             None => {
-                eprintln!("hyperion: --output needs a connector name");
+                eprintln!("ec-hyperion-bar: --output needs a connector name");
                 std::process::exit(2);
             }
         },
         None => None,
         Some(other) => {
-            eprintln!("hyperion: unknown argument {other:?} (expected --output <NAME>)");
+            eprintln!("ec-hyperion-bar: unknown argument {other:?} (expected --output <NAME>)");
             std::process::exit(2);
         }
     };
@@ -57,11 +57,11 @@ fn main() -> iced_layershell::Result {
         ..Default::default()
     })
     .style(view::style)
-    .theme(|_: &app::App, _: iced::window::Id| eclipse_ui::theme::theme())
+    .theme(|_: &app::App, _: iced::window::Id| ec_ui::theme::theme())
     .subscription(app::subscription)
     .antialiasing(true);
     // Every face, registered once, before the first surface exists.
-    for face in eclipse_ui::FONTS {
+    for face in ec_ui::FONTS {
         builder = builder.font(*face);
     }
     builder.run()

@@ -21,11 +21,11 @@ use std::time::{Duration, Instant};
 use iced::widget::image;
 use iced::{Color, Subscription};
 
-use eclipse_services::custom::{Kind, Output, WidgetSpec};
-use eclipse_services::media::{NowPlaying, Playback};
-use eclipse_services::status::{Battery, Charge};
-use eclipse_services::usage::Sample;
-use eclipse_ui::tokens::{bar, color};
+use ec_services::custom::{Kind, Output, WidgetSpec};
+use ec_services::media::{NowPlaying, Playback};
+use ec_services::status::{Battery, Charge};
+use ec_services::usage::Sample;
+use ec_ui::tokens::{bar, color};
 
 use crate::app::{App, Message};
 use crate::model::{Snapshot, Trust, Window, Workspace};
@@ -198,7 +198,7 @@ pub fn widgets(app: &mut App, idle: bool, output: u64) {
     );
     widgets::update(
         state,
-        widgets::Feed::Volume(volume::Feed::Sink(Some(eclipse_services::audio::Sink {
+        widgets::Feed::Volume(volume::Feed::Sink(Some(ec_services::audio::Sink {
             volume: 0.64,
             muted: false,
             description: "Speakers".to_owned(),

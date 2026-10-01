@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-use eclipse_setup_helper::cli;
-use eclipse_setup_helper::confirm::{Confirm, DenyConfirm, SocketConfirm};
-use eclipse_setup_helper::env::{Env, Paths};
-use eclipse_setup_helper::runner::SysRunner;
+use ec_setup_helper::cli;
+use ec_setup_helper::confirm::{Confirm, DenyConfirm, SocketConfirm};
+use ec_setup_helper::env::{Env, Paths};
+use ec_setup_helper::runner::SysRunner;
 use rustix::fs::Mode;
 use rustix::process::{geteuid, setrlimit, Resource, Rlimit};
 use std::process::ExitCode;

@@ -6,7 +6,7 @@
 //! [`Action::ALL`] order, then custom actions as configured); nothing is
 //! ranked.
 
-use fog_config::{Action, CustomAction};
+use ec_fog_config::{Action, CustomAction};
 
 use crate::edit::{Edit, LineEdit};
 use crate::state::fuzzy;

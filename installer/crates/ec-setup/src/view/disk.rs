@@ -13,10 +13,10 @@ use super::Body;
 use crate::data::format_size;
 use crate::model::{Load, Message, Model};
 use crate::parts::{self, El, Ink};
-use eclipse_setup_plan::Disk;
-use eclipse_ui::theme;
-use eclipse_ui::tokens::{color, font, size, space};
-use eclipse_ui::widget::{hairline, inset, list_row, micro_label, value};
+use ec_setup_plan::Disk;
+use ec_ui::theme;
+use ec_ui::tokens::{color, font, size, space};
+use ec_ui::widget::{hairline, inset, list_row, micro_label, value};
 use iced::widget::{column, container, row, text, Column, Row, Space};
 use iced::{Alignment, Length};
 

@@ -17,11 +17,11 @@ that hybrid is the tiebreaker.
 
 Nothing that is a matter of taste may be a constant in the source. The accent
 colours are the live example — the taskbar's yellow "up" accent is currently
-`eclipse_ui::tokens`, and it should be a settings value like any other. The
+`ec_ui::tokens`, and it should be a settings value like any other. The
 rule generalises: palette, geometry, clock format, chip behaviour, which
 applets appear and in what order.
 
-`eclipse_ui::tokens` stays the only *source* of colour/size/radius for the
+`ec_ui::tokens` stays the only *source* of colour/size/radius for the
 views; the question is where the tokens themselves come from. Today they are
 compiled in. They should be loaded from config, with the compiled values as
 defaults.
@@ -52,15 +52,15 @@ defaults.
   `abyss/crates/ec-abyss/src/config/mod.rs`, `default_binds`) has no `launcher.*` keys;
   the only config it reads is `misc.terminal-command`, once at startup
   (`shell/crates/ec-launcher/src/conn.rs`), so it has no tab in
-  `eclipse-settings` either. It wants a `launcher.*`
+  `ec-settings` either. It wants a `launcher.*`
   section in the schema table and its own pane alongside Taskbar once there is
   something to put in it: result count, whether it searches paths as well as
   desktop entries, where it anchors. Deferred deliberately — the Taskbar pane
   shipped first because `bar.*` had real keys to expose.
 
 - **Wifi and bluetooth pickers — decided and built (ADR 0053).** The drawers
-  scan, join, disconnect, pair and connect through the `eclipse-services::status`
-  action path. Passphrases and PINs go through `eclipse-secret-prompt`, a separate
+  scan, join, disconnect, pair and connect through the `ec-services::status`
+  action path. Passphrases and PINs go through `ec-secret-prompt`, a separate
   toplevel whose whole surface is `secret`. What is left:
   - **`Pairing.Answer` is not authenticated.** Any process running as the same
     user can answer a pairing request on the session bus while its prompt is
@@ -108,7 +108,7 @@ separate work:
 
 ## Wallpaper
 
-`eclipse-wallpaper` v1 (ADR 0068) draws one still image or a solid colour per
+`ec-wallpaper` v1 (ADR 0068) draws one still image or a solid colour per
 output. Beyond that:
 
 - **Animated / GIF wallpapers.** Frame timing on the `Background` layer, paused
@@ -147,7 +147,7 @@ output. Beyond that:
 
 - **User-chosen boot and shutdown splash, set in Settings.** The EclipseOS
   mark now shows at boot (UKI `--splash`, `packaging/boot/splash.bmp`) and at
-  shutdown (`eclipse-shutdown-splash.service` blitting to fbdev), with quiet
+  shutdown (`ec-shutdown-splash.service` blitting to fbdev), with quiet
   boot and no menu. Letting the user pick their own PNG was scoped on
   2026-09-23 and held:
   - Two settings, boot and shutdown; shutdown defaults to the boot image.
@@ -210,12 +210,12 @@ first, then where the code goes, then the COMP-16 milestone.
   (autostart set, default binds, panel) that explicit config overrides. Does
   not exist; was out of scope by DE plan B7. `config/mod.rs`, `config/schema.rs`.
   *Phase 1, DE userland.*
-- **`eclipse-wallpaper` v1.** ADR 0068, D-05 §5. New crate
+- **`ec-wallpaper` v1.** ADR 0068, D-05 §5. New crate
   `shell/crates/ec-wallpaper/`: layer-shell on `Background`, one surface per
   output, image (`fill`/`fit`/`center`) or solid colour, reload on `config`,
   reconcile on `output`. Schema keys `wallpaper.path`/`mode`/`color` and the
   KDL-only `output` child in `config/schema.rs`; Appearance-pane rows in
-  eclipse-settings; `packaging/` unit `eclipse-wallpaper.service` and split package
+  ec-settings; `packaging/` unit `ec-wallpaper.service` and split package
   `eclipseos-wallpaper` under `eclipseos-meta`. *Phase 1, DE userland.*
 - **Taskbar clock: calendar drawer.** See Taskbar above;
   `shell/crates/ec-hyperion-bar/src/view.rs`. *Phase 1, DE userland.*

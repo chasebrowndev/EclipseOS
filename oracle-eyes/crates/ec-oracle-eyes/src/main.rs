@@ -23,7 +23,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use beacon::Eye;
-use eclipse_ipc::{Client, EventKind};
+use ec_ipc::{Client, EventKind};
 use frame::Region;
 use hud::{Anchor, Hud, Panel};
 use pipeline::{Answer, Pipeline};
@@ -32,7 +32,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("oracle-eyes: {e}");
+            eprintln!("ec-oracle-eyes: {e}");
             ExitCode::FAILURE
         }
     }
@@ -43,7 +43,7 @@ fn run() -> Result<(), String> {
     for e in &errors {
         // A bad config line is never fatal: the default it failed to
         // override is still a working daemon.
-        eprintln!("oracle-eyes: config: {e}");
+        eprintln!("ec-oracle-eyes: config: {e}");
     }
     let mut auto = cfg.auto;
     let fail_ms = cfg.fail_indicator_ms;
@@ -118,7 +118,7 @@ fn run() -> Result<(), String> {
                 Some("annotation-dismiss") => {
                     until = None;
                     if let Err(e) = hud.dismiss(&mut client) {
-                        eprintln!("oracle-eyes: {e}");
+                        eprintln!("ec-oracle-eyes: {e}");
                     }
                     None
                 }
@@ -135,7 +135,7 @@ fn run() -> Result<(), String> {
         if until.is_some_and(|u| now >= u) {
             until = None;
             if let Err(e) = hud.dismiss(&mut client) {
-                eprintln!("oracle-eyes: {e}");
+                eprintln!("ec-oracle-eyes: {e}");
             }
         }
 
@@ -200,7 +200,7 @@ fn present(
     let (anchor, panel, hold) = match result {
         Ok(a) => (a.anchor, a.panel, a.hold_ms),
         Err(e) => {
-            eprintln!("oracle-eyes: {e}");
+            eprintln!("ec-oracle-eyes: {e}");
             // A failure belongs beside the thing that was asked about, same
             // as an answer would. Only a failure with no region at all —
             // a malformed chord — falls back to the corner.
@@ -213,7 +213,7 @@ fn present(
         Err(e) => {
             // If the compositor will not draw for us there is nowhere left
             // to complain but the journal.
-            eprintln!("oracle-eyes: {e}");
+            eprintln!("ec-oracle-eyes: {e}");
             None
         }
     }

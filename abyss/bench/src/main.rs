@@ -20,9 +20,9 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use abyss_bench::alloc::Counting;
-use abyss_bench::budgets::Budget;
-use abyss_bench::{measure, Report, DEFAULT_ITERS};
+use ec_abyss_bench::alloc::Counting;
+use ec_abyss_bench::budgets::Budget;
+use ec_abyss_bench::{measure, Report, DEFAULT_ITERS};
 
 /// Installed process-wide so `Report::forbid_alloc` has something to count.
 /// Only this binary installs it; the library's own tests run under the default

@@ -4,11 +4,11 @@ Date: 2026-09-21
 Deciders: chase (owner), Claude (advisory)
 
 ## Context
-`crates/eclipse-bar` built four binaries: the taskbar, plus `eclipse-toasts`,
-`eclipse-center` and `eclipse-launcher` as extra `[[bin]]` targets, and all
+`crates/eclipse-bar` built four binaries: the taskbar, plus `ec-toasts`,
+`ec-center` and `ec-launcher` as extra `[[bin]]` targets, and all
 four shipped in the single `eclipseos-desktop` package. None of the three
-extras imports anything from the bar; they only share `eclipse-ui` and
-`eclipse-services`, which are separate crates already. The bundling was an
+extras imports anything from the bar; they only share `ec-ui` and
+`ec-services`, which are separate crates already. The bundling was an
 accident of layout, but a real cost to users: someone who runs Quickshell or
 Waybar as their bar and wants our notification toasts had to install our bar
 to get them.
@@ -26,25 +26,25 @@ third-party alternative.
 
 ## Decision
 Option 2. The taskbar crate is renamed `hyperion` (internal name; the UI and
-docs addressed to users say "taskbar"). `eclipse-toasts`, `eclipse-center` and
-`eclipse-launcher` become their own crates. Each ships as its own package
+docs addressed to users say "taskbar"). `ec-toasts`, `ec-center` and
+`ec-launcher` become their own crates. Each ships as its own package
 (`eclipseos-hyperion`, `eclipseos-toasts`, `eclipseos-center`,
 `eclipseos-launcher`), and `eclipseos-meta` depends on all of them, so a
 default install is unchanged.
 
 Rules going forward:
 - A swappable component never depends on another one. Shared code goes into
-  `eclipse-ui` (visual) or `eclipse-services` (data and D-Bus).
+  `ec-ui` (visual) or `ec-services` (data and D-Bus).
 - Only `eclipseos-hyperion` depends on `eclipseos-abyss`. The others are plain
   layer-shell clients and must keep working under any compositor that speaks
   wlr-layer-shell.
 - Cross-component launches use the binary name on `PATH` (the taskbar spawns
-  `eclipse-launcher` and `eclipse-center` that way), so a replacement binary of
+  `ec-launcher` and `ec-center` that way), so a replacement binary of
   the same name slots in.
 
 ## Consequences
 - `eclipseos-toasts` installs and runs with no taskbar and no abyss.
-- `eclipse-bar.service` becomes `hyperion.service`, and `ECLIPSE_BAR_OUTPUT`
+- `eclipse-bar.service` becomes `ec-hyperion-bar.service`, and `ECLIPSE_BAR_OUTPUT`
   becomes `HYPERION_OUTPUT`. There is no compatibility alias: EclipseOS has no
   installed base to keep.
 - Four `cargo build` targets instead of one crate. The build graph is the same

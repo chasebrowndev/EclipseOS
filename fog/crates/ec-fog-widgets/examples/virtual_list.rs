@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! 100 000-row [`fog_widgets::VirtualList`] demo.
+//! 100 000-row [`ec_fog_widgets::VirtualList`] demo.
 //!
 //! Run from `fog/`:
 //!
 //! ```sh
-//! cargo run -p fog-widgets --example virtual_list            # 100 000 rows
-//! cargo run -p fog-widgets --example virtual_list -- 1000000 # any count
+//! cargo run -p ec-fog-widgets --example virtual_list            # 100 000 rows
+//! cargo run -p ec-fog-widgets --example virtual_list -- 1000000 # any count
 //! ```
 //!
 //! Keys: `j`/`k` or arrows move the selection (kept in view with
@@ -20,7 +20,7 @@
 //! were materialized too late.
 //!
 //! ```sh
-//! cargo run -p fog-widgets --example virtual_list -- --tour
+//! cargo run -p ec-fog-widgets --example virtual_list -- --tour
 //! ```
 //!
 //! Colours are local constants: this is a crate demo, not a themed Fog pane
@@ -34,7 +34,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row, text, Id};
 use iced::{Background, Color, Element, Font, Length, Subscription, Task, Theme};
 
-use fog_widgets::{scroll_into_view, virtual_list};
+use ec_fog_widgets::{scroll_into_view, virtual_list};
 
 const DEFAULT_ROWS: usize = 100_000;
 const ROW_HEIGHT: f32 = 24.0;
@@ -129,7 +129,7 @@ fn view(demo: &Demo) -> Element<'_, Message> {
     // The live count never wraps; the title yields and clips at narrow widths.
     let header = container(row![
         container(
-            text("fog-widgets / virtual_list")
+            text("ec-fog-widgets / virtual_list")
                 .size(TEXT_SIZE)
                 .wrapping(Wrapping::None)
                 .color(DIM),

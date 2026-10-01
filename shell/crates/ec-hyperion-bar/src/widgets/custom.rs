@@ -16,9 +16,9 @@ use iced::mouse::ScrollDelta;
 use iced::widget::{mouse_area, text, Row};
 use iced::Alignment;
 
-use eclipse_services::custom::{Output, WidgetSpec};
-use eclipse_ui::tokens::{bar, color, font, size};
-use eclipse_ui::widget::{self as parts, ShellFrame};
+use ec_services::custom::{Output, WidgetSpec};
+use ec_ui::tokens::{bar, color, font, size};
+use ec_ui::widget::{self as parts, ShellFrame};
 
 use super::{Action, Feed as Routed, Parts, Spans};
 use crate::app::Message;
@@ -96,7 +96,7 @@ fn detail(out: &Output) -> Option<String> {
 pub fn resolve(source: &str, format: &str, widgets: &super::State) -> Option<String> {
     let sample = widgets.usage.sample.as_ref();
     let np = widgets.now_playing.player.as_ref();
-    let readings = eclipse_ui::reading::Readings {
+    let readings = ec_ui::reading::Readings {
         cpu: sample.map(|s| s.cpu),
         mem: sample.and_then(|s| s.mem),
         gpu: sample.and_then(|s| s.gpu),
@@ -105,7 +105,7 @@ pub fn resolve(source: &str, format: &str, widgets: &super::State) -> Option<Str
         title: np.map(|p| p.title.clone()),
         artist: np.and_then(|p| p.artist.clone()),
     };
-    eclipse_ui::reading::line(source, format, &readings)
+    ec_ui::reading::line(source, format, &readings)
 }
 
 pub fn spans(out: Option<&Output>, spec: &WidgetSpec) -> Spans {
@@ -200,7 +200,7 @@ pub fn view<'a>(out: Option<Output>, spec: &'a WidgetSpec, frame: ShellFrame) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eclipse_services::custom::Kind;
+    use ec_services::custom::Kind;
 
     fn spec() -> WidgetSpec {
         WidgetSpec {
@@ -256,7 +256,7 @@ mod tests {
     fn a_source_reads_the_other_widgets_state() {
         let mut w = super::super::State::default();
         assert_eq!(resolve("usage.cpu", "{}", &w), None);
-        w.usage.sample = Some(eclipse_services::usage::Sample {
+        w.usage.sample = Some(ec_services::usage::Sample {
             cpu: 0.42,
             mem: None,
             gpu: None,

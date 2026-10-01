@@ -12,7 +12,7 @@
 //! gnome-copied-files body (first line `copy` or `cut`), or plain absolute
 //! paths, one per line.
 
-use fog_proto::{ConflictPolicy, JobSpec};
+use ec_fog_proto::{ConflictPolicy, JobSpec};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipOp {

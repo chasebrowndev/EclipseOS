@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn the_policy_owned_set_is_mirrored() {
-        // Mirrors `abyss::config::schema::tests::the_policy_owned_set_is_exactly_this`.
+        // Mirrors `ec_abyss::config::schema::tests::the_policy_owned_set_is_exactly_this`.
         // If that test fails, this copy is the other half of the fix.
         assert_eq!(
             POLICY_KEYS,

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `eclipse-setup-helper`: the root half of the graphical installer (D-07 §6).
+//! `ec-setup-helper`: the root half of the graphical installer (D-07 §6).
 //!
 //! Reached through polkit (`org.eclipse.install.apply`), it takes one closed
-//! `eclipse_setup_plan::Request` and does exactly one thing with it. It is small
+//! `ec_setup_plan::Request` and does exactly one thing with it. It is small
 //! on purpose: TCB-adjacent, reviewed line by line, no shell, no free-form input.
 //!
 //! Layout, in the order a request meets it:

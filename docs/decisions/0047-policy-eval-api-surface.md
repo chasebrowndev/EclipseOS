@@ -1,4 +1,4 @@
-# 0047 — The `policy-eval` API surface: what the two processes are allowed to share
+# 0047 — The `ec-policy-eval` API surface: what the two processes are allowed to share
 Status: accepted
 Date: 2026-09-17
 Deciders: chase (owner)
@@ -11,12 +11,12 @@ exposes the *same* surface to both. The failure mode is quiet: an API added for
 one caller's convenience — a mutable grant setter for policyd, a "just parse
 it, skip the signature" shortcut for abyss — and the two processes stop being
 two users of one evaluator and become two evaluators that happen to share a
-file. The root `policy-eval/CLAUDE.md` already states the rule ("do not add an
+file. The root `ec-policy-eval/CLAUDE.md` already states the rule ("do not add an
 API that only one of them can call"); milestone 10 built the first real surface,
 so this records what it is and why each piece is shaped the way it is.
 
 ## Decision
-`policy-eval` exposes three modules and nothing else.
+`ec-policy-eval` exposes three modules and nothing else.
 
 **`cbor`** — `Writer`, `MapBuilder`, `enc`, `Reader`, `Error`. The canonical
 profile of ADR 0044, written by hand with no serde so a reviewer can read the
@@ -73,5 +73,5 @@ ignored event, and `Closed` is terminal in the table itself.
 
 ## Revisit when
 Milestone 16 lands `check()` and the compiled table, or a caller needs a
-`policy-eval` item that genuinely serves only one of the two processes — in
+`ec-policy-eval` item that genuinely serves only one of the two processes — in
 which case the honest answer is a new crate, not an exception here.

@@ -120,7 +120,7 @@ impl Wallpaper {
         Spec {
             path: p.path.filter(|s| !s.trim().is_empty()).map(|s| expand(&s)),
             mode: p.mode.unwrap_or_default(),
-            color: p.color.unwrap_or(eclipse_ui::tokens::color::BASE),
+            color: p.color.unwrap_or(ec_ui::tokens::color::BASE),
         }
     }
 }
@@ -194,7 +194,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const BASE: Color = eclipse_ui::tokens::color::BASE;
+    const BASE: Color = ec_ui::tokens::color::BASE;
 
     #[test]
     fn no_reply_is_the_base_colour_alone() {

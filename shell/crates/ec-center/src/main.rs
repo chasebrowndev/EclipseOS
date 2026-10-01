@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `eclipse-center` — the control center panel.
+//! `ec-center` — the control center panel.
 //!
 //! A layer surface under the bar's right end: spawned by a keybind, it answers
 //! one question and goes away. Like the bar and the toast stack it is an
@@ -7,20 +7,20 @@
 //! action it offers is one logind re-authorises through polkit, and a refusal
 //! is shown rather than worked around.
 
-use eclipse_center::{app, view, WIDTH};
+use ec_center::{app, view, WIDTH};
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
 use iced_layershell::settings::LayerShellSettings;
 
 fn namespace() -> String {
-    "eclipse-center".to_owned()
+    "ec-center".to_owned()
 }
 
 /// Gap between the bar's bottom edge and the panel. Layer-shell margin, not
 /// padding inside the surface: the compositor blurs the whole surface.
-const TOP_MARGIN: i32 = eclipse_ui::tokens::bar::SHEET_MARGIN_TOP;
+const TOP_MARGIN: i32 = ec_ui::tokens::bar::SHEET_MARGIN_TOP;
 /// Gap between the panel and the right edge of the output — the bar
 /// capsule's own, so the panel's right edge lines up under it.
-const RIGHT_MARGIN: i32 = eclipse_ui::tokens::bar::SHEET_MARGIN_X;
+const RIGHT_MARGIN: i32 = ec_ui::tokens::bar::SHEET_MARGIN_X;
 
 fn main() -> iced_layershell::Result {
     // A menu has no business holding the selection.
@@ -44,10 +44,10 @@ fn main() -> iced_layershell::Result {
                 ..Default::default()
             })
             .style(view::style)
-            .theme(|_: &app::App| eclipse_ui::theme::theme())
+            .theme(|_: &app::App| ec_ui::theme::theme())
             .subscription(app::subscription)
             .antialiasing(true);
-    for face in eclipse_ui::FONTS {
+    for face in ec_ui::FONTS {
         builder = builder.font(*face);
     }
     builder.run()

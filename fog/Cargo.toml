@@ -17,11 +17,11 @@ license = "AGPL-3.0-only"
 repository = "https://github.com/chasebrowndev/eclipseos"
 
 [workspace.dependencies]
-fog-proto = { path = "crates/ec-fog-proto" }
-fog-config = { path = "crates/ec-fog-config" }
-fog-daemon = { path = "crates/ec-fog-daemon" }
-fog-widgets = { path = "crates/ec-fog-widgets" }
-# eclipse-ui's pin, but with the tokio executor: the UI's fogd connection is a
+ec-fog-proto = { path = "crates/ec-fog-proto" }
+ec-fog-config = { path = "crates/ec-fog-config" }
+ec-fog-daemon = { path = "crates/ec-fog-daemon" }
+ec-fog-widgets = { path = "crates/ec-fog-widgets" }
+# ec-ui's pin, but with the tokio executor: the UI's fogd connection is a
 # tokio UnixStream.
 iced = { version = "0.14", default-features = false, features = [
   "wgpu",

@@ -119,7 +119,7 @@ pub(crate) fn tpgid(stat: &str) -> Option<i32> {
 /// The `Name=` key of `<comm>.desktop`, searched like `icons::desktop_icon_key`.
 fn desktop_name(comm: &str) -> Option<String> {
     let file = format!("{comm}.desktop");
-    eclipse_services::apps::search_path()
+    ec_services::apps::search_path()
         .into_iter()
         .filter_map(|dir| std::fs::read_to_string(dir.join(&file)).ok())
         .find_map(|body| name_key(&body))

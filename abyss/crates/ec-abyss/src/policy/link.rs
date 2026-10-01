@@ -16,8 +16,8 @@ use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use policy_eval::link::decode_key_offer;
-use policy_eval::VerifyingKey;
+use ec_policy_eval::link::decode_key_offer;
+use ec_policy_eval::VerifyingKey;
 use rustix::net::{self, AddressFamily, RecvFlags, SocketAddrUnix, SocketFlags, SocketType};
 use smithay::reexports::calloop::{
     generic::Generic,

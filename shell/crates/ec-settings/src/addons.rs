@@ -10,10 +10,10 @@
 use iced::widget::{column, container, row, text, Column, Space};
 use iced::{Alignment, Element, Length, Theme};
 
-use eclipse_ipc::Addons;
-use eclipse_ui::theme;
-use eclipse_ui::tokens::{font, size, space};
-use eclipse_ui::widget::{hairline, inset, micro_label, panel, status_cell, status_grid, value as mono};
+use ec_ipc::Addons;
+use ec_ui::theme;
+use ec_ui::tokens::{font, size, space};
+use ec_ui::widget::{hairline, inset, micro_label, panel, status_cell, status_grid, value as mono};
 
 use crate::app::{App, Message};
 
@@ -263,7 +263,7 @@ fn installed<'a>(app: &App, a: &Addons) -> Element<'a, Message, Theme> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eclipse_ipc::Addon;
+    use ec_ipc::Addon;
 
     fn eyes() -> Addon {
         Addon {

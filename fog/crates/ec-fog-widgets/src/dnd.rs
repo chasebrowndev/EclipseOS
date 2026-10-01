@@ -3,7 +3,7 @@
 //! Drag and drop inside one window: an object you pick up, with a ghost of
 //! it following the pointer (FOG §Visual design, layer 4 "drag ghosts").
 //!
-//! The gesture is Eclipse Settings' (`eclipse-ui`'s `draggable`, D-05 §2),
+//! The gesture is Eclipse Settings' (`ec-ui`'s `draggable`, D-05 §2),
 //! ported rather than shared: Fog is its own workspace and takes no
 //! dependency on the desktop's UI crate. What it keeps: the whole object is
 //! the handle, a click and a drag are told apart by [`TAP_SLOP`], the ghost
@@ -33,7 +33,7 @@ use iced::mouse;
 use iced::{Element, Event, Length, Point, Rectangle, Size, Theme, Vector};
 
 /// How far a press may travel and still be a click, in logical pixels:
-/// `eclipse-ui` tokens `motion::TAP_SLOP`.
+/// `ec-ui` tokens `motion::TAP_SLOP`.
 pub const TAP_SLOP: f32 = 4.0;
 
 /// An object that can be picked up; see the module note.

@@ -19,7 +19,7 @@ use crate::config::{self, WriteError};
 use crate::data::{self, Layout, LANGUAGES};
 use crate::helper::HelperEvent;
 use crate::net::Snapshot;
-use eclipse_setup_plan::{
+use ec_setup_plan::{
     check_password, valid_by_id, valid_hostname, valid_username, Disk, Plan, Profile, Progress, Request,
     Stage, MIN_PASSWORD_CHARS,
 };
@@ -337,7 +337,7 @@ pub enum Key {
 
 #[derive(Clone, Debug)]
 pub enum Message {
-    /// Step 0's hand-off: `eclipse_welcome::Message::Begin`.
+    /// Step 0's hand-off: `ec_welcome::Message::Begin`.
     Begin,
     Next,
     Back,
@@ -1752,7 +1752,7 @@ mod tests {
         // The plan carries catalog ids, never a package or a unit.
         assert_eq!(
             r.plan.candidates,
-            ["hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center"]
+            ["ec-hyperion-bar", "ec-launcher", "ec-toasts", "ec-center"]
         );
 
         // The config writes come first, and only the wizard's own keys: the

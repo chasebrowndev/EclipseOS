@@ -1,5 +1,5 @@
 [package]
-name = "oracle-eyes"
+name = "ec-oracle-eyes"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ description = "Screen annotation daemon for EclipseOS (COMP-18, ADR 0041)."
 publish.workspace = true
 
 [dependencies]
-eclipse-ipc.workspace = true
+ec-ipc.workspace = true
 serde_json.workspace = true
 libc.workspace = true
 kdl.workspace = true

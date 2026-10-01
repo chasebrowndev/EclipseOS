@@ -8,9 +8,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use ec_audit::{project, query, records, trace, Filter};
-use policy_eval::audit::{Emission, Kind};
-use policy_eval::cbor::{enc, MapBuilder};
-use policyd::audit::{Record, Store};
+use ec_policy_eval::audit::{Emission, Kind};
+use ec_policy_eval::cbor::{enc, MapBuilder};
+use ec_policyd::audit::{Record, Store};
 
 fn tmp(name: &str) -> PathBuf {
     let p = std::env::temp_dir().join(format!("ec-audit-{name}-{}", std::process::id()));

@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use fog_proto::{ConflictPolicy, JobId, JobSpec, JobStatus, Reply, Resolution};
+use ec_fog_proto::{ConflictPolicy, JobId, JobSpec, JobStatus, Reply, Resolution};
 use rustix::fs::{FileType, Mode};
 use rustix::io::Errno;
 

@@ -12,7 +12,7 @@
 //! Anything but one exact `allow` line is a deny.
 
 use crate::error::{io, Error, Result};
-use eclipse_setup_plan::Disk;
+use ec_setup_plan::Disk;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -46,7 +46,7 @@ impl SocketConfirm {
         SocketConfirm {
             socket: format!("/run/user/{uid}/eclipse/trusted.sock").into(),
             proc: "/proc".into(),
-            exe: "/usr/bin/abyss".into(),
+            exe: "/usr/bin/ec-abyss".into(),
             uid,
         }
     }

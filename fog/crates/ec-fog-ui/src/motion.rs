@@ -12,7 +12,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fog_widgets::{Backdrop, Params, Spring};
+use ec_fog_widgets::{Backdrop, Params, Spring};
 use iced::window::{self, Screenshot};
 use iced::Task;
 

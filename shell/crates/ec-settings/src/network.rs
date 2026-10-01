@@ -3,7 +3,7 @@
 //! taskbar's drawers cannot do — forget a saved network, forget a device.
 //!
 //! Not schema keys. The readings come from the status service's action handle
-//! (`eclipse_services::status`), on a thread that exists only while this pane
+//! (`ec_services::status`), on a thread that exists only while this pane
 //! is showing; nothing here touches `abyss.kdl`.
 //!
 //! Shape: header (status chip) → hero (magnitude: the signal, then the link's
@@ -21,10 +21,10 @@ use std::time::{Duration, Instant};
 use iced::widget::{column, container, row, text, Column, Row, Space};
 use iced::{Alignment, Element, Length, Subscription, Theme};
 
-use eclipse_services::status::{self, Actions, BtDevice, Event, PairingAgent, Security, WifiDetail};
-use eclipse_ui::theme;
-use eclipse_ui::tokens::{color, font, size, space};
-use eclipse_ui::widget::{
+use ec_services::status::{self, Actions, BtDevice, Event, PairingAgent, Security, WifiDetail};
+use ec_ui::theme;
+use ec_ui::tokens::{color, font, size, space};
+use ec_ui::widget::{
     big_value, hairline, inset_list, list_row, meter_bar, micro_label, panel, pill, value as mono,
 };
 

@@ -1,4 +1,4 @@
-# wlcs-abyss — conformance harness
+# ec-abyss-wlcs — conformance harness
 
 Governing spec: COMP-15 §1, Vol 1 §15. Not TCB.
 

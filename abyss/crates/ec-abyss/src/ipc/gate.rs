@@ -287,7 +287,7 @@ mod tests {
         Peer {
             uid: 1000,
             pid: 42,
-            comm: Some("eclipse-ctl".into()),
+            comm: Some("ec-ctl".into()),
         }
     }
 

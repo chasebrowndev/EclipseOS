@@ -1,5 +1,5 @@
 [package]
-name = "eclipse-services"
+name = "ec-services"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,24 +11,24 @@ description = "Desktop services for the Eclipse userland: the freedesktop notifi
 publish = false
 
 [lib]
-name = "eclipse_services"
+name = "ec_services"
 path = "src/lib.rs"
 
 [[bin]]
-name = "eclipse-screensaver"
-path = "src/bin/eclipse-screensaver.rs"
+name = "ec-screensaver"
+path = "src/bin/ec-screensaver.rs"
 
 [[bin]]
-name = "eclipse-pairing"
-path = "src/bin/eclipse-pairing.rs"
+name = "ec-pairing"
+path = "src/bin/ec-pairing.rs"
 
 [dependencies]
 # Already in the tree via iced_layershell 0.19.1 -> mundy 0.2.3, so this adds
 # no new supply-chain surface (ADR 0038, ADR 0039). The blocking API is the
 # one that fits: iced runs no tokio runtime, so the server owns its own thread
-# and talks to the GUI over a channel, exactly like eclipse-settings' watcher.
+# and talks to the GUI over a channel, exactly like ec-settings' watcher.
 zbus = "5.19"
-eclipse-ipc = { path = "../../../abyss/crates/ec-ipc" }
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 serde_json.workspace = true
 # ADR 0065. The audio service (default sink, per-app mute, the visualizer's
 # monitor tap) speaks the PulseAudio native protocol, which pipewire-pulse
@@ -39,7 +39,7 @@ pulseaudio = "0.3"
 # ADR 0065: the monitor tap's band reduction. MIT.
 realfft = "3"
 # ADR 0065: the usage sampler's disk fill level via statvfs(3). Already in the
-# tree through eclipse-ipc and zbus, so no new supply-chain surface.
+# tree through ec-ipc and zbus, so no new supply-chain surface.
 libc = "0.2"
 # ADR 0065: NVIDIA GPU busyness via NVML, dlopened from libnvidia-ml.so.1 at
 # runtime by libloading (never linked; no bindgen, no NVIDIA headers at build

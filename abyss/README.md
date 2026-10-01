@@ -31,7 +31,7 @@ cargo build --workspace
 cargo run -- --backend winit     # nested in your current session
 cargo run -- --backend drm       # from a bare VT, real KMS
 cargo run -- --backend headless  # no display; what wlcs drives
-journalctl --user -t abyss -f    # logs
+journalctl --user -t ec-abyss -f    # logs
 ```
 
 `Super+Shift+Q` quits. Full instructions and system dependencies:

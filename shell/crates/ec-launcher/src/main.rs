@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `eclipse-launcher` — type, pick, run.
+//! `ec-launcher` — type, pick, run.
 //!
 //! A centred overlay layer surface, spawned by a keybind, that filters the
 //! installed applications and starts one. Like the bar, the toast stack and
@@ -8,13 +8,13 @@
 //! and spawns a child of itself, and when that is refused the refusal is shown
 //! rather than worked around.
 
-use eclipse_launcher::{app, view, WIDTH};
+use ec_launcher::{app, view, WIDTH};
 use iced::Task;
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
 use iced_layershell::settings::LayerShellSettings;
 
 fn namespace() -> String {
-    "eclipse-launcher".to_owned()
+    "ec-launcher".to_owned()
 }
 
 /// The cursor belongs in the filter field before the human has typed: the
@@ -30,7 +30,7 @@ fn main() -> iced_layershell::Result {
     // `--centered` is the bar starting us because it cannot show its menu
     // (folded, hidden): asking it again would bounce straight back.
     let centered = std::env::args().skip(1).any(|a| a == "--centered");
-    if !centered && eclipse_launcher::conn::menu_style() && eclipse_launcher::conn::open_bar_menu() {
+    if !centered && ec_launcher::conn::menu_style() && ec_launcher::conn::open_bar_menu() {
         return Ok(());
     }
     // Deliberately no `disable_clipboard()`, unlike the bar's menus: the
@@ -53,10 +53,10 @@ fn main() -> iced_layershell::Result {
             ..Default::default()
         })
         .style(view::style)
-        .theme(|_: &app::App| eclipse_ui::theme::theme())
+        .theme(|_: &app::App| ec_ui::theme::theme())
         .subscription(app::subscription)
         .antialiasing(true);
-    for face in eclipse_ui::FONTS {
+    for face in ec_ui::FONTS {
         builder = builder.font(*face);
     }
     builder.run()

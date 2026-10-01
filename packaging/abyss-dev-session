@@ -13,7 +13,7 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 bin="$here/../target/debug"
 
 # Binds spawn through `/bin/sh -c` inheriting this environment, so target/debug
-# has to be on PATH for Super+R (eclipse-launcher) and Super+N to resolve.
+# has to be on PATH for Super+R (ec-launcher) and Super+N to resolve.
 PATH="$bin:$PATH"
 export PATH
 
@@ -21,4 +21,4 @@ export XDG_CURRENT_DESKTOP=Abyss
 export XDG_SESSION_TYPE=wayland
 export XDG_SESSION_DESKTOP=abyss
 
-exec "$bin/abyss" --backend drm --session --stats "$@"
+exec "$bin/ec-abyss" --backend drm --session --stats "$@"

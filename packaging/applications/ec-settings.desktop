@@ -6,6 +6,6 @@
 Type=Application
 Name=Eclipse Settings
 Comment=Compositor, input and appearance settings
-Exec=eclipse-settings
+Exec=ec-settings
 Categories=Settings;DesktopSettings;
 Keywords=settings;preferences;config;eclipse;abyss;

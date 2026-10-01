@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The closed plan language between `eclipse-setup` and `eclipse-setup-helper`
+//! The closed plan language between `ec-setup` and `ec-setup-helper`
 //! (D-07 §6). The helper's input is this and nothing else: no shell command, no
 //! path, no package name, no unit name. Types and validators only; no I/O, so
 //! the GUI and the root helper can share one definition without sharing code
@@ -221,7 +221,7 @@ mod tests {
             keymap: "us".into(),
             carry_network: true,
             profile: Profile::Standard,
-            candidates: vec!["hyperion".into()],
+            candidates: vec!["ec-hyperion-bar".into()],
             agents: false,
         };
         let j = serde_json::to_string(&plan).unwrap();

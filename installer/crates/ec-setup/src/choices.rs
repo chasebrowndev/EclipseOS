@@ -8,7 +8,7 @@
 //! seed the helper copies, D-07 §5) or a catalog id (the helper resolves it,
 //! D-07 §4.1, §6). No package name, unit name or command exists here.
 
-use eclipse_setup_plan::Profile;
+use ec_setup_plan::Profile;
 use serde_json::{json, Value};
 
 /// `mode` (ADR 0062): what the session looks like.
@@ -139,22 +139,22 @@ pub const SLOTS: [Slot; 4] = [
     Slot {
         key: "components.bar",
         label: "Bar",
-        choices: &["hyperion", "waybar", "quickshell", NONE],
+        choices: &["ec-hyperion-bar", "waybar", "quickshell", NONE],
     },
     Slot {
         key: "components.launcher",
         label: "Launcher",
-        choices: &["eclipse-launcher", "fuzzel", NONE],
+        choices: &["ec-launcher", "fuzzel", NONE],
     },
     Slot {
         key: "components.notifications",
         label: "Notifications",
-        choices: &["eclipse-toasts", "mako", NONE],
+        choices: &["ec-toasts", "mako", NONE],
     },
     Slot {
         key: "components.control-center",
         label: "Control center",
-        choices: &["eclipse-center", NONE],
+        choices: &["ec-center", NONE],
     },
 ];
 
@@ -250,11 +250,11 @@ impl Choices {
             mode: if minimal { Mode::Wm } else { Mode::Hybrid },
             tiling: Tiling::Radiant,
             slots: [
-                native("hyperion"),
+                native("ec-hyperion-bar"),
                 // A session with no launcher cannot start anything.
-                "eclipse-launcher",
-                native("eclipse-toasts"),
-                native("eclipse-center"),
+                "ec-launcher",
+                native("ec-toasts"),
+                native("ec-center"),
             ],
             rounded: true,
             blur: Blur::Blur,
@@ -348,13 +348,13 @@ mod tests {
         assert_eq!(std.tiling, Tiling::Radiant);
         assert_eq!(
             std.slots,
-            ["hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center"]
+            ["ec-hyperion-bar", "ec-launcher", "ec-toasts", "ec-center"]
         );
         assert_eq!(std.app_count(), 0);
 
         let min = Choices::for_profile(Profile::Minimal);
         assert_eq!(min.mode, Mode::Wm);
-        assert_eq!(min.slots, [NONE, "eclipse-launcher", NONE, NONE]);
+        assert_eq!(min.slots, [NONE, "ec-launcher", NONE, NONE]);
         assert_eq!(min.app_count(), 0);
 
         let full = Choices::for_profile(Profile::Full);
@@ -377,13 +377,13 @@ mod tests {
     #[test]
     fn candidates_skip_none_and_keep_slot_then_app_order() {
         let mut c = Choices::for_profile(Profile::Minimal);
-        assert_eq!(c.candidates(), ["eclipse-launcher"]);
+        assert_eq!(c.candidates(), ["ec-launcher"]);
         c.slots[0] = "waybar";
         c.apps[0] = true;
         c.apps[8] = true;
         assert_eq!(
             c.candidates(),
-            ["waybar", "eclipse-launcher", "app-browser", "app-bluetooth-ui"]
+            ["waybar", "ec-launcher", "app-browser", "app-bluetooth-ui"]
         );
     }
 

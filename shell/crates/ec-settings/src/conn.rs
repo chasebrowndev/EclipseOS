@@ -2,7 +2,7 @@
 //! The control-socket connection, and the two failures every DE app renders
 //! the same way: `DENIED (-32000)` and a config error.
 
-use eclipse_ipc::{Client, Error, EventKind};
+use ec_ipc::{Client, Error, EventKind};
 use serde_json::{json, Value};
 
 /// A failure worth showing the user. Anything the app can retry silently does
@@ -124,7 +124,7 @@ impl Conn {
     }
 
     pub fn reconnect(&mut self) {
-        match eclipse_ipc::Client::connect() {
+        match ec_ipc::Client::connect() {
             Ok(mut client) => {
                 // Output hot-plug (COMP-03), config errors from someone else
                 // editing the file under us, and a live reload succeeding
@@ -167,7 +167,7 @@ impl Conn {
     }
 
     /// Drain whatever the compositor has pushed since the last poll.
-    pub fn drain_events(&mut self) -> Vec<eclipse_ipc::Event> {
+    pub fn drain_events(&mut self) -> Vec<ec_ipc::Event> {
         let mut out = Vec::new();
         let Some(client) = self.client.as_mut() else {
             return out;
@@ -222,14 +222,14 @@ impl Conn {
     /// caller keeps whatever value it already had.
     pub fn glass_radius(&mut self) -> Option<f32> {
         let client = self.client.as_mut()?;
-        eclipse_ui::ipc::fetch_config_radius(client, "decoration.rounding")
+        ec_ui::ipc::fetch_config_radius(client, "decoration.rounding")
     }
 
     /// Whether the compositor's blur is on (`decoration.blur.mode`). `None`
     /// on any failure, so the caller keeps whatever value it already had.
     pub fn blur(&mut self) -> Option<bool> {
         let client = self.client.as_mut()?;
-        eclipse_ui::ipc::fetch_blur(client)
+        ec_ui::ipc::fetch_blur(client)
     }
 
     /// Write one scalar. Returns whether the change needs a restart to apply.
@@ -242,7 +242,7 @@ impl Conn {
     }
 
     /// Every `widget` block in `abyss.kdl`, in file order (ADR 0065).
-    pub fn widgets(&mut self) -> Result<Vec<eclipse_ipc::Widget>, Problem> {
+    pub fn widgets(&mut self) -> Result<Vec<ec_ipc::Widget>, Problem> {
         let client = self
             .client
             .as_mut()
@@ -251,7 +251,7 @@ impl Conn {
     }
 
     /// Installed add-ons and the abyss hooks they turn on (ADR 0066).
-    pub fn addons(&mut self) -> Result<eclipse_ipc::Addons, Problem> {
+    pub fn addons(&mut self) -> Result<ec_ipc::Addons, Problem> {
         let client = self
             .client
             .as_mut()
@@ -260,7 +260,7 @@ impl Conn {
     }
 
     /// Every widget's approval state, withheld ones included (ADR 0067).
-    pub fn widget_statuses(&mut self) -> Result<Vec<eclipse_ipc::WidgetStatus>, Problem> {
+    pub fn widget_statuses(&mut self) -> Result<Vec<ec_ipc::WidgetStatus>, Problem> {
         let client = self
             .client
             .as_mut()
@@ -283,9 +283,9 @@ impl Conn {
     /// answers `valid: false` with positioned errors rather than failing.
     pub fn widget_write(
         &mut self,
-        op: &eclipse_ipc::WidgetOp<'_>,
+        op: &ec_ipc::WidgetOp<'_>,
         dry_run: bool,
-    ) -> Result<eclipse_ipc::WriteResult, Problem> {
+    ) -> Result<ec_ipc::WriteResult, Problem> {
         let client = self
             .client
             .as_mut()

@@ -189,13 +189,13 @@ fn lookup(name: &str) -> Option<PathBuf> {
 
 /// The `Icon=` key of `<app_id>.desktop`, if such a file exists.
 ///
-/// `eclipse_services::apps::Entry` does not carry `Icon` — the launcher has
+/// `ec_services::apps::Entry` does not carry `Icon` — the launcher has
 /// never needed it — so rather than duplicate the scanner this reuses its
 /// `search_path()` and reads the one key out of the one file. That is a
 /// single `read_to_string` per *missing* app_id, cached like the rest.
 fn desktop_icon_key(app_id: &str) -> Option<String> {
     let file = format!("{app_id}.desktop");
-    for dir in eclipse_services::apps::search_path() {
+    for dir in ec_services::apps::search_path() {
         let path = dir.join(&file);
         let Ok(body) = std::fs::read_to_string(&path) else {
             continue;

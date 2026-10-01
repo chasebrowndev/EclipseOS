@@ -6,7 +6,7 @@
 use std::io;
 use std::path::Path;
 
-use fog_proto::{Entry, Kind, StatReply};
+use ec_fog_proto::{Entry, Kind, StatReply};
 use rustix::fs::{self as rfs, AtFlags, FileType, Mode, OFlags, RawDir, StatxFlags, CWD};
 
 /// Entries per streamed batch.

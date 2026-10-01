@@ -1,5 +1,5 @@
 [package]
-name = "abyss"
+name = "ec-abyss"
 description = "EclipseOS Wayland compositor"
 version.workspace = true
 edition.workspace = true
@@ -13,11 +13,11 @@ publish = false
 # lib + bin: the conformance harness (COMP-15 §1) links the compositor and
 # drives it in-process, which a bin-only crate cannot support.
 [lib]
-name = "abyss"
+name = "ec_abyss"
 path = "src/lib.rs"
 
 [[bin]]
-name = "abyss"
+name = "ec-abyss"
 path = "src/main.rs"
 
 [dependencies]
@@ -40,7 +40,7 @@ regex.workspace = true
 serde_json.workspace = true
 blake3.workspace = true
 # Grant verification and scope evaluation, shared with policyd (ADR 0008).
-policy-eval = { path = "../ec-policy-eval" }
+ec-policy-eval = { path = "../ec-policy-eval" }
 # eclipse_agent_v1 server bindings (COMP-08).
 ec-protocols = { path = "../ec-protocols", features = ["server"] }
 

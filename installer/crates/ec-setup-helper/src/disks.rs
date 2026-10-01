@@ -9,7 +9,7 @@
 use crate::env::Paths;
 use crate::error::{io, Error, Result};
 use crate::runner::{Cmd, Runner, Tool};
-use eclipse_setup_plan::{valid_by_id, Disk, Partition};
+use ec_setup_plan::{valid_by_id, Disk, Partition};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;

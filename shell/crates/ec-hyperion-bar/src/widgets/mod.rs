@@ -2,7 +2,7 @@
 //! The bar's widgets (ADR 0065): everything right of the task strip.
 //!
 //! A widget is a glass cell of the same family as a window chip —
-//! [`eclipse_ui::theme::bar_cell`]'s ground and hairline — holding a *core*
+//! [`ec_ui::theme::bar_cell`]'s ground and hairline — holding a *core*
 //! and, optionally, a *revealed* section, behind a grip that drags it between
 //! compressed, core and revealed. Which widgets exist and in what order is
 //! `bar.widgets.order`; the ones in `bar.widgets.important` never compress.
@@ -29,10 +29,10 @@ use std::collections::HashMap;
 use iced::widget::{button, container};
 use iced::{Alignment, Element, Length, Theme};
 
-use eclipse_services::custom::{Kind, Output, WidgetSpec};
-use eclipse_ui::motion::Motion;
-use eclipse_ui::tokens::{bar, color};
-use eclipse_ui::widget::{self as parts, ClipEdge, Grip, ShellFrame, ShellLook, ShellSpan};
+use ec_services::custom::{Kind, Output, WidgetSpec};
+use ec_ui::motion::Motion;
+use ec_ui::tokens::{bar, color};
+use ec_ui::widget::{self as parts, ClipEdge, Grip, ShellFrame, ShellLook, ShellSpan};
 
 use crate::app::{App, Message};
 

@@ -4,13 +4,13 @@
 //! following symlinks (FOG §Performance model, technique 1).
 //!
 //! Plain `statx` on the blocking pool; io_uring batching is not needed while
-//! fog-bench stays inside its budgets.
+//! ec-fog-bench stays inside its budgets.
 
 use std::io;
 use std::os::fd::OwnedFd;
 use std::path::Path;
 
-use fog_proto::{Entry, Kind};
+use ec_fog_proto::{Entry, Kind};
 use rustix::fs::{self as rfs, AtFlags, FileType, Mode, OFlags, Statx, StatxFlags, CWD};
 
 /// Entries in the first phase-2 batch: enough for any visible window, so

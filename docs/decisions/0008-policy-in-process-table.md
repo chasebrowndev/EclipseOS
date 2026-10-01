@@ -25,7 +25,7 @@ an unavailable `policyd` denies.
 
 ## Consequences
 - Hot-path check is benchmarked in `bench/` and stays allocation-free.
-- Two evaluators exist, so a golden decision suite proving `policy-eval` ≡
+- Two evaluators exist, so a golden decision suite proving `ec-policy-eval` ≡
   `abyss` is a CI gate once S-02 lands.
 - `policyd` being down degrades to deny, never to allow.
 

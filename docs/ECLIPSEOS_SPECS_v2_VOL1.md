@@ -135,7 +135,7 @@ than silently restating it.* | | |
 | D-02 | Package repository: build infra, signing, mirrors | written, `docs/design/D-02-package-repository.md` *(amended C-08, 2026-09-23)* | F-07, S-12 |
 | D-03 | ISO build (archiso) & installer | written, `docs/design/D-03-installation-media.md` *(amended C-08, 2026-09-23)* | D-01 |
 | D-04 | Update strategy: rolling vs snapshots, atomic updates, rollback | planned | D-02 |
-| D-05 | Default userland: bar, launcher, terminal (`cataclysm`, P-04), portal, notifications, **settings GUI** | planned; **bar pulled forward into Phase 1** (B-08). *(amended C-06, 2026-09-23)* Native Rust/iced (ADR 0038), one crate per swappable component (ADR 0052): bar `hyperion`, `eclipse-toasts`, `eclipse-center`, `eclipse-launcher`, `eclipse-settings`, `eclipse-policy-viewer`, `eclipse-secret-prompt` (ADR 0053) | C-00, P-04, COMP-17 |
+| D-05 | Default userland: bar, launcher, terminal (`cataclysm`, P-04), portal, notifications, **settings GUI** | planned; **bar pulled forward into Phase 1** (B-08). *(amended C-06, 2026-09-23)* Native Rust/iced (ADR 0038), one crate per swappable component (ADR 0052): bar `hyperion`, `ec-toasts`, `ec-center`, `ec-launcher`, `ec-settings`, `ec-policy-viewer`, `ec-secret-prompt` (ADR 0053) | C-00, P-04, COMP-17 |
 | D-06 | Hardware support matrix, GPU drivers, firmware | planned | F-04 |
 | D-07 | First-run experience & agent onboarding | written, `docs/design/D-07-first-run.md` *(added DA-04, 2026-09-24)* | D-03, COMP-17 |
 | D-08 | Telemetry & crash reporting (opt-in; privacy stance) | planned | F-02 |
@@ -1043,7 +1043,7 @@ mean version-juggling for no benefit at this team size.
   crates/
     abyss/                   # compositor            [TCB]
     policyd/                  # policy + audit        [TCB]
-    policy-eval/              # shared evaluator crate (linked by both)
+    ec-policy-eval/              # shared evaluator crate (linked by both)
     agentd/                   # agent gateway
     registryd/                # perception aggregation
     proto-agent/              # eclipse_agent_v1 bindings (generated)
@@ -1109,7 +1109,7 @@ the Cargo workspace. Where it is vendored is undecided — proposed:
 
 | Area | Review |
 |---|---|
-| `abyss` enforcement path, `policyd`, `policy-eval`, `sandbox` | **Owner reads every line.** No exceptions. |
+| `abyss` enforcement path, `policyd`, `ec-policy-eval`, `sandbox` | **Owner reads every line.** No exceptions. |
 | Everything else | Merge on green CI; owner reviews at leisure |
 
 Write this down because in six months you will not remember which crates
@@ -1270,7 +1270,7 @@ auditable or the product's central claim is unverifiable.
 
 | Component | Licence |
 |---|---|
-| `abyss`, `policyd`, `policy-eval`, `sandbox`, `agentd`, `registryd` | AGPLv3 |
+| `abyss`, `policyd`, `ec-policy-eval`, `sandbox`, `agentd`, `registryd` | AGPLv3 |
 | Protocol definitions (`eclipse_agent_v1`, `eclipse_semantic_v1`) | **Permissive (Apache-2.0 or MIT)** — see §4 |
 | SDKs (`sdk-rust`, `sdk-python`) | **Permissive (Apache-2.0)** — see §4 |
 | Toolkit bridges (P-03), upstreamed patches | Licence of the upstream project |
@@ -1779,8 +1779,8 @@ machine-readable — but no work is spent on it now.
 *(amended C-06, 2026-09-23)* Superseded in part. B-03 added a DE mode
 (COMP-17), and ADR 0038 pulled part of Z-01 forward: the default userland is
 native Rust (iced), one crate per swappable component (ADR 0052) — `hyperion`
-(bar), `eclipse-toasts`, `eclipse-center`, `eclipse-launcher`,
-`eclipse-settings`, `eclipse-policy-viewer`, `eclipse-secret-prompt`. They are
+(bar), `ec-toasts`, `ec-center`, `ec-launcher`,
+`ec-settings`, `ec-policy-viewer`, `ec-secret-prompt`. They are
 ordinary Wayland clients of the human IPC; none is trusted UI (§10).
 
 ---
@@ -2183,7 +2183,7 @@ abyss/
     standard/       (COMP-06)
     agent/          (COMP-08) — privileged socket only
     semantic/       (COMP-09)
-  policy/           (COMP-11) table eval — links `policy-eval` crate
+  policy/           (COMP-11) table eval — links `ec-policy-eval` crate
   audit/            (COMP-12) emission only; store lives in `policyd`
   trusted_ui/       (COMP-10)
   ipc/              (COMP-13) human JSON-RPC socket
@@ -2702,7 +2702,7 @@ scanout, COMP-14 §6 shedding (which sheds every mode) — applies to all
 modes alike. Where glass samples beyond the kernel footprint, the §3
 damage expansion grows by its maximum refraction offset.
 `decoration.blur.enabled` is kept as a legacy alias (`false` ⇒ `off`,
-`true` ⇒ `blur`) and rewritten by `eclipse-ctl config migrate`.
+`true` ⇒ `blur`) and rewritten by `ec-ctl config migrate`.
 
 Animations are geometry-only in v1. **They must not affect what an agent
 sees**: `scene`/`get_tree` geometry reports the *target* geometry, not the
@@ -2935,7 +2935,7 @@ testing/headless work.
 - Quota per agent (default 2, grant-configurable). Counted against the
   agent, released on agent exit.
 - Not shown in the human's output list or workspace switcher unless the
-  human asks (`eclipse-ctl outputs --all`).
+  human asks (`ec-ctl outputs --all`).
 - A virtual output may be *promoted* to visible: mirrored into a floating
   window on a physical output so the human can watch an agent work. This is
   a human-initiated action only.
@@ -3275,7 +3275,7 @@ agents check against (COMP §0.5).
 - Every workspace has an **owner principal**: `human` or `agent:<id>`.
 - Human workspaces are in the switcher and on physical outputs.
 - Agent workspaces default to a virtual output (COMP-03 §6), are hidden
-  from the human switcher, and are listed only via `eclipse-ctl` or the
+  from the human switcher, and are listed only via `ec-ctl` or the
   agent activity panel (COMP-10).
 - A workspace whose output disappears moves to the fallback output
   (COMP-03 §5). Workspaces are never destroyed by hardware changes.
@@ -3452,7 +3452,7 @@ there is no blanket "enable everywhere" switch.
 | move/resize/float/fullscreen | bindings, mouse | `window.control`, scoped |
 | move to workspace/output | bindings | `workspace.manage` / `window.control` |
 | close | binding | `close` → `xdg_toplevel.close` (graceful only) |
-| kill process | `eclipse-ctl` | **not a compositor operation** — goes via `policyd` with `window.kill` |
+| kill process | `ec-ctl` | **not a compositor operation** — goes via `policyd` with `window.kill` |
 | minimize | binding | `window.control` |
 
 Agents never get SIGKILL through the compositor. Terminating a process is a
@@ -4694,7 +4694,7 @@ common path.
 | Slow-path (`defer`) decisions | ✓ | |
 | Store audit | ✓ | emits only (COMP-12) |
 
-Both link the **same `policy-eval` crate** (F-07 §1). The evaluator is one
+Both link the **same `ec-policy-eval` crate** (F-07 §1). The evaluator is one
 implementation used in two processes; the golden decision suite (S-02 §7)
 runs against both to prove they cannot drift.
 
@@ -5026,7 +5026,7 @@ misc      { scripted-input #false }  // §2.2
   2026-09-25)* invalid config → each rejected node is dropped and its setting
   keeps its default; Abyss starts, and each error (`file:line:col` and the
   offending token) goes to journald and to the `config-error` IPC event,
-  which `eclipse-services` shows as an ordinary client-drawn notification
+  which `ec-services` shows as an ordinary client-drawn notification
   (not trusted UI). Still a refusal to start: any error in `policy.kdl`, a
   policy-owned key in `abyss.kdl`, and `render-device` (ADR 0033). Two
   refusals start in a safe state rather than the default, and the notice leads
@@ -5081,7 +5081,7 @@ Keeping the last good
 widens permissions.
 
 **Migration** from a single-file config is an explicit startup error naming
-each misplaced key and its destination, plus `eclipse-ctl config migrate`. Not
+each misplaced key and its destination, plus `ec-ctl config migrate`. Not
 a silent auto-migration — §1.2 refuses rather than guesses, and this is no
 exception.
 
@@ -5124,7 +5124,7 @@ Required by CHARTER §4, "Parity between the terminal and the GUI". Every
 setting is reachable from a shell and from a graphical control. Neither front
 end may be the only path to a capability.
 
-**One write path, two front ends.** `eclipse-ctl` and the settings GUI
+**One write path, two front ends.** `ec-ctl` and the settings GUI
 (COMP-17 §3) are both clients of §1.4. Neither has a private path into the
 config files, and neither may implement a setting the other cannot express. A
 front end that writes config by any route other than §1.4 is a defect, not an
@@ -5139,7 +5139,7 @@ produce a rule that quietly fails in one direction:
   configuration files remain the source of truth and stay hand-editable, and
   §1.4 requires that everything the GUI does lands in those files. Any setting
   that reaches a file is therefore reachable by editing the file and by
-  `eclipse-ctl`. Terminal parity is free as long as that line holds. **The way
+  `ec-ctl`. Terminal parity is free as long as that line holds. **The way
   it breaks is GUI-managed state that never reaches a file** — remembered
   window positions, wizard progress, anything a graphical front end is tempted
   to keep for itself. That is the failure to guard against, and it is a
@@ -5156,7 +5156,7 @@ declarative — for each key: its type, constraints, default, owning file
 (§1.3), and a human-readable description. From that one source:
 
 - the parser validates (§1.2);
-- `eclipse-ctl` enumerates, describes, gets and sets;
+- `ec-ctl` enumerates, describes, gets and sets;
 - the settings GUI **generates** its controls;
 - and a key with no reachable control is detectable mechanically.
 
@@ -5184,12 +5184,12 @@ debt with a name, not a silent gap.
 
 #### Test Plan (into COMP-15)
 
-- Enumerate every schema key; assert each is settable through `eclipse-ctl`
+- Enumerate every schema key; assert each is settable through `ec-ctl`
   and reachable in the GUI, or named in the exception list.
 - Assert the exception list never grows relative to the previous commit.
 - Assert the GUI holds no persistent setting that does not appear in a config
   file.
-- Round-trip: set a key from the GUI, read it with `eclipse-ctl`, and the
+- Round-trip: set a key from the GUI, read it with `ec-ctl`, and the
   reverse; assert identical values and an unchanged file otherwise.
 
 ---
@@ -5198,7 +5198,7 @@ debt with a name, not a silent gap.
 
 Unix socket at `$XDG_RUNTIME_DIR/eclipse/abyss.sock`, mode 0600.
 Line-delimited JSON-RPC 2.0. For bars, launchers, scripts, and
-`eclipse-ctl`.
+`ec-ctl`.
 
 **This socket has no injection ability by default.** It is not a back door
 to the agent protocol: no `get_tree`, no capture of `secret` surfaces, no
@@ -5258,10 +5258,10 @@ Rationale (COMP-06 §2): scripting is a legitimate need; ambient
 `zwp_virtual_keyboard` is not the way to serve it. This path is
 attributable and can be turned off.
 
-### 2.3 `eclipse-ctl`
+### 2.3 `ec-ctl`
 
-Thin CLI over the above. `eclipse-ctl agents`, `eclipse-ctl pause
-agent:research-7`, `eclipse-ctl outputs --all`, `eclipse-ctl watch`.
+Thin CLI over the above. `ec-ctl agents`, `ec-ctl pause
+agent:research-7`, `ec-ctl outputs --all`, `ec-ctl watch`.
 
 ---
 
@@ -5294,7 +5294,7 @@ unit, so a random user process cannot impersonate a daemon.
 1. Whether `subscribe` should be a separate socket to avoid slow readers
    blocking request/response (proposed: same socket, per-connection queue
    with drop-oldest for events).
-2. Whether `eclipse-ctl` ships as part of `abyss` or its own crate
+2. Whether `ec-ctl` ships as part of `abyss` or its own crate
    (proposed: own crate, so it can be installed on a remote box later).
 
 
@@ -5689,7 +5689,7 @@ reworded until it can be.
 | 6 | Session lock, idle, DPMS, power, lid | COMP-01, COMP-03 | lock/unlock, suspend/resume across a real logind cycle, laptop lid open/close | M |
 | 7 | XWayland | COMP-07 | Steam + a Proton game + a Java app | M |
 | 8 | Screen sharing via xdg-desktop-portal | COMP-02 §8 | a video call with screen share | M |
-| 9 | Human IPC, `eclipse-ctl`, metrics | COMP-13 | a third-party bar is driven by our IPC and lists windows it does not own | M |
+| 9 | Human IPC, `ec-ctl`, metrics | COMP-13 | a third-party bar is driven by our IPC and lists windows it does not own | M |
 | **9a** | COMP-06 §1 protocol completeness: `xdg_decoration`, `xdg_activation`, `wp_single_pixel_buffer`, `zwp_pointer_constraints`, `zwp_relative_pointer`, `zwp_pointer_gestures`, `ext_foreign_toplevel_list`, `wp_security_context`, `zwp_tablet_v2`, `wlr_output_management`, `xdg_foreign`, `wlr_gamma_control`, `content_type`, `wp_alpha_modifier`, `cursor_shape` | COMP-06 | every protocol in COMP-06 §1 appears in `wayland-info`; mouse-look works in a Proton game; toolkits set their own cursors | M |
 | **9b** | *(stretch)* animations, rounding, shadows, dim, blur | COMP-02 §9 | visuals at Hyprland parity; frame budget still met per 9f | M + CI-N |
 
@@ -6595,7 +6595,7 @@ injection investigation.
   `policyd`'s own writable tree (proposed: `/var/lib/eclipse/anchors/`
   owned by root, written via a tiny setuid-less helper socket; optionally
   mirrored to a hardware token or remote endpoint, off by default).
-- Verification tool: `eclipse-audit verify` recomputes the chain and
+- Verification tool: `ec-audit verify` recomputes the chain and
   checks anchors.
 - Retention: default 90 days full, then `request/decision/prompt/grant`
   kept 1 year, others dropped. Owner-configurable.
@@ -6604,9 +6604,9 @@ injection investigation.
 
 - Local index (SQLite, rebuildable from segments) over `seq, ts, kind,
   principal, grant_id, req_id, handle, rule_id, outcome`.
-- CLI: `eclipse-audit query --principal agent:x --kind decision --outcome deny
-  --since 1h`; `eclipse-audit trace --req-id N` shows request → decision
-  → prompt → input → result chain; `eclipse-audit replay --agent x --since`
+- CLI: `ec-audit query --principal agent:x --kind decision --outcome deny
+  --since 1h`; `ec-audit trace --req-id N` shows request → decision
+  → prompt → input → result chain; `ec-audit replay --agent x --since`
   reconstructs a timeline.
 - Trusted-UI panel (COMP-10) shows the live tail per agent.
 - Agents have **no** access (B2). The owner may grant a *read-only
@@ -6614,7 +6614,7 @@ injection investigation.
 
 ## 6. Training Export (I-04)
 
-`eclipse-audit export --for-classifier` emits joined tuples
+`ec-audit export --for-classifier` emits joined tuples
 `(request facts, provenance, decision, prompt answer)` with all free text
 replaced by hashes unless the owner opts in per field. Prompt answers are
 the labels. Export is itself an audited action.
@@ -6953,7 +6953,7 @@ committed. It writes ordinary values into `abyss.kdl` through COMP-13 §1.4, and
 that file is copied to the installed system. After setup, nothing
 reads the profile. `setup.profile` records which one was chosen, for reference
 only. Choosing a different profile later means re-running setup
-(`eclipse-setup --reconfigure`), which starts from the current files. A live profile layer under explicit config would give
+(`ec-setup --reconfigure`), which starts from the current files. A live profile layer under explicit config would give
 every value three possible sources and make "why is this set" unanswerable
 from the file, against CHARTER §4.
 
@@ -6961,9 +6961,9 @@ from the file, against CHARTER §4.
 |---|---|---|---|---|
 | `mode` | `wm` | `hybrid` | `hybrid` | `hybrid` |
 | `components.bar` | `none` | `hyperion` | `hyperion` | `hyperion` |
-| `components.launcher` | `eclipse-launcher` | `eclipse-launcher` | `eclipse-launcher` | `eclipse-launcher` |
-| `components.notifications` | `none` | `eclipse-toasts` | `eclipse-toasts` | `eclipse-toasts` |
-| `components.control-center` | `none` | `eclipse-center` | `eclipse-center` | `eclipse-center` |
+| `components.launcher` | `ec-launcher` | `ec-launcher` | `ec-launcher` | `ec-launcher` |
+| `components.notifications` | `none` | `ec-toasts` | `ec-toasts` | `ec-toasts` |
+| `components.control-center` | `none` | `ec-center` | `ec-center` | `ec-center` |
 | terminal | `foot` | `foot` | `foot` | `foot` (`cataclysm` once P-04 exists) |
 | browser, office, image editor, file manager, media player | none | asked, none preselected | `firefox`, `libreoffice-fresh`, `gimp`, `nautilus`, `mpv` | asked, none preselected |
 | agent stack | off | off | off | on (`agentd`, `brokerd`, egress proxy) |
@@ -6989,9 +6989,9 @@ marked *preview* and installs only what exists.
 ```kdl
 components {
     bar "hyperion"              // hyperion | waybar | quickshell | none
-    launcher "eclipse-launcher"
-    notifications "eclipse-toasts"
-    control-center "eclipse-center"
+    launcher "ec-launcher"
+    notifications "ec-toasts"
+    control-center "ec-center"
 }
 ```
 
@@ -7000,7 +7000,7 @@ root-owned catalog (D-07 §4.1), which maps each candidate id to its packages
 and to what starts it. `abyss-session` starts what `components` names. An id
 the catalog does not know is refused at parse time, naming the key (COMP-13
 §1.2). The slots are `abyss.kdl` keys like any other, so the settings GUI and
-`eclipse-ctl` reach them (COMP-13 §1.5), and a slot change applies on hot
+`ec-ctl` reach them (COMP-13 §1.5), and a slot change applies on hot
 reload by stopping the old candidate and starting the new one.
 
 ADR 0038's "no Quickshell" is about the *default* userland and stands. Offering

@@ -3,7 +3,7 @@
 //! request's chain by `req_id`, and filter records, each as a JSON
 //! projection (S-04 §1).
 //!
-//! Every answer comes from [`policyd::audit::verify`]: a store that does not
+//! Every answer comes from [`ec_policyd::audit::verify`]: a store that does not
 //! verify yields its break, never a partial listing of records that might
 //! follow a forged one.
 
@@ -11,9 +11,9 @@
 
 use std::path::{Path, PathBuf};
 
-use policy_eval::audit::Kind;
-use policy_eval::cbor::Reader;
-use policyd::audit::{verify, Record, StoreError, Verified};
+use ec_policy_eval::audit::Kind;
+use ec_policy_eval::cbor::Reader;
+use ec_policyd::audit::{verify, Record, StoreError, Verified};
 use serde_json::{json, Map, Value};
 
 /// `policyd`'s state directory, as `policyd` itself resolves it.

@@ -34,7 +34,7 @@ use std::{
 use serde_json::{json, Value};
 
 /// Event kinds the compositor will send (COMP-13 §2.1). Mirrors `EVENTS` in
-/// `abyss::ipc::methods`; an unknown kind is refused by the server, so this
+/// `ec_abyss::ipc::methods`; an unknown kind is refused by the server, so this
 /// list existing as a type saves a round trip to find out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventKind {
@@ -355,7 +355,7 @@ fn as_event(msg: &Value) -> Option<Event> {
     if msg.get("id").is_some() {
         return None;
     }
-    // The server's shape (`abyss::ipc::emit`): one `event` method whose
+    // The server's shape (`ec_abyss::ipc::emit`): one `event` method whose
     // params name the kind and carry its payload.
     if msg.get("method")?.as_str()? != "event" {
         return None;

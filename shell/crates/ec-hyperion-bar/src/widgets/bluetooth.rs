@@ -6,9 +6,9 @@
 
 use iced::{Color, Element, Theme};
 
-use eclipse_services::status::Bluetooth;
-use eclipse_ui::tokens::{bar, color, drawer};
-use eclipse_ui::widget::{self as parts, ShellFrame};
+use ec_services::status::Bluetooth;
+use ec_ui::tokens::{bar, color, drawer};
+use ec_ui::widget::{self as parts, ShellFrame};
 
 use super::{Parts, Spans};
 use crate::app::{App, Drawer, Message};

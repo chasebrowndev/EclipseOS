@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Scrolling frame times for `fog-bench frames` (FOG §Performance model).
+//! Scrolling frame times for `ec-fog-bench frames` (FOG §Performance model).
 //!
 //! `FOG_UI_BENCH_SCROLL=N` scrolls the list a fixed step every frame for N
 //! frames after a warm-up, then prints one JSON line with the intervals

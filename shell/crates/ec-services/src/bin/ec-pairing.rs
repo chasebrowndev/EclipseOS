@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `eclipse-pairing`: the session's one BlueZ pairing agent (ADR 0053, ADR 0066).
+//! `ec-pairing`: the session's one BlueZ pairing agent (ADR 0053, ADR 0066).
 //!
-//! Its own process with its own user unit (`packaging/eclipse-pairing.service`), so
+//! Its own process with its own user unit (`packaging/ec-pairing.service`), so
 //! Bluetooth pairing works whether or not a taskbar is installed. It registers
 //! `org.bluez.Agent1` as BlueZ's default agent and serves
 //! `org.eclipse.Services.Pairing` on the session bus. It draws nothing: every
-//! question it is asked is answered by an `eclipse-secret-prompt` window it
+//! question it is asked is answered by an `ec-secret-prompt` window it
 //! starts, and that window answers the agent itself through the session-bus
 //! door.
 
-use eclipse_services::status::{Actions, BtPrompt, Event, Events, PairingAgent};
+use ec_services::status::{Actions, BtPrompt, Event, Events, PairingAgent};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -23,12 +23,12 @@ const POLL: Duration = Duration::from_millis(500);
 
 /// Register the agent and answer it for as long as the process lives.
 fn main() -> ExitCode {
-    let (actions, events) = match eclipse_services::status::actions(PairingAgent::Register) {
+    let (actions, events) = match ec_services::status::actions(PairingAgent::Register) {
         Ok(pair) => pair,
         Err(e) => {
             // Journald picks stderr up. Not fatal to the session: pairing
             // falls back to BlueZ's own rules, and the unit retries.
-            eprintln!("eclipse-pairing: no bluetooth pairing agent: {e}");
+            eprintln!("ec-pairing: no bluetooth pairing agent: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -50,7 +50,7 @@ struct Prompt {
 }
 
 /// Answer what the pairing agent asks. A PIN or passkey is typed into
-/// `eclipse-secret-prompt`, which answers the agent itself; this process never
+/// `ec-secret-prompt`, which answers the agent itself; this process never
 /// holds one. A yes/no is answered by the same window; a code to type on the
 /// device is only shown by it.
 fn pair(actions: &Actions, events: &Events, prompt: &mut Option<Prompt>) {
@@ -78,13 +78,13 @@ fn pair(actions: &Actions, events: &Events, prompt: &mut Option<Prompt>) {
                     continue;
                 }
                 close(prompt);
-                match tied(std::process::Command::new("eclipse-secret-prompt").args(&args)).spawn() {
+                match tied(std::process::Command::new("ec-secret-prompt").args(&args)).spawn() {
                     Ok(child) => {
                         let until = (!answers).then(|| Instant::now() + SHOW_FOR);
                         *prompt = Some(Prompt { child, args, until });
                     }
                     Err(e) => {
-                        eprintln!("eclipse-pairing: cannot start the pairing prompt: {e}");
+                        eprintln!("ec-pairing: cannot start the pairing prompt: {e}");
                         if answers {
                             actions.bt_answer(addr, None);
                         }

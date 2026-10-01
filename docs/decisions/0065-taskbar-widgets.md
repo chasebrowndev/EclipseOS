@@ -49,7 +49,7 @@ Default order: `now-playing`, `volume`, `network`, `bluetooth`, `battery`,
 `tray`, `clock`. The launcher button and the pager stay fixed and are not
 widgets. `bar.tray.pinned`/`hidden` keep governing SNI items only; the built-in
 ids they used to carry (`network`, `bluetooth`, `battery`, `volume`) move to
-`bar.widgets.order`, and `eclipse-ctl config migrate` rewrites old files.
+`bar.widgets.order`, and `ec-ctl config migrate` rewrites old files.
 
 `bar.widgets.important` (string list, default `clock`, `battery`) names widgets
 that **never compress**: the solver keeps them at their core size and takes
@@ -85,7 +85,7 @@ retargets from its current position and velocity, so an interrupted animation
 never jumps. The frame clock runs only while something moves. Keys:
 `bar.motion.enabled` (default on; off snaps), `bar.motion.duration-ms`
 (default 220), `bar.motion.curve` (the `animations` curves plus `spring`,
-default `spring`). The primitives live in `eclipse_ui::motion` so other
+default `spring`). The primitives live in `ec_ui::motion` so other
 components may use them.
 
 **Custom widgets.** A `widget` block is either:
@@ -96,13 +96,13 @@ components may use them.
 
 Optional `icon`, `on-click`, `on-scroll-up`, `on-scroll-down` (argv lists).
 Commands are argv-exec, never through an implicit shell. They run on an
-`eclipse-services` thread, never on a draw path, with a timeout, a 4 KiB line
+`ec-services` thread, never on a draw path, with a timeout, a 4 KiB line
 cap, and are killed on reload or removal. Output is rendered as plain text,
 never markup, and never logged (it may carry anything the user's command
 prints). Exec widgets have exactly the authority of the user who wrote them;
 they are not a plugin mechanism and gain nothing from the taskbar.
 
-**Data services** go in `eclipse-services`, on the `status` pattern (one
+**Data services** go in `ec-services`, on the `status` pattern (one
 watcher thread per source, an `mpsc` feed, a separate actions handle):
 `media` (MPRIS over zbus), `audio` (PipeWire default-sink volume and mute, the
 per-window mute that replaces `pactl`, and the monitor tap), `usage`

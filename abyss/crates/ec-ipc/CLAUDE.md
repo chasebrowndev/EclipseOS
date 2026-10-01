@@ -1,4 +1,4 @@
-# eclipse-ipc — control-socket client
+# ec-ipc — control-socket client
 
 Read the root `CLAUDE.md` first.
 

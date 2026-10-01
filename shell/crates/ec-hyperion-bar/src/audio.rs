@@ -8,14 +8,14 @@
 //! it. The descendant part is not pedantry — a browser plays audio from a
 //! content child, never from the process that owns the surface.
 //!
-//! The streams themselves come from `eclipse_services::audio` (ADR 0065), kept
+//! The streams themselves come from `ec_services::audio` (ADR 0065), kept
 //! on the app as the service last reported them; this module only answers
 //! "which of these are this window's". Muting goes back through the service's
 //! `set_app_muted`, one call per owning pid.
 
 use std::collections::HashSet;
 
-use eclipse_services::audio::Stream;
+use ec_services::audio::Stream;
 
 /// The streams in `streams` that belong to `pid` or any of its descendants.
 pub fn streams_for(streams: &[Stream], pid: i32) -> Vec<Stream> {

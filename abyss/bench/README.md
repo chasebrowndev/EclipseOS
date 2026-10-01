@@ -7,7 +7,7 @@ benchmarks, §5 CI enforcement). Not TCB, but it is what gates TCB code: the
 milestone 16 exit criterion is `check()` at **≤50 µs p99, measured here**.
 
 ```
-cargo run --release -p abyss-bench
+cargo run --release -p ec-abyss-bench
 ```
 
 Exits non-zero if any bench is over its budget or allocates on a path where

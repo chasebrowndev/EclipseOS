@@ -62,7 +62,7 @@ impl Beacon {
     /// there is no runtime dir or the bind fails.
     pub fn bind() -> Beacon {
         let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") else {
-            eprintln!("oracle-eyes: beacon: XDG_RUNTIME_DIR unset, taskbar eye disabled");
+            eprintln!("ec-oracle-eyes: beacon: XDG_RUNTIME_DIR unset, taskbar eye disabled");
             return Beacon { shared: None };
         };
         let path = PathBuf::from(dir).join("oracle-eyes").join("eye.sock");

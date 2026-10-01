@@ -26,9 +26,9 @@ mod timezone;
 use crate::metrics;
 use crate::model::{Message, Model, Phase, Step};
 use crate::parts::{self, El};
-use eclipse_ui::theme;
-use eclipse_ui::tokens::{color, space};
-use eclipse_ui::widget::hairline;
+use ec_ui::theme;
+use ec_ui::tokens::{color, space};
+use ec_ui::widget::hairline;
 use iced::widget::{column, container, row, scrollable, Column, Space};
 use iced::{Alignment, Length};
 
@@ -43,7 +43,7 @@ pub struct Body<'a> {
     pub scroll: bool,
 }
 
-/// The whole window for steps 1 to 14. Step 0 is `eclipse_welcome`'s own view.
+/// The whole window for steps 1 to 14. Step 0 is `ec_welcome`'s own view.
 pub fn view(m: &Model) -> El<'_, Message> {
     let body = match m.step {
         Step::Welcome => {
@@ -110,7 +110,7 @@ pub fn view(m: &Model) -> El<'_, Message> {
     container(main.width(Length::Fill))
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(theme::window(eclipse_ui::tokens::radius::WINDOW))
+        .style(theme::window(ec_ui::tokens::radius::WINDOW))
         .into()
 }
 
@@ -184,7 +184,7 @@ pub(crate) fn list_box<'a>(top: Option<El<'a, Message>>, rows: Column<'a, Messag
             .width(Length::Fill)
             .height(Length::Fill),
     );
-    eclipse_ui::widget::inset(col)
+    ec_ui::widget::inset(col)
         .padding(space::CARD)
         .height(Length::Fill)
         .into()

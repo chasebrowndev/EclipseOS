@@ -12,8 +12,8 @@ use super::Body;
 use crate::choices::{BAR, NONE, SLOTS};
 use crate::model::{Message, Model};
 use crate::parts::{self, El};
-use eclipse_ui::tokens::{color, space};
-use eclipse_ui::widget::inset;
+use ec_ui::tokens::{color, space};
+use ec_ui::widget::inset;
 use iced::widget::{column, Row};
 use iced::Length;
 

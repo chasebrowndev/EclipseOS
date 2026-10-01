@@ -21,7 +21,7 @@ durable path in the TCB, not two.
 Milestone 10 defines the full record envelope, the canonical-CBOR encoding, the
 chain computation, segment rotation, fsync policy and anchors. It defines the
 `task` body only; the other seventeen `kind` bodies stay milestone 12's work,
-as does `eclipse-audit verify` and retention.
+as does `ec-audit verify` and retention.
 
 ## Consequences
 - Milestones 10 and 12 are no longer independent. 12 becomes "emit the

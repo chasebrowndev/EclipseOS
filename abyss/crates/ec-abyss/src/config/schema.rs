@@ -128,12 +128,21 @@ pub const MODES: &[&str] = &["wm", "hybrid", "de"];
 
 /// Component-slot catalog (COMP-17 §2.2). An id outside the slot's list is a
 /// parse error naming the key. Mirrors the root-owned catalog of D-07 §4.1.
-pub const COMPONENT_BARS: &[&str] = &["hyperion", "waybar", "quickshell", "none"];
-pub const COMPONENT_LAUNCHERS: &[&str] = &["eclipse-launcher", "fuzzel", "none"];
-pub const COMPONENT_NOTIFICATIONS: &[&str] = &["eclipse-toasts", "mako", "none"];
-pub const COMPONENT_CONTROL_CENTERS: &[&str] = &["eclipse-center", "none"];
+pub const COMPONENT_BARS: &[&str] = &["ec-hyperion-bar", "waybar", "quickshell", "none"];
+pub const COMPONENT_LAUNCHERS: &[&str] = &["ec-launcher", "fuzzel", "none"];
+pub const COMPONENT_NOTIFICATIONS: &[&str] = &["ec-toasts", "mako", "none"];
+pub const COMPONENT_CONTROL_CENTERS: &[&str] = &["ec-center", "none"];
 
-/// `wallpaper.mode` values, as `eclipse-wallpaper` draws them.
+/// Pre-`ec-` component ids (ADR 0069), still accepted on read for one release
+/// so an existing `abyss.kdl` keeps loading. Reads normalise to the new id.
+pub const LEGACY_COMPONENT_IDS: &[(&str, &str)] = &[
+    ("hyperion", "ec-hyperion-bar"),
+    ("eclipse-launcher", "ec-launcher"),
+    ("eclipse-toasts", "ec-toasts"),
+    ("eclipse-center", "ec-center"),
+];
+
+/// `wallpaper.mode` values, as `ec-wallpaper` draws them.
 pub const WALLPAPER_MODES: &[&str] = &["fill", "fit", "center"];
 /// `wallpaper.color` default, `#0b0906`.
 pub const WALLPAPER_DEFAULT_COLOR: [f32; 4] = [11.0 / 255.0, 9.0 / 255.0, 6.0 / 255.0, 1.0];
@@ -162,7 +171,7 @@ pub const TABLE: &[Key] = &[
     k(
         "components.bar",
         Ty::Enum(COMPONENT_BARS),
-        Str("hyperion"),
+        Str("ec-hyperion-bar"),
         Abyss,
         Live,
         "Which bar `abyss-session` runs (COMP-17 §2.2). A change on hot reload \
@@ -171,7 +180,7 @@ pub const TABLE: &[Key] = &[
     k(
         "components.launcher",
         Ty::Enum(COMPONENT_LAUNCHERS),
-        Str("eclipse-launcher"),
+        Str("ec-launcher"),
         Abyss,
         Live,
         "Which launcher `abyss-session` runs (COMP-17 §2.2).",
@@ -179,7 +188,7 @@ pub const TABLE: &[Key] = &[
     k(
         "components.notifications",
         Ty::Enum(COMPONENT_NOTIFICATIONS),
-        Str("eclipse-toasts"),
+        Str("ec-toasts"),
         Abyss,
         Live,
         "Which notification daemon `abyss-session` runs (COMP-17 §2.2).",
@@ -187,12 +196,12 @@ pub const TABLE: &[Key] = &[
     k(
         "components.control-center",
         Ty::Enum(COMPONENT_CONTROL_CENTERS),
-        Str("eclipse-center"),
+        Str("ec-center"),
         Abyss,
         Live,
         "Which control center `abyss-session` runs (COMP-17 §2.2).",
     ),
-    // wallpaper: read by the eclipse-wallpaper daemon; abyss draws nothing
+    // wallpaper: read by the ec-wallpaper daemon; abyss draws nothing
     k(
         "wallpaper.path",
         Ty::Str,
@@ -447,7 +456,7 @@ pub const TABLE: &[Key] = &[
        the overflow drawer. The built-in applets are widgets now \
        (`bar.widgets.order`): their old ids here (network, bluetooth, \
        battery, volume) still load, with a deprecation warning, and \
-       `eclipse-ctl config migrate` moves them.",
+       `ec-ctl config migrate` moves them.",
     ),
     k(
         "bar.tray.hidden",
@@ -984,14 +993,14 @@ pub const TABLE: &[Key] = &[
        (`$term -e <argv>`). Unset: those entries are dropped from the app \
        index rather than shown and refused.",
     ),
-    // setup: recorded by eclipse-setup (D-07 §4), read by nothing at runtime
+    // setup: recorded by ec-setup (D-07 §4), read by nothing at runtime
     k(
         "setup.profile",
         Ty::Enum(SETUP_PROFILES),
         Str("standard"),
         Abyss,
         Live,
-        "Setup profile chosen in eclipse-setup (COMP-17 §2.1). A record for \
+        "Setup profile chosen in ec-setup (COMP-17 §2.1). A record for \
        reference only: nothing reads it at runtime, and changing it does not \
        change any other value.",
     ),
@@ -1001,7 +1010,7 @@ pub const TABLE: &[Key] = &[
         Bool(false),
         Abyss,
         Live,
-        "Set when eclipse-setup applies (D-07 §4). `eclipse-ctl setup reset` \
+        "Set when ec-setup applies (D-07 §4). `ec-ctl setup reset` \
        clears it so setup runs again.",
     ),
     k(
@@ -1248,7 +1257,7 @@ pub const BAR_WIDGET_DEFAULT_ORDER: &[&str] = &[
 pub const BAR_WIDGET_DEFAULT_IMPORTANT: &[&str] = &["clock", "battery"];
 /// Built-in applet ids `bar.tray.pinned`/`hidden` carried before they became
 /// widgets. Still accepted there, with a deprecation warning;
-/// `eclipse-ctl config migrate` moves them to `bar.widgets.order`.
+/// `ec-ctl config migrate` moves them to `bar.widgets.order`.
 pub const LEGACY_TRAY_BUILTINS: &[&str] = &["network", "bluetooth", "battery", "volume"];
 
 /// Shipped data sources a declarative `widget { source … }` can show. The

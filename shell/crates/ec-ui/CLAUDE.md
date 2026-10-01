@@ -1,4 +1,4 @@
-# eclipse-ui — the design system
+# ec-ui — the design system
 
 Read the root `CLAUDE.md` first.
 
@@ -19,7 +19,7 @@ Read the root `CLAUDE.md` first.
 - Corner radius follows the compositor: `ipc::fetch_config_radius` reads
   `decoration.rounding` (or `bar.rounding` for the taskbar) over `get_config`,
   and `theme::{panel, surface, menu_surface, bar_ground}` take that radius.
-  This is why the crate depends on `eclipse-ipc`.
+  This is why the crate depends on `ec-ipc`.
 - Accent discipline: one live yellow per pane. Widgets take their accent from
   the theme, so a pane that looks wrong is a pane using two accent widgets,
   not a widget to restyle.

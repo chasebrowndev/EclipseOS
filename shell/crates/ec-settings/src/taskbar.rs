@@ -23,11 +23,11 @@ use iced::widget::{
 use iced::{Alignment, Element, Length, Point, Rectangle, Size, Task, Theme};
 use serde_json::{json, Value};
 
-use eclipse_ipc::{Approval, Widget, WidgetOp, WidgetStatus};
-use eclipse_ui::motion::{Animated, Curve, Motion};
-use eclipse_ui::theme;
-use eclipse_ui::tokens::{bar, canvas, color, font, radius, size, space};
-use eclipse_ui::widget::{
+use ec_ipc::{Approval, Widget, WidgetOp, WidgetStatus};
+use ec_ui::motion::{Animated, Curve, Motion};
+use ec_ui::theme;
+use ec_ui::tokens::{bar, canvas, color, font, radius, size, space};
+use ec_ui::widget::{
     arg_chip, art_thumb, badge, bar_cell_frame, bar_sheet, battery_gauge, big_value, chip, config_error,
     drag_bar, drag_ghost, draggable, drop_well, drop_zone, edge_note, edge_quad, elide, glide_track,
     hairline, halves, inset, list_row, mark, micro_label, mini_meter, outline, panel, pill, pin, placed,
@@ -913,7 +913,7 @@ pub fn preview_env(app: &mut App) {
         Ok("long") => {
             let w = Widget {
                 name: "probe".into(),
-                kind: eclipse_ipc::WidgetKind::Exec {
+                kind: ec_ipc::WidgetKind::Exec {
                     argv: vec![
                         "sh".into(),
                         "-c".into(),
@@ -1660,8 +1660,8 @@ fn core_of<'a>(app: &App, id: &str) -> Element<'a, Message, Theme> {
 /// The span the picture draws: the core alone. Nothing is ever revealed in
 /// the picture, and the shell anchors its body right, so a revealed width it
 /// is not given would show as empty room where the core should be.
-fn drawn_span(c: &CellAnim) -> eclipse_ui::widget::ShellSpan {
-    eclipse_ui::widget::ShellSpan {
+fn drawn_span(c: &CellAnim) -> ec_ui::widget::ShellSpan {
+    ec_ui::widget::ShellSpan {
         core: c.cell.span.core,
         revealed: 0.0,
     }
@@ -2517,7 +2517,7 @@ mod tests {
     fn widget(name: &str) -> Widget {
         Widget {
             name: name.into(),
-            kind: eclipse_ipc::WidgetKind::Exec {
+            kind: ec_ipc::WidgetKind::Exec {
                 argv: vec!["date".into()],
                 interval_ms: 5000,
             },

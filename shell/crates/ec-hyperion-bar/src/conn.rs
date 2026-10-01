@@ -6,8 +6,8 @@
 //! reconnects rather than failing forever — the bar must not need a restart
 //! because the compositor did.
 
-use eclipse_ipc::{Client, Error, EventKind};
-use eclipse_ui::tokens::popup::Anchor;
+use ec_ipc::{Client, Error, EventKind};
+use ec_ui::tokens::popup::Anchor;
 use serde_json::{json, Value};
 
 use crate::model::{parse_focused, parse_mode, parse_windows, parse_workspaces, Mode, Snapshot};
@@ -117,9 +117,9 @@ impl Default for BarConfig {
             fold_duration_ms: 150,
             fold_curve: FoldCurve::EaseOut,
             position: BarPosition::Top,
-            hour_12: eclipse_ui::tokens::clock::HOUR_12,
-            date_mdy: eclipse_ui::tokens::clock::DATE_MDY,
-            popup_anchor: eclipse_ui::tokens::popup::ANCHOR,
+            hour_12: ec_ui::tokens::clock::HOUR_12,
+            date_mdy: ec_ui::tokens::clock::DATE_MDY,
+            popup_anchor: ec_ui::tokens::popup::ANCHOR,
             eye: true,
             launcher: LauncherStyle::Centered,
         }
@@ -384,7 +384,7 @@ impl Conn {
     pub fn glass_radius(&mut self, path: &str) -> Option<f32> {
         self.ensure();
         let client = self.client.as_mut()?;
-        eclipse_ui::ipc::fetch_config_radius(client, path)
+        ec_ui::ipc::fetch_config_radius(client, path)
     }
 
     /// The air around the pill (`general.gaps-out`, and the effective
@@ -395,10 +395,10 @@ impl Conn {
     pub fn air(&mut self) -> Option<crate::app::Air> {
         self.ensure();
         let client = self.client.as_mut()?;
-        let x = eclipse_ui::ipc::fetch_config_radius(client, "general.gaps-out")?;
-        let y = eclipse_ui::ipc::fetch_config_radius(client, "general.gaps-out-vertical").unwrap_or(x);
-        let gi = eclipse_ui::ipc::fetch_config_radius(client, "general.gaps-in").unwrap_or(y);
-        let inner = eclipse_ui::ipc::fetch_config_radius(client, "general.gaps-in-vertical").unwrap_or(gi);
+        let x = ec_ui::ipc::fetch_config_radius(client, "general.gaps-out")?;
+        let y = ec_ui::ipc::fetch_config_radius(client, "general.gaps-out-vertical").unwrap_or(x);
+        let gi = ec_ui::ipc::fetch_config_radius(client, "general.gaps-in").unwrap_or(y);
+        let inner = ec_ui::ipc::fetch_config_radius(client, "general.gaps-in-vertical").unwrap_or(gi);
         Some(crate::app::Air {
             x: x.round() as i32,
             y: y.round() as i32,
@@ -411,12 +411,12 @@ impl Conn {
     pub fn blur(&mut self) -> Option<bool> {
         self.ensure();
         let client = self.client.as_mut()?;
-        eclipse_ui::ipc::fetch_blur(client)
+        ec_ui::ipc::fetch_blur(client)
     }
 
     /// `misc.terminal-command` (TERM-01), read when the start menu opens:
     /// with none set, `Terminal=true` entries are left out of the list, as
-    /// in `eclipse-launcher`. `None` on any failure.
+    /// in `ec-launcher`. `None` on any failure.
     pub fn terminal_command(&mut self) -> Option<String> {
         self.ensure();
         let reply = self.call("get_config", json!({ "path": "misc.terminal-command" }))?;
@@ -437,9 +437,9 @@ impl Conn {
 pub fn parse_widgets(reply: &Value) -> widgets::Config {
     use std::time::Duration;
 
-    use eclipse_ipc::widgets::{widgets_from_config, WidgetKind};
-    use eclipse_services::custom::{Kind, WidgetSpec};
-    use eclipse_ui::motion::Curve;
+    use ec_ipc::widgets::{widgets_from_config, WidgetKind};
+    use ec_services::custom::{Kind, WidgetSpec};
+    use ec_ui::motion::Curve;
     use widgets::WidgetId;
 
     let mut cfg = widgets::Config::default();
@@ -522,7 +522,7 @@ pub fn parse_widgets(reply: &Value) -> widgets::Config {
 mod tests {
     use super::*;
     use crate::widgets::WidgetId;
-    use eclipse_services::custom::Kind;
+    use ec_services::custom::Kind;
 
     #[test]
     fn widget_keys_and_blocks_parse_and_bad_ones_keep_defaults() {

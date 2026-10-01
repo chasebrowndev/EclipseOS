@@ -17,7 +17,7 @@ HW-01 through HW-07 (the first Framework install, 2026-09-19) and PKG-01/PKG-02
 rules they left behind are kept below. The full write-ups are in git history
 (this file at `20d8e3a`) and `docs/internal/handoff/2026-09-19-greeter-to-abyss.md`.
 BLUR-02 and TILE-01 were fixed on 2026-09-23 and removed. BLUR-02 came back and
-was fixed for real on 2026-09-28: the line was eclipse-toasts' idle 1 px
+was fixed for real on 2026-09-28: the line was ec-toasts' idle 1 px
 transparent layer, which the compositor blurred; the stack now has no surface
 while empty.
 BLUR-01's fix (opaque sheets, because clients could not tell whether blur was on)
@@ -32,7 +32,7 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
 
 - **A shipped bind must name a binary in `eclipseos-meta`'s dependency
   closure** (was HW-04). `default_binds()` spawns `foot` (Super+Q,
-  Super+Return), `eclipse-launcher` (Super+E, Super+R) and `eclipse-center`
+  Super+Return), `ec-launcher` (Super+E, Super+R) and `ec-center`
   (Super+N). `default_bind_spawns_name_shipped_binaries` enforces it against
   `packaging/pkg/eclipseos/PKGBUILD`.
 - **User units are enabled by `abyss-session.target.wants/` symlinks the
@@ -97,7 +97,7 @@ M8 — since it needs a metadata cursor stream, not baked-in pixels.
 ## BLUR-03: a blurred rectangle frames the toast stack
 
 Found 2026-09-28 fixing BLUR-02. While cards show, the compositor blurs the
-whole eclipse-toasts layer (404 x stack height), including the transparent
+whole ec-toasts layer (404 x stack height), including the transparent
 gaps around and between the rounded cards, so a square blurred slab shows
 behind them. Layers are blurred wherever they leave the surface uncovered
 (`render/mod.rs:192`); the toasts surface is larger than what it draws.
@@ -112,7 +112,7 @@ blur-modes work) or each card becomes its own surface.
 
 ## TRAY-01: a tray entry that is not running vanishes when moved to the drawer
 
-`eclipse-settings/src/tray.rs:81` (`Tray::ids`) lists live items plus those
+`ec-settings/src/tray.rs:81` (`Tray::ids`) lists live items plus those
 named in `pinned` or `hidden`. The drawer is simply "in neither list", so an
 entry that isn't running, once dragged (or keyed) from the bar or hidden row
 into the drawer, is named nowhere and drops out of the pane. The config write
@@ -128,7 +128,7 @@ session in the pane's own list, or give the drawer its own config key.
 
 The Hyprland-host probing recipe (`hyprctl`, `ydotool` scale) that used to sit
 here is retired with the Hyprland dev host. One note still holds: the journal
-is silent under both `-t eclipse-launcher` and `-t abyss` for the
+is silent under both `-t ec-launcher` and `-t abyss` for the
 whole of a launcher probe. That is correct, not a fault: the launcher holds no
 capability, and logging the query would violate the never-log-human-input
 invariant. Visual state is the only oracle here, so silence is never evidence

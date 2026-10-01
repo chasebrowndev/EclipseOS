@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The browser's pure state: which folder each tab shows, its listing as
-//! `fogd` sent it, the filter and the selection. No I/O and no sorting —
-//! `order` always comes from `fogd` (invariant: the UI thread never does
+//! `ec-fogd` sent it, the filter and the selection. No I/O and no sorting —
+//! `order` always comes from `ec-fogd` (invariant: the UI thread never does
 //! filesystem I/O or sorting). The filter and hidden-file toggle only drop
 //! rows from that order; they never reorder it. Every method returns an
 //! [`Effect`] for the app to carry out.
 
 use std::collections::{BTreeSet, HashSet};
 
-use fog_proto::{apply_diff, Entry, Kind, Reply, Sort, SortKey};
+use ec_fog_proto::{apply_diff, Entry, Kind, Reply, Sort, SortKey};
 
 use crate::clip::ClipOp;
 use crate::ops::JobKind;
@@ -26,15 +26,15 @@ pub enum Effect {
     List(Vec<u8>),
     /// Stop the pushes for a listing we no longer show.
     Unsubscribe(u64),
-    /// Send `Open` for this file: `fogd` launches its handler.
+    /// Send `Open` for this file: `ec-fogd` launches its handler.
     Open(Vec<u8>),
-    /// Send `SetSort`: `fogd` reorders the listing and says `Sorted`.
+    /// Send `SetSort`: `ec-fogd` reorders the listing and says `Sorted`.
     SetSort(u64, Sort),
 }
 
 /// What the selection holds on to while a listing arrives in pieces.
 ///
-/// `fogd` answers an uncached folder with a partial snapshot (the first
+/// `ec-fogd` answers an uncached folder with a partial snapshot (the first
 /// batch, sorted on its own) and then a diff carrying the full order. Until
 /// the user moves, the selection is pinned to where entering put it, not to
 /// whichever name happened to be first in the partial batch.
@@ -61,7 +61,7 @@ pub struct Nav {
 /// A one-line report for the status line, replaced by the next.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Notice {
-    /// `fogd` launched a handler for this file.
+    /// `ec-fogd` launched a handler for this file.
     Opened(Vec<u8>),
     /// Opening this file failed with this errno.
     OpenFailed(Vec<u8>, i32),
@@ -82,10 +82,10 @@ pub enum Notice {
     /// A job of ours finished having changed nothing: every item it named
     /// was skipped at a conflict.
     Skipped(JobKind),
-    /// A job of ours failed: its kind and `fogd`'s message.
+    /// A job of ours failed: its kind and `ec-fogd`'s message.
     Failed(JobKind, String),
     Undone,
-    /// `fogd` refused to undo, and why.
+    /// `ec-fogd` refused to undo, and why.
     UndoRefused(String),
 }
 
@@ -104,11 +104,11 @@ pub enum Click {
 pub struct Browser {
     /// The folder whose listing is shown (absolute, raw bytes).
     pub path: Vec<u8>,
-    /// `fogd`'s id for that listing; `None` until the first snapshot.
+    /// `ec-fogd`'s id for that listing; `None` until the first snapshot.
     pub dir: Option<u64>,
     pub generation: u64,
     pub entries: Vec<Entry>,
-    /// Display order, indices into `entries`, exactly as `fogd` sent it.
+    /// Display order, indices into `entries`, exactly as `ec-fogd` sent it.
     pub order: Vec<u32>,
     /// `order` without hidden or filtered-out rows. What is drawn.
     visible: Vec<u32>,
@@ -119,7 +119,7 @@ pub struct Browser {
     pub pending: Option<Nav>,
     /// The last error for the shown or requested folder: path and errno.
     pub error: Option<(Vec<u8>, i32)>,
-    /// How `fogd` orders this listing, from its last `Sorted`.
+    /// How `ec-fogd` orders this listing, from its last `Sorted`.
     pub sort: Sort,
     pub show_hidden: bool,
     /// Type-to-filter text: a fuzzy match on names. Empty is no filter.
@@ -129,7 +129,7 @@ pub struct Browser {
     /// Visual mode: the name the range started on. The range runs from it
     /// to the cursor.
     pub anchor: Option<Vec<u8>>,
-    /// A file sent to `fogd` with `Open`, until it answers.
+    /// A file sent to `ec-fogd` with `Open`, until it answers.
     pub opening: Option<Vec<u8>>,
     pub notice: Option<Notice>,
     /// Free and total bytes on the shown folder's filesystem.
@@ -174,7 +174,7 @@ impl Browser {
         self.pending.as_ref().map_or(&self.path, |n| &n.path)
     }
 
-    /// A new `fogd` connection is a new id space: `fogd` numbers listings
+    /// A new `ec-fogd` connection is a new id space: `ec-fogd` numbers listings
     /// from 1 on every start, so the id and generation we hold mean nothing
     /// to it. Forget them, so the relist's snapshot is taken as-is.
     pub fn reconnected(&mut self) {
@@ -294,7 +294,7 @@ impl Browser {
                 let not_dir = std::io::Error::from_raw_os_error(errno).kind()
                     == std::io::ErrorKind::NotADirectory;
                 if not_dir && navigating {
-                    // The start path is a file (`fog-ui FILE`, or a file://
+                    // The start path is a file (`ec-fog-ui FILE`, or a file://
                     // URI from the desktop entry): nothing is shown yet, so
                     // open its parent with the file selected.
                     if self.dir.is_none() {
@@ -372,8 +372,8 @@ impl Browser {
     }
 
     /// Open the selected entry: a folder (or a symlink or unknown kind,
-    /// which `fogd` answers `ENOTDIR` for if it is not one) is entered, a
-    /// file is handed to `fogd`'s `Open`.
+    /// which `ec-fogd` answers `ENOTDIR` for if it is not one) is entered, a
+    /// file is handed to `ec-fogd`'s `Open`.
     pub fn open(&mut self) -> Effect {
         let Some(e) = self.selected_entry() else {
             return Effect::None;
@@ -601,7 +601,7 @@ impl Browser {
             .collect()
     }
 
-    // Sorting: asked of `fogd`, never done here.
+    // Sorting: asked of `ec-fogd`, never done here.
 
     /// Order by `key`. The key already in use flips direction; a new size or
     /// date key starts largest or newest first, a name or type key A to Z.
@@ -702,7 +702,7 @@ impl Browser {
     }
 }
 
-/// The window's tabs (FOG §UI and navigation). One `fogd` connection serves
+/// The window's tabs (FOG §UI and navigation). One `ec-fogd` connection serves
 /// them all, so a reply is offered to every tab and each keeps what is its
 /// own; a subscription ends only when no tab still shows that listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -827,7 +827,7 @@ impl Tabs {
 
 /// Fuzzy match for the filter and the palette: every byte of `needle`, in
 /// order, somewhere in `hay`, ASCII case folded. Only a yes or no; nothing
-/// is ranked, so matches keep `fogd`'s order.
+/// is ranked, so matches keep `ec-fogd`'s order.
 pub fn fuzzy(needle: &str, hay: &[u8]) -> bool {
     let mut hay = hay.iter();
     needle
@@ -1056,7 +1056,7 @@ mod tests {
             complete: true,
         });
         assert_eq!(b.generation, 2);
-        // fogd restarts: ids begin at 1 again and generations at 0.
+        // ec-fogd restarts: ids begin at 1 again and generations at 0.
         b.reconnected();
         b.on_reply(partial("/t", 1, &[("a", Kind::File)], &[0]));
         assert_eq!(names(&b), ["a"]);
@@ -1127,7 +1127,7 @@ mod tests {
             &[0, 1, 2],
         ));
         assert_eq!(sel(&b), "a");
-        // The other tab reverses the order: fogd resends it to both.
+        // The other tab reverses the order: ec-fogd resends it to both.
         let fx = b.on_reply(Reply::DirDiff {
             dir: 2,
             generation: 1,
@@ -1558,7 +1558,7 @@ mod tests {
             dirs_first: true,
         };
         assert_eq!(b.sort_by(SortKey::Size), Effect::SetSort(4, size_desc));
-        // Nothing changes until fogd says so.
+        // Nothing changes until ec-fogd says so.
         assert_eq!(b.sort, Sort::default());
         b.on_reply(Reply::Sorted {
             dir: 9,
@@ -1608,7 +1608,7 @@ mod tests {
         t.on_reply(snap("/a", 1, 0, &[("s", Kind::Dir)], &[0]));
         assert_eq!(t.open(), Effect::List(b"/a".to_vec()));
         assert_eq!((t.len(), t.index()), (2, 1));
-        // fogd answers the second Subscribe from its cache: both tabs take
+        // ec-fogd answers the second Subscribe from its cache: both tabs take
         // it, one as its first listing, one as a refresh.
         let fx = t.on_reply(snap("/a", 1, 0, &[("s", Kind::Dir)], &[0]));
         assert_eq!(fx, [(1, Effect::Entered(0))]);

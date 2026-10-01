@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The one door to the control socket: COMP-13 §1.4 `set_config_value`.
 //!
-//! `eclipse-setup` is an ordinary client of the write API (D-07 §7). It is
+//! `ec-setup` is an ordinary client of the write API (D-07 §7). It is
 //! scoped to `abyss.kdl`, has no path into `policy.kdl`, and never sees the
 //! phrase. That is enforced here rather than promised: every write in the
 //! program goes through [`Writer::set`], and [`is_allowed`] is a closed
@@ -68,7 +68,7 @@ pub enum WriteError {
 /// Where writes go.
 pub enum Writer {
     /// The compositor's control socket, connected on first use.
-    Socket(Option<eclipse_ipc::Client>),
+    Socket(Option<ec_ipc::Client>),
     /// Records instead of sending. `--fake-helper` and tests: a dry run must
     /// not change the desktop it runs on.
     Record(Vec<(String, Value)>),
@@ -103,12 +103,12 @@ impl Writer {
             }
             Writer::Socket(slot) => {
                 if slot.is_none() {
-                    *slot = eclipse_ipc::Client::connect().ok();
+                    *slot = ec_ipc::Client::connect().ok();
                 }
                 let client = slot.as_mut().ok_or(WriteError::NoSocket)?;
                 match client.call("set_config_value", json!({ "path": key, "value": value })) {
                     Ok(_) => Ok(()),
-                    Err(eclipse_ipc::Error::Rpc { .. }) => Err(WriteError::Rejected),
+                    Err(ec_ipc::Error::Rpc { .. }) => Err(WriteError::Rejected),
                     Err(_) => {
                         // The socket is gone; reconnect on the next write.
                         *slot = None;

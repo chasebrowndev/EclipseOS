@@ -18,7 +18,7 @@ Forces:
 - Every desktop has a background, even if it is one flat colour.
 
 ## Options
-1. **A core daemon.** `eclipse-wallpaper`, an out-of-process wlr-layer-shell
+1. **A core daemon.** `ec-wallpaper`, an out-of-process wlr-layer-shell
    client on `Layer::Background`, one surface per output, drawing an image
    (`fill`, `fit`, `center`) or a solid colour. Configured by a `wallpaper`
    node in `abyss.kdl`; ships as its own package, a dependency of
@@ -32,9 +32,9 @@ Forces:
    not belong in the compositor's process or loop.
 
 ## Decision
-We take **1**. `eclipse-wallpaper` is a core component, crate
+We take **1**. `ec-wallpaper` is a core component, crate
 `shell/crates/ec-wallpaper/`, package `eclipseos-wallpaper`, started by
-`eclipse-wallpaper.service` (`WantedBy=abyss-session.target`) like the other DE
+`ec-wallpaper.service` (`WantedBy=abyss-session.target`) like the other DE
 units. It reads the top-level `wallpaper` node through `get_config`: `path`
 (optional), `mode` (`fill` | `fit` | `center`, default `fill`), `color`
 (default `color::BASE`, `#0b0906`), and optional `output "<name>" { path …;

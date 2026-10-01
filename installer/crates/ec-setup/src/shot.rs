@@ -13,10 +13,10 @@ use crate::choices::{BarPosition, Blur, Choices};
 use crate::helper::{fake_disks, HelperEvent};
 use crate::model::{Inputs, Message, Model, Secret, Step, ZoneClock};
 use crate::net::fake_snapshot;
-use eclipse_setup_plan::{Profile, Progress, Stage};
-use eclipse_ui::theme;
-use eclipse_ui::tokens::color;
-use eclipse_welcome::{timeline, Welcome};
+use ec_setup_plan::{Profile, Progress, Stage};
+use ec_ui::theme;
+use ec_ui::tokens::color;
+use ec_welcome::{timeline, Welcome};
 use iced::advanced::clipboard::Null;
 use iced::advanced::renderer::{Headless, Style};
 use iced::{mouse, window, Font, Pixels, Size};
@@ -245,7 +245,7 @@ pub fn render(name: &str, size: (f32, f32), scale: f32, path: &Path) -> Result<(
         let mut fonts = iced::advanced::graphics::text::font_system()
             .write()
             .expect("font system");
-        for face in eclipse_ui::FONTS {
+        for face in ec_ui::FONTS {
             fonts.load_font(Cow::Borrowed(*face));
         }
     }

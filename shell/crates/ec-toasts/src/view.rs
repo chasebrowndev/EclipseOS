@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! One card per notification, stacked newest-last down the corner.
 //!
-//! Every colour and size comes from `eclipse_ui`; a literal anywhere in here is
+//! Every colour and size comes from `ec_ui`; a literal anywhere in here is
 //! a bug, with the exception of the layout metrics named at the top of the file,
 //! which the surface height is derived from and which therefore cannot live in
 //! a styling token.
@@ -9,8 +9,8 @@
 use iced::widget::{container, mouse_area, text, Column, Row};
 use iced::{Alignment, Color, Element, Length, Theme};
 
-use eclipse_services::notifications::{Notification, Urgency};
-use eclipse_ui::tokens::{color, font, size, space};
+use ec_services::notifications::{Notification, Urgency};
+use ec_ui::tokens::{color, font, size, space};
 
 use crate::app::{Message, Toast};
 use crate::WIDTH;
@@ -130,7 +130,7 @@ fn card(notification: &Notification, radius: f32, blur: bool) -> Element<'_, Mes
             .width(Length::Fill)
             .height(Length::Fixed(card_height(notification)))
             .padding(space::CARD)
-            .style(eclipse_ui::theme::surface(radius, blur)),
+            .style(ec_ui::theme::surface(radius, blur)),
     )
     .on_press(Message::Dismiss(notification.id))
     .into()
@@ -146,7 +146,7 @@ fn button<'a>(id: u32, key: &str, label: &str) -> Element<'a, Message, Theme> {
     .padding([0, space::CARD as u16])
     .height(Length::Fill)
     .align_y(Alignment::Center)
-    .style(eclipse_ui::theme::inset);
+    .style(ec_ui::theme::inset);
     mouse_area(cell)
         .on_press(Message::Invoke(id, key.to_owned()))
         .into()
@@ -164,7 +164,7 @@ pub fn style(_app: &crate::app::App, theme: &Theme) -> iced::theme::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eclipse_services::notifications::Action;
+    use ec_services::notifications::Action;
 
     fn notification(body: &str, actions: usize) -> Notification {
         Notification {

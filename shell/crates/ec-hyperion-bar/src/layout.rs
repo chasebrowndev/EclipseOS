@@ -36,7 +36,7 @@
 //! narrower bar or one more window never opens a widget or widens a chip.
 //! That is the monotonicity the tests pin down.
 
-use eclipse_ui::tokens::{bar, size};
+use ec_ui::tokens::{bar, size};
 
 /// The eclipse cell's width with the start menu `reveal` of the way open:
 /// the launcher button at 0, the search field at 1. The pager and the chips

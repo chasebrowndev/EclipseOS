@@ -47,7 +47,7 @@ pub fn theme() -> Theme {
 ///
 /// `radius` is a parameter rather than [`radius::CARD`] baked in, because the
 /// glass this fn draws has to live-sync to the compositor's own
-/// `decoration.rounding` (`eclipse_ui::ipc::fetch_config_radius`) — a caller
+/// `decoration.rounding` (`ec_ui::ipc::fetch_config_radius`) — a caller
 /// with no live value yet still passes `radius::CARD` explicitly, so the
 /// fallback stays visible at the call site instead of hiding in here.
 pub fn panel(radius: f32) -> impl Fn(&Theme) -> container::Style {

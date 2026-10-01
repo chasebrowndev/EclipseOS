@@ -135,7 +135,7 @@ run by hand from the live root shell. Flow:
 10. `passwd` for root and the new user, `umount -R /mnt`.
 
 *(amended DA-04, 2026-09-24)* **This script is the fallback installer, not the
-primary one.** The primary installer is `eclipse-setup --install`, a graphical
+primary one.** The primary installer is `ec-setup --install`, a graphical
 program in the live session (D-07), which asks these questions and many more
 (language, network, profile, mode, components, applications, appearance,
 displays, agents) and drives the same steps through the D-07 §6 helper. The
@@ -185,7 +185,7 @@ The medium boots to a session, not a prompt. `airootfs/` carries:
   package's file, since pacstrap refuses to overwrite an overlay file at the same path: the live medium needs the
   initial session and the installed system must not have it. `display-manager`
   and `default.target` link greetd and `graphical.target`.
-- **`/etc/systemd/user/eclipse-setup-live.service`**, wanted by
+- **`/etc/systemd/user/ec-setup-live.service`**, wanted by
   `abyss-session.target` and conditioned on `/run/archiso`. It starts the
   installer. It is the medium's own unit, not a key in any `abyss.kdl`.
 - **`/etc/polkit-1/rules.d/50-eclipse-live-install.rules`**, allowing

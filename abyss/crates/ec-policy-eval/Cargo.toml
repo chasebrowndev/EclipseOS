@@ -1,5 +1,5 @@
 [package]
-name = "policy-eval"
+name = "ec-policy-eval"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

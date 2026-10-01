@@ -6,15 +6,15 @@
 //! one iced canvas driven by frame ticks; what is on screen is a pure function
 //! of elapsed time ([`timeline`]).
 //!
-//! It is a library so `eclipse-setup` can embed it as its first step:
+//! It is a library so `ec-setup` can embed it as its first step:
 //!
 //! ```ignore
-//! let mut welcome = eclipse_welcome::Welcome::new(env!("CARGO_PKG_VERSION"))
-//!     .reduced_motion(eclipse_welcome::reduced_motion_from_env());
+//! let mut welcome = ec_welcome::Welcome::new(env!("CARGO_PKG_VERSION"))
+//!     .reduced_motion(ec_welcome::reduced_motion_from_env());
 //! // update:       welcome.update(msg).map(Msg::Welcome)
 //! // view:         welcome.view().map(Msg::Welcome)
 //! // subscription: welcome.subscription().map(Msg::Welcome)
-//! // and advance to step 1 when you see `eclipse_welcome::Message::Begin`.
+//! // and advance to step 1 when you see `ec_welcome::Message::Begin`.
 //! ```
 //!
 //! Not TCB, no network, writes nothing.

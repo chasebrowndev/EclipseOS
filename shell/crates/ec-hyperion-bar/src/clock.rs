@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 ///
 /// Which of the two is a matter of taste, so it is not decided here: the
 /// caller passes `bar.clock.hour-12`, whose default is
-/// `eclipse_ui::tokens::clock::HOUR_12`. The bar never hardcodes a preference.
+/// `ec_ui::tokens::clock::HOUR_12`. The bar never hardcodes a preference.
 pub fn time(hour_12: bool) -> String {
     let Some(tm) = local() else {
         return "--:--".to_owned();

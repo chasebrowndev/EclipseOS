@@ -1,19 +1,19 @@
 [package]
-name = "fog-daemon"
+name = "ec-fog-daemon"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "fogd: Fog's filesystem daemon (FOG §Architecture, §Filesystem backend)."
+description = "ec-fogd: Fog's filesystem daemon (FOG §Architecture, §Filesystem backend)."
 publish = false
 
 [lib]
-name = "fog_daemon"
+name = "ec_fog_daemon"
 path = "src/lib.rs"
 
 [[bin]]
-name = "fogd"
+name = "ec-fogd"
 path = "src/main.rs"
 
 [features]
@@ -21,8 +21,8 @@ gio = []
 activity = []
 
 [dependencies]
-fog-proto.workspace = true
-fog-config.workspace = true
+ec-fog-proto.workspace = true
+ec-fog-config.workspace = true
 tokio.workspace = true
 rustix = { workspace = true, features = ["event"] }
 tracing.workspace = true

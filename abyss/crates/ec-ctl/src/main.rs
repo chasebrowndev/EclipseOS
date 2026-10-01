@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `eclipse-ctl` — thin CLI over the abyss control socket (COMP-13 §2.3).
+//! `ec-ctl` — thin CLI over the abyss control socket (COMP-13 §2.3).
 //!
 //! It holds no authority: it opens `$XDG_RUNTIME_DIR/eclipse/abyss.sock` and
 //! writes JSON-RPC. The compositor decides what is allowed; anything this
@@ -16,44 +16,44 @@ use serde_json::{json, Value};
 mod migrate;
 
 const USAGE: &str = "\
-eclipse-ctl — control the abyss compositor
+ec-ctl — control the abyss compositor
 
-  eclipse-ctl outputs [--all]         list outputs (--all includes virtual)
-  eclipse-ctl workspaces              list workspaces
-  eclipse-ctl windows                 list windows
-  eclipse-ctl focused                 the focused window, per seat
-  eclipse-ctl metrics                 frame timing and counters
-  eclipse-ctl dump                    everything, as JSON
-  eclipse-ctl watch [EVENT...]        stream events until interrupted
-  eclipse-ctl focus HANDLE            focus a window
-  eclipse-ctl close HANDLE            ask a window to close
-  eclipse-ctl float HANDLE on|off     set a window floating or tiled
-  eclipse-ctl workspace N             switch to workspace N
-  eclipse-ctl move HANDLE N           move a window to workspace N
-  eclipse-ctl output ID overscan SPEC set overscan: N, or top=N,left=N,...
-  eclipse-ctl output ID calibrate [commit|cancel]
+  ec-ctl outputs [--all]         list outputs (--all includes virtual)
+  ec-ctl workspaces              list workspaces
+  ec-ctl windows                 list windows
+  ec-ctl focused                 the focused window, per seat
+  ec-ctl metrics                 frame timing and counters
+  ec-ctl dump                    everything, as JSON
+  ec-ctl watch [EVENT...]        stream events until interrupted
+  ec-ctl focus HANDLE            focus a window
+  ec-ctl close HANDLE            ask a window to close
+  ec-ctl float HANDLE on|off     set a window floating or tiled
+  ec-ctl workspace N             switch to workspace N
+  ec-ctl move HANDLE N           move a window to workspace N
+  ec-ctl output ID overscan SPEC set overscan: N, or top=N,left=N,...
+  ec-ctl output ID calibrate [commit|cancel]
                                       drive the on-screen overscan calibration
-  eclipse-ctl reload                  re-read the config
-  eclipse-ctl addons                  installed add-ons and the hooks they turn on
-  eclipse-ctl config list [--changed] every setting, its value and its file
-  eclipse-ctl config describe PATH    one setting: type, range, default, doc
-  eclipse-ctl config get PATH         one setting's value, bare
-  eclipse-ctl config set PATH VALUE   write a setting (abyss.kdl only)
-  eclipse-ctl config validate         check a config file without applying it
-  eclipse-ctl config migrate          split a legacy abyss.kdl into two files
-  eclipse-ctl config widget list      custom taskbar widgets (bar { widget … })
-  eclipse-ctl config widget set NAME exec|stream ARGV0 [ARG...]
-  eclipse-ctl config widget set NAME source SOURCE [FORMAT]
-  eclipse-ctl config widget set NAME JSON
+  ec-ctl reload                  re-read the config
+  ec-ctl addons                  installed add-ons and the hooks they turn on
+  ec-ctl config list [--changed] every setting, its value and its file
+  ec-ctl config describe PATH    one setting: type, range, default, doc
+  ec-ctl config get PATH         one setting's value, bare
+  ec-ctl config set PATH VALUE   write a setting (abyss.kdl only)
+  ec-ctl config validate         check a config file without applying it
+  ec-ctl config migrate          split a legacy abyss.kdl into two files
+  ec-ctl config widget list      custom taskbar widgets (bar { widget … })
+  ec-ctl config widget set NAME exec|stream ARGV0 [ARG...]
+  ec-ctl config widget set NAME source SOURCE [FORMAT]
+  ec-ctl config widget set NAME JSON
                                       create or replace a widget; JSON is the
                                       entry shape `config widget list --json` prints
-  eclipse-ctl config widget rm NAME   delete it, and its custom:NAME ids
-  eclipse-ctl config widget mv NAME INDEX
+  ec-ctl config widget rm NAME   delete it, and its custom:NAME ids
+  ec-ctl config widget mv NAME INDEX
                                       move it to INDEX (0-based)
-  eclipse-ctl config widget rename OLD NEW
+  ec-ctl config widget rename OLD NEW
                                       rename it, rewriting custom:OLD ids
-  eclipse-ctl setup reset             clear setup.complete so eclipse-setup runs again
-  eclipse-ctl call METHOD [JSON]      raw JSON-RPC, for anything not above
+  ec-ctl setup reset             clear setup.complete so ec-setup runs again
+  ec-ctl call METHOD [JSON]      raw JSON-RPC, for anything not above
 
 Options:
   --json          print the raw result even for the table commands
@@ -64,7 +64,7 @@ Options:
 ";
 
 fn main() -> ExitCode {
-    // Restore the default SIGPIPE so `eclipse-ctl windows | head` exits quietly
+    // Restore the default SIGPIPE so `ec-ctl windows | head` exits quietly
     // instead of panicking on a closed stdout.
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
@@ -123,7 +123,7 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(e) => {
-                eprintln!("eclipse-ctl: {e}");
+                eprintln!("ec-ctl: {e}");
                 ExitCode::FAILURE
             }
         };
@@ -132,7 +132,7 @@ fn main() -> ExitCode {
     let (method, params, table) = match parse(&args, &flags) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("eclipse-ctl: {e}");
+            eprintln!("ec-ctl: {e}");
             return ExitCode::FAILURE;
         }
     };
@@ -141,7 +141,7 @@ fn main() -> ExitCode {
     let stream = match UnixStream::connect(&path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("eclipse-ctl: {path}: {e}");
+            eprintln!("ec-ctl: {path}: {e}");
             eprintln!("is abyss running, and is this the same session?");
             return ExitCode::FAILURE;
         }
@@ -159,7 +159,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("eclipse-ctl: {e}");
+            eprintln!("ec-ctl: {e}");
             ExitCode::FAILURE
         }
     }
@@ -321,7 +321,7 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
             }
         }
         "setup" => match a(1) {
-            // The one key, through the one write path: eclipse-setup (D-07 §4)
+            // The one key, through the one write path: ec-setup (D-07 §4)
             // re-runs when `setup.complete` is false, and nothing else about
             // the config changes, `setup.profile` included.
             "reset" => (
@@ -352,7 +352,7 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
             None,
         ),
         "pause" | "resume" | "terminate" => {
-            // COMP-13 §2.3 spells these as `eclipse-ctl pause agent:research-7`.
+            // COMP-13 §2.3 spells these as `ec-ctl pause agent:research-7`.
             // The compositor has no agents yet and answers "not implemented";
             // the CLI surface exists so the shape does not change later.
             let id = a(1);
@@ -507,11 +507,11 @@ fn call(mut stream: UnixStream, method: &str, params: Value) -> Result<Value, St
 }
 
 /// Subscribe and print events one JSON object per line, forever. Line-buffered
-/// so `eclipse-ctl watch | while read` works.
+/// so `ec-ctl watch | while read` works.
 fn watch(mut stream: UnixStream, params: Value) -> ExitCode {
     let line = request("subscribe", params);
     if let Err(e) = stream.write_all(format!("{line}\n").as_bytes()) {
-        eprintln!("eclipse-ctl: {e}");
+        eprintln!("ec-ctl: {e}");
         return ExitCode::FAILURE;
     }
     let reader = BufReader::new(stream);
@@ -522,7 +522,7 @@ fn watch(mut stream: UnixStream, params: Value) -> ExitCode {
             continue;
         };
         if let Some(err) = v.get("error") {
-            eprintln!("eclipse-ctl: {err}");
+            eprintln!("ec-ctl: {err}");
             return ExitCode::FAILURE;
         }
         // The reply to `subscribe` itself is only interesting on a terminal.
@@ -614,7 +614,7 @@ fn print_config_key(rows: &[Value]) {
     println!("  {}", s(r, "doc"));
 }
 
-/// `eclipse-ctl addons`: one line per add-on, then the hooks that are on
+/// `ec-ctl addons`: one line per add-on, then the hooks that are on
 /// (ADR 0066). A string so the format is testable without a socket.
 fn addons_text(result: &Value) -> String {
     let join = |v: &Value| {

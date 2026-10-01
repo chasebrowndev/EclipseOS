@@ -18,7 +18,7 @@ use serde_json::json;
 /// `None` on any failure — the launcher does not distinguish "unset" from
 /// "couldn't ask", since both mean the same thing to `apps::scan`/`launch`.
 pub fn fetch_terminal_command() -> Option<String> {
-    let mut client = eclipse_ipc::Client::connect().ok()?;
+    let mut client = ec_ipc::Client::connect().ok()?;
     let reply = client
         .call("get_config", json!({ "path": "misc.terminal-command" }))
         .ok()?;
@@ -34,14 +34,14 @@ pub fn fetch_terminal_command() -> Option<String> {
 /// `decoration.rounding` and whether blur is on; each `None` on any failure,
 /// and the caller keeps its compile-time default.
 pub fn fetch_glass() -> (Option<f32>, Option<bool>) {
-    eclipse_ui::ipc::fetch_glass()
+    ec_ui::ipc::fetch_glass()
 }
 
 /// `bar.launcher-style` is `"menu"`: the taskbar's start menu is the launcher
 /// on this desktop, so the keybind that spawns this binary should open that
 /// menu rather than a second, centred one. `false` on any failure.
 pub fn menu_style() -> bool {
-    let Ok(mut client) = eclipse_ipc::Client::connect() else {
+    let Ok(mut client) = ec_ipc::Client::connect() else {
         return false;
     };
     client
@@ -64,7 +64,7 @@ pub fn menu_style() -> bool {
 /// no socket, a refusal, no bar running — is `false`, and the caller falls
 /// back to drawing the centred launcher itself.
 pub fn open_bar_menu() -> bool {
-    let Ok(mut client) = eclipse_ipc::Client::connect() else {
+    let Ok(mut client) = ec_ipc::Client::connect() else {
         return false;
     };
     client

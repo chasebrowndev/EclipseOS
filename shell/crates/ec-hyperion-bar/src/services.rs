@@ -15,8 +15,8 @@
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
-use eclipse_services::custom::Kind;
-use eclipse_services::{audio, custom, media, usage};
+use ec_services::custom::Kind;
+use ec_services::{audio, custom, media, usage};
 
 use crate::app::Message;
 use crate::widgets::{self, now_playing, system_usage, volume, Action, Feed, WidgetId};

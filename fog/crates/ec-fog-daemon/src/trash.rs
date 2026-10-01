@@ -16,7 +16,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use fog_proto::{Kind, TrashItem};
+use ec_fog_proto::{Kind, TrashItem};
 use rustix::io::Errno;
 
 use crate::ops::{self, is_errno};

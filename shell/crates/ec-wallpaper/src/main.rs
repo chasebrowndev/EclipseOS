@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `eclipse-wallpaper` — the desktop background, one surface per output.
+//! `ec-wallpaper` — the desktop background, one surface per output.
 //!
 //! Starts with no surface of its own and opens one per output the control
 //! socket lists, opening and closing them as monitors come and go
 //! (`app::reconcile`, the taskbar's pattern).
 
-use eclipse_wallpaper::{app, view};
+use ec_wallpaper::{app, view};
 use iced_layershell::settings::{LayerShellSettings, StartMode};
 
 fn namespace() -> String {
-    "eclipse-wallpaper".to_owned()
+    "ec-wallpaper".to_owned()
 }
 
 fn main() -> iced_layershell::Result {
@@ -23,7 +23,7 @@ fn main() -> iced_layershell::Result {
             ..Default::default()
         })
         .style(view::style)
-        .theme(|_: &app::App, _: iced::window::Id| eclipse_ui::theme::theme())
+        .theme(|_: &app::App, _: iced::window::Id| ec_ui::theme::theme())
         .subscription(app::subscription)
         .run()
 }

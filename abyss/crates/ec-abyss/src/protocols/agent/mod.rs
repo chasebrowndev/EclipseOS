@@ -35,8 +35,8 @@ use ec_protocols::agent::server::{
     eclipse_agent_v1::{self, EclipseAgentV1, Status},
     eclipse_scene_v1::{self, EclipseSceneV1},
 };
-use policy_eval::scope::SCENE_READ;
-use policy_eval::Class;
+use ec_policy_eval::scope::SCENE_READ;
+use ec_policy_eval::Class;
 use smithay::desktop::Window;
 use smithay::reexports::calloop::{generic::Generic, Interest, Mode, PostAction, RegistrationToken};
 use smithay::reexports::wayland_server::{
@@ -488,7 +488,7 @@ impl Dispatch<EclipseSceneV1, AgentId> for AbyssState {
                 scene,
                 req_id,
                 Status::NoCapability,
-                policy_eval::scope::SCENE_LIST,
+                ec_policy_eval::scope::SCENE_LIST,
             );
             return;
         };
@@ -591,7 +591,7 @@ fn answer(
     request: eclipse_scene_v1::Request,
 ) -> Outcome {
     use eclipse_scene_v1::Request;
-    use policy_eval::scope::SCENE_LIST;
+    use ec_policy_eval::scope::SCENE_LIST;
     let Some(views) = agent.view_at(now_ms()) else {
         let req_id = match request {
             Request::ListToplevels { req_id, .. }

@@ -1,5 +1,5 @@
 [package]
-name = "eclipse-ctl"
+name = "ec-ctl"
 description = "CLI for the abyss human control socket"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "eclipse-ctl"
+name = "ec-ctl"
 path = "src/main.rs"
 
 [dependencies]
@@ -20,4 +20,4 @@ kdl.workspace = true
 # Only so `tests/schema_drift.rs` can compare this crate's copy of the
 # policy-owned key list against the schema it mirrors. Not linked into the
 # shipped binary.
-abyss = { path = "../ec-abyss" }
+ec-abyss = { path = "../ec-abyss" }

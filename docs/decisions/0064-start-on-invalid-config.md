@@ -58,7 +58,7 @@ the same way. Abyss starts.
 **The errors are reported twice.** Each one goes to stderr and the journal
 with file, line, column and the offending token, as today. They also go out
 as one `config-error` IPC event, the one a failed hot reload emits.
-`eclipse-services` turns it into a persistent "Config problem" notification.
+`ec-services` turns it into a persistent "Config problem" notification.
 This is **not trusted UI**. The notification is drawn by an ordinary client
 and uses a fixed id (`u32::MAX`), so any same-uid D-Bus client can close or
 replace it. It is a best-effort notice, not a guarantee that the owner sees
@@ -73,7 +73,7 @@ not applied". While the live config still has auto-lock or Xwayland off from
 the degraded start, that reload summary keeps the "auto-lock is OFF" /
 "Xwayland is OFF" lead ahead of "change not applied". The notification has one
 fixed id, so a later reload could otherwise downgrade the warning. A clean load
-clears it. `eclipse-ctl config validate` reports
+clears it. `ec-ctl config validate` reports
 the errors as well.
 
 **The summary leads with a protection that did not take.** When a refusal

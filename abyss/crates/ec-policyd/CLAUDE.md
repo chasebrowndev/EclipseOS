@@ -6,7 +6,7 @@ Read the root `CLAUDE.md` first.
   never delegated to `eclipse-backend` (F-07 §4).
 - Governing spec: A-04 (task objects, §§2, 4–6, 9), S-01 §4 and §6 (grants),
   S-04 §1 and §4 (record envelope, store), COMP-13 §3 (socket). ADRs 0044,
-  0045, 0046, 0047 (the `policy-eval` API surface), 0048 (a task statement is
+  0045, 0046, 0047 (the `ec-policy-eval` API surface), 0048 (a task statement is
   journalled as a hash, and does not survive a restart).
 - **Journal before answer.** A task transition or counter change is durable
   before the caller is told it happened (A-04 §5). Answering first and

@@ -1,4 +1,4 @@
-# eclipse-services — the userland's D-Bus services
+# ec-services — the userland's D-Bus services
 
 Read the root `CLAUDE.md` first. Governing spec: ADR 0038 (DE services),
 ADR 0051 (screensaver bridge), ADR 0053 (status actions, secret prompt),
@@ -9,13 +9,13 @@ ADR 0065 (taskbar widgets: `media`, `audio`, `usage`, `custom`).
   the human, not escalate. Anything that would need to be trusted belongs in
   `abyss/src/trusted_ui/` instead.
 - Lib plus two bins. The lib is linked by the panes (`notifications`, `tray`,
-  `status`, `session`, `apps`); `src/bin/eclipse-screensaver.rs` owns
+  `status`, `session`, `apps`); `src/bin/ec-screensaver.rs` owns
   `org.freedesktop.ScreenSaver` and forwards inhibits to the compositor
-  (`packaging/eclipse-screensaver.service`); `src/bin/eclipse-pairing.rs` is the
+  (`packaging/ec-screensaver.service`); `src/bin/ec-pairing.rs` is the
   session's one BlueZ pairing agent and serves `org.eclipse.Services.Pairing`
-  (`packaging/eclipse-pairing.service`, ADR 0066).
+  (`packaging/ec-pairing.service`, ADR 0066).
 - Deps stay at `zbus` (already in the tree via iced_layershell → mundy, so no
-  new supply chain), `eclipse-ipc` and `serde_json`, plus what ADR 0065
+  new supply chain), `ec-ipc` and `serde_json`, plus what ADR 0065
   admits for the taskbar widgets: `pulseaudio` (pure-Rust PulseAudio
   protocol, served by pipewire-pulse; no libclang), `realfft`, `libc`, and
   `nvml-wrapper`/`nvml-wrapper-sys` (NVML `dlopen`ed at runtime). Blocking zbus only: iced
@@ -24,7 +24,7 @@ ADR 0065 (taskbar widgets: `media`, `audio`, `usage`, `custom`).
 - **`password`-role values** (wifi passphrase, Bluetooth PIN) travel only as
   `status::secret::Secret`: no `Debug`, bytes overwritten on drop, readable
   only crate-private. Never log, store or echo one. The prompt that collects
-  them is a separate process (`eclipse-secret-prompt`), reached through the
+  them is a separate process (`ec-secret-prompt`), reached through the
   session-bus door in `status/agent.rs`.
 - `tests/live_bus.rs` is `#[ignore]`d: it spawns a private `dbus-daemon` and
   must never run against the human's session bus.

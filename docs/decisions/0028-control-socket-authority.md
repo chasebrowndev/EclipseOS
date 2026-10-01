@@ -5,7 +5,7 @@ Deciders: chase (owner), Claude (advisory)
 
 ## Context
 COMP-13 gives the human a JSON-RPC control socket so a bar, a launcher and
-`eclipse-ctl` can drive the compositor. That socket is a capability surface: it
+`ec-ctl` can drive the compositor. That socket is a capability surface: it
 reads window state and mutates focus, workspaces and floating. It cannot be
 ambient authority (root invariant), and it must not become a side channel for
 human input (root invariant: keystrokes, clipboard and IME are never logged by

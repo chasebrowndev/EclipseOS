@@ -433,7 +433,7 @@ Three, plus the implicit `human`:
 |---|---|---|
 | `untrusted` | Anything rendering third-party content the owner did not author: web pages by default, cross-origin frames **always**, documents from downloads, unsigned/unknown binaries, Flatpaks not on the owner's list, anything an agent launched that is not on the trusted list. | Content originating here can never be above `untrusted` in a provenance chain (S-07 §3). Rules commonly `defer`/`prompt` when it reaches a shell or an irreversible action. |
 | `standard` | **Default.** Owner-installed applications from the distro repos. | No special treatment. |
-| `trusted` | The owner's own terminal, editor, EclipseOS components (`hyperion` and the `eclipse-*` binaries: `eclipse-toasts`, `eclipse-center`, `eclipse-launcher`, `eclipse-settings`, `eclipse-policy-viewer`, `eclipse-secret-prompt`, …) *(amended C-07, 2026-09-23; these are candidates an owner rule may list, never matched implicitly by name or app_id)*, explicitly listed apps. | Eligible to be the origin of instructions an agent may act on with fewer prompts, where a rule says so. |
+| `trusted` | The owner's own terminal, editor, EclipseOS components (`hyperion` and the `eclipse-*` binaries: `ec-toasts`, `ec-center`, `ec-launcher`, `ec-settings`, `ec-policy-viewer`, `ec-secret-prompt`, …) *(amended C-07, 2026-09-23; these are candidates an owner rule may list, never matched implicitly by name or app_id)*, explicitly listed apps. | Eligible to be the origin of instructions an agent may act on with fewer prompts, where a rule says so. |
 
 Assignment is by owner `trust` rules only (S-02 §3). There is **no**
 runtime promotion path in v1 — the trusted-UI prompt cannot offer "trust
@@ -1801,7 +1801,7 @@ trusting the machine's own account of what happened.
 | Landlock/seccomp denials, pasta drops, proxy denials (S-09 §7) | I3 |
 | `secret` audit records with unexpected destination or mode | I4 |
 | Policy table signature check on swap (S-02 §4), `brokerd` state | I5 |
-| `eclipse-audit verify` on a 5-minute timer and at every anchor | I6 |
+| `ec-audit verify` on a 5-minute timer and at every anchor | I6 |
 | Human ("that isn't what I asked for") | any |
 
 Detection runs in `policyd`, which is the only process that sees all
@@ -1866,7 +1866,7 @@ screen.
 Not available: human keystrokes (never logged), secret values, raw capture
 outside the ring, anything about what the model "thought".
 
-Tooling: `eclipse-audit trace --req-id`, `replay --agent --since`,
+Tooling: `ec-audit trace --req-id`, `replay --agent --since`,
 `verify`, plus `eclipse-incident open|snapshot|close`.
 
 ---
@@ -1879,7 +1879,7 @@ Tooling: `eclipse-audit trace --req-id`, `replay --agent --since`,
 | I2 | Rotate nothing; tighten the rule that let the untrusted content reach the action; add an S-10 Corpus A case |
 | I3 | Rebuild the sandbox profile; assume any secret the agent held `secret.expose` on is compromised; treat all concurrently running agents as suspect and re-provision them |
 | I4 | Rotate **every** secret the agent could reach, not just the one implicated, plus any credential the affected app authenticates with. Rotation is a human action (S-08 §6) |
-| I5 | Verify binaries against the signed manifest (S-12), restore policy from the signed source of truth, re-provision from a known-good state; do not resume agents until `eclipse-audit verify` is clean |
+| I5 | Verify binaries against the signed manifest (S-12), restore policy from the signed source of truth, re-provision from a known-good state; do not resume agents until `ec-audit verify` is clean |
 | I6 | Treat all audit after the break as unusable. Anchor comparison (S-04 §4) locates the break. Any grant issued after the break is revoked and re-issued |
 
 ---
@@ -1920,7 +1920,7 @@ threat analysis.
    per-agent opt-in via the grant rather than global.
 2. Whether I1 should auto-pause or only warn. Proposed: auto-pause, on the
    grounds that a breaker trip already means something is wrong.
-3. Whether `eclipse-audit verify` on a 5-minute timer is too frequent for
+3. Whether `ec-audit verify` on a 5-minute timer is too frequent for
    a large store. Proposed: incremental verify since the last anchor.
 4. Whether an I3 should force a full session restart. Proposed: no in v1,
    but re-provision every agent; revisit after the first real one.

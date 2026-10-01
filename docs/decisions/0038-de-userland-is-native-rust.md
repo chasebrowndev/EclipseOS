@@ -70,7 +70,7 @@ compositor-drawn (root invariant), and the policy editor stays in milestone 15
 for exactly that reason — B6 ships a read-only policy *viewer*, reading
 `policy.kdl` from disk, because Policy/Read over the socket stays closed.
 That property is what makes this reversal cheap in review terms, and it has to
-stay true: an eclipse-ui client that ever needs to be trusted is a signal that
+stay true: an ec-ui client that ever needs to be trusted is a signal that
 this ADR was applied too widely.
 
 ## Revisit when

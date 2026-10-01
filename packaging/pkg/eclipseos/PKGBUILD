@@ -37,7 +37,7 @@ build() {
     (cd "$srcdir/$_src/$ws" && cargo build --release --workspace --bins --locked)
   done
   cd "$srcdir/$_fog"
-  cargo build --release --bins --locked -p fog-daemon -p fog-ui
+  cargo build --release --bins --locked -p ec-fog-daemon -p ec-fog-ui
 }
 
 check() {
@@ -66,8 +66,9 @@ package_eclipseos-abyss() {
   depends=(wayland libxkbcommon libinput libdrm libdisplay-info mesa xorg-xwayland)
   optdepends=('seatd: fallback seat management when logind is unavailable (D-01 §5.3)')
   provides=(abyss)
+  install=eclipseos.install
 
-  for b in abyss eclipse-ctl; do _bin "$b"; done
+  for b in ec-abyss ec-ctl; do _bin "$b"; done
   install -Dm0755 "$srcdir/$_src/packaging/abyss-session" "$pkgdir/usr/bin/abyss-session"
   install -Dm0644 "$srcdir/$_src/packaging/abyss.desktop" \
     "$pkgdir/usr/share/wayland-sessions/abyss.desktop"
@@ -77,14 +78,14 @@ package_eclipseos-abyss() {
 package_eclipseos-hyperion() {
   pkgdesc="EclipseOS taskbar (hyperion)"
   # The only DE component that talks to abyss directly (control socket).
-  # eclipseos-desktop carries eclipse-secret-prompt, spawned for wifi passphrases.
+  # eclipseos-desktop carries ec-secret-prompt, spawned for wifi passphrases.
   depends=(eclipseos-abyss eclipseos-desktop wayland libxkbcommon mesa networkmanager bluez bluez-utils upower)
   optdepends=('curl: Now Playing album art from https URLs (ADR 0065)'
               'foot: click actions of the premade widgets (ADR 0067)')
 
-  _bin hyperion
-  _unit hyperion.service
-  _want hyperion.service
+  _bin ec-hyperion-bar
+  _unit ec-hyperion-bar.service
+  _want ec-hyperion-bar.service
   # An add-on (ADR 0066): the manifest turns on abyss's taskbar-widgets hook.
   install -Dm0644 "$srcdir/$_src/packaging/addons/hyperion.kdl" \
     "$pkgdir/usr/share/eclipse/addons/hyperion.kdl"
@@ -99,53 +100,53 @@ package_eclipseos-toasts() {
   # binary yourself.
   depends=(wayland libxkbcommon mesa)
 
-  _bin eclipse-toasts
-  _unit eclipse-toasts.service
-  _want eclipse-toasts.service
+  _bin ec-toasts
+  _unit ec-toasts.service
+  _want ec-toasts.service
 }
 
 package_eclipseos-wallpaper() {
   pkgdesc="EclipseOS wallpaper daemon"
   depends=(wayland libxkbcommon mesa)
 
-  _bin eclipse-wallpaper
-  _unit eclipse-wallpaper.service
-  _want eclipse-wallpaper.service
+  _bin ec-wallpaper
+  _unit ec-wallpaper.service
+  _want ec-wallpaper.service
 }
 
 package_eclipseos-center() {
   pkgdesc="EclipseOS notification and status center"
   depends=(wayland libxkbcommon mesa networkmanager bluez upower)
 
-  _bin eclipse-center
-  _app eclipse-center.desktop
+  _bin ec-center
+  _app ec-center.desktop
 }
 
 package_eclipseos-launcher() {
   pkgdesc="EclipseOS application launcher"
   depends=(wayland libxkbcommon mesa)
 
-  _bin eclipse-launcher
+  _bin ec-launcher
 }
 
 package_eclipseos-desktop() {
   pkgdesc="EclipseOS desktop apps: settings, policy viewer, screensaver, welcome, pairing agent, secret prompt"
-  # Fonts for eclipse-welcome (D-07 step 0). Lora has no official package; the
+  # Fonts for ec-welcome (D-07 step 0). Lora has no official package; the
   # version label falls back to a serif.
   depends=(eclipseos-abyss wayland libxkbcommon mesa networkmanager bluez ttf-cormorant noto-fonts-cjk)
 
-  for b in eclipse-settings eclipse-policy-viewer eclipse-screensaver eclipse-welcome; do _bin "$b"; done
+  for b in ec-settings ec-policy-viewer ec-screensaver ec-welcome; do _bin "$b"; done
   # The Bluetooth pairing agent and the prompt it and the taskbar spawn by name
   # from PATH for pairing PINs and wifi passphrases (ADR 0053). Here, not in the
   # taskbar's package, so pairing works with no taskbar (ADR 0066).
-  _bin eclipse-pairing
-  _bin eclipse-secret-prompt
-  _unit eclipse-screensaver.service
-  _want eclipse-screensaver.service
-  _unit eclipse-pairing.service
-  _want eclipse-pairing.service
-  _app eclipse-settings.desktop
-  _app eclipse-policy-viewer.desktop
+  _bin ec-pairing
+  _bin ec-secret-prompt
+  _unit ec-screensaver.service
+  _want ec-screensaver.service
+  _unit ec-pairing.service
+  _want ec-pairing.service
+  _app ec-settings.desktop
+  _app ec-policy-viewer.desktop
 }
 
 # The agent stack is one add-on (ADR 0069): installed by the Agentic profile,
@@ -157,11 +158,11 @@ package_eclipseos-agents() {
   replaces=(eclipseos-policyd)
   conflicts=(eclipseos-policyd)
 
-  _bin policyd
-  _bin eclipse-audit
-  _unit policyd.service
-  _want policyd.service
-  install -Dm0644 "$srcdir/$_src/dist/addons/eclipseos-agents.kdl" \
+  _bin ec-policyd
+  _bin ec-audit
+  _unit ec-policyd.service
+  _want ec-policyd.service
+  install -Dm0644 "$srcdir/$_src/packaging/addons/eclipseos-agents.kdl" \
     "$pkgdir/usr/share/eclipse/addons/eclipseos-agents.kdl"
 }
 
@@ -172,26 +173,26 @@ package_eclipseos-setup() {
   depends=(eclipseos-abyss wayland libxkbcommon mesa polkit
            arch-install-scripts gptfdisk dosfstools e2fsprogs util-linux)
 
-  for b in eclipse-setup eclipse-setup-helper; do _bin "$b"; done
+  for b in ec-setup ec-setup-helper; do _bin "$b"; done
   install -Dm0644 "$srcdir/$_src/packaging/polkit/org.eclipse.install.apply.policy" \
     "$pkgdir/usr/share/polkit-1/actions/org.eclipse.install.apply.policy"
 }
 
 package_eclipseos-fog() {
-  pkgdesc="Fog, the EclipseOS file explorer (fogd daemon and fog-ui)"
+  pkgdesc="Fog, the EclipseOS file explorer (ec-fogd daemon and ec-fog-ui)"
   depends=(wayland libxkbcommon mesa)
 
-  for b in fogd fog-ui; do
+  for b in ec-fogd ec-fog-ui; do
     install -Dm0755 "$srcdir/target/release/$b" "$pkgdir/usr/bin/$b"
   done
-  for u in fogd.socket fogd.service; do
+  for u in ec-fogd.socket ec-fogd.service; do
     install -Dm0644 "$srcdir/$_fog/dist/$u" "$pkgdir/usr/lib/systemd/user/$u"
   done
   # Socket-activated at login for every user (FOG §Architecture, Lifecycle),
   # by a shipped wants/ link as _want does, not a preset. sockets.target, not
-  # abyss-session.target: fogd needs no display, and fog-ui may start first.
+  # abyss-session.target: fogd needs no display, and ec-fog-ui may start first.
   install -d "$pkgdir/usr/lib/systemd/user/sockets.target.wants"
-  ln -sf ../fogd.socket "$pkgdir/usr/lib/systemd/user/sockets.target.wants/fogd.socket"
+  ln -sf ../ec-fogd.socket "$pkgdir/usr/lib/systemd/user/sockets.target.wants/ec-fogd.socket"
   install -Dm0644 "$srcdir/$_fog/dist/os.eclipse.fog.desktop" \
     "$pkgdir/usr/share/applications/os.eclipse.fog.desktop"
   # Fog as the folder handler (FOG §Desktop interop). With Fog, not in meta,
@@ -248,11 +249,11 @@ package_eclipseos-meta() {
   # The same mark over the console at shutdown and reboot. Enabled by the
   # shipped wants/ symlink, not a preset (see HW-02 in KNOWNBUGS history).
   install -Dm0644 "$srcdir/$_src/packaging/boot/splash.bgr0" "$pkgdir/usr/share/eclipseos/splash.bgr0"
-  install -Dm0755 "$srcdir/$_src/packaging/boot/eclipse-shutdown-splash" \
+  install -Dm0755 "$srcdir/$_src/packaging/boot/ec-shutdown-splash" \
     "$pkgdir/usr/lib/eclipseos/shutdown-splash"
-  install -Dm0644 "$srcdir/$_src/packaging/systemd/eclipse-shutdown-splash.service" \
-    "$pkgdir/usr/lib/systemd/system/eclipse-shutdown-splash.service"
+  install -Dm0644 "$srcdir/$_src/packaging/systemd/ec-shutdown-splash.service" \
+    "$pkgdir/usr/lib/systemd/system/ec-shutdown-splash.service"
   install -d "$pkgdir/usr/lib/systemd/system/multi-user.target.wants"
-  ln -sf ../eclipse-shutdown-splash.service \
-    "$pkgdir/usr/lib/systemd/system/multi-user.target.wants/eclipse-shutdown-splash.service"
+  ln -sf ../ec-shutdown-splash.service \
+    "$pkgdir/usr/lib/systemd/system/multi-user.target.wants/ec-shutdown-splash.service"
 }

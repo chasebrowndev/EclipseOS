@@ -1,30 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The `fogd` connection, as an iced subscription (FOG §Architecture).
+//! The `ec-fogd` connection, as an iced subscription (FOG §Architecture).
 //!
 //! The stream runs on iced's tokio executor, never on the UI thread. It
 //! connects to `fogd.sock`, hands the app a [`Link`] for requests and
-//! forwards every [`Reply`]. When `fogd` is absent or goes away it reports
+//! forwards every [`Reply`]. When `ec-fogd` is absent or goes away it reports
 //! [`Event::Down`] once and retries with backoff; the app shows that quietly.
 
 use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use fog_proto::{Reply, Request};
+use ec_fog_proto::{Reply, Request};
 use iced::futures::channel::mpsc as ui;
 use iced::futures::SinkExt;
 use iced::Subscription;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 
-/// First and last retry delay while `fogd` is not reachable.
+/// First and last retry delay while `ec-fogd` is not reachable.
 const BACKOFF_MIN: Duration = Duration::from_millis(200);
 const BACKOFF_MAX: Duration = Duration::from_secs(3);
 /// Messages buffered towards the UI before the reader waits.
 const UI_QUEUE: usize = 64;
 
-/// Sends requests to the connected `fogd`.
+/// Sends requests to the connected `ec-fogd`.
 pub type Link = mpsc::UnboundedSender<Request>;
 
 #[derive(Debug, Clone)]
@@ -34,7 +34,7 @@ pub enum Event {
     Down,
 }
 
-/// `$XDG_RUNTIME_DIR/fog/fogd.sock`, as `fog_daemon::socket_path` computes it.
+/// `$XDG_RUNTIME_DIR/fog/fogd.sock`, as `ec_fog_daemon::socket_path` computes it.
 fn socket_path() -> io::Result<PathBuf> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .filter(|d| !d.is_empty())
@@ -75,7 +75,7 @@ async fn run(mut out: ui::Sender<Event>) {
         // `read_frame` is not cancel-safe, so the reader is never raced
         // against anything but the writer finishing.
         let reader = async {
-            while let Ok(Some(reply)) = fog_proto::read_frame::<_, Reply>(&mut rd).await {
+            while let Ok(Some(reply)) = ec_fog_proto::read_frame::<_, Reply>(&mut rd).await {
                 if out.send(Event::Reply(reply)).await.is_err() {
                     return false;
                 }
@@ -84,7 +84,7 @@ async fn run(mut out: ui::Sender<Event>) {
         };
         let writer = async {
             while let Some(req) = rx.recv().await {
-                if fog_proto::write_frame(&mut wr, &req).await.is_err() {
+                if ec_fog_proto::write_frame(&mut wr, &req).await.is_err() {
                     break;
                 }
             }

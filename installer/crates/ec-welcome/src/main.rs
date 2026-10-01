@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `eclipse-welcome`: the welcome screen, standalone and full-screen.
+//! `ec-welcome`: the welcome screen, standalone and full-screen.
 //!
 //! ```text
-//! eclipse-welcome [--reduced-motion] [--version-label X.Y.Z]
+//! ec-welcome [--reduced-motion] [--version-label X.Y.Z]
 //!                 [--size WxH] [--scale F] [--at SECONDS] [--fade 0..1]
 //!                 [--shot FILE.png]
 //! ```
@@ -21,7 +21,7 @@
 //! compared frame by frame against `reference/welcome.html`.
 //! Exit status is 0 once the fade completes.
 
-use eclipse_welcome::{reduced_motion_from_env, Message, Welcome};
+use ec_welcome::{reduced_motion_from_env, Message, Welcome};
 use iced::advanced::renderer::Headless;
 use iced::{window, Element, Font, Pixels, Size, Subscription, Task, Theme};
 use std::path::PathBuf;
@@ -138,13 +138,13 @@ fn main() -> iced::Result {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("eclipse-welcome: {e}");
+            eprintln!("ec-welcome: {e}");
             std::process::exit(2);
         }
     };
     if let Some(path) = &args.shot {
         if let Err(e) = shoot(&args, path) {
-            eprintln!("eclipse-welcome: --shot: {e}");
+            eprintln!("ec-welcome: --shot: {e}");
             std::process::exit(1);
         }
         return Ok(());

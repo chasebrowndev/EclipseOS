@@ -1,5 +1,5 @@
 [package]
-name = "fog-proto"
+name = "ec-fog-proto"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

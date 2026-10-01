@@ -17,23 +17,23 @@ the terminal row only.
 
 ## 1. Shape
 
-Ten crates: seven programs, two libraries, and `eclipse-services`, which is both.
+Ten crates: seven programs, two libraries, and `ec-services`, which is both.
 
 | Crate | Binary | Surface | Package |
 |---|---|---|---|
 | `hyperion` | `hyperion` | layer-shell, `Top`, one per output | `eclipseos-hyperion` (add-on) |
-| `eclipse-toasts` | `eclipse-toasts` | layer-shell, `Overlay`, top-right | `eclipseos-toasts` |
-| `eclipse-center` | `eclipse-center` | layer-shell, `Overlay` | `eclipseos-center` |
-| `eclipse-launcher` | `eclipse-launcher` | layer-shell, `Overlay`, exclusive keyboard | `eclipseos-launcher` |
-| `eclipse-settings` | `eclipse-settings` | xdg_toplevel | `eclipseos-desktop` |
-| `eclipse-policy-viewer` | `eclipse-policy-viewer` | xdg_toplevel | `eclipseos-desktop` |
-| `eclipse-secret-prompt` | `eclipse-secret-prompt` | xdg_toplevel, fixed size | `eclipseos-desktop` |
-| `eclipse-services` | `eclipse-screensaver`, `eclipse-pairing` (`src/bin/`) | none; also a library | `eclipseos-desktop` (bins) |
-| `eclipse-ui` | — | library: tokens, theme, widgets, `ipc::fetch_config_radius` | inside consumers |
-| `eclipse-ipc` | — | library: control-socket client, `serde_json` + `libc` only | inside consumers |
+| `ec-toasts` | `ec-toasts` | layer-shell, `Overlay`, top-right | `eclipseos-toasts` |
+| `ec-center` | `ec-center` | layer-shell, `Overlay` | `eclipseos-center` |
+| `ec-launcher` | `ec-launcher` | layer-shell, `Overlay`, exclusive keyboard | `eclipseos-launcher` |
+| `ec-settings` | `ec-settings` | xdg_toplevel | `eclipseos-desktop` |
+| `ec-policy-viewer` | `ec-policy-viewer` | xdg_toplevel | `eclipseos-desktop` |
+| `ec-secret-prompt` | `ec-secret-prompt` | xdg_toplevel, fixed size | `eclipseos-desktop` |
+| `ec-services` | `ec-screensaver`, `ec-pairing` (`src/bin/`) | none; also a library | `eclipseos-desktop` (bins) |
+| `ec-ui` | — | library: tokens, theme, widgets, `ipc::fetch_config_radius` | inside consumers |
+| `ec-ipc` | — | library: control-socket client, `serde_json` + `libc` only | inside consumers |
 
 **One crate per swappable component** (ADR 0052). A component never depends on
-another; shared code goes into `eclipse-ui` (visual) or `eclipse-services`
+another; shared code goes into `ec-ui` (visual) or `ec-services`
 (data and D-Bus). Cross-component launches go by binary name on `PATH`, so a
 replacement binary of the same name slots in. Toolkit: iced 0.14 plus
 iced_layershell 0.19.1 (ADR 0038).
@@ -65,43 +65,43 @@ catalog and no command approval, and the session still starts: the launcher
 and center have their own binds. A command widget runs only once the owner has
 approved it in the compositor-drawn prompt (ADR 0067, COMP-10 §3.11).
 
-**eclipse-pairing** — the one BlueZ pairing agent (ADR 0053), an
-`eclipse-services` binary with its own user unit, so pairing works with no
-taskbar. PINs go through `eclipse-secret-prompt`.
+**ec-pairing** — the one BlueZ pairing agent (ADR 0053), an
+`ec-services` binary with its own user unit, so pairing works with no
+taskbar. PINs go through `ec-secret-prompt`.
 
-**eclipse-toasts** — the notification stack. Owns
-`org.freedesktop.Notifications` in-process via `eclipse_services::notifications`.
+**ec-toasts** — the notification stack. Owns
+`org.freedesktop.Notifications` in-process via `ec_services::notifications`.
 Bodies are never logged; only `Critical` may pin itself on screen.
 
-**eclipse-center** — the control center: status readout plus lock, log out,
+**ec-center** — the control center: status readout plus lock, log out,
 suspend, hibernate, reboot, power off, each greyed out when logind's `Can*`
 says no, and a refusal shown rather than worked around. A menu: it exits after
 one action.
 
-**eclipse-launcher** — filters `.desktop` entries (`eclipse_services::apps`)
+**ec-launcher** — filters `.desktop` entries (`ec_services::apps`)
 and spawns one, detached. `Terminal=true` entries run as `$term -e <argv>`
 when `misc.terminal-command` is set and are **hidden**, not refused, when it is
 not. The shipped `abyss.kdl` is empty, so by default they are hidden.
 
-**eclipse-settings** — §6. Takes an optional pane name as `argv[1]`
+**ec-settings** — §6. Takes an optional pane name as `argv[1]`
 (hyperion's drawers use this). Panes: Appearance, Taskbar, Display, Network,
 Input, Session, System, Privacy.
 
-**eclipse-policy-viewer** — reads `/etc/eclipse/policy.kdl` then
+**ec-policy-viewer** — reads `/etc/eclipse/policy.kdl` then
 `$XDG_CONFIG_HOME/eclipse/policy.kdl` off disk (`src/read.rs`) and renders
 it. No write path exists and none may be added. An absent file is normal; a
 malformed one names the file and the reason; unreadable reads as granting
 nothing.
 
-**eclipse-secret-prompt** — one password field, then exit (ADR 0053).
+**ec-secret-prompt** — one password field, then exit (ADR 0053).
 `wifi <ssid>` hands the passphrase to NetworkManager through
-`eclipse_services::status::Actions`; `bt <addr> pin|passkey|authorize|confirm
-<n>|show <code>` answers eclipse-pairing over the session-bus door
+`ec_services::status::Actions`; `bt <addr> pin|passkey|authorize|confirm
+<n>|show <code>` answers ec-pairing over the session-bus door
 `org.eclipse.Services.Pairing`. Every owned copy of the secret is wiped; no
-`Debug` on anything that holds it. App-id `eclipse-secret-prompt` is
+`Debug` on anything that holds it. App-id `ec-secret-prompt` is
 load-bearing (§5).
 
-**eclipse-screensaver** — owns `org.freedesktop.ScreenSaver` on
+**ec-screensaver** — owns `org.freedesktop.ScreenSaver` on
 `/org/freedesktop/ScreenSaver` and `/ScreenSaver`, one cookie per `Inhibit`,
 cookies dropped when their owner leaves the bus, and calls
 `set_idle_inhibit {inhibit}` whenever "any cookie held" flips (ADR 0051). If
@@ -110,20 +110,20 @@ the name is taken it exits non-zero rather than stealing it.
 ## 3. Surfaces
 
 The control socket is `$XDG_RUNTIME_DIR/eclipse/abyss.sock`, owner-only
-(COMP-13 §2); `eclipse-ipc` is the client. Every socket read is fail-soft:
+(COMP-13 §2); `ec-ipc` is the client. Every socket read is fail-soft:
 nothing listening renders empty, never crashes.
 
 | Component | Socket methods | Events | D-Bus |
 |---|---|---|---|
 | hyperion (bar) | `get_workspaces`, `get_windows`, `get_focused`, `get_outputs`, `get_config`, `focus_window`, `close_window`, `set_minimized`, `switch_workspace` | `window`, `workspace`, `focus`, `output`, `config_error`, `config` | system: NetworkManager, BlueZ, UPower. session: SNI watcher/host, MPRIS players (`org.mpris.MediaPlayer2.*`). PipeWire: default sink volume/mute, monitor tap (ADR 0065) |
-| eclipse-pairing | — | — | system: BlueZ `org.bluez.Agent1`. session: serves `org.eclipse.Services.Pairing` |
-| eclipse-toasts | `get_config` (`decoration.rounding`, startup) | — | session: serves `org.freedesktop.Notifications` |
-| eclipse-center | `get_config` (`decoration.rounding`, startup) | — | system: NetworkManager, BlueZ, UPower (read), logind `login1.Manager` / `login1.Session` |
-| eclipse-launcher | `get_config` (`misc.terminal-command`, `decoration.rounding`, startup) | — | — |
-| eclipse-settings | `get_config {schema: true}`, `set_config_value`, `set_config_collection` (`widget`, `bar.widgets.*`), `review_widget` (re-show a withheld command widget's approval prompt; ADR 0067), `get_outputs`, `set_output`, `calibrate_output` | `output`, `config_error`, `config` | system: NetworkManager, BlueZ (Network pane only). session: SNI host via `tray::observe` (Taskbar pane only; never serves the watcher, cannot click) |
-| eclipse-policy-viewer | `get_config` (`decoration.rounding`, startup) | — | — |
-| eclipse-secret-prompt | — | — | system: NetworkManager. session: calls `org.eclipse.Services.Pairing` |
-| eclipse-screensaver | `set_idle_inhibit` | — | session: serves `org.freedesktop.ScreenSaver` |
+| ec-pairing | — | — | system: BlueZ `org.bluez.Agent1`. session: serves `org.eclipse.Services.Pairing` |
+| ec-toasts | `get_config` (`decoration.rounding`, startup) | — | session: serves `org.freedesktop.Notifications` |
+| ec-center | `get_config` (`decoration.rounding`, startup) | — | system: NetworkManager, BlueZ, UPower (read), logind `login1.Manager` / `login1.Session` |
+| ec-launcher | `get_config` (`misc.terminal-command`, `decoration.rounding`, startup) | — | — |
+| ec-settings | `get_config {schema: true}`, `set_config_value`, `set_config_collection` (`widget`, `bar.widgets.*`), `review_widget` (re-show a withheld command widget's approval prompt; ADR 0067), `get_outputs`, `set_output`, `calibrate_output` | `output`, `config_error`, `config` | system: NetworkManager, BlueZ (Network pane only). session: SNI host via `tray::observe` (Taskbar pane only; never serves the watcher, cannot click) |
+| ec-policy-viewer | `get_config` (`decoration.rounding`, startup) | — | — |
+| ec-secret-prompt | — | — | system: NetworkManager. session: calls `org.eclipse.Services.Pairing` |
+| ec-screensaver | `set_idle_inhibit` | — | session: serves `org.freedesktop.ScreenSaver` |
 
 The tray watcher (`org.kde.StatusNotifierWatcher`) is served by hyperion if
 the name is free and queued for if not, so ours takes over when another
@@ -141,11 +141,11 @@ component keeps a config file of its own.
 |---|---|---|
 | `bar.fold-when-inactive`, `bar.fold-height`, `bar.fold-when-idle`, `bar.idle-seconds`, `bar.fold-duration-ms`, `bar.fold-curve` | hyperion, re-read on `config` | live |
 | `bar.position` | hyperion, once, before the surface exists | restart |
-| `bar.tray.pinned`, `bar.tray.hidden` | hyperion (read); eclipse-settings Taskbar pane (read/write) | live |
+| `bar.tray.pinned`, `bar.tray.hidden` | hyperion (read); ec-settings Taskbar pane (read/write) | live |
 | `bar.rounding` | hyperion, re-read on `config` | live |
-| `decoration.rounding` | hyperion and eclipse-settings, re-read on `config` | live |
+| `decoration.rounding` | hyperion and ec-settings, re-read on `config` | live |
 | `decoration.rounding` | toasts, center, launcher, policy viewer, once at startup | next start |
-| `misc.terminal-command` | eclipse-launcher, at startup | next launch |
+| `misc.terminal-command` | ec-launcher, at startup | next launch |
 
 Policy keys are never asked for over the socket: `get_config {file: "policy"}`
 stays closed in `ipc/gate.rs`, which is why the viewer reads the file itself.
@@ -154,29 +154,29 @@ stays closed in `ipc/gate.rs`, which is why the viewer reads the file itself.
 
 | Component | Started by | Trust |
 |---|---|---|
-| hyperion (add-on) | `hyperion.service` | ordinary client |
-| eclipse-pairing | `eclipse-pairing.service` | ordinary client |
-| eclipse-toasts | `eclipse-toasts.service` | ordinary client |
-| eclipse-screensaver | `eclipse-screensaver.service` | ordinary client |
-| eclipse-launcher | `Super+E` / `Super+R` default binds; hyperion's launcher button | ordinary client |
-| eclipse-center | `Super+N` default bind; `eclipse-center.desktop` | ordinary client |
-| eclipse-settings | `eclipse-settings.desktop`; hyperion drawer links | ordinary client |
-| eclipse-policy-viewer | `eclipse-policy-viewer.desktop` | ordinary client |
-| eclipse-secret-prompt | hyperion (wifi), eclipse-pairing (bluetooth) | ordinary client, surface classified `secret` |
+| hyperion (add-on) | `ec-hyperion-bar.service` | ordinary client |
+| ec-pairing | `ec-pairing.service` | ordinary client |
+| ec-toasts | `ec-toasts.service` | ordinary client |
+| ec-screensaver | `ec-screensaver.service` | ordinary client |
+| ec-launcher | `Super+E` / `Super+R` default binds; hyperion's launcher button | ordinary client |
+| ec-center | `Super+N` default bind; `ec-center.desktop` | ordinary client |
+| ec-settings | `ec-settings.desktop`; hyperion drawer links | ordinary client |
+| ec-policy-viewer | `ec-policy-viewer.desktop` | ordinary client |
+| ec-secret-prompt | hyperion (wifi), ec-pairing (bluetooth) | ordinary client, surface classified `secret` |
 
-The four DE units in `packaging/` (`hyperion`, `eclipse-pairing`, `eclipse-toasts`,
-`eclipse-screensaver`) install to `/usr/lib/systemd/user/`, are
+The four DE units in `packaging/` (`hyperion`, `ec-pairing`, `ec-toasts`,
+`ec-screensaver`) install to `/usr/lib/systemd/user/`, are
 `PartOf=graphical-session.target`, `Requisite=`/`After=abyss-session.target`,
 `Restart=on-failure`, and the PKGBUILD links each into
 `abyss-session.target.wants/` (a preset alone never fires for an existing
-account). The fifth, `policyd.service`, is TCB and ordered `Before=` the
+account). The fifth, `ec-policyd.service`, is TCB and ordered `Before=` the
 target instead. Everything else is spawned by name, so `PATH` must carry it:
 `/usr/bin` packaged, `target/debug` under `packaging/abyss-dev-session`. Default
 binds: `abyss/crates/ec-abyss/src/config/mod.rs`. `.desktop` files: `packaging/applications/`.
 
 **Wallpaper** is a core component (ADR 0068), not yet written:
-`eclipse-wallpaper`, a layer-shell client on `Background`, one surface per
-output, started by `eclipse-wallpaper.service`
+`ec-wallpaper`, a layer-shell client on `Background`, one surface per
+output, started by `ec-wallpaper.service`
 (`WantedBy=abyss-session.target`), package `eclipseos-wallpaper`, a dependency
 of `eclipseos-meta`. It reads the `wallpaper` node, reloads on `config` and
 follows `output` events. Default is a solid `color::BASE`; no image ships
@@ -187,16 +187,16 @@ refused or obliged by the compositor like any client (ADR 0038). Trusted UI is
 compositor-drawn and never a layer-shell client; a DE binary that would need
 to be trusted means ADR 0038 was applied too widely. The one elevated
 treatment is a *restriction*: `packaging/etc/policy.kdl` ships
-`windowrule "sensitivity secret" { app-id "^eclipse-secret-prompt$"; }`, which
+`windowrule "sensitivity secret" { app-id "^ec-secret-prompt$"; }`, which
 buys capture redaction and no direct scanout. Session actions are authorised
 by logind/polkit, not by us.
 
-`eclipse-secret-prompt` and `eclipse-pairing` ship in `eclipseos-desktop`,
+`ec-secret-prompt` and `ec-pairing` ship in `eclipseos-desktop`,
 so neither depends on the taskbar being installed.
 
 ## 6. Settings (COMP-17 §3)
 
-`eclipse-settings` is a client of the COMP-13 §1.4 write API and nothing else:
+`ec-settings` is a client of the COMP-13 §1.4 write API and nothing else:
 every write is `set_config_value`, `set_output` or `calibrate_output`. As built
 it holds to the four §3 limits:
 
@@ -242,8 +242,8 @@ it holds to the four §3 limits:
    drops from the autostart set above.~~ Decided by ADR 0060: it lands, and the
    autostart set moves to `components {}` (COMP-17 §2.2), which will replace
    §5's fixed `.wants/` links.
-3. **Packaging `eclipse-secret-prompt`** (§5): which package carries it. It
+3. **Packaging `ec-secret-prompt`** (§5): which package carries it. It
    belongs with hyperion's actions but is reusable by any bar (ADR 0053).
-4. **Center from the taskbar.** ADR 0052 says hyperion spawns `eclipse-center`
+4. **Center from the taskbar.** ADR 0052 says hyperion spawns `ec-center`
    by name; as built it spawns only the launcher, settings and the secret
    prompt. Either the ADR is stale or a button is missing.

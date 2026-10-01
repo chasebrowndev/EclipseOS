@@ -77,7 +77,7 @@ impl Entry {
         String::from_utf8_lossy(&self.name)
     }
 
-    /// The type column, shared by the UI's display and `fogd`'s
+    /// The type column, shared by the UI's display and `ec-fogd`'s
     /// [`SortKey::Type`] so the two always agree: `dir`, `link`, the special
     /// file kind from `mode`, a file's lower-cased extension, `exec` for an
     /// executable without one, else `file`. Empty while a phase-1 `Unknown`
@@ -114,7 +114,7 @@ impl Entry {
     }
 }
 
-/// Daemon-assigned job id, unique for the life of `fogd`.
+/// Daemon-assigned job id, unique for the life of `ec-fogd`.
 pub type JobId = u64;
 
 /// What a job does on a name collision (FOG §File operations/Conflicts).
@@ -131,7 +131,7 @@ pub enum ConflictPolicy {
     Fail,
 }
 
-/// A mutation for `fogd`'s job queue (FOG §File operations/Queue). Every
+/// A mutation for `ec-fogd`'s job queue (FOG §File operations/Queue). Every
 /// file change is one of these, whoever asks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobSpec {
@@ -267,7 +267,7 @@ pub enum SortKey {
     Type,
 }
 
-/// A listing's display order, computed in `fogd` (FOG §Performance model,
+/// A listing's display order, computed in `ec-fogd` (FOG §Performance model,
 /// technique 7). Names always compare naturally and break every tie;
 /// `reverse` flips the key but never moves folders out of the front while
 /// `dirs_first` holds.
@@ -288,9 +288,9 @@ impl Default for Sort {
     }
 }
 
-/// Client to `fogd`. Paths are absolute, raw bytes.
+/// Client to `ec-fogd`. Paths are absolute, raw bytes.
 ///
-/// `Subscribe` is answered like `ListDir`, then `fogd` keeps pushing
+/// `Subscribe` is answered like `ListDir`, then `ec-fogd` keeps pushing
 /// `DirDiff`s for that listing's `dir` until `Unsubscribe`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Request {
@@ -323,7 +323,7 @@ pub enum Request {
     Places,
     /// Order listing `dir`, and every later generation of it, by `sort`. The
     /// sort belongs to the folder, not the client (FOG §Configuration:
-    /// per-folder view state): `fogd` publishes the new order to every
+    /// per-folder view state): `ec-fogd` publishes the new order to every
     /// subscriber as a `DirDiff` with no entry changes, then `Sorted`. An
     /// unknown `dir` is `Error { path: [], errno: ENOENT }`.
     SetSort {
@@ -337,7 +337,7 @@ pub enum Request {
     },
 }
 
-/// `fogd` to client.
+/// `ec-fogd` to client.
 ///
 /// `order` is the display order as indices into the entry list. After a
 /// `DirDiff`, indices refer to the list produced by [`apply_diff`].
@@ -421,9 +421,9 @@ pub enum Reply {
         total: u64,
     },
     /// `fog.kdl` was reloaded and is now active (FOG §Configuration),
-    /// broadcast to every client. `text` is the file as `fogd` accepted it,
+    /// broadcast to every client. `text` is the file as `ec-fogd` accepted it,
     /// empty when it is missing (the defaults); a client lays it over the
-    /// defaults with `fog_config::parse` to restyle and rebind live.
+    /// defaults with `ec_fog_config::parse` to restyle and rebind live.
     ConfigReloaded {
         text: String,
     },

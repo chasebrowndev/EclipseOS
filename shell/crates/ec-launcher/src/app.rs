@@ -9,7 +9,7 @@
 use iced::{Subscription, Task};
 use iced_layershell::to_layer_message;
 
-use eclipse_services::apps::{self, Entry};
+use ec_services::apps::{self, Entry};
 
 /// The filter field. Named so the boot task can put the cursor in it before
 /// the human has typed anything.
@@ -70,7 +70,7 @@ impl App {
     pub fn new() -> Self {
         let term = crate::conn::fetch_terminal_command();
         let (radius, blur) = crate::conn::fetch_glass();
-        let glass_radius = radius.unwrap_or(eclipse_ui::tokens::radius::CARD);
+        let glass_radius = radius.unwrap_or(ec_ui::tokens::radius::CARD);
         let blur = blur.unwrap_or(false);
         let mut app = App {
             entries: apps::scan(term.as_deref()),
@@ -238,7 +238,7 @@ mod tests {
             selected: 0,
             problem: None,
             term: None,
-            glass_radius: eclipse_ui::tokens::radius::CARD,
+            glass_radius: ec_ui::tokens::radius::CARD,
             blur: false,
         };
         app.refilter();

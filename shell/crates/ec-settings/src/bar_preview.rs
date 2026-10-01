@@ -19,8 +19,8 @@
 //! the taskbar crate is not a dependency of settings, and a preview that
 //! pulled it in would drag its services along.
 
-use eclipse_ui::tokens::{bar, space};
-use eclipse_ui::widget::{ShellFrame, ShellSpan, TRANSPORT_W, VOLUME_SLIDER_W};
+use ec_ui::tokens::{bar, space};
+use ec_ui::widget::{ShellFrame, ShellSpan, TRANSPORT_W, VOLUME_SLIDER_W};
 
 /// Every built-in widget id, in the order the add picker lists them.
 pub const BUILTINS: [&str; 8] = [
@@ -199,7 +199,7 @@ impl Cell {
         (grip + extent.round()).round()
     }
 
-    /// `extent` as the frame a [`eclipse_ui::widget::widget_shell`] draws.
+    /// `extent` as the frame a [`ec_ui::widget::widget_shell`] draws.
     pub fn frame(&self, extent: f32, presence: f32) -> ShellFrame {
         ShellFrame {
             open: (extent / self.core_run()).clamp(0.0, 1.0),

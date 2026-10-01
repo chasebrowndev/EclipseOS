@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
-use fog_proto::{JobAction, JobId, JobSpec, JobStatus, Reply, Resolution};
+use ec_fog_proto::{JobAction, JobId, JobSpec, JobStatus, Reply, Resolution};
 use rustix::io::Errno;
 use tokio::sync::broadcast;
 

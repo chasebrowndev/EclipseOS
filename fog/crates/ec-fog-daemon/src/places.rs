@@ -10,7 +10,7 @@ use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-use fog_proto::{Place, PlaceKind};
+use ec_fog_proto::{Place, PlaceKind};
 
 use crate::open::Xdg;
 

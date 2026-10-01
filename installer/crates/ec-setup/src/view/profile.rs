@@ -10,8 +10,8 @@ use super::Body;
 use crate::data::{self, CARDS, STANDARD_SEEDS};
 use crate::model::{Message, Model};
 use crate::parts::{self, El};
-use eclipse_ui::tokens::{color, font, size, space};
-use eclipse_ui::widget::{inset_list, list_row, value};
+use ec_ui::tokens::{color, font, size, space};
+use ec_ui::widget::{inset_list, list_row, value};
 use iced::widget::{column, row, text, Column, Space};
 use iced::{Alignment, Length};
 

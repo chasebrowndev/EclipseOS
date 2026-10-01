@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
-use fog_proto::Entry;
+use ec_fog_proto::Entry;
 
 /// One cached listing. `order` indexes `entries`; `entries` is in the same
 /// order every client holding this `generation` has.
@@ -183,7 +183,7 @@ impl Default for Cache {
     }
 }
 
-/// What turns `old` into `new` under [`fog_proto::apply_diff`]: names that
+/// What turns `old` into `new` under [`ec_fog_proto::apply_diff`]: names that
 /// left (or changed kind), entries that arrived (or changed kind), and
 /// entries whose metadata alone changed.
 pub fn diff(old: &[Entry], new: &[Entry]) -> (Vec<Vec<u8>>, Vec<Entry>, Vec<Entry>) {
@@ -212,7 +212,7 @@ pub fn diff(old: &[Entry], new: &[Entry]) -> (Vec<Vec<u8>>, Vec<Entry>, Vec<Entr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fog_proto::Kind;
+    use ec_fog_proto::Kind;
     use std::collections::HashSet;
 
     fn e(n: &str, k: Kind) -> Entry {
@@ -307,7 +307,7 @@ mod tests {
         assert!(changed.is_empty());
 
         let mut applied = old.clone();
-        fog_proto::apply_diff(&mut applied, &removed, &added, &changed);
+        ec_fog_proto::apply_diff(&mut applied, &removed, &added, &changed);
         let a: HashSet<Entry> = applied.into_iter().collect();
         let n: HashSet<Entry> = new.into_iter().collect();
         assert_eq!(a, n);
@@ -327,7 +327,7 @@ mod tests {
         assert!(removed.is_empty() && added.is_empty());
         assert_eq!(changed, [sized]);
         let mut applied = old.clone();
-        fog_proto::apply_diff(&mut applied, &removed, &added, &changed);
+        ec_fog_proto::apply_diff(&mut applied, &removed, &added, &changed);
         assert_eq!(applied, new);
     }
 }

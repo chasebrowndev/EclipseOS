@@ -12,9 +12,9 @@ use std::collections::HashSet;
 
 use serde_json::{json, Value};
 
-use abyss::config::schema::{Ty, COLLECTIONS, TABLE};
-use eclipse_settings::pane::pane_for;
-use eclipse_settings::schema::control_for;
+use ec_abyss::config::schema::{Ty, COLLECTIONS, TABLE};
+use ec_settings::pane::pane_for;
+use ec_settings::schema::control_for;
 
 /// The wire shape `config_rpc::ty_json` produces for a `Ty`. Written out once
 /// here so the test exercises the exact strings the app will see, rather than

@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::Path;
 
-use fog_proto::{JobId, JobStatus};
+use ec_fog_proto::{JobId, JobStatus};
 use rustix::io::Errno;
 
 use super::run::{at, describe, Op, Runner};

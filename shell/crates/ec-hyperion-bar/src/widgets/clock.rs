@@ -9,8 +9,8 @@
 use iced::widget::{column, text};
 use iced::Alignment;
 
-use eclipse_ui::tokens::{bar, color, font, size};
-use eclipse_ui::widget::ShellFrame;
+use ec_ui::tokens::{bar, color, font, size};
+use ec_ui::widget::ShellFrame;
 
 use super::{Parts, Spans};
 use crate::app::App;

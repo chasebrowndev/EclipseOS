@@ -17,7 +17,7 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::thread::JoinHandle;
 
-use abyss::backend::headless::{wlcs_channel, wlcs_send_and_wait, WlcsEvent, WlcsSender};
+use ec_abyss::backend::headless::{wlcs_channel, wlcs_send_and_wait, WlcsEvent, WlcsSender};
 use wayland_sys::client::*;
 use wayland_sys::ffi_dispatch;
 use wlcs::{
@@ -67,8 +67,8 @@ impl Wlcs for AbyssHandle {
     fn start(&mut self) {
         let (tx, rx) = wlcs_channel();
         let join = std::thread::spawn(move || {
-            if let Err(e) = abyss::backend::headless::run_wlcs(rx) {
-                eprintln!("wlcs-abyss: compositor exited with an error: {e:?}");
+            if let Err(e) = ec_abyss::backend::headless::run_wlcs(rx) {
+                eprintln!("ec-abyss-wlcs: compositor exited with an error: {e:?}");
             }
         });
         self.server = Some((tx, join));

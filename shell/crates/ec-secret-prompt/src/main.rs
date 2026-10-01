@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `eclipse-secret-prompt wifi <ssid>` | `bt <addr> pin|passkey|authorize`
+//! `ec-secret-prompt wifi <ssid>` | `bt <addr> pin|passkey|authorize`
 //! | `bt <addr> confirm <passkey>` | `bt <addr> show <code>`.
 //!
 //! A plain xdg_toplevel, not a layer surface: windowrules — and with them the
 //! `secret` sensitivity class — only match toplevels (ADR 0053). Fixed size,
 //! so abyss floats it without a rule.
 
-use eclipse_secret_prompt::app::{self, App};
-use eclipse_secret_prompt::{Target, APP_ID};
-use eclipse_ui::tokens::secret;
+use ec_secret_prompt::app::{self, App};
+use ec_secret_prompt::{Target, APP_ID};
+use ec_ui::tokens::secret;
 use iced::window;
 
 fn main() -> iced::Result {
@@ -26,7 +26,7 @@ fn main() -> iced::Result {
     let size = iced::Size::new(secret::W, secret::H);
     let mut builder = iced::application(move || App::new(target.clone()), app::update, app::view)
         .title(|app: &App| app.title().to_owned())
-        .theme(|_: &App| eclipse_ui::theme::theme())
+        .theme(|_: &App| ec_ui::theme::theme())
         .subscription(app::subscription)
         .window(window::Settings {
             size,
@@ -41,7 +41,7 @@ fn main() -> iced::Result {
             ..window::Settings::default()
         })
         .antialiasing(true);
-    for face in eclipse_ui::FONTS {
+    for face in ec_ui::FONTS {
         builder = builder.font(*face);
     }
     builder.run()

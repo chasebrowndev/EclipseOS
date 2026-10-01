@@ -11,10 +11,10 @@
 use super::Body;
 use crate::model::{touched_disk, Message, Model, Phase};
 use crate::parts::{self, El, Tone};
-use eclipse_setup_plan::Stage;
-use eclipse_ui::theme;
-use eclipse_ui::tokens::{color, font, radius, size, space};
-use eclipse_ui::widget::{big_value, panel};
+use ec_setup_plan::Stage;
+use ec_ui::theme;
+use ec_ui::tokens::{color, font, radius, size, space};
+use ec_ui::widget::{big_value, panel};
 use iced::widget::{column, row, text, Space};
 use iced::{Alignment, Length};
 

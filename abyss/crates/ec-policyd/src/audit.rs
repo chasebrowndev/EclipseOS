@@ -29,9 +29,9 @@
 //!   before it is spoken call [`Store::sync`] themselves. The task store does
 //!   exactly that — journal before answer (A-04 §4).
 
-use policy_eval::audit::Emission;
-use policy_eval::cbor::{enc, MapBuilder, Reader, Writer};
-use policy_eval::{cbor, Ulid};
+use ec_policy_eval::audit::Emission;
+use ec_policy_eval::cbor::{enc, MapBuilder, Reader, Writer};
+use ec_policy_eval::{cbor, Ulid};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -56,8 +56,8 @@ const DIR_MODE: u32 = 0o700;
 const FILE_MODE: u32 = 0o600;
 
 /// What a record is about: the S-04 §1.1 table, shared with every source
-/// (`policy_eval::audit`).
-pub use policy_eval::audit::Kind;
+/// (`ec_policy_eval::audit`).
+pub use ec_policy_eval::audit::Kind;
 
 /// The S-04 §1 envelope.
 ///

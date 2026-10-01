@@ -97,7 +97,7 @@ pub fn hover<'a>(
 }
 
 /// A drop target with the drag over it: a lifted fill with a secondary
-/// white hairline (`eclipse-ui`'s `drop_well` when hot, Settings' taskbar
+/// white hairline (`ec-ui`'s `drop_well` when hot, Settings' taskbar
 /// pane). Targets at rest draw as they are. Never yellow: a target is a
 /// place, not the pane's live value.
 pub fn drop_well() -> container::Style {
@@ -113,7 +113,7 @@ pub fn drop_well() -> container::Style {
 }
 
 /// The thing in hand: its glyph and what it is, on the nearly opaque menu
-/// ground with a strong edge (`eclipse-ui`'s `drag_ghost`), so it stays
+/// ground with a strong edge (`ec-ui`'s `drag_ghost`), so it stays
 /// legible over rows, places or the desktop showing through.
 pub fn ghost<'a>(g: Glyph, what: String) -> Element<'a, Message> {
     let r = look().chip_radius;

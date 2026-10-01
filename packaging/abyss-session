@@ -15,4 +15,4 @@ export XDG_SESSION_DESKTOP=abyss
 # greetd hands the session the VT as stdout/stderr; anything printed there
 # shows as text between the greeter and the first frame, and again on logout.
 # abyss logs to journald itself, so stray output goes there too.
-exec systemd-cat -t abyss-session abyss --backend drm --session "$@"
+exec systemd-cat -t abyss-session ec-abyss --backend drm --session "$@"

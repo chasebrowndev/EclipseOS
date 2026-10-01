@@ -650,7 +650,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
-name = "eclipse-ipc"
+name = "ec-ipc"
 version = "0.1.0"
 dependencies = [
  "libc",
@@ -658,13 +658,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "eclipse-setup"
+name = "ec-setup"
 version = "0.1.0"
 dependencies = [
- "eclipse-ipc",
- "eclipse-setup-plan",
- "eclipse-ui",
- "eclipse-welcome",
+ "ec-ipc",
+ "ec-setup-plan",
+ "ec-ui",
+ "ec-welcome",
  "iced",
  "iced_runtime",
  "image",
@@ -673,10 +673,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "eclipse-setup-helper"
+name = "ec-setup-helper"
 version = "0.1.0"
 dependencies = [
- "eclipse-setup-plan",
+ "ec-setup-plan",
  "kdl",
  "rustix 1.1.4",
  "serde_json",
@@ -684,7 +684,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "eclipse-setup-plan"
+name = "ec-setup-plan"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -693,16 +693,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "eclipse-ui"
+name = "ec-ui"
 version = "0.1.0"
 dependencies = [
- "eclipse-ipc",
+ "ec-ipc",
  "iced",
  "serde_json",
 ]
 
 [[package]]
-name = "eclipse-welcome"
+name = "ec-welcome"
 version = "0.1.0"
 dependencies = [
  "iced",

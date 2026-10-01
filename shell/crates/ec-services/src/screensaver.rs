@@ -223,7 +223,7 @@ fn spawn_bridge() -> Sender<bool> {
 
 fn bridge(levels: &Receiver<bool>) {
     let mut wanted = false;
-    let mut client: Option<eclipse_ipc::Client> = None;
+    let mut client: Option<ec_ipc::Client> = None;
     let mut wait = REASSERT;
     loop {
         match levels.recv_timeout(wait) {
@@ -237,7 +237,7 @@ fn bridge(levels: &Receiver<bool>) {
         }
 
         if client.is_none() && wanted {
-            client = eclipse_ipc::Client::connect().ok();
+            client = ec_ipc::Client::connect().ok();
         }
         wait = REASSERT;
         if let Some(c) = client.as_mut() {

@@ -13,7 +13,7 @@ ADR 0060.
 ## 1. Shape
 
 **First boot is booting the ISO.** The live medium starts an abyss session and
-runs one full-screen program, `eclipse-setup --install`, that takes a machine
+runs one full-screen program, `ec-setup --install`, that takes a machine
 from blank to a configured desktop: language and keyboard, network, disk,
 identity, profile, interaction mode, every replaceable component, applications,
 appearance, displays, agents, then the install itself. There is no TTY
@@ -27,7 +27,7 @@ right now, and the user commits to something they have already seen.
 **Setup is a seed, not a layer.** What the user chooses becomes ordinary values
 in `abyss.kdl` and a package set. Afterwards the files are the only source of
 truth. Nothing reads "the profile" at runtime (COMP-17 §2.1). The same program
-runs again on an installed system as `eclipse-setup --reconfigure`, which skips
+runs again on an installed system as `ec-setup --reconfigure`, which skips
 the install-only steps (§4) and starts from the current files, not from the
 profile table.
 
@@ -37,7 +37,7 @@ profile table.
 
 The live medium gains a session, where D-03 §5 currently has only a root shell
 on tty1. `greetd` autologins an unprivileged `liveuser` into `abyss-session`,
-which autostarts `eclipse-setup --install`. `liveuser` follows D-01 §5 like any
+which autostarts `ec-setup --install`. `liveuser` follows D-01 §5 like any
 user: no groups, a logind session on the seat, nothing else. Explicitly **no**
 sudoers or wheel entry, **no** sshd, and no other listening service on the
 medium, so nothing reaches `liveuser` from the network (the polkit rule in §6
@@ -55,7 +55,7 @@ chooses; §5 enforces what may cross.
 
 The installer installs `eclipseos-base`: the compositor, `policyd`, the greeter
 set, the D-Bus services D-01 §1 names, `foot`, **every D-05 component** and
-`eclipse-setup`. This is the setup floor: it is what D-03 §2.1 already says,
+`ec-setup`. This is the setup floor: it is what D-03 §2.1 already says,
 "what you booted is what you install". Today `build-iso.sh` bakes the signed
 `[eclipseos]` packages into the medium (`/root/eclipseos-repo`) and
 `install-eclipseos.sh` pacstraps from that copy, so **the EclipseOS packages
@@ -73,10 +73,10 @@ office suite and stay a sensible size.
 
 | Where | Program | Privilege |
 |---|---|---|
-| Live session | `eclipse-setup --install` | `liveuser`, unprivileged. An ordinary client, not TCB (§7) |
-| Live session | `eclipse-setup-helper` | root, reached through polkit. Repartitions, installs, configures the target (write surface: §6) |
-| Installed system | `eclipse-setup --reconfigure` | the user. Launched from Settings ("Run setup again") or `eclipse-ctl setup reset` |
-| Installed system | `eclipse-setup-helper` | root, reached through polkit. Packages only (§6) |
+| Live session | `ec-setup --install` | `liveuser`, unprivileged. An ordinary client, not TCB (§7) |
+| Live session | `ec-setup-helper` | root, reached through polkit. Repartitions, installs, configures the target (write surface: §6) |
+| Installed system | `ec-setup --reconfigure` | the user. Launched from Settings ("Run setup again") or `ec-ctl setup reset` |
+| Installed system | `ec-setup-helper` | root, reached through polkit. Packages only (§6) |
 
 `--install` and `--reconfigure` are the same program with the same steps. A
 step whose subject is a disk, an identity or a locale is skipped in
@@ -90,10 +90,10 @@ session apply live, so the live medium itself is the preview.
 
 | # | Step | `--install` | Effect |
 |---|---|---|---|
-| 0 | **Welcome** | yes | `eclipse-welcome`: the eclipse animation, greetings in ten languages, "press Space". Space begins step 1. Not a setup step: it writes nothing, and `--reconfigure` skips it. Reduced motion is honoured |
+| 0 | **Welcome** | yes | `ec-welcome`: the eclipse animation, greetings in ten languages, "press Space". Space begins step 1. Not a setup step: it writes nothing, and `--reconfigure` skips it. Reduced motion is honoured |
 | 1 | **Language, keyboard** | yes | `input.kb-layout`, `input.kb-variant` (live); locale for the target. First, because every later step types |
 | 2 | **Timezone** | yes | Target timezone; `hwclock --systohc` at install |
-| 3 | **Network** | both | NetworkManager owns it. Reuses `eclipse-secret-prompt` for the passphrase. Skippable. Offline disables the network-dependent choices in steps 8, 9 and 12 with "needs network" rather than hiding them |
+| 3 | **Network** | both | NetworkManager owns it. Reuses `ec-secret-prompt` for the passphrase. Skippable. Offline disables the network-dependent choices in steps 8, 9 and 12 with "needs network" rather than hiding them |
 | 4 | **Disk** | yes | §4.2. Destructive; confirmed at review, not here |
 | 5 | **Identity** | yes | Hostname, username, passwords. §4.3 |
 | 6 | **Profile** | both | `setup.profile`. Four cards (COMP-17 §2.1). Picking one preselects every later step. Mandatory |
@@ -127,9 +127,9 @@ bluetooth-ui) are a slot of their own that any number may fill. *(ADR 0062)*
 | Slot | Candidates (initial) |
 |---|---|
 | bar | `hyperion`, `waybar`, `quickshell`, `none` |
-| launcher | `eclipse-launcher`, `fuzzel`, `none` |
-| notifications | `eclipse-toasts`, `mako`, `none` |
-| control center | `eclipse-center`, `none` |
+| launcher | `ec-launcher`, `fuzzel`, `none` |
+| notifications | `ec-toasts`, `mako`, `none` |
+| control center | `ec-center`, `none` |
 | terminal | `foot`, `kitty`, `alacritty` (`cataclysm` when P-04 exists) |
 | browser | `firefox`, `chromium`, `none` |
 | office | `libreoffice-fresh`, `none` |
@@ -230,7 +230,7 @@ is throwaway, and it should not be the origin of anything the installed system
 must trust.
 
 So at first login the compositor itself shows the COMP-10 §2 "anti-spoofing
-unconfigured" warning, and if `setup.pending-preset` is set, `eclipse-toasts`
+unconfigured" warning, and if `setup.pending-preset` is set, `ec-toasts`
 adds a nudge. The user presses `agent-attention` (SUPER+space):
 
 - **Phrase entry** is drawn by the compositor, first, on the human seat with a
@@ -289,7 +289,7 @@ helper enforces by reading only the user's file, not merely a convention.
 
 ## 6. The helper
 
-`eclipse-setup-helper` is the only privileged program. Its input is a
+`ec-setup-helper` is the only privileged program. Its input is a
 **structured plan**, never a shell command or a path:
 
 - `disk`: a `/dev/disk/by-id` entry from the helper's own listing
@@ -345,13 +345,13 @@ authorities:
   against the configured signed repositories (D-02 §5), plus the units the
   catalog lists. **Removal is derived from catalog ids only**, resolved to the
   packages that catalog entry alone owns, never a caller-named package. Floor
-  and essential packages (the compositor, `policyd`, `eclipse-setup`, the
+  and essential packages (the compositor, `policyd`, `ec-setup`, the
   session, the base) are **never removable**, and a `-Rns` whose cascade reaches
   one is refused, not trimmed. **`auth_admin`**, never `_keep`: setup runs one transaction,
   and a keep window would let any same-session process ride the authorisation.
   Active local session only. **The `auth_admin` password is collected by a
 compositor-drawn polkit authentication agent** (trusted UI), never by a client
-such as `eclipse-secret-prompt`, since it is an admin-equivalent secret and a
+such as `ec-secret-prompt`, since it is an admin-equivalent secret and a
 client prompt is spoofable. That agent is **owed** (COMP-10).
 
 Agent sandboxes must not reach the system bus at all. That is S-03's to
@@ -362,7 +362,7 @@ component set to `none` stays installed and simply is not started.
 
 ## 7. Trust
 
-`eclipse-setup` is **not TCB**. It is an ordinary client of the COMP-13 §1.4
+`ec-setup` is **not TCB**. It is an ordinary client of the COMP-13 §1.4
 write API, like the settings GUI (COMP-17 §3), and holds to the same limits:
 scoped to `abyss.kdl`, no private store, no path into `policy.kdl`, never sees
 the phrase.
@@ -412,7 +412,7 @@ file*, is met by D-07 alone for every profile and is its acceptance test.
   hostname or username outside the patterns; a candidate id not in the catalog; a
   package or unit name; `org.eclipse.install.apply` when `/run/archiso` is
   absent.
-- `eclipse-setup` has no code path that writes or stages `policy.kdl`, and never
+- `ec-setup` has no code path that writes or stages `policy.kdl`, and never
   receives the phrase. Assert on the socket traffic.
 - The seed contains exactly the allowlisted keys: a seed containing a spawning
   `bind`, `idle.lock-command` or a `misc.terminal-command` string yields a target
@@ -426,7 +426,7 @@ file*, is met by D-07 alone for every profile and is its acceptance test.
   password containing a newline or NUL is refused by the helper.
 - Killing the live session at each step touches no disk. Killing the helper after
   repartitioning leaves a state the next run either completes or cleanly erases.
-- `eclipse-ctl setup reset`, then a re-run, preselects the current files'
+- `ec-ctl setup reset`, then a re-run, preselects the current files'
   values, not the profile's.
 
 ## 11. Open decisions

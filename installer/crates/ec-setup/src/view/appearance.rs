@@ -16,8 +16,8 @@ use super::Body;
 use crate::choices::{BarPosition, Blur};
 use crate::model::{Message, Model};
 use crate::parts::{self, El};
-use eclipse_ui::tokens::space;
-use eclipse_ui::widget::{inset_list, list_row};
+use ec_ui::tokens::space;
+use ec_ui::widget::{inset_list, list_row};
 use iced::widget::Row;
 
 /// Two chips, the first for `true`.

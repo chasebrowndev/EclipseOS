@@ -1,34 +1,34 @@
 [package]
-name = "eclipse-setup"
+name = "ec-setup"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "the graphical installer and setup wizard (D-07). Steps 1-14; step 0 is eclipse-welcome."
+description = "the graphical installer and setup wizard (D-07). Steps 1-14; step 0 is ec-welcome."
 publish = false
 
 [lib]
-name = "eclipse_setup"
+name = "ec_setup"
 path = "src/lib.rs"
 
 [[bin]]
-name = "eclipse-setup"
+name = "ec-setup"
 path = "src/main.rs"
 
 [dependencies]
-# Pinned to match eclipse-ui exactly (ADR 0039). `wayland` and `thread-pool` are
+# Pinned to match ec-ui exactly (ADR 0039). `wayland` and `thread-pool` are
 # load-bearing as in every other DE crate; a plain xdg_toplevel, no layer shell.
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "canvas", "image"] }
 # `--shot` builds a `UserInterface` by hand to render a step offscreen; iced
 # does not re-export it. Same version iced itself resolves.
 iced_runtime = "0.14"
-eclipse-ui = { path = "../../../shell/crates/ec-ui" }
+ec-ui = { path = "../../../shell/crates/ec-ui" }
 # The COMP-13 §1.4 write API: `input.kb-*` live, `setup.*`. Nothing else.
-eclipse-ipc = { path = "../../../abyss/crates/ec-ipc" }
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 # Step 0, embedded (its `Message::Begin` is the hand-off).
-eclipse-welcome = { path = "../ec-welcome" }
-eclipse-setup-plan = { path = "../ec-setup-plan" }
+ec-welcome = { path = "../ec-welcome" }
+ec-setup-plan = { path = "../ec-setup-plan" }
 serde_json.workspace = true
 # The password lives in `Zeroizing` buffers and is overwritten on drop.
 zeroize = "1"

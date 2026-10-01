@@ -782,7 +782,7 @@ mod tests {
         assert_eq!(h.try_recv(), None, "nothing new while nothing changed");
     }
 
-    /// Read-only readout of the live server: `cargo test -p eclipse-services
+    /// Read-only readout of the live server: `cargo test -p ec-services
     /// live_readout -- --ignored --nocapture`. Changes nothing; opens the tap
     /// for two seconds and prints band levels, never samples.
     #[test]

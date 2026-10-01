@@ -83,7 +83,7 @@
 //! its own. The launcher mark is the row's only circle, and pager tiles
 //! stay small squircles (`bar::RADIUS_TILE`).
 //!
-//! Every colour and size comes from `eclipse_ui::tokens` — a literal anywhere
+//! Every colour and size comes from `ec_ui::tokens` — a literal anywhere
 //! in this file is a bug, because the tokens are the only transcription of
 //! `docs/STYLE.md`.
 
@@ -93,9 +93,9 @@ use iced::widget::{
 };
 use iced::{Alignment, Color, Element, Length, Theme};
 
-use eclipse_ui::theme::{self, CellTone};
-use eclipse_ui::tokens::{bar, color, drawer, font, menu, radius, size, space};
-use eclipse_ui::widget::{self as parts, ClipEdge, SheetEdge, SheetShape};
+use ec_ui::theme::{self, CellTone};
+use ec_ui::tokens::{bar, color, drawer, font, menu, radius, size, space};
+use ec_ui::widget::{self as parts, ClipEdge, SheetEdge, SheetShape};
 
 use crate::app::Message;
 use crate::icons::Icon;
@@ -397,7 +397,7 @@ fn start_sheet<'a>(
 /// The panel at full size: a column of results the search field's width,
 /// under it and flush with it, and a footer of key hints.
 ///
-/// The results are `eclipse-launcher`'s rows, drawn here again rather than
+/// The results are `ec-launcher`'s rows, drawn here again rather than
 /// imported (ADR 0052): the same glass cells, the same name, note and
 /// identifier, the same scroll that keeps the selection on screen. The
 /// selected row is the panel's one yellow.
@@ -437,11 +437,11 @@ fn start_panel(on: &crate::app::Bar) -> Element<'_, Message, Theme> {
         .into()
 }
 
-/// One result: `eclipse-launcher`'s row look at the bar's row height.
+/// One result: `ec-launcher`'s row look at the bar's row height.
 /// `index` is into the matches, not a slot on screen, so a click runs the
 /// row it lands on.
 fn start_row(
-    entry: &eclipse_services::apps::Entry,
+    entry: &ec_services::apps::Entry,
     index: usize,
     selected: bool,
 ) -> Element<'static, Message, Theme> {
@@ -1333,7 +1333,7 @@ pub(crate) fn blank_mark() -> Element<'static, Message, Theme> {
 /// glass. The same rows and the same zero-yellow ledger as [`context_menu`]
 /// — it is a menu, and a second menu style on one bar would be two.
 fn tray_menu(id: &str, entries: &[crate::radio::MenuEntry], radius: f32) -> Element<'static, Message, Theme> {
-    use eclipse_services::tray::MenuKind;
+    use ec_services::tray::MenuKind;
     // One checkable entry gives every item row the mark column, so the labels
     // stay on one gridline whether or not a given row is ticked.
     let marks = entries.iter().any(|e| e.checked.is_some());
@@ -1426,7 +1426,7 @@ fn tick(checked: Option<bool>, ink: Color) -> Element<'static, Message, Theme> {
 /// The popup height that fits a tray item's menu, by the same arithmetic
 /// [`tray_menu`] draws: a rule is [`menu::SEP_H`], every other line a row.
 pub fn tray_menu_height(entries: &[crate::radio::MenuEntry]) -> u32 {
-    use eclipse_services::tray::MenuKind;
+    use ec_services::tray::MenuKind;
     let lines: f32 = entries
         .iter()
         .map(|e| match e.kind {
@@ -1456,7 +1456,7 @@ mod tests {
     /// The popup is sized before layout, so the sum has to be the drawing.
     #[test]
     fn a_tray_menu_is_as_tall_as_its_lines() {
-        use eclipse_services::tray::MenuKind;
+        use ec_services::tray::MenuKind;
         let entries = crate::radio::preview_menu();
         let rows = entries.iter().filter(|e| e.kind != MenuKind::Separator).count() as f32;
         let rules = entries.len() as f32 - rows;
@@ -1560,7 +1560,7 @@ mod tests {
             iced::window::Id::unique(),
             "DP-1".into(),
             0,
-            eclipse_ui::motion::Motion::DEFAULT,
+            ec_ui::motion::Motion::DEFAULT,
         );
         on.width = 1830.0;
         app.snapshot = Snapshot {
@@ -1600,7 +1600,7 @@ mod tests {
             iced::window::Id::unique(),
             "DP-1".into(),
             0,
-            eclipse_ui::motion::Motion::DEFAULT,
+            ec_ui::motion::Motion::DEFAULT,
         );
         on.width = 1830.0;
         app.snapshot = Snapshot {
@@ -1644,7 +1644,7 @@ mod tests {
             iced::window::Id::unique(),
             "DP-1".into(),
             0,
-            eclipse_ui::motion::Motion::DEFAULT,
+            ec_ui::motion::Motion::DEFAULT,
         );
         on.width = 1830.0;
         on.cursor = iced::Point::ORIGIN;

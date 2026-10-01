@@ -239,7 +239,7 @@ pub struct AbyssState {
     /// (COMP-01 §6, F-05). `None` until the `policyd` link has authenticated
     /// its peer; while `None`, `create_agent` fails with `POLICY_UNAVAILABLE`.
     /// Written only by the link in `policy/`.
-    pub policy_key: Option<policy_eval::VerifyingKey>,
+    pub policy_key: Option<ec_policy_eval::VerifyingKey>,
     pub policy_link: crate::policy::link::Link,
     /// Provenance emission to `policyd` (COMP-12).
     pub audit: crate::audit::Audit,

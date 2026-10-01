@@ -47,7 +47,7 @@
 
 # ---------------------------------------------------------------------------
 # 1. RETIRED. Was "the harness has no touch device": 170 entries that all
-# SIGSEGV'd because `wlcs-abyss`'s `create_touch()` returned `None` and wlcs
+# SIGSEGV'd because `ec-abyss-wlcs`'s `create_touch()` returned `None` and wlcs
 # dereferences the resulting null `WlcsTouch*`. The harness has a real touch
 # device now and 168 of those tests pass. Group numbers below are left as they
 # were so existing references still resolve.

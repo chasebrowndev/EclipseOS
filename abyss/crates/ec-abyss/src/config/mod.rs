@@ -294,15 +294,15 @@ pub struct Components {
 impl Default for Components {
     fn default() -> Self {
         Self {
-            bar: "hyperion".into(),
-            launcher: "eclipse-launcher".into(),
-            notifications: "eclipse-toasts".into(),
-            control_center: "eclipse-center".into(),
+            bar: "ec-hyperion-bar".into(),
+            launcher: "ec-launcher".into(),
+            notifications: "ec-toasts".into(),
+            control_center: "ec-center".into(),
         }
     }
 }
 
-/// `wallpaper { ... }`. Read over the socket by the `eclipse-wallpaper`
+/// `wallpaper { ... }`. Read over the socket by the `ec-wallpaper`
 /// daemon; abyss draws nothing from it. `path` is not checked for existence:
 /// a missing file is the daemon's to fall back from.
 #[derive(Debug, Clone)]
@@ -345,13 +345,13 @@ enum WallpaperKey {
     Color([f32; 4]),
 }
 
-/// `setup { ... }` (D-07 §4, COMP-17 §2.1). Written by `eclipse-setup` through
+/// `setup { ... }` (D-07 §4, COMP-17 §2.1). Written by `ec-setup` through
 /// COMP-13 §1.4 and read by nothing at runtime: a record, not a layer.
 #[derive(Debug, Clone)]
 pub struct Setup {
     /// `profile`: one of [`schema::SETUP_PROFILES`]. Reference only.
     pub profile: String,
-    /// `complete`: setup has applied. `eclipse-ctl setup reset` clears it.
+    /// `complete`: setup has applied. `ec-ctl setup reset` clears it.
     pub complete: bool,
     /// `pending-preset`: the Agentic policy preset was chosen and awaits
     /// loading on the installed system (D-07 §4.5).
@@ -444,7 +444,7 @@ pub struct Bar {
     /// Where the bar's popups open: under the cell that was clicked, or at
     /// the pointer.
     pub popup_anchor: BarPopupAnchor,
-    /// Which launcher the eclipse button and `eclipse-launcher` open: the
+    /// Which launcher the eclipse button and `ec-launcher` open: the
     /// centred sheet, or the bar's own start menu (`bar.open-launcher`).
     pub launcher_style: BarLauncherStyle,
     /// `eye`: whether the taskbar draws its status eye on the eclipse mark.
@@ -631,7 +631,7 @@ impl Default for BarMotion {
 
 /// `bar { widget "<name>" { … } }` (ADR 0065). Stored and handed out through
 /// `get_config`; the compositor never runs these. The taskbar's
-/// `eclipse-services::custom` runner does, as the human.
+/// `ec-services::custom` runner does, as the human.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomWidget {
     pub name: String,
@@ -694,7 +694,7 @@ impl Default for Bar {
 /// `rounding` is drawn as a fragment-shader mask.
 #[derive(Debug, Clone)]
 pub struct Decoration {
-    /// Corner radius in logical pixels; 0 disables. Matches eclipse-ui's
+    /// Corner radius in logical pixels; 0 disables. Matches ec-ui's
     /// `tokens::radius::CARD` (13px) so the compositor-drawn blur backdrop
     /// lines up with the client-drawn glass content on top of it.
     pub rounding: i32,
@@ -779,7 +779,7 @@ impl BlurMode {
 
 /// `blur { mode "blur"; size 8; passes 4; glass { … }; frost { … } }`.
 /// Dual-Kawase (COMP-02 §9). The legacy `enabled #true|#false` still parses
-/// (as `mode "blur"` / `mode "off"`); `eclipse-ctl config migrate` rewrites it.
+/// (as `mode "blur"` / `mode "off"`); `ec-ctl config migrate` rewrites it.
 #[derive(Debug, Clone)]
 pub struct Blur {
     pub mode: BlurMode,
@@ -1355,7 +1355,7 @@ fn summary(errors: &[ConfigError], startup: bool, leads_from: &[ConfigError]) ->
     };
     if n > shown {
         s.push_str(&format!(
-            " (and {} more; `eclipse-ctl config validate` lists them)",
+            " (and {} more; `ec-ctl config validate` lists them)",
             n - shown
         ));
     }
@@ -1762,7 +1762,7 @@ pub fn default_binds() -> Vec<Bind> {
         Bind {
             mods: sup,
             key: Keysym::e,
-            action: Action::Spawn("eclipse-launcher".into()),
+            action: Action::Spawn("ec-launcher".into()),
         },
         // The desktop's own surfaces. Hyprland reaches these through
         // `qs -c eclipse ipc call ui toggle ...`; ours are separate binaries,
@@ -1771,12 +1771,12 @@ pub fn default_binds() -> Vec<Bind> {
         Bind {
             mods: sup,
             key: Keysym::r,
-            action: Action::Spawn("eclipse-launcher".into()),
+            action: Action::Spawn("ec-launcher".into()),
         },
         Bind {
             mods: sup,
             key: Keysym::n,
-            action: Action::Spawn("eclipse-center".into()),
+            action: Action::Spawn("ec-center".into()),
         },
         // Windows.
         Bind {
@@ -2698,7 +2698,7 @@ impl Config {
                 tracing::warn!(
                     id = id.as_str(),
                     "deprecated: built-in applet id in bar.tray; list it in bar.widgets.order \
-                     instead (eclipse-ctl config migrate does this)"
+                     instead (ec-ctl config migrate does this)"
                 );
             }
         }
@@ -3455,7 +3455,7 @@ impl Config {
         for n in children.nodes() {
             match n.name().value() {
                 // Legacy (before `mode`): kept so an old file still loads;
-                // `eclipse-ctl config migrate` rewrites it.
+                // `ec-ctl config migrate` rewrites it.
                 "enabled" if has_mode => {}
                 "enabled" => {
                     self.decoration.blur.mode = if arg(n).and_then(KdlValue::as_bool).unwrap_or(true) {
@@ -3871,7 +3871,13 @@ impl Config {
                     continue;
                 }
             };
-            match arg(n).and_then(KdlValue::as_string) {
+            let value = arg(n).and_then(KdlValue::as_string).map(|v| {
+                schema::LEGACY_COMPONENT_IDS
+                    .iter()
+                    .find_map(|&(old, new)| (old == v).then_some(new))
+                    .unwrap_or(v)
+            });
+            match value {
                 Some(v) if catalog.contains(&v) => *slot = v.to_owned(),
                 other => {
                     let msg = format!(
@@ -4616,7 +4622,7 @@ pub(crate) mod tests {
                 d.components.notifications.as_str(),
                 d.components.control_center.as_str()
             ),
-            ("hyperion", "eclipse-launcher", "eclipse-toasts", "eclipse-center")
+            ("ec-hyperion-bar", "ec-launcher", "ec-toasts", "ec-center")
         );
         for (m, want) in [("wm", Mode::Wm), ("hybrid", Mode::Hybrid), ("de", Mode::De)] {
             let doc: KdlDocument = format!("mode \"{m}\"\n").parse().unwrap();
@@ -4640,7 +4646,24 @@ pub(crate) mod tests {
             Some(schema::Value::Str("waybar".into()))
         );
 
-        let text = "mode \"tiling\"\ncomponents {\n    bar \"polybar\"\n    launcher \"eclipse-toasts\"\n    control-center \"mako\"\n    notifications 3\n    dock \"x\"\n}\n";
+        // Pre-`ec-` ids load as their new names (ADR 0069).
+        let doc: KdlDocument = "components {\n    bar \"hyperion\"\n    launcher \"eclipse-launcher\"\n    notifications \"eclipse-toasts\"\n    control-center \"eclipse-center\"\n}\n"
+            .parse()
+            .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(
+            (
+                cfg.components.bar.as_str(),
+                cfg.components.launcher.as_str(),
+                cfg.components.notifications.as_str(),
+                cfg.components.control_center.as_str()
+            ),
+            ("ec-hyperion-bar", "ec-launcher", "ec-toasts", "ec-center")
+        );
+
+        let text = "mode \"tiling\"\ncomponents {\n    bar \"polybar\"\n    launcher \"ec-toasts\"\n    control-center \"mako\"\n    notifications 3\n    dock \"x\"\n}\n";
         let doc: KdlDocument = text.parse().unwrap();
         let mut cfg = Config {
             cur: Some((abyss_src("/etc/eclipse/abyss.kdl"), text.to_owned())),
@@ -4658,7 +4681,7 @@ pub(crate) mod tests {
         assert!(cfg.errors[3].message.contains("components.control-center"));
         assert!(cfg.errors[4].message.contains("components.notifications"));
         assert_eq!(cfg.mode, Mode::Hybrid, "a refused value must not land");
-        assert_eq!(cfg.components.bar, "hyperion");
+        assert_eq!(cfg.components.bar, "ec-hyperion-bar");
 
         // abyss.kdl only.
         let text = "mode \"wm\"\n";
@@ -4892,9 +4915,9 @@ pub(crate) mod tests {
                 ours.push(name.split_whitespace().next().unwrap_or_default());
             }
         }
-        assert!(ours.contains(&"eclipse-launcher"), "PKGBUILD parse: {ours:?}");
+        assert!(ours.contains(&"ec-launcher"), "PKGBUILD parse: {ours:?}");
         assert!(
-            !ours.contains(&"hyperion"),
+            !ours.contains(&"ec-hyperion-bar"),
             "hyperion is an add-on, not the closure"
         );
         // Third-party binaries: (argv0, providing package). `base` is the
@@ -6820,7 +6843,7 @@ mod startup_tests {
                 s.starts_with(&format!("abyss.kdl: auto-lock is OFF \u{2014} line {line}: ")),
                 "{s}"
             );
-            assert!(s.ends_with("(and 1 more; `eclipse-ctl config validate` lists them)"), "{s}");
+            assert!(s.ends_with("(and 1 more; `ec-ctl config validate` lists them)"), "{s}");
             assert!(lock_bind_intact(&cfg), "Super+Shift+L must stay bound");
         }
         // DPMS is not a protection; its default (never) is safe and says so
@@ -6914,7 +6937,7 @@ mod startup_tests {
         );
         assert!(s.contains("; Xwayland is OFF \u{2014} line 5: "), "{s}");
         assert!(
-            s.ends_with("(and 1 more; `eclipse-ctl config validate` lists them)"),
+            s.ends_with("(and 1 more; `ec-ctl config validate` lists them)"),
             "{s}"
         );
         // A failed hot reload changes nothing live, so it claims nothing.
@@ -6974,7 +6997,7 @@ mod startup_tests {
             s.starts_with("abyss.kdl: 2 problems ignored \u{2014} line 2: "),
             "{s}"
         );
-        assert!(s.contains("and 1 more; `eclipse-ctl config validate`"), "{s}");
+        assert!(s.contains("and 1 more; `ec-ctl config validate`"), "{s}");
         let r = error_event(&cfg.errors, false)["summary"]
             .as_str()
             .unwrap_or_default()

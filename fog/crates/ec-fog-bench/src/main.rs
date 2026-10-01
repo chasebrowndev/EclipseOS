@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! fog-bench: cold/warm listing latency against the budgets in
+//! ec-fog-bench: cold/warm listing latency against the budgets in
 //! FOG §Performance model; M0's exit criterion (FOG §Milestones).
 //!
-//! fogd runs in-process on a tokio runtime and is measured over its real
-//! Unix socket with `fog_proto` framing, from sending `ListDir` to the
+//! ec-fogd runs in-process on a tokio runtime and is measured over its real
+//! Unix socket with `ec_fog_proto` framing, from sending `ListDir` to the
 //! decoded reply.
 //!
 //! "Cold" means a cold daemon cache, not a cold page cache: dropping the
 //! page cache needs root, which Fog never has.
 //!
-//! `fog-bench frames` measures scrolling frame times of fog-ui itself; see
+//! `ec-fog-bench frames` measures scrolling frame times of ec-fog-ui itself; see
 //! [`frames`].
 
 use std::fs;
@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, ensure, Context, Result};
-use fog_daemon::{bind, serve, Cache, Daemon, LocalBackend};
-use fog_proto::{apply_diff, read_frame, write_frame, Reply, Request};
+use ec_fog_daemon::{bind, serve, Cache, Daemon, LocalBackend};
+use ec_fog_proto::{apply_diff, read_frame, write_frame, Reply, Request};
 use tokio::net::UnixStream;
 
 mod frames;
@@ -33,7 +33,7 @@ const FRAME: Duration = Duration::from_micros(16_700);
 const MS50: Duration = Duration::from_millis(50);
 const S1: Duration = Duration::from_secs(1);
 
-const USAGE: &str = "usage: fog-bench [-n ITERATIONS] [--json] | fog-bench frames [-h]";
+const USAGE: &str = "usage: ec-fog-bench [-n ITERATIONS] [--json] | ec-fog-bench frames [-h]";
 
 #[derive(Clone, Copy, PartialEq)]
 enum Metric {
@@ -135,7 +135,7 @@ fn main() -> Result<()> {
 async fn run(iters: usize) -> Result<Vec<Case>> {
     // Under /tmp so the socket path fits in sun_path (108 bytes).
     let root = tempfile::Builder::new()
-        .prefix("fog-bench.")
+        .prefix("ec-fog-bench.")
         .tempdir_in("/tmp")?;
     let sock = root.path().join("fogd.sock");
     let daemon = Arc::new(Daemon::new(Box::new(LocalBackend), Cache::default()));
@@ -219,10 +219,10 @@ async fn wait_cached(daemon: &Daemon, raw: &[u8]) {
 async fn recv(conn: &mut UnixStream) -> Result<Reply> {
     loop {
         match read_frame(conn).await? {
-            Some(Reply::Error { errno, .. }) => bail!("fogd error: errno {errno}"),
+            Some(Reply::Error { errno, .. }) => bail!("ec-fogd error: errno {errno}"),
             Some(Reply::Sorted { .. }) => {}
             Some(r) => return Ok(r),
-            None => bail!("fogd closed the connection"),
+            None => bail!("ec-fogd closed the connection"),
         }
     }
 }
@@ -308,8 +308,8 @@ fn ms(d: Duration) -> f64 {
 }
 
 fn print_table(cases: &[Case], iters: usize) {
-    println!("fog-bench: ListDir over fogd.sock, {iters} iterations, pass/fail on medians");
-    println!("cold = cold fogd cache, warm page cache (dropping caches needs root)");
+    println!("ec-fog-bench: ListDir over fogd.sock, {iters} iterations, pass/fail on medians");
+    println!("cold = cold ec-fogd cache, warm page cache (dropping caches needs root)");
     println!(
         "{:>7}  {:<13} {:>9} {:>9} {:>9}  result",
         "entries", "metric", "median", "p95", "budget"
@@ -332,7 +332,7 @@ fn print_table(cases: &[Case], iters: usize) {
             budget,
         );
     }
-    println!("times in ms; scrolling frame times: fog-bench frames");
+    println!("times in ms; scrolling frame times: ec-fog-bench frames");
 }
 
 fn print_json(cases: &[Case], iters: usize) {

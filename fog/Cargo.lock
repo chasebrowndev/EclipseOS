@@ -533,6 +533,72 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
+name = "ec-fog-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ec-fog-daemon",
+ "ec-fog-proto",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "ec-fog-config"
+version = "0.1.0"
+dependencies = [
+ "kdl",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "ec-fog-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ec-fog-config",
+ "ec-fog-proto",
+ "libc",
+ "postcard",
+ "rustix 1.1.5",
+ "serde",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "ec-fog-proto"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "ec-fog-ui"
+version = "0.1.0"
+dependencies = [
+ "ec-fog-config",
+ "ec-fog-proto",
+ "ec-fog-widgets",
+ "iced",
+ "jiff",
+ "tokio",
+]
+
+[[package]]
+name = "ec-fog-widgets"
+version = "0.1.0"
+dependencies = [
+ "iced",
+ "iced_wgpu",
+]
+
+[[package]]
 name = "embedded-io"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -596,72 +662,6 @@ name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aedcfb3409746eddb02b9e19ebda1c3394f759a152e48ee875a0844d1b955484"
-
-[[package]]
-name = "fog-bench"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "fog-daemon",
- "fog-proto",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "fog-config"
-version = "0.1.0"
-dependencies = [
- "kdl",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "fog-daemon"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "fog-config",
- "fog-proto",
- "libc",
- "postcard",
- "rustix 1.1.5",
- "serde",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "fog-proto"
-version = "0.1.0"
-dependencies = [
- "postcard",
- "serde",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
-name = "fog-ui"
-version = "0.1.0"
-dependencies = [
- "fog-config",
- "fog-proto",
- "fog-widgets",
- "iced",
- "jiff",
- "tokio",
-]
-
-[[package]]
-name = "fog-widgets"
-version = "0.1.0"
-dependencies = [
- "iced",
- "iced_wgpu",
-]
 
 [[package]]
 name = "foldhash"

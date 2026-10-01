@@ -31,17 +31,17 @@ Read this section first. The rest of the spec is the reference.
 ```
 fog/
   crates/
-    fog-proto/      # IPC message types, versioned; no I/O
-    fog-daemon/     # fogd binary: backends, cache, watch, jobs, journal, thumbnails
-    fog-ui/         # iced app: windows, views, input, animation
-    fog-widgets/    # virtual list, glass shader, reusable widgets
+    ec-fog-proto/      # IPC message types, versioned; no I/O
+    ec-fog-daemon/     # ec-fogd binary: backends, cache, watch, jobs, journal, thumbnails
+    ec-fog-ui/         # iced app: windows, views, input, animation
+    ec-fog-widgets/    # virtual list, glass shader, reusable widgets
     fog-cli/        # `fog` binary
     fog-portal/     # xdg-desktop-portal FileChooser backend
     fog-pub/        # eclipse_semantic_v1 publisher
     fog-elevate/    # polkit-spawned root helper (minimal, audited)
     fog-activity/   # agent views; always built, inert until the activity-lens hook is on
     fog-activityd/  # the fog-activity add-on: agentd subscription, replay log, fog.* MCP bridge
-    fog-bench/      # latency and frame-time benchmarks
+    ec-fog-bench/      # latency and frame-time benchmarks
   config/fog.default.kdl
 ```
 
@@ -49,59 +49,59 @@ fog/
 
 **Invariants (never violate)**
 
-- `fogd` never runs with privileges. Only `fog-elevate` runs as root, and only for the lifetime of one elevated tab.
-- The UI thread never does filesystem I/O or sorting. All of it happens in `fogd`.
+- `ec-fogd` never runs with privileges. Only `fog-elevate` runs as root, and only for the lifetime of one elevated tab.
+- The UI thread never does filesystem I/O or sorting. All of it happens in `ec-fogd`.
 - Every mutation goes through the job queue and the undo journal. No direct writes from the UI, CLI or portal.
 - Renames use `RENAME_NOREPLACE`. No code path may silently overwrite a file.
 - Unknown config keys are errors, and the last valid config stays active.
-- `fog`, `fogd` and `fog-ui` contain no `agentd` client code. Only `fog-activityd` talks to `agentd`.
+- `fog`, `ec-fogd` and `ec-fog-ui` contain no `agentd` client code. Only `fog-activityd` talks to `agentd`.
 - Agents never reach `fogd.sock`. Agent calls arrive only via `agentd`.
 
 **Start here: M0**
 
-1. `fog-proto`: `ListDir`, `DirSnapshot`, `DirDiff`, `Stat` messages, length-prefixed framing, version header.
-2. `fog-daemon`: `LocalBackend::list` using `getdents64` (phase 1 only), LRU cache, socket server.
-3. `fog-ui`: one window, a virtualized list rendering `DirSnapshot` and applying `DirDiff`.
-4. `fog-bench`: cold/warm listing for 1k and 10k entries against the budgets in Performance model.
+1. `ec-fog-proto`: `ListDir`, `DirSnapshot`, `DirDiff`, `Stat` messages, length-prefixed framing, version header.
+2. `ec-fog-daemon`: `LocalBackend::list` using `getdents64` (phase 1 only), LRU cache, socket server.
+3. `ec-fog-ui`: one window, a virtualized list rendering `DirSnapshot` and applying `DirDiff`.
+4. `ec-fog-bench`: cold/warm listing for 1k and 10k entries against the budgets in Performance model.
 
-M0 is done when `fog-bench` meets the 1k/10k budgets. Then follow the milestone table in order.
+M0 is done when `ec-fog-bench` meets the 1k/10k budgets. Then follow the milestone table in order.
 
 ## Architecture
 
-One long-lived daemon, `fogd`, owns all state and I/O. Every other component is a thin client over a Unix socket.
+One long-lived daemon, `ec-fogd`, owns all state and I/O. Every other component is a thin client over a Unix socket.
 
 ```mermaid
 flowchart LR
-  UI[fog-ui<br/>iced windows] --> D
+  UI[ec-fog-ui<br/>iced windows] --> D
   CLI[fog CLI<br/>user + scripts] --> D
   P[fog-portal<br/>FileChooser backend] --> D
   AG[agentd] --> FA[fog-activityd<br/>MCP bridge + activity] --> D
-  D[fogd] --> FS[Local FS<br/>getdents64 / statx / io_uring]
+  D[ec-fogd] --> FS[Local FS<br/>getdents64 / statx / io_uring]
   D --> G[GIO/GVfs<br/>smb, sftp, mtp]
   D --> W[inotify]
   D --> T[Thumbnailer pool]
   UI --> PUB[fog-pub<br/>eclipse_semantic_v1]
 ```
 
-Clients send requests and subscribe to change streams. After the first full listing, `fogd` pushes only diffs.
+Clients send requests and subscribe to change streams. After the first full listing, `ec-fogd` pushes only diffs.
 
 | Component | Crate | Responsibility |
 | --- | --- | --- |
-| `fogd` | `fog-daemon` | Directory cache, watching, operation queue, undo journal, thumbnails, mounts, trash |
-| `fog-ui` | `fog-ui` | iced frontend: windows, views, input, animation. Holds no authoritative state |
+| `ec-fogd` | `ec-fog-daemon` | Directory cache, watching, operation queue, undo journal, thumbnails, mounts, trash |
+| `ec-fog-ui` | `ec-fog-ui` | iced frontend: windows, views, input, animation. Holds no authoritative state |
 | `fog` | `fog-cli` | Command-line client for the user and user scripts. Not reachable from agent sandboxes |
-| `fog-portal` | `fog-portal` | `org.freedesktop.impl.portal.FileChooser` backend. Opens picker windows via `fog-ui` |
-| Protocol | `fog-proto` | Shared, versioned message types. serde over length-prefixed frames |
+| `fog-portal` | `fog-portal` | `org.freedesktop.impl.portal.FileChooser` backend. Opens picker windows via `ec-fog-ui` |
+| Protocol | `ec-fog-proto` | Shared, versioned message types. serde over length-prefixed frames |
 | Publisher | `fog-pub` | Describes Fog's windows (current folder, selection, view) over `eclipse_semantic_v1` (COMP-09) |
 
-Agents never talk to `fogd` directly. `agentd` passes their MCP calls, and streams file-activity events, to `fog-activityd`, which relays calls to `fogd` (see Agent and scripting interface, and Agent activity).
+Agents never talk to `ec-fogd` directly. `agentd` passes their MCP calls, and streams file-activity events, to `fog-activityd`, which relays calls to `ec-fogd` (see Agent and scripting interface, and Agent activity).
 
 **IPC**
 
 - Socket: `$XDG_RUNTIME_DIR/fog/fogd.sock`, mode 0600. Callers are verified with `SO_PEERCRED`.
 - Encoding: length-prefixed frames. Binary (postcard or bincode) for UI traffic, JSON for the CLI.
-- Every message carries a protocol version. `fogd` rejects unknown major versions.
-- Lifecycle: `fogd` starts as a socket-activated systemd user service at session start. The UI process can be kept warm and pre-spawned so windows open within one frame.
+- Every message carries a protocol version. `ec-fogd` rejects unknown major versions.
+- Lifecycle: `ec-fogd` starts as a socket-activated systemd user service at session start. The UI process can be kept warm and pre-spawned so windows open within one frame.
 
 ## Filesystem backend
 
@@ -120,7 +120,7 @@ All access goes through a `Backend` trait (`list`, `stat`, `read_range`, `copy`,
 
 **GioBackend**
 
-- Runs GLib's main loop on a dedicated thread inside `fogd`. Requests cross via channels, so tokio never blocks on GLib.
+- Runs GLib's main loop on a dedicated thread inside `ec-fogd`. Requests cross via channels, so tokio never blocks on GLib.
 - Covers SMB, sftp, WebDAV, MTP, and anything else GVfs mounts.
 - Optional at build time (`--features gio`). Without it, remote URIs are unavailable and local access works unchanged.
 
@@ -134,7 +134,7 @@ Removable drives are handled via udisks2 over D-Bus (`zbus`): list, mount, unmou
 
 ## File operations
 
-Every change to files is a job in `fogd`'s queue with an entry in the undo journal, whether it comes from the UI, the CLI, the picker or an agent.
+Every change to files is a job in `ec-fogd`'s queue with an entry in the undo journal, whether it comes from the UI, the CLI, the picker or an agent.
 
 ```mermaid
 stateDiagram-v2
@@ -177,7 +177,7 @@ Copy everything, `fsync` the destination, verify sizes, then remove the sources.
 
 Anything the user's own credentials can't read or write requires authentication, every time, for every caller: UI, CLI, picker or agent.
 
-- `fogd` runs as the user and never holds privileges. A directory that returns `EACCES` shows a locked state with an Authenticate action, not an error.
+- `ec-fogd` runs as the user and never holds privileges. A directory that returns `EACCES` shows a locked state with an Authenticate action, not an error.
 - Authentication goes through polkit (`os.eclipse.fog.elevate`, `auth_admin`, never `auth_admin_keep`).
 - A successful prompt opens one **elevated tab**. It ends when the tab closes or after 5 minutes idle. Every destructive operation inside it (move, trash, delete, replace, permission change) prompts again.
 - Elevated work runs in `fog-elevate`, a short-lived root helper started via polkit. It exposes only list, stat, read, copy, move, trash, delete and chmod/chown, over a pipe to that one tab, and exits with it.
@@ -188,7 +188,7 @@ Anything the user's own credentials can't read or write requires authentication,
 
 **No resident privilege**
 
-No Fog process holds privileges long-term. `fog-elevate` exists only while an elevated tab is open. Directory watching runs unprivileged in `fogd` (see Performance model), so it only ever sees what the user can see.
+No Fog process holds privileges long-term. `fog-elevate` exists only while an elevated tab is open. Directory watching runs unprivileged in `ec-fogd` (see Performance model), so it only ever sees what the user can see.
 
 ## Performance model
 
@@ -208,16 +208,16 @@ Fog never blocks a frame and always has something to draw: cached state first, t
 **Techniques**
 
 1. **Two-phase listing.** Phase 1: names and `d_type` from `getdents64`, enough to draw icons and sort by name. Phase 2: `statx` batched via io_uring for size and mtime, visible rows first, the rest in the background.
-2. **Cached listings, revalidated in the background.** `fogd` keeps an LRU of listings (default 256 dirs / 64 MiB). A cached folder paints immediately, then the watcher or a rescan sends diffs.
+2. **Cached listings, revalidated in the background.** `ec-fogd` keeps an LRU of listings (default 256 dirs / 64 MiB). A cached folder paints immediately, then the watcher or a rescan sends diffs.
 3. **Watching.** `inotify` on every open and cached directory, well within `max_user_watches` for a 256-directory cache. Opening a cached directory also re-checks its mtime with one `statx`, which catches changes missed while it was unwatched or after a watch-limit overflow. No privileged watcher.
-4. **Prefetch.** When the pointer rests on a directory for 120 ms or more, or it gets keyboard focus, `fogd` starts phase 1 for it. It also prefetches the parent and the previously visited sibling.
+4. **Prefetch.** When the pointer rests on a directory for 120 ms or more, or it gets keyboard focus, `ec-fogd` starts phase 1 for it. It also prefetches the parent and the previously visited sibling.
 5. **Thumbnails.** A worker pool sized to CPU cores minus one, prioritized visible, then near-visible, then the rest. Uses the freedesktop thumbnail cache (`~/.cache/thumbnails`), so thumbnails are shared with other apps. Native decoders for images, external thumbnailers for video and PDF.
-6. **Virtualized views.** Only visible rows or tiles (plus one screen of overscan) exist as widgets. If the pinned iced version has no suitable virtual list, Fog ships its own in `fog-widgets`.
-7. **Sorting.** Natural sort (`file2` before `file10`), computed in `fogd` off the UI thread. Results arrive as index permutations.
+6. **Virtualized views.** Only visible rows or tiles (plus one screen of overscan) exist as widgets. If the pinned iced version has no suitable virtual list, Fog ships its own in `ec-fog-widgets`.
+7. **Sorting.** Natural sort (`file2` before `file10`), computed in `ec-fogd` off the UI thread. Results arrive as index permutations.
 8. **Motion hides latency.** Transitions (spring-based, 120–200 ms) start on input, not when the data arrives.
-9. **Quick Look.** Space previews the selection. `fogd` renders previews (images, text with syntax highlighting, first page of a PDF, poster frame for audio and video) and caches them.
+9. **Quick Look.** Space previews the selection. `ec-fogd` renders previews (images, text with syntax highlighting, first page of a PDF, poster frame for audio and video) and caches them.
 
-**Benchmarks in CI**: a `fog-bench` suite measures cold and warm listing of 1k, 10k and 100k-entry directories, and frame times while scrolling. A regression over 10% fails the build.
+**Benchmarks in CI**: a `ec-fog-bench` suite measures cold and warm listing of 1k, 10k and 100k-entry directories, and frame times while scrolling. A regression over 10% fails the build.
 
 ## UI and navigation
 
@@ -281,11 +281,11 @@ Glass comes from two sources: the compositor blurs what is behind the window (ex
 - Parent window: `xdg-foreign` makes the picker a transient of the calling app's window.
 - The picker opens from the daemon's cache, so it is as fast as the main window.
 - Returns `file://` URIs. For sandboxed apps, the portal frontend handles document-portal exports.
-- Fallback: if `fogd` is unreachable, `fog-portal` exits with an error so xdg-desktop-portal falls back to the next configured backend (GTK).
+- Fallback: if `ec-fogd` is unreachable, `fog-portal` exits with an error so xdg-desktop-portal falls back to the next configured backend (GTK).
 
 ## Agent and scripting interface
 
-Agents are bwrap-sandboxed and reach the OS only through MCP on their per-agent `agentd` socket. Fog's agent interface is therefore a set of MCP tools that `agentd` passes to `fog-activityd`, which relays them to `fogd`. Without the fog-activity add-on, agents have no Fog tools. The `fog` CLI is for the user and user scripts.
+Agents are bwrap-sandboxed and reach the OS only through MCP on their per-agent `agentd` socket. Fog's agent interface is therefore a set of MCP tools that `agentd` passes to `fog-activityd`, which relays them to `ec-fogd`. Without the fog-activity add-on, agents have no Fog tools. The `fog` CLI is for the user and user scripts.
 
 **MCP tools (via `agentd`)**
 
@@ -295,11 +295,11 @@ Agents are bwrap-sandboxed and reach the OS only through MCP on their per-agent 
 | `fog.open` / `fog.reveal` | Navigate a window / select a file in its folder |
 | `fog.select` | Set the selection |
 | `fog.pick` | Ask the user to choose. Returns the chosen paths (within the agent's grants) |
-| `fog.copy` / `fog.move` / `fog.trash` / `fog.rename` | Queue jobs through `fogd` (undoable, visible in the tray) |
+| `fog.copy` / `fog.move` / `fog.trash` / `fog.rename` | Queue jobs through `ec-fogd` (undoable, visible in the tray) |
 | `fog.undo` / `fog.jobs` | Undo; list or cancel the agent's own jobs |
 
 - Identity is the caller's cgroup principal (`agent-<id>.slice`), stamped by `agentd`. Agents cannot claim an identity. Jobs record the principal and `task_id` (ADR 0048).
-- `agentd` checks every path against the agent's `fs.read` / `fs.write` grants before it reaches `fogd`.
+- `agentd` checks every path against the agent's `fs.read` / `fs.write` grants before it reaches `ec-fogd`.
 - No permanent delete tool is exposed to agents.
 
 **`fog` CLI (user only)**
@@ -327,7 +327,7 @@ At a glance, Fog shows which files agents are working on right now and where the
 
 - One kind of add-on (ADR 0066). The `fog-activity` package ships `fog-activityd` (the `agentd` activity subscription, the replay log and the `fog.*` MCP bridge), its user unit, and a manifest `/usr/share/eclipse/addons/fog-activity.kdl` naming the `activity-lens` hook.
 - Fog always carries the lens views (`fog-activity` crate) because Wayland has no way for one app to draw inside another's window. They are a hook: with no installed manifest naming `activity-lens`, Fog shows no pill bar at all, not an empty one, and opens no connection to `fog-activityd`.
-- With the hook on, `fog-ui` reads events and replay logs from `fog-activityd` over its socket. Installing or removing the package turns the lens on or off live; config and state carry over.
+- With the hook on, `ec-fog-ui` reads events and replay logs from `fog-activityd` over its socket. Installing or removing the package turns the lens on or off live; config and state carry over.
 - Why not a runtime plugin: Rust has no stable ABI for dynamic loading (ADR 0041).
 
 **Lens pills**
@@ -369,7 +369,7 @@ At a glance, Fog shows which files agents are working on right now and where the
 
 ## Configuration
 
-One KDL file, `$XDG_CONFIG_HOME/eclipse/fog.kdl`, hot-reloaded by `fogd`. Every option is listed with its default in the shipped `fog.default.kdl`.
+One KDL file, `$XDG_CONFIG_HOME/eclipse/fog.kdl`, hot-reloaded by `ec-fogd`. Every option is listed with its default in the shipped `fog.default.kdl`.
 
 - Parsed with the `kdl` crate into typed structs. Unknown keys are errors reported with line and column, and the previous valid config stays active.
 - `fog config check` validates. `fog config defaults` prints the full default file.
@@ -437,7 +437,7 @@ Build the daemon and the fast path first. The glass and the picker come after th
 
 | Milestone | Scope | Exit criteria |
 | --- | --- | --- |
-| M0 — Skeleton | `fog-proto`, `fogd` with LocalBackend listing + cache, minimal iced list view | Budgets met for 1k/10k dirs in `fog-bench` |
+| M0 — Skeleton | `ec-fog-proto`, `ec-fogd` with LocalBackend listing + cache, minimal iced list view | Budgets met for 1k/10k dirs in `ec-fog-bench` |
 | M1 — Daily driver | Job queue, conflicts, trash, undo journal, watching, keyboard model, config | Used as the only file manager for 2 weeks without data loss |
 | M2 — Glass | Floating glass layers, theming from the EclipseOS theme, thumbnails, Quick Look | Contrast floor passes; scrolling holds 60 fps with blur on |
 | M3 — Picker | `fog-portal`, reduced picker mode, xdg-foreign parenting | Firefox, a GTK4 app, a Qt6 app and a Flatpak all open and save through Fog |
@@ -447,8 +447,8 @@ Build the daemon and the fast path first. The glass and the picker come after th
 
 **Open questions**
 
-- [ ] Does the iced version in use have a virtual list that handles 100k rows, or does `fog-widgets` need its own?
+- [ ] Does the iced version in use have a virtual list that handles 100k rows, or does `ec-fog-widgets` need its own?
 - [ ] Split pane: in v1 or deferred? Radiant can already tile two Fog windows side by side.
-- [ ] Should `fog-ui` stay resident (hidden) for instant opens, and what does that cost in memory?
+- [ ] Should `ec-fog-ui` stay resident (hidden) for instant opens, and what does that cost in memory?
 - [ ] ADR 0063: check whether the kernel reports create/delete/rename on fanotify mount marks, and confirm `agentd` holds `CAP_SYS_ADMIN`.
 - [ ] The agent colour (VOL1 L4573) must be decided before M6 visuals ship.

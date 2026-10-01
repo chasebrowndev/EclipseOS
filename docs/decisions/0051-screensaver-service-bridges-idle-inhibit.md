@@ -21,7 +21,7 @@ the display went dark mid-film.
 3. **A userland service owns the name and tells abyss over the control socket.**
 
 ## Decision
-Option 3. `eclipse-screensaver` (crate `eclipse-services`, module `screensaver`)
+Option 3. `ec-screensaver` (crate `ec-services`, module `screensaver`)
 owns `org.freedesktop.ScreenSaver` on `/org/freedesktop/ScreenSaver` and
 `/ScreenSaver`. It keeps one cookie per `Inhibit`, drops a client's cookies when
 that client leaves the bus, and calls the new control-socket method
@@ -38,7 +38,7 @@ off together.
   display on, and stops doing so when it pauses, stops or dies.
 - The compositor gains one method and no dependency. Nothing here can do more
   to abyss than keep the screen on, which a Wayland client already can.
-- A crashed `eclipse-screensaver` releases every hold with its connection: the
+- A crashed `ec-screensaver` releases every hold with its connection: the
   display then times out normally rather than staying on forever.
 - Only the connection that took a cookie can release it.
 - If another daemon already owns the name, this one exits non-zero and does not

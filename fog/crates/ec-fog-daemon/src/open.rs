@@ -553,9 +553,9 @@ fn which(name: &str) -> Option<PathBuf> {
         .find(|p| fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
 
-/// Launch `argv` outside fogd's service cgroup: in a transient user scope
+/// Launch `argv` outside ec-fogd's service cgroup: in a transient user scope
 /// when a systemd user manager is running, else in a new session. stdio is
-/// /dev/null and no fogd descriptor survives exec. The child is reaped on a
+/// /dev/null and no ec-fogd descriptor survives exec. The child is reaped on a
 /// detached thread.
 fn spawn(mut argv: Vec<OsString>) -> io::Result<()> {
     let manager = std::env::var_os("XDG_RUNTIME_DIR")

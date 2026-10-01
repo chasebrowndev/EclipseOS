@@ -12,8 +12,8 @@
 pub mod link;
 pub mod scene;
 
-use policy_eval::scope::SCENE_READ;
-use policy_eval::{Grant, SceneView, VerifyError, VerifyingKey};
+use ec_policy_eval::scope::SCENE_READ;
+use ec_policy_eval::{Grant, SceneView, VerifyError, VerifyingKey};
 
 /// Why a grant was not admitted to an agent object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,7 +103,7 @@ impl Agent {
     /// The task this agent's grants were issued under. Every grant names
     /// one, and a principal has one live task at a time (A-04 §4), so the
     /// first grant's is the agent's.
-    pub fn task_id(&self) -> Option<policy_eval::Ulid> {
+    pub fn task_id(&self) -> Option<ec_policy_eval::Ulid> {
         self.grants.first().map(|g| g.task_id)
     }
 
@@ -169,9 +169,9 @@ fn verify(
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
-    use policy_eval::grant::{cose_sign1, protected_header, sig_structure};
-    use policy_eval::task::Ulid;
-    use policy_eval::{Capability, Constraints};
+    use ec_policy_eval::grant::{cose_sign1, protected_header, sig_structure};
+    use ec_policy_eval::task::Ulid;
+    use ec_policy_eval::{Capability, Constraints};
 
     fn sk() -> SigningKey {
         SigningKey::from_bytes(&[3u8; 32])

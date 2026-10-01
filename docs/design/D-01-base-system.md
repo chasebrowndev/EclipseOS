@@ -37,13 +37,13 @@ Four packages, split so the repo can move pieces independently (D-02, and
 
 | Package | Contents | License |
 |---|---|---|
-| `eclipseos-abyss` | `abyss`, `eclipse-ctl`, the session entry, `abyss-session`, the user units | AGPL-3.0-only |
-| `eclipseos-hyperion` | `hyperion` (the taskbar) and `hyperion.service` | AGPL-3.0-only |
-| `eclipseos-toasts` | `eclipse-toasts` and its user unit | AGPL-3.0-only |
-| `eclipseos-center` | `eclipse-center` and its `.desktop` file | AGPL-3.0-only |
-| `eclipseos-launcher` | `eclipse-launcher` | AGPL-3.0-only |
-| `eclipseos-desktop` | `eclipse-settings`, `eclipse-policy-viewer`, `eclipse-screensaver`, their `.desktop` files and user units | AGPL-3.0-only |
-| `eclipseos-agents` | The agent stack add-on (ADR 0069): `policyd`, its user unit and the `agents` manifest. Not in the floor; the Agentic profile installs it. Replaces `eclipseos-policyd` | AGPL-3.0-only |
+| `eclipseos-abyss` | `abyss`, `ec-ctl`, the session entry, `abyss-session`, the user units | AGPL-3.0-only |
+| `eclipseos-hyperion` | `hyperion` (the taskbar) and `ec-hyperion-bar.service` | AGPL-3.0-only |
+| `eclipseos-toasts` | `ec-toasts` and its user unit | AGPL-3.0-only |
+| `eclipseos-center` | `ec-center` and its `.desktop` file | AGPL-3.0-only |
+| `eclipseos-launcher` | `ec-launcher` | AGPL-3.0-only |
+| `eclipseos-desktop` | `ec-settings`, `ec-policy-viewer`, `ec-screensaver`, their `.desktop` files and user units | AGPL-3.0-only |
+| `eclipseos-agents` | The agent stack add-on (ADR 0069): `ec-policyd`, its user unit and the `agents` manifest. Not in the floor; the Agentic profile installs it. Replaces `eclipseos-policyd` | AGPL-3.0-only |
 | `eclipseos-meta` | Depends on every package above except the add-ons (`eclipseos-hyperion`, `eclipseos-agents`), plus §1.2; ships the pacman drop-in and `/etc/eclipse` defaults | AGPL-3.0-only |
 
 **One crate, one package per swappable component** (ADR 0052). The taskbar
@@ -51,11 +51,11 @@ Four packages, split so the repo can move pieces independently (D-02, and
 targets of one crate and shipped as one package; they are now separate crates
 and separate packages, so a user can install our toasts under another bar, or
 another bar under abyss. None of them depends on another; they share only
-`eclipse-ui` and `eclipse-services`.
+`ec-ui` and `ec-services`.
 
-`eclipse-ipc`, `eclipse-ui`, `eclipse-services` and `policy-eval` are libraries
+`ec-ipc`, `ec-ui`, `ec-services` and `ec-policy-eval` are libraries
 and ship inside their consumers; they are not separately packaged. `Oracle-Eyes`
-is **not** in the first image: it path-depends on `eclipse-ipc` in a sibling
+is **not** in the first image: it path-depends on `ec-ipc` in a sibling
 workspace, so it cannot be built from a single source tarball, and it targets
 Phase 2 trusted UI that does not exist. The hand-placed `oracle-eyes.service`
 on `mainframe` is a development artifact and must not be packaged (§3.3).
@@ -86,7 +86,7 @@ packaged path does not.
 ### 1.3 The Appendix B floor
 
 B-01/B-02 commit to a user reaching a working configuration without editing a
-file. That makes `eclipse-settings` part of the base set, not an option, and it
+file. That makes `ec-settings` part of the base set, not an option, and it
 makes a terminal part of the base set too. `cataclysm` (P-04) does not exist
 (defect 12), so the first image ships `foot` as the default terminal and
 `eclipseos-desktop` declares it an optional-but-installed dependency that
@@ -185,12 +185,12 @@ is built for, and NVIDIA is the one that needs revalidating against the ISO.
 
 ```
 greetd (system) ──► abyss-session (user login shell of the session)
-                      └─ abyss --backend drm --session
+                      └─ ec-abyss --backend drm --session
                            └─ session::import() → systemd user manager
                                 └─ graphical-session.target
                                      └─ abyss-session.target
-                                          ├─ hyperion.service
-                                          ├─ eclipse-toasts.service
+                                          ├─ ec-hyperion-bar.service
+                                          ├─ ec-toasts.service
                                           └─ (Phase 2: agentd, brokerd)
 ```
 
@@ -213,7 +213,7 @@ The line is the TCB boundary, not convenience.
 - **System units**: nothing today. `policyd` is the first candidate and is
   decided in §3.4.
 
-`hyperion.service` and `eclipse-toasts.service` are `WantedBy=abyss-session.target`
+`ec-hyperion-bar.service` and `ec-toasts.service` are `WantedBy=abyss-session.target`
 and enabled by the package via a `systemd-user.preset`, not by a post-install
 `systemctl --user enable` (which cannot run for a user who does not exist yet at
 install time).
@@ -235,13 +235,13 @@ have to multiplex users across one journal and one key, which is a larger
 security surface for no gain on a single-seat machine.
 
 ```
-# /usr/lib/systemd/user/policyd.service
+# /usr/lib/systemd/user/ec-policyd.service
 [Unit]
 Description=Eclipse policy daemon
 Before=abyss-session.target
 [Service]
 Type=notify
-ExecStart=/usr/bin/policyd
+ExecStart=/usr/bin/ec-policyd
 Restart=on-failure
 RestartSec=1
 ```
@@ -265,7 +265,7 @@ first `check()` pays a process start, and COMP-11's check is on a hot path with
 no allocation allowed. The daemon starts eagerly and stays up.
 
 `agentd` and `brokerd` (Phase 2) attach as user services `WantedBy=abyss-session.target`,
-`After=policyd.service`. They are named here only so the ordering is not
+`After=ec-policyd.service`. They are named here only so the ordering is not
 reinvented; their units are S-tier documents' business.
 
 ### 3.5 greetd
@@ -302,7 +302,7 @@ is labelled.
 | `/var/lib/eclipse/` | machine | reserved; nothing writes it today |
 
 The rule that follows: **the shipped configuration is read-only and lives under
-`/etc/eclipse`, and no component ever writes there.** `eclipse-settings` writes
+`/etc/eclipse`, and no component ever writes there.** `ec-settings` writes
 `~/.config/eclipse/abyss.kdl` and nothing else. An image swap replacing
 `/etc/eclipse` therefore loses nothing the user did.
 
@@ -458,7 +458,7 @@ first grant is a diff against a known file.
 ### 6.3 What is *not* shipped
 
 No default wallpaper, theme or font configuration in `/etc/eclipse`. Appearance
-is `eclipse-settings`' business and belongs to D-05, not here. D-01 shipping a
+is `ec-settings`' business and belongs to D-05, not here. D-01 shipping a
 theme would put a machine-owned concern in an image-owned path, which §4.1
 forbids.
 

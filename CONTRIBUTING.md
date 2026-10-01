@@ -63,7 +63,7 @@ docs: record focus-follows-mouse default as ADR 0019
 
 | Area | Review |
 |---|---|
-| `abyss` enforcement path, `policyd`, `policy-eval`, `sandbox` | Owner reads every line. No exceptions. These are the TCB. |
+| `abyss` enforcement path, `policyd`, `ec-policy-eval`, `sandbox` | Owner reads every line. No exceptions. These are the TCB. |
 | Everything else | Merge on green CI; owner reviews at leisure |
 
 ## Architecture decisions

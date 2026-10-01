@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Pieces the wizard needs that `eclipse_ui::widget::parts` does not have yet.
+//! Pieces the wizard needs that `ec_ui::widget::parts` does not have yet.
 //!
 //! Each of these is here rather than in the shared crate because this crate may
 //! only touch itself; each is a widget and not a styled container for the
 //! reason in its doc comment, and each is a candidate to move to
-//! `eclipse-ui/src/widget/parts.rs` as-is. Nothing here inlines a colour or a
+//! `ec-ui/src/widget/parts.rs` as-is. Nothing here inlines a colour or a
 //! size: it is all `tokens` and `metrics`.
 
 use crate::metrics;
-use eclipse_ui::theme;
-use eclipse_ui::tokens::{color, font, radius, size, space};
-use eclipse_ui::widget::{edge_quad, micro_label, quad};
+use ec_ui::theme;
+use ec_ui::tokens::{color, font, radius, size, space};
+use ec_ui::widget::{edge_quad, micro_label, quad};
 use iced::widget::{button, column, container, row, text, text_input, Column, Row, Space};
 use iced::{Alignment, Color, Element, Length, Theme};
 
@@ -43,7 +43,7 @@ pub fn mono<'a, M: 'a>(s: impl Into<String>, ink: Color) -> El<'a, M> {
 
 /// A pane subtitle in plain secondary ink.
 ///
-/// `eclipse_ui::widget::subtitle` spends the accent on its middle clause; on a
+/// `ec_ui::widget::subtitle` spends the accent on its middle clause; on a
 /// step whose one yellow is elsewhere, the subtitle has to be quiet.
 pub fn plain_subtitle<'a, M: 'a>(s: &str) -> El<'a, M> {
     body(s.to_owned())
@@ -185,7 +185,7 @@ pub fn banner<'a, M: 'a>(
 
 /// A row of a list that can be the current choice.
 ///
-/// `eclipse_ui::widget::choice_row` always draws its bar and its wash in the
+/// `ec_ui::widget::choice_row` always draws its bar and its wash in the
 /// accent, which is right for a pane's one live selection and wrong for every
 /// other list on the same pane, where a second yellow would break the ledger.
 /// This is that row with the tone as a parameter and the click target built
@@ -237,7 +237,7 @@ pub fn pick<'a, M: Clone + 'a>(
 
 /// A canvas chip whose selection is a white outline, not the accent.
 ///
-/// `eclipse_ui::widget::chip` marks its selection in yellow, which a step with
+/// `ec_ui::widget::chip` marks its selection in yellow, which a step with
 /// a live value elsewhere cannot afford. Same squarer-than-a-pill silhouette,
 /// same mono face, so it still reads as an object and not a verb.
 pub fn tab<'a, M: Clone + 'a>(label: &str, selected: bool, on_press: M) -> El<'a, M> {
@@ -344,7 +344,7 @@ pub fn commit<'a, M: Clone + 'a>(label: &str, on_press: Option<M>) -> El<'a, M> 
     )
 }
 
-/// The way back: an outlined pill. `eclipse_ui::widget::pill` unselected.
+/// The way back: an outlined pill. `ec_ui::widget::pill` unselected.
 pub fn ghost<'a, M: Clone + 'a>(label: &str, on_press: Option<M>) -> El<'a, M> {
     let b = button(text(label.to_owned()).font(font::UI_MEDIUM).size(size::BODY))
         .padding([metrics::BUTTON_Y, metrics::BUTTON_X])
@@ -357,7 +357,7 @@ pub fn ghost<'a, M: Clone + 'a>(label: &str, on_press: Option<M>) -> El<'a, M> {
 
 /// A small verb beside a list heading (`rescan`, `reload`).
 pub fn verb<'a, M: Clone + 'a>(label: &str, on_press: M) -> El<'a, M> {
-    eclipse_ui::widget::pill(label, false, on_press)
+    ec_ui::widget::pill(label, false, on_press)
 }
 
 // ----------------------------------------------------------------- fields
@@ -517,7 +517,7 @@ pub fn stat_grid<'a, M: 'a>(cells: Vec<(&str, String)>, columns: usize) -> El<'a
         }
         rows = rows.push(r);
     }
-    eclipse_ui::widget::inset(rows).padding(space::CARD).into()
+    ec_ui::widget::inset(rows).padding(space::CARD).into()
 }
 
 // --------------------------------------------------------------- progress
@@ -526,7 +526,7 @@ pub fn stat_grid<'a, M: 'a>(cells: Vec<(&str, String)>, columns: usize) -> El<'a
 /// and white, the ones behind you grey, and "3 of 8" beside them.
 ///
 /// A widget because the wizard has no sidebar to say where you are, and eight
-/// squares in a row are a magnitude (how far along), which `eclipse_ui` has no
+/// squares in a row are a magnitude (how far along), which `ec_ui` has no
 /// primitive for. It is white, never yellow: the yellow belongs to the step's
 /// own value.
 pub fn progress<'a, M: 'a>(here: usize, total: usize) -> El<'a, M> {
@@ -602,7 +602,7 @@ pub fn lead<'a, M: 'a>(s: &str) -> El<'a, M> {
 /// A large selectable card: a disk, a profile.
 ///
 /// A widget because a card is a click target with a ground that has to answer
-/// the pointer, and `eclipse_ui::widget::panel` is a static container. `selected`
+/// the pointer, and `ec_ui::widget::panel` is a static container. `selected`
 /// is the pane's one yellow (border and wash); `on_press: None` is a card that
 /// is shown and refused, drawn flat with no hover.
 pub fn card<'a, M: Clone + 'a>(
@@ -733,7 +733,7 @@ pub fn tiles<'a, M: 'a>(layout: crate::choices::Tiling) -> El<'a, M> {
 /// being placed) and two tiled windows, square or rounded.
 ///
 /// A widget because the appearance step's hero is a picture of the result, and
-/// `eclipse_ui` has no primitive for a stylised screen.
+/// `ec_ui` has no primitive for a stylised screen.
 pub fn desk<'a, M: 'a>(rounded: bool, bottom: bool) -> El<'a, M> {
     let corner = if rounded { radius::CARD } else { 0.0 };
     let bar: El<'a, M> = quad(
@@ -755,7 +755,7 @@ pub fn desk<'a, M: 'a>(rounded: bool, bottom: bool) -> El<'a, M> {
     } else {
         col.push(bar).push(windows)
     };
-    eclipse_ui::widget::inset(col.height(Length::Fill))
+    ec_ui::widget::inset(col.height(Length::Fill))
         .padding(space::CHIP_GAP)
         .height(Length::Fixed(metrics::DESK_H))
         .into()
@@ -763,7 +763,7 @@ pub fn desk<'a, M: 'a>(rounded: bool, bottom: bool) -> El<'a, M> {
 
 /// A level bar that takes the width it is given, `fraction` lit.
 ///
-/// `eclipse_ui::widget::meter_bar` is fixed-width for a drawer row; a hero
+/// `ec_ui::widget::meter_bar` is fixed-width for a drawer row; a hero
 /// meter runs the width of the column, and the two cannot share a signature.
 pub fn meter_fill<'a, M: 'a>(fraction: f32, fill: Color) -> El<'a, M> {
     let lit = (fraction.clamp(0.0, 1.0) * 100.0).round() as u16;

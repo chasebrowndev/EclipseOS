@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
-# ec-audit — `eclipse-audit`, the audit store's reader
+# ec-audit — `ec-audit`, the audit store's reader
 
 Governing spec: S-04 §4 (`verify`), §5 (`query`, `trace`), §1 (JSON
 projection). Reads the store `policyd` writes; links `policyd`'s own record

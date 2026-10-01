@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `eclipse-audit` (S-04 §4, §5).
+//! `ec-audit` (S-04 §4, §5).
 //!
 //! ```text
-//! eclipse-audit [--dir D] verify
-//! eclipse-audit [--dir D] trace --req-id N [--principal P]
-//! eclipse-audit [--dir D] query [--principal P] [--kind K] [--outcome O] [--since 1h]
+//! ec-audit [--dir D] verify
+//! ec-audit [--dir D] trace --req-id N [--principal P]
+//! ec-audit [--dir D] query [--principal P] [--kind K] [--outcome O] [--since 1h]
 //! ```
 //!
 //! Records print one JSON projection per line. Exit status is 0 on an
@@ -14,14 +14,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use ec_audit::{parse_since, project, query, records, store_dir, trace, Filter};
-use policy_eval::audit::Kind;
+use ec_policy_eval::audit::Kind;
 
-const USAGE: &str = "usage: eclipse-audit [--dir D] verify
-       eclipse-audit [--dir D] trace --req-id N [--principal P]
-       eclipse-audit [--dir D] query [--principal P] [--kind K] [--outcome O] [--since 90s|15m|1h|7d]";
+const USAGE: &str = "usage: ec-audit [--dir D] verify
+       ec-audit [--dir D] trace --req-id N [--principal P]
+       ec-audit [--dir D] query [--principal P] [--kind K] [--outcome O] [--since 90s|15m|1h|7d]";
 
 fn usage(why: &str) -> ExitCode {
-    eprintln!("eclipse-audit: {why}\n{USAGE}");
+    eprintln!("ec-audit: {why}\n{USAGE}");
     ExitCode::from(2)
 }
 
@@ -66,7 +66,7 @@ fn main() -> ExitCode {
     let (verified, all) = match records(&dir) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("eclipse-audit: {}: {e}", dir.display());
+            eprintln!("ec-audit: {}: {e}", dir.display());
             return ExitCode::from(1);
         }
     };

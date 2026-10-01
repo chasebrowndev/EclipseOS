@@ -12,9 +12,9 @@ use super::{list_box, Body};
 use crate::model::{ids, Key, Message, Model};
 use crate::parts::{self, El};
 use crate::sys;
-use eclipse_ui::theme;
-use eclipse_ui::tokens::{color, font, size, space};
-use eclipse_ui::widget::prompt_band;
+use ec_ui::theme;
+use ec_ui::tokens::{color, font, size, space};
+use ec_ui::widget::prompt_band;
 use iced::widget::{column, row, text, text_input, Column, Space};
 use iced::{Alignment, Length};
 

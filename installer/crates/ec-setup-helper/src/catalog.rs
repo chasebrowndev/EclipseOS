@@ -36,25 +36,25 @@ pub struct Catalog {
 
 const BUILTIN: &[Entry] = &[
     Entry {
-        id: "hyperion",
+        id: "ec-hyperion-bar",
         slot: Slot::Bar,
         packages: &["eclipseos-hyperion"],
         system_units: &[],
     },
     Entry {
-        id: "eclipse-launcher",
+        id: "ec-launcher",
         slot: Slot::Launcher,
         packages: &["eclipseos-launcher"],
         system_units: &[],
     },
     Entry {
-        id: "eclipse-toasts",
+        id: "ec-toasts",
         slot: Slot::Notifications,
         packages: &["eclipseos-toasts"],
         system_units: &[],
     },
     Entry {
-        id: "eclipse-center",
+        id: "ec-center",
         slot: Slot::ControlCenter,
         packages: &["eclipseos-center"],
         system_units: &[],
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn resolves_known_ids() {
         let c = Catalog::builtin();
-        let r = c.resolve(&ids(&["hyperion", "eclipse-toasts"])).unwrap();
+        let r = c.resolve(&ids(&["ec-hyperion-bar", "ec-toasts"])).unwrap();
         assert_eq!(r.len(), 2);
         assert!(c.resolve(&[]).unwrap().is_empty());
     }
@@ -248,7 +248,7 @@ mod tests {
         ] {
             assert!(c.resolve(&ids(&[bad])).is_err(), "{bad:?}");
         }
-        assert!(c.resolve(&ids(&["hyperion", "hyperion"])).is_err());
+        assert!(c.resolve(&ids(&["ec-hyperion-bar", "ec-hyperion-bar"])).is_err());
         assert!(c.resolve(&ids(&["a"; 33])).is_err());
     }
 
@@ -261,7 +261,7 @@ mod tests {
                 .len(),
             3
         );
-        assert!(c.resolve(&ids(&["hyperion", "waybar"])).is_err());
+        assert!(c.resolve(&ids(&["ec-hyperion-bar", "waybar"])).is_err());
         assert!(c.resolve(&ids(&["app-pdf", "app-pdf"])).is_err());
     }
 

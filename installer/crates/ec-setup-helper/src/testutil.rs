@@ -238,8 +238,8 @@ pub fn live() -> (TempDir, Paths) {
     (t, p)
 }
 
-pub fn req() -> eclipse_setup_plan::Request {
-    use eclipse_setup_plan::{Plan, Profile, Request};
+pub fn req() -> ec_setup_plan::Request {
+    use ec_setup_plan::{Plan, Profile, Request};
     Request {
         plan: Plan {
             disk_by_id: "nvme-Some_NVMe_1".into(),
@@ -250,7 +250,7 @@ pub fn req() -> eclipse_setup_plan::Request {
             keymap: "us".into(),
             carry_network: false,
             profile: Profile::Standard,
-            candidates: vec!["hyperion".into(), "eclipse-toasts".into()],
+            candidates: vec!["ec-hyperion-bar".into(), "ec-toasts".into()],
             agents: false,
         },
         password: zeroize::Zeroizing::new("correct horse".into()),

@@ -11,7 +11,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use eclipse_ui::tokens::bar;
+use ec_ui::tokens::bar;
 use iced::Subscription;
 
 use crate::app::Message;

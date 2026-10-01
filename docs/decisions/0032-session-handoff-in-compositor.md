@@ -38,7 +38,7 @@ claimed for it.
 ## Decision
 Option 3, the niri/sway model. `packaging/abyss-session` sets only what is knowable
 in advance (`XDG_CURRENT_DESKTOP`, `XDG_SESSION_TYPE`, `XDG_SESSION_DESKTOP`)
-and `exec`s `abyss --session`. `crate::session::import()` runs immediately
+and `exec`s `ec-abyss --session`. `crate::session::import()` runs immediately
 after each backend sets `WAYLAND_DISPLAY`, and `teardown()` on the normal exit
 path. The helpers are spawned as children and never waited on — `SIGCHLD`
 already carries `SA_NOCLDWAIT` — so nothing blocks the calloop. Failure to

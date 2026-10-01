@@ -46,11 +46,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
-name = "eclipse-ipc"
+name = "ec-ipc"
 version = "0.1.0"
 dependencies = [
  "libc",
  "serde_json",
+]
+
+[[package]]
+name = "ec-oracle-eyes"
+version = "0.1.0"
+dependencies = [
+ "ec-ipc",
+ "kdl",
+ "libc",
+ "regex",
+ "serde_json",
+ "wayland-client",
+ "wayland-protocols",
 ]
 
 [[package]]
@@ -122,19 +135,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "oracle-eyes"
-version = "0.1.0"
-dependencies = [
- "eclipse-ipc",
- "kdl",
- "libc",
- "regex",
- "serde_json",
- "wayland-client",
- "wayland-protocols",
 ]
 
 [[package]]

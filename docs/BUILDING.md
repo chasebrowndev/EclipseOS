@@ -39,7 +39,7 @@ sudo apt-get install -y libseat-dev libinput-dev libwayland-dev \
   libdisplay-info-dev pkg-config
 ```
 
-No C library is needed for D-Bus: `eclipse-services` uses `zbus` (pure Rust,
+No C library is needed for D-Bus: `ec-services` uses `zbus` (pure Rust,
 already in the tree via `iced_layershell`). At runtime it wants a session bus,
 and the status cells want NetworkManager, BlueZ and UPower on the system bus;
 each degrades to "unavailable" without its daemon.
@@ -76,7 +76,7 @@ journald stores them as `F_`-prefixed fields with an empty `MESSAGE` — they ar
 invisible to `journalctl -o cat` and to a grep for "fps". Read them with:
 
 ```
-journalctl -t abyss -o json | jq 'select(.F_FPS)'
+journalctl -t ec-abyss -o json | jq 'select(.F_FPS)'
 ```
 
 ## Running wlcs locally
@@ -93,7 +93,7 @@ bound to anything else.
 
 ## Running as a login session
 
-`abyss --session` performs the systemd/D-Bus handoff itself, immediately after
+`ec-abyss --session` performs the systemd/D-Bus handoff itself, immediately after
 its Wayland socket exists — see ADR 0032 for why that is not in the wrapper.
 It publishes `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP` and `XDG_SESSION_TYPE` to
 the user bus and to `systemd --user`, then starts `abyss-session.target`; on
@@ -112,7 +112,7 @@ Install the three files in `packaging/` (or use one of the scripts under
 `greetd`/`regreet` builds its session list from `/usr/share/wayland-sessions`,
 so the desktop entry is all that is needed for "Abyss" to appear at the
 greeter; it runs `/usr/bin/abyss-session`, which sets the session environment
-and `exec`s `abyss --session`. After adding the target, run
+and `exec`s `ec-abyss --session`. After adding the target, run
 `systemctl --user daemon-reload` once.
 
 User services that should come up with the session declare the usual pair:
@@ -144,8 +144,8 @@ copies, a rebuild is live at the next login and the installer does not have to
 be run again — which is the whole point of it, and also the reason it is not
 how a distribution should ship Abyss.
 
-It also enables `hyperion`, `eclipse-toasts`, `eclipse-screensaver` and
-`eclipse-pairing`, and copies the taskbar's add-on manifest to
+It also enables `hyperion`, `ec-toasts`, `ec-screensaver` and
+`ec-pairing`, and copies the taskbar's add-on manifest to
 `/usr/share/eclipse/addons/hyperion.kdl` (ADR 0066), with its premade widgets
 in `/usr/share/eclipse/widgets` (ADR 0067). `packaging/install.sh` is the
 non-symlink variant: it builds from a fresh clone as your user, installs real
@@ -177,19 +177,19 @@ The distribution path (D-01..D-03), all under `packaging/`:
 
 - **`packaging/pkg/eclipseos/PKGBUILD`** — split package, built from the pushed
   `v$pkgver` tag (`pkgver=0.1.1`). One package per swappable component
-  (ADR 0052): `eclipseos-abyss` (abyss, eclipse-ctl, the session wrapper,
+  (ADR 0052): `eclipseos-abyss` (abyss, ec-ctl, the session wrapper,
   desktop entry and target; hard-depends on `xorg-xwayland`),
   `-hyperion` (the taskbar, an add-on with its manifest
   `/usr/share/eclipse/addons/hyperion.kdl`, ADR 0066), `-toasts`, `-center`,
-  `-launcher`, `-desktop` (settings, policy viewer, `eclipse-screensaver`, the
-  `eclipse-pairing` Bluetooth agent and `eclipse-secret-prompt`), `-policyd`,
+  `-launcher`, `-desktop` (settings, policy viewer, `ec-screensaver`, the
+  `ec-pairing` Bluetooth agent and `ec-secret-prompt`), `-policyd`,
   and `-meta`, which depends on all of them except `-hyperion` (an
   optdepend) plus greetd/regreet/cage, NetworkManager, BlueZ, UPower, PipeWire
   and foot, and ships `/etc/eclipse/{abyss,policy}.kdl`, the greetd config under
   `/etc/eclipse/greetd` and its `greetd.service.d` drop-in.
-- **User units.** `hyperion.service`, `eclipse-toasts.service`,
-  `eclipse-screensaver.service`, `eclipse-pairing.service` and
-  `policyd.service` are all `PartOf=graphical-session.target`; the four
+- **User units.** `ec-hyperion-bar.service`, `ec-toasts.service`,
+  `ec-screensaver.service`, `ec-pairing.service` and
+  `ec-policyd.service` are all `PartOf=graphical-session.target`; the four
   session-side units are
   `After=`/`Requisite=abyss-session.target`, and `policyd` is
   `Before=abyss-session.target` so abyss still paints without it.
@@ -209,7 +209,7 @@ The distribution path (D-01..D-03), all under `packaging/`:
 `abyss` logs through `tracing` to journald under the identifier `abyss`:
 
 ```
-journalctl --user -t abyss -f
+journalctl --user -t ec-abyss -f
 ```
 
 Verbosity is controlled by `RUST_LOG`, e.g. `RUST_LOG=abyss=debug cargo run -- --backend winit`.
@@ -238,7 +238,7 @@ rather than killed.
    makes tty2's session active and revokes DRM master from the desktop, which
    keeps running (and so does everything inside it — terminals, editors,
    long-lived shells).
-2. `XDG_RUNTIME_DIR=/run/user/1000 ./target/debug/abyss --backend drm`
+2. `XDG_RUNTIME_DIR=/run/user/1000 ./target/debug/ec-abyss --backend drm`
 3. `Ctrl+Alt+F1` returns to the desktop; the compositor on tty2 is suspended in
    turn.
 
@@ -258,7 +258,7 @@ if the host compositor is running at all, modeset is on.
 that wedges while holding DRM master can make the VT switch back fail, leaving
 a black screen with the desktop still alive underneath. `ssh` in from another
 machine and `kill` the test compositor's pid recovers it without a power cycle
-(not `pkill -x abyss` if the host session is itself abyss); there is no
+(not `pkill -x ec-abyss` if the host session is itself abyss); there is no
 recovery from the keyboard once the console is wedged.
 
 ## Testing DRM in a VM
@@ -289,7 +289,7 @@ Build and run inside the guest over ssh:
 ```
 ssh -p 2222 user@127.0.0.1
 cd ~/abyss-src && cargo build
-XDG_RUNTIME_DIR=/run/user/1000 ./target/debug/abyss --backend drm &
+XDG_RUNTIME_DIR=/run/user/1000 ./target/debug/ec-abyss --backend drm &
 XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1 foot &
 ```
 
