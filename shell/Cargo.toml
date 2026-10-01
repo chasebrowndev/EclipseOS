@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/ec-center",
+  "crates/ec-hyperion-bar",
+  "crates/ec-launcher",
+  "crates/ec-policy-viewer",
+  "crates/ec-secret-prompt",
+  "crates/ec-services",
+  "crates/ec-settings",
+  "crates/ec-toasts",
+  "crates/ec-ui",
+  "crates/ec-wallpaper",
+]
+
+# The DE apps: out-of-process Wayland/layer-shell clients of the compositor
+# (ADR 0038, 0052). They reach the compositor only through the `ec-ipc` control
+# socket client, a path dependency on the sibling `abyss/` workspace.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+repository = "https://github.com/chasebrowndev/eclipseos"
+
+[workspace.dependencies]
+kdl = "6"
+serde_json = "1"
+
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 4
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

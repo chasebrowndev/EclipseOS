@@ -1,0 +1,50 @@
+[package]
+name = "eclipse-services"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Desktop services for the Eclipse userland: the freedesktop notification server (ADR 0038)."
+# A library for the DE binaries, never published. `publish = false` also keeps
+# cargo-deny's wildcard check off our path dependencies.
+publish = false
+
+[lib]
+name = "eclipse_services"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eclipse-screensaver"
+path = "src/bin/eclipse-screensaver.rs"
+
+[[bin]]
+name = "eclipse-pairing"
+path = "src/bin/eclipse-pairing.rs"
+
+[dependencies]
+# Already in the tree via iced_layershell 0.19.1 -> mundy 0.2.3, so this adds
+# no new supply-chain surface (ADR 0038, ADR 0039). The blocking API is the
+# one that fits: iced runs no tokio runtime, so the server owns its own thread
+# and talks to the GUI over a channel, exactly like eclipse-settings' watcher.
+zbus = "5.19"
+eclipse-ipc = { path = "../../../abyss/crates/ec-ipc" }
+serde_json.workspace = true
+# ADR 0065. The audio service (default sink, per-app mute, the visualizer's
+# monitor tap) speaks the PulseAudio native protocol, which pipewire-pulse
+# serves. Pure Rust: no libpulse, no bindgen/libclang (the `pipewire` crate
+# needs both), and its `protocol` module is synchronous, so the service runs
+# it on its own blocking thread like every other watcher here. MIT.
+pulseaudio = "0.3"
+# ADR 0065: the monitor tap's band reduction. MIT.
+realfft = "3"
+# ADR 0065: the usage sampler's disk fill level via statvfs(3). Already in the
+# tree through eclipse-ipc and zbus, so no new supply-chain surface.
+libc = "0.2"
+# ADR 0065: NVIDIA GPU busyness via NVML, dlopened from libnvidia-ml.so.1 at
+# runtime by libloading (never linked; no bindgen, no NVIDIA headers at build
+# time). Absent library = no NVIDIA reading. MIT OR Apache-2.0.
+nvml-wrapper = "0.13"
+# Only for the raw `nvmlDevice_t` handle type, which the wrapper does not
+# re-export. Already pulled in by nvml-wrapper. MIT OR Apache-2.0.
+nvml-wrapper-sys = "0.10"

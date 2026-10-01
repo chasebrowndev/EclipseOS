@@ -1,0 +1,4 @@
+# One build directory for every workspace (abyss, shell, installer, oracle-eyes, fog), so
+# packaging scripts and docs find binaries in <repo>/target/{debug,release}.
+[build]
+target-dir = "target"

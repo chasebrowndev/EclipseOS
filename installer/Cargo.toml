@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/ec-setup",
+  "crates/ec-setup-helper",
+  "crates/ec-setup-plan",
+  "crates/ec-welcome",
+]
+
+# First-run installer: the iced setup app, its privileged helper (TCB, see
+# gate.yml `tcb-review`) and the shared plan/welcome crates. UI and control
+# socket client come from the sibling `shell/` and `abyss/` workspaces.
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+repository = "https://github.com/chasebrowndev/eclipseos"
+
+[workspace.dependencies]
+kdl = "6"
+serde_json = "1"
+
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 4
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

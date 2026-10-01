@@ -1,0 +1,31 @@
+[package]
+name = "eclipse-wallpaper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Eclipse wallpaper: a Background-layer surface per output, a colour with an optional image on it."
+# Its own crate and package, like the toast stack (ADR 0052): a session that
+# draws its own desktop can leave this out.
+publish = false
+
+[lib]
+name = "eclipse_wallpaper"
+path = "src/lib.rs"
+
+[[bin]]
+name = "eclipse-wallpaper"
+path = "src/main.rs"
+
+[dependencies]
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "image-without-codecs"] }
+iced_layershell = "0.19.1"
+eclipse-ui = { path = "../ec-ui" }
+eclipse-ipc = { path = "../../../abyss/crates/ec-ipc" }
+serde_json.workspace = true
+# Decoded here rather than by the renderer so that a missing or corrupt file
+# is known — and logged — before a surface draws, and so that one decode
+# serves every output showing the same path. PNG and JPEG are what wallpapers
+# are; iced's own `image` feature (on through eclipse-ui) unifies in the rest.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
