@@ -90,7 +90,7 @@ a system gets; nothing else turns an add-on on.
 | `region-select` | abyss | the `region-select` bind action |
 | `taskbar-widgets` | abyss | the `widget` collection and its socket writes, the premade widget catalog, command approval (ADR 0067) |
 | `activity-lens` | Fog | the lens pill bar and agent views, fed by the add-on's daemon |
-| `agents` | abyss | the privileged `abyss-agent-N` socket, agent and `eclipse_semantic_v1` globals, the `policyd` link, the agent indicator, the `agent-override`/`agent-attention` default binds, `get_agents` (ADR 0069) |
+| `agents` | abyss | the privileged `abyss-agent-N` socket, agent and `eclipse_semantic_v1` globals, the `policyd` link, the "agents disabled" indicator, the agent lifecycle methods (`get_agents`, `pause_agent`, `resume_agent`, `terminate_agent`, `revoke_grants`) (ADR 0069) |
 
 **The add-ons.**
 - **hyperion** enables `taskbar-widgets`. `eclipseos-meta` lists it as an

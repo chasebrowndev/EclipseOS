@@ -58,9 +58,14 @@ COMP-08 describe. When it is off:
   indicator. No add-on is the normal state, not degraded mode;
 - `eclipse_semantic_v1` is not advertised, so clients spend nothing
   publishing trees that nothing reads;
-- the `agent-override` and `agent-attention` default binds are not
-  installed, and `get_agents` is refused like any hook-bound method
+- the agent lifecycle methods (`get_agents`, `pause_agent`, `resume_agent`,
+  `terminate_agent`, `revoke_grants`) are refused like any hook-bound method
   (ADR 0066 §Authority).
+
+The `agent-override` (Super+Escape) and `agent-attention` binds stay with the
+hook off. The override chord is the trusted-UI escape and always works
+(COMP-04 §6). Attention opens phrase entry and the pending decision queue
+(COMP-10 §3.10), which command-widget approvals use without any agent.
 
 Turning the hook off at runtime (the add-on is removed) behaves like
 "`agentd` dies" in COMP-01 §6: every agent object is destroyed and its seats
@@ -79,7 +84,7 @@ until it acts through the agent protocol.
   `eclipseos-meta` and from the base `abyss-session.target.wants/`. The setup
   plan's Agentic profile adds the package.
 - **abyss.** Add a `Hook::Agents` variant, checked before the privileged socket
-  binds, before any global is created, and in the default-bind table.
+  binds, before any agent or semantic global is created, and in the gate table.
 - **CI.** The dormant code is still TCB and still tested on every push. The
   COMP-15 §2 suites run with the hook on. One test asserts that with the hook
   off, no agent global is reachable on any socket and no socket file exists.

@@ -2332,7 +2332,7 @@ nothing to degrade from. That is the normal state, and no indicator is shown.
 
 | Condition | Behaviour |
 |---|---|
-| `agents` hook off | Full human desktop. No privileged socket is created and no agent or `eclipse_semantic_v1` global is advertised on any socket. abyss does not try to reach `policyd`. No "agents disabled" indicator, no `agent-override`/`agent-attention` default binds, and `get_agents` is refused as hook-bound. Turning the hook off while agents are live behaves as "`agentd` dies" (below), and then the socket is removed. |
+| `agents` hook off | Full human desktop. No privileged socket is created and no agent or `eclipse_semantic_v1` global is advertised on any socket. abyss does not try to reach `policyd`. No "agents disabled" indicator, and the agent lifecycle methods (`get_agents` and the rest) are refused as hook-bound. The `agent-override` and `agent-attention` chords stay: the first is the trusted-UI escape (COMP-04 §6), and the second opens phrase entry and the decision queue (COMP-10 §3.10). Turning the hook off while agents are live behaves as "`agentd` dies" (below), and then the socket is removed. |
 | `policyd` not yet connected | Full human desktop. Privileged socket exists but `create_agent` fails with `POLICY_UNAVAILABLE`. Trusted UI shows a persistent "agents disabled" indicator. |
 | `policyd` connects, pushes signed table | Agents may connect. Indicator clears. |
 | `policyd` dies while agents are live | **Fail closed for agents:** all agent seats paused (as in human override, C-00 §4.5), in-flight requests return `paused`, no new requests accepted. Human session continues untouched. Reconnect resumes. |
