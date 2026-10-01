@@ -52,7 +52,7 @@ the window model, sensitivity classes and redaction, the capture policy
 
 **The `agents` hook (abyss).** When it is on, abyss does what COMP-01 §6 and
 COMP-08 describe. When it is off:
-- no `abyss-agent-N` socket is created and no agent global is advertised on
+- no `ec-agent.sock` socket is created and no agent global is advertised on
   any socket;
 - abyss makes no attempt to reach `policyd` and shows no "agents disabled"
   indicator. No add-on is the normal state, not degraded mode;

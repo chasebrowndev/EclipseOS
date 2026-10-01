@@ -1587,7 +1587,7 @@ implemented via Smithay's helpers or our own renderer path.
 1. Acquire session (libseat), enumerate GPUs (udev), pick primary render node.
 2. Init renderer, load cursor theme, load config.
 3. Create Wayland display and socket `wayland-N`; create **second** listening
-   socket `abyss-agent-N` restricted by filesystem permissions and used only
+   socket `$XDG_RUNTIME_DIR/eclipse/ec-agent.sock` restricted by filesystem permissions and used only
    by `agentd`.
 4. Start XWayland lazily on first X11 client.
 5. Spawn `agentd`, `registryd`, `policyd` as systemd user units (compositor
@@ -1831,7 +1831,7 @@ Clipboard: agents read/write the clipboard through `eclipse_agent_v1`, not
 ## 8. Agent Protocol `eclipse_agent_v1` (COMP-08)
 
 ### 8.1 Transport and trust
-- A Wayland protocol served **only** on the `abyss-agent-N` socket.
+- A Wayland protocol served **only** on the `ec-agent.sock` socket.
   Connections on the normal socket never see these globals.
 - `agentd` is the sole intended client. It authenticates agents, assigns
   agent ids and capability sets (from `policyd`), and multiplexes.
@@ -2149,7 +2149,7 @@ display lives outside it.
 | Process | Unit | Role | Trust |
 |---|---|---|---|
 | `abyss` | `abyss.service` (user) | DRM, input, rendering, protocol servers, policy enforcement | TCB |
-| `policyd` | `eclipse-policyd.service` | Policy compilation, audit store, defer path | TCB |
+| `policyd` | `policyd.service` | Policy compilation, audit store, defer path | TCB |
 | `agentd` | `eclipse-agentd.service` | Agent gateway, MCP surface | semi-trusted |
 | `registryd` | `eclipse-registryd.service` | AT-SPI aggregation, coordinate join, vision fallback | semi-trusted |
 
@@ -2307,7 +2307,7 @@ Explicit sync is mandatory; there is no implicit-sync fallback path.
 8. Create the Wayland display; bind standard globals (COMP-06).
 9. Create the public socket `wayland-N`; export $WAYLAND_DISPLAY.
 10. Create the privileged socket at
-    $XDG_RUNTIME_DIR/eclipse/abyss-agent.sock, mode 0600, owned by the
+    $XDG_RUNTIME_DIR/eclipse/ec-agent.sock, mode 0600, owned by the
     user. Agent globals are advertised only on this socket.
 11. Connect to policyd (§6). Non-blocking.
 12. Open human IPC socket (COMP-13).
@@ -3703,7 +3703,7 @@ Consequences, all enforced:
 Depends on: C-00 §8, S-01, P-01, COMP-09. Consumed by: A-01, A-02, A-05,
 COMP-11, COMP-12.
 
-Privileged Wayland protocol served only on `abyss-agent-N`. Sole intended
+Privileged Wayland protocol served only on `$XDG_RUNTIME_DIR/eclipse/ec-agent.sock`. Sole intended
 client: `agentd`. Every object is attributed to one agent principal.
 
 Conventions: all requests that act carry `req_id: uint` (agent-assigned,
@@ -3719,7 +3719,6 @@ unique per agent within the dedupe window) and, where relevant,
 request create_agent(id: new_id<eclipse_agent_v1>, grant: array<u8>)
   -- grant = COSE_Sign1 CBOR (S-01 §4). Compositor verifies signature,
   -- expiry, principal. On failure: protocol error INVALID_GRANT.
-request set_policy_key(key: array<u8>)     -- only from policyd's IPC path; not exposed to agentd
 event   revoked(principal: string, reason: uint)   -- informational to agentd
 event   dedupe_window(seconds: uint)
 ```
@@ -3845,7 +3844,11 @@ event   provenance(req_id, chain_id: array<u8>, min_trust: uint,
 
 Visibility: every response is filtered to the agent's `scene.list` scope
 and sensitivity class. Nothing outside scope appears, including in
-`hit_test` (returns handle=0).
+`hit_test` (returns handle=0). A request naming a handle the agent cannot
+see (out of scope, `no-agent`, or never existed) returns exactly what an
+unknown handle returns, `invalid_argument` with detail `handle`, by the same
+code path; `out_of_scope` is only for a visible target that a held
+capability's own scope excludes *(amended F-07, 2026-10-01)*.
 
 ---
 
@@ -5265,7 +5268,7 @@ agent:research-7`, `eclipse-ctl outputs --all`, `eclipse-ctl watch`.
 |---|---|---|---|
 | `policyd` | `$XDG_RUNTIME_DIR/eclipse/policyd.sock` | SEQPACKET, CBOR | table push, defer requests, audit stream (COMP-12) |
 | `registryd` | `$XDG_RUNTIME_DIR/eclipse/registryd.sock` | SEQPACKET, CBOR | native tree mirroring, placement queries for the coordinate join |
-| `agentd` | `$XDG_RUNTIME_DIR/eclipse/abyss-agent.sock` | Wayland, 0600 | the privileged protocol (COMP-08) |
+| `agentd` | `$XDG_RUNTIME_DIR/eclipse/ec-agent.sock` | Wayland, 0600 | the privileged protocol (COMP-08) |
 
 All are peer-credential-checked (`SO_PEERCRED`) against the expected uid,
 and `policyd`/`registryd` additionally against the cgroup of their systemd
@@ -5908,7 +5911,10 @@ the agent**, including in events and `hit_test`.
 
 Scope evaluation is deterministic and total: every request resolves to
 exactly one target set; if any target falls outside scope, the request
-fails with `no_capability` and nothing is applied (no partial batches).
+fails and nothing is applied (no partial batches). A target outside
+`scene.list` fails as an unknown handle (`invalid_argument`); a visible
+target outside the acting capability's scope fails with `out_of_scope`
+*(amended F-07, 2026-10-01)*.
 
 ---
 
@@ -7327,7 +7333,7 @@ against source before it was written. Nothing was renumbered.
 
 ## Open decisions this appendix leaves standing
 
-1. **Agent socket name.** C-00 §1.3 and §8.1 and the COMP-08 preamble say `abyss-agent-N`;
+1. ~~**Agent socket name.**~~ *Resolved by F-06 (2026-10-01): `$XDG_RUNTIME_DIR/eclipse/ec-agent.sock`.* C-00 §1.3 and §8.1 and the COMP-08 preamble said `abyss-agent-N`;
    COMP-01 §5 and COMP-13 §3 say `$XDG_RUNTIME_DIR/eclipse/abyss-agent.sock`. No
    agent socket exists in code yet.
 2. **`unsupported` status.** COMP-04 §3 and COMP-08 §12 open decision 1 use
@@ -7397,7 +7403,7 @@ same day. Appendix D is reserved for the D-07 batch.
 # Appendix F — amendment record, 2026-09-30
 
 **Applied inline to this volume on 2026-09-30**, from an owner ruling of the
-same day (ADR 0069).
+same day (ADR 0069). F-06..F-10 added 2026-10-01.
 
 | ID | Target | Change | Applied |
 |---|---|---|---|
@@ -7406,6 +7412,12 @@ same day (ADR 0069).
 | F-03 | COMP-16 Phase 2; COMP-15 §2 | Phase 2 suites run in CI with the `agents` hook on. One added test: with the hook off, no agent global is reachable and no agent socket file exists | yes |
 | F-04 | ADR 0066 add-ons | `fog-activity` depends on `eclipseos-agents` | yes |
 | F-05 | COMP-01 §6 | abyss gets the `policyd` key by dialing `policyd` and authenticating the peer (session uid via `SO_PEERCRED`, `policyd.service` cgroup), then pins it for the session; a changed key on reconnect is refused. Replaces the root-owned `/etc/eclipse/policyd.pub`, which a per-user `policyd` (D-01 §3.4) cannot use | yes |
+
+| F-06 | C-00 §1.3, §8.1; COMP-01 §5; COMP-08 preamble; COMP-13 §3; ADR 0066, 0069 | *(2026-10-01, owner ruling)* The agent socket is `$XDG_RUNTIME_DIR/eclipse/ec-agent.sock`, mode 0600, beside `policyd.sock`. A second compositor (the nested test session) overrides it by environment. Closes Appendix C open item 1 | yes |
+| F-07 | COMP-08 §3; S-01 §3 | *(2026-10-01, owner ruling)* A handle the agent cannot see is indistinguishable from one that never existed: `invalid_argument`, detail `handle`, same code path. `out_of_scope` stays for a visible target excluded by a held capability's scope | yes |
+| F-08 | S-01 §6 (policyd unavailable) | *(2026-10-01, owner ruling)* COMP-01 §6 governs: when `policyd` dies, every agent pauses until it reconnects with the pinned key. "Existing grants remain valid until expiry" is withdrawn, since revocation cannot reach abyss while `policyd` is down | yes |
+| F-09 | COMP-08 §1 | `set_policy_key` is removed: the key arrives over the dialled `policyd` link (F-05), never over Wayland | yes |
+| F-10 | C-00 §17 | `policyd`'s unit is `policyd.service`, as shipped | yes |
 
 ## Open decisions this appendix leaves standing
 
