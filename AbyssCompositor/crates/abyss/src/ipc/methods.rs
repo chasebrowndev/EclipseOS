@@ -123,7 +123,14 @@ fn window_param(state: &AbyssState, params: &Value) -> Result<Window, RpcError> 
 
 /// `app_id` and `title` for a toplevel. Read here and returned to the owner;
 /// never written to the journal (COMP-13 §2, ADR 0028).
+///
+/// An X11 window has no xdg state: its `app_id` is the WM_CLASS class and its
+/// title the `_NET_WM_NAME`/`WM_NAME` XWayland already tracks.
 pub(crate) fn identity_of(window: &Window) -> (Option<String>, Option<String>) {
+    if let Some(x) = window.x11_surface() {
+        let some = |s: String| (!s.is_empty()).then_some(s);
+        return (some(x.class()), some(x.title()));
+    }
     let Some(surface) = crate::shell::window_surface(window) else {
         return (None, None);
     };

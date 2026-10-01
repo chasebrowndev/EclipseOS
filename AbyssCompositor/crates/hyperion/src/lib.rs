@@ -19,6 +19,7 @@ pub mod model;
 pub mod motion;
 #[cfg(debug_assertions)]
 pub mod preview;
+pub mod program;
 pub mod radio;
 pub mod services;
 pub mod view;

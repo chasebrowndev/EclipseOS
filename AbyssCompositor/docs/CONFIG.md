@@ -293,7 +293,7 @@ Matchers, all of which must match. A rule with none is refused.
 
 | matcher | example | what it does |
 | --- | --- | --- |
-| `app-id "<regex>"` | `app-id "pavucontrol\|org.gnome.Calculator"` | Regex against the xdg-shell app id. |
+| `app-id "<regex>"` | `app-id "pavucontrol\|org.gnome.Calculator"` | Regex against the xdg-shell app id, or the WM_CLASS class for an X11 window. |
 | `title "<regex>"` | `title "^Picture-in-Picture$"` | Regex against the window title. |
 | `pid <int>` | `pid 4242` | The client's process id, positive. |
 | `xwayland [<bool>]` | `xwayland`<br>`xwayland #false` | Whether the window is an X11 client. Bare means `#true`. |

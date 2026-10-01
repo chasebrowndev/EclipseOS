@@ -1325,7 +1325,7 @@ pub const RULE_MATCHERS: &[Form] = &[
         &["app-id"],
         "\"<regex>\"",
         &[r#"app-id "pavucontrol|org.gnome.Calculator""#],
-        "Regex against the xdg-shell app id.",
+        "Regex against the xdg-shell app id, or the WM_CLASS class for an X11 window.",
     ),
     form(
         &["title"],
