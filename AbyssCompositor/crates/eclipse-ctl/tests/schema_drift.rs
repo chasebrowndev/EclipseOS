@@ -16,7 +16,13 @@ const POLICY_KEYS: &[&str] = &[
 ];
 
 /// Keep in sync with `migrate::POLICY_RULE_ACTIONS`.
-const POLICY_RULE_ACTIONS: &[&str] = &["sensitivity", "app-trust", "seat-compat", "no-agent"];
+const POLICY_RULE_ACTIONS: &[&str] = &[
+    "sensitivity",
+    "app-trust",
+    "seat-compat",
+    "no-agent",
+    "irreversible-capable",
+];
 
 /// Keep in sync with `migrate::LEGACY_TRAY_BUILTINS`.
 const LEGACY_TRAY_BUILTINS: &[&str] = &["network", "bluetooth", "battery", "volume"];

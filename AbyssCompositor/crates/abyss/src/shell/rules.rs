@@ -8,14 +8,21 @@
 //! `sensitivity`, `no-agent`) are re-applied on every re-evaluation.
 //!
 //! `sensitivity` goes through the same raise-only path as the capture
-//! classifier: a rule can raise a window's class, never lower it.
+//! classifier: a rule can raise a window's class, never lower it. Whichever
+//! origin raised it is recorded as the window's `class_source` (COMP-05 §1).
+//!
+//! `irreversible_capable` (COMP-05 §1, S-06 §3.3) is a rule fact too: an
+//! `irreversible-capable` rule decides it, and without one it defaults from
+//! the app's desktop entry (see [`category_default`]).
 
 use std::cell::Cell;
+use std::hash::{Hash, Hasher};
 
 use smithay::desktop::Window;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
 
-use crate::config::{BlurRule, Matchers, RuleAction};
+use crate::config::{BlurRule, Matchers, RuleAction, WindowRule};
 use crate::state::AbyssState;
 use crate::xwayland::security::{AppTrust, SeatCompat};
 
@@ -33,6 +40,129 @@ pub struct RuleTrust(pub Cell<AppTrust>);
 
 /// Seat concurrency pinned by a `seat-compat` rule (COMP-04 §8).
 pub struct RuleSeat(pub Cell<SeatCompat>);
+
+/// The window's `irreversible_capable` fact (COMP-05 §1, S-06 §3.3), set on
+/// every evaluation. The desktop-entry category default is cached per id
+/// (keyed by a hash of it), so the file I/O happens at most once per window
+/// per distinct id, and at most [`DEFAULT_CACHE`] times per window: a client
+/// cycling `set_app_id` before every commit cannot drive a lookup per commit.
+/// An id seen once the cache is full gets no lookup and defaults to false,
+/// the same as an app without a desktop entry.
+#[derive(Default)]
+pub struct RuleIrreversible {
+    value: Cell<bool>,
+    cache: Cell<[(u64, bool); DEFAULT_CACHE]>,
+    cached: Cell<usize>,
+}
+
+/// Distinct ids per window whose category default is looked up.
+const DEFAULT_CACHE: usize = 4;
+
+impl RuleIrreversible {
+    /// Settle `value` for `id`: the rule if one decides, otherwise the
+    /// category default from `lookup`, called only for an id not cached yet
+    /// and only while the cache has room.
+    fn update(&self, id: &str, rule: Option<bool>, lookup: impl FnOnce(&str) -> bool) -> bool {
+        // The default is only needed when no rule decides, and the lookup is
+        // file I/O: skip it then.
+        let value = match rule {
+            Some(v) => v,
+            None => {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                id.hash(&mut h);
+                let key = h.finish();
+                let mut cache = self.cache.get();
+                let n = self.cached.get();
+                match cache[..n].iter().find(|(k, _)| *k == key) {
+                    Some(&(_, v)) => v,
+                    None if n < DEFAULT_CACHE => {
+                        let v = lookup(id);
+                        cache[n] = (key, v);
+                        self.cache.set(cache);
+                        self.cached.set(n + 1);
+                        v
+                    }
+                    None => false,
+                }
+            }
+        };
+        self.value.set(value);
+        value
+    }
+}
+
+/// Where a window's sensitivity class came from (COMP-05 §1 `class_source`),
+/// for audit and debugging only: nothing decides on it. Raise-only semantics
+/// are untouched; this records which origin did the raise.
+///
+/// - [`CLASS_SOURCE_DEFAULT`]: never raised; the class is the `private` floor.
+/// - [`CLASS_SOURCE_X11`]: an X11 window, whose class the COMP-07 §2
+///   classifier pins (`xwayland::security::classify`) and nothing raised.
+/// - [`CLASS_SOURCE_CAPTURE_POLICY`]: `capture.redact-app-id` named the app.
+/// - [`CLASS_SOURCE_RULE_BASE`]` + i`: the `sensitivity` windowrule at index
+///   `i` of the loaded rule list (file order). Indices past
+///   `255 - CLASS_SOURCE_RULE_BASE` all read 255.
+///
+/// Values 3..16 are reserved for origins that do not exist yet (an
+/// app-declared raise over `eclipse_semantic_v1`, COMP-09).
+pub const CLASS_SOURCE_DEFAULT: u8 = 0;
+/// See [`CLASS_SOURCE_DEFAULT`].
+pub const CLASS_SOURCE_X11: u8 = 1;
+/// See [`CLASS_SOURCE_DEFAULT`].
+pub const CLASS_SOURCE_CAPTURE_POLICY: u8 = 2;
+/// See [`CLASS_SOURCE_DEFAULT`].
+pub const CLASS_SOURCE_RULE_BASE: u8 = 16;
+
+/// The `class_source` of a raise by the windowrule at `index`.
+pub fn rule_class_source(index: usize) -> u8 {
+    u8::try_from(index)
+        .ok()
+        .and_then(|i| i.checked_add(CLASS_SOURCE_RULE_BASE))
+        .unwrap_or(u8::MAX)
+}
+
+/// The recorded raise origin, kept on the surface beside the `sensitive` set
+/// it explains: membership in that set is per surface and survives an unmap
+/// and remap, which builds a new `Window`, so the provenance has to as well.
+struct ClassSource(Cell<u8>);
+
+/// Record that `source` raised `surface`'s class. Call only when the raise
+/// actually changed it (`state.sensitive.insert` returned true), so the first
+/// origin that raised a window keeps the record.
+pub fn record_class_source(surface: &WlSurface, source: u8) {
+    smithay::wayland::compositor::with_states(surface, |states| {
+        if !states
+            .data_map
+            .insert_if_missing(|| ClassSource(Cell::new(source)))
+        {
+            if let Some(c) = states.data_map.get::<ClassSource>() {
+                c.0.set(source);
+            }
+        }
+    });
+}
+
+/// Which origin produced this window's sensitivity class (see
+/// [`CLASS_SOURCE_DEFAULT`]).
+pub fn class_source_of(window: &Window) -> u8 {
+    let recorded = crate::shell::window_surface(window).and_then(|s| {
+        smithay::wayland::compositor::with_states(&s, |states| {
+            states.data_map.get::<ClassSource>().map(|c| c.0.get())
+        })
+    });
+    resolve_class_source(recorded, window.x11_surface().is_some())
+}
+
+/// A recorded raise wins; otherwise an X11 window's class is the X11
+/// classifier's (it never raises, so it is never recorded), and anything
+/// else is the default.
+fn resolve_class_source(recorded: Option<u8>, xwayland: bool) -> u8 {
+    match recorded {
+        Some(s) => s,
+        None if xwayland => CLASS_SOURCE_X11,
+        None => CLASS_SOURCE_DEFAULT,
+    }
+}
 
 /// Marker that a window's placement is final. An xdg_toplevel is placed at
 /// its initial commit, by which point xdg-shell has applied the `app_id`,
@@ -102,6 +232,15 @@ pub fn seat_compat_of(window: &Window) -> Option<SeatCompat> {
     window.user_data().get::<RuleSeat>().map(|s| s.0.get())
 }
 
+/// Whether the S-06 §3.3 app-capable fallback covers this window. False for a
+/// window no evaluation has reached yet (it is not mapped).
+pub fn irreversible_capable_of(window: &Window) -> bool {
+    window
+        .user_data()
+        .get::<RuleIrreversible>()
+        .is_some_and(|r| r.value.get())
+}
+
 /// COMP-08 will consult this before putting a window in an agent scene.
 #[allow(dead_code)]
 pub fn hidden_from_agents(window: &Window) -> bool {
@@ -139,6 +278,12 @@ pub fn reevaluate(state: &mut AbyssState, window: &Window) -> Option<Placement> 
     if window.user_data().get::<Placed>().is_some() {
         if rules {
             evaluate(state, window, false);
+        } else {
+            // No rule can decide, but the category default still follows the
+            // current id: a client naming itself after placement must not
+            // keep the default looked up for its old (often empty) id.
+            let (app_id, _) = crate::ipc::methods::identity_of(window);
+            set_irreversible(window, &desktop_id_of(window, app_id.unwrap_or_default()), None);
         }
         return None;
     }
@@ -183,6 +328,7 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> (Placemen
     // does, a placement pass matches on empty strings and the caller retries.
     let named = !(facts.app_id.is_empty() && facts.title.is_empty());
     if state.config.window_rules.is_empty() {
+        set_irreversible(window, &facts.desktop_id, None);
         return (placement, named);
     }
     // Rules apply in file order, so a later rule wins on the same property.
@@ -258,16 +404,165 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> (Placemen
             RuleAction::NoAgent => {
                 window.user_data().insert_if_missing(|| NoAgent);
             }
+            // Settled after the loop by `irreversible_rule`.
+            RuleAction::IrreversibleCapable(_) => {}
             RuleAction::Sensitivity(_) => {
                 // Raise-only, and the class is already the strictest this
                 // build represents; there is nothing to lower.
                 if let Some(surface) = crate::shell::window_surface(window) {
-                    state.sensitive.insert(surface);
+                    if state.sensitive.insert(surface.clone()) {
+                        record_class_source(&surface, rule_class_source(i));
+                    }
                 }
             }
         }
     }
+    let irreversible = irreversible_rule(&state.config.window_rules, &facts);
+    set_irreversible(window, &facts.desktop_id, irreversible);
     (placement, named)
+}
+
+/// What the last matching `irreversible-capable` rule says, if any rule does
+/// (file order, a later rule wins, as for every other property).
+fn irreversible_rule(rules: &[WindowRule], facts: &Facts) -> Option<bool> {
+    rules.iter().rev().find_map(|r| match r.action {
+        RuleAction::IrreversibleCapable(v) if facts.matches(&r.matchers) => Some(v),
+        _ => None,
+    })
+}
+
+/// Settle this evaluation's `irreversible_capable`: the last matching rule,
+/// or the category default. Re-run on every evaluation, so a rule that stops
+/// matching (a title change) falls back to the default.
+fn set_irreversible(window: &Window, desktop_id: &str, rule: Option<bool>) {
+    window.user_data().insert_if_missing(RuleIrreversible::default);
+    if let Some(cell) = window.user_data().get::<RuleIrreversible>() {
+        cell.update(desktop_id, rule, category_default);
+    }
+}
+
+/// An explicit rule wins, both ways; otherwise the category default.
+#[cfg(test)]
+fn irreversible_value(default: bool, rule: Option<bool>) -> bool {
+    rule.unwrap_or(default)
+}
+
+/// Desktop-entry categories whose apps are `irreversible_capable` by default
+/// (S-06 §3.3: browsers, mail clients, terminals, file managers).
+const CAPABLE_CATEGORIES: &[&str] = &["WebBrowser", "Email", "TerminalEmulator", "FileManager"];
+
+/// The S-06 §3.3 default for an app: true when its desktop entry, found by
+/// id (`<id>.desktop`, then lowercased for an X11 class like `XTerm`) in the
+/// XDG data dirs, carries one of [`CAPABLE_CATEGORIES`]. No entry, or no id,
+/// is false. Blocking file reads: called at most once per window per id.
+fn category_default(id: &str) -> bool {
+    #[cfg(test)]
+    if let Some(dirs) = TEST_DATA_DIRS.with(|d| d.borrow().clone()) {
+        return category_default_in(&dirs, id);
+    }
+    category_default_in(&data_dirs(), id)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Data dirs for [`category_default`] in an in-process harness test, so
+    /// it never reads the host's desktop entries or touches the environment.
+    pub(crate) static TEST_DATA_DIRS: std::cell::RefCell<Option<Vec<std::path::PathBuf>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn category_default_in(dirs: &[std::path::PathBuf], id: &str) -> bool {
+    if id.is_empty() || id.contains('/') {
+        return false;
+    }
+    let lower = id.to_lowercase();
+    let names: &[&str] = if lower == id { &[id] } else { &[id, &lower] };
+    for dir in dirs {
+        for name in names {
+            let path = dir.join("applications").join(format!("{name}.desktop"));
+            if let Some(text) = read_entry(&path) {
+                // The first entry found shadows later ones, as XDG says.
+                return capable_categories(&text);
+            }
+        }
+    }
+    false
+}
+
+/// Largest desktop entry read; anything past it is ignored.
+const ENTRY_MAX: u64 = 64 * 1024;
+
+/// Read a desktop entry on the calloop thread without letting the file stall
+/// or flood it: opened non-blocking (a FIFO would otherwise block the open),
+/// accepted only if it is a regular file once symlinks are followed (so no
+/// FIFO, socket or `/dev/zero`), and read up to [`ENTRY_MAX`] bytes.
+fn read_entry(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut buf = Vec::new();
+    file.take(ENTRY_MAX).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// `$XDG_DATA_HOME` then `$XDG_DATA_DIRS`, with the spec's defaults.
+fn data_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    match std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
+        Some(d) => dirs.push(d.into()),
+        None => {
+            if let Some(home) = std::env::var_os("HOME") {
+                dirs.push(std::path::PathBuf::from(home).join(".local/share"));
+            }
+        }
+    }
+    let system = std::env::var("XDG_DATA_DIRS")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    dirs.extend(system.split(':').filter(|d| !d.is_empty()).map(Into::into));
+    dirs
+}
+
+/// Whether a desktop entry's `[Desktop Entry]` `Categories` names a capable
+/// category. Other groups (`[Desktop Action …]`) are ignored.
+fn capable_categories(text: &str) -> bool {
+    let mut in_entry = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_entry {
+            continue;
+        }
+        if let Some(v) = line.strip_prefix("Categories") {
+            if let Some(v) = v.trim_start().strip_prefix('=') {
+                return v
+                    .split(';')
+                    .map(str::trim)
+                    .any(|c| CAPABLE_CATEGORIES.contains(&c));
+            }
+        }
+    }
+    false
+}
+
+/// The id a window's desktop entry is looked up by: its app id, or an X11
+/// window's `WM_CLASS` class when it has none.
+fn desktop_id_of(window: &Window, app_id: String) -> String {
+    match window.x11_surface() {
+        Some(x11) if app_id.is_empty() => x11.class(),
+        _ => app_id,
+    }
 }
 
 /// Everything a matcher can ask about a window, read once.
@@ -280,6 +575,9 @@ struct Facts {
     output_connector: String,
     output_identity: String,
     workspace: i32,
+    /// The id its desktop entry is looked up by: the app id, or an X11
+    /// window's `WM_CLASS` class.
+    desktop_id: String,
     /// True for a window that identifies itself as a dialog/utility rather
     /// than a primary toplevel: an xdg_toplevel with `parent` set, or an X11
     /// window carrying `WM_TRANSIENT_FOR` or a non-`Normal`
@@ -338,9 +636,12 @@ impl Facts {
         } else {
             false
         };
+        let app_id = app_id.unwrap_or_default();
+        let desktop_id = desktop_id_of(window, app_id.clone());
         Self {
             cgroup: pid.map(cgroup_of).unwrap_or_default(),
-            app_id: app_id.unwrap_or_default(),
+            app_id,
+            desktop_id,
             title: title.unwrap_or_default(),
             pid,
             xwayland: window.toplevel().is_none(),
@@ -419,8 +720,258 @@ fn cgroup_of(pid: i32) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{fixed_size, settles};
+    use super::{
+        capable_categories, category_default_in, fixed_size, irreversible_rule, irreversible_value,
+        resolve_class_source, rule_class_source, settles, Facts, RuleIrreversible,
+        CLASS_SOURCE_CAPTURE_POLICY, CLASS_SOURCE_DEFAULT, CLASS_SOURCE_RULE_BASE, CLASS_SOURCE_X11,
+        DEFAULT_CACHE,
+    };
+    use crate::config::{Matchers, Pattern, RuleAction, WindowRule};
     use smithay::utils::{Logical, Size};
+
+    fn facts(app_id: &str, title: &str) -> Facts {
+        Facts {
+            app_id: app_id.into(),
+            title: title.into(),
+            pid: None,
+            xwayland: false,
+            cgroup: String::new(),
+            output_connector: String::new(),
+            output_identity: String::new(),
+            workspace: 1,
+            desktop_id: app_id.into(),
+            is_dialog: false,
+        }
+    }
+
+    fn rule(action: RuleAction, app_id: Option<&str>, title: Option<&str>) -> WindowRule {
+        WindowRule {
+            action,
+            matchers: Matchers {
+                app_id: app_id.and_then(Pattern::parse),
+                title: title.and_then(Pattern::parse),
+                ..Matchers::default()
+            },
+        }
+    }
+
+    /// An `applications/` dir holding the given `(id, Categories)` entries.
+    fn data_dir(tag: &str, entries: &[(&str, &str)]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("abyss-rules-{tag}-{}", std::process::id()));
+        let apps = dir.join("applications");
+        std::fs::create_dir_all(&apps).expect("apps dir");
+        for (id, cats) in entries {
+            std::fs::write(
+                apps.join(format!("{id}.desktop")),
+                format!("[Desktop Entry]\nType=Application\nName={id}\nCategories={cats}\n"),
+            )
+            .expect("desktop entry");
+        }
+        dir
+    }
+
+    #[test]
+    fn desktop_categories_decide_the_irreversible_default() {
+        let dir = data_dir(
+            "cats",
+            &[
+                ("firefox", "Network;WebBrowser;"),
+                ("org.gnome.Evolution", "GNOME;GTK;Office;Email;Calendar;"),
+                ("foot", "System;TerminalEmulator;"),
+                ("xterm", "System;TerminalEmulator;"),
+                ("org.gnome.Nautilus", "GNOME;GTK;Utility;Core;FileManager;"),
+                ("mpv", "AudioVideo;Audio;Video;Player;"),
+            ],
+        );
+        let dirs = [dir.clone()];
+        assert!(category_default_in(&dirs, "firefox"));
+        assert!(category_default_in(&dirs, "org.gnome.Evolution"));
+        assert!(category_default_in(&dirs, "foot"));
+        assert!(category_default_in(&dirs, "org.gnome.Nautilus"));
+        // An X11 class is matched lowercased.
+        assert!(category_default_in(&dirs, "XTerm"));
+        assert!(!category_default_in(&dirs, "mpv"));
+        // No entry, no id, or an id that would escape the dir: false.
+        assert!(!category_default_in(&dirs, "unknown-app"));
+        assert!(!category_default_in(&dirs, ""));
+        assert!(!category_default_in(&dirs, "../applications/foot"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_non_regular_or_huge_entry_is_not_read() {
+        let dir = data_dir("special", &[]);
+        let apps = dir.join("applications");
+        // A FIFO with no writer would block a plain open forever.
+        let fifo = apps.join("fifo.desktop");
+        let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).expect("path");
+        // SAFETY: `c` is a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(!category_default_in(std::slice::from_ref(&dir), "fifo"));
+        // A symlink to an endless device is not a regular file.
+        std::os::unix::fs::symlink("/dev/zero", apps.join("zero.desktop")).expect("symlink");
+        assert!(!category_default_in(std::slice::from_ref(&dir), "zero"));
+        // A symlink to a regular entry still counts.
+        std::fs::write(
+            apps.join("real.desktop"),
+            "[Desktop Entry]\nCategories=WebBrowser;\n",
+        )
+        .expect("entry");
+        std::os::unix::fs::symlink(apps.join("real.desktop"), apps.join("link.desktop")).expect("symlink");
+        assert!(category_default_in(std::slice::from_ref(&dir), "link"));
+        // Only the first 64 KiB is read: a category past it is not seen.
+        let mut big = String::from("[Desktop Entry]\n");
+        big.push_str(&"#".repeat(64 * 1024));
+        big.push_str("\nCategories=WebBrowser;\n");
+        std::fs::write(apps.join("big.desktop"), big).expect("entry");
+        assert!(!category_default_in(std::slice::from_ref(&dir), "big"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_late_name_gets_its_own_default() {
+        // A window mapped with no id, which names itself a browser after
+        // placement: the default follows the new id (the no-rules Placed
+        // path in `reevaluate` runs this same update with the current id).
+        let dir = data_dir("late", &[("firefox", "Network;WebBrowser;")]);
+        let dirs = [dir.clone()];
+        let slot = RuleIrreversible::default();
+        assert!(!slot.update("", None, |id| category_default_in(&dirs, id)));
+        assert!(slot.update("firefox", None, |id| category_default_in(&dirs, id)));
+        assert!(slot.value.get());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn default_lookups_are_cached_and_capped_per_window() {
+        let slot = RuleIrreversible::default();
+        let lookups = std::cell::Cell::new(0);
+        let lookup = |id: &str| {
+            lookups.set(lookups.get() + 1);
+            id == "firefox"
+        };
+        // Alternating ids every commit: one lookup per distinct id.
+        for _ in 0..50 {
+            assert!(slot.update("firefox", None, lookup));
+            assert!(!slot.update("mpv", None, lookup));
+        }
+        assert_eq!(lookups.get(), 2);
+        // A rule decides without a lookup.
+        assert!(slot.update("other", Some(true), lookup));
+        assert_eq!(lookups.get(), 2);
+        // Past the cap, a new id gets no lookup and defaults to false.
+        for i in 0..100 {
+            slot.update(&format!("id{i}"), None, lookup);
+        }
+        assert_eq!(lookups.get(), DEFAULT_CACHE);
+        assert!(!slot.update("firefox-late", None, |_| true));
+        // Cached ids still answer.
+        assert!(slot.update("firefox", None, lookup));
+        assert_eq!(lookups.get(), DEFAULT_CACHE);
+    }
+
+    #[test]
+    fn only_the_desktop_entry_group_counts() {
+        assert!(capable_categories(
+            "[Desktop Entry]\nCategories = Utility;FileManager\n"
+        ));
+        assert!(!capable_categories("[Desktop Entry]\nCategories=Utility;\n"));
+        assert!(!capable_categories(
+            "[Desktop Entry]\nName=x\n[Desktop Action new]\nCategories=WebBrowser;\n"
+        ));
+        // A substring is not a category.
+        assert!(!capable_categories(
+            "[Desktop Entry]\nCategories=WebBrowserLike;\n"
+        ));
+    }
+
+    #[test]
+    fn an_irreversible_rule_overrides_the_default_both_ways() {
+        let off = [rule(RuleAction::IrreversibleCapable(false), Some("^foot$"), None)];
+        let on = [rule(RuleAction::IrreversibleCapable(true), Some("^mpv$"), None)];
+        // A terminal (default true) pinned false, a player (default false)
+        // pinned true; a non-matching window keeps its default.
+        assert!(!irreversible_value(
+            true,
+            irreversible_rule(&off, &facts("foot", ""))
+        ));
+        assert!(irreversible_value(
+            false,
+            irreversible_rule(&on, &facts("mpv", ""))
+        ));
+        assert!(irreversible_value(
+            true,
+            irreversible_rule(&on, &facts("foot", ""))
+        ));
+        assert!(!irreversible_value(
+            false,
+            irreversible_rule(&off, &facts("mpv", ""))
+        ));
+        // Other actions are not irreversible rules.
+        let other = [rule(RuleAction::Float, Some("foot"), None)];
+        assert_eq!(irreversible_rule(&other, &facts("foot", "")), None);
+        // File order: the later matching rule wins.
+        let both = [
+            rule(RuleAction::IrreversibleCapable(false), Some("foot"), None),
+            rule(RuleAction::IrreversibleCapable(true), Some("foot"), None),
+        ];
+        assert_eq!(irreversible_rule(&both, &facts("foot", "")), Some(true));
+    }
+
+    #[test]
+    fn irreversible_is_re_evaluated_on_title_change() {
+        // A browser whose banking tab is pinned false (say, a kiosk policy
+        // turns the fallback off only there) returns to its default when the
+        // title moves on; a rule matching the new title turns it back.
+        let rules = [
+            rule(
+                RuleAction::IrreversibleCapable(false),
+                Some("firefox"),
+                Some("^Kiosk"),
+            ),
+            rule(RuleAction::IrreversibleCapable(true), Some("mpv"), Some("Admin")),
+        ];
+        let browser = |title| irreversible_value(true, irreversible_rule(&rules, &facts("firefox", title)));
+        assert!(!browser("Kiosk — Firefox"));
+        assert!(browser("Mail — Firefox"));
+        let player = |title| irreversible_value(false, irreversible_rule(&rules, &facts("mpv", title)));
+        assert!(!player("movie.mkv"));
+        assert!(player("Admin panel"));
+        assert!(!player("movie.mkv"));
+    }
+
+    #[test]
+    fn class_source_names_each_origin() {
+        // Unraised: the Wayland default, or the X11 classifier's pinned class.
+        assert_eq!(resolve_class_source(None, false), CLASS_SOURCE_DEFAULT);
+        assert_eq!(resolve_class_source(None, true), CLASS_SOURCE_X11);
+        // A recorded raise wins over either, including on an X11 window.
+        assert_eq!(
+            resolve_class_source(Some(CLASS_SOURCE_CAPTURE_POLICY), false),
+            CLASS_SOURCE_CAPTURE_POLICY
+        );
+        assert_eq!(
+            resolve_class_source(Some(rule_class_source(3)), true),
+            CLASS_SOURCE_RULE_BASE + 3
+        );
+        // The rule index is encoded, and saturates rather than wraps into
+        // another origin's range.
+        assert_eq!(rule_class_source(0), CLASS_SOURCE_RULE_BASE);
+        assert_eq!(rule_class_source(239), u8::MAX);
+        assert_eq!(rule_class_source(240), u8::MAX);
+        assert_eq!(rule_class_source(100_000), u8::MAX);
+        // The named origins are distinct and below the rule range.
+        let named = [
+            CLASS_SOURCE_DEFAULT,
+            CLASS_SOURCE_X11,
+            CLASS_SOURCE_CAPTURE_POLICY,
+        ];
+        assert!(named.iter().all(|s| *s < CLASS_SOURCE_RULE_BASE));
+        assert_eq!(
+            named.len(),
+            named.iter().collect::<std::collections::HashSet<_>>().len()
+        );
+    }
 
     fn size(w: i32, h: i32) -> Size<i32, Logical> {
         Size::from((w, h))

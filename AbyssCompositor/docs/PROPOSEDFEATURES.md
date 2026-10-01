@@ -201,10 +201,6 @@ first, then where the code goes, then the COMP-16 milestone.
 
 ### Phase 1 exit
 
-- **`Toplevel.class_source` and `irreversible_capable`.** COMP-05 §1 (A-12);
-  the rest of milestone 9e. Absent everywhere in `crates/`. Goes in
-  `crates/abyss/src/shell/` (the toplevel record) fed from `shell/rules.rs`,
-  with the unit tests the 9e gate names. *Phase 1, M9e.*
 - **Cursor capture for `ext-image-copy-capture`.** COMP-06 §1, ADR
   0029/0030. `CreatePointerCursorSession` is answered with a session that
   never produces a frame (`protocols/standard/image_copy_capture.rs:329`,
