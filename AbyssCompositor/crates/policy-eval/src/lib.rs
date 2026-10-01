@@ -16,7 +16,11 @@
 
 pub mod cbor;
 pub mod grant;
+pub mod scope;
 pub mod task;
 
 pub use grant::{Capability, Constraints, Grant, Rate, VerifyError};
+pub use scope::{Class, SceneView, WindowFacts};
+// Re-exported so the verifier's one key type is the one callers hold.
+pub use ed25519_dalek::VerifyingKey;
 pub use task::{CloseReason, Counters, Origin, RateRing, Task, TaskEvent, TaskState, Ulid};

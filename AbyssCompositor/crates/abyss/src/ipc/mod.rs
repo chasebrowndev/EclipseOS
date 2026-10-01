@@ -156,6 +156,13 @@ impl IpcState {
         h
     }
 
+    /// The handle `window` already has, without minting one. The agent scene
+    /// filter evaluates `handle:` scopes with this, so judging a window never
+    /// changes the handle counter.
+    pub fn existing_handle(&self, window: &Window) -> Option<u64> {
+        self.handles.iter().find(|(_, w)| w == window).map(|(h, _)| *h)
+    }
+
     pub fn window_for(&self, handle: u64) -> Option<Window> {
         self.handles
             .iter()

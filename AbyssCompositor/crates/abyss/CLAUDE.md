@@ -19,8 +19,11 @@ Read the root `CLAUDE.md` first. This file only adds crate-local rules.
   its owners: command-widget approval (`approval.rs`, ADR 0067) and the §3.10
   destructive-action prompt (`erase.rs`, asked over the root-only `socket.rs`,
   ADR 0061).
-- Not yet present: `protocols/agent/`, `protocols/semantic/`,
-  `policy/`, `audit/`. When they land they go there, not elsewhere.
+- `policy/` (TCB): per-agent grant admission (`mod.rs`) and the agent scene
+  filter (`scene.rs`), the one choke point every agent-facing window path
+  goes through. Scopes themselves are evaluated in `policy-eval`.
+- Not yet present: `protocols/agent/`, `protocols/semantic/`, `audit/`.
+  When they land they go there, not elsewhere.
 - Human keystrokes are never logged by content. Log keysym names only behind `trace`.
 - Logs go to journald: `journalctl --user -t abyss -o cat --since "5 min ago"`.
 - Nested test under the host session (itself abyss): `./target/debug/abyss --backend winit & pid=$!`,

@@ -25,8 +25,10 @@ dependencies = [
  "anyhow",
  "blake3",
  "calloop 0.14.4",
+ "ed25519-dalek",
  "kdl",
  "libc",
+ "policy-eval",
  "regex",
  "serde_json",
  "smithay",
@@ -3735,6 +3737,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "ed25519-dalek",
+ "regex",
 ]
 
 [[package]]

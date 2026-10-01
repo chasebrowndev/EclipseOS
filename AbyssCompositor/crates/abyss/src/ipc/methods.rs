@@ -287,11 +287,9 @@ fn get_windows(state: &mut AbyssState) -> Reply {
             "pid": pid_of(state, &w),
             "focused": state.focus.as_ref() == Some(&w),
             // The default class for anything not explicitly raised
-            // (root invariant: default is `private`). `secret` and
-            // `no-agent` come from `windowrule`, which the config layer does
-            // not parse yet, so this is the floor and never a claim of less.
+            // (root invariant: default is `private`); never a claim of less.
             "trust": if sensitive { "secret" } else { "private" },
-            "no_agent": sensitive,
+            "no_agent": crate::shell::rules::hidden_from_agents(&w),
             // COMP-05 §1. `class_source` is audit/debug provenance for the
             // class above (`shell::rules::CLASS_SOURCE_*`); nothing decides
             // on it.
