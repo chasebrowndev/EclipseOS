@@ -16,6 +16,7 @@
 
 pub mod cbor;
 pub mod grant;
+pub mod link;
 pub mod scope;
 pub mod task;
 

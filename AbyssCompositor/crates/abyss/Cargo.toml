@@ -31,6 +31,7 @@ tracing-journald.workspace = true
 anyhow.workspace = true
 xkbcommon.workspace = true
 libc = "0.2"
+rustix.workspace = true
 kdl.workspace = true
 regex.workspace = true
 serde_json.workspace = true

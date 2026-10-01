@@ -309,6 +309,7 @@ pub fn start(state: &mut AbyssState, handle: &LoopHandle<'static, AbyssState>) {
     state.config = cfg;
     crate::trusted_ui::approval::schedule(state);
     crate::config::catalog::start(handle);
+    crate::policy::link::start(state);
 
     // SAFETY: `inotify_init1` takes only flags and returns a new fd or -1.
     let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
@@ -397,6 +398,9 @@ pub fn apply(state: &mut AbyssState, next: Addons) {
     log_hooks(&state.addons);
     let now = state.addons.hooks;
     let turned_off = |h: Hook| before.is_on(h) && !now.is_on(h);
+    if now.is_on(Hook::Agents) {
+        crate::policy::link::start(state);
+    }
 
     if turned_off(Hook::RegionSelect) && state.region_select.active() {
         state.region_select.cancel();

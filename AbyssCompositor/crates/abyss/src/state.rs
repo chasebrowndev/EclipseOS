@@ -240,6 +240,7 @@ pub struct AbyssState {
     /// its peer; while `None`, `create_agent` fails with `POLICY_UNAVAILABLE`.
     /// Written only by the link in `policy/`.
     pub policy_key: Option<policy_eval::VerifyingKey>,
+    pub policy_link: crate::policy::link::Link,
 
     /// Live capture allowlist, shared with the `zwlr_screencopy_v1` bind
     /// filter. Written by the config reload path.
@@ -540,6 +541,7 @@ impl AbyssState {
             syncobj_state: None,
             sensitive: HashSet::new(),
             policy_key: None,
+            policy_link: Default::default(),
             session_lock_state,
             lock: Default::default(),
             idle: Default::default(),

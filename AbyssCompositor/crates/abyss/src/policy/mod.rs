@@ -9,6 +9,7 @@
 //! The protocol layer (`protocols/agent/`) owns the Wayland objects and calls
 //! in here; it never reads a grant itself.
 
+pub mod link;
 pub mod scene;
 
 use policy_eval::{Grant, SceneView, VerifyError, VerifyingKey};
