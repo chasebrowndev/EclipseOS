@@ -100,8 +100,12 @@ fn with_facts<R>(state: &AbyssState, window: &Window, f: impl FnOnce(&WindowFact
     }
 }
 
+/// No capability lists a `secret` toplevel: S-01 §2.1 has no
+/// `scene.list.secret`, and S-05 §2 delivers secret content to no agent
+/// without a `*.secret` capability and a per-request prompt. A `class:secret`
+/// scope narrows; it never makes one visible.
 fn visible(state: &AbyssState, view: &SceneView, window: &Window) -> bool {
-    window.alive() && with_facts(state, window, |w| view.visible(w))
+    window.alive() && with_facts(state, window, |w| w.class != Class::Secret && view.visible(w))
 }
 
 /// `list_toplevels`: every window that exists for this agent, with its
@@ -125,6 +129,16 @@ pub fn list(state: &mut AbyssState, view: &SceneView) -> Vec<(u64, Window)> {
 /// with `invalid_argument`, detail `handle` (F-07).
 pub fn resolve(state: &AbyssState, view: &SceneView, handle: u64) -> Option<Window> {
     state.ipc.window_for(handle).filter(|w| visible(state, view, w))
+}
+
+/// Whether a window [`resolve`] or [`hit`] returned may be read in detail
+/// (`get_toplevel`, `hit_test`; S-01 §2.1). `scene.read` reaches `public`
+/// and `private` windows within its scopes. A `secret` window needs
+/// `scene.read.secret` and a per-request prompt, and there is no prompt path
+/// yet, so it is never readable whatever the grant says; [`visible`]
+/// already refuses it.
+pub fn readable(state: &AbyssState, read: &SceneView, window: &Window) -> bool {
+    visible(state, read, window)
 }
 
 /// `hit_test`: the topmost toplevel at `pos` if it exists for this agent,

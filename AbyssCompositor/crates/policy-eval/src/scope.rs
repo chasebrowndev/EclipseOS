@@ -273,15 +273,26 @@ pub struct SceneView {
 /// The capability whose scope defines what exists for an agent.
 pub const SCENE_LIST: &str = "scene.list";
 
+/// The capability whose scope defines which existing windows an agent may
+/// read in detail (`get_toplevel`, `hit_test`; S-01 §2.1).
+pub const SCENE_READ: &str = "scene.read";
+
 impl SceneView {
     /// Builds the view from a principal's live, verified grants. Callers pass
     /// only grants that came out of [`Grant::verify`] and are not revoked;
     /// this function does not re-check either.
     pub fn compile<'a>(grants: impl IntoIterator<Item = &'a Grant>) -> SceneView {
+        SceneView::compile_for(SCENE_LIST, grants)
+    }
+
+    /// The same compilation over another capability's scopes, under the
+    /// same rules (an unscoped line matches nothing, the class ceiling
+    /// defaults to `public`).
+    pub fn compile_for<'a>(cap: &str, grants: impl IntoIterator<Item = &'a Grant>) -> SceneView {
         let lines = grants
             .into_iter()
             .flat_map(|g| g.capabilities.iter())
-            .filter(|c| c.name == SCENE_LIST)
+            .filter(|c| c.name == cap)
             .filter_map(|c| Line::compile(&c.scopes))
             .collect();
         SceneView { lines }
@@ -465,6 +476,9 @@ mod tests {
             quota: None,
         });
         assert!(!SceneView::compile([&g]).visible(&win()));
+        // And the read view counts only its own capability's lines.
+        assert!(SceneView::compile_for(SCENE_READ, [&g]).visible(&win()));
+        assert!(!SceneView::compile_for(SCENE_READ, [&grant(&[&["handle:7"]])]).visible(&win()));
     }
 
     #[test]

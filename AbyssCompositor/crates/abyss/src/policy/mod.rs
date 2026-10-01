@@ -12,6 +12,7 @@
 pub mod link;
 pub mod scene;
 
+use policy_eval::scope::SCENE_READ;
 use policy_eval::{Grant, SceneView, VerifyError, VerifyingKey};
 
 /// Why a grant was not admitted to an agent object.
@@ -36,6 +37,17 @@ pub struct Agent {
     principal: String,
     grants: Vec<Grant>,
     view: SceneView,
+    read: SceneView,
+}
+
+/// What one request is filtered through, compiled from the live grants.
+#[derive(Debug, Clone, Copy)]
+pub struct Views<'a> {
+    /// `scene.list`: what exists.
+    pub list: &'a SceneView,
+    /// `scene.read`: which of those may be read in detail. Only consulted
+    /// through [`scene::readable`].
+    pub read: &'a SceneView,
 }
 
 /// The principal prefix every agent grant carries (S-01 §4).
@@ -56,6 +68,7 @@ impl Agent {
             principal: grant.principal.clone(),
             grants: vec![grant],
             view: SceneView::default(),
+            read: SceneView::default(),
         };
         agent.recompile();
         Ok(agent)
@@ -82,17 +95,20 @@ impl Agent {
         &self.principal
     }
 
-    /// The visibility to filter this request through, after dropping every
+    /// The views to filter this request through, after dropping every
     /// grant that has expired since the last request (S-01 §4: expiry is
     /// checked at request time, no grace). `None` when no grant is left: the
     /// agent then sees nothing and can do nothing.
-    pub fn view_at(&mut self, now_ms: u64) -> Option<&SceneView> {
+    pub fn view_at(&mut self, now_ms: u64) -> Option<Views<'_>> {
         let before = self.grants.len();
         self.grants.retain(|g| g.is_valid_at(now_ms).is_ok());
         if self.grants.len() != before {
             self.recompile();
         }
-        (!self.grants.is_empty()).then_some(&self.view)
+        (!self.grants.is_empty()).then_some(Views {
+            list: &self.view,
+            read: &self.read,
+        })
     }
 
     /// A revocation push from `policyd` (S-01 §6): drops every grant it
@@ -110,6 +126,7 @@ impl Agent {
 
     fn recompile(&mut self) {
         self.view = SceneView::compile(&self.grants);
+        self.read = SceneView::compile_for(SCENE_READ, &self.grants);
     }
 }
 
