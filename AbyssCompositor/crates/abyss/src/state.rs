@@ -235,6 +235,12 @@ pub struct AbyssState {
     /// compositor keeps the pixels it can redact.
     pub sensitive: HashSet<smithay::reexports::wayland_server::protocol::wl_surface::WlSurface>,
 
+    /// The `policyd` key grants are verified against, pinned for the session
+    /// (COMP-01 §6, F-05). `None` until the `policyd` link has authenticated
+    /// its peer; while `None`, `create_agent` fails with `POLICY_UNAVAILABLE`.
+    /// Written only by the link in `policy/`.
+    pub policy_key: Option<policy_eval::VerifyingKey>,
+
     /// Live capture allowlist, shared with the `zwlr_screencopy_v1` bind
     /// filter. Written by the config reload path.
     pub capture_allow: crate::config::Allowlist,
@@ -533,6 +539,7 @@ impl AbyssState {
             #[cfg(feature = "drm")]
             syncobj_state: None,
             sensitive: HashSet::new(),
+            policy_key: None,
             session_lock_state,
             lock: Default::default(),
             idle: Default::default(),
