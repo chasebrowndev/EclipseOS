@@ -415,6 +415,8 @@ pub struct Pipeline {
     frame: Vec<Uniform>,
     empty: wgpu::BindGroup,
     backdrop: Option<Cached>,
+    /// Kawase uniform buffers, one per pass index, reused by every rebuild.
+    scratch: Vec<wgpu::Buffer>,
     /// The target is not sRGB: the shader encodes.
     encode: bool,
 }
@@ -598,6 +600,7 @@ impl shader::Pipeline for Pipeline {
             frame: Vec::new(),
             empty,
             backdrop: None,
+            scratch: Vec::new(),
             encode: !format.is_srgb(),
         }
     }
@@ -740,12 +743,14 @@ impl Pipeline {
                 target,
             ));
         }
-        let result = texture("fog.glass.blurred", width, height, LEVEL, target);
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("fog.glass.blur"),
         });
         let offset = b.blur.offset();
+        // One uniform buffer per pass index, kept across rebuilds.
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let mut next = 0;
         let mut run =
             |pipeline: &wgpu::RenderPipeline, src: &wgpu::Texture, dst: &wgpu::Texture| {
                 let size = src.size();
@@ -758,13 +763,17 @@ impl Pipeline {
                 ] {
                     data.extend_from_slice(&f.to_ne_bytes());
                 }
-                let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("fog.glass.kawase"),
-                    size: 16,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                queue.write_buffer(&uniform, 0, &data);
+                if next == scratch.len() {
+                    scratch.push(device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("fog.glass.kawase"),
+                        size: 16,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }));
+                }
+                let uniform = &scratch[next];
+                next += 1;
+                queue.write_buffer(uniform, 0, &data);
                 let view = src.create_view(&wgpu::TextureViewDescriptor::default());
                 let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("fog.glass.kawase"),
@@ -810,12 +819,15 @@ impl Pipeline {
         for i in (2..levels.len()).rev() {
             run(&self.up, &levels[i], &levels[i - 1]);
         }
-        run(&self.up, &levels[levels.len().min(2) - 1], &result);
+        // The result is level 1 (half size, bilinear-sampled by uv); a
+        // 1px-wide snapshot has no levels and is used as is.
+        let result = &levels[levels.len().min(2) - 1];
+        self.scratch = scratch;
         queue.submit([encoder.finish()]);
 
         self.backdrop = Some(Cached {
             id: b.id,
-            group: texture_group(device, &self.texture_layout, &result, &self.sampler),
+            group: texture_group(device, &self.texture_layout, result, &self.sampler),
         });
     }
 }
