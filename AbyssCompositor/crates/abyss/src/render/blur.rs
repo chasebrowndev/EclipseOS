@@ -192,24 +192,31 @@ pub struct BlurElement<T: Texture = GlesTexture> {
 }
 
 impl<T: Texture + Clone + 'static> BlurElement<T> {
-    /// Place `texture` (physical, buffer scale 1, upright, its top-left at
-    /// `origin` in the output) so the element covers exactly `region` and
-    /// samples exactly `region` of it.
+    /// Place `texture` (buffer scale 1, upright, covering `crop` of the output
+    /// at whatever resolution it was stored, e.g. half) so the element covers
+    /// exactly `region` and samples exactly `region` of it, stretched.
     fn placed(
         id: Id,
         context: ContextId<T>,
         texture: T,
-        origin: Point<i32, Physical>,
+        crop: Rectangle<i32, Physical>,
         region: Rectangle<i32, Physical>,
         scale: Scale<f64>,
     ) -> Self {
         // The result texture is built with a literal `texture_scale` of 1, so
         // `Element::src()` hands this rectangle straight to the GPU with no
         // further scaling. It must therefore already be in the texture's own
-        // buffer space, i.e. `region` unscaled and relative to `origin`.
+        // buffer space, i.e. `region` relative to `crop`, times the texture's
+        // texels per output pixel (below 1 for a reduced-resolution result).
+        let sx = texture.width() as f64 / crop.size.w.max(1) as f64;
+        let sy = texture.height() as f64 / crop.size.h.max(1) as f64;
         let src = Rectangle::<f64, smithay::utils::Logical>::new(
-            ((region.loc.x - origin.x) as f64, (region.loc.y - origin.y) as f64).into(),
-            (region.size.w as f64, region.size.h as f64).into(),
+            (
+                (region.loc.x - crop.loc.x) as f64 * sx,
+                (region.loc.y - crop.loc.y) as f64 * sy,
+            )
+                .into(),
+            (region.size.w as f64 * sx, region.size.h as f64 * sy).into(),
         );
         // The inner element still wants a logical footprint. It only feeds the
         // inner `geometry`, which this element never reports.
@@ -724,7 +731,7 @@ impl BlurStore {
             entry.id.clone(),
             renderer.context_id(),
             texture,
-            crop.loc,
+            crop,
             region,
             scale,
         );
@@ -865,30 +872,33 @@ where
         renderer,
         level0,
         &mut mid[0],
-        down,
+        Some(down),
         offset,
         Transform::Normal,
         Some(tex),
     )?;
     for level in 1..passes {
         let (src, dst) = split_pair(mid, level - 1, level);
-        blit(renderer, src, dst, down, offset, Transform::Normal, None)?;
+        blit(renderer, src, dst, Some(down), offset, Transform::Normal, None)?;
     }
 
-    // 3. Upsample. The last step writes into the per-window result texture so
-    //    the element can hold it while the chain is reused for the next window.
-    for level in (1..passes).rev() {
+    // 3. Upsample down to level 2. The last step writes level 1 (half size)
+    //    into the per-window result texture so the element can hold it while
+    //    the chain is reused for the next window; the element stretches it to
+    //    the region with bilinear filtering. One pass has no level 2: level 1
+    //    is copied as is.
+    for level in (2..passes).rev() {
         let (src, dst) = split_pair(mid, level, level - 1);
-        blit(renderer, src, dst, up, offset, Transform::Normal, None)?;
+        blit(renderer, src, dst, Some(up), offset, Transform::Normal, None)?;
     }
-    let mut result = sized(
-        renderer,
-        reuse,
-        crop.size.to_logical(1).to_buffer(1, Transform::Normal),
-    )?;
-    {
+    let half = mid[0].size();
+    let mut result = sized(renderer, reuse, half)?;
+    if passes >= 2 {
+        let src = mid[1].clone();
+        blit(renderer, &src, &mut result, Some(up), offset, orient, None)?;
+    } else {
         let src = mid[0].clone();
-        blit(renderer, &src, &mut result, up, offset, orient, None)?;
+        blit(renderer, &src, &mut result, None, offset, orient, None)?;
     }
     Ok(result)
 }
@@ -919,12 +929,12 @@ fn split_pair(chain: &mut [GlesTexture], src: usize, dst: usize) -> (&GlesTextur
 
 /// One Kawase pass: draw the whole of `src` over the whole of `dst`, sampling
 /// `src` (or just its `from` rectangle) under `transform` (`Normal` except for
-/// the final, upright-ing pass). The half-pixel is always one of `src`'s own.
+/// the final, upright-ing pass), through `program` or the default shader. The half-pixel is always one of `src`'s own.
 fn blit(
     renderer: &mut GlesRenderer,
     src: &GlesTexture,
     dst: &mut GlesTexture,
-    program: &GlesTexProgram,
+    program: Option<&GlesTexProgram>,
     offset: f32,
     transform: Transform,
     from: Option<Rectangle<f64, BufferCoords>>,
@@ -946,7 +956,7 @@ fn blit(
         &[],
         transform,
         1.0,
-        Some(program),
+        program,
         &uniforms,
     )?;
     let _ = frame.finish()?;
@@ -1445,7 +1455,7 @@ mod tests {
                 Id::new(),
                 ContextId::new(),
                 Backdrop(fb),
-                (0, 0).into(),
+                Rectangle::from_size((fb.w, fb.h).into()),
                 region,
                 scale,
             );
@@ -1475,7 +1485,7 @@ mod tests {
         let (_, crop) = crop_rects(region, 64, Size::from((1920, 1080)), 3, false).unwrap();
         let tex = Backdrop(Size::from((crop.size.w, crop.size.h)));
         let scale = Scale::from(1.0);
-        let el = BlurElement::placed(Id::new(), ContextId::new(), tex, crop.loc, region, scale);
+        let el = BlurElement::placed(Id::new(), ContextId::new(), tex, crop, region, scale);
         assert_eq!(el.geometry(scale), region);
         let want = Rectangle::<f64, BufferCoords>::new(
             (
@@ -1487,6 +1497,29 @@ mod tests {
         );
         assert_eq!(el.src(), want);
         assert!(crop.contains_rect(grow(region, 64)));
+    }
+
+    /// A half-size result is sampled at half the region's offset and size.
+    #[test]
+    fn a_half_size_result_is_sampled_at_half_coordinates() {
+        let region = r(1000, 500, 400, 300);
+        let (_, crop) = crop_rects(region, 64, Size::from((1920, 1080)), 3, false).unwrap();
+        let tex = Backdrop(Size::from((crop.size.w / 2, crop.size.h / 2)));
+        let scale = Scale::from(1.0);
+        let el = BlurElement::placed(Id::new(), ContextId::new(), tex, crop, region, scale);
+        assert_eq!(el.geometry(scale), region);
+        let want = Rectangle::<f64, BufferCoords>::new(
+            (
+                (region.loc.x - crop.loc.x) as f64 / 2.0,
+                (region.loc.y - crop.loc.y) as f64 / 2.0,
+            )
+                .into(),
+            (200.0, 150.0).into(),
+        );
+        assert_eq!(el.src(), want);
+        let s = el.src();
+        assert!(s.loc.x + s.size.w <= (crop.size.w / 2) as f64);
+        assert!(s.loc.y + s.size.h <= (crop.size.h / 2) as f64);
     }
 
     #[test]
