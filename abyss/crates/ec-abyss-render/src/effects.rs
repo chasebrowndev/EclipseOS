@@ -86,11 +86,11 @@ void main() {
 /// functions are spliced in right after it (see [`shaped_source`]).
 const RADIUS_DECL: &str = "uniform float radius;\n";
 
-/// A layer's glass shape (Vol 1 §5.2, [`crate::render::blur::Shape`]): up to
+/// A layer's glass shape (Vol 1 §5.2, [`crate::blur::Shape`]): up to
 /// four boxes in `gl_FragCoord` space (`x y w h`, as [`rounding_uniforms`]
 /// places `win_rect`), each rounded by `radius`, unioned in order by a
 /// polynomial smooth-min of width `fillet`. `boxes` is how many are live
-/// (2..=4). Mirrored line for line by [`crate::render::blur::shape_sd`].
+/// (2..=4). Mirrored line for line by [`crate::blur::shape_sd`].
 const SHAPE_FNS: &str = r#"
 #define SHAPED 1
 uniform vec4 box0;
@@ -178,11 +178,7 @@ pub fn compile_glass_shaped(renderer: &mut GlesRenderer) -> Result<GlesTexProgra
 /// The shape uniforms appended to a mask program's own: the boxes placed in
 /// `gl_FragCoord` space exactly as [`rounding_uniforms`] places `win_rect`,
 /// unused slots zeroed (`boxes` says how many are live).
-pub fn shape_uniforms(
-    shape: &crate::render::blur::Shape,
-    fb_height: i32,
-    mirrored: bool,
-) -> [Uniform<'static>; 6] {
+pub fn shape_uniforms(shape: &crate::blur::Shape, fb_height: i32, mirrored: bool) -> [Uniform<'static>; 6] {
     let mut boxes = [[0.0f32; 4]; 4];
     for (slot, rect) in boxes.iter_mut().zip(shape.rects()) {
         let y = if mirrored {
@@ -498,7 +494,7 @@ pub fn glass_uniforms(
     tex_size: (i32, i32),
     strength: f32,
     bevel: f32,
-    glass: &crate::config::GlassBlur,
+    glass: &ec_abyss_config::GlassBlur,
     bezel: Option<(i32, bool, [f32; 4])>,
 ) -> Vec<Uniform<'static>> {
     let (inner, opaque, rim_color) = bezel.map_or((0.0, 0.0, [1.0; 4]), |(inner, opaque, rim)| {
@@ -913,7 +909,7 @@ mod tests {
             (1920, 1080),
             4.0,
             16.0,
-            &crate::config::GlassBlur::default(),
+            &ec_abyss_config::GlassBlur::default(),
             None,
         );
         let set: Vec<&str> = got.iter().map(|u| &*u.name).collect();
@@ -928,7 +924,7 @@ mod tests {
             (1920, 1080),
             4.0,
             6.0,
-            &crate::config::GlassBlur::default(),
+            &ec_abyss_config::GlassBlur::default(),
             Some((6, true, [0.43, 0.34, 0.11, 0.45])),
         );
         let set: Vec<&str> = bezel.iter().map(|u| &*u.name).collect();
@@ -969,7 +965,7 @@ mod tests {
                 ),
             ],
         };
-        let shape = crate::render::blur::Shape::from_region(
+        let shape = crate::blur::Shape::from_region(
             Some(&region),
             (400, 300).into(),
             (0, 0).into(),
@@ -986,7 +982,7 @@ mod tests {
             (1920, 1080),
             4.0,
             16.0,
-            &crate::config::GlassBlur::default(),
+            &ec_abyss_config::GlassBlur::default(),
             None,
         );
         got.extend(shape_uniforms(&shape, 1080, true));
@@ -1006,7 +1002,7 @@ mod tests {
         assert_eq!(find("box2"), format!("{:?}", Uniform::new("box2", [0.0f32; 4])));
         assert_eq!(find("boxes"), format!("{:?}", Uniform::new("boxes", 2.0f32)));
         // A different shape is a different look (it bumps the backdrop's commit).
-        let other = crate::render::blur::Shape::from_region(
+        let other = crate::blur::Shape::from_region(
             Some(&region),
             (400, 100).into(),
             (0, 0).into(),
@@ -1031,7 +1027,7 @@ mod tests {
             (1920, 1080),
             4.0,
             16.0,
-            &crate::config::GlassBlur::default(),
+            &ec_abyss_config::GlassBlur::default(),
             None,
         );
         let find = |name: &str| format!("{:?}", got.iter().find(|u| u.name == name).unwrap());

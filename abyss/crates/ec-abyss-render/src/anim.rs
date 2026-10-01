@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use smithay::desktop::{Space, Window};
 use smithay::utils::{Logical, Point};
 
-use crate::config::Config;
+use ec_abyss_config::Config;
 
 /// One window's in-flight move.
 struct Move {
@@ -78,7 +78,7 @@ struct Ramp {
 }
 
 impl Ramp {
-    fn new(anim: &crate::config::Animation, now: Instant) -> Self {
+    fn new(anim: &ec_abyss_config::Animation, now: Instant) -> Self {
         Self {
             start: now,
             duration: Duration::from_millis(anim.duration_ms as u64),
@@ -218,7 +218,7 @@ impl AnimStore {
     pub fn slide(
         &mut self,
         space: &Space<Window>,
-        anim: &crate::config::Animation,
+        anim: &ec_abyss_config::Animation,
         windows: &[Window],
         from: Point<i32, Logical>,
     ) {

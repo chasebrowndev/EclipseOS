@@ -47,29 +47,8 @@ pub fn window_surface(window: &Window) -> Option<WlSurface> {
     }
 }
 
-/// The tile's inner rect (after the border shrink) a tiled window was last
-/// configured to, in global logical coordinates. Render crops tiled windows to
-/// it, since some clients (Electron) ignore the configure and overhang their
-/// tile (COMP-05, KNOWNBUGS TILE-01). `None` for floating windows.
-pub struct TileClip(Cell<Option<Rectangle<i32, Logical>>>);
-
-/// The tile rect a tiled window is cropped to, if it is tiled.
-pub fn tile_clip(window: &Window) -> Option<Rectangle<i32, Logical>> {
-    window.user_data().get::<TileClip>().and_then(|c| c.0.get())
-}
-
-/// The output whose workspace laid this window out. Render draws a window on
-/// that output only and cuts it to that output's rectangle, so no part of it
-/// shows again on a neighbouring monitor sharing the global space.
-pub struct OwnerOutput(Cell<Option<Output>>);
-
-/// The output that owns `window`, once a layout pass has placed it.
-pub fn owner_output(window: &Window) -> Option<Output> {
-    let owner = window.user_data().get::<OwnerOutput>()?;
-    let out = owner.0.take();
-    owner.0.set(out.clone());
-    out
-}
+// Read by the renderer, written here; defined in `ec-abyss-render::userdata`.
+pub use ec_abyss_render::userdata::{layer_geometry, owner_output, tile_clip, LayerOffset, OwnerOutput, TileClip};
 
 fn set_owner_output(window: &Window, output: &Output) {
     let data = window.user_data();
@@ -829,37 +808,6 @@ fn hit_under(
 }
 
 // ------------------------------------------------------ layer placement
-
-/// An explicit position for a layer surface, over and above the arrangement
-/// `LayerMap::arrange` derives from its anchors and margins.
-///
-/// The layer map has no notion of a position a layer surface did not ask for,
-/// so the delta is kept beside it, in the surface's own user data. Nothing in
-/// the protocol sets this; it exists for the harnesses and test hooks that
-/// place a layer surface directly (the wlcs `position_window` hook is the only
-/// caller today). An unset offset is `(0, 0)`, so every read path below stays
-/// exactly the arrangement the layer map produced.
-#[derive(Default)]
-struct LayerOffset(std::cell::Cell<Point<i32, Logical>>);
-
-fn layer_offset(layer: &DesktopLayerSurface) -> Point<i32, Logical> {
-    layer
-        .user_data()
-        .get::<LayerOffset>()
-        .map(|o| o.0.get())
-        .unwrap_or_default()
-}
-
-/// Geometry of a mapped layer surface, including any explicit placement.
-///
-/// Every hit-test and render path must use this rather than
-/// `LayerMap::layer_geometry`, or an explicitly placed layer surface is drawn
-/// in one place and clicked in another.
-pub fn layer_geometry(map: &LayerMap, layer: &DesktopLayerSurface) -> Option<Rectangle<i32, Logical>> {
-    let mut geo = map.layer_geometry(layer)?;
-    geo.loc += layer_offset(layer);
-    Some(geo)
-}
 
 /// Place a mapped layer surface at an explicit output-local position.
 pub fn place_layer(map: &LayerMap, layer: &DesktopLayerSurface, loc: Point<i32, Logical>) {
@@ -2306,6 +2254,27 @@ pub struct TileDrag {
     /// only scans this.
     candidates: Vec<DropCandidate>,
     pub preview: DropPreview,
+}
+
+impl ec_abyss_render::drop::DropGuides for TileDrag {
+    fn armed(&self) -> bool {
+        self.armed
+    }
+    fn output(&self) -> &Output {
+        &self.output
+    }
+    fn ghost(&self) -> Option<Rectangle<i32, Logical>> {
+        self.preview.ghost
+    }
+    fn tiles(&self) -> &[(Window, Rectangle<i32, Logical>)] {
+        &self.tiles
+    }
+    fn area(&self) -> Rectangle<i32, Logical> {
+        self.area
+    }
+    fn band(&self) -> i32 {
+        self.band
+    }
 }
 
 fn main_mod_held(state: &AbyssState) -> bool {

@@ -41,14 +41,5 @@ impl InputMethodHandler for AbyssState {
 
 delegate_input_method_manager!(AbyssState);
 
-/// Top-left of the popup in global logical coordinates, or `None` if it is
-/// gone or has no parent yet.
-pub fn popup_location(popup: &PopupSurface) -> Option<smithay::utils::Point<i32, Logical>> {
-    if !popup.alive() {
-        return None;
-    }
-    let parent = popup.get_parent()?;
-    let rect = popup.text_input_rectangle();
-    let offset: smithay::utils::Point<i32, Logical> = (rect.loc.x, rect.loc.y + rect.size.h).into();
-    Some(parent.location.loc + offset)
-}
+// Defined in `ec-abyss-render` (the renderer places the popup with it).
+pub use ec_abyss_render::popup_location;

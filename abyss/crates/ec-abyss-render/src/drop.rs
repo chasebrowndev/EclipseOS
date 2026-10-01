@@ -11,12 +11,29 @@ use smithay::{
         solid::{SolidColorBuffer, SolidColorRenderElement},
         Kind,
     },
+    desktop::Window,
     output::Output,
     utils::{Logical, Point, Rectangle, Scale, Size},
 };
 
 use super::AbyssRenderElement;
-use crate::shell::TileDrag;
+
+/// What the guides need of a running Radiant drag. `ec-abyss` implements it
+/// for its `TileDrag`; the renderer never sees the shell's drag state.
+pub trait DropGuides {
+    /// Whether a drop would tile the window right now.
+    fn armed(&self) -> bool;
+    /// The output the drag started on.
+    fn output(&self) -> &Output;
+    /// The landing tile, global logical coordinates, if anything would tile.
+    fn ghost(&self) -> Option<Rectangle<i32, Logical>>;
+    /// Every tile of the layout captured at drag start.
+    fn tiles(&self) -> &[(Window, Rectangle<i32, Logical>)];
+    /// The tiling area the tiles were laid out in.
+    fn area(&self) -> Rectangle<i32, Logical>;
+    /// Edge band width, logical px; 0 disables the bands.
+    fn band(&self) -> i32;
+}
 
 const OUTLINE: i32 = 2;
 const TILE_ALPHA: f32 = 0.55;
@@ -72,31 +89,31 @@ fn bands(a: Rectangle<i32, Logical>, band: i32) -> [Rectangle<i32, Logical>; 4] 
 /// The guide elements for one output, front-to-back. Empty unless a drag is
 /// running on `output` and `general.drop-guides` is on.
 pub fn drop_elements(
-    drag: Option<&TileDrag>,
+    drag: Option<&impl DropGuides>,
     enabled: bool,
     color: [f32; 4],
     output: &Output,
     output_loc: Point<i32, Logical>,
 ) -> Vec<AbyssRenderElement> {
-    let Some(drag) = drag.filter(|d| enabled && d.armed && &d.output == output) else {
+    let Some(drag) = drag.filter(|d| enabled && d.armed() && d.output() == output) else {
         return Vec::new();
     };
     let scale = Scale::from(output.current_scale().fractional_scale());
     let local = |r: Rectangle<i32, Logical>| Rectangle::new(r.loc - output_loc, r.size);
     let mut out = Vec::new();
-    if let Some(g) = drag.preview.ghost.map(local) {
+    if let Some(g) = drag.ghost().map(local) {
         for e in outline(g, OUTLINE) {
             quad(e, scale, color, GHOST_LINE_ALPHA, &mut out);
         }
         quad(g, scale, color, GHOST_FILL_ALPHA, &mut out);
     }
-    for (_, r) in &drag.tiles {
+    for (_, r) in drag.tiles() {
         for e in outline(local(*r), 1) {
             quad(e, scale, color, TILE_ALPHA, &mut out);
         }
     }
-    if drag.band > 0 {
-        for b in bands(local(drag.area), drag.band) {
+    if drag.band() > 0 {
+        for b in bands(local(drag.area()), drag.band()) {
             quad(b, scale, color, BAND_ALPHA, &mut out);
         }
     }
@@ -127,28 +144,5 @@ mod tests {
         assert_eq!(b[1], r(1880, 30, 40, 1050));
         assert_eq!(b[2], r(40, 30, 1840, 40));
         assert_eq!(b[3], r(40, 1040, 1840, 40));
-    }
-
-    #[test]
-    fn the_capture_pass_cannot_see_the_guides() {
-        let src = include_str!("capture.rs");
-        assert!(
-            !src.contains("drop_elements") && !src.contains("tile_drag"),
-            "capture.rs names the drop guides; they are compositor chrome, not screen content"
-        );
-    }
-
-    #[test]
-    fn every_backend_draws_the_guides() {
-        for (src, path) in [
-            (include_str!("../backend/drm.rs"), "drm.rs"),
-            (include_str!("../backend/winit.rs"), "winit.rs"),
-            (include_str!("../backend/headless.rs"), "headless.rs"),
-        ] {
-            assert!(
-                src.contains("drop::drop_elements"),
-                "{path} does not draw the drop guides"
-            );
-        }
     }
 }

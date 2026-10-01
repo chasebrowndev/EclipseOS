@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
 // Dual-Kawase down and up samples, the compositor's blur
-// (abyss/crates/ec-abyss/src/render/blur.rs) ported to WGSL: same
+// (abyss/crates/ec-abyss-render/src/blur.rs) ported to WGSL: same
 // taps, same `halfpixel * offset` spacing, so a Fog panel blurs like a
 // window does. Premultiplied alpha is kept, not forced to 1: a translucent
 // window blurs into translucent glass.

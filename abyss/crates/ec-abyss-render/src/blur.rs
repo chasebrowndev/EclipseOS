@@ -21,7 +21,7 @@
 //!
 //! Blur also makes the window a non-candidate for direct scanout: the pixels
 //! under it are composited by us, so the buffer can never go straight to a
-//! plane. See [`crate::render::scanout_candidate`].
+//! plane. See [`crate::scanout_candidate`].
 
 use std::collections::HashMap;
 
@@ -48,7 +48,7 @@ use smithay::{
     wayland::compositor::{RectangleKind, RegionAttributes},
 };
 
-use crate::config::Blur;
+use ec_abyss_config::Blur;
 
 /// The offscreen chain is rendered in the same format the capture path uses.
 const FORMAT: Fourcc = Fourcc::Xbgr8888;
@@ -89,7 +89,7 @@ pub fn grow(rect: Rectangle<i32, Physical>, radius: i32) -> Rectangle<i32, Physi
 /// `radius` and clamped to the `fb` output, as `(tex, phys)`. `phys` is that
 /// rectangle in output-local physical pixels; `tex` is the same pixels in the
 /// backdrop texture, which is stored bottom row first when `mirrored`
-/// (`Flipped180`, see [`crate::render::effects::fb_y_mirrored`]).
+/// (`Flipped180`, see [`crate::effects::fb_y_mirrored`]).
 ///
 /// `tex` is snapped outwards to the chain's coarsest level (`1 << passes`
 /// px), so every level samples the same pixel grid as an output-sized chain
@@ -461,7 +461,7 @@ impl Shape {
 /// `h = max(k - |a - b|, 0) / k` and `k = shape.fillet`.
 ///
 /// This is the mask the shaped backdrop programs draw (`SHAPE_FNS` in
-/// [`crate::render::effects`], line for line). A client that paints a fill
+/// [`crate::effects`], line for line). A client that paints a fill
 /// under the same shape uses the same formula so its tint meets the blur's
 /// edge.
 pub fn shape_sd(shape: &Shape, radius: f32, p: (f32, f32)) -> f32 {
@@ -618,7 +618,7 @@ impl BlurStore {
         self.ensure_programs(renderer)?;
         let passes = blur.passes.clamp(1, 6) as usize;
         self.ensure_chain(renderer, fb_size, passes)?;
-        let mirrored = crate::render::effects::fb_y_mirrored(output.current_transform()) == Some(true);
+        let mirrored = crate::effects::fb_y_mirrored(output.current_transform()) == Some(true);
         // Only this much of the backdrop is ever sampled (kernel plus the
         // final draw's own reach), so only this much is computed.
         let sampled = kernel_radius(blur).saturating_add(reach.max(0));
@@ -688,7 +688,7 @@ impl BlurStore {
             // first. The result is sampled back as a `Normal` texture, so the
             // last pass flips it upright; otherwise every window would blur
             // the vertical mirror image of what is behind it.
-            let orient = match crate::render::effects::fb_y_mirrored(output.current_transform()) {
+            let orient = match crate::effects::fb_y_mirrored(output.current_transform()) {
                 Some(true) => Transform::Flipped180,
                 _ => Transform::Normal,
             };
@@ -1096,7 +1096,7 @@ mod tests {
     /// flat glass adds nothing.
     #[test]
     fn glass_refraction_widens_the_invalidation_reach() {
-        use crate::render::effects::glass_reach;
+        use crate::effects::glass_reach;
         assert_eq!(glass_reach(0, 1.5), 0);
         assert_eq!(glass_reach(12, 1.0), 13);
         assert_eq!(glass_reach(12, 2.0), 26);

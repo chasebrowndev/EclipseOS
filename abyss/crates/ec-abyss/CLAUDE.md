@@ -6,8 +6,10 @@ Read the root `CLAUDE.md` first. This file only adds crate-local rules.
   `~/.cargo/registry/src/*/smithay-0.7.0` before using any API; do not guess.
 - One thread, one `AbyssState`, one calloop loop. No `Arc<Mutex<..>>` around state.
 - Every `.rs` starts with `// SPDX-License-Identifier: AGPL-3.0-only`.
-- Layout: `backend/` (winit, drm, headless, gpu), `render/` (damage, blur,
-  effects, annotations, FB damage-clip sanitising), `outputs/` (layout, EDID,
+- Layout: `backend/` (winit, drm, headless, gpu), `render/` (`capture.rs`, TCB, plus a
+  re-export of `ec-abyss-render`, which holds damage, blur, effects,
+  annotations, FB damage-clip sanitising and the overscan arithmetic),
+  `outputs/` (layout, EDID,
   calibration, overscan, persistence, DPMS), `input/` (bindings, keyboard,
   pointer, touch, tablet, touchpad swipe gestures, idle, injection), `shell/`
   (layout, workspaces, rules, focus), `protocols/standard/` (one file per

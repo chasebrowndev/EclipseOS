@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Applying overscan compensation to a finished element list (COMP-03 §2).
 //!
-//! [`crate::outputs::overscan`] owns the arithmetic; this owns the render
+//! [`crate::output_overscan`] owns the arithmetic; this owns the render
 //! plumbing. Two things happen here and nowhere else:
 //!
 //! 1. The whole scene is rescaled into the inset rectangle and relocated to its
@@ -32,7 +32,7 @@ use smithay::{
     utils::{Physical, Point, Rectangle, Scale, Size},
 };
 
-use crate::outputs::overscan::{Overscan, OverscanGeometry as _};
+use crate::output_overscan::{Overscan, OverscanGeometry as _};
 
 use super::{
     sanitize::{has_area, Sanitized},

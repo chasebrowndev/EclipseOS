@@ -22,17 +22,12 @@ use smithay::desktop::Window;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
 
-use crate::config::{BlurRule, Matchers, RuleAction, WindowRule};
+use crate::config::{Matchers, RuleAction, WindowRule};
 use crate::state::AbyssState;
 use crate::xwayland::security::{AppTrust, SeatCompat};
 
-/// Per-window opacity set by a matched `opacity` rule, read by the renderer.
-pub struct RuleOpacity(pub Cell<f32>);
-
-/// Per-window blur override set by a matched `blur` rule, read by the
-/// renderer. Picks the window's blur mode; an opaque window still never
-/// blurs (see `render::window_elements`).
-pub struct RuleBlur(pub Cell<BlurRule>);
+// Read by the renderer, written by `apply`; defined in `ec-abyss-render::userdata`.
+pub use ec_abyss_render::userdata::{blur_of, opacity_of, RuleBlur, RuleOpacity};
 
 /// Trust class pinned by an `app-trust` rule (COMP-05 §4). Consumed once
 /// COMP-08 gates agent actions on it.
@@ -198,20 +193,10 @@ pub struct Placement {
     pub output: Option<String>,
 }
 
-/// The opacity a matched rule pinned on this window, if any.
-pub fn opacity_of(window: &Window) -> Option<f32> {
-    window.user_data().get::<RuleOpacity>().map(|o| o.0.get())
-}
-
 /// Whether any window carries an opacity override, i.e. whether the renderer
 /// has to take the per-window path even with default decoration.
 pub fn any_opacity_override<'a>(mut windows: impl Iterator<Item = &'a Window>) -> bool {
     windows.any(|w| w.user_data().get::<RuleOpacity>().is_some())
-}
-
-/// The blur override a matched rule pinned on this window, if any.
-pub fn blur_of(window: &Window) -> Option<BlurRule> {
-    window.user_data().get::<RuleBlur>().map(|b| b.0.get())
 }
 
 /// Whether any window carries a blur override, i.e. whether the renderer has

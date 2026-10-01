@@ -10,7 +10,7 @@ graph. The licence text ships beside them, which is all OFL-1.1 §2 asks.
 | `JetBrainsMono-{Regular,Medium}.ttf` | JetBrains Mono, upstream statics |
 
 `LICENSE-Spleen.txt` (BSD-2-Clause) covers the Spleen 2.1.0 8x16 glyphs that
-`abyss/crates/ec-abyss/src/render/font.rs` carries as a table: the compositor's
+`abyss/crates/ec-abyss-render/src/font.rs` carries as a table: the compositor's
 annotation face, compiled in rather than loaded (ADR 0009). No Spleen file is
 shipped here; the table header says how to regenerate it from upstream's BDF.
 

@@ -22,7 +22,7 @@ use smithay::{
     wayland::compositor::with_states,
 };
 
-use crate::render::AbyssRenderElement;
+use crate::AbyssRenderElement;
 
 /// The built-in arrow, one character per pixel: `o` outline, `x` fill.
 const ARROW: [&str; 19] = [

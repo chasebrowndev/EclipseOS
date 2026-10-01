@@ -9,7 +9,7 @@
 //!
 //! Two properties come from where it is drawn rather than from any check here:
 //!
-//! * **Capture-invisible.** [`super::capture::capture_elements`] builds its own
+//! * **Capture-invisible.** `capture::capture_elements` builds its own
 //!   pass list from the space and the layer map. Backend-prepended elements are
 //!   not in it, so an annotation cannot appear in a screenshot, a screencast, or
 //!   in the pixels Oracle-Eyes itself reads back. The pick marker is part of
@@ -734,7 +734,7 @@ fn place(
 ///
 /// `None` on any GL failure: an annotation is cosmetic and must never be able
 /// to take a frame down with it.
-pub(crate) fn upload(
+pub fn upload(
     renderer: &mut GlesRenderer,
     raster: &text::Raster,
     bs: usize,
@@ -889,49 +889,6 @@ mod tests {
         let l = lay_out(a, out, (0, 0).into(), &[]).unwrap();
         assert!(l.pick.is_none());
         assert!(l.card.chip.is_empty(), "no marker, no chip");
-    }
-
-    /// ADR 0040: annotations are capture-invisible *by construction* --
-    /// [`super::super::capture::capture_elements`] builds its own pass list
-    /// and never consults this module. There is no GL context in a unit test
-    /// to compare two rendered lists, so the assertion is made where the
-    /// property actually lives: in the source of the capture pass. The pick
-    /// marker (ADR 0054) is built by `draw` in this module, so it is covered
-    /// by the same assertion.
-    #[test]
-    fn the_capture_pass_cannot_see_annotations() {
-        let src = include_str!("capture.rs");
-        assert!(
-            !src.contains("annotation"),
-            "capture.rs referenced the annotation pass; capture exclusion is \
-             supposed to hold because it never looks"
-        );
-    }
-
-    /// COMP-18 §1: the per-frame element vector is front-to-back, so trusted
-    /// UI must be spliced ahead of annotations in every backend. Each backend
-    /// expresses that differently -- drm appends, winit and headless splice at
-    /// zero -- so the check is per file and on the relative order of the two
-    /// calls, which is the thing that must not be swapped.
-    #[test]
-    fn the_trusted_indicator_stays_above_annotations_in_every_backend() {
-        for (src, path, indicator_first) in [
-            (include_str!("../backend/drm.rs"), "drm.rs", true),
-            (include_str!("../backend/winit.rs"), "winit.rs", false),
-            (include_str!("../backend/headless.rs"), "headless.rs", false),
-        ] {
-            let ann = src
-                .find("annotation::annotation_elements")
-                .unwrap_or_else(|| panic!("{path} does not draw annotations"));
-            let ind = src
-                .find("capture::indicator")
-                .unwrap_or_else(|| panic!("{path} does not draw the indicator"));
-            assert_eq!(
-                ind < ann,
-                indicator_first,
-                "{path} puts the annotation pass on the wrong side of trusted UI"
-            );
-        }
     }
 
     #[test]

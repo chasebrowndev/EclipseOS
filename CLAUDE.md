@@ -151,7 +151,8 @@ file dumps until it compacts mid-task and loses the plan.
 ## Where things are
 ```
 abyss/crates/ec-abyss/src/backend/     COMP-01  winit, DRM/udev, headless, gpu.rs, behind one trait
-abyss/crates/ec-abyss/src/render/      COMP-02  damage, scanout, sync, blur, redaction, annotations
+abyss/crates/ec-abyss/src/render/      COMP-02  capture.rs only (TCB, state-bound); re-exports ec-abyss-render
+abyss/crates/ec-abyss-render/       COMP-02  state-free: damage, scanout, sync, blur, effects, annotations, overscan arithmetic
 abyss/crates/ec-abyss/src/outputs/     COMP-03  hotplug, layout, EDID, calibration, power
 abyss/crates/ec-abyss/src/input/       COMP-04  keyboard, pointer, touch, tablet, gestures, injection
 abyss/crates/ec-abyss/src/shell/       COMP-05  layouts, workspaces, rules, focus

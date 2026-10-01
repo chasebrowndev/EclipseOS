@@ -122,7 +122,7 @@ struct Span {
 }
 
 /// Overscan is bounded here and nowhere else — the compositor's own clamp is
-/// a fraction of the mode (`outputs/overscan.rs`), so this is a UI bound.
+/// a fraction of the mode (`ec-abyss-render/src/output_overscan.rs`), so this is a UI bound.
 const INSET_MAX: f64 = 120.0;
 const SCALE_MIN: f64 = 0.5;
 const SCALE_MAX: f64 = 3.0;

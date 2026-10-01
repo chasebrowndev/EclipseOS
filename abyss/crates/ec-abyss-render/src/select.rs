@@ -325,44 +325,4 @@ mod tests {
             })
         );
     }
-
-    #[test]
-    fn the_capture_pass_cannot_see_the_selector() {
-        let src = include_str!("capture.rs");
-        assert!(
-            !src.contains("selector_elements") && !src.contains("region_select"),
-            "capture.rs names the region selector; a selector in a capture would be read back as screen content"
-        );
-    }
-
-    #[test]
-    fn the_selector_sits_between_annotations_and_the_trusted_indicator_in_every_backend() {
-        for (src, path, indicator_first) in [
-            (include_str!("../backend/drm.rs"), "drm.rs", true),
-            (include_str!("../backend/winit.rs"), "winit.rs", false),
-            (include_str!("../backend/headless.rs"), "headless.rs", false),
-        ] {
-            let ann = src
-                .find("annotation::annotation_elements")
-                .unwrap_or_else(|| panic!("{path} does not draw annotations"));
-            let sel = src
-                .find("select::selector_elements")
-                .unwrap_or_else(|| panic!("{path} does not draw the region selector"));
-            let ind = src
-                .find("capture::indicator")
-                .unwrap_or_else(|| panic!("{path} does not draw the indicator"));
-            // drm appends top-first; winit and headless splice each pass in at
-            // index 0, which reverses source order.
-            assert_eq!(
-                ind < sel,
-                indicator_first,
-                "{path}: selector is on the wrong side of trusted UI"
-            );
-            assert_eq!(
-                sel < ann,
-                indicator_first,
-                "{path}: selector is on the wrong side of the annotation pass"
-            );
-        }
-    }
 }

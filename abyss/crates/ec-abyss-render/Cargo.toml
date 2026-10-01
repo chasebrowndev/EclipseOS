@@ -1,0 +1,23 @@
+[package]
+name = "ec-abyss-render"
+description = "State-free render: element collection, blur, effects, annotations, damage sanitising"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ec_abyss_render"
+path = "src/lib.rs"
+
+[dependencies]
+smithay = { workspace = true, features = [
+  "wayland_frontend",
+  "desktop",
+  "renderer_gl",
+  "xwayland",
+] }
+ec-abyss-config = { path = "../ec-abyss-config" }
+tracing.workspace = true
+serde_json.workspace = true
