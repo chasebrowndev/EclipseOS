@@ -285,7 +285,10 @@ mod tests {
         // Nothing that takes remote input may name the prompt's entry points.
         for (name, src) in [
             ("ipc/methods.rs", include_str!("../ipc/methods.rs")),
-            ("ipc/gate.rs", include_str!("../ipc/gate.rs")),
+            (
+                "ec-abyss-wire/src/gate.rs",
+                include_str!("../../../ec-abyss-wire/src/gate.rs"),
+            ),
             ("ipc/mod.rs", include_str!("../ipc/mod.rs")),
             ("input/inject.rs", include_str!("../input/inject.rs")),
         ] {

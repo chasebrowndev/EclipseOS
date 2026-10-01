@@ -28,6 +28,7 @@ use smithay::reexports::calloop::{
 };
 
 use crate::state::AbyssState;
+pub use ec_abyss_wire::hooks::{Hook, HookSet};
 
 /// Where manifests live. Package-owned and root-writable (ADR 0066 "Manifest
 /// trust"): a user-level process must not be able to turn a hook on, so this is
@@ -39,84 +40,9 @@ pub const SYSTEM_DIR: &str = "/usr/share/eclipse/addons";
 /// renaming a file, short enough to feel immediate.
 const DEBOUNCE: Duration = Duration::from_millis(100);
 
-/// The abyss hooks at v1 (ADR 0066 table). A closed set: adding one is a host
-/// change with its own review, never something a manifest can do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Hook {
-    /// `annotation_*` methods; annotation binds forward on `keybind`.
-    Annotations,
-    /// The `annotation-select` bind action (the region selector).
-    RegionSelect,
-    /// The `widget` collection and its socket writes.
-    TaskbarWidgets,
-    /// The agent stack (ADR 0069): the privileged socket, agent and semantic
-    /// globals, the `policyd` link and the agent lifecycle methods. Off is
-    /// the normal state, not degraded mode (COMP-01 §6).
-    Agents,
-}
-
-impl Hook {
-    pub const ALL: [Hook; 4] = [
-        Hook::Annotations,
-        Hook::RegionSelect,
-        Hook::TaskbarWidgets,
-        Hook::Agents,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Hook::Annotations => "annotations",
-            Hook::RegionSelect => "region-select",
-            Hook::TaskbarWidgets => "taskbar-widgets",
-            Hook::Agents => "agents",
-        }
-    }
-
-    /// The refusal a gated method answers with. Static so the gate's
-    /// `Decision::Deny(&'static str)` carries it without allocating.
-    pub fn off_reason(self) -> &'static str {
-        match self {
-            Hook::Annotations => "add-on hook `annotations` is off",
-            Hook::RegionSelect => "add-on hook `region-select` is off",
-            Hook::TaskbarWidgets => "add-on hook `taskbar-widgets` is off",
-            Hook::Agents => "add-on hook `agents` is off",
-        }
-    }
-
-    fn from_name(s: &str) -> Option<Hook> {
-        Hook::ALL.into_iter().find(|h| h.name() == s)
-    }
-
-    fn bit(self) -> u8 {
-        1 << self as u8
-    }
-}
-
 /// Hooks other hosts own. A manifest naming one is valid (Oracle's and Fog's
 /// manifests share the format), but it turns nothing on in abyss.
 const FOREIGN_HOOKS: &[&str] = &["activity-lens"];
-
-/// Which hooks are on. A bitset so the input path's check is one bool read.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct HookSet(u8);
-
-impl HookSet {
-    pub fn is_on(self, hook: Hook) -> bool {
-        self.0 & hook.bit() != 0
-    }
-
-    pub fn insert(&mut self, hook: Hook) {
-        self.0 |= hook.bit();
-    }
-
-    pub fn names(self) -> Vec<&'static str> {
-        Hook::ALL
-            .into_iter()
-            .filter(|h| self.is_on(*h))
-            .map(Hook::name)
-            .collect()
-    }
-}
 
 /// One installed add-on, as its manifest declares it.
 #[derive(Debug, Clone, PartialEq, Eq)]

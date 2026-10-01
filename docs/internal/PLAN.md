@@ -169,7 +169,7 @@ Spec: **COMP-11**, ADR 0008.
   With `policyd` not connected, `create_agent` fails `POLICY_UNAVAILABLE`
   (COMP-01 §6 degraded mode).
 - Ratchet: `defer` may only tighten. No state mutation before `Allow`.
-- **Do not mistake `abyss/crates/ec-abyss/src/ipc/gate.rs` for this** — that is the
+- **Do not mistake `abyss/crates/ec-abyss-wire/src/gate.rs` for this** — that is the
   narrower COMP-13 §2 human-socket gate and stays separate.
 - **Exit gate (CI):** enforcement suite + F-07 §3 golden decision suite green; no
   state mutation on any denied path under fault injection at each step of
@@ -196,7 +196,7 @@ if you want a second front.
 | `docs/ARCHITECTURE.md:12-35` | the F-07 §1 layout block — drop the `(not yet)` markers as crates appear |
 | `docs/STATUS.md` (Phase 2 table, lines ~107-131) | source of truth once code exists; update the row in the same PR |
 | `abyss/crates/ec-abyss/src/state.rs` | `AbyssState` gains the policy table + audit handles; `:110` sensitivity stub dies at m17 |
-| `abyss/crates/ec-abyss/src/ipc/gate.rs` | reference only — **not** the COMP-11 table |
+| `abyss/crates/ec-abyss-wire/src/gate.rs` | reference only — **not** the COMP-11 table |
 | `shell/crates/ec-policy-viewer/src/read.rs` | already models the policy surface off-disk; keep it file-based, don't add an IPC path |
 | `decisions/` | new ADR for any layout or transport choice the specs leave open (e.g. policyd's socket path — no spec states one) |
 

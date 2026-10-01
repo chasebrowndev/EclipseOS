@@ -11,7 +11,8 @@ Read the root `CLAUDE.md` first. This file only adds crate-local rules.
   calibration, overscan, persistence, DPMS), `input/` (bindings, keyboard,
   pointer, touch, tablet, touchpad swipe gestures, idle, injection), `shell/`
   (layout, workspaces, rules, focus), `protocols/standard/` (one file per
-  Wayland protocol handler), `ipc/` (control socket, gate table, config RPC),
+  Wayland protocol handler), `ipc/` (control socket, config RPC; the gate table, `RpcError`, `EVENTS`
+  and `Hook`/`HookSet` live in `ec-abyss-wire`, re-exported here),
   `config/` (re-exports `ec-abyss-config`, which holds KDL parse, schema, in-place edit; here: apply, watch, widget catalog watcher, approval withholding), `xwayland/` (XWM,
   security), `state.rs` (globals + seat), `session.rs`. `ec-abyss-config/tests/config_doc.rs`
   checks the config schema against `docs/CONFIG.md`.

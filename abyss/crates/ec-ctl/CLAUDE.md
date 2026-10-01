@@ -3,7 +3,7 @@
 Governing spec: COMP-13 §2.3. **Not TCB**: it is an ordinary client of the
 control socket and holds no authority of its own — everything it can do, any
 process running as the same user can do by writing JSON to the socket. The
-gate lives in `abyss` (`abyss/crates/ec-abyss/src/ipc/gate.rs`), never here.
+gate lives in `abyss` (`abyss/crates/ec-abyss-wire/src/gate.rs`), never here.
 
 - Dependencies: `serde_json`, `libc` (SIGPIPE reset only) and `kdl` (only for
   `ec-ctl config migrate`, `src/migrate.rs`). Argument parsing is hand-rolled; a

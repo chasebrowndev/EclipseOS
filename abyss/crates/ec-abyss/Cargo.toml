@@ -28,6 +28,7 @@ smithay = { workspace = true, features = [
   "xwayland",
 ] }
 ec-abyss-config = { path = "../ec-abyss-config" }
+ec-abyss-wire = { path = "../ec-abyss-wire" }
 calloop.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

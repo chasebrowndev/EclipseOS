@@ -161,7 +161,8 @@ abyss/crates/ec-abyss/src/protocols/semantic/  COMP-09  eclipse_semantic_v1    (
 abyss/crates/ec-abyss/src/trusted_ui/  COMP-10  prompts (modal primitive; §3.10 erase, §3.11 command approval); indicator, emergency panel not yet
 abyss/crates/ec-abyss/src/policy/      COMP-11  grant admission, agent scene filter; enforcement table, check() not yet
 abyss/crates/ec-abyss/src/audit/       COMP-12  provenance emission to policyd (M12: scene requests, focus, lifecycle)
-abyss/crates/ec-abyss/src/ipc/         COMP-13  human JSON-RPC socket, gate table
+abyss/crates/ec-abyss/src/ipc/         COMP-13  human JSON-RPC socket, methods, config RPC (gate.rs is a re-export shim)
+abyss/crates/ec-abyss-wire/         COMP-13  state-free: gate table + check, Decision/Peer, RpcError + codes, EVENTS, Hook/HookSet (gate.rs = authz enforcement, owner review)
 abyss/crates/ec-abyss-config/       COMP-13  KDL schema, parse, validate, edit (no smithay; ec-settings/ec-ctl link it)
 abyss/crates/ec-abyss/src/config/      COMP-13  re-exports ec-abyss-config; apply, hot-reload, catalog watch, approval withholding
 abyss/crates/ec-abyss/src/xwayland/    COMP-07

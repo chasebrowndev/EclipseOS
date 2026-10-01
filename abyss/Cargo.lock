@@ -502,6 +502,7 @@ dependencies = [
  "blake3",
  "calloop 0.14.4",
  "ec-abyss-config",
+ "ec-abyss-wire",
  "ec-policy-eval",
  "ec-protocols",
  "ed25519-dalek",
@@ -535,6 +536,14 @@ dependencies = [
  "serde_json",
  "tracing",
  "xkbcommon",
+]
+
+[[package]]
+name = "ec-abyss-wire"
+version = "0.1.0"
+dependencies = [
+ "ec-abyss-config",
+ "serde_json",
 ]
 
 [[package]]

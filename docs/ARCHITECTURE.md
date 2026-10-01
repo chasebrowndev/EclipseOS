@@ -94,7 +94,7 @@ SPDX header naming which.
 | `trusted_ui/` (destructive-action prompt only) | COMP-10 | Compositor-drawn consent prompts, agent-activity indicator, emergency panel. Never a client (ADR 0009). So far only the destructive-system-action confirmation (§3.10, ADR 0061) and its root-only `trusted.sock`; the rest is not yet. |
 | `policy/` (not yet) | COMP-11 | The compiled enforcement table and `check()`; today a stub in `state.rs`. Fail-closed; no state mutation before `Allow`; `defer` may only tighten. |
 | `audit/` (not yet) | COMP-12 | Audit and provenance event emission. Never records human input by content. |
-| `ipc/` | COMP-13 | Human JSON-RPC socket and its gate table — the taskbar, the launcher, settings, `ec-ctl`. Unprivileged, human-principal only. |
+| `ipc/` | COMP-13 | Human JSON-RPC socket (gate table in `ec-abyss-wire`) — the taskbar, the launcher, settings, `ec-ctl`. Unprivileged, human-principal only. |
 | `config/` | COMP-13 | KDL parse, validate, hot-reload (ADR 0016), in-place edit for `set_config_value`. A bad config never takes down a live session. |
 | `xwayland/` | COMP-07 | X11 client support, window identity mapping, scaling. |
 | `state.rs` | COMP-01 | `AbyssState` itself: the single owner of everything above. |

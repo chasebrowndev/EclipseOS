@@ -1,0 +1,16 @@
+[package]
+name = "ec-abyss-wire"
+description = "State-free control-socket types: gate table, decisions, JSON-RPC errors, event kinds, add-on hooks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ec_abyss_wire"
+path = "src/lib.rs"
+
+[dependencies]
+ec-abyss-config = { path = "../ec-abyss-config" }
+serde_json.workspace = true

@@ -45,14 +45,11 @@ const MAX_LINE: usize = 64 * 1024;
 /// still cannot make room is disconnected.
 const MAX_OUT: usize = 256 * 1024;
 
-/// JSON-RPC error codes. The negative 32xxx range is the standard's; -32000
-/// down is ours.
-const PARSE_ERROR: i32 = -32700;
-const INVALID_REQUEST: i32 = -32600;
-const METHOD_NOT_FOUND: i32 = -32601;
-pub(crate) const INVALID_PARAMS: i32 = -32602;
-pub(crate) const DENIED: i32 = -32000;
-const NOT_IMPLEMENTED: i32 = -32001;
+// JSON-RPC error codes live in `ec-abyss-wire`.
+pub use ec_abyss_wire::rpc::RpcError;
+#[allow(unused_imports)]
+pub(crate) use ec_abyss_wire::rpc::{DENIED, INVALID_PARAMS};
+use ec_abyss_wire::rpc::{INVALID_REQUEST, METHOD_NOT_FOUND, NOT_IMPLEMENTED, PARSE_ERROR};
 
 /// One connected client.
 pub struct Conn {
@@ -505,32 +502,6 @@ fn handle_line(state: &mut AbyssState, conn: u64, line: &[u8]) -> Option<String>
         Ok(v) => json!({"jsonrpc": "2.0", "id": id, "result": v}).to_string(),
         Err(RpcError { code, message }) => error(id, code, &message),
     })
-}
-
-pub struct RpcError {
-    pub code: i32,
-    pub message: String,
-}
-
-impl RpcError {
-    pub fn invalid_params(m: &str) -> Self {
-        Self {
-            code: INVALID_PARAMS,
-            message: m.to_owned(),
-        }
-    }
-    pub fn denied(m: &str) -> Self {
-        Self {
-            code: DENIED,
-            message: m.to_owned(),
-        }
-    }
-    pub fn not_implemented(m: &str) -> Self {
-        Self {
-            code: NOT_IMPLEMENTED,
-            message: m.to_owned(),
-        }
-    }
 }
 
 /// Broadcast one event to every subscriber that asked for its kind
