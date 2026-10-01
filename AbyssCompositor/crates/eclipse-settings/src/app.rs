@@ -818,10 +818,18 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
     row![
         sidebar_at(density, app.blur, nav, footer),
         iced::widget::container(
-            scrollable(content_at(density, blocks))
-                .id(SCROLL)
-                .style(theme::eclipse_scrollable)
-                .height(Length::Fill),
+            // A thin rail, inset top and bottom so it reads as a hint, not a
+            // full-height bar.
+            iced::widget::container(
+                scrollable(content_at(density, blocks))
+                    .id(SCROLL)
+                    .direction(scrollable::Direction::Vertical(
+                        scrollable::Scrollbar::new().width(4).scroller_width(4).margin(3),
+                    ))
+                    .style(theme::eclipse_scrollable)
+                    .height(Length::Fill),
+            )
+            .padding([space::BLOCK, 0.0]),
         )
         .width(Length::Fill)
         .height(Length::Fill)
