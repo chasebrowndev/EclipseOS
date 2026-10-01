@@ -2344,9 +2344,19 @@ Rationale: a policy misconfiguration must not lock you out of your own
 machine, and an unpoliced agent must never run. Those two requirements are
 satisfiable simultaneously, so we satisfy both.
 
-The `policyd` public key used to verify grants and tables (S-01 §6) is read
-at startup from `/etc/eclipse/policyd.pub` — not received over IPC, so a
-process impersonating `policyd` cannot supply its own key.
+The `policyd` public key used to verify grants and tables (S-01 §6) is
+received over IPC from a peer abyss has authenticated *(amended F-05,
+2026-09-30)*. abyss dials `policyd`'s socket when the `agents` hook turns on,
+and requires the peer to have the session user's uid (`SO_PEERCRED`) and to
+be a member of the `policyd.service` cgroup. Only then does it accept the key.
+That key is pinned for the session: a reconnect presenting a different key is
+refused and surfaced in trusted UI and the journal. A process impersonating
+`policyd` therefore cannot supply its own key. Agent sandboxes can reach
+neither the socket nor `policyd`'s state directory. Unsandboxed code running
+as the same user is outside this boundary, as it is everywhere else in S-01.
+The earlier root-owned `/etc/eclipse/policyd.pub` is withdrawn, because
+`policyd` is a user service that generates its issuer key per user (D-01
+§3.4).
 
 ---
 
@@ -7395,13 +7405,11 @@ same day (ADR 0069).
 | F-02 | D-07 §4.4 | `policyd` leaves the floor. The Agentic profile installs `eclipseos-agents`; no other profile does. Enabling it later is `pacman -S eclipseos-agents` until COMP-10's trusted admin prompt makes a Settings button possible | yes |
 | F-03 | COMP-16 Phase 2; COMP-15 §2 | Phase 2 suites run in CI with the `agents` hook on. One added test: with the hook off, no agent global is reachable and no agent socket file exists | yes |
 | F-04 | ADR 0066 add-ons | `fog-activity` depends on `eclipseos-agents` | yes |
+| F-05 | COMP-01 §6 | abyss gets the `policyd` key by dialing `policyd` and authenticating the peer (session uid via `SO_PEERCRED`, `policyd.service` cgroup), then pins it for the session; a changed key on reconnect is refused. Replaces the root-owned `/etc/eclipse/policyd.pub`, which a per-user `policyd` (D-01 §3.4) cannot use | yes |
 
 ## Open decisions this appendix leaves standing
 
-1. **Policy key delivery.** COMP-01 §6 reads the `policyd` key from
-   `/etc/eclipse/policyd.pub`, while `policyd` generates its issuer key per user
-   under `~/.local/state`. Which one gives way is settled in the M11 plan.
-2. **The Settings enable button** waits on the trusted admin prompt (COMP-10).
+1. **The Settings enable button** waits on the trusted admin prompt (COMP-10).
 
 ---
 
