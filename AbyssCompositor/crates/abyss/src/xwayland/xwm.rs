@@ -24,7 +24,7 @@ use smithay::{
         SelectionTarget,
     },
     xwayland::{
-        xwm::{Reorder, ResizeEdge, X11Window, XwmId},
+        xwm::{Reorder, ResizeEdge, WmWindowProperty, X11Window, XwmId},
         X11Surface, X11Wm, XwmHandler,
     },
 };
@@ -57,6 +57,23 @@ fn window_for(state: &AbyssState, surface: &X11Surface) -> Option<Window> {
     shell::owned_windows(state)
         .into_iter()
         .find(|w| w.x11_surface() == Some(surface))
+}
+
+/// `base` with whichever of x/y/w/h the client asked to change.
+fn requested_rect(
+    base: Rectangle<i32, Logical>,
+    x: Option<i32>,
+    y: Option<i32>,
+    w: Option<u32>,
+    h: Option<u32>,
+) -> Rectangle<i32, Logical> {
+    Rectangle::new(
+        (x.unwrap_or(base.loc.x), y.unwrap_or(base.loc.y)).into(),
+        Size::from((
+            w.map(|v| v as i32).unwrap_or(base.size.w).max(1),
+            h.map(|v| v as i32).unwrap_or(base.size.h).max(1),
+        )),
+    )
 }
 
 impl XwmHandler for AbyssState {
@@ -119,9 +136,10 @@ impl XwmHandler for AbyssState {
         self.xwayland.unmanaged.retain(|s| *s != window);
     }
 
-    /// Geometry requests. Managed windows are tiled, so the compositor's
-    /// layout wins and we simply re-assert it; unmanaged windows get what
-    /// they asked for.
+    /// Geometry requests. Tiled windows are held to the layout, so the
+    /// compositor re-asserts it; floating windows get what they asked for
+    /// (through the shell's float rect, so the layout keeps it); unmanaged
+    /// windows get what they asked for outright.
     fn configure_request(
         &mut self,
         _xwm: XwmId,
@@ -133,18 +151,76 @@ impl XwmHandler for AbyssState {
         _reorder: Option<Reorder>,
     ) {
         let current = window.geometry();
-        let rect = if let Some(element) = window_for(self, &window) {
-            self.space.element_geometry(&element).unwrap_or(current)
-        } else {
-            Rectangle::new(
-                (x.unwrap_or(current.loc.x), y.unwrap_or(current.loc.y)).into(),
-                Size::from((
-                    w.map(|v| v as i32).unwrap_or(current.size.w).max(1),
-                    h.map(|v| v as i32).unwrap_or(current.size.h).max(1),
-                )),
-            )
+        let element = window_for(self, &window);
+        let rect = match &element {
+            Some(element) => {
+                let held = self.space.element_geometry(element).unwrap_or(current);
+                if !shell::is_floating(self, element) {
+                    held
+                } else {
+                    let want = requested_rect(held, x, y, w, h);
+                    if want != held {
+                        shell::place_at(self, element, want);
+                    }
+                    // `place_at` configures through the layout; a maximized or
+                    // fullscreen window is not pinned, so re-assert what it has.
+                    self.space.element_geometry(element).unwrap_or(want)
+                }
+            }
+            None => requested_rect(current, x, y, w, h),
         };
         let _ = window.configure(rect);
+    }
+
+    fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        if let Some(w) = window_for(self, &window) {
+            shell::set_x11_state(self, &w, false, true);
+        }
+    }
+
+    fn unmaximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        if let Some(w) = window_for(self, &window) {
+            shell::set_x11_state(self, &w, false, false);
+        }
+    }
+
+    fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        if let Some(w) = window_for(self, &window) {
+            shell::set_x11_state(self, &w, true, true);
+        }
+    }
+
+    fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        if let Some(w) = window_for(self, &window) {
+            shell::set_x11_state(self, &w, true, false);
+        }
+    }
+
+    fn minimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        if let Some(w) = window_for(self, &window) {
+            shell::set_minimized(self, &w, true);
+        }
+    }
+
+    fn unminimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        if let Some(w) = window_for(self, &window) {
+            shell::set_minimized(self, &w, false);
+        }
+    }
+
+    /// Title/class/type/transient hints changed after the window was created:
+    /// tell the bar and re-run the rules that wait on a name (COMP-05 §4).
+    fn property_notify(&mut self, _xwm: XwmId, window: X11Surface, property: WmWindowProperty) {
+        if !matches!(
+            property,
+            WmWindowProperty::Title
+                | WmWindowProperty::Class
+                | WmWindowProperty::TransientFor
+                | WmWindowProperty::WindowType
+        ) {
+            return;
+        }
+        shell::x11_properties_changed(self, &window);
     }
 
     fn configure_notify(
@@ -255,5 +331,28 @@ impl XwmHandler for AbyssState {
         self.xwayland.unmanaged.clear();
         self.xwayland.wm = None;
         self.xwayland.advertised_scale = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn r(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new((x, y).into(), Size::from((w, h)))
+    }
+
+    #[test]
+    fn configure_request_merges_only_what_was_asked() {
+        let base = r(10, 20, 300, 200);
+        assert_eq!(requested_rect(base, None, None, None, None), base);
+        assert_eq!(
+            requested_rect(base, Some(5), None, Some(640), None),
+            r(5, 20, 640, 200)
+        );
+        assert_eq!(
+            requested_rect(base, None, Some(-4), None, Some(0)),
+            r(10, -4, 300, 1)
+        );
     }
 }
