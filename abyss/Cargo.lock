@@ -501,6 +501,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "calloop 0.14.4",
+ "ec-abyss-config",
  "ec-policy-eval",
  "ec-protocols",
  "ed25519-dalek",
@@ -523,6 +524,18 @@ dependencies = [
 [[package]]
 name = "ec-abyss-bench"
 version = "0.1.0"
+
+[[package]]
+name = "ec-abyss-config"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "kdl",
+ "regex",
+ "serde_json",
+ "tracing",
+ "xkbcommon",
+]
 
 [[package]]
 name = "ec-abyss-wlcs"
@@ -558,7 +571,7 @@ version = "0.1.0"
 name = "ec-ctl"
 version = "0.1.0"
 dependencies = [
- "ec-abyss",
+ "ec-abyss-config",
  "kdl",
  "libc",
  "serde_json",

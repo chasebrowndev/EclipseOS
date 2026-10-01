@@ -49,7 +49,7 @@ defaults.
   legibility that a hover can recover.
 - **A Launcher settings pane.** The launcher
   (`shell/crates/ec-launcher/src/main.rs`, spawned by `Super+E` and `Super+R` —
-  `abyss/crates/ec-abyss/src/config/mod.rs`, `default_binds`) has no `launcher.*` keys;
+  `abyss/crates/ec-abyss-config/src/lib.rs`, `default_binds`) has no `launcher.*` keys;
   the only config it reads is `misc.terminal-command`, once at startup
   (`shell/crates/ec-launcher/src/conn.rs`), so it has no tab in
   `ec-settings` either. It wants a `launcher.*`

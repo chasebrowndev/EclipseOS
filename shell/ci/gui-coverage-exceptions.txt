@@ -8,7 +8,7 @@
 # another. A schema key that is not listed here must be settable from the
 # settings app, or the gate goes red.
 #
-# One entry per line, as a schema path (`abyss/crates/ec-abyss/src/config/schema.rs`)
+# One entry per line, as a schema path (`abyss/crates/ec-abyss-config/src/schema.rs`)
 # or a collection node name. Blank lines and `#` comments are ignored by the
 # same filter the wlcs list uses.
 

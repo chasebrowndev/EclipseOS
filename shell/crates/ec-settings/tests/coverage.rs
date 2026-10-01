@@ -12,7 +12,7 @@ use std::collections::HashSet;
 
 use serde_json::{json, Value};
 
-use ec_abyss::config::schema::{Ty, COLLECTIONS, TABLE};
+use ec_abyss_config::schema::{Ty, COLLECTIONS, TABLE};
 use ec_settings::pane::pane_for;
 use ec_settings::schema::control_for;
 

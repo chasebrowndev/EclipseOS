@@ -35,4 +35,4 @@ serde_json.workspace = true
 # Only so `tests/coverage.rs` can walk the compositor's config schema and
 # assert this app renders a control for every key in it. Not linked into the
 # shipped binary.
-ec-abyss = { path = "../../../abyss/crates/ec-abyss" }
+ec-abyss-config = { path = "../../../abyss/crates/ec-abyss-config" }

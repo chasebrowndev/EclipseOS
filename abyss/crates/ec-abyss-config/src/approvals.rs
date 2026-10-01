@@ -21,23 +21,24 @@ use kdl::KdlDocument;
 
 use super::widget_hash::WidgetHash;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-hooks"))]
 thread_local! {
     static TEST_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Tests only: use `path` as the store on this thread (`None` = no store).
-#[cfg(test)]
-pub(crate) fn set_test_path(path: Option<PathBuf>) {
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn set_test_path(path: Option<PathBuf>) {
     TEST_PATH.with(|p| *p.borrow_mut() = path);
 }
 
 fn path() -> Option<PathBuf> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     {
         TEST_PATH.with(|p| p.borrow().clone())
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-hooks")))]
     {
         let base = std::env::var_os("XDG_STATE_HOME")
             .filter(|x| !x.is_empty())
@@ -161,8 +162,9 @@ pub fn persist(name: &str, hash: WidgetHash) -> std::io::Result<()> {
 
 /// Tests only: block until the writer has finished every [`persist`] sent so
 /// far (from any thread).
-#[cfg(test)]
-pub(crate) fn wait_written() {
+#[cfg(any(test, feature = "test-hooks"))]
+#[doc(hidden)]
+pub fn wait_written() {
     let (tx, rx) = mpsc::channel();
     writer().unwrap().send(Job::Flush(tx)).unwrap();
     rx.recv().unwrap();
@@ -170,7 +172,7 @@ pub(crate) fn wait_written() {
 
 enum Job {
     Write(PathBuf, String, WidgetHash),
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     Flush(mpsc::Sender<()>),
 }
 
@@ -196,7 +198,7 @@ fn writer() -> std::io::Result<&'static mpsc::Sender<Job>> {
                             tracing::error!(name, error = %e, "widget approval not saved; it lasts this session only");
                         }
                     }
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-hooks"))]
                     Job::Flush(done) => {
                         let _ = done.send(());
                     }
@@ -323,13 +325,17 @@ mod tests {
                 }
             }
         }
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        // This crate holds the helpers; the compositor crate holds their only
+        // legitimate caller (`trusted_ui/`) and everything else to police.
+        let own = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let abyss = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ec-abyss/src");
         let mut files = Vec::new();
-        walk(&root, &mut files);
-        assert!(files.len() > 20, "scanned too little: {}", root.display());
+        walk(&own, &mut files);
+        walk(&abyss, &mut files);
+        assert!(files.len() > 20, "scanned too little: {}", abyss.display());
         let mut defs = 0;
         for f in files {
-            if f.strip_prefix(&root).unwrap().starts_with("trusted_ui") {
+            if f.strip_prefix(&abyss).is_ok_and(|p| p.starts_with("trusted_ui")) {
                 continue;
             }
             let text = std::fs::read_to_string(&f).unwrap();

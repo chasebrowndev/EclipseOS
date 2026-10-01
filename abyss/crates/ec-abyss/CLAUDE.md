@@ -12,8 +12,8 @@ Read the root `CLAUDE.md` first. This file only adds crate-local rules.
   pointer, touch, tablet, touchpad swipe gestures, idle, injection), `shell/`
   (layout, workspaces, rules, focus), `protocols/standard/` (one file per
   Wayland protocol handler), `ipc/` (control socket, gate table, config RPC),
-  `config/` (KDL parse, schema, watch, in-place edit), `xwayland/` (XWM,
-  security), `state.rs` (globals + seat), `session.rs`. `tests/config_doc.rs`
+  `config/` (re-exports `ec-abyss-config`, which holds KDL parse, schema, in-place edit; here: apply, watch, widget catalog watcher, approval withholding), `xwayland/` (XWM,
+  security), `state.rs` (globals + seat), `session.rs`. `ec-abyss-config/tests/config_doc.rs`
   checks the config schema against `docs/CONFIG.md`.
 - `trusted_ui/` (TCB): the modal prompt primitive (COMP-10 §3.11, §4) and
   its owners: command-widget approval (`approval.rs`, ADR 0067) and the §3.10

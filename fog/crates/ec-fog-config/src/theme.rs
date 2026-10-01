@@ -38,7 +38,7 @@ pub struct Theme {
 }
 
 impl Default for Theme {
-    /// abyss's schema defaults (`abyss/crates/ec-abyss/src/config/mod.rs`).
+    /// abyss's schema defaults (`abyss/crates/ec-abyss-config/src/lib.rs`).
     fn default() -> Theme {
         Theme {
             rounding: 13,

@@ -36,15 +36,9 @@ const DIM_ALPHA: f32 = 0.45;
 const BAND: [f32; 4] = [1.0, 0.69, 0.16, 1.0];
 const BAND_THICK: i32 = 2;
 
-/// What a key means while the selector owns the seat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelectKey {
-    /// Leave selection mode and emit nothing.
-    Cancel,
-    /// A key with no meaning here. Swallowed anyway — the selector owns the
-    /// seat outright, so nothing bound elsewhere may fire underneath it.
-    Ignored,
-}
+// What a key means while the selector owns the seat. Plain data carried by
+// `input::Action`, so it lives in `ec-abyss-config`.
+pub use ec_abyss_config::input::SelectKey;
 
 /// Escape cancels, and so does a second press of the chord that started the
 /// selection: the chord is a toggle, because a modal mode you can only leave

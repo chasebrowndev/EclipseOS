@@ -32,21 +32,9 @@ use smithay::input::keyboard::{Keysym, ModifiersState};
 use super::overscan::{Edge, Overscan};
 use crate::state::AbyssState;
 
-/// Resolved meaning of one keypress while calibrating. Computed in the input
-/// filter, which only sees `&AbyssState`, and applied by [`apply`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Step {
-    /// Move one edge by `px`; positive is inward.
-    Edge(Edge, i32),
-    /// Move all four edges by `px`; positive is inward.
-    All(i32),
-    Next,
-    Commit,
-    Cancel,
-    Reset,
-    /// A key with no meaning here. Swallowed anyway — see the module docs.
-    Ignored,
-}
+// `Step` (the resolved meaning of one keypress, applied by [`apply`]) is plain
+// data and lives in `ec-abyss-config` because `input::Action` carries it.
+pub use ec_abyss_config::outputs::Step;
 
 /// Interpret a keypress. Returns `None` when no calibration is running, which
 /// is the signal to let the key through to the normal binding path.

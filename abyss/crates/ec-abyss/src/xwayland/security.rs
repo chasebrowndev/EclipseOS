@@ -20,23 +20,8 @@ pub enum Sensitivity {
     Secret,
 }
 
-/// How far the compositor trusts the application behind a window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum AppTrust {
-    Standard,
-    Trusted,
-}
-
-/// Whether a second (agent) seat can address the window concurrently
-/// (COMP-04 §8).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // `Multi` exists for Wayland windows; X11 never gets it
-pub enum SeatCompat {
-    /// Multiple seats may be routed to the window at once.
-    Multi,
-    /// One seat at a time, taken under an exclusive focus lock.
-    Lock,
-}
+// Plain data a `window-rule` can name, so it lives in `ec-abyss-config`.
+pub use ec_abyss_config::trust::{AppTrust, SeatCompat};
 
 /// The classification attached to every X11 window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

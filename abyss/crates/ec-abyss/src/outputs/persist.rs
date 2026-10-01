@@ -262,26 +262,9 @@ fn parse(doc: &KdlDocument) -> State {
     state
 }
 
-/// Read `top=`/`bottom=`/`left=`/`right=` properties off a node. Shared with
-/// the config parser's `overscan` key so the two spellings cannot drift.
-pub fn overscan_of(node: &kdl::KdlNode) -> Overscan {
-    let prop = |name: &str| -> Option<i32> { node.get(name).and_then(|v| v.as_integer()).map(|i| i as i32) };
-    // A bare `overscan 30` means all four edges, which is what a human writing
-    // this by hand almost always wants.
-    let all = node
-        .entries()
-        .iter()
-        .find(|e| e.name().is_none() && e.value().as_integer().is_some())
-        .and_then(|e| e.value().as_integer())
-        .map(|i| i as i32)
-        .unwrap_or(0);
-    Overscan {
-        top: prop("top").unwrap_or(all),
-        bottom: prop("bottom").unwrap_or(all),
-        left: prop("left").unwrap_or(all),
-        right: prop("right").unwrap_or(all),
-    }
-}
+// Shared with the config parser's `overscan`/`mode` keys (they live in
+// `ec-abyss-config`) so the two spellings cannot drift.
+pub use ec_abyss_config::outputs::{overscan_of, parse_mode};
 
 fn first_string(node: &kdl::KdlNode) -> Option<String> {
     node.entries()
@@ -293,31 +276,6 @@ fn first_string(node: &kdl::KdlNode) -> Option<String> {
 
 fn as_f64(v: &KdlValue) -> Option<f64> {
     v.as_float().or_else(|| v.as_integer().map(|i| i as f64))
-}
-
-/// `1920x1080` or `1920x1080@60000` (mHz) or `1920x1080@60` (Hz).
-pub fn parse_mode(s: &str) -> Option<(i32, i32, i32)> {
-    let (dims, refresh) = match s.split_once('@') {
-        Some((d, r)) => (d, Some(r)),
-        None => (s, None),
-    };
-    let (w, h) = dims.trim().split_once('x')?;
-    let w: i32 = w.trim().parse().ok()?;
-    let h: i32 = h.trim().parse().ok()?;
-    let r = match refresh {
-        None => 0,
-        Some(r) => {
-            let r = r.trim();
-            let hz: f64 = r.parse().ok()?;
-            // Anything under 1000 is plainly Hz, not mHz.
-            if hz < 1000.0 {
-                (hz * 1000.0).round() as i32
-            } else {
-                hz.round() as i32
-            }
-        }
-    };
-    Some((w, h, r))
 }
 
 #[cfg(test)]

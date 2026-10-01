@@ -1,0 +1,28 @@
+[package]
+name = "ec-abyss-config"
+description = "abyss.kdl schema, parser, editor and the plain-data types it produces"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ec_abyss_config"
+path = "src/lib.rs"
+
+# No smithay, no calloop: this crate is linked by the DE (ec-settings) and
+# ec-ctl, which must not pull in the compositor.
+[features]
+# Thread-local overrides for the approval store path and the widget catalog
+# directory, so `ec-abyss`'s own tests stay hermetic. Enabled only by its
+# dev-dependency; never by a shipped build.
+test-hooks = []
+
+[dependencies]
+tracing.workspace = true
+xkbcommon.workspace = true
+kdl.workspace = true
+regex.workspace = true
+serde_json.workspace = true
+blake3.workspace = true

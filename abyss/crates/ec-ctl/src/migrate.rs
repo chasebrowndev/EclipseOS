@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use kdl::{KdlDocument, KdlNode};
 
 /// Dotted paths the schema marks `Owner::Policy`
-/// (`ec_abyss::config::schema::TABLE`). Mirrored here so this CLI does not link
+/// (`ec_abyss_config::schema::TABLE`). Mirrored here so this CLI does not link
 /// the compositor; `tests/schema_drift.rs` fails if the two ever diverge.
 const POLICY_KEYS: &[&str] = &[
     "misc.scripted-input",
@@ -36,7 +36,7 @@ const POLICY_KEYS: &[&str] = &[
 ];
 
 /// `windowrule` actions the schema marks `Owner::Policy`
-/// (`ec_abyss::config::schema::RULE_ACTIONS`). A rule carrying both kinds is
+/// (`ec_abyss_config::schema::RULE_ACTIONS`). A rule carrying both kinds is
 /// split in two, one node per file, keeping the same match criteria.
 const POLICY_RULE_ACTIONS: &[&str] = &[
     "sensitivity",
@@ -47,11 +47,11 @@ const POLICY_RULE_ACTIONS: &[&str] = &[
 ];
 
 /// Built-in applet ids `bar.tray.pinned`/`hidden` carried before they became
-/// taskbar widgets (ADR 0065). Mirrors `ec_abyss::config::schema::LEGACY_TRAY_BUILTINS`;
+/// taskbar widgets (ADR 0065). Mirrors `ec_abyss_config::schema::LEGACY_TRAY_BUILTINS`;
 /// `tests/schema_drift.rs` pins both copies.
 const LEGACY_TRAY_BUILTINS: &[&str] = &["network", "bluetooth", "battery", "volume"];
 
-/// `ec_abyss::config::schema::BAR_WIDGET_DEFAULT_ORDER`. The migrated order is
+/// `ec_abyss_config::schema::BAR_WIDGET_DEFAULT_ORDER`. The migrated order is
 /// this list with the legacy ids rearranged by the old tray lists.
 const BAR_WIDGET_DEFAULT_ORDER: &[&str] = &[
     "now-playing",

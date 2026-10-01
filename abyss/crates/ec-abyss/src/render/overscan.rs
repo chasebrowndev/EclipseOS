@@ -32,7 +32,7 @@ use smithay::{
     utils::{Physical, Point, Rectangle, Scale, Size},
 };
 
-use crate::outputs::overscan::Overscan;
+use crate::outputs::overscan::{Overscan, OverscanGeometry as _};
 
 use super::{
     sanitize::{has_area, Sanitized},

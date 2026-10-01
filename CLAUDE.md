@@ -162,7 +162,8 @@ abyss/crates/ec-abyss/src/trusted_ui/  COMP-10  prompts (modal primitive; §3.10
 abyss/crates/ec-abyss/src/policy/      COMP-11  grant admission, agent scene filter; enforcement table, check() not yet
 abyss/crates/ec-abyss/src/audit/       COMP-12  provenance emission to policyd (M12: scene requests, focus, lifecycle)
 abyss/crates/ec-abyss/src/ipc/         COMP-13  human JSON-RPC socket, gate table
-abyss/crates/ec-abyss/src/config/      COMP-13  KDL parse, validate, hot-reload, edit
+abyss/crates/ec-abyss-config/       COMP-13  KDL schema, parse, validate, edit (no smithay; ec-settings/ec-ctl link it)
+abyss/crates/ec-abyss/src/config/      COMP-13  re-exports ec-abyss-config; apply, hot-reload, catalog watch, approval withholding
 abyss/crates/ec-abyss/src/xwayland/    COMP-07
 abyss/crates/ec-policyd/, abyss/crates/ec-policy-eval/   A-04, S-01 §4, S-04 §4  policy daemon + shared types (TCB)
 abyss/crates/ec-protocols/          eclipse_agent_v1 XML + bindings (Apache-2.0)

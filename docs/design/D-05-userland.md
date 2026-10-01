@@ -134,7 +134,7 @@ own threads and report back as updates; none runs on a draw path.
 
 ## 4. Configuration read
 
-All keys are `abyss.kdl` keys in `abyss/crates/ec-abyss/src/config/schema.rs`. No DE
+All keys are `abyss.kdl` keys in `abyss/crates/ec-abyss-config/src/schema.rs`. No DE
 component keeps a config file of its own.
 
 | Key | Reader | Reload |
@@ -172,7 +172,7 @@ The four DE units in `packaging/` (`hyperion`, `ec-pairing`, `ec-toasts`,
 account). The fifth, `ec-policyd.service`, is TCB and ordered `Before=` the
 target instead. Everything else is spawned by name, so `PATH` must carry it:
 `/usr/bin` packaged, `target/debug` under `packaging/abyss-dev-session`. Default
-binds: `abyss/crates/ec-abyss/src/config/mod.rs`. `.desktop` files: `packaging/applications/`.
+binds: `abyss/crates/ec-abyss-config/src/lib.rs`. `.desktop` files: `packaging/applications/`.
 
 **Wallpaper** is a core component (ADR 0068), not yet written:
 `ec-wallpaper`, a layer-shell client on `Background`, one surface per

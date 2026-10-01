@@ -4,7 +4,7 @@
 //! this test compares it against the schema it mirrors. `abyss` is a
 //! dev-dependency: it is here and nowhere else.
 
-use ec_abyss::config::schema::{self, Owner, RULE_ACTIONS, TABLE};
+use ec_abyss_config::schema::{self, Owner, RULE_ACTIONS, TABLE};
 
 /// Keep in sync with `migrate::POLICY_KEYS`.
 const POLICY_KEYS: &[&str] = &[

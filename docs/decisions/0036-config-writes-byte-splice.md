@@ -55,7 +55,7 @@ the input — a slider dragged back to where it started must not churn the file.
 ## Consequences
 - COMP-13 §1.4's VERIFY is closed: yes, faithfully — by splicing, not by the
   obvious API call.
-- `abyss/crates/ec-abyss/src/config/edit.rs` carries
+- `abyss/crates/ec-abyss-config/src/edit.rs` carries
   `round_trip_preserves_everything_else` over a fixture holding a license
   comment, a `/* block */`, a `//` trailing comment on the edited line, a `/-`
   slashdashed node, tab and 4-space indentation in different blocks,

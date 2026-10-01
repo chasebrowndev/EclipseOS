@@ -799,7 +799,7 @@ pub fn start_mouse_bind(state: &mut AbyssState, button: u32) -> bool {
         return false;
     };
     let mods = keyboard.modifier_state();
-    let Some(action) = state.config.mouse_bind_for(&mods, button) else {
+    let Some(action) = state.config.mouse_bind_for(&super::held_mods(&mods), button) else {
         return false;
     };
     let Some(window) = grabbable_window_under_pointer(state) else {
@@ -850,7 +850,7 @@ pub fn drag_gesture_claims(
     locked: bool,
     busy: bool,
 ) -> bool {
-    !locked && !busy && config.drag_gesture_bound(fingers, mods)
+    !locked && !busy && config.drag_gesture_bound(fingers, &super::held_mods(mods))
 }
 
 /// Claim a touchpad gesture beginning now as a window drag if it is one (see

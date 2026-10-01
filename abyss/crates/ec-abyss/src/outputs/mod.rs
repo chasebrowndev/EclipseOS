@@ -30,6 +30,7 @@ use smithay::{
 
 use crate::shell::workspace::{self, Workspace};
 
+use overscan::OverscanGeometry as _;
 use persist::{Persist, SavedOutput};
 
 /// Where an output came from.
@@ -918,6 +919,25 @@ pub fn unregister(state: &mut crate::state::AbyssState, id: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every transform the output layer can name is documented in the schema.
+    #[test]
+    fn output_transforms_are_complete() {
+        for t in [
+            Transform::Normal,
+            Transform::_90,
+            Transform::_180,
+            Transform::_270,
+            Transform::Flipped,
+            Transform::Flipped90,
+            Transform::Flipped180,
+            Transform::Flipped270,
+        ] {
+            let name = transform_name(t);
+            assert!(crate::config::schema::OUTPUT_TRANSFORMS.contains(&name));
+            assert_eq!(parse_transform(name), Some(t));
+        }
+    }
 
     #[test]
     fn identity_falls_back_to_connector() {

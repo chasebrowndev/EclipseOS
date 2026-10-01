@@ -120,7 +120,7 @@ mod tests {
     use super::*;
 
     fn one(text: &str) -> CustomWidget {
-        let cfg = crate::config::tests::widgets_cfg(text);
+        let cfg = crate::parse_single_for_tests(text);
         assert!(cfg.errors.is_empty(), "{text}: {:?}", cfg.errors);
         let [w] = &cfg.bar.custom_widgets[..] else {
             panic!("{text}: expected one widget")

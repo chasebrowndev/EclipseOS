@@ -26,36 +26,25 @@ use smithay::utils::{Logical, Physical, Point, Rectangle, Size};
 /// the three front ends is still recoverable from the same UI.
 const MAX_FRACTION: f64 = 0.25;
 
-/// Per-edge inset in physical pixels. All zero means "no overscan
-/// compensation", which is the only state in which the render path is
-/// untouched and direct scanout stays available.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Overscan {
-    pub top: i32,
-    pub bottom: i32,
-    pub left: i32,
-    pub right: i32,
+// The data type (per-edge inset in physical pixels; all zero means "no
+// overscan compensation") lives in `ec-abyss-config` so the config parser can
+// name it without smithay. The geometry below needs smithay's `Size`/`Rectangle`
+// and so is an extension trait here.
+pub use ec_abyss_config::outputs::{Edge, Overscan};
+
+pub trait OverscanGeometry: Sized {
+    fn clamped(self, size: Size<i32, Physical>) -> Self;
+    fn inset(&self, size: Size<i32, Physical>) -> Rectangle<i32, Physical>;
+    fn scale(&self, size: Size<i32, Physical>) -> (f64, f64);
+    fn untransform(&self, p: Point<f64, Physical>, size: Size<i32, Physical>) -> Point<f64, Physical>;
+    fn untransform_unit(&self, p: Point<f64, Logical>, size: Size<i32, Physical>) -> Point<f64, Logical>;
 }
 
-impl Overscan {
-    /// The same inset on all four edges.
-    pub fn uniform(px: i32) -> Self {
-        Self {
-            top: px,
-            bottom: px,
-            left: px,
-            right: px,
-        }
-    }
-
-    pub fn is_zero(&self) -> bool {
-        *self == Self::default()
-    }
-
+impl OverscanGeometry for Overscan {
     /// Clamp to non-negative and to [`MAX_FRACTION`] of each axis of `size`.
     /// Applied on every path in — config, state file, IPC and calibration — so
     /// no later stage has to re-check.
-    pub fn clamped(self, size: Size<i32, Physical>) -> Self {
+    fn clamped(self, size: Size<i32, Physical>) -> Self {
         let hmax = ((size.w as f64) * MAX_FRACTION) as i32;
         let vmax = ((size.h as f64) * MAX_FRACTION) as i32;
         Self {
@@ -67,7 +56,7 @@ impl Overscan {
     }
 
     /// The rectangle of the framebuffer the desktop is scaled into.
-    pub fn inset(&self, size: Size<i32, Physical>) -> Rectangle<i32, Physical> {
+    fn inset(&self, size: Size<i32, Physical>) -> Rectangle<i32, Physical> {
         let w = (size.w - self.left - self.right).max(1);
         let h = (size.h - self.top - self.bottom).max(1);
         Rectangle::new((self.left, self.top).into(), (w, h).into())
@@ -76,7 +65,7 @@ impl Overscan {
     /// Non-uniform scale taking the full framebuffer onto [`Overscan::inset`].
     /// Non-uniform on purpose: a TV's horizontal and vertical crop are set by
     /// separate parts of its scaler and are routinely different.
-    pub fn scale(&self, size: Size<i32, Physical>) -> (f64, f64) {
+    fn scale(&self, size: Size<i32, Physical>) -> (f64, f64) {
         let r = self.inset(size);
         (
             r.size.w as f64 / (size.w.max(1) as f64),
@@ -88,7 +77,7 @@ impl Overscan {
     /// coordinates — the inverse of what the render path does, needed so an
     /// absolute pointer (touchscreen, tablet, VM) still lands under the finger.
     /// Points inside the black margins clamp to the nearest desktop edge.
-    pub fn untransform(&self, p: Point<f64, Physical>, size: Size<i32, Physical>) -> Point<f64, Physical> {
+    fn untransform(&self, p: Point<f64, Physical>, size: Size<i32, Physical>) -> Point<f64, Physical> {
         let (sx, sy) = self.scale(size);
         let x = (p.x - self.left as f64) / sx;
         let y = (p.y - self.top as f64) / sy;
@@ -98,38 +87,11 @@ impl Overscan {
     /// The same inverse in the normalised 0..1 space that
     /// `AbsolutePositionEvent::position_transformed` works in, which is where
     /// the input path actually needs it.
-    pub fn untransform_unit(&self, p: Point<f64, Logical>, size: Size<i32, Physical>) -> Point<f64, Logical> {
+    fn untransform_unit(&self, p: Point<f64, Logical>, size: Size<i32, Physical>) -> Point<f64, Logical> {
         let phys = (p.x * size.w as f64, p.y * size.h as f64).into();
         let back = self.untransform(phys, size);
         (back.x / size.w.max(1) as f64, back.y / size.h.max(1) as f64).into()
     }
-
-    /// Step one edge. `outward` grows the desktop back towards the panel edge.
-    pub fn nudge(&mut self, edge: Edge, step: i32, outward: bool) {
-        let d = if outward { -step } else { step };
-        let slot = match edge {
-            Edge::Top => &mut self.top,
-            Edge::Bottom => &mut self.bottom,
-            Edge::Left => &mut self.left,
-            Edge::Right => &mut self.right,
-        };
-        *slot = (*slot + d).max(0);
-    }
-
-    /// Step all four edges at once.
-    pub fn nudge_all(&mut self, step: i32, outward: bool) {
-        for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
-            self.nudge(edge, step, outward);
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Edge {
-    Top,
-    Bottom,
-    Left,
-    Right,
 }
 
 #[cfg(test)]

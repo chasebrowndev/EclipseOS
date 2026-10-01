@@ -316,7 +316,7 @@ a merge problem.
 
 ### 4.2 The config search path, as built
 
-From `abyss/crates/ec-abyss/src/config/mod.rs`, in apply order, later overriding earlier:
+From `abyss/crates/ec-abyss-config/src/lib.rs`, in apply order, later overriding earlier:
 
 1. `/etc/eclipse/abyss.kdl` *(image)*
 2. `/etc/eclipse/policy.kdl` *(image)*
@@ -434,7 +434,7 @@ only what a machine cannot infer and a user would otherwise hit as a defect:
 - nothing else.
 
 Layout, animation and decoration defaults belong in the schema's own defaults in
-`abyss/crates/ec-abyss/src/config/schema.rs`, not in a shipped file. A default that lives
+`abyss/crates/ec-abyss-config/src/schema.rs`, not in a shipped file. A default that lives
 in a config file is a default the user has to delete to get back to; a default
 that lives in the schema is one they never see. **Prefer the schema every time.**
 

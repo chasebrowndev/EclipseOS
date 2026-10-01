@@ -27,6 +27,7 @@ smithay = { workspace = true, features = [
   "renderer_gl",
   "xwayland",
 ] }
+ec-abyss-config = { path = "../ec-abyss-config" }
 calloop.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -45,6 +46,7 @@ ec-policy-eval = { path = "../ec-policy-eval" }
 ec-protocols = { path = "../ec-protocols", features = ["server"] }
 
 [dev-dependencies]
+ec-abyss-config = { path = "../ec-abyss-config", features = ["test-hooks"] }
 # An in-process client for the state tests: the lock-screen focus rules can
 # only be exercised against real surfaces (COMP-06 §1, COMP-04 §7).
 wayland-client = "0.31"

@@ -700,7 +700,7 @@ pub const TABLE: &[Key] = &[
     ),
     k(
         "decoration.blur.mode",
-        Ty::Enum(crate::config::BlurMode::NAMES),
+        Ty::Enum(crate::BlurMode::NAMES),
         Str("glass"),
         Abyss,
         Live,
@@ -767,7 +767,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.blur.frost.tint",
         Ty::Color,
-        Color(crate::config::FROST_TINT),
+        Color(crate::FROST_TINT),
         Abyss,
         Live,
         "`frost`: colour mixed over the blurred backdrop; its alpha is how much.",
@@ -1902,7 +1902,7 @@ impl Dv {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::edit;
+    use crate::edit;
     use kdl::KdlDocument;
 
     /// Build a config file that sets every scalar key to a value of the right
@@ -2151,9 +2151,7 @@ mod tests {
                 cfg.apply(&doc, &mut binds);
                 assert!(cfg.errors.is_empty(), "{text}: {:#?}", cfg.errors);
                 assert!(
-                    binds
-                        .iter()
-                        .any(|b| b.key == smithay::input::keyboard::Keysym::F9),
+                    binds.iter().any(|b| b.key == xkbcommon::xkb::Keysym::F9),
                     "{text}"
                 );
             }
@@ -2210,21 +2208,13 @@ mod tests {
         }
     }
 
-    /// Every transform the output layer can name is documented.
+    /// Every documented transform name is one the parser accepts. (The other
+    /// direction, every smithay `Transform` is documented, is tested in
+    /// `ec-abyss`'s `outputs` module.)
     #[test]
-    fn output_transforms_are_complete() {
-        use smithay::utils::Transform;
-        for t in [
-            Transform::Normal,
-            Transform::_90,
-            Transform::_180,
-            Transform::_270,
-            Transform::Flipped,
-            Transform::Flipped90,
-            Transform::Flipped180,
-            Transform::Flipped270,
-        ] {
-            assert!(OUTPUT_TRANSFORMS.contains(&crate::outputs::transform_name(t)));
+    fn output_transforms_are_parseable() {
+        for t in OUTPUT_TRANSFORMS {
+            assert!(crate::outputs::is_transform_name(t), "{t}");
         }
     }
 
