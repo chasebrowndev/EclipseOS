@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "ec-cataclysm-pub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Apache-2.0, not the workspace AGPL: this crate is linked into the MIT foot
+# fork (`cataclysm`) and is protocol-shaped (eclipse_semantic_v1 types and the
+# publish policy), the F-05 §3 permissive tier. ADR 0034 / P-04 do not name a
+# licence; this is the resolution.
+license = "Apache-2.0"
+repository.workspace = true
+description = "cataclysm terminal grid publisher: P-04 node model, line diffing, publish-rate policy, C ABI (ADR 0034)."
+
+[lib]
+name = "ec_cataclysm_pub"
+# rlib for abyss (native), staticlib for the foot fork (FFI).
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
