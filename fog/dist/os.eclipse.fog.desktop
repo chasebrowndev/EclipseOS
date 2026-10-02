@@ -1,0 +1,13 @@
+# Installed to <data dir>/applications; the launcher's apps::scan() reads it
+# from there. Exec is the bare binary name on purpose, as ec-settings'
+# entry: dev PATH or /usr/bin, same file. ec-fog-ui takes a path or a file:// URI.
+# The basename matches the Wayland app-id (FOG §UI and navigation).
+[Desktop Entry]
+Type=Application
+Name=Fog
+Comment=Browse and manage files
+Exec=ec-fog-ui %U
+StartupWMClass=os.eclipse.fog
+Categories=System;FileManager;
+MimeType=inode/directory;
+Keywords=files;folders;explorer;browser;fog;

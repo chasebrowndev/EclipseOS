@@ -1,0 +1,18 @@
+[package]
+name = "ec-setup-helper"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "the root helper behind ec-setup (D-07 §6). Closed plan in, polkit-gated. TCB-adjacent: owner review."
+publish = false
+
+[dependencies]
+ec-setup-plan = { path = "../ec-setup-plan" }
+kdl.workspace = true
+# Safe wrappers over openat/fstat/fchown/geteuid: the seed's O_NOFOLLOW walk
+# (D-07 §5) needs no `unsafe` of our own.
+rustix = { version = "1", default-features = false, features = ["std", "fs", "net", "process"] }
+serde_json.workspace = true
+zeroize = "1"

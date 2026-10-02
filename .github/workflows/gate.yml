@@ -10,13 +10,12 @@ concurrency:
   group: gate-${{ github.ref }}
   cancel-in-progress: true
 
-# The workflow files must sit at the repository root for GitHub to read
-# them; the cargo workspace lives one directory down. Every `run:` step is
-# therefore rooted at AbyssCompositor/, and each `uses:` action that touches
-# the filesystem is pointed there explicitly (actions ignore `defaults`).
-defaults:
-  run:
-    working-directory: AbyssCompositor
+# The workflow files must sit at the repository root for GitHub to read them.
+# The repo holds five cargo workspaces (abyss/, shell/, installer/,
+# oracle-eyes/, fog/), so each job sets its own `defaults.run.working-directory`
+# and points any filesystem-touching `uses:` action at its workspace explicitly
+# (actions ignore `defaults`). All of them build into <repo>/target, set by the
+# root .cargo/config.toml.
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,14 +24,21 @@ env:
 
 jobs:
   gate:
-    name: build / fmt / clippy / test
+    name: ${{ matrix.workspace }} build / fmt / clippy / test
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [abyss, shell, installer]
+    defaults:
+      run:
+        working-directory: ${{ matrix.workspace }}
     steps:
       - uses: actions/checkout@v4
 
-      # Smithay/wayland build deps. Trim to what the workspace actually
-      # links; an over-broad list here hides a missing dep in packaging.
+      # Smithay/wayland build deps. Trim to what the workspaces actually
+      # link; an over-broad list here hides a missing dep in packaging.
       - name: system deps
         run: |
           sudo apt-get update
@@ -42,16 +48,15 @@ jobs:
             libdisplay-info-dev libpixman-1-dev libdrm-dev \
             pkg-config
 
-      # Toolchain comes from rust-toolchain.toml. If that file does not
-      # exist, add it before merging this workflow — CI and dev must not
-      # drift, same rule as the Smithay pin in CLAUDE.md.
+      # Toolchain comes from each workspace's rust-toolchain.toml. CI and dev
+      # must not drift, same rule as the Smithay pin in CLAUDE.md.
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: AbyssCompositor
+          workspaces: ${{ matrix.workspace }} -> ../target
 
       - run: cargo fmt --all --check
 
@@ -69,6 +74,9 @@ jobs:
     # push to every branch bought nothing that the PR run does not.
     if: github.event_name == 'pull_request'
     timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: abyss
     steps:
       - uses: actions/checkout@v4
 
@@ -88,7 +96,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: AbyssCompositor
+          workspaces: abyss -> ../target
 
       # Pinned to the same revision smithay's own wlcs job uses. A floating
       # checkout would let an upstream test change turn this gate red on a
@@ -102,7 +110,7 @@ jobs:
         id: wlcs-cache
         uses: actions/cache@v4
         with:
-          path: AbyssCompositor/target/wlcs-build
+          path: target/wlcs-build
           key: wlcs-${{ runner.os }}-${{ steps.wlcs.outputs.sha }}
 
       - name: build wlcs
@@ -110,13 +118,13 @@ jobs:
         env:
           WLCS_SHA: ${{ steps.wlcs.outputs.sha }}
         run: |
-          git clone https://github.com/MirServer/wlcs.git target/wlcs-src
-          git -C target/wlcs-src checkout "$WLCS_SHA"
-          cmake -S target/wlcs-src -B target/wlcs-build -DCMAKE_BUILD_TYPE=Release
-          cmake --build target/wlcs-build -j"$(nproc)"
+          git clone https://github.com/MirServer/wlcs.git ../target/wlcs-src
+          git -C ../target/wlcs-src checkout "$WLCS_SHA"
+          cmake -S ../target/wlcs-src -B ../target/wlcs-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build ../target/wlcs-build -j"$(nproc)"
 
       - name: build the integration
-        run: cargo build -p wlcs-abyss
+        run: cargo build -p ec-abyss-wlcs
 
       # Software GL: no /dev/dri on the runner.
       - name: run the suite
@@ -126,144 +134,92 @@ jobs:
           RUST_BACKTRACE: "1"
         run: |
           skip=$(grep -vE '^\s*(#|$)' ci/wlcs-skip.txt | paste -sd: -)
-          target/wlcs-build/wlcs target/debug/libwlcs_abyss.so \
+          ../target/wlcs-build/wlcs ../target/debug/libec_abyss_wlcs.so \
             --gtest_filter="-${skip}"
 
   oracle-eyes:
     name: oracle-eyes build / fmt / clippy / test
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # The Oracle-Eyes addon (COMP-18, ADR 0041) is its own cargo workspace,
-    # not a member of Abyss's, so it needs its own gate rooted one directory
-    # over. `defaults` above points at AbyssCompositor; override it here.
+    # The Oracle-Eyes addon (COMP-18, ADR 0041) is its own cargo workspace.
+    # It has no skip-if-missing guard: a move that loses the manifest must
+    # fail this job, not pass it silently.
     defaults:
       run:
-        working-directory: Oracle-Eyes
+        working-directory: oracle-eyes
     steps:
       - uses: actions/checkout@v4
 
-      # The workspace does not exist until Phase 1. Skip cleanly rather than
-      # failing red on every push in the meantime; delete this step and the
-      # `if:` guards below once Oracle-Eyes/Cargo.toml lands.
-      - id: exists
-        run: test -f Cargo.toml && echo "yes=true" >> "$GITHUB_OUTPUT" || echo "yes=false" >> "$GITHUB_OUTPUT"
-
-      - if: steps.exists.outputs.yes == 'true'
-        name: system deps
+      - name: system deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libwayland-dev libxkbcommon-dev libtesseract-dev libleptonica-dev \
             pkg-config
 
-      - if: steps.exists.outputs.yes == 'true'
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      - if: steps.exists.outputs.yes == 'true'
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: Oracle-Eyes
+          workspaces: oracle-eyes -> ../target
 
-      - if: steps.exists.outputs.yes == 'true'
-        run: cargo fmt --all --check
+      - run: cargo fmt --all --check
 
-      - if: steps.exists.outputs.yes == 'true'
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - if: steps.exists.outputs.yes == 'true'
-        run: cargo build --workspace --all-targets
+      - run: cargo build --workspace --all-targets
 
-      - if: steps.exists.outputs.yes == 'true'
-        run: cargo test --workspace
-
-  oracle-eyes-supply-chain:
-    name: oracle-eyes cargo-deny
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - id: exists
-        run: test -f Oracle-Eyes/Cargo.toml && echo "yes=true" >> "$GITHUB_OUTPUT" || echo "yes=false" >> "$GITHUB_OUTPUT"
-      - if: steps.exists.outputs.yes == 'true'
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check advisories bans licenses sources
-          manifest-path: Oracle-Eyes/Cargo.toml
+      - run: cargo test --workspace
 
   fog:
     name: fog build / fmt / clippy / test
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # The Fog file explorer (FogFileExplorer/FOG-SPEC.md, §Implementation
-    # guide) is its own cargo workspace, like Oracle-Eyes, so it gets its own
-    # gate rooted one directory over. Override `defaults` here.
+    # The Fog file explorer (fog/FOG-SPEC.md, §Implementation guide) is its own
+    # cargo workspace. No skip-if-missing guard, as for oracle-eyes.
     defaults:
       run:
-        working-directory: FogFileExplorer
+        working-directory: fog
     steps:
       - uses: actions/checkout@v4
 
-      # The workspace is still landing on its branch. Skip cleanly rather than
-      # failing red on every push in the meantime; delete this step and the
-      # `if:` guards below once FogFileExplorer/Cargo.toml is on main.
-      - id: exists
-        run: test -f Cargo.toml && echo "yes=true" >> "$GITHUB_OUTPUT" || echo "yes=false" >> "$GITHUB_OUTPUT"
-
-      - if: steps.exists.outputs.yes == 'true'
-        name: system deps
+      - name: system deps
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libwayland-dev libxkbcommon-dev pkg-config
 
-      - if: steps.exists.outputs.yes == 'true'
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
-      - if: steps.exists.outputs.yes == 'true'
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: FogFileExplorer
+          workspaces: fog -> ../target
 
-      - if: steps.exists.outputs.yes == 'true'
-        run: cargo fmt --all --check
+      - run: cargo fmt --all --check
 
-      - if: steps.exists.outputs.yes == 'true'
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - if: steps.exists.outputs.yes == 'true'
-        run: cargo build --workspace --all-targets
+      - run: cargo build --workspace --all-targets
 
       # FOG-SPEC invariant: the base build compiles without the optional
       # `gio` and `activity` features. --all-features above never proves that.
-      - if: steps.exists.outputs.yes == 'true'
-        name: cargo build (no default features)
+      - name: cargo build (no default features)
         run: cargo build --workspace --no-default-features
 
-      - if: steps.exists.outputs.yes == 'true'
-        run: cargo test --workspace
-
-  fog-supply-chain:
-    name: fog cargo-deny
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - id: exists
-        run: test -f FogFileExplorer/Cargo.toml && echo "yes=true" >> "$GITHUB_OUTPUT" || echo "yes=false" >> "$GITHUB_OUTPUT"
-      - if: steps.exists.outputs.yes == 'true'
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check advisories bans licenses sources
-          manifest-path: FogFileExplorer/Cargo.toml
+      - run: cargo test --workspace
 
   supply-chain:
-    name: cargo-deny
+    name: ${{ matrix.workspace }} cargo-deny
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [abyss, shell, installer, oracle-eyes, fog]
     steps:
       - uses: actions/checkout@v4
       # Advisories + license + source checks. This is a down payment on
@@ -271,7 +227,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans licenses sources
-          manifest-path: AbyssCompositor/Cargo.toml
+          manifest-path: ${{ matrix.workspace }}/Cargo.toml
 
   tcb-review:
     name: TCB touch check
@@ -292,7 +248,7 @@ jobs:
           head="${{ github.event.pull_request.head.sha }}"
           changed=$(git diff --name-only "$base" "$head")
           tcb=$(echo "$changed" | grep -E \
-            '^AbyssCompositor/(crates/(policyd|policy-eval|sandbox|brokerd|eclipse-setup-helper)/|dist/polkit/|crates/abyss/src/(policy|trusted_ui|audit)/|crates/abyss/src/render/capture\.rs$)' \
+            '^(abyss/crates/ec-(policyd|policy-eval|sandbox|brokerd)/|installer/crates/ec-setup-helper/|packaging/polkit/|abyss/crates/ec-abyss/src/(policy|trusted_ui|audit)/|abyss/crates/ec-abyss/src/render/capture\.rs$|AbyssCompositor/(crates/(policyd|ec-policy-eval|sandbox|brokerd|ec-setup-helper)/|dist/polkit/|crates/abyss/src/(policy|trusted_ui|audit)/|crates/abyss/src/render/capture\.rs$))' \
             || true)
           if [ -n "$tcb" ]; then
             echo "::warning title=TCB path touched::Line-by-line owner review required (F-07 §4)"
@@ -313,35 +269,43 @@ jobs:
           fetch-depth: 0
 
       # F-01 §4 (Appendix B): every setting reachable without a text editor.
-      # ci/gui-coverage-exceptions.txt lists the ones that are not yet, and
-      # only ever shrinks. Both halves matter: the count check stops the list
-      # growing, and the inclusion check stops a swap that keeps the count the
-      # same while smuggling a new exception in.
+      # shell/ci/gui-coverage-exceptions.txt lists the ones that are not yet,
+      # and only ever shrinks. Both halves matter: the count check stops the
+      # list growing, and the inclusion check stops a swap that keeps the count
+      # the same while smuggling a new exception in.
       - name: exception list only shrinks
         run: |
+          new=shell/ci/gui-coverage-exceptions.txt
           base=$(git merge-base "${{ github.event.pull_request.base.sha }}" HEAD)
           filter() { grep -vE '^\s*(#|$)' | sort -u; }
+          # The list moved from AbyssCompositor/ci/ when the repo was split into
+          # per-product directories; a base from before that move keeps the
+          # ratchet by reading the old path.
+          basefile=""
+          for p in "$new" AbyssCompositor/ci/gui-coverage-exceptions.txt; do
+            if git cat-file -e "$base:$p" 2>/dev/null; then basefile="$p"; break; fi
+          done
           # A base with no list at all is the bootstrap case: the PR that
           # introduces the ratchet sets the first notch, and every later PR is
           # measured against it. That is not the same as a base whose list is
           # present but empty, where growth is a real violation.
-          if ! git cat-file -e "$base:AbyssCompositor/ci/gui-coverage-exceptions.txt" 2>/dev/null; then
+          if [ -z "$basefile" ]; then
             echo "no exception list at the merge base; this PR sets the first notch:"
-            filter < ci/gui-coverage-exceptions.txt | sed 's/^/  + /'
+            filter < "$new" | sed 's/^/  + /'
             exit 0
           fi
-          git show "$base:AbyssCompositor/ci/gui-coverage-exceptions.txt" | filter > /tmp/base.txt
-          filter < ci/gui-coverage-exceptions.txt > /tmp/head.txt
+          git show "$base:$basefile" | filter > /tmp/base.txt
+          filter < "$new" > /tmp/head.txt
           echo "base: $(wc -l < /tmp/base.txt)  head: $(wc -l < /tmp/head.txt)"
           if [ "$(wc -l < /tmp/head.txt)" -gt "$(wc -l < /tmp/base.txt)" ]; then
             echo "::error::the GUI-coverage exception list grew; it is a ratchet"
             comm -13 /tmp/base.txt /tmp/head.txt | sed 's/^/  + /'
             exit 1
           fi
-          new=$(comm -13 /tmp/base.txt /tmp/head.txt)
-          if [ -n "$new" ]; then
+          added=$(comm -13 /tmp/base.txt /tmp/head.txt)
+          if [ -n "$added" ]; then
             echo "::error::new entries on the GUI-coverage exception list"
-            echo "$new" | sed 's/^/  + /'
+            echo "$added" | sed 's/^/  + /'
             exit 1
           fi
           echo "ratchet holds"
@@ -357,10 +321,6 @@ jobs:
       # delegated to an agent rather than typed by hand.
       # Fog's spec has no numbered IDs, so it is cited as 'Implements FOG §X'.
       - name: check PR body
-        # No checkout in this job, so the workflow-level
-        # `working-directory: AbyssCompositor` would not exist yet and bash
-        # fails to start at all. Run from the workspace root.
-        working-directory: .
         env:
           BODY: ${{ github.event.pull_request.body }}
         run: |

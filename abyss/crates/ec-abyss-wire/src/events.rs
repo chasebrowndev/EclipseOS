@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! Subscribable event kinds.
+
+/// Event kinds a client may ask for (COMP-13 §2.1). An unknown kind is
+/// rejected rather than silently accepted: a bar that thinks it is subscribed
+/// and never hears anything is the worst outcome.
+pub const EVENTS: &[&str] = &[
+    "workspace",
+    "window",
+    "focus",
+    "output",
+    "agent-activity",
+    "config-error",
+    "config",
+    "keybind",
+    "launcher",
+];

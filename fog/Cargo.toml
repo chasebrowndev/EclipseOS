@@ -1,0 +1,71 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/ec-fog-proto",
+  "crates/ec-fog-config",
+  "crates/ec-fog-daemon",
+  "crates/ec-fog-widgets",
+  "crates/ec-fog-ui",
+  "crates/ec-fog-bench",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+repository = "https://github.com/chasebrowndev/eclipseos"
+
+[workspace.dependencies]
+ec-fog-proto = { path = "crates/ec-fog-proto" }
+ec-fog-config = { path = "crates/ec-fog-config" }
+ec-fog-daemon = { path = "crates/ec-fog-daemon" }
+ec-fog-widgets = { path = "crates/ec-fog-widgets" }
+# ec-ui's pin, but with the tokio executor: the UI's fogd connection is a
+# tokio UnixStream.
+iced = { version = "0.14", default-features = false, features = [
+  "wgpu",
+  "advanced",
+  "wayland",
+  "tokio",
+] }
+# iced hides its renderer re-export; the glass widget needs the primitive
+# trait to draw its shader beside other content. Same crate iced resolves.
+iced_wgpu = { version = "0.14", default-features = false }
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "net",
+  "io-util",
+  "sync",
+  "macros",
+  "time",
+] }
+rustix = { version = "1", features = ["fs", "net", "process"] }
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+thiserror = "2"
+# The compositor's pin (abyss/Cargo.toml): KDL v2 syntax.
+kdl = "6"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
+libc = "0.2"
+# Local time for the modified column; the zone is read once, before iced
+# starts (the UI thread never does filesystem I/O).
+jiff = { version = "0.2", default-features = false, features = [
+  "std",
+  "tz-system",
+  "tzdb-zoneinfo",
+] }
+
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 4
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -1,0 +1,16 @@
+[package]
+name = "ec-setup-plan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The closed plan and progress language between ec-setup and ec-setup-helper (D-07 §6). Types and validators only, no I/O."
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+zeroize = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+serde_json.workspace = true

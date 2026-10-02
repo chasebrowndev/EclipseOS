@@ -1,0 +1,20 @@
+[package]
+name = "ec-audit"
+description = "ec-audit: verify, trace and query the policyd audit store (S-04 §4, §5)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Never published; `publish = false` also keeps `cargo deny` from flagging
+# the path dependencies (as in policyd).
+publish = false
+
+[[bin]]
+name = "ec-audit"
+path = "src/main.rs"
+
+[dependencies]
+ec-policyd = { path = "../ec-policyd" }
+ec-policy-eval = { path = "../ec-policy-eval" }
+serde_json.workspace = true

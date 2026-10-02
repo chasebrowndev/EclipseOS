@@ -1,0 +1,6 @@
+# Installed to /etc/xdg/abyss-mimeapps.list by eclipseos-fog. The prefix
+# matches XDG_CURRENT_DESKTOP=Abyss (packaging/abyss-session), so it applies only
+# in the Abyss session and a user's ~/.config/mimeapps.list still wins.
+# EclipseOS sets Fog as the default app for folders (FOG §Desktop interop).
+[Default Applications]
+inode/directory=os.eclipse.fog.desktop

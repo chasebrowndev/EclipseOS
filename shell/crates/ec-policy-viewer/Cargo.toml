@@ -1,0 +1,23 @@
+[package]
+name = "ec-policy-viewer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Read-only viewer for policy.kdl: capture allowlist, data-control allowlist, security window rules."
+publish = false
+
+[lib]
+name = "ec_policy_viewer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ec-policy-viewer"
+path = "src/main.rs"
+
+[dependencies]
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
+ec-ui = { path = "../ec-ui" }
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
+kdl.workspace = true

@@ -1,0 +1,35 @@
+# Fog
+
+The EclipseOS file explorer. The spec is `FOG-SPEC.md` — read §Implementation
+guide first; the rest is reference. Standalone cargo workspace (the spec's
+`fog/`), sibling of `abyss/` and `oracle-eyes/`.
+
+## Invariants (never violate)
+
+- `ec-fogd` never runs with privileges. Only `fog-elevate` runs as root, and only for the lifetime of one elevated tab.
+- The UI thread never does filesystem I/O or sorting. All of it happens in `ec-fogd`.
+- Every mutation goes through the job queue and the undo journal. No direct writes from the UI, CLI or portal.
+- Renames use `RENAME_NOREPLACE`. No code path may silently overwrite a file.
+- Unknown config keys are errors, and the last valid config stays active.
+- `fog`, `ec-fogd` and `ec-fog-ui` contain no `agentd` client code; only the `fog-activityd` add-on daemon does (ADR 0066).
+- Agents never reach `fogd.sock`. Agent calls arrive only via `agentd`.
+
+## Crates
+
+- `ec-fog-proto` — IPC message types, versioned framing; no I/O.
+- `ec-fog-config` — `fog.kdl` parsing over the embedded `config/fog.default.kdl`; the `Action` names.
+- `ec-fog-daemon` — `ec-fogd`: backends, cache, watch, jobs, journal, thumbnails.
+- `ec-fog-widgets` — virtual list, glass shader, reusable widgets.
+- `ec-fog-ui` — iced app: windows, views, input, animation.
+- `ec-fog-bench` — latency and frame-time benchmarks against §Performance model.
+
+## Features
+
+`gio` (remote backends) must stay off in base builds. Agent integration is
+not a feature but the fog-activity add-on (ADR 0066): Fog keeps its lens views
+behind the `activity-lens` hook, off unless an installed manifest names it.
+
+## Gate (from `fog/`)
+
+`cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+`cargo build --workspace --no-default-features`, `cargo test --workspace`, `cargo deny check`.

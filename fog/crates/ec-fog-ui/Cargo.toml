@@ -1,0 +1,25 @@
+[package]
+name = "ec-fog-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fog's iced frontend (FOG §UI and navigation)."
+publish = false
+
+[[bin]]
+name = "ec-fog-ui"
+path = "src/main.rs"
+
+[dependencies]
+ec-fog-proto.workspace = true
+ec-fog-config.workspace = true
+ec-fog-widgets.workspace = true
+iced.workspace = true
+# `process`: custom actions are spawned on the executor, never the UI thread.
+tokio = { workspace = true, features = ["process"] }
+jiff.workspace = true
+
+[features]
+activity = []

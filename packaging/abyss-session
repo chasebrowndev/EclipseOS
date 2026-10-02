@@ -1,0 +1,18 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Login-session wrapper for Abyss. Install to /usr/bin/abyss-session.
+#
+# This sets only the environment that is knowable before the compositor runs.
+# The systemd/D-Bus handoff is NOT done here: WAYLAND_DISPLAY does not exist
+# until the compositor has created its socket, so the import must happen inside
+# abyss, behind --session (ADR 0032).
+export XDG_CURRENT_DESKTOP=Abyss
+export XDG_SESSION_TYPE=wayland
+export XDG_SESSION_DESKTOP=abyss
+# --backend drm is explicit rather than inferred: default_backend() picks DRM
+# only because WAYLAND_DISPLAY and DISPLAY are unset, and a greeter that leaks
+# either into the session would silently start a nested winit compositor.
+# greetd hands the session the VT as stdout/stderr; anything printed there
+# shows as text between the greeter and the first frame, and again on logout.
+# abyss logs to journald itself, so stray output goes there too.
+exec systemd-cat -t abyss-session ec-abyss --backend drm --session "$@"

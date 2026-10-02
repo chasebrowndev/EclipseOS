@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="AbyssCompositor/crates/eclipse-welcome/assets/eclipseos-logo.png" alt="EclipseOS" width="160">
+  <img src="installer/crates/ec-welcome/assets/eclipseos-logo.png" alt="EclipseOS" width="160">
 </p>
 
 > Hello, and welcome, to EclipseOS.  
@@ -30,7 +30,7 @@ Under the glass, a few things are different:
 - **Trusted UI is drawn by the compositor**, above every app, so consent prompts can't be spoofed.
 - **Your input is never logged by content.** Not in logs, not in the audit trail.
 
-**Status:** early. The installer and desktop work, but EclipseOS is not a daily driver yet. [STATUS.md](AbyssCompositor/docs/STATUS.md) lists what is verified and what is still stubbed.
+**Status:** early. The installer and desktop work, but EclipseOS is not a daily driver yet. [STATUS.md](docs/STATUS.md) lists what is verified and what is still stubbed.
 
 ## Install
 
@@ -52,17 +52,17 @@ Under the glass, a few things are different:
 
 Once installed, updates arrive through the signed EclipseOS package repository with `pacman`.
 
-Want to build the ISO yourself? See [D-03](AbyssCompositor/docs/design/D-03-installation-media.md) and [BUILDING.md](AbyssCompositor/docs/BUILDING.md).
+Want to build the ISO yourself? See [D-03](docs/design/D-03-installation-media.md) and [BUILDING.md](docs/BUILDING.md).
 
 ## Learn more
 
 | | |
 |---|---|
-| [Abyss compositor](AbyssCompositor/README.md) | the window manager at the heart of EclipseOS |
-| [STATUS.md](AbyssCompositor/docs/STATUS.md) | what is built, stubbed and verified |
-| [ARCHITECTURE.md](AbyssCompositor/docs/ARCHITECTURE.md) | how the pieces fit together |
-| [CONFIG.md](AbyssCompositor/docs/CONFIG.md) | configuring the desktop |
+| [Abyss compositor](abyss/README.md) | the window manager at the heart of EclipseOS |
+| [STATUS.md](docs/STATUS.md) | what is built, stubbed and verified |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the pieces fit together |
+| [CONFIG.md](docs/CONFIG.md) | configuring the desktop |
 
 ## Licence
 
-System code is **AGPL-3.0-only** ([LICENSE](AbyssCompositor/LICENSE)). Protocol definitions and the agent SDKs are **Apache-2.0** ([LICENSE-APACHE](AbyssCompositor/LICENSE-APACHE)). The name and logo are not licensed by the AGPL: [TRADEMARK.md](AbyssCompositor/TRADEMARK.md).
+System code is **AGPL-3.0-only** ([LICENSE](LICENSE)). Protocol definitions and the agent SDKs are **Apache-2.0** ([LICENSE-APACHE](LICENSE-APACHE)). The name and logo are not licensed by the AGPL: [TRADEMARK.md](TRADEMARK.md).

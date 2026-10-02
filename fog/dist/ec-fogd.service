@@ -1,0 +1,12 @@
+# Fog's filesystem daemon (FOG §Architecture). Socket-activated by
+# ec-fogd.socket; never runs as root (fogd refuses to).
+[Unit]
+Description=Fog filesystem daemon
+Requires=ec-fogd.socket
+After=ec-fogd.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ec-fogd
+Restart=on-failure
+RestartSec=2
