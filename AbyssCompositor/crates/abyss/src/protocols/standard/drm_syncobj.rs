@@ -58,6 +58,12 @@ pub fn block_on_acquire_point(state: &mut AbyssState, surface: &WlSurface) {
     let inserted = state.loop_handle.insert_source(source, move |_, _, state| {
         let dh = state.display_handle.clone();
         state.client_compositor_state(&client).blocker_cleared(state, &dh);
+        // The commit applies here, not in the display source, so the render
+        // that source scheduled has already run without it. Without a render
+        // of its own its frame callback waits for unrelated activity: an
+        // idle output with a push-driven client (the bar's visualizer) stalls
+        // until the pointer moves.
+        crate::backend::damage_all(state);
         Ok(())
     });
     match inserted {
