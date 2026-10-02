@@ -189,10 +189,12 @@ pub fn run(config: Config, stats: bool, session: bool) -> Result<()> {
     event_loop
         .run(None, &mut state, |state| {
             let _ = state.display_handle.flush_clients();
+            crate::protocols::agent::flush(state);
         })
         .context("event loop")?;
     crate::ipc::cleanup(&state);
     crate::trusted_ui::socket::cleanup(&state);
+    crate::protocols::agent::cleanup(&state);
     if session {
         crate::session::teardown();
     }

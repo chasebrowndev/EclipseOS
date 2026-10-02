@@ -20,3 +20,4 @@ zstd = "0.14.0"
 anyhow.workspace = true
 tracing.workspace = true
 libc = "0.2"
+rustix.workspace = true

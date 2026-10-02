@@ -1,0 +1,19 @@
+[package]
+name = "ec-agentd"
+description = "EclipseOS agent daemon (A-01), M11 skeleton: admits one agent over the privileged socket"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+# Never published; `publish = false` also keeps `cargo deny` from flagging
+# the path dependencies (as in policyd).
+publish = false
+
+[[bin]]
+name = "ec-agentd"
+path = "src/main.rs"
+
+[dependencies]
+ec-protocols = { path = "../ec-protocols", features = ["client"] }
+wayland-client = "0.31"

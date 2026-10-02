@@ -992,9 +992,11 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     render(&mut state);
     event_loop.run(None, &mut state, |state| {
         let _ = state.display_handle.flush_clients();
+        crate::protocols::agent::flush(state);
     })?;
     crate::ipc::cleanup(&state);
     crate::trusted_ui::socket::cleanup(&state);
+    crate::protocols::agent::cleanup(&state);
     if session_handoff {
         crate::session::teardown();
     }

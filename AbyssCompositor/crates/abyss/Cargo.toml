@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# Never published; `publish = false` also keeps `cargo deny` from flagging
+# the path dependencies (as in policyd).
+publish = false
 
 # lib + bin: the conformance harness (COMP-15 §1) links the compositor and
 # drives it in-process, which a bin-only crate cannot support.
@@ -31,15 +34,24 @@ tracing-journald.workspace = true
 anyhow.workspace = true
 xkbcommon.workspace = true
 libc = "0.2"
+rustix.workspace = true
 kdl.workspace = true
 regex.workspace = true
 serde_json.workspace = true
 blake3.workspace = true
+# Grant verification and scope evaluation, shared with policyd (ADR 0008).
+policy-eval = { path = "../policy-eval" }
+# eclipse_agent_v1 server bindings (COMP-08).
+ec-protocols = { path = "../ec-protocols", features = ["server"] }
 
 [dev-dependencies]
 # An in-process client for the state tests: the lock-screen focus rules can
 # only be exercised against real surfaces (COMP-06 §1, COMP-04 §7).
 wayland-client = "0.31"
+# The agent socket tests drive eclipse_agent_v1 from the client side.
+ec-protocols = { path = "../ec-protocols", features = ["client", "server"] }
+# Signs test grants for the policy/ tests; abyss itself only verifies.
+ed25519-dalek = "3.0.0"
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }

@@ -17,10 +17,10 @@ Description=Eclipse policy daemon
 PartOf=graphical-session.target
 Before=abyss-session.target
 
-# Type=simple, not notify: policyd does not sd_notify READY=1 yet — it has no
-# socket to be ready on until milestone 11 — and under Type=notify systemd
-# fails the unit on every start, which takes the bar and toasts down with the
-# target. Revisit when the agent socket lands.
+# Type=simple, not notify: policyd does not sd_notify READY=1, and nothing
+# needs it to. abyss redials policyd.sock every second and checks that the
+# peer's cgroup is this unit (F-05), so ordering only shortens the wait.
+# Renaming the unit breaks that check.
 [Service]
 Type=simple
 ExecStart=/usr/bin/policyd

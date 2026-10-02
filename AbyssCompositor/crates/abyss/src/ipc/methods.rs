@@ -149,7 +149,7 @@ pub(crate) fn identity_of(window: &Window) -> (Option<String>, Option<String>) {
 }
 
 /// The pid behind a window's client, if the surface still has one.
-fn pid_of(state: &AbyssState, window: &Window) -> Option<i32> {
+pub(crate) fn pid_of(state: &AbyssState, window: &Window) -> Option<i32> {
     crate::shell::window_surface(window)
         .and_then(|s| s.client())
         .and_then(|c| c.get_credentials(&state.display_handle).ok())
@@ -157,7 +157,7 @@ fn pid_of(state: &AbyssState, window: &Window) -> Option<i32> {
 }
 
 /// Where a window lives, as `(output id, 1-based workspace)`.
-fn location_of(state: &AbyssState, window: &Window) -> Option<(u64, usize)> {
+pub(crate) fn location_of(state: &AbyssState, window: &Window) -> Option<(u64, usize)> {
     for entry in state.outputs.iter() {
         for (i, ws) in entry.workspaces.iter().enumerate() {
             if ws.all_windows().iter().any(|w| w == window) {
@@ -168,7 +168,7 @@ fn location_of(state: &AbyssState, window: &Window) -> Option<(u64, usize)> {
     None
 }
 
-fn is_floating(state: &AbyssState, window: &Window) -> bool {
+pub(crate) fn is_floating(state: &AbyssState, window: &Window) -> bool {
     state.outputs.iter().any(|e| {
         e.workspaces
             .iter()
@@ -287,11 +287,9 @@ fn get_windows(state: &mut AbyssState) -> Reply {
             "pid": pid_of(state, &w),
             "focused": state.focus.as_ref() == Some(&w),
             // The default class for anything not explicitly raised
-            // (root invariant: default is `private`). `secret` and
-            // `no-agent` come from `windowrule`, which the config layer does
-            // not parse yet, so this is the floor and never a claim of less.
+            // (root invariant: default is `private`); never a claim of less.
             "trust": if sensitive { "secret" } else { "private" },
-            "no_agent": sensitive,
+            "no_agent": crate::shell::rules::hidden_from_agents(&w),
             // COMP-05 §1. `class_source` is audit/debug provenance for the
             // class above (`shell::rules::CLASS_SOURCE_*`); nothing decides
             // on it.

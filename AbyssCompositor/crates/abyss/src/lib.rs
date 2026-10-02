@@ -11,6 +11,7 @@ pub mod config;
 pub mod input;
 pub mod ipc;
 pub mod outputs;
+pub mod policy;
 pub mod protocols;
 pub mod render;
 pub mod session;

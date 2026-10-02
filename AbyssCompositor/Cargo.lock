@@ -25,9 +25,13 @@ dependencies = [
  "anyhow",
  "blake3",
  "calloop 0.14.4",
+ "ec-protocols",
+ "ed25519-dalek",
  "kdl",
  "libc",
+ "policy-eval",
  "regex",
+ "rustix 1.1.4",
  "serde_json",
  "smithay",
  "tracing",
@@ -1142,8 +1146,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-agentd"
+version = "0.1.0"
+dependencies = [
+ "ec-protocols",
+ "wayland-client",
+]
+
+[[package]]
 name = "ec-cataclysm-pub"
 version = "0.1.0"
+
+[[package]]
+name = "ec-protocols"
+version = "0.1.0"
+dependencies = [
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+ "wayland-server",
+]
 
 [[package]]
 name = "eclipse-center"
@@ -3735,6 +3757,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "ed25519-dalek",
+ "regex",
 ]
 
 [[package]]
@@ -3747,6 +3770,7 @@ dependencies = [
  "getrandom 0.4.3",
  "libc",
  "policy-eval",
+ "rustix 1.1.4",
  "tracing",
  "zstd",
 ]

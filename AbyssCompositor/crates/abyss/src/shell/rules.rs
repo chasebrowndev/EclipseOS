@@ -179,7 +179,7 @@ fn resolve_class_source(recorded: Option<u8>, xwayland: bool) -> u8 {
 pub struct Placed;
 
 /// Marker for `windowrule "no-agent"`: the window is absent from every agent's
-/// scene. Nothing consumes it until COMP-08 lands `list_toplevels`.
+/// scene (`policy::scene`).
 pub struct NoAgent;
 
 /// What the caller still has to act on, because only it knows the placement.
@@ -241,8 +241,7 @@ pub fn irreversible_capable_of(window: &Window) -> bool {
         .is_some_and(|r| r.value.get())
 }
 
-/// COMP-08 will consult this before putting a window in an agent scene.
-#[allow(dead_code)]
+/// Whether the agent scene filter must treat the window as absent.
 pub fn hidden_from_agents(window: &Window) -> bool {
     window.user_data().get::<NoAgent>().is_some()
 }

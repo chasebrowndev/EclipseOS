@@ -156,15 +156,17 @@ crates/abyss/src/outputs/     COMP-03  hotplug, layout, EDID, calibration, power
 crates/abyss/src/input/       COMP-04  keyboard, pointer, touch, tablet, gestures, injection
 crates/abyss/src/shell/       COMP-05  layouts, workspaces, rules, focus
 crates/abyss/src/protocols/standard/  COMP-06
-crates/abyss/src/protocols/agent/     COMP-08  eclipse_agent_v1       (not yet)
+crates/abyss/src/protocols/agent/     COMP-08  ec-agent.sock, eclipse_agent_v1 (M11: admission, scene queries)
 crates/abyss/src/protocols/semantic/  COMP-09  eclipse_semantic_v1    (not yet)
 crates/abyss/src/trusted_ui/  COMP-10  prompts (modal primitive; §3.10 erase, §3.11 command approval); indicator, emergency panel not yet
-crates/abyss/src/policy/      COMP-11  enforcement table, check()     (not yet; stub in state.rs)
+crates/abyss/src/policy/      COMP-11  grant admission, agent scene filter; enforcement table, check() not yet
 crates/abyss/src/audit/       COMP-12  provenance emission            (not yet)
 crates/abyss/src/ipc/         COMP-13  human JSON-RPC socket, gate table
 crates/abyss/src/config/      COMP-13  KDL parse, validate, hot-reload, edit
 crates/abyss/src/xwayland/    COMP-07
 crates/policyd/, crates/policy-eval/   A-04, S-01 §4, S-04 §4  policy daemon + shared types (TCB)
+crates/ec-protocols/          eclipse_agent_v1 XML + bindings (Apache-2.0)
+crates/ec-agentd/             agentd skeleton (M11)
 crates/eclipse-ipc/           control-socket client + types
 crates/eclipse-ctl/           CLI over the control socket, config migrate
 crates/wlcs-abyss/            WLCS conformance shim

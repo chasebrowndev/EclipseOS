@@ -1,0 +1,20 @@
+[package]
+name = "ec-protocols"
+description = "EclipseOS Wayland protocol bindings: eclipse_agent_v1 (COMP-08)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Protocol definitions are permissive so agents may link them under any
+# licence (F-05 §3, §4).
+license = "Apache-2.0"
+repository.workspace = true
+
+[dependencies]
+wayland-backend = "0.3"
+wayland-scanner = "0.31"
+wayland-client = { version = "0.31", optional = true }
+wayland-server = { version = "0.31", optional = true }
+
+[features]
+client = ["dep:wayland-client"]
+server = ["dep:wayland-server"]
