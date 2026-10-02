@@ -6537,8 +6537,8 @@ not apply: a nullable field that is always populated stops being evidence.
 | `capture` | kind, target, region, scale, format, content_hash, redacted_regions |
 | `perception` | tree/text read: handle, generation, node count, node id list hash, source_mix, bytes |
 | `channel` | channel, msg id, from, size, provenance chain hash |
-| `grant` | full grant KDL, issuer, reason (rule/prompt/manifest) |
-| `revoke` | grant_id, reason |
+| `grant` | the signed grant (COSE_Sign1), issuer, reason (rule/prompt/manifest) *(amended F-11)* |
+| `revoke` | grants (every grant revoked by one operation), reason *(amended F-11)* |
 | `launch` | argv, cgroup, sandbox program hashes, resulting handle |
 | `sandbox` | compiled bwrap argv hash, landlock hash, seccomp hash |
 | `policy` | table version, source file hashes, compiler warnings |
@@ -7404,7 +7404,7 @@ same day. Appendix D is reserved for the D-07 batch.
 # Appendix F — amendment record, 2026-09-30
 
 **Applied inline to this volume on 2026-09-30**, from an owner ruling of the
-same day (ADR 0069). F-06..F-10 added 2026-10-01.
+same day (ADR 0069). F-06..F-11 added 2026-10-01.
 
 | ID | Target | Change | Applied |
 |---|---|---|---|
@@ -7419,6 +7419,7 @@ same day (ADR 0069). F-06..F-10 added 2026-10-01.
 | F-08 | S-01 §6 (policyd unavailable) | *(2026-10-01, owner ruling)* COMP-01 §6 governs: when `policyd` dies, every agent pauses until it reconnects with the pinned key. "Existing grants remain valid until expiry" is withdrawn, since revocation cannot reach abyss while `policyd` is down | yes |
 | F-09 | COMP-08 §1 | `set_policy_key` is removed: the key arrives over the dialled `policyd` link (F-05), never over Wayland | yes |
 | F-10 | C-00 §17 | `policyd`'s unit is `policyd.service`, as shipped | yes |
+| F-11 | S-04 §1.1 | *(2026-10-01, owner ruling)* A `grant` record carries the signed grant (COSE_Sign1) rather than its KDL, since only the signed form can be checked, plus readable `issuer` and `reason`. A `revoke` record lists every grant one operation revoked, so closing a task is one record, never a partial revocation | yes |
 
 ## Open decisions this appendix leaves standing
 

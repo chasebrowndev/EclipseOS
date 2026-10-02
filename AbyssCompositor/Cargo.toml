@@ -34,7 +34,7 @@ serde_json = "1"
 # Command-widget approval hashes (ADR 0067). Same spec policyd pins.
 blake3 = { version = "1.8.7", default-features = false, features = ["std"] }
 # SEQPACKET + SO_PEERCRED for the abyss↔policyd link (F-05), without unsafe.
-rustix = { version = "1", features = ["net", "process"] }
+rustix = { version = "1", features = ["net", "process", "time"] }
 
 [profile.release]
 debug = 1
