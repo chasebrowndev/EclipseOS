@@ -297,12 +297,40 @@ pub fn arrange(state: &mut AbyssState) {
     for id in ids {
         arrange_output(state, id);
     }
+    raise_override_redirect(state);
     refresh_reactive_popups(state);
     // Layout changes are not driven by a client commit: an unmapped surface
     // sends nothing, so without this the last composite stays on screen and a
     // closed window or dismissed launcher goes on being visible until some
     // other client happens to commit a frame.
     crate::backend::damage_all(state);
+}
+
+/// Keep override-redirect X11 windows (menus, tooltips) above every managed
+/// window. `arrange_output` raises each floating window, which would bury a
+/// menu that mapped earlier — then it is drawn and hit-tested underneath.
+fn raise_override_redirect(state: &mut AbyssState) {
+    if state.xwayland.unmanaged.is_empty() {
+        return;
+    }
+    let menus: Vec<Window> = state
+        .space
+        .elements()
+        .filter(|w| w.x11_surface().is_some_and(|x| x.is_override_redirect()))
+        .cloned()
+        .collect();
+    for w in menus {
+        state.space.raise_element(&w, false);
+    }
+}
+
+/// Whether `window` is floating on some workspace.
+pub fn is_floating(state: &AbyssState, window: &Window) -> bool {
+    state.outputs.iter().any(|e| {
+        e.workspaces
+            .iter()
+            .any(|ws| ws.floating.iter().any(|f| &f.window == window))
+    })
 }
 
 /// Lay out one output's active workspace and remap it into the space.
@@ -544,6 +572,11 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
     let geometry = state.space.element_geometry(&window);
+    let parent = x11_parent(state, &window);
+    let parent_rect = parent.as_ref().and_then(|p| state.space.element_geometry(p));
+    // An X11 dialog whose parent is not the focused window must not take the
+    // keyboard from whatever the human is using (COMP-05 §5).
+    let steal_blocked = placement.no_focus_steal || (parent.is_some() && state.focus != parent);
     let mode = state.config.general.floating_placement;
     let pointer = state.pointer_location;
     let entry = state.outputs.get_mut(id).expect("just resolved");
@@ -562,7 +595,14 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
         // `general.floating-placement` decides.
         let loc: Point<i32, Logical> = match placement.position {
             Some((x, y)) => (area.loc.x + x, area.loc.y + y).into(),
-            None => floating_origin(mode, area, size, pointer, entry.workspaces[ws].floating.len()),
+            None => match parent_rect {
+                // A transient dialog opens centred over its parent.
+                Some(p) => Point::from((
+                    p.loc.x + (p.size.w - size.w) / 2,
+                    p.loc.y + (p.size.h - size.h) / 2,
+                )),
+                None => floating_origin(mode, area, size, pointer, entry.workspaces[ws].floating.len()),
+            },
         };
         let rect = Rectangle::new(loc, size);
         entry.workspaces[ws].floating.push(Floating {
@@ -581,7 +621,7 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
     }
     // A no-focus-steal window is mapped where the rule put it but never takes
     // the focus; the human is told it wants attention (COMP-05 §5).
-    if placement.no_focus_steal {
+    if steal_blocked {
         arrange(state);
         mark_urgent(state, &window);
     } else {
@@ -601,6 +641,14 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
         }
     }
     true
+}
+
+/// The window an X11 transient is `WM_TRANSIENT_FOR`, if the shell holds it.
+fn x11_parent(state: &AbyssState, window: &Window) -> Option<Window> {
+    let id = window.x11_surface()?.is_transient_for()?;
+    owned_windows(state)
+        .into_iter()
+        .find(|w| w != window && w.x11_surface().is_some_and(|x| x.window_id() == id))
 }
 
 /// Resolve a surface to the window that owns it, if any.
@@ -1808,6 +1856,108 @@ pub fn unmaximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::s
     });
     surface.send_configure();
     arrange(state);
+}
+
+/// An X11 window's title/class/transient/type property changed.
+pub fn x11_properties_changed(state: &mut AbyssState, surface: &smithay::xwayland::X11Surface) {
+    let Some(window) = owned_windows(state)
+        .into_iter()
+        .find(|w| w.x11_surface() == Some(surface) && !surface.is_override_redirect())
+    else {
+        return;
+    };
+    if crate::protocols::standard::foreign_toplevel::window_updated(&window) {
+        let handle = state.ipc.handle_for(&window);
+        crate::ipc::emit(
+            state,
+            "window",
+            serde_json::json!({"change": "title", "handle": handle}),
+        );
+    }
+    if let Some(placement) = rules::reevaluate(state, &window) {
+        replace_window(state, &window, &placement);
+    }
+}
+
+/// An X11 window's `_NET_WM_STATE` maximize/fullscreen request: the same shell
+/// state the xdg paths use (`state.maximized`/`state.fullscreen`, which
+/// `arrange_output` tracks), minus the xdg configure handshake.
+pub fn set_x11_state(state: &mut AbyssState, window: &Window, fullscreen: bool, on: bool) {
+    let Some(x11) = window.x11_surface().cloned() else {
+        return;
+    };
+    let Some(id) = output_of_window(state, window).or_else(|| state.outputs.focused().map(|e| e.id)) else {
+        return;
+    };
+    let has = if fullscreen {
+        state.fullscreen.contains_key(window)
+    } else {
+        state.maximized.contains_key(window)
+    };
+    if on == has {
+        return;
+    }
+    let output = state.outputs.get(id).expect("just resolved").output.clone();
+    layer_map_for_output(&output).arrange();
+    let other = if fullscreen {
+        state.maximized.contains_key(window)
+    } else {
+        state.fullscreen.contains_key(window)
+    };
+    if on {
+        let area = if fullscreen {
+            state.space.output_geometry(&output).unwrap_or_default()
+        } else {
+            usable_area(state, &output)
+        };
+        let restore = detach_from_layout(state, id, window);
+        let ws = state.outputs.get(id).expect("just resolved").active;
+        state.outputs.get_mut(id).expect("just resolved").workspaces[ws]
+            .floating
+            .push(Floating {
+                window: window.clone(),
+                rect: area,
+                weight: None,
+            });
+        if fullscreen {
+            state.fullscreen.insert(window.clone(), restore);
+        } else {
+            state.maximized.insert(window.clone(), restore);
+        }
+    } else {
+        let restore = if fullscreen {
+            state.fullscreen.remove(window)
+        } else {
+            state.maximized.remove(window)
+        };
+        // Still held by the other state: `arrange_output` resizes it.
+        if !other {
+            let area = tiling_area(state, &output);
+            let pointer = state.pointer_location;
+            detach_from_layout(state, id, window);
+            let entry = state.outputs.get_mut(id).expect("just resolved");
+            let ws = entry.active;
+            match restore.flatten() {
+                Some(rect) => entry.workspaces[ws].floating.push(Floating {
+                    window: window.clone(),
+                    rect,
+                    weight: None,
+                }),
+                None => entry.workspaces[ws]
+                    .tiled
+                    .insert(window.clone(), None, area, pointer),
+            }
+        }
+    }
+    let _ = if fullscreen {
+        x11.set_fullscreen(on)
+    } else {
+        x11.set_maximized(on)
+    };
+    arrange(state);
+    if fullscreen {
+        focus::emit_output_state(state, id);
+    }
 }
 
 /// Remove `window` from whatever placement it holds on `id`'s active workspace,

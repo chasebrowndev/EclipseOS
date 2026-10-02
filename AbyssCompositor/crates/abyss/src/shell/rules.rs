@@ -623,7 +623,15 @@ impl Facts {
                         fixed_size(d.min_size, d.max_size)
                     }))
         } else if let Some(x11) = window.x11_surface() {
+            let area = entry
+                .map(|e| crate::shell::tiling_area(state, &e.output).size)
+                .unwrap_or_default();
             x11.is_transient_for().is_some()
+                || x11_cannot_tile(
+                    x11.min_size().unwrap_or_default(),
+                    x11.max_size().unwrap_or_default(),
+                    area,
+                )
                 || matches!(
                     x11.window_type(),
                     Some(
@@ -704,6 +712,18 @@ fn fixed_size(
     min == max && min.w > 0 && min.h > 0
 }
 
+/// An X11 window that pins its size (WM_NORMAL_HINTS min == max) or whose
+/// minimum cannot fit a half-area tile on either axis would be squashed or
+/// stretched by the layout, so it floats instead. `area` is the output's
+/// tiling area; an empty one (no output yet) never floats.
+fn x11_cannot_tile(
+    min: smithay::utils::Size<i32, smithay::utils::Logical>,
+    max: smithay::utils::Size<i32, smithay::utils::Logical>,
+    area: smithay::utils::Size<i32, smithay::utils::Logical>,
+) -> bool {
+    fixed_size(min, max) || (area.w > 0 && area.h > 0 && (min.w > area.w / 2 || min.h > area.h / 2))
+}
+
 /// The client's cgroup path, or empty when the kernel will not say. Read once
 /// per evaluation, off the input hot path.
 fn cgroup_of(pid: i32) -> String {
@@ -722,7 +742,7 @@ fn cgroup_of(pid: i32) -> String {
 mod tests {
     use super::{
         capable_categories, category_default_in, fixed_size, irreversible_rule, irreversible_value,
-        resolve_class_source, rule_class_source, settles, Facts, RuleIrreversible,
+        resolve_class_source, rule_class_source, settles, x11_cannot_tile, Facts, RuleIrreversible,
         CLASS_SOURCE_CAPTURE_POLICY, CLASS_SOURCE_DEFAULT, CLASS_SOURCE_RULE_BASE, CLASS_SOURCE_X11,
         DEFAULT_CACHE,
     };
@@ -989,6 +1009,21 @@ mod tests {
         assert!(!fixed_size(size(400, 180), size(420, 180)));
         // Only a minimum.
         assert!(!fixed_size(size(420, 180), size(0, 0)));
+    }
+
+    #[test]
+    fn x11_fixed_or_oversized_min_floats() {
+        let area = size(1920, 1000);
+        // Fixed-size dialog.
+        assert!(x11_cannot_tile(size(400, 300), size(400, 300), area));
+        // Min larger than a half tile on one axis.
+        assert!(x11_cannot_tile(size(1100, 100), size(0, 0), area));
+        assert!(x11_cannot_tile(size(100, 600), size(0, 0), area));
+        // Ordinary resizable window.
+        assert!(!x11_cannot_tile(size(200, 100), size(0, 0), area));
+        assert!(!x11_cannot_tile(size(0, 0), size(0, 0), area));
+        // No output: never floats on the min rule.
+        assert!(!x11_cannot_tile(size(5000, 5000), size(0, 0), size(0, 0)));
     }
 
     #[test]
