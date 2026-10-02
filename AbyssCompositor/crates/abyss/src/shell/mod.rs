@@ -451,10 +451,21 @@ pub fn place_at(state: &mut AbyssState, window: &Window, geo: Rectangle<i32, Log
     }
 }
 
+/// Run the capture-policy classifier (COMP-02 §7, raise-only) and, when it is
+/// what raised the window, record it as the `class_source` (COMP-05 §1).
+fn classify(state: &mut AbyssState, window: &Window) {
+    let surface = window_surface(window);
+    let before = surface.as_ref().is_some_and(|s| state.sensitive.contains(s));
+    crate::render::capture::mark_sensitive(state, window);
+    if let Some(s) = surface.filter(|s| !before && state.sensitive.contains(s)) {
+        rules::record_class_source(&s, rules::CLASS_SOURCE_CAPTURE_POLICY);
+    }
+}
+
 /// A brand-new toplevel joins the active workspace, tiled, next to the focus.
 pub fn place_new_window(state: &mut AbyssState, window: Window) {
     // Classify before the window is ever composited (COMP-02 §7). Raise-only.
-    crate::render::capture::mark_sensitive(state, &window);
+    classify(state, &window);
     crate::protocols::standard::foreign_toplevel::window_mapped(state, &window);
     // COMP-05 §4: rules decide placement before the window joins a workspace.
     let placement = rules::apply(state, &window);
@@ -1110,7 +1121,7 @@ fn restore_floating(state: &mut AbyssState, window: &Window, p: Remembered) -> b
         weight: None,
     });
     // Same bookkeeping as `place_new_window`, minus the placement decision.
-    crate::render::capture::mark_sensitive(state, window);
+    classify(state, window);
     crate::protocols::standard::foreign_toplevel::window_mapped(state, window);
     // Property rules (opacity, blur, trust) still apply to the new `Window`,
     // but its placement is final: a settle pass must not move it again.
@@ -3172,6 +3183,42 @@ mod initial_commit_placement {
             sizes.iter().all(|&s| s == tile),
             "the neighbour was resized: {sizes:?}"
         );
+    }
+
+    /// S-06 §3.3 with no windowrules at all: a window that names itself
+    /// only after it is placed gets the category default for its new id, not
+    /// the one looked up for the empty id it mapped with.
+    #[test]
+    fn a_late_app_id_gets_its_category_default_without_rules() {
+        let dir = std::env::temp_dir().join(format!("abyss-late-id-{}", std::process::id()));
+        let apps = dir.join("applications");
+        std::fs::create_dir_all(&apps).expect("apps dir");
+        std::fs::write(
+            apps.join("firefox.desktop"),
+            "[Desktop Entry]\nType=Application\nCategories=Network;WebBrowser;\n",
+        )
+        .expect("desktop entry");
+        rules::TEST_DATA_DIRS.with(|d| *d.borrow_mut() = Some(vec![dir.clone()]));
+
+        let mut h = harness();
+        assert!(h.state.config.window_rules.is_empty());
+        let mut c = Client::connect(&mut h);
+        let t = c.create_toplevel(&mut h);
+        c.commit(&mut h, &t.surface);
+        c.attach(&mut h, &t.surface);
+        let window = window_of(&h, &t).expect("mapped");
+        assert!(window.user_data().get::<rules::Placed>().is_some(), "settled");
+        assert!(!rules::irreversible_capable_of(&window), "no id, no default");
+
+        t.toplevel.set_app_id("firefox".into());
+        c.commit(&mut h, &t.surface);
+        assert!(
+            rules::irreversible_capable_of(&window),
+            "the default follows the late id"
+        );
+
+        rules::TEST_DATA_DIRS.with(|d| *d.borrow_mut() = None);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

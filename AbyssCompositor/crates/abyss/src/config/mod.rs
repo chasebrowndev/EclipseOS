@@ -988,6 +988,9 @@ pub enum RuleAction {
     /// Raise-only: `secret` or `private`. `public` is refused at parse time
     /// because a rule may never lower a sensitivity class.
     Sensitivity(String),
+    /// Pin the window's `irreversible_capable` fact (COMP-05 §1, S-06 §3.3)
+    /// either way, overriding the desktop-category default.
+    IrreversibleCapable(bool),
     NoAgent,
     NoFocusSteal,
 }
@@ -3547,6 +3550,8 @@ impl Config {
             ("app-trust", Some("trusted")) => RuleAction::Trust(AppTrust::Trusted),
             ("seat-compat", Some("lock")) => RuleAction::Seat(SeatCompat::Lock),
             ("seat-compat", Some("multi")) => RuleAction::Seat(SeatCompat::Multi),
+            ("irreversible-capable", Some("true")) => RuleAction::IrreversibleCapable(true),
+            ("irreversible-capable", Some("false")) => RuleAction::IrreversibleCapable(false),
             ("workspace", Some(p)) => match p.parse::<i32>() {
                 Ok(n) if (1..=10).contains(&n) => RuleAction::Workspace(n),
                 _ => {
@@ -5519,11 +5524,24 @@ mod tests {
             windowrule "app-trust root"      { app-id "mpv" }
             windowrule "seat-compat none"    { app-id "mpv" }
             windowrule "cgroup-typo"         { cgroup "(" }
+            windowrule "irreversible-capable true"  { app-id "foot" }
+            windowrule "irreversible-capable false" { app-id "mpv" }
+            windowrule "irreversible-capable maybe" { app-id "mpv" }
+            windowrule "irreversible-capable"       { app-id "mpv" }
+            windowrule "irreversable-capable true"  { app-id "mpv" }
         "#
         .parse()
         .unwrap();
         let mut cfg = Config::default();
         cfg.apply(&doc, &mut Vec::new());
+        // Every malformed rule above is a config error, not a warning that
+        // lets it through: the five bad shapes plus the three bad
+        // `irreversible-capable` forms (milestone 9e).
+        assert_eq!(cfg.errors.len(), 8, "{:?}", cfg.errors);
+        assert!(cfg
+            .errors
+            .iter()
+            .any(|e| e.message.contains("irreversable-capable")));
         let actions: Vec<&RuleAction> = cfg.window_rules.iter().map(|r| &r.action).collect();
         assert_eq!(
             actions,
@@ -5534,6 +5552,8 @@ mod tests {
                 &RuleAction::Trust(AppTrust::Trusted),
                 &RuleAction::Seat(SeatCompat::Multi),
                 &RuleAction::IdleInhibit,
+                &RuleAction::IrreversibleCapable(true),
+                &RuleAction::IrreversibleCapable(false),
             ]
         );
         assert!(cfg.window_rules[3].matchers.cgroup.is_some());
@@ -6399,6 +6419,7 @@ mod startup_tests {
             "windowrule \"sensitivity secret\" {\n    app-id \"keepassxc\"\n}\n",
             "windowrule \"app-trust trusted\" {\n    app-id \"x\"\n}\n",
             "windowrule \"seat-compat lock\" {\n    app-id \"x\"\n}\n",
+            "windowrule \"irreversible-capable false\" {\n    app-id \"x\"\n}\n",
         ] {
             let mut cfg = abyss(text);
             assert_eq!(

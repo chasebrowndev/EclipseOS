@@ -1116,6 +1116,9 @@ pub const COLLECTIONS: &[Collection] = &[
 ///
 /// `no-agent` is policy-owned: it decides whether an agent can see a window at
 /// all, which is the same kind of decision as `sensitivity`.
+///
+/// `irreversible-capable` is policy-owned too: `false` takes an app out of the
+/// S-06 §3.3 app-capable prompt fallback, which is a security decision.
 pub const RULE_ACTIONS: &[(&str, Owner)] = &[
     ("float", Abyss),
     ("tile", Abyss),
@@ -1132,6 +1135,7 @@ pub const RULE_ACTIONS: &[(&str, Owner)] = &[
     ("app-trust", Policy),
     ("seat-compat", Policy),
     ("no-agent", Policy),
+    ("irreversible-capable", Policy),
 ];
 
 pub fn rule_owner(action: &str) -> Option<Owner> {
@@ -1457,6 +1461,16 @@ pub const RULE_ACTION_FORMS: &[Form] = &[
         "Seat concurrency (COMP-07 §6). Clamped to `lock` for X11 windows.",
     ),
     form(&["no-agent"], "", &["no-agent"], "Hide the window from agents."),
+    form(
+        &["irreversible-capable"],
+        "true | false",
+        &["irreversible-capable true", "irreversible-capable false"],
+        "Pin whether the window counts as able to take irreversible actions \
+       (S-06 §3.3): coordinate-only or low-confidence agent input to it then \
+       prompts. Without a rule it is true for apps whose desktop entry lists \
+       `WebBrowser`, `Email`, `TerminalEmulator` or `FileManager`, false \
+       otherwise.",
+    ),
 ];
 
 /// Values `output … { lid-close … }` takes.
@@ -2216,6 +2230,15 @@ mod tests {
             .filter(|(_, o)| *o == Policy)
             .map(|(a, _)| *a)
             .collect();
-        assert_eq!(rules, ["sensitivity", "app-trust", "seat-compat", "no-agent"]);
+        assert_eq!(
+            rules,
+            [
+                "sensitivity",
+                "app-trust",
+                "seat-compat",
+                "no-agent",
+                "irreversible-capable"
+            ]
+        );
     }
 }

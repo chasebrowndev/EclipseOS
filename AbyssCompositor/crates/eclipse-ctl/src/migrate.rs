@@ -38,7 +38,13 @@ const POLICY_KEYS: &[&str] = &[
 /// `windowrule` actions the schema marks `Owner::Policy`
 /// (`abyss::config::schema::RULE_ACTIONS`). A rule carrying both kinds is
 /// split in two, one node per file, keeping the same match criteria.
-const POLICY_RULE_ACTIONS: &[&str] = &["sensitivity", "app-trust", "seat-compat", "no-agent"];
+const POLICY_RULE_ACTIONS: &[&str] = &[
+    "sensitivity",
+    "app-trust",
+    "seat-compat",
+    "no-agent",
+    "irreversible-capable",
+];
 
 /// Built-in applet ids `bar.tray.pinned`/`hidden` carried before they became
 /// taskbar widgets (ADR 0065). Mirrors `abyss::config::schema::LEGACY_TRAY_BUILTINS`;

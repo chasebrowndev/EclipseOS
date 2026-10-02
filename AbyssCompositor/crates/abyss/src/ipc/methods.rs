@@ -292,6 +292,11 @@ fn get_windows(state: &mut AbyssState) -> Reply {
             // not parse yet, so this is the floor and never a claim of less.
             "trust": if sensitive { "secret" } else { "private" },
             "no_agent": sensitive,
+            // COMP-05 §1. `class_source` is audit/debug provenance for the
+            // class above (`shell::rules::CLASS_SOURCE_*`); nothing decides
+            // on it.
+            "irreversible_capable": crate::shell::rules::irreversible_capable_of(&w),
+            "class_source": crate::shell::rules::class_source_of(&w),
         }));
     }
     Ok(Value::Array(out))

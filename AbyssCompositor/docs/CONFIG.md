@@ -322,6 +322,7 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `app-trust standard \| trusted` | `policy.kdl` | `app-trust standard`<br>`app-trust trusted` | Trust level (COMP-07 §2). Clamped to `standard` for X11 windows. |
 | `seat-compat lock \| multi` | `policy.kdl` | `seat-compat lock`<br>`seat-compat multi` | Seat concurrency (COMP-07 §6). Clamped to `lock` for X11 windows. |
 | `no-agent` | `policy.kdl` | `no-agent` | Hide the window from agents. |
+| `irreversible-capable true \| false` | `policy.kdl` | `irreversible-capable true`<br>`irreversible-capable false` | Pin whether the window counts as able to take irreversible actions (S-06 §3.3): coordinate-only or low-confidence agent input to it then prompts. Without a rule it is true for apps whose desktop entry lists `WebBrowser`, `Email`, `TerminalEmulator` or `FileManager`, false otherwise. |
 
 ### `wallpaper.output`
 
