@@ -24,18 +24,20 @@ use crate::addons::Hook;
 use crate::shell::focus::state_tests::{harness, Harness};
 use crate::state::ClientState;
 
-const MANAGER: &str = "eclipse_agent_manager_v1";
+pub(super) const MANAGER: &str = "eclipse_agent_manager_v1";
 const PAUSED: u32 = 14;
-const INVALID_ARGUMENT: u32 = 15;
+pub(super) const INVALID_ARGUMENT: u32 = 15;
 
 #[derive(Default)]
-struct Seen {
+pub(super) struct Seen {
     globals: Vec<(u32, String)>,
     dedupe: Option<u32>,
-    toplevels: Vec<(u32, u32)>,
-    done: Vec<u32>,
-    hits: Vec<(u32, u32)>,
-    results: Vec<(u32, u32, String)>,
+    pub(super) toplevels: Vec<(u32, u32)>,
+    pub(super) done: Vec<u32>,
+    pub(super) hits: Vec<(u32, u32)>,
+    pub(super) results: Vec<(u32, u32, String)>,
+    /// Every `eclipse_scene_v1` event, whole, in arrival order.
+    pub(super) scene: Vec<eclipse_scene_v1::Event>,
 }
 
 impl Dispatch<WlRegistry, ()> for Seen {
@@ -99,25 +101,26 @@ impl Dispatch<EclipseSceneV1, ()> for Seen {
         _: &QueueHandle<Self>,
     ) {
         use eclipse_scene_v1::Event;
-        match e {
-            Event::Toplevel { req_id, handle, .. } => s.toplevels.push((req_id, handle)),
-            Event::ToplevelsDone { req_id } => s.done.push(req_id),
-            Event::Hit { req_id, handle, .. } => s.hits.push((req_id, handle)),
+        match &e {
+            Event::Toplevel { req_id, handle, .. } => s.toplevels.push((*req_id, *handle)),
+            Event::ToplevelsDone { req_id } => s.done.push(*req_id),
+            Event::Hit { req_id, handle, .. } => s.hits.push((*req_id, *handle)),
             Event::Result {
                 req_id,
                 status,
                 detail,
                 ..
-            } => s.results.push((req_id, status, detail)),
+            } => s.results.push((*req_id, *status, detail.clone())),
             _ => {}
         }
+        s.scene.push(e);
     }
 }
 
-struct Peer {
+pub(super) struct Peer {
     conn: Connection,
     queue: EventQueue<Seen>,
-    seen: Seen,
+    pub(super) seen: Seen,
     registry: WlRegistry,
 }
 
@@ -139,7 +142,7 @@ impl Peer {
     /// A client inserted directly where its socket would put it: an agent
     /// on the agent display, flagged as `accept` flags it; anyone else on
     /// the human display.
-    fn inserted(h: &mut Harness, agent: bool) -> Self {
+    pub(super) fn inserted(h: &mut Harness, agent: bool) -> Self {
         if !agent {
             return Self::on_human(h, false);
         }
@@ -172,7 +175,7 @@ impl Peer {
         Self::new(h, client)
     }
 
-    fn pump(&mut self, h: &mut Harness) {
+    pub(super) fn pump(&mut self, h: &mut Harness) {
         for _ in 0..8 {
             let _ = self.conn.flush();
             h.dispatch();
@@ -200,7 +203,7 @@ impl Peer {
         m
     }
 
-    fn admit(&mut self, h: &mut Harness, grant: Vec<u8>) -> (EclipseAgentV1, EclipseSceneV1) {
+    pub(super) fn admit(&mut self, h: &mut Harness, grant: Vec<u8>) -> (EclipseAgentV1, EclipseSceneV1) {
         let manager = self.manager(h);
         let qh = self.queue.handle();
         let agent = manager.create_agent(grant, &qh, ());
@@ -210,12 +213,12 @@ impl Peer {
     }
 
     /// `(interface, code)` of the protocol error that ended the connection.
-    fn error(&self) -> Option<(String, u32)> {
+    pub(super) fn error(&self) -> Option<(String, u32)> {
         self.conn.protocol_error().map(|e| (e.object_interface, e.code))
     }
 }
 
-fn sk() -> SigningKey {
+pub(super) fn sk() -> SigningKey {
     SigningKey::from_bytes(&[7u8; 32])
 }
 
@@ -242,6 +245,11 @@ fn grant(principal: &str) -> Vec<u8> {
         constraints: Constraints::default(),
         unattended: false,
     };
+    signed(&g)
+}
+
+/// `g` as `policyd` would hand it over: COSE_Sign1 under [`sk`].
+pub(super) fn signed(g: &Grant) -> Vec<u8> {
     let k = sk();
     let protected = protected_header(&k.verifying_key());
     let payload = g.encode();
@@ -258,7 +266,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 /// The harness with the agent socket at a private path.
-fn hooked(name: &str, on: bool) -> (Harness, PathBuf) {
+pub(super) fn hooked(name: &str, on: bool) -> (Harness, PathBuf) {
     let mut h = harness();
     let path = scratch(name);
     h.state.agents.test_path = Some(path.clone());

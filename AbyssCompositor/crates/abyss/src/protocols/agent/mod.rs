@@ -49,6 +49,8 @@ use crate::policy::{scene, AdmitError, Agent, Views};
 use crate::state::{AbyssState, ClientState};
 
 #[cfg(test)]
+mod leakage;
+#[cfg(test)]
 mod tests;
 
 const MANAGER_VERSION: u32 = 1;

@@ -31,6 +31,10 @@ use crate::state::AbyssState;
 /// flag can only raise, so it changes nothing below `secret`. This is the one
 /// place the table plugs in.
 fn class_of(_state: &AbyssState, _window: &Window) -> Class {
+    #[cfg(test)]
+    if let Some(c) = test_class::get(_window) {
+        return c;
+    }
     Class::Secret
 }
 
@@ -162,4 +166,34 @@ pub fn hit(
     let (window, loc) = state.space.element_under(pos)?;
     let window = window.clone();
     visible(state, view, &window).then(|| (window, pos - loc.to_f64()))
+}
+
+/// Test-only stand-in for the M16 policy table, so the leakage suite can
+/// put `public` and `private` windows beside `secret` ones. Absent from
+/// every non-test build; an unset window stays `secret`.
+#[cfg(test)]
+pub mod test_class {
+    use std::cell::RefCell;
+
+    use policy_eval::Class;
+    use smithay::desktop::Window;
+
+    thread_local! {
+        static CLASSES: RefCell<Vec<(Window, Class)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub fn set(window: &Window, class: Class) {
+        CLASSES.with_borrow_mut(|v| {
+            v.retain(|(w, _)| w != window);
+            v.push((window.clone(), class));
+        });
+    }
+
+    pub fn clear() {
+        CLASSES.with_borrow_mut(Vec::clear);
+    }
+
+    pub(super) fn get(window: &Window) -> Option<Class> {
+        CLASSES.with_borrow(|v| v.iter().find(|(w, _)| w == window).map(|(_, c)| *c))
+    }
 }
