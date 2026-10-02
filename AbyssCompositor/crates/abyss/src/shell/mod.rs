@@ -58,6 +58,27 @@ pub fn tile_clip(window: &Window) -> Option<Rectangle<i32, Logical>> {
     window.user_data().get::<TileClip>().and_then(|c| c.0.get())
 }
 
+/// The output whose workspace laid this window out. Render draws a window on
+/// that output only and cuts it to that output's rectangle, so no part of it
+/// shows again on a neighbouring monitor sharing the global space.
+pub struct OwnerOutput(Cell<Option<Output>>);
+
+/// The output that owns `window`, once a layout pass has placed it.
+pub fn owner_output(window: &Window) -> Option<Output> {
+    let owner = window.user_data().get::<OwnerOutput>()?;
+    let out = owner.0.take();
+    owner.0.set(out.clone());
+    out
+}
+
+fn set_owner_output(window: &Window, output: &Output) {
+    let data = window.user_data();
+    data.insert_if_missing(|| OwnerOutput(Cell::new(None)));
+    if let Some(o) = data.get::<OwnerOutput>() {
+        o.0.set(Some(output.clone()));
+    }
+}
+
 fn set_tile_clip(window: &Window, rect: Option<Rectangle<i32, Logical>>) {
     let data = window.user_data();
     data.insert_if_missing(|| TileClip(Cell::new(None)));
@@ -388,6 +409,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
         fractional_scale::update_window_scale(&w, &output);
         set_tile_clip(&w, Some(inner));
+        set_owner_output(&w, &output);
         state.space.map_element(w, inner.loc, false);
     }
     for (w, rect) in floating {
@@ -401,6 +423,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
         fractional_scale::update_window_scale(&w, &output);
         set_tile_clip(&w, None);
+        set_owner_output(&w, &output);
         state.space.map_element(w.clone(), inner.loc, false);
         state.space.raise_element(&w, false);
     }

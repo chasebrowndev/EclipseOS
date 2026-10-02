@@ -53,6 +53,8 @@ use smithay::{
     },
 };
 
+use smithay::desktop::space::SpaceElement;
+
 use crate::config::{BlurMode, Config};
 
 smithay::backend::renderer::element::render_elements! {
@@ -70,13 +72,18 @@ smithay::backend::renderer::element::render_elements! {
     // A tiled window that overhangs its tile, cut back to it (see `window_elements`).
     Cropped=CropRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
     CroppedRounded=CropRenderElement<effects::RoundedElement>,
+    // A tiled window's decorations (dim, border, shadow, glow, backdrop), cut to its tile.
+    CroppedSolid=CropRenderElement<SolidColorRenderElement>,
+    CroppedShader=CropRenderElement<PixelShaderElement>,
+    CroppedBlur=CropRenderElement<blur::BlurElement>,
 }
 
 /// A surface that wants a blurred backdrop: what it belongs to, the index in
 /// the element list directly below its surfaces, the region it blurs, the
 /// mode it is drawn in (never `Off`), the logical corner radius its backdrop
 /// is masked with, the window's glass bezel if it has one, and the layer's
-/// input-region shape if it has one (Vol 1 §5.2).
+/// input-region shape if it has one (Vol 1 §5.2), and the physical rect its
+/// backdrop is cut to (a tiled window's tile, a layer's output), if any.
 type BlurRequest = (
     blur::BlurKey,
     usize,
@@ -85,6 +92,7 @@ type BlurRequest = (
     i32,
     Option<Bezel>,
     Option<blur::Shape>,
+    Option<Rectangle<i32, Physical>>,
 );
 
 /// A window's border drawn as a ring of glass instead of paint (COMP-02 §9).
@@ -207,14 +215,15 @@ fn layer_radius(surface: &smithay::desktop::LayerSurface, config: &Config) -> i3
 /// Four solid quads (top, bottom, left, right) per window.
 type Border = [SolidColorBuffer; 4];
 
-/// Border quads kept alive between frames, keyed by window.
+/// Border quads kept alive between frames, keyed by output and window: one
+/// window can be drawn on several outputs, each at its own geometry.
 #[derive(Default)]
 pub struct BorderStore {
-    borders: HashMap<Window, Border>,
+    borders: HashMap<(Output, Window), Border>,
     /// In-flight window moves (COMP-02 §9).
     pub anim: anim::AnimStore,
     /// One dim-inactive overlay quad per window, kept alive between frames.
-    dims: HashMap<Window, SolidColorBuffer>,
+    dims: HashMap<(Output, Window), SolidColorBuffer>,
     /// Rounded-corner texture program, compiled on the first frame that rounds.
     rounded: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     /// Frost and glass backdrop programs, compiled on the first frame that
@@ -233,26 +242,28 @@ pub struct BorderStore {
     /// One rounded border ring per window when rounding is on, kept alive
     /// between frames so its damage is tracked; the last-applied colour,
     /// radius, width and scale are kept to skip no-op uniform updates.
-    rings: HashMap<Window, (PixelShaderElement, [f32; 7])>,
+    rings: HashMap<(Output, Window), (PixelShaderElement, [f32; 7])>,
     /// One drop shadow per window when shadows are on, kept alive between
     /// frames for the same reason; the last-applied range, radius, drop and
     /// focus weight are kept to skip no-op uniform updates.
-    shadows: HashMap<Window, (PixelShaderElement, [f32; 4])>,
+    shadows: HashMap<(Output, Window), (PixelShaderElement, [f32; 4])>,
     /// One border glow per window when glow is on, drawn by the ring
     /// program; the last-applied colour, range and radius are kept to skip
     /// no-op uniform updates.
-    glows: HashMap<Window, (PixelShaderElement, [f32; 6])>,
-    /// Blur chain, programs and per-window backdrops (COMP-02 §9).
-    blur: blur::BlurStore,
+    glows: HashMap<(Output, Window), (PixelShaderElement, [f32; 6])>,
+    /// Blur chain, programs and per-window backdrops (COMP-02 §9), one store
+    /// per output so one output's retain, clear or chain size never touches
+    /// another's (BLUR-04).
+    blur: HashMap<Output, blur::BlurStore>,
 }
 
 impl BorderStore {
     pub fn remove(&mut self, window: &Window) {
-        self.borders.remove(window);
-        self.rings.remove(window);
-        self.shadows.remove(window);
-        self.glows.remove(window);
-        self.dims.remove(window);
+        self.borders.retain(|(_, w), _| w != window);
+        self.rings.retain(|(_, w), _| w != window);
+        self.shadows.retain(|(_, w), _| w != window);
+        self.glows.retain(|(_, w), _| w != window);
+        self.dims.retain(|(_, w), _| w != window);
     }
 }
 
@@ -327,6 +338,12 @@ pub fn collect_elements(
     // Layers have no rules: they take the global mode.
     let layer_mode = config.decoration.blur.mode;
     let blur_layers = layer_mode != BlurMode::Off;
+    // A layer surface bigger than its output (or hanging off it) is cut to it,
+    // so it never draws onto a neighbouring output's area of the shared space.
+    let output_rect = Rectangle::new(
+        Point::from((0, 0)),
+        output_geo.size.to_f64().to_physical(scale).to_i32_round(),
+    );
     let layers = |elements: &mut Vec<AbyssRenderElement>,
                   requests: &mut Vec<BlurRequest>,
                   which: &[Layer],
@@ -339,6 +356,8 @@ pub fn collect_elements(
                 };
                 // Layer geometry is already output-local.
                 let loc = phys(geo.loc, scale);
+                let layer_rect = Rectangle::new(loc, geo.size.to_f64().to_physical(scale).to_i32_round());
+                let crop = (!output_rect.contains_rect(layer_rect)).then_some(output_rect);
                 let els = surface
                     .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(renderer, loc, scale, 1.0);
                 // Vol 1 §5.2 asks for blur behind layer-shell too. A layer
@@ -353,6 +372,19 @@ pub fn collect_elements(
                 // centred by those anchors still gets its glass.
                 let scrim =
                     surface.cached_state().anchor.contains(Anchor::all()) && geo.size == output_geo.size;
+                // Cropping can drop surfaces, so the splice index is counted on
+                // what is actually pushed.
+                let pushed =
+                    |els: Vec<WaylandSurfaceRenderElement<GlesRenderer>>| -> Vec<AbyssRenderElement> {
+                        match crop {
+                            Some(crop) => els
+                                .into_iter()
+                                .filter_map(|e| CropRenderElement::from_element(e, scale, crop))
+                                .map(AbyssRenderElement::Cropped)
+                                .collect(),
+                            None => els.into_iter().map(AbyssRenderElement::Surface).collect(),
+                        }
+                    };
                 if blur_layers && !scrim {
                     let region = Rectangle::new(loc, geo.size.to_f64().to_physical(scale).to_i32_round());
                     // Vol 1 §5.2: a layer whose input region is 2..=4 boxes
@@ -376,6 +408,7 @@ pub fn collect_elements(
                         None => blur::shows_through(region, 0, opaque),
                     };
                     if shows {
+                        let els = pushed(els);
                         requests.push((
                             blur::BlurKey::Layer(surface.clone()),
                             elements.len() + els.len(),
@@ -384,10 +417,13 @@ pub fn collect_elements(
                             layer_radius(surface, config),
                             None,
                             shape,
+                            crop,
                         ));
+                        elements.extend(els);
+                        continue;
                     }
                 }
-                elements.extend(els.into_iter().map(AbyssRenderElement::Surface));
+                elements.extend(pushed(els));
             }
         }
     };
@@ -458,12 +494,12 @@ fn insert_blur(
     if requests.is_empty() {
         // Nothing asked for a backdrop (blur `off`, or nothing translucent):
         // the chain must not sit in GPU memory for a frame that draws none.
-        store.blur.clear();
+        store.blur.remove(output);
         return;
     }
     let scale = Scale::from(output.current_scale().fractional_scale());
     let live: Vec<blur::BlurKey> = requests.iter().map(|(key, ..)| key.clone()).collect();
-    store.blur.retain(&live);
+    store.blur.entry(output.clone()).or_default().retain(&live);
 
     // Same framebuffer-space mask as `window_elements`: needs the output's own
     // height and the sense of its vertical axis (COMP-02 §9).
@@ -478,7 +514,7 @@ fn insert_blur(
         .unwrap_or((1, 1));
     let upscale = scale.x.max(scale.y);
 
-    for (key, index, region, mode, radius, bezel, shape) in requests.into_iter().rev() {
+    for (key, index, region, mode, radius, bezel, shape, crop) in requests.into_iter().rev() {
         // The final draw's program: plain `blur` only needs one to round
         // (a square backdrop draws with smithay's own); frost and glass
         // always do, radius 0 included. A shaped layer (Vol 1 §5.2) takes
@@ -570,7 +606,7 @@ fn insert_blur(
             )
         });
         let behind = &elements[index..];
-        if let Some(element) = store.blur.element(
+        if let Some(element) = store.blur.entry(output.clone()).or_default().element(
             renderer,
             output,
             &key,
@@ -583,7 +619,15 @@ fn insert_blur(
             ring,
             shape.as_ref(),
         ) {
-            elements.insert(index, AbyssRenderElement::Blur(element));
+            let element = match crop {
+                Some(crop) => {
+                    CropRenderElement::from_element(element, scale, crop).map(AbyssRenderElement::CroppedBlur)
+                }
+                None => Some(AbyssRenderElement::Blur(element)),
+            };
+            if let Some(element) = element {
+                elements.insert(index, element);
+            }
         }
     }
 }
@@ -620,9 +664,24 @@ fn window_elements(
     };
     let scale = Scale::from(output.current_scale().fractional_scale());
     let deco = &config.decoration;
-    let live: Vec<Window> = space.elements().cloned().collect();
+    // Only windows that reach this output get any decoration work: one that
+    // sits on another output must not paint its backdrop, shadow, glow, border
+    // or dim here.
+    let live = windows_on_output(
+        space,
+        output_geo,
+        // A window not yet laid out has no owner and is drawn wherever it lands.
+        |w| crate::shell::owner_output(w).is_none_or(|o| &o == output),
+        |w| store.anim.offset(w),
+    );
+    // The output's own rectangle, output-local physical: nothing of a window
+    // (surface tree, popups, decorations) is ever drawn outside it.
+    let out_rect = Rectangle::new(
+        Point::from((0, 0)),
+        output_geo.size.to_f64().to_physical(scale).to_i32_round(),
+    );
     if deco.dim_inactive > 0.0 {
-        store.dims.retain(|w, _| live.contains(w));
+        store.dims.retain(|(o, w), _| o != output || live.contains(w));
     } else {
         store.dims.clear();
     }
@@ -642,8 +701,8 @@ fn window_elements(
     }
     let rounding = fb_height.zip(store.rounded.clone());
     let border = border_frame(renderer, store, output_geo.loc, scale, output, config, &live);
-    let shadow = shadow_program(renderer, store, config, &live);
-    let glow = glow_program(renderer, store, config, &live);
+    let shadow = shadow_program(renderer, store, output, config, &live);
+    let glow = glow_program(renderer, store, output, config, &live);
     let upscale = scale.x.max(scale.y);
     // Compiled (and checked) only once some window actually wants a bezel.
     let mut glass: Option<bool> = None;
@@ -669,6 +728,29 @@ fn window_elements(
             }
             geo
         });
+        // Decorations are cut to the whole tile (the window plus its border),
+        // whether or not the client overhangs it: unlike a surface, a shadow or
+        // backdrop would otherwise bleed into the neighbouring tile.
+        let deco_crop = Some(
+            crate::shell::tile_clip(&window)
+                .map(|c| {
+                    let width = config.general.border_size.max(0);
+                    Rectangle::new(
+                        phys(c.loc + store.anim.offset(&window) - output_geo.loc, scale)
+                            - Point::from((width, width))
+                                .to_f64()
+                                .to_physical(scale)
+                                .to_i32_round(),
+                        (c.size + (2 * width, 2 * width).into())
+                            .to_f64()
+                            .to_physical(scale)
+                            .to_i32_round(),
+                    )
+                })
+                .map_or(Some(out_rect), |tile| tile.intersection(out_rect))
+                // Wholly outside: an empty rect crops everything away.
+                .unwrap_or_default(),
+        );
         let active = focus == Some(&window);
         // A matched `windowrule "opacity …"` overrides the global pair.
         let alpha = crate::shell::rules::opacity_of(&window).unwrap_or(if active {
@@ -684,9 +766,10 @@ fn window_elements(
                 let color = [0.0, 0.0, 0.0, deco.dim_inactive * alpha];
                 let buffer = store
                     .dims
-                    .entry(window.clone())
+                    .entry((output.clone(), window.clone()))
                     .or_insert_with(|| SolidColorBuffer::new(geo.size, color));
                 buffer.update(geo.size, color);
+                let start = out.len();
                 out.push(AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
                     buffer,
                     phys(geo.loc - output_geo.loc, scale),
@@ -694,6 +777,7 @@ fn window_elements(
                     1.0,
                     Kind::Unspecified,
                 )));
+                crop_decor(out, start, scale, deco_crop);
             }
         }
 
@@ -737,12 +821,23 @@ fn window_elements(
                 ),
             ),
         };
-        let crop = clip.map(|c| {
+        let tile_crop = clip.map(|c| {
             Rectangle::new(
                 phys(c.loc + store.anim.offset(&window) - output_geo.loc, scale),
                 c.size.to_f64().to_physical(scale).to_i32_round(),
             )
         });
+        // A window reaching past its output (any size, any placement) is cut
+        // to it; one that fits keeps its plain elements and its scanout path.
+        let mut bbox = window.bbox();
+        bbox.loc += loc + store.anim.offset(&window) - window.geometry().loc;
+        let overhangs = !output_geo.contains_rect(bbox);
+        let crop = match (tile_crop, overhangs) {
+            (Some(tile), true) => Some(tile.intersection(out_rect).unwrap_or_default()),
+            (Some(tile), false) => Some(tile),
+            (None, true) => Some(out_rect),
+            (None, false) => None,
+        };
 
         // Blur follows what shows through the window, not a whole-window
         // alpha (COMP-02 §9): decided here, on the raw surfaces, before the
@@ -808,7 +903,7 @@ fn window_elements(
                 let round =
                     |surface| effects::RoundedElement::new(surface, program.clone(), uniforms.clone());
                 // Unmasked: the mask follows the tile, and would cut the popup too.
-                out.extend(popups.into_iter().map(AbyssRenderElement::Surface));
+                push_popups(out, popups, scale, overhangs.then_some(out_rect));
                 match crop {
                     Some(crop) => out.extend(
                         surfaces
@@ -824,7 +919,7 @@ fn window_elements(
                 }
             }
             _ => {
-                out.extend(popups.into_iter().map(AbyssRenderElement::Surface));
+                push_popups(out, popups, scale, overhangs.then_some(out_rect));
                 match crop {
                     Some(crop) => out.extend(
                         surfaces
@@ -846,20 +941,22 @@ fn window_elements(
         // either; glow and shadow draw only outside the bordered rect. A glass
         // bezel replaces the painted ring.
         let bezeled = backdrop.as_ref().is_some_and(|(_, _, b)| b.is_some());
+        let start = out.len();
         match &border {
             Some(_) if bezeled => {
-                store.rings.remove(&window);
-                store.borders.remove(&window);
+                store.rings.remove(&(output.clone(), window.clone()));
+                store.borders.remove(&(output.clone(), window.clone()));
             }
-            Some(frame) => push_border(store, frame, &window, geo, config, out),
+            Some(frame) => push_border(store, frame, output, &window, geo, config, out),
             None => {}
         }
         if let Some(program) = &glow {
-            push_glow(store, program, &window, geo, output_geo.loc, config, out);
+            push_glow(store, program, output, &window, geo, output_geo.loc, config, out);
         }
         if let Some(program) = &shadow {
-            push_shadow(store, program, &window, geo, output_geo.loc, config, out);
+            push_shadow(store, program, output, &window, geo, output_geo.loc, config, out);
         }
+        crop_decor(out, start, scale, deco_crop);
 
         // An opaque window gets no backdrop pass at all (the gate above)
         // unless its border is a glass bezel. The backdrop goes below the
@@ -875,9 +972,73 @@ fn window_elements(
                 radius,
                 bezel,
                 None,
+                deco_crop,
             ));
         }
     }
+}
+
+/// Windows that `owned` says belong on this output and whose geometry (moved
+/// by their animation `offset`) reaches `output_geo`, bottom to top. Everything per-output about a window starts
+/// from this list.
+fn windows_on_output<E: SpaceElement + PartialEq + Clone>(
+    space: &Space<E>,
+    output_geo: Rectangle<i32, Logical>,
+    owned: impl Fn(&E) -> bool,
+    offset: impl Fn(&E) -> Point<i32, Logical>,
+) -> Vec<E> {
+    space
+        .elements()
+        .filter(|w| owned(w))
+        .filter(|w| {
+            space.element_geometry(w).is_some_and(|mut geo| {
+                geo.loc += offset(w);
+                geo.overlaps(output_geo)
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+/// A cropped window's popups, cut to the output only when they might leave it.
+fn push_popups(
+    out: &mut Vec<AbyssRenderElement>,
+    popups: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+    scale: Scale<f64>,
+    crop: Option<Rectangle<i32, Physical>>,
+) {
+    match crop {
+        Some(crop) => out.extend(
+            popups
+                .into_iter()
+                .filter_map(|p| CropRenderElement::from_element(p, scale, crop))
+                .map(AbyssRenderElement::Cropped),
+        ),
+        None => out.extend(popups.into_iter().map(AbyssRenderElement::Surface)),
+    }
+}
+
+/// Cut the decoration elements pushed since `start` to `crop` (a tile),
+/// dropping any that fall wholly outside it. `None` leaves them be.
+fn crop_decor(
+    out: &mut Vec<AbyssRenderElement>,
+    start: usize,
+    scale: Scale<f64>,
+    crop: Option<Rectangle<i32, Physical>>,
+) {
+    let Some(crop) = crop else {
+        return;
+    };
+    let tail: Vec<AbyssRenderElement> = out.drain(start..).collect();
+    out.extend(tail.into_iter().filter_map(|e| match e {
+        AbyssRenderElement::Solid(s) => {
+            CropRenderElement::from_element(s, scale, crop).map(AbyssRenderElement::CroppedSolid)
+        }
+        AbyssRenderElement::Shader(s) => {
+            CropRenderElement::from_element(s, scale, crop).map(AbyssRenderElement::CroppedShader)
+        }
+        other => Some(other),
+    }));
 }
 
 /// The drop-shadow program when shadows are on, compiled on first use, with
@@ -886,6 +1047,7 @@ fn window_elements(
 fn shadow_program(
     renderer: &mut GlesRenderer,
     store: &mut BorderStore,
+    output: &Output,
     config: &Config,
     live: &[Window],
 ) -> Option<smithay::backend::renderer::gles::GlesPixelProgram> {
@@ -894,7 +1056,7 @@ fn shadow_program(
         store.shadows.clear();
         return None;
     }
-    store.shadows.retain(|w, _| live.contains(w));
+    store.shadows.retain(|(o, w), _| o != output || live.contains(w));
     if store.shadow.is_none() {
         match effects::compile_shadow(renderer) {
             Ok(program) => store.shadow = Some(program),
@@ -912,6 +1074,7 @@ fn shadow_program(
 fn glow_program(
     renderer: &mut GlesRenderer,
     store: &mut BorderStore,
+    output: &Output,
     config: &Config,
     live: &[Window],
 ) -> Option<smithay::backend::renderer::gles::GlesPixelProgram> {
@@ -919,7 +1082,7 @@ fn glow_program(
         store.glows.clear();
         return None;
     }
-    store.glows.retain(|w, _| live.contains(w));
+    store.glows.retain(|(o, w), _| o != output || live.contains(w));
     if store.glow.is_none() {
         match effects::compile_ring(renderer) {
             Ok(program) => store.glow = Some(program),
@@ -978,9 +1141,11 @@ fn shadow_drop(range: i32) -> i32 {
 /// range, radius or the focus weight do. Focus deepens the shadow, following
 /// the border's crossfade; the area is sized for the deepest case, so a
 /// focus change never resizes it.
+#[allow(clippy::too_many_arguments)]
 fn push_shadow(
     store: &mut BorderStore,
     program: &smithay::backend::renderer::gles::GlesPixelProgram,
+    output: &Output,
     window: &Window,
     geo: Rectangle<i32, Logical>,
     output_loc: Point<i32, Logical>,
@@ -992,12 +1157,15 @@ fn push_shadow(
     let focus = store.anim.border_color(window, [1.0, 0.0, 0.0, 0.0], [0.0; 4])[0];
     let params = [geometry[0], geometry[1], geometry[2], focus];
     let uniforms = || effects::shadow_uniforms(geometry, focus);
-    let (element, applied) = store.shadows.entry(window.clone()).or_insert_with(|| {
-        (
-            PixelShaderElement::new(program.clone(), area, None, 1.0, uniforms(), Kind::Unspecified),
-            params,
-        )
-    });
+    let (element, applied) = store
+        .shadows
+        .entry((output.clone(), window.clone()))
+        .or_insert_with(|| {
+            (
+                PixelShaderElement::new(program.clone(), area, None, 1.0, uniforms(), Kind::Unspecified),
+                params,
+            )
+        });
     element.resize(area, None);
     if *applied != params {
         element.update_uniforms(uniforms());
@@ -1010,9 +1178,11 @@ fn push_shadow(
 /// border's focus crossfade, and a state with glow off crossfades to
 /// transparent, so glow fades in or out with focus. Stored and updated like
 /// `push_shadow`.
+#[allow(clippy::too_many_arguments)]
 fn push_glow(
     store: &mut BorderStore,
     program: &smithay::backend::renderer::gles::GlesPixelProgram,
+    output: &Output,
     window: &Window,
     geo: Rectangle<i32, Logical>,
     output_loc: Point<i32, Logical>,
@@ -1035,12 +1205,15 @@ fn push_glow(
     let (area, [range, radius, _]) = shadow_geometry(geo, output_loc, effects::GLOW_RANGE, 0, config);
     let params = [color[0], color[1], color[2], color[3], range, radius];
     let uniforms = || effects::ring_uniforms(color, range, radius);
-    let (element, applied) = store.glows.entry(window.clone()).or_insert_with(|| {
-        (
-            PixelShaderElement::new(program.clone(), area, None, 1.0, uniforms(), Kind::Unspecified),
-            params,
-        )
-    });
+    let (element, applied) = store
+        .glows
+        .entry((output.clone(), window.clone()))
+        .or_insert_with(|| {
+            (
+                PixelShaderElement::new(program.clone(), area, None, 1.0, uniforms(), Kind::Unspecified),
+                params,
+            )
+        });
     element.resize(area, None);
     if *applied != params {
         element.update_uniforms(uniforms());
@@ -1076,8 +1249,8 @@ fn border_frame(
         store.rings.clear();
         return None;
     }
-    store.borders.retain(|w, _| live.contains(w));
-    store.rings.retain(|w, _| live.contains(w));
+    store.borders.retain(|(o, w), _| o != output || live.contains(w));
+    store.rings.retain(|(o, w), _| o != output || live.contains(w));
 
     // The ring only exists where `window_elements` actually rounds the window:
     // same radius, and the same fallback to square corners on an output whose
@@ -1095,9 +1268,9 @@ fn border_frame(
     }
     let ring = store.ring.clone().filter(|_| rounds);
     if ring.is_some() {
-        store.borders.clear();
+        store.borders.retain(|(o, _), _| o != output);
     } else {
-        store.rings.clear();
+        store.rings.retain(|(o, _), _| o != output);
     }
     Some(BorderFrame {
         width,
@@ -1115,6 +1288,7 @@ fn border_frame(
 fn push_border(
     store: &mut BorderStore,
     frame: &BorderFrame,
+    output: &Output,
     window: &Window,
     geo: Rectangle<i32, Logical>,
     config: &Config,
@@ -1150,12 +1324,15 @@ fn push_border(
             scale.x.max(scale.y) as f32,
         ];
         let uniforms = || effects::border_uniforms(color, params[4], params[5], params[6]);
-        let (element, applied) = store.rings.entry(window.clone()).or_insert_with(|| {
-            (
-                PixelShaderElement::new(program.clone(), outer, None, 1.0, uniforms(), Kind::Unspecified),
-                params,
-            )
-        });
+        let (element, applied) = store
+            .rings
+            .entry((output.clone(), window.clone()))
+            .or_insert_with(|| {
+                (
+                    PixelShaderElement::new(program.clone(), outer, None, 1.0, uniforms(), Kind::Unspecified),
+                    params,
+                )
+            });
         element.resize(outer, None);
         if *applied != params {
             element.update_uniforms(uniforms());
@@ -1182,7 +1359,7 @@ fn push_border(
     ];
     let buffers = store
         .borders
-        .entry(window.clone())
+        .entry((output.clone(), window.clone()))
         .or_insert_with(|| std::array::from_fn(|i| SolidColorBuffer::new(quads[i].size, color)));
     for (buffer, quad) in buffers.iter_mut().zip(quads) {
         buffer.update(quad.size, color);
@@ -1450,6 +1627,70 @@ mod tests {
         assert_eq!(
             window_backdrop(BlurMode::Frost, 0.8, rect, 9, vec![rect], 9, 6, None),
             Some((rect, 9, None))
+        );
+    }
+
+    /// A stand-in toplevel: `Window` needs a live client, the cull does not.
+    #[derive(Clone, PartialEq, Debug)]
+    struct Fake(u32);
+    impl smithay::utils::IsAlive for Fake {
+        fn alive(&self) -> bool {
+            true
+        }
+    }
+    impl SpaceElement for Fake {
+        fn bbox(&self) -> Rectangle<i32, Logical> {
+            Rectangle::new((0, 0).into(), (300, 200).into())
+        }
+        fn is_in_input_region(&self, _: &Point<f64, Logical>) -> bool {
+            true
+        }
+        fn set_activate(&self, _: bool) {}
+        fn output_enter(&self, _: &Output, _: Rectangle<i32, Logical>) {}
+        fn output_leave(&self, _: &Output) {}
+    }
+
+    #[test]
+    fn a_window_on_another_output_gets_no_elements_here() {
+        let (a, _) = crate::outputs::virtual_output("A", (1920, 1080));
+        let (b, _) = crate::outputs::virtual_output("B", (1920, 1080));
+        let mut space: Space<Fake> = Space::default();
+        space.map_output(&a, (0, 0));
+        space.map_output(&b, (1920, 300));
+        let a_geo = space.output_geometry(&a).unwrap();
+        let b_geo = space.output_geometry(&b).unwrap();
+        let none = |_: &Fake| Point::from((0, 0));
+
+        space.map_element(Fake(1), (2100, 400), false);
+        space.map_element(Fake(2), (1820, 400), false);
+        // Fake 1 belongs to B, fake 2 to A.
+        let owned_by = |name: &'static str| move |w: &Fake| (w.0 == 1) == (name == "B");
+        // Wholly on B.
+        let only_one = |w: Fake| move |x: &Fake| *x == w;
+        let on = |geo, name, w: Fake| {
+            windows_on_output(
+                &space,
+                geo,
+                |x: &Fake| owned_by(name)(x) && only_one(w.clone())(x),
+                none,
+            )
+        };
+        assert!(on(a_geo, "A", Fake(1)).is_empty());
+        assert_eq!(on(b_geo, "B", Fake(1)), vec![Fake(1)]);
+
+        // Owned by A but hanging 100 px into B's rectangle (300 wide at x=1820,
+        // y=400): B draws none of it, A still does.
+        assert!(on(b_geo, "B", Fake(2)).is_empty());
+        assert_eq!(on(a_geo, "A", Fake(2)), vec![Fake(2)]);
+        // The crop rect that bounds it on A is A's own, so nothing lands on B.
+        let overhang = space.element_geometry(&Fake(2)).unwrap();
+        assert!(!a_geo.contains_rect(overhang) && a_geo.intersection(overhang).is_some());
+
+        // An animation offset can carry an owned window onto this output.
+        let slide = |_: &Fake| Point::from((-400, 0));
+        assert_eq!(
+            windows_on_output(&space, a_geo, |w: &Fake| w.0 == 1, slide).len(),
+            1
         );
     }
 
