@@ -5935,7 +5935,7 @@ pub(crate) mod tests {
         assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
         assert_eq!(
             cfg.capture.hide_layer,
-            [("hyperion".to_string(), "eclipse-eye".to_string())]
+            [("ec-hyperion-bar".to_string(), "eclipse-eye".to_string())]
         );
     }
 
