@@ -4601,7 +4601,7 @@ pub(crate) mod tests {
             Some(schema::Value::Str("waybar".into()))
         );
 
-        // Pre-`ec-` ids load as their new names (ADR 0069).
+        // Pre-`ec-` ids load as their new names (ADR 0070).
         let doc: KdlDocument = "components {\n    bar \"hyperion\"\n    launcher \"eclipse-launcher\"\n    notifications \"eclipse-toasts\"\n    control-center \"eclipse-center\"\n}\n"
             .parse()
             .unwrap();

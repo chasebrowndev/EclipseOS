@@ -1918,7 +1918,7 @@ fn eye_placement(
 /// The bar only ever draws the plain ring. The live eye is a second layer
 /// surface, namespace [`crate::eye::NAMESPACE`], laid over the mark, which
 /// abyss leaves out of screenshots and recordings (`capture { hide-layer
-/// "hyperion:eclipse-eye" }`) — so a capture shows the still ring beneath and
+/// "ec-hyperion-bar:eclipse-eye" }`) — so a capture shows the still ring beneath and
 /// the person at the screen sees the eye. It exists only while there is an
 /// eye to show on a full pill: a settled Off, a folded or hidden bar, or
 /// `bar.eye = false` costs no surface at all. Each bar has its own, on its
