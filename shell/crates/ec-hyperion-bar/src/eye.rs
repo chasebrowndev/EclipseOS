@@ -274,7 +274,7 @@ pub fn after(at: Instant) -> Subscription<Message> {
 }
 
 /// The eye surface's layer-shell namespace. Abyss's capture policy names it
-/// (`hide-layer "hyperion:eclipse-eye"`, ADR 0056), so it must not drift.
+/// (`hide-layer "ec-hyperion-bar:eclipse-eye"`, ADR 0056), so it must not drift.
 pub const NAMESPACE: &str = "eclipse-eye";
 
 /// How long to wait before reconnecting to a daemon that is not there.

@@ -133,7 +133,7 @@ pub const COMPONENT_LAUNCHERS: &[&str] = &["ec-launcher", "fuzzel", "none"];
 pub const COMPONENT_NOTIFICATIONS: &[&str] = &["ec-toasts", "mako", "none"];
 pub const COMPONENT_CONTROL_CENTERS: &[&str] = &["ec-center", "none"];
 
-/// Pre-`ec-` component ids (ADR 0069), still accepted on read for one release
+/// Pre-`ec-` component ids (ADR 0070), still accepted on read for one release
 /// so an existing `abyss.kdl` keeps loading. Reads normalise to the new id.
 pub const LEGACY_COMPONENT_IDS: &[(&str, &str)] = &[
     ("hyperion", "ec-hyperion-bar"),
