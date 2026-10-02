@@ -569,6 +569,84 @@ impl Store {
     }
 }
 
+/// What a read-only walk of a store found (S-04 §4 `verify`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Verified {
+    pub records: u64,
+    pub head: [u8; 32],
+    /// The open segment ends in a partial frame: a write the power cut
+    /// short. Not a break; `policyd` drops it on its next start.
+    pub torn_tail: bool,
+}
+
+/// Walks the store at `dir` oldest-first without changing it, verifying
+/// every link, every hash, `seq` continuity and every rotation anchor, and
+/// hands each verified record to `f`. A reader must not repair what it is
+/// auditing, so unlike [`Store::open`] nothing is truncated or moved
+/// aside: the first bad record is the answer, as `ChainBroken`.
+pub fn verify(dir: &Path, mut f: impl FnMut(&Record)) -> Result<Verified> {
+    let mut v = Verified {
+        records: 0,
+        head: GENESIS,
+        torn_tail: false,
+    };
+    let mut step = |buf: &[u8], sealed: bool, v: &mut Verified| -> Result<()> {
+        let mut pos = 0usize;
+        while pos < buf.len() {
+            let seq = v.records;
+            // What `Store::replay` truncates in the open segment is a torn
+            // tail here too; in a sealed one it is a break.
+            let len = buf
+                .get(pos..pos + 4)
+                .map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+                .filter(|&l| l != 0 && l <= MAX_FRAME);
+            let end = len.map(|l| pos + 4 + l as usize).filter(|&e| e <= buf.len());
+            let Some(end) = end else {
+                if sealed {
+                    return Err(StoreError::ChainBroken { seq });
+                }
+                v.torn_tail = true;
+                return Ok(());
+            };
+            let rec = Record::decode(&buf[pos + 4..end]).map_err(|_| StoreError::ChainBroken { seq })?;
+            if rec.prev_hash != v.head || rec.hash != rec.compute_hash() || rec.seq != seq {
+                return Err(StoreError::ChainBroken { seq });
+            }
+            if rec.kind == Kind::Anchor && anchored_head(&rec.body) != Some(rec.prev_hash) {
+                return Err(StoreError::ChainBroken { seq });
+            }
+            f(&rec);
+            v.head = rec.hash;
+            v.records += 1;
+            pos = end;
+        }
+        Ok(())
+    };
+    for sealed in Store::sealed_segments(dir)? {
+        step(&Store::read_sealed(&sealed)?, true, &mut v)?;
+    }
+    match fs::read(dir.join("current.open")) {
+        Ok(buf) => step(&buf, false, &mut v)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    Ok(v)
+}
+
+/// The chain head a rotation anchor says its sealed segment ended on.
+fn anchored_head(body: &[u8]) -> Option<[u8; 32]> {
+    let mut r = Reader::new(body);
+    let n = r.map_begin().ok()?;
+    let mut head = None;
+    for _ in 0..n {
+        match r.key().ok()? {
+            "head" => head = Some(r.byte_array::<32>().ok()?),
+            _ => r.skip().ok()?,
+        }
+    }
+    head
+}
+
 fn anchor_body(sealed: &Path, head: [u8; 32]) -> Vec<u8> {
     let mut m = MapBuilder::new();
     m.insert("head", enc(|w| w.bytes(&head)));
@@ -782,6 +860,49 @@ mod tests {
         );
         let b = s.append(rec(Kind::Focus, "human")).unwrap();
         assert!(b.mono >= a.mono && a.mono != 7);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn verify_reads_without_repairing_and_names_the_break() {
+        let dir = tmp("verify");
+        let mut s = Store::open(&dir).unwrap();
+        s.append(rec(Kind::Task, "agent:a")).unwrap();
+        s.rotate().unwrap();
+        s.append(rec(Kind::Focus, "human")).unwrap();
+        s.sync().unwrap();
+        drop(s);
+        let mut kinds = Vec::new();
+        let v = verify(&dir, |r| kinds.push(r.kind)).unwrap();
+        assert_eq!(kinds, [Kind::Task, Kind::Anchor, Kind::Focus]);
+        assert_eq!((v.records, v.torn_tail), (3, false));
+
+        // A torn tail is reported, not repaired.
+        let p = dir.join("current.open");
+        let len = fs::metadata(&p).unwrap().len();
+        OpenOptions::new()
+            .write(true)
+            .open(&p)
+            .unwrap()
+            .set_len(len - 3)
+            .unwrap();
+        assert!(verify(&dir, |_| {}).unwrap().torn_tail);
+        assert_eq!(fs::metadata(&p).unwrap().len(), len - 3);
+
+        // A flipped byte early in the open segment (the rotation anchor,
+        // record 1) is the record that broke.
+        let mut bytes = fs::read(&p).unwrap();
+        bytes[10] ^= 0xff;
+        fs::write(&p, &bytes).unwrap();
+        assert!(matches!(
+            verify(&dir, |_| {}),
+            Err(StoreError::ChainBroken { seq: 1 })
+        ));
+        assert!(!fs::read_dir(&dir).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("quarantine")));
         fs::remove_dir_all(&dir).unwrap();
     }
 
