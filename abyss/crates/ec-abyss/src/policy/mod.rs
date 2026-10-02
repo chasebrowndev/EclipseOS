@@ -168,10 +168,10 @@ fn verify(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
     use ec_policy_eval::grant::{cose_sign1, protected_header, sig_structure};
     use ec_policy_eval::task::Ulid;
     use ec_policy_eval::{Capability, Constraints};
+    use ed25519_dalek::{Signer, SigningKey};
 
     fn sk() -> SigningKey {
         SigningKey::from_bytes(&[3u8; 32])

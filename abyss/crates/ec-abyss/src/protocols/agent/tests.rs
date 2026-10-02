@@ -7,14 +7,14 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use ec_policy_eval::grant::{cose_sign1, protected_header, sig_structure};
+use ec_policy_eval::{Capability, Constraints, Grant, Ulid};
 use ec_protocols::agent::client::{
     eclipse_agent_manager_v1::{self, EclipseAgentManagerV1},
     eclipse_agent_v1::{self, EclipseAgentV1},
     eclipse_scene_v1::{self, EclipseSceneV1},
 };
 use ed25519_dalek::{Signer, SigningKey};
-use ec_policy_eval::grant::{cose_sign1, protected_header, sig_structure};
-use ec_policy_eval::{Capability, Constraints, Grant, Ulid};
 use wayland_client::{
     protocol::wl_registry::{self, WlRegistry},
     Connection, Dispatch, EventQueue, QueueHandle,

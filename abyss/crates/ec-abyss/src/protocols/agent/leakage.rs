@@ -21,8 +21,8 @@
 
 use std::collections::BTreeSet;
 
-use ec_protocols::agent::client::{eclipse_agent_v1::EclipseAgentV1, eclipse_scene_v1};
 use ec_policy_eval::{Capability, Class, Constraints, Grant, Ulid};
+use ec_protocols::agent::client::{eclipse_agent_v1::EclipseAgentV1, eclipse_scene_v1};
 use smithay::desktop::Window;
 use smithay::utils::{Logical, Point};
 

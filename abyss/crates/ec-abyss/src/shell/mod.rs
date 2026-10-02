@@ -48,7 +48,9 @@ pub fn window_surface(window: &Window) -> Option<WlSurface> {
 }
 
 // Read by the renderer, written here; defined in `ec-abyss-render::userdata`.
-pub use ec_abyss_render::userdata::{layer_geometry, owner_output, tile_clip, LayerOffset, OwnerOutput, TileClip};
+pub use ec_abyss_render::userdata::{
+    layer_geometry, owner_output, tile_clip, LayerOffset, OwnerOutput, TileClip,
+};
 
 fn set_owner_output(window: &Window, output: &Output) {
     let data = window.user_data();
