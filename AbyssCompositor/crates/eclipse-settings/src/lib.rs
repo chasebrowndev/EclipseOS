@@ -18,6 +18,7 @@ pub mod editor;
 pub mod network;
 pub mod output;
 pub mod pane;
+pub mod portal;
 pub mod schema;
 pub mod taskbar;
 pub mod tray;

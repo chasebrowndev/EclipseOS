@@ -882,6 +882,39 @@ pub fn swatch<'a, Message: 'a>(fill: Color) -> Element<'a, Message, Theme> {
         .into()
 }
 
+/// A [`swatch`] that opens its colour's picker. A widget and not a bare
+/// button because the rim is the state: none at rest, a hairline on hover, a
+/// crisp brighter one while the picker is `open`. Glassy, not glowy — nothing
+/// lights past the rim.
+pub fn swatch_button<'a, Message: Clone + 'a>(
+    fill: Color,
+    open: bool,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
+    button(swatch(fill))
+        .padding(space::SWATCH_PAD)
+        .on_press(on_press)
+        .style(move |_t: &Theme, status| {
+            let rim = if open {
+                color::TEXT_SECONDARY
+            } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                color::BORDER_STRONG
+            } else {
+                Color::TRANSPARENT
+            };
+            button::Style {
+                background: None,
+                border: iced::Border {
+                    color: rim,
+                    width: space::HAIRLINE,
+                    radius: radius::PILL.into(),
+                },
+                ..button::Style::default()
+            }
+        })
+        .into()
+}
+
 /// The mono right-hand side of a list row — a path, a rate, a device id.
 pub fn value<'a, Message: 'a>(v: &str) -> Element<'a, Message, Theme> {
     text(v.to_string())

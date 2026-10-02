@@ -21,9 +21,9 @@ use eclipse_ipc::EventKind;
 use eclipse_ui::theme;
 use eclipse_ui::tokens::space;
 use eclipse_ui::widget::{
-    big_value, content_at, dimmed_at, hairline, header, list_row, micro_label, nav_item_at, panel, pill,
-    pill_group, row_caption, sidebar_at, status_chip, subtitle, swatch, value as mono, Density,
-    NumericSlider, Toggle,
+    big_value, color_picker, content_at, dimmed_at, hairline, header, list_row, micro_label, nav_item_at,
+    panel, pill, pill_group, row_caption, sidebar_at, status_chip, subtitle, swatch_button, value as mono,
+    Density, NumericSlider, Toggle,
 };
 
 use crate::conn::{Conn, Problem};
@@ -67,6 +67,12 @@ pub enum Message {
     Chose(String, String),
     Edited(String, String),
     Committed(String),
+    /// Open the file chooser portal for this key.
+    /// Open or close the colour picker under this key's row.
+    Picker(String),
+    Browse(String),
+    /// The portal answered: a path, a cancel (`None`) or why it could not.
+    Browsed(String, Result<Option<std::path::PathBuf>, String>),
     Reload,
     Dismiss,
     OutputEnabled(u64, bool),
@@ -148,6 +154,8 @@ pub struct App {
     /// Drafts `validate_config` has rejected. Written on every keystroke so
     /// the field can say no before the user commits.
     invalid: HashSet<String>,
+    /// The colour key whose picker is open under its row.
+    picker: Option<String>,
     /// Text typed into a numeric entry, per control. Absent means "show the
     /// value the slider is at".
     nums: HashMap<Num, String>,
@@ -208,6 +216,7 @@ impl App {
             pane,
             drafts: HashMap::new(),
             invalid: HashSet::new(),
+            picker: None,
             live: HashMap::new(),
             live_writes: HashMap::new(),
             nums: HashMap::new(),
@@ -230,6 +239,7 @@ impl App {
         #[cfg(debug_assertions)]
         {
             app.tray_sel = std::env::var("SETTINGS_PREVIEW_TRAY_SEL").ok();
+            app.picker = std::env::var("SETTINGS_PREVIEW_PICKER").ok();
         }
         app.reload();
         #[cfg(debug_assertions)]
@@ -563,6 +573,30 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 app.write(&path, Value::String(text));
             }
         }
+
+        Message::Picker(path) => {
+            if app.picker.as_deref() == Some(path.as_str()) {
+                app.picker = None;
+                // Closing lands whatever the picker or the field left pending.
+                return update_inner(app, Message::Committed(path));
+            }
+            app.picker = Some(path);
+        }
+
+        Message::Browse(path) => {
+            return Task::perform(crate::portal::pick_image(), move |r| {
+                Message::Browsed(path.clone(), r)
+            });
+        }
+        Message::Browsed(path, result) => match result {
+            Ok(Some(p)) => {
+                let text = p.to_string_lossy().into_owned();
+                let _ = update_inner(app, Message::Edited(path.clone(), text));
+                return update_inner(app, Message::Committed(path));
+            }
+            Ok(None) => {}
+            Err(e) => app.banner = Some(Problem::Other(e)),
+        },
 
         Message::NumberTyped(id, text) => {
             app.nums.insert(id, text);
@@ -1104,29 +1138,70 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
             let field = iced::widget::container(field)
                 .width(Length::Fill)
                 .max_width(space::FIELD_W + space::CONTROL_GAP + space::VERDICT_W);
-            // A colour key shows the colour it holds now — what was written,
-            // not the draft — beside the field that edits it.
-            match color.then(|| crate::schema::rgba(&key.display())).flatten() {
-                Some([r, g, b, a]) => iced::widget::container(
-                    row![
-                        swatch(iced::Color::from_rgba8(r, g, b, f32::from(a) / 255.0)),
-                        field
-                    ]
-                    .spacing(space::CONTROL_GAP)
-                    .align_y(iced::Alignment::Center),
-                )
-                // The field's own cap, plus the swatch beside it.
-                .width(Length::Fill)
-                .max_width(
-                    space::FIELD_W
-                        + space::CONTROL_GAP
-                        + space::VERDICT_W
-                        + space::CONTROL_GAP
-                        + space::SWATCH,
-                )
-                .into(),
-                None => field.into(),
+            if key.path == "wallpaper.path" {
+                return row![
+                    field,
+                    pill("Browse\u{2026}", false, Message::Browse(key.path.clone()))
+                ]
+                .spacing(space::CONTROL_GAP)
+                .align_y(iced::Alignment::Center)
+                .into();
             }
+            // A colour key shows the colour it holds now — what was written,
+            // not the draft — as a swatch that opens its picker under the row.
+            let Some([r, g, b, a]) = color.then(|| crate::schema::rgba(&key.display())).flatten() else {
+                return field.into();
+            };
+            let open = app.picker.as_deref() == Some(key.path.as_str());
+            let head = iced::widget::container(
+                row![
+                    swatch_button(
+                        iced::Color::from_rgba8(r, g, b, f32::from(a) / 255.0),
+                        open,
+                        Message::Picker(key.path.clone()),
+                    ),
+                    field
+                ]
+                .spacing(space::CONTROL_GAP)
+                .align_y(iced::Alignment::Center),
+            )
+            // The field's own cap, plus the swatch beside it.
+            .width(Length::Fill)
+            .max_width(
+                space::FIELD_W
+                    + space::CONTROL_GAP
+                    + space::VERDICT_W
+                    + space::CONTROL_GAP
+                    + space::SWATCH
+                    + 2.0 * space::SWATCH_PAD,
+            );
+            if !open {
+                return head.into();
+            }
+            // The picker follows the draft while one is good, so a hex typed
+            // into the field moves the knobs too.
+            let text = app
+                .drafts
+                .get(&key.path)
+                .filter(|_| !invalid)
+                .cloned()
+                .unwrap_or_else(|| key.display());
+            let rgba = crate::schema::rgba(&text).unwrap_or([r, g, b, a]);
+            // Alpha only where the value spells one: eight hex digits.
+            let alpha = text.len() == 9;
+            let (moved, released) = (key.path.clone(), key.path.clone());
+            column![
+                head,
+                color_picker(
+                    rgba,
+                    alpha,
+                    move |c| Message::Edited(moved.clone(), crate::schema::hex(c, alpha)),
+                    Message::Committed(released),
+                ),
+                mono(&crate::schema::hex(rgba, alpha)),
+            ]
+            .spacing(space::PICKER_GAP)
+            .into()
         }
 
         // `set_config_value` writes one scalar at a dotted path; a list needs

@@ -3,6 +3,7 @@
 
 mod bar_chart;
 mod bar_widget;
+mod color_picker;
 mod draggable;
 mod fold;
 mod parts;
@@ -11,6 +12,7 @@ mod veil;
 
 pub use bar_chart::{BarChart, Highlight};
 pub use bar_widget::*;
+pub use color_picker::{color_picker, hsv_to_rgb, rgb_to_hsv};
 pub use draggable::*;
 pub use fold::Fold;
 pub use parts::*;

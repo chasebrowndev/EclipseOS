@@ -211,6 +211,17 @@ pub fn rgba(value: &str) -> Option<[u8; 4]> {
     ])
 }
 
+/// The inverse of [`rgba`]: `#rrggbb`, or `#rrggbbaa` when `alpha` — the
+/// spelling the compositor takes back. Lower-case, as the config writes it.
+pub fn hex(rgba: [u8; 4], alpha: bool) -> String {
+    let [r, g, b, a] = rgba;
+    if alpha {
+        format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
+    } else {
+        format!("#{r:02x}{g:02x}{b:02x}")
+    }
+}
+
 /// A kebab-case config token as a person reads it: hyphens become spaces and
 /// the first letter is capitalised. Nothing else changes, so `gaps-in` is
 /// "Gaps in" and an acronym the token already spells in capitals keeps them.
@@ -493,6 +504,11 @@ mod tests {
         assert_eq!(rgba("#e8a33dff"), Some([0xe8, 0xa3, 0x3d, 0xff]));
         assert_eq!(rgba("#e8a33d"), Some([0xe8, 0xa3, 0x3d, 0xff]));
         assert_eq!(rgba("#e8a33d8"), None);
+        let c = [0xe8, 0xa3, 0x3d, 0x80];
+        assert_eq!(hex(c, true), "#e8a33d80");
+        assert_eq!(hex(c, false), "#e8a33d");
+        assert_eq!(rgba(&hex(c, true)), Some(c));
+        assert_eq!(rgba(&hex([1, 2, 3, 255], false)), Some([1, 2, 3, 255]));
         assert_eq!(rgba("e8a33dff"), None);
         assert_eq!(rgba("#zz0000"), None);
     }
