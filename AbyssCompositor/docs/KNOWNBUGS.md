@@ -106,17 +106,6 @@ around both cards. **Proposed:** none committed. Either the client tells the
 compositor where its glass is (`ext-background-effect-v1`, deferred from the
 blur-modes work) or each card becomes its own surface.
 
-## BLUR-04: two outputs of different sizes rebuild each other's backdrops
-
-Found 2026-09-29 by code review during the C-14 glass work; not yet seen on
-hardware. `BlurStore` is one store shared by every output, but `ensure_chain`
-sizes the chain to the output being drawn and the per-output `retain`/`clear`
-drop entries that belong to the others. With two outputs of different sizes
-each frame throws away the other output's cached backdrops, so every blurred
-surface re-renders its full chain every frame. **Repro:** two monitors of
-different resolution, a translucent window on each; watch GPU time. **Proposed:**
-key the chain and the cache by output.
-
 ---
 
 # Settings Taskbar pane — found probing drag and drop, 2026-09-28
