@@ -65,4 +65,4 @@ Want to build the ISO yourself? See [D-03](docs/design/D-03-installation-media.m
 
 ## Licence
 
-System code is **AGPL-3.0-only** ([LICENSE](LICENSE)). Protocol definitions and the agent SDKs are **Apache-2.0** ([LICENSE-APACHE](LICENSE-APACHE)). The name and logo are not licensed by the AGPL: [TRADEMARK.md](AbyssCompositor/TRADEMARK.md).
+System code is **AGPL-3.0-only** ([LICENSE](LICENSE)). Protocol definitions and the agent SDKs are **Apache-2.0** ([LICENSE-APACHE](LICENSE-APACHE)). The name and logo are not licensed by the AGPL: [TRADEMARK.md](TRADEMARK.md).
