@@ -19,7 +19,7 @@ use crate::runner::{Cmd, Tool};
 use crate::seed;
 use crate::stages::{self, Prepared};
 use crate::validate::{self, Validated};
-use eclipse_setup_plan::{Progress, Request, Stage};
+use eclipse_setup_plan::{Plan, Progress, Request, Stage};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -80,7 +80,7 @@ impl Reporter<'_> {
 }
 
 /// Everything that can fail without touching a disk, after `validate`.
-pub fn preflight(env: &Env, v: &Validated, locale: &str) -> Result<Prepared> {
+pub fn preflight(env: &Env, v: &Validated, plan: &Plan) -> Result<Prepared> {
     let p = &env.paths;
     if v.disk.disk.size_bytes < MIN_DISK_BYTES {
         return Err(Error::Refused("disk too small"));
@@ -97,7 +97,7 @@ pub fn preflight(env: &Env, v: &Validated, locale: &str) -> Result<Prepared> {
         return Err(Error::Refused("package list on the medium"));
     }
     let text = fs::read_to_string(&p.pkg_list).map_err(io("read package list"))?;
-    let mut pkgs = stages::package_set(stages::parse_pkg_list(&text)?, &v.entries);
+    let mut pkgs = stages::package_set(stages::parse_pkg_list(&text)?, &v.entries, plan.agents);
 
     let machine = hw::detect(p);
     if machine.mem_kib < MIN_MEM_KIB {
@@ -108,7 +108,7 @@ pub fn preflight(env: &Env, v: &Validated, locale: &str) -> Result<Prepared> {
             pkgs.push(extra.to_owned());
         }
     }
-    for extra in stages::locale_packages(locale) {
+    for extra in stages::locale_packages(&plan.locale) {
         if !pkgs.iter().any(|q| q == extra) {
             pkgs.push((*extra).to_owned());
         }
@@ -240,7 +240,7 @@ impl Run<'_, '_> {
             Stage::Preflight,
             8,
             "checking the machine and the network",
-            |_| preflight(env, &v, &req.plan.locale),
+            |_| preflight(env, &v, &req.plan),
         )?;
         for w in &prep.warnings {
             self.rep.line(Stage::Preflight, 10, w, false);
@@ -799,6 +799,37 @@ mod tests {
         }
         // `etc/localtime` is a link, which `file_set` reports too.
         assert!(fs::symlink_metadata(target.join("etc/localtime")).is_ok());
+    }
+
+    /// D-07 §4.4 "Stack": the add-on rides into pacstrap only on the plan's flag,
+    /// which the UI seeds from the profile (on for Agentic only).
+    #[test]
+    fn agents_package_is_installed_only_when_the_plan_asks() {
+        use eclipse_setup_plan::Profile;
+        let cases = [
+            (Profile::Agentic, Profile::Agentic.agents_default(), true),
+            (Profile::Agentic, false, false),
+            (Profile::Standard, Profile::Standard.agents_default(), false),
+            (Profile::Minimal, Profile::Minimal.agents_default(), false),
+            (Profile::Full, Profile::Full.agents_default(), false),
+        ];
+        for (profile, agents, want) in cases {
+            let (_t, p) = live();
+            let r = machine_runner(&p);
+            let mut rq = req();
+            rq.plan.profile = profile;
+            rq.plan.agents = agents;
+            let mut out = Vec::new();
+            assert!(
+                apply(&env(p, &r, &AllowConfirm, None), &rq, &mut out),
+                "{:?}",
+                progress(&out).last()
+            );
+            let log = r.log.borrow();
+            let strap = log.iter().find(|l| l.tool == Tool::Pacstrap).unwrap();
+            let has = strap.args.iter().any(|a| a == "eclipseos-agents");
+            assert_eq!(has, want, "{profile:?} agents={agents}");
+        }
     }
 
     #[test]

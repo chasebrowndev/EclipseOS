@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Add-on manifest (ADR 0066, ADR 0069): /usr/share/eclipse/addons/eclipseos-agents.kdl,
+// owned by the eclipseos-agents package. Turns on abyss's agents hook: the
+// privileged socket, agent and semantic globals, the policyd link and the
+// agent lifecycle methods. Without it abyss runs no agent surface at all.
+id "eclipseos-agents"
+name "Agents"
+hooks "agents"

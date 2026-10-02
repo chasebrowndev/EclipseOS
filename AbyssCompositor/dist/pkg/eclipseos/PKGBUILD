@@ -11,7 +11,7 @@
 
 pkgbase=eclipseos
 pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-wallpaper eclipseos-center
-         eclipseos-launcher eclipseos-desktop eclipseos-policyd eclipseos-setup eclipseos-fog eclipseos-meta)
+         eclipseos-launcher eclipseos-desktop eclipseos-agents eclipseos-setup eclipseos-fog eclipseos-meta)
 pkgver=0.1.1
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
@@ -145,13 +145,20 @@ package_eclipseos-desktop() {
   _app eclipse-policy-viewer.desktop
 }
 
-package_eclipseos-policyd() {
-  pkgdesc="EclipseOS policy daemon"
+# The agent stack is one add-on (ADR 0069): installed by the Agentic profile,
+# never by the floor. Every agent-only process ships here; abyss's half stays
+# dormant until this manifest turns the `agents` hook on.
+package_eclipseos-agents() {
+  pkgdesc="EclipseOS agent stack add-on: policy daemon (ADR 0069)"
   depends=(eclipseos-abyss)
+  replaces=(eclipseos-policyd)
+  conflicts=(eclipseos-policyd)
 
   _bin policyd
   _unit policyd.service
   _want policyd.service
+  install -Dm0644 "$srcdir/$_src/dist/addons/eclipseos-agents.kdl" \
+    "$pkgdir/usr/share/eclipse/addons/eclipseos-agents.kdl"
 }
 
 package_eclipseos-setup() {
@@ -193,13 +200,14 @@ package_eclipseos-meta() {
   pkgdesc="EclipseOS base system (D-01 §1)"
   arch=(any)  # config and dependencies only, no ELF
   depends=(eclipseos-abyss eclipseos-toasts eclipseos-wallpaper eclipseos-center
-           eclipseos-launcher eclipseos-desktop eclipseos-policyd eclipseos-fog
+           eclipseos-launcher eclipseos-desktop eclipseos-fog
            greetd greetd-regreet cage
            networkmanager bluez bluez-utils upower pipewire pipewire-pulse wireplumber
            foot xdg-user-dirs brightnessctl playerctl)
   # Add-ons (ADR 0066): suggested, not required. The session starts without
   # them; Super+E/R/N reach the launcher and center through built-in binds.
-  optdepends=('eclipseos-hyperion: the taskbar add-on (workspaces, window chips, widgets, tray)')
+  optdepends=('eclipseos-hyperion: the taskbar add-on (workspaces, window chips, widgets, tray)'
+              'eclipseos-agents: the agent stack add-on (ADR 0069)')
   # /etc/eclipse is image-owned (D-01 §4.1): deliberately NOT in backup(), so
   # pacman overwrites rather than leaving .pacnew, and the later atomic scheme
   # is a no-op migration.

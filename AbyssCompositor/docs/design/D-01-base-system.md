@@ -43,8 +43,8 @@ Four packages, split so the repo can move pieces independently (D-02, and
 | `eclipseos-center` | `eclipse-center` and its `.desktop` file | AGPL-3.0-only |
 | `eclipseos-launcher` | `eclipse-launcher` | AGPL-3.0-only |
 | `eclipseos-desktop` | `eclipse-settings`, `eclipse-policy-viewer`, `eclipse-screensaver`, their `.desktop` files and user units | AGPL-3.0-only |
-| `eclipseos-policyd` | `policyd` and its system/user unit | AGPL-3.0-only |
-| `eclipseos-meta` | Depends on every package above plus §1.2; ships the pacman drop-in and `/etc/eclipse` defaults | AGPL-3.0-only |
+| `eclipseos-agents` | The agent stack add-on (ADR 0069): `policyd`, its user unit and the `agents` manifest. Not in the floor; the Agentic profile installs it. Replaces `eclipseos-policyd` | AGPL-3.0-only |
+| `eclipseos-meta` | Depends on every package above except the add-ons (`eclipseos-hyperion`, `eclipseos-agents`), plus §1.2; ships the pacman drop-in and `/etc/eclipse` defaults | AGPL-3.0-only |
 
 **One crate, one package per swappable component** (ADR 0052). The taskbar
 (`crates/hyperion`), toasts, center and launcher were once four `[[bin]]`

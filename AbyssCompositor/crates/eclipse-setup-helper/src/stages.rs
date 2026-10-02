@@ -5,7 +5,7 @@
 //! line. Nothing in this module runs before `Confirm` has allowed (the caller
 //! in `apply` orders that; `Tool::touches_disk` lets tests prove it).
 
-use crate::catalog::{valid_pkg_name, Entry, FLOOR_UNITS};
+use crate::catalog::{valid_pkg_name, Entry, AGENTS_PACKAGE, FLOOR_UNITS};
 use crate::disks::{self, DiskEntry};
 use crate::env::Env;
 use crate::error::{io, Error, Result};
@@ -73,13 +73,14 @@ pub fn parse_pkg_list(text: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 
-pub fn package_set(base: Vec<String>, entries: &[&Entry]) -> Vec<String> {
+/// Floor, then catalog packages, then the agent add-on if the plan asked for it.
+pub fn package_set(base: Vec<String>, entries: &[&Entry], agents: bool) -> Vec<String> {
     let mut all = base;
-    for e in entries {
-        for p in e.packages {
-            if !all.iter().any(|a| a == p) {
-                all.push((*p).to_owned());
-            }
+    let extra = entries.iter().flat_map(|e| e.packages.iter());
+    let agents = agents.then_some(&AGENTS_PACKAGE);
+    for p in extra.chain(agents) {
+        if !all.iter().any(|a| a == p) {
+            all.push((*p).to_owned());
         }
     }
     all
@@ -509,8 +510,17 @@ mod tests {
         let es = Catalog::builtin()
             .resolve(&["hyperion".into(), "eclipse-toasts".into()])
             .unwrap();
-        let s = package_set(vec!["base".into(), "eclipseos-hyperion".into()], &es);
+        let s = package_set(vec!["base".into(), "eclipseos-hyperion".into()], &es, false);
         assert_eq!(s, ["base", "eclipseos-hyperion", "eclipseos-toasts"]);
+    }
+
+    #[test]
+    fn agents_package_follows_the_flag_once() {
+        let base = || vec!["base".to_owned()];
+        assert_eq!(package_set(base(), &[], true), ["base", "eclipseos-agents"]);
+        assert_eq!(package_set(base(), &[], false), ["base"]);
+        let had = vec!["base".to_owned(), "eclipseos-agents".to_owned()];
+        assert_eq!(package_set(had, &[], true), ["base", "eclipseos-agents"]);
     }
 
     #[test]

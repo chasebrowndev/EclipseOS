@@ -49,16 +49,26 @@ pub enum Hook {
     RegionSelect,
     /// The `widget` collection and its socket writes.
     TaskbarWidgets,
+    /// The agent stack (ADR 0069): the privileged socket, agent and semantic
+    /// globals, the `policyd` link and the agent lifecycle methods. Off is
+    /// the normal state, not degraded mode (COMP-01 §6).
+    Agents,
 }
 
 impl Hook {
-    pub const ALL: [Hook; 3] = [Hook::Annotations, Hook::RegionSelect, Hook::TaskbarWidgets];
+    pub const ALL: [Hook; 4] = [
+        Hook::Annotations,
+        Hook::RegionSelect,
+        Hook::TaskbarWidgets,
+        Hook::Agents,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Hook::Annotations => "annotations",
             Hook::RegionSelect => "region-select",
             Hook::TaskbarWidgets => "taskbar-widgets",
+            Hook::Agents => "agents",
         }
     }
 
@@ -69,6 +79,7 @@ impl Hook {
             Hook::Annotations => "add-on hook `annotations` is off",
             Hook::RegionSelect => "add-on hook `region-select` is off",
             Hook::TaskbarWidgets => "add-on hook `taskbar-widgets` is off",
+            Hook::Agents => "add-on hook `agents` is off",
         }
     }
 
@@ -543,6 +554,10 @@ mod tests {
                     "id \"hyperion\"\nname \"Hyperion\"\nhooks \"taskbar-widgets\"\n",
                 ),
                 ("oracle-eyes.kdl", ORACLE),
+                (
+                    "eclipseos-agents.kdl",
+                    "id \"eclipseos-agents\"\nname \"Agents\"\nhooks \"agents\"\n",
+                ),
             ],
         );
         let a = Addons::load_from(&d);
@@ -551,10 +566,10 @@ mod tests {
         }
         assert_eq!(
             a.hooks.names(),
-            ["annotations", "region-select", "taskbar-widgets"]
+            ["annotations", "region-select", "taskbar-widgets", "agents"]
         );
         // Sorted file order.
-        assert_eq!(a.manifests[0].id, "hyperion");
+        assert_eq!(a.manifests[0].id, "eclipseos-agents");
     }
 
     #[test]

@@ -24,10 +24,11 @@ pub const TASKBAR_WIDGETS: &str = "taskbar-widgets";
 /// Where a hook lives, per ADR 0066's table. Hooks are a host change with
 /// their own review, so this list moves only when the ADR's table does; a
 /// manifest naming anything else still shows, as a hook nothing here knows.
-const HOOKS: [(&str, Host); 4] = [
+const HOOKS: [(&str, Host); 5] = [
     ("annotations", Host::Abyss),
     ("region-select", Host::Abyss),
     (TASKBAR_WIDGETS, Host::Abyss),
+    ("agents", Host::Abyss),
     ("activity-lens", Host::Fog),
 ];
 
@@ -305,6 +306,23 @@ mod tests {
         assert!(hs.iter().any(|h| h.name == "activity-lens" && h.on));
         let odd = hs.iter().find(|h| h.name == "made-up").expect("shown");
         assert_eq!((odd.host, odd.on), (Host::Unknown, false));
+    }
+
+    #[test]
+    fn the_agents_hook_is_an_abyss_hook() {
+        let a = Addons {
+            addons: vec![Addon {
+                id: "agents".into(),
+                name: "Agents".into(),
+                hooks: vec!["agents".into()],
+                capture_requested: false,
+            }],
+            hooks_on: vec!["agents".into()],
+        };
+        let hs = hooks(&a);
+        let h = hs.iter().find(|h| h.name == "agents").expect("shown");
+        assert_eq!((h.host, h.on), (Host::Abyss, true));
+        assert_eq!(hs.iter().filter(|h| h.name == "agents").count(), 1);
     }
 
     #[test]
