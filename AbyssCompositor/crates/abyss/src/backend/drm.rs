@@ -135,6 +135,62 @@ impl DrmData {
     }
 }
 
+/// Apply the pointer half of the `input` block to one libinput device, as
+/// [`crate::input::device_settings`] resolves it for this device's name.
+/// Every setter is optional on the device; a device that does not support a
+/// knob reports failure and keeps its default. A setting the config leaves to
+/// the device (`scroll-method "default"`, no `calibration`) restores the
+/// device's default, so a reload that drops a key undoes it.
+pub fn configure_input_device(device: &mut smithay::reexports::input::Device, input: &crate::config::Input) {
+    use smithay::reexports::input::{AccelProfile, ClickMethod, ScrollMethod};
+    let touchpad = device.config_tap_finger_count() > 0;
+    let s = crate::input::device_settings(input, device.name(), touchpad);
+    if device.config_accel_is_available() {
+        let _ = device.config_accel_set_profile(match s.accel_profile {
+            "flat" => AccelProfile::Flat,
+            _ => AccelProfile::Adaptive,
+        });
+        let _ = device.config_accel_set_speed(s.accel_speed);
+    }
+    let method = match s.scroll_method {
+        Some("none") => Some(ScrollMethod::NoScroll),
+        Some("two-finger") => Some(ScrollMethod::TwoFinger),
+        Some("edge") => Some(ScrollMethod::Edge),
+        Some("on-button-down") => Some(ScrollMethod::OnButtonDown),
+        _ => device.config_scroll_default_method(),
+    };
+    if let Some(m) =
+        method.filter(|m| *m == ScrollMethod::NoScroll || device.config_scroll_methods().contains(m))
+    {
+        let _ = device.config_scroll_set_method(m);
+    }
+    if let Some(t) = s.touchpad {
+        let _ = device.config_tap_set_enabled(t.tap_to_click);
+        let _ = device.config_tap_set_drag_enabled(t.tap_and_drag);
+        let _ = device.config_click_set_method(match t.click_method {
+            "button-areas" => ClickMethod::ButtonAreas,
+            _ => ClickMethod::Clickfinger,
+        });
+        let _ = device.config_dwt_set_enabled(t.dwt);
+        if device.config_scroll_has_natural_scroll() {
+            let _ = device.config_scroll_set_natural_scroll_enabled(t.natural_scroll);
+        }
+    }
+    if device.config_calibration_has_matrix() {
+        if let Some(m) = s
+            .calibration
+            .or_else(|| device.config_calibration_default_matrix())
+        {
+            let _ = device.config_calibration_set_matrix(m);
+        }
+    }
+    tracing::debug!(
+        device = device.name(),
+        block = input.devices.iter().any(|d| d.name == device.name()),
+        "input device configured"
+    );
+}
+
 /// Refuse to run on NVIDIA without `nvidia-drm.modeset=1` (F-04 §2).
 fn check_nvidia_modeset(node: &DrmNode) -> Result<()> {
     let driver = match smithay::backend::udev::driver(node.dev_id()) {
@@ -747,7 +803,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
             match &event {
                 InputEvent::DeviceAdded { device } => {
                     let mut device = device.clone();
-                    crate::input::configure_device(&mut device, &state.config.input);
+                    configure_input_device(&mut device, &state.config.input);
                     // Advertise a tablet on the seat as it appears (COMP-06
                     // §1), so a client learns of it before the first stroke.
                     // Fully qualified: libinput's inherent `has_capability`

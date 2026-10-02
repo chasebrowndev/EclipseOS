@@ -1076,7 +1076,17 @@ pub struct Input {
     pub repeat_delay: i32,
     /// `flat` | `adaptive`.
     pub accel_profile: String,
+    /// libinput's normalised speed, -1.0..=1.0; 0 is the device default.
+    pub accel_speed: f64,
+    /// Scroll method for pointers that are not touchpads: `default` (leave
+    /// the device's own, which is how a trackpoint keeps scrolling), `none`
+    /// or `on-button-down`.
+    pub scroll_method: String,
     pub touchpad: Touchpad,
+    /// `device "<libinput name>" { .. }` children in file order, one per
+    /// name: a later block for the same name overrides an earlier one key by
+    /// key. KDL-only.
+    pub devices: Vec<InputDevice>,
 }
 
 impl Default for Input {
@@ -1088,7 +1098,10 @@ impl Default for Input {
             repeat_rate: 40,
             repeat_delay: 300,
             accel_profile: "adaptive".into(),
+            accel_speed: 0.0,
+            scroll_method: "default".into(),
             touchpad: Touchpad::default(),
+            devices: Vec::new(),
         }
     }
 }
@@ -1101,6 +1114,54 @@ pub struct Touchpad {
     pub dwt: bool,
     /// `clickfinger` | `button-areas`.
     pub click_method: String,
+    /// Tap, then hold the second tap down, to drag.
+    pub tap_and_drag: bool,
+    /// `two-finger` | `edge` | `none`.
+    pub scroll_method: String,
+}
+
+/// One `input { device "<name>" { .. } }` block: any subset of the global
+/// pointer keys, plus `calibration`, which only a device block may carry.
+/// `None` inherits the global key.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct InputDevice {
+    /// The libinput device name, matched exactly.
+    pub name: String,
+    pub accel_profile: Option<String>,
+    pub accel_speed: Option<f64>,
+    pub scroll_method: Option<String>,
+    pub touchpad: TouchpadOverride,
+    /// libinput's 2x3 calibration matrix, row-major.
+    pub calibration: Option<[f32; 6]>,
+}
+
+/// The `touchpad { }` half of a device block; `None` inherits.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TouchpadOverride {
+    pub natural_scroll: Option<bool>,
+    pub tap_to_click: Option<bool>,
+    pub tap_and_drag: Option<bool>,
+    pub dwt: Option<bool>,
+    pub click_method: Option<String>,
+    pub scroll_method: Option<String>,
+}
+
+/// One validated pointer key of `input` or of a `device` block.
+enum PointerKey {
+    AccelProfile(String),
+    AccelSpeed(f64),
+    ScrollMethod(String),
+    Calibration([f32; 6]),
+}
+
+/// One validated key of a `touchpad` block.
+enum TouchpadKey {
+    NaturalScroll(bool),
+    TapToClick(bool),
+    TapAndDrag(bool),
+    Dwt(bool),
+    ClickMethod(String),
+    ScrollMethod(String),
 }
 
 impl Default for Touchpad {
@@ -1110,6 +1171,8 @@ impl Default for Touchpad {
             tap_to_click: false,
             dwt: false,
             click_method: "clickfinger".into(),
+            tap_and_drag: true,
+            scroll_method: "two-finger".into(),
         }
     }
 }
@@ -1240,7 +1303,7 @@ fn event(errors: &[ConfigError], startup: bool, leads_from: &[ConfigError]) -> s
     v
 }
 
-/// `abyss.kdl: 1 problem ignored — line 14: touchpad key needs a boolean: "scroll-method"`.
+/// `abyss.kdl: 1 problem ignored — line 14: touchpad key needs a boolean: "drag-lock"`.
 ///
 /// At startup a refusal that left a protection off ([`FailSafe`]) leads,
 /// named for what it switched off — `abyss.kdl: auto-lock is OFF — line 3: …`
@@ -3255,39 +3318,103 @@ impl Config {
                     Some(v) if (0..=5_000).contains(&v) => self.input.repeat_delay = v as i32,
                     _ => self.reject(n, "repeat-delay must be an integer 0..=5000"),
                 },
-                "accel-profile" => match arg(n).and_then(KdlValue::as_string) {
-                    Some(v @ ("flat" | "adaptive")) => self.input.accel_profile = v.to_string(),
-                    other => self.reject(n, format!("unknown accel-profile {other:?}")),
+                "touchpad" => {
+                    for n in n.children().map(|c| c.nodes()).unwrap_or_default() {
+                        let t = &mut self.input.touchpad;
+                        match touchpad_key(n) {
+                            Ok(TouchpadKey::NaturalScroll(b)) => t.natural_scroll = b,
+                            Ok(TouchpadKey::TapToClick(b)) => t.tap_to_click = b,
+                            Ok(TouchpadKey::TapAndDrag(b)) => t.tap_and_drag = b,
+                            Ok(TouchpadKey::Dwt(b)) => t.dwt = b,
+                            Ok(TouchpadKey::ClickMethod(m)) => t.click_method = m,
+                            Ok(TouchpadKey::ScrollMethod(m)) => t.scroll_method = m,
+                            Err(None) => self.unknown_key(n, "input.touchpad", "touchpad key"),
+                            Err(Some(msg)) => self.reject(n, msg),
+                        }
+                    }
+                }
+                "device" => self.apply_input_device(n),
+                "calibration" => self.reject(
+                    n,
+                    "calibration is per device: write it inside input { device \"<name>\" { … } }",
+                ),
+                _ => match pointer_key(n) {
+                    Ok(PointerKey::AccelProfile(v)) => self.input.accel_profile = v,
+                    Ok(PointerKey::AccelSpeed(v)) => self.input.accel_speed = v,
+                    Ok(PointerKey::ScrollMethod(v)) => self.input.scroll_method = v,
+                    // Only `calibration` yields a matrix, and it is refused above.
+                    Ok(PointerKey::Calibration(_)) => {}
+                    Err(None) => self.unknown_key(n, "input", "input key"),
+                    Err(Some(msg)) => self.reject(n, msg),
                 },
-                "touchpad" => self.apply_touchpad(n),
-                _ => self.unknown_key(n, "input", "input key"),
             }
         }
     }
 
-    fn apply_touchpad(&mut self, node: &KdlNode) {
-        let Some(children) = node.children() else { return };
-        for n in children.nodes() {
-            let name = n.name().value();
-            if name == "click-method" {
-                match arg(n).and_then(KdlValue::as_string) {
-                    Some(v @ ("clickfinger" | "button-areas")) => {
-                        self.input.touchpad.click_method = v.to_string()
+    /// `input { device "<name>" { .. } }`: any subset of the pointer keys and
+    /// of `touchpad { }`, plus `calibration`. A later block for the same name
+    /// overrides key by key.
+    fn apply_input_device(&mut self, node: &KdlNode) {
+        let Some(name) = arg(node).and_then(KdlValue::as_string).filter(|s| !s.is_empty()) else {
+            self.reject(
+                node,
+                "input.device needs a libinput device name, e.g. device \"ELAN0001:00 04F3:3140 Touchpad\" { … }",
+            );
+            return;
+        };
+        let mut d = self
+            .input
+            .devices
+            .iter()
+            .find(|d| d.name == name)
+            .cloned()
+            .unwrap_or_else(|| InputDevice {
+                name: name.to_owned(),
+                ..InputDevice::default()
+            });
+        for n in node.children().map(|c| c.nodes()).unwrap_or_default() {
+            if n.name().value() == "touchpad" {
+                for n in n.children().map(|c| c.nodes()).unwrap_or_default() {
+                    let t = &mut d.touchpad;
+                    match touchpad_key(n) {
+                        Ok(TouchpadKey::NaturalScroll(b)) => t.natural_scroll = Some(b),
+                        Ok(TouchpadKey::TapToClick(b)) => t.tap_to_click = Some(b),
+                        Ok(TouchpadKey::TapAndDrag(b)) => t.tap_and_drag = Some(b),
+                        Ok(TouchpadKey::Dwt(b)) => t.dwt = Some(b),
+                        Ok(TouchpadKey::ClickMethod(m)) => t.click_method = Some(m),
+                        Ok(TouchpadKey::ScrollMethod(m)) => t.scroll_method = Some(m),
+                        Err(None) => self.reject(
+                            n,
+                            format!(
+                                "unknown input.device.touchpad key {:?}; expected natural-scroll, \
+                                 tap-to-click, tap-and-drag, dwt, click-method or scroll-method",
+                                n.name().value()
+                            ),
+                        ),
+                        Err(Some(msg)) => self.reject(n, msg),
                     }
-                    other => self.reject(n, format!("unknown click-method {other:?}")),
                 }
                 continue;
             }
-            let Some(b) = arg(n).and_then(KdlValue::as_bool) else {
-                self.reject(n, format!("touchpad key needs a boolean: {name:?}"));
-                continue;
-            };
-            match name {
-                "natural-scroll" => self.input.touchpad.natural_scroll = b,
-                "tap-to-click" => self.input.touchpad.tap_to_click = b,
-                "dwt" => self.input.touchpad.dwt = b,
-                _ => self.unknown_key(n, "input.touchpad", "touchpad key"),
+            match pointer_key(n) {
+                Ok(PointerKey::AccelProfile(v)) => d.accel_profile = Some(v),
+                Ok(PointerKey::AccelSpeed(v)) => d.accel_speed = Some(v),
+                Ok(PointerKey::ScrollMethod(v)) => d.scroll_method = Some(v),
+                Ok(PointerKey::Calibration(m)) => d.calibration = Some(m),
+                Err(None) => self.reject(
+                    n,
+                    format!(
+                        "unknown input.device key {:?}; expected accel-profile, accel-speed, \
+                         scroll-method, calibration or touchpad",
+                        n.name().value()
+                    ),
+                ),
+                Err(Some(msg)) => self.reject(n, msg),
             }
+        }
+        match self.input.devices.iter_mut().find(|x| x.name == d.name) {
+            Some(slot) => *slot = d,
+            None => self.input.devices.push(d),
         }
     }
 
@@ -4367,7 +4494,7 @@ fn output_number_arg(n: Option<i128>) -> Result<u8, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn abyss_src(p: &str) -> Source {
@@ -5284,6 +5411,10 @@ mod tests {
         assert!(!cfg.input.touchpad.dwt);
         assert_eq!(cfg.input.touchpad.click_method, "button-areas");
         assert_eq!(Config::default().input.touchpad.click_method, "clickfinger");
+        let d = Config::default().input;
+        assert_eq!((d.accel_speed, d.scroll_method.as_str()), (0.0, "default"));
+        assert!(d.touchpad.tap_and_drag && d.devices.is_empty());
+        assert_eq!(d.touchpad.scroll_method, "two-finger");
         // The override chord is built in, never taken from the config.
         assert!(binds.is_empty());
         assert!(default_binds()
@@ -6206,6 +6337,77 @@ fn as_f64(v: &KdlValue) -> Option<f64> {
     v.as_float().or_else(|| v.as_integer().map(|i| i as f64))
 }
 
+/// One pointer key of `input` or a `device` block, validated. `Err(None)` is
+/// a name this does not know; `Err(Some)` a known name with a bad value.
+fn pointer_key(n: &KdlNode) -> Result<PointerKey, Option<String>> {
+    let s = arg(n).and_then(KdlValue::as_string);
+    match n.name().value() {
+        "accel-profile" => match s {
+            Some(v @ ("flat" | "adaptive")) => Ok(PointerKey::AccelProfile(v.to_owned())),
+            other => Err(Some(format!("unknown accel-profile {other:?}"))),
+        },
+        "accel-speed" => match arg(n).and_then(as_f64) {
+            Some(v) if (-1.0..=1.0).contains(&v) => Ok(PointerKey::AccelSpeed(v)),
+            _ => Err(Some("accel-speed must be a number -1.0..=1.0".to_owned())),
+        },
+        "scroll-method" => match s {
+            Some(v @ ("default" | "none" | "on-button-down")) => Ok(PointerKey::ScrollMethod(v.to_owned())),
+            other => Err(Some(format!(
+                "unknown scroll-method {other:?}; expected default, none or on-button-down"
+            ))),
+        },
+        "calibration" => {
+            let vals = args(n);
+            let nums: Vec<f32> = vals
+                .iter()
+                .filter_map(|v| as_f64(v))
+                .filter(|v| v.is_finite())
+                .map(|v| v as f32)
+                .collect();
+            match <[f32; 6]>::try_from(nums) {
+                Ok(m) if vals.len() == 6 => Ok(PointerKey::Calibration(m)),
+                _ => Err(Some(
+                    "calibration needs exactly six numbers: a b c d e f".to_owned(),
+                )),
+            }
+        }
+        _ => Err(None),
+    }
+}
+
+/// One `touchpad` key, validated; errors as in [`pointer_key`].
+fn touchpad_key(n: &KdlNode) -> Result<TouchpadKey, Option<String>> {
+    let name = n.name().value();
+    let s = arg(n).and_then(KdlValue::as_string);
+    match name {
+        "click-method" => {
+            return match s {
+                Some(v @ ("clickfinger" | "button-areas")) => Ok(TouchpadKey::ClickMethod(v.to_owned())),
+                other => Err(Some(format!("unknown click-method {other:?}"))),
+            }
+        }
+        "scroll-method" => {
+            return match s {
+                Some(v @ ("two-finger" | "edge" | "none")) => Ok(TouchpadKey::ScrollMethod(v.to_owned())),
+                other => Err(Some(format!(
+                    "unknown touchpad scroll-method {other:?}; expected two-finger, edge or none"
+                ))),
+            }
+        }
+        _ => {}
+    }
+    let Some(b) = arg(n).and_then(KdlValue::as_bool) else {
+        return Err(Some(format!("touchpad key needs a boolean: {name:?}")));
+    };
+    match name {
+        "natural-scroll" => Ok(TouchpadKey::NaturalScroll(b)),
+        "tap-to-click" => Ok(TouchpadKey::TapToClick(b)),
+        "tap-and-drag" => Ok(TouchpadKey::TapAndDrag(b)),
+        "dwt" => Ok(TouchpadKey::Dwt(b)),
+        _ => Err(None),
+    }
+}
+
 /// `*` matches any run of characters; everything else is literal. Anchored.
 pub fn glob_match(pattern: &str, text: &str) -> bool {
     let mut parts = pattern.split('*');
@@ -6355,11 +6557,138 @@ mod startup_tests {
         assert_eq!(cfg.startup(), Startup::Start { ignored: 1 });
     }
 
+    #[test]
+    fn parses_the_new_pointer_keys() {
+        let cfg = abyss(
+            "input {\n    accel-speed -0.5\n    scroll-method \"on-button-down\"\n    touchpad {\n        \
+             tap-and-drag #false\n        scroll-method \"edge\"\n    }\n}\n",
+        );
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.input.accel_speed, -0.5);
+        assert_eq!(cfg.input.scroll_method, "on-button-down");
+        assert!(!cfg.input.touchpad.tap_and_drag);
+        assert_eq!(cfg.input.touchpad.scroll_method, "edge");
+        // An integer is a number too.
+        assert_eq!(abyss("input { accel-speed 1; }").input.accel_speed, 1.0);
+    }
+
+    #[test]
+    fn bad_pointer_values_are_refused_and_keep_the_default() {
+        for (kdl, needle) in [
+            ("input { accel-speed 1.5; }", "accel-speed"),
+            ("input { accel-speed \"fast\"; }", "accel-speed"),
+            ("input { scroll-method \"two-finger\"; }", "scroll-method"),
+            (
+                "input { touchpad { scroll-method \"on-button-down\"; }; }",
+                "scroll-method",
+            ),
+            ("input { touchpad { tap-and-drag \"yes\"; }; }", "tap-and-drag"),
+        ] {
+            let cfg = abyss(kdl);
+            assert_eq!(cfg.errors.len(), 1, "{kdl}: {:?}", cfg.errors);
+            assert!(cfg.errors[0].message.contains(needle), "{kdl}: {:?}", cfg.errors);
+            let d = Input::default();
+            assert_eq!(cfg.input.accel_speed, d.accel_speed);
+            assert_eq!(cfg.input.scroll_method, d.scroll_method);
+            assert_eq!(cfg.input.touchpad.scroll_method, d.touchpad.scroll_method);
+            assert!(cfg.input.touchpad.tap_and_drag);
+        }
+    }
+
+    #[test]
+    fn parses_input_device_blocks() {
+        let cfg = abyss(
+            r#"input {
+    device "Pad" {
+        accel-profile "flat"
+        accel-speed 0.25
+        touchpad { natural-scroll #true; click-method "button-areas"; scroll-method "none"; }
+    }
+    device "Screen" { calibration 0 -1 1 1 0.5 0; }
+    device "Pad" { accel-speed -1; scroll-method "none"; }
+}
+"#,
+        );
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.input.devices.len(), 2, "one entry per name");
+        let pad = &cfg.input.devices[0];
+        assert_eq!(pad.name, "Pad");
+        assert_eq!(pad.accel_profile.as_deref(), Some("flat"));
+        assert_eq!(
+            pad.accel_speed,
+            Some(-1.0),
+            "the later block overrides key by key"
+        );
+        assert_eq!(pad.scroll_method.as_deref(), Some("none"));
+        assert_eq!(pad.touchpad.natural_scroll, Some(true));
+        assert_eq!(pad.touchpad.click_method.as_deref(), Some("button-areas"));
+        assert_eq!(pad.touchpad.scroll_method.as_deref(), Some("none"));
+        assert_eq!(pad.touchpad.tap_to_click, None);
+        assert_eq!(pad.calibration, None);
+        assert_eq!(
+            cfg.input.devices[1].calibration,
+            Some([0.0, -1.0, 1.0, 1.0, 0.5, 0.0])
+        );
+        // The globals are untouched by a device block.
+        assert_eq!(cfg.input.accel_profile, "adaptive");
+        assert!(!cfg.input.touchpad.natural_scroll);
+    }
+
+    #[test]
+    fn bad_device_blocks_are_refused() {
+        for (kdl, needle) in [
+            ("input { calibration 1 0 0 0 1 0; }", "per device"),
+            ("input { touchpad { calibration 1 0 0 0 1 0; }; }", "calibration"),
+            ("input { device { accel-speed 0; }; }", "device name"),
+            ("input { device \"\" { accel-speed 0; }; }", "device name"),
+            (
+                "input { device \"M\" { calibration 1 0 0 0 1; }; }",
+                "six numbers",
+            ),
+            (
+                "input { device \"M\" { calibration 1 0 0 0 1 0 0; }; }",
+                "six numbers",
+            ),
+            (
+                "input { device \"M\" { calibration 1 0 \"x\" 0 1 0; }; }",
+                "six numbers",
+            ),
+            ("input { device \"M\" { accel-speed -2; }; }", "accel-speed"),
+            (
+                "input { device \"M\" { accel-profile \"slow\"; }; }",
+                "accel-profile",
+            ),
+            (
+                "input { device \"M\" { kb-layout \"de\"; }; }",
+                "unknown input.device key",
+            ),
+            (
+                "input { device \"M\" { touchpad { tap #true; }; }; }",
+                "unknown input.device.touchpad key",
+            ),
+            (
+                "input { device \"M\" { touchpad { scroll-method \"sideways\"; }; }; }",
+                "scroll-method",
+            ),
+        ] {
+            let cfg = abyss(kdl);
+            assert_eq!(cfg.errors.len(), 1, "{kdl}: {:?}", cfg.errors);
+            assert!(cfg.errors[0].message.contains(needle), "{kdl}: {:?}", cfg.errors);
+            assert!(
+                cfg.input
+                    .devices
+                    .iter()
+                    .all(|d| d.calibration.is_none() && d.accel_speed.is_none() && d.accel_profile.is_none()),
+                "{kdl}: nothing invalid applied"
+            );
+        }
+    }
+
     /// The owner's login loop: a touchpad key this build does not know.
     #[test]
     fn an_unknown_touchpad_key_leaves_tap_to_click_alone() {
         let mut cfg = abyss(
-            "input {\n    touchpad {\n        tap-to-click #true\n        scroll-method \"two-finger\"\n    }\n}\n",
+            "input {\n    touchpad {\n        tap-to-click #true\n        drag-lock \"sticky\"\n    }\n}\n",
         );
         assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
         assert_eq!(cfg.errors[0].line, 4);
@@ -6370,7 +6699,7 @@ mod startup_tests {
         let ev = error_event(&cfg.errors, true);
         assert_eq!(
             ev["summary"],
-            "abyss.kdl: 1 problem ignored \u{2014} line 4: touchpad key needs a boolean: \"scroll-method\""
+            "abyss.kdl: 1 problem ignored \u{2014} line 4: touchpad key needs a boolean: \"drag-lock\""
         );
         assert_eq!(ev["errors"].as_array().map(Vec::len), Some(1));
         assert_eq!(ev["line"], 4);

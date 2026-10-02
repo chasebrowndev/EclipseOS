@@ -1254,31 +1254,149 @@ pub fn apply_config(state: &mut AbyssState) {
     #[cfg(feature = "drm")]
     if let Some(drm) = state.drm.as_mut() {
         for device in drm.input_devices.iter_mut() {
-            configure_device(device, &cfg.input);
+            crate::backend::drm::configure_input_device(device, &cfg.input);
         }
     }
 }
 
-/// Apply the pointer half of the `input` block to one libinput device. Every
-/// setter is optional on the device; a device that does not support a knob
-/// simply reports failure and keeps its default.
-#[cfg(feature = "drm")]
-pub fn configure_device(device: &mut smithay::reexports::input::Device, input: &crate::config::Input) {
-    use smithay::reexports::input::{AccelProfile, ClickMethod, ScrollMethod};
-    let _ = device.config_accel_set_profile(match input.accel_profile.as_str() {
-        "flat" => AccelProfile::Flat,
-        _ => AccelProfile::Adaptive,
-    });
-    if device.config_tap_finger_count() > 0 {
-        let _ = device.config_tap_set_enabled(input.touchpad.tap_to_click);
-        let _ = device.config_click_set_method(match input.touchpad.click_method.as_str() {
-            "button-areas" => ClickMethod::ButtonAreas,
-            _ => ClickMethod::Clickfinger,
-        });
-        let _ = device.config_dwt_set_enabled(input.touchpad.dwt);
-        if device.config_scroll_methods().contains(&ScrollMethod::TwoFinger) {
-            let _ = device.config_scroll_set_natural_scroll_enabled(input.touchpad.natural_scroll);
+/// The settings one pointer device ends up with, after its `device` block (if
+/// any) is laid over the global `input` keys. Strings borrow the config.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceSettings<'a> {
+    /// `flat` | `adaptive`.
+    pub accel_profile: &'a str,
+    pub accel_speed: f64,
+    /// libinput scroll method name (`none`, `two-finger`, `edge`,
+    /// `on-button-down`); `None` restores the device's own default.
+    pub scroll_method: Option<&'a str>,
+    /// Present only for a touchpad.
+    pub touchpad: Option<TouchpadSettings<'a>>,
+    /// `None` restores the device's default matrix.
+    pub calibration: Option<[f32; 6]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TouchpadSettings<'a> {
+    pub natural_scroll: bool,
+    pub tap_to_click: bool,
+    pub tap_and_drag: bool,
+    pub dwt: bool,
+    /// `clickfinger` | `button-areas`.
+    pub click_method: &'a str,
+}
+
+/// Resolve the effective settings for the device called `name` (COMP-04 §2,
+/// COMP-13). A `device` block whose name matches exactly wins key by key; a
+/// key it leaves out, or a device with no block, gets the global one.
+/// `touchpad` is whether the device taps (libinput's finger count), which
+/// decides whether the touchpad keys or the pointer `scroll-method` apply.
+pub fn device_settings<'a>(
+    input: &'a crate::config::Input,
+    name: &str,
+    touchpad: bool,
+) -> DeviceSettings<'a> {
+    let d = input.devices.iter().find(|d| d.name == name);
+    let t = d.map(|d| &d.touchpad);
+    let g = &input.touchpad;
+    let scroll_method = if touchpad {
+        Some(
+            t.and_then(|t| t.scroll_method.as_deref())
+                .unwrap_or(&g.scroll_method),
+        )
+    } else {
+        Some(
+            d.and_then(|d| d.scroll_method.as_deref())
+                .unwrap_or(&input.scroll_method),
+        )
+        .filter(|m| *m != "default")
+    };
+    DeviceSettings {
+        accel_profile: d
+            .and_then(|d| d.accel_profile.as_deref())
+            .unwrap_or(&input.accel_profile),
+        accel_speed: d.and_then(|d| d.accel_speed).unwrap_or(input.accel_speed),
+        scroll_method,
+        touchpad: touchpad.then(|| TouchpadSettings {
+            natural_scroll: t.and_then(|t| t.natural_scroll).unwrap_or(g.natural_scroll),
+            tap_to_click: t.and_then(|t| t.tap_to_click).unwrap_or(g.tap_to_click),
+            tap_and_drag: t.and_then(|t| t.tap_and_drag).unwrap_or(g.tap_and_drag),
+            dwt: t.and_then(|t| t.dwt).unwrap_or(g.dwt),
+            click_method: t
+                .and_then(|t| t.click_method.as_deref())
+                .unwrap_or(&g.click_method),
+        }),
+        calibration: d.and_then(|d| d.calibration),
+    }
+}
+
+#[cfg(test)]
+mod device_settings_tests {
+    use super::*;
+
+    fn input(kdl: &str) -> crate::config::Input {
+        let cfg = crate::config::tests::widgets_cfg(kdl);
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        cfg.input
+    }
+
+    const KDL: &str = r#"
+        input {
+            accel-profile "flat"
+            accel-speed 0.5
+            scroll-method "on-button-down"
+            touchpad { tap-to-click #true; scroll-method "two-finger"; click-method "button-areas" }
+            device "Pad" {
+                accel-speed -0.25
+                touchpad { scroll-method "edge"; tap-to-click #false }
+            }
+            device "Mouse" { scroll-method "none" }
+            device "Screen" { calibration 0 -1 1 1 0 0 }
         }
+    "#;
+
+    #[test]
+    fn a_device_block_wins_key_by_key_over_the_globals() {
+        let i = input(KDL);
+        let s = device_settings(&i, "Pad", true);
+        assert_eq!(s.accel_profile, "flat");
+        assert_eq!(s.accel_speed, -0.25);
+        assert_eq!(s.scroll_method, Some("edge"));
+        let t = s.touchpad.unwrap();
+        assert!(!t.tap_to_click);
+        assert_eq!(t.click_method, "button-areas");
+        assert!(t.tap_and_drag && !t.dwt && !t.natural_scroll);
+        assert_eq!(s.calibration, None);
+        assert_eq!(device_settings(&i, "Mouse", false).scroll_method, Some("none"));
+        assert_eq!(
+            device_settings(&i, "Screen", false).calibration,
+            Some([0.0, -1.0, 1.0, 1.0, 0.0, 0.0])
+        );
+    }
+
+    #[test]
+    fn a_device_with_no_block_gets_the_globals() {
+        let i = input(KDL);
+        let pad = device_settings(&i, "Other Pad", true);
+        assert_eq!((pad.accel_profile, pad.accel_speed), ("flat", 0.5));
+        assert_eq!(pad.scroll_method, Some("two-finger"));
+        assert!(pad.touchpad.unwrap().tap_to_click);
+        assert_eq!(pad.calibration, None);
+        let mouse = device_settings(&i, "Other Mouse", false);
+        assert_eq!(mouse.scroll_method, Some("on-button-down"));
+        assert!(mouse.touchpad.is_none());
+        // Matching is exact: case and prefixes do not count.
+        assert_eq!(device_settings(&i, "pad", true).accel_speed, 0.5);
+        assert_eq!(device_settings(&i, "Pad ", true).accel_speed, 0.5);
+    }
+
+    #[test]
+    fn default_scroll_method_leaves_a_pointer_alone() {
+        let i = crate::config::Input::default();
+        assert_eq!(device_settings(&i, "TrackPoint", false).scroll_method, None);
+        assert_eq!(device_settings(&i, "Pad", true).scroll_method, Some("two-finger"));
+        let s = device_settings(&i, "Pad", true);
+        assert_eq!((s.accel_profile, s.accel_speed), ("adaptive", 0.0));
+        assert!(s.touchpad.unwrap().tap_and_drag);
     }
 }
 
