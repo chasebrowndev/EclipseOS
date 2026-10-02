@@ -1154,6 +1154,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-audit"
+version = "0.1.0"
+dependencies = [
+ "policy-eval",
+ "policyd",
+ "serde_json",
+]
+
+[[package]]
 name = "ec-cataclysm-pub"
 version = "0.1.0"
 

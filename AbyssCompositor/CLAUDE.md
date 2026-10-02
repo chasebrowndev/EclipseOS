@@ -167,6 +167,7 @@ crates/abyss/src/xwayland/    COMP-07
 crates/policyd/, crates/policy-eval/   A-04, S-01 §4, S-04 §4  policy daemon + shared types (TCB)
 crates/ec-protocols/          eclipse_agent_v1 XML + bindings (Apache-2.0)
 crates/ec-agentd/             agentd skeleton (M11)
+crates/ec-audit/              eclipse-audit: verify, trace, query the audit store (S-04 §4–§5)
 crates/eclipse-ipc/           control-socket client + types
 crates/eclipse-ctl/           CLI over the control socket, config migrate
 crates/wlcs-abyss/            WLCS conformance shim
