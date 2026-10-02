@@ -14,6 +14,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod audit;
 pub mod cbor;
 pub mod grant;
 pub mod link;

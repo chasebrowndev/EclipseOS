@@ -4,9 +4,15 @@
 //! Opens the state directory, replays the journal, then serves
 //! `policyd.sock` (F-05, COMP-01 §6): each connection from the session user
 //! is offered the grant verifying key and held open, so abyss sees the link
-//! drop when `policyd` does. The daemon itself lives in the library next to
-//! this file.
+//! drop when `policyd` does. What the peer then sends is its audit stream
+//! (COMP-12 §1), one emission per packet. The daemon itself lives in the
+//! library next to this file.
+//!
+//! The store has one owner, the main thread. Connection threads decode and
+//! queue; a full queue stops a connection thread reading, which fills the
+//! socket, which is the backpressure abyss stalls the agent on.
 
+use policy_eval::audit::{Emission, MAX_EMISSION};
 use policyd::tasks;
 
 use std::fs;
@@ -14,6 +20,10 @@ use std::io::Read;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+
+/// Emissions decoded but not yet appended, across every connection.
+const QUEUE: usize = 1024;
 
 /// Where the journal and the issuing key live.
 ///
@@ -69,7 +79,7 @@ fn main() -> std::process::ExitCode {
     let offer = policy_eval::link::encode_key_offer(&key.verifying_key());
     // A store that will not open is fatal, not a warning: without the journal
     // there is nothing to make a grant accountable to.
-    let store = match tasks::TaskStore::open(&dir, key) {
+    let mut store = match tasks::TaskStore::open(&dir, key) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("policyd: cannot open the audit store: {e}");
@@ -82,13 +92,35 @@ fn main() -> std::process::ExitCode {
         "policyd: {} tasks replayed ({live} live), {grants} live grants",
         store.tasks().len()
     );
-    match serve(&offer) {
-        Ok(never) => match never {},
+    let (tx, rx) = mpsc::sync_channel(QUEUE);
+    let listener = match listen() {
+        Ok(l) => l,
         Err(e) => {
             eprintln!("policyd: cannot serve policyd.sock: {e}");
-            std::process::ExitCode::FAILURE
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    std::thread::spawn(move || {
+        if let Err(e) = serve(listener, &offer, tx) {
+            eprintln!("policyd: policyd.sock: {e}");
+            std::process::exit(1);
+        }
+    });
+    write(&mut store, rx)
+}
+
+/// Appends every queued emission. A record that cannot be written ends the
+/// daemon: abyss sees the link drop and pauses every agent (COMP-01 §6),
+/// which is the fail-closed answer to an audit log that has stopped taking
+/// records. Continuing would let agents act unjournalled.
+fn write(store: &mut tasks::TaskStore, rx: Receiver<Emission>) -> std::process::ExitCode {
+    for e in rx {
+        if let Err(err) = store.record(e) {
+            eprintln!("policyd: cannot append an audit record: {err}");
+            return std::process::ExitCode::FAILURE;
         }
     }
+    std::process::ExitCode::FAILURE
 }
 
 /// `$ECLIPSE_POLICYD_SOCKET`, else `$XDG_RUNTIME_DIR/eclipse/policyd.sock`.
@@ -114,8 +146,8 @@ fn seqpacket() -> rustix::io::Result<OwnedFd> {
     )
 }
 
-fn serve(offer: &[u8]) -> std::io::Result<std::convert::Infallible> {
-    use rustix::net::{self, SocketAddrUnix, SocketFlags};
+fn listen() -> std::io::Result<OwnedFd> {
+    use rustix::net::{self, SocketAddrUnix};
     let path = socket_path()?;
     let addr = SocketAddrUnix::new(&path)?;
     // A socket file someone still answers on is a second policyd: refuse to
@@ -130,6 +162,11 @@ fn serve(offer: &[u8]) -> std::io::Result<std::convert::Infallible> {
     net::bind(&listener, &addr)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     net::listen(&listener, 4)?;
+    Ok(listener)
+}
+
+fn serve(listener: OwnedFd, offer: &[u8], tx: SyncSender<Emission>) -> std::io::Result<()> {
+    use rustix::net::{self, SocketFlags};
     let me = rustix::process::getuid();
     loop {
         let conn = match net::accept_with(&listener, SocketFlags::CLOEXEC) {
@@ -144,23 +181,87 @@ fn serve(offer: &[u8]) -> std::io::Result<std::convert::Infallible> {
             _ => continue,
         }
         let offer = offer.to_vec();
-        std::thread::spawn(move || hold(conn, &offer));
+        let tx = tx.clone();
+        std::thread::spawn(move || hold(conn, &offer, &tx));
     }
 }
 
-/// Offers the key, then holds the connection until the peer hangs up. The
-/// peer sends nothing yet; anything it does send is ignored.
-fn hold(conn: OwnedFd, offer: &[u8]) {
+/// Offers the key, then queues every emission the peer sends until it hangs
+/// up. A packet that is oversized, malformed, or of a kind the compositor
+/// does not emit (COMP-12 §2) ends the connection: a source whose stream
+/// cannot be trusted is cut off, not partly believed.
+fn hold(conn: OwnedFd, offer: &[u8], tx: &SyncSender<Emission>) {
     use rustix::net::{recv, send, RecvFlags, SendFlags};
     if send(&conn, offer, SendFlags::NOSIGNAL).is_err() {
         return;
     }
-    let mut buf = [0u8; 64];
+    let mut buf = vec![0u8; MAX_EMISSION];
     loop {
-        match recv(&conn, &mut buf, RecvFlags::empty()) {
-            Ok((0, _)) => return,
-            Ok(_) | Err(rustix::io::Errno::INTR) => continue,
+        // With TRUNC the second length is the packet's, not what fit.
+        let n = match recv(&conn, &mut buf[..], RecvFlags::TRUNC) {
+            Ok((_, 0)) => return,
+            Ok((_, len)) if len > MAX_EMISSION => {
+                eprintln!("policyd: oversized audit emission; dropping the peer");
+                return;
+            }
+            Ok((n, _)) => n,
+            Err(rustix::io::Errno::INTR) => continue,
             Err(_) => return,
+        };
+        match accept(&buf[..n]) {
+            Some(e) => {
+                if tx.send(e).is_err() {
+                    return;
+                }
+            }
+            None => {
+                eprintln!("policyd: malformed audit emission; dropping the peer");
+                return;
+            }
         }
+    }
+}
+
+/// An emission `policyd` will store from this peer.
+fn accept(packet: &[u8]) -> Option<Emission> {
+    Emission::decode(packet).ok().filter(|e| e.kind.from_compositor())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use policy_eval::audit::Kind;
+    use policy_eval::cbor::enc;
+
+    fn emission(kind: Kind) -> Emission {
+        Emission {
+            kind,
+            principal: "agent:a".into(),
+            grant_id: None,
+            task_id: None,
+            chain_id: None,
+            req_id: Some(1),
+            serial: None,
+            body: enc(|w| w.null()),
+        }
+    }
+
+    #[test]
+    fn a_compositor_kind_is_accepted() {
+        let e = emission(Kind::Request);
+        assert_eq!(accept(&e.encode()), Some(e));
+    }
+
+    #[test]
+    fn a_kind_policyd_owns_is_refused_from_the_socket() {
+        for k in [Kind::Grant, Kind::Revoke, Kind::Task, Kind::Anchor] {
+            assert_eq!(accept(&emission(k).encode()), None, "{k:?}");
+        }
+    }
+
+    #[test]
+    fn garbage_is_refused() {
+        assert_eq!(accept(&[0xff, 0x00]), None);
+        assert_eq!(accept(&[]), None);
     }
 }

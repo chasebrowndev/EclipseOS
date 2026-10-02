@@ -29,6 +29,7 @@
 //!   before it is spoken call [`Store::sync`] themselves. The task store does
 //!   exactly that — journal before answer (A-04 §4).
 
+use policy_eval::audit::Emission;
 use policy_eval::cbor::{enc, MapBuilder, Reader, Writer};
 use policy_eval::{cbor, Ulid};
 use std::fs::{self, File, OpenOptions};
@@ -47,40 +48,16 @@ pub const FSYNC_INTERVAL_MS: u64 = 250;
 /// corrupt tail can turn into an allocation request, so it is bounded.
 const MAX_FRAME: u32 = 4 * 1024 * 1024;
 
+/// A sealed segment's name is `audit-<date>-<n>.cbor.zst` (S-04 §4).
+const SEALED_PREFIX: &str = "audit-";
+const SEALED_SUFFIX: &str = ".cbor.zst";
+
 const DIR_MODE: u32 = 0o700;
 const FILE_MODE: u32 = 0o600;
 
-/// What a record is about. Milestone 10 emits `task` and `anchor`; the
-/// remaining kinds arrive with milestone 12 and change nothing here, which is
-/// the reason the envelope was built first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    Task,
-    Anchor,
-    GrantIssued,
-    GrantRevoked,
-}
-
-impl Kind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Kind::Task => "task",
-            Kind::Anchor => "anchor",
-            Kind::GrantIssued => "grant_issued",
-            Kind::GrantRevoked => "grant_revoked",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Kind> {
-        Some(match s {
-            "task" => Kind::Task,
-            "anchor" => Kind::Anchor,
-            "grant_issued" => Kind::GrantIssued,
-            "grant_revoked" => Kind::GrantRevoked,
-            _ => return None,
-        })
-    }
-}
+/// What a record is about: the S-04 §1.1 table, shared with every source
+/// (`policy_eval::audit`).
+pub use policy_eval::audit::Kind;
 
 /// The S-04 §1 envelope.
 ///
@@ -90,16 +67,16 @@ impl Kind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Record {
     pub seq: u64,
-    /// Wall-clock milliseconds since the epoch — what a human reads.
+    /// `CLOCK_REALTIME` nanoseconds since the epoch: what a human reads.
     pub ts: u64,
-    /// Monotonic milliseconds since store open — what an auditor trusts when
-    /// the wall clock steps.
+    /// `CLOCK_MONOTONIC` nanoseconds: what an auditor trusts when the wall
+    /// clock steps (S-04 §1).
     pub mono: u64,
     pub kind: Kind,
     pub principal: String,
     pub grant_id: Option<Ulid>,
     pub task_id: Option<Ulid>,
-    pub chain_id: Option<String>,
+    pub chain_id: Option<u128>,
     pub req_id: Option<u64>,
     pub serial: Option<u64>,
     /// Kind-specific body, itself canonical CBOR.
@@ -113,7 +90,10 @@ impl Record {
     fn unhashed(&self) -> Vec<u8> {
         let mut m = MapBuilder::new();
         m.insert("body", self.body.clone());
-        m.insert_opt("chain_id", self.chain_id.as_ref().map(|c| enc(|w| w.text(c))));
+        m.insert_opt(
+            "chain_id",
+            self.chain_id.map(|c| enc(|w| w.bytes(&c.to_be_bytes()))),
+        );
         m.insert_opt("grant_id", self.grant_id.map(|g| enc(|w| w.bytes(&g.0))));
         m.insert("kind", enc(|w| w.text(self.kind.as_str())));
         m.insert("mono", enc(|w| w.u64(self.mono)));
@@ -173,7 +153,7 @@ impl Record {
                     r.skip()?;
                     rec.body = bytes[at..r.position()].to_vec();
                 }
-                "chain_id" => rec.chain_id = Some(r.text()?.to_owned()),
+                "chain_id" => rec.chain_id = Some(u128::from_be_bytes(r.byte_array::<16>()?)),
                 "grant_id" => rec.grant_id = Some(Ulid(r.byte_array::<16>()?)),
                 "kind" => {
                     rec.kind = Kind::parse(r.text()?).ok_or(cbor::Error::Type)?;
@@ -198,6 +178,28 @@ impl Record {
             return Err(cbor::Error::Type);
         }
         Ok(rec)
+    }
+}
+
+impl Record {
+    /// The record a source's emission becomes. Every chain field is left for
+    /// [`Store::append`] to fill.
+    pub fn from_emission(e: Emission) -> Record {
+        Record {
+            seq: 0,
+            ts: 0,
+            mono: 0,
+            kind: e.kind,
+            principal: e.principal,
+            grant_id: e.grant_id,
+            task_id: e.task_id,
+            chain_id: e.chain_id,
+            req_id: e.req_id,
+            serial: e.serial,
+            body: e.body,
+            prev_hash: GENESIS,
+            hash: GENESIS,
+        }
     }
 }
 
@@ -255,7 +257,6 @@ pub struct Store {
     seq: u64,
     head: [u8; 32],
     last_sync_ms: u64,
-    opened_at: SystemTime,
 }
 
 fn now_ms() -> u64 {
@@ -263,6 +264,18 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+fn now_ns() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+fn mono_ns() -> u64 {
+    let t = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    (t.tv_sec as u64).saturating_mul(1_000_000_000) + t.tv_nsec as u64
 }
 
 impl Store {
@@ -290,7 +303,6 @@ impl Store {
             seq,
             head,
             last_sync_ms: now_ms(),
-            opened_at: SystemTime::now(),
         })
     }
 
@@ -405,12 +417,8 @@ impl Store {
     #[allow(clippy::too_many_arguments)]
     pub fn append(&mut self, mut rec: Record) -> Result<Record> {
         rec.seq = self.seq;
-        rec.ts = now_ms();
-        rec.mono = self
-            .opened_at
-            .elapsed()
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        rec.ts = now_ns();
+        rec.mono = mono_ns();
         rec.prev_hash = self.head;
         rec.hash = rec.compute_hash();
 
@@ -446,15 +454,17 @@ impl Store {
 
     /// Seals the open segment into one zstd frame and starts a fresh one.
     ///
-    /// The sealed name is `<YYYYMMDD>-<nnn>.seg` (ADR 0046). The counter is
-    /// per day and padded so that a plain lexicographic listing is also a
-    /// chronological one.
+    /// The sealed name is `audit-<YYYYMMDD>-<nnnn>.cbor.zst` (S-04 §4; the
+    /// date and counter are ADR 0046's). The counter is per day and padded so
+    /// that a plain lexicographic listing is also a chronological one.
     pub fn rotate(&mut self) -> Result<()> {
         self.sync()?;
         let date = utc_date(now_ms());
         let mut n = 0u32;
         let sealed = loop {
-            let p = self.dir.join(format!("{date}-{n:04}.seg"));
+            let p = self
+                .dir
+                .join(format!("{SEALED_PREFIX}{date}-{n:04}{SEALED_SUFFIX}"));
             if !p.exists() {
                 break p;
             }
@@ -534,7 +544,7 @@ impl Store {
         Ok(())
     }
 
-    /// The sealed `.seg` files in chain order.
+    /// The sealed segments in chain order.
     ///
     /// The name carries the date and a zero-padded per-day counter (ADR
     /// 0046) exactly so that sorting the names sorts the segments; nothing
@@ -543,7 +553,8 @@ impl Store {
         let mut out = Vec::new();
         for entry in fs::read_dir(dir)? {
             let path = entry?.path();
-            if path.extension().is_some_and(|e| e == "seg") {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if name.starts_with(SEALED_PREFIX) && name.ends_with(SEALED_SUFFIX) {
                 out.push(path);
             }
         }
@@ -692,9 +703,14 @@ mod tests {
         let sealed: Vec<_> = fs::read_dir(&dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".seg"))
+            .filter(|e| e.file_name().to_string_lossy().ends_with(SEALED_SUFFIX))
             .collect();
         assert_eq!(sealed.len(), 1);
+        // `audit-<date>-<n>.cbor.zst` (S-04 §4).
+        let name = sealed[0].file_name().to_string_lossy().into_owned();
+        let date = name.strip_prefix(SEALED_PREFIX).unwrap();
+        assert_eq!(date.len(), "YYYYMMDD-0000.cbor.zst".len(), "{name}");
+        assert!(date.ends_with("-0000.cbor.zst"), "{name}");
         let raw = fs::read(sealed[0].path()).unwrap();
         let plain = zstd::decode_all(&raw[..]).unwrap();
         assert!(plain.windows(32).any(|w| w == a.hash));
@@ -746,6 +762,26 @@ mod tests {
             & 0o777;
         assert_eq!(dm, DIR_MODE);
         assert_eq!(fm, FILE_MODE);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn timestamps_are_nanoseconds_and_the_store_owns_them() {
+        let dir = tmp("ns");
+        let mut s = Store::open(&dir).unwrap();
+        let mut r = rec(Kind::Focus, "human");
+        r.ts = 7;
+        r.mono = 7;
+        let before = now_ms();
+        let a = s.append(r).unwrap();
+        // A wall clock in ns is three orders past one in ms.
+        assert!(
+            a.ts / 1_000_000 >= before && a.ts / 1_000_000 <= now_ms(),
+            "{}",
+            a.ts
+        );
+        let b = s.append(rec(Kind::Focus, "human")).unwrap();
+        assert!(b.mono >= a.mono && a.mono != 7);
         fs::remove_dir_all(&dir).unwrap();
     }
 

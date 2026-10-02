@@ -13,7 +13,7 @@
 //!   machine must find the task on restart; the reverse order cannot promise
 //!   that.
 //! * **Revocation on close is one operation.** Closing a task writes a single
-//!   `grant_revoked` record naming every grant it covers. A loop that revoked
+//!   `revoke` record naming every grant it covers. A loop that revoked
 //!   grants one at a time would have a window in the middle where some of a
 //!   dead task's authority still verified.
 //! * **One live task per principal.** `active`, `paused` and `draining` all
@@ -22,10 +22,29 @@
 //!   who could choose would choose the one with the budget left.
 
 use crate::audit::{Kind, Record, Store, StoreError};
+use policy_eval::audit::Emission;
 use policy_eval::cbor::{enc, MapBuilder, Reader, Writer};
 use policy_eval::grant::{cose_sign1, protected_header, sig_structure};
 use policy_eval::{cbor, CloseReason, Counters, Grant, Origin, Task, TaskEvent, TaskState, Ulid};
 use std::path::Path;
+
+/// Why a grant was issued: the `reason` of its `grant` record (S-04 §1.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GrantReason {
+    Rule,
+    Prompt,
+    Manifest,
+}
+
+impl GrantReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GrantReason::Rule => "rule",
+            GrantReason::Prompt => "prompt",
+            GrantReason::Manifest => "manifest",
+        }
+    }
+}
 
 /// Why a task or grant operation was refused.
 ///
@@ -208,9 +227,11 @@ impl TaskStore {
                             None => tasks.push(t),
                         }
                     }
-                    Kind::GrantIssued => issued.push(replay_issued(&rec.body)?),
-                    Kind::GrantRevoked => revoked.extend(replay_revoked(&rec.body)?),
-                    Kind::Anchor => {}
+                    Kind::Grant => issued.push(replay_issued(&rec.body)?),
+                    Kind::Revoke => revoked.extend(replay_revoked(&rec.body)?),
+                    // Every other kind is a source's record of what happened;
+                    // none of them changes a task or a grant.
+                    _ => {}
                 }
                 Ok(())
             };
@@ -223,7 +244,7 @@ impl TaskStore {
         }
         for g in &mut issued {
             // A closed task's grants are revoked whether or not the
-            // `grant_revoked` record made it to disk. The close record is the
+            // `revoke` record made it to disk. The close record is the
             // authoritative operation (S-01 §4); treating the second record as
             // required would leave a crash window in which a restarted policyd
             // honours grants against a task it knows is closed.
@@ -346,7 +367,7 @@ impl TaskStore {
     }
 
     /// Mints and signs a grant against a live task (S-01 §4).
-    pub fn issue_grant(&mut self, mut grant: Grant, now_ms: u64) -> Result<Vec<u8>> {
+    pub fn issue_grant(&mut self, mut grant: Grant, reason: GrantReason, now_ms: u64) -> Result<Vec<u8>> {
         let task = self
             .task(grant.task_id)
             .ok_or(TaskError::UnknownTask(grant.task_id))?;
@@ -383,12 +404,15 @@ impl TaskStore {
 
         let mut m = MapBuilder::new();
         m.insert("cose", enc(|w| w.bytes(&cose)));
+        // Readable copies for query; the signed payload stays the authority.
+        m.insert("issuer", enc(|w| w.text(&grant.issuer)));
+        m.insert("reason", enc(|w| w.text(reason.as_str())));
         let body = m.finish();
         let rec = Record {
             seq: 0,
             ts: 0,
             mono: 0,
-            kind: Kind::GrantIssued,
+            kind: Kind::Grant,
             principal: grant.principal.clone(),
             grant_id: Some(grant.id),
             task_id: Some(grant.task_id),
@@ -407,6 +431,14 @@ impl TaskStore {
             revoked: false,
         });
         Ok(cose)
+    }
+
+    /// Appends a source's emission (COMP-12 §1). Not synced here: these
+    /// are bounded by the store's 250 ms fsync (S-04 §4), and nothing is
+    /// answered on the strength of them.
+    pub fn record(&mut self, e: Emission) -> Result<()> {
+        self.audit.append(Record::from_emission(e))?;
+        Ok(())
     }
 
     /// True if the grant exists here and has not been revoked. Expiry is not
@@ -439,7 +471,7 @@ impl TaskStore {
             seq: 0,
             ts: 0,
             mono: 0,
-            kind: Kind::GrantRevoked,
+            kind: Kind::Revoke,
             principal,
             grant_id: None,
             task_id: Some(task),
@@ -489,6 +521,7 @@ fn replay_issued(body: &[u8]) -> cbor::Result<Issued> {
     for _ in 0..n {
         match r.key()? {
             "cose" => cose = r.bytes()?.to_vec(),
+            "issuer" | "reason" => r.skip()?,
             _ => return Err(cbor::Error::Type),
         }
     }
@@ -578,8 +611,10 @@ mod tests {
         let t = s
             .open_task("agent:a", Origin::Human, "chat:1", "tidy notes", 100_000, 1_000)
             .unwrap();
-        s.issue_grant(grant_for(t, 50_000), 1_000).unwrap();
-        s.issue_grant(grant_for(t, 60_000), 1_001).unwrap();
+        s.issue_grant(grant_for(t, 50_000), GrantReason::Rule, 1_000)
+            .unwrap();
+        s.issue_grant(grant_for(t, 60_000), GrantReason::Rule, 1_001)
+            .unwrap();
         s.apply(t, TaskEvent::Drain).unwrap();
         let before = s.audit.next_seq();
         s.apply(t, TaskEvent::Drained).unwrap();
@@ -596,7 +631,8 @@ mod tests {
         let t = s
             .open_task("agent:a", Origin::Human, "chat:1", "tidy notes", 100_000, 1_000)
             .unwrap();
-        s.issue_grant(grant_for(t, 50_000), 1_000).unwrap();
+        s.issue_grant(grant_for(t, 50_000), GrantReason::Rule, 1_000)
+            .unwrap();
         s.update_counters(t, |c| c.prompts_shown += 7).unwrap();
         // Rotating mid-task is the ordinary case — segments turn over on size,
         // not on anything a task does — so nothing here may depend on the live
@@ -621,7 +657,8 @@ mod tests {
         let t = s
             .open_task("agent:a", Origin::Human, "chat:1", "tidy", 100_000, 1_000)
             .unwrap();
-        s.issue_grant(grant_for(t, 50_000), 1_000).unwrap();
+        s.issue_grant(grant_for(t, 50_000), GrantReason::Rule, 1_000)
+            .unwrap();
         let id = s.grants()[0].grant.id;
         s.apply(t, TaskEvent::Cancel).unwrap();
         drop(s);
@@ -711,10 +748,12 @@ mod tests {
             .open_task("agent:a", Origin::Human, "chat:1", "work", 50_000, 1_000)
             .unwrap();
         assert!(matches!(
-            s.issue_grant(grant_for(t, 50_001), 1_000),
+            s.issue_grant(grant_for(t, 50_001), GrantReason::Rule, 1_000),
             Err(TaskError::ExpiryBeyondDeadline)
         ));
-        assert!(s.issue_grant(grant_for(t, 50_000), 1_000).is_ok());
+        assert!(s
+            .issue_grant(grant_for(t, 50_000), GrantReason::Rule, 1_000)
+            .is_ok());
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -727,7 +766,7 @@ mod tests {
             .unwrap();
         s.apply(t, TaskEvent::Cancel).unwrap();
         assert!(matches!(
-            s.issue_grant(grant_for(t, 10_000), 1_000),
+            s.issue_grant(grant_for(t, 10_000), GrantReason::Rule, 1_000),
             Err(TaskError::TaskClosed)
         ));
         assert!(s.apply(t, TaskEvent::Cancel).is_err());
@@ -742,7 +781,8 @@ mod tests {
             let t = s
                 .open_task("agent:a", Origin::Human, "chat:1", "work", 90_000, 1_000)
                 .unwrap();
-            s.issue_grant(grant_for(t, 50_000), 1_000).unwrap();
+            s.issue_grant(grant_for(t, 50_000), GrantReason::Rule, 1_000)
+                .unwrap();
             t
         };
         let s = store(&dir);
@@ -751,6 +791,79 @@ mod tests {
         assert_eq!(g.grant.task_id.0, t.0);
         assert!(s.is_live_grant(g.grant.id));
         assert!(g.grant.allows("fs.read", "~/notes"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_grant_record_names_its_issuer_and_reason() {
+        let dir = tmp("grant-body");
+        let mut s = store(&dir);
+        let t = s
+            .open_task("agent:a", Origin::Human, "chat:1", "work", 90_000, 1_000)
+            .unwrap();
+        s.issue_grant(grant_for(t, 50_000), GrantReason::Prompt, 1_000)
+            .unwrap();
+        drop(s);
+
+        let a = crate::audit::Store::open(&dir).unwrap();
+        let mut body = Vec::new();
+        a.for_each(|r| {
+            if r.kind == Kind::Grant {
+                body = r.body.clone();
+            }
+        })
+        .unwrap();
+        let mut r = Reader::new(&body);
+        let mut seen = Vec::new();
+        for _ in 0..r.map_begin().unwrap() {
+            match r.key().unwrap() {
+                "issuer" => seen.push(("issuer", r.text().unwrap().to_string())),
+                "reason" => seen.push(("reason", r.text().unwrap().to_string())),
+                _ => r.skip().unwrap(),
+            }
+        }
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![
+                ("issuer", "policyd".to_string()),
+                ("reason", "prompt".to_string())
+            ]
+        );
+        // Replay still reads it back as a live grant.
+        assert_eq!(store(&dir).grants().len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_emission_is_chained_into_the_journal() {
+        let dir = tmp("emission");
+        let mut s = store(&dir);
+        let e = policy_eval::audit::Emission {
+            kind: Kind::Decision,
+            principal: "agent:a".into(),
+            grant_id: None,
+            task_id: None,
+            chain_id: Some(5),
+            req_id: Some(3),
+            serial: Some(11),
+            body: cbor::enc(|w| w.text("allow")),
+        };
+        s.record(e.clone()).unwrap();
+        s.audit.sync().unwrap();
+        drop(s);
+
+        let a = crate::audit::Store::open(&dir).unwrap();
+        let mut seen = Vec::new();
+        a.for_each(|r| seen.push(r.clone())).unwrap();
+        let r = seen.last().unwrap();
+        assert_eq!(
+            (r.kind, r.req_id, r.chain_id, r.serial),
+            (Kind::Decision, Some(3), Some(5), Some(11))
+        );
+        assert_eq!(r.body, e.body);
+        // Replay ignores it: a decision changes no task.
+        assert!(store(&dir).tasks().is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 }
