@@ -25,8 +25,9 @@ Read the root `CLAUDE.md` first. This file only adds crate-local rules.
 - `protocols/agent/`: the privileged `ec-agent.sock` (hook-gated, 0600,
   `SO_PEERCRED` uid) and the `eclipse_agent_v1` handlers. Not TCB: it calls
   `policy::Agent` and `policy::scene` and decides nothing itself.
-- Not yet present: `protocols/semantic/`, `audit/`.
-  When they land they go there, not elsewhere.
+- `audit/` (TCB): provenance emission to `policyd` (COMP-12). Agent records
+  stall the agent when the socket is full; human records ring, never wait.
+- Not yet present: `protocols/semantic/`. When it lands it goes there.
 - Human keystrokes are never logged by content. Log keysym names only behind `trace`.
 - Logs go to journald: `journalctl --user -t abyss -o cat --since "5 min ago"`.
 - Nested test under the host session (itself abyss): `./target/debug/abyss --backend winit & pid=$!`,

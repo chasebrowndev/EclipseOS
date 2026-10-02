@@ -6,6 +6,7 @@
 //! compositor and drive it in-process; nothing else about the layout changes.
 
 pub mod addons;
+pub mod audit;
 pub mod backend;
 pub mod config;
 pub mod input;

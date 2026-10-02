@@ -45,6 +45,7 @@ use smithay::reexports::wayland_server::{
 };
 
 use crate::addons::Hook;
+use crate::audit;
 use crate::policy::{scene, AdmitError, Agent, Views};
 use crate::state::{AbyssState, ClientState};
 
@@ -358,6 +359,7 @@ impl Dispatch<EclipseAgentManagerV1, ()> for AbyssState {
                 state.agents.next_id += 1;
                 let aid = state.agents.next_id;
                 tracing::info!(agent = aid, principal = agent.principal(), "agent admitted");
+                audit::agent(state, audit::lifecycle(agent.principal(), "start"));
                 state.agents.slots.push((aid, Some(agent)));
                 data_init.init(id, AgentId(aid));
             }
@@ -437,6 +439,16 @@ impl Dispatch<EclipseAgentV1, AgentId> for AbyssState {
     }
 
     fn destroyed(state: &mut Self, _client: ClientId, _resource: &EclipseAgentV1, data: &AgentId) {
+        if let Some(principal) = state
+            .agents
+            .slots
+            .iter()
+            .find(|(i, _)| *i == data.0)
+            .and_then(|(_, a)| a.as_ref())
+            .map(|a| a.principal().to_owned())
+        {
+            audit::agent(state, audit::lifecycle(&principal, "stop"));
+        }
         state.agents.slots.retain(|(i, _)| *i != data.0);
     }
 }
@@ -480,8 +492,95 @@ impl Dispatch<EclipseSceneV1, AgentId> for AbyssState {
             );
             return;
         };
-        answer(state, scene, &mut agent, request);
+        let started = std::time::Instant::now();
+        let task = agent.task_id();
+        // COMP-12 §1: no request runs before its record is in the socket.
+        let (name, args) = describe(&request);
+        let req = audit::request(agent.principal(), task, req_id, "eclipse_scene_v1", name, args);
+        if !audit::begin(state, req) {
+            state.agents.put(data.0, agent);
+            result(scene, req_id, Status::Paused, "");
+            return;
+        }
+        let out = answer(state, scene, &mut agent, request);
+        let us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        audit::agent(
+            state,
+            audit::decision(agent.principal(), task, req_id, out.allow, out.rule, "scope", us),
+        );
+        audit::agent(
+            state,
+            audit::result(agent.principal(), req_id, out.status as u32, out.detail, us),
+        );
         state.agents.put(data.0, agent);
+    }
+}
+
+fn describe(request: &eclipse_scene_v1::Request) -> (&'static str, audit::Args<'_>) {
+    use eclipse_scene_v1::Request;
+    match request {
+        Request::ListToplevels { filter, .. } => ("list_toplevels", audit::Args::Filter(filter)),
+        Request::GetToplevel { handle, .. } => ("get_toplevel", audit::Args::Handle(u64::from(*handle))),
+        Request::HitTest { x, y, .. } => ("hit_test", audit::Args::Point(i64::from(*x), i64::from(*y))),
+        _ => ("unknown", audit::Args::None),
+    }
+}
+
+/// How a scene request ended, for its `decision` and `result` records.
+struct Outcome {
+    /// Whether the capability check passed. A malformed argument can fail a
+    /// request the check allowed.
+    allow: bool,
+    status: Status,
+    /// The capability the request was checked against.
+    rule: &'static str,
+    /// The `result` detail the agent was sent.
+    detail: &'static str,
+}
+
+impl Outcome {
+    fn ok(rule: &'static str) -> Self {
+        Outcome {
+            allow: true,
+            status: Status::Ok,
+            rule,
+            detail: "",
+        }
+    }
+
+    fn refused(
+        scene: &EclipseSceneV1,
+        req_id: u32,
+        status: Status,
+        rule: &'static str,
+        detail: &'static str,
+    ) -> Self {
+        result(scene, req_id, status, detail);
+        Outcome {
+            allow: false,
+            status,
+            rule,
+            detail,
+        }
+    }
+
+    /// Allowed by the check, refused for a malformed argument.
+    fn invalid(scene: &EclipseSceneV1, req_id: u32, rule: &'static str, detail: &'static str) -> Self {
+        Outcome {
+            allow: true,
+            ..Outcome::refused(scene, req_id, Status::InvalidArgument, rule, detail)
+        }
+    }
+
+    /// A request this compositor does not know: denied, nothing done, and
+    /// no result to send (fail-closed).
+    fn unknown() -> Self {
+        Outcome {
+            allow: false,
+            status: Status::InvalidArgument,
+            rule: "unknown",
+            detail: "request",
+        }
     }
 }
 
@@ -490,22 +589,17 @@ fn answer(
     scene: &EclipseSceneV1,
     agent: &mut Agent,
     request: eclipse_scene_v1::Request,
-) {
+) -> Outcome {
     use eclipse_scene_v1::Request;
+    use policy_eval::scope::SCENE_LIST;
     let Some(views) = agent.view_at(now_ms()) else {
         let req_id = match request {
             Request::ListToplevels { req_id, .. }
             | Request::GetToplevel { req_id, .. }
             | Request::HitTest { req_id, .. } => req_id,
-            _ => return,
+            _ => return Outcome::unknown(),
         };
-        result(
-            scene,
-            req_id,
-            Status::NoCapability,
-            policy_eval::scope::SCENE_LIST,
-        );
-        return;
+        return Outcome::refused(scene, req_id, Status::NoCapability, SCENE_LIST, SCENE_LIST);
     };
     let view = views.list;
     match request {
@@ -514,8 +608,7 @@ fn answer(
             // only "no filter" has a meaning; anything else is refused rather
             // than silently ignored.
             if !filter.is_empty() {
-                result(scene, req_id, Status::InvalidArgument, "filter");
-                return;
+                return Outcome::invalid(scene, req_id, SCENE_LIST, "filter");
             }
             for (handle, window) in scene::list(state, view) {
                 // A handle the wire cannot carry is a window the agent
@@ -526,19 +619,19 @@ fn answer(
                 send_toplevel(state, scene, req_id, handle, &window);
             }
             scene.toplevels_done(req_id);
+            Outcome::ok(SCENE_LIST)
         }
         Request::GetToplevel { req_id, handle } => {
             // F-07: unknown, gone, out of scope and no-agent are one answer,
             // reached by one path.
             let Some(window) = scene::resolve(state, view, u64::from(handle)) else {
-                result(scene, req_id, Status::InvalidArgument, "handle");
-                return;
+                return Outcome::refused(scene, req_id, Status::InvalidArgument, SCENE_LIST, "handle");
             };
             if !scene::readable(state, views.read, &window) {
-                result(scene, req_id, unreadable(views), SCENE_READ);
-                return;
+                return Outcome::refused(scene, req_id, unreadable(views), SCENE_READ, SCENE_READ);
             }
             send_detail(state, scene, req_id, handle, &window);
+            Outcome::ok(SCENE_READ)
         }
         Request::HitTest { req_id, x, y } => {
             let pos = (f64::from(x), f64::from(y)).into();
@@ -550,15 +643,15 @@ fn answer(
             });
             let Some((window, local, handle)) = hit else {
                 scene.hit(req_id, 0, 0, 0, 0, 0);
-                return;
+                return Outcome::ok(SCENE_LIST);
             };
             if !scene::readable(state, views.read, &window) {
-                result(scene, req_id, unreadable(views), SCENE_READ);
-                return;
+                return Outcome::refused(scene, req_id, unreadable(views), SCENE_READ, SCENE_READ);
             }
             scene.hit(req_id, handle, local.x as i32, local.y as i32, 0, 0);
+            Outcome::ok(SCENE_READ)
         }
-        _ => {}
+        _ => Outcome::unknown(),
     }
 }
 

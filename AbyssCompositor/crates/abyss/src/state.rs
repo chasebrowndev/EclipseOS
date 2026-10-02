@@ -241,6 +241,8 @@ pub struct AbyssState {
     /// Written only by the link in `policy/`.
     pub policy_key: Option<policy_eval::VerifyingKey>,
     pub policy_link: crate::policy::link::Link,
+    /// Provenance emission to `policyd` (COMP-12).
+    pub audit: crate::audit::Audit,
     /// The privileged agent socket, its manager global and every admitted
     /// agent object (COMP-08). Empty while the `agents` hook is off.
     pub agents: crate::protocols::agent::Agents,
@@ -545,6 +547,7 @@ impl AbyssState {
             sensitive: HashSet::new(),
             policy_key: None,
             policy_link: Default::default(),
+            audit: Default::default(),
             agents: Default::default(),
             session_lock_state,
             lock: Default::default(),

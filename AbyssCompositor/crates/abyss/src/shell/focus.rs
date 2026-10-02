@@ -374,6 +374,7 @@ pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool
     keyboard.set_focus(state, Some(target), SERIAL_COUNTER.next_serial());
     arrange(state);
     let handle = state.ipc.handle_for(window);
+    crate::audit::focus(state, Some(handle), "human");
     crate::ipc::emit(state, "focus", serde_json::json!({ "handle": handle }));
 }
 
@@ -424,6 +425,13 @@ pub fn focus_surface(state: &mut AbyssState, surface: Option<WlSurface>) {
     if state.trusted_ui.active() {
         return;
     }
+    // A layer surface, popup grab or nothing is recorded as "no window", so
+    // focus leaving a window and coming back is two records, not none.
+    let window = surface
+        .as_ref()
+        .and_then(|s| crate::shell::window_for_surface(state, s));
+    let to = window.map(|w| state.ipc.handle_for(&w));
+    crate::audit::focus(state, to, "human");
     let keyboard = state.seat.get_keyboard().unwrap();
     keyboard.set_focus(state, surface.map(Into::into), SERIAL_COUNTER.next_serial());
 }

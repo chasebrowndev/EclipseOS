@@ -201,6 +201,7 @@ fn readable(state: &mut AbyssState, fd: &OwnedFd) -> bool {
     match pin(&mut state.policy_link.pinned, offered) {
         Pin::Accept => {
             state.policy_key = Some(offered);
+            crate::audit::up(state, fd);
             tracing::info!("policyd link up; agents resume");
             true
         }
@@ -214,6 +215,7 @@ fn readable(state: &mut AbyssState, fd: &OwnedFd) -> bool {
 }
 
 fn down(state: &mut AbyssState) {
+    crate::audit::down(state);
     if state.policy_key.take().is_some() {
         tracing::warn!("policyd link down; every agent is paused");
     }
