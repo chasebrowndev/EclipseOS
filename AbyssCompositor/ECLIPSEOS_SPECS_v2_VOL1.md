@@ -1587,7 +1587,7 @@ implemented via Smithay's helpers or our own renderer path.
 1. Acquire session (libseat), enumerate GPUs (udev), pick primary render node.
 2. Init renderer, load cursor theme, load config.
 3. Create Wayland display and socket `wayland-N`; create **second** listening
-   socket `abyss-agent-N` restricted by filesystem permissions and used only
+   socket `$XDG_RUNTIME_DIR/eclipse/ec-agent.sock` restricted by filesystem permissions and used only
    by `agentd`.
 4. Start XWayland lazily on first X11 client.
 5. Spawn `agentd`, `registryd`, `policyd` as systemd user units (compositor
@@ -1831,7 +1831,7 @@ Clipboard: agents read/write the clipboard through `eclipse_agent_v1`, not
 ## 8. Agent Protocol `eclipse_agent_v1` (COMP-08)
 
 ### 8.1 Transport and trust
-- A Wayland protocol served **only** on the `abyss-agent-N` socket.
+- A Wayland protocol served **only** on the `ec-agent.sock` socket.
   Connections on the normal socket never see these globals.
 - `agentd` is the sole intended client. It authenticates agents, assigns
   agent ids and capability sets (from `policyd`), and multiplexes.
@@ -2149,7 +2149,7 @@ display lives outside it.
 | Process | Unit | Role | Trust |
 |---|---|---|---|
 | `abyss` | `abyss.service` (user) | DRM, input, rendering, protocol servers, policy enforcement | TCB |
-| `policyd` | `eclipse-policyd.service` | Policy compilation, audit store, defer path | TCB |
+| `policyd` | `policyd.service` | Policy compilation, audit store, defer path | TCB |
 | `agentd` | `eclipse-agentd.service` | Agent gateway, MCP surface | semi-trusted |
 | `registryd` | `eclipse-registryd.service` | AT-SPI aggregation, coordinate join, vision fallback | semi-trusted |
 
@@ -2307,7 +2307,7 @@ Explicit sync is mandatory; there is no implicit-sync fallback path.
 8. Create the Wayland display; bind standard globals (COMP-06).
 9. Create the public socket `wayland-N`; export $WAYLAND_DISPLAY.
 10. Create the privileged socket at
-    $XDG_RUNTIME_DIR/eclipse/abyss-agent.sock, mode 0600, owned by the
+    $XDG_RUNTIME_DIR/eclipse/ec-agent.sock, mode 0600, owned by the
     user. Agent globals are advertised only on this socket.
 11. Connect to policyd (§6). Non-blocking.
 12. Open human IPC socket (COMP-13).
@@ -2325,8 +2325,14 @@ actionable error rather than a backtrace.
 **Decided 2026-09-05: the compositor starts without `policyd` and runs in
 degraded mode. No agent connection is accepted until policy is live.**
 
+**Amended 2026-09-30 (ADR 0069, Appendix F): the agent stack is an add-on.**
+The rows below apply only while the `agents` hook (ADR 0066) is on. With it
+off, which is the default whenever `eclipseos-agents` is not installed, there is
+nothing to degrade from. That is the normal state, and no indicator is shown.
+
 | Condition | Behaviour |
 |---|---|
+| `agents` hook off | Full human desktop. No privileged socket is created and no agent or `eclipse_semantic_v1` global is advertised on any socket. abyss does not try to reach `policyd`. No "agents disabled" indicator, and the agent lifecycle methods (`get_agents` and the rest) are refused as hook-bound. The `agent-override` and `agent-attention` chords stay: the first is the trusted-UI escape (COMP-04 §6), and the second opens phrase entry and the decision queue (COMP-10 §3.10). Turning the hook off while agents are live behaves as "`agentd` dies" (below), and then the socket is removed. |
 | `policyd` not yet connected | Full human desktop. Privileged socket exists but `create_agent` fails with `POLICY_UNAVAILABLE`. Trusted UI shows a persistent "agents disabled" indicator. |
 | `policyd` connects, pushes signed table | Agents may connect. Indicator clears. |
 | `policyd` dies while agents are live | **Fail closed for agents:** all agent seats paused (as in human override, C-00 §4.5), in-flight requests return `paused`, no new requests accepted. Human session continues untouched. Reconnect resumes. |
@@ -2338,9 +2344,19 @@ Rationale: a policy misconfiguration must not lock you out of your own
 machine, and an unpoliced agent must never run. Those two requirements are
 satisfiable simultaneously, so we satisfy both.
 
-The `policyd` public key used to verify grants and tables (S-01 §6) is read
-at startup from `/etc/eclipse/policyd.pub` — not received over IPC, so a
-process impersonating `policyd` cannot supply its own key.
+The `policyd` public key used to verify grants and tables (S-01 §6) is
+received over IPC from a peer abyss has authenticated *(amended F-05,
+2026-09-30)*. abyss dials `policyd`'s socket when the `agents` hook turns on,
+and requires the peer to have the session user's uid (`SO_PEERCRED`) and to
+be a member of the `policyd.service` cgroup. Only then does it accept the key.
+That key is pinned for the session: a reconnect presenting a different key is
+refused and surfaced in trusted UI and the journal. A process impersonating
+`policyd` therefore cannot supply its own key. Agent sandboxes can reach
+neither the socket nor `policyd`'s state directory. Unsandboxed code running
+as the same user is outside this boundary, as it is everywhere else in S-01.
+The earlier root-owned `/etc/eclipse/policyd.pub` is withdrawn, because
+`policyd` is a user service that generates its issuer key per user (D-01
+§3.4).
 
 ---
 
@@ -3687,7 +3703,7 @@ Consequences, all enforced:
 Depends on: C-00 §8, S-01, P-01, COMP-09. Consumed by: A-01, A-02, A-05,
 COMP-11, COMP-12.
 
-Privileged Wayland protocol served only on `abyss-agent-N`. Sole intended
+Privileged Wayland protocol served only on `$XDG_RUNTIME_DIR/eclipse/ec-agent.sock`. Sole intended
 client: `agentd`. Every object is attributed to one agent principal.
 
 Conventions: all requests that act carry `req_id: uint` (agent-assigned,
@@ -3703,7 +3719,6 @@ unique per agent within the dedupe window) and, where relevant,
 request create_agent(id: new_id<eclipse_agent_v1>, grant: array<u8>)
   -- grant = COSE_Sign1 CBOR (S-01 §4). Compositor verifies signature,
   -- expiry, principal. On failure: protocol error INVALID_GRANT.
-request set_policy_key(key: array<u8>)     -- only from policyd's IPC path; not exposed to agentd
 event   revoked(principal: string, reason: uint)   -- informational to agentd
 event   dedupe_window(seconds: uint)
 ```
@@ -3829,7 +3844,11 @@ event   provenance(req_id, chain_id: array<u8>, min_trust: uint,
 
 Visibility: every response is filtered to the agent's `scene.list` scope
 and sensitivity class. Nothing outside scope appears, including in
-`hit_test` (returns handle=0).
+`hit_test` (returns handle=0). A request naming a handle the agent cannot
+see (out of scope, `no-agent`, or never existed) returns exactly what an
+unknown handle returns, `invalid_argument` with detail `handle`, by the same
+code path; `out_of_scope` is only for a visible target that a held
+capability's own scope excludes *(amended F-07, 2026-10-01)*.
 
 ---
 
@@ -5249,7 +5268,7 @@ agent:research-7`, `eclipse-ctl outputs --all`, `eclipse-ctl watch`.
 |---|---|---|---|
 | `policyd` | `$XDG_RUNTIME_DIR/eclipse/policyd.sock` | SEQPACKET, CBOR | table push, defer requests, audit stream (COMP-12) |
 | `registryd` | `$XDG_RUNTIME_DIR/eclipse/registryd.sock` | SEQPACKET, CBOR | native tree mirroring, placement queries for the coordinate join |
-| `agentd` | `$XDG_RUNTIME_DIR/eclipse/abyss-agent.sock` | Wayland, 0600 | the privileged protocol (COMP-08) |
+| `agentd` | `$XDG_RUNTIME_DIR/eclipse/ec-agent.sock` | Wayland, 0600 | the privileged protocol (COMP-08) |
 
 All are peer-credential-checked (`SO_PEERCRED`) against the expected uid,
 and `policyd`/`registryd` additionally against the cgroup of their systemd
@@ -5892,7 +5911,10 @@ the agent**, including in events and `hit_test`.
 
 Scope evaluation is deterministic and total: every request resolves to
 exactly one target set; if any target falls outside scope, the request
-fails with `no_capability` and nothing is applied (no partial batches).
+fails and nothing is applied (no partial batches). A target outside
+`scene.list` fails as an unknown handle (`invalid_argument`); a visible
+target outside the acting capability's scope fails with `out_of_scope`
+*(amended F-07, 2026-10-01)*.
 
 ---
 
@@ -7311,7 +7333,7 @@ against source before it was written. Nothing was renumbered.
 
 ## Open decisions this appendix leaves standing
 
-1. **Agent socket name.** C-00 §1.3 and §8.1 and the COMP-08 preamble say `abyss-agent-N`;
+1. ~~**Agent socket name.**~~ *Resolved by F-06 (2026-10-01): `$XDG_RUNTIME_DIR/eclipse/ec-agent.sock`.* C-00 §1.3 and §8.1 and the COMP-08 preamble said `abyss-agent-N`;
    COMP-01 §5 and COMP-13 §3 say `$XDG_RUNTIME_DIR/eclipse/abyss-agent.sock`. No
    agent socket exists in code yet.
 2. **`unsupported` status.** COMP-04 §3 and COMP-08 §12 open decision 1 use
@@ -7375,6 +7397,31 @@ same day. Appendix D is reserved for the D-07 batch.
 | E-01 | COMP-18 §3 | Annotation methods, binds and region select are add-on hooks (ADR 0066), off unless an installed manifest names them. A manifest never grants capture | yes |
 | E-02 | COMP-10 §3.11 | New surface: command approval for taskbar command widgets (ADR 0067). Compositor-initiated; no client may request it | yes |
 | E-03 | COMP-10 §3.10 | On merging with D-07 (DA-05), the destructive-action prompt runs on §3.11's modal primitive: the granting Erase button needs Tab then Space (Enter never grants), input is ignored for the arming delay, and it is drawn front-most with the other prompts, above the §3.6 indicator. Owner review pending on the indicator ordering | yes |
+
+---
+
+# Appendix F — amendment record, 2026-09-30
+
+**Applied inline to this volume on 2026-09-30**, from an owner ruling of the
+same day (ADR 0069). F-06..F-10 added 2026-10-01.
+
+| ID | Target | Change | Applied |
+|---|---|---|---|
+| F-01 | COMP-01 §6; ADR 0066 hook table | The agent stack is one add-on, `eclipseos-agents`: `policyd`, `agentd`, `brokerd`, the egress proxy, `registryd`, the inference router, the MCP surface and `cataclysm`. It enables a new `agents` hook. The compositor half (privileged socket, agent globals, grant verification, scope filtering, the COMP-11 table, the `eclipse_semantic_v1` server) stays compiled in and dormant. With the hook off there is no socket, no globals, no `policyd` link and no indicator, and that is the normal state, not degraded mode | yes |
+| F-02 | D-07 §4.4 | `policyd` leaves the floor. The Agentic profile installs `eclipseos-agents`; no other profile does. Enabling it later is `pacman -S eclipseos-agents` until COMP-10's trusted admin prompt makes a Settings button possible | yes |
+| F-03 | COMP-16 Phase 2; COMP-15 §2 | Phase 2 suites run in CI with the `agents` hook on. One added test: with the hook off, no agent global is reachable and no agent socket file exists | yes |
+| F-04 | ADR 0066 add-ons | `fog-activity` depends on `eclipseos-agents` | yes |
+| F-05 | COMP-01 §6 | abyss gets the `policyd` key by dialing `policyd` and authenticating the peer (session uid via `SO_PEERCRED`, `policyd.service` cgroup), then pins it for the session; a changed key on reconnect is refused. Replaces the root-owned `/etc/eclipse/policyd.pub`, which a per-user `policyd` (D-01 §3.4) cannot use | yes |
+
+| F-06 | C-00 §1.3, §8.1; COMP-01 §5; COMP-08 preamble; COMP-13 §3; ADR 0066, 0069 | *(2026-10-01, owner ruling)* The agent socket is `$XDG_RUNTIME_DIR/eclipse/ec-agent.sock`, mode 0600, beside `policyd.sock`. A second compositor (the nested test session) overrides it by environment. Closes Appendix C open item 1 | yes |
+| F-07 | COMP-08 §3; S-01 §3 | *(2026-10-01, owner ruling)* A handle the agent cannot see is indistinguishable from one that never existed: `invalid_argument`, detail `handle`, same code path. `out_of_scope` stays for a visible target excluded by a held capability's scope | yes |
+| F-08 | S-01 §6 (policyd unavailable) | *(2026-10-01, owner ruling)* COMP-01 §6 governs: when `policyd` dies, every agent pauses until it reconnects with the pinned key. "Existing grants remain valid until expiry" is withdrawn, since revocation cannot reach abyss while `policyd` is down | yes |
+| F-09 | COMP-08 §1 | `set_policy_key` is removed: the key arrives over the dialled `policyd` link (F-05), never over Wayland | yes |
+| F-10 | C-00 §17 | `policyd`'s unit is `policyd.service`, as shipped | yes |
+
+## Open decisions this appendix leaves standing
+
+1. **The Settings enable button** waits on the trusted admin prompt (COMP-10).
 
 ---
 

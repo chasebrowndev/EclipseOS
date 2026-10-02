@@ -2891,10 +2891,10 @@ If `policyd` becomes unavailable while agents run (COMP-01 §6):
 - No new agents provision.
 - No `grant.request`, no prompts, no defer — every `defer` outcome
   fail-closes to `deferred_timeout`, and every `prompt` outcome denies.
-- Existing grants remain valid until expiry, because they are signed and
-  the compositor verifies them independently. When a grant expires with no
-  `policyd` to renew it, the agent is paused rather than left with a
-  shrinking capability set.
+- Every agent is paused until `policyd` reconnects with the pinned key
+  (COMP-01 §6). Revocation is pushed by `policyd`, so a grant cannot be
+  trusted while nothing can revoke it *(amended VOL1 F-08, 2026-10-01;
+  previously "existing grants remain valid until expiry")*.
 - Audit buffers in `abyss` with backpressure onto the *agent*, never the
   human (S-04 §4). If the buffer fills, agents pause.
 

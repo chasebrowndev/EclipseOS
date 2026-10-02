@@ -191,9 +191,11 @@ written to `/etc/vconsole.conf` before the initramfs is built. The user is creat
 
 Step 12 has two independent parts.
 
-**Stack.** Whether to install and enable the agent stack (`policyd` is in the
-floor; `agentd`, `brokerd`, the egress proxy and `cataclysm` are not). Default
-on for Agentic, off otherwise. Until Phase 2 delivers them (COMP-16 M11–M25) the
+**Stack.** Whether to install the `eclipseos-agents` add-on (ADR 0069):
+`policyd`, `agentd`, `brokerd`, the egress proxy, `registryd`, the inference
+router and `cataclysm`. Nothing agent-only is in the floor. Default on for
+Agentic, off otherwise. Installing it later is `pacman -S eclipseos-agents`
+until a Settings button can use COMP-10's trusted admin prompt. Until Phase 2 delivers them (COMP-16 M11–M25) the
 Agentic card is marked **preview** and the row lists only what exists.
 
 **Policy starting point.** Two options, both offered:

@@ -90,6 +90,7 @@ a system gets; nothing else turns an add-on on.
 | `region-select` | abyss | the `region-select` bind action |
 | `taskbar-widgets` | abyss | the `widget` collection and its socket writes, the premade widget catalog, command approval (ADR 0067) |
 | `activity-lens` | Fog | the lens pill bar and agent views, fed by the add-on's daemon |
+| `agents` | abyss | the privileged `ec-agent.sock` socket, agent and `eclipse_semantic_v1` globals, the `policyd` link, the "agents disabled" indicator, the agent lifecycle methods (`get_agents`, `pause_agent`, `resume_agent`, `terminate_agent`, `revoke_grants`) (ADR 0069) |
 
 **The add-ons.**
 - **hyperion** enables `taskbar-widgets`. `eclipseos-meta` lists it as an
@@ -103,6 +104,7 @@ a system gets; nothing else turns an add-on on.
   the replay log and the `fog.*` MCP bridge) and enables `activity-lens`. Fog
   carries the lens views and shows no pill bar while the hook is off. Fog
   itself links no `agentd` client. The `fog-agentic` build variant is withdrawn.
+  The package depends on `eclipseos-agents` (ADR 0069).
 
 ## Consequences
 - abyss gains a manifest loader and a hook set on `AbyssState`, the gate gains
