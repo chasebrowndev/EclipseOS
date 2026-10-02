@@ -351,6 +351,7 @@ fn create_agent_without_policyd_is_policy_unavailable() {
 fn a_bad_grant_is_invalid_grant() {
     for bad in [b"not cbor".to_vec(), grant("human")] {
         let (mut h, _path) = hooked("bad.sock", true);
+        h.state.audit.sink = Some(Vec::new());
         h.state.policy_key = Some(sk().verifying_key());
         let mut p = Peer::inserted(&mut h, true);
         p.admit(&mut h, bad);
@@ -359,6 +360,7 @@ fn a_bad_grant_is_invalid_grant() {
     }
     // Signed by another key.
     let (mut h, _path) = hooked("bad.sock", true);
+    h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(SigningKey::from_bytes(&[8u8; 32]).verifying_key());
     let mut p = Peer::inserted(&mut h, true);
     p.admit(&mut h, grant("agent:test"));
@@ -369,6 +371,7 @@ fn a_bad_grant_is_invalid_grant() {
 #[test]
 fn requests_while_policyd_is_down_are_paused() {
     let (mut h, _path) = hooked("paused.sock", true);
+    h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
     let mut p = Peer::inserted(&mut h, true);
     let (_agent, scene) = p.admit(&mut h, grant("agent:test"));
@@ -391,10 +394,82 @@ fn requests_while_policyd_is_down_are_paused() {
     assert!(p.seen.done.is_empty() && p.seen.hits.is_empty());
 
     // Reconnect resumes (COMP-01 §6).
+    h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
     scene.list_toplevels(4, String::new());
     p.pump(&mut h);
     assert_eq!(p.seen.done, vec![4]);
+}
+
+/// COMP-15 audit completeness: every request an agent makes is a
+/// `request`, a `decision` and a `result` record, in that order, under its
+/// `req_id`, with the agent's principal and task; admission is a
+/// `lifecycle` record.
+#[test]
+fn every_scene_request_is_request_decision_result() {
+    use policy_eval::audit::Kind;
+    let (mut h, _path) = hooked("audit.sock", true);
+    h.state.audit.sink = Some(Vec::new());
+    h.state.policy_key = Some(sk().verifying_key());
+    let mut p = Peer::inserted(&mut h, true);
+    let (_agent, scene) = p.admit(&mut h, grant("agent:test"));
+    scene.list_toplevels(1, String::new());
+    scene.get_toplevel(2, 999);
+    scene.hit_test(3, 10, 10);
+    p.pump(&mut h);
+
+    let seen = h.state.audit.sink.take().unwrap();
+    assert_eq!(seen[0].kind, Kind::Lifecycle);
+    assert_eq!(seen[0].principal, "agent:test");
+    let rest = &seen[1..];
+    assert_eq!(rest.len(), 9, "{rest:?}");
+    for (i, chunk) in rest.chunks(3).enumerate() {
+        let kinds: Vec<_> = chunk.iter().map(|e| e.kind).collect();
+        assert_eq!(kinds, [Kind::Request, Kind::Decision, Kind::Result]);
+        for e in chunk {
+            assert_eq!(e.req_id, Some(i as u64 + 1));
+            assert_eq!(e.principal, "agent:test");
+        }
+        assert!(chunk[0].task_id.is_some() && chunk[0].task_id == chunk[1].task_id);
+    }
+}
+
+/// COMP-12 §1: when policyd stops reading, the agent stalls (`paused`,
+/// nothing done) and is let through again once the socket drains.
+#[test]
+fn a_full_audit_socket_stalls_the_agent_not_the_human() {
+    use rustix::net::{recv, send, socketpair, AddressFamily, RecvFlags, SendFlags, SocketFlags, SocketType};
+    let (mut h, _path) = hooked("stall.sock", true);
+    h.state.audit.sink = Some(Vec::new());
+    h.state.policy_key = Some(sk().verifying_key());
+    let mut p = Peer::inserted(&mut h, true);
+    let (_agent, scene) = p.admit(&mut h, grant("agent:test"));
+
+    let (ours, theirs) = socketpair(
+        AddressFamily::UNIX,
+        SocketType::SEQPACKET,
+        SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+        None,
+    )
+    .unwrap();
+    while send(&ours, &[0u8; 512], SendFlags::DONTWAIT).is_ok() {}
+    h.state.audit.link_for_test(ours);
+
+    scene.list_toplevels(1, String::new());
+    p.pump(&mut h);
+    assert_eq!(p.seen.results, vec![(1, PAUSED, String::new())]);
+    assert!(p.seen.done.is_empty());
+
+    // The human side does not wait: a focus change still happens, queued.
+    crate::audit::focus(&mut h.state, Some(1), "human");
+    assert!(h.state.audit.backlogged());
+
+    let mut buf = [0u8; 1024];
+    while recv(&theirs, &mut buf[..], RecvFlags::DONTWAIT).is_ok() {}
+    scene.list_toplevels(2, String::new());
+    p.pump(&mut h);
+    assert_eq!(p.seen.done, vec![2]);
+    assert!(!h.state.audit.backlogged());
 }
 
 /// S-05 §8 and F-07: with no policy table every window is secret, so the
@@ -403,6 +478,7 @@ fn requests_while_policyd_is_down_are_paused() {
 fn with_a_valid_grant_every_window_is_secret_and_unknown() {
     use crate::shell::focus::state_tests::client::Client;
     let (mut h, _path) = hooked("secret.sock", true);
+    h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
 
     let mut app = Client::connect(&mut h);

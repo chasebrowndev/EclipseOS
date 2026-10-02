@@ -116,6 +116,25 @@ impl Writer {
         self.buf.is_empty()
     }
 
+    pub fn capacity(&self) -> usize {
+        self.buf.capacity()
+    }
+
+    /// Empties the buffer and keeps its capacity, so a writer reused per
+    /// record allocates once, not once per record.
+    pub fn clear(&mut self) {
+        self.buf.clear();
+    }
+
+    /// Opens a definite-length map whose keys the caller writes already in
+    /// canonical order. Only for paths that must not allocate (COMP-12 §1);
+    /// everywhere else use [`MapBuilder`], which cannot get the order wrong.
+    /// The decoder refuses a misordered map, so a test that decodes the
+    /// output is the check.
+    pub fn map(&mut self, len: usize) {
+        self.head(MAJOR_MAP, len as u64);
+    }
+
     /// The shortest head that can carry `arg`. Every other writer method goes
     /// through this, so "shortest form always" is one place, not eleven.
     fn head(&mut self, major: u8, arg: u64) {

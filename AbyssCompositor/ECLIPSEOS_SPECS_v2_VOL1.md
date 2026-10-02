@@ -4832,12 +4832,14 @@ only; the schema, hash chain, retention, and query surface are S-04.
 - `SOCK_SEQPACKET` to `policyd`, one connection, message-per-record,
   CBOR-encoded.
 - **Lossless.** On backpressure the compositor stalls the *agent* whose
-  records cannot be accepted — its next request blocks until the queue
-  drains. The human path is never stalled and records are never dropped.
+  records cannot be accepted — its next request is answered `paused` and
+  does nothing until the queue drains *(amended F-12)*. The human path is never stalled and records are never dropped.
 - If `policyd` is gone: agents are already paused (COMP-01 §6), so no
   agent-attributable events can occur. Human-side records (focus changes)
-  buffer in a bounded ring and are flushed on reconnect, with a gap marker
-  if the ring overflowed.
+  buffer in a bounded ring of 4096 records *(F-14)* and are flushed on
+  reconnect, with a gap marker if the ring overflowed: a `lifecycle`
+  record from `system:abyss`, event `audit_gap`, carrying the count of
+  records dropped *(F-13)*.
 - Emission is off the hot path: records are built into a preallocated
   buffer and written from the loop, never blocking rendering or input.
 
@@ -4897,15 +4899,15 @@ told and what was recorded. `policyd` assigns the global `seq`.
 ## 6. Test Plan
 - Assert every acting request produces request+decision+result, and that
   `trace --req-id` reconstructs the full chain including synthetic inputs.
-- Backpressure: stall `policyd`'s reader; assert the agent blocks, the
+- Backpressure: stall `policyd`'s reader; assert the agent is answered `paused`, the
   human session is unaffected, and no record is lost.
 - Assert human keystrokes never appear in any record.
 - Assert capture records contain no pixels and hash post-redaction.
 - Assert elision on secret-targeted text before the socket write.
 
 ## 7. Open Decisions
-1. Ring size for human-side records while `policyd` is down (proposed:
-   4096 records).
+1. ~~Ring size for human-side records while `policyd` is down~~ —
+   settled at 4096 records (F-14).
 2. Whether `perception` records should include the node-id set in full or
    only a hash (proposed: hash, with full set behind a debug flag — the
    full set is large and rarely needed).
@@ -6541,7 +6543,7 @@ not apply: a nullable field that is always populated stops being evidence.
 | `launch` | argv, cgroup, sandbox program hashes, resulting handle |
 | `sandbox` | compiled bwrap argv hash, landlock hash, seccomp hash |
 | `policy` | table version, source file hashes, compiler warnings |
-| `lifecycle` | agent start/stop/pause/resume, override on/off |
+| `lifecycle` | agent start/stop/pause/resume, override on/off, `audit_gap` (dropped count; COMP-12 §1) *(amended F-13)* |
 | `task` | task_id, principal, origin, origin_ref, parent_task_id, state, statement_hash, counters_snapshot, reason (A-04); emitted on every state transition |
 | `net` | principal, grant_id, host, sni, ip, port, mode (`splice`\|`mitm`), bytes_up, bytes_down, duration_ms, outcome, rule_id? (S-09 §7) |
 | `secret` | secret_id, rotation_counter, mode, destination, principal, grant_id, outcome, length? (S-08 §7) |
@@ -7403,7 +7405,7 @@ same day. Appendix D is reserved for the D-07 batch.
 # Appendix F — amendment record, 2026-09-30
 
 **Applied inline to this volume on 2026-09-30**, from an owner ruling of the
-same day (ADR 0069). F-06..F-11 added 2026-10-01.
+same day (ADR 0069). F-06..F-14 added 2026-10-01.
 
 | ID | Target | Change | Applied |
 |---|---|---|---|
@@ -7419,6 +7421,9 @@ same day (ADR 0069). F-06..F-11 added 2026-10-01.
 | F-09 | COMP-08 §1 | `set_policy_key` is removed: the key arrives over the dialled `policyd` link (F-05), never over Wayland | yes |
 | F-10 | C-00 §17 | `policyd`'s unit is `policyd.service`, as shipped | yes |
 | F-11 | S-04 §1.1 | *(2026-10-01, owner ruling)* A `grant` record carries the signed grant (COSE_Sign1) rather than its KDL, since only the signed form can be checked, plus readable `issuer` and `reason`. A `revoke` record lists every grant one operation revoked, so closing a task is one record, never a partial revocation | yes |
+| F-12 | COMP-12 §1, §6 | *(2026-10-01, owner ruling)* An agent whose records cannot be accepted is answered `paused` and its request does nothing, rather than the request blocking. The agent retries; it already handles `paused` from the `policyd`-down path, and the compositor holds no waiting requests | yes |
+| F-13 | COMP-12 §1; S-04 §1.1 | *(2026-10-01, owner ruling)* The gap marker is a `lifecycle` record from `system:abyss`, event `audit_gap`, with `dropped`: the number of human-side records the ring had no room for. No new kind | yes |
+| F-14 | COMP-12 §7 open decision 1 | *(2026-10-01, owner ruling)* The human-side ring holds 4096 records | yes |
 
 ## Open decisions this appendix leaves standing
 

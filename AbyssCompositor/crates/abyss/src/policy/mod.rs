@@ -100,6 +100,13 @@ impl Agent {
         &self.principal
     }
 
+    /// The task this agent's grants were issued under. Every grant names
+    /// one, and a principal has one live task at a time (A-04 §4), so the
+    /// first grant's is the agent's.
+    pub fn task_id(&self) -> Option<policy_eval::Ulid> {
+        self.grants.first().map(|g| g.task_id)
+    }
+
     /// The views to filter this request through, after dropping every
     /// grant that has expired since the last request (S-01 §4: expiry is
     /// checked at request time, no grace). `None` when no grant is left: the

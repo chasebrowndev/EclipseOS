@@ -160,7 +160,7 @@ crates/abyss/src/protocols/agent/     COMP-08  ec-agent.sock, eclipse_agent_v1 (
 crates/abyss/src/protocols/semantic/  COMP-09  eclipse_semantic_v1    (not yet)
 crates/abyss/src/trusted_ui/  COMP-10  prompts (modal primitive; §3.10 erase, §3.11 command approval); indicator, emergency panel not yet
 crates/abyss/src/policy/      COMP-11  grant admission, agent scene filter; enforcement table, check() not yet
-crates/abyss/src/audit/       COMP-12  provenance emission            (not yet)
+crates/abyss/src/audit/       COMP-12  provenance emission to policyd (M12: scene requests, focus, lifecycle)
 crates/abyss/src/ipc/         COMP-13  human JSON-RPC socket, gate table
 crates/abyss/src/config/      COMP-13  KDL parse, validate, hot-reload, edit
 crates/abyss/src/xwayland/    COMP-07

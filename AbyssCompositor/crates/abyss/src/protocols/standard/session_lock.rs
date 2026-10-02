@@ -118,6 +118,7 @@ impl AbyssState {
             keyboard.unset_grab(self);
             keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
         }
+        crate::audit::focus(self, None, "human");
         // The region selector is a modal over the session behind the lock.
         self.region_select.cancel();
         if let Some(pointer) = self.seat.get_pointer() {

@@ -130,6 +130,7 @@ fn now_ms() -> u64 {
 /// has a handle a `handle:` scope can name), with `policyd`'s key pinned.
 fn world(sock: &str) -> World {
     let (mut h, _path) = hooked(sock, true);
+    h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
     test_class::clear();
     h.state.config.window_rules = vec![
