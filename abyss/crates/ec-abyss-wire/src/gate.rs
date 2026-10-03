@@ -79,7 +79,7 @@ pub const TABLE: &[Entry] = &[
     // Privileged: it can only keep the screen on, which any client can already
     // do with `zwp_idle_inhibit_v1`, and it lapses with the connection.
     e("set_idle_inhibit", Kind::Command, true),
-    // Open the bar's start menu (`bar.launcher-style "menu"`). Command and not
+    // Open the bar's start menu (`launcher.style "menu"`). Command and not
     // Privileged: it is the eclipse button / Super+R, a thing the human already
     // does, and it only rebroadcasts on the `launcher` event stream; the
     // compositor holds no launcher state and the bar decides what opens.

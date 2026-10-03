@@ -3,16 +3,17 @@
 //! bar and the OSD are.
 
 use ec_settings::app::{self, App};
-use ec_settings::pane::Pane;
+use ec_settings::pane::Page;
 
 fn main() -> iced::Result {
-    // `ec-settings [pane]`: the taskbar's drawers open `network`. An
-    // unknown name opens the default pane rather than refusing to start.
-    let pane = std::env::args()
+    // `ec-settings [section[/page]]`: the taskbar's drawers open
+    // `network`, and `desktop/wallpaper` opens that page. An unknown name
+    // opens the default page rather than refusing to start.
+    let page = std::env::args()
         .nth(1)
-        .and_then(|a| Pane::from_arg(&a))
-        .unwrap_or(Pane::Windows);
-    let mut builder = iced::application(move || app::boot(pane), app::update, app::view)
+        .and_then(|a| Page::from_arg(&a))
+        .unwrap_or(Page::Layout);
+    let mut builder = iced::application(move || app::boot(page), app::update, app::view)
         .title("Eclipse Settings")
         .theme(|_: &App| ec_ui::theme::theme())
         // Transparent, so the compositor's blur shows through; the panes tint

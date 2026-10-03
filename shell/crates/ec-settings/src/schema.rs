@@ -126,7 +126,7 @@ pub fn value_label(value: &str) -> &str {
         // Component slots: the ids are program names and read as themselves;
         // only the opt-out needs a word.
         "none" => "None",
-        // `bar.launcher-style`: `menu` is the bar's start menu. `centered`
+        // `launcher.style`: `menu` is the bar's start menu. `centered`
         // is left as itself — `floating-placement` spells it the same.
         "menu" => "start menu",
         // `decoration.blur.mode`: what is drawn behind translucency. `glass`
@@ -286,11 +286,18 @@ impl Row {
             "mode" => "Interaction mode",
             "components.bar" => "Bar",
             "components.launcher" => "Launcher",
-            "bar.launcher-style" => "Launcher style",
             "components.notifications" => "Notifications",
             "components.control-center" => "Control center",
+            // The keyboard hint lines under the launcher and start menu.
+            // "Key hints" names the mechanism; what goes is the controls.
+            "ui.show-key-hints" => "Show controls",
+            "launcher.style" => "Launcher style",
+            "launcher.bind.open" => "Open launcher",
+            "launcher.bind.run" => "Run command",
+            "launcher.search.path-binaries" => "Programs on PATH",
+            "launcher.search.terminal-apps" => "Terminal apps",
             // The blur group flattens its `glass` and `frost` sub-nodes
-            // (`pane::group_for`), so the leaf alone would lose which mode a
+            // (`pane::place_for`), so the leaf alone would lose which mode a
             // row tunes.
             "decoration.blur.glass.refraction" => "Glass refraction",
             "decoration.blur.glass.bevel" => "Glass bevel",
@@ -351,6 +358,16 @@ impl Row {
                 }
             }
             other => other.to_string(),
+        }
+    }
+
+    /// The value as a text field holds it: an unset or empty value is an
+    /// empty field, never [`Row::display`]'s dash, which would be typed into.
+    pub fn text(&self) -> String {
+        match &self.value {
+            Value::Null => String::new(),
+            Value::String(s) => s.clone(),
+            _ => self.display(),
         }
     }
 
@@ -552,5 +569,22 @@ mod tests {
         .expect("policy rows are rendered, not dropped");
         assert!(row.locked());
         assert_eq!(row.control, Control::Toggle);
+    }
+
+    /// An unset text key is an empty field: the dash a read-only display
+    /// shows would otherwise be typed into, and saved as "—foo".
+    #[test]
+    fn an_unset_text_key_is_an_empty_field() {
+        let row = |value: Value| {
+            Row::parse(&json!({
+                "path": "misc.terminal-command", "file": "abyss", "value": value,
+                "default": null, "source": null, "readable": true, "writable": true,
+                "type": "string", "constraints": null, "doc": "d", "reload": "live"
+            }))
+            .expect("a string row parses")
+        };
+        assert_eq!(row(Value::Null).text(), "");
+        assert_eq!(row(Value::Null).display(), "—");
+        assert_eq!(row(json!("foot")).text(), "foot");
     }
 }

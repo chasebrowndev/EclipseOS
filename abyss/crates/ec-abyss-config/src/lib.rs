@@ -451,9 +451,6 @@ pub struct Bar {
     /// Where the bar's popups open: under the cell that was clicked, or at
     /// the pointer.
     pub popup_anchor: BarPopupAnchor,
-    /// Which launcher the eclipse button and `ec-launcher` open: the
-    /// centred sheet, or the bar's own start menu (`bar.open-launcher`).
-    pub launcher_style: BarLauncherStyle,
     /// `eye`: whether the taskbar draws its status eye on the eclipse mark.
     /// Stored only; the taskbar sources the eye's state itself (ADR 0055).
     pub eye: bool,
@@ -492,21 +489,171 @@ pub enum BarPopupAnchor {
     Pointer,
 }
 
-/// `bar { launcher-style "centered" | "menu" }`.
+/// `launcher { style "centered" | "menu" }`. The deprecated
+/// `bar { launcher-style … }` still sets it (see `apply_bar`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum BarLauncherStyle {
+pub enum LauncherStyle {
     #[default]
     Centered,
     Menu,
 }
 
-impl BarLauncherStyle {
+impl LauncherStyle {
     /// The KDL spelling.
     pub fn name(self) -> &'static str {
         match self {
-            BarLauncherStyle::Centered => "centered",
-            BarLauncherStyle::Menu => "menu",
+            LauncherStyle::Centered => "centered",
+            LauncherStyle::Menu => "menu",
         }
+    }
+}
+
+/// `launcher { centered { anchor … } }`: where the centred launcher sits.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LauncherAnchor {
+    #[default]
+    Center,
+    Top,
+    Bottom,
+}
+
+impl LauncherAnchor {
+    /// The KDL spelling, one of [`schema::LAUNCHER_ANCHORS`].
+    pub fn name(self) -> &'static str {
+        match self {
+            LauncherAnchor::Center => "center",
+            LauncherAnchor::Top => "top",
+            LauncherAnchor::Bottom => "bottom",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "center" => Some(LauncherAnchor::Center),
+            "top" => Some(LauncherAnchor::Top),
+            "bottom" => Some(LauncherAnchor::Bottom),
+            _ => None,
+        }
+    }
+}
+
+/// `launcher { … }` (COMP-13). The compositor stores these; the
+/// launcher (`ec-launcher`) and the taskbar's start menu read them over
+/// `get_config`. The two `bind` chords are the exception: abyss turns them
+/// into key bindings itself (`defaults_with_launcher`).
+#[derive(Debug, Clone, Default)]
+pub struct Launcher {
+    /// What Super+R and the eclipse button open.
+    pub style: LauncherStyle,
+    /// `centered { … }`: the standalone sheet.
+    pub centered: LauncherCentered,
+    /// `menu { … }`: the taskbar's start menu.
+    pub menu: LauncherMenu,
+    /// `search { … }`: what both launchers index and match.
+    pub search: LauncherSearch,
+    /// `bind { open …; run … }`: the chords that start the launcher.
+    pub bind: LauncherBinds,
+}
+
+/// `launcher { centered { width …; max-rows …; anchor … } }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LauncherCentered {
+    /// Logical px.
+    pub width: u32,
+    pub max_rows: u32,
+    pub anchor: LauncherAnchor,
+}
+
+impl Default for LauncherCentered {
+    fn default() -> Self {
+        Self {
+            width: 540,
+            max_rows: 6,
+            anchor: LauncherAnchor::Center,
+        }
+    }
+}
+
+/// `launcher { menu { max-rows … } }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LauncherMenu {
+    pub max_rows: u32,
+}
+
+impl Default for LauncherMenu {
+    fn default() -> Self {
+        Self { max_rows: 8 }
+    }
+}
+
+/// `launcher { search { … } }`, shared by both launcher styles: both search
+/// through `ec_services::apps`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LauncherSearch {
+    /// Offer executables on `$PATH` as well as desktop entries.
+    pub path_binaries: bool,
+    /// List `Terminal=true` entries. Only takes effect with
+    /// `misc.terminal-command` set; without a terminal they are always left out.
+    pub terminal_apps: bool,
+    /// Match the query against an entry's `Comment` too.
+    pub match_descriptions: bool,
+}
+
+impl Default for LauncherSearch {
+    fn default() -> Self {
+        Self {
+            path_binaries: false,
+            terminal_apps: true,
+            match_descriptions: false,
+        }
+    }
+}
+
+/// One `launcher { bind { … } }` chord: the text as written, which is what
+/// `get_config` reads back, and the binding it parsed to. `None` is `"none"`:
+/// no chord.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LauncherChord {
+    pub text: String,
+    pub chord: Option<(Mods, Keysym)>,
+}
+
+impl LauncherChord {
+    fn new(text: &str) -> Self {
+        Self {
+            text: text.to_owned(),
+            chord: parse_chord(text).expect("built-in chord parses"),
+        }
+    }
+}
+
+/// `launcher { bind { open "Super+E"; run "Super+R" } }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LauncherBinds {
+    pub open: LauncherChord,
+    pub run: LauncherChord,
+}
+
+impl Default for LauncherBinds {
+    fn default() -> Self {
+        Self {
+            open: LauncherChord::new("Super+E"),
+            run: LauncherChord::new("Super+R"),
+        }
+    }
+}
+
+/// `ui { … }`: preferences every DE pane shares. Stored only; each pane
+/// reads them over `get_config`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ui {
+    /// Show the keyboard hint line in the launcher and the start menu.
+    pub show_key_hints: bool,
+}
+
+impl Default for Ui {
+    fn default() -> Self {
+        Self { show_key_hints: true }
     }
 }
 
@@ -682,7 +829,6 @@ impl Default for Bar {
             tray: BarTray::default(),
             clock: BarClock::default(),
             popup_anchor: BarPopupAnchor::Cell,
-            launcher_style: BarLauncherStyle::Centered,
             eye: true,
             widgets: BarWidgets::default(),
             motion: BarMotion::default(),
@@ -1495,6 +1641,8 @@ pub struct Config {
     pub idle: Idle,
     pub misc: Misc,
     pub setup: Setup,
+    pub launcher: Launcher,
+    pub ui: Ui,
     pub mode: Mode,
     pub components: Components,
     pub wallpaper: Wallpaper,
@@ -1559,6 +1707,8 @@ impl Default for Config {
             idle: Idle::default(),
             misc: Misc::default(),
             setup: Setup::default(),
+            launcher: Launcher::default(),
+            ui: Ui::default(),
             mode: Mode::Hybrid,
             components: Components::default(),
             wallpaper: Wallpaper::default(),
@@ -1606,6 +1756,26 @@ fn merge_binds(defaults: Vec<Bind>, from_file: Vec<Bind>) -> Vec<Bind> {
             out.push(d);
         }
     }
+    out
+}
+
+/// The built-in binds, with the launcher's chords taken from
+/// `launcher.bind` in place of the shipped Super+E / Super+R. They are still
+/// defaults: a `bind` block on the same chord wins over them, and they win
+/// over any other built-in on the chord the human picked (first default in
+/// the list wins in `merge_binds`).
+pub fn defaults_with_launcher(launcher: &Launcher) -> Vec<Bind> {
+    let spawn = || Action::Spawn("ec-launcher".into());
+    let mut out: Vec<Bind> = [&launcher.bind.open, &launcher.bind.run]
+        .into_iter()
+        .filter_map(|c| c.chord)
+        .map(|(mods, key)| Bind {
+            mods,
+            key,
+            action: spawn(),
+        })
+        .collect();
+    out.extend(default_binds().into_iter().filter(|b| b.action != spawn()));
     out
 }
 
@@ -2038,7 +2208,7 @@ impl Config {
             cfg.apply(&doc, &mut binds_from_file);
             cfg.cur = None;
         }
-        cfg.binds = merge_binds(default_binds(), binds_from_file);
+        cfg.binds = merge_binds(defaults_with_launcher(&cfg.launcher), binds_from_file);
         if !any {
             tracing::info!("no config found, using built-in defaults");
         } else {
@@ -2281,6 +2451,11 @@ impl Config {
     }
 
     fn apply(&mut self, doc: &KdlDocument, binds: &mut Vec<Bind>) {
+        let launcher_style_set = doc.nodes().iter().any(|n| {
+            n.name().value() == "launcher"
+                && n.children()
+                    .is_some_and(|c| c.nodes().iter().any(|k| k.name().value() == "style"))
+        });
         for node in doc.nodes() {
             let name = node.name().value();
             // Whole-node ownership, before the node is parsed at all. `misc`
@@ -2348,7 +2523,9 @@ impl Config {
                 },
                 "workspace" => self.apply_workspace(node),
                 "render" => self.apply_render(node),
-                "bar" => self.apply_bar(node),
+                "bar" => self.apply_bar(node, launcher_style_set),
+                "launcher" => self.apply_launcher(node),
+                "ui" => self.apply_ui(node),
                 "clipboard" => self.apply_clipboard(node),
                 "capture" => self.apply_capture(node),
                 "xwayland" => self.apply_xwayland(node),
@@ -2524,7 +2701,9 @@ impl Config {
         }
     }
 
-    fn apply_bar(&mut self, node: &KdlNode) {
+    /// `style_set`: this document sets `launcher.style`, which wins over the
+    /// deprecated `bar.launcher-style` wherever either sits.
+    fn apply_bar(&mut self, node: &KdlNode, style_set: bool) {
         let Some(children) = node.children() else { return };
         for n in children.nodes() {
             match n.name().value() {
@@ -2586,9 +2765,22 @@ impl Config {
                         ),
                     ),
                 },
+                // Deprecated alias of `launcher.style`: still loads so an
+                // old file keeps its launcher, and is not in the schema, so
+                // a GUI shows the one key. Writing `launcher.style` removes
+                // it (`edit::SUPERSEDES`).
+                "launcher-style" if style_set => {
+                    tracing::warn!("deprecated: bar.launcher-style is ignored beside launcher.style");
+                }
                 "launcher-style" => match arg(n).and_then(KdlValue::as_string) {
-                    Some("centered") => self.bar.launcher_style = BarLauncherStyle::Centered,
-                    Some("menu") => self.bar.launcher_style = BarLauncherStyle::Menu,
+                    Some(v @ ("centered" | "menu")) => {
+                        tracing::warn!("deprecated: bar.launcher-style; write launcher.style instead");
+                        self.launcher.style = if v == "menu" {
+                            LauncherStyle::Menu
+                        } else {
+                            LauncherStyle::Centered
+                        };
+                    }
                     other => self.reject(
                         n,
                         format!(
@@ -3957,6 +4149,145 @@ impl Config {
         }
     }
 
+    fn apply_launcher(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "style" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("centered") => self.launcher.style = LauncherStyle::Centered,
+                    Some("menu") => self.launcher.style = LauncherStyle::Menu,
+                    other => self.reject(
+                        n,
+                        format!("launcher style must be \"centered\" or \"menu\", keeping default (other={other:?})"),
+                    ),
+                },
+                "centered" => self.apply_launcher_centered(n),
+                "menu" => self.apply_launcher_menu(n),
+                "search" => self.apply_launcher_search(n),
+                "bind" => self.apply_launcher_bind(n),
+                _ => self.unknown_key(n, "launcher", "launcher key"),
+            }
+        }
+    }
+
+    fn apply_launcher_centered(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "width" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (360..=1200).contains(&v) => self.launcher.centered.width = v as u32,
+                    _ => self.reject(n, "launcher centered width must be an integer 360..=1200"),
+                },
+                "max-rows" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (3..=16).contains(&v) => self.launcher.centered.max_rows = v as u32,
+                    _ => self.reject(n, "launcher centered max-rows must be an integer 3..=16"),
+                },
+                "anchor" => match arg(n)
+                    .and_then(KdlValue::as_string)
+                    .and_then(LauncherAnchor::parse)
+                {
+                    Some(a) => self.launcher.centered.anchor = a,
+                    None => self.reject(
+                        n,
+                        format!(
+                            "launcher centered anchor must be one of {}",
+                            schema::LAUNCHER_ANCHORS.join(", ")
+                        ),
+                    ),
+                },
+                _ => self.unknown_key(n, "launcher.centered", "launcher centered key"),
+            }
+        }
+    }
+
+    fn apply_launcher_menu(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "max-rows" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (3..=16).contains(&v) => self.launcher.menu.max_rows = v as u32,
+                    _ => self.reject(n, "launcher menu max-rows must be an integer 3..=16"),
+                },
+                _ => self.unknown_key(n, "launcher.menu", "launcher menu key"),
+            }
+        }
+    }
+
+    fn apply_launcher_search(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let name = n.name().value();
+            if !matches!(name, "path-binaries" | "terminal-apps" | "match-descriptions") {
+                self.unknown_key(n, "launcher.search", "launcher search key");
+                continue;
+            }
+            // A bare node is on, as for the other flags.
+            let value = match arg(n).map(KdlValue::as_bool) {
+                None => true,
+                Some(Some(b)) => b,
+                Some(None) => {
+                    self.reject(n, format!("launcher search {name} expects #true or #false"));
+                    continue;
+                }
+            };
+            let search = &mut self.launcher.search;
+            match name {
+                "path-binaries" => search.path_binaries = value,
+                "terminal-apps" => search.terminal_apps = value,
+                _ => search.match_descriptions = value,
+            }
+        }
+    }
+
+    fn apply_launcher_bind(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let name = n.name().value();
+            if !matches!(name, "open" | "run") {
+                self.unknown_key(n, "launcher.bind", "launcher bind key");
+                continue;
+            }
+            let Some(text) = arg(n).and_then(KdlValue::as_string) else {
+                self.reject(
+                    n,
+                    format!("launcher bind {name} must be a chord string like \"Super+R\" or \"none\""),
+                );
+                continue;
+            };
+            match parse_chord(text) {
+                Ok(chord) => {
+                    let parsed = LauncherChord {
+                        text: text.to_owned(),
+                        chord,
+                    };
+                    if name == "open" {
+                        self.launcher.bind.open = parsed;
+                    } else {
+                        self.launcher.bind.run = parsed;
+                    }
+                }
+                Err(e) => {
+                    let message = format!("launcher bind {name}: {e}");
+                    self.reject(n, message);
+                }
+            }
+        }
+    }
+
+    fn apply_ui(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "show-key-hints" => match arg(n).map(KdlValue::as_bool) {
+                    None => self.ui.show_key_hints = true,
+                    Some(Some(b)) => self.ui.show_key_hints = b,
+                    Some(None) => self.reject(n, "ui show-key-hints expects #true or #false"),
+                },
+                _ => self.unknown_key(n, "ui", "ui key"),
+            }
+        }
+    }
+
     fn apply_workspace(&mut self, node: &KdlNode) {
         let Some(idx) = arg(node).and_then(KdlValue::as_integer) else {
             self.reject(node, "workspace node needs a number argument");
@@ -4265,6 +4596,39 @@ fn parse_keysym(s: &str) -> Result<Keysym, String> {
     } else {
         Ok(k)
     }
+}
+
+/// A launcher chord as one string (`launcher.bind.*`): `"Super+R"`,
+/// `"Super+Shift+Return"`, or `"none"` (or empty) for no chord. The last
+/// `+`- or space-separated part is the xkb keysym and the rest are modifiers
+/// as `bind` spells them. A single letter is case-folded, so `"Super+R"` is
+/// the chord `bind "SUPER" "r"` makes. The reserved chords are refused as
+/// `parse_bind` refuses them.
+fn parse_chord(text: &str) -> Result<Option<(Mods, Keysym)>, String> {
+    let text = text.trim();
+    if text.is_empty() || text.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    let (mods, key) = match text.rfind(['+', ' ']) {
+        Some(i) => (&text[..i], &text[i + 1..]),
+        None => ("", text),
+    };
+    if key.is_empty() {
+        return Err(format!("{text:?} names no key"));
+    }
+    let mods = parse_mods(mods)?;
+    let key = if key.len() == 1 && key.as_bytes()[0].is_ascii_alphabetic() {
+        parse_keysym(&key.to_ascii_lowercase())?
+    } else {
+        parse_keysym(key)?
+    };
+    if mods == m(true, false, false, false) && key == Keysym::Escape {
+        return Err("Super+Escape is reserved (COMP-04 §6) and cannot be bound".into());
+    }
+    if mods == m(true, false, false, false) && key == Keysym::space {
+        return Err("Super+space is reserved (COMP-13 §1.1) and cannot be bound".into());
+    }
+    Ok(Some((mods, key)))
 }
 
 /// `bind "SUPER" "Return" { spawn "foot"; }`
@@ -4959,8 +5323,9 @@ pub(crate) mod tests {
         assert_eq!(c.errors.len(), 1, "{:?}", c.errors);
     }
 
-    /// `bar.launcher-style`: centred by default, `menu` parses, and a bad
-    /// style is rejected without moving off the default.
+    /// `bar.launcher-style` is the deprecated alias of `launcher.style`:
+    /// centred by default, `menu` parses, and a bad style is rejected
+    /// without moving off the default.
     #[test]
     fn bar_launcher_style_parses() {
         fn cfg(text: &str) -> Config {
@@ -4969,12 +5334,12 @@ pub(crate) mod tests {
             cfg.apply(&doc, &mut Vec::new());
             cfg
         }
-        assert_eq!(Config::default().bar.launcher_style, BarLauncherStyle::Centered);
+        assert_eq!(Config::default().launcher.style, LauncherStyle::Centered);
 
         let c = cfg("bar { launcher-style \"menu\" }\n");
         assert!(c.errors.is_empty(), "{:?}", c.errors);
-        assert_eq!(c.bar.launcher_style, BarLauncherStyle::Menu);
-        assert_eq!(c.bar.launcher_style.name(), "menu");
+        assert_eq!(c.launcher.style, LauncherStyle::Menu);
+        assert_eq!(c.launcher.style.name(), "menu");
 
         let c = cfg("bar { launcher-style \"sideways\" }\n");
         assert_eq!(c.errors.len(), 1);
@@ -4983,7 +5348,126 @@ pub(crate) mod tests {
             "{}",
             c.errors[0].message
         );
-        assert_eq!(c.bar.launcher_style, BarLauncherStyle::Centered);
+        assert_eq!(c.launcher.style, LauncherStyle::Centered);
+    }
+
+    /// `launcher.style` wins over the deprecated alias whichever comes first.
+    #[test]
+    fn launcher_style_beats_the_bar_alias() {
+        fn cfg(text: &str) -> Config {
+            let doc: KdlDocument = text.parse().unwrap();
+            let mut cfg = Config::default();
+            cfg.apply(&doc, &mut Vec::new());
+            cfg
+        }
+        let c = cfg("bar { launcher-style \"menu\" }\nlauncher { style \"centered\" }\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert_eq!(c.launcher.style, LauncherStyle::Centered);
+        let c = cfg("launcher { style \"centered\" }\nbar { launcher-style \"menu\" }\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert_eq!(c.launcher.style, LauncherStyle::Centered);
+        let c = cfg("launcher { style \"menu\" }\n");
+        assert_eq!(c.launcher.style, LauncherStyle::Menu);
+    }
+
+    /// The `launcher` block: sizes, anchor and search flags parse, and out of
+    /// range values keep the default.
+    #[test]
+    fn launcher_block_parses() {
+        fn cfg(text: &str) -> Config {
+            let doc: KdlDocument = text.parse().unwrap();
+            let mut cfg = Config::default();
+            cfg.apply(&doc, &mut Vec::new());
+            cfg
+        }
+        let d = Config::default();
+        assert_eq!(d.launcher.centered.width, 540);
+        assert_eq!(d.launcher.centered.max_rows, 6);
+        assert_eq!(d.launcher.centered.anchor, LauncherAnchor::Center);
+        assert_eq!(d.launcher.menu.max_rows, 8);
+        assert!(!d.launcher.search.path_binaries);
+        assert!(d.launcher.search.terminal_apps);
+        assert!(!d.launcher.search.match_descriptions);
+        assert!(d.ui.show_key_hints);
+
+        let c = cfg(concat!(
+            "launcher {\n",
+            "  centered { width 720; max-rows 12; anchor \"top\"; }\n",
+            "  menu { max-rows 5; }\n",
+            "  search { path-binaries; terminal-apps #false; match-descriptions #true; }\n",
+            "}\n",
+            "ui { show-key-hints #false; }\n",
+        ));
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert_eq!(c.launcher.centered.width, 720);
+        assert_eq!(c.launcher.centered.max_rows, 12);
+        assert_eq!(c.launcher.centered.anchor, LauncherAnchor::Top);
+        assert_eq!(c.launcher.menu.max_rows, 5);
+        assert!(c.launcher.search.path_binaries);
+        assert!(!c.launcher.search.terminal_apps);
+        assert!(c.launcher.search.match_descriptions);
+        assert!(!c.ui.show_key_hints);
+
+        let c = cfg("launcher { centered { width 20; anchor \"left\"; }; menu { max-rows 99; } }\n");
+        assert_eq!(c.errors.len(), 3, "{:?}", c.errors);
+        assert_eq!(c.launcher.centered.width, 540);
+        assert_eq!(c.launcher.centered.anchor, LauncherAnchor::Center);
+        assert_eq!(c.launcher.menu.max_rows, 8);
+    }
+
+    /// Launcher chords: `Super+R` is the chord `bind "SUPER" "r"` makes,
+    /// `none` is no chord, and the reserved chords are refused.
+    #[test]
+    fn launcher_chords_parse() {
+        let sup = m(true, false, false, false);
+        assert_eq!(parse_chord("Super+R"), Ok(Some((sup, Keysym::r))));
+        assert_eq!(parse_chord("SUPER r"), Ok(Some((sup, Keysym::r))));
+        assert_eq!(
+            parse_chord("Super+Shift+Return"),
+            Ok(Some((m(true, true, false, false), Keysym::Return)))
+        );
+        assert_eq!(parse_chord("F2"), Ok(Some((Mods::default(), Keysym::F2))));
+        assert_eq!(parse_chord("none"), Ok(None));
+        assert_eq!(parse_chord(""), Ok(None));
+        assert!(parse_chord("Super+Escape").is_err());
+        assert!(parse_chord("Super+space").is_err());
+        assert!(parse_chord("Super+").is_err());
+        assert!(parse_chord("Hyper+r").is_err());
+    }
+
+    /// `launcher.bind.*` replaces the shipped Super+E / Super+R launcher
+    /// binds; a `bind` block on the same chord still wins.
+    #[test]
+    fn launcher_binds_replace_the_defaults() {
+        let sup = m(true, false, false, false);
+        let spawn = Action::Spawn("ec-launcher".into());
+        let launcher_chords = |binds: &[Bind]| {
+            let mut v: Vec<_> = binds
+                .iter()
+                .filter(|b| b.action == spawn)
+                .map(|b| (b.mods, b.key))
+                .collect();
+            v.sort_by_key(|(_, k)| k.raw());
+            v
+        };
+
+        let stock = defaults_with_launcher(&Launcher::default());
+        assert_eq!(launcher_chords(&stock), vec![(sup, Keysym::e), (sup, Keysym::r)]);
+
+        let doc: KdlDocument = "launcher { bind { open \"Super+o\"; run \"none\"; } }\n"
+            .parse()
+            .unwrap();
+        let mut c = Config::default();
+        c.apply(&doc, &mut Vec::new());
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        let binds = defaults_with_launcher(&c.launcher);
+        assert_eq!(launcher_chords(&binds), vec![(sup, Keysym::o)]);
+
+        let doc: KdlDocument = "launcher { bind { open \"Super+Escape\"; } }\n".parse().unwrap();
+        let mut c = Config::default();
+        c.apply(&doc, &mut Vec::new());
+        assert_eq!(c.errors.len(), 1, "{:?}", c.errors);
+        assert_eq!(c.launcher.bind.open.text, "Super+E");
     }
 
     /// `bar.eye`: on by default, a bare node is on, `#false` turns it off.

@@ -505,15 +505,6 @@ pub const TABLE: &[Key] = &[
        the pointer.",
     ),
     k(
-        "bar.launcher-style",
-        Ty::Enum(&["centered", "menu"]),
-        Str("centered"),
-        Abyss,
-        Live,
-        "Which launcher the eclipse button and Super+R open: the centred \
-       sheet, or a start menu that grows out of the bar.",
-    ),
-    k(
         "bar.eye",
         Ty::Bool,
         Bool(true),
@@ -973,6 +964,105 @@ pub const TABLE: &[Key] = &[
         Live,
         "Touchpad scrolling: two fingers, one finger along the edge, or off.",
     ),
+    // launcher: the centred sheet and the bar's start menu (COMP-13)
+    k(
+        "launcher.style",
+        Ty::Enum(&["centered", "menu"]),
+        Str("centered"),
+        Abyss,
+        Live,
+        "Which launcher the eclipse button and the launcher keybinds open: \
+       the centred sheet, or a start menu that grows out of the bar. \
+       Replaces `bar.launcher-style`, which still loads.",
+    ),
+    k(
+        "launcher.centered.width",
+        int(360, 1200),
+        Int(540),
+        Abyss,
+        Live,
+        "Width of the centred launcher, in logical pixels. Read when the \
+       launcher opens.",
+    ),
+    k(
+        "launcher.centered.max-rows",
+        int(3, 16),
+        Int(6),
+        Abyss,
+        Live,
+        "How many results the centred launcher shows before it scrolls.",
+    ),
+    k(
+        "launcher.centered.anchor",
+        Ty::Enum(LAUNCHER_ANCHORS),
+        Str("center"),
+        Abyss,
+        Live,
+        "Where the centred launcher sits on the output: the middle, or near \
+       the top or bottom edge.",
+    ),
+    k(
+        "launcher.menu.max-rows",
+        int(3, 16),
+        Int(8),
+        Abyss,
+        Live,
+        "How many results the start menu shows before it scrolls.",
+    ),
+    k(
+        "launcher.search.path-binaries",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Also find the programs on PATH by name. They answer a typed query \
+       only, never the empty list.",
+    ),
+    k(
+        "launcher.search.terminal-apps",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "List `Terminal=true` applications. Needs `misc.terminal-command`; \
+       without one they are never listed.",
+    ),
+    k(
+        "launcher.search.match-descriptions",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Let a query match an application's description as well as its \
+       name and keywords.",
+    ),
+    k(
+        "launcher.bind.open",
+        Ty::Str,
+        Str("Super+E"),
+        Abyss,
+        Live,
+        "Chord that opens the launcher, like `Super+E`; `none` unbinds it. \
+       A `bind` block on the same chord wins.",
+    ),
+    k(
+        "launcher.bind.run",
+        Ty::Str,
+        Str("Super+R"),
+        Abyss,
+        Live,
+        "Second chord that opens the launcher, like `Super+R`; `none` \
+       unbinds it.",
+    ),
+    // ui: shared by the shell's own surfaces
+    k(
+        "ui.show-key-hints",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Show the keyboard control hints in the launcher and the start menu.",
+    ),
     // misc
     k(
         "misc.render-device",
@@ -991,7 +1081,8 @@ pub const TABLE: &[Key] = &[
         Live,
         "Terminal emulator used to launch `Terminal=true` .desktop entries \
        (`$term -e <argv>`). Unset: those entries are dropped from the app \
-       index rather than shown and refused.",
+       index rather than shown and refused, whatever \
+       `launcher.search.terminal-apps` says.",
     ),
     // setup: recorded by ec-setup (D-07 §4), read by nothing at runtime
     k(
@@ -1264,6 +1355,10 @@ pub const LEGACY_TRAY_BUILTINS: &[&str] = &["network", "bluetooth", "battery", "
 /// taskbar resolves them from its own feeds; `{}` in `format` becomes the
 /// value (a whole percent for `usage.*` and `audio.volume`, text for
 /// `media.*`).
+/// `launcher.centered.anchor`'s values, shared by the table and the parser's
+/// error message.
+pub const LAUNCHER_ANCHORS: &[&str] = &["center", "top", "bottom"];
+
 pub const WIDGET_SOURCES: &[&str] = &[
     "usage.cpu",
     "usage.mem",
@@ -1773,7 +1868,17 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
             }
             .into(),
         ),
-        "bar.launcher-style" => V::Str(c.bar.launcher_style.name().into()),
+        "launcher.style" => V::Str(c.launcher.style.name().into()),
+        "launcher.centered.width" => V::Int(c.launcher.centered.width as i64),
+        "launcher.centered.max-rows" => V::Int(c.launcher.centered.max_rows as i64),
+        "launcher.centered.anchor" => V::Str(c.launcher.centered.anchor.name().into()),
+        "launcher.menu.max-rows" => V::Int(c.launcher.menu.max_rows as i64),
+        "launcher.search.path-binaries" => V::Bool(c.launcher.search.path_binaries),
+        "launcher.search.terminal-apps" => V::Bool(c.launcher.search.terminal_apps),
+        "launcher.search.match-descriptions" => V::Bool(c.launcher.search.match_descriptions),
+        "launcher.bind.open" => V::Str(c.launcher.bind.open.text.clone()),
+        "launcher.bind.run" => V::Str(c.launcher.bind.run.text.clone()),
+        "ui.show-key-hints" => V::Bool(c.ui.show_key_hints),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.active-opacity" => V::Float(widen(c.decoration.active_opacity)),
         "decoration.inactive-opacity" => V::Float(widen(c.decoration.inactive_opacity)),
@@ -1933,6 +2038,9 @@ mod tests {
                 "misc.render-device" => "/dev/dri/card1".into(),
                 "input.kb-layout" => "de".into(),
                 "bar.widgets.system-usage.disk-path" => "/home".into(),
+                // A chord, not free text.
+                "launcher.bind.open" => "Super+o".into(),
+                "launcher.bind.run" => "Super+F2".into(),
                 _ => "x".to_string(),
             }),
             // A list node is not a scalar assignment; covered by its own row on

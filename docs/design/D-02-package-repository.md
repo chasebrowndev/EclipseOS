@@ -106,3 +106,27 @@ unhelpful error. This is the step people forget.
 No downgrades, no rollback, no pinning, no staged rollout. Those belong to D-04,
 which is where the question "what happens when an upgrade breaks the session"
 is answered. D-02's job ends when a signed package is reachable.
+
+## Release hosting (planned, not yet built)
+
+How the ISO and the package repo reach users once the project is public.
+
+- **The repo is the product.** The ISO installs from it (`eclipseos-meta`
+  ships the `/etc/pacman.d/eclipseos.conf` drop-in) and updates come from it:
+  one trust model, one signer, binary packages. The compositor is a large Rust
+  build, so AUR would make every user compile it.
+- **Repo hosting:** a rolling GitHub Release tag `repo-x86_64` holding
+  `eclipseos.db`, `eclipseos.files`, `*.pkg.tar.zst` and their `.sig`. Client
+  `Server = https://github.com/<owner>/<repo>/releases/download/repo-x86_64`.
+  Upload the db as real files (no symlinks). Keep
+  `SigLevel = Required DatabaseRequired`: TLS is the transport, signatures are
+  still the integrity.
+- **ISO:** a versioned GitHub Release asset, `eclipseos-YYYY.MM.DD-x86_64.iso`
+  plus `.sig` and sha256. It is for first install only, never the update path.
+- **AUR:** later, optional and thin. At most an `eclipseos-git` / `-bin`
+  PKGBUILD for stock-Arch users who want the DE without the ISO. Never the
+  updater for ISO installs (two sources for one package conflict). Skip until
+  there is demand.
+- **Root README:** its Releases link is a placeholder until the first ISO is
+  published. Its "UEFI only, Secure Boot off" and "internet during install"
+  lines are unverified against the installer; check before the first release.

@@ -101,7 +101,6 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `bar.clock.hour-12` | bool | `#true` | live | Show the taskbar clock in 12-hour time with AM/PM; off is 24-hour. |
 | `bar.clock.date-mdy` | bool | `#true` | live | Write the taskbar date month/day/year; off is ISO year-month-day (2026-09-23). |
 | `bar.popup-anchor` | cell \| pointer | `"cell"` | live | Where taskbar popups open: under the cell that was clicked, or at the pointer. |
-| `bar.launcher-style` | centered \| menu | `"centered"` | live | Which launcher the eclipse button and Super+R open: the centred sheet, or a start menu that grows out of the bar. |
 | `bar.eye` | bool | `#true` | live | Show the Oracle-Eyes status eye on the taskbar's eclipse mark. The compositor only stores this; the taskbar reads Oracle-Eyes' own status socket (ADR 0055). |
 | `bar.widgets.order` | list of strings | `"now-playing" "volume" "network" "bluetooth" "battery" "tray" "clock"` | live | Widgets drawn after the task strip, left to right (ADR 0065). Built-in ids: now-playing, system-usage, volume, network, bluetooth, battery, tray (the StatusNotifierItems and their overflow drawer) and clock; `custom:<name>` names a `widget` block in `bar`. A widget left out is not drawn. An unknown id, a repeated one, or a `custom:` naming no `widget` block is refused. |
 | `bar.widgets.important` | list of strings | `"clock" "battery"` | live | Widgets that never compress: when the bar runs short of room they keep their full size and everything else gives way first. Same ids as `bar.widgets.order`. |
@@ -191,12 +190,33 @@ Each animation is off until named in an `animation` node inside `animations { }`
 | `input.touchpad.tap-and-drag` | bool | `#true` | live | Tap, then tap and hold, to drag. |
 | `input.touchpad.scroll-method` | two-finger \| edge \| none | `"two-finger"` | live | Touchpad scrolling: two fingers, one finger along the edge, or off. |
 
+### `launcher`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `launcher.style` | centered \| menu | `"centered"` | live | Which launcher the eclipse button and the launcher keybinds open: the centred sheet, or a start menu that grows out of the bar. Replaces `bar.launcher-style`, which still loads. |
+| `launcher.centered.width` | int 360..1200 | `540` | live | Width of the centred launcher, in logical pixels. Read when the launcher opens. |
+| `launcher.centered.max-rows` | int 3..16 | `6` | live | How many results the centred launcher shows before it scrolls. |
+| `launcher.centered.anchor` | center \| top \| bottom | `"center"` | live | Where the centred launcher sits on the output: the middle, or near the top or bottom edge. |
+| `launcher.menu.max-rows` | int 3..16 | `8` | live | How many results the start menu shows before it scrolls. |
+| `launcher.search.path-binaries` | bool | `#false` | live | Also find the programs on PATH by name. They answer a typed query only, never the empty list. |
+| `launcher.search.terminal-apps` | bool | `#true` | live | List `Terminal=true` applications. Needs `misc.terminal-command`; without one they are never listed. |
+| `launcher.search.match-descriptions` | bool | `#false` | live | Let a query match an application's description as well as its name and keywords. |
+| `launcher.bind.open` | string | `"Super+E"` | live | Chord that opens the launcher, like `Super+E`; `none` unbinds it. A `bind` block on the same chord wins. |
+| `launcher.bind.run` | string | `"Super+R"` | live | Second chord that opens the launcher, like `Super+R`; `none` unbinds it. |
+
+### `ui`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `ui.show-key-hints` | bool | `#true` | live | Show the keyboard control hints in the launcher and the start menu. |
+
 ### `misc`
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `misc.render-device` | string | _unset_ | restart | `auto`, a /dev/dri/… path, or `pci:DDDD:BB:DD.F`. The CLI flag and ECLIPSE_RENDER_DEVICE both override it. |
-| `misc.terminal-command` | string | _unset_ | live | Terminal emulator used to launch `Terminal=true` .desktop entries (`$term -e <argv>`). Unset: those entries are dropped from the app index rather than shown and refused. |
+| `misc.terminal-command` | string | _unset_ | live | Terminal emulator used to launch `Terminal=true` .desktop entries (`$term -e <argv>`). Unset: those entries are dropped from the app index rather than shown and refused, whatever `launcher.search.terminal-apps` says. |
 
 ### `setup`
 

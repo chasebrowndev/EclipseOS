@@ -57,3 +57,21 @@ pub fn fetch_glass() -> (Option<f32>, Option<bool>) {
         Err(_) => (None, None),
     }
 }
+
+/// `ui.show-key-hints` over a connection the caller already holds. `None` on
+/// any failure — no such key on an older compositor, or not a bool.
+pub fn fetch_key_hints(client: &mut ec_ipc::Client) -> Option<bool> {
+    let reply = client
+        .call("get_config", json!({ "path": "ui.show-key-hints" }))
+        .ok()?;
+    reply.get("keys")?.as_array()?.first()?.get("value")?.as_bool()
+}
+
+/// `ui.show-key-hints` — whether the launcher and the start menu draw their
+/// keyboard hint line — over one short-lived connection, like
+/// [`fetch_glass`]. `None` when the socket or the key is not there; callers
+/// default to showing the hints.
+pub fn fetch_show_key_hints() -> Option<bool> {
+    let mut client = ec_ipc::Client::connect().ok()?;
+    fetch_key_hints(&mut client)
+}

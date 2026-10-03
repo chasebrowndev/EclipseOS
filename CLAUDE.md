@@ -132,6 +132,11 @@ file dumps until it compacts mid-task and loses the plan.
   have. Subagents are for medium and larger changes, where keeping the main
   context clean pays. The one exception: **all** frontend goes to
   `eclipse-frontend`, every time, whatever the size.
+- **Build barrier when several agents run at once.** Each brief says: no
+  cargo build/check/clippy/test, gate, or headless screenshot until the main
+  thread gives the go-ahead. An agent finishes its code, messages main
+  "READY TO BUILD" with a short summary, and waits. Main gives the go-ahead
+  only after **every** running agent has signalled ready, never to one early.
 
 ## Commits & PRs (F-07 §5)
 - Conventional commits: `feat(abyss): …`, `fix(policyd): …`, `docs: …`.

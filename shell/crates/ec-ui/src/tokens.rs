@@ -277,6 +277,8 @@ pub mod radius {
     pub const CHIP: f32 = 6.0;
     /// Bar-chart caps.
     pub const BAR: f32 = 2.5;
+    /// A sidebar nav item's placeholder icon square.
+    pub const GLYPH: f32 = 4.5;
     /// A badge: nearly square, so a label that classifies an object never
     /// reads as a chip you can pick or a pill you can press.
     pub const BADGE: f32 = 3.0;
@@ -342,6 +344,19 @@ pub mod space {
     /// stands in for its icon.
     pub const NAV_BAR_H: f32 = 18.0;
     pub const NAV_GLYPH: f32 = 15.0;
+    /// A sub-page row under an expanded sidebar section: shorter than a
+    /// section row, so the two levels read apart before the indent does.
+    pub const NAV_SUB_H: f32 = 26.0;
+    /// Between two sub-page rows, and above the first.
+    pub const NAV_SUB_GAP: f32 = 2.0;
+    /// How far a sub-page label sits in from its button's edge: under the
+    /// section's label, past where its icon square is.
+    pub const NAV_SUB_INDENT: f32 = NAV_X + NAV_GLYPH + NAV_GLYPH_GAP;
+    pub const NAV_SUB_INDENT_COMPACT: f32 = NAV_X_COMPACT + NAV_GLYPH_GAP;
+    /// A section's open/closed chevron: its extent (the long side is twice
+    /// this, less a stroke) and the stroke it is drawn in.
+    pub const NAV_CHEVRON: f32 = 4.0;
+    pub const NAV_CHEVRON_STROKE: f32 = 1.0;
     /// One device-independent pixel: a border, a rule, an edge highlight.
     pub const HAIRLINE: f32 = 1.0;
     /// The drag track of a numeric control in a settings row.
@@ -409,6 +424,11 @@ pub mod space {
     /// enough that the next key does not.
     pub const KEY_GAP: f32 = 6.0;
     pub const HINT_GAP: f32 = 14.0;
+    /// A keycap's height: one line of micro mono (iced's default 1.3 line
+    /// height) inside its badge padding. A header that shows hints only some
+    /// of the time reserves it always, so the hints coming and going never
+    /// move what is below.
+    pub const KEYCAP_H: f32 = 1.3 * super::size::MICRO + 2.0 * BADGE_Y;
 }
 
 /// Window widths at which a pane's frame changes shape. Only the frame: rows
@@ -754,7 +774,8 @@ pub mod bar {
     /// the search cell with the row's [`EDGE`] inset on both sides, so the
     /// result rows line up under the field edge for edge.
     pub const PANEL_W: f32 = EDGE + SEARCH_W + EDGE;
-    /// Result rows the panel shows at once; more scroll with the selection.
+    /// Result rows the panel shows at once when `launcher.menu.max-rows`
+    /// does not say; more scroll with the selection.
     pub const MENU_ROWS: usize = 8;
     /// One result row: a chip's height, so the panel reads as the bar's own
     /// cells stacked rather than a second pane's.
@@ -770,16 +791,24 @@ pub mod bar {
     pub const MENU_NOTE_CHARS: usize = 28;
     /// The key-hint line at the panel's foot.
     pub const MENU_FOOTER_H: f32 = 24.0;
-    /// How far the panel extends past the pill, fully revealed: the rows, the
-    /// footer, and [`EDGE`] of air above, between and below them. A constant,
-    /// so a keystroke that changes how many rows match never resizes the
-    /// surface under the pointer.
-    pub const PANEL_H: f32 = EDGE
-        + MENU_ROWS as f32 * MENU_ROW_H
-        + (MENU_ROWS - 1) as f32 * MENU_ROW_GAP
-        + EDGE
-        + MENU_FOOTER_H
-        + EDGE;
+    /// `rows` result rows together, gaps included.
+    pub const fn menu_list_h(rows: usize) -> f32 {
+        rows as f32 * MENU_ROW_H + rows.saturating_sub(1) as f32 * MENU_ROW_GAP
+    }
+
+    /// How far the panel extends past the pill, fully revealed: `rows` rows,
+    /// the key-hint footer when `hints` is on, and [`EDGE`] of air above,
+    /// between and below them. Without hints the panel ends at the rows —
+    /// the footer's room is given back, not left as a gap.
+    ///
+    /// Fixed while the menu is open, so a keystroke that changes how many
+    /// rows match never resizes the surface under the pointer. The view, the
+    /// surface size and the slide all read this one function, so they cannot
+    /// disagree.
+    pub const fn panel_h(hints: bool, rows: usize) -> f32 {
+        let footer = if hints { MENU_FOOTER_H + EDGE } else { 0.0 };
+        EDGE + menu_list_h(rows) + EDGE + footer
+    }
 }
 
 /// The bar, as a settings pane draws it: a live preview strip, the lane of
@@ -849,6 +878,9 @@ pub mod motion {
     pub const DURATION_MS: u64 = 220;
     /// One frame of the bar's motion clock, while anything moves.
     pub const FRAME_MS: u64 = 16;
+    /// How long a revealed settings row stays lit before it has faded back
+    /// to an ordinary row: long enough to find with the eye after the jump.
+    pub const REVEAL_MS: u64 = 1200;
     /// Travel under which a grip's press and release is a tap, not a drag.
     pub const TAP_SLOP: f32 = 4.0;
     /// How far ahead a released drag is projected along its velocity, in

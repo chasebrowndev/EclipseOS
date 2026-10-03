@@ -47,16 +47,18 @@ defaults.
   had to shed. It goes away as soon as the pointer moves again. This is the
   escape hatch that lets the ladder be aggressive: no rung has to preserve
   legibility that a hover can recover.
-- **A Launcher settings pane.** The launcher
-  (`shell/crates/ec-launcher/src/main.rs`, spawned by `Super+E` and `Super+R` —
-  `abyss/crates/ec-abyss-config/src/lib.rs`, `default_binds`) has no `launcher.*` keys;
-  the only config it reads is `misc.terminal-command`, once at startup
-  (`shell/crates/ec-launcher/src/conn.rs`), so it has no tab in
-  `ec-settings` either. It wants a `launcher.*`
-  section in the schema table and its own pane alongside Taskbar once there is
-  something to put in it: result count, whether it searches paths as well as
-  desktop entries, where it anchors. Deferred deliberately — the Taskbar pane
-  shipped first because `bar.*` had real keys to expose.
+- **A Launcher settings pane — keys landed (2026-10-02).** The schema now has
+  a `launcher.*` section (`abyss/crates/ec-abyss-config/src/schema.rs`): `style`
+  (replacing `bar.launcher-style`, which still loads), `centered.width`,
+  `centered.max-rows`, `centered.anchor`, `menu.max-rows`, the shared
+  `search.path-binaries` / `terminal-apps` / `match-descriptions`, and the two
+  launcher chords `bind.open` / `bind.run`; plus `ui.show-key-hints`. The
+  launcher reads them at spawn (`shell/crates/ec-launcher/src/conn.rs`), the
+  start menu at startup and on every `config` event
+  (`shell/crates/ec-hyperion-bar/src/conn.rs`, `menu_config`). Still open: the
+  `ec-settings` Launcher pane itself, and sizing the launcher surface and
+  the start menu from the width and row keys rather than the compile-time
+  `WIDTH` / `MAX_ROWS` / `bar::MENU_ROWS`.
 
 - **Wifi and bluetooth pickers — decided and built (ADR 0053).** The drawers
   scan, join, disconnect, pair and connect through the `ec-services::status`

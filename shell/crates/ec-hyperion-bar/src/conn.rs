@@ -48,11 +48,31 @@ pub struct BarConfig {
     pub popup_anchor: Anchor,
     /// `bar.eye`: let Oracle-Eyes' beacon open the eclipse into an eye.
     pub eye: bool,
-    /// `bar.launcher-style`: what the eclipse button opens.
+    /// `launcher.style` (an older compositor's `bar.launcher-style`): what
+    /// the eclipse button opens.
     pub launcher: LauncherStyle,
 }
 
-/// `bar.launcher-style`: the separate centred launcher, or the start menu
+/// The `launcher.*` keys the start menu reads (COMP-13), at startup and on
+/// every `config` event. Defaults match the schema's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuConfig {
+    /// `launcher.menu.max-rows`.
+    pub rows: usize,
+    /// `launcher.search.*`: what the menu indexes and matches.
+    pub search: ec_services::apps::Search,
+}
+
+impl Default for MenuConfig {
+    fn default() -> Self {
+        MenuConfig {
+            rows: 8,
+            search: ec_services::apps::Search::default(),
+        }
+    }
+}
+
+/// `launcher.style`: the separate centred launcher, or the start menu
 /// the bar grows out of its own eclipse cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LauncherStyle {
@@ -310,7 +330,9 @@ impl Conn {
                     Some("pointer") => cfg.popup_anchor = Anchor::Pointer,
                     _ => {}
                 },
-                Some("bar.launcher-style") => match value.and_then(Value::as_str) {
+                // `bar.launcher-style` is what an older compositor calls it;
+                // a current one lists only `launcher.style`.
+                Some("launcher.style" | "bar.launcher-style") => match value.and_then(Value::as_str) {
                     Some("menu") => cfg.launcher = LauncherStyle::Menu,
                     Some("centered") => cfg.launcher = LauncherStyle::Centered,
                     _ => {}
@@ -319,6 +341,54 @@ impl Conn {
             }
         }
         cfg
+    }
+
+    /// The start menu's `launcher.*` keys and `ui.show-key-hints`, from one
+    /// `get_config`. Fail-soft: no reply, or a key an older compositor does
+    /// not have, keeps the default — and the hints default to shown.
+    pub fn menu_config(&mut self) -> (MenuConfig, bool) {
+        let mut cfg = MenuConfig::default();
+        let mut hints = true;
+        self.ensure();
+        let Some(v) = self.call("get_config", json!({ "schema": false })) else {
+            return (cfg, hints);
+        };
+        let Some(keys) = v.get("keys").and_then(Value::as_array) else {
+            return (cfg, hints);
+        };
+        for key in keys {
+            let value = key.get("value");
+            let flag = value.and_then(Value::as_bool);
+            match key.get("path").and_then(Value::as_str) {
+                Some("launcher.menu.max-rows") => {
+                    if let Some(r) = value.and_then(Value::as_u64) {
+                        cfg.rows = r as usize;
+                    }
+                }
+                Some("launcher.search.path-binaries") => {
+                    if let Some(b) = flag {
+                        cfg.search.path_binaries = b;
+                    }
+                }
+                Some("launcher.search.terminal-apps") => {
+                    if let Some(b) = flag {
+                        cfg.search.terminal_apps = b;
+                    }
+                }
+                Some("launcher.search.match-descriptions") => {
+                    if let Some(b) = flag {
+                        cfg.search.match_descriptions = b;
+                    }
+                }
+                Some("ui.show-key-hints") => {
+                    if let Some(b) = flag {
+                        hints = b;
+                    }
+                }
+                _ => {}
+            }
+        }
+        (cfg, hints)
     }
 
     /// The interaction `mode` (ADR 0062). Fail-soft to `hybrid`, the schema

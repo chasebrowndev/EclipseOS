@@ -3,7 +3,8 @@
 //!
 //! Walk the compositor's own schema table, subtract the collection nodes and
 //! whatever `ci/gui-coverage-exceptions.txt` still admits to, and assert that
-//! every key left over both maps to a widget and lands on a pane. This is the
+//! every key left over both maps to a widget and lands on exactly one page
+//! (`place_for` is a function, so one key has one place by construction). This is the
 //! local half of the `gui-coverage` job in `gate.yml`: that job stops the
 //! exception list from growing, this test stops a key from quietly skipping
 //! the list entirely.
@@ -13,7 +14,7 @@ use std::collections::HashSet;
 use serde_json::{json, Value};
 
 use ec_abyss_config::schema::{Ty, COLLECTIONS, TABLE};
-use ec_settings::pane::pane_for;
+use ec_settings::pane::place_for;
 use ec_settings::schema::control_for;
 
 /// The wire shape `config_rpc::ty_json` produces for a `Ty`. Written out once
@@ -61,7 +62,7 @@ fn every_schema_key_has_a_control_and_a_pane() {
             "{} is a {ty} the settings app cannot render",
             key.path
         );
-        assert!(pane_for(key.path).is_some(), "{} belongs to no pane", key.path);
+        assert!(place_for(key.path).is_some(), "{} belongs to no page", key.path);
     }
 }
 

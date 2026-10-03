@@ -20,5 +20,7 @@ pub mod output;
 pub mod pane;
 pub mod portal;
 pub mod schema;
+pub mod search;
+pub mod search_ui;
 pub mod taskbar;
 pub mod tray;

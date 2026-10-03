@@ -877,7 +877,7 @@ fn set_idle_inhibit(state: &mut AbyssState, conn: u64, params: &Value) -> Reply 
     Ok(json!({"ok": true, "inhibit": inhibit}))
 }
 
-/// Ask the bar to open its start menu (`bar.launcher-style "menu"`,
+/// Ask the bar to open its start menu (`launcher.style "menu"`,
 /// COMP-13 §2.1). `output` is an output id as `get_outputs` reports it;
 /// absent or null means the focused output, so exactly one bar opens. The
 /// compositor keeps no launcher state: it names the output and relays the

@@ -331,6 +331,13 @@ pub struct App {
     /// neither refetches nor starts services — the fixture stands in for
     /// both.
     pub fixture: Option<Instant>,
+    /// `ui.show-key-hints`: the start menu draws its key-hint footer, and
+    /// its panel is tall enough for it. Change it through [`set_key_hints`],
+    /// which resizes an open panel to match.
+    pub show_key_hints: bool,
+    /// `launcher.menu.*` and `launcher.search.*`: the start menu's rows and
+    /// what it indexes. Read at startup and on every `config` event.
+    pub launcher_menu: crate::conn::MenuConfig,
 }
 
 /// One output's bar: everything that depends on *where* it is drawn.
@@ -670,6 +677,7 @@ impl App {
         // from its first frame rather than on the next output event.
         let (_, focused) = conn.outputs();
         let widget_cfg = conn.widgets_config();
+        let (launcher_menu, hints) = conn.menu_config();
         let mut app = App {
             conn,
             snapshot,
@@ -703,7 +711,11 @@ impl App {
             widgets: widgets::State::default(),
             streams: Vec::new(),
             fixture: None,
+            show_key_hints: true,
+            launcher_menu,
         };
+        // No bar exists yet, so there is nothing to resize: the task is empty.
+        let _ = set_key_hints(&mut app, hints);
         app.icons.warm(&app.snapshot.windows);
         app.programs.fill(&mut app.snapshot.windows);
         #[cfg(debug_assertions)]
@@ -1445,6 +1457,11 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             if app.bar.launcher != LauncherStyle::Menu {
                 moved = dismiss(app);
             }
+            // `ui.show-key-hints` resizes an open menu; the rows and search
+            // options reach the next open.
+            let (launcher_menu, hints) = app.conn.menu_config();
+            app.launcher_menu = launcher_menu;
+            moved = Task::batch([moved, set_key_hints(app, hints)]);
             let air = app.conn.air().filter(|air| *air != app.air);
             let edge_moved = app.bar.position != app.edge;
             if air.is_some() || edge_moved {
@@ -1587,13 +1604,14 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         Message::Frame => {
             let now = Instant::now();
             let mut sized = Vec::new();
+            let hints = app.show_key_hints;
             for bar in app.bars.values_mut() {
                 bar.motion.tick(now);
                 // The panel's extent is the surface's height: a frame that
                 // moved it by a pixel re-asks the size, and only then.
-                let before = bar.menu.extent();
+                let before = bar.menu.extent(hints);
                 bar.menu.reveal.tick(now);
-                if bar.menu.extent() != before {
+                if bar.menu.extent(hints) != before {
                     sized.push(bar.id);
                 }
             }
@@ -1718,8 +1736,28 @@ fn push_size(app: &App, bar: &Bar) -> Task<Message> {
     let g = bar.fold.geometry(app.edge);
     Task::done(Message::SizeChange {
         id: bar.id,
-        size: (0, g.height + bar.menu.extent()),
+        size: (0, g.height + bar.menu.extent(app.show_key_hints)),
     })
+}
+
+/// Apply `ui.show-key-hints`, live. The panel's full height depends on it,
+/// so a change re-asks every bar's size — an open menu grows or shrinks to
+/// the new panel at once — and drops the last input region, which was sent
+/// at the old full height (see [`sync_region`]); the next configure at the
+/// new one sends it again.
+pub fn set_key_hints(app: &mut App, on: bool) -> Task<Message> {
+    if app.show_key_hints == on {
+        return Task::none();
+    }
+    app.show_key_hints = on;
+    let mut tasks = Vec::new();
+    for bar in app.bars.values_mut() {
+        bar.menu.region = None;
+    }
+    for bar in app.bars.values() {
+        tasks.push(push_size(app, bar));
+    }
+    Task::batch(tasks)
 }
 
 /// `--centered`: the launcher draws itself even with `bar.launcher-style
@@ -1760,7 +1798,7 @@ fn sync_region(app: &App, bar: &mut Bar, h: f32) -> Task<Message> {
     }
     let h = h.round().max(0.0) as u32;
     let rest = bar.fold.geometry(app.edge).height;
-    let full = rest + bar::PANEL_H.round() as u32;
+    let full = rest + bar.menu.full(app.show_key_hints).round() as u32;
     let top = app.edge == BarPosition::Top;
     let send = if top {
         h == full
@@ -1802,9 +1840,9 @@ fn toggle_start(app: &mut App, id: Id) -> Task<Message> {
     // One menu at a time, and never a popup over it.
     let closed = dismiss(app);
     let term = app.conn.terminal_command();
-    let entries = ec_services::apps::scan(term.as_deref());
+    let entries = ec_services::apps::scan_with(term.as_deref(), &app.launcher_menu.search);
     let open = with_bar(app, id, |app, bar| {
-        bar.menu.open(entries, term, now);
+        bar.menu.open(entries, term, app.launcher_menu, now);
         Task::batch([
             // The keyboard, held until the menu closes: the query is typed
             // here, and Escape and the arrows must reach it. On-demand, so
@@ -3130,7 +3168,8 @@ pub(crate) mod tests {
         let (one, two) = (bar_on(&mut a, "DP-1", 1), bar_on(&mut a, "DP-2", 2));
         let open = |a: &mut App| {
             let bar = a.bars.get_mut(&one).unwrap();
-            bar.menu.open(Vec::new(), None, Instant::now());
+            bar.menu
+                .open(Vec::new(), None, Default::default(), Instant::now());
             bar.menu.open
         };
         let is_open = |a: &App| a.bars[&one].menu.open;

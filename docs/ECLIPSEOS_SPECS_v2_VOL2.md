@@ -4357,6 +4357,790 @@ Refused at install, no review offered:
 
 ---
 
+<!-- ===== FILE: A-08_HUMAN_CONTROL_SURFACE.md ===== -->
+
+# A-08 — Human Control Surface (Draft v0.1)
+
+Depends on: A-01, A-03, A-04, S-07, COMP-10, COMP-19. Consumed by: D-05,
+D-07, COMP-17 (Agentic profile), X-07.
+
+How the owner dispatches agents, talks to them, watches them, and stops them.
+
+---
+
+## 1. Purpose and the One Rule
+
+Before this document, an agent could be given a task only in the abstract.
+A-04 says a task has a human origin, and S-07 says a `Human` link can arrive
+`via: "launcher"`. No document says what the human touches. This one does.
+
+One rule governs every choice below:
+
+> **The surface a human uses constantly carries no authority. The surface that
+> carries authority draws its own pixels.**
+
+The **console** is an ordinary client, outside the TCB and freely designed. It
+can draft, display, converse, pause and cancel, because none of those widen
+anything. Creating a task (including resuming a session) and unpausing one *do*
+widen authority, so
+they happen in a **commit slot**. The commit slot is drawn by the compositor,
+inside the console's window but not by it (COMP-19). This mirrors the split
+between `ec-settings` and the COMP-10 §3.9 policy editor, applied inside
+a single window.
+
+The rule exists because the alternative is a laundering hole. If an ordinary
+client could create a task, any same-uid process could mint a task whose
+`statement` renders as **trusted compositor text in every consent prompt for
+that task** (A-04 §11). That is the exact authority A-04 §3 withholds from
+agents, handed to anything that can open a socket.
+
+---
+
+## 2. Components
+
+| Component | What it is | Trust | Owner |
+|---|---|---|---|
+| **Console** (`eclipse-console`) | Fleet view, composer, conversations, task controls | Ordinary client. Not TCB. | D-05 |
+| **Protected surface** | A pane whose input must be human-origin and which capture never contains | Mechanism (COMP-19) | COMP-19 |
+| **Commit slot** | Fixed-size, compositor-drawn card hosted inside a protected surface. Dispatches a task, resumes a session, or unpauses a task. | Trusted UI | COMP-10 §3.12, COMP-19 §5 |
+| **Pending-decision queue** | Compositor-drawn list of every parked prompt, across all agents | Trusted UI | COMP-10 §3.13 |
+| **Console socket** | `agentd`'s API for the console: task list, conversations, pause, cancel | Owner uid, agent scopes refused | §7 |
+| **Conversation** | Task-bound A-03 channel, `conversation/<task_id>` | Intrinsic to the task, not grantable | §6, A-03 |
+
+---
+
+## 3. Who Holds Authority
+
+| Act | Widens authority? | Where it happens |
+|---|---|---|
+| Draft a task | No | Console, in a protected pane |
+| **Dispatch a task** | **Yes**: a new principal, grants, a trusted statement | **Commit slot** |
+| Post a message to an agent | No: confers no capability, carries `standard` trust | Console, in a protected pane |
+| Read conversations, status, history | No | Console |
+| Pause a task | No | Console |
+| Cancel a task (drain or immediate) | No | Console |
+| **Resume a closed session** | **Yes**: a new task, new grants | **Commit slot** (`task.commit` with `resumes`, §5.4) |
+| **Unpause a paused task** | **Yes**: acting requests flow again | **Commit slot** (`task.unpause`), queue, or emergency panel |
+| Answer an agent's permission prompt | Yes | Modal prompt (COMP-10 §3.2) or queue (§3.13), never the console |
+| Edit policy | Yes | Policy editor (COMP-10 §3.9), reached from the queue or the emergency panel |
+
+Unpausing is on the authority side for two reasons. A-04 §8 requires a human
+action to resume after a breaker pause. And a same-uid process that could
+unpause from the console socket could undo every pause the human made.
+
+**Naming.** *Resume* means continuing a closed session (§5.4), as in Claude
+Code's `/resume`. *Unpause* means letting a paused task act again. The two are
+never used interchangeably, in the spec or in the UI.
+
+---
+
+## 4. Interaction Model
+
+The design target is that the human types and presses Enter, and the security
+machinery stays invisible unless something actually needs a decision. The
+friction budget, per act:
+
+| Act | What the human does | Added cost |
+|---|---|---|
+| Dispatch | Picks an agent (or the default), types, presses Enter | None, when the slot is armed (COMP-19 §6) |
+| Chat mid-task | Types, presses Enter | None |
+| Pause / cancel | Clicks | None |
+| Follow-up after close | Clicks Reply, types, presses Enter | None; it is a new task (§5.3, or §5.4 for resumable agents) |
+| Resume a past session | Picks it in History (or types `/resume`), optionally adds an instruction, presses Enter | None |
+| Unpause | Presses Enter on the unpause slot | One keystroke, which is the point |
+| Agent asks permission | Answers a modal prompt, or defers to the queue | The real interruption, kept rare by grant sizing and the prompt budget (S-02 §5) |
+
+### 4.1 Questions are not prompts
+
+An agent can ask two different kinds of question, and the human must never
+confuse them:
+
+- **"Which folder are the invoices in?"** is conversation. It is untrusted
+  agent text, shown in the console.
+- **"May I send this email?"** is a permission prompt. It is trusted UI,
+  compositor-drawn.
+
+The console **must not** render anything that resembles a permission prompt:
+no Allow/Deny button pairs, no taxonomy labels, nothing styled like COMP-10.
+It may show *that* decisions are pending (§8), and it may summon the queue. It
+may never show a decision's content or offer a way to answer it. This is a
+design constraint on the frontend, stated here so the frontend design cannot
+drift from it.
+
+---
+
+## 5. Dispatch
+
+### 5.1 The draft
+
+```
+Draft {
+  package        string          // A-07 agent id; must be installed
+  statement      string          // ≤ 1,000 chars; becomes A-04 `statement`
+  deadline       duration        // default 2h (A-04 §13.4), ≤ policy max
+  narrowing      [Scope]?        // optional: may only shrink the install policy
+  continuation   task_id?        // §5.3
+  resumes        task_id?        // §5.4; exclusive with continuation
+  workspace_hint workspace?
+}
+```
+
+The console never submits a draft to `policyd` or `agentd`. It hands the
+draft to the compositor through its commit slot (COMP-19 §5), and receives
+only an opaque `draft_id`.
+
+### 5.2 Sequence
+
+```
+console      ──set_draft──►  abyss (slot)  ──preview_task──►  policyd
+                                  ◄──────preview{grants, deadline, refusals}──
+                             slot renders the preview, arms (COMP-19 §6)
+human ──Enter (physical)──►  abyss: consumes the key, commits
+                             abyss  ──create_task{draft, preview_id}──►  policyd
+                                           policyd: re-checks preview_id,
+                                           mints task (origin human,
+                                           origin_ref "slot:<id>"), issues grants
+                             abyss  ──committed{task_id}──►  console
+                             policyd ──task created──►  agentd: provisions (A-01 §4)
+agentd ──task_started──►  console (console socket subscription)
+```
+
+Rules:
+
+- **What was shown is what is submitted.** The compositor holds the only copy
+  of the draft that reaches `policyd`. The grant `policyd` mints must be
+  byte-identical to the preview the slot displayed. This is the same rule as
+  COMP-10 §3.2's scope display, and is tested the same way.
+- **The preview is version-bound.** `preview_id` names the policy table
+  version and install policy it was computed against. If either changes before
+  commit, `create_task` refuses with `preview_stale`. The slot disarms,
+  re-previews and re-arms. It never commits against a preview the human did
+  not see.
+- **The console learns only the outcome:** `committed{task_id}` or
+  `refused{reason}`, where the reason is a code, not a rule id (A-05 §5).
+- **Refusals happen at preview.** A package whose requested set fails S-01 §4
+  validation, or exceeds what policy allows, is refused in the slot before the
+  human can press Enter. Nothing is refused after commit that the slot showed
+  as acceptable.
+
+### 5.3 Follow-up is a new task
+
+A closed task cannot reopen (A-04 §4), so "continue" means a new task with
+`continuation` set. Three consequences:
+
+1. The new task's `statement` is still only what the human typed. It stays
+   trusted.
+2. The previous task's summary and transcript are **not** folded into the
+   statement. They enter the new task as the first message of its
+   conversation, carrying their original chain. Context arrives with its
+   provenance intact.
+3. The slot shows the continuation and, when the predecessor's `min_trust` was
+   `untrusted`, the S-07 §8 warning line. A follow-up of a task that read the
+   web starts out knowing it.
+
+§5.3 is the fallback for agents that cannot restore a session. For a
+`resumable` agent, Reply on a closed task uses §5.4.
+
+### 5.4 Resuming a session
+
+The human picks a closed task in History, or types `/resume` in the composer
+(a client-side command that opens a picker). The agent continues with its full
+prior context, like Claude Code's `/resume`.
+
+It is **not** a reopen. A-04 §4 makes `closed` terminal, and a task boundary is
+a process boundary (A-04 §5). A resume is a new task, with a new principal
+instance, new grants and a new process, whose agent starts with the old
+session's history restored.
+
+**The session record.** `agentd` keeps the model-visible history of every task:
+messages, tool calls and tool results, as they passed through its inference
+path (A-01 §9.3, settled by Appendix F-21). The agent's own scratch is
+destroyed on exit (S-03), so this record is the only thing that can be
+restored. It is stored at `$XDG_STATE_HOME/eclipse/sessions/<task_id>/`, mode
+0600, outside every sandbox.
+
+**Dispatch.** The draft carries `resumes: <task_id>`. The slot shows:
+
+- the original `statement` verbatim. It was human-authored, so it stays
+  trusted, and the human commits it again;
+- an optional new instruction, delivered as the first `human` conversation
+  message, not appended to the statement;
+- the session being resumed, its date and its outcome;
+- a **fresh preview** against current policy and the currently installed
+  package version.
+
+**What carries over.** These rules are what keep close-then-resume from
+becoming a laundering primitive:
+
+| Item | On resume | Reason |
+|---|---|---|
+| Provenance chain | **Carried.** The new chain root is a `Collapsed` link summarising the old chain (S-07 §3.1), so `min_trust` and `max_sensitivity` are unchanged. | Otherwise resuming clears untrusted taint. Same rule as crash recovery (A-04 §9.2). |
+| Hourly breaker windows and the denied-irreversible streak | **Carried**, merged into the new task's counters | Otherwise resuming resets S-06 §8 limits. |
+| Prompt budget | Reset | It measures whether a grant is the right size, not how much has been done. |
+| Grants | **Not carried.** Re-previewed and shown in the slot. | Policy may have changed, and the old approval was for the old task. |
+| Batch tokens, handles, revisions | Dropped | They describe a world that no longer exists. |
+| Conversation | The old transcript is linked, read-only, from the new task | |
+
+When the carried chain has `min_trust == untrusted`, the slot shows the S-07 §8
+warning. **A resumed untrusted session stays untrusted.** The only clean slate
+is a fresh task without the old context, and the console offers that as a
+separate action ("Start fresh with this statement").
+
+**Restoration.** The new agent process receives the history through
+`session.restore()` (A-06), followed by a boundary marker stating that the
+environment changed and every handle and revision is invalid. The SDK treats
+this like a compositor restart (A-06 §7): nothing is re-read automatically,
+and the agent must re-observe before acting.
+
+**Eligibility.**
+
+- The package must declare `resumable true` (A-07, Appendix F-24). The default
+  for third-party packages is off. A non-resumable agent gets §5.3 instead.
+- The package must still be installed. A version change loads the old history
+  into the current version. If the manifest widened in between, the normal
+  install re-review (A-07 §5) happens first.
+- A session whose task closed `failed` is resumable. One closed by an S-11 I3,
+  I5 or I6 incident is not: its history is evidence, and the system no longer
+  trusts the state it describes.
+- Resuming a parent resumes the parent only. Child sessions are visible from
+  its history and can be resumed individually.
+
+**Retention.** Session records follow transcript retention (§11), and the
+console's History has a per-session **Delete**. The record holds whatever the
+agent perceived at `private` class or below. `secret` content never reaches an
+agent (S-05 §2), so it never reaches the record.
+
+---
+
+## 6. Conversation
+
+A channel per task, named `conversation/<task_id>`, hosted by `agentd` and
+following A-03 except where stated here.
+
+- **Intrinsic, not grantable.** Every task has exactly one conversation. The
+  agent may read and post on its own task's conversation and on no other.
+  There is no capability to request, and no way to name another task's
+  conversation.
+- **Lifecycle.** Opened with the task. Closed to new posts when the task
+  closes. Retained for history (§11).
+- **Human posts** arrive over the console socket and are stamped by `agentd`
+  with a `HumanClient` link (S-07, Appendix F-03) at **`standard` trust**.
+
+  This is deliberately not `human` trust. The console socket admits any
+  owner-uid process outside an agent scope, and `agentd` cannot tell a
+  keystroke in the console from a script. A human message therefore informs an
+  agent but authorizes nothing. Authority still comes only from grants, and
+  irreversible acts still prompt. The protected pane (COMP-19) stops *agents*
+  from typing into the composer. It does not make the message trustworthy to
+  `policyd`, and nothing here claims it does.
+- **Agent posts** carry the agent's current chain and are untrusted text to
+  every reader. The console renders them with their provenance summary
+  (`min_trust`, head source), as COMP-10 renders `agent_note`.
+- **Agent tools** (A-02, Appendix F-04): `task.say(body)`, `task.ask(question)`
+  (marks the task *awaiting reply*) and `task.inbox(since?)`. Message size and
+  rate quotas follow A-03 §7, counted on the task.
+- **Notifications.** When an agent asks a question, a toast may announce
+  *that* agent X has a question. It does **not** show the body by default. The
+  body is agent text, possibly derived from private content, and toasts are
+  capturable and visible across workspaces.
+
+### 6.1 Schema
+
+Conversation messages use one registered schema, `conversation.v1`:
+
+```
+{ kind: "say" | "ask" | "human" | "context",
+  text: string,             // ≤ 16 KiB, sanitised as COMP-10 §3.2
+  reply_to: msg_id? }
+```
+
+`context` is used once, for the §5.3 carried-over summary. Attachments are an
+open decision (§14).
+
+---
+
+## 7. Console Socket
+
+`$XDG_RUNTIME_DIR/eclipse/console.sock`, served by `agentd`, mode 0600.
+Peer credentials must match the owner uid, and a peer whose cgroup is under
+`agents.slice` is refused (the same rule as ADR 0063's activity socket).
+Line-delimited JSON-RPC 2.0, following COMP-13 §2's conventions.
+
+| Method | Effect | Widens? |
+|---|---|---|
+| `list_packages` | Installed agents (A-07), with name and publisher. No grant detail. | — |
+| `list_tasks {state?}` | Tasks: id, package, statement, state, deadline, depth, counters summary, `awaiting_reply`, `pending_decisions` | — |
+| `get_task {task_id}` | One task, including its subtree (A-04 §10) | — |
+| `conversation_read {task_id, since?}` | Messages, each with its provenance summary | — |
+| `conversation_post {task_id, text, reply_to?}` | Human message (§6) | No |
+| `pause_task {task_id}` | `active` → `paused`, reason `human` | No |
+| `cancel_task {task_id, mode: "drain" \| "immediate"}` | A-04 §8 | No |
+| `show_decisions` | Asks the compositor to open the queue (COMP-10 §3.13). Rate-limited to 1/s. Opens with Deny focused. | No |
+| `list_sessions {since?}` | Closed tasks that can be resumed: id, package, statement, closed reason, date, `min_trust` | — |
+| `delete_session {task_id}` | Deletes the session record and transcript. Audit is unaffected. | No |
+| `subscribe` | Events: `task_started`, `task_state`, `message`, `awaiting_reply`, `decisions_pending {count}`, `task_closed` | — |
+
+Absent on purpose: `create_task`, `resume_session`, `unpause_task`, `answer_prompt`, anything
+touching grants or policy. The console reaches the first two through its
+commit slot, and the rest only through trusted UI. A request naming a task
+outside the owner's own tasks is impossible by construction, because v1 is
+single-user (Z-03).
+
+`list_tasks` returns the `statement`, which the human wrote. It does **not**
+return grant contents. The console shows a package's capabilities from the
+slot's preview at dispatch time, and does not hold them afterwards.
+
+---
+
+## 8. What the Console Shows
+
+Requirements on the frontend. Layout and visual design are D-05's.
+
+- **Fleet.** Every non-closed task: package, statement, state, time to
+  deadline, `awaiting_reply`, and a pending-decision badge. Nested tasks are
+  grouped under their parent.
+- **Conversation** for the selected task, with agent text visibly marked
+  untrusted, and a provenance summary per message on demand.
+- **Composer** for a new task, and a reply box for the selected one. **Both
+  are protected panes** (COMP-19). The composer hosts the commit slot.
+- **Controls:** pause, cancel (drain / immediate), and unpause. Unpause is a
+  commit slot with kind `task.unpause`, not a button.
+- **Decisions:** a count, and a control that calls `show_decisions`. Never the
+  decision content (§4.1).
+- **Activity:** when the `activity-lens` hook is on (ADR 0066), a link into
+  Fog for the selected task. The console embeds none of Fog's views.
+- **History:** closed tasks and their transcripts, read-only, within the §11
+  retention window. Each has **Resume** (§5.4), which fills the composer's
+  slot, **Start fresh** (same statement, no context), and **Delete**. `/resume`
+  in the composer opens the same list as a picker.
+- **Resumed tasks** show a divider in the conversation where the restored
+  history ends, and a link to the predecessor.
+
+The commit slot is a **fixed-size hole** the frontend lays out around
+(COMP-19 §5). The frontend chooses where the hole goes. It does not choose
+what is drawn in it, and must not draw anything that imitates it.
+
+---
+
+## 9. Chords
+
+| Chord | Opens | Class |
+|---|---|---|
+| `Super+Space` | Pending-decision queue (COMP-10 §3.13) | **Reserved**, compositor-owned, not rebindable (COMP-13 §1.1) |
+| `Super+/` | Console (spawn or focus) | Ordinary default bind, rebindable |
+| `Super+Escape` | Pause all agents and open the emergency panel | Reserved, unchanged (COMP-04 §6) |
+
+The console chord is not reserved, because opening a client grants nothing.
+
+**Layout note.** Bindings match keysyms. On layouts where `/` is shifted
+(`de`: Shift+7; `fr`: Shift+:), the chord is `Super+Shift+<that key>`. The user
+documentation must say so, and first-run (D-07) offers to rebind.
+
+The policy editor no longer has its own chord (COMP-10 §3.9 as amended). It is
+reached from the queue and from the emergency panel. Both are compositor-drawn,
+so it is still summoned only from trusted UI.
+
+---
+
+## 10. Isolating the Console from Agents
+
+The console displays every agent's conversation. An agent that could read the
+console's pixels or tree could read other agents' transcripts, defeating
+A-03's rule that agents share conclusions only through channels they were
+granted.
+
+Therefore:
+
+- The shipped `policy.kdl` carries
+  `windowrule "no-agent" { app-id "^eclipse-console$"; }`. The console is
+  absent from every agent's scene, hit tests, events and captures (COMP-05 §4).
+- Every pane in the console that displays conversation, or accepts input, is
+  a protected surface. It is excluded from capture by construction (COMP-19
+  §4), so a portal screen share of the desktop does not carry it either.
+- App-id is client-chosen, so `no-agent` alone is not a guarantee: a process
+  claiming the app-id gets hidden, not trusted. Hiding something is harmless;
+  the protection that matters is capture exclusion, and that does not depend
+  on the app-id.
+
+---
+
+## 11. Persistence
+
+- The console keeps **no state of its own** beyond per-viewer conveniences
+  (selected task, pane sizes), consistent with COMP-17 §3.
+- Transcripts are kept by `agentd` under
+  `$XDG_STATE_HOME/eclipse/conversations/<task_id>/`. They are append-only and
+  outside every sandbox. They are retained for 30 days by default
+  (owner-configurable, policy-owned) and then deleted.
+- Audit (S-04) records conversation posts and reads as `channel` records:
+  message id, size and chain hash, **not** the body. The transcript is a
+  convenience; audit is the evidence. Deleting a transcript loses no audit.
+- Session records (§5.4) live under `$XDG_STATE_HOME/eclipse/sessions/`, with
+  the same retention and deletion as transcripts. They are excluded from the
+  capture ring (S-11 §5) and are never readable by any agent except, through
+  `session.restore()`, the task that resumes them.
+
+---
+
+## 12. Failure Modes
+
+| Situation | Behaviour |
+|---|---|
+| `agentd` down | Console shows tasks unavailable. No slot can commit, because `policyd` provisions only to a live `agentd` (A-01 §5). Pausing still works through the emergency panel. |
+| `policyd` down | Slots cannot preview, so they never arm. Existing tasks run per A-01 §5. |
+| Console crashes mid-dispatch | The slot is destroyed with the surface. An uncommitted draft is gone. A committed one is a running task, and the restarted console sees it in `list_tasks`. |
+| Slot cannot arm (fullscreen, statement too long, occlusion) | COMP-19 §7: Enter opens the modal commit card instead. Dispatch still works, with one extra step. |
+| Two consoles open | Allowed. Each sees the same tasks. Slots are per surface. |
+| Agent posts while human is away | Stored. `awaiting_reply` set. A toast if enabled. |
+
+---
+
+## 13. Testing
+
+- **No task without a slot.** Grep- and test-enforced: no path creates a task
+  from the console socket. A same-uid process with the socket cannot create
+  or resume a task.
+- **Shown = submitted.** The minted grant and statement are byte-identical to
+  the slot preview, across 1,000 randomized drafts. A draft changed after
+  arming does not commit until re-armed.
+- **Stale preview.** Swap the policy table between arm and Enter: refused
+  with `preview_stale`, then re-armed with the new preview.
+- **Agent cannot dispatch.** An agent with `seat.key` and `seat.pointer`, in
+  scope of everything, cannot type into the composer, press Enter on the slot,
+  or see the console. The test also covers the compat-lock route (COMP-04 §8)
+  and `zwlr_virtual_pointer`.
+- **Conversation isolation.** An agent cannot read or post to another task's
+  conversation, and gets the same error whether that task exists or not.
+- **HumanClient is standard.** A human message carrying an instruction to
+  perform an irreversible act still prompts. Its chain shows `standard`, never
+  `human`.
+- **No prompt imitation.** The console never renders a decision's content (a
+  UI test against its view tree), and `show_decisions` opens the queue with
+  Deny focused.
+- **Continuation trust.** A follow-up of an untrusted-chain task shows the
+  warning in its slot, and its first `context` message carries the old chain.
+- **Resume does not launder.** Close a task whose chain is untrusted, resume
+  it, and assert the new `min_trust` is untrusted. Exhaust an hourly breaker,
+  close, resume, and assert the breaker is still tripped.
+- **Resume does not inherit grants.** Change policy between close and resume.
+  The slot preview reflects the new policy, and the minted grants match it.
+- **Restoration boundary.** After `session.restore()`, an act carrying a
+  revision from the old session fails `stale_generation`.
+- **Ineligible sessions.** A non-`resumable` package, an uninstalled package,
+  and an incident-closed task are all refused at preview.
+
+---
+
+## 14. Open Decisions
+
+1. **Attachments.** Should dispatch be able to hand the agent files? That is
+   an `fs.read` grant chosen at dispatch, shown in the slot. It is a
+   narrowing-only scope today. Proposed: yes, in v1.1.
+2. **Default agent.** A package marked default, so dispatch needs no picker.
+   Proposed: yes, owner policy.
+3. **Transcript retention**, 30 days proposed.
+4. **Attested human messages.** A future COMP-19 extension could have the
+   compositor attest that a message's text was typed physically into a
+   protected pane, which could justify a trust above `standard`. Not proposed
+   for v1. The value is unclear, and it is exactly the kind of mechanism that
+   grows into a second authority path.
+5. **Unpause from the console.** A `task.unpause` slot makes unpausing one
+   Enter. Should a *breaker* pause (S-06 §8) also be unpausable there, or only
+   from the emergency panel, where the counters are visible? Proposed: panel
+   only for breaker and incident pauses; slot for human pauses.
+6. **Session record format.** Router-level request/response pairs (I-02) are
+   provider-agnostic but bulky. A per-SDK compact format is smaller but ties
+   restoration to the SDK version. Proposed: router-level, compressed.
+7. **Resume chain size.** A long session collapses to one link; a session
+   resumed many times keeps collapsing. Fine for the invariants, but forensic
+   detail stays only in audit. Accepted.
+
+---
+
+<!-- ===== FILE: COMP-19_PROTECTED_SURFACES.md ===== -->
+
+# COMP-19 — `eclipse_protected_surface_v1` (Draft v0.1)
+
+Depends on: COMP-02, COMP-04, COMP-10, COMP-11. Consumed by: A-08, D-05,
+`ec-secret-prompt`, `ec-settings`.
+
+A Wayland protocol by which a client marks part of its own UI as protected,
+and may host a compositor-drawn **commit slot** inside it.
+
+---
+
+## 1. Model
+
+A **protected surface** is a `wl_surface`, and with it every subsurface below
+it, that the compositor treats in three ways:
+
+1. **Human-origin input only.** Only input from a physical device on the human
+   seat is delivered to it (§3).
+2. **Excluded from capture by construction.** It never enters any capture
+   pass list (§4).
+3. **Invisible to agents.** It is absent from every agent scene, tree, text
+   read and hit test.
+
+The human sees it exactly as before. Scanout is unchanged; only capture and
+input change.
+
+**Marking is safe to accept from a client because it only restricts.** A
+client can hide its own content and refuse input to its own pane. It cannot
+reach any other client's surfaces, and it gains nothing it did not have. This
+is the same footing as app-declared sensitivity (raise-only, S-05 §3).
+
+**Protection is not trust.** A protected surface's pixels are still drawn by
+the client. Protection says nothing about whether those pixels are honest.
+Only the commit slot (§5), drawn by the compositor, carries authority.
+
+### 1.1 Uses
+
+| Client | Protected part | Why |
+|---|---|---|
+| `eclipse-console` | Composer, reply box, conversation view | Agents must not type tasks or read transcripts (A-08 §10) |
+| `ec-secret-prompt` | Whole surface | Replaces the whole-window `sensitivity secret` rule with a direct guarantee |
+| `ec-settings` | Optional per pane | E.g. the Network pane |
+| Any client | Password fields | Capture exclusion and no injected input, finer-grained than COMP-02 §7 |
+
+---
+
+## 2. Interfaces
+
+### `eclipse_protected_surface_manager_v1` (global, public socket)
+
+```
+request protect(id: new_id<eclipse_protected_surface_v1>, surface: wl_surface)
+  -- One per surface. A second call → protocol error ALREADY_PROTECTED.
+  -- The surface must belong to the calling client (object ownership).
+request destroy()
+```
+
+### `eclipse_protected_surface_v1`
+
+```
+request get_slot(id: new_id<eclipse_commit_slot_v1>, kind: uint, x: int, y: int)
+  -- kind: 1 task.commit (dispatch, or resume a session), 2 task.unpause.
+  -- No other kinds at v1.
+  -- x, y: surface-local logical px of the slot's top-left.
+  -- One slot per protected surface → protocol error SLOT_EXISTS.
+request destroy()
+  -- Protection ends at the surface's next commit. Any slot is cancelled.
+
+event   input_refused(count: uint)
+  -- Coalesced, at most 1/s: non-physical input aimed at this surface was
+  -- dropped. Lets the client explain why "typing doesn't work" when a
+  -- script tries. Carries no origin detail.
+```
+
+### `eclipse_commit_slot_v1`
+
+```
+request set_draft(package: string, statement: string, deadline_s: uint,
+                  narrowing: array<u8>, continuation: string, resumes: string,
+                  workspace: uint)
+  -- narrowing: CBOR scope list, may only shrink. continuation, resumes:
+  -- task id or "", at most one non-empty.
+  -- Replaces the draft. Disarms (§6). The compositor previews (A-08 §5.2).
+request set_unpause(task_id: string)         -- for kind task.unpause only
+request move(x: int, y: int)                  -- disarms
+request cancel()
+request destroy()
+
+event   geometry(width: int, height: int)
+  -- Compositor-chosen, surface-local logical px. The client must keep this
+  -- rect free of its own content. Re-sent if the preview's size changes.
+event   state(state: uint, reason: uint)
+  -- previewing | armed | disarmed | suspended | refused
+  -- reason codes, never rule ids (A-05 §5)
+event   committed(task_id: string)
+event   cancelled()
+```
+
+The client receives no preview content: no grant set and no scope text.
+Everything the human must judge is drawn by the compositor in the slot.
+
+Protocol errors: `ALREADY_PROTECTED`, `SLOT_EXISTS`, `NOT_OWNER`,
+`BAD_KIND`, `DRAFT_TOO_LARGE`.
+
+---
+
+## 3. Input Origin
+
+COMP-04 is amended (Appendix F-05) so that every input event carries an
+**origin**, set where the event is created:
+
+| Origin | Source |
+|---|---|
+| `physical` | libinput device on the human seat |
+| `agent_seat` | An agent seat (COMP-04 §3) |
+| `agent_compat` | Agent input routed over the human seat under a compat lock (COMP-04 §8) |
+| `virtual` | `zwlr_virtual_pointer`, `zwp_virtual_keyboard`, allowlisted |
+| `scripted` | `type_text`, `click_at` (COMP-13 §2.2) |
+| `injected` | Test and headless injection (`input/inject.rs`) |
+
+A protected surface receives **`physical` only**. Everything else aimed at it
+is dropped before delivery, audited (Appendix F-13) when it came from an
+agent, and counted for `input_refused`.
+
+Origin, not seat, is the check. `agent_compat` arrives *on the human seat*.
+A seat check would let compat-lock input through, which is the hole this
+section exists to close.
+
+**Focus.** Keyboard focus may enter a protected surface only through
+`physical` input, or through a compositor focus change caused by `physical`
+input. An agent's `focus` request naming a protected surface fails with
+`out_of_scope`, and the surface is out of scope for every agent anyway (§1).
+
+**Conformance testing.** wlcs drives input through `injected`, which a
+protected surface refuses. The test build accepts `injected` on protected
+surfaces only under the `wlcs` feature. That code path is compiled out of
+release builds, and a release-build test asserts it is.
+
+---
+
+## 4. Capture Exclusion
+
+A protected surface, its subsurfaces and its popups are **never added to any
+capture pass list**: not `capture_toplevel`, `capture_output`,
+`capture_region`, streams, or portal screencopy. This is exclusion by
+construction (ADR 0030), not redaction:
+
+- No per-surface decision has to fire correctly. A classification bug cannot
+  leak it.
+- No placeholder is drawn. A capture shows what the output would look like
+  without the surface, i.e. whatever lies beneath. That content was already
+  capturable under its own class. A `secret` window beneath is still
+  redacted by COMP-02 §7.
+
+The surface **stays in normal stacking** on the physical output. It is not
+moved into the backend-prepended pass that holds annotations. That pass
+composites above every client, and putting client pixels there would let a
+client draw over other applications' windows.
+
+---
+
+## 5. Commit Slot
+
+A compositor-drawn card at a client-chosen position inside a protected
+surface. Its content and design are COMP-10 §3.12's. Its geometry and
+behaviour are defined here.
+
+- **Size is the compositor's.** The client chooses the position. The
+  compositor sends `geometry` and the client keeps that rect empty. Anything
+  the client draws there is hidden, because the slot is drawn in the trusted
+  pass above it.
+- **Drawn in the trusted pass**, clipped to the host surface's visible
+  rectangle, so it moves with the window.
+- **Edge marker.** While armed, the compositor also draws a marker that
+  overhangs the host window's border next to the slot, outside the client's
+  buffer, where no client can draw. Where the host has no visible border
+  (maximized flush to the output edge), the marker is omitted, and the
+  personal phrase inside the slot (COMP-10 §2) is the anti-spoof cue.
+- **The draft lives in the compositor.** `set_draft` hands the compositor its
+  copy. The client cannot read the preview back, and cannot submit anything
+  to `policyd` itself.
+
+---
+
+## 6. Arming and Commit
+
+A slot is **armed** only when all of the following hold, continuously, for
+`slot_arm_ms` (default 500 ms, policy-owned, bounds 300–2000 ms):
+
+- The preview has returned and is unchanged.
+- The host toplevel has keyboard focus on the human seat.
+- The slot's rect is fully visible: not occluded by another surface, inside
+  its output, not transformed by an in-flight animation.
+- The host has not moved, resized or changed scale.
+- The draft fits the slot (§7). Statements longer than the slot's capacity
+  never arm in place.
+- The session is unlocked, and no modal trusted UI is showing.
+
+Any change resets the timer. **Commit**, when armed, happens on either:
+
+- **Enter**, `physical` origin, unmodified, while keyboard focus is in the
+  host protected surface; or
+- **A pointer click** on the slot's commit control, `physical` origin.
+
+While a slot exists, an unmodified Enter **never reaches the client**. When
+armed it commits. When not armed it is dropped, and the slot pulses to show it
+was not ready. It is never queued: a keystroke cannot be saved up and spent
+when the card changes. Shift+Enter and other modified Enters pass to the
+client, which may use them for newlines.
+
+This deliberately relaxes COMP-10's "Enter never grants". That rule protects
+against a prompt that *appears under* a reflexive keypress. A commit slot is
+human-initiated, has been visible and still for the arming delay, and accepts
+only physical input. Under those conditions, Enter is the human's intent, not
+a reflex. The relaxation applies only to slots, never to agent-triggered
+prompts.
+
+On commit the compositor sends the held draft and `preview_id` to `policyd`
+(A-08 §5.2), then emits `committed` or `state(refused)`.
+
+---
+
+## 7. Suspension and Fallback
+
+| Condition | Slot state |
+|---|---|
+| Host loses focus, is occluded, minimized, or moved off-output | `suspended`: drawn dimmed with no commit control. Re-arms when the conditions return. |
+| Host is fullscreen | `suspended`. Enter opens the modal commit card. |
+| Statement exceeds slot capacity | `disarmed` with reason `overflow`. Enter opens the modal commit card. |
+| `policyd` unavailable | `disarmed` with reason `policy_unavailable`. Never arms. |
+| Preview refused | `refused`, with the reason drawn in the slot |
+
+The **modal commit card** is the same content as the slot, drawn as a COMP-10
+§3.11-style modal: scrollable, full statement, Tab then Space to commit,
+Escape and default focus on Cancel. Dispatch never becomes impossible; it
+becomes one step slower.
+
+---
+
+## 8. Limits
+
+- One protected-surface object per `wl_surface`, and one slot per protected
+  surface.
+- At most 4 slots per client, and 1 armed slot per output.
+- `set_draft` is rate-limited to 10/s. Previews are coalesced, so a human
+  typing does not flood `policyd`.
+- `statement` ≤ 1,000 chars, otherwise `DRAFT_TOO_LARGE`.
+
+---
+
+## 9. Test Plan (into COMP-15)
+
+- **Origin matrix.** For every origin except `physical`, input aimed at a
+  protected surface is dropped, including `agent_compat` arriving on the human
+  seat. `physical` input is delivered.
+- **Capture.** A protected surface contributes no pixel to any capture path,
+  at every scale and transform, including portal screencopy. It does not
+  appear in the pass list at all.
+- **Agent scene.** A protected surface is absent from `list_toplevels` detail,
+  `get_tree`, `get_text` and `hit_test` for every agent.
+- **Arming.** Each §6 condition, violated alone, prevents arming. Changing the
+  draft within `slot_arm_ms` of Enter does not commit.
+- **Enter isolation.** While a slot exists, no unmodified Enter reaches the
+  client, armed or not. Enter while disarmed is not queued.
+- **Spoof.** A client draws a pixel-perfect slot elsewhere in its window. It
+  cannot show the phrase or the edge marker, and pressing Enter on it does
+  nothing the client did not do itself.
+- **Release build.** The `injected`-accepting path is absent.
+
+---
+
+## 10. Open Decisions
+
+1. `slot_arm_ms` default (500 proposed). Too short reopens the
+   swap-under-keypress window; too long makes fast dispatch feel broken.
+2. Whether protected surfaces should also refuse `virtual` input from
+   allowlisted IME helpers. Proposed: yes; IMEs use `input_method_v2`, which
+   is a separate path and stays allowed.
+3. Whether X11 surfaces can be protected. Proposed: no, as with `secret`
+   (COMP-07 §2). X11 clients can read each other.
+4. A third slot kind for prompts the human started from inside an app, e.g.
+   "grant this agent access to this folder". Not at v1.
+
 ---
 
 # APPENDIX A — AMENDMENTS (APPLIED 2026-09-08)
@@ -4864,3 +5648,37 @@ subset needed by the GPU userspace when a sandboxed app needs rendering.
 | A3-15 | **S-06 §3.1** | Terminal command matching happens at the OSC 133 `C` boundary on the fully expanded command line, not by parsing the input line character by character (P-04 §3). Materially better matching point. |
 
 ---
+
+# APPENDIX F — AMENDMENTS (NOT YET APPLIED), 2026-10-02
+
+Source: owner rulings of 2026-10-02 while designing A-08. Apply inline, then
+mark applied, per the Appendix A convention.
+
+| ID | Target | Change |
+|---|---|---|
+| F-01 | Planning index | Add A-08 *Human control surface* to Tier 4 (**DONE**, Draft v0.1, depends A-01, A-03, A-04, COMP-19). Add COMP-19 *Protected surfaces and commit slot* to Tier 1 (Draft v0.1, depends COMP-02, COMP-04, COMP-10). Add `eclipse-console` to D-05's component list. |
+| F-02 | S-07 §2 | `Human.via` gains `"slot"` (a commit-slot answer, compositor-stamped). |
+| F-03 | S-07 §2, §3, §4 | New source `HumanClient { client_app_id, msg_id }`, stamped by `agentd`, trust **`standard`**. It is never `human`, because the console socket cannot distinguish the owner from an owner-uid script (A-08 §6). |
+| F-04 | A-02 §1 | Tools `task.say`, `task.ask`, `task.inbox`, available to every task on its own conversation only, with no capability (A-08 §6). |
+| F-05 | COMP-04 §1, §3 | Every input event carries an origin: `physical`, `agent_seat`, `agent_compat`, `virtual`, `scripted` or `injected`. It is set at creation and immutable. Checks that need human input test the origin, not the seat (COMP-19 §3). |
+| F-06 | A-03 §1, §2, §6 | New channel kind `conversation/<task_id>`: intrinsic to the task, not grantable, not enumerable, closed with the task, retained per A-08 §11. Human posts arrive via `agentd`'s console socket. |
+| F-07 | A-04 §2, §3 | A task minted from a commit slot has `origin: human`, `origin_ref: "slot:<id>"`. New optional fields `continuation_of: task_id` (A-08 §5.3) and `resumes: task_id` (A-08 §5.4), at most one set. Neither affects `statement` trust. A resuming task's chain root is a `Collapsed` link of the resumed chain, and its hourly breaker windows and denied-irreversible streak are merged from the resumed task (A-08 §5.4). |
+| F-08 | A-04 §8 | Unpausing a paused task requires a trusted step: a `task.unpause` commit slot, the queue, or the emergency panel. It is never a socket call. A breaker or incident pause is unpaused from the emergency panel only (A-08 §14.5, proposed). |
+| F-09 | A-01 §2, §8 | `agentd` serves `$XDG_RUNTIME_DIR/eclipse/console.sock` (A-08 §7), refusing peers in `agents.slice`. |
+| F-10 | COMP-10 §3.9 | The policy editor is no longer summoned by `agent-attention`. It is reached from the pending-decision queue (§3.13) and the emergency panel (§3.3). Closes Appendix C open item 5. |
+| F-11 | COMP-10, new §3.12 | **Commit slot.** Content: the personal phrase; package name and publisher; the statement verbatim; deadline; capability summary as the taxonomies the grant *could* reach, phrased as possibility (A-07 §9.2); narrowing; continuation or resumed session, and the untrusted-predecessor warning (S-07 §8); a single commit control. Geometry and behaviour per COMP-19 §5–§7. Fixed design from `ec_ui` tokens, not themeable. |
+| F-12 | COMP-10, new §3.13 | **Pending-decision queue.** Opened by `agent-attention` (`Super+Space`) or `show_decisions`. Lists every parked prompt across all agents (COMP-11 §4), oldest first. Each entry expands to its full §3.2 prompt. Deny is focused. Links to the emergency panel and the policy editor. Answers here are identical to answering the modal prompt. |
+| F-13 | S-04 §1.1 | New kinds: `slot` (preview, arm, commit, refuse; draft hash, preview_id, task_id) and `input_refused` (origin, target surface; agent origins only). |
+| F-14 | COMP-13 §1.1 | `SUPER+space` stays reserved as `agent-attention`, now targeting the queue. New default bind `SUPER+slash` → `spawn "eclipse-console"` (single-instance, focuses if running), ordinary and rebindable. New policy-owned key `slot-arm-ms` (300–2000, default 500). |
+| F-15 | COMP-02 §4, §7 | Protected surfaces are omitted from every capture pass list by construction (COMP-19 §4). Commit slots are drawn in the TrustedUI pass. |
+| F-16 | `dist/etc/policy.kdl` | Ship `windowrule "no-agent" { app-id "^eclipse-console$"; }` (A-08 §10). |
+| F-17 | COMP-15 §2 | New blocking suite: **protected surfaces** (COMP-19 §9), attached to the milestone that builds COMP-19. |
+| F-18 | COMP-16 | Sequence COMP-19 with milestone 15 (trusted UI). It needs agent seats (13) to test the origin matrix and `policyd` previews (10, 16) to arm. A-08's console lands with 25 (MCP surface). |
+| F-19 | F-06 | Glossary: **Console**, **Protected surface**, **Commit slot**, **Pending-decision queue**, **HumanClient**. |
+| F-20 | A-04 §13 | Open decision 4 (deadline default) is closed: the human sets the deadline in the draft, default 2 h. |
+| F-21 | A-01 §9.3 | Closed: inference goes through `agentd`. `agentd` also persists each task's model-visible history as its session record (A-08 §5.4), in `$XDG_STATE_HOME/eclipse/sessions/`, 0600. |
+| F-22 | A-04 §4 | Add: `closed` stays terminal. A *resume* is a new task with `resumes` set; it never changes the old task's state. A task closed by an S-11 I3, I5 or I6 incident is not resumable. |
+| F-23 | A-06 §7 | New `session.restore()`, available only to a task created with `resumes`. It returns the prior history followed by a boundary marker, after which every handle and revision from the old session is invalid. No automatic re-read. |
+| F-24 | A-07 §2, §6 | New manifest key `resumable` (bool, default `false` for non-`local` publishers, `true` for `local`). |
+| F-25 | S-04 §1.1 | The `task` record gains `resumes` and `continuation_of`. New kind `session` (stored, restored, deleted; task_id, size, hash), never the content. |
+| F-26 | F-06 | Glossary: **Resume** (continue a closed session as a new task, A-08 §5.4) and **Unpause** (let a paused task act again) are distinct terms and are never used interchangeably. |

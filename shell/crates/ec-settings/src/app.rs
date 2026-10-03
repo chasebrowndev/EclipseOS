@@ -2,34 +2,35 @@
 //! State, messages and view.
 //!
 //! The whole pane body is generated: `rows` is whatever the compositor said
-//! its schema is, `pane_for` sorts it, and `Control` picks the widget. The one
-//! bespoke pane is Display, which is not schema keys at all but outputs
-//! (COMP-03 §1.1) — and even there the calibration overlay is the
+//! its schema is, `place_for` sorts it onto a section's page, and `Control`
+//! picks the widget. The one bespoke page is Display, which is not schema
+//! keys at all but outputs (COMP-03 §1.1) — and even there the calibration overlay is the
 //! compositor's; this pane only sends the verbs and shows the numbers.
 //! Network is the other: the status service's readings, not config
 //! (`network.rs`). Taskbar is schema keys arranged around a live picture of
 //! the bar (`taskbar.rs`).
 
-use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use iced::widget::{column, pick_list, row, scrollable, text_input, Column, Row, Space};
 use iced::{Element, Length, Subscription, Task, Theme};
 use serde_json::{json, Value};
 
 use ec_ipc::EventKind;
+use ec_ui::motion::{Animated, Motion};
 use ec_ui::theme;
-use ec_ui::tokens::space;
+use ec_ui::tokens::{color, font, radius, size, space};
 use ec_ui::widget::{
-    big_value, color_picker, content_at, dimmed_at, hairline, header, list_row, micro_label, nav_item_at,
-    panel, pill, pill_group, row_caption, sidebar_at, status_chip, subtitle, swatch_button, value as mono,
-    Density, NumericSlider, Toggle,
+    big_value, color_picker, content_at, dimmed_at, edge_note, hairline, header, list_row, list_row_at,
+    micro_label, nav_item_at, nav_page_at, nav_section_at, panel, pill, pill_group, row_caption, sidebar_at,
+    status_chip, subtitle, swatch_button, value as mono, Density, NumericSlider, Toggle,
 };
 
 use crate::conn::{Conn, Problem};
 use crate::network::{self, Net};
 use crate::output::{Edge, Inset, Output};
-use crate::pane::{group_for, pane_for, Pane};
+use crate::pane::{page_of, place_for, Page, Section};
 use crate::schema::{Control, Row as Key};
 use crate::tray::{Tray, Writes};
 
@@ -57,7 +58,17 @@ struct LiveWrite {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Select(Pane),
+    /// A section's head in the sidebar: fold it if it is the open one,
+    /// otherwise open it on its first page.
+    Section(Section),
+    /// Show a page, its section expanded, scrolled to the top.
+    Open(Page),
+    /// Show a page and bring one of its rows into view, lit briefly — the
+    /// door search (and anything else that names a setting) comes in by.
+    /// Build one with [`locate`].
+    Reveal(Locus),
+    /// The sidebar's or a revealed row's frame clock, while either moves.
+    NavFrame(Instant),
     Toggled(String, bool),
     SliderMoved(String, f64),
     SliderReleased(String),
@@ -101,6 +112,54 @@ pub enum Message {
     TrayLive(Option<Vec<String>>),
     /// The Taskbar pane's own messages.
     Bar(crate::taskbar::Msg),
+    /// The sidebar search's messages.
+    Search(crate::search_ui::Msg),
+}
+
+/// Somewhere to take the user: a page, and optionally a row on it by its
+/// [`row_id`] (a config key's dotted path). See [`locate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Locus {
+    pub page: Page,
+    pub row: Option<String>,
+}
+
+/// Where `target` is, or `None` if nothing here shows it. `target` is any of:
+///
+/// - a config key (`decoration.blur.size`): its page, and its row;
+/// - a page path (`desktop/wallpaper`, `effects`, `addons`), as
+///   [`Page::from_arg`] reads it: that page, no row;
+/// - a bespoke-pane place as search names it (`pane:display.scale`,
+///   `pane:taskbar.widgets`): the page the part after `pane:` names, read
+///   as `section.page`, no row.
+pub fn locate(target: &str) -> Option<Locus> {
+    if let Some(place) = target.strip_prefix(BESPOKE) {
+        let path = place.replacen('.', "/", 1);
+        return Page::from_arg(&path).map(|page| Locus { page, row: None });
+    }
+    if let Some(place) = place_for(target) {
+        return Some(Locus {
+            page: place.page,
+            row: Some(target.to_owned()),
+        });
+    }
+    Page::from_arg(target).map(|page| Locus { page, row: None })
+}
+
+/// The terminal, and the launcher switch it gates (`schema_page`).
+const TERMINAL: &str = "misc.terminal-command";
+const TERMINAL_APPS: &str = "launcher.search.terminal-apps";
+
+/// How search names a place in a bespoke pane (`search::BESPOKE`).
+const BESPOKE: &str = "pane:";
+
+/// How long a revealed row stays lit.
+const REVEAL: Duration = Duration::from_millis(ec_ui::tokens::motion::REVEAL_MS);
+
+/// The widget id of the row that shows config key `path`: what
+/// [`Message::Reveal`] scrolls to and lights.
+pub fn row_id(path: &str) -> iced::widget::Id {
+    iced::widget::Id::from(format!("row:{path}"))
 }
 
 /// Which draggable number a typed draft belongs to. The three sites are not
@@ -148,12 +207,23 @@ impl Span {
 pub struct App {
     pub(crate) conn: Conn,
     pub(crate) rows: Vec<Key>,
-    pane: Pane,
+    /// The page the content column shows.
+    page: Page,
+    /// The expanded section in the sidebar: at most one, and not always the
+    /// shown page's — folding the current section leaves its page showing.
+    open: Option<Section>,
+    /// Each expanding section's open fraction, 0 folded to 1 open, moving
+    /// toward `open` under the default motion.
+    folds: HashMap<Section, Animated>,
+    /// The row a [`Message::Reveal`] lit, and when: it fades over
+    /// `motion::REVEAL_MS`.
+    flash: Option<(String, Instant)>,
     /// Text in flight, per path. Absent means "show the committed value".
     drafts: HashMap<String, String>,
-    /// Drafts `validate_config` has rejected. Written on every keystroke so
-    /// the field can say no before the user commits.
-    invalid: HashSet<String>,
+    /// Drafts `validate_config` has rejected, with the compositor's reason.
+    /// Written on every keystroke so the field can say no, and why, before
+    /// the user commits.
+    invalid: HashMap<String, String>,
     /// The colour key whose picker is open under its row.
     picker: Option<String>,
     /// Text typed into a numeric entry, per control. Absent means "show the
@@ -192,6 +262,8 @@ pub struct App {
     /// Installed add-ons and the hooks they turn on (ADR 0066). `None` until
     /// the compositor answers.
     pub(crate) addons: Option<ec_ipc::Addons>,
+    /// The sidebar search: its index over `rows`, the query and its hits.
+    pub(crate) search: crate::search_ui::Search,
 }
 
 impl Default for App {
@@ -202,20 +274,31 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
-        Self::with_pane(Pane::Windows)
+        Self::with_page(Section::Windows.first())
     }
 
-    /// Open on `pane` — `ec-settings network` from the taskbar.
-    pub fn with_pane(pane: Pane) -> Self {
+    /// Open on `page`, its section expanded — `ec-settings network`
+    /// from the taskbar, `ec-settings desktop/wallpaper`.
+    pub fn with_page(page: Page) -> Self {
         let mut conn = Conn::new();
         let glass_radius = conn.glass_radius().unwrap_or(ec_ui::tokens::radius::CARD);
         let blur = conn.blur().unwrap_or(false);
         let mut app = App {
             conn,
             rows: Vec::new(),
-            pane,
+            page,
+            open: Some(page.section()),
+            folds: Section::ALL
+                .iter()
+                .filter(|s| s.expands())
+                .map(|s| {
+                    let at = if *s == page.section() { 1.0 } else { 0.0 };
+                    (*s, Animated::new(at, Motion::DEFAULT))
+                })
+                .collect(),
+            flash: None,
             drafts: HashMap::new(),
-            invalid: HashSet::new(),
+            invalid: HashMap::new(),
             picker: None,
             live: HashMap::new(),
             live_writes: HashMap::new(),
@@ -233,6 +316,7 @@ impl App {
             blur,
             bar: crate::taskbar::Bar::default(),
             addons: None,
+            search: crate::search_ui::Search::default(),
         };
         // Debug builds only: open with a tray entry selected, so the selected
         // state can be screenshotted without pointer injection.
@@ -264,6 +348,7 @@ impl App {
         // Keys this compositor did not report still get a control, so the
         // Taskbar pane is whole with no socket and ahead of a newer schema.
         crate::taskbar::stand_in(&mut self.rows);
+        self.search.reindex(&self.rows);
         self.read_widgets();
         match self.conn.call("get_outputs", json!({ "all": true })) {
             Ok(reply) => {
@@ -281,6 +366,7 @@ impl App {
         if let Ok(rows) = self.conn.load_schema() {
             self.rows = rows;
             crate::taskbar::stand_in(&mut self.rows);
+            self.search.reindex(&self.rows);
         }
         self.read_widgets();
     }
@@ -300,6 +386,12 @@ impl App {
 
     pub(crate) fn key(&self, path: &str) -> Option<&Key> {
         self.rows.iter().find(|r| r.path == path)
+    }
+
+    /// Whether keyboard hint lines show (`ui.show-key-hints`). On when the
+    /// compositor does not report the key: hints are the shipped default.
+    pub(crate) fn key_hints_on(&self) -> bool {
+        self.key("ui.show-key-hints").is_none_or(Key::as_bool)
     }
 
     /// The two tray lists as the compositor last reported them.
@@ -487,14 +579,57 @@ impl App {
     }
 }
 
+/// How long past boot a debug build's `SETTINGS_PREVIEW_REVEAL` row stays
+/// fully lit before it starts to fade.
+#[cfg(debug_assertions)]
+const PREVIEW_HOLD: Duration = Duration::from_secs(10);
+
 /// The content column's scrollable, so a debug build can open scrolled.
 const SCROLL: &str = "content";
 
-/// Start on `pane`. Debug builds read `SETTINGS_PREVIEW_SCROLL` (logical px)
+/// Start on `page`. Debug builds read `SETTINGS_PREVIEW_SCROLL` (logical px)
 /// and open scrolled that far, so a lower block can be screenshotted with no
-/// pointer to scroll it.
-pub fn boot(pane: Pane) -> (App, Task<Message>) {
-    let app = App::with_pane(pane);
+/// pointer to scroll it, and `SETTINGS_PREVIEW_REVEAL` (anything [`locate`]
+/// reads) and open on that row, lit, as a search jump would.
+/// `SETTINGS_PREVIEW_SEARCH` opens with that query in the sidebar search,
+/// and `SETTINGS_PREVIEW_SEARCH_SEL` with that result selected.
+pub fn boot(page: Page) -> (App, Task<Message>) {
+    #[allow(unused_mut)]
+    let mut app = App::with_page(page);
+    #[cfg(debug_assertions)]
+    if let Ok(q) = std::env::var("SETTINGS_PREVIEW_SEARCH") {
+        app.search.set_query(&q);
+        if let Some(n) = std::env::var("SETTINGS_PREVIEW_SEARCH_SEL")
+            .ok()
+            .and_then(|n| n.parse().ok())
+        {
+            app.search.select(n);
+        }
+    }
+    // `SETTINGS_PREVIEW_EDIT=path=text`: open with that draft typed into
+    // the key's field, validated as a keystroke would be, so a refusal can be
+    // screenshotted without injected typing.
+    #[cfg(debug_assertions)]
+    if let Some((path, text)) = std::env::var("SETTINGS_PREVIEW_EDIT")
+        .ok()
+        .and_then(|e| e.split_once('=').map(|(p, t)| (p.to_owned(), t.to_owned())))
+    {
+        let _ = update(&mut app, Message::Edited(path, text));
+    }
+    #[cfg(debug_assertions)]
+    if let Some(to) = std::env::var("SETTINGS_PREVIEW_REVEAL")
+        .ok()
+        .and_then(|t| locate(&t))
+    {
+        let mut app = app;
+        let task = update(&mut app, Message::Reveal(to));
+        // The window takes seconds to map, longer than the light lasts:
+        // start the fade later, so a screenshot can still catch it lit.
+        if let Some((_, at)) = &mut app.flash {
+            *at += PREVIEW_HOLD;
+        }
+        return (app, task);
+    }
     #[cfg(debug_assertions)]
     if let Some(y) = std::env::var("SETTINGS_PREVIEW_SCROLL")
         .ok()
@@ -509,7 +644,7 @@ pub fn boot(pane: Pane) -> (App, Task<Message>) {
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
     let task = update_inner(app, message);
     // Any message can move the bar picture: a knob, the order, a reload.
-    if app.pane == Pane::Taskbar {
+    if app.page.section() == Section::Taskbar {
         crate::taskbar::sync(app, std::time::Instant::now());
     }
     task
@@ -517,7 +652,46 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
 
 fn update_inner(app: &mut App, message: Message) -> Task<Message> {
     match message {
-        Message::Select(p) => app.pane = p,
+        Message::Section(s) => {
+            if app.open == Some(s) && s.expands() {
+                // Folding leaves the page where it is: closing a list is
+                // not a request to go somewhere else.
+                app.fold(None);
+            } else if app.page.section() == s {
+                // Reopening the section the page is in: just unfold it.
+                app.fold(Some(s));
+            } else {
+                return go(app, s.first());
+            }
+        }
+        Message::Open(p) => return go(app, p),
+        Message::Reveal(Locus { page, row }) => {
+            let top = go(app, page);
+            let Some(path) = row else { return top };
+            app.flash = Some((path.clone(), Instant::now()));
+            return iced::advanced::widget::operate(Measure::new(row_id(&path))).then(|at| match at {
+                Some(y) => iced::widget::operation::scroll_to(
+                    SCROLL,
+                    iced::widget::scrollable::AbsoluteOffset {
+                        x: None,
+                        y: Some((y - space::BLOCK).max(0.0)),
+                    },
+                ),
+                None => Task::none(),
+            });
+        }
+        Message::NavFrame(now) => {
+            for f in app.folds.values_mut() {
+                f.tick(now);
+            }
+            if app
+                .flash
+                .as_ref()
+                .is_some_and(|(_, at)| now.duration_since(*at) >= REVEAL)
+            {
+                app.flash = None;
+            }
+        }
         Message::Dismiss => app.banner = None,
         Message::Reload => app.reload(),
 
@@ -542,7 +716,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             let apart: Vec<(String, Value)> = app
                 .rows
                 .iter()
-                .filter(|k| pane_for(&k.path) == Some(app.pane) && hidden_mirror(k))
+                .filter(|k| page_of(&k.path) == Some(app.page) && hidden_mirror(k))
                 .map(|k| (k.path.clone(), app.slider_json(&k.path, app.effective(k))))
                 .collect();
             for (path, json) in apart {
@@ -559,14 +733,14 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 Ok(()) => {
                     app.invalid.remove(&path);
                 }
-                Err(_) => {
-                    app.invalid.insert(path.clone());
+                Err(e) => {
+                    app.invalid.insert(path.clone(), e.detail().to_owned());
                 }
             }
             app.drafts.insert(path, text);
         }
         Message::Committed(path) => {
-            if app.invalid.contains(&path) {
+            if app.invalid.contains_key(&path) {
                 return Task::none();
             }
             if let Some(text) = app.drafts.remove(&path) {
@@ -697,22 +871,131 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::TrayLive(live) => app.tray_live = Some(live),
         Message::Bar(m) => return crate::taskbar::update(app, m),
+        Message::Search(m) => return crate::search_ui::update(app, m),
     }
     Task::none()
+}
+
+/// Show `page`: its section expanded (and any other folded), the content
+/// column back at the top.
+fn go(app: &mut App, page: Page) -> Task<Message> {
+    let changed = app.page != page;
+    app.page = page;
+    app.fold(Some(page.section()));
+    if !changed {
+        return Task::none();
+    }
+    app.flash = None;
+    iced::widget::operation::snap_to(SCROLL, iced::widget::scrollable::RelativeOffset::START)
+}
+
+impl App {
+    /// Expand `open` and fold every other section. The sidebar's layout
+    /// changes at once (`nav_section_at`); only the opening section's reveal
+    /// moves, under the default motion. A folded section's reveal goes to 0
+    /// at once, so it opens from the top again next time.
+    fn fold(&mut self, open: Option<Section>) {
+        let open = open.filter(|s| s.expands());
+        self.open = open;
+        let now = Instant::now();
+        for (s, f) in &mut self.folds {
+            if Some(*s) == open {
+                f.set_target(1.0, now);
+            } else {
+                f.snap(0.0);
+            }
+        }
+    }
+
+    /// Whether the sidebar or a lit row is moving, so the frame clock runs.
+    fn nav_moving(&self) -> bool {
+        self.flash.is_some() || self.folds.values().any(Animated::animating)
+    }
+
+    /// How lit row `path` is: 1 just revealed, falling to 0 over `REVEAL`.
+    fn lit(&self, path: &str) -> f32 {
+        match &self.flash {
+            Some((p, at)) if p == path => {
+                let t = at.elapsed().as_secs_f32() / REVEAL.as_secs_f32();
+                // Held, then let go: the first third at full, the rest an
+                // ease out, so the eye has time to land before it fades.
+                let fade = ((t - 1.0 / 3.0) * 1.5).clamp(0.0, 1.0);
+                1.0 - ec_ui::motion::ease_out(fade)
+            }
+            _ => 0.0,
+        }
+    }
+}
+
+/// Where a widget sits in the content column: the y offset of the
+/// container with `target`'s id from the top of the content scrollable's
+/// content, which is what `scroll_to` takes. Layout bounds are absolute and
+/// unscrolled, so the difference is the offset whatever the scroll is now.
+struct Measure {
+    target: iced::widget::Id,
+    scroll: iced::widget::Id,
+    top: Option<f32>,
+    at: Option<f32>,
+}
+
+impl Measure {
+    fn new(target: iced::widget::Id) -> Self {
+        Measure {
+            target,
+            scroll: iced::widget::Id::new(SCROLL),
+            top: None,
+            at: None,
+        }
+    }
+}
+
+impl iced::advanced::widget::Operation<Option<f32>> for Measure {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<Option<f32>>)) {
+        operate(self);
+    }
+
+    fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+        if id == Some(&self.target) {
+            self.at = Some(bounds.y);
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        _bounds: iced::Rectangle,
+        content: iced::Rectangle,
+        _translation: iced::Vector,
+        _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        if id == Some(&self.scroll) {
+            self.top = Some(content.y);
+        }
+    }
+
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<Option<f32>> {
+        iced::advanced::widget::operation::Outcome::Some(self.top.zip(self.at).map(|(top, at)| at - top))
+    }
 }
 
 /// A second connection on its own thread, forwarding events into the runtime.
 /// iced's `time::every` needs a tokio or smol backend and we enable neither,
 /// so the wait lives in a thread rather than in a futures timer.
 pub fn subscription(app: &App) -> Subscription<Message> {
-    let mut subs = vec![blur(), events()];
+    let mut subs = vec![blur(), events(), crate::search_ui::keys(&app.search)];
+    if app.nav_moving() {
+        subs.push(iced::window::frames().map(Message::NavFrame));
+    }
     // The status feed runs only while its pane is showing.
-    if app.pane == Pane::Network {
+    if app.page == Page::Network {
         subs.push(network::feed());
     }
-    if app.pane == Pane::Taskbar {
+    if app.page.section() == Section::Taskbar {
         subs.push(crate::tray::feed());
-        subs.push(taskbar_keys());
+        // While results show, the arrows and Escape are the search's.
+        if !app.search.active() {
+            subs.push(taskbar_keys());
+        }
         // The frame clock runs only while something in the picture moves.
         if app.bar.animating() {
             subs.push(iced::window::frames().map(|t| Message::Bar(crate::taskbar::Msg::Frame(t))));
@@ -803,11 +1086,41 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
     iced::widget::responsive(move |size| frame(app, Density::for_width(size.width))).into()
 }
 
-fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
-    let nav: Vec<Element<'_, Message, Theme>> = Pane::ALL
+/// The sidebar's section tree: what the rail shows when nothing is searched.
+fn tree(app: &App, density: Density) -> Vec<Element<'_, Message, Theme>> {
+    Section::ALL
         .iter()
-        .map(|p| nav_item_at(density, p.title(), *p == app.pane, Message::Select(*p)))
-        .collect();
+        .map(|s| {
+            let current = app.page.section() == *s;
+            if !s.expands() {
+                return nav_item_at(density, s.title(), current, Message::Open(s.first()));
+            }
+            let pages = s
+                .pages()
+                .iter()
+                .map(|p| nav_page_at(density, p.title(), *p == app.page, Message::Open(*p)))
+                .collect();
+            let reveal = app.folds.get(s).map_or(0.0, Animated::value);
+            nav_section_at(
+                density,
+                s.title(),
+                current,
+                app.open == Some(*s),
+                reveal,
+                Message::Section(*s),
+                pages,
+            )
+        })
+        .collect()
+}
+
+fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
+    let mut nav = vec![crate::search_ui::field(app, density)];
+    if app.search.active() {
+        nav.extend(crate::search_ui::results(app));
+    } else {
+        nav.extend(tree(app, density));
+    }
 
     let mut footer = Vec::new();
     if app.restart_pending {
@@ -815,35 +1128,35 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
     }
 
     let mut controls = vec![pill("Reload", false, Message::Reload)];
-    match app.pane {
-        Pane::Network => {
+    match app.page.section() {
+        Section::Network => {
             let (state, measure) = app.net.chip();
             controls.push(status_chip(&state, &measure));
         }
-        Pane::Taskbar => {
+        Section::Taskbar => {
             let (state, measure) = crate::taskbar::status(app);
             controls.push(status_chip(&state, &measure));
         }
-        Pane::Addons => {
+        Section::Addons => {
             let (state, measure) = crate::addons::status(app);
             controls.push(status_chip(&state, &measure));
         }
         _ => {}
     }
     let mut blocks = vec![header(
-        app.pane.title(),
-        subtitle(app.pane.subtitle(), "", ""),
+        app.page.title(),
+        subtitle(app.page.subtitle(), "", ""),
         controls,
     )];
     if let Some(problem) = &app.banner {
         blocks.push(banner(problem, app.glass_radius));
     }
-    match app.pane {
-        Pane::Display => blocks.extend(display_pane(app)),
-        Pane::Network => blocks.extend(network::blocks(&app.net, app.glass_radius)),
-        Pane::Taskbar => blocks.extend(crate::taskbar::blocks(app)),
-        Pane::Addons => blocks.extend(crate::addons::blocks(app)),
-        _ => blocks.extend(schema_pane(app)),
+    match app.page {
+        Page::Display => blocks.extend(display_pane(app)),
+        Page::Network => blocks.extend(network::blocks(&app.net, app.glass_radius)),
+        Page::Addons => blocks.extend(crate::addons::blocks(app)),
+        p if p.section() == Section::Taskbar => blocks.extend(crate::taskbar::blocks(app, p)),
+        _ => blocks.push(schema_page(app)),
     }
 
     // The window is transparent (`main.rs`): with blur on, sidebar and
@@ -895,11 +1208,17 @@ fn banner(problem: &Problem, radius: f32) -> Element<'_, Message, Theme> {
     .into()
 }
 
-/// Every schema key this pane claims, grouped by node, in schema order —
-/// except a moded node's keys (`schema::moded`), which follow their `mode`
-/// picker in runs, one per set of modes they apply to, in mode order. A run
-/// the current mode does not use is dimmed, and stays editable.
-fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
+/// Every schema key this page claims, in one panel: grouped by
+/// `place_for`'s group, in schema order — except a moded node's keys
+/// (`schema::moded`), which follow their `mode` picker in runs, one per set
+/// of modes they apply to, in mode order. A run the current mode does not
+/// use is dimmed, and stays editable.
+///
+/// One panel, not one per group: a page is a short list, and a stack of
+/// same-shaped cards is the silhouette COMPOSITION.md rules out. Groups are
+/// a hairline and a micro label inside it, and the label is dropped when the
+/// page has one group — the page title already says what it is.
+fn schema_page(app: &App) -> Element<'_, Message, Theme> {
     let mut groups: Vec<(&str, Vec<Element<'_, Message, Theme>>)> = Vec::new();
     let mode_path = format!("{}.mode", crate::schema::BLUR);
     let mode_key = app.key(&mode_path);
@@ -912,23 +1231,21 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
     let mut runs: Vec<(Vec<&str>, Vec<&Key>)> = Vec::new();
     let mut runs_group = None;
 
-    // The tray lists are drawn by `tray_hero`, their control; listing them
-    // again here as read-only text would be the same setting twice.
-    let shown = |k: &&Key| pane_for(&k.path) == Some(app.pane) && !k.path.starts_with("bar.tray.");
+    let shown = |k: &&Key| page_of(&k.path) == Some(app.page);
     let mut keys: Vec<&Key> = app.rows.iter().filter(shown).collect();
-    // The launcher style is a `bar` key (so last in schema order) but a
-    // sub-choice of the Launcher slot: it reads directly beneath that row.
-    if let Some(i) = keys.iter().position(|k| k.path == crate::pane::LAUNCHER_STYLE) {
-        let style = keys.remove(i);
-        let at = keys
+    // The terminal command decides whether terminal apps are offered at
+    // all: it goes directly above the switch it gates.
+    if let Some(from) = keys.iter().position(|k| k.path == TERMINAL) {
+        let gated = keys.remove(from);
+        let to = keys
             .iter()
-            .position(|k| k.path == "components.launcher")
-            .map_or(keys.len(), |j| j + 1);
-        keys.insert(at, style);
+            .position(|k| k.path == TERMINAL_APPS)
+            .unwrap_or(keys.len());
+        keys.insert(to, gated);
     }
     let mut set_apart = false;
     for key in keys {
-        let group = group_for(&key.path);
+        let group = place_for(&key.path).map_or("", |p| p.group);
         let rows = match groups.iter().position(|(g, _)| *g == group) {
             Some(i) => &mut groups[i].1,
             None => {
@@ -965,10 +1282,12 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
             }
             continue;
         }
-        rows.push(list_row(&key.label(), control(app, key)));
+        rows.push(setting_row(app, &key.label(), key));
         let blurb = match key.path.as_str() {
             "mode" => crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()),
             p if p == mode_path => crate::schema::blur_blurb(current),
+            "ui.show-key-hints" => Some("Keyboard hints in the launcher and start menu"),
+            TERMINAL_APPS => Some("Opened in the terminal command above."),
             _ => None,
         };
         if let Some(blurb) = blurb {
@@ -996,11 +1315,17 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
     runs.sort_by_key(|(applies, _)| first(applies));
     if let Some(rows) = runs_group.and_then(|g| groups.iter_mut().find(|(n, _)| *n == g)) {
         for (applies, keys) in runs {
-            let caption = applies
+            let dim = !applies.contains(&current);
+            let mut caption = applies
                 .iter()
                 .map(|m| crate::schema::value_label(m))
                 .collect::<Vec<_>>()
                 .join(" · ");
+            // Said in words as well as in strength: on glass the controls
+            // cannot be faded (`dimmed_at`), only the labels.
+            if dim && !caption.is_empty() {
+                caption.push_str(" · not in use");
+            }
             // The divider stops where the rows' labels do, so a run reads as a
             // softer break inside the panel rather than a rule across it.
             let divider = iced::widget::container(hairline()).padding([0.0, space::CARD]);
@@ -1009,22 +1334,93 @@ fn schema_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
                 run = run.push(row_caption(&caption));
             }
             for key in keys {
-                run = run.push(list_row(&key.label(), control(app, key)));
+                run = run.push(setting_row_at(app, &key.label(), key, dim && app.blur));
             }
-            rows.1.push(dimmed_at(run, !applies.contains(&current), app.blur));
+            rows.1.push(dimmed_at(run, dim, app.blur));
         }
     }
 
-    groups
-        .into_iter()
-        .map(|(group, rows)| {
-            let mut col = Column::new().push(micro_label(group)).spacing(space::ROW_Y);
-            for r in rows {
-                col = col.push(r);
-            }
-            panel(app.glass_radius, col).into()
-        })
-        .collect()
+    if groups.is_empty() {
+        return edge_note(
+            "Nothing to set here yet",
+            "This compositor reports no settings for this page. A newer abyss adds them; until then \
+             they are not in abyss.kdl either.",
+            color::NEUTRAL,
+        );
+    }
+    let labelled = groups.len() > 1;
+    let mut col = Column::new().spacing(space::ROW_Y);
+    for (i, (group, rows)) in groups.into_iter().enumerate() {
+        if i > 0 {
+            col = col.push(hairline());
+        }
+        if labelled {
+            col = col.push(micro_label(group));
+        }
+        for r in rows {
+            col = col.push(r);
+        }
+    }
+    panel(app.glass_radius, col).into()
+}
+
+/// One setting's row: [`list_row`] in a container carrying [`row_id`], so
+/// [`Message::Reveal`] can find it, and lit while a reveal fades. The
+/// container is there lit or not, so the tree does not change shape as the
+/// light goes.
+pub(crate) fn setting_row<'a>(app: &'a App, label: &str, key: &'a Key) -> Element<'a, Message, Theme> {
+    setting_row_at(app, label, key, false)
+}
+
+/// [`setting_row`] with its label stepped down, for a row that does not
+/// apply right now on a translucent column (`dimmed_at`).
+fn setting_row_at<'a>(app: &'a App, label: &str, key: &'a Key, dim: bool) -> Element<'a, Message, Theme> {
+    let lit = app.lit(&key.path);
+    let reason = app.invalid.get(&key.path).map_or("", String::as_str);
+    iced::widget::container(column![
+        list_row_at(label, control(app, key), dim),
+        refusal(reason)
+    ])
+    .id(row_id(&key.path))
+    .width(Length::Fill)
+    .style(move |_t: &Theme| iced::widget::container::Style {
+        background: Some(iced::Background::Color(color::HIGHLIGHT.scale_alpha(lit))),
+        border: iced::Border {
+            color: color::BORDER_STRONG.scale_alpha(lit),
+            width: space::HAIRLINE,
+            radius: radius::INSET.into(),
+        },
+        ..iced::widget::container::Style::default()
+    })
+    .into()
+}
+
+/// Why the compositor refused a draft, in its own words, under the row:
+/// "Super+Escape is reserved", "unknown key 'Foo'". The "invalid" beside the
+/// field says that it was refused; this says why. Always in the tree, and no
+/// height while there is nothing to say, so the field keeps its focus and an
+/// accepted row is no taller.
+fn refusal<'a>(reason: &str) -> Element<'a, Message, Theme> {
+    let line = iced::widget::container(
+        iced::widget::text(reason.to_owned())
+            .font(font::UI)
+            .size(size::BODY_SMALL)
+            .style(theme::text_danger),
+    );
+    if reason.is_empty() {
+        // `max_height`, not `height(Fixed(0.0))`: iced's column drops a
+        // child sized `Fixed(0)` from the tree altogether.
+        line.max_height(0.0).into()
+    } else {
+        // Inset like the row's label, and the row's own air beneath it.
+        line.padding(
+            iced::Padding::ZERO
+                .left(space::CARD)
+                .right(space::CARD)
+                .bottom(space::ROW_Y),
+        )
+        .into()
+    }
 }
 
 /// An unset key that mirrors another (`Key::mirror_of`) and can be written:
@@ -1115,11 +1511,19 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
 
         Control::Text { color } => {
             let draft = app.drafts.get(&key.path);
-            let shown = draft.cloned().unwrap_or_else(|| key.display());
+            // An unset key is an empty field: the dash a read-only value
+            // shows is the placeholder here, never text that can be typed
+            // after. A default, when there is one, says more than the dash.
+            let shown = draft.cloned().unwrap_or_else(|| key.text());
+            let hint = key.default.as_str().filter(|d| !d.is_empty()).unwrap_or("—");
             let submit = path.clone();
-            let invalid = app.invalid.contains(&key.path);
-            let mut input = text_input(key.default.as_str().unwrap_or(""), &shown)
+            let invalid = app.invalid.contains_key(&key.path);
+            let mut input = text_input(hint, &shown)
                 .on_input(move |t| Message::Edited(path.clone(), t))
+                // The row label's face and size: the field is part of the
+                // row, not a different voice beside it.
+                .font(font::UI)
+                .size(size::BODY)
                 .style(if invalid {
                     theme::eclipse_input_invalid
                 } else {
@@ -1377,6 +1781,45 @@ mod tests {
         let tree = |invalid| {
             let el = verdict_row(text_input("", "#f0"), invalid);
             shape(&iced::advanced::widget::Tree::new(&el))
+        };
+        assert_eq!(tree(false), tree(true));
+    }
+
+    /// The refusal line under a row comes and goes without changing the
+    /// row's tree, so a field being typed into keeps its focus.
+    #[test]
+    fn a_refusal_keeps_the_rows_tree_shape() {
+        let tree = |reason: &str| {
+            let el: Element<'_, Message, Theme> = iced::widget::column![
+                verdict_row(text_input("", "x"), !reason.is_empty()),
+                refusal(reason)
+            ]
+            .into();
+            shape(&iced::advanced::widget::Tree::new(&el))
+        };
+        assert_eq!(
+            tree(""),
+            tree("Super+Escape is reserved (COMP-04 §6) and cannot be bound")
+        );
+    }
+
+    /// A section folding and unfolding keeps its head and its well in place,
+    /// so the head's button keeps a press that spans the change. (Only the
+    /// chevron inside the head is redrawn as another shape.)
+    #[test]
+    fn a_sidebar_section_keeps_its_tree_shape_open_or_folded() {
+        let tree = |open: bool| {
+            let pages = vec![nav_page_at(Density::Regular, "A", false, Message::Reload)];
+            let el = nav_section_at(Density::Regular, "S", false, open, 0.5, Message::Reload, pages);
+            let t = iced::advanced::widget::Tree::new(&el);
+            let head = &t.children[0];
+            let button = &head.children[1];
+            let well = &t.children[1];
+            (
+                t.children.len(),
+                format!("{:?}{:?}", head.tag, button.tag),
+                shape(well),
+            )
         };
         assert_eq!(tree(false), tree(true));
     }

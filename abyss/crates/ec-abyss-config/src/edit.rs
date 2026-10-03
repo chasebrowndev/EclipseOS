@@ -79,7 +79,10 @@ pub fn set_value(text: &str, path: &str, value: &KdlValue) -> Result<String, Edi
 /// Legacy keys a newer key replaces: writing the newer one removes the old,
 /// so the file says one thing (the parser already ignores the old one beside
 /// the new).
-const SUPERSEDES: &[(&str, &str)] = &[("decoration.blur.mode", "decoration.blur.enabled")];
+const SUPERSEDES: &[(&str, &str)] = &[
+    ("decoration.blur.mode", "decoration.blur.enabled"),
+    ("launcher.style", "bar.launcher-style"),
+];
 
 fn drop_superseded(text: String, path: &str) -> Result<String, EditError> {
     let Some(&(_, legacy)) = SUPERSEDES.iter().find(|(new, _)| *new == path) else {
@@ -1149,5 +1152,24 @@ bar {
             let doc: KdlDocument = format!("n {q}").parse().unwrap();
             assert_eq!(doc.nodes()[0].entries()[0].value().as_string(), Some(s));
         }
+    }
+
+    /// Writing `launcher.style` removes the deprecated `bar.launcher-style`,
+    /// so the file names the setting once.
+    #[test]
+    fn launcher_style_drops_the_bar_alias() {
+        let text = "bar {\n    launcher-style \"menu\"\n    eye #false\n}\n";
+        let out = set_value(text, "launcher.style", &KdlValue::String("centered".into())).unwrap();
+        assert!(!out.contains("launcher-style"), "{out}");
+        assert!(out.contains("eye #false"), "{out}");
+        let doc: KdlDocument = out.parse().unwrap();
+        let mut found = Vec::new();
+        nodes_at(&doc, &["launcher", "style"], &mut found);
+        assert_eq!(found.len(), 1, "{out}");
+        assert_eq!(
+            found[0].entries()[0].value().as_string(),
+            Some("centered"),
+            "{out}"
+        );
     }
 }
