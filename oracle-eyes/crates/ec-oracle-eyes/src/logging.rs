@@ -2,47 +2,117 @@
 
 //! Logging setup. Normal mode is `info` on stderr (journal), `RUST_LOG`
 //! honoured. Debug mode adds a `trace` copy in
-//! `$XDG_STATE_HOME/oracle-eyes/debug.log`, owner-only and truncated each
-//! run. Screen-derived text reaches either sink only through
-//! [`crate::logsafe::log_safe`].
+//! `$XDG_STATE_HOME/oracle-eyes/debug.log`, owner-only, truncated the first
+//! time it is opened in a run. Debug can be switched on and off while the
+//! daemon runs (Settings writes `oracle-eyes.debug`), so the file sink is a
+//! switch rather than a layer installed once. Screen-derived text reaches
+//! either sink only through [`crate::logsafe::log_safe`].
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use tracing_subscriber::filter::filter_fn;
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 
-/// Held for the life of `main`; flushes the debug log to disk on drop.
+type Sink = Arc<Mutex<Option<File>>>;
+
+/// Held for the life of `main`: flips debug mode, and flushes the debug log
+/// to disk on drop.
 pub struct Guard {
-    file: Option<Arc<Mutex<File>>>,
+    file: Sink,
+    on: Arc<AtomicBool>,
 }
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        if let Some(f) = &self.file {
-            let mut f = f.lock().unwrap_or_else(|p| p.into_inner());
+        let mut f = self.file.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(f) = f.as_mut() {
             let _ = f.flush();
             let _ = f.sync_all();
         }
     }
 }
 
-#[derive(Clone)]
-struct FileWriter(Arc<Mutex<File>>);
+impl Guard {
+    /// Debug on or off, now. The file is opened (and truncated) the first
+    /// time debug comes on and kept for the rest of the run, so toggling it
+    /// off and on again appends rather than losing what was logged.
+    pub fn set_debug(&self, debug: bool) {
+        if self.on.load(Ordering::Relaxed) == debug {
+            return;
+        }
+        if !debug {
+            tracing::info!("debug mode off");
+            self.on.store(false, Ordering::Relaxed);
+            let mut f = self.file.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(f) = f.as_mut() {
+                let _ = f.flush();
+            }
+            return;
+        }
+        let (mut note, mut warn) = (None, None);
+        {
+            let mut f = self.file.lock().unwrap_or_else(|p| p.into_inner());
+            if f.is_none() {
+                match debug_log_path() {
+                    None => {
+                        warn =
+                            Some("debug: no HOME or XDG_STATE_HOME, debug.log disabled".to_string())
+                    }
+                    Some(path) => match open_log(&path) {
+                        Ok(file) => {
+                            *f = Some(file);
+                            note = Some(format!(
+                                "debug log at {} (trace level, truncated each run)",
+                                path.display()
+                            ));
+                        }
+                        Err(e) => {
+                            warn = Some(format!(
+                                "debug: {}: {e}, debug.log disabled",
+                                path.display()
+                            ))
+                        }
+                    },
+                }
+            }
+        }
+        self.on.store(true, Ordering::Relaxed);
+        tracing::info!("debug mode on");
+        if let Some(n) = note {
+            tracing::info!("{n}");
+        }
+        if let Some(w) = warn {
+            tracing::warn!("{w}");
+        }
+    }
+}
 
-struct Locked<'a>(std::sync::MutexGuard<'a, File>);
+/// Writes to the debug file while there is one, and nowhere otherwise.
+#[derive(Clone)]
+struct FileWriter(Sink);
+
+struct Locked<'a>(std::sync::MutexGuard<'a, Option<File>>);
 
 impl Write for Locked<'_> {
     fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-        self.0.write(b)
+        match self.0.as_mut() {
+            Some(f) => f.write(b),
+            None => Ok(b.len()),
+        }
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        self.0.flush()
+        match self.0.as_mut() {
+            Some(f) => f.flush(),
+            None => Ok(()),
+        }
     }
 }
 
@@ -94,43 +164,22 @@ pub fn init(debug: bool) -> Guard {
         .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .with_filter(stderr_filter);
 
-    let mut file = None;
-    let mut note = None;
-    if debug {
-        match debug_log_path() {
-            None => note = Some("debug: no HOME or XDG_STATE_HOME, debug.log disabled".to_string()),
-            Some(path) => match open_log(&path) {
-                Ok(f) => file = Some((Arc::new(Mutex::new(f)), path)),
-                Err(e) => {
-                    note = Some(format!(
-                        "debug: {}: {e}, debug.log disabled",
-                        path.display()
-                    ))
-                }
-            },
-        }
-    }
-    let file_layer = file.as_ref().map(|(f, _)| {
-        tracing_subscriber::fmt::layer()
-            .with_writer(FileWriter(Arc::clone(f)))
-            .with_ansi(false)
-            .with_filter(EnvFilter::new("trace"))
-    });
+    // Always installed, gated by `on`: a layer cannot be added to the
+    // global subscriber after `init`, and a filter that answers per event
+    // (rather than per callsite) is what lets the switch take effect at once.
+    let file: Sink = Arc::new(Mutex::new(None));
+    let on = Arc::new(AtomicBool::new(false));
+    let gate = Arc::clone(&on);
+    let file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(FileWriter(Arc::clone(&file)))
+        .with_ansi(false)
+        .with_filter(filter_fn(move |_| gate.load(Ordering::Relaxed)));
     tracing_subscriber::registry()
         .with(stderr)
         .with(file_layer)
         .init();
 
-    if debug {
-        tracing::info!("debug mode on");
-    }
-    if let Some((_, path)) = &file {
-        tracing::info!(path = %path.display(), "debug log (trace level, truncated each run)");
-    }
-    if let Some(n) = note {
-        tracing::warn!("{n}");
-    }
-    Guard {
-        file: file.map(|(f, _)| f),
-    }
+    let guard = Guard { file, on };
+    guard.set_debug(debug);
+    guard
 }

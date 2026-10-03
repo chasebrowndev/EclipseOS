@@ -22,6 +22,10 @@ pub struct Choice {
     pub label: String,
     /// The option's first line, as numbered for the model.
     pub line: usize,
+    /// Which list on the screen this option belongs to, from 0 in reading
+    /// order. Two questions on one screen are two groups with the same
+    /// labels, so a label alone does not say which option the model meant.
+    pub group: usize,
     /// Logical rect of the option, wrapped continuation lines included.
     pub x: i32,
     pub y: i32,
@@ -98,9 +102,9 @@ fn starts(k: Key) -> bool {
     matches!(k, Key::Letter(b'A') | Key::Number(1) | Key::Bullet)
 }
 
-/// Find the longest run of labelled alternatives, or failing that an
-/// unlabelled one after a question. Returns nothing unless at least two were
-/// found, left-aligned with each other.
+/// Find every run of labelled alternatives, or failing that one unlabelled
+/// run after a question. A run counts when it has at least two options,
+/// left-aligned with each other; each run is a [`Choice::group`].
 pub fn detect(lines: &[Line]) -> Vec<Choice> {
     let labelled = labelled(lines);
     let (found, kind) = if labelled.is_empty() {
@@ -111,63 +115,110 @@ pub fn detect(lines: &[Line]) -> Vec<Choice> {
     if tracing::enabled!(tracing::Level::DEBUG) {
         let opts: Vec<String> = found
             .iter()
-            .map(|c| format!("{}=L{}", crate::logsafe::log_safe(&c.label), c.line))
+            .map(|c| {
+                format!(
+                    "{}{}=L{}",
+                    c.group,
+                    crate::logsafe::log_safe(&c.label),
+                    c.line
+                )
+            })
             .collect();
         tracing::debug!(lines = lines.len(), kind, options = %opts.join(","), "choice: detected");
     }
     found
 }
 
-fn labelled(lines: &[Line]) -> Vec<Choice> {
-    let mut best: Vec<(Key, Choice)> = Vec::new();
-    let mut run: Vec<(Key, Choice)> = Vec::new();
+/// Most wrapped lines one option may take. Past this it is prose that
+/// happened to follow the last option, not more of it.
+const MAX_WRAP: usize = 3;
 
-    for l in lines {
+fn labelled(lines: &[Line]) -> Vec<Choice> {
+    let mut runs: Vec<Vec<(Key, Choice)>> = Vec::new();
+    let mut run: Vec<(Key, Choice)> = Vec::new();
+    let mut wraps = 0;
+
+    for (i, l) in lines.iter().enumerate() {
         let key = key_of(&l.text);
         let tol = l.h.max(12);
+        let aligned = |above: &Choice| (l.x - above.x).abs() <= tol;
         let continues = match (run.last(), key) {
-            (Some((prev, above)), Some(k)) => prev.follows(k) && (l.x - above.x).abs() <= tol,
+            (Some((prev, above)), Some(k)) => prev.follows(k) && aligned(above),
             _ => false,
         };
         if continues {
             run.push((key.expect("matched above"), choice(l)));
+            wraps = 0;
             continue;
         }
-        // A wrapped option: no label, no paragraph break, indented past the
-        // label. Anything else ends the run.
-        if key.is_none() && !l.para {
-            if let Some((_, c)) = run.last_mut() {
-                if l.x > c.x + 4 {
-                    grow(c, l);
+        // A misread label (`C)` read as `Q)` or `©)`): a short first word,
+        // aligned with the list, between two labels that would follow each
+        // other with one in between. Taken as that one; anything less sure
+        // ends the run.
+        let short = l
+            .text
+            .split_whitespace()
+            .next()
+            .is_some_and(|t| t.chars().count() <= 3);
+        if let (Some((prev, above)), true) = (run.last(), key.is_some() || short) {
+            let next = lines[i + 1..]
+                .iter()
+                .find_map(|n| key_of(&n.text).map(|k| (k, n)));
+            if let (Some(mid), Some((after, n))) = (successor(*prev), next) {
+                if aligned(above) && mid.follows(after) && (n.x - above.x).abs() <= tol {
+                    run.push((mid, choice(l)));
+                    wraps = 0;
                     continue;
                 }
             }
         }
-        if run.len() > best.len() {
-            best = std::mem::take(&mut run);
+        // A wrapped option: no label, no paragraph break, and set where the
+        // option's text is (a hanging indent) or back at its label. Anything
+        // else ends the run.
+        if key.is_none() && !l.para && wraps < MAX_WRAP {
+            if let Some((_, c)) = run.last_mut() {
+                if l.x + tol >= c.x && !l.text.trim_end().ends_with('?') {
+                    grow(c, l);
+                    wraps += 1;
+                    continue;
+                }
+            }
+        }
+        if run.len() >= 2 {
+            runs.push(std::mem::take(&mut run));
         }
         run.clear();
+        wraps = 0;
         if let Some(k) = key.filter(|k| starts(*k)) {
             run.push((k, choice(l)));
         }
     }
-    if run.len() > best.len() {
-        best = run;
+    if run.len() >= 2 {
+        runs.push(run);
     }
-    if best.len() < 2 {
-        return Vec::new();
-    }
-    best.into_iter()
+    runs.into_iter()
         .enumerate()
-        .map(|(i, (k, mut c))| {
-            c.label = match k {
-                Key::Letter(b) => (b as char).to_string(),
-                Key::Number(n) => n.to_string(),
-                Key::Bullet => letter(i),
-            };
-            c
+        .flat_map(|(g, run)| {
+            run.into_iter().enumerate().map(move |(i, (k, mut c))| {
+                c.group = g;
+                c.label = match k {
+                    Key::Letter(b) => (b as char).to_string(),
+                    Key::Number(n) => n.to_string(),
+                    Key::Bullet => letter(i),
+                };
+                c
+            })
         })
         .collect()
+}
+
+/// The label after `k` in a list, if it has one.
+fn successor(k: Key) -> Option<Key> {
+    match k {
+        Key::Letter(b) if b < b'Z' => Some(Key::Letter(b + 1)),
+        Key::Number(n) if n < 99 => Some(Key::Number(n + 1)),
+        _ => None,
+    }
 }
 
 /// Fewest options an unlabelled list may have. Two lines have one gap, so
@@ -243,6 +294,7 @@ fn choice(l: &Line) -> Choice {
     Choice {
         label: String::new(),
         line: l.id,
+        group: 0,
         x: l.x,
         y: l.y,
         w: l.w,
@@ -456,5 +508,58 @@ mod tests {
             line(2, "B movies are fun.", 0, 20),
         ];
         assert!(detect(&l).is_empty());
+    }
+
+    #[test]
+    fn an_option_wrapped_back_to_its_label_keeps_its_line() {
+        let l = [
+            line(1, "A) Slow start doubles the window until it", 16, 75),
+            line(2, "reaches the threshold", 47, 100),
+            line(
+                3,
+                "B) Fast retransmit waits for a timeout before it",
+                18,
+                125,
+            ),
+            line(4, "resends a missing segment", 17, 150),
+            line(5, "C) The receive window is the congestion window", 17, 175),
+            line(6, "D) Avoidance halves the window", 17, 250),
+        ];
+        let c = detect(&l);
+        assert_eq!(labels(&c), ["A", "B", "C", "D"]);
+        assert_eq!(
+            (c[1].y, c[1].h),
+            (125, 150 + 16 - 125),
+            "B spans both its lines"
+        );
+    }
+
+    #[test]
+    fn a_misread_label_between_two_good_ones_is_the_missing_one() {
+        let l = [
+            line(1, "A) 3", 16, 51),
+            line(2, "B) 6", 18, 101),
+            line(3, "Q) [2, 4, 6]", 17, 125),
+            line(4, "D) TypeError", 17, 200),
+        ];
+        assert_eq!(labels(&detect(&l)), ["A", "B", "C", "D"]);
+        // Without a D after it, a stray label is not taken on trust.
+        assert_eq!(labels(&detect(&l[..3])), ["A", "B"]);
+    }
+
+    #[test]
+    fn two_questions_are_two_groups() {
+        let l = [
+            line(1, "1. Capital of Australia?", 18, 25),
+            line(2, "A) Sydney", 46, 50),
+            line(3, "B) Canberra", 48, 75),
+            line(4, "2. Most of the atmosphere?", 17, 175),
+            line(5, "A) Oxygen", 46, 201),
+            line(6, "B) Nitrogen", 48, 225),
+        ];
+        let c = detect(&l);
+        assert_eq!(labels(&c), ["A", "B", "A", "B"]);
+        let groups: Vec<usize> = c.iter().map(|c| c.group).collect();
+        assert_eq!(groups, [0, 0, 1, 1]);
     }
 }

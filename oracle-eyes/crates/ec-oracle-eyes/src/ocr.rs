@@ -30,7 +30,6 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use crate::frame::Frame;
-use crate::logsafe::log_safe;
 
 /// One recognised word. `x`/`y`/`w`/`h` are **compositor-logical screen**
 /// coordinates, already translated out of frame space, so a caller can hand
@@ -60,8 +59,8 @@ pub struct Line {
     pub y: i32,
     pub w: i32,
     pub h: i32,
-    /// More than half a line of blank space sits above this one: a paragraph
-    /// or a different block on the page.
+    /// About a blank line of space sits above this one: a paragraph or a
+    /// different block on the page.
     pub para: bool,
 }
 
@@ -97,13 +96,35 @@ impl Line {
 /// the only consumer that cares, so breaks are restored here rather than being
 /// carried through [`Word`].
 ///
-/// The rule is geometric because it has to work for any engine (§7): a word
-/// whose vertical midpoint leaves the current line's band, or which starts to
-/// the left of where the line began, opens a new line; if more than half a
-/// line's worth of blank space sits between the two, the new line is marked
-/// as starting a paragraph.
+/// The rule is geometric because it has to work for any engine (§7):
+///
+/// - A word whose vertical midpoint leaves the current line's band, or which
+///   starts to the left of where the line began, opens a new line.
+/// - A word in the band but past a gutter — more blank space than
+///   [`GUTTER`] typical word heights — opens a new line too: it is the next
+///   column, not the next word. Without this a two-column page read as one
+///   line per row, half from each column, and no question or option on it
+///   could be found or bracketed.
+/// - When a gutter split happened, lines are put back in reading order
+///   column by column ([`by_column`]), so a column's lines stay adjacent.
+/// - A line starts a paragraph ([`Line::para`]) when it sits more than
+///   [`PARA_PITCH`] line pitches below the one before (a blank line), above
+///   it (the next column or block), or beside it with no overlap.
+///
+/// The yardsticks are medians over the whole read, not the line above: a
+/// line band is as tall as its glyphs, so `Jupiter` (descender) and `Mars`
+/// (none) set different bands at the same pitch, and an all-lowercase prose
+/// line (`would save a`) is a few pixels shorter than its neighbours. Either
+/// measured against the line above made evenly set lines flip between
+/// "paragraph" and "not".
 pub fn lines_of(words: &[Word]) -> Vec<Line> {
+    let typical = {
+        let mut hs: Vec<i32> = words.iter().map(|w| w.h).collect();
+        hs.sort_unstable();
+        hs.get(hs.len() / 2).copied().unwrap_or(1).max(1)
+    };
     let mut lines: Vec<Line> = Vec::new();
+    let mut split = false;
     // The current line's band and left edge. Kept apart from the line's rect
     // because the rect's left edge is the same thing, but the band is only
     // stretched by same-line words, never reset by them.
@@ -111,40 +132,101 @@ pub fn lines_of(words: &[Word]) -> Vec<Line> {
 
     for w in words {
         let Some(cur) = lines.last_mut() else {
-            lines.push(Line::start(1, w, false));
+            lines.push(Line::start(0, w, false));
             (top, bottom, left) = (w.y, w.y + w.h, w.x);
             continue;
         };
         let mid = w.y + w.h / 2;
-        let height = (bottom - top).max(1);
-        if mid >= top && mid < bottom && w.x >= left {
+        let in_band = mid >= top && mid < bottom && w.x >= left;
+        let past_gutter = w.x - (cur.x + cur.w) > GUTTER * typical;
+        if in_band && !past_gutter {
             // Tall glyphs (parentheses, capitals) stretch the band so the
             // rest of the line keeps matching it.
             top = top.min(w.y);
             bottom = bottom.max(w.y + w.h);
             cur.push(w);
         } else {
-            let para = w.y - bottom > height / 2;
-            let id = cur.id + 1;
-            lines.push(Line::start(id, w, para));
+            split |= in_band;
+            lines.push(Line::start(0, w, false));
             (top, bottom, left) = (w.y, w.y + w.h, w.x);
         }
     }
-    if tracing::enabled!(tracing::Level::TRACE) {
-        for l in &lines {
-            tracing::trace!(
-                id = l.id,
-                x = l.x,
-                y = l.y,
-                w = l.w,
-                h = l.h,
-                para = l.para,
-                text = %log_safe(&l.text),
-                "ocr: line"
-            );
+    if split {
+        lines = by_column(lines);
+    }
+    let pitch = pitch(&lines);
+    for i in 0..lines.len() {
+        lines[i].id = i + 1;
+        if i > 0 {
+            let (above, l) = (&lines[i - 1], &lines[i]);
+            let step = l.y - above.y;
+            lines[i].para = step <= 0 || step * 10 > pitch * PARA_PITCH || !overlaps(above, l);
         }
     }
+    // Not traced here: these lines are not redacted yet, and only the
+    // caller sees the context (a label on the line above) that makes a bare
+    // value a secret. `pipeline` traces them after redaction.
     lines
+}
+
+/// Blank space between two words of one band, in typical word heights, past
+/// which the second is in another column. A word space is well under one.
+const GUTTER: i32 = 3;
+
+/// Top-to-top distance, in tenths of the line pitch, past which a line
+/// starts a paragraph. One blank line is 2.0; ragged tops are well under 0.6.
+pub const PARA_PITCH: i32 = 16;
+
+/// Whether two lines share any horizontal extent.
+pub fn overlaps(a: &Line, b: &Line) -> bool {
+    a.x < b.x + b.w && b.x < a.x + a.w
+}
+
+/// The read's line pitch: the usual top-to-top distance between a line and
+/// the one below it in the same column. The lower median, so the blank lines
+/// between paragraphs do not count as the pitch; with too few lines to tell,
+/// no more than one and a half line heights.
+pub fn pitch(lines: &[Line]) -> i32 {
+    let mut steps: Vec<i32> = lines
+        .windows(2)
+        .filter(|p| overlaps(&p[0], &p[1]))
+        .map(|p| p[1].y - p[0].y)
+        .filter(|s| *s > 0)
+        .collect();
+    let mut hs: Vec<i32> = lines.iter().map(|l| l.h).collect();
+    hs.sort_unstable();
+    let height = hs.get(hs.len().saturating_sub(1) / 2).copied().unwrap_or(1);
+    steps.sort_unstable();
+    let median = steps.get(steps.len().saturating_sub(1) / 2).copied();
+    let p = match median {
+        Some(m) if steps.len() >= 3 => m,
+        Some(m) => m.min(height * 3 / 2),
+        None => height * 3 / 2,
+    };
+    p.max(1)
+}
+
+/// Lines back in reading order, one column after another. Each line joins
+/// the column whose last line it sits under, overlapping it horizontally;
+/// one that fits no column starts a new one. Columns come out in the order
+/// they started, which keeps a heading above two columns first and a page's
+/// left column before its right.
+fn by_column(lines: Vec<Line>) -> Vec<Line> {
+    let mut columns: Vec<Vec<Line>> = Vec::new();
+    for l in lines {
+        let home = columns
+            .iter_mut()
+            .filter(|c| {
+                let last = c.last().expect("never empty");
+                last.y < l.y && overlaps(last, &l)
+            })
+            .max_by_key(|c| c.last().expect("never empty").y);
+        match home {
+            Some(c) => c.push(l),
+            None => columns.push(vec![l]),
+        }
+    }
+    columns.into_iter().flatten().collect()
 }
 
 #[cfg(test)]
@@ -550,6 +632,27 @@ mod tests {
     }
 
     #[test]
+    fn evenly_spaced_options_are_one_paragraph_whatever_their_glyphs() {
+        // From a live run: 25 px pitch, bands of 14 (no descender) and 18
+        // (descender). Measured against the line above, B and D came out as
+        // paragraphs and A and C did not.
+        let words = vec![
+            at("Which", 17, 69, 50, 14),
+            at("planet?", 72, 69, 60, 18),
+            at("A)", 17, 119, 20, 14),
+            at("Mercury", 42, 119, 60, 14),
+            at("B)", 17, 144, 20, 14),
+            at("Jupiter", 42, 144, 60, 18),
+            at("C)", 17, 169, 20, 14),
+            at("Mars", 42, 169, 40, 14),
+            at("D)", 17, 194, 20, 14),
+            at("Venus", 42, 194, 50, 14),
+        ];
+        let paras: Vec<bool> = lines_of(&words).iter().map(|l| l.para).collect();
+        assert_eq!(paras, [false, true, false, false, false]);
+    }
+
+    #[test]
     fn text_of_handles_empty_and_single() {
         assert_eq!(text_of(&[]), "");
         assert_eq!(text_of(&[at("solo", 0, 0, 10, 10)]), "solo");
@@ -578,5 +681,60 @@ mod tests {
             self.conf = conf;
             self
         }
+    }
+
+    #[test]
+    fn a_two_column_row_splits_at_the_gutter_and_reads_column_by_column() {
+        // Tesseract's order on a two-column page: each row of both columns.
+        let words = vec![
+            at("The", 17, 25, 30, 18),
+            at("Revolution", 57, 25, 100, 18),
+            at("Quiz:", 537, 25, 50, 18),
+            at("which", 597, 25, 50, 18),
+            at("and", 17, 50, 30, 18),
+            at("reshaped", 57, 50, 80, 18),
+            at("begin?", 538, 50, 60, 18),
+            at("A)", 536, 101, 20, 16),
+            at("1776", 566, 101, 40, 16),
+        ];
+        let l = lines_of(&words);
+        let text: Vec<&str> = l.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            text,
+            [
+                "The Revolution",
+                "and reshaped",
+                "Quiz: which",
+                "begin?",
+                "A) 1776"
+            ]
+        );
+        let ids: Vec<usize> = l.iter().map(|l| l.id).collect();
+        assert_eq!(ids, [1, 2, 3, 4, 5]);
+        assert!(l[2].para, "the right column starts a block");
+        assert!(!l[3].para && l[4].para);
+    }
+
+    #[test]
+    fn a_lowercase_prose_line_is_not_a_paragraph() {
+        // Live: `would save local businesses about ...` boxed 14 px tall
+        // among 18 px lines, and with most words x-height only (10 px) the
+        // median word was shorter than the 11 px between that line and the
+        // next: `id=7 ... para=true` in the middle of a paragraph.
+        let mut words = Vec::new();
+        for (y, tall, h) in [
+            (175, "The", 18),
+            (200, "would", 14),
+            (225, "year", 18),
+            (250, "dollars", 18),
+            (300, "The", 18),
+        ] {
+            words.push(at(tall, 17, y, 50, h));
+            for (i, low) in ["save", "a", "now", "or", "vow"].iter().enumerate() {
+                words.push(at(low, 80 + 50 * i as i32, y + 4, 40, 10));
+            }
+        }
+        let paras: Vec<bool> = lines_of(&words).iter().map(|l| l.para).collect();
+        assert_eq!(paras, [false, false, false, false, true]);
     }
 }

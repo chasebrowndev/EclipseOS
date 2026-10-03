@@ -93,6 +93,13 @@ impl Beacon {
         }
     }
 
+    /// A beacon that tells nobody, for tests: binding the real path would
+    /// unlink the socket of a daemon running in the same session.
+    #[cfg(test)]
+    pub fn disabled() -> Beacon {
+        Beacon { shared: None }
+    }
+
     pub fn at(path: &Path, debug: bool) -> std::io::Result<Beacon> {
         if let Some(dir) = path.parent() {
             std::fs::DirBuilder::new()
@@ -151,6 +158,20 @@ impl Beacon {
         );
         s.eye = eye;
         let debug = s.debug;
+        s.clients.retain_mut(|c| tell(c, eye, debug));
+    }
+
+    /// Debug toggled live (Settings): every client is re-told the current
+    /// state with or without the prefix, so the taskbar's eye turns red or
+    /// back at once rather than at the next transition.
+    pub fn set_debug(&mut self, debug: bool) {
+        let Some(shared) = &self.shared else { return };
+        let mut s = lock(shared);
+        if s.debug == debug {
+            return;
+        }
+        s.debug = debug;
+        let eye = s.eye;
         s.clients.retain_mut(|c| tell(c, eye, debug));
     }
 }
@@ -213,6 +234,21 @@ mod tests {
         b.set(Eye::Think);
         assert_eq!(next(&mut r), "debug watch");
         assert_eq!(next(&mut r), "debug think");
+    }
+
+    #[test]
+    fn a_live_debug_toggle_re_tells_the_state_with_the_new_prefix() {
+        let path = sock("toggle");
+        let mut b = Beacon::at(&path, false).unwrap();
+        let mut r = join(&path);
+        assert_eq!(next(&mut r), "off");
+        b.set(Eye::Watch);
+        b.set_debug(true);
+        b.set_debug(true);
+        b.set_debug(false);
+        assert_eq!(next(&mut r), "watch");
+        assert_eq!(next(&mut r), "debug watch");
+        assert_eq!(next(&mut r), "watch");
     }
 
     #[test]
