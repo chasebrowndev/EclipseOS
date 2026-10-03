@@ -40,7 +40,7 @@
 //! live in a styling token.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{button, container, row, text, text_input, Column, Row, Space};
+use iced::widget::{button, container, row, text, text_input, Column, Space};
 use iced::{Alignment, Color, Element, Length, Theme};
 
 use ec_services::apps::Entry;
@@ -49,7 +49,8 @@ use ec_ui::tokens::{color, font, radius, size, space};
 use ec_ui::widget as parts;
 
 use crate::app::{App, Message, INPUT_ID};
-use crate::{MAX_ROWS, WIDTH};
+#[cfg(test)]
+use crate::MAX_ROWS;
 
 /// Height of the hero prompt cell, its padding included.
 const BAND_H: f32 = 52.0;
@@ -66,37 +67,43 @@ const NAME_W: f32 = 196.0;
 /// The last line of the panel, where a refusal, the key hints and the match
 /// count go. It is reserved whether or not there is anything to say: a panel
 /// that grows a line when a launch fails moves every row under the pointer
-/// that just clicked.
+/// that just clicked. With `ui.show-key-hints` off the line is not drawn and
+/// not reserved: the refusal moves onto the row that refused, and the count
+/// into the prompt's reading.
 const PROBLEM_H: f32 = 28.0;
 
-/// The launcher's surface height, in whole pixels.
+/// The launcher's surface height, in whole pixels, for the key-hint setting.
 ///
 /// Constant for the life of the launcher. A layer surface fixes its size
 /// before the boot fn runs, so a height that depended on how many entries
-/// matched would need a `SizeChange` round trip on every keystroke.
-pub fn surface_height() -> u32 {
-    (space::CARD * 2.0
-        + BAND_H
-        + space::BLOCK
-        + ROW_H * MAX_ROWS as f32
-        + ROW_GAP * (MAX_ROWS - 1) as f32
-        + space::BLOCK
-        + PROBLEM_H)
+/// matched would need a `SizeChange` round trip on every keystroke. Without
+/// the hint line the sheet ends at the last row: the space is given back,
+/// not left as a gap. `rows` is `launcher.centered.max-rows`.
+pub fn surface_height(show_key_hints: bool, rows: usize) -> u32 {
+    let rows = rows.max(1);
+    let footer = if show_key_hints {
+        space::BLOCK + PROBLEM_H
+    } else {
+        0.0
+    };
+    (space::CARD * 2.0 + BAND_H + space::BLOCK + ROW_H * rows as f32 + ROW_GAP * (rows - 1) as f32 + footer)
         .ceil() as u32
 }
 
 pub fn view(app: &App) -> Element<'_, Message, Theme> {
-    let body = Column::new()
+    let mut body = Column::new()
         .spacing(space::BLOCK)
         .push(prompt(app))
-        .push(results(app))
-        .push(footer(app));
+        .push(results(app));
+    if app.show_key_hints {
+        body = body.push(footer(app));
+    }
 
     // The sheet is the whole surface: the compositor masks it to
     // `decoration.rounding` and draws its material underneath, so there is
     // no outer padding for a blurred rim to show through.
     container(parts::surface(app.glass_radius, app.blur, body))
-        .width(Length::Fixed(WIDTH as f32))
+        .width(Length::Fixed(app.width as f32))
         .into()
 }
 
@@ -117,11 +124,17 @@ fn prompt(app: &App) -> Element<'_, Message, Theme> {
         .padding(iced::Padding::ZERO)
         .style(theme::prompt_input);
 
-    let position = if app.matched.is_empty() {
+    let mut position = if app.matched.is_empty() {
         "no match".to_owned()
     } else {
         format!("{} / {}", app.selected + 1, app.matched.len())
     };
+    // No hint line to carry the count: the reading that already says where
+    // the cursor is says how much is off the list as well.
+    let tally = tally(app);
+    if !app.show_key_hints && !tally.is_empty() {
+        position = format!("{position} \u{00b7} {tally}");
+    }
     let position = text(position)
         .size(size::MONO)
         .font(font::DATA)
@@ -141,10 +154,16 @@ fn prompt(app: &App) -> Element<'_, Message, Theme> {
 /// inside the window — so the selection rides the bottom row going down and
 /// the top row coming back up, and the accent is never off the pane.
 fn scroll(app: &App) -> usize {
-    app.selected.saturating_sub(MAX_ROWS - 1)
+    app.selected.saturating_sub(rows(app) - 1)
 }
 
-/// The visible slice of the match list, always `MAX_ROWS` tall.
+/// How many result rows the surface holds: `launcher.centered.max-rows`,
+/// never fewer than one — a launcher with no row has nothing to select.
+fn rows(app: &App) -> usize {
+    app.rows.max(1)
+}
+
+/// The visible slice of the match list, always [`rows`] tall.
 ///
 /// No container: the rows float on the sheet itself. A frame around them
 /// would be a stroke doing the job the air between the blocks already does,
@@ -152,10 +171,17 @@ fn scroll(app: &App) -> usize {
 fn results(app: &App) -> Element<'_, Message, Theme> {
     let offset = scroll(app);
     let mut col = Column::new().spacing(ROW_GAP);
-    for slot in 0..MAX_ROWS {
+    for slot in 0..rows(app) {
         let index = offset + slot;
         col = match app.matched.get(index) {
-            Some(&entry) => col.push(entry_row(&app.entries[entry], index, index == app.selected)),
+            Some(&entry) => {
+                let selected = index == app.selected;
+                // Hints off, there is no footer to hold a refusal, so it sits
+                // on the row it is about — the selected one, since a click
+                // selects before it runs and an arrow clears the refusal.
+                let refusal = app.problem.as_deref().filter(|_| selected && !app.show_key_hints);
+                col.push(entry_row(&app.entries[entry], index, selected, refusal))
+            }
             // An empty slot rather than a shorter list: the panel is a fixed
             // height, and rows that slide up as you type are rows you misclick.
             None => col.push(Space::new().height(Length::Fixed(ROW_H)).width(Length::Fill)),
@@ -166,7 +192,14 @@ fn results(app: &App) -> Element<'_, Message, Theme> {
 
 /// One row. `index` is an index into `matched`, not a slot on screen: the
 /// drawn window scrolls, so a click has to name the match it lands on.
-fn entry_row(entry: &Entry, index: usize, selected: bool) -> Element<'static, Message, Theme> {
+/// `refusal` replaces the note, in the warning colour, when the launch of
+/// this row was refused and there is no footer line to say so.
+fn entry_row(
+    entry: &Entry,
+    index: usize,
+    selected: bool,
+    refusal: Option<&str>,
+) -> Element<'static, Message, Theme> {
     // A terminal-only entry is listed and greyed: `apps::launch` will refuse
     // it, and a row that is simply missing teaches the human nothing. The
     // greying wins over the selection: a selected row that cannot launch must
@@ -187,17 +220,27 @@ fn entry_row(entry: &Entry, index: usize, selected: bool) -> Element<'static, Me
 
     // One line, clipped. A comment that wraps makes its row taller than its
     // neighbours, and a list whose rows are different heights is a list you
-    // cannot arrow down by eye.
-    let note = if entry.terminal {
+    // cannot arrow down by eye. A refusal is the exception: it is the one
+    // line the human must read whole, so it wraps inside the fixed row
+    // height rather than losing its tail (`… (os error 2)`).
+    let note = if let Some(refusal) = refusal {
+        refusal.to_owned()
+    } else if entry.terminal {
         "needs a terminal".to_owned()
     } else {
         entry.comment.clone().unwrap_or_default()
     };
     let note = text(note)
         .size(size::BODY_SMALL)
-        .font(font::UI)
-        .wrapping(Wrapping::None)
-        .color(if entry.terminal {
+        .font(if refusal.is_some() { font::DATA } else { font::UI })
+        .wrapping(if refusal.is_some() {
+            Wrapping::WordOrGlyph
+        } else {
+            Wrapping::None
+        })
+        .color(if refusal.is_some() {
+            color::DANGER
+        } else if entry.terminal {
             color::TEXT_TERTIARY
         } else {
             color::TEXT_SECONDARY
@@ -207,7 +250,9 @@ fn entry_row(entry: &Entry, index: usize, selected: bool) -> Element<'static, Me
     // spawned, so it belongs beside the choice — and printing all eight makes
     // a column of mono noise that reads louder than the names it labels.
     // Tertiary, not gold: the name already carries the row's one yellow.
-    let tail: Element<'static, Message, Theme> = if live {
+    // A refusal takes the identifier's room too: it is the longer line, and
+    // the one the human needs to read.
+    let tail: Element<'static, Message, Theme> = if live && refusal.is_none() {
         text(entry.id.trim_end_matches(".desktop").to_owned())
             .size(size::MONO)
             .font(font::DATA)
@@ -218,8 +263,21 @@ fn entry_row(entry: &Entry, index: usize, selected: bool) -> Element<'static, Me
         Space::new().into()
     };
 
+    // The name column is a fixed width so every note starts at one x. A
+    // refusal gives that alignment up: the name keeps only what it needs
+    // (never more than the column) and the reason takes the rest, with the
+    // same air between them as the note's right edge.
+    let name: Element<'static, Message, Theme> = if refusal.is_some() {
+        // Clip on the inner box, as for the note below: a clip on the
+        // padded box would let an unwrapped name run through the gap.
+        container(container(name).max_width(NAME_W - space::CARD).clip(true))
+            .padding(iced::Padding::ZERO.right(space::CARD))
+            .into()
+    } else {
+        container(name).width(Length::Fixed(NAME_W)).clip(true).into()
+    };
     let line = row![
-        container(name).width(Length::Fixed(NAME_W)).clip(true),
+        name,
         // The gap to the identifier has to be real padding: two strings that
         // meet at a clip edge read as one string. The clip has to sit on the
         // inner box, inset by that padding — a clip on the outer, padded
@@ -270,27 +328,10 @@ fn footer(app: &App) -> Element<'_, Message, Theme> {
             .font(font::DATA)
             .color(color::DANGER)
             .into(),
-        None => Row::new()
-            .spacing(space::HINT_GAP)
-            .align_y(Alignment::Center)
-            .push(parts::key_hint("\u{2191}\u{2193}", "select"))
-            .push(parts::key_hint("enter", "run"))
-            .push(parts::key_hint("esc", "close"))
-            .into(),
+        None => parts::key_hints(&[("\u{2191}\u{2193}", "select"), ("enter", "run"), ("esc", "close")]),
     };
 
-    // Both counts come from the scroll position, so the line changes as the
-    // selection descends. Computed from `matched.len()` alone it would name a
-    // constant, which is what made a scrolled-away selection invisible.
-    let offset = scroll(app);
-    let above = offset;
-    let below = app.matched.len().saturating_sub(offset + MAX_ROWS);
-    let tally = match (above, below) {
-        (0, 0) => String::new(),
-        (0, below) => format!("+{below} below"),
-        (above, 0) => format!("+{above} above"),
-        (above, below) => format!("+{above} above \u{00b7} +{below} below"),
-    };
+    let tally = tally(app);
     let right: Element<'_, Message, Theme> = if tally.is_empty() {
         Space::new().into()
     } else {
@@ -305,6 +346,24 @@ fn footer(app: &App) -> Element<'_, Message, Theme> {
         .height(Length::Fixed(PROBLEM_H))
         .align_y(Alignment::Center)
         .into()
+}
+
+/// How much of the list is off the drawn window: `+3 above · +12 below`,
+/// empty when it all fits.
+///
+/// Both counts come from the scroll position, so the line changes as the
+/// selection descends. Computed from `matched.len()` alone it would name a
+/// constant, which is what made a scrolled-away selection invisible.
+fn tally(app: &App) -> String {
+    let offset = scroll(app);
+    let above = offset;
+    let below = app.matched.len().saturating_sub(offset + rows(app));
+    match (above, below) {
+        (0, 0) => String::new(),
+        (0, below) => format!("+{below} below"),
+        (above, 0) => format!("+{above} above"),
+        (above, below) => format!("+{above} above \u{00b7} +{below} below"),
+    }
 }
 
 /// The panel draws itself; the surface behind it is nothing at all, so it
@@ -324,7 +383,26 @@ mod tests {
     /// one is clipped off the bottom of the screen.
     #[test]
     fn the_surface_holds_every_row() {
-        assert!(surface_height() as f32 >= BAND_H + ROW_H * MAX_ROWS as f32 + PROBLEM_H);
+        assert!(surface_height(true, MAX_ROWS) as f32 >= BAND_H + ROW_H * MAX_ROWS as f32 + PROBLEM_H);
+        assert!(surface_height(false, MAX_ROWS) as f32 >= BAND_H + ROW_H * MAX_ROWS as f32);
+    }
+
+    #[test]
+    fn the_surface_follows_the_configured_rows() {
+        assert_eq!(
+            surface_height(true, 8) - surface_height(true, 4),
+            (ROW_H * 4.0 + ROW_GAP * 4.0) as u32
+        );
+        assert_eq!(surface_height(false, 0), surface_height(false, 1));
+    }
+
+    /// Hints off gives the hint line's room back rather than leaving a gap.
+    #[test]
+    fn hiding_the_hints_shortens_the_surface() {
+        assert_eq!(
+            surface_height(true, MAX_ROWS) - surface_height(false, MAX_ROWS),
+            (space::BLOCK + PROBLEM_H) as u32
+        );
     }
 
     fn app_with(matched: usize, selected: usize) -> App {

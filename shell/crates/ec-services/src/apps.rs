@@ -57,6 +57,30 @@ pub fn search_path() -> Vec<PathBuf> {
     dirs.into_iter().map(|d| d.join("applications")).collect()
 }
 
+/// What a launcher search covers (`launcher.search.*`, COMP-13). The default
+/// is the schema's: desktop entries only, terminal apps when a terminal is
+/// configured, names and keywords but not descriptions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Search {
+    /// `launcher.search.path-binaries`: also index the executables on `PATH`.
+    pub path_binaries: bool,
+    /// `launcher.search.terminal-apps`: index `Terminal=true` entries (still
+    /// only when `misc.terminal-command` is set).
+    pub terminal_apps: bool,
+    /// `launcher.search.match-descriptions`: a query may match `Comment`.
+    pub match_descriptions: bool,
+}
+
+impl Default for Search {
+    fn default() -> Self {
+        Search {
+            path_binaries: false,
+            terminal_apps: true,
+            match_descriptions: false,
+        }
+    }
+}
+
 /// Every application the session can launch, sorted by name.
 ///
 /// An id found in an earlier directory wins: that is what lets a human shadow
@@ -67,15 +91,84 @@ pub fn search_path() -> Vec<PathBuf> {
 /// COMP-13), if any. Unset, `Terminal=true` entries are dropped rather than
 /// indexed and then refused at launch (TERM-01).
 pub fn scan(term: Option<&str>) -> Vec<Entry> {
+    scan_with(term, &Search::default())
+}
+
+/// `scan`, shaped by the `launcher.search` options. With `terminal_apps` off,
+/// `Terminal=true` entries are dropped as if no terminal were configured.
+/// With `path_binaries` on, every executable on `PATH` that no desktop entry
+/// already runs is appended as an entry of its own (see `is_path_binary`).
+pub fn scan_with(term: Option<&str>, search: &Search) -> Vec<Entry> {
+    let term = term.filter(|_| search.terminal_apps);
     let mut found: BTreeMap<String, Entry> = BTreeMap::new();
     for dir in search_path() {
         collect(&dir, &dir, &mut found, term);
     }
     let mut entries: Vec<Entry> = found.into_values().collect();
+    if search.path_binaries {
+        let covered: std::collections::BTreeSet<String> = entries
+            .iter()
+            .filter_map(|e| e.argv.first())
+            .map(|a| a.rsplit('/').next().unwrap_or(a).to_owned())
+            .collect();
+        entries.extend(path_binaries(&covered));
+    }
     // Case-insensitive, so "Files" and "firefox" sort where a human looks for
     // them rather than where ASCII puts them.
-    entries.sort_by_key(|e| (e.name.to_lowercase(), e.id.clone()));
+    entries.sort_by_cached_key(|e| (e.name.to_lowercase(), e.id.clone()));
     entries
+}
+
+/// Was this entry made from a bare `PATH` executable rather than a
+/// `.desktop` file? Its id is the executable's absolute path; a desktop file
+/// id never holds a `/` (`collect` turns them into `-`).
+pub fn is_path_binary(entry: &Entry) -> bool {
+    entry.id.starts_with('/')
+}
+
+/// The executables on `PATH`, first directory winning, minus the names in
+/// `covered`. Each becomes an entry that runs its full path with no
+/// arguments.
+fn path_binaries(covered: &std::collections::BTreeSet<String>) -> Vec<Entry> {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(path) = std::env::var_os("PATH") else {
+        return Vec::new();
+    };
+    let mut found: BTreeMap<String, Entry> = BTreeMap::new();
+    for dir in std::env::split_paths(&path) {
+        let Ok(read) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for item in read.flatten() {
+            let Ok(name) = item.file_name().into_string() else {
+                continue;
+            };
+            if name.starts_with('.') || covered.contains(&name) || found.contains_key(&name) {
+                continue;
+            }
+            // `metadata` follows symlinks, which is most of /usr/bin.
+            let full = item.path();
+            let Ok(meta) = std::fs::metadata(&full) else {
+                continue;
+            };
+            if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
+                continue;
+            }
+            let full = full.to_string_lossy().into_owned();
+            found.insert(
+                name.clone(),
+                Entry {
+                    id: full.clone(),
+                    name,
+                    comment: None,
+                    argv: vec![full],
+                    terminal: false,
+                    keywords: Vec::new(),
+                },
+            );
+        }
+    }
+    found.into_values().collect()
 }
 
 /// Walks one data directory. Subdirectories are part of the id (`kde-foo.desktop`
@@ -248,30 +341,70 @@ pub fn argv(exec: &str) -> Vec<String> {
 /// A case-insensitive substring over the name, then the keywords. Not a fuzzy
 /// matcher: a launcher that ranks by edit distance answers a three-letter
 /// query with something surprising, and the fix is always to type more, which
-/// a substring match rewards and a fuzzy one does not.
+/// a substring match rewards and a fuzzy one does not. A `PATH` binary only
+/// answers a typed query: an empty one lists the applications, not /usr/bin.
 pub fn matches(entry: &Entry, query: &str) -> bool {
     if query.is_empty() {
-        return true;
+        return !is_path_binary(entry);
     }
     let query = query.to_lowercase();
-    let name = entry.name.to_lowercase();
-    name.contains(&query) || entry.keywords.iter().any(|k| k.to_lowercase().contains(&query))
+    matches_lower(entry, &entry.name.to_lowercase(), &query, false)
+}
+
+/// `matches`, with the name and the query already lowercased.
+fn matches_lower(entry: &Entry, name: &str, query: &str, descriptions: bool) -> bool {
+    if query.is_empty() {
+        return !is_path_binary(entry);
+    }
+    name.contains(query)
+        || entry.keywords.iter().any(|k| k.to_lowercase().contains(query))
+        || (descriptions
+            && entry
+                .comment
+                .as_ref()
+                .is_some_and(|c| c.to_lowercase().contains(query)))
 }
 
 /// A name that starts with the query is a better answer than one that merely
 /// contains it, and an exact name is better still. Higher sorts first.
 pub fn rank(entry: &Entry, query: &str) -> u8 {
-    let query = query.to_lowercase();
-    let name = entry.name.to_lowercase();
+    rank_lower(&entry.name.to_lowercase(), &query.to_lowercase())
+}
+
+/// `rank`, with the name and the query already lowercased.
+fn rank_lower(name: &str, query: &str) -> u8 {
     if name == query {
         3
-    } else if name.starts_with(&query) {
+    } else if name.starts_with(query) {
         2
-    } else if name.contains(&query) {
+    } else if name.contains(query) {
         1
     } else {
         0
     }
+}
+
+/// The entries that answer `query`, as indices into `entries`, best first:
+/// rank descending, a desktop entry before a `PATH` binary of the same rank,
+/// then name. The query and each name are lowercased once per search, not
+/// once per comparison. `search.match_descriptions` lets `Comment` match.
+pub fn search(entries: &[Entry], query: &str, search: &Search) -> Vec<usize> {
+    let query = query.to_lowercase();
+    let mut hits: Vec<(u8, bool, usize)> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| {
+            let name = e.name.to_lowercase();
+            matches_lower(e, &name, &query, search.match_descriptions)
+                .then(|| (rank_lower(&name, &query), !is_path_binary(e), i))
+        })
+        .collect();
+    hits.sort_by(|a, b| {
+        (b.0, b.1)
+            .cmp(&(a.0, a.1))
+            .then_with(|| entries[a.2].name.cmp(&entries[b.2].name))
+    });
+    hits.into_iter().map(|(_, _, i)| i).collect()
 }
 
 /// Runs an entry, detached from this process.
@@ -431,6 +564,53 @@ mod tests {
     fn a_terminal_entry_refuses_without_a_terminal_at_launch() {
         let e = entry_with_term("[Desktop Entry]\nName=Top\nExec=top\nTerminal=true\n", "true").unwrap();
         assert!(launch(&e, None).is_err());
+    }
+
+    fn binary(name: &str) -> Entry {
+        Entry {
+            id: format!("/usr/bin/{name}"),
+            name: name.to_owned(),
+            comment: None,
+            argv: vec![format!("/usr/bin/{name}")],
+            terminal: false,
+            keywords: Vec::new(),
+        }
+    }
+
+    /// A `PATH` binary is found by typing its name, never listed by an
+    /// empty query, and loses a tie to a desktop entry.
+    #[test]
+    fn path_binaries_answer_only_a_typed_query() {
+        let files = entry("[Desktop Entry]\nName=files\nExec=nautilus\n").unwrap();
+        let bin = binary("files");
+        assert!(is_path_binary(&bin));
+        assert!(!is_path_binary(&files));
+        assert!(!matches(&bin, ""));
+        assert!(matches(&bin, "fil"));
+        let entries = vec![bin, files];
+        assert_eq!(search(&entries, "", &Search::default()), vec![1]);
+        assert_eq!(search(&entries, "files", &Search::default()), vec![1, 0]);
+    }
+
+    /// Descriptions match only when asked to.
+    #[test]
+    fn descriptions_match_only_when_enabled() {
+        let e = entry("[Desktop Entry]\nName=Files\nComment=Browse folders\nExec=x\n").unwrap();
+        let entries = vec![e];
+        assert!(search(&entries, "browse", &Search::default()).is_empty());
+        let on = Search {
+            match_descriptions: true,
+            ..Search::default()
+        };
+        assert_eq!(search(&entries, "BROWSE", &on), vec![0]);
+    }
+
+    /// `search` orders as the per-entry `rank` does: exact, prefix, substring.
+    #[test]
+    fn search_orders_by_rank_then_name() {
+        let mk = |n: &str| entry(&format!("[Desktop Entry]\nName={n}\nExec=x\n")).unwrap();
+        let entries = vec![mk("Profiler"), mk("Filer"), mk("Files"), mk("Fil")];
+        assert_eq!(search(&entries, "fil", &Search::default()), vec![3, 1, 2, 0]);
     }
 
     /// The user's own directory comes before the system ones, or shadowing an

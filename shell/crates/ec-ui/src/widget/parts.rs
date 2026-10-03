@@ -805,11 +805,26 @@ pub fn list_row<'a, Message: 'a>(
     label: &str,
     value: impl Into<Element<'a, Message, Theme>>,
 ) -> Element<'a, Message, Theme> {
+    list_row_at(label, value, false)
+}
+
+/// [`list_row`] whose label can step down to tertiary: how a setting that
+/// does not apply right now reads on a translucent column, where
+/// [`dimmed_at`] cannot repaint the ground (see there).
+pub fn list_row_at<'a, Message: 'a>(
+    label: &str,
+    value: impl Into<Element<'a, Message, Theme>>,
+    dim: bool,
+) -> Element<'a, Message, Theme> {
     container(fold(
         text(label.to_string())
             .font(font::UI)
             .size(size::BODY)
-            .style(theme::text_secondary),
+            .style(if dim {
+                theme::text_tertiary
+            } else {
+                theme::text_secondary
+            }),
         value,
     ))
     .padding([space::ROW_Y, space::CARD])
@@ -832,15 +847,20 @@ pub fn dimmed<'a, Message: 'a>(
     dimmed_at(content, dim, false)
 }
 
-/// [`dimmed`] on a column that may be translucent: `blur` picks the veil
-/// that repaints the tint rather than an opaque ground ([`color::VEIL_GLASS`]).
+/// [`dimmed`] on a column that may be translucent. With `blur` on, the
+/// ground under a row is the compositor's backdrop, which no client can
+/// repaint: any veil there ([`color::VEIL_GLASS`] included) lands as a
+/// darker inset box that dims the ground about as much as the text. So on
+/// glass this paints nothing, and the caller dims what it can style — the
+/// labels ([`list_row_at`]) and the run's caption. The tree is the same
+/// either way.
 pub fn dimmed_at<'a, Message: 'a>(
     content: impl Into<Element<'a, Message, Theme>>,
     dim: bool,
     blur: bool,
 ) -> Element<'a, Message, Theme> {
-    let veil: &'static [iced::Color] = if blur { &color::VEIL_GLASS } else { &color::VEIL };
-    crate::widget::Veil::new(content, dim.then_some(veil), radius::INSET).into()
+    let veil: &'static [iced::Color] = &color::VEIL;
+    crate::widget::Veil::new(content, (dim && !blur).then_some(veil), radius::INSET).into()
 }
 
 /// A caption over a run of rows inside one panel — "Frost" above the rows
@@ -1009,41 +1029,8 @@ pub fn nav_item_at<'a, Message: Clone + 'a>(
     on_press: Message,
 ) -> Element<'a, Message, Theme> {
     let compact = density == Density::Compact;
-    let bar = container(Space::new())
-        .width(space::BAR_W)
-        .height(space::NAV_BAR_H)
-        .style(move |_t: &Theme| container::Style {
-            background: Some(iced::Background::Color(if active {
-                color::ACCENT
-            } else {
-                Color::TRANSPARENT
-            })),
-            border: iced::border::rounded(radius::BAR),
-            ..container::Style::default()
-        });
-
-    // The placeholder icon square the spec calls for: a small rounded rect,
-    // not an icon. Icons are a later problem and a worse one.
-    let glyph = container(Space::new())
-        .width(space::NAV_GLYPH)
-        .height(space::NAV_GLYPH)
-        .style(move |_t: &Theme| container::Style {
-            background: Some(iced::Background::Color(if active {
-                color::ACCENT_FILL
-            } else {
-                color::HIGHLIGHT_SOFT
-            })),
-            border: iced::Border {
-                color: if active {
-                    color::ACCENT_BORDER
-                } else {
-                    color::BORDER
-                },
-                width: 1.0,
-                radius: 4.5.into(),
-            },
-            ..container::Style::default()
-        });
+    let bar = nav_bar(active);
+    let glyph = nav_glyph(active);
 
     let name = text(label)
         .font(if active { font::UI_MEDIUM } else { font::UI })
@@ -1074,6 +1061,401 @@ pub fn nav_item_at<'a, Message: Clone + 'a>(
     .spacing(space::NAV_BAR_GAP)
     .align_y(Alignment::Center)
     .into()
+}
+
+/// A nav item's 3px selected bar: [`color::ACCENT`] when `active`, and the
+/// same room left empty when not, so a row does not shift as it is picked.
+fn nav_bar<'a, Message: 'a>(active: bool) -> Element<'a, Message, Theme> {
+    container(Space::new())
+        .width(space::BAR_W)
+        .height(space::NAV_BAR_H)
+        .style(move |_t: &Theme| container::Style {
+            background: Some(iced::Background::Color(if active {
+                color::ACCENT
+            } else {
+                Color::TRANSPARENT
+            })),
+            border: iced::border::rounded(radius::BAR),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// The placeholder icon square the spec calls for: a small rounded rect,
+/// not an icon. Icons are a later problem and a worse one.
+fn nav_glyph<'a, Message: 'a>(active: bool) -> Element<'a, Message, Theme> {
+    container(Space::new())
+        .width(space::NAV_GLYPH)
+        .height(space::NAV_GLYPH)
+        .style(move |_t: &Theme| container::Style {
+            background: Some(iced::Background::Color(if active {
+                color::ACCENT_FILL
+            } else {
+                color::HIGHLIGHT_SOFT
+            })),
+            border: iced::Border {
+                color: if active {
+                    color::ACCENT_BORDER
+                } else {
+                    color::BORDER
+                },
+                width: space::HAIRLINE,
+                radius: radius::GLYPH.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// A sidebar section that expands in place to list its sub-pages: a
+/// [`nav_item_at`]-shaped head with an open/closed chevron at its far end,
+/// and under it the `pages` (built with [`nav_page_at`]) in a well.
+///
+/// A widget and not a column in the app, because the head, the well and the
+/// chevron have to agree on whether the section is open.
+///
+/// `open` is where the section is going and decides the layout at once: the
+/// well takes its full height the moment a section opens and none the moment
+/// it folds, so every row's hit target is where it will be drawn and a click
+/// during the motion lands where it is aimed. `reveal` (0 to 1, animated by
+/// the caller toward `open`) only uncovers the opening well top-down
+/// ([`Reveal`]); it never moves a row. The tree is the same open or folded,
+/// so the head's button keeps its press across the change.
+///
+/// `current` is whether the shown page is one of this section's. The head
+/// takes the accent bar only while the section is folded over it — open, the
+/// selected sub-page carries the one yellow, never both. A section with no
+/// `pages` is a plain [`nav_item_at`].
+pub fn nav_section_at<'a, Message: Clone + 'a>(
+    density: Density,
+    label: &'a str,
+    current: bool,
+    open: bool,
+    reveal: f32,
+    on_press: Message,
+    pages: Vec<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    if pages.is_empty() {
+        return nav_item_at(density, label, current, on_press);
+    }
+    let compact = density == Density::Compact;
+    let lit = current && !open;
+
+    let name = text(label)
+        .font(if current { font::UI_MEDIUM } else { font::UI })
+        .size(size::BODY)
+        .wrapping(text::Wrapping::None);
+    // The chevron's slot is square and the size of the open one, so the
+    // turn from ▸ to ▾ never moves the label.
+    let s = space::NAV_CHEVRON;
+    let t = space::NAV_CHEVRON_STROKE;
+    let slot = 2.0 * s - t;
+    let mark = if open {
+        chevron(s, t, color::TEXT_TERTIARY)
+    } else {
+        chevron_right(s, t, color::TEXT_TERTIARY)
+    };
+    let mark = container(mark)
+        .width(slot)
+        .height(slot)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center);
+    let mut face = Row::new()
+        .spacing(space::NAV_GLYPH_GAP)
+        .align_y(Alignment::Center);
+    if !compact {
+        face = face.push(nav_glyph(lit));
+    }
+    let face = face.push(name).push(Space::new().width(Length::Fill)).push(mark);
+    let pad = if compact {
+        [space::NAV_Y_COMPACT, space::NAV_X_COMPACT]
+    } else {
+        [space::NAV_Y, space::NAV_X]
+    };
+    let head = row![
+        nav_bar(lit),
+        button(face)
+            .padding(pad)
+            .width(Length::Fill)
+            .on_press(on_press)
+            .style(theme::nav(lit)),
+    ]
+    .spacing(space::NAV_BAR_GAP)
+    .align_y(Alignment::Center);
+
+    let mut list = Column::new()
+        .spacing(space::NAV_SUB_GAP)
+        .padding(iced::Padding::ZERO.top(space::NAV_SUB_GAP));
+    for page in pages {
+        list = list.push(page);
+    }
+    // Folded, the well is there with no height, so the tree keeps its shape.
+    // `max_height`, not `height(Fixed(0.0))`: a column drops a `Fixed(0)`
+    // child from the tree altogether.
+    let well = container(list).width(Length::Fill).clip(true);
+    let well = if open { well } else { well.max_height(0.0) };
+    let reveal = if open { reveal.clamp(0.0, 1.0) } else { 0.0 };
+    column![head, Reveal::new(well, reveal)].into()
+}
+
+/// Content laid out whole and drawn only down to `fraction` of its height:
+/// a top-down wipe whose layout never moves.
+///
+/// A widget and not a clipped container, because a container that clips
+/// also lays its content out in the clipped height — the rows below it ride
+/// the animation, and a click aimed at one lands on whatever has moved under
+/// the pointer by the time the button is released. Here layout is final from
+/// the first frame and only drawing animates. Input outside the uncovered
+/// part sees no cursor, so nothing undrawn can be hovered or clicked.
+pub struct Reveal<'a, Message> {
+    content: Element<'a, Message, Theme>,
+    fraction: f32,
+}
+
+impl<'a, Message> Reveal<'a, Message> {
+    pub fn new(content: impl Into<Element<'a, Message, Theme>>, fraction: f32) -> Self {
+        Self {
+            content: content.into(),
+            fraction: fraction.clamp(0.0, 1.0),
+        }
+    }
+
+    /// The uncovered part of `bounds`.
+    fn shown(&self, bounds: iced::Rectangle) -> iced::Rectangle {
+        iced::Rectangle {
+            height: bounds.height * self.fraction,
+            ..bounds
+        }
+    }
+
+    /// The cursor as the content may see it: absent over the covered part.
+    fn cursor(&self, bounds: iced::Rectangle, cursor: iced::mouse::Cursor) -> iced::mouse::Cursor {
+        match cursor.position() {
+            Some(p) if bounds.contains(p) && !self.shown(bounds).contains(p) => {
+                iced::mouse::Cursor::Unavailable
+            }
+            _ => cursor,
+        }
+    }
+}
+
+impl<Message> iced::advanced::Widget<Message, Theme, iced::Renderer> for Reveal<'_, Message> {
+    fn children(&self) -> Vec<iced::advanced::widget::Tree> {
+        vec![iced::advanced::widget::Tree::new(&self.content)]
+    }
+
+    fn diff(&self, tree: &mut iced::advanced::widget::Tree) {
+        tree.diff_children(std::slice::from_ref(&self.content));
+    }
+
+    fn size(&self) -> iced::Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut iced::advanced::widget::Tree,
+        renderer: &iced::Renderer,
+        limits: &iced::advanced::layout::Limits,
+    ) -> iced::advanced::layout::Node {
+        let child = self
+            .content
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits);
+        iced::advanced::layout::Node::with_children(child.size(), vec![child])
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut iced::advanced::widget::Tree,
+        layout: iced::advanced::Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn iced::advanced::widget::Operation,
+    ) {
+        self.content.as_widget_mut().operate(
+            &mut tree.children[0],
+            layout.children().next().expect("a reveal has one child"),
+            renderer,
+            operation,
+        );
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut iced::advanced::widget::Tree,
+        event: &iced::Event,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn iced::advanced::Clipboard,
+        shell: &mut iced::advanced::Shell<'_, Message>,
+        viewport: &iced::Rectangle,
+    ) {
+        let cursor = self.cursor(layout.bounds(), cursor);
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout.children().next().expect("a reveal has one child"),
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &iced::advanced::widget::Tree,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::mouse::Cursor,
+        viewport: &iced::Rectangle,
+        renderer: &iced::Renderer,
+    ) -> iced::mouse::Interaction {
+        self.content.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout.children().next().expect("a reveal has one child"),
+            self.cursor(layout.bounds(), cursor),
+            viewport,
+            renderer,
+        )
+    }
+
+    fn draw(
+        &self,
+        tree: &iced::advanced::widget::Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &iced::advanced::renderer::Style,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::mouse::Cursor,
+        viewport: &iced::Rectangle,
+    ) {
+        use iced::advanced::Renderer as _;
+        let shown = self.shown(layout.bounds());
+        if shown.height <= 0.0 {
+            return;
+        }
+        let child = layout.children().next().expect("a reveal has one child");
+        let cursor = self.cursor(layout.bounds(), cursor);
+        if self.fraction >= 1.0 {
+            self.content
+                .as_widget()
+                .draw(&tree.children[0], renderer, theme, style, child, cursor, viewport);
+            return;
+        }
+        renderer.with_layer(shown, |renderer| {
+            self.content
+                .as_widget()
+                .draw(&tree.children[0], renderer, theme, style, child, cursor, viewport);
+        });
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut iced::advanced::widget::Tree,
+        layout: iced::advanced::Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &iced::Rectangle,
+        translation: iced::Vector,
+    ) -> Option<iced::advanced::overlay::Element<'b, Message, Theme, iced::Renderer>> {
+        self.content.as_widget_mut().overlay(
+            &mut tree.children[0],
+            layout.children().next().expect("a reveal has one child"),
+            renderer,
+            viewport,
+            translation,
+        )
+    }
+}
+
+impl<'a, Message: 'a> From<Reveal<'a, Message>> for Element<'a, Message, Theme> {
+    fn from(reveal: Reveal<'a, Message>) -> Self {
+        Element::new(reveal)
+    }
+}
+
+/// One sub-page under an expanded [`nav_section_at`]: shorter than a
+/// section row, its label indented under the section's, and no icon square.
+///
+/// A widget because its selected state is the sidebar's glassy one — the
+/// row a step brighter, a crisp one-pixel rim, the 3px accent bar beside it
+/// — and that has to be the same in every app with a two-level sidebar.
+pub fn nav_page_at<'a, Message: Clone + 'a>(
+    density: Density,
+    label: &'a str,
+    active: bool,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
+    let indent = match density {
+        Density::Regular => space::NAV_SUB_INDENT,
+        Density::Compact => space::NAV_SUB_INDENT_COMPACT,
+    };
+    let name = text(label)
+        .font(if active { font::UI_MEDIUM } else { font::UI })
+        .size(size::BODY_SMALL)
+        .wrapping(text::Wrapping::None);
+    let face = container(name).height(Length::Fill).align_y(Alignment::Center);
+    row![
+        nav_bar(active),
+        button(face)
+            .padding(iced::Padding::ZERO.left(indent).right(space::NAV_X))
+            .width(Length::Fill)
+            .height(space::NAV_SUB_H)
+            .on_press(on_press)
+            .style(nav_page_style(active)),
+    ]
+    .spacing(space::NAV_BAR_GAP)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// [`nav_page_at`]'s button: selected is a brighter fill and a crisp rim,
+/// hovered a softer lift. Never a glow.
+fn nav_page_style(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_t, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let fill = match (active, hovered) {
+            (true, _) => color::HIGHLIGHT_SOFT,
+            (false, true) => color::LIFT_SOFT,
+            (false, false) => Color::TRANSPARENT,
+        };
+        button::Style {
+            background: Some(iced::Background::Color(fill)),
+            text_color: if active || hovered {
+                color::TEXT
+            } else {
+                color::TEXT_SECONDARY
+            },
+            border: iced::Border {
+                color: if active { color::BORDER } else { Color::TRANSPARENT },
+                width: space::HAIRLINE,
+                radius: radius::INSET.into(),
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
+/// [`chevron`] turned a quarter to point right (▸): a section that is
+/// folded. Drawn the same way — a staircase of quads, one per row — so the
+/// two read as one mark turning.
+fn chevron_right<'a, Message: 'a>(extent: f32, thickness: f32, stroke: Color) -> Element<'a, Message, Theme> {
+    let steps = (extent / thickness).round().max(2.0) as usize;
+    let t = thickness;
+    let mut col = Column::new();
+    for r in 0..(2 * steps - 1) {
+        let at = r.min(2 * steps - 2 - r) as f32 * t;
+        col = col.push(
+            Row::new()
+                .push(Space::new().width(Length::Fixed(at)).height(Length::Fixed(t)))
+                .push(edge_quad(Length::Fixed(t), Length::Fixed(t), stroke)),
+        );
+    }
+    container(col)
+        .width(Length::Fixed(steps as f32 * t))
+        .height(Length::Fixed((2 * steps - 1) as f32 * t))
+        .into()
 }
 
 /// The 214px left column: nav items above, a mono status block at the foot.
@@ -1342,6 +1724,20 @@ pub fn key_hint<'a, Message: 'a>(key: &str, verb: &str) -> Element<'a, Message, 
     .spacing(space::KEY_GAP)
     .align_y(Alignment::Center)
     .into()
+}
+
+/// A hint line: [`key_hint`]s in order, [`space::HINT_GAP`] apart.
+///
+/// A widget so the launcher and the bar's start menu space their hint
+/// lines the same way, and so `ui.show-key-hints` has one shape to hide.
+pub fn key_hints<'a, Message: 'a>(hints: &[(&str, &str)]) -> Element<'a, Message, Theme> {
+    hints
+        .iter()
+        .fold(
+            Row::new().spacing(space::HINT_GAP).align_y(Alignment::Center),
+            |line, &(key, verb)| line.push(key_hint(key, verb)),
+        )
+        .into()
 }
 
 /// One object on a spatial canvas: a mono name, with its position in an

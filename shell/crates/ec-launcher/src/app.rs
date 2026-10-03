@@ -58,6 +58,18 @@ pub struct App {
     /// alongside the radius; `false` when nothing answers, so the sheet
     /// falls back to its opaque ground.
     pub blur: bool,
+    /// `ui.show-key-hints`: draw the hint line at the foot. Read once at
+    /// startup, like the glass; the surface height depends on it.
+    pub show_key_hints: bool,
+    /// `launcher.centered.width`, logical px; `crate::WIDTH` when nothing
+    /// answers.
+    pub width: u32,
+    /// `launcher.centered.max-rows`; `crate::MAX_ROWS` when nothing answers.
+    pub rows: usize,
+    /// `launcher.centered.anchor`.
+    pub anchor: crate::conn::Anchor,
+    /// `launcher.search.*`: what `entries` holds and what a query matches.
+    pub search: apps::Search,
 }
 
 impl Default for App {
@@ -68,12 +80,18 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
+        Self::with(crate::conn::fetch_launcher_config())
+    }
+
+    /// `new`, with the `launcher.*` keys already read (`main` reads them
+    /// once, for the anchor, before the surface exists).
+    pub fn with(cfg: crate::conn::LauncherConfig) -> Self {
         let term = crate::conn::fetch_terminal_command();
         let (radius, blur) = crate::conn::fetch_glass();
         let glass_radius = radius.unwrap_or(ec_ui::tokens::radius::CARD);
         let blur = blur.unwrap_or(false);
         let mut app = App {
-            entries: apps::scan(term.as_deref()),
+            entries: apps::scan_with(term.as_deref(), &cfg.search),
             query: String::new(),
             matched: Vec::new(),
             selected: 0,
@@ -81,6 +99,11 @@ impl App {
             term,
             glass_radius,
             blur,
+            show_key_hints: crate::conn::show_key_hints(),
+            width: cfg.width,
+            rows: cfg.rows,
+            anchor: cfg.anchor,
+            search: cfg.search,
         };
         app.refilter();
         app
@@ -91,16 +114,7 @@ impl App {
     /// under the pointer does not change identity between two keystrokes that
     /// rank the same.
     fn refilter(&mut self) {
-        let query = self.query.clone();
-        let mut matched: Vec<usize> = (0..self.entries.len())
-            .filter(|&i| apps::matches(&self.entries[i], &query))
-            .collect();
-        matched.sort_by(|&a, &b| {
-            apps::rank(&self.entries[b], &query)
-                .cmp(&apps::rank(&self.entries[a], &query))
-                .then_with(|| self.entries[a].name.cmp(&self.entries[b].name))
-        });
-        self.matched = matched;
+        self.matched = apps::search(&self.entries, &self.query, &self.search);
         self.selected = self.selected.min(self.matched.len().saturating_sub(1));
     }
 
@@ -240,6 +254,11 @@ mod tests {
             term: None,
             glass_radius: ec_ui::tokens::radius::CARD,
             blur: false,
+            show_key_hints: true,
+            width: crate::WIDTH,
+            rows: crate::MAX_ROWS,
+            anchor: crate::conn::Anchor::Center,
+            search: apps::Search::default(),
         };
         app.refilter();
         app

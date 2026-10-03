@@ -205,7 +205,7 @@ fn folded_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element
 
 fn bar_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element<'a, Message, Theme> {
     let mut bar_row = Row::new()
-        .push(eclipse_cell(bar))
+        .push(eclipse_cell(bar, app.show_key_hints))
         .push(Space::new().width(Length::Fixed(bar::ZONE_GAP)))
         .push(pager(app, bar))
         .push(Space::new().width(Length::Fixed(bar::ZONE_GAP)))
@@ -306,9 +306,9 @@ fn launcher_button() -> Element<'static, Message, Theme> {
 
 /// The far-left cell: the launcher button, or — while the start menu is out
 /// or on its way in — that same button widened into the search field.
-fn eclipse_cell(bar: &crate::app::Bar) -> Element<'_, Message, Theme> {
+fn eclipse_cell(bar: &crate::app::Bar, hints: bool) -> Element<'_, Message, Theme> {
     if bar.menu.showing() {
-        search_cell(bar)
+        search_cell(bar, hints)
     } else {
         launcher_button()
     }
@@ -322,7 +322,11 @@ fn eclipse_cell(bar: &crate::app::Bar) -> Element<'_, Message, Theme> {
 /// Still the same lozenge and still a button — a press on the ring (or on
 /// the glass around the field) closes the menu again, the way the button
 /// opened it; a press on the field is the field's.
-fn search_cell(bar: &crate::app::Bar) -> Element<'_, Message, Theme> {
+///
+/// With `ui.show-key-hints` off the panel has no footer, so how much of the
+/// list is off the panel is read at the field's right instead, the way the
+/// launcher's prompt reads its position.
+fn search_cell(bar: &crate::app::Bar, hints: bool) -> Element<'_, Message, Theme> {
     let width = crate::layout::eclipse_w(bar.menu.reveal.value());
     let mark = container(parts::ring(bar::EYE_DISC, bar::RING, color::ACCENT))
         .center_x(Length::Fixed(bar::TASK_MIN))
@@ -338,9 +342,29 @@ fn search_cell(bar: &crate::app::Bar) -> Element<'_, Message, Theme> {
         .padding(iced::Padding::ZERO)
         .width(Length::Fill)
         .style(theme::prompt_input);
-    let content = row![mark, field, Space::new().width(Length::Fixed(bar::CELL_X))]
-        .align_y(Alignment::Center)
-        .height(Length::Fill);
+    let tally = if hints {
+        String::new()
+    } else {
+        start_tally(&bar.menu)
+    };
+    let reading: Element<'_, Message, Theme> = if tally.is_empty() {
+        Space::new().into()
+    } else {
+        text(tally)
+            .size(size::MONO)
+            .font(font::DATA)
+            .wrapping(Wrapping::None)
+            .color(color::TEXT_TERTIARY)
+            .into()
+    };
+    let content = row![
+        mark,
+        field,
+        reading,
+        Space::new().width(Length::Fixed(bar::CELL_X))
+    ]
+    .align_y(Alignment::Center)
+    .height(Length::Fill);
 
     button(content)
         .width(Length::Fixed(width))
@@ -378,9 +402,10 @@ fn start_sheet<'a>(
     let pill = container(pill_row)
         .width(Length::Fill)
         .height(Length::Fixed(bar::PILL_H));
-    let panel = container(start_panel(on))
+    let hints = app.show_key_hints;
+    let panel = container(start_panel(on, hints))
         .width(Length::Fixed(bar::PANEL_W))
-        .height(Length::Fixed(on.menu.extent() as f32))
+        .height(Length::Fixed(on.menu.extent(hints) as f32))
         .align_y(if top { Alignment::Start } else { Alignment::End })
         .clip(true);
     let body = if top {
@@ -395,18 +420,25 @@ fn start_sheet<'a>(
 }
 
 /// The panel at full size: a column of results the search field's width,
-/// under it and flush with it, and a footer of key hints.
+/// under it and flush with it, and a footer of key hints — or, with
+/// `ui.show-key-hints` off, no footer and a panel that ends at the rows
+/// (`bar::panel_h`). The refusal the footer would carry is then drawn on the
+/// row that refused.
 ///
 /// The results are `ec-launcher`'s rows, drawn here again rather than
 /// imported (ADR 0052): the same glass cells, the same name, note and
 /// identifier, the same scroll that keeps the selection on screen. The
 /// selected row is the panel's one yellow.
-fn start_panel(on: &crate::app::Bar) -> Element<'_, Message, Theme> {
+fn start_panel(on: &crate::app::Bar, hints: bool) -> Element<'_, Message, Theme> {
     let m = &on.menu;
     let offset = m.scroll();
     let mut rows = Column::new().spacing(bar::MENU_ROW_GAP);
-    for (slot, &i) in m.matched.iter().enumerate().skip(offset).take(bar::MENU_ROWS) {
-        rows = rows.push(start_row(&m.entries[i], slot, slot == m.selected));
+    for (slot, &i) in m.matched.iter().enumerate().skip(offset).take(m.rows) {
+        let selected = slot == m.selected;
+        // A launch selects its row before it runs, and an arrow clears the
+        // refusal, so the selected row is the one it is about.
+        let refusal = m.problem.as_deref().filter(|_| selected && !hints);
+        rows = rows.push(start_row(&m.entries[i], slot, selected, refusal));
     }
     if m.matched.is_empty() {
         let why = if m.entries.is_empty() {
@@ -426,24 +458,28 @@ fn start_panel(on: &crate::app::Bar) -> Element<'_, Message, Theme> {
             .align_y(Alignment::Center),
         );
     }
-    let list_h = bar::MENU_ROWS as f32 * bar::MENU_ROW_H + (bar::MENU_ROWS - 1) as f32 * bar::MENU_ROW_GAP;
-    Column::new()
-        .push(container(rows).height(Length::Fixed(list_h)))
-        .push(Space::new().height(Length::Fixed(bar::EDGE)))
-        .push(start_footer(m))
+    let mut panel = Column::new().push(container(rows).height(Length::Fixed(bar::menu_list_h(m.rows))));
+    if hints {
+        panel = panel
+            .push(Space::new().height(Length::Fixed(bar::EDGE)))
+            .push(start_footer(m));
+    }
+    panel
         .padding(bar::EDGE)
         .width(Length::Fixed(bar::PANEL_W))
-        .height(Length::Fixed(bar::PANEL_H))
+        .height(Length::Fixed(m.full(hints)))
         .into()
 }
 
 /// One result: `ec-launcher`'s row look at the bar's row height.
 /// `index` is into the matches, not a slot on screen, so a click runs the
-/// row it lands on.
+/// row it lands on. `refusal`, when this row's launch was refused and there
+/// is no footer to say so, takes the note's place in the warning colour.
 fn start_row(
     entry: &ec_services::apps::Entry,
     index: usize,
     selected: bool,
+    refusal: Option<&str>,
 ) -> Element<'static, Message, Theme> {
     // A terminal-only entry is listed and greyed, and the greying wins over
     // the selection: a selected row that cannot launch must not read as one
@@ -460,26 +496,57 @@ fn start_row(
         } else {
             color::TEXT
         });
-    let note = if entry.terminal {
+    // The name is already beside it, so the refusal drops its own
+    // `cannot start NAME:` lead and keeps only the reason.
+    let refusal = refusal.map(|r| {
+        r.strip_prefix(&format!("cannot start {}: ", entry.name))
+            .unwrap_or(r)
+            .to_owned()
+    });
+    let note = if let Some(refusal) = refusal.as_ref() {
+        refusal.clone()
+    } else if entry.terminal {
         "needs a terminal".to_owned()
     } else {
         entry.comment.clone().unwrap_or_default()
     };
-    let note = text(parts::elide(&note, bar::MENU_NOTE_CHARS))
+    // A note ends in an ellipsis; a refusal is never cut. It is the one line
+    // the human must read whole (`… (os error 2)`), so it wraps within the
+    // row's height instead, with the name giving it the room below.
+    let note = if refusal.is_some() {
+        note
+    } else {
+        parts::elide(&note, bar::MENU_NOTE_CHARS)
+    };
+    let note = text(note)
         .size(size::BODY_SMALL)
-        .font(font::UI)
-        .wrapping(Wrapping::None)
-        .color(if entry.terminal {
+        .font(if refusal.is_some() { font::DATA } else { font::UI })
+        .wrapping(if refusal.is_some() {
+            Wrapping::WordOrGlyph
+        } else {
+            Wrapping::None
+        })
+        .color(if refusal.is_some() {
+            color::DANGER
+        } else if entry.terminal {
             color::TEXT_TERTIARY
         } else {
             color::TEXT_SECONDARY
         });
-    let line = row![
-        container(name).width(Length::Fixed(bar::MENU_NAME_W)).clip(true),
-        container(note).width(Length::Fill).clip(true),
-    ]
-    .spacing(bar::GAP)
-    .align_y(Alignment::Center);
+    // The fixed name column lines every note up at one x; a refusal gives
+    // that up, so the name keeps only what it needs (never more than the
+    // column) and the reason takes the rest of the row.
+    // Without the column the name's own end is the only edge, so the reason
+    // keeps a real gap from it rather than reading on as one string.
+    let name = if refusal.is_some() {
+        container(container(name).max_width(bar::MENU_NAME_W).clip(true))
+            .padding(iced::Padding::ZERO.right(space::CARD - bar::GAP))
+    } else {
+        container(name).width(Length::Fixed(bar::MENU_NAME_W)).clip(true)
+    };
+    let line = row![name, container(note).width(Length::Fill).clip(true)]
+        .spacing(bar::GAP)
+        .align_y(Alignment::Center);
     let tone = if live {
         CellTone::Focused
     } else if selected {
@@ -506,22 +573,9 @@ fn start_footer(m: &crate::menu::Menu) -> Element<'_, Message, Theme> {
             .wrapping(Wrapping::None)
             .color(color::DANGER)
             .into(),
-        None => Row::new()
-            .spacing(space::HINT_GAP)
-            .align_y(Alignment::Center)
-            .push(parts::key_hint("\u{2191}\u{2193}", "select"))
-            .push(parts::key_hint("enter", "run"))
-            .push(parts::key_hint("esc", "close"))
-            .into(),
+        None => parts::key_hints(&[("\u{2191}\u{2193}", "select"), ("enter", "run"), ("esc", "close")]),
     };
-    let above = m.scroll();
-    let below = m.matched.len().saturating_sub(above + bar::MENU_ROWS);
-    let tally = match (above, below) {
-        (0, 0) => String::new(),
-        (0, below) => format!("+{below}"),
-        (above, 0) => format!("{above}+"),
-        (above, below) => format!("{above}+ \u{00b7} +{below}"),
-    };
+    let tally = start_tally(m);
     container(
         row![
             container(left).width(Length::Fill).clip(true),
@@ -537,6 +591,19 @@ fn start_footer(m: &crate::menu::Menu) -> Element<'_, Message, Theme> {
     .padding([0.0, space::CARD])
     .align_y(Alignment::Center)
     .into()
+}
+
+/// How much of the list is off the panel: `3+` above, `+12` below, empty
+/// when it all fits.
+fn start_tally(m: &crate::menu::Menu) -> String {
+    let above = m.scroll();
+    let below = m.matched.len().saturating_sub(above + m.rows);
+    match (above, below) {
+        (0, 0) => String::new(),
+        (0, below) => format!("+{below}"),
+        (above, 0) => format!("{above}+"),
+        (above, below) => format!("{above}+ \u{00b7} +{below}"),
+    }
 }
 
 /// Oracle-Eyes' status (ADR 0055), on the eye's own surface over the

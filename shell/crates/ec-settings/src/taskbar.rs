@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The Taskbar pane (ADR 0065, D-05 §4): a live picture of the bar that is
-//! also where its widgets are arranged — dragged along it to reorder, in from
-//! the picker under it to add, back out onto the picker to remove — one sheet
-//! for whichever widget is selected, the bar's motion, and the bar's own
-//! appearance and folding.
+//! The Taskbar section (ADR 0065, D-05 §4), one page at a time: the bar's
+//! appearance; its widgets — a live picture of the bar that is also where
+//! they are arranged, dragged along it to reorder, in from the picker under
+//! it to add, back out onto the picker to remove, and one sheet for
+//! whichever is selected; how it folds; the tray's lanes; and its motion.
 //!
 //! Every `bar.*` key has a control here, and every one is still a schema row:
 //! the grouping below is the one place this crate names keys by hand, and a
@@ -30,7 +30,7 @@ use ec_ui::tokens::{bar, canvas, color, font, radius, size, space};
 use ec_ui::widget::{
     arg_chip, art_thumb, badge, bar_cell_frame, bar_sheet, battery_gauge, big_value, chip, config_error,
     drag_bar, drag_ghost, draggable, drop_well, drop_zone, edge_note, edge_quad, elide, glide_track,
-    hairline, halves, inset, list_row, mark, micro_label, mini_meter, outline, panel, pill, pin, placed,
+    hairline, inset, key_hints, list_row, mark, micro_label, mini_meter, outline, panel, pill, pin, placed,
     ring, track_label, viz_bars, widget_shell, Grip, NumericSlider, Toggle, Well,
 };
 
@@ -38,6 +38,7 @@ use crate::app::{App, Message};
 use crate::bar_preview::{self as bp, Cell, Knobs, Rung, Solved};
 use crate::conn::Problem;
 use crate::editor::{Editor, Field, Kind, Slot, SOURCES};
+use crate::pane::Page;
 use crate::schema::Row as Key;
 use crate::tray::{Lane, Tray, Writes};
 
@@ -65,7 +66,13 @@ const DEFAULT_IMPORTANT: [&str; 2] = ["clock", "battery"];
 
 /// The bar's appearance, and how it folds away. Everything else under `bar`
 /// belongs to a widget's sheet, the motion band, or the tray.
-const APPEARANCE: [&str; 4] = ["bar.position", "bar.rounding", "bar.eye", "bar.popup-anchor"];
+const APPEARANCE: [&str; 5] = [
+    "components.bar",
+    "bar.position",
+    "bar.rounding",
+    "bar.eye",
+    "bar.popup-anchor",
+];
 const FOLDING: [&str; 6] = [
     "bar.fold-when-inactive",
     "bar.fold-when-idle",
@@ -113,6 +120,7 @@ fn claimed(path: &str) -> bool {
 /// A key as a person reads it on this pane.
 fn label(key: &Key) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Borrowed(match key.path.as_str() {
+        "components.bar" => "Show the bar",
         "bar.position" => "Position",
         "bar.rounding" => "Corner radius",
         "bar.popup-anchor" => "Popups open",
@@ -187,7 +195,6 @@ pub fn stand_in(rows: &mut Vec<Key>) {
         b("bar.clock.hour-12", true),
         b("bar.clock.date-mdy", true),
         e("bar.popup-anchor", "cell", &["cell", "pointer"]),
-        e("bar.launcher-style", "centered", &["centered", "menu"]),
         b("bar.eye", true),
         l(ORDER, json!(DEFAULT_ORDER)),
         l(IMPORTANT, json!(DEFAULT_IMPORTANT)),
@@ -1465,8 +1472,20 @@ fn bar_msg(m: Msg) -> Message {
     Message::Bar(m)
 }
 
-/// Every block of the pane after the header.
-pub fn blocks(app: &App) -> Vec<Element<'_, Message, Theme>> {
+/// Every block of `page` after the header.
+pub fn blocks(app: &App, page: Page) -> Vec<Element<'_, Message, Theme>> {
+    match page {
+        Page::BarAppearance => vec![appearance(app)],
+        Page::BarFolding => vec![keys_panel(app, FOLDING.to_vec())],
+        Page::BarTray => vec![inset(Column::with_children(tray_rows(app))).into()],
+        Page::BarMotion => vec![motion_band(app)],
+        _ => widgets(app),
+    }
+}
+
+/// The Widgets page: the live bar and its picker, the selected widget's
+/// sheet, and any command widget waiting on approval.
+fn widgets(app: &App) -> Vec<Element<'_, Message, Theme>> {
     let on = crate::addons::taskbar_widgets_on(app);
     let mut out = Vec::new();
     if !on {
@@ -1482,11 +1501,9 @@ pub fn blocks(app: &App) -> Vec<Element<'_, Message, Theme>> {
     if let Some(s) = sheet(app) {
         out.push(s);
     }
-    out.push(motion_band(app));
     if on && !app.bar.statuses.is_empty() {
         out.push(approvals(app));
     }
-    out.push(settings(app));
     out
 }
 
@@ -1985,7 +2002,7 @@ fn padded<'a>(e: impl Into<Element<'a, Message, Theme>>) -> Element<'a, Message,
 
 fn key_row<'a>(app: &'a App, path: &str) -> Option<Element<'a, Message, Theme>> {
     let key = app.key(path)?;
-    Some(list_row(&label(key), crate::app::control(app, key)))
+    Some(crate::app::setting_row(app, &label(key), key))
 }
 
 /// The selected widget's sheet: where it sits, whether it gives way, and its
@@ -2035,8 +2052,8 @@ fn sheet(app: &App) -> Option<Element<'_, Message, Theme>> {
         .spacing(space::CONTROL_GAP)
         .align_y(Alignment::Center);
     let head = match at {
-        Some(_) => head.push(caption("← → move · delete removes".into())),
-        None => head,
+        Some(_) if app.key_hints_on() => head.push(key_hints(&[("← →", "move"), ("delete", "removes")])),
+        _ => head,
     };
 
     let mut col = Column::new().push(padded(head)).push(hairline());
@@ -2069,10 +2086,16 @@ fn sheet(app: &App) -> Option<Element<'_, Message, Theme>> {
         }
     }
     if id == "tray" {
-        col = col.push(hairline());
-        for r in tray_rows(app) {
-            col = col.push(r);
-        }
+        // The lanes have a page of their own; the sheet says where.
+        col = col.push(hairline()).push(padded(
+            row![
+                prose("Which icons sit on the bar, in the drawer, or nowhere"),
+                Space::new().width(Length::Fill),
+                pill("Arrange the tray", false, Message::Open(Page::BarTray)),
+            ]
+            .spacing(space::CONTROL_GAP)
+            .align_y(Alignment::Center),
+        ));
     }
     if let Some(name) = custom {
         col = col.push(hairline());
@@ -2117,7 +2140,7 @@ fn caption_prose<'a>(t: &str) -> Element<'a, Message, Theme> {
         .into()
 }
 
-/// The tray's three lanes, flat inside the tray's sheet. Each entry is
+/// The tray's three lanes, flat inside the Tray page's inset. Each entry is
 /// dragged within its lane or into another; a click selects it for the
 /// keyboard.
 fn tray_rows(app: &App) -> Vec<Element<'_, Message, Theme>> {
@@ -2221,9 +2244,18 @@ fn tray_rows(app: &App) -> Vec<Element<'_, Message, Theme>> {
             move |r| bar_msg(Msg::Zone(Zone::Lane(lane), r)),
         )
     };
-    let hint = match sel {
-        Some(id) => format!("{id} · ← → move · ↑ ↓ lane · delete hides"),
-        None => "drag an icon between lanes".to_owned(),
+    // The keys only while something is selected for them to move, and only
+    // with `ui.show-key-hints` on — off, the hint takes no room at all.
+    let hint: Element<'_, Message, Theme> = match sel {
+        Some(id) if app.key_hints_on() => row![
+            caption(id.to_owned()),
+            key_hints(&[("← →", "move"), ("↑ ↓", "lane"), ("delete", "hides")]),
+        ]
+        .spacing(space::CONTROL_GAP)
+        .align_y(Alignment::Center)
+        .into(),
+        Some(id) => caption(id.to_owned()),
+        None => caption("drag an icon between lanes".to_owned()),
     };
     vec![
         padded(
@@ -2231,9 +2263,15 @@ fn tray_rows(app: &App) -> Vec<Element<'_, Message, Theme>> {
                 micro_label("status icons"),
                 caption(live),
                 Space::new().width(Length::Fill),
-                caption(hint),
+                // The keycaps are taller than a caption: the slot is that
+                // tall with or without them, so selecting an icon moves no
+                // lane.
+                container(hint)
+                    .height(Length::Fixed(space::KEYCAP_H))
+                    .align_y(Alignment::Center),
             ]
-            .spacing(space::CONTROL_GAP),
+            .spacing(space::CONTROL_GAP)
+            .align_y(Alignment::Center),
         ),
         // Each lane is a well with the sheet's own inset, so the lanes are
         // not padded again: their labels line up with the rows above.
@@ -2483,31 +2521,41 @@ fn motion_band(app: &App) -> Element<'_, Message, Theme> {
     .into()
 }
 
-/// The bar itself: how it looks, and how it folds away.
-fn settings(app: &App) -> Element<'_, Message, Theme> {
-    let group = |name: &'static str, paths: Vec<&str>| {
-        let mut c = Column::new().push(padded(micro_label(name)));
-        for p in paths {
-            if let Some(r) = key_row(app, p) {
-                c = c.push(r);
-            }
+/// One panel of `paths`' rows, in that order.
+fn keys_panel<'a>(app: &'a App, paths: Vec<&str>) -> Element<'a, Message, Theme> {
+    let mut c = Column::new();
+    for p in paths {
+        if let Some(r) = key_row(app, p) {
+            c = c.push(r);
         }
-        c.width(Length::Fill)
-    };
-    let mut body = Column::new().push(halves(
-        group("appearance", APPEARANCE.to_vec()),
-        group("folding", FOLDING.to_vec()),
-    ));
+    }
+    panel(app.glass_radius, c.width(Length::Fill)).into()
+}
+
+/// How the bar looks — and, under a hairline, any key the compositor puts on
+/// this page that no block here names, so a new one is never unreachable.
+fn appearance(app: &App) -> Element<'_, Message, Theme> {
+    let mut body = Column::new();
+    for p in APPEARANCE {
+        if let Some(r) = key_row(app, p) {
+            body = body.push(r);
+        }
+    }
     let rest: Vec<&str> = app
         .rows
         .iter()
-        .filter(|k| crate::pane::pane_for(&k.path) == Some(crate::pane::Pane::Taskbar) && !claimed(&k.path))
+        .filter(|k| crate::pane::page_of(&k.path) == Some(Page::BarAppearance) && !claimed(&k.path))
         .map(|k| k.path.as_str())
         .collect();
     if !rest.is_empty() {
-        body = body.push(hairline()).push(group("other", rest));
+        body = body.push(hairline()).push(padded(micro_label("other")));
+        for p in rest {
+            if let Some(r) = key_row(app, p) {
+                body = body.push(r);
+            }
+        }
     }
-    panel(app.glass_radius, body).into()
+    panel(app.glass_radius, body.width(Length::Fill)).into()
 }
 
 #[cfg(test)]
