@@ -1168,18 +1168,17 @@ fn render_output(state: &mut AbyssState, index: usize) {
     // The region selector (COMP-18 §1.3): untrusted too, but above the
     // annotation pass it is about to feed.
     elements.extend(crate::render::select::selector_elements(
-        &state.region_select,
+        &mut drm.renderer,
+        &mut state.region_select,
         &output,
         output_loc,
+        &state.config,
     ));
     // Annotations (COMP-18): untrusted, so below the indicator -- the list is
     // front-to-back -- but above the cursor and above everything client-drawn.
-    elements.extend(crate::render::annotation::annotation_elements(
-        &mut drm.renderer,
-        &mut state.annotations,
-        &output,
-        output_loc,
-    ));
+    // They go in here, at `annotations_at`, once everything below them has
+    // been collected: their glass panels blur what is behind them.
+    let annotations_at = elements.len();
     if !prompt {
         elements.extend(crate::render::cursor::elements(
             &mut drm.renderer,
@@ -1216,6 +1215,16 @@ fn render_output(state: &mut AbyssState, index: usize) {
             fullscreen,
         ));
     }
+    let behind = elements.split_off(annotations_at);
+    elements.extend(crate::render::annotation::annotation_elements(
+        &mut drm.renderer,
+        &mut state.annotations,
+        &output,
+        output_loc,
+        &state.config,
+        Some(&behind),
+    ));
+    elements.extend(behind);
     // Overscan compensation (COMP-03 §2): scale the finished scene into the
     // inset rect and leave the margins black. The markers go on afterwards so
     // they stay in raw framebuffer pixels — they exist to show where the
@@ -1233,7 +1242,9 @@ fn render_output(state: &mut AbyssState, index: usize) {
     }
     let Some(drm) = state.drm.as_mut() else { return };
 
-    let animating = state.borders.anim.running();
+    // Annotation and selector fades schedule frames only while in flight.
+    let animating =
+        state.borders.anim.running() || state.annotations.animating() || state.region_select.animating();
 
     // A surface covering the whole output is both the direct-scanout candidate
     // and the trigger for adaptive sync (COMP-03 §8).

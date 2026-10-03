@@ -202,6 +202,7 @@ impl<T: Texture + Clone + 'static> BlurElement<T> {
         crop: Rectangle<i32, Physical>,
         region: Rectangle<i32, Physical>,
         scale: Scale<f64>,
+        alpha: f32,
     ) -> Self {
         // The result texture is built with a literal `texture_scale` of 1, so
         // `Element::src()` hands this rectangle straight to the GPU with no
@@ -231,7 +232,9 @@ impl<T: Texture + Clone + 'static> BlurElement<T> {
             texture,
             1,
             Transform::Normal,
-            None,
+            // 1.0 for a surface; an annotation fading in or out passes its
+            // fade (the damage tracker sees an alpha change on its own).
+            (alpha < 1.0).then_some(alpha),
             Some(src),
             Some(size),
             None,
@@ -506,6 +509,9 @@ pub fn shape_shows_through(shape: &Shape, opaque: &[Rectangle<i32, Physical>]) -
 pub enum BlurKey {
     Window(Window),
     Layer(LayerSurface),
+    /// An annotation panel (ADR 0071), by its handle. Annotations keep their
+    /// own [`BlurStore`], so this never shares a table with a surface.
+    Annotation(u64),
 }
 
 /// Per-surface blur bookkeeping, kept alive between frames.
@@ -588,7 +594,8 @@ impl BlurStore {
     /// so only damage near them invalidates, and only they report damage.
     /// `shape` is a shaped layer's boxes: only damage within reach of one of
     /// them (grown by the fillet, which can only fill in between them)
-    /// invalidates.
+    /// invalidates. `alpha` fades the whole backdrop (1.0 but for an
+    /// annotation panel fading in or out).
     /// Returns `None` when nothing needs redrawing *and* nothing is cached, or
     /// when any GL step failed (blur is an effect; a failure drops the effect,
     /// never the frame).
@@ -606,6 +613,7 @@ impl BlurStore {
         reach: i32,
         ring: Option<(i32, i32)>,
         shape: Option<&Shape>,
+        alpha: f32,
     ) -> Option<BlurElement>
     where
         E: Element + RenderElement<GlesRenderer>,
@@ -734,6 +742,7 @@ impl BlurStore {
             crop,
             region,
             scale,
+            alpha,
         );
         element.commit = entry.commit;
         element.program = program;
@@ -1458,6 +1467,7 @@ mod tests {
                 Rectangle::from_size((fb.w, fb.h).into()),
                 region,
                 scale,
+                1.0,
             );
             assert_eq!(el.geometry(scale), region, "geometry at scale {s}");
             assert_eq!(el.location(scale), region.loc, "location at scale {s}");
@@ -1485,7 +1495,7 @@ mod tests {
         let (_, crop) = crop_rects(region, 64, Size::from((1920, 1080)), 3, false).unwrap();
         let tex = Backdrop(Size::from((crop.size.w, crop.size.h)));
         let scale = Scale::from(1.0);
-        let el = BlurElement::placed(Id::new(), ContextId::new(), tex, crop, region, scale);
+        let el = BlurElement::placed(Id::new(), ContextId::new(), tex, crop, region, scale, 1.0);
         assert_eq!(el.geometry(scale), region);
         let want = Rectangle::<f64, BufferCoords>::new(
             (
@@ -1506,7 +1516,7 @@ mod tests {
         let (_, crop) = crop_rects(region, 64, Size::from((1920, 1080)), 3, false).unwrap();
         let tex = Backdrop(Size::from((crop.size.w / 2, crop.size.h / 2)));
         let scale = Scale::from(1.0);
-        let el = BlurElement::placed(Id::new(), ContextId::new(), tex, crop, region, scale);
+        let el = BlurElement::placed(Id::new(), ContextId::new(), tex, crop, region, scale, 1.0);
         assert_eq!(el.geometry(scale), region);
         let want = Rectangle::<f64, BufferCoords>::new(
             (

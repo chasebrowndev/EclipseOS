@@ -2,9 +2,10 @@
 
 //! The Oracle-Eyes daemon (COMP-18, ADR 0041).
 //!
-//! One thread, one loop: wait on the control socket, act on a chord, hold
-//! the answer on screen for as long as it takes to read, take it down.
-//! Every stage's failure is shown rather than logged away (§2.1).
+//! One loop: wait on the control socket, act on a chord, hold the answer on
+//! screen for as long as it takes to read, take it down. The model call runs
+//! on a worker so the loop never goes deaf (see `daemon`). Every stage's
+//! failure is shown rather than logged away (§2.1).
 
 mod answer;
 mod beacon;
@@ -12,243 +13,153 @@ mod capture;
 mod choice;
 mod classify;
 mod config;
+mod daemon;
+mod fault;
 mod focus;
 mod frame;
 mod hud;
+mod logging;
+mod logsafe;
 mod ocr;
 mod pipeline;
 mod redact;
+#[cfg(test)]
+mod tests_loop;
 
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use beacon::Eye;
 use ec_ipc::{Client, EventKind};
-use frame::Region;
-use hud::{Anchor, Hud, Panel};
-use pipeline::{Answer, Pipeline};
+use serde_json::Value;
+
+use beacon::Beacon;
+use daemon::Daemon;
+use hud::Control;
+use pipeline::Pipeline;
 
 fn main() -> ExitCode {
-    match run() {
+    let debug = config::debug_requested(
+        std::env::args().skip(1),
+        std::env::var("OE_DEBUG").ok().as_deref(),
+    );
+    // Held to the end of `main` so the debug log is flushed on every exit.
+    let log = logging::init(debug);
+    match run(debug, &log) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("ec-oracle-eyes: {e}");
+            tracing::error!("{e}");
             ExitCode::FAILURE
         }
     }
 }
 
-fn run() -> Result<(), String> {
-    let (cfg, errors) = config::load();
+/// The control socket, noting whether a call has been made since the event
+/// queue was last drained. `Client::call` keeps any event that arrives while
+/// it waits for its reply in a queue of its own, which `poll` on the socket
+/// cannot see: a chord that landed during a HUD call made after the drain sat
+/// there until something else woke the loop — with nothing scheduled, never.
+struct Link {
+    client: Client,
+    called: bool,
+}
+
+impl Control for Link {
+    fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        self.called = true;
+        Control::call(&mut self.client, method, params)
+    }
+}
+
+/// The file config with the compositor's `oracle-eyes` block laid over it.
+/// The file is the fallback: an unreachable or refused `get_config` leaves it
+/// as it is.
+fn effective(base: &config::Config, c: &mut impl Control) -> config::Config {
+    let mut cfg = base.clone();
+    match c.call("get_config", serde_json::json!({ "file": "abyss" })) {
+        Ok(reply) => {
+            let (n, errors) = config::apply_compositor(&mut cfg, &reply);
+            for e in &errors {
+                tracing::warn!("settings: {e}");
+            }
+            tracing::debug!(applied = n, "settings: compositor block applied");
+        }
+        Err(e) => tracing::warn!("settings: get_config: {e}, using the file config"),
+    }
+    cfg
+}
+
+fn run(flag_debug: bool, log: &logging::Guard) -> Result<(), String> {
+    let (base, errors) = config::load();
     for e in &errors {
         // A bad config line is never fatal: the default it failed to
         // override is still a working daemon.
-        eprintln!("ec-oracle-eyes: config: {e}");
+        tracing::warn!("config: {e}");
     }
-    let mut auto = cfg.auto;
-    let fail_ms = cfg.fail_indicator_ms;
-    let poll_every = Duration::from_millis(cfg.settle_ms.max(1));
-
     let mut client = Client::connect().map_err(|e| format!("control socket: {e}"))?;
-    client
-        .subscribe(&[EventKind::Keybind])
-        .map_err(|e| format!("subscribe to keybind: {e}"))?;
-    eprintln!(
-        "oracle-eyes: connected, listening for annotation chords{}",
+    if let Err(e) = client.subscribe(&[EventKind::Keybind, EventKind::Config]) {
+        // An older compositor without the config event: settings then apply
+        // at the next start, not live.
+        tracing::warn!("subscribe to config: {e}, settings changes apply on restart");
+        client
+            .subscribe(&[EventKind::Keybind])
+            .map_err(|e| format!("subscribe to keybind: {e}"))?;
+    }
+    let cfg = effective(&base, &mut client);
+    tracing::debug!(?cfg, "effective config");
+    let (auto, fail_ms, settle_ms) = (cfg.auto, cfg.fail_indicator_ms, cfg.settle_ms);
+    let mut debug = flag_debug || cfg.debug;
+    log.set_debug(debug);
+    tracing::info!(
+        auto,
+        "connected, listening for annotation chords{}",
         if auto { " (automatic mode on)" } else { "" }
     );
+    let mut link = Link {
+        client,
+        called: false,
+    };
 
-    let mut pipeline = Pipeline::new(cfg);
-    pipeline.beacon.set(resting(auto));
-    let mut hud = Hud::new();
-    // When the current annotation has outstayed its welcome.
-    let mut until: Option<Instant> = None;
-    // Automatic mode reads one output per tick rather than the whole desktop;
-    // a screen's worth of OCR per tick is the cost we are trying not to pay.
-    // Normally that output is the focused one (ADR 0042). The round-robin
-    // cursor is only the fallback for when the compositor will not say.
-    let mut next_output = 0usize;
-    let mut next_tick = Instant::now() + poll_every;
-    // The gate's TTL and rate limit are durations, so they need a clock that
-    // only moves forward. Wall clock stepped by NTP either suppressed every
-    // answer for the length of the step or expired the whole dedup table.
-    let started = Instant::now();
+    let pipeline = Pipeline::new(cfg);
+    let mut daemon = Daemon::new(
+        pipeline,
+        Beacon::bind(debug),
+        auto,
+        fail_ms,
+        settle_ms,
+        Instant::now(),
+    );
 
     loop {
-        let now = Instant::now();
-        let mut wake = until;
-        if auto {
-            wake = Some(match wake {
-                Some(w) => w.min(next_tick),
-                None => next_tick,
-            });
-        }
-        let timeout = wake.map(|w| w.saturating_duration_since(now));
-        wait_readable(client.as_raw_fd(), timeout)?;
+        let timeout = if link.called {
+            Some(Duration::ZERO)
+        } else {
+            daemon.wake_in(Instant::now())
+        };
+        wait_readable(link.client.as_raw_fd(), timeout)?;
+        link.called = false;
 
         loop {
-            let event = match client.poll_event() {
+            let event = match link.client.poll_event() {
                 Ok(Some(e)) => e,
                 Ok(None) => break,
                 Err(e) => return Err(format!("control socket: {e}")),
             };
-            if event.kind != EventKind::Keybind {
-                continue;
-            }
-            let action = event.data.get("action").and_then(|v| v.as_str());
-            if matches!(action, Some("annotation-select" | "annotation-expand")) {
-                pipeline.beacon.set(Eye::Think);
-            }
-            let outcome = match action {
-                Some("annotation-select") => match region_of(&event.data) {
-                    Some(r) => Some(pipeline.select(r)),
-                    // The compositor only sends the chord with a region on
-                    // commit, so this is a protocol mismatch, not a cancel.
-                    None => Some(Err("select event carried no region".to_string())),
-                },
-                Some("annotation-expand") => Some(pipeline.expand()),
-                Some("annotation-auto-toggle") => {
-                    auto = !auto;
-                    eprintln!(
-                        "oracle-eyes: automatic mode {}",
-                        if auto { "on" } else { "off" }
-                    );
-                    None
+            if event.kind == EventKind::Keybind {
+                daemon.chord(&mut link, &event.data, Instant::now());
+            } else if event.kind == EventKind::Config {
+                let cfg = effective(&base, &mut link);
+                let now_debug = flag_debug || cfg.debug;
+                if now_debug != debug {
+                    debug = now_debug;
+                    log.set_debug(debug);
+                    daemon.set_debug(debug);
                 }
-                Some("annotation-dismiss") => {
-                    until = None;
-                    if let Err(e) = hud.dismiss(&mut client) {
-                        eprintln!("ec-oracle-eyes: {e}");
-                    }
-                    None
-                }
-                _ => None,
-            };
-            pipeline.beacon.set(resting(auto));
-            if let Some(result) = outcome {
-                let near = pipeline.last_region();
-                until = present(&mut hud, &mut client, result, near, fail_ms);
+                tracing::info!("settings changed, reapplied");
+                daemon.reconfigure(cfg, Instant::now());
             }
         }
-
-        let now = Instant::now();
-        if until.is_some_and(|u| now >= u) {
-            until = None;
-            if let Err(e) = hud.dismiss(&mut client) {
-                eprintln!("ec-oracle-eyes: {e}");
-            }
-        }
-
-        if auto && now >= next_tick {
-            next_tick = now + poll_every;
-            // The screen the user is actually facing. Reading every output in
-            // turn meant two thirds of the answers were about a monitor nobody
-            // was looking at, and they all queued for the same display slot.
-            // If the compositor will not say, fall back to the old round-robin
-            // rather than fixing on one screen forever.
-            let focused = focus::focused_output(&mut client);
-            let regions = match focused {
-                Some(r) => vec![r],
-                None => pipeline.output_regions(),
-            };
-            if !regions.is_empty() {
-                let region = regions[next_output % regions.len()];
-                next_output = next_output.wrapping_add(1);
-                // Nothing on screen means nothing to look at: automatic mode
-                // never interrupts an answer the user is still reading.
-                if until.is_none() {
-                    let pass = pipeline.auto(region, elapsed_ms(started));
-                    pipeline.beacon.set(resting(auto));
-                    match pass {
-                        // The gate declined. That is the common case.
-                        Ok(None) => {}
-                        Ok(Some(a)) => {
-                            until = present(&mut hud, &mut client, Ok(a), Some(region), fail_ms)
-                        }
-                        // Fail visibly (spec §2.1). Automatic mode is
-                        // unprompted, but a capture or OCR failure that only
-                        // ever reaches the journal is silent degradation:
-                        // auto looks like it is working and is not.
-                        Err(e) => {
-                            until = present(&mut hud, &mut client, Err(e), Some(region), fail_ms)
-                        }
-                    }
-                }
-            }
-        }
+        daemon.step(&mut link, Instant::now());
     }
-}
-
-/// What the taskbar eye shows when nothing is in flight.
-fn resting(auto: bool) -> Eye {
-    if auto {
-        Eye::Watch
-    } else {
-        Eye::Off
-    }
-}
-
-/// Put an answer — or the reason there isn't one — on screen, and say when
-/// it should come down.
-fn present(
-    hud: &mut Hud,
-    client: &mut Client,
-    result: Result<Answer, String>,
-    near: Option<Region>,
-    fail_ms: u64,
-) -> Option<Instant> {
-    let (anchor, panel, hold) = match result {
-        Ok(a) => (a.anchor, a.panel, a.hold_ms),
-        Err(e) => {
-            eprintln!("ec-oracle-eyes: {e}");
-            // A failure belongs beside the thing that was asked about, same
-            // as an answer would. Only a failure with no region at all —
-            // a malformed chord — falls back to the corner.
-            let anchor = near.map(Anchor::from).unwrap_or(FAIL_ANCHOR);
-            (anchor, Panel::failure(&e), fail_ms)
-        }
-    };
-    match hud.show(client, anchor, &panel) {
-        Ok(_) => Some(Instant::now() + Duration::from_millis(hold)),
-        Err(e) => {
-            // If the compositor will not draw for us there is nowhere left
-            // to complain but the journal.
-            eprintln!("ec-oracle-eyes: {e}");
-            None
-        }
-    }
-}
-
-/// Where a failure with no region of its own goes. A select that failed
-/// before it knew where to point still has to say so somewhere.
-const FAIL_ANCHOR: Anchor = Anchor {
-    x: 64,
-    y: 64,
-    w: 480,
-    h: 96,
-};
-
-fn region_of(data: &serde_json::Value) -> Option<Region> {
-    let r = data.get("region")?;
-    let get = |k: &str| r.get(k)?.as_i64();
-    let (x, y, w, h) = (get("x")?, get("y")?, get("w")?, get("h")?);
-    if w <= 0 || h <= 0 {
-        return None;
-    }
-    Some(Region {
-        x: x as i32,
-        y: y as i32,
-        w: w as i32,
-        h: h as i32,
-    })
-}
-
-/// Milliseconds since the daemon started. The gate measures durations — a
-/// dedup TTL and a rate limit — so it needs a clock that cannot step. Wall
-/// clock could, and an NTP correction either froze every answer for the length
-/// of the step or emptied the dedup table in one tick.
-fn elapsed_ms(started: Instant) -> u64 {
-    started.elapsed().as_millis() as u64
 }
 
 /// Block until the socket has something, or `timeout` elapses. `None` waits
@@ -278,7 +189,8 @@ fn wait_readable(fd: std::os::fd::RawFd, timeout: Option<Duration>) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::daemon::region_of;
+    use super::frame::Region;
     use serde_json::json;
 
     #[test]

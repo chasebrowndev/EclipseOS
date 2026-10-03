@@ -35,6 +35,17 @@ impl Eye {
             _ => Eye::Off,
         }
     }
+
+    /// A beacon line: an animation word, optionally led by `debug` while the
+    /// daemon is in debug mode (`debug watch`). Returns `(debug, eye)`.
+    pub fn parse_line(line: &str) -> (bool, Eye) {
+        match line.trim().strip_prefix("debug") {
+            Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) => {
+                (true, Eye::parse(rest))
+            }
+            _ => (false, Eye::parse(line)),
+        }
+    }
 }
 
 /// The mark's animated geometry: where the pupil is and how wide it is.
@@ -48,11 +59,18 @@ impl Eye {
 pub struct Iris {
     /// What the beacon last said.
     pub eye: Eye,
+    /// The daemon is in debug mode: the eye is red, always shown, and on a
+    /// namespace capture does not omit.
+    pub debug: bool,
     /// Pupil radius, in logical pixels, as of the last tick.
     pub pupil: f32,
     /// Pupil centre relative to the iris centre, in logical pixels.
     pub offset: (f32, f32),
+    /// How much of the eye shows, `0..=1`: it fades in over the ring when
+    /// it opens and out again before its surface is dropped.
+    pub alpha: f32,
     radius: Tween,
+    fade: Tween,
     x: Tween,
     y: Tween,
     dart_at: Option<Instant>,
@@ -61,15 +79,18 @@ pub struct Iris {
 
 impl Default for Iris {
     fn default() -> Self {
-        let off = pupil_for(Eye::Off);
+        let off = pupil_for(Eye::Off, false);
         let seed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as u64);
         Iris {
             eye: Eye::Off,
+            debug: false,
             pupil: off,
             offset: (0.0, 0.0),
+            alpha: 0.0,
             radius: Tween::rest(off),
+            fade: Tween::rest(0.0),
             x: Tween::rest(0.0),
             y: Tween::rest(0.0),
             dart_at: None,
@@ -84,11 +105,17 @@ pub fn outer() -> f32 {
     bar::EYE_DISC / 2.0
 }
 
-/// The pupil radius each state settles at. Off is the ring's own hole, so a
-/// settled Off is the plain eclipse.
-fn pupil_for(eye: Eye) -> f32 {
+/// The pupil radius each state settles at. Off closes it to nothing while
+/// the eye fades out over the ring — except in debug, where the eye stays
+/// open so it is never invisible.
+fn shown(eye: Eye, debug: bool) -> bool {
+    debug || eye != Eye::Off
+}
+
+fn pupil_for(eye: Eye, debug: bool) -> f32 {
     match eye {
-        Eye::Off => outer() - bar::RING,
+        Eye::Off if debug => outer() * bar::EYE_PUPIL,
+        Eye::Off => 0.0,
         Eye::Watch => outer() * bar::EYE_PUPIL,
         Eye::Think => bar::EYE_PINPOINT,
     }
@@ -97,12 +124,12 @@ fn pupil_for(eye: Eye) -> f32 {
 impl Iris {
     /// Settled on the plain eclipse: the view may draw the ring itself.
     pub fn is_plain(&self) -> bool {
-        self.eye == Eye::Off && self.radius.to == self.pupil && self.offset == (0.0, 0.0)
+        !shown(self.eye, self.debug) && self.alpha == 0.0 && !self.fade.live()
     }
 
-    /// A dart or a resize is in flight: the frame clock must run.
+    /// A dart, a resize or a fade is in flight: the frame clock must run.
     pub fn animating(&self) -> bool {
-        self.radius.live() || self.x.live() || self.y.live()
+        self.radius.live() || self.x.live() || self.y.live() || self.fade.live()
     }
 
     /// When the held pupil next darts, if it is holding.
@@ -113,12 +140,20 @@ impl Iris {
     /// The beacon said something. Retarget from wherever the pupil is now,
     /// so a state change mid-dart does not jump.
     pub fn set(&mut self, eye: Eye, now: Instant) {
-        if eye == self.eye {
+        self.set_beacon(self.debug, eye, now);
+    }
+
+    /// [`Iris::set`] with the debug flag too.
+    pub fn set_beacon(&mut self, debug: bool, eye: Eye, now: Instant) {
+        if eye == self.eye && debug == self.debug {
             return;
         }
         self.eye = eye;
+        self.debug = debug;
         let resize = Duration::from_millis(bar::EYE_RESIZE_MS);
-        self.radius = Tween::new(self.pupil, pupil_for(eye), now, resize);
+        self.radius = Tween::new(self.pupil, pupil_for(eye, debug), now, resize);
+        let to = if shown(eye, debug) { 1.0 } else { 0.0 };
+        self.fade = Tween::new(self.alpha, to, now, Duration::from_millis(bar::EYE_FADE_MS));
         self.dart_at = None;
         if eye == Eye::Watch {
             // Open where it is, then glance once the pupil has opened.
@@ -164,6 +199,7 @@ impl Iris {
 
     fn sample(&mut self, now: Instant) {
         self.pupil = self.radius.at(now, ease_in_out);
+        self.alpha = self.fade.at(now, ease_in_out);
         self.offset = (self.x.at(now, ease_out), self.y.at(now, ease_out));
     }
 
@@ -277,6 +313,10 @@ pub fn after(at: Instant) -> Subscription<Message> {
 /// (`hide-layer "ec-hyperion-bar:eclipse-eye"`, ADR 0056), so it must not drift.
 pub const NAMESPACE: &str = "eclipse-eye";
 
+/// The namespace in debug mode: deliberately *not* the one `hide-layer`
+/// names, so the red eye shows in screenshots and recordings.
+pub const NAMESPACE_DEBUG: &str = "eclipse-eye-debug";
+
 /// How long to wait before reconnecting to a daemon that is not there.
 const RETRY: Duration = Duration::from_secs(2);
 
@@ -294,14 +334,17 @@ pub fn watch() -> Subscription<Message> {
                     if let Ok(stream) = UnixStream::connect(&path) {
                         for line in BufReader::new(stream).lines() {
                             let Ok(line) = line else { break };
-                            if !crate::app::send(&mut sender, Message::Eye(Eye::parse(&line))) {
+                            if !crate::app::send(&mut sender, {
+                                let (debug, eye) = Eye::parse_line(&line);
+                                Message::Eye(debug, eye)
+                            }) {
                                 return;
                             }
                         }
                     }
                 }
                 // Lost, refused or absent: the eclipse goes back to a ring.
-                if !crate::app::send(&mut sender, Message::Eye(Eye::Off)) {
+                if !crate::app::send(&mut sender, Message::Eye(false, Eye::Off)) {
                     return;
                 }
                 std::thread::sleep(RETRY);
@@ -328,7 +371,7 @@ mod tests {
         assert!(iris.is_plain());
         assert!(!iris.animating());
         assert_eq!(iris.dart_at(), None);
-        assert_eq!(iris.pupil, outer() - bar::RING);
+        assert_eq!((iris.pupil, iris.alpha), (0.0, 0.0));
     }
 
     #[test]
@@ -349,8 +392,8 @@ mod tests {
             let (x, y) = iris.offset;
             assert!((x * x + y * y).sqrt() <= outer() * bar::EYE_WANDER + 1e-3);
         }
-        // At full reach the pupil stays inside the plain ring's hole.
-        assert!(outer() * (bar::EYE_PUPIL + bar::EYE_WANDER) <= outer() - bar::RING);
+        // At full reach the pupil stays inside the rim.
+        assert!(outer() * (bar::EYE_PUPIL + bar::EYE_WANDER) <= outer() - bar::EYE_RIM - bar::EYE_BLEED);
     }
 
     #[test]
@@ -378,5 +421,39 @@ mod tests {
         assert_eq!(Eye::parse("off"), Eye::Off);
         assert_eq!(Eye::parse("WATCH"), Eye::Off);
         assert_eq!(Eye::parse(""), Eye::Off);
+        assert_eq!(Eye::parse_line("debug watch\n"), (true, Eye::Watch));
+        assert_eq!(Eye::parse_line("debug off"), (true, Eye::Off));
+        assert_eq!(Eye::parse_line("debug"), (true, Eye::Off));
+        assert_eq!(Eye::parse_line("debugging"), (false, Eye::Off));
+        assert_eq!(Eye::parse_line("think"), (false, Eye::Think));
+    }
+
+    #[test]
+    fn the_eye_fades_in_and_out_and_only_then_is_plain() {
+        let mut iris = Iris::default();
+        let mut now = Instant::now();
+        iris.set(Eye::Watch, now);
+        assert!(!iris.is_plain(), "fading in already wants its surface");
+        now += Duration::from_millis(bar::EYE_FADE_MS / 2);
+        iris.tick(now);
+        assert!(iris.alpha > 0.0 && iris.alpha < 1.0);
+        now = settle(&mut iris, now);
+        assert_eq!(iris.alpha, 1.0);
+        iris.set(Eye::Off, now);
+        assert!(!iris.is_plain(), "fading out still needs its surface");
+        settle(&mut iris, now);
+        assert_eq!(iris.alpha, 0.0);
+        assert!(iris.is_plain());
+    }
+
+    #[test]
+    fn debug_off_keeps_the_eye_open() {
+        let mut iris = Iris::default();
+        let now = Instant::now();
+        iris.set_beacon(true, Eye::Off, now);
+        assert!(!iris.is_plain());
+        assert_eq!(iris.radius.to, outer() * bar::EYE_PUPIL);
+        iris.set_beacon(false, Eye::Off, now);
+        assert_eq!(iris.radius.to, pupil_for(Eye::Off, false));
     }
 }

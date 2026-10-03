@@ -9,6 +9,10 @@
 //! whole vocabulary is [`Eye`]. A reader that loses the connection must treat
 //! that as `off`, so a crashed daemon never leaves an eye staring.
 //!
+//! In debug mode (`--debug` / `OE_DEBUG=1`) every line carries a leading
+//! `debug ` token (`debug watch`), which the taskbar shows as a red eye. The
+//! vocabulary after it is unchanged and still carries nothing screen-derived.
+//!
 //! The eye is decorative. A beacon that cannot bind or write says so in the
 //! journal once and the daemon carries on without it.
 
@@ -40,6 +44,7 @@ impl Eye {
 
 struct Shared {
     eye: Eye,
+    debug: bool,
     clients: Vec<UnixStream>,
 }
 
@@ -53,32 +58,49 @@ fn lock(m: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
 
 /// Write one state line; `false` means the client is gone or not reading,
 /// and it is dropped rather than allowed to stall the daemon.
-fn tell(c: &mut UnixStream, eye: Eye) -> bool {
-    c.write_all(format!("{}\n", eye.word()).as_bytes()).is_ok()
+fn tell(c: &mut UnixStream, eye: Eye, debug: bool) -> bool {
+    c.write_all(wire(eye, debug).as_bytes()).is_ok()
+}
+
+/// One wire line, newline included.
+fn wire(eye: Eye, debug: bool) -> String {
+    if debug {
+        format!("debug {}\n", eye.word())
+    } else {
+        format!("{}\n", eye.word())
+    }
 }
 
 impl Beacon {
     /// `$XDG_RUNTIME_DIR/oracle-eyes/eye.sock`, or a disabled beacon when
     /// there is no runtime dir or the bind fails.
-    pub fn bind() -> Beacon {
+    pub fn bind(debug: bool) -> Beacon {
         let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") else {
-            eprintln!("ec-oracle-eyes: beacon: XDG_RUNTIME_DIR unset, taskbar eye disabled");
+            tracing::warn!("beacon: XDG_RUNTIME_DIR unset, taskbar eye disabled");
             return Beacon { shared: None };
         };
         let path = PathBuf::from(dir).join("oracle-eyes").join("eye.sock");
-        match Beacon::at(&path) {
-            Ok(b) => b,
+        match Beacon::at(&path, debug) {
+            Ok(b) => {
+                let prefixed = debug;
+                tracing::debug!(path = %path.display(), prefixed = prefixed, "beacon: listening");
+                b
+            }
             Err(e) => {
-                eprintln!(
-                    "oracle-eyes: beacon: {}: {e}, taskbar eye disabled",
-                    path.display()
-                );
+                tracing::warn!("beacon: {}: {e}, taskbar eye disabled", path.display());
                 Beacon { shared: None }
             }
         }
     }
 
-    pub fn at(path: &Path) -> std::io::Result<Beacon> {
+    /// A beacon that tells nobody, for tests: binding the real path would
+    /// unlink the socket of a daemon running in the same session.
+    #[cfg(test)]
+    pub fn disabled() -> Beacon {
+        Beacon { shared: None }
+    }
+
+    pub fn at(path: &Path, debug: bool) -> std::io::Result<Beacon> {
         if let Some(dir) = path.parent() {
             std::fs::DirBuilder::new()
                 .recursive(true)
@@ -94,6 +116,7 @@ impl Beacon {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         let shared = Arc::new(Mutex::new(Shared {
             eye: Eye::Off,
+            debug,
             clients: Vec::new(),
         }));
         let accept = Arc::clone(&shared);
@@ -106,8 +129,13 @@ impl Beacon {
                 let mut s = lock(&accept);
                 // A late joiner is told where things stand, not left
                 // waiting for the next transition.
-                if tell(&mut c, s.eye) {
+                if tell(&mut c, s.eye, s.debug) {
                     s.clients.push(c);
+                    tracing::debug!(
+                        clients = s.clients.len(),
+                        state = s.eye.word(),
+                        "beacon: subscriber joined"
+                    );
                 }
             }
         });
@@ -122,8 +150,29 @@ impl Beacon {
         if s.eye == eye {
             return;
         }
+        tracing::debug!(
+            from = s.eye.word(),
+            to = eye.word(),
+            clients = s.clients.len(),
+            "beacon: transition"
+        );
         s.eye = eye;
-        s.clients.retain_mut(|c| tell(c, eye));
+        let debug = s.debug;
+        s.clients.retain_mut(|c| tell(c, eye, debug));
+    }
+
+    /// Debug toggled live (Settings): every client is re-told the current
+    /// state with or without the prefix, so the taskbar's eye turns red or
+    /// back at once rather than at the next transition.
+    pub fn set_debug(&mut self, debug: bool) {
+        let Some(shared) = &self.shared else { return };
+        let mut s = lock(shared);
+        if s.debug == debug {
+            return;
+        }
+        s.debug = debug;
+        let eye = s.eye;
+        s.clients.retain_mut(|c| tell(c, eye, debug));
     }
 }
 
@@ -156,7 +205,7 @@ mod tests {
     #[test]
     fn a_late_joiner_is_told_the_current_state() {
         let path = sock("late");
-        let mut b = Beacon::at(&path).unwrap();
+        let mut b = Beacon::at(&path, false).unwrap();
         b.set(Eye::Watch);
         let mut r = join(&path);
         assert_eq!(next(&mut r), "watch");
@@ -165,7 +214,7 @@ mod tests {
     #[test]
     fn transitions_reach_a_client_and_repeats_are_not_sent() {
         let path = sock("repeat");
-        let mut b = Beacon::at(&path).unwrap();
+        let mut b = Beacon::at(&path, false).unwrap();
         let mut r = join(&path);
         assert_eq!(next(&mut r), "off");
         b.set(Eye::Think);
@@ -176,9 +225,42 @@ mod tests {
     }
 
     #[test]
+    fn debug_lines_carry_the_prefix_including_the_idle_greeting() {
+        let path = sock("debug");
+        let mut b = Beacon::at(&path, true).unwrap();
+        let mut r = join(&path);
+        assert_eq!(next(&mut r), "debug off");
+        b.set(Eye::Watch);
+        b.set(Eye::Think);
+        assert_eq!(next(&mut r), "debug watch");
+        assert_eq!(next(&mut r), "debug think");
+    }
+
+    #[test]
+    fn a_live_debug_toggle_re_tells_the_state_with_the_new_prefix() {
+        let path = sock("toggle");
+        let mut b = Beacon::at(&path, false).unwrap();
+        let mut r = join(&path);
+        assert_eq!(next(&mut r), "off");
+        b.set(Eye::Watch);
+        b.set_debug(true);
+        b.set_debug(true);
+        b.set_debug(false);
+        assert_eq!(next(&mut r), "watch");
+        assert_eq!(next(&mut r), "debug watch");
+        assert_eq!(next(&mut r), "watch");
+    }
+
+    #[test]
+    fn wire_format_is_unchanged_without_debug() {
+        assert_eq!(wire(Eye::Think, false), "think\n");
+        assert_eq!(wire(Eye::Think, true), "debug think\n");
+    }
+
+    #[test]
     fn the_socket_is_owner_only() {
         let path = sock("mode");
-        let _b = Beacon::at(&path).unwrap();
+        let _b = Beacon::at(&path, false).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
     }

@@ -75,3 +75,44 @@ pub fn fetch_show_key_hints() -> Option<bool> {
     let mut client = ec_ipc::Client::connect().ok()?;
     fetch_key_hints(&mut client)
 }
+
+/// Read a colour key (`"annotations.accent"`) as the `#rrggbb` /
+/// `#rrggbbaa` the compositor serves it in. `None` on any failure — no
+/// connection, no such key on an older compositor, or not a colour — so the
+/// caller keeps its own token.
+pub fn fetch_config_color(client: &mut ec_ipc::Client, path: &str) -> Option<iced::Color> {
+    let reply = client.call("get_config", json!({ "path": path })).ok()?;
+    parse_hex(reply.get("keys")?.as_array()?.first()?.get("value")?.as_str()?)
+}
+
+/// `#rrggbb` or `#rrggbbaa` as a colour. Anything else is `None`.
+pub fn parse_hex(value: &str) -> Option<iced::Color> {
+    let hex = value.strip_prefix('#')?;
+    if !matches!(hex.len(), 6 | 8) || !hex.is_ascii() {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
+    let a = if hex.len() == 8 { byte(6)? } else { u8::MAX };
+    Some(iced::Color::from_rgba8(
+        byte(0)?,
+        byte(2)?,
+        byte(4)?,
+        f32::from(a) / f32::from(u8::MAX),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_hex;
+
+    #[test]
+    fn a_hex_colour_parses_with_or_without_alpha() {
+        let c = parse_hex("#f2c33c").expect("six digits");
+        assert_eq!(c.into_rgba8(), [0xf2, 0xc3, 0x3c, 0xff]);
+        let c = parse_hex("#17140f8f").expect("eight digits");
+        assert_eq!(c.into_rgba8(), [0x17, 0x14, 0x0f, 0x8f]);
+        assert_eq!(parse_hex("f2c33c"), None);
+        assert_eq!(parse_hex("#f2c33"), None);
+        assert_eq!(parse_hex("#zzzzzz"), None);
+    }
+}

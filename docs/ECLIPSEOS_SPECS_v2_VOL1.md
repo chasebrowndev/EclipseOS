@@ -7012,6 +7012,9 @@ Quickshell or waybar as a non-default candidate is the modularity ADR 0052's
 Required by CHARTER §4. A client over the COMP-13 §1.4 write API, scoped to
 **`abyss.kdl` only**: appearance, input, outputs, layouts, keybinds, and the
 COMP-03 §1.1 screen-edges selector.
+*(G-05)* An add-on whose settings belong in Settings keeps them in its own
+`abyss.kdl` block, served to it by `get_config`, so Settings still writes
+nothing else; Oracle Eyes' `oracle-eyes` block is the first (ADR 0072).
 
 Because it can only write `abyss.kdl`, it is an ordinary Wayland client — it is
 **not** in the TCB, needs no anti-spoofing story, and can be sandboxed freely.
@@ -7134,13 +7137,19 @@ collision avoidance between overlays, eviction when too many are live,
 styling, and text sanitisation — is decided by the compositor, which is the
 only party that knows output geometry and the only party the caller cannot
 influence. **A caller must not be able to affect anything but the glyphs**,
-with the single bounded exception of the pick: which of the rectangles
-*inside* its own region gets marked.
+with two bounded exceptions: the pick (which of the rectangles *inside* its
+own region gets marked) and the `kind` (§3.2), which chooses between two
+compositor-defined looks and nothing finer. *(G-01)* The overlay's colours are
+the owner's, set in `abyss.kdl`'s `annotations` block; a caller cannot name
+one.
 
 ## 2. Text handling
 
 Rendering is the compositor's own minimal monospace glyph path (ADR 0009: no
-toolkit). Before any string is rasterised:
+toolkit). *(G-02)* The face is JetBrains Mono, drawn from an 8-bit alpha atlas
+pre-rasterised offline and checked in (ADR 0071); trusted UI keeps its own
+fixed face (COMP-10 §2), so the two never share a typeface. Before any string
+is rasterised:
 
 - C0/C1 control characters and bidi overrides are stripped, not escaped.
 - Length is clamped to a configured maximum, truncated hard.
@@ -7158,7 +7167,7 @@ that table does not exist:
 
 | Method | Effect |
 |---|---|
-| `annotation_create` | rectangle + text (+ optional `title`, `pick`) → overlay handle |
+| `annotation_create` | text (+ optional rectangle, `title`, `pick`, `kind`) → overlay handle. *(G-03)* With no rectangle the overlay is unanchored: the compositor places it top-centre of the focused output with no region mark, and a `pick` is rejected |
 | `annotation_update` | replace the title and text on an existing handle |
 | `annotation_destroy` | remove one overlay |
 | `annotation_clear` | remove every overlay owned by the caller |
@@ -7185,14 +7194,22 @@ line is the header" cannot be a convention in the text.
 `label` is one or two ASCII letters or digits, or the call is rejected. The
 rectangle is clamped like the anchor and must lie **wholly inside it**, or the
 pick is silently dropped and the overlay is drawn without it. The compositor
-marks the pick — a wash over it, a bar down its left edge and a chip carrying
-the label, repeated in the panel's header — so a multiple-choice answer can
+marks the pick — *(G-04)* a rimmed wash over it and a pill carrying the label,
+the label repeated in the panel's header — so a multiple-choice answer can
 point at the option it names. A pick only ever marks geometry inside a region
 the caller was already allowed to bracket, plus the marker's fixed furniture
 (a 2 px wash overhang, and the bar and chip at most 35 px to the pick's left,
 ADR 0054); it is the caller's claim, drawn in
 the untrusted pass, and is capture-invisible like the rest of it (§1.2).
 Moving a pick is a new overlay: `annotation_update` cannot change it.
+
+### 3.2 Kind
+
+*(G-01)* `kind` is an optional `"answer"` (the default) or `"error"` on
+`annotation_create` only; any other value rejects the call. An `error` overlay
+is drawn with a danger dot before its title and no accent, so a failure never
+reads as an answer. The caller picks which of the two; the compositor owns what
+each looks like.
 
 Capture is deliberately **not** a socket capability (COMP-13 §1, non-goals).
 Pixels travel the Wayland path, gated separately by
@@ -7429,6 +7446,21 @@ same day (ADR 0069). F-06..F-14 added 2026-10-01.
 ## Open decisions this appendix leaves standing
 
 1. **The Settings enable button** waits on the trusted admin prompt (COMP-10).
+
+---
+
+# Appendix G — amendment record, 2026-10-02
+
+**Applied inline to this volume on 2026-10-02**, from owner rulings of the
+same day (ADR 0071, ADR 0072).
+
+| ID | Target | Change | Applied |
+|---|---|---|---|
+| G-01 | COMP-18 §1.3, new §3.2 | `annotation_create` takes an optional `kind`, `"answer"` or `"error"`: a second bounded caller choice beside the pick. Overlay colours come from the owner's `annotations` block in `abyss.kdl`, never from a caller | yes |
+| G-02 | COMP-18 §2 | The overlay face is JetBrains Mono from a checked-in pre-rasterised atlas, separate from trusted UI's face | yes |
+| G-03 | COMP-18 §3 | The rectangle on `annotation_create` is optional; without one the overlay is unanchored, placed by the compositor, and cannot carry a pick | yes |
+| G-04 | COMP-18 §3.1 | The pick marker is a rimmed wash and a label pill; the left bar is gone. The ≤35 px furniture bound of ADR 0054 still holds | yes |
+| G-05 | COMP-17 §3 | Settings edits Oracle Eyes through an `oracle-eyes` block in `abyss.kdl`, keeping Settings a client of the COMP-13 §1.4 write API and nothing else. A changed model command is withheld until approved in the COMP-10 §3.11 prompt (ADR 0072) | yes |
 
 ---
 

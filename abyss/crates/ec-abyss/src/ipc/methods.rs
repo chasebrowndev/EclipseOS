@@ -741,7 +741,9 @@ fn calibrate_output(state: &mut AbyssState, params: &Value) -> Reply {
 
 // ----------------------------------------------------------- annotations
 //
-// COMP-18 §3, ADR 0054. The caller sends a rectangle, a body, an optional
+// COMP-18 §3, ADR 0054. The caller sends an optional rectangle (absent:
+// unanchored, drawn top-centre), an optional kind (`answer`, the default, or
+// `error`), a body, an optional
 // one-line title and an optional pick (a labelled sub-rectangle marking the
 // suggested option) and gets a handle. Everything else -- sanitising,
 // wrapping, styling, placement, eviction, clamping the pick and dropping one
@@ -803,21 +805,52 @@ fn pick_param(params: &Value) -> Result<Option<crate::render::annotation::Pick>,
     Ok(Some(crate::render::annotation::Pick { rect, label }))
 }
 
+/// Optional anchor: none of `x/y/w/h` present means unanchored (drawn
+/// top-centre by `render::annotation`); any one present means all four are
+/// required and checked exactly as before.
+fn anchor_param(params: &Value) -> Result<Option<Rectangle<i32, Logical>>, RpcError> {
+    let obj = params_obj(params);
+    if ["x", "y", "w", "h"].iter().all(|k| !obj.contains_key(*k)) {
+        return Ok(None);
+    }
+    rect_param(params).map(Some)
+}
+
+/// Optional `kind`: absent means `answer`. Anything but the two known names
+/// is refused (fail closed), never mapped to a default.
+fn kind_param(params: &Value) -> Result<crate::render::annotation::AnnotationKind, RpcError> {
+    use crate::render::annotation::AnnotationKind;
+    match params_obj(params).get("kind") {
+        None => Ok(AnnotationKind::Answer),
+        Some(v) => match v.as_str() {
+            Some("answer") => Ok(AnnotationKind::Answer),
+            Some("error") => Ok(AnnotationKind::Error),
+            _ => Err(RpcError::invalid_params("kind must be \"answer\" or \"error\"")),
+        },
+    }
+}
+
 type CreateParams<'a> = (
-    Rectangle<i32, Logical>,
+    Option<Rectangle<i32, Logical>>,
+    crate::render::annotation::AnnotationKind,
     &'a str,
     &'a str,
     Option<crate::render::annotation::Pick>,
 );
 
 fn create_params(params: &Value) -> Result<CreateParams<'_>, RpcError> {
-    only_keys(params, &["x", "y", "w", "h", "text", "title", "pick"])?;
-    Ok((
-        rect_param(params)?,
-        title_param(params)?,
-        text_param(params)?,
-        pick_param(params)?,
-    ))
+    only_keys(params, &["x", "y", "w", "h", "kind", "text", "title", "pick"])?;
+    let anchor = anchor_param(params)?;
+    let kind = kind_param(params)?;
+    let title = title_param(params)?;
+    let text = text_param(params)?;
+    let pick = pick_param(params)?;
+    // A pick marks a sub-rectangle of the anchor; with no anchor there is
+    // nothing for it to be inside.
+    if pick.is_some() && anchor.is_none() {
+        return Err(RpcError::invalid_params("pick requires x, y, w and h"));
+    }
+    Ok((anchor, kind, title, text, pick))
 }
 
 fn update_params(params: &Value) -> Result<(u64, &str, &str), RpcError> {
@@ -830,8 +863,8 @@ fn update_params(params: &Value) -> Result<(u64, &str, &str), RpcError> {
 }
 
 fn annotation_create(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {
-    let (anchor, title, text, pick) = create_params(params)?;
-    let Some(id) = state.annotations.create(conn, anchor, title, text, pick) else {
+    let (anchor, kind, title, text, pick) = create_params(params)?;
+    let Some(id) = state.annotations.create(conn, anchor, kind, title, text, pick) else {
         return Err(RpcError::invalid_params("too many live annotations"));
     };
     crate::backend::damage_all(state);
@@ -982,14 +1015,14 @@ mod tests {
     #[test]
     fn annotation_title_is_optional_but_must_be_a_string() {
         let base = json!({"x": 0, "y": 0, "w": 100, "h": 50, "text": "body"});
-        let (_, title, text, pick) = create_params(&base).unwrap_or_else(|_| panic!("no title: rejected"));
+        let (_, _, title, text, pick) = create_params(&base).unwrap_or_else(|_| panic!("no title: rejected"));
         assert_eq!((title, text), ("", "body"));
         assert!(pick.is_none());
 
         let mut p = base.clone();
         p["title"] = json!("Q3");
         assert_eq!(
-            create_params(&p).unwrap_or_else(|_| panic!("titled: rejected")).1,
+            create_params(&p).unwrap_or_else(|_| panic!("titled: rejected")).2,
             "Q3"
         );
 
@@ -1002,7 +1035,7 @@ mod tests {
         let with_pick = |pick: Value| json!({"x": 0, "y": 0, "w": 100, "h": 50, "text": "t", "pick": pick});
         let ok = create_params(&with_pick(json!({"x": 1, "y": 2, "w": 3, "h": 4, "label": "b2"})))
             .unwrap_or_else(|_| panic!("valid pick: rejected"))
-            .3
+            .4
             .expect("pick present");
         assert_eq!(ok.label, "B2");
         assert_eq!(ok.rect, Rectangle::new((1, 2).into(), (3, 4).into()));
@@ -1010,7 +1043,7 @@ mod tests {
         // `null` is absent.
         assert!(create_params(&with_pick(Value::Null))
             .unwrap_or_else(|_| panic!("null pick: rejected"))
-            .3
+            .4
             .is_none());
 
         for bad in [
@@ -1030,16 +1063,53 @@ mod tests {
     }
 
     #[test]
+    fn annotation_anchor_is_optional_and_kind_fails_closed() {
+        use crate::render::annotation::AnnotationKind;
+        // No rect at all: unanchored, kind defaults to answer.
+        let (anchor, kind, ..) =
+            create_params(&json!({"text": "t"})).unwrap_or_else(|_| panic!("unanchored: rejected"));
+        assert!(anchor.is_none());
+        assert_eq!(kind, AnnotationKind::Answer);
+
+        let (_, kind, ..) = create_params(&json!({"text": "t", "kind": "error"}))
+            .unwrap_or_else(|_| panic!("error kind: rejected"));
+        assert_eq!(kind, AnnotationKind::Error);
+        let (_, kind, ..) = create_params(&json!({"text": "t", "kind": "answer"}))
+            .unwrap_or_else(|_| panic!("answer kind: rejected"));
+        assert_eq!(kind, AnnotationKind::Answer);
+
+        for bad in [
+            // Unknown or mistyped kind.
+            json!({"text": "t", "kind": "warning"}),
+            json!({"text": "t", "kind": "Error"}),
+            json!({"text": "t", "kind": null}),
+            json!({"text": "t", "kind": 1}),
+            // A partial rect is not "no rect".
+            json!({"text": "t", "x": 0}),
+            json!({"text": "t", "x": 0, "y": 0, "w": 10}),
+            // A present rect is still checked.
+            json!({"text": "t", "x": 0, "y": 0, "w": 0, "h": 10}),
+            json!({"text": "t", "x": 0, "y": 0, "w": 10, "h": -1}),
+            // A pick needs an anchor to sit inside.
+            json!({"text": "t", "pick": {"x": 1, "y": 2, "w": 3, "h": 4, "label": "A"}}),
+        ] {
+            assert!(create_params(&bad).is_err(), "{bad} accepted");
+        }
+        // A null pick without an anchor is simply no pick.
+        assert!(create_params(&json!({"text": "t", "pick": null})).is_ok());
+    }
+
+    #[test]
     fn annotation_pick_outside_anchor_is_accepted_then_dropped_by_the_store() {
         let p = json!({
             "x": 0, "y": 0, "w": 100, "h": 50, "text": "t",
             "pick": {"x": 500, "y": 500, "w": 10, "h": 10, "label": "A"},
         });
-        let (anchor, title, text, pick) =
+        let (anchor, kind, title, text, pick) =
             create_params(&p).unwrap_or_else(|_| panic!("IPC accepts it: rejected"));
         assert!(pick.is_some());
         let mut store = crate::render::annotation::AnnotationStore::default();
-        let id = store.create(1, anchor, title, text, pick).expect("created");
+        let id = store.create(1, anchor, kind, title, text, pick).expect("created");
         let (_, a) = store.iter().find(|(k, _)| **k == id).expect("live");
         assert!(a.pick.is_none());
     }
@@ -1048,7 +1118,16 @@ mod tests {
     fn annotation_update_without_title_clears_it() {
         let anchor = Rectangle::new((0, 0).into(), (100, 50).into());
         let mut store = crate::render::annotation::AnnotationStore::default();
-        let id = store.create(1, anchor, "Old", "t", None).expect("created");
+        let id = store
+            .create(
+                1,
+                Some(anchor),
+                crate::render::annotation::AnnotationKind::Answer,
+                "Old",
+                "t",
+                None,
+            )
+            .expect("created");
 
         let p = json!({"id": id.0, "text": "new"});
         let (raw, title, text) = update_params(&p).unwrap_or_else(|_| panic!("no title is fine: rejected"));

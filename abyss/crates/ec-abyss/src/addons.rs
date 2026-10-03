@@ -352,6 +352,11 @@ pub fn apply(state: &mut AbyssState, next: Addons) {
         state.config_written.clear();
         state.config.catalog_layer = now.is_on(Hook::TaskbarWidgets);
         crate::config::watch::reload_now(state);
+    } else if before.is_on(Hook::Annotations) != now.is_on(Hook::Annotations) {
+        // The model command is queued for approval only while the add-on is
+        // on (`withhold::settle_model_command`); settle again so it is asked
+        // about now, or no longer.
+        crate::config::withhold::reapply(state);
     } else {
         // `get_config` reports add-ons; clients refetch on `config`.
         crate::ipc::emit(state, "config", serde_json::json!({}));

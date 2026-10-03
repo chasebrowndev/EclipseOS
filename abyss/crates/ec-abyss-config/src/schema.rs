@@ -18,7 +18,7 @@
 //! 3. schema → defaults: [`get`] on a default `Config` returns exactly the
 //!    `default` column for every row.
 
-use super::{BarPopupAnchor, BarPosition, Config, FloatingPlacement, LayoutKind};
+use super::{AnnotationColors, BarPopupAnchor, BarPosition, Config, FloatingPlacement, LayoutKind};
 
 /// The type of a key's value, and whatever constrains it. A GUI maps this
 /// straight onto a control: `Bool` is a toggle, `Int{min,max}` a slider,
@@ -226,6 +226,185 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Solid background, and letterbox fill.",
+    ),
+    // annotation HUD colours (COMP-18 §1.3). Drawn by the compositor; the
+    // add-on that sends the text cannot restyle any of them.
+    k(
+        "annotations.accent",
+        Ty::Color,
+        Color(AnnotationColors::DEFAULT.accent),
+        Abyss,
+        Live,
+        "Annotation HUD: the pick tab and rim, the region selector's band and \
+       the live Oracle Eyes taskbar eye.",
+    ),
+    k(
+        "annotations.accent-text",
+        Ty::Color,
+        Color(AnnotationColors::DEFAULT.accent_text),
+        Abyss,
+        Live,
+        "Annotation HUD: the pick letter inside the panel.",
+    ),
+    k(
+        "annotations.text",
+        Ty::Color,
+        Color(AnnotationColors::DEFAULT.text),
+        Abyss,
+        Live,
+        "Annotation HUD: title and body text.",
+    ),
+    k(
+        "annotations.panel-tint",
+        Ty::Color,
+        Color(AnnotationColors::DEFAULT.panel_tint),
+        Abyss,
+        Live,
+        "Annotation HUD: the panel's fill over its blurred backdrop. An alpha \
+       below 0.5 (`80`) is raised to 0.5 so the text stays legible over a \
+       white page.",
+    ),
+    k(
+        "annotations.panel-rim",
+        Ty::Color,
+        Color(AnnotationColors::DEFAULT.panel_rim),
+        Abyss,
+        Live,
+        "Annotation HUD: the panel's 1px rim.",
+    ),
+    k(
+        "annotations.hairline",
+        Ty::Color,
+        Color(AnnotationColors::DEFAULT.hairline),
+        Abyss,
+        Live,
+        "Annotation HUD: the rule between the title and the body.",
+    ),
+    k(
+        "annotations.region-outline",
+        Ty::Color,
+        Color(AnnotationColors::DEFAULT.region_outline),
+        Abyss,
+        Live,
+        "Annotation HUD: the rounded rim around the region an answer is about.",
+    ),
+    k(
+        "annotations.leader",
+        Ty::Color,
+        Color(AnnotationColors::DEFAULT.leader),
+        Abyss,
+        Live,
+        "Annotation HUD: the line from a panel to its region.",
+    ),
+    k(
+        "annotations.selection-dim",
+        Ty::Color,
+        Color(AnnotationColors::DEFAULT.selection_dim),
+        Abyss,
+        Live,
+        "Region selector: the dim over the screen around the selection.",
+    ),
+    k(
+        "annotations.danger",
+        Ty::Color,
+        Color(AnnotationColors::DEFAULT.danger),
+        Abyss,
+        Live,
+        "Annotation HUD: the dot before the title of an error.",
+    ),
+    // Oracle Eyes add-on settings (ADR 0066). Stored and served; the daemon
+    // reads them over `get_config`.
+    k(
+        "oracle-eyes.model-command",
+        Ty::StrList,
+        List(crate::ORACLE_EYES_MODEL_COMMAND),
+        Abyss,
+        Live,
+        "Oracle Eyes: the model command, program then arguments. The daemon \
+       always adds its own locked flags (no tools, one turn, the answer \
+       schema). A command other than the default runs only once you approve \
+       it in the compositor-drawn prompt (ADR 0067); until then `get_config` \
+       serves `null` for it, with `approval: \"pending\"` on this row \
+       (`\"approved\"` otherwise). Any later edit asks again.",
+    ),
+    k(
+        "oracle-eyes.timeout-ms",
+        int(
+            crate::ORACLE_EYES_TIMEOUT_MS.0 as i64,
+            crate::ORACLE_EYES_TIMEOUT_MS.1 as i64,
+        ),
+        Int(30_000),
+        Abyss,
+        Live,
+        "Oracle Eyes: how long one model call may take before it is abandoned.",
+    ),
+    k(
+        "oracle-eyes.auto-interval-ms",
+        int(
+            crate::ORACLE_EYES_AUTO_INTERVAL_MS.0 as i64,
+            crate::ORACLE_EYES_AUTO_INTERVAL_MS.1 as i64,
+        ),
+        Int(3000),
+        Abyss,
+        Live,
+        "Oracle Eyes: in automatic mode, the least time between two questions.",
+    ),
+    k(
+        "oracle-eyes.hold-ms",
+        int(
+            crate::ORACLE_EYES_HOLD_MS.0 as i64,
+            crate::ORACLE_EYES_HOLD_MS.1 as i64,
+        ),
+        Int(4000),
+        Abyss,
+        Live,
+        "Oracle Eyes: the least time an answer stays on screen; longer \
+       answers stay longer.",
+    ),
+    k(
+        "oracle-eyes.debug",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Oracle Eyes debug mode: the taskbar eye turns red and is shown in \
+       screen captures, and the daemon writes a debug log.",
+    ),
+    k(
+        "oracle-eyes.bind.select",
+        Ty::Str,
+        Str("none"),
+        Abyss,
+        Live,
+        "Chord for annotation-select: draw a rectangle for Oracle Eyes to read, like `Super+Shift+A`; `none` (the default) \
+       leaves it unbound. A `bind` block on the same chord wins.",
+    ),
+    k(
+        "oracle-eyes.bind.dismiss",
+        Ty::Str,
+        Str("none"),
+        Abyss,
+        Live,
+        "Chord for annotation-dismiss: dismiss the answer on screen, like `Super+Shift+A`; `none` (the default) \
+       leaves it unbound. A `bind` block on the same chord wins.",
+    ),
+    k(
+        "oracle-eyes.bind.expand",
+        Ty::Str,
+        Str("none"),
+        Abyss,
+        Live,
+        "Chord for annotation-expand: expand the answer on screen, like `Super+Shift+A`; `none` (the default) \
+       leaves it unbound. A `bind` block on the same chord wins.",
+    ),
+    k(
+        "oracle-eyes.bind.auto-toggle",
+        Ty::Str,
+        Str("none"),
+        Abyss,
+        Live,
+        "Chord for annotation-auto-toggle: turn automatic mode on or off, like `Super+Shift+A`; `none` (the default) \
+       leaves it unbound. A `bind` block on the same chord wins.",
     ),
     // general
     k(
@@ -1814,6 +1993,22 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "wallpaper.path" => s(&c.wallpaper.path),
         "wallpaper.mode" => V::Str(c.wallpaper.mode.clone()),
         "wallpaper.color" => V::Color(c.wallpaper.color),
+        "annotations.accent" => V::Color(c.annotations.accent),
+        "annotations.accent-text" => V::Color(c.annotations.accent_text),
+        "annotations.text" => V::Color(c.annotations.text),
+        "annotations.panel-tint" => V::Color(c.annotations.panel_tint),
+        "annotations.panel-rim" => V::Color(c.annotations.panel_rim),
+        "annotations.hairline" => V::Color(c.annotations.hairline),
+        "annotations.region-outline" => V::Color(c.annotations.region_outline),
+        "annotations.leader" => V::Color(c.annotations.leader),
+        "annotations.selection-dim" => V::Color(c.annotations.selection_dim),
+        "annotations.danger" => V::Color(c.annotations.danger),
+        // `None` while withheld (ADR 0067): served as null, never as argv.
+        "oracle-eyes.model-command" => c.oracle_eyes.model_command.as_deref().map_or(V::Null, list),
+        "oracle-eyes.timeout-ms" => V::Int(c.oracle_eyes.timeout_ms as i64),
+        "oracle-eyes.auto-interval-ms" => V::Int(c.oracle_eyes.auto_interval_ms as i64),
+        "oracle-eyes.hold-ms" => V::Int(c.oracle_eyes.hold_ms as i64),
+        "oracle-eyes.debug" => V::Bool(c.oracle_eyes.debug),
         "general.gaps-in" => V::Int(c.general.gaps_in as i64),
         "general.gaps-out" => V::Int(c.general.gaps_out as i64),
         "general.gaps-in-vertical" => c.general.gaps_in_vertical.map_or(V::Null, |v| V::Int(v as i64)),
@@ -1877,6 +2072,10 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "launcher.search.terminal-apps" => V::Bool(c.launcher.search.terminal_apps),
         "launcher.search.match-descriptions" => V::Bool(c.launcher.search.match_descriptions),
         "launcher.bind.open" => V::Str(c.launcher.bind.open.text.clone()),
+        "oracle-eyes.bind.select" => V::Str(c.oracle_eyes.bind.select.text.clone()),
+        "oracle-eyes.bind.dismiss" => V::Str(c.oracle_eyes.bind.dismiss.text.clone()),
+        "oracle-eyes.bind.expand" => V::Str(c.oracle_eyes.bind.expand.text.clone()),
+        "oracle-eyes.bind.auto-toggle" => V::Str(c.oracle_eyes.bind.auto_toggle.text.clone()),
         "launcher.bind.run" => V::Str(c.launcher.bind.run.text.clone()),
         "ui.show-key-hints" => V::Bool(c.ui.show_key_hints),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
@@ -2041,6 +2240,10 @@ mod tests {
                 // A chord, not free text.
                 "launcher.bind.open" => "Super+o".into(),
                 "launcher.bind.run" => "Super+F2".into(),
+                "oracle-eyes.bind.select" => "Super+Shift+a".into(),
+                "oracle-eyes.bind.dismiss" => "Super+Shift+d".into(),
+                "oracle-eyes.bind.expand" => "Super+Shift+x".into(),
+                "oracle-eyes.bind.auto-toggle" => "Super+Shift+t".into(),
                 _ => "x".to_string(),
             }),
             // A list node is not a scalar assignment; covered by its own row on

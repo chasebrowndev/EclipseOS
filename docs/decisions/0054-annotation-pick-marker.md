@@ -1,5 +1,5 @@
 # 0054 — Annotations gain a title and a pick marker
-Status: accepted
+Status: accepted (face and pick-bar marker superseded by 0071)
 Date: 2026-09-22
 Deciders: chase (owner), Claude (advisory)
 
