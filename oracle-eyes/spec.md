@@ -177,7 +177,7 @@ revocable capabilities:
   capture gate, enabled by one line in `policy.kdl`:
 
   ```kdl
-  capture { allow "oracle-eyes" }
+  capture { allow "ec-oracle-eyes" }
   ```
 
   Identity is the peer pid's executable basename. Revoking is deleting that

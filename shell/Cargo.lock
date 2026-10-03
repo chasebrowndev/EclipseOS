@@ -1034,6 +1034,7 @@ version = "0.1.0"
 dependencies = [
  "ec-abyss-config",
  "ec-ipc",
+ "ec-policy-viewer",
  "ec-services",
  "ec-ui",
  "iced",

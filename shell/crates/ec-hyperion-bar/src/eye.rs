@@ -66,7 +66,11 @@ pub struct Iris {
     pub pupil: f32,
     /// Pupil centre relative to the iris centre, in logical pixels.
     pub offset: (f32, f32),
+    /// How much of the eye shows, `0..=1`: it fades in over the ring when
+    /// it opens and out again before its surface is dropped.
+    pub alpha: f32,
     radius: Tween,
+    fade: Tween,
     x: Tween,
     y: Tween,
     dart_at: Option<Instant>,
@@ -84,7 +88,9 @@ impl Default for Iris {
             debug: false,
             pupil: off,
             offset: (0.0, 0.0),
+            alpha: 0.0,
             radius: Tween::rest(off),
+            fade: Tween::rest(0.0),
             x: Tween::rest(0.0),
             y: Tween::rest(0.0),
             dart_at: None,
@@ -99,13 +105,17 @@ pub fn outer() -> f32 {
     bar::EYE_DISC / 2.0
 }
 
-/// The pupil radius each state settles at. Off is the ring's own hole, so a
-/// settled Off is the plain eclipse — except in debug, where the eye stays
+/// The pupil radius each state settles at. Off closes it to nothing while
+/// the eye fades out over the ring — except in debug, where the eye stays
 /// open so it is never invisible.
+fn shown(eye: Eye, debug: bool) -> bool {
+    debug || eye != Eye::Off
+}
+
 fn pupil_for(eye: Eye, debug: bool) -> f32 {
     match eye {
         Eye::Off if debug => outer() * bar::EYE_PUPIL,
-        Eye::Off => outer() - bar::RING,
+        Eye::Off => 0.0,
         Eye::Watch => outer() * bar::EYE_PUPIL,
         Eye::Think => bar::EYE_PINPOINT,
     }
@@ -114,12 +124,12 @@ fn pupil_for(eye: Eye, debug: bool) -> f32 {
 impl Iris {
     /// Settled on the plain eclipse: the view may draw the ring itself.
     pub fn is_plain(&self) -> bool {
-        !self.debug && self.eye == Eye::Off && self.radius.to == self.pupil && self.offset == (0.0, 0.0)
+        !shown(self.eye, self.debug) && self.alpha == 0.0 && !self.fade.live()
     }
 
-    /// A dart or a resize is in flight: the frame clock must run.
+    /// A dart, a resize or a fade is in flight: the frame clock must run.
     pub fn animating(&self) -> bool {
-        self.radius.live() || self.x.live() || self.y.live()
+        self.radius.live() || self.x.live() || self.y.live() || self.fade.live()
     }
 
     /// When the held pupil next darts, if it is holding.
@@ -142,6 +152,8 @@ impl Iris {
         self.debug = debug;
         let resize = Duration::from_millis(bar::EYE_RESIZE_MS);
         self.radius = Tween::new(self.pupil, pupil_for(eye, debug), now, resize);
+        let to = if shown(eye, debug) { 1.0 } else { 0.0 };
+        self.fade = Tween::new(self.alpha, to, now, Duration::from_millis(bar::EYE_FADE_MS));
         self.dart_at = None;
         if eye == Eye::Watch {
             // Open where it is, then glance once the pupil has opened.
@@ -187,6 +199,7 @@ impl Iris {
 
     fn sample(&mut self, now: Instant) {
         self.pupil = self.radius.at(now, ease_in_out);
+        self.alpha = self.fade.at(now, ease_in_out);
         self.offset = (self.x.at(now, ease_out), self.y.at(now, ease_out));
     }
 
@@ -358,7 +371,7 @@ mod tests {
         assert!(iris.is_plain());
         assert!(!iris.animating());
         assert_eq!(iris.dart_at(), None);
-        assert_eq!(iris.pupil, outer() - bar::RING);
+        assert_eq!((iris.pupil, iris.alpha), (0.0, 0.0));
     }
 
     #[test]
@@ -379,8 +392,8 @@ mod tests {
             let (x, y) = iris.offset;
             assert!((x * x + y * y).sqrt() <= outer() * bar::EYE_WANDER + 1e-3);
         }
-        // At full reach the pupil stays inside the plain ring's hole.
-        assert!(outer() * (bar::EYE_PUPIL + bar::EYE_WANDER) <= outer() - bar::RING);
+        // At full reach the pupil stays inside the rim.
+        assert!(outer() * (bar::EYE_PUPIL + bar::EYE_WANDER) <= outer() - bar::EYE_RIM - bar::EYE_BLEED);
     }
 
     #[test]
@@ -413,6 +426,24 @@ mod tests {
         assert_eq!(Eye::parse_line("debug"), (true, Eye::Off));
         assert_eq!(Eye::parse_line("debugging"), (false, Eye::Off));
         assert_eq!(Eye::parse_line("think"), (false, Eye::Think));
+    }
+
+    #[test]
+    fn the_eye_fades_in_and_out_and_only_then_is_plain() {
+        let mut iris = Iris::default();
+        let mut now = Instant::now();
+        iris.set(Eye::Watch, now);
+        assert!(!iris.is_plain(), "fading in already wants its surface");
+        now += Duration::from_millis(bar::EYE_FADE_MS / 2);
+        iris.tick(now);
+        assert!(iris.alpha > 0.0 && iris.alpha < 1.0);
+        now = settle(&mut iris, now);
+        assert_eq!(iris.alpha, 1.0);
+        iris.set(Eye::Off, now);
+        assert!(!iris.is_plain(), "fading out still needs its surface");
+        settle(&mut iris, now);
+        assert_eq!(iris.alpha, 0.0);
+        assert!(iris.is_plain());
     }
 
     #[test]

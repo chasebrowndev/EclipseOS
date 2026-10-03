@@ -25,7 +25,7 @@ CI job blocks the merge.
 Two capabilities, granted and revoked independently, plus one output-only beacon:
 
 1. **Capture** — `ext-image-copy-capture-v1`, behind the fail-closed capture
-   gate. Enabled by one line in `policy.kdl`: `capture { allow "oracle-eyes" }`.
+   gate. Enabled by one line in `policy.kdl`: `capture { allow "ec-oracle-eyes" }`.
    Absent, it reads nothing.
 2. **Control** — the COMP-13 socket at `$XDG_RUNTIME_DIR/eclipse/abyss.sock`,
    owner-uid only, restricted to `annotation_create` / `annotation_update` /
@@ -82,7 +82,8 @@ see the injection note below.
 
 ## Debug mode
 
-`oracle-eyes --debug` or `OE_DEBUG=1` turns it on. It changes what is logged
+`ec-oracle-eyes --debug`, `OE_DEBUG=1`, or `oracle-eyes { debug #true }` in
+`abyss.kdl` (the Settings tickbox, live) turns it on. It changes what is logged
 and what the beacon says, never what the pipeline does.
 
 - **Logging.** All output goes through `tracing`. Normal mode: `info` to

@@ -316,6 +316,11 @@ pub struct App {
     /// `"off"`): the bar lays only a light tint on its material. Off, or
     /// with nothing answering, the bar paints the opaque fallback ground.
     pub blur: bool,
+    /// The live eye's gold: `annotations.accent`, the colour the compositor
+    /// draws Oracle-Eyes' picks in, so the eye and the picks are one yellow.
+    /// [`color::ACCENT`](ec_ui::tokens::color::ACCENT) until the compositor
+    /// says otherwise. Re-read on every config reload.
+    pub eye_accent: iced::Color,
     /// The air around every bar's pill, from `general.gaps-out` (see
     /// [`Air`]). Re-read on every config reload.
     pub air: Air,
@@ -672,6 +677,7 @@ impl App {
             .glass_radius("decoration.rounding")
             .unwrap_or(ec_ui::tokens::radius::CARD);
         let blur = conn.blur().unwrap_or(false);
+        let eye_accent = conn.eye_accent().unwrap_or(ec_ui::tokens::color::ACCENT);
         let air = conn.air().unwrap_or_default();
         // The focused output now, so a bar opened on any other one folds
         // from its first frame rather than on the next output event.
@@ -706,6 +712,7 @@ impl App {
             bar_radius,
             menu_radius,
             blur,
+            eye_accent,
             air,
             widget_cfg,
             widgets: widgets::State::default(),
@@ -1468,6 +1475,9 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             if let Some(blur) = app.conn.blur() {
                 app.blur = blur;
             }
+            // A key that went away goes back to the token, not to the last
+            // colour a reload saw.
+            app.eye_accent = app.conn.eye_accent().unwrap_or(ec_ui::tokens::color::ACCENT);
             // A new outer gap or edge moves every pill now, not on its next
             // fold: the surface is re-asked, and a raised eye is dropped so
             // the fold pass below raises it again at the new offset. A popup
