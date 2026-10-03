@@ -120,6 +120,16 @@ impl Default for Config {
     }
 }
 
+/// Debug mode is `--debug` on the command line or `OE_DEBUG=1`. It is a run
+/// switch, not a config key: it changes what is logged and what the beacon
+/// says, never what the pipeline does.
+pub fn debug_requested<S: AsRef<str>>(
+    args: impl IntoIterator<Item = S>,
+    env: Option<&str>,
+) -> bool {
+    env == Some("1") || args.into_iter().any(|a| a.as_ref() == "--debug")
+}
+
 /// System file first so the user's own file wins on any key it names.
 fn search_path() -> Vec<PathBuf> {
     let mut v = vec![PathBuf::from("/etc/eclipse/oracle-eyes.kdl")];
@@ -410,6 +420,14 @@ mod tests {
         let mut errors = Vec::new();
         apply_text(&mut cfg, Path::new("oracle-eyes.kdl"), text, &mut errors);
         (cfg, errors)
+    }
+
+    #[test]
+    fn debug_comes_from_the_flag_or_the_env() {
+        assert!(debug_requested(["oracle-eyes", "--debug"], None));
+        assert!(debug_requested(["oracle-eyes"], Some("1")));
+        assert!(!debug_requested(["oracle-eyes"], None));
+        assert!(!debug_requested(["oracle-eyes", "--debugger"], Some("0")));
     }
 
     #[test]

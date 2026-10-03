@@ -186,8 +186,8 @@ pub enum Message {
     /// One frame of the fold slide. Only sent while an animation, or a fold
     /// waiting out its grace window, is live.
     FoldTick,
-    /// Oracle-Eyes' beacon moved (ADR 0055). Only sent while `bar.eye` is on.
-    Eye(crate::eye::Eye),
+    /// Oracle-Eyes' beacon moved (ADR 0055): `(debug, eye)`.
+    Eye(bool, crate::eye::Eye),
     /// One frame of the eclipse mark's pupil, or the end of a hold between
     /// darts. Only sent while the pupil is moving or waiting to.
     EyeTick,
@@ -1422,9 +1422,29 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         Message::FoldTick => return each_bar(app, fold_and_eye),
         // The beacon and the eye's frames are not the compositor: nothing to
         // refetch, only the eyes' surfaces to raise or drop.
-        Message::Eye(eye) => {
-            app.iris.set(eye, std::time::Instant::now());
-            return each_bar(app, sync_eye);
+        Message::Eye(debug, eye) => {
+            // The namespace differs in debug, so a surface up under the old
+            // one is dropped and `sync_eye` raises it again under the new.
+            let flipped = debug != app.iris.debug;
+            // With `bar.eye` off only debug may open the eye.
+            let eye = if app.bar.eye || debug {
+                eye
+            } else {
+                crate::eye::Eye::Off
+            };
+            app.iris.set_beacon(debug, eye, std::time::Instant::now());
+            let mut tasks = Vec::new();
+            if flipped {
+                for bar in app.bars.values_mut() {
+                    tasks.extend(
+                        bar.eye_surface
+                            .take()
+                            .map(|id| Task::done(Message::RemoveWindow(id))),
+                    );
+                }
+            }
+            tasks.push(each_bar(app, sync_eye));
+            return Task::batch(tasks);
         }
         Message::EyeTick => {
             app.iris.tick(std::time::Instant::now());
@@ -1432,7 +1452,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         Message::Reconfigured => {
             app.bar = app.conn.bar_config();
-            if !app.bar.eye {
+            if !app.bar.eye && !app.iris.debug {
                 app.iris.set(crate::eye::Eye::Off, std::time::Instant::now());
             }
             app.tray = app.conn.tray_config();
@@ -1968,7 +1988,7 @@ fn eye_placement(
 /// launcher button beneath.
 fn sync_eye(app: &App, bar: &mut Bar) -> Task<Message> {
     use iced_layershell::reexport::{KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption};
-    let want = app.bar.eye && !app.iris.is_plain() && bar.fold.pill();
+    let want = (app.bar.eye || app.iris.debug) && !app.iris.is_plain() && bar.fold.pill();
     match (want, bar.eye_surface) {
         (true, None) => {
             let (anchor, margin, size) = eye_placement(app.edge, bar.fold.air);
@@ -1984,7 +2004,14 @@ fn sync_eye(app: &App, bar: &mut Bar) -> Task<Message> {
                     keyboard_interactivity: KeyboardInteractivity::None,
                     output_option: OutputOption::OutputName(bar.output_name.clone()),
                     events_transparent: true,
-                    namespace: Some(crate::eye::NAMESPACE.to_owned()),
+                    namespace: Some(
+                        if app.iris.debug {
+                            crate::eye::NAMESPACE_DEBUG
+                        } else {
+                            crate::eye::NAMESPACE
+                        }
+                        .to_owned(),
+                    ),
                 },
                 id,
             })
@@ -2559,9 +2586,8 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     if app.fixture.is_some() {
         subs.push(crate::preview::script());
     }
-    if app.bar.eye {
-        subs.push(crate::eye::watch());
-    }
+    // Always listening: a debug daemon's red eye shows even with `bar.eye` off.
+    subs.push(crate::eye::watch());
     // Same rule for the eye: frames only mid-dart or mid-resize, one deadline
     // while holding, nothing at all once it has settled back to the ring.
     if app.iris.animating() {
@@ -2857,6 +2883,26 @@ pub(crate) mod tests {
         a.bars.get_mut(&id).unwrap().fold.target = FoldTarget::Shown;
         a.bar.eye = false;
         assert_eq!(eye(&mut a), None);
+    }
+
+    #[test]
+    fn a_debug_eye_shows_with_bar_eye_off_and_is_not_hidden_from_capture() {
+        let mut a = app();
+        let id = bar_on(&mut a, "DP-1", 0);
+        a.bar.eye = false;
+        a.iris
+            .set_beacon(true, crate::eye::Eye::Off, std::time::Instant::now());
+        let _ = with_bar(&mut a, id, sync_eye);
+        assert!(
+            a.bars[&id].eye_surface.is_some(),
+            "debug raises the eye whatever bar.eye says"
+        );
+        // abyss's shipped rule hides exactly `hyperion:eclipse-eye`.
+        assert_ne!(crate::eye::NAMESPACE_DEBUG, crate::eye::NAMESPACE);
+        a.iris
+            .set_beacon(false, crate::eye::Eye::Off, std::time::Instant::now());
+        let _ = with_bar(&mut a, id, sync_eye);
+        assert_eq!(a.bars[&id].eye_surface, None, "leaving debug drops it again");
     }
 
     #[test]

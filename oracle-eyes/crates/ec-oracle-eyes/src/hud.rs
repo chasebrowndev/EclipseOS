@@ -9,6 +9,8 @@
 
 use serde_json::{json, Value};
 
+use crate::logsafe::log_safe;
+
 /// The four methods COMP-18 §3 grants this daemon, behind a trait so the
 /// display logic is testable without a running compositor.
 pub trait Control {
@@ -19,6 +21,41 @@ impl Control for ec_ipc::Client {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         ec_ipc::Client::call(self, method, params).map_err(|e| e.to_string())
     }
+}
+
+/// Every call to the compositor, logged on its way out. Panel text came off
+/// the model, which saw redacted screen text, but it goes through
+/// [`log_safe`] all the same.
+fn traced(c: &mut impl Control, method: &str, params: Value) -> Result<Value, String> {
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        let int = |k: &str| params.get(k).and_then(Value::as_i64);
+        let text = |k: &str| {
+            params
+                .get(k)
+                .and_then(Value::as_str)
+                .map(log_safe)
+                .unwrap_or_default()
+        };
+        let id = params.get("id").and_then(Value::as_u64);
+        let pick = params.get("pick").map(|p| log_safe(&p.to_string()));
+        tracing::debug!(
+            method,
+            id,
+            x = int("x"),
+            y = int("y"),
+            w = int("w"),
+            h = int("h"),
+            title = %text("title"),
+            text = %text("text"),
+            pick,
+            "hud: send"
+        );
+    }
+    let r = c.call(method, params);
+    if let Err(e) = &r {
+        tracing::debug!(method, error = %e, "hud: call failed");
+    }
+    r
 }
 
 /// A rectangle in compositor-logical coordinates: what the answer is about.
@@ -121,7 +158,7 @@ impl Hud {
             Some((id, at, pick)) if at == anchor && pick == panel.pick => {
                 let mut p = panel.params();
                 p["id"] = json!(id);
-                if c.call("annotation_update", p).is_ok() {
+                if traced(c, "annotation_update", p).is_ok() {
                     self.live = Some((id, at, pick));
                     return Ok(id);
                 }
@@ -133,7 +170,7 @@ impl Hud {
                 // Moving is destroy-then-create. A failure here is not fatal:
                 // the compositor evicts on its own and a stale panel is worse
                 // than a duplicate call.
-                let _ = c.call("annotation_destroy", json!({"id": id}));
+                let _ = traced(c, "annotation_destroy", json!({"id": id}));
             }
             None => {}
         }
@@ -145,7 +182,7 @@ impl Hud {
         if let Some(k) = &panel.pick {
             p["pick"] = json!({"x": k.x, "y": k.y, "w": k.w, "h": k.h, "label": k.label});
         }
-        let reply = c.call("annotation_create", p)?;
+        let reply = traced(c, "annotation_create", p)?;
         let id = reply
             .get("id")
             .and_then(Value::as_u64)
@@ -158,7 +195,7 @@ impl Hud {
     /// because the chord is the user's and they may press it any time.
     pub fn dismiss(&mut self, c: &mut impl Control) -> Result<(), String> {
         self.live = None;
-        c.call("annotation_clear", json!({})).map(|_| ())
+        traced(c, "annotation_clear", json!({})).map(|_| ())
     }
 }
 

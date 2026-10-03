@@ -15,6 +15,8 @@ mod config;
 mod focus;
 mod frame;
 mod hud;
+mod logging;
+mod logsafe;
 mod ocr;
 mod pipeline;
 mod redact;
@@ -29,22 +31,29 @@ use hud::{Anchor, Hud, Panel};
 use pipeline::{Answer, Pipeline};
 
 fn main() -> ExitCode {
-    match run() {
+    let debug = config::debug_requested(
+        std::env::args().skip(1),
+        std::env::var("OE_DEBUG").ok().as_deref(),
+    );
+    // Held to the end of `main` so the debug log is flushed on every exit.
+    let _log = logging::init(debug);
+    match run(debug) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("ec-oracle-eyes: {e}");
+            tracing::error!("{e}");
             ExitCode::FAILURE
         }
     }
 }
 
-fn run() -> Result<(), String> {
+fn run(debug: bool) -> Result<(), String> {
     let (cfg, errors) = config::load();
     for e in &errors {
         // A bad config line is never fatal: the default it failed to
         // override is still a working daemon.
-        eprintln!("ec-oracle-eyes: config: {e}");
+        tracing::warn!("config: {e}");
     }
+    tracing::debug!(?cfg, "effective config");
     let mut auto = cfg.auto;
     let fail_ms = cfg.fail_indicator_ms;
     let poll_every = Duration::from_millis(cfg.settle_ms.max(1));
@@ -53,12 +62,13 @@ fn run() -> Result<(), String> {
     client
         .subscribe(&[EventKind::Keybind])
         .map_err(|e| format!("subscribe to keybind: {e}"))?;
-    eprintln!(
-        "oracle-eyes: connected, listening for annotation chords{}",
+    tracing::info!(
+        auto,
+        "connected, listening for annotation chords{}",
         if auto { " (automatic mode on)" } else { "" }
     );
 
-    let mut pipeline = Pipeline::new(cfg);
+    let mut pipeline = Pipeline::new(cfg, debug);
     pipeline.beacon.set(resting(auto));
     let mut hud = Hud::new();
     // When the current annotation has outstayed its welcome.
@@ -96,6 +106,9 @@ fn run() -> Result<(), String> {
                 continue;
             }
             let action = event.data.get("action").and_then(|v| v.as_str());
+            // The chord's action name and region only: never the keys
+            // behind it.
+            tracing::debug!(action = action.unwrap_or("?"), region = ?region_of(&event.data), "chord");
             if matches!(action, Some("annotation-select" | "annotation-expand")) {
                 pipeline.beacon.set(Eye::Think);
             }
@@ -109,16 +122,13 @@ fn run() -> Result<(), String> {
                 Some("annotation-expand") => Some(pipeline.expand()),
                 Some("annotation-auto-toggle") => {
                     auto = !auto;
-                    eprintln!(
-                        "oracle-eyes: automatic mode {}",
-                        if auto { "on" } else { "off" }
-                    );
+                    tracing::info!("automatic mode {}", if auto { "on" } else { "off" });
                     None
                 }
                 Some("annotation-dismiss") => {
                     until = None;
                     if let Err(e) = hud.dismiss(&mut client) {
-                        eprintln!("ec-oracle-eyes: {e}");
+                        tracing::warn!("hud: {e}");
                     }
                     None
                 }
@@ -134,8 +144,9 @@ fn run() -> Result<(), String> {
         let now = Instant::now();
         if until.is_some_and(|u| now >= u) {
             until = None;
+            tracing::debug!("annotation expired");
             if let Err(e) = hud.dismiss(&mut client) {
-                eprintln!("ec-oracle-eyes: {e}");
+                tracing::warn!("hud: {e}");
             }
         }
 
@@ -200,7 +211,7 @@ fn present(
     let (anchor, panel, hold) = match result {
         Ok(a) => (a.anchor, a.panel, a.hold_ms),
         Err(e) => {
-            eprintln!("ec-oracle-eyes: {e}");
+            tracing::warn!("{e}");
             // A failure belongs beside the thing that was asked about, same
             // as an answer would. Only a failure with no region at all —
             // a malformed chord — falls back to the corner.
@@ -213,7 +224,7 @@ fn present(
         Err(e) => {
             // If the compositor will not draw for us there is nowhere left
             // to complain but the journal.
-            eprintln!("ec-oracle-eyes: {e}");
+            tracing::warn!("hud: {e}");
             None
         }
     }

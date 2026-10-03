@@ -187,7 +187,7 @@ revocable capabilities:
   mode 0600. One word per line — `off`, `watch` (automatic mode on, idle) or
   `think` (a model call in flight) — for the taskbar's eye. The daemon never
   reads from it and nothing screen-derived crosses it; a reader treats a lost
-  connection as `off`.
+  connection as `off`. In debug mode each line is prefixed `debug ` (§4.1).
 
 Capture is deliberately *not* a control-socket capability — pixels travel the
 Wayland path so the two grants stay separable. "May draw but may no longer read"
@@ -210,6 +210,27 @@ Consequences worth stating plainly:
   therefore ships first on a fixed poll, and the `damage` event comes last.
 - The compositor must never special-case "is Oracle-Eyes running". Nothing in
   COMP-18 names it; the allowlist entry is config.
+
+### 4.1 Debug mode
+
+`oracle-eyes --debug` or `OE_DEBUG=1` turns it on. It changes what is logged
+and what the beacon says, never what the pipeline does.
+
+- **Logging.** All output goes through `tracing`. Normal mode: `info` to
+  stderr, `RUST_LOG` honoured. Debug mode adds a `trace` log to
+  `$XDG_STATE_HOME/oracle-eyes/debug.log` (fallback `~/.local/state`), 0600,
+  truncated each run, path logged at startup, flushed on exit. Every stage
+  (capture, OCR, redact, classify, choice, answer, pipeline, hud, focus,
+  beacon) emits structured fields, cheap at the default level.
+- **Hard rule: password values and input content are never logged.** Every
+  screen-derived string reaches a log through `logsafe::log_safe()` and no
+  other path: it runs `redact()` then blanks any whole line carrying a
+  secret/bearer/private-key marker. The redact stage logs marker classes and
+  counts only. Word OCR text is not logged (boxes only). Keybinds log the
+  action name, never keys. Best-effort, like redaction.
+- **Beacon.** Each line gains a leading `debug ` token (`debug watch`), and a
+  new subscriber is greeted with `debug off` even when idle. Taskbar shows a
+  red eye (ADR 0055, Amendment). Non-debug lines are unchanged.
 
 ## 5. Configuration
 - **All hotkeys are user-configurable** — select-mode trigger, dismiss, automatic-mode toggle, and expand (§3.6) all route through the compositor's existing keybind config system rather than being hardcoded. No hotkey is assumed to exist at a fixed binding; defaults ship in config, not code.

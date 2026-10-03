@@ -12,6 +12,8 @@
 //! from the user's seat; one that starts and says so on the first chord has
 //! not.
 
+use std::time::Instant;
+
 use crate::answer::{Answerer, Confidence, Reply};
 use crate::beacon::{Beacon, Eye};
 use crate::capture::Capturer;
@@ -20,6 +22,7 @@ use crate::classify::{Gate, Verdict};
 use crate::config::Config;
 use crate::frame::Region;
 use crate::hud::{Anchor, Panel, Pick};
+use crate::logsafe::marker_counts;
 use crate::ocr::{self, Line, Ocr, Tesseract, Word};
 use crate::redact;
 
@@ -65,8 +68,13 @@ pub struct Pipeline {
     pub beacon: Beacon,
 }
 
+/// A stage's wall time in milliseconds, for the per-stage trace.
+fn ms(since: Instant) -> u64 {
+    since.elapsed().as_millis() as u64
+}
+
 impl Pipeline {
-    pub fn new(cfg: Config) -> Pipeline {
+    pub fn new(cfg: Config, debug: bool) -> Pipeline {
         let answerer = Answerer::new(&cfg);
         // Every field, not a partial override: leaving two of them on
         // `Default` made them constants in all but name, against the
@@ -85,7 +93,7 @@ impl Pipeline {
             answerer,
             gate,
             last: None,
-            beacon: Beacon::bind(),
+            beacon: Beacon::bind(debug),
         }
     }
 
@@ -122,21 +130,45 @@ impl Pipeline {
     /// the owning output, so the rect read can be smaller than the rect asked
     /// for, and it is the read one an answer has to be anchored inside.
     fn read(&mut self, region: Region) -> Result<Read, String> {
+        let t = Instant::now();
         let frame = self.capturer()?.grab(region)?;
+        let grab_ms = ms(t);
         let origin = frame.origin;
+        let t = Instant::now();
         let words = self.ocr()?.recognise(&frame)?;
+        let ocr_ms = ms(t);
         if words.is_empty() {
+            tracing::debug!(grab_ms, ocr_ms, "pipeline: drop, no readable text");
             // An empty result is a failure, not an empty answer: asking a
             // model about nothing spends a query to be told nothing.
             return Err("no readable text in that region".to_string());
         }
         // Redacted per line: every rule is line-local, and the model sees
         // nothing but these lines.
+        let t = Instant::now();
         let mut lines = ocr::lines_of(&words);
+        let mut masked = 0usize;
         for l in &mut lines {
-            l.text = redact::redact(&l.text);
+            let redacted = redact::redact(&l.text);
+            if redacted != l.text {
+                masked += 1;
+                // Classes and counts only, never the masked text.
+                tracing::debug!(line = l.id, markers = %marker_counts(&redacted), "redact: masked");
+            }
+            l.text = redacted;
         }
+        let redact_ms = ms(t);
         let options = choice::detect(&lines);
+        tracing::debug!(
+            grab_ms,
+            ocr_ms,
+            redact_ms,
+            words = words.len(),
+            lines = lines.len(),
+            masked_lines = masked,
+            options = options.len(),
+            "pipeline: read"
+        );
         Ok(Read {
             lines,
             options,
@@ -163,9 +195,17 @@ impl Pipeline {
         // us where the user was looking, and that is where the failure has to
         // be reported.
         self.last = Some(region);
+        tracing::debug!(?region, "pipeline: select");
+        let t = Instant::now();
         let read = self.read(region)?;
         let reply = self.answerer.ask(&read.lines, &read.options, None)?;
-        Ok(self.dress(&read, reply, Fallback::All))
+        let answer = self.dress(&read, reply, Fallback::All);
+        tracing::debug!(
+            total_ms = ms(t),
+            hold_ms = answer.hold_ms,
+            "pipeline: select done"
+        );
+        Ok(answer)
     }
 
     /// Expand (§3.6): the same question with more of the screen around it.
@@ -177,6 +217,7 @@ impl Pipeline {
             .ok_or_else(|| "nothing to expand — select a region first".to_string())?;
         let bounds = self.owning_output(region);
         let wider = widen(region, bounds);
+        tracing::debug!(?region, ?wider, ?bounds, "pipeline: expand");
         let read = self.read(wider)?;
         self.last = Some(wider);
         let reply = self.answerer.ask(&read.lines, &read.options, None)?;
@@ -190,6 +231,7 @@ impl Pipeline {
     /// `Ok(None)` when the gate declined, which is the common case and not
     /// an error.
     pub fn auto(&mut self, region: Region, now_ms: u64) -> Result<Option<Answer>, String> {
+        let t = Instant::now();
         let read = self.read(region)?;
         let text: Vec<&str> = read.lines.iter().map(|l| l.text.as_str()).collect();
         // Scoped by where it was read, not just what it said. Oracle-Eyes has
@@ -200,11 +242,21 @@ impl Pipeline {
             .gate
             .consider(scope_of(read.origin), &text.join("\n"), read.conf, now_ms)
         {
-            Verdict::Skip(_) => Ok(None),
+            Verdict::Skip(r) => {
+                tracing::debug!(reason = %r, total_ms = ms(t), "pipeline: auto pass dropped by gate");
+                Ok(None)
+            }
             Verdict::Ask => {
+                tracing::debug!("pipeline: gate asked, eye -> think");
                 self.beacon.set(Eye::Think);
                 let reply = self.answerer.ask(&read.lines, &read.options, None)?;
-                Ok(Some(self.dress(&read, reply, Fallback::Densest)))
+                let answer = self.dress(&read, reply, Fallback::Densest);
+                tracing::debug!(
+                    total_ms = ms(t),
+                    hold_ms = answer.hold_ms,
+                    "pipeline: auto pass answered"
+                );
+                Ok(Some(answer))
             }
         }
     }
@@ -219,6 +271,11 @@ impl Pipeline {
             .as_ref()
             .and_then(|c| read.options.iter().find(|o| o.label == *c));
         let anchor = anchor_for(read, &reply.focus, pick.is_some(), fallback);
+        tracing::debug!(
+            ?anchor,
+            picked = pick.map(|o| o.label.as_str()),
+            "pipeline: anchor"
+        );
         let mut detail = reply.detail;
         if reply.confidence == Some(Confidence::Low) {
             detail = if detail.is_empty() {
@@ -575,7 +632,7 @@ mod tests {
 
     #[test]
     fn display_time_is_bounded_at_both_ends() {
-        let p = Pipeline::new(Config::default());
+        let p = Pipeline::new(Config::default(), false);
         let r = read_of(vec![line(1, 10, 10, 100, false, "x")]);
         let short = p.dress(&r, reply("yes", "", &[], None), Fallback::All);
         assert_eq!(short.hold_ms, p.cfg.min_display_ms);
@@ -629,7 +686,7 @@ mod tests {
 
     #[test]
     fn a_pick_anchors_on_the_whole_question_and_carries_the_option_rect() {
-        let p = Pipeline::new(Config::default());
+        let p = Pipeline::new(Config::default(), false);
         let r = read_of(vec![
             line(1, 0, 0, 80, false, "unrelated"),
             line(2, 100, 200, 300, true, "Largest planet?"),
@@ -648,7 +705,7 @@ mod tests {
         // The model named the search box that asked for the quiz; the
         // brackets still hug the quiz, so the compositor's cap cannot trim
         // the options off the bottom.
-        let p = Pipeline::new(Config::default());
+        let p = Pipeline::new(Config::default(), false);
         let r = read_of(vec![
             line(
                 1,
@@ -671,7 +728,7 @@ mod tests {
 
     #[test]
     fn a_pick_includes_a_stem_of_several_paragraphs() {
-        let p = Pipeline::new(Config::default());
+        let p = Pipeline::new(Config::default(), false);
         let r = read_of(vec![
             line(1, 0, 0, 80, false, "unrelated"),
             line(2, 200, 300, 400, true, "Read the passage below."),
@@ -717,7 +774,7 @@ mod tests {
 
     #[test]
     fn low_confidence_is_said_out_loud() {
-        let p = Pipeline::new(Config::default());
+        let p = Pipeline::new(Config::default(), false);
         let r = read_of(vec![line(1, 10, 10, 100, false, "x")]);
         let mut rep = reply("Maybe", "", &[], None);
         rep.confidence = Some(Confidence::Low);

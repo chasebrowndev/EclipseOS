@@ -621,6 +621,7 @@ fn eye_view(iris: &crate::eye::Iris) -> Element<'static, Message, Theme> {
     let mark = canvas(EyeMark {
         pupil: iris.pupil,
         offset: iris.offset,
+        color: if iris.debug { color::DANGER } else { color::ACCENT },
     })
     .width(Length::Fixed(bar::EYE_DISC))
     .height(Length::Fixed(bar::EYE_DISC));
@@ -633,6 +634,7 @@ fn eye_view(iris: &crate::eye::Iris) -> Element<'static, Message, Theme> {
 struct EyeMark {
     pupil: f32,
     offset: (f32, f32),
+    color: iced::Color,
 }
 
 impl canvas::Program<Message> for EyeMark {
@@ -656,7 +658,7 @@ impl canvas::Program<Message> for EyeMark {
         frame.fill(
             &path,
             canvas::Fill {
-                style: canvas::Style::Solid(color::ACCENT),
+                style: canvas::Style::Solid(self.color),
                 rule: canvas::fill::Rule::EvenOdd,
             },
         );

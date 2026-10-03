@@ -139,11 +139,44 @@ impl Answerer {
         options: &[Choice],
         question: Option<&str>,
     ) -> Result<Reply, String> {
-        let raw = self.invoke(
-            &system_prompt(self.word_cap),
-            &user_prompt(lines, options, question),
-        )?;
-        parse_reply(&raw, lines, options, self.word_cap, self.char_cap)
+        let system = system_prompt(self.word_cap);
+        let user = user_prompt(lines, options, question);
+        tracing::debug!(
+            bin = %self.bin,
+            model = self.model.as_deref().unwrap_or("default"),
+            timeout_ms = self.timeout.as_millis() as u64,
+            system_chars = system.len(),
+            user_chars = user.len(),
+            lines = lines.len(),
+            options = options.len(),
+            "answer: model request"
+        );
+        tracing::trace!(prompt = %crate::logsafe::log_safe(&user), "answer: request prompt");
+        let started = Instant::now();
+        let raw = self.invoke(&system, &user);
+        let ms = started.elapsed().as_millis() as u64;
+        let raw = match raw {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(ms, error = %e, "answer: model call failed");
+                return Err(e);
+            }
+        };
+        tracing::debug!(ms, bytes = raw.len(), "answer: model response");
+        tracing::trace!(raw = %crate::logsafe::log_safe(&raw), "answer: response body");
+        let reply = parse_reply(&raw, lines, options, self.word_cap, self.char_cap);
+        match &reply {
+            Ok(r) => tracing::debug!(
+                headline = %crate::logsafe::log_safe(&r.headline),
+                detail = %crate::logsafe::log_safe(&r.detail),
+                focus = ?r.focus,
+                choice = r.choice.as_deref().unwrap_or("-"),
+                confidence = ?r.confidence,
+                "answer: validated reply"
+            ),
+            Err(e) => tracing::debug!(error = %e, "answer: reply rejected"),
+        }
+        reply
     }
 
     /// Run the CLI to completion or to the timeout, whichever comes first.
@@ -368,11 +401,22 @@ fn validate(
         .collect();
     focus.sort_unstable();
     focus.dedup();
+    let named = o.get("focus").and_then(Value::as_array).map_or(0, Vec::len);
+    if named > focus.len() {
+        tracing::debug!(
+            named,
+            kept = focus.len(),
+            "answer: dropped focus ids not sent"
+        );
+    }
     let choice = o
         .get("choice")
         .and_then(Value::as_str)
         .map(|c| c.trim().to_ascii_uppercase())
         .filter(|c| options.iter().any(|o| o.label == *c));
+    if choice.is_none() && o.get("choice").and_then(Value::as_str).is_some() {
+        tracing::debug!("answer: dropped a choice that was not an offered label");
+    }
     let confidence = match text("confidence") {
         "high" => Some(Confidence::High),
         "medium" => Some(Confidence::Medium),

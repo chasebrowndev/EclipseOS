@@ -103,11 +103,19 @@ fn starts(k: Key) -> bool {
 /// found, left-aligned with each other.
 pub fn detect(lines: &[Line]) -> Vec<Choice> {
     let labelled = labelled(lines);
-    if labelled.is_empty() {
-        unlabelled(lines)
+    let (found, kind) = if labelled.is_empty() {
+        (unlabelled(lines), "unlabelled")
     } else {
-        labelled
+        (labelled, "labelled")
+    };
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        let opts: Vec<String> = found
+            .iter()
+            .map(|c| format!("{}=L{}", crate::logsafe::log_safe(&c.label), c.line))
+            .collect();
+        tracing::debug!(lines = lines.len(), kind, options = %opts.join(","), "choice: detected");
     }
+    found
 }
 
 fn labelled(lines: &[Line]) -> Vec<Choice> {

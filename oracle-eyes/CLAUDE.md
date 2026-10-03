@@ -37,7 +37,8 @@ Two capabilities, granted and revoked independently, plus one output-only beacon
    the add-on manifest `dist/addon.kdl` is installed as
    `/usr/share/eclipse/addons/oracle-eyes.kdl` (ADR 0066).
 3. **Beacon** — ADR 0055. `$XDG_RUNTIME_DIR/oracle-eyes/eye.sock`, 0600,
-   write-only: one of `off` / `watch` / `think` per line for the taskbar eye.
+   write-only: one of `off` / `watch` / `think` per line for the taskbar eye
+   (`debug `-prefixed in debug mode, see below).
    Never read from a client; never send anything screen-derived over it.
 
 Anything else is a new capability and needs an ADR. Do not add one casually —
@@ -78,6 +79,27 @@ see the injection note below.
 - **SPDX header on every source file:** `// SPDX-License-Identifier: AGPL-3.0-only`
 - Oracle-Eyes may use threads and async freely. Abyss's single-threaded-core
   invariant is Abyss's, not its.
+
+## Debug mode
+
+`oracle-eyes --debug` or `OE_DEBUG=1` turns it on. It changes what is logged
+and what the beacon says, never what the pipeline does.
+
+- **Logging.** All output goes through `tracing`. Normal mode: `info` to
+  stderr, `RUST_LOG` honoured. Debug mode adds a `trace` log to
+  `$XDG_STATE_HOME/oracle-eyes/debug.log` (fallback `~/.local/state`), 0600,
+  truncated each run, path logged at startup, flushed on exit. Every stage
+  (capture, OCR, redact, classify, choice, answer, pipeline, hud, focus,
+  beacon) emits structured fields, cheap at the default level.
+- **Hard rule: password values and input content are never logged.** Every
+  screen-derived string reaches a log through `logsafe::log_safe()` and no
+  other path: it runs `redact()` then blanks any whole line carrying a
+  secret/bearer/private-key marker. The redact stage logs marker classes and
+  counts only. Word OCR text is not logged (boxes only). Keybinds log the
+  action name, never keys. Best-effort, like redaction.
+- **Beacon.** Each line gains a leading `debug ` token (`debug watch`), and a
+  new subscriber is greeted with `debug off` even when idle. Taskbar shows a
+  red eye (ADR 0055, Amendment). Non-debug lines are unchanged.
 
 ## Naming
 

@@ -27,8 +27,10 @@
 
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::time::Instant;
 
 use crate::frame::Frame;
+use crate::logsafe::log_safe;
 
 /// One recognised word. `x`/`y`/`w`/`h` are **compositor-logical screen**
 /// coordinates, already translated out of frame space, so a caller can hand
@@ -128,6 +130,20 @@ pub fn lines_of(words: &[Word]) -> Vec<Line> {
             (top, bottom, left) = (w.y, w.y + w.h, w.x);
         }
     }
+    if tracing::enabled!(tracing::Level::TRACE) {
+        for l in &lines {
+            tracing::trace!(
+                id = l.id,
+                x = l.x,
+                y = l.y,
+                w = l.w,
+                h = l.h,
+                para = l.para,
+                text = %log_safe(&l.text),
+                "ocr: line"
+            );
+        }
+    }
     lines
 }
 
@@ -182,6 +198,7 @@ impl Tesseract {
 
 impl Ocr for Tesseract {
     fn recognise(&mut self, frame: &Frame) -> Result<Vec<Word>, String> {
+        let started = Instant::now();
         let ppm = encode_ppm(frame);
 
         // Image in on stdin, TSV out on stdout: screen pixels never touch the
@@ -220,6 +237,7 @@ impl Ocr for Tesseract {
         if !out.status.success() {
             let why = String::from_utf8_lossy(&out.stderr);
             let why = why.trim();
+            tracing::debug!(status = %out.status, ms = started.elapsed().as_millis() as u64, "ocr: engine failed");
             return Err(format!(
                 "ocr: `{}` exited {}: {}",
                 self.bin,
@@ -229,7 +247,28 @@ impl Ocr for Tesseract {
         }
 
         let tsv = String::from_utf8_lossy(&out.stdout);
-        Ok(parse_tsv(&tsv, frame))
+        let words = parse_tsv(&tsv, frame);
+        tracing::debug!(
+            words = words.len(),
+            ms = started.elapsed().as_millis() as u64,
+            ppm_bytes = frame.pixels.len(),
+            "ocr: recognised"
+        );
+        if tracing::enabled!(tracing::Level::TRACE) {
+            // Boxes and confidence only: a single word is too small a unit
+            // for the redaction rules to judge, so word text is not logged.
+            for w in &words {
+                tracing::trace!(
+                    x = w.x,
+                    y = w.y,
+                    w = w.w,
+                    h = w.h,
+                    conf = w.conf,
+                    "ocr: word box"
+                );
+            }
+        }
+        Ok(words)
     }
 }
 
