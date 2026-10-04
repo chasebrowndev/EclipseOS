@@ -94,6 +94,12 @@ smithay::backend::renderer::element::render_elements! {
     CroppedSolid=CropRenderElement<SolidColorRenderElement>,
     CroppedShader=CropRenderElement<PixelShaderElement>,
     CroppedBlur=CropRenderElement<blur::BlurElement>,
+    // A window drawn at an animation scale (open, morph), and one cut to its
+    // tile or output; see `anim::ScaledElement`. Only while it animates.
+    Scaled=anim::ScaledElement,
+    CroppedScaled=CropRenderElement<anim::ScaledElement>,
+    // A closed window's last frame, played out as a ghost (`anim::Ghost`).
+    ScaledTexture=anim::ScaledElement<smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>>,
 }
 
 /// A surface that wants a blurred backdrop: what it belongs to, the index in
@@ -474,7 +480,8 @@ pub fn collect_elements(
     // (COMP-02 §9). With no effect configured every surface is still emitted
     // unwrapped at alpha 1.0, so damage tracking and direct scanout are what
     // `space_render_elements` gave.
-    borders.anim.sync(space, config, focus);
+    borders.anim.sync(space, &config.animations, focus);
+    ghost_elements(renderer, borders, output, space, config, &mut elements);
     window_elements(
         renderer,
         space,
@@ -652,6 +659,105 @@ fn insert_blur(
 /// funhouse.
 const BEZEL_REFRACTION: f64 = 4.0;
 
+/// Windows that have left the space, still playing out (COMP-02 §9), front
+/// to back, above the mapped windows: a closing window was usually on top.
+///
+/// Surfaces only, through the rounded-corner mask when rounding is on; a
+/// ghost's border, shadow and backdrop are not drawn yet (P3). With no ghost
+/// this does nothing.
+fn ghost_elements(
+    renderer: &mut GlesRenderer,
+    store: &BorderStore,
+    output: &Output,
+    space: &Space<Window>,
+    config: &Config,
+    out: &mut Vec<AbyssRenderElement>,
+) {
+    use smithay::backend::renderer::element::texture::TextureRenderElement;
+
+    if store.anim.ghosts.is_empty() {
+        return;
+    }
+    let Some(output_geo) = space.output_geometry(output) else {
+        return;
+    };
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    let rounding = effects::fb_y_mirrored(output.current_transform())
+        .zip(output.current_mode())
+        .filter(|_| config.decoration.rounding > 0)
+        .map(|(mirrored, mode)| (mode.size.h, mirrored))
+        .zip(store.rounded.clone());
+    let radius = (config.decoration.rounding as f64 * scale.x.max(scale.y)) as f32;
+
+    for ghost in store.anim.ghosts.iter().rev() {
+        if ghost.output() != output {
+            continue;
+        }
+        let t = store.anim.ghost_transform(ghost);
+        let at = match ghost {
+            anim::Ghost::Live { window, from_loc, .. } => Rectangle::new(*from_loc, window.geometry().size),
+            anim::Ghost::Snapshot { geometry, .. } => *geometry,
+        };
+        let pivot = anim::track::pivot(&t, at);
+        let drawn = t.map(at, pivot);
+        if !drawn.overlaps(output_geo) {
+            continue;
+        }
+        let origin = (pivot - output_geo.loc.to_f64())
+            .to_physical(scale)
+            .to_i32_round();
+        let by = Scale::from(t.scale);
+        let mask = rounding.as_ref().map(|((fb_height, mirrored), program)| {
+            let rect = Rectangle::new(
+                phys(drawn.loc - output_geo.loc, scale),
+                drawn.size.to_f64().to_physical(scale).to_i32_round(),
+            );
+            (
+                program.clone(),
+                effects::rounding_uniforms(rect, *fb_height, *mirrored, radius),
+            )
+        });
+        match ghost {
+            anim::Ghost::Live { window, .. } => {
+                let render_loc = at.loc + t.loc() - window.geometry().loc - output_geo.loc;
+                let els = window.render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
+                    renderer,
+                    phys(render_loc, scale),
+                    scale,
+                    t.alpha,
+                );
+                out.extend(els.into_iter().map(|s| {
+                    AbyssRenderElement::Scaled(anim::ScaledElement::new(s, origin, by, mask.clone()))
+                }));
+            }
+            anim::Ghost::Snapshot { surfaces, .. } => {
+                out.extend(surfaces.iter().map(|s| {
+                    let loc = at.loc + t.loc() + s.offset - output_geo.loc;
+                    let texture = TextureRenderElement::from_static_texture(
+                        s.id.clone(),
+                        s.context.clone(),
+                        loc.to_f64().to_physical(scale),
+                        s.texture.clone(),
+                        s.buffer_scale,
+                        s.transform,
+                        Some(t.alpha),
+                        Some(s.src),
+                        Some(s.size),
+                        None,
+                        Kind::Unspecified,
+                    );
+                    AbyssRenderElement::ScaledTexture(anim::ScaledElement::new(
+                        texture,
+                        origin,
+                        by,
+                        mask.clone(),
+                    ))
+                }));
+            }
+        }
+    }
+}
+
 /// Per-window toplevel elements, front to back, with `decoration` opacity and
 /// `dim-inactive` applied (COMP-02 §9), pushed straight onto `out`.
 ///
@@ -688,7 +794,7 @@ fn window_elements(
         output_geo,
         // A window not yet laid out has no owner and is drawn wherever it lands.
         |w| userdata::owner_output(w).is_none_or(|o| &o == output),
-        |w| store.anim.offset(w),
+        |w| store.anim.transform(w).loc(),
     );
     // The output's own rectangle, output-local physical: nothing of a window
     // (surface tree, popups, decorations) is ever drawn outside it.
@@ -736,14 +842,20 @@ fn window_elements(
             let g = window.geometry().size;
             g.w > c.size.w || g.h > c.size.h
         });
-        let geo = space.element_geometry(&window).map(|mut geo| {
-            geo.loc += store.anim.offset(&window);
+        // Everything drawn for the window — surfaces, crop, mask, border,
+        // shadow, backdrop — goes through its animation transform, scaling
+        // about the centre of what it shows. The identity when idle, where
+        // `map` is exactly the target rectangle.
+        let t = store.anim.transform(&window);
+        let target = space.element_geometry(&window).map(|mut geo| {
             if let Some(c) = clip {
                 geo.size.w = geo.size.w.min(c.size.w);
                 geo.size.h = geo.size.h.min(c.size.h);
             }
             geo
         });
+        let pivot = target.map_or_else(|| loc.to_f64() + t.offset, |g| anim::track::pivot(&t, g));
+        let geo = target.map(|g| t.map(g, pivot));
         // Decorations are cut to the whole tile (the window plus its border),
         // whether or not the client overhangs it: unlike a surface, a shadow or
         // backdrop would otherwise bleed into the neighbouring tile.
@@ -751,8 +863,9 @@ fn window_elements(
             userdata::tile_clip(&window)
                 .map(|c| {
                     let width = config.general.border_size.max(0);
+                    let c = t.map(c, pivot);
                     Rectangle::new(
-                        phys(c.loc + store.anim.offset(&window) - output_geo.loc, scale)
+                        phys(c.loc - output_geo.loc, scale)
                             - Point::from((width, width))
                                 .to_f64()
                                 .to_physical(scale)
@@ -773,7 +886,7 @@ fn window_elements(
             deco.active_opacity
         } else {
             deco.inactive_opacity
-        }) * store.anim.fade(&window);
+        }) * t.alpha;
 
         // The dim overlay belongs above this window but below the ones in
         // front of it, so it is pushed just before the window's own surfaces.
@@ -797,7 +910,7 @@ fn window_elements(
             }
         }
 
-        let render_loc = loc + store.anim.offset(&window) - window.geometry().loc - output_geo.loc;
+        let render_loc = loc + t.loc() - window.geometry().loc - output_geo.loc;
         // Popups are split off a cropped window so a menu that opens past the
         // tile edge is not cut; smithay's `render_elements` puts them first.
         let (popups, surfaces) = match (clip, window.toplevel()) {
@@ -838,15 +951,17 @@ fn window_elements(
             ),
         };
         let tile_crop = clip.map(|c| {
+            let c = t.map(c, pivot);
             Rectangle::new(
-                phys(c.loc + store.anim.offset(&window) - output_geo.loc, scale),
+                phys(c.loc - output_geo.loc, scale),
                 c.size.to_f64().to_physical(scale).to_i32_round(),
             )
         });
         // A window reaching past its output (any size, any placement) is cut
         // to it; one that fits keeps its plain elements and its scanout path.
         let mut bbox = window.bbox();
-        bbox.loc += loc + store.anim.offset(&window) - window.geometry().loc;
+        bbox.loc += loc - window.geometry().loc;
+        let bbox = t.map(bbox, pivot);
         let overhangs = !output_geo.contains_rect(bbox);
         let crop = match (tile_crop, overhangs) {
             (Some(tile), true) => Some(tile.intersection(out_rect).unwrap_or_default()),
@@ -873,6 +988,16 @@ fn window_elements(
             }
             false => None,
         };
+        // A scaled window is drawn through `ScaledElement` about `origin`
+        // (output-local physical); its opaque regions scale with it.
+        let scaled = t.scaled().then(|| {
+            (
+                (pivot - output_geo.loc.to_f64())
+                    .to_physical(scale)
+                    .to_i32_round(),
+                Scale::from(t.scale),
+            )
+        });
         let backdrop = geo
             .filter(|_| mode != BlurMode::Off)
             .and_then(|geo| {
@@ -885,7 +1010,13 @@ fn window_elements(
                     alpha,
                     rect,
                     corner,
-                    opaque_of(&surfaces, scale),
+                    match scaled {
+                        Some((origin, by)) => opaque_of(&surfaces, scale)
+                            .into_iter()
+                            .map(|r| anim::track::scale_about(r, origin, by))
+                            .collect(),
+                        None => opaque_of(&surfaces, scale),
+                    },
                     deco.rounding,
                     border_size,
                     bezel,
@@ -908,8 +1039,47 @@ fn window_elements(
 
         // Every surface of one window is masked by the same rectangle, so a
         // window with subsurfaces rounds as a single shape.
-        match (&rounding, geo) {
-            (Some(((fb_height, mirrored), program)), Some(geo)) => {
+        match (scaled, &rounding, geo) {
+            // Animating at a scale: the same arms through `ScaledElement`,
+            // which carries the mask itself. Idle windows never get here.
+            (Some((origin, by)), rounding, _) => {
+                let mask = rounding
+                    .as_ref()
+                    .zip(geo)
+                    .map(|(((fb_height, mirrored), program), geo)| {
+                        let rect = Rectangle::new(
+                            phys(geo.loc - output_geo.loc, scale),
+                            geo.size.to_f64().to_physical(scale).to_i32_round(),
+                        );
+                        let radius = deco.rounding as f64 * scale.x.max(scale.y);
+                        (
+                            program.clone(),
+                            effects::rounding_uniforms(rect, *fb_height, *mirrored, radius as f32),
+                        )
+                    });
+                let popup_crop = overhangs.then_some(out_rect);
+                for popup in popups {
+                    let popup = anim::ScaledElement::new(popup, origin, by, None);
+                    match popup_crop {
+                        Some(crop) => out.extend(
+                            CropRenderElement::from_element(popup, scale, crop)
+                                .map(AbyssRenderElement::CroppedScaled),
+                        ),
+                        None => out.push(AbyssRenderElement::Scaled(popup)),
+                    }
+                }
+                for surface in surfaces {
+                    let surface = anim::ScaledElement::new(surface, origin, by, mask.clone());
+                    match crop {
+                        Some(crop) => out.extend(
+                            CropRenderElement::from_element(surface, scale, crop)
+                                .map(AbyssRenderElement::CroppedScaled),
+                        ),
+                        None => out.push(AbyssRenderElement::Scaled(surface)),
+                    }
+                }
+            }
+            (None, Some(((fb_height, mirrored), program)), Some(geo)) => {
                 let rect = Rectangle::new(
                     phys(geo.loc - output_geo.loc, scale),
                     geo.size.to_f64().to_physical(scale).to_i32_round(),
