@@ -467,6 +467,8 @@ fn page_for(path: &str) -> Option<(Page, &'static str)> {
         "xwayland" => (Page::Xwayland, "xwayland"),
         "setup" => (Page::Setup, "setup"),
         "ui" => (Page::General, "general"),
+        // The settings app's own preferences: today, how its search ranks.
+        "settings" => (Page::General, "search"),
         "clipboard" => (Page::Privacy, "clipboard"),
         "capture" => (Page::Privacy, "capture"),
         _ => return None,

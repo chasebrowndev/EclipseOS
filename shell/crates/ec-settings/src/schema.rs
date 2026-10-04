@@ -296,6 +296,9 @@ impl Row {
             "launcher.bind.run" => "Run command",
             "launcher.search.path-binaries" => "Programs on PATH",
             "launcher.search.terminal-apps" => "Terminal apps",
+            // `settings.search.frecency` reads "settings search, frecency":
+            // the word is the mechanism, "recent use" is what a person sees.
+            "launcher.search.frecency" | "settings.search.frecency" => "Rank by recent use",
             // The blur group flattens its `glass` and `frost` sub-nodes
             // (`pane::place_for`), so the leaf alone would lose which mode a
             // row tunes.

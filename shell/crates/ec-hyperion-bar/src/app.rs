@@ -1883,7 +1883,10 @@ fn run_entry(app: &mut App, at: Id, index: usize) -> Task<Message> {
             return Task::none();
         };
         match launch_entry(entry, menu.term.as_deref()) {
-            Ok(()) => close_start(bar, now),
+            Ok(()) => {
+                menu.record_launch();
+                close_start(bar, now)
+            }
             Err(e) => {
                 menu.problem = Some(format!("cannot start {}: {e}", entry.name));
                 Task::none()
