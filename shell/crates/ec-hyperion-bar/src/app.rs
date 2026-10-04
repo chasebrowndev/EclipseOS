@@ -324,7 +324,7 @@ pub struct App {
     /// The air around every bar's pill, from `general.gaps-out` (see
     /// [`Air`]). Re-read on every config reload.
     pub air: Air,
-    /// `bar.widgets.*`, `bar.motion.*` and the `widget` blocks, re-read on
+    /// `bar.widgets.*`, the `widget` blocks and the `animations` events, re-read on
     /// every successful config reload.
     pub widget_cfg: widgets::Config,
     /// What the widgets' services last said. Shared: every bar draws the
@@ -1067,6 +1067,8 @@ pub fn open_bar(app: &mut App, name: String, output_id: u64) -> Task<Message> {
     use iced_layershell::reexport::{KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption};
     let id = Id::unique();
     let mut bar = Bar::new(id, name.clone(), output_id, app.widget_cfg.motion);
+    bar.motion
+        .set_chip_anims(app.widget_cfg.chip_add, app.widget_cfg.chip_remove);
     bar.fold = FoldState::with_air(app.air);
     let geometry = bar.fold.geometry(app.edge);
     app.bars.insert(id, bar);
@@ -1518,8 +1520,10 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             if app.fixture.is_none() {
                 app.widget_cfg = app.conn.widgets_config();
                 let motion = app.widget_cfg.motion;
+                let (add, remove) = (app.widget_cfg.chip_add, app.widget_cfg.chip_remove);
                 for bar in app.bars.values_mut() {
                     bar.motion.set_motion(motion);
+                    bar.motion.set_chip_anims(add, remove);
                     bar.menu.reveal.set_motion(motion);
                 }
                 crate::services::configure(&app.widget_cfg);

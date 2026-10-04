@@ -16,8 +16,7 @@
 //!
 //! Every picture is resolved with the compositor's own
 //! [`Animations::resolve`], so a card cannot preview a table abyss does not
-//! run. `ec_ui::motion` has no bounce curve: `bounce` previews as `spring`,
-//! which lands without overshoot.
+//! run, and `bounce` previews on `ec_ui::motion`'s own underdamped curve.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -346,8 +345,7 @@ fn lerp(a: StageFrame, b: StageFrame, t: f32) -> StageFrame {
     }
 }
 
-/// A resolved row as the preview's motion. `bounce` runs as `spring`:
-/// `ec_ui::motion` has no bounce curve.
+/// A resolved row as the preview's motion.
 fn motion(r: &Resolved) -> Motion {
     Motion {
         enabled: !r.off(),
@@ -356,7 +354,8 @@ fn motion(r: &Resolved) -> Motion {
             AnimCurve::EaseIn => Curve::EaseIn,
             AnimCurve::EaseOut => Curve::EaseOut,
             AnimCurve::EaseInOut => Curve::EaseInOut,
-            AnimCurve::Spring | AnimCurve::Bounce => Curve::Spring,
+            AnimCurve::Spring => Curve::Spring,
+            AnimCurve::Bounce => Curve::Bounce,
         },
         duration: Duration::from_millis(u64::from(r.duration_ms)),
     }
@@ -575,6 +574,19 @@ fn reading(r: &Resolved) -> String {
     }
 }
 
+/// A pill with nothing behind it: no press, tertiary ink.
+fn dead_pill<'a>(label: &str) -> Element<'a, Message, Theme> {
+    button(
+        text(label.to_owned())
+            .font(font::UI_MEDIUM)
+            .size(size::BODY_SMALL)
+            .color(color::TEXT_TERTIARY),
+    )
+    .padding([space::PILL_Y, space::PILL_X])
+    .style(theme::pill(false))
+    .into()
+}
+
 fn caption<'a>(t: String) -> Element<'a, Message, Theme> {
     text(t)
         .font(font::DATA)
@@ -661,7 +673,7 @@ fn speed_band<'a>(app: &'a App, m: &Animations) -> Element<'a, Message, Theme> {
                 caption(note.to_owned()),
             ]
             .spacing(space::PILL_GAP)
-            .width(Length::Fixed(space::FIELD_W / 2.0)),
+            .width(Length::Fixed(space::FIELD_W)),
             container(controls).width(Length::Fill),
         ]
         .spacing(space::BLOCK)
@@ -749,17 +761,45 @@ fn event_row<'a>(
             .push(pill("Reset", false, Message::Anim(Msg::Reset(ev))));
     }
 
-    let stepper = row![
-        pill("−", false, Message::Anim(Msg::Duration(ev, down))),
-        container(mono(&format!("{ms} ms")))
-            .width(Length::Fixed(canvas::EVENT_MS_W))
-            .align_x(Alignment::Center),
-        pill("+", false, Message::Anim(Msg::Duration(ev, up))),
-    ]
+    // A style that snaps has no duration or curve to bend: the stepper and
+    // curve picker are shown dim and do nothing, so "+" cannot write an
+    // override the engine would ignore. The style picker stays live — it is
+    // the way back.
+    let inert = m.preset == Preset::Off || b.style == "none";
+    let stepper = if inert {
+        row![
+            dead_pill("−"),
+            container(caption(format!("{ms} ms")))
+                .width(Length::Fixed(canvas::EVENT_MS_W))
+                .align_x(Alignment::Center),
+            dead_pill("+"),
+        ]
+    } else {
+        row![
+            pill("−", false, Message::Anim(Msg::Duration(ev, down))),
+            container(mono(&format!("{ms} ms")))
+                .width(Length::Fixed(canvas::EVENT_MS_W))
+                .align_x(Alignment::Center),
+            pill("+", false, Message::Anim(Msg::Duration(ev, up))),
+        ]
+    }
     .spacing(space::PILL_GAP)
     .align_y(Alignment::Center);
 
     let curves: Vec<String> = AnimCurve::ALL.iter().map(|c| c.key().to_owned()).collect();
+    let curve_pick: Element<'a, Message, Theme> = if inert {
+        container(caption(b.curve.key().to_owned()))
+            .padding([space::PILL_Y, space::PILL_X])
+            .width(Length::Fixed(canvas::EVENT_PICK_W))
+            .style(theme::inset)
+            .into()
+    } else {
+        pick_list(curves, Some(b.curve.key().to_owned()), move |v| {
+            Message::Chose(curve_path.clone(), v)
+        })
+        .width(Length::Fixed(canvas::EVENT_PICK_W))
+        .into()
+    };
     let lit = app.lit(&style_path);
     container(
         row![
@@ -784,10 +824,7 @@ fn event_row<'a>(
             })
             .width(Length::Fixed(canvas::EVENT_PICK_W)),
             stepper,
-            pick_list(curves, Some(b.curve.key().to_owned()), move |v| {
-                Message::Chose(curve_path.clone(), v)
-            })
-            .width(Length::Fixed(canvas::EVENT_PICK_W)),
+            curve_pick,
         ]
         .spacing(space::CONTROL_GAP)
         .align_y(Alignment::Center),
@@ -864,12 +901,12 @@ mod tests {
     }
 
     #[test]
-    fn bounce_previews_as_spring() {
+    fn bounce_previews_as_bounce() {
         let r = Resolved {
             style: "zoom".into(),
             duration_ms: 320,
             curve: AnimCurve::Bounce,
         };
-        assert_eq!(motion(&r).curve, Curve::Spring);
+        assert_eq!(motion(&r).curve, Curve::Bounce);
     }
 }

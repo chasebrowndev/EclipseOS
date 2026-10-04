@@ -832,7 +832,7 @@ fn tasks<'a>(app: &'a crate::app::App, on: &'a crate::app::Bar) -> Element<'a, M
         if visible <= 0.0 && chip.presence.value() <= 0.0 {
             continue;
         }
-        let presence = chip.presence.value().clamp(0.0, 1.0);
+        let room = chip.room();
         r = r
             .push(task_chip(
                 chip,
@@ -840,7 +840,7 @@ fn tasks<'a>(app: &'a crate::app::App, on: &'a crate::app::Bar) -> Element<'a, M
                 visible,
                 focused(app, &chip.window),
             ))
-            .push(Space::new().width(Length::Fixed((bar::GAP * presence).round())));
+            .push(Space::new().width(Length::Fixed((bar::GAP * room).round())));
     }
     if on.layout.hidden > 0 {
         r = r.push(overflow_cell(on.layout.hidden));
@@ -971,7 +971,7 @@ fn task_chip(
     let accent = focused && up;
     // Ink leads the glass: an arriving chip's face shows once there is room
     // to read it, a closing one's is gone before the edge reaches a glyph.
-    let presence = chip.presence.value().clamp(0.0, 1.0);
+    let presence = chip.ink();
     let ink = parts::lead(presence);
     let swap = chip.swap.value().clamp(0.0, 1.0);
     let natural = width.max(visible).max(chip.prev.unwrap_or(0.0));

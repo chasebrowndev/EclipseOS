@@ -14,3 +14,13 @@
 pub fn fetch_glass() -> (Option<f32>, Option<bool>) {
     ec_ui::ipc::fetch_glass()
 }
+
+/// `animations.toast`, over one short-lived connection: the style and
+/// motion the compositor resolved for a card arriving or leaving. `None`
+/// when nothing answers or the compositor predates `animations`, and the
+/// caller keeps what it had (at first, no motion: cards land as they always
+/// did).
+pub fn fetch_anim() -> Option<ec_ui::ipc::EventAnim> {
+    let mut client = ec_ipc::Client::connect().ok()?;
+    ec_ui::ipc::fetch_animation(&mut client, "toast")
+}

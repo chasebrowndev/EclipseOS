@@ -69,6 +69,29 @@ pub fn spring_ease(t: f32) -> f32 {
     1.0 - (1.0 + x) * (-x).exp()
 }
 
+/// Damping ratio of `bounce`: underdamped, so it overshoots and rings once
+/// or twice before settling. Copied from `ec-abyss-render`'s `anim::curve`, so
+/// a window and a chip on `bounce` move alike.
+const BOUNCE_ZETA: f32 = 0.55;
+
+/// `ω·duration` for `bounce`: its envelope `e^(-ζωt)` is down to [`SETTLE`]
+/// at `duration`, i.e. `ζ·k = ln(1 / SETTLE)`.
+const BOUNCE_K: f32 = 9.6333;
+
+/// The step response of an underdamped spring released from rest, over
+/// `t = 0..=1`: it passes 1.0, rings, and lands on it. Unlike the other
+/// easings it is not monotonic.
+pub fn bounce_ease(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if t >= 1.0 {
+        return 1.0;
+    }
+    let a = BOUNCE_ZETA * BOUNCE_K;
+    let wd = BOUNCE_K * (1.0 - BOUNCE_ZETA * BOUNCE_ZETA).sqrt();
+    let (sin, cos) = (wd * t).sin_cos();
+    1.0 - (-a * t).exp() * (cos + a / wd * sin)
+}
+
 /// The shape of a movement. Mirrors `bar.motion.curve` exactly — the
 /// compositor's `animations` curve names plus `spring`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -81,10 +104,16 @@ pub enum Curve {
     /// because it is the only curve that is smooth when interrupted.
     #[default]
     Spring,
+    /// An underdamped spring: overshoots and rings before it lands. It is
+    /// the compositor's `animations` curve; `bar.motion.curve` has no such
+    /// value, so it is not in [`Curve::ALL`].
+    Bounce,
 }
 
 impl Curve {
-    /// Every curve, in config order.
+    /// The curves `bar.motion.curve` accepts, in config order. `Bounce` is
+    /// left out on purpose (see [`Curve::Bounce`]); [`Curve::parse`] still
+    /// reads it.
     pub const ALL: [Curve; 5] = [
         Curve::Linear,
         Curve::EaseIn,
@@ -92,10 +121,15 @@ impl Curve {
         Curve::EaseInOut,
         Curve::Spring,
     ];
+}
 
+impl Curve {
     /// The config spelling (`ease-in-out`), or `None` for anything else.
     pub fn parse(s: &str) -> Option<Curve> {
-        Curve::ALL.into_iter().find(|c| c.as_str() == s)
+        Curve::ALL
+            .into_iter()
+            .chain([Curve::Bounce])
+            .find(|c| c.as_str() == s)
     }
 
     pub fn as_str(self) -> &'static str {
@@ -105,6 +139,7 @@ impl Curve {
             Curve::EaseOut => "ease-out",
             Curve::EaseInOut => "ease-in-out",
             Curve::Spring => "spring",
+            Curve::Bounce => "bounce",
         }
     }
 
@@ -116,6 +151,7 @@ impl Curve {
             Curve::EaseOut => ease_out(t),
             Curve::EaseInOut => ease_in_out(t),
             Curve::Spring => spring_ease(t),
+            Curve::Bounce => bounce_ease(t),
         }
     }
 }
@@ -339,6 +375,17 @@ impl<T: Animatable> Animated<T> {
         }
     }
 
+    /// Move toward `target` under `motion`, starting at `now`, without the
+    /// landing [`set_motion`](Animated::set_motion) does: whatever is in
+    /// flight is brought up to `now` and the new leg starts from there. For a
+    /// value whose direction picks its motion — a chip arriving is one
+    /// animation event and the same chip leaving is another.
+    pub fn set_target_under(&mut self, target: T, motion: Motion, now: Instant) {
+        self.tick(now);
+        self.motion = motion;
+        self.set_target(target, now);
+    }
+
     /// Move toward `target`, starting at `now`.
     pub fn set_target(&mut self, target: T, now: Instant) {
         let target = target.to_f32();
@@ -506,6 +553,31 @@ mod tests {
                 prev = v;
             }
         }
+    }
+
+    #[test]
+    fn bounce_matches_the_compositor_curve() {
+        // Sampled from ec-abyss-render's `anim::curve::ease(Curve::Bounce, t)`
+        // (the closed form, f64).
+        for (t, want) in [
+            (0.1, 0.312_430_06),
+            (0.25, 0.954_998_3),
+            (0.5, 1.080_916_8),
+            (0.75, 0.984_830_76),
+            (0.9, 0.990_538_3),
+        ] {
+            assert!((bounce_ease(t) - want).abs() < 1e-4, "t={t}: {}", bounce_ease(t));
+        }
+        assert_eq!(bounce_ease(0.0), 0.0);
+        assert_eq!(bounce_ease(1.0), 1.0);
+        assert!(bounce_ease(0.5) > 1.0, "it overshoots");
+    }
+
+    #[test]
+    fn bounce_is_a_config_curve_but_not_a_bar_motion_choice() {
+        assert_eq!(Curve::parse("bounce"), Some(Curve::Bounce));
+        assert_eq!(Curve::Bounce.as_str(), "bounce");
+        assert!(!Curve::ALL.contains(&Curve::Bounce));
     }
 
     #[test]

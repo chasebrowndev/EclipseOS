@@ -27,6 +27,119 @@ use ec_ui::tokens::{bar, motion as tok};
 use crate::layout::{ChipOut, Pin, WidgetOut};
 use crate::model::Window;
 
+/// How a chip arrives or leaves (`animations.chip-add` / `chip-remove`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Style {
+    /// Today's: the glass opens from nothing to its width while its ink and
+    /// glass fade.
+    Grow,
+    /// Alpha only. The chip holds its full width throughout.
+    Fade,
+    /// Not a `chip-add`/`chip-remove` style in the config (it belongs to
+    /// `bar-layout`); read as a fallback only. Geometry only: the width
+    /// opens and closes, the ink does not fade.
+    /// The neighbours slide to make room.
+    Glide,
+    /// Lands at once.
+    None,
+}
+
+impl Style {
+    /// The config spelling. A style this bar does not know (an add-on's)
+    /// is today's [`Style::Grow`].
+    pub fn parse(s: &str) -> Style {
+        match s {
+            "fade" => Style::Fade,
+            "glide" => Style::Glide,
+            "none" => Style::None,
+            _ => Style::Grow,
+        }
+    }
+
+    /// Whether the chip's width follows its presence.
+    fn reveals(self) -> bool {
+        matches!(self, Style::Grow | Style::Glide)
+    }
+
+    /// Whether the chip's ink and glass follow its presence.
+    fn inks(self) -> bool {
+        matches!(self, Style::Grow | Style::Fade)
+    }
+}
+
+/// One animation event as the bar plays it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spec {
+    pub style: Style,
+    pub motion: Motion,
+}
+
+impl Spec {
+    /// What the bar did before `animations` existed.
+    pub const DEFAULT: Spec = Spec {
+        style: Style::Grow,
+        motion: Motion::DEFAULT,
+    };
+
+    /// From the compositor's resolved event. `none` is a snap whatever its
+    /// duration says.
+    pub fn from_event(e: &ec_ui::ipc::EventAnim) -> Spec {
+        let style = Style::parse(&e.style);
+        Spec {
+            style,
+            motion: if style == Style::None {
+                Motion::SNAP
+            } else {
+                e.motion
+            },
+        }
+    }
+
+    fn snaps(&self) -> bool {
+        self.style == Style::None || self.motion.snaps()
+    }
+}
+
+/// `animations.{chip-add, chip-remove, bar-layout}`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Anims {
+    pub chip_add: Spec,
+    pub chip_remove: Spec,
+    /// Widths and positions moving to the solver's answer. Its `style` is
+    /// `Glide` or `None`; only its motion is read.
+    pub layout: Spec,
+}
+
+impl Default for Anims {
+    fn default() -> Self {
+        Anims {
+            chip_add: Spec::DEFAULT,
+            chip_remove: Spec::DEFAULT,
+            layout: Spec {
+                style: Style::Glide,
+                motion: Motion::DEFAULT,
+            },
+        }
+    }
+}
+
+impl Anims {
+    /// Out of a full `get_config` reply. Anything absent, as on a compositor
+    /// without `animations`, keeps today's behaviour; the legacy
+    /// `bar.motion.*` keys are no longer read.
+    pub fn from_reply(reply: &serde_json::Value) -> Anims {
+        let d = Anims::default();
+        let read = |ev: &str, or: Spec| {
+            ec_ui::ipc::parse_animation_event(reply, ev).map_or(or, |e| Spec::from_event(&e))
+        };
+        Anims {
+            chip_add: read("chip-add", d.chip_add),
+            chip_remove: read("chip-remove", d.chip_remove),
+            layout: read("bar-layout", d.layout),
+        }
+    }
+}
+
 /// One task chip: a live window, or a ghost of one animating out.
 #[derive(Debug, Clone)]
 pub struct Chip {
@@ -43,12 +156,39 @@ pub struct Chip {
     pub prev: Option<f32>,
     /// How far the current face has faded in over `prev`'s.
     pub swap: Animated,
+    /// Whether the width follows `presence` (grow, glide) or holds (fade),
+    /// as set by the event that last moved it.
+    reveal: bool,
+    /// Whether the ink and glass follow `presence` (grow, fade).
+    ink: bool,
 }
 
 impl Chip {
+    /// The share of its width the chip holds this frame. A fade holds all of
+    /// it until it is gone.
+    pub fn room(&self) -> f32 {
+        let p = self.presence.value().clamp(0.0, 1.0);
+        // A fade that has finished (target and value both zero) gives its
+        // room back; one still arriving already holds all of it.
+        if self.reveal || (p <= 0.0 && self.presence.target() <= 0.0) {
+            p
+        } else {
+            1.0
+        }
+    }
+
+    /// How opaque the chip's ink and glass are.
+    pub fn ink(&self) -> f32 {
+        if self.ink {
+            self.presence.value().clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
+    }
+
     /// The glass's width this frame.
     pub fn visible(&self) -> f32 {
-        (self.width.value().max(0.0) * self.presence.value().clamp(0.0, 1.0)).round()
+        (self.width.value().max(0.0) * self.room()).round()
     }
 
     fn animating(&self) -> bool {
@@ -181,6 +321,10 @@ pub struct Bar {
     /// The cover `art` is fading in, by the service's key.
     art_key: Option<String>,
     motion: Motion,
+    /// `chip-add` and `chip-remove`: the presence of a chip, which `motion`
+    /// (bar-layout) does not drive.
+    add: Spec,
+    remove: Spec,
     /// Whether anything has been placed yet: the first layout lands at once.
     laid_out: bool,
     /// The workspace the chips were laid out for; a switch lands at once.
@@ -197,6 +341,8 @@ impl Default for Bar {
             art: Animated::new(0.0, Motion::DEFAULT),
             art_key: None,
             motion: Motion::DEFAULT,
+            add: Spec::DEFAULT,
+            remove: Spec::DEFAULT,
             laid_out: false,
             workspace: None,
         }
@@ -208,13 +354,19 @@ impl Bar {
         self.motion
     }
 
-    /// Adopt `bar.motion.*`. Anything in flight lands.
+    /// Adopt `chip-add` and `chip-remove`. A presence in flight carries on
+    /// under the motion it started with.
+    pub fn set_chip_anims(&mut self, add: Spec, remove: Spec) {
+        self.add = add;
+        self.remove = remove;
+    }
+
+    /// Adopt `bar-layout`'s motion. Anything in flight lands.
     pub fn set_motion(&mut self, motion: Motion) {
         self.motion = motion;
         self.art.set_motion(motion);
         for c in &mut self.chips {
             c.width.set_motion(motion);
-            c.presence.set_motion(motion);
             c.swap.set_motion(motion);
         }
         for w in self.widgets.values_mut() {
@@ -229,8 +381,14 @@ impl Bar {
     /// A grip under the finger snaps everything: the dragged body follows
     /// 1:1, so a neighbour still easing toward its target would run into it.
     pub fn snaps(&self, workspace: Option<usize>) -> bool {
+        self.settling(workspace) || self.motion.snaps()
+    }
+
+    /// Whether the next retarget is not an event to animate: the first
+    /// layout, a workspace switch, or a grip under the finger.
+    fn settling(&self, workspace: Option<usize>) -> bool {
         let dragging = self.drag.as_ref().is_some_and(|d| d.dx != 0.0);
-        !self.laid_out || self.workspace != workspace || self.motion.snaps() || dragging
+        !self.laid_out || self.workspace != workspace || dragging
     }
 
     /// Now Playing's cover is `key` now. A new cover develops in from its
@@ -262,7 +420,9 @@ impl Bar {
         workspace: Option<usize>,
         now: Instant,
     ) {
-        let snap = self.snaps(workspace);
+        let settling = self.settling(workspace);
+        let snap = settling || self.motion.snaps();
+        let (add, remove) = (self.add, self.remove);
         let motion = self.motion;
         let old = std::mem::take(&mut self.chips);
         let mut next: Vec<Chip> = Vec::with_capacity(live.len());
@@ -277,11 +437,13 @@ impl Bar {
                     Chip {
                         window: (*w).clone(),
                         width: Animated::new(width, motion),
-                        presence: Animated::new(0.0, motion),
+                        presence: Animated::new(0.0, add.motion),
                         content: width,
                         gone: false,
                         prev: None,
                         swap: Animated::new(1.0, motion),
+                        reveal: add.style.reveals(),
+                        ink: add.style.inks(),
                     }
                 }
             };
@@ -291,11 +453,16 @@ impl Bar {
                 chip.relay(t, snap, now);
                 aim(&mut chip.width, t, snap, now);
             }
-            aim(&mut chip.presence, presence, snap, now);
+            let spec = if target.is_some() { add } else { remove };
+            if chip.presence.target() != presence {
+                chip.reveal = spec.style.reveals();
+                chip.ink = spec.style.inks();
+            }
+            aim_under(&mut chip.presence, presence, spec, settling, now);
             next.push(chip);
         }
         // Ghosts: a closed window's chip stays where it was, closing.
-        if !snap {
+        if !settling && !remove.snaps() {
             for (i, c) in old.iter().enumerate() {
                 if next.iter().any(|n| n.window.handle == c.window.handle && !n.gone)
                     || (c.gone && !c.animating())
@@ -304,7 +471,9 @@ impl Bar {
                 }
                 let mut ghost = c.clone();
                 ghost.gone = true;
-                aim(&mut ghost.presence, 0.0, false, now);
+                ghost.reveal = remove.style.reveals();
+                ghost.ink = remove.style.inks();
+                aim_under(&mut ghost.presence, 0.0, remove, false, now);
                 let after = old[..i]
                     .iter()
                     .rev()
@@ -392,6 +561,16 @@ impl Bar {
     }
 }
 
+/// [`aim`] for a presence, which takes `spec`'s motion for this leg
+/// (`settling` lands it whatever the spec says).
+fn aim_under(a: &mut Animated, target: f32, spec: Spec, settling: bool, now: Instant) {
+    if settling || spec.snaps() {
+        a.snap(target);
+    } else if a.target() != target {
+        a.set_target_under(target, spec.motion, now);
+    }
+}
+
 fn aim(a: &mut Animated, target: f32, snap: bool, now: Instant) {
     if snap {
         a.snap(target);
@@ -420,6 +599,20 @@ mod tests {
         }
     }
 
+    fn spec(style: Style) -> Spec {
+        Spec {
+            style,
+            motion: Motion::DEFAULT,
+        }
+    }
+
+    fn none() -> Spec {
+        Spec {
+            style: Style::None,
+            motion: Motion::SNAP,
+        }
+    }
+
     fn out(n: usize, width: f32) -> Vec<ChipOut> {
         (0..n)
             .map(|i| ChipOut {
@@ -445,6 +638,92 @@ mod tests {
         bar.tick(t0 + Duration::from_secs(2));
         assert!(!bar.animating());
         assert_eq!(bar.chips[1].visible(), 80.0);
+    }
+
+    /// Fade is alpha only: the new chip holds its whole width from the first
+    /// frame and only its ink arrives.
+    #[test]
+    fn fade_arrives_by_alpha_and_holds_its_width() {
+        let (a, b) = (win(1), win(2));
+        let mut bar = Bar::default();
+        bar.set_chip_anims(spec(Style::Fade), spec(Style::Fade));
+        let t0 = Instant::now();
+        bar.retarget_chips(&[&a], &out(1, 120.0), Some(1), t0);
+        bar.retarget_chips(&[&a, &b], &out(2, 80.0), Some(1), t0);
+        assert_eq!(bar.chips[1].visible(), 80.0);
+        assert_eq!(bar.chips[1].ink(), 0.0);
+        assert!(bar.animating());
+        bar.tick(t0 + Duration::from_secs(2));
+        assert_eq!(bar.chips[1].ink(), 1.0);
+        // And it leaves the same way: full width, fading, then gone.
+        bar.retarget_chips(&[&a], &out(1, 120.0), Some(1), t0 + Duration::from_secs(2));
+        assert!(bar.chips[1].gone);
+        bar.tick(t0 + Duration::from_millis(2_080));
+        assert_eq!(bar.chips[1].visible(), 80.0, "holds its width while it fades");
+        assert!(bar.chips[1].ink() < 1.0);
+        bar.tick(t0 + Duration::from_secs(5));
+        assert_eq!(bar.chips.len(), 1);
+    }
+
+    /// Glide is geometry only: the width opens, the ink never fades.
+    #[test]
+    fn glide_moves_the_width_without_fading_the_ink() {
+        let (a, b) = (win(1), win(2));
+        let mut bar = Bar::default();
+        bar.set_chip_anims(spec(Style::Glide), spec(Style::Glide));
+        let t0 = Instant::now();
+        bar.retarget_chips(&[&a], &out(1, 120.0), Some(1), t0);
+        bar.retarget_chips(&[&a, &b], &out(2, 80.0), Some(1), t0);
+        assert_eq!(bar.chips[1].visible(), 0.0);
+        assert_eq!(bar.chips[1].ink(), 1.0);
+        bar.tick(t0 + Duration::from_millis(100));
+        let v = bar.chips[1].visible();
+        assert!(v > 0.0 && v < 80.0 || v == 80.0);
+        assert_eq!(bar.chips[1].ink(), 1.0);
+    }
+
+    /// `none` lands a chip at once and leaves no ghost; add and remove are
+    /// independent events.
+    #[test]
+    fn none_snaps_one_direction_only() {
+        let (a, b) = (win(1), win(2));
+        let mut bar = Bar::default();
+        bar.set_chip_anims(none(), spec(Style::Grow));
+        let t0 = Instant::now();
+        bar.retarget_chips(&[&a], &out(1, 120.0), Some(1), t0);
+        bar.retarget_chips(&[&a, &b], &out(2, 80.0), Some(1), t0);
+        assert_eq!(bar.chips[1].visible(), 80.0, "arrives at once");
+        bar.retarget_chips(&[&a], &out(1, 120.0), Some(1), t0);
+        assert!(bar.chips[1].gone && bar.animating(), "but leaves by growing shut");
+        bar.set_chip_anims(none(), none());
+        let c = win(3);
+        bar.tick(t0 + Duration::from_secs(3));
+        bar.retarget_chips(&[&a, &c], &out(2, 80.0), Some(1), t0 + Duration::from_secs(3));
+        bar.retarget_chips(&[&a], &out(1, 120.0), Some(1), t0 + Duration::from_secs(3));
+        assert_eq!(bar.chips.len(), 1, "no ghost when remove is none");
+    }
+
+    #[test]
+    fn anims_read_the_resolved_events_and_default_without_them() {
+        let reply = serde_json::json!({"animations": {"events": {
+            "chip-add": {"style": "fade", "duration-ms": 150, "curve": "ease-out"},
+            "chip-remove": {"style": "none", "duration-ms": 150, "curve": "ease-out"},
+            "bar-layout": {"style": "glide", "duration-ms": 90, "curve": "linear"},
+        }}});
+        let a = Anims::from_reply(&reply);
+        assert_eq!(a.chip_add.style, Style::Fade);
+        assert_eq!(a.chip_add.motion.duration.as_millis(), 150);
+        assert!(a.chip_remove.snaps());
+        assert_eq!(a.layout.motion.duration.as_millis(), 90);
+        assert_eq!(
+            Anims::from_reply(&serde_json::json!({"keys": []})),
+            Anims::default()
+        );
+        assert_eq!(
+            Style::parse("pack:embers"),
+            Style::Grow,
+            "an unknown style is today's"
+        );
     }
 
     #[test]
@@ -542,6 +821,7 @@ mod tests {
         let (a, b) = (win(1), win(2));
         let mut bar = Bar::default();
         bar.set_motion(Motion::SNAP);
+        bar.set_chip_anims(none(), none());
         let t0 = Instant::now();
         bar.retarget_chips(&[&a], &out(1, 400.0), Some(1), t0);
         bar.retarget_chips(&[&a, &b], &out(2, 20.0), Some(1), t0);

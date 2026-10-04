@@ -435,7 +435,8 @@ impl Conn {
         cfg
     }
 
-    /// `bar.widgets.*`, `bar.motion.*` and the `widget` blocks (ADR 0065).
+    /// `bar.widgets.*`, the `widget` blocks (ADR 0065) and the `animations`
+    /// events the bar plays.
     /// Fail-soft like the others: no reply is the defaults.
     pub fn widgets_config(&mut self) -> widgets::Config {
         self.ensure();
@@ -514,7 +515,7 @@ impl Conn {
     }
 }
 
-/// `bar.widgets.*`, `bar.motion.*` and `collections.widget` out of a
+/// `bar.widgets.*`, `collections.widget` and `animations` out of a
 /// `get_config` reply. A key that is missing or the wrong shape keeps its
 /// default; an unknown widget id is dropped (the compositor's validator has
 /// already refused it, so this only matters for a newer compositor).
@@ -523,7 +524,6 @@ pub fn parse_widgets(reply: &Value) -> widgets::Config {
 
     use ec_ipc::widgets::{widgets_from_config, WidgetKind};
     use ec_services::custom::{Kind, WidgetSpec};
-    use ec_ui::motion::Curve;
     use widgets::WidgetId;
 
     let mut cfg = widgets::Config::default();
@@ -567,20 +567,13 @@ pub fn parse_widgets(reply: &Value) -> widgets::Config {
             Some("bar.widgets.volume.max-percent") => {
                 cfg.volume.max_percent = n.map_or(cfg.volume.max_percent, |n| n.min(150) as u32)
             }
-            Some("bar.motion.enabled") => cfg.motion.enabled = b.unwrap_or(cfg.motion.enabled),
-            Some("bar.motion.duration-ms") => {
-                if let Some(ms) = n {
-                    cfg.motion.duration = Duration::from_millis(ms);
-                }
-            }
-            Some("bar.motion.curve") => {
-                if let Some(c) = s.and_then(Curve::parse) {
-                    cfg.motion.curve = c;
-                }
-            }
             _ => {}
         }
     }
+    let anims = crate::motion::Anims::from_reply(reply);
+    cfg.motion = anims.layout.motion;
+    cfg.chip_add = anims.chip_add;
+    cfg.chip_remove = anims.chip_remove;
     cfg.custom = widgets_from_config(reply)
         .into_iter()
         .map(|w| WidgetSpec {
@@ -618,9 +611,11 @@ mod tests {
                 {"path": "bar.widgets.now-playing.visualizer", "value": false},
                 {"path": "bar.widgets.now-playing.remote-art", "value": false},
                 {"path": "bar.motion.duration-ms", "value": 300},
-                {"path": "bar.motion.curve", "value": "linear"},
-                {"path": "bar.motion.enabled", "value": "yes"},
             ],
+            "animations": {"events": {
+                "bar-layout": {"style": "glide", "duration-ms": 300, "curve": "linear"},
+                "chip-add": {"style": "fade", "duration-ms": 100, "curve": "ease-out"},
+            }},
             "collections": {"widget": [
                 {"name": "weather", "kind": "exec", "exec": ["curl", "-s", "wttr.in"],
                  "interval-ms": 600000, "source": null, "format": null, "icon": null,
@@ -643,7 +638,12 @@ mod tests {
         assert!(d.now_playing.remote_art, "remote art is on by default");
         assert_eq!(cfg.motion.duration.as_millis(), 300);
         assert_eq!(cfg.motion.curve.as_str(), "linear");
-        assert_eq!(cfg.motion.enabled, d.motion.enabled);
+        assert!(cfg.motion.enabled);
+        assert_eq!(cfg.chip_add.style, crate::motion::Style::Fade);
+        assert_eq!(
+            cfg.chip_remove, d.chip_remove,
+            "an event the reply lacks keeps its default"
+        );
         assert_eq!(cfg.custom.len(), 2);
         assert!(matches!(&cfg.custom[0].kind, Kind::Exec { interval, .. } if interval.as_secs() == 600));
         assert!(matches!(&cfg.custom[1].kind, Kind::Source { format, .. } if format == "{}%"));
