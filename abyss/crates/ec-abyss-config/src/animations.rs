@@ -320,6 +320,12 @@ impl Animations {
         !self.overrides.is_empty()
     }
 
+    /// Whether overlays without an event of their own (the annotation HUD)
+    /// may move. Cheap enough for every frame, unlike [`Self::any`].
+    pub fn motion(&self) -> bool {
+        self.preset != Preset::Off && !self.reduce_motion
+    }
+
     /// False when every event resolves to "don't animate".
     pub fn any(&self) -> bool {
         Event::ALL.into_iter().any(|ev| !self.resolve(ev).off())

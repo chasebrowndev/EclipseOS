@@ -308,7 +308,7 @@ pub fn selector_elements(
     output_loc: Point<i32, Logical>,
     config: &Config,
 ) -> Vec<AbyssRenderElement> {
-    select.motion = config.animations.enabled;
+    select.motion = config.animations.motion();
     let Some(session) = select.session.as_ref() else {
         return Vec::new();
     };
