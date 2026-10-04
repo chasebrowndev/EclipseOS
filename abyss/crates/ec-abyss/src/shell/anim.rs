@@ -19,7 +19,7 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{IsAlive, Logical, Point, Rectangle};
 
-use ec_abyss_render::anim::{self, Channels, Ghost, Leg, SnapshotSurface, Track};
+use ec_abyss_render::anim::{self, Channels, Ghost, Leg, RunKind, ShaderRun, SnapshotSurface, Track};
 
 use crate::config::animations::Event;
 use crate::state::AbyssState;
@@ -45,6 +45,20 @@ fn resolve(state: &AbyssState, ev: Event) -> Option<(Leg, &'static str)> {
         Instant::now(),
         state.borders.anim.shed(),
     )
+}
+
+/// An add-on transition shader run for `kind`, when the event's style is an
+/// installed one and the hook is on; `None` runs the built-in style alone.
+fn shader_run(state: &mut AbyssState, kind: RunKind, travel: (f64, f64)) -> Option<ShaderRun> {
+    if state.lock.locked {
+        return None;
+    }
+    let shed = state.borders.anim.shed();
+    state
+        .borders
+        .anim
+        .shaders
+        .start(&state.config.animations, kind, Instant::now(), shed, travel, 0.0)
 }
 
 fn centre(r: &Rectangle<i32, Logical>) -> (f64, f64) {
@@ -98,19 +112,26 @@ pub fn capture(state: &AbyssState, window: &Window) -> Option<Frame> {
     })
 }
 
-fn push_snapshot(state: &mut AbyssState, frame: Frame, track: Track) {
+fn push_snapshot(state: &mut AbyssState, frame: Frame, track: Track, shader: Option<ShaderRun>) {
     state.borders.anim.push_ghost(Ghost::Snapshot {
         surfaces: frame.surfaces,
         output: frame.output,
         geometry: frame.geometry,
         active: frame.active,
         track,
+        shader,
     });
 }
 
 /// A window still alive but leaving the space: drawn from its live buffers.
 /// Called *before* it is unmapped, while its geometry is still known.
-fn push_live(state: &mut AbyssState, window: &Window, output: &Output, track: Track) {
+fn push_live(
+    state: &mut AbyssState,
+    window: &Window,
+    output: &Output,
+    track: Track,
+    shader: Option<ShaderRun>,
+) {
     if !window.alive() {
         return;
     }
@@ -124,6 +145,7 @@ fn push_live(state: &mut AbyssState, window: &Window, output: &Output, track: Tr
         from_loc: geo.loc,
         active,
         track,
+        shader,
     });
 }
 
@@ -146,7 +168,11 @@ pub fn close_frame(state: &mut AbyssState, frame: Frame) {
     let Some((leg, style)) = resolve(state, Event::WindowClose) else {
         return;
     };
-    push_snapshot(state, frame, Track::leave(leg, anim::close_to(style)));
+    // An add-on style sets the length; the built-in it falls back to runs on
+    // the same leg.
+    let run = shader_run(state, RunKind::Close, (0.0, 0.0));
+    let leg = run.as_ref().map_or(leg, |r| r.leg);
+    push_snapshot(state, frame, Track::leave(leg, anim::close_to(style)), run);
 }
 
 /// `layer-close`: keep a layer surface's last frame and play it out, leaving
@@ -229,7 +255,7 @@ pub fn leave_workspace(state: &mut AbyssState, windows: &[Window], output: &Outp
         },
     };
     for window in windows {
-        push_live(state, window, output, Track::leave(leg, end));
+        push_live(state, window, output, Track::leave(leg, end), None);
     }
 }
 
@@ -251,7 +277,7 @@ pub fn send_away(state: &mut AbyssState, window: &Window, output: &Output, towar
             ..Channels::ZERO
         },
     };
-    push_live(state, window, output, Track::leave(leg, end));
+    push_live(state, window, output, Track::leave(leg, end), None);
 }
 
 /// `window-to-workspace`, a window that is followed: the workspace slides
@@ -344,7 +370,13 @@ pub fn minimize(state: &mut AbyssState, window: &Window) {
         ("shrink", Some(dock)) => shrunk(&geo, dock),
         _ => FADE,
     };
-    push_live(state, window, &output, Track::leave(leg, end));
+    let travel = dock(state, &output).map_or((0.0, 0.0), |d| {
+        let c = centre(&geo);
+        (d.0 - c.0, d.1 - c.1)
+    });
+    let run = shader_run(state, RunKind::Minimize, travel);
+    let leg = run.as_ref().map_or(leg, |r| r.leg);
+    push_live(state, window, &output, Track::leave(leg, end), run);
 }
 
 /// `unminimize`: grow back out of the bar, or fade in. Called once the window
@@ -408,7 +440,7 @@ pub fn toggle(state: &mut AbyssState, window: Option<Window>, change: impl FnOnc
                 Channels::ZERO
             }
         };
-        push_snapshot(state, frame, Track::leave(leg, end));
+        push_snapshot(state, frame, Track::leave(leg, end), None);
         from.alpha = -1.0;
     } else if !morph {
         return;

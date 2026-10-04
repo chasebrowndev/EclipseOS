@@ -41,6 +41,7 @@ use smithay::utils::{Logical, Point, Rectangle, Size, Transform as BufferTransfo
 use smithay::wayland::compositor::{with_surface_tree_downward, TraversalAction};
 use smithay::wayland::shell::wlr_layer::Layer;
 
+use super::shader::ShaderRun;
 use super::track::Track;
 
 /// One surface of a [`Ghost::Snapshot`]: its texture and where it sat.
@@ -72,6 +73,8 @@ pub enum Ghost<W = Window> {
         /// Whether it had the focus: picks its border colour and shadow depth.
         active: bool,
         track: Track,
+        /// An add-on shader drawing this instead of `track`, when it can.
+        shader: Option<ShaderRun>,
     },
     Snapshot {
         /// Front to back, in `render_elements_from_surface_tree` order.
@@ -82,6 +85,8 @@ pub enum Ghost<W = Window> {
         /// Whether it had the focus: picks its border colour and shadow depth.
         active: bool,
         track: Track,
+        /// An add-on shader drawing this instead of `track`, when it can.
+        shader: Option<ShaderRun>,
     },
     /// A closed layer-shell surface (`layer-close`).
     Layer {
@@ -99,6 +104,13 @@ impl<W> Ghost<W> {
     pub fn track(&self) -> &Track {
         match self {
             Ghost::Live { track, .. } | Ghost::Snapshot { track, .. } | Ghost::Layer { track, .. } => track,
+        }
+    }
+
+    pub fn shader(&self) -> Option<&ShaderRun> {
+        match self {
+            Ghost::Live { shader, .. } | Ghost::Snapshot { shader, .. } => shader.as_ref(),
+            Ghost::Layer { .. } => None,
         }
     }
 

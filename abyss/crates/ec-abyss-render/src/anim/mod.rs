@@ -25,6 +25,7 @@
 pub mod curve;
 pub mod ghost;
 pub mod layer;
+pub mod shader;
 pub mod shed;
 pub mod track;
 
@@ -32,7 +33,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::time::Instant;
 
-use smithay::backend::renderer::gles::GlesTexture;
+use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
 use smithay::backend::renderer::ContextId;
 use smithay::desktop::space::SpaceElement;
 use smithay::desktop::{LayerSurface, Space, Window};
@@ -45,6 +46,7 @@ use ec_abyss_config::Animations;
 pub use curve::{Curve, Leg};
 pub use ghost::{snapshot, Ghost, SnapshotSurface};
 pub use layer::layer_motion;
+pub use shader::{Registry as ShaderRegistry, RunKind, ShaderElement, ShaderRun};
 pub use shed::{ShedLevel, ShedMonitor};
 pub use track::{Channels, ScaledElement, Track, Transform};
 
@@ -129,6 +131,9 @@ struct Tracks {
     motion: Option<Track>,
     /// `window-open`, and `workspace-switch` `fade`.
     open: Option<Track>,
+    /// An add-on shader playing `window-open` in place of `open` once its
+    /// program is compiled. `open` runs beside it as the fallback.
+    shader: Option<ShaderRun>,
     /// `focus`: the crossfade, and the focus state it is headed towards.
     focus: Option<(Leg, bool)>,
 }
@@ -141,13 +146,16 @@ impl Tracks {
         if self.open.is_some_and(|t| t.done(now)) {
             self.open = None;
         }
+        if self.shader.as_ref().is_some_and(|r| r.done(now)) {
+            self.shader = None;
+        }
         if self.focus.is_some_and(|(l, _)| l.done(now)) {
             self.focus = None;
         }
     }
 
     fn idle(&self) -> bool {
-        self.motion.is_none() && self.open.is_none() && self.focus.is_none()
+        self.motion.is_none() && self.open.is_none() && self.shader.is_none() && self.focus.is_none()
     }
 }
 
@@ -174,6 +182,9 @@ pub struct AnimStore<W = Window> {
     /// frame (and every output of it) agrees.
     now: Instant,
     running: bool,
+    /// Add-on transition shaders (ADR 0071): the installed styles and their
+    /// compiled programs. Empty while the `transition-shaders` hook is off.
+    pub shaders: ShaderRegistry,
 }
 
 impl<W> Default for AnimStore<W> {
@@ -188,6 +199,7 @@ impl<W> Default for AnimStore<W> {
             shed: ShedLevel::Full,
             now: Instant::now(),
             running: false,
+            shaders: ShaderRegistry::default(),
         }
     }
 }
@@ -268,8 +280,15 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
                     if let Some((leg, style)) =
                         *open.get_or_insert_with(|| resolve(anims, Event::WindowOpen, now, shed))
                     {
-                        self.tracks.entry(window.clone()).or_default().open =
-                            Some(Track::arrive(leg, open_from(style)));
+                        // An add-on style sets the run's length; the built-in
+                        // it falls back to runs on the same leg.
+                        let run = self
+                            .shaders
+                            .start(anims, RunKind::Open, now, shed, (0.0, 0.0), 0.0);
+                        let leg = run.as_ref().map_or(leg, |r| r.leg);
+                        let tracks = self.tracks.entry(window.clone()).or_default();
+                        tracks.open = Some(Track::arrive(leg, open_from(style)));
+                        tracks.shader = run;
                     }
                 }
                 // `window-move`. Off: never start a move from a target change;
@@ -436,7 +455,14 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
             return Transform::identity();
         };
         let mut t = Transform::identity();
-        for track in [tracks.motion, tracks.open].into_iter().flatten() {
+        // A shader that is drawing the open owns it; the built-in open track
+        // only runs when the shader cannot.
+        let open = if self.window_shader(window).is_some() {
+            None
+        } else {
+            tracks.open
+        };
+        for track in [tracks.motion, open].into_iter().flatten() {
             t = t.compose(track.at(self.now).0);
         }
         t
@@ -444,7 +470,48 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
 
     /// A ghost's transform this frame, relative to where it left from.
     pub fn ghost_transform(&self, ghost: &Ghost<W>) -> Transform {
+        if self.ghost_shader(ghost).is_some() {
+            return Transform::identity();
+        }
         Transform::identity().compose(ghost.track().at(self.now).0)
+    }
+
+    /// The shader run drawing `window`'s open this frame: only once its
+    /// program is compiled and the style still usable.
+    pub fn window_shader(&self, window: &W) -> Option<&ShaderRun> {
+        let run = self.tracks.get(window)?.shader.as_ref()?;
+        self.shaders.ready(&run.style).then_some(run)
+    }
+
+    /// The shader run drawing `ghost` this frame, on the same terms.
+    pub fn ghost_shader<'g>(&self, ghost: &'g Ghost<W>) -> Option<&'g ShaderRun> {
+        let run = ghost.shader()?;
+        self.shaders.ready(&run.style).then_some(run)
+    }
+
+    /// Compile what this frame's runs need, once per style, and drop the
+    /// offscreen copies of runs that finished. Call after `sync`, before any
+    /// query. A no-op with no catalog.
+    pub fn prepare_shaders(&mut self, renderer: &mut GlesRenderer) {
+        if self.shaders.styles().is_empty() {
+            return;
+        }
+        let mut live = std::collections::HashSet::new();
+        for run in self
+            .tracks
+            .values()
+            .filter_map(|t| t.shader.as_ref())
+            .chain(self.ghosts.iter().filter_map(|g| g.shader()))
+        {
+            self.shaders.ensure(renderer, &run.style);
+            live.insert(run.serial);
+        }
+        self.shaders.retain_textures(&live);
+    }
+
+    /// The instant this frame is drawn at.
+    pub fn now(&self) -> Instant {
+        self.now
     }
 
     /// The border colour to draw, crossfading on focus change.
@@ -720,6 +787,7 @@ mod tests {
             output: output(),
             from_loc: (0, 0).into(),
             active: false,
+            shader: None,
             track: Track::leave(
                 leg,
                 Channels {
@@ -751,6 +819,7 @@ mod tests {
             output: output(),
             from_loc: (0, 0).into(),
             active: false,
+            shader: None,
             track: Track::leave(leg, Channels::ZERO),
         });
         space.map_element(w.clone(), (0, 0), false);

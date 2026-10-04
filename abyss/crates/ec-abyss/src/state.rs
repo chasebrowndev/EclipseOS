@@ -324,6 +324,8 @@ pub struct AbyssState {
     pub addons_pending: bool,
     /// A debounced re-read after a widget catalog change is armed.
     pub catalog_pending: bool,
+    /// A debounced re-read after a transition shader catalog change is armed.
+    pub transitions_pending: bool,
     /// Withheld command widgets, the prompt queue and the session's Not now
     /// set (ADR 0067). Plain data; see `config::withhold`.
     pub widget_approvals: crate::config::withhold::WidgetApprovals,
@@ -567,6 +569,7 @@ impl AbyssState {
             addons: crate::addons::Addons::default(),
             addons_pending: false,
             catalog_pending: false,
+            transitions_pending: false,
             widget_approvals: Default::default(),
         }
     }

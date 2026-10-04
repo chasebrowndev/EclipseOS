@@ -11,6 +11,7 @@
 pub use ec_abyss_config::*;
 
 pub mod catalog;
+pub mod transitions;
 pub mod watch;
 pub mod withhold;
 

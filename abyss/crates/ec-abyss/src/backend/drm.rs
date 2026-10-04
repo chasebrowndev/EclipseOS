@@ -1333,6 +1333,8 @@ fn render_output(state: &mut AbyssState, index: usize) {
         // step, a longer run of headroom restores one.
         if let Some(drm) = state.drm.as_mut() {
             let period = frame_period(output.current_mode().map_or(0, |m| m.refresh));
+            // A transition shader drawn in a run of missed frames is switched off.
+            state.borders.anim.shaders.frame_result(frame_time > period);
             if let Some(level) = drm.shed.observe(frame_time, period) {
                 tracing::info!(
                     ?level,

@@ -239,6 +239,9 @@ pub fn scale_about(
     r
 }
 
+/// A rounded-corner program and its uniforms, as [`ScaledElement`] carries them.
+pub type Mask = (GlesTexProgram, Vec<Uniform<'static>>);
+
 /// A window surface drawn at an animation scale, optionally through the
 /// rounded-corner mask. See the module comment for why it exists.
 ///
@@ -253,16 +256,11 @@ pub struct ScaledElement<E = WaylandSurfaceRenderElement<GlesRenderer>> {
     inner: E,
     origin: Point<i32, Physical>,
     scale: Scale<f64>,
-    mask: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
+    mask: Option<Mask>,
 }
 
 impl<E> ScaledElement<E> {
-    pub fn new(
-        inner: E,
-        origin: Point<i32, Physical>,
-        scale: Scale<f64>,
-        mask: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
-    ) -> Self {
+    pub fn new(inner: E, origin: Point<i32, Physical>, scale: Scale<f64>, mask: Option<Mask>) -> Self {
         Self {
             inner,
             origin,

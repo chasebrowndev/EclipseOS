@@ -32,6 +32,7 @@ pub mod edit;
 pub mod input;
 pub mod outputs;
 pub mod schema;
+pub mod transitions;
 pub mod trust;
 pub mod widget_hash;
 

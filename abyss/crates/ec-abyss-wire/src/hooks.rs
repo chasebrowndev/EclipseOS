@@ -16,14 +16,19 @@ pub enum Hook {
     /// globals, the `policyd` link and the agent lifecycle methods. Off is
     /// the normal state, not degraded mode (COMP-01 §6).
     Agents,
+    /// Add-on transition shaders (ADR 0071): abyss reads the package-owned
+    /// transition catalog and compiles its fragment shaders. Not a gated
+    /// method; the gate table is unaffected.
+    TransitionShaders,
 }
 
 impl Hook {
-    pub const ALL: [Hook; 4] = [
+    pub const ALL: [Hook; 5] = [
         Hook::Annotations,
         Hook::RegionSelect,
         Hook::TaskbarWidgets,
         Hook::Agents,
+        Hook::TransitionShaders,
     ];
 
     pub fn name(self) -> &'static str {
@@ -32,6 +37,7 @@ impl Hook {
             Hook::RegionSelect => "region-select",
             Hook::TaskbarWidgets => "taskbar-widgets",
             Hook::Agents => "agents",
+            Hook::TransitionShaders => "transition-shaders",
         }
     }
 
@@ -43,6 +49,7 @@ impl Hook {
             Hook::RegionSelect => "add-on hook `region-select` is off",
             Hook::TaskbarWidgets => "add-on hook `taskbar-widgets` is off",
             Hook::Agents => "add-on hook `agents` is off",
+            Hook::TransitionShaders => "add-on hook `transition-shaders` is off",
         }
     }
 
