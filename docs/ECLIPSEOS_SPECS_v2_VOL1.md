@@ -2656,8 +2656,9 @@ surface never contributes a pixel without `capture.secret`.
 ~~All optional, all off by default until 9b, all designed for now:~~
 *(amended C-01, 2026-09-23)* All optional and all built (9b is at parity).
 Defaults (`config/schema.rs`): **blur on** (`decoration.blur`, size 8,
-~~2~~ *(C-14)* 4 passes), **rounding 13**, border 2; shadows, glow, dim-inactive and
-animations off; active and inactive opacity 1.0.
+~~2~~ *(C-14)* 4 passes), **rounding 13**, border 2; shadows, glow and dim-inactive
+off, ~~animations off~~ *(C-18)* animations on (`preset "smooth"`); active and
+inactive opacity 1.0.
 
 | Effect | Implementation | Cost note |
 |---|---|---|
@@ -2667,7 +2668,7 @@ animations off; active and inactive opacity 1.0.
 | Glow *(added C-11)* | The shadow's ~~pixel shader~~ *(C-14)* original single-ring pixel shader (not the dropped two-layer one), tinted with the window's border colour (following its focus crossfade) and scaled by `strength`; reaches a fixed 24 logical px, drawn only outside the bordered rect, below the border and surface; `active` / `inactive` gate it per focus state | Cheap; expands damage |
 | Dim inactive | Colour multiply in the surface pass | Negligible |
 | Blur | Dual-Kawase downsample/upsample, N passes on the region behind translucent surfaces | Expensive; expands damage by kernel radius; disables direct scanout; skipped entirely when the blurred surface is opaque |
-| Animations | Interpolated geometry driven by the frame clock | Forces repaint while running; must not extend past the animation |
+| Animations | ~~Interpolated geometry~~ *(C-18)* Per-event transitions (offset, scale, alpha; add-on transition shaders, ADR 0071) driven by the frame clock; leaving and closing windows drawn as ghosts | Forces repaint while running; must not extend past the animation; idle keeps direct scanout |
 
 *(added C-01, 2026-09-23)* Blur applies only behind a translucent surface.
 A toplevel is translucent when its alpha (`active-opacity` /
@@ -2704,7 +2705,11 @@ damage expansion grows by its maximum refraction offset.
 `decoration.blur.enabled` is kept as a legacy alias (`false` ⇒ `off`,
 `true` ⇒ `blur`) and rewritten by `ec-ctl config migrate`.
 
-Animations are geometry-only in v1. **They must not affect what an agent
+~~Animations are geometry-only in v1.~~ *(C-18)* Animations are render-only:
+the shell maps at target geometry and the transition exists only in the
+composited frame (ADR 0071); ghosts of leaving or closed windows are never
+listed, hit-tested or captured, and `capture.rs` never reads animation state.
+**They must not affect what an agent
 sees**: `scene`/`get_tree` geometry reports the *target* geometry, not the
 interpolated one, so an agent never clicks where a window was mid-flight.
 This is the single most important interaction between effects and the agent
@@ -2738,7 +2743,8 @@ Benchmarks live in `bench/` and gate CI on regression (F-07 §3).
   compositor; assert frame continues with the previous buffer.
 - Scanout: assert fallback path meets frame budget with planes disabled.
 - Animation/agent interaction: assert `get_tree` geometry equals target
-  geometry during an animation.
+  geometry during an animation. *(C-18)* Assert ghosts are neither listed
+  nor hit-tested, and that an idle output renders no frames.
 - Vendor matrix: NVIDIA (reference), Intel iGPU, virtio-gpu.
 
 ---
@@ -4963,9 +4969,10 @@ decoration {
 }
 
 animations {
-    enabled true
-    animation "windows" duration=150ms curve="ease-out"
-    animation "workspaces" duration=200ms curve="ease-out"
+    preset "smooth"              // off | subtle | smooth | lively (C-18)
+    speed 1.0
+    reduce-motion #false
+    window-open { style "pop"; duration-ms 220; curve "spring"; }
 }
 
 input {
@@ -5462,7 +5469,9 @@ compile out to zero cost.
 When the budget cannot be met, degrade in this order — never drop
 correctness or security:
 
-1. Disable blur, then shadows, then animations.
+1. Disable blur, then shadows, then animations. *(C-18)* Animations step
+   down: add-on transition styles fall back to built-in, then motion
+   becomes a fade, then off.
 2. Reduce agent capture stream FPS to its floor.
 3. Stop rendering unfocused virtual outputs entirely (they are already
    on-demand).
@@ -7332,6 +7341,7 @@ against source before it was written. Nothing was renumbered.
 | C-15 | COMP-02 §9 | *(2026-09-29, owner ruling)* In glass mode the window border is a glass bezel: `border-size` is its width and the border colours tint its rim light (gold on focus). The bar's own margins follow `gaps-out`, so screen→bar matches windows→screen; the tiling area is unchanged (a window still shrinks by exactly the exclusive zone, as wlcs asserts) | yes |
 | C-16 | COMP-02 §9 | *(2026-09-29, owner ruling)* Glass is the shipped look: `decoration.blur.mode` defaults to `glass`, the shadow ships on (`range` 16), `rounding` 9, `border-size` 1, the active border a translucent gold `#f2c33c73` and the inactive one a faint white hairline `#ffffff1a` (the bezel's rim, C-15). Gaps ship as `gaps-in` 5, `gaps-out` 3, `gaps-in-vertical` 3, `gaps-out-vertical` 7; the vertical keys are set rather than mirroring, and still mirror when unset | yes |
 | C-17 | COMP-02 §9 | *(2026-09-30, owner ruling)* A layer surface anchored to all four edges and spanning its output gets no backdrop: it is a scrim or a selection overlay (slurp), not a sheet, and glass behind it smears the whole output it asks the human to read | yes |
+| C-18 | COMP-02 §9, §11; COMP-13 §1.1; COMP-14 §6 | *(2026-10-04, owner ruling)* Animations ship on: `animations { preset "smooth" }`, with per-event styles and presets `off`/`subtle`/`smooth`/`lively` (ADR 0071). Animations are render-only rather than geometry-only (offset, scale, alpha, add-on transition shaders); closing and leaving windows are drawn as ghosts that are never listed, hit-tested or captured. Amends C-01's "animations off" | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing
