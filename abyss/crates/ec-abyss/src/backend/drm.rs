@@ -115,6 +115,8 @@ pub struct DrmData {
     pub input_devices: Vec<smithay::reexports::input::Device>,
     /// Render node of the primary GPU, the `main_device` of every feedback.
     render_node: libc::dev_t,
+    /// Frame-budget watch that sheds animations (COMP-14 §6).
+    shed: crate::render::anim::ShedMonitor,
 }
 
 impl super::Backend for DrmData {
@@ -778,6 +780,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         cursor: crate::render::cursor::Fallback::default(),
         input_devices: Vec::new(),
         render_node,
+        shed: Default::default(),
     }));
 
     scan_connectors(&mut state);
@@ -1324,7 +1327,21 @@ fn render_output(state: &mut AbyssState, index: usize) {
                 failed = true;
             }
         }
+        let frame_time = render_time + submit_start.elapsed();
         state.stats.record(render_time, submit_start.elapsed());
+        // COMP-14 §6: a sustained run of missed frames sheds animations a
+        // step, a longer run of headroom restores one.
+        if let Some(drm) = state.drm.as_mut() {
+            let period = frame_period(output.current_mode().map_or(0, |m| m.refresh));
+            if let Some(level) = drm.shed.observe(frame_time, period) {
+                tracing::info!(
+                    ?level,
+                    frame_us = frame_time.as_micros() as u64,
+                    "animation shedding"
+                );
+                state.borders.anim.set_shed(level);
+            }
+        }
         state.stats.maybe_report();
     }
 

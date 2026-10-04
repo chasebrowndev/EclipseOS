@@ -374,19 +374,64 @@ pub fn collect_elements(
     let layers = |elements: &mut Vec<AbyssRenderElement>,
                   requests: &mut Vec<BlurRequest>,
                   which: &[Layer],
+                  anim: &anim::AnimStore,
                   renderer: &mut GlesRenderer| {
         let map = layer_map_for_output(output);
         for &layer in which {
+            // A layer surface that has just closed, played out in front of
+            // whatever is left on its layer (`layer-close`).
+            for ghost in anim.ghosts.iter().rev() {
+                let anim::Ghost::Layer {
+                    layer: on,
+                    surfaces,
+                    output: on_output,
+                    geometry,
+                    ..
+                } = ghost
+                else {
+                    continue;
+                };
+                if *on != layer || on_output != output {
+                    continue;
+                }
+                let t = anim.ghost_transform(ghost);
+                let pivot = anim::track::pivot(&t, *geometry);
+                snapshot_elements(
+                    elements,
+                    surfaces,
+                    geometry.loc + t.loc(),
+                    scale,
+                    pivot.to_physical(scale).to_i32_round(),
+                    Scale::from(t.scale),
+                    None,
+                    t.alpha,
+                );
+            }
             for surface in map.layers_on(layer).rev() {
                 let Some(geo) = userdata::layer_geometry(&map, surface) else {
                     continue;
                 };
+                // `layer-open`: drawn displaced, scaled and faded while it
+                // opens; the identity (and so exactly the plain path) otherwise.
                 // Layer geometry is already output-local.
-                let loc = phys(geo.loc, scale);
-                let layer_rect = Rectangle::new(loc, geo.size.to_f64().to_physical(scale).to_i32_round());
+                let t = anim.layer_transform(output, surface);
+                let pivot = anim::track::pivot(&t, geo);
+                let drawn = t.map(geo, pivot);
+                let scaled = t
+                    .scaled()
+                    .then(|| (pivot.to_physical(scale).to_i32_round(), Scale::from(t.scale)));
+                let loc = phys(drawn.loc, scale);
+                let layer_rect = Rectangle::new(loc, drawn.size.to_f64().to_physical(scale).to_i32_round());
                 let crop = (!output_rect.contains_rect(layer_rect)).then_some(output_rect);
-                let els = surface
-                    .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(renderer, loc, scale, 1.0);
+                let render_loc = match scaled {
+                    // The scale is about the pivot; the surface is laid out
+                    // at its target plus the offset.
+                    Some(_) => phys(geo.loc + t.loc(), scale),
+                    None => loc,
+                };
+                let els = surface.render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
+                    renderer, render_loc, scale, t.alpha,
+                );
                 // Vol 1 §5.2 asks for blur behind layer-shell too. A layer
                 // client declares its own translucency through the surface's
                 // opaque region; anything it leaves uncovered is glass and
@@ -403,33 +448,55 @@ pub fn collect_elements(
                 // what is actually pushed.
                 let pushed =
                     |els: Vec<WaylandSurfaceRenderElement<GlesRenderer>>| -> Vec<AbyssRenderElement> {
-                        match crop {
-                            Some(crop) => els
+                        match (scaled, crop) {
+                            (Some((origin, by)), crop) => els
+                                .into_iter()
+                                .filter_map(|e| {
+                                    let e = anim::ScaledElement::new(e, origin, by, None);
+                                    match crop {
+                                        Some(crop) => CropRenderElement::from_element(e, scale, crop)
+                                            .map(AbyssRenderElement::CroppedScaled),
+                                        None => Some(AbyssRenderElement::Scaled(e)),
+                                    }
+                                })
+                                .collect(),
+                            (None, Some(crop)) => els
                                 .into_iter()
                                 .filter_map(|e| CropRenderElement::from_element(e, scale, crop))
                                 .map(AbyssRenderElement::Cropped)
                                 .collect(),
-                            None => els.into_iter().map(AbyssRenderElement::Surface).collect(),
+                            (None, None) => els.into_iter().map(AbyssRenderElement::Surface).collect(),
                         }
                     };
                 if blur_layers && !scrim {
-                    let region = Rectangle::new(loc, geo.size.to_f64().to_physical(scale).to_i32_round());
+                    let region = layer_rect;
                     // Vol 1 §5.2: a layer whose input region is 2..=4 boxes
                     // (a bar pill and the panel hanging off it) gets glass in
                     // that shape, joined by `bar.rounding` fillets; any other
                     // region keeps the single rounded box.
                     let fillet = (config.bar.rounding as f64 * scale.x.max(scale.y)) as f32;
-                    let shape = with_states(surface.wl_surface(), |states| {
-                        let mut attrs = states.cached_state.get::<SurfaceAttributes>();
-                        blur::Shape::from_region(
-                            attrs.current().input_region.as_ref(),
-                            geo.size,
-                            loc,
-                            scale,
-                            fillet,
-                        )
+                    // The input-region shape is laid out at the target; while
+                    // the surface animates, the backdrop is its drawn box.
+                    let shape = t.is_identity().then(|| {
+                        with_states(surface.wl_surface(), |states| {
+                            let mut attrs = states.cached_state.get::<SurfaceAttributes>();
+                            blur::Shape::from_region(
+                                attrs.current().input_region.as_ref(),
+                                geo.size,
+                                loc,
+                                scale,
+                                fillet,
+                            )
+                        })
                     });
-                    let opaque = opaque_of(&els, scale);
+                    let shape = shape.flatten();
+                    let opaque = match scaled {
+                        Some((origin, by)) => opaque_of(&els, scale)
+                            .into_iter()
+                            .map(|r| anim::track::scale_about(r, origin, by))
+                            .collect::<Vec<_>>(),
+                        None => opaque_of(&els, scale),
+                    };
                     let shows = match &shape {
                         Some(shape) => blur::shape_shows_through(shape, &opaque),
                         None => blur::shows_through(region, 0, opaque),
@@ -476,13 +543,6 @@ pub fn collect_elements(
     } else {
         (&[Layer::Overlay, Layer::Top], &[Layer::Bottom, Layer::Background])
     };
-    layers(&mut elements, &mut blur_requests, above, renderer);
-
-    // Toplevels go one window at a time so each one's border and shadow stack
-    // directly under its own surfaces rather than under the whole window stack
-    // (COMP-02 §9). With no effect configured every surface is still emitted
-    // unwrapped at alpha 1.0, so damage tracking and direct scanout are what
-    // `space_render_elements` gave.
     // The shell snapshots closing windows against this context; a renderer
     // rebuilt after a GPU reset hands out a new one.
     let context = smithay::backend::renderer::Renderer::context_id(renderer);
@@ -490,6 +550,16 @@ pub fn collect_elements(
         borders.anim.context = Some(context);
     }
     borders.anim.sync(space, &config.animations, focus);
+    borders
+        .anim
+        .sync_layers(output, &config.animations, output_geo.size);
+    layers(&mut elements, &mut blur_requests, above, &borders.anim, renderer);
+
+    // Toplevels go one window at a time so each one's border and shadow stack
+    // directly under its own surfaces rather than under the whole window stack
+    // (COMP-02 §9). With no effect configured every surface is still emitted
+    // unwrapped at alpha 1.0, so damage tracking and direct scanout are what
+    // `space_render_elements` gave.
     ghost_elements(renderer, borders, output, space, config, &mut elements);
     window_elements(
         renderer,
@@ -502,7 +572,7 @@ pub fn collect_elements(
         &mut blur_requests,
     );
 
-    layers(&mut elements, &mut blur_requests, below, renderer);
+    layers(&mut elements, &mut blur_requests, below, &borders.anim, renderer);
 
     insert_blur(renderer, output, borders, config, blur_requests, &mut elements);
 
@@ -686,8 +756,6 @@ fn ghost_elements(
     config: &Config,
     out: &mut Vec<AbyssRenderElement>,
 ) {
-    use smithay::backend::renderer::element::texture::TextureRenderElement;
-
     if store.anim.ghosts.is_empty() {
         return;
     }
@@ -710,6 +778,8 @@ fn ghost_elements(
         let at = match ghost {
             anim::Ghost::Live { window, from_loc, .. } => Rectangle::new(*from_loc, window.geometry().size),
             anim::Ghost::Snapshot { geometry, .. } => *geometry,
+            // Drawn by the `layers` pass, at its layer's depth.
+            anim::Ghost::Layer { .. } => continue,
         };
         let pivot = anim::track::pivot(&t, at);
         let drawn = t.map(at, pivot);
@@ -758,29 +828,18 @@ fn ghost_elements(
                 }));
             }
             anim::Ghost::Snapshot { surfaces, .. } => {
-                out.extend(surfaces.iter().map(|s| {
-                    let loc = at.loc + t.loc() + s.offset - output_geo.loc;
-                    let texture = TextureRenderElement::from_static_texture(
-                        s.id.clone(),
-                        s.context.clone(),
-                        loc.to_f64().to_physical(scale),
-                        s.texture.clone(),
-                        s.buffer_scale,
-                        s.transform,
-                        Some(alpha),
-                        Some(s.src),
-                        Some(s.size),
-                        None,
-                        Kind::Unspecified,
-                    );
-                    AbyssRenderElement::ScaledTexture(anim::ScaledElement::new(
-                        texture,
-                        origin,
-                        by,
-                        mask.clone(),
-                    ))
-                }));
+                snapshot_elements(
+                    out,
+                    surfaces,
+                    at.loc + t.loc() - output_geo.loc,
+                    scale,
+                    origin,
+                    by,
+                    mask.clone(),
+                    alpha,
+                );
             }
+            anim::Ghost::Layer { .. } => {}
         }
         // A live window's decor is drawn opaque whatever its opacity, so the
         // ghost's carries the animation's alpha alone.
@@ -793,6 +852,42 @@ fn ghost_elements(
         };
         ghost_decor(store, config, &decor, drawn, out);
     }
+}
+
+/// A snapshot ghost's textures as elements: `base` is the geometry's top-left
+/// as drawn, output-local logical; `origin` and `by` scale about the pivot.
+#[allow(clippy::too_many_arguments)]
+fn snapshot_elements(
+    out: &mut Vec<AbyssRenderElement>,
+    surfaces: &[anim::SnapshotSurface],
+    base: Point<i32, Logical>,
+    scale: Scale<f64>,
+    origin: Point<i32, Physical>,
+    by: Scale<f64>,
+    mask: Option<(
+        smithay::backend::renderer::gles::GlesTexProgram,
+        Vec<smithay::backend::renderer::gles::Uniform<'static>>,
+    )>,
+    alpha: f32,
+) {
+    use smithay::backend::renderer::element::texture::TextureRenderElement;
+
+    out.extend(surfaces.iter().map(|s| {
+        let texture = TextureRenderElement::from_static_texture(
+            s.id.clone(),
+            s.context.clone(),
+            (base + s.offset).to_f64().to_physical(scale),
+            s.texture.clone(),
+            s.buffer_scale,
+            s.transform,
+            Some(alpha),
+            Some(s.src),
+            Some(s.size),
+            None,
+            Kind::Unspecified,
+        );
+        AbyssRenderElement::ScaledTexture(anim::ScaledElement::new(texture, origin, by, mask.clone()))
+    }));
 }
 
 /// Where and how one ghost's decor is drawn.

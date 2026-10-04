@@ -64,15 +64,15 @@ impl WlrLayerShellHandler for AbyssState {
             return;
         };
         let mut refocus = false;
-        {
-            let mut map = layer_map_for_output(&output);
-            if let Some(layer) = map
-                .layer_for_surface(surface.wl_surface(), WindowSurfaceType::TOPLEVEL)
-                .cloned()
-            {
-                refocus = layer.can_receive_keyboard_focus();
-                map.unmap_layer(&layer);
-            }
+        let layer = layer_map_for_output(&output)
+            .layer_for_surface(surface.wl_surface(), WindowSurfaceType::TOPLEVEL)
+            .cloned();
+        if let Some(layer) = layer {
+            refocus = layer.can_receive_keyboard_focus();
+            // `layer-close`: keep its last frame before the unmap. The map is
+            // not locked here, since the snapshot takes the lock itself.
+            shell::anim::close_layer(self, &output, &layer);
+            layer_map_for_output(&output).unmap_layer(&layer);
         }
         shell::arrange(self);
         if refocus {
