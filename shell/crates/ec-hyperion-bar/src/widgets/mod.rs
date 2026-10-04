@@ -129,7 +129,7 @@ impl Parts<'_> {
     }
 }
 
-/// `bar.widgets.*` and `bar.motion.*`, and the `widget` blocks.
+/// `bar.widgets.*`, the `widget` blocks, and the bar's `animations` events.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub order: Vec<WidgetId>,
@@ -137,7 +137,11 @@ pub struct Config {
     pub now_playing: now_playing::Cfg,
     pub usage: system_usage::Cfg,
     pub volume: volume::Cfg,
+    /// `animations.bar-layout`: how widths and positions move.
     pub motion: Motion,
+    /// `animations.chip-add` and `chip-remove`.
+    pub chip_add: crate::motion::Spec,
+    pub chip_remove: crate::motion::Spec,
     pub custom: Vec<WidgetSpec>,
 }
 
@@ -159,6 +163,8 @@ impl Default for Config {
             usage: system_usage::Cfg::default(),
             volume: volume::Cfg::default(),
             motion: Motion::DEFAULT,
+            chip_add: crate::motion::Spec::DEFAULT,
+            chip_remove: crate::motion::Spec::DEFAULT,
             custom: Vec::new(),
         }
     }

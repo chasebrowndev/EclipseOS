@@ -75,3 +75,89 @@ pub fn fetch_show_key_hints() -> Option<bool> {
     let mut client = ec_ipc::Client::connect().ok()?;
     fetch_key_hints(&mut client)
 }
+
+/// One `animations` event as a pane plays it: the style the compositor
+/// resolved (preset, speed, reduce-motion and overrides already applied) and
+/// the [`Motion`](crate::motion::Motion) it runs on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EventAnim {
+    pub style: String,
+    pub motion: crate::motion::Motion,
+}
+
+impl EventAnim {
+    /// `style` on the pane's own motion defaults, for a compositor too old to
+    /// report `animations`.
+    pub fn fallback(style: &str) -> EventAnim {
+        EventAnim {
+            style: style.to_owned(),
+            motion: crate::motion::Motion::DEFAULT,
+        }
+    }
+}
+
+/// `animations.events.<event>` out of a full `get_config` reply. `None` when
+/// the object, the event, or its style is absent or the wrong shape — an
+/// older compositor — so the caller keeps its own default. A `none` style or
+/// a zero duration is [`Motion::SNAP`](crate::motion::Motion::SNAP).
+pub fn parse_animation_event(reply: &serde_json::Value, event: &str) -> Option<EventAnim> {
+    use crate::motion::{Curve, Motion};
+    let e = reply.get("animations")?.get("events")?.get(event)?;
+    let style = e.get("style")?.as_str()?.to_owned();
+    let ms = e.get("duration-ms")?.as_u64()?;
+    let motion = if style == "none" || ms == 0 {
+        Motion::SNAP
+    } else {
+        Motion {
+            enabled: true,
+            curve: e
+                .get("curve")
+                .and_then(serde_json::Value::as_str)
+                .and_then(Curve::parse)
+                .unwrap_or_default(),
+            duration: std::time::Duration::from_millis(ms),
+        }
+    };
+    Some(EventAnim { style, motion })
+}
+
+/// [`parse_animation_event`] over a connection the caller holds. `None` on
+/// any failure.
+pub fn fetch_animation(client: &mut ec_ipc::Client, event: &str) -> Option<EventAnim> {
+    let reply = client.call("get_config", json!({ "schema": false })).ok()?;
+    parse_animation_event(&reply, event)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::motion::Curve;
+
+    #[test]
+    fn an_event_reads_its_resolved_style_and_motion() {
+        let reply = json!({"animations": {"events": {
+            "toast": {"style": "slide", "duration-ms": 240, "curve": "bounce"},
+            "chip-add": {"style": "none", "duration-ms": 200, "curve": "spring"},
+            "chip-remove": {"style": "fade", "duration-ms": 0, "curve": "spring"},
+        }}});
+        let t = parse_animation_event(&reply, "toast").unwrap();
+        assert_eq!(t.style, "slide");
+        assert_eq!(t.motion.curve, Curve::Bounce);
+        assert_eq!(t.motion.duration.as_millis(), 240);
+        assert!(parse_animation_event(&reply, "chip-add").unwrap().motion.snaps());
+        assert!(parse_animation_event(&reply, "chip-remove")
+            .unwrap()
+            .motion
+            .snaps());
+    }
+
+    #[test]
+    fn a_compositor_without_animations_reads_none() {
+        assert_eq!(parse_animation_event(&json!({"keys": []}), "toast"), None);
+        assert_eq!(
+            parse_animation_event(&json!({"animations": {"events": {}}}), "toast"),
+            None
+        );
+        assert_eq!(parse_animation_event(&json!(null), "toast"), None);
+    }
+}

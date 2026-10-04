@@ -178,6 +178,8 @@ pub fn widgets(app: &mut App, idle: bool, output: u64) {
         .unwrap_or(1);
     // Every bar takes its motion from here when it opens.
     cfg.motion.duration *= slow.max(1);
+    cfg.chip_add.motion.duration *= slow.max(1);
+    cfg.chip_remove.motion.duration *= slow.max(1);
 
     let state = &mut app.widgets;
     if !idle {

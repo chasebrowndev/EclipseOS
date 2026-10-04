@@ -6,13 +6,13 @@
 //! which the surface height is derived from and which therefore cannot live in
 //! a styling token.
 
-use iced::widget::{container, mouse_area, text, Column, Row};
+use iced::widget::{container, mouse_area, text, Column, Row, Space};
 use iced::{Alignment, Color, Element, Length, Theme};
 
 use ec_services::notifications::{Notification, Urgency};
 use ec_ui::tokens::{color, font, size, space};
 
-use crate::app::{Message, Toast};
+use crate::app::{Message, Style, Toast};
 use crate::WIDTH;
 
 /// Space between cards. There is none around the stack: the first card's
@@ -59,12 +59,49 @@ pub fn height(drawn: &[Toast]) -> u32 {
 pub fn view(app: &crate::app::App, _id: iced::window::Id) -> Element<'_, Message, Theme> {
     let mut stack = Column::new().spacing(GAP);
     for toast in app.drawn() {
-        stack = stack.push(card(&toast.notification, app.glass_radius, app.blur));
+        let pose = toast.pose(app.now, &app.anim);
+        let presence = pose.presence.clamp(0.0, 1.0);
+        // Slide enters from the anchored (right) edge, so the card's
+        // distance from home is its width at nothing and zero at rest. The
+        // slot is clipped to the surface: a card out of its home is cut by
+        // the surface edge, not drawn past it. A bounce curve's overshoot
+        // past home is clamped away — the surface has no room beyond it.
+        let (away, alpha) = match pose.style {
+            Style::Slide => ((1.0 - presence) * WIDTH as f32, 1.0),
+            Style::Fade => (0.0, presence),
+            Style::None => (0.0, 1.0),
+        };
+        let face = card(&toast.notification, app.glass_radius, app.blur, alpha);
+        stack = stack.push(if away > 0.5 {
+            Element::from(
+                container(
+                    Row::new()
+                        .push(Space::new().width(Length::Fixed(away.round())))
+                        .push(face),
+                )
+                .width(Length::Fixed(WIDTH as f32))
+                .clip(true),
+            )
+        } else {
+            face
+        });
     }
     container(stack).width(Length::Fixed(WIDTH as f32)).into()
 }
 
-fn card(notification: &Notification, radius: f32, blur: bool) -> Element<'_, Message, Theme> {
+/// `style` with every colour at `alpha` of its own: iced has no layer
+/// opacity, so a fading card scales its ground, rim and shadow itself.
+fn faded(mut style: container::Style, alpha: f32) -> container::Style {
+    style.background = style.background.map(|b| match b {
+        iced::Background::Color(c) => iced::Background::Color(c.scale_alpha(alpha)),
+        other => other,
+    });
+    style.border.color = style.border.color.scale_alpha(alpha);
+    style.shadow.color = style.shadow.color.scale_alpha(alpha);
+    style
+}
+
+fn card(notification: &Notification, radius: f32, blur: bool, alpha: f32) -> Element<'_, Message, Theme> {
     let mut body = Column::new();
 
     // Critical is the one thing allowed off the neutral palette here, for the
@@ -79,7 +116,7 @@ fn card(notification: &Notification, radius: f32, blur: bool) -> Element<'_, Mes
             text(notification.summary.clone())
                 .size(size::CARD_TITLE)
                 .font(font::UI_SEMIBOLD)
-                .color(summary_tint),
+                .color(summary_tint.scale_alpha(alpha)),
         )
         .height(Length::Fixed(SUMMARY_H))
         .align_y(Alignment::Center),
@@ -90,7 +127,7 @@ fn card(notification: &Notification, radius: f32, blur: bool) -> Element<'_, Mes
             container(
                 text(notification.body.clone())
                     .size(size::BODY_SMALL)
-                    .color(color::TEXT_SECONDARY),
+                    .color(color::TEXT_SECONDARY.scale_alpha(alpha)),
             )
             .height(Length::Fixed(BODY_H))
             // The card's height is computed, so anything longer than its slot
@@ -104,7 +141,7 @@ fn card(notification: &Notification, radius: f32, blur: bool) -> Element<'_, Mes
             text(notification.app_name.clone())
                 .size(size::MICRO)
                 .font(font::DATA)
-                .color(color::TEXT_TERTIARY),
+                .color(color::TEXT_TERTIARY.scale_alpha(alpha)),
         )
         .height(Length::Fixed(SOURCE_H))
         .align_y(Alignment::Center),
@@ -113,7 +150,7 @@ fn card(notification: &Notification, radius: f32, blur: bool) -> Element<'_, Mes
     if !notification.actions.is_empty() {
         let mut buttons = Row::new().spacing(GAP).align_y(Alignment::Center);
         for action in &notification.actions {
-            buttons = buttons.push(button(notification.id, &action.key, &action.label));
+            buttons = buttons.push(button(notification.id, &action.key, &action.label, alpha));
         }
         body = body.push(
             container(buttons)
@@ -127,26 +164,26 @@ fn card(notification: &Notification, radius: f32, blur: bool) -> Element<'_, Mes
     // close glyph to click.
     mouse_area(
         container(body)
-            .width(Length::Fill)
+            .width(Length::Fixed(WIDTH as f32))
             .height(Length::Fixed(card_height(notification)))
             .padding(space::CARD)
-            .style(ec_ui::theme::surface(radius, blur)),
+            .style(move |t: &Theme| faded(ec_ui::theme::surface(radius, blur)(t), alpha)),
     )
     .on_press(Message::Dismiss(notification.id))
     .into()
 }
 
-fn button<'a>(id: u32, key: &str, label: &str) -> Element<'a, Message, Theme> {
+fn button<'a>(id: u32, key: &str, label: &str, alpha: f32) -> Element<'a, Message, Theme> {
     let cell = container(
         text(label.to_owned())
             .size(size::BODY_SMALL)
             .font(font::UI_MEDIUM)
-            .color(color::TEXT),
+            .color(color::TEXT.scale_alpha(alpha)),
     )
     .padding([0, space::CARD as u16])
     .height(Length::Fill)
     .align_y(Alignment::Center)
-    .style(ec_ui::theme::inset);
+    .style(move |t: &Theme| faded(ec_ui::theme::inset(t), alpha));
     mouse_area(cell)
         .on_press(Message::Invoke(id, key.to_owned()))
         .into()
