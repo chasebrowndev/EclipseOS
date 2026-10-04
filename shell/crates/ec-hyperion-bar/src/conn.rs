@@ -462,6 +462,15 @@ impl Conn {
         ec_ui::ipc::fetch_config_radius(client, path)
     }
 
+    /// `annotations.accent`: the gold Oracle-Eyes is drawn in, which the
+    /// live eye wears too. `None` when nothing answers or the key is not
+    /// there, so the caller keeps [`color::ACCENT`](ec_ui::tokens::color::ACCENT).
+    pub fn eye_accent(&mut self) -> Option<iced::Color> {
+        self.ensure();
+        let client = self.client.as_mut()?;
+        ec_ui::ipc::fetch_config_color(client, "annotations.accent")
+    }
+
     /// The air around the pill (`general.gaps-out`, and the effective
     /// `general.gaps-out-vertical` — unset reads `null` and mirrors the
     /// horizontal key, as the compositor resolves it), and the effective

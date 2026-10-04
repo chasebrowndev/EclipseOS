@@ -249,6 +249,12 @@ pub mod color {
     /// Warm neutral for swatches and inert indicators.
     pub const NEUTRAL: Color = rgb(0x96918a);
 
+    /// The launcher's eye: the iris's glass, white at the spec's focused-cell
+    /// .12 — the same linear-light value as [`CELL_FOCUS`], since the eye's
+    /// own surface is blended the same way (a literal .12 read as mid grey
+    /// in the headless captures).
+    pub const EYE_IRIS: Color = CELL_FOCUS;
+
     /// Off state of a toggle, and the inert bars of a chart.
     pub const CONTROL_OFF: Color = white(0.13);
     pub const TRACK: Color = white(0.12);
@@ -551,13 +557,12 @@ pub mod bar {
     /// wander still leaves a gold rim all the way round.
     pub const EYE_PUPIL: f32 = 0.4;
     /// How far the pupil's centre may wander from the iris's, as a fraction
-    /// of the iris radius. `EYE_PUPIL + EYE_WANDER` is 0.76: on the 8.5px
-    /// iris of [`EYE_DISC`] the pupil's far edge reaches 6.46px, inside the
-    /// plain ring's 6.5px hole (outer radius less [`RING`]), leaving a 2.04px
-    /// rim. The cap is `1 - RING / (EYE_DISC / 2)`, about 0.765: past it the
-    /// pupil would cut into the ring drawn beneath the eye and show its gold
-    /// through the hole.
-    pub const EYE_WANDER: f32 = 0.36;
+    /// of the iris radius. `EYE_PUPIL + EYE_WANDER` is 0.67: on the 8.5px
+    /// iris of [`EYE_DISC`] the pupil's far edge reaches 5.7px, inside the
+    /// rim's 5.75px inner edge (outer radius less [`EYE_RIM`] and
+    /// [`EYE_BLEED`]). Past it the pupil would run into the rim and the eye
+    /// would read as a blot, not a glance.
+    pub const EYE_WANDER: f32 = 0.27;
     /// A glance lands at least this fraction of [`EYE_WANDER`] off centre.
     /// Uniform points in the disc cluster near the middle and read as a
     /// twitch; a glance has to visibly look somewhere.
@@ -566,6 +571,20 @@ pub mod bar {
     pub const EYE_RECENTRE: u64 = 6;
     /// The pupil's radius while thinking: a point, in logical pixels.
     pub const EYE_PINPOINT: f32 = 1.5;
+    /// The live iris's accent rim. As thick as [`RING`], not thinner: the
+    /// eye is laid over the resting ring, and a thinner rim leaves a sliver
+    /// of the ring's white showing inside the gold.
+    pub const EYE_RIM: f32 = RING;
+    /// How far past [`outer`](EYE_DISC) the eye draws its edge. The ring
+    /// beneath is antialiased too, and an eye edge exactly on the ring's
+    /// leaves that ring's half-covered edge pixels showing as a fringe —
+    /// white around the gold eye, gold or white around the red debug eye.
+    /// Three quarters of a pixel covers it at 1x and 2x without the eye
+    /// reading larger than the ring it replaces.
+    pub const EYE_BLEED: f32 = 0.75;
+    /// The eye surface fading in when it appears and out before it is
+    /// dropped, so the mark never snaps between the ring and the eye.
+    pub const EYE_FADE_MS: u64 = 160;
     /// One saccade: quick, eased out, so it reads as a glance and not a drift.
     pub const EYE_DART_MS: u64 = 120;
     /// The pupil opening or narrowing between states.

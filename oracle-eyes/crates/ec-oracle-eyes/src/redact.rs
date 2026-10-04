@@ -130,6 +130,25 @@ pub fn redact(text: &str) -> String {
     out
 }
 
+/// What a line becomes when the label above it says it holds a secret.
+pub const LABELED_LINE: &str = "[REDACTED:secret]";
+
+/// A line that is nothing but a secret's label — `Password`, `PIN:`,
+/// `API key` — the way a form sets the label above its field rather than
+/// beside it. `redact` is line-local and cannot see that, so the caller
+/// masks the line under one of these whole (see [`LABELED_LINE`]).
+pub fn is_secret_label(line: &str) -> bool {
+    static LABEL: OnceLock<Regex> = OnceLock::new();
+    LABEL
+        .get_or_init(|| {
+            Regex::new(
+                r"(?i)^[ \t*]*(?:current |new |confirm |re-?enter |your )?(?:password|passwd|pwd|passphrase|passcode|pin|secret|token|api[-_ ]?key)[ \t*:=]*$",
+            )
+            .unwrap()
+        })
+        .is_match(line.trim())
+}
+
 fn already_redacted(value: &str) -> bool {
     value.trim_start().starts_with(MARKER)
 }
@@ -200,6 +219,33 @@ fn luhn(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_label_alone_on_its_line_is_a_secret_label() {
+        for l in [
+            "Password",
+            "Password:",
+            "  PIN :",
+            "API key",
+            "Confirm password",
+            "* Passphrase *",
+        ] {
+            assert!(is_secret_label(l), "{l:?}");
+        }
+    }
+
+    #[test]
+    fn prose_mentioning_a_password_is_not_a_label() {
+        for l in [
+            "Why does the login form reject my password every time?",
+            "Password: hunter2",
+            "Forgot password?",
+            "Tokens",
+            "",
+        ] {
+            assert!(!is_secret_label(l), "{l:?}");
+        }
+    }
 
     #[test]
     fn jwt_pattern() {

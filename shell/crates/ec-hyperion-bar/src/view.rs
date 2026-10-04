@@ -41,14 +41,16 @@
 //! not on an outline; and not on a 2px underline, which on a rounded chip
 //! read as a sticker bolted to the bottom.
 //!
-//! The launcher mark is the third and last, also by explicit direction: the
-//! corona is the desktop's own mark, and a white ring read as a disabled
-//! button rather than as a logo. At rest it is that fixed ring. While
-//! Oracle-Eyes is working it opens into an eye — a gold iris whose pupil
-//! wanders while it watches and narrows to a point while it thinks — so the
-//! mark reports that daemon's live state (ADR 0055). It stays one small
-//! circle of the same yellow and never grows, so it still does not compete
-//! for area with the two above.
+//! The launcher mark is the third and last, and it is yellow only while it
+//! reports something live. At rest it is a ring in secondary white, full
+//! white under the pointer — a resting gold ring was decoration, a yellow
+//! that said nothing was true. While Oracle-Eyes is working it opens into an
+//! eye — a glass iris in a gold rim whose gold pupil wanders while it
+//! watches and narrows to a point while it thinks — so the mark reports
+//! that daemon's live state (ADR 0055). The gold is `annotations.accent`,
+//! the colour the compositor draws Oracle-Eyes' own picks in. It stays one
+//! small circle and never grows, so it does not compete for area with the
+//! two above.
 //!
 //! The widgets keep the rule with one exception, which is the fourth: Now
 //! Playing's visualizer is yellow while media plays and the widget is open —
@@ -114,7 +116,7 @@ pub fn view(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message,
 
 fn surface(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message, Theme> {
     if app.bars.values().any(|b| b.eye_surface == Some(id)) {
-        return eye_view(&app.iris);
+        return eye_view(&app.iris, app.eye_accent);
     }
     match app.popup.as_ref() {
         Some(popup) if popup.id == id => {
@@ -290,10 +292,10 @@ fn launcher_style(t: &Theme, status: button::Status) -> button::Style {
 /// The bar always draws the plain ring here, whatever Oracle-Eyes is doing:
 /// the live eye is [`eye_view`], on a surface of its own laid over this one,
 /// so a capture that leaves that surface out shows this ring, unchanging.
+/// That is also why the ring never turns gold itself: the gold of a live
+/// eye belongs to the surface captures leave out (ADR 0056).
 fn launcher_button() -> Element<'static, Message, Theme> {
-    let mark = parts::ring(bar::EYE_DISC, bar::RING, color::ACCENT);
-
-    button(container(mark).center(Length::Fill))
+    button(launcher_mark())
         .width(Length::Fixed(bar::TASK_MIN))
         .height(Length::Fixed(bar::TASK_H))
         .padding(0)
@@ -314,6 +316,12 @@ fn eclipse_cell(bar: &crate::app::Bar, hints: bool) -> Element<'_, Message, Them
     }
 }
 
+/// The resting mark: [`parts::hover_ring`] over the whole button, so it
+/// lifts to full white with the button's glass.
+fn launcher_mark() -> Element<'static, Message, Theme> {
+    parts::hover_ring(bar::EYE_DISC, bar::RING, color::TEXT_SECONDARY, color::TEXT)
+}
+
 /// The launcher button grown into the menu's search field.
 ///
 /// The ring does not move: it keeps the button's own `TASK_MIN` box at the
@@ -328,9 +336,9 @@ fn eclipse_cell(bar: &crate::app::Bar, hints: bool) -> Element<'_, Message, Them
 /// launcher's prompt reads its position.
 fn search_cell(bar: &crate::app::Bar, hints: bool) -> Element<'_, Message, Theme> {
     let width = crate::layout::eclipse_w(bar.menu.reveal.value());
-    let mark = container(parts::ring(bar::EYE_DISC, bar::RING, color::ACCENT))
-        .center_x(Length::Fixed(bar::TASK_MIN))
-        .center_y(Length::Fill);
+    let mark = container(launcher_mark())
+        .width(Length::Fixed(bar::TASK_MIN))
+        .height(Length::Fill);
     let field = text_input("search applications", &bar.menu.query)
         .id(crate::menu::INPUT_ID)
         .on_input(Message::MenuQuery)
@@ -607,32 +615,37 @@ fn start_tally(m: &crate::menu::Menu) -> String {
 }
 
 /// Oracle-Eyes' status (ADR 0055), on the eye's own surface over the
-/// launcher mark. While the daemon watches, the corona thickens into an iris
-/// and the hole becomes a pupil that darts about; while it thinks, the pupil
-/// narrows to a point.
+/// launcher mark. While the daemon watches, the ring becomes a glass iris in
+/// a gold rim with a gold pupil that darts about; while it thinks, the pupil
+/// narrows to a point. In debug the gold is [`color::DANGER`].
 ///
 /// The surface is the launcher button's box and the disc is centred in it
-/// exactly as the ring is centred in the button, so the iris covers the ring
-/// edge for edge. The hole is a real hole — the gold is one even-odd path and
-/// the surface is transparent — and since the pupil never reaches past the
-/// ring's inner edge (`EYE_PUPIL + EYE_WANDER`), what shows through it is the
-/// bar's glass, never the ring's gold.
-fn eye_view(iris: &crate::eye::Iris) -> Element<'static, Message, Theme> {
+/// exactly as the ring is centred in the button, so the rim covers the ring
+/// edge for edge — a hair past it ([`bar::EYE_BLEED`]), so the ring's own
+/// antialiased edge does not fringe the eye. The pupil never reaches the rim
+/// (`EYE_PUPIL + EYE_WANDER`). The whole eye fades in and out with
+/// [`Iris::alpha`](crate::eye::Iris::alpha).
+fn eye_view(iris: &crate::eye::Iris, accent: Color) -> Element<'static, Message, Theme> {
+    let ink = if iris.debug { color::DANGER } else { accent };
     let mark = canvas(EyeMark {
         pupil: iris.pupil,
         offset: iris.offset,
+        ink: ink.scale_alpha(iris.alpha),
+        iris: color::EYE_IRIS.scale_alpha(iris.alpha),
     })
-    .width(Length::Fixed(bar::EYE_DISC))
-    .height(Length::Fixed(bar::EYE_DISC));
-    // The surface is sized to the button (`eye_placement`), so filling it is
-    // the button's own centring.
+    .width(Length::Fill)
+    .height(Length::Fill);
+    // The surface is sized to the button (`eye_placement`) and the canvas
+    // fills it, so the frame's centre is the button's — where the ring is.
     container(mark).center(Length::Fill).into()
 }
 
-/// The eye, one frame of it: a gold disc with the pupil cut out of it.
+/// The eye, one frame of it: a glass disc, a rim and a pupil.
 struct EyeMark {
     pupil: f32,
     offset: (f32, f32),
+    ink: Color,
+    iris: Color,
 }
 
 impl canvas::Program<Message> for EyeMark {
@@ -648,18 +661,29 @@ impl canvas::Program<Message> for EyeMark {
     ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let centre = frame.center();
-        let pupil = iced::Point::new(centre.x + self.offset.0, centre.y + self.offset.1);
-        let path = canvas::Path::new(|b| {
-            b.circle(centre, crate::eye::outer());
-            b.circle(pupil, self.pupil);
+        let edge = crate::eye::outer() + bar::EYE_BLEED;
+        // Bled on both sides: the eye's surface and the bar's ring need not
+        // share a pixel grid, so the ring's inner fringe shows through the
+        // translucent iris unless the rim reaches past it too.
+        let inner = crate::eye::outer() - bar::EYE_RIM - bar::EYE_BLEED;
+        // The glass inside the rim, then the rim as its own band, so the two
+        // never overlap and double the alpha at the seam.
+        frame.fill(&canvas::Path::circle(centre, inner), self.iris);
+        let rim = canvas::Path::new(|b| {
+            b.circle(centre, edge);
+            b.circle(centre, inner);
         });
         frame.fill(
-            &path,
+            &rim,
             canvas::Fill {
-                style: canvas::Style::Solid(color::ACCENT),
+                style: canvas::Style::Solid(self.ink),
                 rule: canvas::fill::Rule::EvenOdd,
             },
         );
+        if self.pupil > 0.0 {
+            let pupil = iced::Point::new(centre.x + self.offset.0, centre.y + self.offset.1);
+            frame.fill(&canvas::Path::circle(pupil, self.pupil), self.ink);
+        }
         vec![frame.into_geometry()]
     }
 }

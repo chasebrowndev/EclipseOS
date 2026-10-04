@@ -335,6 +335,17 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
             "readable": readable,
             "writable": writable,
         });
+        // A changed Oracle Eyes model command is withheld (served as null)
+        // until the owner approves it in the compositor-drawn prompt
+        // (owner decision 3, ADR 0067's path). Say which, so a pane can tell
+        // "unset" from "awaiting approval" without seeing the command.
+        if key.path == "oracle-eyes.model-command" {
+            let pending = state.widget_approvals.model_command.withheld.is_some();
+            row.as_object_mut().expect("object").insert(
+                "approval".into(),
+                json!(if pending { "pending" } else { "approved" }),
+            );
+        }
         if want_schema {
             let m = row.as_object_mut().expect("object");
             m.insert("type".into(), json!(ty));
@@ -661,6 +672,26 @@ pub fn revert_widget(state: &mut AbyssState, name: &str) -> Result<(), RpcError>
         .ok_or_else(|| RpcError::invalid_params("no config file on the search path to write to"))?;
     let before = std::fs::read_to_string(&target).unwrap_or_default();
     let after = edit::remove_block(&before, edit::WIDGET, name)
+        .map_err(|e| RpcError::invalid_params(&e.to_string()))?;
+    commit(state, &target, &before, &after)
+}
+
+/// Revert the Oracle Eyes model command to the shipped default (`claude`)
+/// in the owner's `abyss.kdl`. Same write path as `set_config_value`
+/// (render, write, full reload, roll back on refusal, re-apply, `config`).
+///
+/// **Only the Trusted UI approval surface (`trusted_ui/`, ADR 0067) may call
+/// this**, on the owner's Revert. It is not a socket method; a test scans the
+/// source to keep every other caller out.
+pub fn revert_model_command(state: &mut AbyssState) -> Result<(), RpcError> {
+    let target = target_path(&state.config, schema::Owner::Abyss)
+        .ok_or_else(|| RpcError::invalid_params("no config file on the search path to write to"))?;
+    let before = std::fs::read_to_string(&target).unwrap_or_default();
+    let default: Vec<kdl::KdlValue> = crate::config::ORACLE_EYES_MODEL_COMMAND
+        .iter()
+        .map(|s| kdl::KdlValue::String((*s).to_owned()))
+        .collect();
+    let after = edit::set_list(&before, "oracle-eyes.model-command", &default)
         .map_err(|e| RpcError::invalid_params(&e.to_string()))?;
     commit(state, &target, &before, &after)
 }
@@ -1850,5 +1881,66 @@ mod tests {
             target_path(&cfg, schema::Owner::Abyss),
             Some(std::path::PathBuf::from("/tmp/explicit.kdl"))
         );
+    }
+
+    /// A withheld model command is served as null with `approval: "pending"`;
+    /// the command text itself never reaches the socket before approval.
+    #[test]
+    fn a_withheld_model_command_is_served_as_null_and_pending() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let path = "oracle-eyes.model-command";
+        let got = get_config(&mut h.state, Decision::Allow, &json!({ "path": path }))
+            .ok()
+            .expect("readable");
+        assert_eq!(got["keys"][0]["value"], json!(["claude"]));
+        assert_eq!(got["keys"][0]["approval"], "approved");
+
+        h.state.config.oracle_eyes.model_command = None;
+        h.state.widget_approvals.model_command.withheld =
+            Some(crate::config::withhold::PendingModelCommand {
+                command_text: "sh -c secret".into(),
+                hash: crate::config::widget_hash::model_command_hash(&["sh".into()]),
+            });
+        let got = get_config(&mut h.state, Decision::Allow, &json!({ "path": path }))
+            .ok()
+            .expect("readable");
+        assert_eq!(got["keys"][0]["value"], Value::Null);
+        assert_eq!(got["keys"][0]["approval"], "pending");
+        assert!(!got.to_string().contains("secret"));
+
+        // Other rows carry no approval field.
+        let got = get_config(
+            &mut h.state,
+            Decision::Allow,
+            &json!({ "path": "oracle-eyes.hold-ms" }),
+        )
+        .ok()
+        .expect("readable");
+        assert!(got["keys"][0].get("approval").is_none());
+    }
+
+    #[test]
+    fn revert_model_command_writes_the_default_back() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let dir = std::env::temp_dir().join(format!("abyss-oe-revert-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+        std::fs::write(
+            &file,
+            "oracle-eyes {\n    model-command \"other\" \"--x\"\n    hold-ms 5000\n}\n",
+        )
+        .unwrap();
+        h.state.config.explicit = Some(file.clone());
+        let ok = revert_model_command(&mut h.state);
+        assert!(ok.is_ok(), "{:?}", ok.err().map(|e| e.message));
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("model-command"), "{text}");
+        assert!(!text.contains("other"), "{text}");
+        assert!(text.contains("hold-ms 5000"), "{text}");
+        assert_eq!(
+            h.state.config.oracle_eyes.model_command,
+            Some(vec!["claude".to_owned()])
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

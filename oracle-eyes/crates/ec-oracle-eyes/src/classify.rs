@@ -156,6 +156,27 @@ impl Gate {
     /// A `Verdict::Ask` records the dispatch: the caller is expected to
     /// actually make the call.
     pub fn consider(&mut self, scope: u64, text: &str, confidence: f32, now_ms: u64) -> Verdict {
+        let verdict = self.decide(scope, text, confidence, now_ms);
+        // Inputs are measures of the text, not the text.
+        tracing::debug!(
+            scope,
+            words = text.split_whitespace().count(),
+            chars = text.len(),
+            text_hash = hash(text),
+            confidence,
+            now_ms,
+            seen = self.seen.len(),
+            verdict = ?verdict,
+            reason = match verdict {
+                Verdict::Skip(r) => r.to_string(),
+                Verdict::Ask => "-".to_string(),
+            },
+            "gate: verdict"
+        );
+        verdict
+    }
+
+    fn decide(&mut self, scope: u64, text: &str, confidence: f32, now_ms: u64) -> Verdict {
         if let Some(r) = self.triviality(text, confidence) {
             return Verdict::Skip(r);
         }

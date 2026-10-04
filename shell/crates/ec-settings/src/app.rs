@@ -117,6 +117,8 @@ pub enum Message {
     Bar(crate::taskbar::Msg),
     /// The sidebar search's messages.
     Search(crate::search_ui::Msg),
+    /// Launch the policy viewer, from the Oracle Eyes capture hero.
+    OpenPolicyViewer,
 }
 
 /// Somewhere to take the user: a page, and optionally a row on it by its
@@ -270,6 +272,11 @@ pub struct App {
     /// The "Clear usage history" button's last press, and whether it worked.
     /// Shown for `CLEARED_FOR`, then the button comes back.
     cleared: Option<(Instant, bool)>,
+    /// Oracle Eyes' capture grant, read off `policy.kdl` with the widgets.
+    pub(crate) oe_grant: crate::oracle::Grant,
+    /// The policy viewer this app launched, kept so it is reaped and a
+    /// second click while it runs does not open a second one.
+    viewer: Option<std::process::Child>,
 }
 
 /// How long "Cleared" stands in for the button.
@@ -327,6 +334,8 @@ impl App {
             addons: None,
             search: crate::search_ui::Search::default(),
             cleared: None,
+            oe_grant: crate::oracle::Grant::Unread,
+            viewer: None,
         };
         // Debug builds only: open with a tray entry selected, so the selected
         // state can be screenshotted without pointer injection.
@@ -386,11 +395,21 @@ impl App {
     /// (an add-on installed, a widget withheld, a prompt answered).
     fn read_widgets(&mut self) {
         self.addons = self.conn.addons().ok();
+        self.oe_grant = crate::oracle::read_grant();
         if let Ok(w) = self.conn.widgets() {
             self.bar.customs = w;
         }
         if let Ok(s) = self.conn.widget_statuses() {
             self.bar.statuses = s;
+        }
+    }
+
+    /// A text field's draft as the JSON its key takes: a string, or for a
+    /// string-list key (the model command's argv line) the words as a list.
+    fn typed(&self, path: &str, text: &str) -> Value {
+        match self.key(path).map(|k| &k.control) {
+            Some(Control::List) => crate::schema::argv_value(text),
+            _ => Value::String(text.to_owned()),
         }
     }
 
@@ -717,6 +736,21 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             }
             app.cleared = Some((Instant::now(), done));
         }
+        Message::OpenPolicyViewer => {
+            let running = app
+                .viewer
+                .as_mut()
+                .is_some_and(|c| matches!(c.try_wait(), Ok(None)));
+            if !running {
+                match std::process::Command::new("ec-policy-viewer").spawn() {
+                    Ok(child) => app.viewer = Some(child),
+                    Err(e) => {
+                        app.viewer = None;
+                        app.banner = Some(Problem::Other(format!("could not start ec-policy-viewer: {e}")));
+                    }
+                }
+            }
+        }
         Message::Reload => app.reload(),
 
         Message::Toggled(path, on) => app.write(&path, Value::Bool(on)),
@@ -753,7 +787,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::Edited(path, text) => {
             // Validation is per keystroke so the field can refuse before the
             // write. It is a `dry_run`-shaped call: nothing is spliced.
-            match app.conn.validate(&path, Value::String(text.clone())) {
+            match app.conn.validate(&path, app.typed(&path, &text)) {
                 Ok(()) => {
                     app.invalid.remove(&path);
                 }
@@ -768,7 +802,8 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 return Task::none();
             }
             if let Some(text) = app.drafts.remove(&path) {
-                app.write(&path, Value::String(text));
+                let v = app.typed(&path, &text);
+                app.write(&path, v);
             }
         }
 
@@ -1167,6 +1202,10 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
             let (state, measure) = crate::addons::status(app);
             controls.push(status_chip(&state, &measure));
         }
+        Section::OracleEyes => {
+            let (state, measure) = crate::oracle::status(app);
+            controls.push(status_chip(&state, &measure));
+        }
         _ => {}
     }
     let mut blocks = vec![header(
@@ -1181,6 +1220,11 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         Page::Display => blocks.extend(display_pane(app)),
         Page::Network => blocks.extend(network::blocks(&app.net, app.glass_radius)),
         Page::Addons => blocks.extend(crate::addons::blocks(app)),
+        // A status grid, then the rows: two silhouettes, not two panels of rows.
+        Page::OeGeneral => {
+            blocks.push(crate::oracle::hero(app));
+            blocks.push(schema_page(app));
+        }
         p if p.section() == Section::Taskbar => blocks.extend(crate::taskbar::blocks(app, p)),
         _ => blocks.push(schema_page(app)),
     }
@@ -1316,6 +1360,9 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             "launcher.search.frecency" => Some(FRECENCY_BLURB),
             "settings.search.frecency" => Some(FRECENCY_BLURB),
             TERMINAL_APPS => Some("Opened in the terminal command above."),
+            crate::oracle::MODEL_COMMAND => Some(crate::oracle::approval_line(key)),
+            "oracle-eyes.bind.select" => Some("A chord like Super+A. \"none\" leaves an action unbound."),
+            "oracle-eyes.debug" => Some("While on, the taskbar eye turns red and shows in screen captures."),
             _ => None,
         };
         if let Some(blurb) = blurb {
@@ -1692,8 +1739,40 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
 
         // `set_config_value` writes one scalar at a dotted path; a list needs
         // the node editor. Shown so the setting is never hidden.
-        Control::List => mono(&key.display()),
+        // A string list is shown, not edited — except an argv a line can
+        // hold, which edits as one: words split on spaces.
+        Control::List => match key
+            .argv_text()
+            .filter(|_| key.path == crate::oracle::MODEL_COMMAND)
+        {
+            Some(line) => argv_field(app, key, line),
+            None => mono(&key.display()),
+        },
     }
+}
+
+/// The model command's argv as one editable line: the text field every text
+/// key uses, its draft written back as a list (`App::typed`).
+fn argv_field<'a>(app: &'a App, key: &'a Key, line: String) -> Element<'a, Message, Theme> {
+    let path = key.path.clone();
+    let shown = app.drafts.get(&key.path).cloned().unwrap_or(line);
+    let invalid = app.invalid.contains_key(&key.path);
+    let mut input = text_input("program and arguments", &shown)
+        .on_input(move |t| Message::Edited(path.clone(), t))
+        .font(font::DATA)
+        .size(size::MONO)
+        .style(if invalid {
+            theme::eclipse_input_invalid
+        } else {
+            theme::eclipse_input
+        });
+    if !invalid {
+        input = input.on_submit(Message::Committed(key.path.clone()));
+    }
+    iced::widget::container(verdict_row(input, invalid))
+        .width(Length::Fill)
+        .max_width(space::FIELD_W + space::CONTROL_GAP + space::VERDICT_W)
+        .into()
 }
 
 /// A text field and the slot that says whether its draft is refused. The
@@ -1931,6 +2010,7 @@ mod tests {
             writable: true,
             doc: String::new(),
             needs_restart: false,
+            approval: None,
             control: Control::Slider {
                 min: 0.0,
                 max: 64.0,
