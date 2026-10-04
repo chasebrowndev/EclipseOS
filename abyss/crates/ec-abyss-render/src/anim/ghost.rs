@@ -16,11 +16,15 @@
 //!   `Arc`, so the clone keeps the GPU texture alive after smithay drops the
 //!   buffer, and nothing is copied.
 //!
-//! TODO(P3): the shell call sites that push ghosts — `switch_workspace` (Live,
-//! before `unmap_elem`), minimize, and close: [`snapshot`] taken in
-//! `compositor.rs commit()` before `on_commit_buffer_handler` on
-//! `BufferAssignment::Removed`, in `toplevel_destroyed`, the xwm unmap paths
-//! and `layer_destroyed`.
+//! The shell pushes them from `ec-abyss/src/shell/anim.rs`: Live for the
+//! outgoing workspace half, minimize and a window sent to another workspace;
+//! Snapshot for close (taken in `compositor.rs commit()` before
+//! `on_commit_buffer_handler` on `BufferAssignment::Removed`, in
+//! `toplevel_destroyed` and the xwm unmap paths) and for the old frame of a
+//! fullscreen or maximize toggle. A ghost is drawn with the border and shadow
+//! its window had, in the focus state it left in.
+//!
+//! TODO(P4): `layer_destroyed` snapshots for `layer-close`.
 
 use std::time::Instant;
 
@@ -62,6 +66,8 @@ pub enum Ghost<W = Window> {
         output: Output,
         /// Where its geometry's top-left was when it left, global logical.
         from_loc: Point<i32, Logical>,
+        /// Whether it had the focus: picks its border colour and shadow depth.
+        active: bool,
         track: Track,
     },
     Snapshot {
@@ -70,6 +76,8 @@ pub enum Ghost<W = Window> {
         output: Output,
         /// The window geometry when the snapshot was taken, global logical.
         geometry: Rectangle<i32, Logical>,
+        /// Whether it had the focus: picks its border colour and shadow depth.
+        active: bool,
         track: Track,
     },
 }
@@ -84,6 +92,12 @@ impl<W> Ghost<W> {
     pub fn output(&self) -> &Output {
         match self {
             Ghost::Live { output, .. } | Ghost::Snapshot { output, .. } => output,
+        }
+    }
+
+    pub fn active(&self) -> bool {
+        match self {
+            Ghost::Live { active, .. } | Ghost::Snapshot { active, .. } => *active,
         }
     }
 

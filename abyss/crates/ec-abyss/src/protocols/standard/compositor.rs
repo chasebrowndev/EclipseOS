@@ -49,6 +49,14 @@ impl CompositorHandler for AbyssState {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        // A mapped toplevel committing a null buffer is closing (or hiding):
+        // keep its last frame for `window-close` before smithay drops the
+        // textures with the buffer.
+        if get_parent(surface).is_none() && buffer_removed(surface) {
+            if let Some(window) = crate::shell::window_for_surface(self, surface) {
+                crate::shell::anim::close(self, &window);
+            }
+        }
         on_commit_buffer_handler::<Self>(surface);
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
@@ -73,6 +81,15 @@ impl CompositorHandler for AbyssState {
         // region out from under a stationary pointer; committed state only.
         self.refresh_pointer_focus();
     }
+}
+
+/// Whether the commit being handled attached a null buffer.
+fn buffer_removed(surface: &WlSurface) -> bool {
+    use smithay::wayland::compositor::{with_states, BufferAssignment, SurfaceAttributes};
+    with_states(surface, |states| {
+        let mut attrs = states.cached_state.get::<SurfaceAttributes>();
+        matches!(attrs.current().buffer, Some(BufferAssignment::Removed))
+    })
 }
 
 impl OutputHandler for AbyssState {}

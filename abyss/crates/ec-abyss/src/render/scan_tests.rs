@@ -46,6 +46,21 @@ fn the_trusted_indicator_stays_above_annotations_in_every_backend() {
     }
 }
 
+/// COMP-02 §9: animation is render-only and never in capture. Ghosts and
+/// snapshots are drawn by `collect_elements` alone; `capture.rs` builds its own
+/// pass from `space`, so a closing window's leftover frame can never reach a
+/// screenshot or a screencast. Asserted where the property lives, in the source.
+#[test]
+fn the_capture_pass_cannot_see_animation_or_ghosts() {
+    let src = include_str!("capture.rs").to_ascii_lowercase();
+    for word in ["anim", "ghost", "snapshot"] {
+        assert!(
+            !src.contains(word),
+            "capture.rs references `{word}`; capture must never read the animation store"
+        );
+    }
+}
+
 #[test]
 fn the_capture_pass_cannot_see_the_selector() {
     let src = include_str!("capture.rs");

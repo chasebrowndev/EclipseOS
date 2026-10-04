@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Window management: placement, layout, workspaces, focus (COMP-05).
 
+pub mod anim;
 pub mod focus;
 pub mod layout;
 pub mod rules;
@@ -1487,6 +1488,7 @@ pub fn minimize_window(state: &mut AbyssState, window: &Window) {
         window: window.clone(),
         was_floating,
     });
+    anim::minimize(state, window);
     state.space.unmap_elem(window);
     // A minimized window is not activated; a client that draws a focus ring
     // would otherwise keep drawing it in the taskbar's thumbnail.
@@ -1541,6 +1543,7 @@ pub fn unminimize_window(state: &mut AbyssState, window: &Window) {
     if state.outputs.get(id).is_some_and(|e| e.active == ws) {
         focus_window(state, window);
     }
+    anim::unminimize(state, window);
     emit_minimized(state, window, false);
 }
 
@@ -1674,6 +1677,55 @@ pub fn toggle_floating(state: &mut AbyssState) {
     arrange(state);
 }
 
+fn toplevel_window(
+    state: &AbyssState,
+    surface: &smithay::wayland::shell::xdg::ToplevelSurface,
+) -> Option<Window> {
+    state
+        .space
+        .elements()
+        .find(|w| w.toplevel() == Some(surface))
+        .cloned()
+}
+
+/// `fullscreen` (COMP-02 §9) plays over each of the four requests below, and
+/// over the X11 form: [`anim::toggle`] keeps the old frame, runs the change,
+/// and animates from the old rectangle to the new.
+pub fn maximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::shell::xdg::ToplevelSurface) {
+    let window = toplevel_window(state, surface);
+    anim::toggle(state, window, |state| maximize_toplevel_now(state, surface));
+}
+
+pub fn unmaximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::shell::xdg::ToplevelSurface) {
+    let window = toplevel_window(state, surface);
+    anim::toggle(state, window, |state| unmaximize_toplevel_now(state, surface));
+}
+
+pub fn fullscreen_toplevel(
+    state: &mut AbyssState,
+    surface: &smithay::wayland::shell::xdg::ToplevelSurface,
+    target: Option<&smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+) {
+    let window = toplevel_window(state, surface);
+    anim::toggle(state, window, |state| {
+        fullscreen_toplevel_now(state, surface, target)
+    });
+}
+
+pub fn unfullscreen_toplevel(
+    state: &mut AbyssState,
+    surface: &smithay::wayland::shell::xdg::ToplevelSurface,
+) {
+    let window = toplevel_window(state, surface);
+    anim::toggle(state, window, |state| unfullscreen_toplevel_now(state, surface));
+}
+
+pub fn set_x11_state(state: &mut AbyssState, window: &Window, fullscreen: bool, on: bool) {
+    anim::toggle(state, Some(window.clone()), |state| {
+        set_x11_state_now(state, window, fullscreen, on)
+    });
+}
+
 /// A client's `xdg_toplevel.set_maximized` (COMP-05 §4): fill the output's
 /// usable area, i.e. shrunk by any layer-shell exclusive zone, with no gap or
 /// border — the raw protocol contract, not abyss's own tiling style.
@@ -1684,7 +1736,7 @@ pub fn toggle_floating(state: &mut AbyssState) {
 /// initial commit places it (`map_toplevel`). Its state requests until then
 /// are parked in its pending state, and `map_toplevel` replays them once the
 /// window exists; the same holds for the other three requests below.
-pub fn maximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::shell::xdg::ToplevelSurface) {
+fn maximize_toplevel_now(state: &mut AbyssState, surface: &smithay::wayland::shell::xdg::ToplevelSurface) {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
 
     let Some(window) = state
@@ -1743,7 +1795,7 @@ pub fn maximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::she
 
 /// A client's `xdg_toplevel.unset_maximized`: restore whatever placement the
 /// window had before it was maximized.
-pub fn unmaximize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::shell::xdg::ToplevelSurface) {
+fn unmaximize_toplevel_now(state: &mut AbyssState, surface: &smithay::wayland::shell::xdg::ToplevelSurface) {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
 
     let Some(window) = state
@@ -1832,7 +1884,7 @@ pub fn x11_properties_changed(state: &mut AbyssState, surface: &smithay::xwaylan
 /// An X11 window's `_NET_WM_STATE` maximize/fullscreen request: the same shell
 /// state the xdg paths use (`state.maximized`/`state.fullscreen`, which
 /// `arrange_output` tracks), minus the xdg configure handshake.
-pub fn set_x11_state(state: &mut AbyssState, window: &Window, fullscreen: bool, on: bool) {
+fn set_x11_state_now(state: &mut AbyssState, window: &Window, fullscreen: bool, on: bool) {
     let Some(x11) = window.x11_surface().cloned() else {
         return;
     };
@@ -1949,7 +2001,7 @@ pub fn output_has_fullscreen(state: &AbyssState, output: &Output) -> bool {
 /// `target` is the client's requested output; `None` means "wherever it is now".
 /// Honouring a different output moves the window there, which is what the
 /// protocol asks for.
-pub fn fullscreen_toplevel(
+fn fullscreen_toplevel_now(
     state: &mut AbyssState,
     surface: &smithay::wayland::shell::xdg::ToplevelSurface,
     target: Option<&smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
@@ -2011,7 +2063,7 @@ pub fn fullscreen_toplevel(
 /// A client's `xdg_toplevel.unset_fullscreen`: restore whatever placement the
 /// window had before. A window that was maximized when it went fullscreen drops
 /// back to maximized rather than to its pre-maximize rectangle.
-pub fn unfullscreen_toplevel(
+fn unfullscreen_toplevel_now(
     state: &mut AbyssState,
     surface: &smithay::wayland::shell::xdg::ToplevelSurface,
 ) {
@@ -2614,18 +2666,21 @@ pub fn switch_workspace(state: &mut AbyssState, idx: usize) {
     if target == entry.active {
         return;
     }
-    for w in entry.workspace().windows() {
-        state.space.unmap_elem(&w);
-    }
     let previous = entry.active;
+    let outgoing = entry.workspace().windows();
+    let output = entry.output.clone();
+    // COMP-02 §9 `workspace-switch`, outgoing half: the old windows are
+    // handed to the render path as ghosts before they leave the space.
+    anim::leave_workspace(state, &outgoing, &output, if target > previous { 1 } else { -1 });
+    for w in &outgoing {
+        state.space.unmap_elem(w);
+    }
     state.outputs.get_mut(id).expect("just resolved").active = target;
     state.focus = None;
     arrange(state);
     refocus_topmost(state);
-    // COMP-02 §9 `workspace-switch`: slide the arriving windows in from the
-    // side the switch came from. There is no outgoing half yet — the old
-    // workspace's windows were unmapped above and no longer exist for the
-    // render path. `slide` settles the arrivals even with the event off, so
+    // The arriving half: slide the new windows in from the side the switch
+    // came from. `slide` settles the arrivals even with the event off, so
     // they do not fire `window-open`.
     let size = state
         .outputs
@@ -2687,6 +2742,12 @@ pub fn move_to_workspace(state: &mut AbyssState, idx: usize) {
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let active = entry.active;
     entry.workspaces[active].remove(&window);
+    let follow = state.config.general.follow_window_to_workspace;
+    let from = state.space.element_geometry(&window);
+    if !follow {
+        // Not followed: it leaves toward the workspace it is bound for.
+        anim::send_away(state, &window, &output, if target > active { 1 } else { -1 });
+    }
     state.space.unmap_elem(&window);
     let entry = state.outputs.get_mut(id).expect("just resolved");
     entry.workspaces[target]
@@ -2698,10 +2759,15 @@ pub fn move_to_workspace(state: &mut AbyssState, idx: usize) {
     tracing::info!(workspace = idx, "window moved to workspace");
     // Following the window is the default: a move you cannot see is hard to
     // tell from a move that did not happen.
-    if state.config.general.follow_window_to_workspace {
+    if follow {
         switch_workspace(state, idx);
         focus::focus_window(state, &window);
         warp_pointer_to(state, &window);
+        // The switch slid it in with the rest; `carry` has it stay put while
+        // the workspace moves under it.
+        if let Some(from) = from {
+            anim::carried(state, &window, from);
+        }
     }
 }
 
@@ -2736,6 +2802,8 @@ pub fn move_to_output_workspace(state: &mut AbyssState, number: u8) {
 
     let source_entry = state.outputs.get_mut(source_id).expect("just resolved");
     source_entry.workspaces[source_active].remove(&window);
+    let source_output = source_entry.output.clone();
+    anim::leave_output(state, &window, &source_output, &target_output);
     state.space.unmap_elem(&window);
 
     let target_entry = state.outputs.get_mut(target_id).expect("just resolved");
@@ -2746,6 +2814,7 @@ pub fn move_to_output_workspace(state: &mut AbyssState, number: u8) {
     state.focus = None;
     arrange(state);
     refocus_topmost(state);
+    anim::arrive_on_output(state, &window);
     tracing::info!(number, workspace = target_ws + 1, "window moved to output");
     // Same rule across displays: focus moves to the target output and the
     // pointer goes with the window, so the next keystroke lands where the

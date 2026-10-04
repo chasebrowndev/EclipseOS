@@ -49,7 +49,7 @@ use smithay::{
     },
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Physical, Point, Rectangle, Scale},
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale},
     wayland::{
         compositor::{with_states, SurfaceAttributes},
         dmabuf::DmabufFeedback,
@@ -480,6 +480,12 @@ pub fn collect_elements(
     // (COMP-02 §9). With no effect configured every surface is still emitted
     // unwrapped at alpha 1.0, so damage tracking and direct scanout are what
     // `space_render_elements` gave.
+    // The shell snapshots closing windows against this context; a renderer
+    // rebuilt after a GPU reset hands out a new one.
+    let context = smithay::backend::renderer::Renderer::context_id(renderer);
+    if borders.anim.context.as_ref() != Some(&context) {
+        borders.anim.context = Some(context);
+    }
     borders.anim.sync(space, &config.animations, focus);
     ghost_elements(renderer, borders, output, space, config, &mut elements);
     window_elements(
@@ -662,9 +668,12 @@ const BEZEL_REFRACTION: f64 = 4.0;
 /// Windows that have left the space, still playing out (COMP-02 §9), front
 /// to back, above the mapped windows: a closing window was usually on top.
 ///
-/// Surfaces only, through the rounded-corner mask when rounding is on; a
-/// ghost's border, shadow and backdrop are not drawn yet (P3). With no ghost
-/// this does nothing.
+/// Each ghost gets its surfaces (through the rounded-corner mask when
+/// rounding is on), then the border and drop shadow its window had, in the
+/// focus state it left in, all at the ghost's transform and alpha. No glow and
+/// no backdrop: a ghost is gone within a few frames. The decorations are built
+/// fresh each frame rather than kept, since a ghost moves every frame anyway.
+/// With no ghost this does nothing.
 fn ghost_elements(
     renderer: &mut GlesRenderer,
     store: &BorderStore,
@@ -703,6 +712,17 @@ fn ghost_elements(
         if !drawn.overlaps(output_geo) {
             continue;
         }
+        // Base opacity as the window was drawn: the rule, else the pair.
+        let deco = &config.decoration;
+        let opacity = ghost
+            .window()
+            .and_then(userdata::opacity_of)
+            .unwrap_or(if ghost.active() {
+                deco.active_opacity
+            } else {
+                deco.inactive_opacity
+            });
+        let alpha = opacity * t.alpha;
         let origin = (pivot - output_geo.loc.to_f64())
             .to_physical(scale)
             .to_i32_round();
@@ -719,12 +739,15 @@ fn ghost_elements(
         });
         match ghost {
             anim::Ghost::Live { window, .. } => {
+                if !window.alive() {
+                    continue;
+                }
                 let render_loc = at.loc + t.loc() - window.geometry().loc - output_geo.loc;
                 let els = window.render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
                     renderer,
                     phys(render_loc, scale),
                     scale,
-                    t.alpha,
+                    alpha,
                 );
                 out.extend(els.into_iter().map(|s| {
                     AbyssRenderElement::Scaled(anim::ScaledElement::new(s, origin, by, mask.clone()))
@@ -740,7 +763,7 @@ fn ghost_elements(
                         s.texture.clone(),
                         s.buffer_scale,
                         s.transform,
-                        Some(t.alpha),
+                        Some(alpha),
                         Some(s.src),
                         Some(s.size),
                         None,
@@ -755,6 +778,114 @@ fn ghost_elements(
                 }));
             }
         }
+        // A live window's decor is drawn opaque whatever its opacity, so the
+        // ghost's carries the animation's alpha alone.
+        let decor = GhostDecor {
+            output_loc: output_geo.loc,
+            scale,
+            rounded: rounding.is_some(),
+            active: ghost.active(),
+            alpha: t.alpha,
+        };
+        ghost_decor(store, config, &decor, drawn, out);
+    }
+}
+
+/// Where and how one ghost's decor is drawn.
+struct GhostDecor {
+    output_loc: Point<i32, Logical>,
+    scale: Scale<f64>,
+    /// Whether the ghost's surfaces go through the rounded mask.
+    rounded: bool,
+    active: bool,
+    alpha: f32,
+}
+
+/// A ghost's border and drop shadow (COMP-02 §9): the same shapes
+/// `push_border` and `push_shadow` draw for a live window, around `geo`
+/// (global, as drawn), at the decor's alpha. A program not compiled yet — no
+/// live window has needed it — draws nothing rather than compiling mid-ghost.
+fn ghost_decor(
+    store: &BorderStore,
+    config: &Config,
+    decor: &GhostDecor,
+    geo: Rectangle<i32, Logical>,
+    out: &mut Vec<AbyssRenderElement>,
+) {
+    let GhostDecor {
+        output_loc,
+        scale,
+        rounded,
+        active,
+        alpha,
+    } = *decor;
+    let width = config.general.border_size;
+    if width > 0 {
+        let color = if active {
+            config.general.col_active
+        } else {
+            config.general.col_inactive
+        };
+        let outer = Rectangle::new(
+            (geo.loc.x - width - output_loc.x, geo.loc.y - width - output_loc.y).into(),
+            (geo.size.w + 2 * width, geo.size.h + 2 * width).into(),
+        );
+        match store.ring.as_ref().filter(|_| rounded) {
+            Some(program) => out.push(AbyssRenderElement::Shader(PixelShaderElement::new(
+                program.clone(),
+                outer,
+                None,
+                alpha,
+                effects::border_uniforms(
+                    color,
+                    config.decoration.rounding as f32,
+                    width as f32,
+                    scale.x.max(scale.y) as f32,
+                ),
+                Kind::Unspecified,
+            ))),
+            None => {
+                let inner_h = (outer.size.h - 2 * width).max(0);
+                let quads = [
+                    Rectangle::new(outer.loc, (outer.size.w, width).into()),
+                    Rectangle::new(
+                        (outer.loc.x, outer.loc.y + outer.size.h - width).into(),
+                        (outer.size.w, width).into(),
+                    ),
+                    Rectangle::new((outer.loc.x, outer.loc.y + width).into(), (width, inner_h).into()),
+                    Rectangle::new(
+                        (outer.loc.x + outer.size.w - width, outer.loc.y + width).into(),
+                        (width, inner_h).into(),
+                    ),
+                ];
+                for quad in quads {
+                    out.push(AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
+                        &SolidColorBuffer::new(quad.size, color),
+                        phys(quad.loc, scale),
+                        scale,
+                        alpha,
+                        Kind::Unspecified,
+                    )));
+                }
+            }
+        }
+    }
+    let shadow = &config.decoration.shadow;
+    if let Some(program) = store
+        .shadow
+        .as_ref()
+        .filter(|_| shadow.enabled && shadow.range > 0)
+    {
+        let (area, geometry) =
+            shadow_geometry(geo, output_loc, shadow.range, shadow_drop(shadow.range), config);
+        out.push(AbyssRenderElement::Shader(PixelShaderElement::new(
+            program.clone(),
+            area,
+            None,
+            alpha,
+            effects::shadow_uniforms(geometry, if active { 1.0 } else { 0.0 }),
+            Kind::Unspecified,
+        )));
     }
 }
 

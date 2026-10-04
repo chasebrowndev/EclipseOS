@@ -258,7 +258,7 @@ impl Choices {
             ],
             rounded: true,
             blur: Blur::Blur,
-            animations: false,
+            animations: true,
             bar_position: BarPosition::Top,
             apps,
         }
