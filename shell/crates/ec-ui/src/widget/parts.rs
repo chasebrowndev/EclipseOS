@@ -2281,6 +2281,93 @@ pub fn glide_track<'a, Message: 'a>(position: f32, label: &str) -> Element<'a, M
         .into()
 }
 
+/// One frame of a [`motion_stage`]: where the window mark is and how it looks.
+///
+/// `x`/`y` place the mark's centre across the stage, `0.0` holding a
+/// full-size mark against the left (top) edge and `1.0` against the right
+/// (bottom). The scales shrink the mark about that centre; `alpha` fades it;
+/// `lit` (`0..=1`) raises it from a resting window to the focused one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StageFrame {
+    pub x: f32,
+    pub y: f32,
+    pub scale_x: f32,
+    pub scale_y: f32,
+    pub alpha: f32,
+    pub lit: f32,
+}
+
+impl StageFrame {
+    /// A window at rest in the middle of its stage.
+    pub const REST: StageFrame = StageFrame {
+        x: 0.5,
+        y: 0.5,
+        scale_x: 1.0,
+        scale_y: 1.0,
+        alpha: 1.0,
+        lit: 0.0,
+    };
+}
+
+/// A tiny clipped stage with one window mark on it, posed by a [`StageFrame`].
+///
+/// A widget and not a styled container because it is a picture of the
+/// compositor's own motion — a window popping in, gliding, closing — and iced
+/// has neither transforms nor absolute positioning, so scale and travel have
+/// to be faked with sized quads behind spacers. Every animation preview in
+/// the desktop has to fake them the same way, or a "pop" on one card and a
+/// "pop" on the next would not be the same pop. The stage is an inset, so it
+/// reads as a window onto something, not as a control.
+pub fn motion_stage<'a, Message: 'a>(
+    stage: (f32, f32),
+    window: (f32, f32),
+    frame: StageFrame,
+) -> Element<'a, Message, Theme> {
+    use crate::tokens::canvas;
+    let (sw, sh) = stage;
+    let (ww, wh) = window;
+    let w = (ww * frame.scale_x.max(0.0)).min(sw);
+    let h = (wh * frame.scale_y.max(0.0)).min(sh);
+    let left = ((sw - ww) * frame.x + (ww - w) / 2.0).clamp(0.0, (sw - w).max(0.0));
+    let top = ((sh - wh) * frame.y + (wh - h) / 2.0).clamp(0.0, (sh - h).max(0.0));
+    let alpha = frame.alpha.clamp(0.0, 1.0);
+    let lit = frame.lit.clamp(0.0, 1.0);
+    let mix = |a: Color, b: Color| Color {
+        r: a.r + (b.r - a.r) * lit,
+        g: a.g + (b.g - a.g) * lit,
+        b: a.b + (b.b - a.b) * lit,
+        a: (a.a + (b.a - a.a) * lit) * alpha,
+    };
+    let fill = mix(color::LIFT_SOFT, color::LIFT);
+    let rim = mix(color::BORDER, color::HIGHLIGHT_STRONG);
+    let title = mix(color::HIGHLIGHT_SOFT, color::HIGHLIGHT);
+    let mark = container(column![
+        quad(Length::Fill, Length::Fixed(h * canvas::STAGE_TITLE), title, 0.0),
+        Space::new().height(Length::Fill),
+    ])
+    .width(Length::Fixed(w))
+    .height(Length::Fixed(h))
+    .clip(true)
+    .style(move |_t: &Theme| container::Style {
+        background: Some(iced::Background::Color(fill)),
+        border: iced::Border {
+            color: rim,
+            width: space::HAIRLINE,
+            radius: radius::BADGE.into(),
+        },
+        ..container::Style::default()
+    });
+    container(column![
+        Space::new().height(Length::Fixed(top)),
+        row![Space::new().width(Length::Fixed(left)), mark],
+    ])
+    .width(Length::Fixed(sw))
+    .height(Length::Fixed(sh))
+    .clip(true)
+    .style(theme::inset)
+    .into()
+}
+
 /// One argument of a command, as a chip with a remove mark.
 ///
 /// A widget because an argv editor's whole promise is that each chip is

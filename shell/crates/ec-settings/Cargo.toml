@@ -33,9 +33,8 @@ zbus = "5.19"
 # viewer's own reader, so the two can never disagree about policy.kdl.
 ec-policy-viewer = { path = "../ec-policy-viewer" }
 serde_json.workspace = true
-
-[dev-dependencies]
-# Only so `tests/coverage.rs` can walk the compositor's config schema and
-# assert this app renders a control for every key in it. Not linked into the
-# shipped binary.
+# The Animations page resolves each preset card's preview with the
+# compositor's own `Animations::resolve`, so a card can never preview a
+# different table than the one abyss runs. `tests/coverage.rs` also walks
+# its schema.
 ec-abyss-config = { path = "../../../abyss/crates/ec-abyss-config" }
