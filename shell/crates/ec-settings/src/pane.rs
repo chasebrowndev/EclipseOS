@@ -27,6 +27,7 @@ pub enum Section {
     System,
     Privacy,
     Addons,
+    OracleEyes,
 }
 
 /// One short page of settings: what the content column shows.
@@ -73,6 +74,9 @@ pub enum Page {
     General,
     Privacy,
     Addons,
+    // Oracle Eyes
+    OeGeneral,
+    OeColours,
 }
 
 impl Section {
@@ -90,6 +94,7 @@ impl Section {
         Section::System,
         Section::Privacy,
         Section::Addons,
+        Section::OracleEyes,
     ];
 
     pub fn title(self) -> &'static str {
@@ -106,6 +111,7 @@ impl Section {
             Section::System => "System",
             Section::Privacy => "Privacy",
             Section::Addons => "Add-ons",
+            Section::OracleEyes => "Oracle Eyes",
         }
     }
 
@@ -137,6 +143,7 @@ impl Section {
             Section::System => &[Page::Rendering, Page::Xwayland, Page::Setup, Page::General],
             Section::Privacy => &[Page::Privacy],
             Section::Addons => &[Page::Addons],
+            Section::OracleEyes => &[Page::OeGeneral, Page::OeColours],
         }
     }
 
@@ -186,6 +193,7 @@ impl Page {
             Page::Rendering | Page::Xwayland | Page::Setup | Page::General => Section::System,
             Page::Privacy => Section::Privacy,
             Page::Addons => Section::Addons,
+            Page::OeGeneral | Page::OeColours => Section::OracleEyes,
         }
     }
 
@@ -221,6 +229,8 @@ impl Page {
             Page::Xwayland => "XWayland",
             Page::Setup => "Setup",
             Page::General => "General",
+            Page::OeGeneral => "Model & capture",
+            Page::OeColours => "Colours",
             single => single.section().title(),
         }
     }
@@ -261,6 +271,8 @@ impl Page {
             Page::General => "Settings that apply across the desktop.",
             Page::Privacy => "Capture, clipboard and input scripting.",
             Page::Addons => "Optional packages, and the hooks they switch on.",
+            Page::OeGeneral => "What the add-on may see, the model it asks, and how long answers stay.",
+            Page::OeColours => "The colours the compositor draws answers and the region selector in.",
         }
     }
 
@@ -468,8 +480,22 @@ fn page_for(path: &str) -> Option<(Page, &'static str)> {
         "xwayland" => (Page::Xwayland, "xwayland"),
         "setup" => (Page::Setup, "setup"),
         "ui" => (Page::General, "general"),
+        // The settings app's own preferences: today, how its search ranks.
+        "settings" => (Page::General, "search"),
         "clipboard" => (Page::Privacy, "clipboard"),
         "capture" => (Page::Privacy, "capture"),
+        "oracle-eyes" => {
+            if sub == "bind" {
+                (Page::OeGeneral, "keybinds")
+            } else if starts("debug") {
+                (Page::OeGeneral, "debug")
+            } else if starts("model-") {
+                (Page::OeGeneral, "model")
+            } else {
+                (Page::OeGeneral, "timing")
+            }
+        }
+        "annotations" => (Page::OeColours, "colours"),
         _ => return None,
     })
 }
@@ -539,7 +565,7 @@ mod tests {
             assert_eq!(owners, 1, "{page:?}");
             assert!(page.section().pages().contains(&page));
         }
-        assert_eq!(Page::all().count(), 33);
+        assert_eq!(Page::all().count(), 35);
     }
 
     #[test]
@@ -602,6 +628,15 @@ mod tests {
     fn misc_splits_by_key_not_by_node() {
         assert_eq!(page_of("misc.render-device"), Some(Page::Rendering));
         assert_eq!(page_of("misc.scripted-input"), Some(Page::Privacy));
+        assert_eq!(page_of("oracle-eyes.model-command"), Some(Page::OeGeneral));
+        assert_eq!(page_of("oracle-eyes.debug"), Some(Page::OeGeneral));
+        assert_eq!(
+            place_for("oracle-eyes.bind.select").map(|p| p.group),
+            Some("keybinds")
+        );
+        assert_eq!(page_of("annotations.accent"), Some(Page::OeColours));
+        assert_eq!(Page::from_arg("oracle-eyes/colours"), Some(Page::OeColours));
+        assert_eq!(Page::from_arg("oracle-eyes"), Some(Page::OeGeneral));
         assert_eq!(page_of("misc.something-new"), None);
     }
 

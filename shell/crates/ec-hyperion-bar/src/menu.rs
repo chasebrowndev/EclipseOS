@@ -14,6 +14,7 @@
 use std::time::Instant;
 
 use ec_services::apps::{self, Entry};
+use ec_services::frecency::{self, Store};
 use ec_ui::motion::{Animated, Motion};
 use ec_ui::tokens::bar;
 
@@ -58,6 +59,9 @@ pub struct Menu {
     pub rows: usize,
     /// `launcher.search.*`, taken when the menu opens.
     pub search: apps::Search,
+    /// What the human has launched, re-read each time the menu opens so a
+    /// launch from the centred launcher shows here; empty with the flag off.
+    pub usage: Store,
 }
 
 impl Menu {
@@ -74,6 +78,7 @@ impl Menu {
             term: None,
             rows: bar::MENU_ROWS,
             search: apps::Search::default(),
+            usage: Store::default(),
         }
     }
 
@@ -84,6 +89,12 @@ impl Menu {
         self.term = term;
         self.rows = cfg.rows.max(1);
         self.search = cfg.search;
+        // Tests never read the human's real history.
+        self.usage = if cfg.search.frecency && !cfg!(test) {
+            Store::load()
+        } else {
+            Store::default()
+        };
         self.query.clear();
         self.selected = 0;
         self.problem = None;
@@ -120,6 +131,17 @@ impl Menu {
         self.matched.get(self.selected).map(|&i| &self.entries[i])
     }
 
+    /// Note the selected entry as launched, for the next open's ranking. Call
+    /// it once the launch succeeded; a no-op with the flag off, and under test
+    /// so a test never writes the human's history.
+    pub fn record_launch(&self) {
+        if self.search.frecency && !cfg!(test) {
+            if let Some(entry) = self.current() {
+                apps::record_launch(entry, &self.entries);
+            }
+        }
+    }
+
     /// How far the drawn rows have scrolled: just enough to keep the
     /// selection on the last row.
     pub fn scroll(&self) -> usize {
@@ -145,7 +167,13 @@ impl Menu {
     }
 
     fn refilter(&mut self) {
-        self.matched = apps::search(&self.entries, &self.query, &self.search);
+        self.matched = apps::search_with(
+            &self.entries,
+            &self.query,
+            &self.search,
+            &self.usage,
+            frecency::now(),
+        );
         self.selected = self.selected.min(self.matched.len().saturating_sub(1));
     }
 }

@@ -346,6 +346,179 @@ pub struct WallpaperOutput {
     pub color: Option<[f32; 4]>,
 }
 
+/// `#rrggbbaa` as straight-alpha floats, for a `const` default.
+const fn rgba8(r: u8, g: u8, b: u8, a: u8) -> [f32; 4] {
+    [
+        r as f32 / 255.0,
+        g as f32 / 255.0,
+        b as f32 / 255.0,
+        a as f32 / 255.0,
+    ]
+}
+
+/// Lowest `annotations.panel-tint` alpha. A lighter tint lets a white page
+/// show through the panel and the white body text on it stops being legible,
+/// so a lower alpha is raised to this rather than refused.
+pub const PANEL_TINT_MIN_ALPHA: f32 = 0.5;
+
+/// `annotations { … }`: every colour the compositor's annotation HUD and
+/// region selector draw with (COMP-18 §1.3; owner decision 6, "every Oracle
+/// Eyes colour is user-settable"). The compositor owns them; the add-on
+/// supplies only text and geometry and cannot restyle anything. Straight
+/// alpha, each written `#rrggbb` or `#rrggbbaa`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AnnotationColors {
+    /// The pick tab, the pick rim, the selector band and the live taskbar eye.
+    pub accent: [f32; 4],
+    /// The pick letter inside the panel.
+    pub accent_text: [f32; 4],
+    /// Title and body text.
+    pub text: [f32; 4],
+    /// Panel fill over the blurred backdrop. Alpha never below
+    /// [`PANEL_TINT_MIN_ALPHA`].
+    pub panel_tint: [f32; 4],
+    /// The panel's 1px rim.
+    pub panel_rim: [f32; 4],
+    /// The rule between title and body.
+    pub hairline: [f32; 4],
+    /// The rounded rim around the region an annotation is about.
+    pub region_outline: [f32; 4],
+    /// The line from the panel to its region.
+    pub leader: [f32; 4],
+    /// The dim over the screen outside a region selection.
+    pub selection_dim: [f32; 4],
+    /// The error dot of an `error` annotation.
+    pub danger: [f32; 4],
+}
+
+impl AnnotationColors {
+    pub const DEFAULT: AnnotationColors = AnnotationColors {
+        accent: rgba8(0xf2, 0xc3, 0x3c, 0xff),
+        accent_text: rgba8(0xf5, 0xcf, 0x5c, 0xff),
+        text: rgba8(0xff, 0xff, 0xff, 0xff),
+        panel_tint: rgba8(0x17, 0x14, 0x0f, 0xb8),
+        panel_rim: rgba8(0xff, 0xff, 0xff, 0x1f),
+        hairline: rgba8(0xff, 0xff, 0xff, 0x0f),
+        region_outline: rgba8(0xff, 0xff, 0xff, 0x38),
+        leader: rgba8(0xff, 0xff, 0xff, 0x47),
+        selection_dim: rgba8(0x0b, 0x09, 0x06, 0x66),
+        danger: rgba8(0xe0, 0x55, 0x3f, 0xff),
+    };
+
+    /// The field a key inside `annotations { }` names, or `None` for an
+    /// unknown key.
+    fn slot_mut(&mut self, key: &str) -> Option<&mut [f32; 4]> {
+        Some(match key {
+            "accent" => &mut self.accent,
+            "accent-text" => &mut self.accent_text,
+            "text" => &mut self.text,
+            "panel-tint" => &mut self.panel_tint,
+            "panel-rim" => &mut self.panel_rim,
+            "hairline" => &mut self.hairline,
+            "region-outline" => &mut self.region_outline,
+            "leader" => &mut self.leader,
+            "selection-dim" => &mut self.selection_dim,
+            "danger" => &mut self.danger,
+            _ => return None,
+        })
+    }
+}
+
+impl Default for AnnotationColors {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// `oracle-eyes.model-command` default: the program alone. The daemon always
+/// appends its locked flags itself (oracle-eyes spec §3.4: tools disabled,
+/// one turn, the answer schema), so nothing here can turn them off. Approved
+/// by virtue of shipping; any other command waits for the owner (ADR 0067's
+/// withhold path, `ec-abyss`'s `config::withhold`).
+pub const ORACLE_EYES_MODEL_COMMAND: &[&str] = &["claude"];
+
+/// `oracle-eyes { … }`: the Oracle Eyes add-on's settings (ADR 0066). They live
+/// in `abyss.kdl` so Settings can edit them (COMP-17 §3); abyss only stores
+/// and serves them over `get_config`, and the daemon reads them from there.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OracleEyes {
+    /// The model command, argv. Always `Some` from the parser; `None` on the
+    /// live config only while the command is withheld awaiting the owner's
+    /// approval, so `get_config` never serves an unapproved command.
+    pub model_command: Option<Vec<String>>,
+    /// Ceiling on one model call.
+    pub timeout_ms: u32,
+    /// Automatic mode: least time between two queries.
+    pub auto_interval_ms: u32,
+    /// Least time an answer stays on screen.
+    pub hold_ms: u32,
+    /// Debug mode: the taskbar eye turns red and shows in captures.
+    pub debug: bool,
+    /// `oracle-eyes { bind { … } }`: chords for the annotation actions.
+    pub bind: OracleEyesBinds,
+}
+
+/// `oracle-eyes { bind { select "Super+A"; dismiss …; expand …; auto-toggle … } }`.
+/// Same grammar as `launcher.bind`; each one is a default bind for its
+/// `annotation-*` action, so a `bind` block on the same chord wins. None is
+/// bound unless set (`none`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct OracleEyesBinds {
+    pub select: LauncherChord,
+    pub dismiss: LauncherChord,
+    pub expand: LauncherChord,
+    pub auto_toggle: LauncherChord,
+}
+
+impl Default for OracleEyesBinds {
+    fn default() -> Self {
+        Self {
+            select: LauncherChord::new("none"),
+            dismiss: LauncherChord::new("none"),
+            expand: LauncherChord::new("none"),
+            auto_toggle: LauncherChord::new("none"),
+        }
+    }
+}
+
+/// The `oracle-eyes.bind.*` chords as default binds for their actions.
+pub fn oracle_eyes_binds(oe: &OracleEyes) -> Vec<Bind> {
+    let b = &oe.bind;
+    [
+        (&b.select, Action::AnnotationSelect),
+        (&b.dismiss, Action::AnnotationDismiss),
+        (&b.expand, Action::AnnotationExpand),
+        (&b.auto_toggle, Action::AnnotationAutoToggle),
+    ]
+    .into_iter()
+    .filter_map(|(c, action)| c.chord.map(|(mods, key)| Bind { mods, key, action }))
+    .collect()
+}
+
+/// `oracle-eyes.*` integer ranges: `(min, max)`, the same in the schema
+/// and the parser.
+pub const ORACLE_EYES_TIMEOUT_MS: (u32, u32) = (1000, 300_000);
+pub const ORACLE_EYES_AUTO_INTERVAL_MS: (u32, u32) = (1000, 600_000);
+pub const ORACLE_EYES_HOLD_MS: (u32, u32) = (500, 60_000);
+
+impl Default for OracleEyes {
+    fn default() -> Self {
+        Self {
+            model_command: Some(
+                ORACLE_EYES_MODEL_COMMAND
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect(),
+            ),
+            timeout_ms: 30_000,
+            auto_interval_ms: 3000,
+            hold_ms: 4000,
+            debug: false,
+            bind: OracleEyesBinds::default(),
+        }
+    }
+}
+
 /// One validated key of a `wallpaper` block or its `output` child.
 enum WallpaperKey {
     Path(String),
@@ -598,6 +771,9 @@ pub struct LauncherSearch {
     pub terminal_apps: bool,
     /// Match the query against an entry's `Comment` too.
     pub match_descriptions: bool,
+    /// Rank applications the human launches often first, and remember
+    /// launches (a count and a time per desktop id, never the query).
+    pub frecency: bool,
 }
 
 impl Default for LauncherSearch {
@@ -606,6 +782,7 @@ impl Default for LauncherSearch {
             path_binaries: false,
             terminal_apps: true,
             match_descriptions: false,
+            frecency: true,
         }
     }
 }
@@ -655,6 +832,23 @@ pub struct Ui {
 impl Default for Ui {
     fn default() -> Self {
         Self { show_key_hints: true }
+    }
+}
+
+/// `settings { search { frecency } }`: the settings app's own preferences.
+/// Stored only; the app reads them over `get_config`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingsApp {
+    /// Nudge search results the human has opened before up among near ties,
+    /// and remember which results were opened (a path each, never the query).
+    pub search_frecency: bool,
+}
+
+impl Default for SettingsApp {
+    fn default() -> Self {
+        Self {
+            search_frecency: true,
+        }
     }
 }
 
@@ -1620,9 +1814,12 @@ pub struct Config {
     pub setup: Setup,
     pub launcher: Launcher,
     pub ui: Ui,
+    pub settings: SettingsApp,
     pub mode: Mode,
     pub components: Components,
     pub wallpaper: Wallpaper,
+    pub annotations: AnnotationColors,
+    pub oracle_eyes: OracleEyes,
     pub input: Input,
     pub binds: Vec<Bind>,
     /// Touchpad swipe bindings, one per `(fingers, direction)`: the defaults
@@ -1686,9 +1883,12 @@ impl Default for Config {
             setup: Setup::default(),
             launcher: Launcher::default(),
             ui: Ui::default(),
+            settings: SettingsApp::default(),
             mode: Mode::Hybrid,
             components: Components::default(),
             wallpaper: Wallpaper::default(),
+            annotations: AnnotationColors::default(),
+            oracle_eyes: OracleEyes::default(),
             input: Input::default(),
             binds: default_binds(),
             gesture_binds: default_gesture_binds(),
@@ -2185,7 +2385,9 @@ impl Config {
             cfg.apply(&doc, &mut binds_from_file);
             cfg.cur = None;
         }
-        cfg.binds = merge_binds(defaults_with_launcher(&cfg.launcher), binds_from_file);
+        let mut defaults = oracle_eyes_binds(&cfg.oracle_eyes);
+        defaults.extend(defaults_with_launcher(&cfg.launcher));
+        cfg.binds = merge_binds(defaults, binds_from_file);
         if !any {
             tracing::info!("no config found, using built-in defaults");
         } else {
@@ -2503,6 +2705,7 @@ impl Config {
                 "bar" => self.apply_bar(node, launcher_style_set),
                 "launcher" => self.apply_launcher(node),
                 "ui" => self.apply_ui(node),
+                "settings" => self.apply_settings(node),
                 "clipboard" => self.apply_clipboard(node),
                 "capture" => self.apply_capture(node),
                 "xwayland" => self.apply_xwayland(node),
@@ -2523,6 +2726,8 @@ impl Config {
                 },
                 "components" => self.apply_components(node),
                 "wallpaper" => self.apply_wallpaper(node),
+                "annotations" => self.apply_annotations(node),
+                "oracle-eyes" => self.apply_oracle_eyes(node),
                 "input" => self.apply_input(node),
                 "output" => self.apply_output(node),
                 "decoration" => self.apply_decoration(node),
@@ -4139,6 +4344,93 @@ impl Config {
         }
     }
 
+    /// `annotations { accent "#f2c33c"; panel-tint "#17140fcc"; … }`. A bad
+    /// colour is refused and that key keeps its value. `panel-tint` alpha is
+    /// raised to [`PANEL_TINT_MIN_ALPHA`], not refused: the text on the panel
+    /// is white, and on a white page a thinner tint leaves it unreadable.
+    fn apply_annotations(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let name = n.name().value();
+            if self.annotations.slot_mut(name).is_none() {
+                self.unknown_key(n, "annotations", "annotations key");
+                continue;
+            }
+            match arg(n).and_then(KdlValue::as_string).and_then(parse_color) {
+                Some(c) => {
+                    if let Some(slot) = self.annotations.slot_mut(name) {
+                        *slot = c;
+                    }
+                }
+                None => self.reject(
+                    n,
+                    format!("bad color for \"annotations {name}\"; expected \"#rrggbb\" or \"#rrggbbaa\""),
+                ),
+            }
+        }
+        let tint = &mut self.annotations.panel_tint[3];
+        *tint = tint.max(PANEL_TINT_MIN_ALPHA);
+    }
+
+    /// `oracle-eyes { model-command "claude"; timeout-ms 30000; … }`. A bad
+    /// value is refused and that key keeps its value. Whether the model
+    /// command may run is not decided here: `ec-abyss` withholds one that
+    /// is neither the default nor approved (ADR 0067's path).
+    fn apply_oracle_eyes(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "model-command" => {
+                    let argv: Option<Vec<String>> = n
+                        .entries()
+                        .iter()
+                        .map(|e| {
+                            e.name()
+                                .is_none()
+                                .then(|| e.value().as_string().map(str::to_owned))
+                                .flatten()
+                        })
+                        .collect();
+                    match argv {
+                        Some(argv) if argv.first().is_some_and(|a| !a.trim().is_empty()) => {
+                            self.oracle_eyes.model_command = Some(argv)
+                        }
+                        _ => self.reject(
+                            n,
+                            "oracle-eyes model-command takes the program and its arguments as strings, \
+                             e.g. model-command \"claude\"",
+                        ),
+                    }
+                }
+                "timeout-ms" => {
+                    let (lo, hi) = ORACLE_EYES_TIMEOUT_MS;
+                    if let Some(v) = self.int_in(n, lo, hi) {
+                        self.oracle_eyes.timeout_ms = v;
+                    }
+                }
+                "auto-interval-ms" => {
+                    let (lo, hi) = ORACLE_EYES_AUTO_INTERVAL_MS;
+                    if let Some(v) = self.int_in(n, lo, hi) {
+                        self.oracle_eyes.auto_interval_ms = v;
+                    }
+                }
+                "hold-ms" => {
+                    let (lo, hi) = ORACLE_EYES_HOLD_MS;
+                    if let Some(v) = self.int_in(n, lo, hi) {
+                        self.oracle_eyes.hold_ms = v;
+                    }
+                }
+                "debug" => {
+                    if let Some(b) = self.flag(n) {
+                        self.oracle_eyes.debug = b;
+                    }
+                }
+                "bind" => self.apply_oracle_eyes_bind(n),
+                _ => self.unknown_key(n, "oracle-eyes", "oracle-eyes key"),
+            }
+        }
+    }
+
     fn apply_wallpaper(&mut self, node: &KdlNode) {
         let Some(children) = node.children() else { return };
         for n in children.nodes() {
@@ -4321,7 +4613,10 @@ impl Config {
         let Some(children) = node.children() else { return };
         for n in children.nodes() {
             let name = n.name().value();
-            if !matches!(name, "path-binaries" | "terminal-apps" | "match-descriptions") {
+            if !matches!(
+                name,
+                "path-binaries" | "terminal-apps" | "match-descriptions" | "frecency"
+            ) {
                 self.unknown_key(n, "launcher.search", "launcher search key");
                 continue;
             }
@@ -4338,7 +4633,45 @@ impl Config {
             match name {
                 "path-binaries" => search.path_binaries = value,
                 "terminal-apps" => search.terminal_apps = value,
+                "frecency" => search.frecency = value,
                 _ => search.match_descriptions = value,
+            }
+        }
+    }
+
+    fn apply_oracle_eyes_bind(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let name = n.name().value();
+            if !matches!(name, "select" | "dismiss" | "expand" | "auto-toggle") {
+                self.unknown_key(n, "oracle-eyes.bind", "oracle-eyes bind key");
+                continue;
+            }
+            let Some(text) = arg(n).and_then(KdlValue::as_string) else {
+                self.reject(
+                    n,
+                    format!("oracle-eyes bind {name} must be a chord string like \"Super+A\" or \"none\""),
+                );
+                continue;
+            };
+            match parse_chord(text) {
+                Ok(chord) => {
+                    let parsed = LauncherChord {
+                        text: text.to_owned(),
+                        chord,
+                    };
+                    let b = &mut self.oracle_eyes.bind;
+                    match name {
+                        "select" => b.select = parsed,
+                        "dismiss" => b.dismiss = parsed,
+                        "expand" => b.expand = parsed,
+                        _ => b.auto_toggle = parsed,
+                    }
+                }
+                Err(e) => {
+                    let message = format!("oracle-eyes bind {name}: {e}");
+                    self.reject(n, message);
+                }
             }
         }
     }
@@ -4388,6 +4721,27 @@ impl Config {
                     Some(None) => self.reject(n, "ui show-key-hints expects #true or #false"),
                 },
                 _ => self.unknown_key(n, "ui", "ui key"),
+            }
+        }
+    }
+
+    fn apply_settings(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            if n.name().value() != "search" {
+                self.unknown_key(n, "settings", "settings key");
+                continue;
+            }
+            let Some(inner) = n.children() else { continue };
+            for k in inner.nodes() {
+                match k.name().value() {
+                    "frecency" => match arg(k).map(KdlValue::as_bool) {
+                        None => self.settings.search_frecency = true,
+                        Some(Some(b)) => self.settings.search_frecency = b,
+                        Some(None) => self.reject(k, "settings search frecency expects #true or #false"),
+                    },
+                    _ => self.unknown_key(k, "settings.search", "settings search key"),
+                }
             }
         }
     }
@@ -5492,7 +5846,9 @@ pub(crate) mod tests {
         assert!(!d.launcher.search.path_binaries);
         assert!(d.launcher.search.terminal_apps);
         assert!(!d.launcher.search.match_descriptions);
+        assert!(d.launcher.search.frecency);
         assert!(d.ui.show_key_hints);
+        assert!(d.settings.search_frecency);
 
         let c = cfg(concat!(
             "launcher {\n",
@@ -5511,6 +5867,10 @@ pub(crate) mod tests {
         assert!(!c.launcher.search.terminal_apps);
         assert!(c.launcher.search.match_descriptions);
         assert!(!c.ui.show_key_hints);
+
+        let c = cfg("settings { search { frecency #false; } }\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert!(!c.settings.search_frecency);
 
         let c = cfg("launcher { centered { width 20; anchor \"left\"; }; menu { max-rows 99; } }\n");
         assert_eq!(c.errors.len(), 3, "{:?}", c.errors);
@@ -6155,6 +6515,148 @@ pub(crate) mod tests {
         assert_eq!(cfg.errors.len(), 6, "{:?}", cfg.errors);
         assert_eq!(cfg.decoration.blur.glass, GlassBlur::default());
         assert_eq!(cfg.decoration.blur.frost, FrostBlur::default());
+    }
+
+    #[test]
+    fn annotation_colours_parse_and_bad_ones_keep_defaults() {
+        let cfg = parse_single_for_tests(
+            "annotations {\n  accent \"#112233\"\n  danger \"#ff000080\"\n  selection-dim \"#00000099\"\n}\n",
+        );
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        let a = &cfg.annotations;
+        assert_eq!(a.accent, rgba8(0x11, 0x22, 0x33, 0xff));
+        assert_eq!(a.danger, rgba8(0xff, 0, 0, 0x80));
+        assert_eq!(a.selection_dim, rgba8(0, 0, 0, 0x99));
+        assert_eq!(a.text, AnnotationColors::DEFAULT.text);
+
+        let cfg =
+            parse_single_for_tests("annotations {\n  accent \"gold\"\n  accnet \"#112233\"\n  text 7\n}\n");
+        assert_eq!(cfg.errors.len(), 3, "{:?}", cfg.errors);
+        assert!(cfg.errors[1].to_string().contains("accnet"), "{:?}", cfg.errors);
+        assert_eq!(cfg.annotations, AnnotationColors::DEFAULT);
+    }
+
+    #[test]
+    fn annotation_panel_tint_alpha_is_raised_to_the_floor() {
+        let cfg = parse_single_for_tests("annotations { panel-tint \"#ffffff10\"; }\n");
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        let t = cfg.annotations.panel_tint;
+        assert_eq!(t[..3], [1.0, 1.0, 1.0]);
+        assert_eq!(t[3], PANEL_TINT_MIN_ALPHA);
+        let cfg = parse_single_for_tests("annotations { panel-tint \"#000000e0\"; }\n");
+        assert_eq!(cfg.annotations.panel_tint[3], 0xe0 as f32 / 255.0);
+        const { assert!(AnnotationColors::DEFAULT.panel_tint[3] >= PANEL_TINT_MIN_ALPHA) };
+    }
+
+    #[test]
+    fn oracle_eyes_parses_and_bad_values_keep_defaults() {
+        let cfg = parse_single_for_tests(
+            "oracle-eyes {\n  model-command \"claude\" \"--model\" \"haiku\"\n  timeout-ms 45000\n  \
+             auto-interval-ms 5000\n  hold-ms 6000\n  debug #true\n}\n",
+        );
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(
+            cfg.oracle_eyes,
+            OracleEyes {
+                model_command: Some(vec!["claude".into(), "--model".into(), "haiku".into()]),
+                timeout_ms: 45_000,
+                auto_interval_ms: 5000,
+                hold_ms: 6000,
+                debug: true,
+                bind: OracleEyesBinds::default(),
+            }
+        );
+
+        let cfg = parse_single_for_tests(
+            "oracle-eyes {\n  model-command\n  timeout-ms 10\n  auto-interval-ms \"3s\"\n  hold-ms 999999\n  \
+             debug \"yes\"\n  colour \"red\"\n}\n",
+        );
+        assert_eq!(cfg.errors.len(), 6, "{:?}", cfg.errors);
+        assert_eq!(cfg.oracle_eyes, OracleEyes::default());
+
+        for bad in [
+            "oracle-eyes { model-command \"\"; }",
+            "oracle-eyes { model-command \"claude\" 3; }",
+            "oracle-eyes { model-command \"claude\" flag=\"x\"; }",
+        ] {
+            let cfg = parse_single_for_tests(bad);
+            assert_eq!(cfg.errors.len(), 1, "{bad}: {:?}", cfg.errors);
+            assert_eq!(cfg.oracle_eyes, OracleEyes::default(), "{bad}");
+        }
+    }
+
+    /// Settings writes these through `edit` and reads them back through
+    /// `schema::get`: both ends name the same thing, and the file stays one
+    /// block per section.
+    #[test]
+    fn oracle_eyes_binds_become_default_binds() {
+        let c = Config::default();
+        assert!(
+            oracle_eyes_binds(&c.oracle_eyes).is_empty(),
+            "nothing bound by default"
+        );
+        let c = parse_single_for_tests(
+            "oracle-eyes { bind { select \"Super+Shift+A\"; dismiss \"Super+Shift+D\"; \
+             expand \"none\"; auto-toggle \"Super+Shift+T\"; } }",
+        );
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        let binds = oracle_eyes_binds(&c.oracle_eyes);
+        assert_eq!(binds.len(), 3);
+        assert_eq!(binds[0].action, Action::AnnotationSelect);
+        assert_eq!(binds[0].key, Keysym::a);
+        assert_eq!(binds[2].action, Action::AnnotationAutoToggle);
+        assert_eq!(c.oracle_eyes.bind.expand.text, "none");
+
+        let c = parse_single_for_tests(
+            "oracle-eyes { bind { select \"Super+Escape\"; frob \"x\"; dismiss 3; } }",
+        );
+        assert_eq!(c.errors.len(), 3, "{:?}", c.errors);
+        assert_eq!(c.oracle_eyes.bind, OracleEyesBinds::default());
+    }
+
+    #[test]
+    fn annotation_and_oracle_eyes_edits_round_trip() {
+        let text = edit::set_value("", "annotations.leader", &KdlValue::String("#12345678".into())).unwrap();
+        let text = edit::set_value(
+            &text,
+            "annotations.panel-tint",
+            &KdlValue::String("#00000020".into()),
+        )
+        .unwrap();
+        let text = edit::set_value(&text, "oracle-eyes.hold-ms", &KdlValue::Integer(7000)).unwrap();
+        let text = edit::set_value(&text, "oracle-eyes.debug", &KdlValue::Bool(true)).unwrap();
+        let argv = [KdlValue::String("ollama".into()), KdlValue::String("run".into())];
+        let text = edit::set_list(&text, "oracle-eyes.model-command", &argv).unwrap();
+        let text = edit::set_value(&text, "annotations.accent", &KdlValue::String("#abcdef".into())).unwrap();
+        assert_eq!(text.matches("annotations").count(), 1, "{text}");
+        assert_eq!(text.matches("oracle-eyes").count(), 1, "{text}");
+
+        let cfg = parse_single_for_tests(&text);
+        assert!(cfg.errors.is_empty(), "{text}\n{:?}", cfg.errors);
+        use schema::Value as V;
+        assert_eq!(
+            schema::get(&cfg, "annotations.leader"),
+            Some(V::Color(rgba8(0x12, 0x34, 0x56, 0x78)))
+        );
+        assert_eq!(
+            schema::get(&cfg, "annotations.accent"),
+            Some(V::Color(rgba8(0xab, 0xcd, 0xef, 0xff)))
+        );
+        assert_eq!(
+            schema::get(&cfg, "annotations.panel-tint"),
+            Some(V::Color([0.0, 0.0, 0.0, PANEL_TINT_MIN_ALPHA]))
+        );
+        assert_eq!(schema::get(&cfg, "oracle-eyes.hold-ms"), Some(V::Int(7000)));
+        assert_eq!(schema::get(&cfg, "oracle-eyes.debug"), Some(V::Bool(true)));
+        assert_eq!(
+            schema::get(&cfg, "oracle-eyes.model-command"),
+            Some(V::List(vec!["ollama".into(), "run".into()]))
+        );
+
+        // A withheld command reads as unset, never as its argv.
+        let mut cfg = cfg;
+        cfg.oracle_eyes.model_command = None;
+        assert_eq!(schema::get(&cfg, "oracle-eyes.model-command"), Some(V::Null));
     }
 
     #[test]

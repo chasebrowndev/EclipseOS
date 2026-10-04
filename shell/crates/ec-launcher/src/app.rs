@@ -10,6 +10,7 @@ use iced::{Subscription, Task};
 use iced_layershell::to_layer_message;
 
 use ec_services::apps::{self, Entry};
+use ec_services::frecency::{self, Store};
 
 /// The filter field. Named so the boot task can put the cursor in it before
 /// the human has typed anything.
@@ -70,6 +71,9 @@ pub struct App {
     pub anchor: crate::conn::Anchor,
     /// `launcher.search.*`: what `entries` holds and what a query matches.
     pub search: apps::Search,
+    /// What the human has launched, read once at startup; empty with
+    /// `launcher.search.frecency` off.
+    pub usage: Store,
 }
 
 impl Default for App {
@@ -104,6 +108,11 @@ impl App {
             rows: cfg.rows,
             anchor: cfg.anchor,
             search: cfg.search,
+            usage: if cfg.search.frecency {
+                Store::load()
+            } else {
+                Store::default()
+            },
         };
         app.refilter();
         app
@@ -114,7 +123,13 @@ impl App {
     /// under the pointer does not change identity between two keystrokes that
     /// rank the same.
     fn refilter(&mut self) {
-        self.matched = apps::search(&self.entries, &self.query, &self.search);
+        self.matched = apps::search_with(
+            &self.entries,
+            &self.query,
+            &self.search,
+            &self.usage,
+            frecency::now(),
+        );
         self.selected = self.selected.min(self.matched.len().saturating_sub(1));
     }
 
@@ -176,8 +191,13 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             };
             match apps::launch(entry, app.term.as_deref()) {
                 // The application is running; the launcher has nothing left
-                // to say.
-                Ok(()) => return quit(),
+                // to say. The launch is noted first: `quit` ends the process.
+                Ok(()) => {
+                    if app.search.frecency {
+                        apps::record_launch(entry, &app.entries);
+                    }
+                    return quit();
+                }
                 Err(error) => app.problem = Some(error.to_string()),
             }
             // We are still here, so the human is still searching. A press on
@@ -259,6 +279,7 @@ mod tests {
             rows: crate::MAX_ROWS,
             anchor: crate::conn::Anchor::Center,
             search: apps::Search::default(),
+            usage: Store::default(),
         };
         app.refilter();
         app

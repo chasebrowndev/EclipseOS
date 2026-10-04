@@ -12,6 +12,8 @@
 pub mod apps;
 pub mod audio;
 pub mod custom;
+pub mod frecency;
+pub mod fuzzy;
 pub mod media;
 pub mod notifications;
 pub mod screensaver;

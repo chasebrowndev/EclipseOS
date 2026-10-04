@@ -19,6 +19,8 @@
 //! sub-pages are laid out.
 
 use crate::schema::{self, Control, Row};
+use ec_services::frecency::Store;
+use ec_services::fuzzy::{osa, subsequence, typo_budget};
 
 /// Path prefix of a hand-written entry. Its path is not a config key: it
 /// names a place in a bespoke pane (`pane:display.scale`), and the prefix is
@@ -444,6 +446,24 @@ pub const SYNONYMS: &[(&[&str], &[&str])] = &[
 /// Rank `entries` against `query`: `(score, index into entries)`, best
 /// first, at most `limit`. An empty query matches nothing.
 pub fn search(entries: &[SearchEntry], query: &str, limit: usize) -> Vec<(f32, usize)> {
+    search_with(entries, query, limit, &Store::default(), 0)
+}
+
+/// The most a frecent entry's score may be raised, as a share of itself. Kept
+/// under the smallest gap between two relevance tiers (about 11%: infix to
+/// abbreviation), so history settles near ties and never promotes a weaker
+/// reading over a clearly better one.
+const FRECENCY_BOOST: f32 = 0.05;
+
+/// `search`, with `usage` (as of unix time `at`) nudging near ties. An entry
+/// the query does not match is never listed however often it was opened.
+pub fn search_with(
+    entries: &[SearchEntry],
+    query: &str,
+    limit: usize,
+    usage: &Store,
+    at: u64,
+) -> Vec<(f32, usize)> {
     let units = expand(&words(query));
     if units.is_empty() || limit == 0 {
         return Vec::new();
@@ -463,7 +483,10 @@ pub fn search(entries: &[SearchEntry], query: &str, limit: usize) -> Vec<(f32, u
                 }
                 total += s;
             }
-            Some((total, i))
+            // Saturating in the score, so the first few opens count most.
+            let u = usage.score(&e.path, at);
+            let boost = 1.0 + FRECENCY_BOOST * (u / (u + 1.0)) as f32;
+            Some((total * boost, i))
         })
         .collect();
     hits.sort_by(|a, b| {
@@ -510,10 +533,6 @@ const SYN_LOOSE: f32 = 0.7;
 /// order says which reading wins a tie.
 const SYN_STEP: f32 = 0.05;
 const SYN_FLOOR: f32 = 0.15;
-
-/// Longest word the typo tier compares, so the edit distance runs on the
-/// stack.
-const MAX_WORD: usize = 32;
 
 /// A field, lowercased and split once at index time.
 #[derive(Debug, Clone)]
@@ -748,66 +767,6 @@ fn abbrev(term: &str, f: &Field) -> f32 {
     }
 }
 
-/// Greedy subsequence match, counting letters that land on word starts.
-/// With `prefer_starts` each letter takes the next word-start occurrence when
-/// there is one, which finds the better reading but can miss a match the
-/// plain greedy pass finds.
-fn subsequence(text: &[u8], t: &[u8], prefer_starts: bool) -> Option<usize> {
-    let at_start = |i: usize| i == 0 || text[i - 1] == b' ';
-    let mut pos = (0..text.len()).find(|&i| text[i] == t[0] && at_start(i))?;
-    let mut starts = 0;
-    for &c in t {
-        let hit = if prefer_starts {
-            (pos..text.len()).find(|&i| text[i] == c && at_start(i))
-        } else {
-            None
-        };
-        let at = hit.or_else(|| (pos..text.len()).find(|&i| text[i] == c))?;
-        starts += usize::from(at_start(at));
-        pos = at + 1;
-    }
-    Some(starts)
-}
-
-/// Edits a word of this length may carry and still match: none under four
-/// letters, one from four, two from seven.
-fn typo_budget(term: &str) -> usize {
-    match term.len() {
-        0..=3 => 0,
-        4..=6 => 1,
-        _ => 2,
-    }
-}
-
-/// Optimal-string-alignment (restricted Damerau–Levenshtein) distance:
-/// insertions, deletions, substitutions and adjacent transpositions.
-fn osa(a: &[u8], b: &[u8]) -> usize {
-    let (n, m) = (a.len(), b.len());
-    if n > MAX_WORD || m > MAX_WORD {
-        return usize::MAX;
-    }
-    let mut prev2 = [0usize; MAX_WORD + 1];
-    let mut prev = [0usize; MAX_WORD + 1];
-    let mut cur = [0usize; MAX_WORD + 1];
-    for (j, p) in prev.iter_mut().enumerate().take(m + 1) {
-        *p = j;
-    }
-    for i in 1..=n {
-        cur[0] = i;
-        for j in 1..=m {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            let mut v = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                v = v.min(prev2[j - 2] + 1);
-            }
-            cur[j] = v;
-        }
-        prev2 = prev;
-        prev = cur;
-    }
-    prev[m]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1013,6 +972,63 @@ mod tests {
         assert!(
             per < std::time::Duration::from_millis(25),
             "{per:?} per keystroke"
+        );
+    }
+
+    fn plain(path: &str, label: &str) -> SearchEntry {
+        SearchEntry::new(
+            path.into(),
+            label.into(),
+            "Windows".into(),
+            String::new(),
+            Vec::new(),
+        )
+    }
+
+    fn order(e: &[SearchEntry], q: &str, usage: &Store) -> Vec<String> {
+        search_with(e, q, 8, usage, 0)
+            .into_iter()
+            .map(|(_, i)| e[i].path.clone())
+            .collect()
+    }
+
+    #[test]
+    fn history_settles_a_near_tie() {
+        let e = [
+            plain("a.width", "Border width"),
+            plain("a.radius", "Border radius"),
+        ];
+        assert_eq!(order(&e, "border", &Store::default()), ["a.width", "a.radius"]);
+        let mut usage = Store::default();
+        usage.record_at("a.radius", 0);
+        assert_eq!(order(&e, "border", &usage), ["a.radius", "a.width"]);
+    }
+
+    #[test]
+    fn a_clearly_better_tier_beats_any_history() {
+        // "bord" is a prefix of one label and only a word prefix of the other.
+        let e = [plain("a.border", "Border"), plain("a.blue", "Blue border")];
+        let mut usage = Store::default();
+        for _ in 0..10_000 {
+            usage.record_at("a.blue", 0);
+        }
+        assert_eq!(order(&e, "bord", &usage), ["a.border", "a.blue"]);
+    }
+
+    #[test]
+    fn history_never_adds_a_non_match() {
+        let e = [plain("a.width", "Border width"), plain("a.vol", "Volume level")];
+        let mut usage = Store::default();
+        usage.record_at("a.vol", 0);
+        assert_eq!(order(&e, "border", &usage), ["a.width"]);
+    }
+
+    #[test]
+    fn the_plain_search_is_the_empty_history_search() {
+        let e = entries();
+        assert_eq!(
+            search(&e, "rounding", 8),
+            search_with(&e, "rounding", 8, &Store::default(), 0)
         );
     }
 }

@@ -233,12 +233,18 @@ fn installed<'a>(app: &App, a: &Addons) -> Element<'a, Message, Theme> {
             .spacing(space::LINE_GAP)
             .align_x(Alignment::End);
         if x.capture_requested {
-            right = right.push(
-                text("requests screen capture (granted in policy.kdl)")
-                    .font(font::UI)
-                    .size(size::BODY_SMALL)
-                    .style(theme::text_secondary),
-            );
+            // Read off policy.kdl only for the add-on this pane knows the
+            // executable of; anything else just says it asks.
+            let mut line = row![text("requests screen capture")
+                .font(font::UI)
+                .size(size::BODY_SMALL)
+                .style(theme::text_secondary)]
+            .spacing(space::CONTROL_GAP)
+            .align_y(Alignment::Center);
+            if x.id == crate::oracle::ADDON {
+                line = line.push(mono(app.oe_grant.as_str()));
+            }
+            right = right.push(line);
         }
         col = col.push(hairline()).push(padded(
             row![

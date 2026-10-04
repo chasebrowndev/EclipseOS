@@ -24,9 +24,17 @@ use crate::hud::Control;
 /// `None` should fall back to its old behaviour rather than guess: guessing
 /// annotates the wrong screen, which is the bug this exists to fix.
 pub fn focused_output(c: &mut impl Control) -> Option<Region> {
-    let reply = c.call("get_outputs", json!({})).ok()?;
+    let reply = match c.call("get_outputs", json!({})) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(error = %e, "focus: get_outputs failed");
+            return None;
+        }
+    };
     let rows = reply.as_array()?;
-    rows.iter().filter(|o| focused(o)).find_map(rect_of)
+    let found = rows.iter().filter(|o| focused(o)).find_map(rect_of);
+    tracing::debug!(outputs = rows.len(), focused = ?found, "focus: resolved");
+    found
 }
 
 fn focused(o: &Value) -> bool {

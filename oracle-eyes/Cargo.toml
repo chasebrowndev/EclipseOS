@@ -30,6 +30,8 @@ regex = { version = "1", default-features = false, features = [
   "perf",
   "unicode-case",
 ] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 

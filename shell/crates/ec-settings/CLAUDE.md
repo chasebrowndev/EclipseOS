@@ -10,8 +10,11 @@ Read the root `CLAUDE.md` first. Governing spec: COMP-17 §3 (DP-5).
   the compositor grows a key this app cannot render — the only way to pass
   without rendering it is to add the key to `ci/gui-coverage-exceptions.txt`,
   and that file only ever shrinks.
-- **No persistent state of its own.** Window size and the selected pane are
-  not remembered. `abyss.kdl` is the only state there is.
+- **No persistent state of its own, bar search history.** Window size and the
+  selected pane are not remembered. `abyss.kdl` is the only config state. The one
+  exception is `settings-usage.json` in `$XDG_STATE_HOME/eclipse/` (frecency for
+  search results: config path, count, last-used; never query text), gated by
+  `settings.search.frecency` and cleared from the Settings pane.
 - **Scoped to `abyss.kdl`.** Policy-owned keys are shown, read-only, with the
   "edit requires the policy editor" affordance — never writable by any path in
   this app. `policy.kdl` belongs to B6.

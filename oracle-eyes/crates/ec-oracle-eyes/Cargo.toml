@@ -16,3 +16,5 @@ kdl.workspace = true
 regex.workspace = true
 wayland-client.workspace = true
 wayland-protocols.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

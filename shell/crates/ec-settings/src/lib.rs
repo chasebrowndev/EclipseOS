@@ -17,6 +17,7 @@ pub mod bar_preview;
 pub mod conn;
 pub mod editor;
 pub mod network;
+pub mod oracle;
 pub mod output;
 pub mod pane;
 pub mod portal;
