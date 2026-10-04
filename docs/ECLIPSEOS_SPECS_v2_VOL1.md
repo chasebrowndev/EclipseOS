@@ -2668,7 +2668,7 @@ inactive opacity 1.0.
 | Glow *(added C-11)* | The shadow's ~~pixel shader~~ *(C-14)* original single-ring pixel shader (not the dropped two-layer one), tinted with the window's border colour (following its focus crossfade) and scaled by `strength`; reaches a fixed 24 logical px, drawn only outside the bordered rect, below the border and surface; `active` / `inactive` gate it per focus state | Cheap; expands damage |
 | Dim inactive | Colour multiply in the surface pass | Negligible |
 | Blur | Dual-Kawase downsample/upsample, N passes on the region behind translucent surfaces | Expensive; expands damage by kernel radius; disables direct scanout; skipped entirely when the blurred surface is opaque |
-| Animations | ~~Interpolated geometry~~ *(C-18)* Per-event transitions (offset, scale, alpha; add-on transition shaders, ADR 0071) driven by the frame clock; leaving and closing windows drawn as ghosts | Forces repaint while running; must not extend past the animation; idle keeps direct scanout |
+| Animations | ~~Interpolated geometry~~ *(C-18)* Per-event transitions (offset, scale, alpha; add-on transition shaders, ADR 0073) driven by the frame clock; leaving and closing windows drawn as ghosts | Forces repaint while running; must not extend past the animation; idle keeps direct scanout |
 
 *(added C-01, 2026-09-23)* Blur applies only behind a translucent surface.
 A toplevel is translucent when its alpha (`active-opacity` /
@@ -2707,7 +2707,7 @@ damage expansion grows by its maximum refraction offset.
 
 ~~Animations are geometry-only in v1.~~ *(C-18)* Animations are render-only:
 the shell maps at target geometry and the transition exists only in the
-composited frame (ADR 0071); ghosts of leaving or closed windows are never
+composited frame (ADR 0073); ghosts of leaving or closed windows are never
 listed, hit-tested or captured, and `capture.rs` never reads animation state.
 **They must not affect what an agent
 sees**: `scene`/`get_tree` geometry reports the *target* geometry, not the
@@ -7358,7 +7358,7 @@ against source before it was written. Nothing was renumbered.
 | C-15 | COMP-02 §9 | *(2026-09-29, owner ruling)* In glass mode the window border is a glass bezel: `border-size` is its width and the border colours tint its rim light (gold on focus). The bar's own margins follow `gaps-out`, so screen→bar matches windows→screen; the tiling area is unchanged (a window still shrinks by exactly the exclusive zone, as wlcs asserts) | yes |
 | C-16 | COMP-02 §9 | *(2026-09-29, owner ruling)* Glass is the shipped look: `decoration.blur.mode` defaults to `glass`, the shadow ships on (`range` 16), `rounding` 9, `border-size` 1, the active border a translucent gold `#f2c33c73` and the inactive one a faint white hairline `#ffffff1a` (the bezel's rim, C-15). Gaps ship as `gaps-in` 5, `gaps-out` 3, `gaps-in-vertical` 3, `gaps-out-vertical` 7; the vertical keys are set rather than mirroring, and still mirror when unset | yes |
 | C-17 | COMP-02 §9 | *(2026-09-30, owner ruling)* A layer surface anchored to all four edges and spanning its output gets no backdrop: it is a scrim or a selection overlay (slurp), not a sheet, and glass behind it smears the whole output it asks the human to read | yes |
-| C-18 | COMP-02 §9, §11; COMP-13 §1.1; COMP-14 §6 | *(2026-10-04, owner ruling)* Animations ship on: `animations { preset "smooth" }`, with per-event styles and presets `off`/`subtle`/`smooth`/`lively` (ADR 0071). Animations are render-only rather than geometry-only (offset, scale, alpha, add-on transition shaders); closing and leaving windows are drawn as ghosts that are never listed, hit-tested or captured. Amends C-01's "animations off" | yes |
+| C-18 | COMP-02 §9, §11; COMP-13 §1.1; COMP-14 §6 | *(2026-10-04, owner ruling)* Animations ship on: `animations { preset "smooth" }`, with per-event styles and presets `off`/`subtle`/`smooth`/`lively` (ADR 0073). Animations are render-only rather than geometry-only (offset, scale, alpha, add-on transition shaders); closing and leaving windows are drawn as ghosts that are never listed, hit-tested or captured. Amends C-01's "animations off" | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing

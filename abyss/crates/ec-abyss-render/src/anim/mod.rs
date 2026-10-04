@@ -182,7 +182,7 @@ pub struct AnimStore<W = Window> {
     /// frame (and every output of it) agrees.
     now: Instant,
     running: bool,
-    /// Add-on transition shaders (ADR 0071): the installed styles and their
+    /// Add-on transition shaders (ADR 0073): the installed styles and their
     /// compiled programs. Empty while the `transition-shaders` hook is off.
     pub shaders: ShaderRegistry,
 }

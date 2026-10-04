@@ -203,7 +203,7 @@ package_eclipseos-fog() {
 
 package_eclipseos-anim-pack() {
   pkgdesc="EclipseOS animation pack: shader window transitions for abyss"
-  # Data only (ADR 0071): style files and GLSL bodies abyss compiles itself.
+  # Data only (ADR 0073): style files and GLSL bodies abyss compiles itself.
   # Not in eclipseos-meta; installing it is what turns the hook on.
   arch=(any)
   depends=(eclipseos-abyss)
