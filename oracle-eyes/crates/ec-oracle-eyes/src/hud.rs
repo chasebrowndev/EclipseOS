@@ -9,6 +9,9 @@
 
 use serde_json::{json, Value};
 
+use crate::fault::Failure;
+use crate::logsafe::log_safe;
+
 /// The four methods COMP-18 §3 grants this daemon, behind a trait so the
 /// display logic is testable without a running compositor.
 pub trait Control {
@@ -19,6 +22,41 @@ impl Control for ec_ipc::Client {
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         ec_ipc::Client::call(self, method, params).map_err(|e| e.to_string())
     }
+}
+
+/// Every call to the compositor, logged on its way out. Panel text came off
+/// the model, which saw redacted screen text, but it goes through
+/// [`log_safe`] all the same.
+fn traced(c: &mut impl Control, method: &str, params: Value) -> Result<Value, String> {
+    if tracing::enabled!(tracing::Level::DEBUG) {
+        let int = |k: &str| params.get(k).and_then(Value::as_i64);
+        let text = |k: &str| {
+            params
+                .get(k)
+                .and_then(Value::as_str)
+                .map(log_safe)
+                .unwrap_or_default()
+        };
+        let id = params.get("id").and_then(Value::as_u64);
+        let pick = params.get("pick").map(|p| log_safe(&p.to_string()));
+        tracing::debug!(
+            method,
+            id,
+            x = int("x"),
+            y = int("y"),
+            w = int("w"),
+            h = int("h"),
+            title = %text("title"),
+            text = %text("text"),
+            pick,
+            "hud: send"
+        );
+    }
+    let r = c.call(method, params);
+    if let Err(e) = &r {
+        tracing::debug!(method, error = %e, "hud: call failed");
+    }
+    r
 }
 
 /// A rectangle in compositor-logical coordinates: what the answer is about.
@@ -53,6 +91,15 @@ pub struct Pick {
     pub h: i32,
 }
 
+/// Whether a panel is an answer or a failure (`kind` on the wire). The
+/// compositor marks a failure as one; how is its business.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PanelKind {
+    #[default]
+    Answer,
+    Error,
+}
+
 /// What goes in the panel. `title` is the headline, drawn as the panel's
 /// header; empty means a body-only panel. Styling is the compositor's.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -60,16 +107,19 @@ pub struct Panel {
     pub title: String,
     pub text: String,
     pub pick: Option<Pick>,
+    pub kind: PanelKind,
 }
 
 impl Panel {
-    /// A panel that says something went wrong. The compositor decides what
-    /// that looks like; we only say it is one.
-    pub fn failure(why: &str) -> Panel {
+    /// A panel that says something went wrong: a fixed title and the one
+    /// sentence for its class. The failure's detail is for the log, never
+    /// the screen.
+    pub fn failure(f: &Failure) -> Panel {
         Panel {
-            title: "no answer".to_string(),
-            text: why.to_string(),
+            title: "Couldn't answer".to_string(),
+            text: f.fault.sentence().to_string(),
             pick: None,
+            kind: PanelKind::Error,
         }
     }
 
@@ -77,6 +127,10 @@ impl Panel {
         let mut p = json!({"text": self.text});
         if !self.title.is_empty() {
             p["title"] = json!(self.title);
+        }
+        // `answer` is the default, so only the exception is spelled out.
+        if self.kind == PanelKind::Error {
+            p["kind"] = json!("error");
         }
         p
     }
@@ -87,11 +141,12 @@ impl Panel {
 /// that is a change here and nowhere else.
 #[derive(Debug, Default)]
 pub struct Hud {
-    /// The live handle and the region it was created against. The anchor is
-    /// kept because `annotation_update` carries text only: a panel can be
-    /// re-worded in place but never moved, so an answer about somewhere else
-    /// has to be a new panel.
-    live: Option<(u64, Anchor, Option<Pick>)>,
+    /// The live handle and what it was created with. The anchor is kept
+    /// because `annotation_update` carries text only: a panel can be
+    /// re-worded in place but never moved, re-marked or turned from an
+    /// answer into a failure, so any of those has to be a new panel.
+    /// `None` as the anchor is an unanchored panel.
+    live: Option<(u64, Option<Anchor>, Option<Pick>, PanelKind)>,
 }
 
 impl Hud {
@@ -102,7 +157,7 @@ impl Hud {
     /// The handle currently on screen, if any.
     #[cfg(test)]
     pub fn live(&self) -> Option<u64> {
-        self.live.as_ref().map(|(id, _, _)| *id)
+        self.live.as_ref().map(|(id, ..)| *id)
     }
 
     /// Show `panel` at `anchor`, replacing whatever was there. An answer
@@ -110,47 +165,52 @@ impl Hud {
     /// which keeps the panel from blinking between two answers about one
     /// thing; anything else gets a fresh panel, because `annotation_update`
     /// carries text only and a panel that stayed put would be pointing at the
-    /// wrong thing.
+    /// wrong thing. With no anchor the rect is left out and the compositor
+    /// places the panel itself (unanchored).
     pub fn show(
         &mut self,
         c: &mut impl Control,
-        anchor: Anchor,
+        anchor: Option<Anchor>,
         panel: &Panel,
     ) -> Result<u64, String> {
         match self.live.take() {
-            Some((id, at, pick)) if at == anchor && pick == panel.pick => {
+            Some((id, at, pick, kind))
+                if at == anchor && pick == panel.pick && kind == panel.kind =>
+            {
                 let mut p = panel.params();
                 p["id"] = json!(id);
-                if c.call("annotation_update", p).is_ok() {
-                    self.live = Some((id, at, pick));
+                if traced(c, "annotation_update", p).is_ok() {
+                    self.live = Some((id, at, pick, kind));
                     return Ok(id);
                 }
                 // The compositor forgot it — we disconnected, or it
                 // restarted. Fall through and create a fresh one rather than
                 // going blind.
             }
-            Some((id, _, _)) => {
+            Some((id, ..)) => {
                 // Moving is destroy-then-create. A failure here is not fatal:
                 // the compositor evicts on its own and a stale panel is worse
                 // than a duplicate call.
-                let _ = c.call("annotation_destroy", json!({"id": id}));
+                let _ = traced(c, "annotation_destroy", json!({"id": id}));
             }
             None => {}
         }
         let mut p = panel.params();
-        p["x"] = json!(anchor.x);
-        p["y"] = json!(anchor.y);
-        p["w"] = json!(anchor.w);
-        p["h"] = json!(anchor.h);
+        if let Some(a) = anchor {
+            p["x"] = json!(a.x);
+            p["y"] = json!(a.y);
+            p["w"] = json!(a.w);
+            p["h"] = json!(a.h);
+        }
         if let Some(k) = &panel.pick {
             p["pick"] = json!({"x": k.x, "y": k.y, "w": k.w, "h": k.h, "label": k.label});
         }
-        let reply = c.call("annotation_create", p)?;
+        let reply = traced(c, "annotation_create", p)?;
         let id = reply
             .get("id")
             .and_then(Value::as_u64)
             .ok_or_else(|| format!("annotation_create returned no handle: {reply}"))?;
-        self.live = Some((id, anchor, panel.pick.clone()));
+        self.live = Some((id, anchor, panel.pick.clone(), panel.kind));
         Ok(id)
     }
 
@@ -158,7 +218,7 @@ impl Hud {
     /// because the chord is the user's and they may press it any time.
     pub fn dismiss(&mut self, c: &mut impl Control) -> Result<(), String> {
         self.live = None;
-        c.call("annotation_clear", json!({})).map(|_| ())
+        traced(c, "annotation_clear", json!({})).map(|_| ())
     }
 }
 
@@ -227,8 +287,8 @@ mod tests {
     fn a_second_answer_replaces_the_first_in_place() {
         let mut c = Fake::default();
         let mut hud = Hud::new();
-        let first = hud.show(&mut c, A, &p("one")).unwrap();
-        let second = hud.show(&mut c, A, &p("two")).unwrap();
+        let first = hud.show(&mut c, Some(A), &p("one")).unwrap();
+        let second = hud.show(&mut c, Some(A), &p("two")).unwrap();
         assert_eq!(first, second, "the panel should not blink between answers");
         assert_eq!(c.seen, ["annotation_create", "annotation_update"]);
     }
@@ -237,14 +297,14 @@ mod tests {
     fn an_answer_about_somewhere_else_moves_rather_than_staying_put() {
         let mut c = Fake::default();
         let mut hud = Hud::new();
-        let first = hud.show(&mut c, A, &p("one")).unwrap();
+        let first = hud.show(&mut c, Some(A), &p("one")).unwrap();
         let elsewhere = Anchor {
             x: 900,
             y: 600,
             w: 100,
             h: 40,
         };
-        let second = hud.show(&mut c, elsewhere, &p("two")).unwrap();
+        let second = hud.show(&mut c, Some(elsewhere), &p("two")).unwrap();
         assert_ne!(first, second, "a moved panel is a new panel");
         assert_eq!(
             c.seen,
@@ -261,10 +321,10 @@ mod tests {
     fn a_forgotten_handle_is_recreated_not_lost() {
         let mut c = Fake::default();
         let mut hud = Hud::new();
-        hud.show(&mut c, A, &p("one")).unwrap();
+        hud.show(&mut c, Some(A), &p("one")).unwrap();
         // The compositor restarted: it no longer knows the handle.
         c.known.clear();
-        hud.show(&mut c, A, &p("two")).unwrap();
+        hud.show(&mut c, Some(A), &p("two")).unwrap();
         assert_eq!(
             c.seen,
             [
@@ -280,7 +340,7 @@ mod tests {
     fn a_different_pick_is_a_new_panel_and_is_sent() {
         let mut c = Fake::default();
         let mut hud = Hud::new();
-        hud.show(&mut c, A, &p("one")).unwrap();
+        hud.show(&mut c, Some(A), &p("one")).unwrap();
         let picked = Panel {
             title: "Jupiter".into(),
             text: "".into(),
@@ -291,8 +351,9 @@ mod tests {
                 w: 60,
                 h: 10,
             }),
+            ..Panel::default()
         };
-        hud.show(&mut c, A, &picked).unwrap();
+        hud.show(&mut c, Some(A), &picked).unwrap();
         assert_eq!(
             c.seen,
             [
@@ -310,8 +371,50 @@ mod tests {
     fn an_empty_title_is_not_sent() {
         let mut c = Fake::default();
         let mut hud = Hud::new();
-        hud.show(&mut c, A, &p("x")).unwrap();
+        hud.show(&mut c, Some(A), &p("x")).unwrap();
         assert!(c.last.unwrap().get("title").is_none());
+    }
+
+    #[test]
+    fn a_failure_is_an_error_panel_with_its_sentence_and_no_detail() {
+        use crate::fault::{Failure, Fault};
+        let mut c = Fake::default();
+        let mut hud = Hud::new();
+        let f = Failure::new(
+            Fault::Command,
+            "could not run /home/u/bin/claude: No such file",
+        );
+        hud.show(&mut c, None, &Panel::failure(&f)).unwrap();
+        let sent = c.last.clone().unwrap();
+        assert_eq!(sent["kind"], "error");
+        assert_eq!(sent["title"], "Couldn't answer");
+        assert_eq!(sent["text"], Fault::Command.sentence());
+        assert!(
+            !sent.to_string().contains("/home/u/bin"),
+            "no path on screen"
+        );
+        for k in ["x", "y", "w", "h"] {
+            assert!(sent.get(k).is_none(), "unanchored: no {k}");
+        }
+    }
+
+    #[test]
+    fn an_answer_does_not_say_its_kind_and_a_kind_change_is_a_new_panel() {
+        use crate::fault::{Failure, Fault};
+        let mut c = Fake::default();
+        let mut hud = Hud::new();
+        hud.show(&mut c, Some(A), &p("one")).unwrap();
+        assert!(c.last.clone().unwrap().get("kind").is_none());
+        let f = Panel::failure(&Failure::new(Fault::Timeout, "x"));
+        hud.show(&mut c, Some(A), &f).unwrap();
+        assert_eq!(
+            c.seen,
+            [
+                "annotation_create",
+                "annotation_destroy",
+                "annotation_create"
+            ]
+        );
     }
 
     #[test]
@@ -326,9 +429,9 @@ mod tests {
     fn dismiss_forgets_the_handle_so_the_next_answer_is_a_fresh_panel() {
         let mut c = Fake::default();
         let mut hud = Hud::new();
-        hud.show(&mut c, A, &p("one")).unwrap();
+        hud.show(&mut c, Some(A), &p("one")).unwrap();
         hud.dismiss(&mut c).unwrap();
-        hud.show(&mut c, A, &p("two")).unwrap();
+        hud.show(&mut c, Some(A), &p("two")).unwrap();
         assert_eq!(
             c.seen,
             ["annotation_create", "annotation_clear", "annotation_create"]
