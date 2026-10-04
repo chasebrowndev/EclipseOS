@@ -867,8 +867,11 @@ mod tests {
 
     #[test]
     fn off_snaps_every_leg_of_a_card() {
-        let legs = card_legs(&Animations::default());
-        assert!(legs.iter().all(|l| l.motion.snaps()));
+        let off = Animations {
+            preset: Preset::Off,
+            ..Animations::default()
+        };
+        assert!(card_legs(&off).iter().all(|l| l.motion.snaps()));
         let smooth = Animations {
             preset: Preset::Smooth,
             ..Animations::default()
