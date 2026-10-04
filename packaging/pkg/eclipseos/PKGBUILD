@@ -11,7 +11,7 @@
 
 pkgbase=eclipseos
 pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-wallpaper eclipseos-center
-         eclipseos-launcher eclipseos-desktop eclipseos-agents eclipseos-setup eclipseos-fog eclipseos-meta)
+         eclipseos-launcher eclipseos-desktop eclipseos-agents eclipseos-setup eclipseos-fog eclipseos-anim-pack eclipseos-meta)
 pkgver=0.1.1
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
@@ -199,6 +199,19 @@ package_eclipseos-fog() {
   # so the default never names an app that is not installed.
   install -Dm0644 "$srcdir/$_src/packaging/etc/abyss-mimeapps.list" \
     "$pkgdir/etc/xdg/abyss-mimeapps.list"
+}
+
+package_eclipseos-anim-pack() {
+  pkgdesc="EclipseOS animation pack: shader window transitions for abyss"
+  # Data only (ADR 0071): style files and GLSL bodies abyss compiles itself.
+  # Not in eclipseos-meta; installing it is what turns the hook on.
+  arch=(any)
+  depends=(eclipseos-abyss)
+
+  install -Dm0644 "$srcdir/$_src/packaging/addons/anim-pack.kdl" \
+    "$pkgdir/usr/share/eclipse/addons/anim-pack.kdl"
+  install -Dm0644 -t "$pkgdir/usr/share/eclipse/transitions/anim-pack" \
+    "$srcdir/$_src"/packaging/transitions/anim-pack/*.{kdl,frag}
 }
 
 package_eclipseos-meta() {

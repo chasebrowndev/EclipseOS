@@ -345,6 +345,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(d);
     }
 
+    /// The eclipseos-anim-pack styles in `packaging/transitions/` pass the same
+    /// checks abyss runs on the installed copy.
+    #[test]
+    fn the_shipped_anim_pack_loads() {
+        let d = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../packaging/transitions");
+        let cat = load_from(&d);
+        assert!(cat.rejected.is_empty(), "{:?}", cat.rejected);
+        let mut ids: Vec<&str> = cat.styles.iter().map(|s| s.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            [
+                "anim-pack:embers",
+                "anim-pack:genie",
+                "anim-pack:materialize",
+                "anim-pack:shatter"
+            ]
+        );
+        assert!(cat.styles.iter().all(|s| s.events.iter().all(|&e| s.serves(e))));
+    }
+
     #[test]
     fn a_missing_root_is_an_empty_catalog() {
         let d = std::env::temp_dir().join(format!("abyss-transitions-absent-{}", std::process::id()));
