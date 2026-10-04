@@ -323,9 +323,24 @@ fn resolve<'a>(text: &str, doc: &'a KdlDocument, parts: &[&str]) -> Resolved<'a>
     // indentation from its last child so the new line sits with its siblings;
     // an empty block has no child, so its braces are the anchor instead.
     let (empty_block, insert_at, indent) = match (cur.nodes().last(), parent) {
-        (Some(last), _) => {
+        (Some(last), _) if tail_is_trivial(text, node_range(text, last).1) => {
             let end = line_end(text, last);
             (None, end, leading_indent(text, last.span().offset()))
+        }
+        // The last child shares its line with the block's `}` (`animations {
+        // preset "smooth"; }`): its line end is outside the block, so break
+        // the line right after the child (and its `;`) instead.
+        (Some(last), _) => {
+            let e = node_range(text, last).1;
+            let after = text[e..].trim_start_matches([' ', '\t']);
+            let at = match after.strip_prefix(';') {
+                Some(_) => text.len() - after.len() + 1,
+                None => e,
+            };
+            let indent = parent.map_or_else(String::new, |p| {
+                format!("{}    ", leading_indent(text, p.span().offset()))
+            });
+            (None, at, indent)
         }
         (None, Some(block)) => (Some(block), 0, String::new()),
         (None, None) => (None, text.len(), String::new()),
@@ -886,6 +901,19 @@ misc {
         let out = set_value(FIXTURE, "misc.vfr", &KdlValue::Bool(true)).unwrap();
         assert!(out.contains("    vrr 1\n    vfr #true\n}"), "{out}");
         out.parse::<KdlDocument>().unwrap();
+    }
+
+    #[test]
+    fn inserts_inside_a_one_line_block() {
+        let text = "animations { preset \"smooth\"; }\n";
+        let v = KdlValue::String("morph".into());
+        let out = set_value(text, "animations.window-move.style", &v).unwrap();
+        assert_eq!(
+            out,
+            "animations { preset \"smooth\";\n    window-move {\n        style morph\n    }\n }\n"
+        );
+        let doc: KdlDocument = out.parse().unwrap();
+        assert_eq!(doc.nodes().len(), 1, "{out}");
     }
 
     #[test]
