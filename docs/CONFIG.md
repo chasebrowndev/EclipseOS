@@ -116,7 +116,7 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `bar.widgets.volume.max-percent` | int 100..150 | `100` | live | Highest volume the Volume widget's slider and scroll reach. Above 100 boosts past the output's nominal level. |
 | `bar.motion.enabled` | bool | `#true` | live | Animate the taskbar's chips and widgets to their new place, width and opacity. Off snaps. |
 | `bar.motion.duration-ms` | int 0..2000 | `220` | live | How long a taskbar movement takes; with `spring`, roughly how long the spring takes to settle. Zero snaps. |
-| `bar.motion.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring | `"spring"` | live | Curve for taskbar movement: one of the `animations` easings, or `spring`, which carries its speed through an interrupted move instead of jumping. |
+| `bar.motion.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | `"spring"` | live | Curve for taskbar movement: one of the `animations` curves. `spring` carries its speed through an interrupted move instead of jumping. |
 
 ### `decoration`
 
@@ -145,16 +145,83 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
-| `animations.enabled` | bool | `#false` | live | Master switch for geometry animations. |
+| `animations.preset` | off \| subtle \| smooth \| lively | `"off"` | live | Animation preset: `off`, `subtle` (short fades), `smooth` (springs, about 200-250ms) or `lively` (bounce, a little slower). Each event's own keys below override it. |
+| `animations.speed` | float 0.25..4 | `1` | live | Speed multiplier: every animation's duration is divided by it. |
+| `animations.reduce-motion` | bool | `#false` | live | Replace motion with a short fade (at most 100ms), or with nothing for window moves and workspace changes. |
+| `animations.window-open.style` | string | _unset_ | live | Style for a window opening: `pop`, `fade`, `slide`, `zoom`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.window-open.duration-ms` | int 0..10000 | _unset_ | live | Duration of a window opening, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.window-open.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for a window opening. Unset follows the preset. |
+| `animations.window-close.style` | string | _unset_ | live | Style for a window closing: `pop`, `fade`, `slide`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.window-close.duration-ms` | int 0..10000 | _unset_ | live | Duration of a window closing, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.window-close.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for a window closing. Unset follows the preset. |
+| `animations.window-move.style` | string | _unset_ | live | Style for a window moving or resizing to its new place: `glide`, `morph`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.window-move.duration-ms` | int 0..10000 | _unset_ | live | Duration of a window moving or resizing to its new place, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.window-move.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for a window moving or resizing to its new place. Unset follows the preset. |
+| `animations.workspace-switch.style` | string | _unset_ | live | Style for switching workspace: `slide`, `slide-vertical`, `fade`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.workspace-switch.duration-ms` | int 0..10000 | _unset_ | live | Duration of switching workspace, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.workspace-switch.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for switching workspace. Unset follows the preset. |
+| `animations.window-to-workspace.style` | string | _unset_ | live | Style for a window sent to another workspace: `carry`, `fade`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.window-to-workspace.duration-ms` | int 0..10000 | _unset_ | live | Duration of a window sent to another workspace, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.window-to-workspace.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for a window sent to another workspace. Unset follows the preset. |
+| `animations.minimize.style` | string | _unset_ | live | Style for a window minimizing to the taskbar: `shrink`, `fade`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.minimize.duration-ms` | int 0..10000 | _unset_ | live | Duration of a window minimizing to the taskbar, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.minimize.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for a window minimizing to the taskbar. Unset follows the preset. |
+| `animations.unminimize.style` | string | _unset_ | live | Style for a window restoring from the taskbar: `shrink`, `fade`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.unminimize.duration-ms` | int 0..10000 | _unset_ | live | Duration of a window restoring from the taskbar, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.unminimize.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for a window restoring from the taskbar. Unset follows the preset. |
+| `animations.fullscreen.style` | string | _unset_ | live | Style for a window entering or leaving fullscreen: `morph`, `fade`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.fullscreen.duration-ms` | int 0..10000 | _unset_ | live | Duration of a window entering or leaving fullscreen, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.fullscreen.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for a window entering or leaving fullscreen. Unset follows the preset. |
+| `animations.layer-open.style` | string | _unset_ | live | Style for a panel (layer surface) opening: `slide`, `fade`, `pop`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.layer-open.duration-ms` | int 0..10000 | _unset_ | live | Duration of a panel (layer surface) opening, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.layer-open.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for a panel (layer surface) opening. Unset follows the preset. |
+| `animations.layer-close.style` | string | _unset_ | live | Style for a panel (layer surface) closing: `slide`, `fade`, `pop`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.layer-close.duration-ms` | int 0..10000 | _unset_ | live | Duration of a panel (layer surface) closing, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.layer-close.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for a panel (layer surface) closing. Unset follows the preset. |
+| `animations.focus.style` | string | _unset_ | live | Style for a border changing colour as focus moves: `crossfade`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.focus.duration-ms` | int 0..10000 | _unset_ | live | Duration of a border changing colour as focus moves, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.focus.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for a border changing colour as focus moves. Unset follows the preset. |
+| `animations.chip-add.style` | string | _unset_ | live | Style for a taskbar chip appearing: `grow`, `fade`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.chip-add.duration-ms` | int 0..10000 | _unset_ | live | Duration of a taskbar chip appearing, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.chip-add.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for a taskbar chip appearing. Unset follows the preset. |
+| `animations.chip-remove.style` | string | _unset_ | live | Style for a taskbar chip leaving: `grow`, `fade`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.chip-remove.duration-ms` | int 0..10000 | _unset_ | live | Duration of a taskbar chip leaving, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.chip-remove.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for a taskbar chip leaving. Unset follows the preset. |
+| `animations.bar-layout.style` | string | _unset_ | live | Style for taskbar chips and widgets moving to their new place: `glide`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.bar-layout.duration-ms` | int 0..10000 | _unset_ | live | Duration of taskbar chips and widgets moving to their new place, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.bar-layout.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for taskbar chips and widgets moving to their new place. Unset follows the preset. |
+| `animations.toast.style` | string | _unset_ | live | Style for a notification toast arriving or leaving: `slide`, `fade`, `none`, or an add-on style `pack:style`. Unset follows the preset. |
+| `animations.toast.duration-ms` | int 0..10000 | _unset_ | live | Duration of a notification toast arriving or leaving, in ms before `speed`; 0 is off. Unset follows the preset. |
+| `animations.toast.curve` | linear \| ease-in \| ease-out \| ease-in-out \| spring \| bounce | _unset_ | live | Curve for a notification toast arriving or leaving. Unset follows the preset. |
 
-Each animation is off until named in an `animation` node inside `animations { }`, and `animations.enabled` gates them all: `animation "<name>" duration=… curve=…`. `duration` is milliseconds, as an integer or a string with a unit (`"150ms"`, `"2s"`), at most 10s, default `150`; a longer one drops the node. `curve` is one of `linear`, `ease-in`, `ease-out`, `ease-in-out`, default `ease-out`.
+Every event resolves the same way: the preset's row, then any field its block sets (`<event> { style …; duration-ms …; curve …; }`), then `duration-ms / speed` rounded, then `reduce-motion`. A field left out keeps the preset's value, and a block may sit in any config file: fields merge key by key down the search path. A bad child drops its whole block. `style "none"` or `duration-ms 0` is no animation. `duration-ms` is at most 10s. `curve` is one of `linear`, `ease-in`, `ease-out`, `ease-in-out`, `spring`, `bounce`. A style is one of the event's own (below) or an add-on style `pack:style`; one this build does not know falls back to the event's first style. `reduce-motion` turns movement (`window-move`, `workspace-switch`, `window-to-workspace`) off, makes every event that offers `fade` a fade of at most 100ms, `ease-out`, and turns the rest off. Animations are drawn only: a window is always mapped, focused and clickable at its final place, so input never lands on an in-between position (COMP-02 §9).
+
+| event | styles | `off` | `subtle` | `smooth` | `lively` |
+| --- | --- | --- | --- | --- | --- |
+| `window-open` | `pop`, `fade`, `slide`, `zoom`, `none` | none | fade 120ms ease-out | pop 220ms spring | zoom 320ms bounce |
+| `window-close` | `pop`, `fade`, `slide`, `none` | none | fade 120ms ease-out | pop 180ms ease-out | pop 216ms ease-out |
+| `window-move` | `glide`, `morph`, `none` | none | glide 120ms ease-out | glide 220ms spring | morph 280ms bounce |
+| `workspace-switch` | `slide`, `slide-vertical`, `fade`, `none` | none | fade 150ms ease-out | slide 250ms spring | slide 300ms bounce |
+| `window-to-workspace` | `carry`, `fade`, `none` | none | fade 150ms ease-out | carry 250ms spring | carry 300ms spring |
+| `minimize` | `shrink`, `fade`, `none` | none | fade 120ms ease-out | shrink 220ms ease-in-out | shrink 264ms ease-in-out |
+| `unminimize` | `shrink`, `fade`, `none` | none | fade 120ms ease-out | shrink 220ms ease-in-out | shrink 264ms ease-in-out |
+| `fullscreen` | `morph`, `fade`, `none` | none | fade 120ms ease-out | morph 220ms spring | morph 264ms spring |
+| `layer-open` | `slide`, `fade`, `pop`, `none` | none | fade 120ms ease-out | slide 200ms ease-out | slide 240ms ease-out |
+| `layer-close` | `slide`, `fade`, `pop`, `none` | none | fade 120ms ease-out | slide 160ms ease-out | slide 192ms ease-out |
+| `focus` | `crossfade`, `none` | none | crossfade 120ms ease-out | crossfade 150ms ease-out | crossfade 180ms ease-out |
+| `chip-add` | `grow`, `fade`, `none` | none | fade 120ms ease-out | grow 220ms spring | grow 280ms bounce |
+| `chip-remove` | `grow`, `fade`, `none` | none | fade 120ms ease-out | grow 220ms spring | grow 280ms bounce |
+| `bar-layout` | `glide`, `none` | none | glide 120ms ease-out | glide 220ms spring | glide 264ms spring |
+| `toast` | `slide`, `fade`, `none` | none | fade 120ms ease-out | slide 220ms spring | slide 280ms bounce |
+
+Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #false` is `preset "off"` (unless the block names a preset); with `enabled #true`, each `animation "<name>" duration=… curve=…` is a block for its event with the style below, `duration` as milliseconds (an integer or `"150ms"`, `"2s"`, default `150`) and `curve` one of `linear`, `ease-in`, `ease-out`, `ease-in-out` (default `ease-out`). Without `enabled #true` they do nothing. Writing `animations.preset` removes them. `migrate` also adds a `bar-layout` block for a written `bar.motion`, which stays.
 
 | name | example | what it does |
 | --- | --- | --- |
-| `windows` | `animation "windows" duration="150ms" curve="ease-out"` | A tiled or floating window sliding to its new position. |
-| `workspaces` | `animation "workspaces" duration=200` | The arriving workspace's windows sliding in from the side the switch came from. |
-| `fade` | `animation "fade" duration="1s" curve="linear"` | A newly mapped window fading in from zero alpha. |
-| `border` | `animation "border" curve="ease-in-out"` | A border crossfading between its active and inactive colour when focus changes. |
+| `windows` | `animation "windows" duration="150ms" curve="ease-out"` | `window-move` with style `glide`. |
+| `workspaces` | `animation "workspaces" duration=200` | `workspace-switch` with style `slide`. |
+| `fade` | `animation "fade" duration="1s" curve="linear"` | `window-open` with style `fade`. |
+| `border` | `animation "border" curve="ease-in-out"` | `focus` with style `crossfade`. |
 
 ### `xwayland`
 

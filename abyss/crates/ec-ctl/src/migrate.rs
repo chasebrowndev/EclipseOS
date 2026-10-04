@@ -2,7 +2,8 @@
 //! `ec-ctl config migrate` — split a legacy single `abyss.kdl` into the
 //! two files COMP-13 §1.3 expects: `abyss.kdl` and `policy.kdl`. It also
 //! moves the built-in applet ids out of `bar.tray` into `bar.widgets.order`
-//! (ADR 0065; see [`migrate_widgets`]).
+//! (ADR 0065; see [`migrate_widgets`]), and rewrites the legacy animation
+//! forms as presets and per-event blocks (see [`migrate_animations`]).
 //!
 //! Three things make this local file surgery rather than an RPC:
 //!
@@ -62,6 +63,30 @@ const BAR_WIDGET_DEFAULT_ORDER: &[&str] = &[
     "tray",
     "clock",
 ];
+
+/// `ec_abyss_config::schema::LEGACY_ANIMATION_MAP`: legacy `animation` name
+/// -> (event, style). Mirrored; pinned by `tests/schema_drift.rs`.
+const LEGACY_ANIMATION_MAP: &[(&str, &str, &str)] = &[
+    ("windows", "window-move", "glide"),
+    ("workspaces", "workspace-switch", "slide"),
+    ("fade", "window-open", "fade"),
+    ("border", "focus", "crossfade"),
+];
+
+/// `schema::EASING_CURVES`: the only curves a legacy `animation` took.
+const EASING_CURVES: &[&str] = &["linear", "ease-in", "ease-out", "ease-in-out"];
+
+/// `schema::ANIMATION_CURVES`: what `bar.motion.curve` and an event's
+/// `curve` take.
+const ANIMATION_CURVES: &[&str] = &["linear", "ease-in", "ease-out", "ease-in-out", "spring", "bounce"];
+
+/// `schema::{ANIMATION_DEFAULT_MS, ANIMATION_DEFAULT_CURVE, ANIMATION_MAX_MS}`.
+const ANIMATION_DEFAULT_MS: u32 = 150;
+const ANIMATION_DEFAULT_CURVE: &str = "ease-out";
+const ANIMATION_MAX_MS: u32 = 10_000;
+
+/// The top of `bar.motion.duration-ms` in the schema.
+const BAR_MOTION_MAX_MS: i128 = 2000;
 
 const POLICY_HEADER: &str = "\
 // policy.kdl — the security surface (COMP-13 §1.3).
@@ -305,6 +330,266 @@ fn migrate_blur_mode(doc: &mut KdlDocument) -> bool {
     changed
 }
 
+/// Bare `enabled` means true, as the parser reads it.
+fn flag_of(n: &KdlNode) -> Option<bool> {
+    match n.entries().iter().find(|e| e.name().is_none()) {
+        None => Some(true),
+        Some(e) => e.value().as_bool(),
+    }
+}
+
+/// The legacy `duration=` grammar: an integer of ms, or `"150ms"`, `"1s"`.
+fn parse_duration_ms(v: &kdl::KdlValue) -> Option<u32> {
+    if let Some(i) = v.as_integer() {
+        return u32::try_from(i).ok();
+    }
+    let s = v.as_string()?.trim();
+    let (num, mult) = if let Some(n) = s.strip_suffix("ms") {
+        (n, 1)
+    } else if let Some(n) = s.strip_suffix('s') {
+        (n, 1000)
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 60_000)
+    } else {
+        (s, 1)
+    };
+    num.trim().parse::<u32>().ok()?.checked_mul(mult)
+}
+
+/// A legacy `animation "<name>" duration=… curve=…` as the event block it
+/// stands for: `(event, style, ms, curve)`. `None` for a node the parser
+/// refuses, which is left where it is for the human to see in the errors.
+fn legacy_animation(n: &KdlNode) -> Option<(&'static str, &'static str, u32, String)> {
+    let name = string_args(n).next()?;
+    let &(_, ev, style) = LEGACY_ANIMATION_MAP.iter().find(|(l, _, _)| *l == name)?;
+    let mut ms = ANIMATION_DEFAULT_MS;
+    let mut curve = ANIMATION_DEFAULT_CURVE.to_owned();
+    for e in n.entries() {
+        match e.name().map(|k| k.value()) {
+            None => {}
+            Some("duration") => ms = parse_duration_ms(e.value()).filter(|ms| *ms <= ANIMATION_MAX_MS)?,
+            Some("curve") => {
+                curve = e
+                    .value()
+                    .as_string()
+                    .filter(|c| EASING_CURVES.contains(c))?
+                    .to_owned()
+            }
+            Some(_) => return None,
+        }
+    }
+    Some((ev, style, ms, curve))
+}
+
+/// An event block, as parsed text: spliced rather than built so it carries
+/// ordinary formatting.
+fn event_block(ev: &str, style: Option<&str>, ms: Option<u32>, curve: Option<&str>) -> KdlNode {
+    let doc: KdlDocument = event_text(ev, style, ms, curve)
+        .parse()
+        .expect("generated node parses");
+    doc.nodes()[0].clone()
+}
+
+fn event_text(ev: &str, style: Option<&str>, ms: Option<u32>, curve: Option<&str>) -> String {
+    let mut text = format!("    {ev} {{\n");
+    if let Some(s) = style {
+        text.push_str(&format!("        style {s:?}\n"));
+    }
+    if let Some(ms) = ms {
+        text.push_str(&format!("        duration-ms {ms}\n"));
+    }
+    if let Some(c) = curve {
+        text.push_str(&format!("        curve {c:?}\n"));
+    }
+    text.push_str("    }\n");
+    text
+}
+
+/// Rewrite the legacy animation forms (COMP-02 §9 animation presets) and
+/// carry `bar.motion` over to `animations.bar-layout`. Returns whether
+/// anything changed. Per `animations` block, as the parser reads them:
+///
+/// - `enabled #false` becomes `preset "off"`, unless the block already names
+///   a preset; its `animation` nodes were inert and go.
+/// - `enabled #true` goes, and each valid `animation` node becomes the event
+///   block it stood for (`animation "windows"` -> `window-move { style
+///   "glide"; … }`, old defaults filled in), unless that event already has a
+///   block. The last node for an event wins, as it did.
+/// - `animation` nodes without `enabled #true` were inert and go.
+/// - An invalid `animation` node is left as is: the loader reports it.
+///
+/// `bar { motion { … } }` stays (the taskbar still reads it); if the human
+/// set any of it and no `bar-layout` block exists, one is added saying the
+/// same thing: `enabled` as style `glide`/`none` (unset meant on), and
+/// `duration-ms` and `curve` only where they were written.
+fn migrate_animations(doc: &mut KdlDocument) -> bool {
+    let mut changed = false;
+    let mut has_bar_layout = false;
+    for block in doc
+        .nodes_mut()
+        .iter_mut()
+        .filter(|n| n.name().value() == "animations")
+    {
+        let Some(kids) = block.children_mut().as_mut() else {
+            continue;
+        };
+        let names = |kids: &KdlDocument, name: &str| kids.nodes().iter().any(|n| n.name().value() == name);
+        let has_preset = names(kids, "preset");
+        let enabled = kids
+            .nodes()
+            .iter()
+            .rev()
+            .filter(|n| n.name().value() == "enabled")
+            .filter_map(flag_of)
+            .next();
+        let mut legacy: Vec<(usize, &'static str, &'static str, u32, String)> = Vec::new();
+        let mut inert: Vec<usize> = Vec::new();
+        for (i, n) in kids.nodes().iter().enumerate() {
+            if n.name().value() != "animation" {
+                continue;
+            }
+            if let Some((ev, style, ms, curve)) = legacy_animation(n) {
+                if enabled == Some(true) && !names(kids, ev) {
+                    legacy.retain(|l| l.1 != ev);
+                    legacy.push((i, ev, style, ms, curve));
+                } else {
+                    inert.push(i);
+                }
+            }
+        }
+        let has_enabled = names(kids, "enabled");
+        if !has_enabled && legacy.is_empty() && inert.is_empty() {
+            has_bar_layout |= names(kids, "bar-layout");
+            continue;
+        }
+        changed = true;
+
+        // Replace in place, keeping each node's leading comments.
+        let mut drop: Vec<usize> = inert;
+        for (i, n) in kids.nodes().iter().enumerate() {
+            if n.name().value() == "animation"
+                && enabled == Some(true)
+                && legacy_animation(n).is_some()
+                && !legacy.iter().any(|l| l.0 == i)
+            {
+                drop.push(i);
+            }
+        }
+        for (i, ev, style, ms, curve) in &legacy {
+            let mut node = event_block(ev, Some(style), Some(*ms), Some(curve));
+            if let (Some(old), Some(new)) = (kids.nodes()[*i].format().cloned(), node.format_mut()) {
+                new.leading = old.leading;
+            }
+            kids.nodes_mut()[*i] = node;
+        }
+        let mut off_placed = false;
+        for (i, n) in kids.nodes_mut().iter_mut().enumerate() {
+            if n.name().value() != "enabled" {
+                continue;
+            }
+            if enabled == Some(false) && !has_preset && !off_placed {
+                off_placed = true;
+                n.set_name("preset");
+                n.entries_mut().clear();
+                n.push(kdl::KdlEntry::new("off"));
+            } else {
+                drop.push(i);
+            }
+        }
+        // The newline after `{` is the first child's leading trivia; when that
+        // child goes, the next one inherits it.
+        let first_break = drop.contains(&0)
+            && kids
+                .nodes()
+                .first()
+                .and_then(|n| n.format())
+                .is_some_and(|f| f.leading.starts_with('\n'));
+        let mut i = 0;
+        kids.nodes_mut().retain(|_| {
+            i += 1;
+            !drop.contains(&(i - 1))
+        });
+        if first_break {
+            if let Some(f) = kids.nodes_mut().first_mut().and_then(|n| n.format_mut()) {
+                if !f.leading.starts_with('\n') {
+                    f.leading.insert(0, '\n');
+                }
+            }
+        }
+        has_bar_layout |= names(kids, "bar-layout");
+    }
+
+    // `bar { motion { … } }`: the last value of each key wins, as parsed.
+    let (mut on, mut ms, mut curve) = (None, None, None);
+    let mut any = false;
+    for bar in doc.nodes().iter().filter(|n| n.name().value() == "bar") {
+        for motion in bar
+            .children()
+            .map(|c| c.nodes())
+            .unwrap_or_default()
+            .iter()
+            .filter(|n| n.name().value() == "motion")
+        {
+            for k in motion.children().map(|c| c.nodes()).unwrap_or_default() {
+                let v = k.entries().iter().find(|e| e.name().is_none()).map(|e| e.value());
+                match k.name().value() {
+                    "enabled" => {
+                        if let Some(b) = flag_of(k) {
+                            on = Some(b);
+                            any = true;
+                        }
+                    }
+                    "duration-ms" => {
+                        if let Some(d) = v
+                            .and_then(kdl::KdlValue::as_integer)
+                            .filter(|d| (0..=BAR_MOTION_MAX_MS).contains(d))
+                        {
+                            ms = Some(d as u32);
+                            any = true;
+                        }
+                    }
+                    "curve" => {
+                        if let Some(c) = v
+                            .and_then(kdl::KdlValue::as_string)
+                            .filter(|c| ANIMATION_CURVES.contains(c))
+                        {
+                            curve = Some(c.to_owned());
+                            any = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if any && !has_bar_layout {
+        let style = if on.unwrap_or(true) { "glide" } else { "none" };
+        match doc
+            .nodes_mut()
+            .iter_mut()
+            .rev()
+            .find(|n| n.name().value() == "animations")
+        {
+            Some(block) => block.ensure_children().nodes_mut().push(event_block(
+                "bar-layout",
+                Some(style),
+                ms,
+                curve.as_deref(),
+            )),
+            None => {
+                let text = format!(
+                    "animations {{\n{}}}\n",
+                    event_text("bar-layout", Some(style), ms, curve.as_deref())
+                );
+                let snippet: KdlDocument = text.parse().expect("generated node parses");
+                doc.nodes_mut().extend(snippet.nodes().iter().cloned());
+            }
+        }
+        changed = true;
+    }
+    changed
+}
+
 /// Returns `(abyss.kdl, policy.kdl, moved)` as text; `moved` is whether any
 /// node went to the policy side.
 fn split(doc: &KdlDocument, existing_policy: &KdlDocument) -> (String, String, bool) {
@@ -347,10 +632,12 @@ pub fn run(dry_run: bool) -> Result<String, String> {
 
     let widgets = migrate_widgets(&mut doc);
     let blur = migrate_blur_mode(&mut doc);
+    let anims = migrate_animations(&mut doc);
     let (split_abyss, mut new_policy, moved) = split(&doc, &existing);
-    if !widgets && !blur && !moved {
+    if !widgets && !blur && !anims && !moved {
         return Ok(format!(
-            "{}: nothing to migrate — no policy settings, built-in tray ids or blur `enabled` found\n",
+            "{}: nothing to migrate — no policy settings, built-in tray ids, blur `enabled`, \
+             legacy animation forms or un-migrated bar.motion found\n",
             abyss_path.display()
         ));
     }
@@ -394,11 +681,16 @@ pub fn run(dry_run: bool) -> Result<String, String> {
     }
     write(&abyss_path, &new_abyss)?;
     if !moved {
-        let what = match (widgets, blur) {
-            (true, true) => "built-in tray ids -> bar.widgets.order, blur enabled -> blur mode",
-            (true, false) => "built-in tray ids -> bar.widgets.order",
-            _ => "decoration.blur.enabled -> decoration.blur.mode",
-        };
+        let what = [
+            (widgets, "built-in tray ids -> bar.widgets.order"),
+            (blur, "decoration.blur.enabled -> decoration.blur.mode"),
+            (anims, "legacy animations -> presets and event blocks"),
+        ]
+        .iter()
+        .filter(|(on, _)| *on)
+        .map(|(_, w)| *w)
+        .collect::<Vec<_>>()
+        .join(", ");
         return Ok(format!(
             "migrated: {} {what} (original saved as .bak)\n",
             abyss_path.display()
@@ -556,6 +848,82 @@ mod tests {
         assert!(changed);
         assert_eq!(out, "decoration {\n    blur {\n        mode glass\n    }\n}\n");
         assert!(!blur("decoration {\n    blur {\n        mode frost\n    }\n}\n").0);
+    }
+
+    fn anims(text: &str) -> (bool, String) {
+        let mut doc = parse(text);
+        let changed = migrate_animations(&mut doc);
+        let out = doc.to_string();
+        out.parse::<KdlDocument>().expect("migrated text re-parses");
+        (changed, out)
+    }
+
+    #[test]
+    fn animations_disabled_becomes_preset_off() {
+        let (changed, out) = anims(
+            "animations {\n    // no motion\n    enabled #false\n    animation \"windows\" duration=\"200ms\"\n}\n",
+        );
+        assert!(changed);
+        assert_eq!(out, "animations {\n    // no motion\n    preset off\n}\n");
+        // An existing preset is the newer word: `enabled` just goes.
+        let (_, out) = anims("animations {\n    preset \"smooth\"\n    enabled #false\n}\n");
+        assert_eq!(out, "animations {\n    preset \"smooth\"\n}\n");
+    }
+
+    #[test]
+    fn enabled_legacy_animations_become_event_blocks() {
+        let (changed, out) = anims(
+            "animations {\n    enabled #true\n    // slide\n    animation \"workspaces\" duration=\"1s\" curve=\"linear\"\n    \
+             animation \"fade\"\n    animation \"border\" duration=90\n    animation \"border\" duration=40\n}\n",
+        );
+        assert!(changed);
+        assert_eq!(
+            out,
+            "animations {\n    // slide\n    workspace-switch {\n        style \"slide\"\n        duration-ms 1000\n        \
+             curve \"linear\"\n    }\n    window-open {\n        style \"fade\"\n        duration-ms 150\n        \
+             curve \"ease-out\"\n    }\n    focus {\n        style \"crossfade\"\n        duration-ms 40\n        \
+             curve \"ease-out\"\n    }\n}\n"
+        );
+    }
+
+    #[test]
+    fn an_existing_event_block_and_bad_nodes_are_kept() {
+        let (_, out) = anims(
+            "animations {\n    enabled #true\n    focus {\n        duration-ms 10\n    }\n    animation \"border\"\n    \
+             animation \"windows\" curve=\"spring\"\n}\n",
+        );
+        assert_eq!(
+            out,
+            "animations {\n    focus {\n        duration-ms 10\n    }\n    animation \"windows\" curve=\"spring\"\n}\n"
+        );
+        // Legacy nodes without `enabled #true` were inert and go.
+        let (changed, out) = anims("animations {\n    preset \"subtle\"\n    animation \"fade\"\n}\n");
+        assert!(changed);
+        assert_eq!(out, "animations {\n    preset \"subtle\"\n}\n");
+    }
+
+    #[test]
+    fn bar_motion_is_carried_to_bar_layout_and_kept() {
+        let (changed, out) = anims("bar {\n    motion {\n        duration-ms 300\n    }\n}\n");
+        assert!(changed);
+        assert_eq!(
+            out,
+            "bar {\n    motion {\n        duration-ms 300\n    }\n}\nanimations {\n    bar-layout {\n        \
+             style \"glide\"\n        duration-ms 300\n    }\n}\n"
+        );
+        let (_, out) = anims(
+            "animations {\n    preset \"smooth\"\n}\nbar {\n    motion {\n        enabled #false\n        curve \"bounce\"\n    }\n}\n",
+        );
+        assert!(
+            out.starts_with(
+                "animations {\n    preset \"smooth\"\n    bar-layout {\n        style \"none\"\n        curve \"bounce\"\n    }\n}\n"
+            ),
+            "{out}"
+        );
+        // Once a bar-layout block exists, the migration is done.
+        let text = "animations {\n    bar-layout {\n        style \"none\"\n    }\n}\nbar {\n    motion {\n        enabled #true\n    }\n}\n";
+        assert_eq!(anims(text), (false, text.to_string()));
+        assert!(!anims("general {\n    gaps-in 5\n}\n").0);
     }
 
     #[test]

@@ -2625,7 +2625,14 @@ pub fn switch_workspace(state: &mut AbyssState, idx: usize) {
     // COMP-02 §9 `workspaces`: slide the arriving windows in from the side the
     // switch came from. There is no outgoing half — the old workspace's
     // windows were unmapped above and no longer exist for the render path.
-    if let Some(anim) = state.config.animations.get("workspaces").cloned() {
+    if let Some(anim) = Some(
+        state
+            .config
+            .animations
+            .resolve(crate::config::animations::Event::WorkspaceSwitch),
+    )
+    .filter(|r| !r.off())
+    {
         let width = state
             .outputs
             .get(id)

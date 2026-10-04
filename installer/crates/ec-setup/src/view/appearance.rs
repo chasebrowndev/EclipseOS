@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Step 11: appearance (`decoration.rounding`, `decoration.blur.mode`,
-//! `animations.enabled`, `bar.position`).
+//! `animations.preset`, `bar.position`).
 //!
 //! Hero: a small desktop that redraws as you choose, a bar strip and two
 //! tiled windows, so rounding and the bar's edge are seen rather than read.

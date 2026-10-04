@@ -46,7 +46,8 @@ enum Verdict {
 }
 
 /// The allowlist, and the whole of it: `input.kb-*`, `general.layout`,
-/// `decoration.rounding`, `decoration.blur.{mode,enabled}`, `animations.enabled|animation`,
+/// `decoration.rounding`, `decoration.blur.{mode,enabled}`, `animations.preset` (and the legacy
+/// `animations.enabled|animation`, which still load),
 /// `bar.position`, `mode`, `components.{bar,launcher,notifications,control-center}`,
 /// `setup.{complete,profile}`.
 /// Anything not named here is dropped, so a key added to the schema later (an
@@ -61,9 +62,9 @@ fn verdict(path: &[&str]) -> Verdict {
         ["general"] => Verdict::Partial,
         ["general", "layout"] => Verdict::Full,
         ["decoration"] | ["animations"] | ["bar"] | ["components"] | ["setup"] => Verdict::Partial,
-        ["decoration", "rounding"] | ["animations", "enabled" | "animation"] | ["bar", "position"] => {
-            Verdict::Full
-        }
+        ["decoration", "rounding"]
+        | ["animations", "preset" | "enabled" | "animation"]
+        | ["bar", "position"] => Verdict::Full,
         ["decoration", "blur"] => Verdict::Partial,
         ["decoration", "blur", "enabled" | "mode"] => Verdict::Full,
         ["components", "bar" | "launcher" | "notifications" | "control-center"] => Verdict::Full,
@@ -425,8 +426,7 @@ decoration {
     blur { enabled #true; mode "glass"; }
 }
 animations {
-    enabled #true
-    animation "windows" duration=150 curve="ease-out"
+    preset "smooth"
 }
 bar { position "top" }
 mode "wm"
@@ -445,8 +445,7 @@ setup { complete #true; profile "standard" }
             "decoration.rounding",
             "decoration.blur.enabled",
             "decoration.blur.mode",
-            "animations.enabled",
-            "animations.animation",
+            "animations.preset",
             "bar.position",
             "mode",
             "components.bar",
@@ -461,7 +460,7 @@ setup { complete #true; profile "standard" }
         assert_eq!(rejected, 3);
         let text = String::from_utf8(out).unwrap();
         assert!(!text.contains("SECRET-COMMENT"), "comments do not travel");
-        assert!(text.contains("duration=150"), "props survive");
+        assert!(text.contains("smooth"), "values survive");
     }
 
     #[test]

@@ -304,8 +304,9 @@ impl Choices {
     pub fn blur_value(&self) -> Value {
         json!(self.blur.id())
     }
+    /// On is the `smooth` preset, off is `off` (COMP-02 §9 presets).
     pub fn animations_value(&self) -> Value {
-        json!(self.animations)
+        json!(if self.animations { "smooth" } else { "off" })
     }
     pub fn bar_position_value(&self) -> Value {
         json!(self.bar_position.id())
@@ -320,7 +321,7 @@ pub const MODE: &str = "mode";
 pub const LAYOUT: &str = "general.layout";
 pub const ROUNDING: &str = "decoration.rounding";
 pub const BLUR: &str = "decoration.blur.mode";
-pub const ANIMATIONS: &str = "animations.enabled";
+pub const ANIMATIONS: &str = "animations.preset";
 pub const BAR_POSITION: &str = "bar.position";
 
 /// Every key the choice steps write, for the writer's allowlist.
