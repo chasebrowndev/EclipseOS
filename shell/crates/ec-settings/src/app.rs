@@ -86,6 +86,9 @@ pub enum Message {
     Browsed(String, Result<Option<std::path::PathBuf>, String>),
     Reload,
     Dismiss,
+    /// "Clear usage history": forget what the launcher and the settings
+    /// search remember about what was opened.
+    ClearUsage,
     OutputEnabled(u64, bool),
     OutputScale(u64, f64),
     OutputScaleReleased(u64),
@@ -266,12 +269,18 @@ pub struct App {
     pub(crate) addons: Option<ec_ipc::Addons>,
     /// The sidebar search: its index over `rows`, the query and its hits.
     pub(crate) search: crate::search_ui::Search,
+    /// The "Clear usage history" button's last press, and whether it worked.
+    /// Shown for `CLEARED_FOR`, then the button comes back.
+    cleared: Option<(Instant, bool)>,
     /// Oracle Eyes' capture grant, read off `policy.kdl` with the widgets.
     pub(crate) oe_grant: crate::oracle::Grant,
     /// The policy viewer this app launched, kept so it is reaped and a
     /// second click while it runs does not open a second one.
     viewer: Option<std::process::Child>,
 }
+
+/// How long "Cleared" stands in for the button.
+const CLEARED_FOR: Duration = Duration::from_millis(2500);
 
 impl Default for App {
     fn default() -> Self {
@@ -324,6 +333,7 @@ impl App {
             bar: crate::taskbar::Bar::default(),
             addons: None,
             search: crate::search_ui::Search::default(),
+            cleared: None,
             oe_grant: crate::oracle::Grant::Unread,
             viewer: None,
         };
@@ -704,6 +714,12 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 f.tick(now);
             }
             if app
+                .cleared
+                .is_some_and(|(at, ok)| ok && now.duration_since(at) >= CLEARED_FOR)
+            {
+                app.cleared = None;
+            }
+            if app
                 .flash
                 .as_ref()
                 .is_some_and(|(_, at)| now.duration_since(*at) >= REVEAL)
@@ -712,6 +728,14 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             }
         }
         Message::Dismiss => app.banner = None,
+        Message::ClearUsage => {
+            // Under test the real history is never touched.
+            let done = cfg!(test) || ec_services::frecency::clear_all().is_ok();
+            if done {
+                app.search.forget();
+            }
+            app.cleared = Some((Instant::now(), done));
+        }
         Message::OpenPolicyViewer => {
             let running = app
                 .viewer
@@ -944,7 +968,9 @@ impl App {
 
     /// Whether the sidebar or a lit row is moving, so the frame clock runs.
     fn nav_moving(&self) -> bool {
-        self.flash.is_some() || self.folds.values().any(Animated::animating)
+        self.flash.is_some()
+            || self.cleared.is_some_and(|(_, ok)| ok)
+            || self.folds.values().any(Animated::animating)
     }
 
     /// How lit row `path` is: 1 just revealed, falling to 0 over `REVEAL`.
@@ -1331,6 +1357,8 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             "mode" => crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()),
             p if p == mode_path => crate::schema::blur_blurb(current),
             "ui.show-key-hints" => Some("Keyboard hints in the launcher and start menu"),
+            "launcher.search.frecency" => Some(FRECENCY_BLURB),
+            "settings.search.frecency" => Some(FRECENCY_BLURB),
             TERMINAL_APPS => Some("Opened in the terminal command above."),
             crate::oracle::MODEL_COMMAND => Some(crate::oracle::approval_line(key)),
             "oracle-eyes.bind.select" => Some("A chord like Super+A. \"none\" leaves an action unbound."),
@@ -1387,6 +1415,19 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
         }
     }
 
+    // The history these switches govern is cleared from the page that holds
+    // either one, under the last of its rows.
+    if app
+        .rows
+        .iter()
+        .any(|k| is_frecency(&k.path) && page_of(&k.path) == Some(app.page))
+    {
+        if let Some((_, rows)) = groups.last_mut() {
+            rows.push(hairline());
+            rows.push(clear_usage_row(app.cleared));
+        }
+    }
+
     if groups.is_empty() {
         return edge_note(
             "Nothing to set here yet",
@@ -1409,6 +1450,47 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
         }
     }
     panel(app.glass_radius, col).into()
+}
+
+const FRECENCY_BLURB: &str =
+    "History stays on this device and stores no search text, only what was opened and when.";
+
+fn is_frecency(path: &str) -> bool {
+    matches!(path, "launcher.search.frecency" | "settings.search.frecency")
+}
+
+/// "Usage history" with its one action. Pressed, the button gives way to a
+/// plain "Cleared" (or the failure) for a moment: confirmed in place, no modal,
+/// since the history is only a ranking hint and rebuilds itself.
+fn clear_usage_row<'a>(cleared: Option<(Instant, bool)>) -> Element<'a, Message, Theme> {
+    let control: Element<'a, Message, Theme> = match cleared {
+        // Padded as the button is, so the row does not change height.
+        Some((_, true)) => iced::widget::container(
+            iced::widget::text("Cleared")
+                .font(ec_ui::tokens::font::UI_MEDIUM)
+                .size(ec_ui::tokens::size::BODY_SMALL)
+                .style(theme::text_secondary),
+        )
+        .padding([space::PILL_Y, space::PILL_X])
+        .into(),
+        failed => {
+            let label = if failed.is_some() {
+                "Could not clear, retry"
+            } else {
+                "Clear usage history"
+            };
+            iced::widget::button(
+                iced::widget::text(label)
+                    .font(ec_ui::tokens::font::UI_MEDIUM)
+                    .size(ec_ui::tokens::size::BODY_SMALL),
+            )
+            .padding([space::PILL_Y, space::PILL_X])
+            .on_press(Message::ClearUsage)
+            .style(theme::danger)
+            .into()
+        }
+    };
+    list_row("Usage history", control)
 }
 
 /// One setting's row: [`list_row`] in a container carrying [`row_id`], so

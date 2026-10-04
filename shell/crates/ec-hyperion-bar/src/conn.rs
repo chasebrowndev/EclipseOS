@@ -380,6 +380,11 @@ impl Conn {
                         cfg.search.match_descriptions = b;
                     }
                 }
+                Some("launcher.search.frecency") => {
+                    if let Some(b) = flag {
+                        cfg.search.frecency = b;
+                    }
+                }
                 Some("ui.show-key-hints") => {
                     if let Some(b) = flag {
                         hints = b;

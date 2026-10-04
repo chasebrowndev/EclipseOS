@@ -1216,6 +1216,16 @@ pub const TABLE: &[Key] = &[
        name and keywords.",
     ),
     k(
+        "launcher.search.frecency",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Rank the applications you launch most and most recently first, \
+       and remember launches (a count and a time per application, never \
+       what you typed).",
+    ),
+    k(
         "launcher.bind.open",
         Ty::Str,
         Str("Super+E"),
@@ -1241,6 +1251,17 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Show the keyboard control hints in the launcher and the start menu.",
+    ),
+    // settings: the settings app's own preferences
+    k(
+        "settings.search.frecency",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Nudge the settings search results you open often up among \
+       near ties, and remember which results you opened (never what \
+       you typed).",
     ),
     // misc
     k(
@@ -2071,6 +2092,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "launcher.search.path-binaries" => V::Bool(c.launcher.search.path_binaries),
         "launcher.search.terminal-apps" => V::Bool(c.launcher.search.terminal_apps),
         "launcher.search.match-descriptions" => V::Bool(c.launcher.search.match_descriptions),
+        "launcher.search.frecency" => V::Bool(c.launcher.search.frecency),
         "launcher.bind.open" => V::Str(c.launcher.bind.open.text.clone()),
         "oracle-eyes.bind.select" => V::Str(c.oracle_eyes.bind.select.text.clone()),
         "oracle-eyes.bind.dismiss" => V::Str(c.oracle_eyes.bind.dismiss.text.clone()),
@@ -2078,6 +2100,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "oracle-eyes.bind.auto-toggle" => V::Str(c.oracle_eyes.bind.auto_toggle.text.clone()),
         "launcher.bind.run" => V::Str(c.launcher.bind.run.text.clone()),
         "ui.show-key-hints" => V::Bool(c.ui.show_key_hints),
+        "settings.search.frecency" => V::Bool(c.settings.search_frecency),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.active-opacity" => V::Float(widen(c.decoration.active_opacity)),
         "decoration.inactive-opacity" => V::Float(widen(c.decoration.inactive_opacity)),

@@ -12,6 +12,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::frecency::{self, Store};
+use crate::fuzzy::{osa, subsequence, typo_budget};
+
 /// One launchable application.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
@@ -69,6 +72,11 @@ pub struct Search {
     pub terminal_apps: bool,
     /// `launcher.search.match-descriptions`: a query may match `Comment`.
     pub match_descriptions: bool,
+    /// `launcher.search.frecency`: rank what the human launches often first,
+    /// fall back to a typo/abbreviation match when nothing contains the
+    /// query, and remember launches. Off, a search is exactly the plain
+    /// substring one and nothing is recorded.
+    pub frecency: bool,
 }
 
 impl Default for Search {
@@ -77,6 +85,7 @@ impl Default for Search {
             path_binaries: false,
             terminal_apps: true,
             match_descriptions: false,
+            frecency: true,
         }
     }
 }
@@ -338,11 +347,12 @@ pub fn argv(exec: &str) -> Vec<String> {
 
 /// Does this entry answer that query?
 ///
-/// A case-insensitive substring over the name, then the keywords. Not a fuzzy
-/// matcher: a launcher that ranks by edit distance answers a three-letter
-/// query with something surprising, and the fix is always to type more, which
-/// a substring match rewards and a fuzzy one does not. A `PATH` binary only
-/// answers a typed query: an empty one lists the applications, not /usr/bin.
+/// A case-insensitive substring over the name, then the keywords. This is the
+/// strict test: it is what ranks above everything else in `search`, which
+/// only falls back to a typo or abbreviation match (`fuzzy_quality`) when
+/// nothing passes this and the query is long enough to carry a typo. A `PATH`
+/// binary only answers a typed query: an empty one lists the applications,
+/// not /usr/bin.
 pub fn matches(entry: &Entry, query: &str) -> bool {
     if query.is_empty() {
         return !is_path_binary(entry);
@@ -388,15 +398,80 @@ fn rank_lower(name: &str, query: &str) -> u8 {
 /// rank descending, a desktop entry before a `PATH` binary of the same rank,
 /// then name. The query and each name are lowercased once per search, not
 /// once per comparison. `search.match_descriptions` lets `Comment` match.
+///
+/// With no launch history; see `search_with` for the ranking the launchers use.
 pub fn search(entries: &[Entry], query: &str, search: &Search) -> Vec<usize> {
+    search_with(entries, query, search, &Store::default(), 0)
+}
+
+/// The shortest query that may fall back to a fuzzy match. Below it a typo
+/// budget is zero anyway, and an abbreviation of three letters matches
+/// nearly everything.
+const FUZZY_MIN: usize = 4;
+
+/// `search`, ranked by `usage` as of unix time `at` when `search.frecency`.
+///
+/// The match set is the substring hits. Among them: an exact name first, then
+/// `rank`, then the higher frecency score within a rank, a desktop entry before a `PATH`
+/// binary, and name. Frecency only reorders; it never adds an entry the query
+/// does not match. With no hit and a query of at least [`FUZZY_MIN`]
+/// characters, the typo/abbreviation matches stand in, ordered by
+/// frecency, then closeness, and always below any substring hit. An empty query lists the applications
+/// most-frecent first, then A to Z. With `frecency` off this is the plain
+/// substring search, byte for byte.
+pub fn search_with(entries: &[Entry], query: &str, search: &Search, usage: &Store, at: u64) -> Vec<usize> {
     let query = query.to_lowercase();
+    if !search.frecency {
+        return search_plain(entries, &query, search);
+    }
+    let names: Vec<String> = entries.iter().map(|e| e.name.to_lowercase()).collect();
+    let score = |i: usize| usage.score(&entries[i].id, at);
+    // Higher score first; `total_cmp` so a NaN could never panic a sort.
+    let by_score = |a: usize, b: usize| score(b).total_cmp(&score(a));
+    let mut hits: Vec<(u8, usize)> = (0..entries.len())
+        .filter(|&i| matches_lower(&entries[i], &names[i], &query, search.match_descriptions))
+        .map(|i| (rank_lower(&names[i], &query), i))
+        .collect();
+    if !hits.is_empty() {
+        hits.sort_by(|&(ra, a), &(rb, b)| {
+            let exact = |r: u8| !query.is_empty() && r == 3;
+            exact(rb)
+                .cmp(&exact(ra))
+                .then(rb.cmp(&ra))
+                .then_with(|| by_score(a, b))
+                .then_with(|| (!is_path_binary(&entries[b])).cmp(&!is_path_binary(&entries[a])))
+                .then_with(|| names[a].cmp(&names[b]))
+                .then_with(|| entries[a].name.cmp(&entries[b].name))
+        });
+        return hits.into_iter().map(|(_, i)| i).collect();
+    }
+    if query.chars().count() < FUZZY_MIN {
+        return Vec::new();
+    }
+    let mut fuzzy: Vec<(u8, usize)> = (0..entries.len())
+        .filter_map(|i| {
+            let q = fuzzy_quality(&names[i], &entries[i].keywords, &query);
+            (q > 0).then_some((q, i))
+        })
+        .collect();
+    fuzzy.sort_by(|&(qa, a), &(qb, b)| {
+        by_score(a, b)
+            .then(qb.cmp(&qa))
+            .then_with(|| (!is_path_binary(&entries[b])).cmp(&!is_path_binary(&entries[a])))
+            .then_with(|| names[a].cmp(&names[b]))
+    });
+    fuzzy.into_iter().map(|(_, i)| i).collect()
+}
+
+/// The substring search with no history and no fuzzy fallback.
+fn search_plain(entries: &[Entry], query: &str, search: &Search) -> Vec<usize> {
     let mut hits: Vec<(u8, bool, usize)> = entries
         .iter()
         .enumerate()
         .filter_map(|(i, e)| {
             let name = e.name.to_lowercase();
-            matches_lower(e, &name, &query, search.match_descriptions)
-                .then(|| (rank_lower(&name, &query), !is_path_binary(e), i))
+            matches_lower(e, &name, query, search.match_descriptions)
+                .then(|| (rank_lower(&name, query), !is_path_binary(e), i))
         })
         .collect();
     hits.sort_by(|a, b| {
@@ -405,6 +480,55 @@ pub fn search(entries: &[Entry], query: &str, search: &Search) -> Vec<usize> {
             .then_with(|| entries[a.2].name.cmp(&entries[b.2].name))
     });
     hits.into_iter().map(|(_, _, i)| i).collect()
+}
+
+/// How close `query` is to this (lowercased) name or one of its keywords when
+/// it is not a substring of either: 3 for one typo in a word, 2 for two, 1
+/// for the query's letters in order from a word start (an abbreviation), 0
+/// for no match. A typo is judged per word, with the edit allowance
+/// `typo_budget` gives a word of the query's length.
+fn fuzzy_quality(name: &str, keywords: &[String], query: &str) -> u8 {
+    let budget = typo_budget(query);
+    if budget > 0 {
+        let words = |text: &str| -> Vec<String> {
+            text.split(|c: char| !c.is_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .map(str::to_owned)
+                .collect()
+        };
+        let mut best = usize::MAX;
+        let mut consider = |word: &str| {
+            if word.len().abs_diff(query.len()) <= budget {
+                best = best.min(osa(query.as_bytes(), word.as_bytes()));
+            }
+        };
+        consider(name);
+        words(name).iter().for_each(|w| consider(w));
+        for k in keywords {
+            words(&k.to_lowercase()).iter().for_each(|w| consider(w));
+        }
+        if best <= budget {
+            return if best <= 1 { 3 } else { 2 };
+        }
+    }
+    let (text, q) = (name.as_bytes(), query.as_bytes());
+    if [true, false]
+        .into_iter()
+        .any(|prefer| subsequence(text, q, prefer).is_some())
+    {
+        1
+    } else {
+        0
+    }
+}
+
+/// Note that `entry` was just launched, for `search_with`'s frecency. Call it
+/// before the launcher exits, and only when `Search::frecency` is on. `entries`
+/// is the scan the launch came from; ids it no longer lists are pruned.
+/// Failure to write is dropped: history never blocks a launch.
+pub fn record_launch(entry: &Entry, entries: &[Entry]) {
+    let installed = entries.iter().map(|e| e.id.as_str()).collect();
+    frecency::record_launch(&entry.id, &installed);
 }
 
 /// Runs an entry, detached from this process.
@@ -620,5 +744,189 @@ mod tests {
         let path = search_path();
         assert!(path.iter().all(|p| p.ends_with("applications")));
         assert!(path.len() >= 2);
+    }
+
+    // --- frecency and the fuzzy fallback ---
+
+    const DAY: u64 = 86_400;
+
+    fn named(id: &str, name: &str) -> Entry {
+        Entry {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            comment: None,
+            argv: vec!["x".to_owned()],
+            terminal: false,
+            keywords: Vec::new(),
+        }
+    }
+
+    fn names(entries: &[Entry], hits: &[usize]) -> Vec<String> {
+        hits.iter().map(|&i| entries[i].name.clone()).collect()
+    }
+
+    fn found(entries: &[Entry], q: &str, usage: &Store, at: u64) -> Vec<String> {
+        names(entries, &search_with(entries, q, &Search::default(), usage, at))
+    }
+
+    #[test]
+    fn a_substring_hit_always_beats_a_fuzzy_one() {
+        let entries = vec![named("a", "Firefox"), named("b", "Fire")];
+        let mut usage = Store::default();
+        // "firefx" is a typo of Firefox and not a substring of anything.
+        for _ in 0..9 {
+            usage.record_at("a", 0);
+        }
+        assert_eq!(found(&entries, "firefx", &usage, 0), ["Firefox"]);
+        // With a real substring hit, fuzzy ones are not even listed.
+        let entries = vec![
+            named("a", "Firefox"),
+            named("b", "Firefix Pro"),
+            named("c", "Foo firefx"),
+        ];
+        assert_eq!(found(&entries, "firefx", &usage, 0), ["Foo firefx"]);
+    }
+
+    #[test]
+    fn fuzzy_finds_typos_and_abbreviations() {
+        let entries = vec![named("a", "Firefox"), named("b", "Visual Studio Code")];
+        let none = Store::default();
+        assert_eq!(found(&entries, "frefox", &none, 0), ["Firefox"]);
+        assert_eq!(found(&entries, "fierfox", &none, 0), ["Firefox"]);
+        assert_eq!(found(&entries, "vsco", &none, 0), ["Visual Studio Code"]);
+    }
+
+    #[test]
+    fn a_short_query_is_never_fuzzy() {
+        let entries = vec![named("a", "Firefox"), named("b", "Visual Studio Code")];
+        let none = Store::default();
+        for q in ["fx", "ffx", "vsc", "frf"] {
+            assert!(found(&entries, q, &none, 0).is_empty(), "{q}");
+        }
+    }
+
+    #[test]
+    fn an_exact_name_beats_frecency() {
+        let entries = vec![named("a", "Files Pro"), named("b", "Files")];
+        let mut usage = Store::default();
+        for _ in 0..20 {
+            usage.record_at("a", 0);
+        }
+        assert_eq!(found(&entries, "files", &usage, 0), ["Files", "Files Pro"]);
+    }
+
+    #[test]
+    fn frecency_reorders_matches_but_never_adds_any() {
+        let entries = vec![
+            named("a", "Terminal"),
+            named("b", "Termite"),
+            named("c", "Calculator"),
+        ];
+        let mut usage = Store::default();
+        for _ in 0..5 {
+            usage.record_at("c", 0);
+        }
+        usage.record_at("b", 0);
+        // Calculator is the most used, and still not an answer to "term".
+        assert_eq!(found(&entries, "term", &usage, 0), ["Termite", "Terminal"]);
+        // Without history the order is the plain one.
+        assert_eq!(
+            found(&entries, "term", &Store::default(), 0),
+            ["Terminal", "Termite"]
+        );
+    }
+
+    #[test]
+    fn frecency_only_reorders_within_a_rank() {
+        let entries = vec![named("a", "Editor"), named("b", "Credit"), named("c", "Writer")];
+        let mut usage = Store::default();
+        for id in ["b", "c"] {
+            usage.record_at(id, 0);
+        }
+        // A launched substring match does not leap an unlaunched prefix match.
+        assert_eq!(found(&entries, "edit", &usage, 0), ["Editor", "Credit"]);
+        // A launched keyword-only match does not outrank an unlaunched name
+        // match either.
+        let mut with_kw = vec![named("k", "Notes"), named("n", "Word")];
+        with_kw[0].keywords.push("word".to_owned());
+        usage.record_at("k", 0);
+        assert_eq!(found(&with_kw, "word", &usage, 0), ["Word", "Notes"]);
+    }
+
+    #[test]
+    fn older_use_decays_below_newer() {
+        let entries = vec![named("a", "Alpha Tool"), named("b", "Beta Tool")];
+        let mut usage = Store::default();
+        for _ in 0..3 {
+            usage.record_at("a", 0);
+        }
+        usage.record_at("b", 28 * DAY);
+        // Three launches four weeks ago are worth three quarters of one
+        // launch today; two weeks ago they were worth more than it.
+        assert_eq!(found(&entries, "tool", &usage, 14 * DAY)[0], "Alpha Tool");
+        assert_eq!(found(&entries, "tool", &usage, 28 * DAY)[0], "Beta Tool");
+    }
+
+    #[test]
+    fn an_empty_query_lists_most_frecent_then_alphabetical() {
+        let entries = vec![
+            named("a", "Alpha"),
+            named("b", "bravo"),
+            named("c", "Charlie"),
+            named("d", "Delta"),
+        ];
+        let mut usage = Store::default();
+        usage.record_at("d", 0);
+        usage.record_at("c", 0);
+        usage.record_at("c", 0);
+        assert_eq!(
+            found(&entries, "", &usage, 0),
+            ["Charlie", "Delta", "Alpha", "bravo"]
+        );
+        assert_eq!(
+            found(&entries, "", &Store::default(), 0),
+            ["Alpha", "bravo", "Charlie", "Delta"]
+        );
+        // `PATH` binaries stay out of the empty list however often used.
+        let mut with_bin = entries.clone();
+        with_bin.push(binary("zsh"));
+        usage.record_at("/usr/bin/zsh", 0);
+        assert_eq!(found(&with_bin, "", &usage, 0).len(), 4);
+    }
+
+    #[test]
+    fn a_fuzzy_tier_is_ordered_by_frecency_among_itself() {
+        let entries = vec![named("a", "Firefox"), named("b", "Firebox")];
+        let mut usage = Store::default();
+        usage.record_at("b", 0);
+        assert_eq!(found(&entries, "firexox", &usage, 0), ["Firebox", "Firefox"]);
+    }
+
+    #[test]
+    fn with_frecency_off_search_is_the_old_one() {
+        let entries = vec![
+            named("a", "Files Pro"),
+            named("b", "Files"),
+            named("c", "Firefox"),
+        ];
+        let off = Search {
+            frecency: false,
+            ..Search::default()
+        };
+        let mut usage = Store::default();
+        for _ in 0..9 {
+            usage.record_at("a", 0);
+        }
+        // History is ignored, and so is the fuzzy fallback.
+        assert_eq!(
+            names(&entries, &search_with(&entries, "fil", &off, &usage, 0)),
+            ["Files", "Files Pro"]
+        );
+        assert!(search_with(&entries, "frefox", &off, &usage, 0).is_empty());
+        assert_eq!(
+            search_with(&entries, "fil", &off, &usage, 0),
+            search(&entries, "fil", &off)
+        );
+        assert_eq!(search_with(&entries, "", &off, &usage, 0), vec![1, 0, 2]);
     }
 }

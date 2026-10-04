@@ -231,6 +231,7 @@ Each animation is off until named in an `animation` node inside `animations { }`
 | `launcher.search.path-binaries` | bool | `#false` | live | Also find the programs on PATH by name. They answer a typed query only, never the empty list. |
 | `launcher.search.terminal-apps` | bool | `#true` | live | List `Terminal=true` applications. Needs `misc.terminal-command`; without one they are never listed. |
 | `launcher.search.match-descriptions` | bool | `#false` | live | Let a query match an application's description as well as its name and keywords. |
+| `launcher.search.frecency` | bool | `#true` | live | Rank the applications you launch most and most recently first, and remember launches (a count and a time per application, never what you typed). |
 | `launcher.bind.open` | string | `"Super+E"` | live | Chord that opens the launcher, like `Super+E`; `none` unbinds it. A `bind` block on the same chord wins. |
 | `launcher.bind.run` | string | `"Super+R"` | live | Second chord that opens the launcher, like `Super+R`; `none` unbinds it. |
 
@@ -239,6 +240,12 @@ Each animation is off until named in an `animation` node inside `animations { }`
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `ui.show-key-hints` | bool | `#true` | live | Show the keyboard control hints in the launcher and the start menu. |
+
+### `settings`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `settings.search.frecency` | bool | `#true` | live | Nudge the settings search results you open often up among near ties, and remember which results you opened (never what you typed). |
 
 ### `misc`
 
