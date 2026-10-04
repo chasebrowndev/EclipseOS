@@ -174,7 +174,7 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
-| `animations.preset` | off \| subtle \| smooth \| lively | `"off"` | live | Animation preset: `off`, `subtle` (short fades), `smooth` (springs, about 200-250ms) or `lively` (bounce, a little slower). Each event's own keys below override it. |
+| `animations.preset` | off \| subtle \| smooth \| lively | `"smooth"` | live | Animation preset: `off`, `subtle` (short fades), `smooth` (springs, about 200-250ms) or `lively` (bounce, a little slower). Each event's own keys below override it. |
 | `animations.speed` | float 0.25..4 | `1` | live | Speed multiplier: every animation's duration is divided by it. |
 | `animations.reduce-motion` | bool | `#false` | live | Replace motion with a short fade (at most 100ms), or with nothing for window moves and workspace changes. |
 | `animations.window-open.style` | string | _unset_ | live | Style for a window opening: `pop`, `fade`, `slide`, `zoom`, `none`, or an add-on style `pack:style`. Unset follows the preset. |

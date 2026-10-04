@@ -34,6 +34,9 @@ impl XdgShellHandler for AbyssState {
             .into_iter()
             .find(|w| w.toplevel().map(|t| t == &surface).unwrap_or(false));
         if let Some(w) = found {
+            // A client that destroyed its toplevel without unmapping first:
+            // its textures are still held, so `window-close` can play.
+            crate::shell::anim::close(self, &w);
             crate::shell::unmap_window(self, &w);
         } else {
             crate::shell::refocus_topmost(self);

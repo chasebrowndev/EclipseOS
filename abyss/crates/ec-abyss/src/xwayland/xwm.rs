@@ -121,6 +121,9 @@ impl XwmHandler for AbyssState {
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(element) = window_for(self, &window) {
+            if !window.is_override_redirect() {
+                shell::anim::close(self, &element);
+            }
             shell::unmap_window(self, &element);
         }
         self.xwayland.unmanaged.retain(|s| *s != window);
@@ -131,6 +134,9 @@ impl XwmHandler for AbyssState {
 
     fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(element) = window_for(self, &window) {
+            if !window.is_override_redirect() {
+                shell::anim::close(self, &element);
+            }
             shell::unmap_window(self, &element);
         }
         self.xwayland.unmanaged.retain(|s| *s != window);

@@ -30,6 +30,8 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::time::Instant;
 
+use smithay::backend::renderer::gles::GlesTexture;
+use smithay::backend::renderer::ContextId;
 use smithay::desktop::space::SpaceElement;
 use smithay::desktop::{Space, Window};
 use smithay::utils::{Logical, Rectangle, Size};
@@ -85,6 +87,13 @@ fn open_from(style: &str) -> Channels {
     }
 }
 
+/// How a `window-close` style ends, as a displacement from the identity:
+/// closing mirrors opening, so `pop` shrinks to 0.92, `slide` sinks 24 px,
+/// and every style fades out.
+pub fn close_to(style: &str) -> Channels {
+    open_from(style)
+}
+
 /// One window's running tracks.
 #[derive(Debug, Default)]
 struct Tracks {
@@ -124,6 +133,10 @@ pub struct AnimStore<W = Window> {
     focused: HashMap<W, bool>,
     /// Windows that have left the space, still playing out.
     pub ghosts: Vec<Ghost<W>>,
+    /// The renderer context the last frame was drawn with, so the shell can
+    /// [`snapshot`] a closing window's textures from outside the render path.
+    /// `None` until the first frame, when nothing has a texture to keep.
+    pub context: Option<ContextId<GlesTexture>>,
     /// The clock this frame is drawn at, set by `sync`, so every query in one
     /// frame (and every output of it) agrees.
     now: Instant,
@@ -137,6 +150,7 @@ impl<W> Default for AnimStore<W> {
             targets: HashMap::new(),
             focused: HashMap::new(),
             ghosts: Vec::new(),
+            context: None,
             now: Instant::now(),
             running: false,
         }
@@ -171,9 +185,10 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
         self.tracks.retain(|w, _| alive(w));
         self.focused.retain(|w, _| alive(w));
         // A live ghost whose window is back in the space (switched back to
-        // mid-slide) would be drawn twice; the mapped copy wins.
+        // mid-slide) would be drawn twice; the mapped copy wins. One whose
+        // client died has nothing left to draw.
         self.ghosts
-            .retain(|g| !g.done(now) && !g.window().is_some_and(alive));
+            .retain(|g| !g.done(now) && !g.window().is_some_and(|w| alive(w) || !w.alive()));
 
         // Resolved on first use this frame, at most once per event.
         let mut open: Option<Option<(Leg, &'static str)>> = None;
@@ -342,6 +357,22 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
             }
         }
         self.running |= !self.tracks.is_empty();
+    }
+
+    /// Start `track` on `window` in place of whatever it was running, and
+    /// settle it so the next `sync` starts no `window-open` or `window-move`
+    /// for the change that caused it. For a window that came back or changed
+    /// state under an event of its own: unminimize, carry to a workspace, a
+    /// fullscreen crossfade. A window not in the space is skipped.
+    pub fn arrive(&mut self, space: &Space<W>, window: &W, track: Track) {
+        if space.element_geometry(window).is_none() {
+            return;
+        }
+        self.settle(space, std::slice::from_ref(window));
+        let tracks = self.tracks.entry(window.clone()).or_default();
+        tracks.motion = Some(track);
+        tracks.open = None;
+        self.running = true;
     }
 
     /// Hand a window that has left the space to the render path. It counts
@@ -641,6 +672,7 @@ mod tests {
             window: gone.clone(),
             output: output(),
             from_loc: (0, 0).into(),
+            active: false,
             track: Track::leave(
                 leg,
                 Channels {
@@ -671,6 +703,7 @@ mod tests {
             window: w.clone(),
             output: output(),
             from_loc: (0, 0).into(),
+            active: false,
             track: Track::leave(leg, Channels::ZERO),
         });
         space.map_element(w.clone(), (0, 0), false);

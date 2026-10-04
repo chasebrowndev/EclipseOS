@@ -993,7 +993,7 @@ pub const TABLE: &[Key] = &[
     k(
         "animations.preset",
         Ty::Enum(ANIMATION_PRESETS),
-        Str("off"),
+        Str("smooth"),
         Abyss,
         Live,
         "Animation preset: `off`, `subtle` (short fades), `smooth` (springs, \

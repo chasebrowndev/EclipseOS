@@ -221,7 +221,7 @@ pub struct Animations {
 impl Default for Animations {
     fn default() -> Self {
         Self {
-            preset: Preset::Off,
+            preset: Preset::Smooth,
             speed: 1.0,
             reduce_motion: false,
             overrides: BTreeMap::new(),
@@ -372,7 +372,13 @@ mod tests {
             assert!(a.resolve(ev).off(), "{}", ev.key());
         }
         assert!(!a.any());
-        assert!(!Animations::default().any());
+    }
+
+    #[test]
+    fn smooth_is_the_default() {
+        let a = Animations::default();
+        assert_eq!(a.preset, Preset::Smooth);
+        assert!(a.any() && !a.custom());
     }
 
     #[test]

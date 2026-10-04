@@ -6397,7 +6397,7 @@ pub(crate) mod tests {
         // Legacy nodes beside `enabled #true` are full overrides of their
         // event, under the default preset.
         use animations::{Curve, Event, Override};
-        assert_eq!(cfg.animations.preset, animations::Preset::Off);
+        assert_eq!(cfg.animations.preset, animations::Preset::Smooth);
         assert_eq!(
             cfg.animations.overrides.get(&Event::WindowMove),
             Some(&Override {
@@ -6411,7 +6411,7 @@ pub(crate) mod tests {
             (ws.style.as_str(), ws.duration_ms, ws.curve),
             ("slide", 200, Curve::Linear)
         );
-        assert!(cfg.animations.resolve(Event::WindowOpen).off());
+        assert_eq!(cfg.animations.resolve(Event::WindowOpen).style, "pop");
     }
 
     #[test]
@@ -6429,9 +6429,9 @@ pub(crate) mod tests {
         assert_eq!(cfg.decoration.active_opacity, 1.0);
         assert_eq!(cfg.decoration.inactive_opacity, 1.0);
         assert_eq!(cfg.decoration.dim_inactive, 0.0);
-        // Animations ship off (the default preset), with nothing overridden.
-        assert_eq!(cfg.animations.preset, animations::Preset::Off);
-        assert!(!cfg.animations.any() && !cfg.animations.custom());
+        // Animations ship on (the Smooth preset), with nothing overridden.
+        assert_eq!(cfg.animations.preset, animations::Preset::Smooth);
+        assert!(cfg.animations.any() && !cfg.animations.custom());
     }
 
     /// Blur ships on, in glass mode (C-16): translucent surfaces get the
@@ -8156,7 +8156,7 @@ mod startup_tests {
         // Without `enabled #true` a legacy node does nothing, as before.
         let cfg = abyss("animations {\n    animation \"fade\" duration=90\n}\n");
         assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
-        assert!(!cfg.animations.any());
+        assert!(cfg.animations.overrides.is_empty());
         // Each name, with the old defaults filled in.
         for (name, ev, style) in [
             ("windows", Event::WindowMove, "glide"),

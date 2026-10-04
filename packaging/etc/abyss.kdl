@@ -23,3 +23,11 @@
 // on select runs it constantly. Float only: it needs the keyboard focus, so
 // no `no-focus-steal`.
 windowrule "float" { app-id "^io\\.github\\.bugaevc\\.wl-clipboard$"; }
+
+// Animations ship on. The default lives in the schema (`animations.preset`);
+// it is stated here as well so the image's choice is visible and an upgrade
+// that changes the schema default cannot silently change the shipped one.
+// `off`, `subtle`, `smooth` or `lively`; override it in ~/.config.
+animations {
+    preset "smooth"
+}
