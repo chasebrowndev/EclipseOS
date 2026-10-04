@@ -14,8 +14,9 @@
 
 use std::time::Instant;
 
-use smithay::desktop::{layer_map_for_output, Window};
+use smithay::desktop::{layer_map_for_output, LayerSurface, Window};
 use smithay::output::Output;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{IsAlive, Logical, Point, Rectangle};
 
 use ec_abyss_render::anim::{self, Channels, Ghost, Leg, SnapshotSurface, Track};
@@ -38,7 +39,12 @@ fn resolve(state: &AbyssState, ev: Event) -> Option<(Leg, &'static str)> {
     if state.lock.locked {
         return None;
     }
-    anim::resolve(&state.config.animations, ev, Instant::now())
+    anim::resolve(
+        &state.config.animations,
+        ev,
+        Instant::now(),
+        state.borders.anim.shed(),
+    )
 }
 
 fn centre(r: &Rectangle<i32, Logical>) -> (f64, f64) {
@@ -141,6 +147,63 @@ pub fn close_frame(state: &mut AbyssState, frame: Frame) {
         return;
     };
     push_snapshot(state, frame, Track::leave(leg, anim::close_to(style)));
+}
+
+/// `layer-close`: keep a layer surface's last frame and play it out, leaving
+/// toward the edge it opened from. Call while the surface is still in its
+/// output's layer map and its buffer still held, so on a null-buffer commit
+/// before `on_commit_buffer_handler`, and in `layer_destroyed` before the
+/// unmap. A surface that covers its whole output (a scrim) is not animated.
+/// Called twice for one surface (the null commit, then the destroy) it keeps
+/// one frame: the second finds the buffer gone and has nothing to snapshot.
+pub fn close_layer(state: &mut AbyssState, output: &Output, layer: &LayerSurface) {
+    let Some((leg, style)) = resolve(state, Event::LayerClose) else {
+        return;
+    };
+    let Some(context) = state.borders.anim.context.as_ref() else {
+        return;
+    };
+    let Some(output_size) = state.space.output_geometry(output).map(|g| g.size) else {
+        return;
+    };
+    let (geometry, surface) = {
+        let map = layer_map_for_output(output);
+        let Some(geometry) = super::layer_geometry(&map, layer) else {
+            return;
+        };
+        (geometry, layer.wl_surface().clone())
+    };
+    let anchor = layer.cached_state().anchor;
+    let Some(end) = anim::layer_motion(style, anchor, geometry.size, output_size) else {
+        return;
+    };
+    if !surface.alive() {
+        return;
+    }
+    let surfaces = anim::snapshot(context, &surface, Point::from((0, 0)));
+    if surfaces.is_empty() {
+        return;
+    }
+    state.borders.anim.push_ghost(Ghost::Layer {
+        layer: layer.layer(),
+        surfaces,
+        output: output.clone(),
+        geometry,
+        track: Track::leave(leg, end),
+    });
+}
+
+/// [`close_layer`] for the layer surface owning `surface`, if it is one.
+pub fn close_layer_of(state: &mut AbyssState, surface: &WlSurface) {
+    let found = state.outputs.iter().map(|e| e.output.clone()).find_map(|output| {
+        let layer = layer_map_for_output(&output)
+            .layer_for_surface(surface, smithay::desktop::WindowSurfaceType::TOPLEVEL)
+            .cloned()?;
+        Some((output, layer))
+    });
+    if let Some((output, layer)) = found {
+        close_layer(state, &output, &layer);
+    }
 }
 
 /// `workspace-switch`, outgoing half: `windows` leave opposite to where the

@@ -24,6 +24,8 @@
 
 pub mod curve;
 pub mod ghost;
+pub mod layer;
+pub mod shed;
 pub mod track;
 
 use std::collections::HashMap;
@@ -33,7 +35,8 @@ use std::time::Instant;
 use smithay::backend::renderer::gles::GlesTexture;
 use smithay::backend::renderer::ContextId;
 use smithay::desktop::space::SpaceElement;
-use smithay::desktop::{Space, Window};
+use smithay::desktop::{LayerSurface, Space, Window};
+use smithay::output::Output;
 use smithay::utils::{Logical, Rectangle, Size};
 
 use ec_abyss_config::animations::Event;
@@ -41,6 +44,8 @@ use ec_abyss_config::Animations;
 
 pub use curve::{Curve, Leg};
 pub use ghost::{snapshot, Ghost, SnapshotSurface};
+pub use layer::layer_motion;
+pub use shed::{ShedLevel, ShedMonitor};
 pub use track::{Channels, ScaledElement, Track, Transform};
 
 /// What `ev` resolves to right now: the leg to run and the built-in style to
@@ -49,7 +54,15 @@ pub use track::{Channels, ScaledElement, Track, Transform};
 /// A style this build does not know — an add-on `pack:style` whose pack is
 /// missing, or not drawn by the engine yet — falls back to the event's first
 /// built-in style, which is never `none`.
-pub fn resolve(anims: &Animations, ev: Event, now: Instant) -> Option<(Leg, &'static str)> {
+///
+/// `shed` is the frame-budget level (COMP-14 §6): `FadeOnly` turns every
+/// motion style into a short fade (events with no fade, like a move, stop), and
+/// `Off` resolves everything to none. `BuiltinOnly` is the fallback above,
+/// which is all the engine has until add-on styles are drawn.
+pub fn resolve(anims: &Animations, ev: Event, now: Instant, shed: ShedLevel) -> Option<(Leg, &'static str)> {
+    if shed == ShedLevel::Off {
+        return None;
+    }
     let r = anims.resolve(ev);
     if r.off() {
         return None;
@@ -60,7 +73,22 @@ pub fn resolve(anims: &Animations, ev: Event, now: Instant) -> Option<(Leg, &'st
         .copied()
         .find(|s| *s == r.style)
         .unwrap_or(styles[0]);
-    (style != "none").then(|| (Leg::new(now, r.duration_ms, r.curve), style))
+    if style == "none" {
+        return None;
+    }
+    if shed >= ShedLevel::FadeOnly && !matches!(style, "fade" | "crossfade") {
+        return ev.is_builtin("fade").then(|| {
+            (
+                Leg::new(
+                    now,
+                    r.duration_ms.min(100),
+                    ec_abyss_config::animations::Curve::EaseOut,
+                ),
+                "fade",
+            )
+        });
+    }
+    Some((Leg::new(now, r.duration_ms, r.curve), style))
 }
 
 /// How a `window-open` style starts, as a displacement from the identity.
@@ -137,6 +165,11 @@ pub struct AnimStore<W = Window> {
     /// [`snapshot`] a closing window's textures from outside the render path.
     /// `None` until the first frame, when nothing has a texture to keep.
     pub context: Option<ContextId<GlesTexture>>,
+    /// `layer-open` per layer surface and output: seen once it has a buffer,
+    /// and running while it holds a track (see [`layer`]).
+    layers: HashMap<(Output, LayerSurface), Option<Track>>,
+    /// The frame-budget level every event resolves under.
+    shed: ShedLevel,
     /// The clock this frame is drawn at, set by `sync`, so every query in one
     /// frame (and every output of it) agrees.
     now: Instant,
@@ -151,6 +184,8 @@ impl<W> Default for AnimStore<W> {
             focused: HashMap::new(),
             ghosts: Vec::new(),
             context: None,
+            layers: HashMap::new(),
+            shed: ShedLevel::Full,
             now: Instant::now(),
             running: false,
         }
@@ -163,6 +198,16 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
     /// it clears, so an idle compositor is idle (COMP-02 §9).
     pub fn running(&self) -> bool {
         self.running
+    }
+
+    /// Set the shedding level from the frame-budget monitor. Applies to events
+    /// that start after this; what is already running finishes.
+    pub fn set_shed(&mut self, shed: ShedLevel) {
+        self.shed = shed;
+    }
+
+    pub fn shed(&self) -> ShedLevel {
+        self.shed
     }
 
     /// Note this frame's targets, start what changed, retire what finished.
@@ -191,6 +236,7 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
             .retain(|g| !g.done(now) && !g.window().is_some_and(|w| alive(w) || !w.alive()));
 
         // Resolved on first use this frame, at most once per event.
+        let shed = self.shed;
         let mut open: Option<Option<(Leg, &'static str)>> = None;
         let mut motion: Option<Option<(Leg, &'static str)>> = None;
         let mut crossfade: Option<Option<(Leg, &'static str)>> = None;
@@ -206,7 +252,7 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
             if let Some(was) = self.focused.insert(window.clone(), active) {
                 if was != active {
                     if let Some((leg, _)) =
-                        *crossfade.get_or_insert_with(|| resolve(anims, Event::Focus, now))
+                        *crossfade.get_or_insert_with(|| resolve(anims, Event::Focus, now, shed))
                     {
                         self.tracks.entry(window.clone()).or_default().focus = Some((leg, active));
                     }
@@ -220,7 +266,7 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
                 // rather than flying in from the origin.
                 None => {
                     if let Some((leg, style)) =
-                        *open.get_or_insert_with(|| resolve(anims, Event::WindowOpen, now))
+                        *open.get_or_insert_with(|| resolve(anims, Event::WindowOpen, now, shed))
                     {
                         self.tracks.entry(window.clone()).or_default().open =
                             Some(Track::arrive(leg, open_from(style)));
@@ -230,7 +276,7 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
                 // one already in flight (a workspace slide) finishes.
                 Some(previous) => {
                     let Some((leg, style)) =
-                        *motion.get_or_insert_with(|| resolve(anims, Event::WindowMove, now))
+                        *motion.get_or_insert_with(|| resolve(anims, Event::WindowMove, now, shed))
                     else {
                         continue;
                     };
@@ -286,7 +332,8 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
             tracks.retire(now);
         }
         self.tracks.retain(|_, t| !t.idle());
-        self.running = !self.tracks.is_empty() || !self.ghosts.is_empty();
+        self.retire_layers(now);
+        self.running = !self.tracks.is_empty() || !self.ghosts.is_empty() || self.layers_running();
     }
 
     /// Mark `windows` as already shown at their current targets, so the next
@@ -317,7 +364,7 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
     ) {
         self.settle(space, windows);
         let now = Instant::now();
-        let Some((leg, style)) = resolve(anims, Event::WorkspaceSwitch, now) else {
+        let Some((leg, style)) = resolve(anims, Event::WorkspaceSwitch, now, self.shed) else {
             return;
         };
         for window in windows {
@@ -641,7 +688,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let (_, style) = resolve(&smooth, Event::WindowOpen, Instant::now()).unwrap();
+        let (_, style) = resolve(&smooth, Event::WindowOpen, Instant::now(), ShedLevel::Full).unwrap();
         assert_eq!(style, Event::WindowOpen.styles()[0]);
     }
 
@@ -667,7 +714,7 @@ mod tests {
         let t0 = Instant::now();
         store.sync_at(&space, &smooth, None, t0);
         assert!(!store.running());
-        let (leg, _) = resolve(&smooth, Event::WorkspaceSwitch, t0).unwrap();
+        let (leg, _) = resolve(&smooth, Event::WorkspaceSwitch, t0, ShedLevel::Full).unwrap();
         store.push_ghost(Ghost::Live {
             window: gone.clone(),
             output: output(),
@@ -698,7 +745,7 @@ mod tests {
         let mut space = Space::default();
         let mut store = AnimStore::default();
         let t0 = Instant::now();
-        let (leg, _) = resolve(&smooth, Event::WorkspaceSwitch, t0).unwrap();
+        let (leg, _) = resolve(&smooth, Event::WorkspaceSwitch, t0, ShedLevel::Full).unwrap();
         store.push_ghost(Ghost::Live {
             window: w.clone(),
             output: output(),
@@ -709,5 +756,41 @@ mod tests {
         space.map_element(w.clone(), (0, 0), false);
         store.sync_at(&space, &smooth, None, t0 + ms(5));
         assert!(store.ghosts.is_empty());
+    }
+
+    #[test]
+    fn shedding_turns_motion_into_fade_and_then_stops() {
+        let smooth = anims(Preset::Smooth);
+        let now = Instant::now();
+        let at = |ev, shed| resolve(&smooth, ev, now, shed);
+        // Full and BuiltinOnly resolve as configured.
+        for shed in [ShedLevel::Full, ShedLevel::BuiltinOnly] {
+            assert_eq!(at(Event::WindowOpen, shed).unwrap().1, "pop");
+            assert_eq!(at(Event::WindowMove, shed).unwrap().1, "glide");
+        }
+        // FadeOnly: styles with a fade become one, short; a move has none.
+        let (leg, style) = at(Event::WindowOpen, ShedLevel::FadeOnly).unwrap();
+        assert_eq!(style, "fade");
+        assert!(leg.duration <= ms(100));
+        assert_eq!(at(Event::LayerOpen, ShedLevel::FadeOnly).unwrap().1, "fade");
+        assert_eq!(at(Event::WindowMove, ShedLevel::FadeOnly), None);
+        // The focus crossfade is already a fade.
+        assert_eq!(at(Event::Focus, ShedLevel::FadeOnly).unwrap().1, "crossfade");
+        // Off: nothing.
+        for ev in Event::ALL {
+            assert_eq!(at(ev, ShedLevel::Off), None, "{ev:?}");
+        }
+    }
+
+    #[test]
+    fn a_shed_store_starts_no_open_animation() {
+        let smooth = anims(Preset::Smooth);
+        let w = Fake::new(1);
+        let mut space = Space::default();
+        let mut store = AnimStore::default();
+        store.set_shed(ShedLevel::Off);
+        space.map_element(w.clone(), (0, 0), false);
+        store.sync_at(&space, &smooth, None, Instant::now());
+        assert!(!store.running() && store.transform(&w).is_identity());
     }
 }

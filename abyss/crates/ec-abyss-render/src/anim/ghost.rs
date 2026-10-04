@@ -24,7 +24,9 @@
 //! fullscreen or maximize toggle. A ghost is drawn with the border and shadow
 //! its window had, in the focus state it left in.
 //!
-//! TODO(P4): `layer_destroyed` snapshots for `layer-close`.
+//! - [`Ghost::Layer`]: a layer surface's last frame, for `layer-close` (taken
+//!   in `layer_destroyed` and on a layer's null-buffer commit). It carries no
+//!   window decor and is drawn at its own layer's depth by the `layers` pass.
 
 use std::time::Instant;
 
@@ -37,6 +39,7 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, Size, Transform as BufferTransform};
 use smithay::wayland::compositor::{with_surface_tree_downward, TraversalAction};
+use smithay::wayland::shell::wlr_layer::Layer;
 
 use super::track::Track;
 
@@ -80,24 +83,37 @@ pub enum Ghost<W = Window> {
         active: bool,
         track: Track,
     },
+    /// A closed layer-shell surface (`layer-close`).
+    Layer {
+        /// Which layer it sat on, so it is drawn at that depth.
+        layer: Layer,
+        surfaces: Vec<SnapshotSurface>,
+        output: Output,
+        /// Output-local logical, as layer geometry is.
+        geometry: Rectangle<i32, Logical>,
+        track: Track,
+    },
 }
 
 impl<W> Ghost<W> {
     pub fn track(&self) -> &Track {
         match self {
-            Ghost::Live { track, .. } | Ghost::Snapshot { track, .. } => track,
+            Ghost::Live { track, .. } | Ghost::Snapshot { track, .. } | Ghost::Layer { track, .. } => track,
         }
     }
 
     pub fn output(&self) -> &Output {
         match self {
-            Ghost::Live { output, .. } | Ghost::Snapshot { output, .. } => output,
+            Ghost::Live { output, .. } | Ghost::Snapshot { output, .. } | Ghost::Layer { output, .. } => {
+                output
+            }
         }
     }
 
     pub fn active(&self) -> bool {
         match self {
             Ghost::Live { active, .. } | Ghost::Snapshot { active, .. } => *active,
+            Ghost::Layer { .. } => false,
         }
     }
 
@@ -109,7 +125,7 @@ impl<W> Ghost<W> {
     pub fn window(&self) -> Option<&W> {
         match self {
             Ghost::Live { window, .. } => Some(window),
-            Ghost::Snapshot { .. } => None,
+            Ghost::Snapshot { .. } | Ghost::Layer { .. } => None,
         }
     }
 }

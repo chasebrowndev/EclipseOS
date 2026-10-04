@@ -50,11 +50,14 @@ impl CompositorHandler for AbyssState {
 
     fn commit(&mut self, surface: &WlSurface) {
         // A mapped toplevel committing a null buffer is closing (or hiding):
-        // keep its last frame for `window-close` before smithay drops the
+        // keep its last frame for `window-close` (or `layer-close`) before smithay drops the
         // textures with the buffer.
         if get_parent(surface).is_none() && buffer_removed(surface) {
             if let Some(window) = crate::shell::window_for_surface(self, surface) {
                 crate::shell::anim::close(self, &window);
+            } else {
+                // A layer surface doing the same: `layer-close`.
+                crate::shell::anim::close_layer_of(self, surface);
             }
         }
         on_commit_buffer_handler::<Self>(surface);
