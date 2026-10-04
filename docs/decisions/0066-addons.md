@@ -91,6 +91,7 @@ a system gets; nothing else turns an add-on on.
 | `taskbar-widgets` | abyss | the `widget` collection and its socket writes, the premade widget catalog, command approval (ADR 0067) |
 | `activity-lens` | Fog | the lens pill bar and agent views, fed by the add-on's daemon |
 | `agents` | abyss | the privileged `ec-agent.sock` socket, agent and `eclipse_semantic_v1` globals, the `policyd` link, the "agents disabled" indicator, the agent lifecycle methods (`get_agents`, `pause_agent`, `resume_agent`, `terminate_agent`, `revoke_grants`) (ADR 0069) |
+| `transition-shaders` | abyss | the transition catalog `/usr/share/eclipse/transitions/` and its `pack:style` animation styles, compiled from package-owned GLSL (ADR 0071; the one in-process exception, at installed-package trust) |
 
 **The add-ons.**
 - **hyperion** enables `taskbar-widgets`. `eclipseos-meta` lists it as an
