@@ -868,6 +868,29 @@ pub mod canvas {
     /// The width a bar preview solves for before its sheet has been
     /// measured: one frame at most, and never drawn animated.
     pub const SHEET_FALLBACK_W: f32 = 720.0;
+
+    /// A motion stage on a preset card: room for a window mark to pop in,
+    /// glide most of the width, and close (`motion_stage`).
+    pub const STAGE_W: f32 = 132.0;
+    pub const STAGE_H: f32 = 64.0;
+    /// The window mark on a preset card's stage.
+    pub const STAGE_WIN_W: f32 = 52.0;
+    pub const STAGE_WIN_H: f32 = 32.0;
+    /// A motion stage beside one event row: a thumbnail, not a picture.
+    pub const STAGE_ROW_W: f32 = 64.0;
+    pub const STAGE_ROW_H: f32 = 30.0;
+    pub const STAGE_ROW_WIN_W: f32 = 24.0;
+    pub const STAGE_ROW_WIN_H: f32 = 15.0;
+    /// The title strip across the top of a stage's window mark, as a
+    /// fraction of the mark's height: what makes a quad read as a window.
+    pub const STAGE_TITLE: f32 = 0.22;
+    /// The column an event row's name and reading sit in, so every row's
+    /// pickers start at the same x.
+    pub const EVENT_NAME_W: f32 = 150.0;
+    /// An event row's style and curve pickers.
+    pub const EVENT_PICK_W: f32 = 118.0;
+    /// The reading between an event row's speed stepper buttons.
+    pub const EVENT_MS_W: f32 = 64.0;
 }
 
 /// Motion defaults. Taste, not mechanism: the live values are
@@ -894,6 +917,11 @@ pub mod motion {
     /// gone before the edge reaches a glyph; opening, it arrives once there
     /// is room to read it. Never a glyph cut in half at full ink.
     pub const FADE_LEAD: f32 = 0.35;
+    /// How long an animation preview rests between the legs of its loop:
+    /// long enough to read where the window landed before it moves again.
+    pub const PREVIEW_HOLD_MS: u64 = 700;
+    /// How long an animation preview waits, empty, before it starts over.
+    pub const PREVIEW_REST_MS: u64 = 500;
 }
 
 /// A context menu: the mark rail that opens on a right-click.

@@ -276,6 +276,7 @@ impl Page {
                 | Page::BarMotion
                 | Page::BarAppearance
                 | Page::BarFolding
+                | Page::Animations
         )
     }
 

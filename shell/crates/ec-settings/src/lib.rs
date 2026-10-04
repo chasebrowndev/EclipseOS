@@ -11,6 +11,7 @@
 //! pane are not remembered. `abyss.kdl` is the only state there is.
 
 pub mod addons;
+pub mod animations;
 pub mod app;
 pub mod bar_preview;
 pub mod conn;

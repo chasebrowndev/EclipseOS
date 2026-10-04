@@ -114,6 +114,8 @@ pub enum Message {
     Bar(crate::taskbar::Msg),
     /// The sidebar search's messages.
     Search(crate::search_ui::Msg),
+    /// The Animations page's own messages.
+    Anim(crate::animations::Msg),
 }
 
 /// Somewhere to take the user: a page, and optionally a row on it by its
@@ -138,9 +140,14 @@ pub fn locate(target: &str) -> Option<Locus> {
         return Page::from_arg(&path).map(|page| Locus { page, row: None });
     }
     if let Some(place) = place_for(target) {
+        let row = if place.page == Page::Animations {
+            crate::animations::row_of(target)
+        } else {
+            target.to_owned()
+        };
         return Some(Locus {
             page: place.page,
-            row: Some(target.to_owned()),
+            row: Some(row),
         });
     }
     Page::from_arg(target).map(|page| Locus { page, row: None })
@@ -264,6 +271,8 @@ pub struct App {
     pub(crate) addons: Option<ec_ipc::Addons>,
     /// The sidebar search: its index over `rows`, the query and its hits.
     pub(crate) search: crate::search_ui::Search,
+    /// The Animations page's looping previews.
+    pub(crate) anim: crate::animations::Anim,
 }
 
 impl Default for App {
@@ -317,6 +326,7 @@ impl App {
             bar: crate::taskbar::Bar::default(),
             addons: None,
             search: crate::search_ui::Search::default(),
+            anim: crate::animations::Anim::default(),
         };
         // Debug builds only: open with a tray entry selected, so the selected
         // state can be screenshotted without pointer injection.
@@ -328,6 +338,9 @@ impl App {
         app.reload();
         #[cfg(debug_assertions)]
         crate::taskbar::preview_env(&mut app);
+        if app.page == Page::Animations {
+            crate::animations::sync(&mut app);
+        }
         crate::taskbar::adopt_selection(&mut app);
         app
     }
@@ -417,6 +430,19 @@ impl App {
     /// Write one scalar and fold the outcome into the banner.
     pub(crate) fn write(&mut self, path: &str, v: Value) {
         match self.conn.set(path, v) {
+            Ok(restart) => {
+                self.restart_pending |= restart;
+                self.banner = None;
+                self.reload();
+            }
+            Err(e) => self.banner = Some(e),
+        }
+    }
+
+    /// Write several scalars as one commit (`null` removes a key), and fold
+    /// the outcome into the banner as [`App::write`] does.
+    pub(crate) fn write_many(&mut self, edits: &[(String, Value)]) {
+        match self.conn.set_many(edits) {
             Ok(restart) => {
                 self.restart_pending |= restart;
                 self.banner = None;
@@ -642,7 +668,12 @@ pub fn boot(page: Page) -> (App, Task<Message>) {
 }
 
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
+    // The previews' frame clock moves nothing they are built from.
+    let frame = matches!(message, Message::Anim(crate::animations::Msg::Frame(_)));
     let task = update_inner(app, message);
+    if app.page == Page::Animations && !frame {
+        crate::animations::sync(app);
+    }
     // Any message can move the bar picture: a knob, the order, a reload.
     if app.page.section() == Section::Taskbar {
         crate::taskbar::sync(app, std::time::Instant::now());
@@ -872,6 +903,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::TrayLive(live) => app.tray_live = Some(live),
         Message::Bar(m) => return crate::taskbar::update(app, m),
         Message::Search(m) => return crate::search_ui::update(app, m),
+        Message::Anim(m) => return crate::animations::update(app, m),
     }
     Task::none()
 }
@@ -913,7 +945,7 @@ impl App {
     }
 
     /// How lit row `path` is: 1 just revealed, falling to 0 over `REVEAL`.
-    fn lit(&self, path: &str) -> f32 {
+    pub(crate) fn lit(&self, path: &str) -> f32 {
         match &self.flash {
             Some((p, at)) if p == path => {
                 let t = at.elapsed().as_secs_f32() / REVEAL.as_secs_f32();
@@ -1000,6 +1032,9 @@ pub fn subscription(app: &App) -> Subscription<Message> {
         if app.bar.animating() {
             subs.push(iced::window::frames().map(|t| Message::Bar(crate::taskbar::Msg::Frame(t))));
         }
+    }
+    if app.page == Page::Animations {
+        subs.push(iced::window::frames().map(|t| Message::Anim(crate::animations::Msg::Frame(t))));
     }
     Subscription::batch(subs)
 }
@@ -1141,6 +1176,10 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
             let (state, measure) = crate::addons::status(app);
             controls.push(status_chip(&state, &measure));
         }
+        _ if app.page == Page::Animations => {
+            let (state, measure) = crate::animations::status(app);
+            controls.push(status_chip(&state, &measure));
+        }
         _ => {}
     }
     let mut blocks = vec![header(
@@ -1155,6 +1194,7 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         Page::Display => blocks.extend(display_pane(app)),
         Page::Network => blocks.extend(network::blocks(&app.net, app.glass_radius)),
         Page::Addons => blocks.extend(crate::addons::blocks(app)),
+        Page::Animations => blocks.extend(crate::animations::blocks(app)),
         p if p.section() == Section::Taskbar => blocks.extend(crate::taskbar::blocks(app, p)),
         _ => blocks.push(schema_page(app)),
     }

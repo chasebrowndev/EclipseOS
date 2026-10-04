@@ -105,6 +105,10 @@ impl Problem {
 pub struct Conn {
     client: Option<Client>,
     pub problem: Option<Problem>,
+    /// `get_config.animations` from the last [`Conn::load_schema`]: every
+    /// event resolved by the compositor, so the Animations page never
+    /// expands the live preset itself. `Null` until a reply carries one.
+    pub animations: Value,
 }
 
 impl Default for Conn {
@@ -118,6 +122,7 @@ impl Conn {
         let mut conn = Conn {
             client: None,
             problem: None,
+            animations: Value::Null,
         };
         conn.reconnect();
         conn
@@ -194,6 +199,7 @@ impl Conn {
     /// than pretending the setting does not exist.
     pub fn load_schema(&mut self) -> Result<Vec<crate::schema::Row>, Problem> {
         let reply = self.call("get_config", json!({ "schema": true }))?;
+        self.animations = reply.get("animations").cloned().unwrap_or(Value::Null);
         Ok(crate::schema::parse_keys(&reply))
     }
 
@@ -235,6 +241,21 @@ impl Conn {
     /// Write one scalar. Returns whether the change needs a restart to apply.
     pub fn set(&mut self, path: &str, value: Value) -> Result<bool, Problem> {
         let reply = self.call("set_config_value", json!({ "path": path, "value": value }))?;
+        Ok(reply
+            .get("restart_required")
+            .and_then(Value::as_bool)
+            .unwrap_or(false))
+    }
+
+    /// Write several scalars from one file as one commit (`null` removes a
+    /// key). All or nothing: one config event, never a half-applied change.
+    /// Returns whether any of them needs a restart to apply.
+    pub fn set_many(&mut self, edits: &[(String, Value)]) -> Result<bool, Problem> {
+        let edits: Vec<Value> = edits
+            .iter()
+            .map(|(path, value)| json!({ "path": path, "value": value }))
+            .collect();
+        let reply = self.call("set_config_values", json!({ "edits": edits }))?;
         Ok(reply
             .get("restart_required")
             .and_then(Value::as_bool)
