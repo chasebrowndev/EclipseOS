@@ -15,8 +15,11 @@ pub mod curve;
 pub mod drop;
 pub mod effects;
 pub mod font;
+pub mod hud;
+pub mod hud_font;
 pub mod output_overscan;
 pub mod overscan;
+pub mod palette;
 pub mod sanitize;
 pub mod select;
 pub mod stats;
@@ -634,6 +637,7 @@ fn insert_blur(
             reach,
             ring,
             shape.as_ref(),
+            1.0,
         ) {
             let element = match crop {
                 Some(crop) => {

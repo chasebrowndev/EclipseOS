@@ -55,6 +55,35 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `wallpaper.mode` | fill \| fit \| center | `"fill"` | live | How the image is sized: `fill` covers the output and crops, `fit` letterboxes, `center` draws it at native size. |
 | `wallpaper.color` | colour `#rrggbb[aa]` | `#0b0906ff` | live | Solid background, and letterbox fill. |
 
+### `annotations`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `annotations.accent` | colour `#rrggbb[aa]` | `#f2c33cff` | live | Annotation HUD: the pick tab and rim, the region selector's band and the live Oracle Eyes taskbar eye. |
+| `annotations.accent-text` | colour `#rrggbb[aa]` | `#f5cf5cff` | live | Annotation HUD: the pick letter inside the panel. |
+| `annotations.text` | colour `#rrggbb[aa]` | `#ffffffff` | live | Annotation HUD: title and body text. |
+| `annotations.panel-tint` | colour `#rrggbb[aa]` | `#17140fb8` | live | Annotation HUD: the panel's fill over its blurred backdrop. An alpha below 0.5 (`80`) is raised to 0.5 so the text stays legible over a white page. |
+| `annotations.panel-rim` | colour `#rrggbb[aa]` | `#ffffff1f` | live | Annotation HUD: the panel's 1px rim. |
+| `annotations.hairline` | colour `#rrggbb[aa]` | `#ffffff0f` | live | Annotation HUD: the rule between the title and the body. |
+| `annotations.region-outline` | colour `#rrggbb[aa]` | `#ffffff38` | live | Annotation HUD: the rounded rim around the region an answer is about. |
+| `annotations.leader` | colour `#rrggbb[aa]` | `#ffffff47` | live | Annotation HUD: the line from a panel to its region. |
+| `annotations.selection-dim` | colour `#rrggbb[aa]` | `#0b090666` | live | Region selector: the dim over the screen around the selection. |
+| `annotations.danger` | colour `#rrggbb[aa]` | `#e0553fff` | live | Annotation HUD: the dot before the title of an error. |
+
+### `oracle-eyes`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `oracle-eyes.model-command` | list of strings | `"claude"` | live | Oracle Eyes: the model command, program then arguments. The daemon always adds its own locked flags (no tools, one turn, the answer schema). A command other than the default runs only once you approve it in the compositor-drawn prompt (ADR 0067); until then `get_config` serves `null` for it, with `approval: "pending"` on this row (`"approved"` otherwise). Any later edit asks again. |
+| `oracle-eyes.timeout-ms` | int 1000..300000 | `30000` | live | Oracle Eyes: how long one model call may take before it is abandoned. |
+| `oracle-eyes.auto-interval-ms` | int 1000..600000 | `3000` | live | Oracle Eyes: in automatic mode, the least time between two questions. |
+| `oracle-eyes.hold-ms` | int 500..60000 | `4000` | live | Oracle Eyes: the least time an answer stays on screen; longer answers stay longer. |
+| `oracle-eyes.debug` | bool | `#false` | live | Oracle Eyes debug mode: the taskbar eye turns red and is shown in screen captures, and the daemon writes a debug log. |
+| `oracle-eyes.bind.select` | string | `"none"` | live | Chord for annotation-select: draw a rectangle for Oracle Eyes to read, like `Super+Shift+A`; `none` (the default) leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.bind.dismiss` | string | `"none"` | live | Chord for annotation-dismiss: dismiss the answer on screen, like `Super+Shift+A`; `none` (the default) leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.bind.expand` | string | `"none"` | live | Chord for annotation-expand: expand the answer on screen, like `Super+Shift+A`; `none` (the default) leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.bind.auto-toggle` | string | `"none"` | live | Chord for annotation-auto-toggle: turn automatic mode on or off, like `Super+Shift+A`; `none` (the default) leaves it unbound. A `bind` block on the same chord wins. |
+
 ### `general`
 
 | setting | type | default | reload | what it does |
@@ -269,6 +298,7 @@ Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #fa
 | `launcher.search.path-binaries` | bool | `#false` | live | Also find the programs on PATH by name. They answer a typed query only, never the empty list. |
 | `launcher.search.terminal-apps` | bool | `#true` | live | List `Terminal=true` applications. Needs `misc.terminal-command`; without one they are never listed. |
 | `launcher.search.match-descriptions` | bool | `#false` | live | Let a query match an application's description as well as its name and keywords. |
+| `launcher.search.frecency` | bool | `#true` | live | Rank the applications you launch most and most recently first, and remember launches (a count and a time per application, never what you typed). |
 | `launcher.bind.open` | string | `"Super+E"` | live | Chord that opens the launcher, like `Super+E`; `none` unbinds it. A `bind` block on the same chord wins. |
 | `launcher.bind.run` | string | `"Super+R"` | live | Second chord that opens the launcher, like `Super+R`; `none` unbinds it. |
 
@@ -277,6 +307,12 @@ Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #fa
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `ui.show-key-hints` | bool | `#true` | live | Show the keyboard control hints in the launcher and the start menu. |
+
+### `settings`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `settings.search.frecency` | bool | `#true` | live | Nudge the settings search results you open often up among near ties, and remember which results you opened (never what you typed). |
 
 ### `misc`
 

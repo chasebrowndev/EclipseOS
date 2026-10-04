@@ -103,6 +103,19 @@ pub fn hash(w: &CustomWidget) -> Option<WidgetHash> {
     Some(WidgetHash(*h.finalize().as_bytes()))
 }
 
+/// Domain separation for [`model_command_hash`]: never equal to a widget
+/// hash of the same bytes.
+pub const MODEL_COMMAND_CONTEXT: &str = "EclipseOS 2026-10-02 oracle-eyes model command approval v1";
+
+/// The hash of the Oracle Eyes model command (owner decision 3): blake3
+/// derive-key under [`MODEL_COMMAND_CONTEXT`] over `list argv`, encoded as
+/// above. The flags the daemon appends itself are not part of it.
+pub fn model_command_hash(argv: &[String]) -> WidgetHash {
+    let mut h = blake3::Hasher::new_derive_key(MODEL_COMMAND_CONTEXT);
+    put_list(&mut h, argv);
+    WidgetHash(*h.finalize().as_bytes())
+}
+
 fn put_str(h: &mut blake3::Hasher, s: &str) {
     h.update(&(s.len() as u64).to_le_bytes());
     h.update(s.as_bytes());
@@ -211,5 +224,25 @@ mod tests {
         for bad in ["", "00", &"g".repeat(64), &"A".repeat(64), &"0".repeat(65)] {
             assert_eq!(WidgetHash::from_hex(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn model_command_hash_is_its_own_domain() {
+        let argv: Vec<String> = ["journalctl", "-f"].iter().map(|s| (*s).to_owned()).collect();
+        let m = model_command_hash(&argv);
+        assert_eq!(m, model_command_hash(&["journalctl".to_owned(), "-f".to_owned()]));
+        assert_ne!(m, model_command_hash(&argv[..1]));
+        // The same argv as a stream widget hashes differently.
+        assert_ne!(
+            Some(m),
+            hash(&one(
+                "bar { widget \"s\" { exec \"journalctl\" \"-f\"; stream #true; } }"
+            ))
+        );
+        // Argument boundaries count: ["a b"] is not ["a", "b"].
+        assert_ne!(
+            model_command_hash(&["a b".to_owned()]),
+            model_command_hash(&["a".to_owned(), "b".to_owned()])
+        );
     }
 }

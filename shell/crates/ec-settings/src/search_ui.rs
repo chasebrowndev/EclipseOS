@@ -25,6 +25,7 @@ use crate::app::{locate, App, Message};
 use crate::pane::place_for;
 use crate::schema::Row as Key;
 use crate::search::{self, Place, SearchEntry};
+use ec_services::frecency::{self, Store};
 
 /// The search field's widget id: what Ctrl+F and type-ahead focus.
 pub const FIELD: &str = "settings-search";
@@ -36,7 +37,15 @@ pub struct Search {
     entries: Vec<SearchEntry>,
     hits: Vec<(f32, usize)>,
     selected: usize,
+    /// Results the human has opened before, read at each reindex; empty with
+    /// `settings.search.frecency` off.
+    usage: Store,
+    /// `settings.search.frecency`, as of the last schema reply.
+    frecency: bool,
 }
+
+/// The key that turns result history on and off.
+const FRECENCY_KEY: &str = "settings.search.frecency";
 
 #[derive(Debug, Clone)]
 pub enum Msg {
@@ -66,6 +75,23 @@ impl Search {
     /// Rebuild the index from a fresh schema reply, keeping the query.
     pub fn reindex(&mut self, rows: &[Key]) {
         self.entries = search::index(rows, place);
+        self.frecency = rows
+            .iter()
+            .find(|r| r.path == FRECENCY_KEY)
+            .is_none_or(|r| r.value.as_bool().unwrap_or(true));
+        // Tests never read the human's real history.
+        self.usage = if self.frecency && !cfg!(test) {
+            Store::load_file(frecency::SETTINGS_FILE)
+        } else {
+            Store::default()
+        };
+        self.rerun();
+    }
+
+    /// Drop the remembered results after the history files were cleared, so
+    /// the next query ranks as on a first run.
+    pub fn forget(&mut self) {
+        self.usage = Store::default();
         self.rerun();
     }
 
@@ -82,16 +108,41 @@ impl Search {
     }
 
     fn rerun(&mut self) {
-        self.hits = search::search(&self.entries, &self.query, search::LIMIT);
+        self.hits = search::search_with(
+            &self.entries,
+            &self.query,
+            search::LIMIT,
+            &self.usage,
+            frecency::now(),
+        );
         self.select(self.selected);
     }
 
     /// Where the selected result goes.
-    fn target(&self) -> Task<Message> {
-        self.hits
-            .get(self.selected)
-            .and_then(|&(_, i)| locate(&self.entries[i].path))
-            .map_or_else(Task::none, |at| Task::done(Message::Reveal(at)))
+    fn target(&mut self) -> Task<Message> {
+        let Some(&(_, i)) = self.hits.get(self.selected) else {
+            return Task::none();
+        };
+        let Some(at) = locate(&self.entries[i].path) else {
+            return Task::none();
+        };
+        self.record(i);
+        Task::done(Message::Reveal(at))
+    }
+
+    /// Note that result `i` was opened from the search box, so near ties go
+    /// its way next time. The path only, never the query; a no-op with the
+    /// flag off, and under test so a test never writes the human's history.
+    fn record(&mut self, i: usize) {
+        if !self.frecency || cfg!(test) {
+            return;
+        }
+        let path = &self.entries[i].path;
+        self.usage.record_at(path, frecency::now());
+        let entries = &self.entries;
+        frecency::record_use(frecency::SETTINGS_FILE, path, |k| {
+            entries.iter().any(|e| e.path == k)
+        });
     }
 }
 

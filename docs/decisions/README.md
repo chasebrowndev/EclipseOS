@@ -68,6 +68,7 @@ writing a new ADR that says so.
 | 0068 | [The wallpaper is a core daemon on the Background layer](0068-wallpaper-daemon.md) | accepted |
 | 0069 | [The agent stack is one add-on](0069-agent-stack-addon.md) | accepted |
 | 0070 | [One umbrella repo, a workspace per product, `ec-` names](0070-umbrella-repo-and-ec-naming.md) | accepted |
+| 0071 | [Compositor animation system: events, presets, ghosts, transition shaders](0071-compositor-animation-system.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering
