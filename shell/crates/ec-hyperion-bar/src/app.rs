@@ -2835,7 +2835,7 @@ pub(crate) mod tests {
     /// An app whose bars are the test's own. `App::new` talks to the
     /// session's control socket, which on a machine running abyss lists real
     /// outputs; pinned, the app never reconciles its bars against them.
-    fn app() -> App {
+    pub(crate) fn app() -> App {
         let mut a = App::new();
         a.pin = Some("test".to_owned());
         a
@@ -3381,6 +3381,7 @@ pub(crate) mod tests {
 
 #[cfg(test)]
 mod fold_tests {
+    use super::tests::{app, bar_on};
     use super::*;
     use crate::conn::{BarConfig, FoldCurve};
 
@@ -3695,5 +3696,32 @@ mod fold_tests {
             target_height(&bar, FoldTarget::Shown, Air::default()),
             crate::HEIGHT
         );
+    }
+
+    /// Every bar keeps its own cache: a bar created after another (a
+    /// hot-plugged output) sends at its own first full configure, whatever
+    /// the first bar already sent.
+    #[test]
+    fn a_second_bar_sends_its_region_at_its_first_full_configure() {
+        let mut a = app();
+        let first = bar_on(&mut a, "DP-1", 0);
+        let second = bar_on(&mut a, "HDMI-A-1", 1);
+        for id in [first, second] {
+            a.bars.get_mut(&id).unwrap().menu.open = true;
+        }
+        let full = |a: &App, id: Id| {
+            let bar = &a.bars[&id];
+            bar.fold.geometry(a.edge).height as f32 + bar.menu.full(a.show_key_hints).round()
+        };
+        let h1 = full(&a, first);
+        let t1 = with_bar(&mut a, first, |a, b| sync_region(a, b, h1)).unwrap();
+        assert_eq!(t1.units(), 1);
+        let h2 = full(&a, second);
+        assert!(a.bars[&second].menu.region.is_none());
+        let t2 = with_bar(&mut a, second, |a, b| sync_region(a, b, h2)).unwrap();
+        assert_eq!(t2.units(), 1, "the second bar's first full configure sends");
+        let want = crate::menu::region(a.edge == BarPosition::Top, a.bar_radius, h2 as u32);
+        assert_eq!(a.bars[&second].menu.region.as_ref(), Some(&want));
+        assert!(want.len() >= 2);
     }
 }

@@ -421,15 +421,18 @@ impl Shape {
         let bounds = Rectangle::<i32, Logical>::from_size(size);
         let mut rects = [Rectangle::default(); MAX_SHAPE];
         let mut len = 0;
-        for (kind, rect) in &region.rects {
+        // Everything up to the last covering subtract is erased by it, so it
+        // is skipped unread: iced_layershell shares one wl_region across a
+        // process's surfaces, and an earlier subtract made at *another*
+        // surface's size (a second output) must not poison this one.
+        let start = region
+            .rects
+            .iter()
+            .rposition(|(kind, rect)| matches!(kind, RectangleKind::Subtract) && rect.contains_rect(bounds))
+            .map_or(0, |i| i + 1);
+        for (kind, rect) in &region.rects[start..] {
             if matches!(kind, RectangleKind::Subtract) {
-                // Clients (iced_layershell) replace a region by subtracting the
-                // whole surface before adding the new rects, and the history
-                // stays in the region: a covering subtract is a reset.
-                if rect.contains_rect(bounds) {
-                    len = 0;
-                    continue;
-                }
+                // A partial subtract is not a shape.
                 return None;
             }
             let Some(r) = rect.intersection(bounds).filter(|r| !r.is_empty()) else {
@@ -1359,6 +1362,12 @@ mod tests {
             None,
             "reset to nothing"
         );
+        // A stale subtract from another surface's size (shared wl_region,
+        // second output) before the reset is erased by it; after it, not.
+        let stale = (false, (0, 0, 300, 200));
+        let two_outputs = shape_of(&[stale, pill, reset, pill, panel], 1.0, 20.0).expect("stale");
+        assert_eq!(two_outputs.rects(), &[r(0, 0, 400, 40), r(100, 40, 200, 200)]);
+        assert_eq!(shape_of(&[reset, pill, stale, panel], 1.0, 20.0), None);
         // Empty boxes and boxes wholly off the surface do not count.
         assert_eq!(
             shape_of(&[pill, (true, (500, 0, 10, 10)), (true, (0, 0, 0, 5))], 1.0, 20.0),
