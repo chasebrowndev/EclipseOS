@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! KDL configuration for the daemon (spec §5).
+//! Configuration for the daemon (spec §5).
+//!
+//! Two sources. The owner-facing settings — model command, timeout,
+//! automatic-mode interval, hold time, debug — live in the compositor's
+//! `abyss.kdl` under `oracle-eyes { … }` (COMP-17 §3: Settings writes only
+//! `abyss.kdl`), and arrive over `get_config` ([`apply_compositor`]), again
+//! on every `config` event. The daemon's own `oracle-eyes.kdl` is the base
+//! underneath: the only source for the other §5 tunables, and the fallback
+//! for those five when the compositor serves no `oracle-eyes` block.
 //!
 //! Search path, later files overriding earlier ones:
 //!   1. `/etc/eclipse/oracle-eyes.kdl`
@@ -22,6 +30,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use kdl::{KdlDocument, KdlNode};
+use serde_json::Value;
 
 /// A refusal from config validation. Position is the offending token's, so
 /// the message can be acted on without opening the file.
@@ -92,6 +101,13 @@ pub struct Config {
     /// `--model` for the CLI. `None` leaves the CLI's own default alone
     /// rather than pinning a name that may stop existing.
     pub model: Option<String>,
+    /// The model command from Settings, program first. `None` until the
+    /// compositor serves one (it withholds a changed command until the owner
+    /// approves it), and then it replaces `claude_bin` and `model` outright.
+    /// Either way the locked flags are appended ([`crate::answer::invocation`]).
+    pub model_command: Option<Vec<String>>,
+    /// Debug mode from Settings. On if this, `--debug` or `OE_DEBUG=1` is.
+    pub debug: bool,
 }
 
 impl Default for Config {
@@ -116,8 +132,105 @@ impl Default for Config {
             ocr_lang: "eng".to_string(),
             claude_bin: "claude".to_string(),
             model: None,
+            model_command: None,
+            debug: false,
         }
     }
+}
+
+impl Config {
+    /// The configured model command, before the locked flags.
+    pub fn model_argv(&self) -> Vec<String> {
+        if let Some(argv) = self.model_command.as_ref().filter(|a| !a.is_empty()) {
+            return argv.clone();
+        }
+        let mut argv = vec![self.claude_bin.clone()];
+        if let Some(m) = &self.model {
+            argv.extend(["--model".to_string(), m.clone()]);
+        }
+        argv
+    }
+}
+
+/// Lay the `oracle-eyes` keys of a `get_config` reply over `cfg`.
+///
+/// The reply is `{"keys": [{"path", "value", ...}]}`; a key is ours when its
+/// path runs through an `oracle-eyes` node, wherever the compositor nests it.
+/// A `null` value — withheld pending approval, or unreadable — leaves the
+/// base alone. Returns how many keys were applied, and a refusal for each
+/// value of the wrong shape (named by path, never echoing the value: a
+/// command line can carry a token).
+pub fn apply_compositor(cfg: &mut Config, reply: &Value) -> (usize, Vec<String>) {
+    let mut applied = 0;
+    let mut errors = Vec::new();
+    let rows = reply.get("keys").and_then(Value::as_array);
+    for row in rows.into_iter().flatten() {
+        let Some(path) = row.get("path").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(key) = path
+            .split_once("oracle-eyes.")
+            .filter(|(pre, _)| pre.is_empty() || pre.ends_with('.'))
+            .map(|(_, k)| k)
+        else {
+            continue;
+        };
+        let v = match row.get("value") {
+            None | Some(Value::Null) => continue,
+            Some(v) => v,
+        };
+        let ms = |slot: &mut u64| v.as_u64().map(|n| *slot = n).is_some();
+        let ok = match key {
+            "model-command" => match command_of(v) {
+                Some(argv) => {
+                    cfg.model_command = Some(argv);
+                    true
+                }
+                None => false,
+            },
+            "timeout-ms" => ms(&mut cfg.answer_timeout_ms),
+            // The automatic-mode tick: two equal grabs one tick apart are a
+            // settled screen, so this is §5's `settle_ms` under its Settings name.
+            "auto-interval-ms" => ms(&mut cfg.settle_ms),
+            // How long an unprompted answer may stay up: the ceiling of the
+            // §2.2 reading-time formula. Select answers stay until dismissed.
+            "hold-ms" => ms(&mut cfg.max_display_ms),
+            "debug" => v.as_bool().map(|b| cfg.debug = b).is_some(),
+            // A key this daemon does not know yet is the compositor being
+            // newer, not an error.
+            _ => continue,
+        };
+        if ok {
+            applied += 1;
+        } else {
+            errors.push(format!("{path}: value has the wrong type"));
+        }
+    }
+    (applied, errors)
+}
+
+/// An argv list, or one string split on whitespace. Empty is no command.
+fn command_of(v: &Value) -> Option<Vec<String>> {
+    let argv: Vec<String> = match v {
+        Value::Array(a) => a
+            .iter()
+            .map(|s| s.as_str().map(str::to_string))
+            .collect::<Option<_>>()?,
+        Value::String(s) => s.split_whitespace().map(str::to_string).collect(),
+        _ => return None,
+    };
+    (!argv.is_empty() && !argv[0].is_empty()).then_some(argv)
+}
+
+/// Debug mode is `--debug` on the command line, `OE_DEBUG=1`, or
+/// `oracle-eyes.debug` in Settings — any one of them on is on. It changes
+/// what is logged and what the beacon says, never what the pipeline does.
+/// This is the run-switch half; the daemon ORs it with the config's.
+pub fn debug_requested<S: AsRef<str>>(
+    args: impl IntoIterator<Item = S>,
+    env: Option<&str>,
+) -> bool {
+    env == Some("1") || args.into_iter().any(|a| a.as_ref() == "--debug")
 }
 
 /// System file first so the user's own file wins on any key it names.
@@ -413,6 +526,14 @@ mod tests {
     }
 
     #[test]
+    fn debug_comes_from_the_flag_or_the_env() {
+        assert!(debug_requested(["oracle-eyes", "--debug"], None));
+        assert!(debug_requested(["oracle-eyes"], Some("1")));
+        assert!(!debug_requested(["oracle-eyes"], None));
+        assert!(!debug_requested(["oracle-eyes", "--debugger"], Some("0")));
+    }
+
+    #[test]
     fn defaults_are_the_spec_5_table() {
         let c = Config::default();
         assert_eq!(c.settle_ms, 600);
@@ -476,6 +597,85 @@ mod tests {
         let rendered = errs[0].to_string();
         assert!(rendered.starts_with("oracle-eyes.kdl:"), "{rendered}");
         assert!(errs[0].line >= 1);
+    }
+
+    fn reply(rows: Value) -> Value {
+        serde_json::json!({ "keys": rows })
+    }
+
+    #[test]
+    fn the_compositor_block_overrides_its_five_keys_and_nothing_else() {
+        let mut c = Config::default();
+        let (n, errs) = apply_compositor(
+            &mut c,
+            &reply(serde_json::json!([
+                {"path": "oracle-eyes.model-command", "value": ["/opt/claude", "--model", "haiku"]},
+                {"path": "oracle-eyes.timeout-ms", "value": 45000},
+                {"path": "oracle-eyes.auto-interval-ms", "value": 900},
+                {"path": "oracle-eyes.hold-ms", "value": 12000},
+                {"path": "oracle-eyes.debug", "value": true},
+                {"path": "bar.eye", "value": false},
+                {"path": "oracle-eyes.something-newer", "value": 1},
+            ])),
+        );
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(n, 5);
+        assert_eq!(c.model_argv(), ["/opt/claude", "--model", "haiku"]);
+        assert_eq!(c.answer_timeout_ms, 45000);
+        assert_eq!(c.settle_ms, 900);
+        assert_eq!(c.max_display_ms, 12000);
+        assert!(c.debug);
+        assert_eq!(c.min_display_ms, Config::default().min_display_ms);
+    }
+
+    #[test]
+    fn a_withheld_command_keeps_the_fallback() {
+        let mut c = Config {
+            claude_bin: "/usr/bin/claude".into(),
+            model: Some("haiku".into()),
+            ..Config::default()
+        };
+        apply_compositor(
+            &mut c,
+            &reply(serde_json::json!([
+                {"path": "oracle-eyes.model-command", "value": null, "readable": true},
+            ])),
+        );
+        assert_eq!(c.model_argv(), ["/usr/bin/claude", "--model", "haiku"]);
+        assert_eq!(Config::default().model_argv(), ["claude"]);
+    }
+
+    #[test]
+    fn a_nested_block_is_found_and_a_lookalike_is_not() {
+        let mut c = Config::default();
+        let (n, _) = apply_compositor(
+            &mut c,
+            &reply(serde_json::json!([
+                {"path": "addons.oracle-eyes.timeout-ms", "value": 1000},
+                {"path": "not-oracle-eyes.timeout-ms", "value": 2000},
+            ])),
+        );
+        assert_eq!(n, 1);
+        assert_eq!(c.answer_timeout_ms, 1000);
+    }
+
+    #[test]
+    fn a_wrong_shape_is_reported_by_path_without_the_value() {
+        let mut c = Config::default();
+        let (n, errs) = apply_compositor(
+            &mut c,
+            &reply(serde_json::json!([
+                {"path": "oracle-eyes.timeout-ms", "value": "soon"},
+                {"path": "oracle-eyes.model-command", "value": ["claude", 7]},
+                {"path": "oracle-eyes.model-command", "value": []},
+            ])),
+        );
+        assert_eq!(n, 0);
+        assert_eq!(errs.len(), 3);
+        assert!(errs[0].contains("oracle-eyes.timeout-ms"));
+        assert!(!errs.iter().any(|e| e.contains("soon")));
+        assert_eq!(c.answer_timeout_ms, Config::default().answer_timeout_ms);
+        assert_eq!(c.model_command, None);
     }
 
     #[test]

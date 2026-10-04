@@ -2656,8 +2656,9 @@ surface never contributes a pixel without `capture.secret`.
 ~~All optional, all off by default until 9b, all designed for now:~~
 *(amended C-01, 2026-09-23)* All optional and all built (9b is at parity).
 Defaults (`config/schema.rs`): **blur on** (`decoration.blur`, size 8,
-~~2~~ *(C-14)* 4 passes), **rounding 13**, border 2; shadows, glow, dim-inactive and
-animations off; active and inactive opacity 1.0.
+~~2~~ *(C-14)* 4 passes), **rounding 13**, border 2; shadows, glow and dim-inactive
+off, ~~animations off~~ *(C-18)* animations on (`preset "smooth"`); active and
+inactive opacity 1.0.
 
 | Effect | Implementation | Cost note |
 |---|---|---|
@@ -2667,7 +2668,7 @@ animations off; active and inactive opacity 1.0.
 | Glow *(added C-11)* | The shadow's ~~pixel shader~~ *(C-14)* original single-ring pixel shader (not the dropped two-layer one), tinted with the window's border colour (following its focus crossfade) and scaled by `strength`; reaches a fixed 24 logical px, drawn only outside the bordered rect, below the border and surface; `active` / `inactive` gate it per focus state | Cheap; expands damage |
 | Dim inactive | Colour multiply in the surface pass | Negligible |
 | Blur | Dual-Kawase downsample/upsample, N passes on the region behind translucent surfaces | Expensive; expands damage by kernel radius; disables direct scanout; skipped entirely when the blurred surface is opaque |
-| Animations | Interpolated geometry driven by the frame clock | Forces repaint while running; must not extend past the animation |
+| Animations | ~~Interpolated geometry~~ *(C-18)* Per-event transitions (offset, scale, alpha; add-on transition shaders, ADR 0071) driven by the frame clock; leaving and closing windows drawn as ghosts | Forces repaint while running; must not extend past the animation; idle keeps direct scanout |
 
 *(added C-01, 2026-09-23)* Blur applies only behind a translucent surface.
 A toplevel is translucent when its alpha (`active-opacity` /
@@ -2704,7 +2705,11 @@ damage expansion grows by its maximum refraction offset.
 `decoration.blur.enabled` is kept as a legacy alias (`false` ⇒ `off`,
 `true` ⇒ `blur`) and rewritten by `ec-ctl config migrate`.
 
-Animations are geometry-only in v1. **They must not affect what an agent
+~~Animations are geometry-only in v1.~~ *(C-18)* Animations are render-only:
+the shell maps at target geometry and the transition exists only in the
+composited frame (ADR 0071); ghosts of leaving or closed windows are never
+listed, hit-tested or captured, and `capture.rs` never reads animation state.
+**They must not affect what an agent
 sees**: `scene`/`get_tree` geometry reports the *target* geometry, not the
 interpolated one, so an agent never clicks where a window was mid-flight.
 This is the single most important interaction between effects and the agent
@@ -2738,7 +2743,8 @@ Benchmarks live in `bench/` and gate CI on regression (F-07 §3).
   compositor; assert frame continues with the previous buffer.
 - Scanout: assert fallback path meets frame budget with planes disabled.
 - Animation/agent interaction: assert `get_tree` geometry equals target
-  geometry during an animation.
+  geometry during an animation. *(C-18)* Assert ghosts are neither listed
+  nor hit-tested, and that an idle output renders no frames.
 - Vendor matrix: NVIDIA (reference), Intel iGPU, virtio-gpu.
 
 ---
@@ -4963,9 +4969,10 @@ decoration {
 }
 
 animations {
-    enabled true
-    animation "windows" duration=150ms curve="ease-out"
-    animation "workspaces" duration=200ms curve="ease-out"
+    preset "smooth"              // off | subtle | smooth | lively (C-18)
+    speed 1.0
+    reduce-motion #false
+    window-open { style "pop"; duration-ms 220; curve "spring"; }
 }
 
 input {
@@ -5462,7 +5469,9 @@ compile out to zero cost.
 When the budget cannot be met, degrade in this order — never drop
 correctness or security:
 
-1. Disable blur, then shadows, then animations.
+1. Disable blur, then shadows, then animations. *(C-18)* Animations step
+   down: add-on transition styles fall back to built-in, then motion
+   becomes a fade, then off.
 2. Reduce agent capture stream FPS to its floor.
 3. Stop rendering unfocused virtual outputs entirely (they are already
    on-demand).
@@ -7012,6 +7021,9 @@ Quickshell or waybar as a non-default candidate is the modularity ADR 0052's
 Required by CHARTER §4. A client over the COMP-13 §1.4 write API, scoped to
 **`abyss.kdl` only**: appearance, input, outputs, layouts, keybinds, and the
 COMP-03 §1.1 screen-edges selector.
+*(G-05)* An add-on whose settings belong in Settings keeps them in its own
+`abyss.kdl` block, served to it by `get_config`, so Settings still writes
+nothing else; Oracle Eyes' `oracle-eyes` block is the first (ADR 0072).
 
 Because it can only write `abyss.kdl`, it is an ordinary Wayland client — it is
 **not** in the TCB, needs no anti-spoofing story, and can be sandboxed freely.
@@ -7134,13 +7146,19 @@ collision avoidance between overlays, eviction when too many are live,
 styling, and text sanitisation — is decided by the compositor, which is the
 only party that knows output geometry and the only party the caller cannot
 influence. **A caller must not be able to affect anything but the glyphs**,
-with the single bounded exception of the pick: which of the rectangles
-*inside* its own region gets marked.
+with two bounded exceptions: the pick (which of the rectangles *inside* its
+own region gets marked) and the `kind` (§3.2), which chooses between two
+compositor-defined looks and nothing finer. *(G-01)* The overlay's colours are
+the owner's, set in `abyss.kdl`'s `annotations` block; a caller cannot name
+one.
 
 ## 2. Text handling
 
 Rendering is the compositor's own minimal monospace glyph path (ADR 0009: no
-toolkit). Before any string is rasterised:
+toolkit). *(G-02)* The face is JetBrains Mono, drawn from an 8-bit alpha atlas
+pre-rasterised offline and checked in (ADR 0071); trusted UI keeps its own
+fixed face (COMP-10 §2), so the two never share a typeface. Before any string
+is rasterised:
 
 - C0/C1 control characters and bidi overrides are stripped, not escaped.
 - Length is clamped to a configured maximum, truncated hard.
@@ -7158,7 +7176,7 @@ that table does not exist:
 
 | Method | Effect |
 |---|---|
-| `annotation_create` | rectangle + text (+ optional `title`, `pick`) → overlay handle |
+| `annotation_create` | text (+ optional rectangle, `title`, `pick`, `kind`) → overlay handle. *(G-03)* With no rectangle the overlay is unanchored: the compositor places it top-centre of the focused output with no region mark, and a `pick` is rejected |
 | `annotation_update` | replace the title and text on an existing handle |
 | `annotation_destroy` | remove one overlay |
 | `annotation_clear` | remove every overlay owned by the caller |
@@ -7185,14 +7203,22 @@ line is the header" cannot be a convention in the text.
 `label` is one or two ASCII letters or digits, or the call is rejected. The
 rectangle is clamped like the anchor and must lie **wholly inside it**, or the
 pick is silently dropped and the overlay is drawn without it. The compositor
-marks the pick — a wash over it, a bar down its left edge and a chip carrying
-the label, repeated in the panel's header — so a multiple-choice answer can
+marks the pick — *(G-04)* a rimmed wash over it and a pill carrying the label,
+the label repeated in the panel's header — so a multiple-choice answer can
 point at the option it names. A pick only ever marks geometry inside a region
 the caller was already allowed to bracket, plus the marker's fixed furniture
 (a 2 px wash overhang, and the bar and chip at most 35 px to the pick's left,
 ADR 0054); it is the caller's claim, drawn in
 the untrusted pass, and is capture-invisible like the rest of it (§1.2).
 Moving a pick is a new overlay: `annotation_update` cannot change it.
+
+### 3.2 Kind
+
+*(G-01)* `kind` is an optional `"answer"` (the default) or `"error"` on
+`annotation_create` only; any other value rejects the call. An `error` overlay
+is drawn with a danger dot before its title and no accent, so a failure never
+reads as an answer. The caller picks which of the two; the compositor owns what
+each looks like.
 
 Capture is deliberately **not** a socket capability (COMP-13 §1, non-goals).
 Pixels travel the Wayland path, gated separately by
@@ -7332,6 +7358,7 @@ against source before it was written. Nothing was renumbered.
 | C-15 | COMP-02 §9 | *(2026-09-29, owner ruling)* In glass mode the window border is a glass bezel: `border-size` is its width and the border colours tint its rim light (gold on focus). The bar's own margins follow `gaps-out`, so screen→bar matches windows→screen; the tiling area is unchanged (a window still shrinks by exactly the exclusive zone, as wlcs asserts) | yes |
 | C-16 | COMP-02 §9 | *(2026-09-29, owner ruling)* Glass is the shipped look: `decoration.blur.mode` defaults to `glass`, the shadow ships on (`range` 16), `rounding` 9, `border-size` 1, the active border a translucent gold `#f2c33c73` and the inactive one a faint white hairline `#ffffff1a` (the bezel's rim, C-15). Gaps ship as `gaps-in` 5, `gaps-out` 3, `gaps-in-vertical` 3, `gaps-out-vertical` 7; the vertical keys are set rather than mirroring, and still mirror when unset | yes |
 | C-17 | COMP-02 §9 | *(2026-09-30, owner ruling)* A layer surface anchored to all four edges and spanning its output gets no backdrop: it is a scrim or a selection overlay (slurp), not a sheet, and glass behind it smears the whole output it asks the human to read | yes |
+| C-18 | COMP-02 §9, §11; COMP-13 §1.1; COMP-14 §6 | *(2026-10-04, owner ruling)* Animations ship on: `animations { preset "smooth" }`, with per-event styles and presets `off`/`subtle`/`smooth`/`lively` (ADR 0071). Animations are render-only rather than geometry-only (offset, scale, alpha, add-on transition shaders); closing and leaving windows are drawn as ghosts that are never listed, hit-tested or captured. Amends C-01's "animations off" | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing
@@ -7429,6 +7456,21 @@ same day (ADR 0069). F-06..F-14 added 2026-10-01.
 ## Open decisions this appendix leaves standing
 
 1. **The Settings enable button** waits on the trusted admin prompt (COMP-10).
+
+---
+
+# Appendix G — amendment record, 2026-10-02
+
+**Applied inline to this volume on 2026-10-02**, from owner rulings of the
+same day (ADR 0071, ADR 0072).
+
+| ID | Target | Change | Applied |
+|---|---|---|---|
+| G-01 | COMP-18 §1.3, new §3.2 | `annotation_create` takes an optional `kind`, `"answer"` or `"error"`: a second bounded caller choice beside the pick. Overlay colours come from the owner's `annotations` block in `abyss.kdl`, never from a caller | yes |
+| G-02 | COMP-18 §2 | The overlay face is JetBrains Mono from a checked-in pre-rasterised atlas, separate from trusted UI's face | yes |
+| G-03 | COMP-18 §3 | The rectangle on `annotation_create` is optional; without one the overlay is unanchored, placed by the compositor, and cannot carry a pick | yes |
+| G-04 | COMP-18 §3.1 | The pick marker is a rimmed wash and a label pill; the left bar is gone. The ≤35 px furniture bound of ADR 0054 still holds | yes |
+| G-05 | COMP-17 §3 | Settings edits Oracle Eyes through an `oracle-eyes` block in `abyss.kdl`, keeping Settings a client of the COMP-13 §1.4 write API and nothing else. A changed model command is withheld until approved in the COMP-10 §3.11 prompt (ADR 0072) | yes |
 
 ---
 

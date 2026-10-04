@@ -216,6 +216,75 @@ pub fn ring<'a, Message: 'a>(diameter: f32, thickness: f32, stroke: Color) -> El
         .into()
 }
 
+/// A [`ring`] that brightens under the pointer, filling whatever box it is
+/// given and centred in it.
+///
+/// A widget, not a styled [`ring`], because the ring sits inside a button
+/// and iced hands a button's hover status to the button's own style only —
+/// its content never sees it. A canvas does see the cursor, so laid over the
+/// button's whole box it knows the pointer is on the button and strokes
+/// `hover` instead of `rest`. It captures nothing, so the press still lands
+/// on the button.
+pub fn hover_ring<'a, Message: 'a>(
+    diameter: f32,
+    thickness: f32,
+    rest: Color,
+    hover: Color,
+) -> Element<'a, Message, Theme> {
+    iced::widget::canvas(HoverRing {
+        diameter,
+        thickness,
+        rest,
+        hover,
+    })
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+struct HoverRing {
+    diameter: f32,
+    thickness: f32,
+    rest: Color,
+    hover: Color,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for HoverRing {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        cursor: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas;
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        // The ring's band, between its outer edge and the hole: the same
+        // circle `ring` draws as a container border.
+        let outer = self.diameter / 2.0;
+        let path = canvas::Path::new(|b| {
+            b.circle(frame.center(), outer);
+            b.circle(frame.center(), (outer - self.thickness).max(0.0));
+        });
+        let stroke = if cursor.is_over(bounds) {
+            self.hover
+        } else {
+            self.rest
+        };
+        frame.fill(
+            &path,
+            canvas::Fill {
+                style: canvas::Style::Solid(stroke),
+                rule: canvas::fill::Rule::EvenOdd,
+            },
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
 /// A hollow rounded rect: a frame with nothing inside it.
 ///
 /// A widget for the same reason [`ring`] is one — on a translucent surface a

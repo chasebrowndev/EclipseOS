@@ -478,6 +478,36 @@ impl Capturer {
     }
 
     pub fn grab(&mut self, region: Region) -> Result<Frame, String> {
+        let started = Instant::now();
+        let result = self.grab_traced(region);
+        let ms = started.elapsed().as_millis() as u64;
+        match &result {
+            Ok(f) => {
+                let hash = if tracing::enabled!(tracing::Level::TRACE) {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    f.pixels.hash(&mut h);
+                    h.finish()
+                } else {
+                    0
+                };
+                tracing::debug!(
+                    ms,
+                    width = f.width,
+                    height = f.height,
+                    bytes = f.pixels.len(),
+                    origin = ?f.origin,
+                    pixel_hash = hash,
+                    "capture: frame"
+                );
+            }
+            // A dropped capture: the reason is the user-facing error.
+            Err(e) => tracing::debug!(ms, ?region, error = %e, "capture: dropped"),
+        }
+        result
+    }
+
+    fn grab_traced(&mut self, region: Region) -> Result<Frame, String> {
         if region.w <= 0 || region.h <= 0 {
             return Err(format!("empty capture region {region:?}"));
         }
@@ -491,6 +521,7 @@ impl Capturer {
             )
         })?;
         let out = geoms[idx];
+        tracing::trace!(?region, output = idx, logical = ?out.logical, "capture: output picked");
         if self.state.outputs[idx].transform != Transform::Normal {
             // A rotated output means the capture buffer is in a different
             // basis than the logical rectangle, and cropping it with this
@@ -580,6 +611,7 @@ impl Capturer {
             .find(|f| PixFmt::from_shm(**f) == Some(fmt))
             .expect("just matched");
 
+        tracing::trace!(buffer_w = bw, buffer_h = bh, format = ?fmt_name(&shm_fmt), "capture: session constraints");
         let crop = logical_to_buffer(region, &out)
             .ok_or_else(|| format!("{region:?} lies outside the captured output"))?;
 
@@ -629,6 +661,10 @@ impl Capturer {
             origin: buffer_to_logical(crop, &out),
         })
     }
+}
+
+fn fmt_name(f: &wl_shm::Format) -> String {
+    format!("{f:?}")
 }
 
 /// The one message the owner can act on.

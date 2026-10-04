@@ -48,6 +48,14 @@ fn path() -> Option<PathBuf> {
     }
 }
 
+/// The store entry for the Oracle Eyes model command (owner decision 3,
+/// ADR 0067's path), beside the widget entries. Its hash is
+/// [`super::widget_hash::model_command_hash`], derived under its own context,
+/// so a widget that happens to carry this name can never approve the model
+/// command, nor the reverse: the worst it does is overwrite the entry and
+/// make the owner be asked again.
+pub const MODEL_COMMAND_KEY: &str = "oracle-eyes:model-command";
+
 /// Recorded approvals, name → accepted hash, one entry per name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Approvals(Vec<(String, WidgetHash)>);
@@ -346,7 +354,13 @@ mod tests {
                 if t.starts_with("//") {
                     continue;
                 }
-                for name in ["record_approval", "persist", "revert_widget", "remove_widget"] {
+                for name in [
+                    "record_approval",
+                    "persist",
+                    "revert_widget",
+                    "remove_widget",
+                    "revert_model_command",
+                ] {
                     let call = format!("{name}(");
                     if !t.contains(&call) {
                         continue;
@@ -359,6 +373,6 @@ mod tests {
                 }
             }
         }
-        assert_eq!(defs, 4, "the four helpers were not all found");
+        assert_eq!(defs, 5, "the five helpers were not all found");
     }
 }

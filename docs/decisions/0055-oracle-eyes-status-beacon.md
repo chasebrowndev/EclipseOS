@@ -43,3 +43,14 @@ Option 3. Oracle-Eyes listens on `$XDG_RUNTIME_DIR/oracle-eyes/eye.sock`
   Same-uid processes can already see the daemon's process and its `claude`
   children, so this discloses nothing new of substance.
 - The compositor stores `bar.eye` as a DE setting and knows nothing else.
+
+## Amendment: debug mode
+Oracle-Eyes gained a debug mode (`--debug` / `OE_DEBUG=1`). A debug daemon
+prefixes every beacon line with a `debug ` token: `debug off`, `debug watch`,
+`debug think`, and greets each new subscriber with `debug off` even when idle.
+Non-debug lines are unchanged and the vocabulary after the token is the same
+three words, so nothing screen-derived crosses the socket. Hyperion parses an
+optional leading `debug` token and draws a red eye that is always shown,
+whatever the state, in a layer namespaced `eclipse-eye-debug` so the
+hide-layer rule no longer omits it. An unknown first token still reads as
+`off`.

@@ -247,6 +247,10 @@ pub struct Row {
     pub doc: String,
     /// True when a change only takes effect after a compositor restart.
     pub needs_restart: bool,
+    /// `"pending"` or `"approved"` on a key the compositor withholds until
+    /// the owner approves a change (`oracle-eyes.model-command`); `None` on
+    /// every other key.
+    pub approval: Option<String>,
     pub control: Control,
 }
 
@@ -271,6 +275,7 @@ impl Row {
                 .unwrap_or_default()
                 .to_owned(),
             needs_restart: v.get("reload").and_then(Value::as_str) == Some("restart"),
+            approval: v.get("approval").and_then(Value::as_str).map(str::to_owned),
             control: control_for(ty, constraints)?,
         })
     }
@@ -294,8 +299,25 @@ impl Row {
             "launcher.style" => "Launcher style",
             "launcher.bind.open" => "Open launcher",
             "launcher.bind.run" => "Run command",
+            "oracle-eyes.model-command" => "Model command",
+            "oracle-eyes.timeout-ms" => "Answer timeout",
+            "oracle-eyes.auto-interval-ms" => "Automatic interval",
+            "oracle-eyes.hold-ms" => "Answer hold time",
+            "oracle-eyes.debug" => "Debug mode",
+            "oracle-eyes.bind.select" => "Select a region",
+            "oracle-eyes.bind.dismiss" => "Dismiss answers",
+            "oracle-eyes.bind.expand" => "Expand an answer",
+            "oracle-eyes.bind.auto-toggle" => "Automatic mode",
+            "annotations.accent-text" => "Pick letter",
+            "annotations.panel-tint" => "Panel tint",
+            "annotations.panel-rim" => "Panel rim",
+            "annotations.region-outline" => "Region outline",
+            "annotations.selection-dim" => "Selection dim",
             "launcher.search.path-binaries" => "Programs on PATH",
             "launcher.search.terminal-apps" => "Terminal apps",
+            // `settings.search.frecency` reads "settings search, frecency":
+            // the word is the mechanism, "recent use" is what a person sees.
+            "launcher.search.frecency" | "settings.search.frecency" => "Rank by recent use",
             // The blur group flattens its `glass` and `frost` sub-nodes
             // (`pane::place_for`), so the leaf alone would lose which mode a
             // row tunes.
@@ -371,6 +393,13 @@ impl Row {
         }
     }
 
+    /// A string list as one line to edit, words split on spaces — or `None`
+    /// if any word holds whitespace itself, which a space-split field could
+    /// not give back. Such a list stays read-only rather than be mangled.
+    pub fn argv_text(&self) -> Option<String> {
+        argv_text(&self.value)
+    }
+
     pub fn as_bool(&self) -> bool {
         self.value.as_bool().unwrap_or(false)
     }
@@ -396,6 +425,35 @@ impl Row {
     }
 }
 
+/// See [`Row::argv_text`]. `null` (unset, or withheld until approved) is an
+/// empty line.
+pub fn argv_text(v: &Value) -> Option<String> {
+    match v {
+        Value::Null => Some(String::new()),
+        Value::Array(a) => {
+            let words = a.iter().map(Value::as_str).collect::<Option<Vec<&str>>>()?;
+            if words
+                .iter()
+                .any(|w| w.is_empty() || w.chars().any(char::is_whitespace))
+            {
+                return None;
+            }
+            Some(words.join(" "))
+        }
+        _ => None,
+    }
+}
+
+/// A typed argv line as the JSON array `set_config_value` takes for a
+/// string-list key.
+pub fn argv_value(text: &str) -> Value {
+    Value::Array(
+        text.split_whitespace()
+            .map(|w| Value::String(w.to_owned()))
+            .collect(),
+    )
+}
+
 /// Parse a whole `get_config` reply, dropping rows this build cannot render.
 pub fn parse_keys(reply: &Value) -> Vec<Row> {
     reply
@@ -409,6 +467,16 @@ pub fn parse_keys(reply: &Value) -> Vec<Row> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_argv_round_trips_through_its_line_unless_a_word_has_a_space() {
+        let v = json!(["claude", "--model", "sonnet"]);
+        let line = argv_text(&v).expect("editable");
+        assert_eq!(line, "claude --model sonnet");
+        assert_eq!(argv_value(&line), v);
+        assert_eq!(argv_text(&json!(["sh", "-c", "a b"])), None);
+        assert_eq!(argv_text(&Value::Null).as_deref(), Some(""));
+    }
 
     #[test]
     fn enum_width_picks_pills_or_dropdown() {

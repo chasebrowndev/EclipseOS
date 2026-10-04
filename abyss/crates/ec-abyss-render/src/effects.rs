@@ -443,6 +443,41 @@ pub fn compile_frost(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, Gles
     )
 }
 
+/// The annotation panel's backdrop (ADR 0071): the blur saturated to 140%
+/// about Rec.709 luma and cut to the panel's rounded rectangle. No tint and
+/// no grain: the tint is the panel texture's own fill, drawn over this, so
+/// the dumps (which cannot run a shader) and the screen agree on it.
+const HUD_BODY: &str = r#"
+const vec3 HUD_LUMA = vec3(0.2126, 0.7152, 0.0722);
+const float HUD_SATURATE = 1.4;
+
+void main() {
+    vec4 color = texture2D(tex, v_coords);
+    float l = dot(color.rgb, HUD_LUMA);
+    color.rgb = clamp(mix(vec3(l), color.rgb, HUD_SATURATE), 0.0, 1.0);
+    color = finish(color);
+
+    vec2 half_size = win_rect.zw * 0.5;
+    vec2 p = gl_FragCoord.xy - (win_rect.xy + half_size);
+    float r = min(radius, min(half_size.x, half_size.y));
+    vec2 q = abs(p) - half_size + r;
+    float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+    gl_FragColor = color * (1.0 - smoothstep(-0.5, 0.5, d));
+}
+"#;
+
+/// Compile the annotation panel's backdrop program. Uniforms are
+/// [`rounding_uniforms`]'. Cached by the caller.
+pub fn compile_hud_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    renderer.compile_custom_texture_shader(
+        format!("{BACKDROP_HEAD}{HUD_BODY}"),
+        &[
+            UniformName::new("win_rect", UniformType::_4f),
+            UniformName::new("radius", UniformType::_1f),
+        ],
+    )
+}
+
 /// The glass program's uniforms, in the order [`glass_uniforms`] sets them.
 const GLASS_UNIFORMS: [(&str, UniformType); 11] = [
     ("win_rect", UniformType::_4f),

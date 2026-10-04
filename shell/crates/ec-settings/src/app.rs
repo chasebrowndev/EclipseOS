@@ -86,6 +86,9 @@ pub enum Message {
     Browsed(String, Result<Option<std::path::PathBuf>, String>),
     Reload,
     Dismiss,
+    /// "Clear usage history": forget what the launcher and the settings
+    /// search remember about what was opened.
+    ClearUsage,
     OutputEnabled(u64, bool),
     OutputScale(u64, f64),
     OutputScaleReleased(u64),
@@ -114,6 +117,8 @@ pub enum Message {
     Bar(crate::taskbar::Msg),
     /// The sidebar search's messages.
     Search(crate::search_ui::Msg),
+    /// Launch the policy viewer, from the Oracle Eyes capture hero.
+    OpenPolicyViewer,
 }
 
 /// Somewhere to take the user: a page, and optionally a row on it by its
@@ -264,7 +269,18 @@ pub struct App {
     pub(crate) addons: Option<ec_ipc::Addons>,
     /// The sidebar search: its index over `rows`, the query and its hits.
     pub(crate) search: crate::search_ui::Search,
+    /// The "Clear usage history" button's last press, and whether it worked.
+    /// Shown for `CLEARED_FOR`, then the button comes back.
+    cleared: Option<(Instant, bool)>,
+    /// Oracle Eyes' capture grant, read off `policy.kdl` with the widgets.
+    pub(crate) oe_grant: crate::oracle::Grant,
+    /// The policy viewer this app launched, kept so it is reaped and a
+    /// second click while it runs does not open a second one.
+    viewer: Option<std::process::Child>,
 }
+
+/// How long "Cleared" stands in for the button.
+const CLEARED_FOR: Duration = Duration::from_millis(2500);
 
 impl Default for App {
     fn default() -> Self {
@@ -317,6 +333,9 @@ impl App {
             bar: crate::taskbar::Bar::default(),
             addons: None,
             search: crate::search_ui::Search::default(),
+            cleared: None,
+            oe_grant: crate::oracle::Grant::Unread,
+            viewer: None,
         };
         // Debug builds only: open with a tray entry selected, so the selected
         // state can be screenshotted without pointer injection.
@@ -376,11 +395,21 @@ impl App {
     /// (an add-on installed, a widget withheld, a prompt answered).
     fn read_widgets(&mut self) {
         self.addons = self.conn.addons().ok();
+        self.oe_grant = crate::oracle::read_grant();
         if let Ok(w) = self.conn.widgets() {
             self.bar.customs = w;
         }
         if let Ok(s) = self.conn.widget_statuses() {
             self.bar.statuses = s;
+        }
+    }
+
+    /// A text field's draft as the JSON its key takes: a string, or for a
+    /// string-list key (the model command's argv line) the words as a list.
+    fn typed(&self, path: &str, text: &str) -> Value {
+        match self.key(path).map(|k| &k.control) {
+            Some(Control::List) => crate::schema::argv_value(text),
+            _ => Value::String(text.to_owned()),
         }
     }
 
@@ -685,6 +714,12 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 f.tick(now);
             }
             if app
+                .cleared
+                .is_some_and(|(at, ok)| ok && now.duration_since(at) >= CLEARED_FOR)
+            {
+                app.cleared = None;
+            }
+            if app
                 .flash
                 .as_ref()
                 .is_some_and(|(_, at)| now.duration_since(*at) >= REVEAL)
@@ -693,6 +728,29 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             }
         }
         Message::Dismiss => app.banner = None,
+        Message::ClearUsage => {
+            // Under test the real history is never touched.
+            let done = cfg!(test) || ec_services::frecency::clear_all().is_ok();
+            if done {
+                app.search.forget();
+            }
+            app.cleared = Some((Instant::now(), done));
+        }
+        Message::OpenPolicyViewer => {
+            let running = app
+                .viewer
+                .as_mut()
+                .is_some_and(|c| matches!(c.try_wait(), Ok(None)));
+            if !running {
+                match std::process::Command::new("ec-policy-viewer").spawn() {
+                    Ok(child) => app.viewer = Some(child),
+                    Err(e) => {
+                        app.viewer = None;
+                        app.banner = Some(Problem::Other(format!("could not start ec-policy-viewer: {e}")));
+                    }
+                }
+            }
+        }
         Message::Reload => app.reload(),
 
         Message::Toggled(path, on) => app.write(&path, Value::Bool(on)),
@@ -729,7 +787,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::Edited(path, text) => {
             // Validation is per keystroke so the field can refuse before the
             // write. It is a `dry_run`-shaped call: nothing is spliced.
-            match app.conn.validate(&path, Value::String(text.clone())) {
+            match app.conn.validate(&path, app.typed(&path, &text)) {
                 Ok(()) => {
                     app.invalid.remove(&path);
                 }
@@ -744,7 +802,8 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 return Task::none();
             }
             if let Some(text) = app.drafts.remove(&path) {
-                app.write(&path, Value::String(text));
+                let v = app.typed(&path, &text);
+                app.write(&path, v);
             }
         }
 
@@ -909,7 +968,9 @@ impl App {
 
     /// Whether the sidebar or a lit row is moving, so the frame clock runs.
     fn nav_moving(&self) -> bool {
-        self.flash.is_some() || self.folds.values().any(Animated::animating)
+        self.flash.is_some()
+            || self.cleared.is_some_and(|(_, ok)| ok)
+            || self.folds.values().any(Animated::animating)
     }
 
     /// How lit row `path` is: 1 just revealed, falling to 0 over `REVEAL`.
@@ -1141,6 +1202,10 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
             let (state, measure) = crate::addons::status(app);
             controls.push(status_chip(&state, &measure));
         }
+        Section::OracleEyes => {
+            let (state, measure) = crate::oracle::status(app);
+            controls.push(status_chip(&state, &measure));
+        }
         _ => {}
     }
     let mut blocks = vec![header(
@@ -1155,6 +1220,11 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         Page::Display => blocks.extend(display_pane(app)),
         Page::Network => blocks.extend(network::blocks(&app.net, app.glass_radius)),
         Page::Addons => blocks.extend(crate::addons::blocks(app)),
+        // A status grid, then the rows: two silhouettes, not two panels of rows.
+        Page::OeGeneral => {
+            blocks.push(crate::oracle::hero(app));
+            blocks.push(schema_page(app));
+        }
         p if p.section() == Section::Taskbar => blocks.extend(crate::taskbar::blocks(app, p)),
         _ => blocks.push(schema_page(app)),
     }
@@ -1287,7 +1357,12 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             "mode" => crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()),
             p if p == mode_path => crate::schema::blur_blurb(current),
             "ui.show-key-hints" => Some("Keyboard hints in the launcher and start menu"),
+            "launcher.search.frecency" => Some(FRECENCY_BLURB),
+            "settings.search.frecency" => Some(FRECENCY_BLURB),
             TERMINAL_APPS => Some("Opened in the terminal command above."),
+            crate::oracle::MODEL_COMMAND => Some(crate::oracle::approval_line(key)),
+            "oracle-eyes.bind.select" => Some("A chord like Super+A. \"none\" leaves an action unbound."),
+            "oracle-eyes.debug" => Some("While on, the taskbar eye turns red and shows in screen captures."),
             _ => None,
         };
         if let Some(blurb) = blurb {
@@ -1340,6 +1415,19 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
         }
     }
 
+    // The history these switches govern is cleared from the page that holds
+    // either one, under the last of its rows.
+    if app
+        .rows
+        .iter()
+        .any(|k| is_frecency(&k.path) && page_of(&k.path) == Some(app.page))
+    {
+        if let Some((_, rows)) = groups.last_mut() {
+            rows.push(hairline());
+            rows.push(clear_usage_row(app.cleared));
+        }
+    }
+
     if groups.is_empty() {
         return edge_note(
             "Nothing to set here yet",
@@ -1362,6 +1450,47 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
         }
     }
     panel(app.glass_radius, col).into()
+}
+
+const FRECENCY_BLURB: &str =
+    "History stays on this device and stores no search text, only what was opened and when.";
+
+fn is_frecency(path: &str) -> bool {
+    matches!(path, "launcher.search.frecency" | "settings.search.frecency")
+}
+
+/// "Usage history" with its one action. Pressed, the button gives way to a
+/// plain "Cleared" (or the failure) for a moment: confirmed in place, no modal,
+/// since the history is only a ranking hint and rebuilds itself.
+fn clear_usage_row<'a>(cleared: Option<(Instant, bool)>) -> Element<'a, Message, Theme> {
+    let control: Element<'a, Message, Theme> = match cleared {
+        // Padded as the button is, so the row does not change height.
+        Some((_, true)) => iced::widget::container(
+            iced::widget::text("Cleared")
+                .font(ec_ui::tokens::font::UI_MEDIUM)
+                .size(ec_ui::tokens::size::BODY_SMALL)
+                .style(theme::text_secondary),
+        )
+        .padding([space::PILL_Y, space::PILL_X])
+        .into(),
+        failed => {
+            let label = if failed.is_some() {
+                "Could not clear, retry"
+            } else {
+                "Clear usage history"
+            };
+            iced::widget::button(
+                iced::widget::text(label)
+                    .font(ec_ui::tokens::font::UI_MEDIUM)
+                    .size(ec_ui::tokens::size::BODY_SMALL),
+            )
+            .padding([space::PILL_Y, space::PILL_X])
+            .on_press(Message::ClearUsage)
+            .style(theme::danger)
+            .into()
+        }
+    };
+    list_row("Usage history", control)
 }
 
 /// One setting's row: [`list_row`] in a container carrying [`row_id`], so
@@ -1610,8 +1739,40 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
 
         // `set_config_value` writes one scalar at a dotted path; a list needs
         // the node editor. Shown so the setting is never hidden.
-        Control::List => mono(&key.display()),
+        // A string list is shown, not edited — except an argv a line can
+        // hold, which edits as one: words split on spaces.
+        Control::List => match key
+            .argv_text()
+            .filter(|_| key.path == crate::oracle::MODEL_COMMAND)
+        {
+            Some(line) => argv_field(app, key, line),
+            None => mono(&key.display()),
+        },
     }
+}
+
+/// The model command's argv as one editable line: the text field every text
+/// key uses, its draft written back as a list (`App::typed`).
+fn argv_field<'a>(app: &'a App, key: &'a Key, line: String) -> Element<'a, Message, Theme> {
+    let path = key.path.clone();
+    let shown = app.drafts.get(&key.path).cloned().unwrap_or(line);
+    let invalid = app.invalid.contains_key(&key.path);
+    let mut input = text_input("program and arguments", &shown)
+        .on_input(move |t| Message::Edited(path.clone(), t))
+        .font(font::DATA)
+        .size(size::MONO)
+        .style(if invalid {
+            theme::eclipse_input_invalid
+        } else {
+            theme::eclipse_input
+        });
+    if !invalid {
+        input = input.on_submit(Message::Committed(key.path.clone()));
+    }
+    iced::widget::container(verdict_row(input, invalid))
+        .width(Length::Fill)
+        .max_width(space::FIELD_W + space::CONTROL_GAP + space::VERDICT_W)
+        .into()
 }
 
 /// A text field and the slot that says whether its draft is refused. The
@@ -1849,6 +2010,7 @@ mod tests {
             writable: true,
             doc: String::new(),
             needs_restart: false,
+            approval: None,
             control: Control::Slider {
                 min: 0.0,
                 max: 64.0,

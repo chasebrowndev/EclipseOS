@@ -6,7 +6,7 @@
 # manager — so this unit can rely on the variable being set.
 #
 # It needs two grants to do anything, both revocable without touching this
-# unit: `capture { allow "oracle-eyes" }` in policy.kdl, and the annotation
+# unit: `capture { allow "ec-oracle-eyes" }` in policy.kdl, and the annotation
 # chords bound in abyss.kdl. With neither, it starts, connects and idles.
 [Unit]
 Description=Oracle-Eyes annotation daemon

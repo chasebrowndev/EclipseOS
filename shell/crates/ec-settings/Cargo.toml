@@ -29,6 +29,9 @@ ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 # status service's action handle.
 ec-services = { path = "../ec-services" }
 zbus = "5.19"
+# The Oracle Eyes pane reads the capture grant off disk with the policy
+# viewer's own reader, so the two can never disagree about policy.kdl.
+ec-policy-viewer = { path = "../ec-policy-viewer" }
 serde_json.workspace = true
 
 [dev-dependencies]

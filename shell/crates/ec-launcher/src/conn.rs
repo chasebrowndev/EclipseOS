@@ -133,6 +133,11 @@ pub fn fetch_launcher_config() -> LauncherConfig {
                     cfg.search.match_descriptions = b;
                 }
             }
+            "launcher.search.frecency" => {
+                if let Some(b) = value.as_bool() {
+                    cfg.search.frecency = b;
+                }
+            }
             _ => {}
         }
     }
