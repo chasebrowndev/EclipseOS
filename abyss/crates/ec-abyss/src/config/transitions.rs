@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The add-on transition-shader catalog (ADR 0071; hook `transition-shaders`).
+//! The add-on transition-shader catalog (ADR 0073; hook `transition-shaders`).
 //! Reading lives in `ec_abyss_config::transitions`; this half decides when it
 //! is read and watches the directory with inotify on the compositor loop,
 //! debounced, like the widget catalog (`catalog.rs`).

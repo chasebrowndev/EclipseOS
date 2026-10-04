@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Add-on transition shaders (ADR 0071 "Transition shaders"; ADR 0066 hook
+//! Add-on transition shaders (ADR 0073 "Transition shaders"; ADR 0066 hook
 //! `transition-shaders`).
 //!
 //! A style is a GLSL ES 1.00 fragment body shipped by an installed animation

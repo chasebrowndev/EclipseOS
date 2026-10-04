@@ -1,4 +1,4 @@
-# 0071 — Compositor animation system: events, presets, ghosts, transition shaders
+# 0073 — Compositor animation system: events, presets, ghosts, transition shaders
 Status: accepted
 Date: 2026-10-04
 Deciders: chase (owner), Claude (advisory)

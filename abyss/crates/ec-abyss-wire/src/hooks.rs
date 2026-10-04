@@ -16,7 +16,7 @@ pub enum Hook {
     /// globals, the `policyd` link and the agent lifecycle methods. Off is
     /// the normal state, not degraded mode (COMP-01 §6).
     Agents,
-    /// Add-on transition shaders (ADR 0071): abyss reads the package-owned
+    /// Add-on transition shaders (ADR 0073): abyss reads the package-owned
     /// transition catalog and compiles its fragment shaders. Not a gated
     /// method; the gate table is unaffected.
     TransitionShaders,

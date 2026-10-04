@@ -105,7 +105,7 @@ smithay::backend::renderer::element::render_elements! {
     // A closed window's last frame, played out as a ghost (`anim::Ghost`).
     ScaledTexture=anim::ScaledElement<smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>>,
     // A window's offscreen copy drawn through an add-on transition shader
-    // (ADR 0071); see `anim::shader`. Only while that run plays.
+    // (ADR 0073); see `anim::shader`. Only while that run plays.
     Transition=anim::ShaderElement,
 }
 
@@ -947,7 +947,7 @@ fn live_content(
         .collect()
 }
 
-/// Draw a window through an add-on transition shader (ADR 0071): `content`
+/// Draw a window through an add-on transition shader (ADR 0073): `content`
 /// builds its elements with the geometry's top-left at the given point inside
 /// the offscreen copy, which is the window grown by the run's margin. `at` is
 /// the geometry as laid out, output-local logical; `rounded` is the corner
