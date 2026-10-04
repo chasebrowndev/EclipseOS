@@ -597,6 +597,9 @@ pub struct LauncherSearch {
     pub terminal_apps: bool,
     /// Match the query against an entry's `Comment` too.
     pub match_descriptions: bool,
+    /// Rank applications the human launches often first, and remember
+    /// launches (a count and a time per desktop id, never the query).
+    pub frecency: bool,
 }
 
 impl Default for LauncherSearch {
@@ -605,6 +608,7 @@ impl Default for LauncherSearch {
             path_binaries: false,
             terminal_apps: true,
             match_descriptions: false,
+            frecency: true,
         }
     }
 }
@@ -654,6 +658,23 @@ pub struct Ui {
 impl Default for Ui {
     fn default() -> Self {
         Self { show_key_hints: true }
+    }
+}
+
+/// `settings { search { frecency } }`: the settings app's own preferences.
+/// Stored only; the app reads them over `get_config`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingsApp {
+    /// Nudge search results the human has opened before up among near ties,
+    /// and remember which results were opened (a path each, never the query).
+    pub search_frecency: bool,
+}
+
+impl Default for SettingsApp {
+    fn default() -> Self {
+        Self {
+            search_frecency: true,
+        }
     }
 }
 
@@ -1643,6 +1664,7 @@ pub struct Config {
     pub setup: Setup,
     pub launcher: Launcher,
     pub ui: Ui,
+    pub settings: SettingsApp,
     pub mode: Mode,
     pub components: Components,
     pub wallpaper: Wallpaper,
@@ -1709,6 +1731,7 @@ impl Default for Config {
             setup: Setup::default(),
             launcher: Launcher::default(),
             ui: Ui::default(),
+            settings: SettingsApp::default(),
             mode: Mode::Hybrid,
             components: Components::default(),
             wallpaper: Wallpaper::default(),
@@ -2526,6 +2549,7 @@ impl Config {
                 "bar" => self.apply_bar(node, launcher_style_set),
                 "launcher" => self.apply_launcher(node),
                 "ui" => self.apply_ui(node),
+                "settings" => self.apply_settings(node),
                 "clipboard" => self.apply_clipboard(node),
                 "capture" => self.apply_capture(node),
                 "xwayland" => self.apply_xwayland(node),
@@ -4217,7 +4241,10 @@ impl Config {
         let Some(children) = node.children() else { return };
         for n in children.nodes() {
             let name = n.name().value();
-            if !matches!(name, "path-binaries" | "terminal-apps" | "match-descriptions") {
+            if !matches!(
+                name,
+                "path-binaries" | "terminal-apps" | "match-descriptions" | "frecency"
+            ) {
                 self.unknown_key(n, "launcher.search", "launcher search key");
                 continue;
             }
@@ -4234,6 +4261,7 @@ impl Config {
             match name {
                 "path-binaries" => search.path_binaries = value,
                 "terminal-apps" => search.terminal_apps = value,
+                "frecency" => search.frecency = value,
                 _ => search.match_descriptions = value,
             }
         }
@@ -4284,6 +4312,27 @@ impl Config {
                     Some(None) => self.reject(n, "ui show-key-hints expects #true or #false"),
                 },
                 _ => self.unknown_key(n, "ui", "ui key"),
+            }
+        }
+    }
+
+    fn apply_settings(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            if n.name().value() != "search" {
+                self.unknown_key(n, "settings", "settings key");
+                continue;
+            }
+            let Some(inner) = n.children() else { continue };
+            for k in inner.nodes() {
+                match k.name().value() {
+                    "frecency" => match arg(k).map(KdlValue::as_bool) {
+                        None => self.settings.search_frecency = true,
+                        Some(Some(b)) => self.settings.search_frecency = b,
+                        Some(None) => self.reject(k, "settings search frecency expects #true or #false"),
+                    },
+                    _ => self.unknown_key(k, "settings.search", "settings search key"),
+                }
             }
         }
     }
@@ -5388,7 +5437,9 @@ pub(crate) mod tests {
         assert!(!d.launcher.search.path_binaries);
         assert!(d.launcher.search.terminal_apps);
         assert!(!d.launcher.search.match_descriptions);
+        assert!(d.launcher.search.frecency);
         assert!(d.ui.show_key_hints);
+        assert!(d.settings.search_frecency);
 
         let c = cfg(concat!(
             "launcher {\n",
@@ -5407,6 +5458,10 @@ pub(crate) mod tests {
         assert!(!c.launcher.search.terminal_apps);
         assert!(c.launcher.search.match_descriptions);
         assert!(!c.ui.show_key_hints);
+
+        let c = cfg("settings { search { frecency #false; } }\n");
+        assert!(c.errors.is_empty(), "{:?}", c.errors);
+        assert!(!c.settings.search_frecency);
 
         let c = cfg("launcher { centered { width 20; anchor \"left\"; }; menu { max-rows 99; } }\n");
         assert_eq!(c.errors.len(), 3, "{:?}", c.errors);
