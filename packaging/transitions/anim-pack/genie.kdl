@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Funnels down toward the taskbar, as far as the margin reaches.
+label "Genie"
+events "minimize"
+shader "genie.frag"
+margin 256
+duration-ms 420
+curve "ease-in-out"

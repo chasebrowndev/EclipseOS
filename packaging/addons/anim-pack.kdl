@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Add-on manifest (ADR 0066): /usr/share/eclipse/addons/anim-pack.kdl, owned by
+// the eclipseos-anim-pack package. Turns on abyss's transition-shaders hook,
+// which reads the styles under /usr/share/eclipse/transitions/anim-pack/.
+id "anim-pack"
+name "Animation pack"
+hooks "transition-shaders"

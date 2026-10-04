@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Resolves out of a soft blur as it settles to full size.
+label "Materialize"
+events "window-open" "window-close"
+shader "materialize.frag"
+margin 24
+duration-ms 320
+curve "ease-out"
