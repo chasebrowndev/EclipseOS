@@ -13,10 +13,10 @@
 use std::fmt::Write as _;
 
 use ec_abyss_config::schema::{
-    rule_owner, Collection, Dv, Form, Key, Owner, Reload, Ty, ANIMATIONS, ANIMATION_CURVES,
-    ANIMATION_DEFAULT_CURVE, ANIMATION_DEFAULT_MS, ANIMATION_MAX_MS, BIND_ACTIONS, COLLECTIONS, LID_CLOSE,
-    OUTPUT_KEYS, OUTPUT_TRANSFORMS, REFUSED_MATCHERS, RULE_ACTION_FORMS, RULE_MATCHERS, TABLE, WIDGET_KEYS,
-    WIDGET_SOURCES,
+    rule_owner, Collection, Dv, Form, Key, Owner, Reload, Ty, ANIMATION_CURVES, ANIMATION_DEFAULT_CURVE,
+    ANIMATION_DEFAULT_MS, ANIMATION_MAX_MS, BIND_ACTIONS, COLLECTIONS, EASING_CURVES, LEGACY_ANIMATIONS,
+    LID_CLOSE, OUTPUT_KEYS, OUTPUT_TRANSFORMS, REFUSED_MATCHERS, RULE_ACTION_FORMS, RULE_MATCHERS, TABLE,
+    WIDGET_KEYS, WIDGET_SOURCES,
 };
 
 fn ty(t: &Ty) -> String {
@@ -117,18 +117,62 @@ fn forms(out: &mut String, head: &str, fs: &[Form]) {
 }
 
 fn animations(out: &mut String) {
+    use ec_abyss_config::animations::{Animations, Event, Preset};
     let _ = writeln!(
         out,
-        "Each animation is off until named in an `animation` node inside `animations {{ }}`, and \
-         `animations.enabled` gates them all: `animation \"<name>\" duration=… curve=…`. \
-         `duration` is milliseconds, as an integer or a string with a unit (`\"150ms\"`, `\"2s\"`), \
-         at most {}s, default `{ANIMATION_DEFAULT_MS}`; a longer one drops the node. `curve` is one of \
-         {}, default `{ANIMATION_DEFAULT_CURVE}`.\n",
+        "Every event resolves the same way: the preset's row, then any field its block sets \
+         (`<event> {{ style …; duration-ms …; curve …; }}`), then `duration-ms / speed` rounded, \
+         then `reduce-motion`. A field left out keeps the preset's value, and a block may sit in \
+         any config file: fields merge key by key down the search path. A bad child drops its \
+         whole block. `style \"none\"` or `duration-ms 0` is no animation. `duration-ms` is at \
+         most {}s. `curve` is one of {}. A style is one of the event's own (below) or an add-on \
+         style `pack:style`; one this build does not know falls back to the event's first style. \
+         `reduce-motion` turns movement (`window-move`, `workspace-switch`, \
+         `window-to-workspace`) off, makes every event that offers `fade` a fade of at most \
+         100ms, `ease-out`, and turns the rest off. Animations are drawn only: a window is \
+         always mapped, focused and clickable at its final place, so input never lands on an \
+         in-between position (COMP-02 §9).\n",
         ANIMATION_MAX_MS / 1000,
         ticks(ANIMATION_CURVES),
     );
+    let _ = write!(out, "| event | styles |");
+    for p in Preset::ALL {
+        let _ = write!(out, " `{}` |", p.key());
+    }
+    let _ = write!(out, "\n| --- | --- |");
+    for _ in Preset::ALL {
+        out.push_str(" --- |");
+    }
+    out.push('\n');
+    for ev in Event::ALL {
+        let _ = write!(out, "| `{}` | {} |", ev.key(), ticks(ev.styles()));
+        for p in Preset::ALL {
+            let r = Animations {
+                preset: p,
+                ..Default::default()
+            }
+            .resolve(ev);
+            if r.off() {
+                out.push_str(" none |");
+            } else {
+                let _ = write!(out, " {} {}ms {} |", r.style, r.duration_ms, r.curve.key());
+            }
+        }
+        out.push('\n');
+    }
+    let _ = writeln!(
+        out,
+        "\nLegacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #false` \
+         is `preset \"off\"` (unless the block names a preset); with `enabled #true`, each \
+         `animation \"<name>\" duration=… curve=…` is a block for its event with the style \
+         below, `duration` as milliseconds (an integer or `\"150ms\"`, `\"2s\"`, default \
+         `{ANIMATION_DEFAULT_MS}`) and `curve` one of {} (default `{ANIMATION_DEFAULT_CURVE}`). \
+         Without `enabled #true` they do nothing. Writing `animations.preset` removes them. \
+         `migrate` also adds a `bar-layout` block for a written `bar.motion`, which stays.\n",
+        ticks(EASING_CURVES),
+    );
     let _ = writeln!(out, "| name | example | what it does |\n| --- | --- | --- |");
-    for f in ANIMATIONS {
+    for f in LEGACY_ANIMATIONS {
         let _ = writeln!(out, "| `{}` | {} | {} |", f.names[0], examples(f), f.doc);
     }
     out.push('\n');

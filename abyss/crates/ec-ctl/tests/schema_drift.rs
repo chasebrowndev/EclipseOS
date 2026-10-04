@@ -83,3 +83,41 @@ fn migrate_knows_every_policy_owned_rule_action() {
         "migrate::POLICY_RULE_ACTIONS has drifted from the schema; update it and this test"
     );
 }
+
+/// Keep in sync with `migrate::LEGACY_ANIMATION_MAP` and the constants next
+/// to it.
+#[test]
+fn migrate_knows_the_animation_forms() {
+    let map: &[(&str, &str, &str)] = &[
+        ("windows", "window-move", "glide"),
+        ("workspaces", "workspace-switch", "slide"),
+        ("fade", "window-open", "fade"),
+        ("border", "focus", "crossfade"),
+    ];
+    assert_eq!(
+        map,
+        schema::LEGACY_ANIMATION_MAP,
+        "migrate::LEGACY_ANIMATION_MAP has drifted"
+    );
+    assert_eq!(
+        &["linear", "ease-in", "ease-out", "ease-in-out"][..],
+        schema::EASING_CURVES,
+        "migrate::EASING_CURVES has drifted"
+    );
+    assert_eq!(
+        &["linear", "ease-in", "ease-out", "ease-in-out", "spring", "bounce"][..],
+        schema::ANIMATION_CURVES,
+        "migrate::ANIMATION_CURVES has drifted"
+    );
+    assert_eq!(schema::ANIMATION_DEFAULT_MS, 150);
+    assert_eq!(schema::ANIMATION_DEFAULT_CURVE, "ease-out");
+    assert_eq!(schema::ANIMATION_MAX_MS, 10_000);
+    let bar = TABLE
+        .iter()
+        .find(|k| k.path == "bar.motion.duration-ms")
+        .expect("bar.motion.duration-ms");
+    assert!(
+        matches!(bar.ty, schema::Ty::Int { max: 2000, .. }),
+        "migrate::BAR_MOTION_MAX_MS has drifted"
+    );
+}

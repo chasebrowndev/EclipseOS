@@ -22,7 +22,13 @@ use std::time::{Duration, Instant};
 use smithay::desktop::{Space, Window};
 use smithay::utils::{Logical, Point};
 
+use ec_abyss_config::animations::{Event, Resolved};
 use ec_abyss_config::Config;
+
+/// `ev` resolved, or `None` when it does not animate.
+fn on(config: &Config, ev: Event) -> Option<Resolved> {
+    Some(config.animations.resolve(ev)).filter(|r| !r.off())
+}
 
 /// One window's in-flight move.
 struct Move {
@@ -78,11 +84,11 @@ struct Ramp {
 }
 
 impl Ramp {
-    fn new(anim: &ec_abyss_config::Animation, now: Instant) -> Self {
+    fn new(anim: &Resolved, now: Instant) -> Self {
         Self {
             start: now,
             duration: Duration::from_millis(anim.duration_ms as u64),
-            curve: Curve::parse(&anim.curve),
+            curve: Curve::parse(anim.curve.key()),
         }
     }
 
@@ -128,7 +134,7 @@ impl AnimStore {
     /// Cheap and idempotent: a multi-output frame calls it once per output and
     /// gets the same answer, because everything here is derived from the clock.
     pub fn sync(&mut self, space: &Space<Window>, config: &Config, focus: Option<&Window>) {
-        let curve = config.animations.get("windows");
+        let curve = on(config, Event::WindowMove);
         let now = Instant::now();
 
         let live: Vec<(Window, Point<i32, Logical>)> = space
@@ -144,7 +150,7 @@ impl AnimStore {
         // `fade`: a window not seen last frame starts at zero alpha. The check
         // is against `targets`, which is updated below, so it has to happen
         // first.
-        if let Some(anim) = config.animations.get("fade") {
+        if let Some(anim) = &on(config, Event::WindowOpen) {
             for (window, _) in &live {
                 if !self.targets.contains_key(window) {
                     self.fades.insert(window.clone(), Ramp::new(anim, now));
@@ -156,12 +162,12 @@ impl AnimStore {
 
         // `border`: crossfade whenever a window's focus state flips. A window
         // seen for the first time takes its colour immediately.
-        let border_anim = config.animations.get("border");
+        let border_anim = on(config, Event::Focus);
         for (window, _) in &live {
             let active = focus == Some(window);
             match self.focused.insert(window.clone(), active) {
                 Some(was) if was != active => {
-                    if let Some(anim) = border_anim {
+                    if let Some(anim) = &border_anim {
                         self.borders
                             .insert(window.clone(), (Ramp::new(anim, now), active));
                     }
@@ -175,7 +181,7 @@ impl AnimStore {
 
         for (window, target) in live {
             let previous = self.targets.insert(window.clone(), target);
-            let Some(anim) = curve else {
+            let Some(anim) = &curve else {
                 // `windows` off: never start a move from a target change. Any
                 // move already in flight is left to finish — it can only have
                 // come from `workspaces`, which is a separate setting.
@@ -198,7 +204,7 @@ impl AnimStore {
                             target,
                             start: now,
                             duration: Duration::from_millis(anim.duration_ms as u64),
-                            curve: Curve::parse(&anim.curve),
+                            curve: Curve::parse(anim.curve.key()),
                         },
                     );
                 }
@@ -218,7 +224,7 @@ impl AnimStore {
     pub fn slide(
         &mut self,
         space: &Space<Window>,
-        anim: &ec_abyss_config::Animation,
+        anim: &Resolved,
         windows: &[Window],
         from: Point<i32, Logical>,
     ) {
@@ -234,7 +240,7 @@ impl AnimStore {
                     target,
                     start: now,
                     duration: Duration::from_millis(anim.duration_ms as u64),
-                    curve: Curve::parse(&anim.curve),
+                    curve: Curve::parse(anim.curve.key()),
                 },
             );
             // `sync` only starts a move when a window's target *changes*, so

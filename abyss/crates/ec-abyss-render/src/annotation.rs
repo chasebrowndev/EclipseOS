@@ -429,7 +429,7 @@ pub fn annotation_elements(
     behind: Option<&[AbyssRenderElement]>,
 ) -> Vec<AbyssRenderElement> {
     let now = Instant::now();
-    store.motion = config.animations.enabled;
+    store.motion = config.animations.motion();
     if !store.motion {
         store.leaving.clear();
     }

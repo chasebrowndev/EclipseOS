@@ -609,7 +609,7 @@ pub const TABLE: &[Key] = &[
     ),
     k(
         "bar.fold-curve",
-        Ty::Enum(ANIMATION_CURVES),
+        Ty::Enum(EASING_CURVES),
         Str("ease-out"),
         Abyss,
         Live,
@@ -828,9 +828,8 @@ pub const TABLE: &[Key] = &[
         Str("spring"),
         Abyss,
         Live,
-        "Curve for taskbar movement: one of the `animations` easings, or \
-       `spring`, which carries its speed through an interrupted move instead \
-       of jumping.",
+        "Curve for taskbar movement: one of the `animations` curves. `spring` \
+       carries its speed through an interrupted move instead of jumping.",
     ),
     // decoration
     k(
@@ -992,12 +991,424 @@ pub const TABLE: &[Key] = &[
     ),
     // animations
     k(
-        "animations.enabled",
+        "animations.preset",
+        Ty::Enum(ANIMATION_PRESETS),
+        Str("off"),
+        Abyss,
+        Live,
+        "Animation preset: `off`, `subtle` (short fades), `smooth` (springs, \
+       about 200-250ms) or `lively` (bounce, a little slower). Each event's own \
+       keys below override it.",
+    ),
+    k(
+        "animations.speed",
+        Ty::Float {
+            min: ANIMATION_MIN_SPEED,
+            max: ANIMATION_MAX_SPEED,
+        },
+        Float(1.0),
+        Abyss,
+        Live,
+        "Speed multiplier: every animation's duration is divided by it.",
+    ),
+    k(
+        "animations.reduce-motion",
         Ty::Bool,
         Bool(false),
         Abyss,
         Live,
-        "Master switch for geometry animations.",
+        "Replace motion with a short fade (at most 100ms), or with nothing \
+       for window moves and workspace changes.",
+    ),
+    k(
+        "animations.window-open.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for a window opening: `pop`, `fade`, `slide`, `zoom`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.window-open.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of a window opening, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.window-open.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for a window opening. Unset follows the preset.",
+    ),
+    k(
+        "animations.window-close.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for a window closing: `pop`, `fade`, `slide`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.window-close.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of a window closing, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.window-close.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for a window closing. Unset follows the preset.",
+    ),
+    k(
+        "animations.window-move.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for a window moving or resizing to its new place: `glide`, `morph`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.window-move.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of a window moving or resizing to its new place, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.window-move.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for a window moving or resizing to its new place. Unset follows the preset.",
+    ),
+    k(
+        "animations.workspace-switch.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for switching workspace: `slide`, `slide-vertical`, `fade`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.workspace-switch.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of switching workspace, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.workspace-switch.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for switching workspace. Unset follows the preset.",
+    ),
+    k(
+        "animations.window-to-workspace.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for a window sent to another workspace: `carry`, `fade`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.window-to-workspace.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of a window sent to another workspace, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.window-to-workspace.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for a window sent to another workspace. Unset follows the preset.",
+    ),
+    k(
+        "animations.minimize.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for a window minimizing to the taskbar: `shrink`, `fade`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.minimize.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of a window minimizing to the taskbar, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.minimize.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for a window minimizing to the taskbar. Unset follows the preset.",
+    ),
+    k(
+        "animations.unminimize.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for a window restoring from the taskbar: `shrink`, `fade`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.unminimize.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of a window restoring from the taskbar, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.unminimize.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for a window restoring from the taskbar. Unset follows the preset.",
+    ),
+    k(
+        "animations.fullscreen.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for a window entering or leaving fullscreen: `morph`, `fade`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.fullscreen.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of a window entering or leaving fullscreen, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.fullscreen.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for a window entering or leaving fullscreen. Unset follows the preset.",
+    ),
+    k(
+        "animations.layer-open.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for a panel (layer surface) opening: `slide`, `fade`, `pop`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.layer-open.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of a panel (layer surface) opening, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.layer-open.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for a panel (layer surface) opening. Unset follows the preset.",
+    ),
+    k(
+        "animations.layer-close.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for a panel (layer surface) closing: `slide`, `fade`, `pop`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.layer-close.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of a panel (layer surface) closing, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.layer-close.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for a panel (layer surface) closing. Unset follows the preset.",
+    ),
+    k(
+        "animations.focus.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for a border changing colour as focus moves: `crossfade`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.focus.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of a border changing colour as focus moves, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.focus.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for a border changing colour as focus moves. Unset follows the preset.",
+    ),
+    k(
+        "animations.chip-add.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for a taskbar chip appearing: `grow`, `fade`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.chip-add.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of a taskbar chip appearing, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.chip-add.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for a taskbar chip appearing. Unset follows the preset.",
+    ),
+    k(
+        "animations.chip-remove.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for a taskbar chip leaving: `grow`, `fade`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.chip-remove.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of a taskbar chip leaving, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.chip-remove.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for a taskbar chip leaving. Unset follows the preset.",
+    ),
+    k(
+        "animations.bar-layout.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for taskbar chips and widgets moving to their new place: `glide`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.bar-layout.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of taskbar chips and widgets moving to their new place, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.bar-layout.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for taskbar chips and widgets moving to their new place. Unset follows the preset.",
+    ),
+    k(
+        "animations.toast.style",
+        Ty::Str,
+        Null,
+        Abyss,
+        Live,
+        "Style for a notification toast arriving or leaving: `slide`, `fade`, `none`, or an add-on style `pack:style`. Unset \
+       follows the preset.",
+    ),
+    k(
+        "animations.toast.duration-ms",
+        int(0, ANIMATION_MAX_MS as i64),
+        Null,
+        Abyss,
+        Live,
+        "Duration of a notification toast arriving or leaving, in ms before `speed`; 0 is off. Unset follows \
+       the preset.",
+    ),
+    k(
+        "animations.toast.curve",
+        Ty::Enum(ANIMATION_CURVES),
+        Null,
+        Abyss,
+        Live,
+        "Curve for a notification toast arriving or leaving. Unset follows the preset.",
     ),
     // xwayland
     k(
@@ -1511,16 +1922,23 @@ pub fn find(forms: &'static [Form], name: &str) -> Option<&'static Form> {
     forms.iter().find(|f| f.names.contains(&name))
 }
 
-/// Easing curves, shared by `animations` and `bar.fold-curve`.
-pub const ANIMATION_CURVES: &[&str] = &["linear", "ease-in", "ease-out", "ease-in-out"];
+/// Plain easings: `bar.fold-curve` and the legacy `animation` node.
+pub const EASING_CURVES: &[&str] = &["linear", "ease-in", "ease-out", "ease-in-out"];
+/// Every animation curve: the easings plus `spring` and `bounce`. In
+/// [`crate::animations::Curve`] order; a test pins the two together.
+pub const ANIMATION_CURVES: &[&str] = &["linear", "ease-in", "ease-out", "ease-in-out", "spring", "bounce"];
+/// `animations.preset`, in [`crate::animations::Preset`] order.
+pub const ANIMATION_PRESETS: &[&str] = &["off", "subtle", "smooth", "lively"];
+pub const ANIMATION_MIN_SPEED: f64 = 0.25;
+pub const ANIMATION_MAX_SPEED: f64 = 4.0;
+/// The legacy `animation` node's defaults.
 pub const ANIMATION_DEFAULT_CURVE: &str = "ease-out";
 pub const ANIMATION_DEFAULT_MS: u32 = 150;
-/// A longer `duration` is refused, not clamped.
+/// A longer duration is refused, not clamped.
 pub const ANIMATION_MAX_MS: u32 = 10_000;
 
-/// `bar.motion.curve`: the [`ANIMATION_CURVES`] easings plus `spring`. Its
-/// own list so `animations` keeps refusing `spring`; a test pins the prefix.
-pub const BAR_MOTION_CURVES: &[&str] = &["linear", "ease-in", "ease-out", "ease-in-out", "spring"];
+/// `bar.motion.curve`: the same curves as `animations`.
+pub const BAR_MOTION_CURVES: &[&str] = ANIMATION_CURVES;
 
 /// Built-in taskbar widget ids (ADR 0065). `custom:<name>` names a `widget`
 /// block instead.
@@ -1632,33 +2050,43 @@ pub const WIDGET_KEYS: &[Form] = &[
     ),
 ];
 
-/// `animations { animation "<name>" duration=… curve=… }` (COMP-02 §9). Each
-/// animation is off until named; an unknown name drops its node.
-pub const ANIMATIONS: &[Form] = &[
+/// The legacy `animations { enabled #true; animation "<name>" duration=… curve=… }`
+/// (COMP-02 §9), still read beside `enabled #true` and rewritten by
+/// `ec-ctl config migrate`. Each stands for a full override of one event:
+/// see [`LEGACY_ANIMATION_MAP`]. An unknown name drops its node.
+pub const LEGACY_ANIMATIONS: &[Form] = &[
     form(
         &["windows"],
         "",
         &[r#"animation "windows" duration="150ms" curve="ease-out""#],
-        "A tiled or floating window sliding to its new position.",
+        "`window-move` with style `glide`.",
     ),
     form(
         &["workspaces"],
         "",
         &[r#"animation "workspaces" duration=200"#],
-        "The arriving workspace's windows sliding in from the side the switch came from.",
+        "`workspace-switch` with style `slide`.",
     ),
     form(
         &["fade"],
         "",
         &[r#"animation "fade" duration="1s" curve="linear""#],
-        "A newly mapped window fading in from zero alpha.",
+        "`window-open` with style `fade`.",
     ),
     form(
         &["border"],
         "",
         &[r#"animation "border" curve="ease-in-out""#],
-        "A border crossfading between its active and inactive colour when focus changes.",
+        "`focus` with style `crossfade`.",
     ),
+];
+
+/// Legacy `animation` name → (event, style) it overrides.
+pub const LEGACY_ANIMATION_MAP: &[(&str, &str, &str)] = &[
+    ("windows", "window-move", "glide"),
+    ("workspaces", "workspace-switch", "slide"),
+    ("fade", "window-open", "fade"),
+    ("border", "focus", "crossfade"),
 ];
 
 /// `windowrule` matchers (COMP-05 §4). All given matchers must match; a rule
@@ -2002,6 +2430,9 @@ fn widen(x: f32) -> f64 {
 
 pub fn get(c: &Config, path: &str) -> Option<Value> {
     use Value as V;
+    if let Some(v) = animation_event_get(c, path) {
+        return Some(v);
+    }
     let s = |o: &Option<String>| o.clone().map_or(V::Null, V::Str);
     let n = |o: &Option<u64>| o.map_or(V::Null, |v| V::Int(v as i64));
     let list = |v: &[String]| V::List(v.to_vec());
@@ -2119,7 +2550,9 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "decoration.glow.active" => V::Bool(c.decoration.glow.active),
         "decoration.glow.inactive" => V::Bool(c.decoration.glow.inactive),
         "decoration.glow.strength" => V::Int(c.decoration.glow.strength as i64),
-        "animations.enabled" => V::Bool(c.animations.enabled),
+        "animations.preset" => V::Str(c.animations.preset.key().into()),
+        "animations.speed" => V::Float(c.animations.speed),
+        "animations.reduce-motion" => V::Bool(c.animations.reduce_motion),
         "xwayland.enable" => V::Bool(c.xwayland.enable),
         "xwayland.scaling" => V::Str(
             if c.xwayland.scaling_client {
@@ -2162,6 +2595,24 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
                 .map(|(exe, ns)| format!("{exe}:{ns}"))
                 .collect(),
         ),
+        _ => return None,
+    })
+}
+
+/// `animations.<event>.{style,duration-ms,curve}`: the override as written,
+/// `Null` where the event follows its preset.
+fn animation_event_get(c: &Config, path: &str) -> Option<Value> {
+    let (ev, field) = path.strip_prefix("animations.")?.split_once('.')?;
+    let ev = crate::animations::Event::parse(ev)?;
+    let o = c.animations.overrides.get(&ev);
+    Some(match field {
+        "style" => o.and_then(|o| o.style.clone()).map_or(Value::Null, Value::Str),
+        "duration-ms" => o
+            .and_then(|o| o.duration_ms)
+            .map_or(Value::Null, |v| Value::Int(v as i64)),
+        "curve" => o
+            .and_then(|o| o.curve)
+            .map_or(Value::Null, |v| Value::Str(v.key().into())),
         _ => return None,
     })
 }
@@ -2267,6 +2718,11 @@ mod tests {
                 "oracle-eyes.bind.dismiss" => "Super+Shift+d".into(),
                 "oracle-eyes.bind.expand" => "Super+Shift+x".into(),
                 "oracle-eyes.bind.auto-toggle" => "Super+Shift+t".into(),
+                // One of the event's own styles.
+                p if p.starts_with("animations.") && p.ends_with(".style") => {
+                    let ev = p.split('.').nth(1).and_then(crate::animations::Event::parse)?;
+                    ev.styles()[1].to_string()
+                }
                 _ => "x".to_string(),
             }),
             // A list node is not a scalar assignment; covered by its own row on
@@ -2440,10 +2896,17 @@ mod tests {
     /// its construct, parses with no error and produces what it should.
     #[test]
     fn every_documented_form_parses() {
-        for f in ANIMATIONS {
+        for f in LEGACY_ANIMATIONS {
+            let &(_, ev, style) = LEGACY_ANIMATION_MAP
+                .iter()
+                .find(|(n, _, _)| *n == f.names[0])
+                .expect("every legacy form is mapped");
+            let ev = crate::animations::Event::parse(ev).expect("mapped to a real event");
+            assert!(ev.is_builtin(style), "{style}");
             for ex in f.examples {
                 let cfg = accepts(&format!("animations {{ enabled #true; {ex}; }}"));
-                assert!(cfg.animations.get(f.names[0]).is_some(), "{ex}");
+                let o = cfg.animations.overrides.get(&ev).expect(ex);
+                assert_eq!(o.style.as_deref(), Some(style), "{ex}");
             }
         }
         for f in RULE_MATCHERS {
@@ -2509,13 +2972,43 @@ mod tests {
         }
     }
 
-    /// `bar.motion.curve` is the `animations` easings plus `spring`, and
-    /// `animations` itself still refuses `spring`.
+    /// `bar.motion.curve` and `animations` take the same curves, `spring` and
+    /// `bounce` included, and the lists are the enums' own spellings. The
+    /// plain easings are their prefix.
     #[test]
-    fn bar_motion_curves_extend_animation_curves() {
-        assert_eq!(&BAR_MOTION_CURVES[..ANIMATION_CURVES.len()], ANIMATION_CURVES);
-        assert_eq!(&BAR_MOTION_CURVES[ANIMATION_CURVES.len()..], ["spring"]);
-        assert!(!ANIMATION_CURVES.contains(&"spring"));
+    fn curve_and_preset_lists_agree_with_the_enums() {
+        use crate::animations::{Curve, Preset};
+        assert_eq!(BAR_MOTION_CURVES, ANIMATION_CURVES);
+        assert_eq!(ANIMATION_CURVES, Curve::ALL.map(Curve::key));
+        assert_eq!(ANIMATION_PRESETS, Preset::ALL.map(Preset::key));
+        assert_eq!(&ANIMATION_CURVES[..EASING_CURVES.len()], EASING_CURVES);
+    }
+
+    /// Every event has its three keys, and nothing else sits under
+    /// `animations.` but the three page-level ones.
+    #[test]
+    fn every_animation_event_has_its_keys() {
+        use crate::animations::Event;
+        let mut want = vec![
+            "animations.preset".to_string(),
+            "animations.speed".to_string(),
+            "animations.reduce-motion".to_string(),
+        ];
+        for ev in Event::ALL {
+            for f in ["style", "duration-ms", "curve"] {
+                want.push(format!("animations.{}.{f}", ev.key()));
+            }
+        }
+        let have: Vec<String> = TABLE
+            .iter()
+            .filter(|k| k.path.starts_with("animations."))
+            .map(|k| k.path.to_string())
+            .collect();
+        assert_eq!(have, want);
+        assert!(TABLE
+            .iter()
+            .filter(|k| k.path.starts_with("animations."))
+            .all(|k| k.reload == Live && k.owner == Abyss));
     }
 
     /// A non-empty list default is an ordering, never an allow-list entry.

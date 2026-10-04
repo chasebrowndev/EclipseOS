@@ -82,21 +82,80 @@ pub fn set_value(text: &str, path: &str, value: &KdlValue) -> Result<String, Edi
 const SUPERSEDES: &[(&str, &str)] = &[
     ("decoration.blur.mode", "decoration.blur.enabled"),
     ("launcher.style", "bar.launcher-style"),
+    // A preset replaces the legacy master switch and the legacy per-name
+    // nodes alike: picking a preset card resets every override.
+    ("animations.preset", "animations.enabled"),
+    ("animations.preset", "animations.animation"),
 ];
 
 fn drop_superseded(text: String, path: &str) -> Result<String, EditError> {
-    let Some(&(_, legacy)) = SUPERSEDES.iter().find(|(new, _)| *new == path) else {
+    let legacy: Vec<&str> = SUPERSEDES
+        .iter()
+        .filter(|(new, _)| *new == path)
+        .map(|(_, old)| *old)
+        .collect();
+    if legacy.is_empty() {
         return Ok(text);
-    };
+    }
     let doc = parse(&text)?;
-    let parts: Vec<&str> = legacy.split('.').collect();
     let mut found = Vec::new();
-    nodes_at(&doc, &parts, &mut found);
+    for old in legacy {
+        let parts: Vec<&str> = old.split('.').collect();
+        nodes_at(&doc, &parts, &mut found);
+    }
     if found.is_empty() {
         return Ok(text);
     }
     let edits = found.into_iter().map(|n| removal(&text, n)).collect();
     reparse(splice_all(&text, edits))
+}
+
+/// Remove the dotted `path` from `text`: every definition of it, since an
+/// earlier one would otherwise take effect in its place. The key then
+/// follows the next file down the search path, or its default. A block left
+/// with no children is removed with it, up to but never including a
+/// top-level node (`capture {}` is not the same as no `capture`). Removing a
+/// key that is not there is byte-identical to the input.
+pub fn remove_value(text: &str, path: &str) -> Result<String, EditError> {
+    let parts: Vec<&str> = path.split('.').filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() || parts.len() != path.split('.').count() {
+        return Err(EditError::BadPath(path.to_string()));
+    }
+    let doc = parse(text)?;
+    let mut edits = Vec::new();
+    prune(text, doc.nodes(), &parts, true, &mut edits);
+    if edits.is_empty() {
+        return Ok(text.to_string());
+    }
+    reparse(splice_all(text, edits))
+}
+
+/// Removals for `parts` among `nodes`; returns how many of `nodes` go whole.
+fn prune(
+    text: &str,
+    nodes: &[KdlNode],
+    parts: &[&str],
+    top: bool,
+    edits: &mut Vec<(usize, usize, String)>,
+) -> usize {
+    let mut gone = 0;
+    for n in nodes.iter().filter(|n| n.name().value() == parts[0]) {
+        if parts.len() == 1 {
+            edits.push(removal(text, n));
+            gone += 1;
+            continue;
+        }
+        let Some(kids) = n.children() else { continue };
+        let mut inner = Vec::new();
+        let removed = prune(text, kids.nodes(), &parts[1..], false, &mut inner);
+        if !top && removed > 0 && removed == kids.nodes().len() && n.entries().is_empty() {
+            edits.push(removal(text, n));
+            gone += 1;
+        } else {
+            edits.extend(inner);
+        }
+    }
+    gone
 }
 
 /// Set a list-valued key — one node carrying every item as a positional
@@ -1152,6 +1211,44 @@ bar {
             let doc: KdlDocument = format!("n {q}").parse().unwrap();
             assert_eq!(doc.nodes()[0].entries()[0].value().as_string(), Some(s));
         }
+    }
+
+    #[test]
+    fn remove_takes_every_definition_and_prunes_emptied_blocks() {
+        let text = "// mine\nanimations {\n    preset \"smooth\"\n    window-open {\n        style \"fade\" // keep?\n    }\n    focus { curve \"linear\"; duration-ms 90; }\n}\nanimations {\n    window-open { style \"pop\"; }\n}\n";
+        let out = remove_value(text, "animations.window-open.style").unwrap();
+        assert_eq!(
+            out,
+            "// mine\nanimations {\n    preset \"smooth\"\n    focus { curve \"linear\"; duration-ms 90; }\n}\nanimations {\n}\n"
+        );
+        // A sibling keeps its block; inline, the node and its `;` go.
+        let out = remove_value(text, "animations.focus.curve").unwrap();
+        assert!(out.contains("    focus {  duration-ms 90; }\n"), "{out}");
+        // A top-level block stays even when emptied.
+        let out = remove_value("capture {\n    allow \"obs\"\n}\n", "capture.allow").unwrap();
+        assert_eq!(out, "capture {\n}\n");
+        // Nothing to remove: byte-identical. A bad path or file is refused.
+        assert_eq!(remove_value(text, "animations.toast.style").unwrap(), text);
+        assert_eq!(remove_value(FIXTURE, "general.nope").unwrap(), FIXTURE);
+        assert!(matches!(
+            remove_value(text, "animations..x"),
+            Err(EditError::BadPath(_))
+        ));
+        assert!(matches!(remove_value("a {", "a.b"), Err(EditError::Parse(_))));
+        // And a removed key is gone, not left with a default written in.
+        let out = remove_value(FIXTURE, "general.gaps-in").unwrap();
+        assert!(!out.contains("\tgaps-in"), "{out}");
+        assert!(out.contains("\tgaps-out 10\n"), "{out}");
+    }
+
+    /// Writing `animations.preset` drops the legacy master switch and the
+    /// legacy per-name nodes.
+    #[test]
+    fn a_preset_drops_the_legacy_animation_forms() {
+        let text =
+            "animations {\n    enabled #true\n    animation \"windows\" duration=100\n    speed 2.0\n}\n";
+        let out = set_value(text, "animations.preset", &KdlValue::String("smooth".into())).unwrap();
+        assert_eq!(out, "animations {\n    speed 2.0\n    preset smooth\n}\n");
     }
 
     /// Writing `launcher.style` removes the deprecated `bar.launcher-style`,

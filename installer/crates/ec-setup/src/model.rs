@@ -1640,7 +1640,7 @@ mod tests {
                 ("components.control-center", json!("none")),
                 ("decoration.rounding", json!(0)),
                 ("decoration.blur.mode", json!("glass")),
-                ("animations.enabled", json!(true)),
+                ("animations.preset", json!("smooth")),
                 ("bar.position", json!("bottom")),
             ],
             "applications are packages, so toggling one writes nothing"

@@ -39,6 +39,7 @@ pub fn dispatch(state: &mut AbyssState, outer: Decision, method: &str, params: &
     match method {
         "get_config" => get_config(state, outer, params),
         "set_config_value" => set_config_value(state, outer, params),
+        "set_config_values" => set_config_values(state, outer, params),
         "set_config_collection" => set_config_collection(state, outer, params),
         "validate_config" => validate_config(state, outer, params),
         "review_widget" => review_widget(state, params),
@@ -379,11 +380,50 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
         return Ok(json!({
             "keys": keys,
             "collections": { "widget": widgets, "wallpaper.output": wallpapers },
+            "animations": animations_json(&state.config.animations),
             "addons": addons,
             "hooks_on": hooks_on,
         }));
     }
     Ok(json!({ "keys": keys, "addons": addons, "hooks_on": hooks_on }))
+}
+
+/// `get_config.animations`: the preset, whether anything overrides it, and
+/// every event resolved, so Settings and the taskbar never expand a preset
+/// themselves. `styles` lists the built-ins and, after them, an add-on
+/// style the event is set to (the catalog of installed packs is not read
+/// yet), so a picker can always show the current value.
+fn animations_json(a: &crate::config::Animations) -> Value {
+    use crate::config::animations::Event;
+    let mut events = Map::new();
+    let mut styles = Map::new();
+    for ev in Event::ALL {
+        let r = a.resolve(ev);
+        events.insert(
+            ev.key().into(),
+            json!({
+                "style": r.style,
+                "duration-ms": r.duration_ms,
+                "curve": r.curve.key(),
+                "overridden": a.overrides.contains_key(&ev),
+            }),
+        );
+        let mut list: Vec<&str> = ev.styles().to_vec();
+        if let Some(s) = a.overrides.get(&ev).and_then(|o| o.style.as_deref()) {
+            if !ev.is_builtin(s) {
+                list.push(s);
+            }
+        }
+        styles.insert(ev.key().into(), json!(list));
+    }
+    json!({
+        "preset": a.preset.key(),
+        "custom": a.custom(),
+        "speed": a.speed,
+        "reduce_motion": a.reduce_motion,
+        "events": events,
+        "styles": styles,
+    })
 }
 
 // ----------------------------------------------------------- set_config_value
@@ -439,6 +479,90 @@ fn set_config_value(state: &mut AbyssState, outer: Decision, params: &Value) -> 
         "previous": previous,
         "applied": true,
         "restart_required": key.reload == schema::Reload::NeedsRestart,
+        "valid": true,
+        "errors": [],
+    }))
+}
+
+// ---------------------------------------------------------- set_config_values
+
+/// Several keys in one write: `{edits: [{path, value}], dry_run?}`. Every
+/// edit is gated, coerced and spliced before anything is written, then the
+/// lot goes through one [`commit`] and so one `config` event. A preset card
+/// in Settings is the reason: `preset` plus a `null` per override, which as
+/// separate writes would reload and redraw a dozen times through states the
+/// human never asked for. All or nothing: one bad edit refuses the batch.
+fn set_config_values(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply {
+    let edits = obj(params)
+        .get("edits")
+        .and_then(Value::as_array)
+        .filter(|e| !e.is_empty())
+        .ok_or_else(|| RpcError::invalid_params("edits must be a non-empty array of {path, value}"))?;
+    // Gate every path first, before any file is opened or `state.config` read.
+    let mut keys = Vec::with_capacity(edits.len());
+    for e in edits {
+        let path = e
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RpcError::invalid_params("each edit needs a string path"))?;
+        let key = lookup_key(path)?;
+        allow_file(outer, file_of(key.owner), Access::Write, path)?;
+        keys.push(key);
+    }
+    let dry_run = obj(params)
+        .get("dry_run")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    // Every writable key lives in one file today; a batch spanning two would
+    // need two commits, which is exactly what this method exists to avoid.
+    let owner = keys[0].owner;
+    if keys.iter().any(|k| k.owner != owner) {
+        return Err(RpcError::invalid_params(
+            "a batch may only write keys of one file",
+        ));
+    }
+    let target = target_path(&state.config, owner)
+        .ok_or_else(|| RpcError::invalid_params("no config file on the search path to write to"))?;
+    let before = std::fs::read_to_string(&target).unwrap_or_default();
+    let mut after = before.clone();
+    let mut previous = Map::new();
+    for (e, key) in edits.iter().zip(&keys) {
+        let raw = e
+            .get("value")
+            .ok_or_else(|| RpcError::invalid_params(&format!("{}: value is required", key.path)))?;
+        let edit = coerce_edit(raw, &key.ty)?;
+        after = edit
+            .apply(&after, key.path)
+            .map_err(|e| RpcError::invalid_params(&format!("{}: {e}", key.path)))?;
+        previous.entry(key.path).or_insert_with(|| {
+            schema::get(&state.config, key.path)
+                .as_ref()
+                .map_or(Value::Null, value_json)
+        });
+    }
+    let restart_required = keys.iter().any(|k| k.reload == schema::Reload::NeedsRestart);
+
+    if dry_run {
+        let errors = Config::check_text_with(&target, owner, &after, &state.config.catalog);
+        let errors: Vec<Value> = errors.iter().map(crate::config::error_json).collect();
+        return Ok(json!({
+            "file": target.display().to_string(),
+            "previous": previous,
+            "applied": false,
+            "restart_required": restart_required,
+            "valid": errors.is_empty(),
+            "errors": errors,
+        }));
+    }
+
+    commit(state, &target, &before, &after)?;
+
+    Ok(json!({
+        "file": target.display().to_string(),
+        "previous": previous,
+        "applied": true,
+        "restart_required": restart_required,
         "valid": true,
         "errors": [],
     }))
@@ -835,10 +959,12 @@ pub fn hash(text: &str) -> u64 {
     h.finish()
 }
 
-/// A checked value, ready to splice: one argument, or a whole list node.
+/// A checked value, ready to splice: one argument, a whole list node, or
+/// the key's removal.
 enum Edit {
     Value(kdl::KdlValue),
     List(Vec<kdl::KdlValue>),
+    Remove,
 }
 
 impl Edit {
@@ -846,12 +972,17 @@ impl Edit {
         match self {
             Self::Value(v) => edit::set_value(text, path, v),
             Self::List(vs) => edit::set_list(text, path, vs),
+            Self::Remove => edit::remove_value(text, path),
         }
     }
 }
 
+/// JSON `null` removes the key from the file, so it follows the next file
+/// down the search path or its default; anything else is checked against
+/// the key's type.
 fn coerce_edit(raw: &Value, ty: &schema::Ty) -> Result<Edit, RpcError> {
     match ty {
+        _ if raw.is_null() => Ok(Edit::Remove),
         schema::Ty::StrList => coerce_list(raw).map(Edit::List),
         _ => coerce(raw, ty).map(Edit::Value),
     }
@@ -1104,6 +1235,125 @@ mod tests {
         assert!(bad.is_err());
         assert!(crate::ipc::capture::take().iter().all(|(k, _)| k != "config"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `value: null` removes the key from the file, so it reads back as its
+    /// default; removing a key that is not written changes nothing.
+    #[test]
+    fn a_null_value_removes_the_key() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let dir = std::env::temp_dir().join(format!("abyss-set-null-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+        std::fs::write(
+            &file,
+            "animations {\n    preset \"smooth\"\n    focus {\n        duration-ms 300\n    }\n}\n",
+        )
+        .unwrap();
+        h.state.config.explicit = Some(file.clone());
+        let next = h.state.config.reload();
+        crate::config::apply_loaded(&mut h.state, next);
+        assert!(h.state.config.animations.custom());
+
+        let ok = set_config_value(
+            &mut h.state,
+            Decision::Allow,
+            &json!({"path": "animations.focus.duration-ms", "value": null}),
+        );
+        assert!(ok.is_ok(), "{:?}", ok.err().map(|e| e.message));
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(!text.contains("duration-ms"), "{text}");
+        assert!(text.contains("preset \"smooth\""), "{text}");
+        assert!(!h.state.config.animations.custom());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A batch is one write: every edit lands, and subscribers hear exactly
+    /// one `config` event. One bad edit refuses the lot and writes nothing.
+    #[test]
+    fn a_batch_emits_one_config_event() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let dir = std::env::temp_dir().join(format!("abyss-set-batch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+        std::fs::write(
+            &file,
+            "animations {\n    window-open {\n        style \"zoom\"\n    }\n}\n",
+        )
+        .unwrap();
+        h.state.config.explicit = Some(file.clone());
+        let next = h.state.config.reload();
+        crate::config::apply_loaded(&mut h.state, next);
+        crate::ipc::capture::take();
+
+        let ok = set_config_values(
+            &mut h.state,
+            Decision::Allow,
+            &json!({"edits": [
+                {"path": "animations.preset", "value": "lively"},
+                {"path": "animations.speed", "value": 2.0},
+                {"path": "animations.window-open.style", "value": null},
+            ]}),
+        );
+        let events = crate::ipc::capture::take();
+        assert!(ok.is_ok(), "{:?}", ok.err().map(|e| e.message));
+        assert_eq!(
+            events.iter().filter(|(k, _)| k == "config").count(),
+            1,
+            "{events:?}"
+        );
+        let a = &h.state.config.animations;
+        assert_eq!(a.preset, crate::config::animations::Preset::Lively);
+        assert!((a.speed - 2.0).abs() < f64::EPSILON);
+        assert!(!a.custom());
+
+        let before = std::fs::read_to_string(&file).unwrap();
+        let bad = set_config_values(
+            &mut h.state,
+            Decision::Allow,
+            &json!({"edits": [
+                {"path": "animations.preset", "value": "subtle"},
+                {"path": "animations.speed", "value": 9.0},
+            ]}),
+        );
+        assert!(bad.is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+        assert!(crate::ipc::capture::take().iter().all(|(k, _)| k != "config"));
+
+        // Empty, and denied, batches are refused before anything is read.
+        assert!(set_config_values(&mut h.state, Decision::Allow, &json!({"edits": []})).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `get_config` carries every event resolved, so no client expands a
+    /// preset itself.
+    #[test]
+    fn get_config_reports_resolved_animations() {
+        let mut a = crate::config::Animations {
+            preset: crate::config::animations::Preset::Smooth,
+            ..Default::default()
+        };
+        a.overrides.insert(
+            crate::config::animations::Event::WindowOpen,
+            crate::config::animations::Override {
+                style: Some("mypack:swirl".into()),
+                ..Default::default()
+            },
+        );
+        let v = animations_json(&a);
+        assert_eq!(v["preset"], "smooth");
+        assert_eq!(v["custom"], true);
+        assert_eq!(v["reduce_motion"], false);
+        assert_eq!(v["events"]["window-open"]["style"], "mypack:swirl");
+        assert_eq!(v["events"]["window-open"]["overridden"], true);
+        assert_eq!(v["events"]["window-close"]["overridden"], false);
+        assert!(v["events"]["focus"]["duration-ms"].is_u64());
+        let styles = v["styles"]["window-open"].as_array().unwrap();
+        assert_eq!(styles.last().unwrap(), "mypack:swirl");
+        assert_eq!(
+            v["events"].as_object().unwrap().len(),
+            crate::config::animations::Event::ALL.len()
+        );
     }
 
     /// A dry run runs the loader's check on the edited text: it reports

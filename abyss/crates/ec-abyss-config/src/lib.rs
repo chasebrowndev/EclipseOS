@@ -25,6 +25,7 @@
 //! catalog, the file watcher and the approval withholding stay in `ec-abyss`'s
 //! `config/`, which re-exports this crate as `crate::config`.
 
+pub mod animations;
 pub mod approvals;
 pub mod catalog;
 pub mod edit;
@@ -611,7 +612,7 @@ pub struct Bar {
     /// How long the fold slide takes. Height and exclusive zone animate together
     /// so tiled windows reflow with the bar; zero snaps.
     pub fold_duration_ms: u32,
-    /// Easing for that slide, one of `ANIMATION_CURVES`.
+    /// Easing for that slide, one of `EASING_CURVES`.
     pub fold_curve: String,
     /// Which edge of every output the bar is anchored to. The layer surface's
     /// anchor is chosen once, at surface creation (COMP-13 §1.1's `restart`
@@ -1237,34 +1238,11 @@ impl Glow {
     }
 }
 
-/// `animations { ... }` (COMP-13 §1.1, COMP-02 §9). Animations are geometry-only
-/// and must never change what an agent sees: `scene`/`get_tree` always report
-/// target geometry, not the interpolated value (COMP-08).
-#[derive(Debug, Clone, Default)]
-pub struct Animations {
-    pub enabled: bool,
-    /// `animation` nodes in file order; a later node for the same name wins.
-    pub curves: Vec<Animation>,
-}
-
-impl Animations {
-    /// The configured curve for `name`, if animations are on and one was given.
-    #[allow(dead_code)] // read once 9b geometry interpolation lands
-    pub fn get(&self, name: &str) -> Option<&Animation> {
-        if !self.enabled {
-            return None;
-        }
-        self.curves.iter().rev().find(|a| a.name == name)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Animation {
-    #[allow(dead_code)] // matched by Animations::get
-    pub name: String,
-    pub duration_ms: u32,
-    pub curve: String,
-}
+/// `animations { ... }` (COMP-13 §1.1, COMP-02 §9): see [`animations`].
+/// Animations are render-only and must never change what an agent sees:
+/// `scene`/`get_tree` always report target geometry, not the interpolated
+/// value (COMP-08).
+pub use animations::Animations;
 
 /// One `windowrule "<action>" { <matchers> }` block (COMP-05 §4).
 ///
@@ -1406,10 +1384,9 @@ fn parse_pair(source: &str, sep: char) -> Option<(i32, i32)> {
     Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
 }
 
-// Animation names and easing curves live in `schema` (ANIMATIONS,
-// ANIMATION_CURVES). Unknown values are rejected at parse time rather than
-// silently ignored at render time.
-use schema::ANIMATION_CURVES;
+// Easing curves live in `schema` (EASING_CURVES). Unknown values are
+// rejected at parse time rather than silently ignored at render time.
+use schema::EASING_CURVES;
 
 /// `input { ... }` (COMP-13 §1.2, COMP-04). Keyboard settings are pushed to the
 /// seat on reload; pointer settings are applied per libinput device as it
@@ -2935,7 +2912,7 @@ impl Config {
                     None => self.reject(n, "fold-duration-ms expects a duration"),
                 },
                 "fold-curve" => match arg(n).and_then(KdlValue::as_string) {
-                    Some(c) if ANIMATION_CURVES.contains(&c) => {
+                    Some(c) if EASING_CURVES.contains(&c) => {
                         self.bar.fold_curve = c.to_owned();
                     }
                     other => self.reject(
@@ -3909,41 +3886,160 @@ impl Config {
         }
     }
 
-    /// `animations { enabled #true; animation "windows" duration="150ms" curve="ease-out" }`.
+    /// `animations { preset "smooth"; speed 1.0; reduce-motion #false;
+    /// window-open { style "pop"; duration-ms 220; curve "spring" } }`.
+    ///
+    /// The legacy forms still parse (`ec-ctl config migrate` rewrites them):
+    /// `enabled #false` is `preset "off"` unless this block names a preset;
+    /// `animation "<name>" duration=… curve=…` is a full override of its
+    /// event, honoured only beside `enabled #true` as it always was, and only
+    /// where this block does not write that event the new way.
     fn apply_animations(&mut self, node: &KdlNode) {
         let Some(children) = node.children() else { return };
+        let mut legacy_enabled = None;
+        let mut legacy = Vec::new();
+        let mut preset_here = false;
+        let mut written_here = Vec::new();
         for n in children.nodes() {
-            match n.name().value() {
-                "enabled" => {
-                    self.animations.enabled = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
+            let name = n.name().value();
+            match name {
+                "preset" => match arg(n)
+                    .and_then(KdlValue::as_string)
+                    .and_then(animations::Preset::parse)
+                {
+                    Some(p) => {
+                        self.animations.preset = p;
+                        preset_here = true;
+                    }
+                    None => self.reject(
+                        n,
+                        format!(
+                            "animations preset must be one of {}",
+                            schema::ANIMATION_PRESETS.join(", ")
+                        ),
+                    ),
+                },
+                "speed" => match arg(n).and_then(as_f64) {
+                    Some(v) if (schema::ANIMATION_MIN_SPEED..=schema::ANIMATION_MAX_SPEED).contains(&v) => {
+                        self.animations.speed = v;
+                    }
+                    _ => self.reject(
+                        n,
+                        format!(
+                            "animations speed must be {}..={}",
+                            schema::ANIMATION_MIN_SPEED,
+                            schema::ANIMATION_MAX_SPEED
+                        ),
+                    ),
+                },
+                "reduce-motion" => {
+                    if let Some(b) = self.flag(n) {
+                        self.animations.reduce_motion = b;
+                    }
                 }
-                "animation" => self.apply_animation(n),
-                _ => self.unknown_key(n, "animations", "animations key"),
+                "enabled" => legacy_enabled = self.flag(n),
+                "animation" => {
+                    if let Some(o) = self.legacy_animation(n) {
+                        legacy.push(o);
+                    }
+                }
+                _ => match animations::Event::parse(name) {
+                    Some(ev) => {
+                        written_here.push(ev);
+                        self.apply_animation_event(n, ev);
+                    }
+                    None => self.unknown_key(n, "animations", "animations key"),
+                },
+            }
+        }
+        if legacy_enabled == Some(false) && !preset_here {
+            self.animations.preset = animations::Preset::Off;
+        }
+        if legacy_enabled == Some(true) {
+            for (ev, o) in legacy {
+                if !written_here.contains(&ev) {
+                    self.animations.overrides.insert(ev, o);
+                }
             }
         }
     }
 
-    fn apply_animation(&mut self, node: &KdlNode) {
-        let Some(name) = arg(node).and_then(KdlValue::as_string) else {
-            self.reject(node, "animation node needs a name argument");
-            return;
-        };
-        if schema::find(schema::ANIMATIONS, name).is_none() {
-            self.reject(node, format!("unknown animation name {name:?}"));
+    /// `window-open { style "pop"; duration-ms 220; curve "spring" }`. One bad
+    /// child drops the whole block, so an override never applies in part
+    /// (ADR 0064). Fields merge into what earlier files set, key by key.
+    fn apply_animation_event(&mut self, node: &KdlNode, ev: animations::Event) {
+        if let Some(e) = node.entries().first() {
+            self.reject_entry(e, format!("animations.{} takes a block, not arguments", ev.key()));
             return;
         }
-        let mut anim = Animation {
-            name: name.to_owned(),
-            duration_ms: schema::ANIMATION_DEFAULT_MS,
-            curve: schema::ANIMATION_DEFAULT_CURVE.to_owned(),
+        let Some(children) = node.children() else { return };
+        let mut o = animations::Override::default();
+        let before = self.errors.len();
+        for n in children.nodes() {
+            match n.name().value() {
+                "style" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(s) if ev.is_builtin(s) || animations::is_addon_style(s) => o.style = Some(s.to_owned()),
+                    other => self.reject(
+                        n,
+                        format!(
+                            "animations.{}.style must be one of {} or an add-on `pack:style` (other={other:?})",
+                            ev.key(),
+                            ev.styles().join(", ")
+                        ),
+                    ),
+                },
+                "duration-ms" => o.duration_ms = self.ms_in(n, 0, schema::ANIMATION_MAX_MS),
+                "curve" => match arg(n).and_then(KdlValue::as_string).and_then(animations::Curve::parse) {
+                    Some(c) => o.curve = Some(c),
+                    None => self.reject(
+                        n,
+                        format!(
+                            "animations.{}.curve must be one of {}",
+                            ev.key(),
+                            schema::ANIMATION_CURVES.join(", ")
+                        ),
+                    ),
+                },
+                _ => self.unknown_key(n, &format!("animations.{}", ev.key()), "animation key"),
+            }
+        }
+        if self.errors.len() != before || o.is_empty() {
+            return;
+        }
+        let into = self.animations.overrides.entry(ev).or_default();
+        if o.style.is_some() {
+            into.style = o.style;
+        }
+        if o.duration_ms.is_some() {
+            into.duration_ms = o.duration_ms;
+        }
+        if o.curve.is_some() {
+            into.curve = o.curve;
+        }
+    }
+
+    /// Legacy `animation "windows" duration="150ms" curve="ease-out"`, as the
+    /// full override of its event it stands for (see [`schema::LEGACY_ANIMATIONS`]).
+    /// A bad name, duration, curve or property drops the node (ADR 0064).
+    fn legacy_animation(&mut self, node: &KdlNode) -> Option<(animations::Event, animations::Override)> {
+        let Some(name) = arg(node).and_then(KdlValue::as_string) else {
+            self.reject(node, "animation node needs a name argument");
+            return None;
         };
+        let Some(&(_, ev, style)) = schema::LEGACY_ANIMATION_MAP.iter().find(|(n, _, _)| *n == name) else {
+            self.reject(node, format!("unknown animation name {name:?}"));
+            return None;
+        };
+        let ev = animations::Event::parse(ev).expect("legacy map names a real event");
+        let mut duration_ms = schema::ANIMATION_DEFAULT_MS;
+        let mut curve = animations::Curve::parse(schema::ANIMATION_DEFAULT_CURVE).expect("default curve");
         for e in node.entries() {
             let Some(key) = e.name().map(|k| k.value().to_owned()) else {
                 continue; // the positional name argument
             };
             match key.as_str() {
                 "duration" => match parse_duration_ms(e.value()) {
-                    Some(ms) if ms <= schema::ANIMATION_MAX_MS => anim.duration_ms = ms,
+                    Some(ms) if ms <= schema::ANIMATION_MAX_MS => duration_ms = ms,
                     _ => {
                         self.reject(
                             node,
@@ -3952,28 +4048,36 @@ impl Config {
                                 name
                             ),
                         );
-                        return;
+                        return None;
                     }
                 },
-                "curve" => match e.value().as_string() {
-                    Some(c) if ANIMATION_CURVES.contains(&c) => anim.curve = c.to_owned(),
+                // The legacy form never took the motion curves.
+                "curve" => match e.value().as_string().filter(|c| EASING_CURVES.contains(c)) {
+                    Some(c) => curve = animations::Curve::parse(c).expect("easing is a curve"),
                     other => {
                         self.reject(
                             node,
                             format!("unknown animation curve (name={}, other={:?})", name, other),
                         );
-                        return;
+                        return None;
                     }
                 },
                 // Dropped whole, like a bad duration or curve: a rejected
                 // node never applies in part (ADR 0064).
                 other => {
                     self.reject(node, format!("unknown animation property {other:?}"));
-                    return;
+                    return None;
                 }
             }
         }
-        self.animations.curves.push(anim);
+        Some((
+            ev,
+            animations::Override {
+                style: Some(style.to_owned()),
+                duration_ms: Some(duration_ms),
+                curve: Some(curve),
+            },
+        ))
     }
 
     /// `windowrule "float" { app-id "pavucontrol|org.gnome.Calculator" }`
@@ -6070,11 +6174,12 @@ pub(crate) mod tests {
     }
 
     /// Out-of-range and mistyped widget settings are refused, keeping the
-    /// default; a bad motion curve too, and `animations` still refuses spring.
+    /// default; a bad motion curve too, and the legacy `animation` node still
+    /// refuses a new-style event name.
     #[test]
     fn widget_settings_out_of_range_keep_the_default() {
         let cfg = widgets_cfg(
-            "bar { widgets { volume { step 0; max-percent 200; }; system-usage { interval-ms 100; disk-path \"home\"; }; }; motion { curve \"bounce\"; duration-ms 5000; } }\n",
+            "bar { widgets { volume { step 0; max-percent 200; }; system-usage { interval-ms 100; disk-path \"home\"; }; }; motion { curve \"wobble\"; duration-ms 5000; } }\n",
         );
         assert_eq!(cfg.errors.len(), 6, "{:?}", cfg.errors);
         assert_eq!(cfg.bar.widgets, BarWidgets::default());
@@ -6289,10 +6394,24 @@ pub(crate) mod tests {
             (true, true, false, 80)
         );
         assert!(cfg.decoration.any_window_effect());
-        let w = cfg.animations.get("windows").expect("windows curve");
-        assert_eq!((w.duration_ms, w.curve.as_str()), (150, "ease-out"));
-        assert_eq!(cfg.animations.get("workspaces").unwrap().duration_ms, 200);
-        assert!(cfg.animations.get("nope").is_none());
+        // Legacy nodes beside `enabled #true` are full overrides of their
+        // event, under the default preset.
+        use animations::{Curve, Event, Override};
+        assert_eq!(cfg.animations.preset, animations::Preset::Off);
+        assert_eq!(
+            cfg.animations.overrides.get(&Event::WindowMove),
+            Some(&Override {
+                style: Some("glide".into()),
+                duration_ms: Some(150),
+                curve: Some(Curve::EaseOut),
+            })
+        );
+        let ws = cfg.animations.resolve(Event::WorkspaceSwitch);
+        assert_eq!(
+            (ws.style.as_str(), ws.duration_ms, ws.curve),
+            ("slide", 200, Curve::Linear)
+        );
+        assert!(cfg.animations.resolve(Event::WindowOpen).off());
     }
 
     #[test]
@@ -6310,8 +6429,9 @@ pub(crate) mod tests {
         assert_eq!(cfg.decoration.active_opacity, 1.0);
         assert_eq!(cfg.decoration.inactive_opacity, 1.0);
         assert_eq!(cfg.decoration.dim_inactive, 0.0);
-        // Animations off means no curve resolves even if one were parsed.
-        assert!(!cfg.animations.enabled);
+        // Animations ship off (the default preset), with nothing overridden.
+        assert_eq!(cfg.animations.preset, animations::Preset::Off);
+        assert!(!cfg.animations.any() && !cfg.animations.custom());
     }
 
     /// Blur ships on, in glass mode (C-16): translucent surfaces get the
@@ -6596,7 +6716,7 @@ pub(crate) mod tests {
         assert_eq!(cfg.decoration.rounding, 9);
         assert_eq!(cfg.decoration.active_opacity, 1.0);
         assert_eq!(cfg.decoration.inactive_opacity, 1.0);
-        assert!(cfg.animations.curves.is_empty());
+        assert!(cfg.animations.overrides.is_empty());
     }
 
     #[test]
@@ -7918,7 +8038,149 @@ mod startup_tests {
 
         let cfg = abyss("animations {\n    animation \"windows\" duration=\"80ms\" speed=2\n}\n");
         assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
-        assert!(cfg.animations.curves.is_empty(), "{:?}", cfg.animations.curves);
+        assert!(
+            cfg.animations.overrides.is_empty(),
+            "{:?}",
+            cfg.animations.overrides
+        );
+
+        // One bad child drops the whole event block.
+        let cfg = abyss(
+            "animations {\n    window-open {\n        style \"fade\"\n        duration-ms 99999\n    }\n}\n",
+        );
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        assert!(
+            cfg.animations.overrides.is_empty(),
+            "{:?}",
+            cfg.animations.overrides
+        );
+    }
+
+    #[test]
+    fn parses_animation_presets_and_overrides() {
+        use animations::{Curve, Event, Override, Preset};
+        let cfg = abyss(
+            "animations {\n    preset \"lively\"\n    speed 2.0\n    reduce-motion #true\n    \
+             window-open { style \"slide\"; duration-ms \"1s\"; curve \"bounce\"; }\n    \
+             window-close { style \"ec-anim-pack:embers\"; }\n    focus {\n    }\n}\n",
+        );
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        let a = &cfg.animations;
+        assert_eq!((a.preset, a.speed, a.reduce_motion), (Preset::Lively, 2.0, true));
+        assert_eq!(
+            a.overrides.get(&Event::WindowOpen),
+            Some(&Override {
+                style: Some("slide".into()),
+                duration_ms: Some(1000),
+                curve: Some(Curve::Bounce),
+            })
+        );
+        // An add-on style is stored as written; whether the pack is there is
+        // a render-time question, not a config error.
+        assert_eq!(
+            a.overrides
+                .get(&Event::WindowClose)
+                .and_then(|o| o.style.as_deref()),
+            Some("ec-anim-pack:embers")
+        );
+        // An empty block is no override, so it does not make the config custom.
+        assert!(!a.overrides.contains_key(&Event::Focus));
+        assert_eq!(a.overrides.len(), 2);
+
+        // Spring and bounce are animation curves now.
+        let cfg = abyss("animations {\n    window-move { curve \"spring\"; }\n}\n");
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    }
+
+    #[test]
+    fn bad_animation_values_are_refused() {
+        for (text, needle) in [
+            ("preset \"wild\"", "preset"),
+            ("speed 8.0", "speed"),
+            ("speed 0.1", "speed"),
+            ("window-move { style \"pop\"; }", "style"),
+            ("window-open { style \"Pack:x\"; }", "style"),
+            ("window-open { curve \"wobble\"; }", "curve"),
+            ("window-open { duration-ms 10001; }", "duration-ms"),
+            ("window-open { speed 2; }", "speed"),
+            ("window-open \"pop\"", "takes a block"),
+            ("windows-open { style \"pop\"; }", "windows-open"),
+        ] {
+            let cfg = abyss(&format!("animations {{\n    {text}\n}}\n"));
+            assert_eq!(cfg.errors.len(), 1, "{text}: {:?}", cfg.errors);
+            assert!(cfg.errors[0].message.contains(needle), "{text}: {:?}", cfg.errors);
+            assert_eq!(cfg.animations, Animations::default(), "{text}");
+        }
+        // 10s exactly is the limit, not past it.
+        let cfg = abyss("animations {\n    window-open { duration-ms \"10s\"; }\n}\n");
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    }
+
+    /// Fields merge key by key across files, like every other dotted key.
+    #[test]
+    fn animation_overrides_merge_across_files() {
+        use animations::{Curve, Event};
+        let mut cfg = Config::default();
+        for text in [
+            "animations { preset \"smooth\"; window-open { style \"fade\"; duration-ms 300; } }",
+            "animations { window-open { curve \"linear\"; duration-ms 100; } }",
+        ] {
+            let doc: KdlDocument = text.parse().unwrap();
+            cfg.apply(&doc, &mut Vec::new());
+        }
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        let r = cfg.animations.resolve(Event::WindowOpen);
+        assert_eq!(
+            (r.style.as_str(), r.duration_ms, r.curve),
+            ("fade", 100, Curve::Linear)
+        );
+    }
+
+    /// Every legacy form maps as `ec-ctl config migrate` rewrites it.
+    #[test]
+    fn legacy_animation_forms_map() {
+        use animations::{Curve, Event, Preset};
+        // `enabled #false` is `preset "off"`; its legacy nodes were inert.
+        let mut cfg = Config::default();
+        cfg.animations.preset = Preset::Smooth; // as if a lower file chose it
+        let doc: KdlDocument = "animations { enabled #false; animation \"windows\"; }"
+            .parse()
+            .unwrap();
+        cfg.apply(&doc, &mut Vec::new());
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.animations.preset, Preset::Off);
+        assert!(cfg.animations.overrides.is_empty());
+        // ...unless the same block names a preset.
+        let cfg = abyss("animations {\n    preset \"subtle\"\n    enabled #false\n}\n");
+        assert_eq!(cfg.animations.preset, Preset::Subtle);
+        // Without `enabled #true` a legacy node does nothing, as before.
+        let cfg = abyss("animations {\n    animation \"fade\" duration=90\n}\n");
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert!(!cfg.animations.any());
+        // Each name, with the old defaults filled in.
+        for (name, ev, style) in [
+            ("windows", Event::WindowMove, "glide"),
+            ("workspaces", Event::WorkspaceSwitch, "slide"),
+            ("fade", Event::WindowOpen, "fade"),
+            ("border", Event::Focus, "crossfade"),
+        ] {
+            let cfg = abyss(&format!(
+                "animations {{\n    enabled #true\n    animation \"{name}\"\n}}\n"
+            ));
+            assert!(cfg.errors.is_empty(), "{name}: {:?}", cfg.errors);
+            let r = cfg.animations.resolve(ev);
+            assert_eq!(
+                (r.style.as_str(), r.duration_ms, r.curve),
+                (style, schema::ANIMATION_DEFAULT_MS, Curve::EaseOut),
+                "{name}"
+            );
+            assert_eq!(cfg.animations.overrides.len(), 1, "{name}");
+        }
+        // The new form wins over a legacy node for the same event.
+        let cfg = abyss(
+            "animations {\n    enabled #true\n    animation \"border\" duration=500\n    focus { duration-ms 90; }\n}\n",
+        );
+        assert_eq!(cfg.animations.resolve(Event::Focus).duration_ms, 90);
     }
 
     #[test]
