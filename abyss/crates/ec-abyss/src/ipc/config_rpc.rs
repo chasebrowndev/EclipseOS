@@ -369,7 +369,7 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
         return Ok(json!({
             "keys": keys,
             "collections": { "widget": widgets, "wallpaper.output": wallpapers },
-            "animations": animations_json(&state.config.animations),
+            "animations": animations_json(&state.config.animations, state.borders.anim.shaders.styles()),
             "addons": addons,
             "hooks_on": hooks_on,
         }));
@@ -380,12 +380,21 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
 /// `get_config.animations`: the preset, whether anything overrides it, and
 /// every event resolved, so Settings and the taskbar never expand a preset
 /// themselves. `styles` lists the built-ins and, after them, an add-on
-/// style the event is set to (the catalog of installed packs is not read
-/// yet), so a picker can always show the current value.
-fn animations_json(a: &crate::config::Animations) -> Value {
+/// style the event is set to, so a picker can always show the current value.
+/// `installed` is the transition catalog (empty while the `transition-shaders`
+/// hook is off): each style serving an event is listed after the built-ins,
+/// and its label is under `addon_labels` by id.
+fn animations_json(
+    a: &crate::config::Animations,
+    installed: &[ec_abyss_config::transitions::TransitionStyle],
+) -> Value {
     use crate::config::animations::Event;
     let mut events = Map::new();
     let mut styles = Map::new();
+    let mut labels = Map::new();
+    for style in installed {
+        labels.insert(style.id.clone(), json!(style.label));
+    }
     for ev in Event::ALL {
         let r = a.resolve(ev);
         events.insert(
@@ -398,8 +407,9 @@ fn animations_json(a: &crate::config::Animations) -> Value {
             }),
         );
         let mut list: Vec<&str> = ev.styles().to_vec();
+        list.extend(installed.iter().filter(|s| s.serves(ev)).map(|s| s.id.as_str()));
         if let Some(s) = a.overrides.get(&ev).and_then(|o| o.style.as_deref()) {
-            if !ev.is_builtin(s) {
+            if !ev.is_builtin(s) && !list.contains(&s) {
                 list.push(s);
             }
         }
@@ -412,6 +422,7 @@ fn animations_json(a: &crate::config::Animations) -> Value {
         "reduce_motion": a.reduce_motion,
         "events": events,
         "styles": styles,
+        "addon_labels": labels,
     })
 }
 
@@ -1309,7 +1320,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let v = animations_json(&a);
+        let v = animations_json(&a, &[]);
         assert_eq!(v["preset"], "smooth");
         assert_eq!(v["custom"], true);
         assert_eq!(v["reduce_motion"], false);
@@ -1323,6 +1334,28 @@ mod tests {
             v["events"].as_object().unwrap().len(),
             crate::config::animations::Event::ALL.len()
         );
+    }
+
+    /// Installed transition styles are listed for the events they serve, after
+    /// the built-ins, once.
+    #[test]
+    fn get_config_lists_installed_transition_styles() {
+        use crate::config::animations::{Curve, Event};
+        let style = ec_abyss_config::transitions::TransitionStyle {
+            id: "fx:ripple".into(),
+            label: "Ripple".into(),
+            events: vec![Event::WindowClose],
+            source: String::new(),
+            margin: 0,
+            duration_ms: 300,
+            curve: Curve::EaseOut,
+        };
+        let v = animations_json(&crate::config::Animations::default(), &[style]);
+        let close = v["styles"]["window-close"].as_array().unwrap();
+        assert_eq!(close.last().unwrap(), "fx:ripple");
+        let open = v["styles"]["window-open"].as_array().unwrap();
+        assert!(!open.iter().any(|s| s == "fx:ripple"));
+        assert_eq!(v["addon_labels"]["fx:ripple"], "Ripple");
     }
 
     /// A dry run runs the loader's check on the edited text: it reports

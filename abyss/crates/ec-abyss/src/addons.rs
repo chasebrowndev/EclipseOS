@@ -235,6 +235,8 @@ pub fn start(state: &mut AbyssState, handle: &LoopHandle<'static, AbyssState>) {
     state.config = cfg;
     crate::trusted_ui::approval::schedule(state);
     crate::config::catalog::start(handle);
+    crate::config::transitions::start(handle);
+    crate::config::transitions::sync(state);
     crate::policy::link::start(state);
     crate::protocols::agent::sync(state);
 
@@ -344,6 +346,9 @@ pub fn apply(state: &mut AbyssState, next: Addons) {
         {
             crate::backend::damage_all(state);
         }
+    }
+    if before.is_on(Hook::TransitionShaders) != now.is_on(Hook::TransitionShaders) {
+        crate::config::transitions::sync(state);
     }
     if before.is_on(Hook::TaskbarWidgets) != now.is_on(Hook::TaskbarWidgets) {
         // Re-read the files so `widget` blocks come back (or go) through the
@@ -490,6 +495,10 @@ mod tests {
                     "eclipseos-agents.kdl",
                     "id \"eclipseos-agents\"\nname \"Agents\"\nhooks \"agents\"\n",
                 ),
+                (
+                    "eclipseos-transitions.kdl",
+                    "id \"eclipseos-transitions\"\nname \"Transitions\"\nhooks \"transition-shaders\"\n",
+                ),
             ],
         );
         let a = Addons::load_from(&d);
@@ -498,7 +507,13 @@ mod tests {
         }
         assert_eq!(
             a.hooks.names(),
-            ["annotations", "region-select", "taskbar-widgets", "agents"]
+            [
+                "annotations",
+                "region-select",
+                "taskbar-widgets",
+                "agents",
+                "transition-shaders"
+            ]
         );
         // Sorted file order.
         assert_eq!(a.manifests[0].id, "eclipseos-agents");

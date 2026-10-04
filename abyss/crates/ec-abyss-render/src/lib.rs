@@ -37,6 +37,7 @@ use smithay::{
             AsRenderElements, Kind,
         },
         gles::{element::PixelShaderElement, GlesRenderer},
+        ContextId,
     },
     desktop::{
         layer_map_for_output,
@@ -49,7 +50,7 @@ use smithay::{
     },
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale},
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size},
     wayland::{
         compositor::{with_states, SurfaceAttributes},
         dmabuf::DmabufFeedback,
@@ -100,6 +101,9 @@ smithay::backend::renderer::element::render_elements! {
     CroppedScaled=CropRenderElement<anim::ScaledElement>,
     // A closed window's last frame, played out as a ghost (`anim::Ghost`).
     ScaledTexture=anim::ScaledElement<smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>>,
+    // A window's offscreen copy drawn through an add-on transition shader
+    // (ADR 0071); see `anim::shader`. Only while that run plays.
+    Transition=anim::ShaderElement,
 }
 
 /// A surface that wants a blurred backdrop: what it belongs to, the index in
@@ -547,6 +551,9 @@ pub fn collect_elements(
         borders.anim.context = Some(context);
     }
     borders.anim.sync(space, &config.animations, focus);
+    // Compiles the add-on shaders this frame's runs need (once per style) so
+    // every query below agrees on which windows a shader draws.
+    borders.anim.prepare_shaders(renderer);
     borders
         .anim
         .sync_layers(output, &config.animations, output_geo.size);
@@ -746,7 +753,7 @@ const BEZEL_REFRACTION: f64 = 4.0;
 /// With no ghost this does nothing.
 fn ghost_elements(
     renderer: &mut GlesRenderer,
-    store: &BorderStore,
+    store: &mut BorderStore,
     output: &Output,
     space: &Space<Window>,
     config: &Config,
@@ -766,17 +773,74 @@ fn ghost_elements(
         .zip(store.rounded.clone());
     let radius = (config.decoration.rounding as f64 * scale.x.max(scale.y)) as f32;
 
-    for ghost in store.anim.ghosts.iter().rev() {
+    let now = store.anim.now();
+    let context = store.anim.context.clone();
+    let rounded = store.rounded.clone().filter(|_| config.decoration.rounding > 0);
+    for index in (0..store.anim.ghosts.len()).rev() {
+        let ghost = &store.anim.ghosts[index];
         if ghost.output() != output {
             continue;
         }
-        let t = store.anim.ghost_transform(ghost);
+        let mut t = store.anim.ghost_transform(ghost);
         let at = match ghost {
             anim::Ghost::Live { window, from_loc, .. } => Rectangle::new(*from_loc, window.geometry().size),
             anim::Ghost::Snapshot { geometry, .. } => *geometry,
             // Drawn by the `layers` pass, at its layer's depth.
             anim::Ghost::Layer { .. } => continue,
         };
+        // An add-on transition shader draws this ghost in place of the
+        // built-in style: the window's copy through the shader, the border and
+        // shadow fading with the run. If the copy cannot be made the built-in
+        // track draws instead, from where it is.
+        if let Some(run) = store.anim.ghost_shader(ghost).cloned() {
+            let local = Rectangle::new(at.loc - output_geo.loc, at.size);
+            let element = context.clone().and_then(|context| {
+                transition_quad(
+                    renderer,
+                    &mut store.anim.shaders,
+                    context,
+                    now,
+                    &run,
+                    local,
+                    scale,
+                    rounded.as_ref().map(|p| (p, radius)),
+                    |renderer, origin, mask| match ghost {
+                        anim::Ghost::Live { window, .. } if window.alive() => {
+                            live_content(renderer, window, origin, scale, 1.0, mask)
+                        }
+                        anim::Ghost::Snapshot { surfaces, .. } => {
+                            let m = run.margin as i32;
+                            let mut content = Vec::new();
+                            snapshot_elements(
+                                &mut content,
+                                surfaces,
+                                (m, m).into(),
+                                scale,
+                                Point::default(),
+                                Scale::from(1.0),
+                                mask,
+                                1.0,
+                            );
+                            content
+                        }
+                        _ => Vec::new(),
+                    },
+                )
+            });
+            if let Some(element) = element {
+                out.push(AbyssRenderElement::Transition(element));
+                let decor = GhostDecor {
+                    output_loc: output_geo.loc,
+                    scale,
+                    rounded: rounding.is_some(),
+                    active: ghost.active(),
+                    alpha: run.visible(now),
+                };
+                ghost_decor(store, config, &decor, at, out);
+                continue;
+            }
+            t = anim::Transform::identity().compose(ghost.track().at(now).0);
+        }
         let pivot = anim::track::pivot(&t, at);
         let drawn = t.map(at, pivot);
         if !drawn.overlaps(output_geo) {
@@ -848,6 +912,81 @@ fn ghost_elements(
         };
         ghost_decor(store, config, &decor, drawn, out);
     }
+}
+
+/// A window's surface tree for the transition shader's offscreen copy:
+/// `origin` is where its geometry's top-left sits inside the copy.
+fn live_content(
+    renderer: &mut GlesRenderer,
+    window: &Window,
+    origin: Point<i32, Physical>,
+    scale: Scale<f64>,
+    alpha: f32,
+    mask: Option<anim::track::Mask>,
+) -> Vec<AbyssRenderElement> {
+    let loc = origin
+        + phys(
+            Point::from((-window.geometry().loc.x, -window.geometry().loc.y)),
+            scale,
+        );
+    window
+        .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(renderer, loc, scale, alpha)
+        .into_iter()
+        .map(|s| {
+            AbyssRenderElement::Scaled(anim::ScaledElement::new(
+                s,
+                Point::default(),
+                Scale::from(1.0),
+                mask.clone(),
+            ))
+        })
+        .collect()
+}
+
+/// Draw a window through an add-on transition shader (ADR 0071): `content`
+/// builds its elements with the geometry's top-left at the given point inside
+/// the offscreen copy, which is the window grown by the run's margin. `at` is
+/// the geometry as laid out, output-local logical; `rounded` is the corner
+/// program and physical radius, applied to the copy so the shader sees the
+/// window's shape. `None` means the copy could not be made.
+#[allow(clippy::too_many_arguments)]
+fn transition_quad(
+    renderer: &mut GlesRenderer,
+    shaders: &mut anim::ShaderRegistry,
+    context: ContextId<smithay::backend::renderer::gles::GlesTexture>,
+    now: std::time::Instant,
+    run: &anim::ShaderRun,
+    at: Rectangle<i32, Logical>,
+    scale: Scale<f64>,
+    rounded: Option<(&smithay::backend::renderer::gles::GlesTexProgram, f32)>,
+    content: impl FnOnce(
+        &mut GlesRenderer,
+        Point<i32, Physical>,
+        Option<anim::track::Mask>,
+    ) -> Vec<AbyssRenderElement>,
+) -> Option<anim::ShaderElement> {
+    let win: Size<i32, Physical> = at.size.to_f64().to_physical(scale).to_i32_round();
+    let inset = anim::shader::margin_px(run.margin, scale);
+    let origin = Point::from((inset, inset));
+    // The copy is rendered upright, so its rounding mask is unmirrored.
+    let mask = rounded.map(|(program, radius)| {
+        let rect = Rectangle::new(origin, win);
+        (
+            program.clone(),
+            effects::rounding_uniforms(rect, win.h + 2 * inset, false, radius),
+        )
+    });
+    let els = content(renderer, origin, mask);
+    shaders.element(
+        renderer,
+        context,
+        run,
+        now,
+        win,
+        phys(at.loc, scale) - origin,
+        scale,
+        &els,
+    )
 }
 
 /// A snapshot ghost's textures as elements: `base` is the geometry's top-left
@@ -1196,12 +1335,56 @@ fn window_elements(
             (None, false) => None,
         };
 
+        // An add-on transition shader draws the open in place of the surfaces
+        // (and any popups, which ride in the same copy). When the copy cannot
+        // be made the plain surfaces below draw, at full alpha.
+        let (popups, surfaces, shaded) = match store.anim.window_shader(&window).cloned() {
+            Some(run) => {
+                let at = Rectangle::new(loc - output_geo.loc, window.geometry().size);
+                let now = store.anim.now();
+                let element = store.anim.context.clone().and_then(|context| {
+                    transition_quad(
+                        renderer,
+                        &mut store.anim.shaders,
+                        context,
+                        now,
+                        &run,
+                        at,
+                        scale,
+                        rounding
+                            .as_ref()
+                            .map(|(_, p)| (p, (deco.rounding as f64 * scale.x.max(scale.y)) as f32)),
+                        |renderer, origin, mask| {
+                            let base = userdata::opacity_of(&window).unwrap_or(if active {
+                                deco.active_opacity
+                            } else {
+                                deco.inactive_opacity
+                            });
+                            live_content(renderer, &window, origin, scale, base, mask)
+                        },
+                    )
+                });
+                match element {
+                    Some(element) => {
+                        // Pushed after the popups of the plain path would be;
+                        // here there are none, they are inside the copy.
+                        out.push(AbyssRenderElement::Transition(element));
+                        (Vec::new(), Vec::new(), true)
+                    }
+                    None => (popups, surfaces, false),
+                }
+            }
+            None => (popups, surfaces, false),
+        };
+
         // Blur follows what shows through the window, not a whole-window
         // alpha (COMP-02 §9): decided here, on the raw surfaces, before the
         // rounding and crop wrappers (which report no opaque region) consume
         // them. A matched `windowrule "blur …"` overrides the global mode.
         let global = config.decoration.blur.mode;
         let mode = userdata::blur_of(&window).map_or(global, |rule| rule.resolve(global));
+        // No backdrop behind a window a shader is reshaping.
+        let mode = if shaded { BlurMode::Off } else { mode };
         let corner = match rounding {
             Some(_) => (deco.rounding as f64 * scale.x.max(scale.y)).ceil() as i32,
             None => 0,
