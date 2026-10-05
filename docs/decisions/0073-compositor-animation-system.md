@@ -78,8 +78,10 @@ catalog per event is in `docs/CONFIG.md`.
 
 **Retile hold.** A tiled window closing on an active workspace with motion on
 holds its neighbours at their current geometry until its close ghost is done
-(or its armed-clock grace runs out); any other layout change ends the hold and
-retiles at once. The neighbours really stay put, so `get_tree` and hit-testing
+(or its armed-clock grace runs out). Layout passes during the hold (focus,
+layer-shell commits, config) still run but leave that workspace's tiles where
+they are; the hold ends early only when the held workspace's tiled set, its
+tiling area or the active workspace changes, and a second close re-arms it. The neighbours really stay put, so `get_tree` and hit-testing
 still match what is drawn. A shader-driven ghost or open draws no compositor
 decoration (border, shadow, dim): the shader owns the whole look.
 

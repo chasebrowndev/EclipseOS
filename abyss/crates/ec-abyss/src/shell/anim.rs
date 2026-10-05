@@ -762,7 +762,10 @@ mod tests {
         let (mut h, _c, _t1, w1, _t2, w2) = pair();
         let before = geo(&h, &w1);
         close_with_ghost(&mut h, &w2);
-        assert_eq!(h.state.retile_hold, crate::shell::RetileHold::Held);
+        assert!(matches!(
+            h.state.retile_hold,
+            crate::shell::RetileHold::Held { .. }
+        ));
         assert_eq!(geo(&h, &w1), before, "neighbour keeps its geometry");
         assert_eq!(listed(&mut h), 1, "the closed window is gone from the listing");
         let hit = crate::shell::surface_under(&h.state, centre_of(before));
@@ -770,7 +773,10 @@ mod tests {
 
         // Still playing: a tick changes nothing.
         crate::shell::tick_retile_hold(&mut h.state);
-        assert_eq!(h.state.retile_hold, crate::shell::RetileHold::Held);
+        assert!(matches!(
+            h.state.retile_hold,
+            crate::shell::RetileHold::Held { .. }
+        ));
         assert_eq!(geo(&h, &w1), before);
 
         // Done: the layout runs.
@@ -785,7 +791,10 @@ mod tests {
     fn a_new_map_during_the_hold_retiles_immediately() {
         let (mut h, mut c, _t1, w1, _t2, w2) = pair();
         close_with_ghost(&mut h, &w2);
-        assert_eq!(h.state.retile_hold, crate::shell::RetileHold::Held);
+        assert!(matches!(
+            h.state.retile_hold,
+            crate::shell::RetileHold::Held { .. }
+        ));
         let t3 = c.create_toplevel(&mut h);
         c.commit(&mut h, &t3.surface);
         c.attach(&mut h, &t3.surface);
@@ -809,7 +818,10 @@ mod tests {
         let (mut h, _c, _t1, w1, _t2, w2) = pair();
         close_with_ghost(&mut h, &w2);
         let before = geo(&h, &w1);
-        assert_eq!(h.state.retile_hold, crate::shell::RetileHold::Held);
+        assert!(matches!(
+            h.state.retile_hold,
+            crate::shell::RetileHold::Held { .. }
+        ));
         // Age the ghost past its length and the grace.
         let old = Instant::now() - std::time::Duration::from_secs(30);
         let leg = Leg::new(old, 200, crate::config::animations::Curve::Linear);
