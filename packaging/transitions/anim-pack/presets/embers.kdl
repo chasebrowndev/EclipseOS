@@ -1,0 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+label "Ultra"
+base "smooth"                       // a built-in preset key; "off" is invalid
+style "window-open" "embers"        // event key, bare style name from the SAME pack
+style "window-close" "embers"
+style "minimize" "genie"

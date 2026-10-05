@@ -212,6 +212,8 @@ package_eclipseos-anim-pack() {
     "$pkgdir/usr/share/eclipse/addons/anim-pack.kdl"
   install -Dm0644 -t "$pkgdir/usr/share/eclipse/transitions/anim-pack" \
     "$srcdir/$_src"/packaging/transitions/anim-pack/*.{kdl,frag}
+  install -Dm0644 -t "$pkgdir/usr/share/eclipse/transitions/anim-pack/presets" \
+    "$srcdir/$_src"/packaging/transitions/anim-pack/presets/*.kdl
 }
 
 package_eclipseos-meta() {

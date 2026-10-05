@@ -380,7 +380,11 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
         return Ok(json!({
             "keys": keys,
             "collections": { "widget": widgets, "wallpaper.output": wallpapers },
-            "animations": animations_json(&state.config.animations, state.borders.anim.shaders.styles()),
+            "animations": animations_json(
+                &state.config.animations,
+                state.borders.anim.shaders.styles(),
+                state.borders.anim.shaders.presets(),
+            ),
             "addons": addons,
             "hooks_on": hooks_on,
         }));
@@ -394,10 +398,12 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
 /// style the event is set to, so a picker can always show the current value.
 /// `installed` is the transition catalog (empty while the `transition-shaders`
 /// hook is off): each style serving an event is listed after the built-ins,
-/// and its label is under `addon_labels` by id.
+/// and its label is under `addon_labels` by id. `pack_presets` lists the
+/// packs' one-click presets (`[]` when none).
 fn animations_json(
     a: &crate::config::Animations,
     installed: &[ec_abyss_config::transitions::TransitionStyle],
+    presets: &[ec_abyss_config::transitions::PackPreset],
 ) -> Value {
     use crate::config::animations::Event;
     let mut events = Map::new();
@@ -434,6 +440,17 @@ fn animations_json(
         "events": events,
         "styles": styles,
         "addon_labels": labels,
+        "pack_presets": presets
+            .iter()
+            .map(|p| {
+                let styles: Map<String, Value> = p
+                    .styles
+                    .iter()
+                    .map(|(ev, id)| (ev.key().to_owned(), json!(id)))
+                    .collect();
+                json!({"id": p.id, "label": p.label, "base": p.base.key(), "styles": styles})
+            })
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -1351,7 +1368,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let v = animations_json(&a, &[]);
+        let v = animations_json(&a, &[], &[]);
         assert_eq!(v["preset"], "smooth");
         assert_eq!(v["custom"], true);
         assert_eq!(v["reduce_motion"], false);
@@ -1381,12 +1398,33 @@ mod tests {
             duration_ms: 300,
             curve: Curve::EaseOut,
         };
-        let v = animations_json(&crate::config::Animations::default(), &[style]);
+        let v = animations_json(&crate::config::Animations::default(), &[style], &[]);
+        assert_eq!(v["pack_presets"], json!([]));
         let close = v["styles"]["window-close"].as_array().unwrap();
         assert_eq!(close.last().unwrap(), "fx:ripple");
         let open = v["styles"]["window-open"].as_array().unwrap();
         assert!(!open.iter().any(|s| s == "fx:ripple"));
         assert_eq!(v["addon_labels"]["fx:ripple"], "Ripple");
+    }
+
+    #[test]
+    fn get_config_lists_pack_presets() {
+        use crate::config::animations::{Event, Preset};
+        let p = ec_abyss_config::transitions::PackPreset {
+            id: "fx:embers".into(),
+            label: "Embers".into(),
+            base: Preset::Smooth,
+            styles: vec![
+                (Event::WindowOpen, "fx:embers".into()),
+                (Event::Minimize, "fx:genie".into()),
+            ],
+        };
+        let v = animations_json(&crate::config::Animations::default(), &[], &[p]);
+        assert_eq!(
+            v["pack_presets"],
+            json!([{"id":"fx:embers","label":"Embers","base":"smooth",
+                    "styles":{"window-open":"fx:embers","minimize":"fx:genie"}}])
+        );
     }
 
     /// A dry run runs the loader's check on the edited text: it reports

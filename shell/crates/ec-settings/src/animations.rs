@@ -94,6 +94,9 @@ const LADDER: [u32; 18] = [
 pub enum Msg {
     /// A preset card: the preset, and every override cleared, in one write.
     Preset(Preset),
+    /// An add-on pack's preset card: its base preset, every override
+    /// cleared, then its styles, in one write.
+    Pack(PackPreset),
     /// An event row's stepper: its `duration-ms` override.
     Duration(Event, u32),
     /// An event row's reset: its override removed.
@@ -105,13 +108,11 @@ pub enum Msg {
 pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
     match msg {
         Msg::Preset(p) => {
-            let model = model(app);
-            let mut edits = vec![(PRESET.to_owned(), json!(p.key()))];
-            for ev in model.overrides.keys() {
-                for f in FIELDS {
-                    edits.push((path(*ev, f), Value::Null));
-                }
-            }
+            let edits = preset_edits(&model(app), p, &[]);
+            app.write_many(&edits);
+        }
+        Msg::Pack(pack) => {
+            let edits = preset_edits(&model(app), pack.base, &pack.styles);
             app.write_many(&edits);
         }
         Msg::Duration(ev, ms) => {
@@ -133,6 +134,75 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
         }
     }
     Task::none()
+}
+
+/// The one batch a preset card writes: the preset, every current override
+/// cleared, then each of `styles` set as its event's style.
+fn preset_edits(m: &Animations, preset: Preset, styles: &[(Event, String)]) -> Vec<(String, Value)> {
+    let mut edits = vec![(PRESET.to_owned(), json!(preset.key()))];
+    for ev in m.overrides.keys() {
+        for f in FIELDS {
+            if f == "style" && styles.iter().any(|(e, _)| e == ev) {
+                continue; // set below; one write per key
+            }
+            edits.push((path(*ev, f), Value::Null));
+        }
+    }
+    for (ev, style) in styles {
+        edits.push((path(*ev, "style"), json!(style)));
+    }
+    edits
+}
+
+/// A preset an installed animation pack declares
+/// (`get_config.animations.pack_presets`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackPreset {
+    pub id: String,
+    pub label: String,
+    pub base: Preset,
+    /// The only events the preset sets.
+    pub styles: Vec<(Event, String)>,
+}
+
+/// The pack presets the compositor listed; none while no pack is installed
+/// or the add-on hook is off. Entries it cannot read are skipped.
+fn pack_presets(app: &App) -> Vec<PackPreset> {
+    let Some(list) = app.conn.animations["pack_presets"].as_array() else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|p| {
+            let base = Preset::parse(p["base"].as_str()?).filter(|b| *b != Preset::Off)?;
+            let styles: Vec<(Event, String)> = p["styles"]
+                .as_object()?
+                .iter()
+                .filter_map(|(ev, s)| Some((Event::parse(ev)?, s.as_str()?.to_owned())))
+                .collect();
+            Some(PackPreset {
+                id: p["id"].as_str()?.to_owned(),
+                label: p["label"]
+                    .as_str()
+                    .unwrap_or_else(|| p["id"].as_str().unwrap_or_default())
+                    .to_owned(),
+                base,
+                styles,
+            })
+        })
+        .collect()
+}
+
+/// Whether the live config is exactly `p`: its base preset, each listed
+/// event overridden with exactly its style and nothing else, no other event
+/// overridden.
+fn pack_selected(m: &Animations, p: &PackPreset) -> bool {
+    m.preset == p.base
+        && m.overrides.len() == p.styles.len()
+        && p.styles.iter().all(|(ev, style)| {
+            m.overrides.get(ev).is_some_and(|o| {
+                o.style.as_deref() == Some(style.as_str()) && o.duration_ms.is_none() && o.curve.is_none()
+            })
+        })
 }
 
 /// `animations.<event>.<field>`.
@@ -295,14 +365,18 @@ enum Card {
     Preset(Preset),
     /// The live config, overrides and all, named for the preset under it.
     Custom(Preset),
+    /// An add-on pack's preset, by its place in the compositor's list.
+    Pack(usize),
 }
 
 /// Bring the previews in line with the config. A preview whose legs are
 /// unchanged keeps its place in the loop.
 pub fn sync(app: &mut App) {
     let m = model(app);
+    let packs = pack_presets(app);
     let mut cards: Vec<Card> = Preset::ALL.into_iter().map(Card::Preset).collect();
-    if m.custom() {
+    cards.extend((0..packs.len()).map(Card::Pack));
+    if m.custom() && !packs.iter().any(|p| pack_selected(&m, p)) {
         cards.push(Card::Custom(m.preset));
     }
     let old = std::mem::take(&mut app.anim.cards);
@@ -312,6 +386,11 @@ pub fn sync(app: &mut App) {
             let source = match card {
                 Card::Preset(p) => Animations {
                     preset: p,
+                    overrides: BTreeMap::new(),
+                    ..m.clone()
+                },
+                Card::Pack(i) => Animations {
+                    preset: packs[i].base,
                     overrides: BTreeMap::new(),
                     ..m.clone()
                 },
@@ -600,8 +679,25 @@ fn caption<'a>(t: String) -> Element<'a, Message, Theme> {
 /// selected card is the glass a step clearer, its label in gold.
 fn hero<'a>(app: &'a App, m: &Animations) -> Element<'a, Message, Theme> {
     let mut strip = iced::widget::Row::new().spacing(space::GRID_GAP);
+    let packs = pack_presets(app);
     for (card, preview) in &app.anim.cards {
+        let mut addon = false;
         let (name, note, selected, press) = match *card {
+            Card::Pack(i) => {
+                addon = true;
+                let p = &packs[i];
+                let shown = Animations {
+                    preset: p.base,
+                    overrides: BTreeMap::new(),
+                    ..m.clone()
+                };
+                (
+                    p.label.clone(),
+                    reading(&shown.resolve(Event::WindowOpen)),
+                    pack_selected(m, p),
+                    Msg::Pack(p.clone()),
+                )
+            }
             Card::Preset(p) => {
                 let shown = Animations {
                     preset: p,
@@ -612,10 +708,15 @@ fn hero<'a>(app: &'a App, m: &Animations) -> Element<'a, Message, Theme> {
                     preset_name(p).to_owned(),
                     reading(&shown.resolve(Event::WindowOpen)),
                     !m.custom() && m.preset == p,
-                    p,
+                    Msg::Preset(p),
                 )
             }
-            Card::Custom(p) => ("Custom".to_owned(), format!("based on {}", p.key()), true, p),
+            Card::Custom(p) => (
+                "Custom".to_owned(),
+                format!("based on {}", p.key()),
+                true,
+                Msg::Preset(p),
+            ),
         };
         let body = column![
             container(motion_stage(
@@ -626,7 +727,12 @@ fn hero<'a>(app: &'a App, m: &Animations) -> Element<'a, Message, Theme> {
             .width(Length::Fill)
             .align_x(Alignment::Center),
             // No style of its own: the cell's text colour is the gold.
-            text(name).font(font::UI_MEDIUM).size(size::CARD_TITLE),
+            row![
+                text(name).font(font::UI_MEDIUM).size(size::CARD_TITLE),
+                Space::new().width(Length::Fill),
+            ]
+            .push(addon.then(|| badge("add-on")))
+            .align_y(Alignment::Center),
             caption(note),
         ]
         .spacing(space::LINE_GAP * 2.0);
@@ -634,7 +740,7 @@ fn hero<'a>(app: &'a App, m: &Animations) -> Element<'a, Message, Theme> {
             button(body)
                 .padding(space::CONTROL_GAP)
                 .width(Length::Fill)
-                .on_press(Message::Anim(Msg::Preset(press)))
+                .on_press(Message::Anim(press))
                 .style(theme::glass_cell(
                     if selected {
                         CellTone::Focused
@@ -898,6 +1004,111 @@ mod tests {
             now += Duration::from_millis(16);
         }
         assert_eq!(seen.len(), 2);
+    }
+
+    fn embers() -> PackPreset {
+        PackPreset {
+            id: "anim-pack:embers".into(),
+            label: "Embers".into(),
+            base: Preset::Smooth,
+            styles: vec![
+                (Event::WindowOpen, "anim-pack:embers".into()),
+                (Event::Minimize, "anim-pack:genie".into()),
+            ],
+        }
+    }
+
+    fn applied(p: &PackPreset) -> Animations {
+        Animations {
+            preset: p.base,
+            overrides: p
+                .styles
+                .iter()
+                .map(|(ev, s)| {
+                    (
+                        *ev,
+                        Override {
+                            style: Some(s.clone()),
+                            ..Override::default()
+                        },
+                    )
+                })
+                .collect(),
+            ..Animations::default()
+        }
+    }
+
+    #[test]
+    fn a_pack_card_is_selected_only_on_its_exact_overrides() {
+        let p = embers();
+        let m = applied(&p);
+        assert!(pack_selected(&m, &p));
+        assert!(m.custom(), "overrides exist, so Custom would appear");
+
+        let mut other_preset = m.clone();
+        other_preset.preset = Preset::Lively;
+        assert!(!pack_selected(&other_preset, &p));
+
+        let mut extra = m.clone();
+        extra.overrides.insert(Event::Focus, Override::default());
+        extra.overrides.get_mut(&Event::Focus).unwrap().style = Some("fade".into());
+        assert!(!pack_selected(&extra, &p));
+
+        let mut missing = m.clone();
+        missing.overrides.remove(&Event::Minimize);
+        assert!(!pack_selected(&missing, &p));
+
+        let mut wrong = m.clone();
+        wrong.overrides.get_mut(&Event::Minimize).unwrap().style = Some("fade".into());
+        assert!(!pack_selected(&wrong, &p));
+
+        let mut timed = m.clone();
+        timed.overrides.get_mut(&Event::WindowOpen).unwrap().duration_ms = Some(300);
+        assert!(!pack_selected(&timed, &p));
+
+        let mut curved = m;
+        curved.overrides.get_mut(&Event::WindowOpen).unwrap().curve = Some(AnimCurve::Linear);
+        assert!(!pack_selected(&curved, &p));
+
+        assert!(!pack_selected(&Animations::default(), &p));
+    }
+
+    #[test]
+    fn a_pack_click_is_one_batch_that_clears_then_styles() {
+        let p = embers();
+        let mut cur = Animations::default();
+        cur.overrides.insert(
+            Event::Focus,
+            Override {
+                duration_ms: Some(90),
+                ..Override::default()
+            },
+        );
+        cur.overrides.insert(
+            Event::WindowOpen,
+            Override {
+                style: Some("pop".into()),
+                ..Override::default()
+            },
+        );
+        let edits = preset_edits(&cur, p.base, &p.styles);
+        assert_eq!(edits[0], (PRESET.to_owned(), json!("smooth")));
+        for f in FIELDS {
+            assert!(edits.contains(&(path(Event::Focus, f), Value::Null)), "{f}");
+        }
+        assert!(edits.contains(&(path(Event::WindowOpen, "duration-ms"), Value::Null)));
+        assert!(edits.contains(&(path(Event::WindowOpen, "style"), json!("anim-pack:embers"))));
+        assert!(edits.contains(&(path(Event::Minimize, "style"), json!("anim-pack:genie"))));
+        let keys: std::collections::HashSet<_> = edits.iter().map(|(k, _)| k).collect();
+        assert_eq!(keys.len(), edits.len(), "one write per key");
+    }
+
+    #[test]
+    fn a_builtin_click_batch_is_unchanged() {
+        let mut cur = Animations::default();
+        cur.overrides.insert(Event::Focus, Override::default());
+        let edits = preset_edits(&cur, Preset::Lively, &[]);
+        assert_eq!(edits.len(), 1 + FIELDS.len());
     }
 
     #[test]
