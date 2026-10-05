@@ -1042,6 +1042,7 @@ fn service_captures(state: &mut AbyssState) {
 
 /// Composite every output. Safe to call at any time.
 pub fn render(state: &mut AbyssState) {
+    crate::shell::tick_retile_hold(state);
     let n = state.drm.as_ref().map_or(0, |d| d.outputs.len());
     for i in 0..n {
         render_output(state, i);

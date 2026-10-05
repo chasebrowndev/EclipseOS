@@ -76,6 +76,13 @@ catalog per event is in `docs/CONFIG.md`.
   state, so screencopy always shows target geometry. A source-scan test pins
   this.
 
+**Retile hold.** A tiled window closing on an active workspace with motion on
+holds its neighbours at their current geometry until its close ghost is done
+(or its armed-clock grace runs out); any other layout change ends the hold and
+retiles at once. The neighbours really stay put, so `get_tree` and hit-testing
+still match what is drawn. A shader-driven ghost or open draws no compositor
+decoration (border, shadow, dim): the shader owns the whole look.
+
 **Never animated:** session lock, Trusted UI and full-output scrims.
 
 **Under load,** COMP-14 §6 shedding steps animations down after blur and

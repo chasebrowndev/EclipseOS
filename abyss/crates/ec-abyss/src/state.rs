@@ -183,6 +183,9 @@ pub struct AbyssState {
     /// A window being dragged onto the Radiant tree, while one is (COMP-05
     /// §3.1). Its drop guides are drawn from here.
     pub tile_drag: Option<crate::shell::TileDrag>,
+    /// Whether the layout of a closing tiled window's neighbours is held
+    /// until its close ghost is done (COMP-02 §9, ADR 0073).
+    pub retile_hold: crate::shell::RetileHold,
 
     /// Who set the current clipboard (COMP-06 §4). Never holds contents.
     pub clipboard: Option<crate::protocols::standard::data_device::ClipboardSource>,
@@ -534,6 +537,7 @@ impl AbyssState {
             region_select: crate::render::select::RegionSelect::default(),
             trusted_ui: crate::trusted_ui::TrustedUi::default(),
             tile_drag: None,
+            retile_hold: crate::shell::RetileHold::None,
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
             config,
             #[cfg(feature = "drm")]

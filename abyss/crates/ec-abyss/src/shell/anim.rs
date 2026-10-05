@@ -100,7 +100,18 @@ pub fn capture(state: &AbyssState, window: &Window) -> Option<Frame> {
     let context = state.borders.anim.context.as_ref()?;
     let geometry = state.space.element_geometry(window)?;
     let surface = super::window_surface(window).filter(|s| s.alive())?;
-    let surfaces = anim::snapshot(context, &surface, Point::from((0, 0)) - window.geometry().loc);
+    let mut surfaces = anim::snapshot(context, &surface, Point::from((0, 0)) - window.geometry().loc);
+    // A commit since the last frame dropped the textures of the buffer it
+    // replaced and nothing has imported the new one (a window that draws its
+    // last frame and closes at once): the previous frame beats no animation.
+    if let Some(last) = state
+        .borders
+        .anim
+        .remembered(window)
+        .filter(|l| l.len() > surfaces.len())
+    {
+        surfaces = last.clone();
+    }
     if surfaces.is_empty() {
         return None;
     }
@@ -112,7 +123,13 @@ pub fn capture(state: &AbyssState, window: &Window) -> Option<Frame> {
     })
 }
 
-fn push_snapshot(state: &mut AbyssState, frame: Frame, track: Track, shader: Option<ShaderRun>) {
+fn push_snapshot(
+    state: &mut AbyssState,
+    frame: Frame,
+    track: Track,
+    shader: Option<ShaderRun>,
+    holds: Option<Window>,
+) {
     state.borders.anim.push_ghost(Ghost::Snapshot {
         surfaces: frame.surfaces,
         output: frame.output,
@@ -120,6 +137,7 @@ fn push_snapshot(state: &mut AbyssState, frame: Frame, track: Track, shader: Opt
         active: frame.active,
         track,
         shader,
+        holds,
     });
 }
 
@@ -158,13 +176,16 @@ pub fn close(state: &mut AbyssState, window: &Window) {
         return;
     }
     if let Some(frame) = capture(state, window) {
-        close_frame(state, frame);
+        close_frame(state, frame, window);
     }
 }
 
 /// [`close`] once the frame is in hand. The ghost owns cloned textures, so it
 /// outlives the buffer, the surface and the client.
-pub fn close_frame(state: &mut AbyssState, frame: Frame) {
+///
+/// The ghost names `window`, so [`super::unmap_window`] can hold its tiled
+/// neighbours where they are until it is done.
+pub fn close_frame(state: &mut AbyssState, frame: Frame, window: &Window) {
     let Some((leg, style)) = resolve(state, Event::WindowClose) else {
         return;
     };
@@ -172,7 +193,13 @@ pub fn close_frame(state: &mut AbyssState, frame: Frame) {
     // the same leg.
     let run = shader_run(state, RunKind::Close, (0.0, 0.0));
     let leg = run.as_ref().map_or(leg, |r| r.leg);
-    push_snapshot(state, frame, Track::leave(leg, anim::close_to(style)), run);
+    push_snapshot(
+        state,
+        frame,
+        Track::leave(leg, anim::close_to(style)),
+        run,
+        Some(window.clone()),
+    );
 }
 
 /// `layer-close`: keep a layer surface's last frame and play it out, leaving
@@ -464,7 +491,7 @@ pub fn toggle(state: &mut AbyssState, window: Option<Window>, change: impl FnOnc
                 Channels::ZERO
             }
         };
-        push_snapshot(state, frame, Track::leave(leg, end), None);
+        push_snapshot(state, frame, Track::leave(leg, end), None, None);
         from.alpha = -1.0;
     } else if !morph {
         return;
@@ -636,7 +663,7 @@ mod tests {
         assert!(h.state.borders.anim.ghosts.is_empty());
 
         let f = frame(&h, &w);
-        close_frame(&mut h.state, f);
+        close_frame(&mut h.state, f, &w);
         assert_eq!(h.state.borders.anim.ghosts.len(), 1);
 
         t.surface.attach(None, 0, 0);
@@ -690,5 +717,203 @@ mod tests {
         crate::shell::minimize_window(&mut h.state, &w);
         crate::shell::switch_workspace(&mut h.state, 2);
         assert!(h.state.borders.anim.ghosts.is_empty());
+    }
+
+    fn snapshots(h: &Harness) -> usize {
+        h.state
+            .borders
+            .anim
+            .ghosts
+            .iter()
+            .filter(|g| matches!(g, Ghost::Snapshot { .. }))
+            .count()
+    }
+
+    /// Two tiled windows; `b` is the second (focused) one.
+    fn pair() -> (Harness, Client, Toplevel, Window, Toplevel, Window) {
+        let (mut h, mut c, t1, w1) = mapped();
+        let t2 = c.create_toplevel(&mut h);
+        c.commit(&mut h, &t2.surface);
+        c.attach(&mut h, &t2.surface);
+        let w2 = h
+            .state
+            .space
+            .elements()
+            .find(|w| **w != w1)
+            .cloned()
+            .expect("second window");
+        (h, c, t1, w1, t2, w2)
+    }
+
+    fn geo(h: &Harness, w: &Window) -> Rectangle<i32, Logical> {
+        h.state.space.element_geometry(w).expect("mapped")
+    }
+
+    fn close_with_ghost(h: &mut Harness, w: &Window) {
+        let f = frame(h, w);
+        close_frame(&mut h.state, f, w);
+        crate::shell::unmap_window(&mut h.state, w);
+    }
+
+    /// A tiled close keeps the neighbours where they were until the ghost is
+    /// done, then retiles; `get_tree`-side state and hit-testing agree.
+    #[test]
+    fn a_tiled_close_holds_the_neighbours_until_the_ghost_is_done() {
+        let (mut h, _c, _t1, w1, _t2, w2) = pair();
+        let before = geo(&h, &w1);
+        close_with_ghost(&mut h, &w2);
+        assert_eq!(h.state.retile_hold, crate::shell::RetileHold::Held);
+        assert_eq!(geo(&h, &w1), before, "neighbour keeps its geometry");
+        assert_eq!(listed(&mut h), 1, "the closed window is gone from the listing");
+        let hit = crate::shell::surface_under(&h.state, centre_of(before));
+        assert_eq!(hit.map(|(s, _)| s), crate::shell::window_surface(&w1));
+
+        // Still playing: a tick changes nothing.
+        crate::shell::tick_retile_hold(&mut h.state);
+        assert_eq!(h.state.retile_hold, crate::shell::RetileHold::Held);
+        assert_eq!(geo(&h, &w1), before);
+
+        // Done: the layout runs.
+        h.state.borders.anim.ghosts.clear();
+        crate::shell::tick_retile_hold(&mut h.state);
+        assert_eq!(h.state.retile_hold, crate::shell::RetileHold::None);
+        assert_ne!(geo(&h, &w1), before, "retiled into the freed space");
+    }
+
+    /// A layout event during the hold ends it and retiles at once.
+    #[test]
+    fn a_new_map_during_the_hold_retiles_immediately() {
+        let (mut h, mut c, _t1, w1, _t2, w2) = pair();
+        close_with_ghost(&mut h, &w2);
+        assert_eq!(h.state.retile_hold, crate::shell::RetileHold::Held);
+        let t3 = c.create_toplevel(&mut h);
+        c.commit(&mut h, &t3.surface);
+        c.attach(&mut h, &t3.surface);
+        assert_eq!(h.state.retile_hold, crate::shell::RetileHold::None);
+        assert_eq!(h.state.space.elements().count(), 2);
+        // Laid out for two windows again: the new one has a tile of its own.
+        let w3 = h
+            .state
+            .space
+            .elements()
+            .find(|w| **w != w1)
+            .cloned()
+            .expect("new");
+        assert_ne!(geo(&h, &w3), geo(&h, &w1));
+    }
+
+    /// A ghost that never draws expires on the armed-clock grace, and the
+    /// hold goes with it.
+    #[test]
+    fn the_hold_does_not_outlive_a_ghost_that_never_draws() {
+        let (mut h, _c, _t1, w1, _t2, w2) = pair();
+        close_with_ghost(&mut h, &w2);
+        let before = geo(&h, &w1);
+        assert_eq!(h.state.retile_hold, crate::shell::RetileHold::Held);
+        // Age the ghost past its length and the grace.
+        let old = Instant::now() - std::time::Duration::from_secs(30);
+        let leg = Leg::new(old, 200, crate::config::animations::Curve::Linear);
+        for g in h.state.borders.anim.ghosts.iter_mut() {
+            if let Ghost::Snapshot { track, .. } = g {
+                track.leg = leg;
+            }
+        }
+        crate::shell::tick_retile_hold(&mut h.state);
+        assert_eq!(h.state.retile_hold, crate::shell::RetileHold::None);
+        assert_ne!(geo(&h, &w1), before);
+    }
+
+    #[test]
+    fn reduce_motion_and_off_do_not_hold() {
+        for reduce in [true, false] {
+            let (mut h, _c, _t1, w1, _t2, w2) = pair();
+            let before = geo(&h, &w1);
+            if reduce {
+                h.state.config.animations.reduce_motion = true;
+            } else {
+                h.state.config.animations.preset = crate::config::animations::Preset::Off;
+            }
+            close_with_ghost(&mut h, &w2);
+            assert_eq!(h.state.retile_hold, crate::shell::RetileHold::None);
+            assert_ne!(geo(&h, &w1), before, "retiled at once (reduce {reduce})");
+        }
+    }
+
+    #[test]
+    fn a_floating_close_does_not_hold() {
+        let (mut h, _c, _t1, w1, _t2, w2) = pair();
+        let rect = Rectangle::new((50, 50).into(), (200, 150).into());
+        crate::shell::place_at(&mut h.state, &w2, rect);
+        let before = geo(&h, &w1);
+        close_with_ghost(&mut h, &w2);
+        assert_eq!(h.state.retile_hold, crate::shell::RetileHold::None);
+        assert_eq!(geo(&h, &w1), before, "a float took no tile from it");
+        assert_eq!(snapshots(&h), 1, "the ghost still plays");
+    }
+
+    /// Workspace switch and window-to-workspace never use `window-close`:
+    /// their ghosts are live (the window still exists), never snapshots, and
+    /// hold nothing.
+    #[test]
+    fn workspace_moves_never_play_window_close() {
+        let (mut h, _c, _t1, _w1, _t2, _w2) = pair();
+        crate::shell::switch_workspace(&mut h.state, 2);
+        assert_eq!(snapshots(&h), 0);
+        assert_eq!(
+            h.state.borders.anim.ghosts.len(),
+            2,
+            "the outgoing half is live ghosts"
+        );
+        assert_eq!(h.state.retile_hold, crate::shell::RetileHold::None);
+
+        for follow in [false, true] {
+            let (mut h, _c, _t1, _w1, _t2, _w2) = pair();
+            h.state.config.general.follow_window_to_workspace = follow;
+            crate::shell::move_to_workspace(&mut h.state, 3);
+            assert_eq!(snapshots(&h), 0, "follow {follow}");
+            assert_eq!(h.state.retile_hold, crate::shell::RetileHold::None);
+            if !follow {
+                assert_eq!(h.state.borders.anim.ghosts.len(), 1, "send_away is a live ghost");
+            }
+        }
+    }
+
+    /// With `window-close` off the close pushes nothing even while the
+    /// workspace events run, and the converse.
+    #[test]
+    fn each_path_resolves_its_own_event() {
+        use crate::config::animations::{Event, Override};
+        let off = Override {
+            style: Some("none".into()),
+            ..Default::default()
+        };
+        let (mut h, _c, _t, w) = mapped();
+        h.state
+            .config
+            .animations
+            .overrides
+            .insert(Event::WindowClose, off.clone());
+        let f = frame(&h, &w);
+        close_frame(&mut h.state, f, &w);
+        assert!(h.state.borders.anim.ghosts.is_empty(), "close is off");
+        crate::shell::switch_workspace(&mut h.state, 2);
+        assert_eq!(
+            h.state.borders.anim.ghosts.len(),
+            1,
+            "workspace-switch still plays"
+        );
+
+        let (mut h, _c, _t, w) = mapped();
+        h.state
+            .config
+            .animations
+            .overrides
+            .insert(Event::WorkspaceSwitch, off);
+        crate::shell::switch_workspace(&mut h.state, 2);
+        assert!(h.state.borders.anim.ghosts.is_empty(), "workspace-switch is off");
+        crate::shell::switch_workspace(&mut h.state, 1);
+        let f = frame(&h, &w);
+        close_frame(&mut h.state, f, &w);
+        assert_eq!(snapshots(&h), 1, "close still plays");
     }
 }
