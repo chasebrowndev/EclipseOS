@@ -18,3 +18,14 @@ path = "src/lib.rs"
 [[bin]]
 name = "ec-abyss-bench"
 path = "src/main.rs"
+
+# Dev-only: `shader-preview` renders an add-on transition style offscreen
+# through the real render path (surfaceless EGL, no display). Not shipped.
+[[bin]]
+name = "shader-preview"
+path = "src/bin/shader-preview.rs"
+
+[dependencies]
+smithay = { workspace = true, features = ["wayland_frontend", "desktop", "renderer_gl", "xwayland"] }
+ec-abyss-config = { path = "../crates/ec-abyss-config" }
+ec-abyss-render = { path = "../crates/ec-abyss-render" }

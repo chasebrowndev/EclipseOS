@@ -23,8 +23,8 @@
 //! `space`.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::damage::OutputDamageTracker;
@@ -40,7 +40,7 @@ use smithay::utils::{
 };
 
 use ec_abyss_config::animations::{is_addon_style, Animations, Event};
-use ec_abyss_config::transitions::{PackPreset, TransitionStyle};
+use ec_abyss_config::transitions::{PackPreset, TransitionStyle, DRAWN_EVENTS};
 
 use super::curve::Leg;
 use super::shed::ShedLevel;
@@ -54,6 +54,11 @@ pub const OVERRUN_LIMIT: u32 = 8;
 /// The largest offscreen copy, either side, physical px. A window past this is
 /// drawn with its built-in style.
 const MAX_TEXTURE: i32 = 8192;
+
+/// How long past its own length a run that was never drawn is kept before it
+/// is dropped (its clock never armed). Past it the built-in style has long
+/// finished and nothing is waiting on the run.
+const UNARMED_GRACE: Duration = Duration::from_secs(1);
 
 /// The fixed header every style is appended to. The pack supplies the rest,
 /// including `void main()`. Everything a style may read is declared here and
@@ -75,7 +80,7 @@ const MAX_TEXTURE: i32 = 8192;
 ///   for minimize), else zero.
 /// - `side`: -1 or +1 for the side a workspace switch came from, else 0.
 /// - `seed`: a fixed value in 0..1 per run, for noise.
-/// - `time`: seconds since the run started.
+/// - `time`: seconds since the run's first drawn frame.
 ///
 /// Output premultiplied colour to `gl_FragColor`.
 pub const HEADER: &str = r#"#version 100
@@ -176,9 +181,17 @@ pub struct ShaderRun {
     /// `pack:style`.
     pub style: Arc<str>,
     pub kind: RunKind,
+    /// The run's length and curve. `leg.start` is when it was created; the
+    /// clock the shader sees starts at [`ShaderRun::armed`] instead.
     pub leg: Leg,
     /// Logical px the quad is grown by.
     pub margin: u32,
+    /// The quad also grows toward `travel` (the style's `reach`).
+    pub reach: bool,
+    /// Set by the first frame that draws the run; until then it reads as
+    /// progress 0. Shared by clones, so the render path's copy stamps the one
+    /// the store holds.
+    pub armed: Arc<OnceLock<Instant>>,
     /// Where the window is headed, from its centre, logical px.
     pub travel: (f64, f64),
     pub side: f32,
@@ -189,19 +202,96 @@ pub struct ShaderRun {
     pub id: Id,
 }
 
+/// The off-centre quad a run is drawn on: how far it extends past the window
+/// on each side, physical px.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Quad {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+impl Quad {
+    pub fn size(&self, win: Size<i32, Physical>) -> Size<i32, Physical> {
+        (win.w + self.left + self.right, win.h + self.top + self.bottom).into()
+    }
+
+    /// Where the window's top-left sits inside the quad.
+    pub fn origin(&self) -> Point<i32, Physical> {
+        (self.left, self.top).into()
+    }
+}
+
+/// How far a quad extends past a `win`-sized window on each side (left, top,
+/// right, bottom), logical px. `margin` everywhere; with `reach`, also enough
+/// toward `travel` (from the window's centre) that the target lies at least
+/// `margin` inside the quad.
+pub fn extents(margin: u32, reach: bool, travel: (f64, f64), win: Size<i32, Logical>) -> [i32; 4] {
+    let m = margin as i32;
+    if !reach {
+        return [m; 4];
+    }
+    let (w, h) = (win.w as f64 / 2.0, win.h as f64 / 2.0);
+    let m_f = margin as f64;
+    // Target from the top-left is (w/2 + tx); it must be `m` short of the far
+    // edge (w + right) and `m` past the near one (-left).
+    let side = |toward: f64, half: f64| (toward - half + m_f).ceil() as i32 + 1;
+    [
+        m.max(side(-travel.0, w)),
+        m.max(side(-travel.1, h)),
+        m.max(side(travel.0, w)),
+        m.max(side(travel.1, h)),
+    ]
+}
+
 impl ShaderRun {
+    /// The quad for a window of `win` logical px at `scale`.
+    pub fn quad(&self, win: Size<i32, Logical>, scale: Scale<f64>) -> Quad {
+        let [l, t, r, b] = extents(self.margin, self.reach, self.travel, win);
+        Quad {
+            left: margin_px(l as u32, scale),
+            top: margin_px(t as u32, scale),
+            right: margin_px(r as u32, scale),
+            bottom: margin_px(b as u32, scale),
+        }
+    }
+
+    /// Stamp the clock; the first call wins. Returns whether this was it.
+    pub fn arm(&self, now: Instant) -> bool {
+        self.armed.set(now).is_ok()
+    }
+
+    /// The leg as the shader sees it: started at the first drawn frame, or
+    /// right now while nothing has drawn it.
+    fn live_leg(&self, now: Instant) -> Leg {
+        Leg {
+            start: self.armed.get().copied().unwrap_or(now),
+            ..self.leg
+        }
+    }
+
+    /// Seconds since the first drawn frame; 0 before it.
+    pub fn time(&self, now: Instant) -> f32 {
+        now.saturating_duration_since(self.live_leg(now).start)
+            .as_secs_f32()
+    }
+
     /// Linear time through the run, 0 to 1.
     pub fn progress(&self, now: Instant) -> f32 {
         let total = self.leg.duration.as_secs_f64();
         if total <= 0.0 {
             return 1.0;
         }
-        (now.saturating_duration_since(self.leg.start).as_secs_f64() / total).clamp(0.0, 1.0) as f32
+        (now.saturating_duration_since(self.live_leg(now).start)
+            .as_secs_f64()
+            / total)
+            .clamp(0.0, 1.0) as f32
     }
 
     /// The curve applied to [`ShaderRun::progress`]; may overshoot 1.0.
     pub fn eased(&self, now: Instant) -> f32 {
-        (1.0 - self.leg.response(now).pd) as f32
+        (1.0 - self.live_leg(now).response(now).pd) as f32
     }
 
     /// How visible the window is, 0 to 1: what the border and shadow follow.
@@ -214,29 +304,35 @@ impl ShaderRun {
         }
     }
 
+    /// Over: its own length after the first drawn frame. A run that never
+    /// drew (the shader was unusable and the built-in played instead) is not
+    /// kept for ever: it goes [`UNARMED_GRACE`] after its length from creation.
     pub fn done(&self, now: Instant) -> bool {
-        self.leg.done(now)
+        match self.armed.get() {
+            Some(_) => self.live_leg(now).done(now),
+            None => now.saturating_duration_since(self.leg.start) >= self.leg.duration + UNARMED_GRACE,
+        }
     }
 
     /// The uniform values for one frame. `win` is the window's physical size
-    /// and `inset` the margin in physical px; `scale` converts `travel`.
+    /// and `quad` its quad; `scale` converts `travel`.
     pub fn uniforms(
         &self,
         now: Instant,
         win: Size<i32, Physical>,
-        inset: i32,
+        quad: Quad,
         scale: Scale<f64>,
     ) -> Vec<Uniform<'static>> {
-        let quad = (win.w + 2 * inset, win.h + 2 * inset);
-        let (qw, qh) = (quad.0.max(1) as f32, quad.1.max(1) as f32);
+        let full = quad.size(win);
+        let (qw, qh) = (full.w.max(1) as f32, full.h.max(1) as f32);
         let content = [
-            inset as f32 / qw,
-            inset as f32 / qh,
+            quad.left as f32 / qw,
+            quad.top as f32 / qh,
             win.w as f32 / qw,
             win.h as f32 / qh,
         ];
         let travel = [(self.travel.0 * scale.x) as f32, (self.travel.1 * scale.y) as f32];
-        let elapsed = now.saturating_duration_since(self.leg.start).as_secs_f32();
+        let elapsed = self.time(now);
         vec![
             Uniform::new("progress", self.progress(now)),
             Uniform::new("eased", self.eased(now)),
@@ -277,8 +373,38 @@ pub struct Registry {
     /// Styles drawn since the last [`Registry::frame_result`].
     drawn: Vec<Arc<str>>,
     textures: HashMap<u64, GlesTexture>,
+    /// Open runs keep their tracker, so an unchanged window is not re-drawn
+    /// into its copy.
+    trackers: HashMap<u64, OutputDamageTracker>,
+    /// Serials whose copy holds a finished render of a static ghost.
+    rendered: HashSet<u64>,
+    /// Add-on styles the resolved config selects, and every pack preset's:
+    /// compiled ahead of any run.
+    wanted: HashSet<String>,
+    /// The config `wanted` was computed from.
+    selected: Option<Animations>,
+    selection_stale: bool,
+    /// A program was compiled since the last [`Registry::frame_result`]: that
+    /// frame is not held against any style.
+    compiled: bool,
     serial: u64,
     frame: usize,
+}
+
+/// The add-on styles `anims` selects for the events a shader is drawn for,
+/// plus every style a pack preset names (so picking one is instant).
+pub fn wanted_styles(anims: &Animations, presets: &[PackPreset]) -> HashSet<String> {
+    let mut out: HashSet<String> = presets
+        .iter()
+        .flat_map(|p| p.styles.iter().map(|(_, id)| id.clone()))
+        .collect();
+    for ev in DRAWN_EVENTS {
+        let r = anims.resolve(ev);
+        if !r.off() && is_addon_style(&r.style) {
+            out.insert(r.style);
+        }
+    }
+    out
 }
 
 impl Registry {
@@ -300,11 +426,42 @@ impl Registry {
         self.overruns.retain(|id, _| keep.contains(id.as_str()));
         self.warned.clear();
         self.styles = styles;
+        self.selection_stale = true;
     }
 
     /// Install the pack presets the loader read (empty while the hook is off).
     pub fn set_presets(&mut self, presets: Vec<PackPreset>) {
         self.presets = presets;
+        self.selection_stale = true;
+    }
+
+    /// Learn which styles `anims` selects. Cheap when nothing changed; call
+    /// every frame before [`Registry::compile_wanted`].
+    pub fn select(&mut self, anims: &Animations) {
+        if !self.selection_stale && self.selected.as_ref() == Some(anims) {
+            return;
+        }
+        self.wanted = wanted_styles(anims, &self.presets);
+        self.selected = Some(anims.clone());
+        self.selection_stale = false;
+    }
+
+    pub fn wanted(&self) -> &HashSet<String> {
+        &self.wanted
+    }
+
+    /// Compile every wanted style not yet tried, whether or not a run exists,
+    /// so no run compiles mid-animation.
+    pub fn compile_wanted(&mut self, renderer: &mut GlesRenderer) {
+        let todo: Vec<String> = self
+            .wanted
+            .iter()
+            .filter(|id| !self.programs.contains_key(*id) && self.usable(id))
+            .cloned()
+            .collect();
+        for id in todo {
+            self.ensure(renderer, &id);
+        }
     }
 
     pub fn presets(&self) -> &[PackPreset] {
@@ -378,7 +535,7 @@ impl Registry {
         let ms =
             (over.and_then(|o| o.duration_ms).unwrap_or(style.duration_ms) as f64 / speed).round() as u32;
         let curve = over.and_then(|o| o.curve).unwrap_or(style.curve);
-        let margin = style.margin;
+        let (margin, reach) = (style.margin, style.reach);
         self.serial += 1;
         let serial = self.serial;
         Some(ShaderRun {
@@ -386,6 +543,8 @@ impl Registry {
             kind,
             leg: Leg::new(now, ms, curve),
             margin,
+            reach,
+            armed: Arc::new(OnceLock::new()),
             travel,
             side,
             seed: ((serial.wrapping_mul(2_654_435_761) >> 4) % 1000) as f32 / 1000.0,
@@ -414,6 +573,7 @@ impl Registry {
             }
         };
         self.programs.insert(id.to_owned(), slot);
+        self.compiled = true;
     }
 
     fn program(&self, id: &str) -> Option<&GlesTexProgram> {
@@ -428,6 +588,9 @@ impl Registry {
     /// session; a style drawn in a good frame starts counting again.
     pub fn frame_result(&mut self, over: bool) {
         let drawn = std::mem::take(&mut self.drawn);
+        // The frame that compiled a program is slow for a reason that is not
+        // the style's drawing.
+        let over = over && !std::mem::take(&mut self.compiled);
         for id in drawn {
             if !over {
                 self.overruns.remove(&*id);
@@ -447,6 +610,19 @@ impl Registry {
     /// Forget the offscreen copies of runs that are gone.
     pub fn retain_textures(&mut self, live: &HashSet<u64>) {
         self.textures.retain(|serial, _| live.contains(serial));
+        self.trackers.retain(|serial, _| live.contains(serial));
+        self.rendered.retain(|serial| live.contains(serial));
+    }
+
+    /// Whether the run's copy must be drawn into this frame. A close or
+    /// minimize shows a frozen window, so it is drawn once; an open follows
+    /// the live window. A fresh texture is empty either way.
+    fn needs_render(&mut self, run: &ShaderRun, fresh: bool) -> bool {
+        if fresh {
+            self.rendered.remove(&run.serial);
+            self.trackers.remove(&run.serial);
+        }
+        run.kind == RunKind::Open || !self.rendered.contains(&run.serial)
     }
 
     fn texture(
@@ -454,21 +630,21 @@ impl Registry {
         renderer: &mut GlesRenderer,
         serial: u64,
         size: Size<i32, Physical>,
-    ) -> Result<GlesTexture, GlesError> {
+    ) -> Result<(GlesTexture, bool), GlesError> {
         let want: Size<i32, BufferCoords> = size.to_logical(1).to_buffer(1, BufferTransform::Normal);
         if let Some(t) = self.textures.get(&serial) {
             use smithay::backend::renderer::Texture;
             if t.size() == want {
-                return Ok(t.clone());
+                return Ok((t.clone(), false));
             }
         }
         let t = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, want)?;
         self.textures.insert(serial, t.clone());
-        Ok(t)
+        Ok((t, true))
     }
 
-    /// Draw `content` (the window alone, laid out with its geometry's top-left
-    /// at `inset` physical px) into the run's offscreen copy and return the
+    /// Draw the window (`content` builds its elements, with the geometry's
+    /// top-left at `quad.origin()`) into the run's offscreen copy and return the
     /// element that draws it through the style, placed at `quad_loc`
     /// (output-local physical, the quad's top-left). `None`, with the
     /// reason logged, means the caller draws the built-in style instead.
@@ -480,41 +656,57 @@ impl Registry {
         run: &ShaderRun,
         now: Instant,
         win: Size<i32, Physical>,
+        quad: Quad,
         quad_loc: Point<i32, Physical>,
         scale: Scale<f64>,
-        content: &[E],
+        content: impl FnOnce(&mut GlesRenderer) -> Vec<E>,
     ) -> Option<ShaderElement> {
         let program = self.program(&run.style)?.clone();
-        let inset = margin_px(run.margin, scale);
-        let size: Size<i32, Physical> = (win.w + 2 * inset, win.h + 2 * inset).into();
+        let size = quad.size(win);
         if size.w <= 0 || size.h <= 0 || size.w > MAX_TEXTURE || size.h > MAX_TEXTURE {
             return None;
         }
-        let mut texture = match self.texture(renderer, run.serial, size) {
+        let (mut texture, fresh) = match self.texture(renderer, run.serial, size) {
             Ok(t) => t,
             Err(err) => {
                 tracing::warn!(?err, "allocating a transition shader's offscreen copy");
                 return None;
             }
         };
-        let rendered = (|| {
-            // Whole each frame (`age = 0`): the copy changes with the window
-            // and the run, and nothing else shares this texture.
-            let mut tracker = OutputDamageTracker::new(size, scale, BufferTransform::Normal);
-            let mut fb = Bind::bind(renderer, &mut texture).map_err(|_| ())?;
-            tracker
-                .render_output(renderer, &mut fb, 0, content, Color32F::new(0.0, 0.0, 0.0, 0.0))
-                .map(|_| ())
-                .map_err(|_| ())
-        })();
-        if rendered.is_err() {
-            tracing::warn!(
-                style = &*run.style,
-                "drawing a window into its transition shader's copy failed"
-            );
-            return None;
+        if self.needs_render(run, fresh) {
+            let els = content(renderer);
+            // An open keeps its tracker: the copy persists between frames
+            // (age 1), so an unchanged window costs nothing. A frozen ghost is
+            // drawn once, whole.
+            let keep = run.kind == RunKind::Open;
+            let (mut tracker, age) = match self.trackers.remove(&run.serial) {
+                Some(t) if keep => (t, 1),
+                _ => (OutputDamageTracker::new(size, scale, BufferTransform::Normal), 0),
+            };
+            let rendered = (|| {
+                let mut fb = Bind::bind(renderer, &mut texture).map_err(|_| ())?;
+                tracker
+                    .render_output(renderer, &mut fb, age, &els, Color32F::new(0.0, 0.0, 0.0, 0.0))
+                    .map(|_| ())
+                    .map_err(|_| ())
+            })();
+            if rendered.is_err() {
+                tracing::warn!(
+                    style = &*run.style,
+                    "drawing a window into its transition shader's copy failed"
+                );
+                self.rendered.remove(&run.serial);
+                return None;
+            }
+            if keep {
+                self.trackers.insert(run.serial, tracker);
+            }
+            self.rendered.insert(run.serial);
         }
-        if !self.drawn.iter().any(|s| **s == *run.style) {
+        // The first drawn frame starts the clock and is not held against the
+        // style's frame budget (it also paid for the copy).
+        let first = run.arm(now);
+        if !first && !self.drawn.iter().any(|s| **s == *run.style) {
             self.drawn.push(run.style.clone());
         }
         self.frame = self.frame.wrapping_add(1);
@@ -525,7 +717,7 @@ impl Registry {
             Rectangle::new(quad_loc, size),
             CommitCounter::from(self.frame),
             program,
-            run.uniforms(now, win, inset, scale),
+            run.uniforms(now, win, quad, scale),
         ))
     }
 }
@@ -662,6 +854,7 @@ mod tests {
             margin: 12,
             duration_ms: 400,
             curve: Curve::EaseOut,
+            reach: false,
         }
     }
 
@@ -822,9 +1015,16 @@ mod tests {
             .start(&a, RunKind::Close, t0, ShedLevel::Full, (10.0, 20.0), 0.0)
             .unwrap();
         assert_eq!(
-            run.uniforms(t0, (100, 50).into(), 12, Scale::from(1.0)).len(),
+            run.uniforms(
+                t0,
+                (100, 50).into(),
+                run.quad((100, 50).into(), Scale::from(1.0)),
+                Scale::from(1.0)
+            )
+            .len(),
             uniform_names().len()
         );
+        run.arm(t0);
         assert_eq!(run.progress(t0), 0.0);
         let end = t0 + std::time::Duration::from_millis(500);
         assert_eq!(run.progress(end), 1.0);
@@ -832,5 +1032,174 @@ mod tests {
         // Closing: fully visible at the start, gone at the end.
         assert!((run.visible(t0) - 1.0).abs() < 1e-6 && run.visible(end).abs() < 1e-6);
         assert_eq!(margin_px(12, Scale::from(2.0)), 24);
+    }
+
+    fn run_at(reg: &mut Registry, kind: RunKind, t0: Instant) -> ShaderRun {
+        let ev = kind.event();
+        reg.set_catalog(vec![style("fx:a", &[ev])]);
+        reg.start(&anims(ev, "fx:a"), kind, t0, ShedLevel::Full, (0.0, 0.0), 0.0)
+            .unwrap()
+    }
+
+    #[test]
+    fn an_armed_run_reads_zero_on_its_first_drawn_frame_whatever_the_wall_time() {
+        let mut reg = Registry::default();
+        let t0 = Instant::now();
+        let run = run_at(&mut reg, RunKind::Close, t0);
+        // Created, never drawn, a long time passes: still the start.
+        let late = t0 + Duration::from_millis(300);
+        assert_eq!(run.progress(late), 0.0);
+        assert_eq!(run.eased(late), 0.0);
+        assert!((run.visible(late) - 1.0).abs() < 1e-6);
+        assert_eq!(run.time(late), 0.0);
+        assert!(!run.done(late));
+        // The first drawn frame stamps it, on a clone too.
+        assert!(run.clone().arm(late));
+        assert!(!run.arm(late + Duration::from_millis(5)), "first stamp wins");
+        assert_eq!(run.progress(late), 0.0);
+        assert_eq!(run.time(late), 0.0);
+        let mid = late + Duration::from_millis(200);
+        assert!((run.progress(mid) - 0.5).abs() < 1e-6);
+        assert!(!run.done(mid) && run.done(late + Duration::from_millis(400)));
+    }
+
+    #[test]
+    fn a_run_that_never_draws_still_ends() {
+        let mut reg = Registry::default();
+        let t0 = Instant::now();
+        let run = run_at(&mut reg, RunKind::Close, t0);
+        assert!(!run.done(t0 + Duration::from_millis(400)));
+        assert!(run.done(t0 + Duration::from_millis(400) + UNARMED_GRACE));
+    }
+
+    #[test]
+    fn a_ghost_copy_is_drawn_once_and_an_open_every_frame() {
+        let mut reg = Registry::default();
+        let t0 = Instant::now();
+        let close = run_at(&mut reg, RunKind::Close, t0);
+        assert!(reg.needs_render(&close, true));
+        reg.rendered.insert(close.serial);
+        for _ in 0..5 {
+            assert!(!reg.needs_render(&close, false), "frozen: reused");
+        }
+        assert!(reg.needs_render(&close, true), "a new texture is empty");
+        let min = run_at(&mut reg, RunKind::Minimize, t0);
+        reg.rendered.insert(min.serial);
+        assert!(!reg.needs_render(&min, false));
+        let open = run_at(&mut reg, RunKind::Open, t0);
+        reg.rendered.insert(open.serial);
+        assert!(reg.needs_render(&open, false), "an open follows the live window");
+        reg.retain_textures(&HashSet::new());
+        assert!(reg.rendered.is_empty());
+    }
+
+    #[test]
+    fn the_reach_quad_contains_the_target_in_every_direction() {
+        let win = Size::<i32, Logical>::from((400, 300));
+        for scale in [1.0, 1.5, 2.0] {
+            let scale = Scale::from(scale);
+            let wp: Size<i32, Physical> = win.to_f64().to_physical(scale).to_i32_round();
+            for travel in [
+                (900.0, 40.0),
+                (-900.0, 40.0),
+                (30.0, 1100.0),
+                (-30.0, -1100.0),
+                (700.0, -800.0),
+                (0.0, 0.0),
+                (-50.0, 20.0),
+            ] {
+                let run = ShaderRun {
+                    reach: true,
+                    travel,
+                    margin: 16,
+                    ..bare_run()
+                };
+                let q = run.quad(win, scale);
+                let size = q.size(wp);
+                // The target in the quad's own px.
+                let tx = q.left as f64 + wp.w as f64 / 2.0 + travel.0 * scale.x;
+                let ty = q.top as f64 + wp.h as f64 / 2.0 + travel.1 * scale.y;
+                assert!(
+                    tx > 0.0 && tx < size.w as f64 && ty > 0.0 && ty < size.h as f64,
+                    "{travel:?} @{scale:?}: ({tx}, {ty}) in {size:?}"
+                );
+                // At least the plain margin on every side.
+                let m = margin_px(16, scale);
+                assert!(q.left >= m && q.top >= m && q.right >= m && q.bottom >= m);
+            }
+        }
+    }
+
+    #[test]
+    fn without_reach_the_quad_is_the_margin_all_round() {
+        let run = ShaderRun {
+            travel: (900.0, 900.0),
+            margin: 12,
+            ..bare_run()
+        };
+        let q = run.quad((100, 80).into(), Scale::from(1.0));
+        assert_eq!((q.left, q.top, q.right, q.bottom), (12, 12, 12, 12));
+        let uni = run.uniforms(Instant::now(), (100, 80).into(), q, Scale::from(1.0));
+        assert_eq!(uni.len(), uniform_names().len());
+    }
+
+    #[test]
+    fn wanted_styles_come_from_the_config_and_the_presets() {
+        let mut a = anims(Event::WindowClose, "fx:a");
+        a.overrides.insert(
+            Event::Minimize,
+            Override {
+                style: Some("scale".into()),
+                ..Default::default()
+            },
+        );
+        let w = wanted_styles(&a, &[]);
+        assert_eq!(w, HashSet::from(["fx:a".to_string()]), "built-ins are not wanted");
+        let preset = PackPreset {
+            id: "fx:p".into(),
+            label: "P".into(),
+            base: Preset::Smooth,
+            styles: vec![(Event::WindowOpen, "fx:b".into())],
+        };
+        let w = wanted_styles(&a, std::slice::from_ref(&preset));
+        assert!(w.contains("fx:a") && w.contains("fx:b") && w.len() == 2);
+        // The registry follows the config and the presets.
+        let mut reg = Registry::default();
+        reg.select(&a);
+        assert!(reg.wanted().contains("fx:a") && !reg.wanted().contains("fx:b"));
+        reg.set_presets(vec![preset]);
+        reg.select(&a);
+        assert!(reg.wanted().contains("fx:b"));
+        reg.select(&Animations::default());
+        assert!(!reg.wanted().contains("fx:a"));
+    }
+
+    #[test]
+    fn the_frame_that_compiled_is_not_an_overrun() {
+        let mut reg = Registry::default();
+        reg.set_catalog(vec![style("fx:a", &[Event::WindowClose])]);
+        reg.compiled = true;
+        reg.drawn.push(Arc::from("fx:a"));
+        reg.frame_result(true);
+        assert!(!reg.overruns.contains_key("fx:a") && !reg.compiled);
+        reg.drawn.push(Arc::from("fx:a"));
+        reg.frame_result(true);
+        assert_eq!(reg.overruns.get("fx:a"), Some(&1));
+    }
+
+    fn bare_run() -> ShaderRun {
+        ShaderRun {
+            style: Arc::from("fx:a"),
+            kind: RunKind::Minimize,
+            leg: Leg::new(Instant::now(), 400, Curve::EaseOut),
+            margin: 0,
+            reach: false,
+            armed: Arc::new(OnceLock::new()),
+            travel: (0.0, 0.0),
+            side: 0.0,
+            seed: 0.0,
+            serial: 1,
+            id: Id::new(),
+        }
     }
 }

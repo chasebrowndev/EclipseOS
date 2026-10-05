@@ -343,6 +343,26 @@ fn dock(state: &AbyssState, output: &Output) -> Option<(f64, f64)> {
     })
 }
 
+/// Where `window` shrinks to on `output`: the centre of its taskbar chip when
+/// the bar reported one for this output (`set_window_chip_rect`), else
+/// [`dock`]. Same space as `dock`: global logical.
+fn minimize_target(state: &AbyssState, window: &Window, output: &Output) -> Option<(f64, f64)> {
+    let chip = state
+        .ipc
+        .existing_handle(window)
+        .and_then(|h| state.ipc.chip(h))
+        .zip(state.space.output_geometry(output))
+        .zip(state.outputs.by_output(output))
+        .filter(|((c, _), e)| c.output == e.connector)
+        .map(|((c, out), _)| {
+            (
+                out.loc.x as f64 + c.rect.loc.x + c.rect.size.w / 2.0,
+                out.loc.y as f64 + c.rect.loc.y + c.rect.size.h / 2.0,
+            )
+        });
+    chip.or_else(|| dock(state, output))
+}
+
 /// The displacement that puts a window at `geo` onto `dock`, shrunk.
 fn shrunk(geo: &Rectangle<i32, Logical>, dock: (f64, f64)) -> Channels {
     let c = centre(geo);
@@ -366,11 +386,12 @@ pub fn minimize(state: &mut AbyssState, window: &Window) {
     let Some(output) = output_for(state, &geo) else {
         return;
     };
-    let end = match (style, dock(state, &output)) {
+    let target = minimize_target(state, window, &output);
+    let end = match (style, target) {
         ("shrink", Some(dock)) => shrunk(&geo, dock),
         _ => FADE,
     };
-    let travel = dock(state, &output).map_or((0.0, 0.0), |d| {
+    let travel = target.map_or((0.0, 0.0), |d| {
         let c = centre(&geo);
         (d.0 - c.0, d.1 - c.1)
     });
@@ -389,7 +410,10 @@ pub fn unminimize(state: &mut AbyssState, window: &Window) {
     let Some(geo) = state.space.element_geometry(window) else {
         return;
     };
-    let from = match (style, output_for(state, &geo).and_then(|o| dock(state, &o))) {
+    let from = match (
+        style,
+        output_for(state, &geo).and_then(|o| minimize_target(state, window, &o)),
+    ) {
         ("shrink", Some(dock)) => shrunk(&geo, dock),
         _ => FADE,
     };
@@ -494,6 +518,48 @@ mod tests {
             geometry,
             active: false,
         }
+    }
+
+    #[test]
+    fn minimize_aims_at_the_chip_and_falls_back_to_the_dock() {
+        let (mut h, _c, _t, w) = mapped();
+        let geo = h.state.space.element_geometry(&w).expect("mapped");
+        let output = output_for(&h.state, &geo).expect("output");
+        let dock_at = dock(&h.state, &output);
+        // No chip rect: today's dock centre.
+        assert_eq!(minimize_target(&h.state, &w, &output), dock_at);
+
+        let handle = h.state.ipc.handle_for(&w);
+        let connector = h
+            .state
+            .outputs
+            .by_output(&output)
+            .expect("entry")
+            .connector
+            .clone();
+        let origin = h.state.space.output_geometry(&output).expect("geometry").loc;
+        let rect = Rectangle::new((100.0, 20.0).into(), (40.0, 30.0).into());
+        h.state.ipc.set_chip(
+            handle,
+            Some(crate::ipc::ChipRect {
+                output: connector.clone(),
+                rect,
+            }),
+        );
+        assert_eq!(
+            minimize_target(&h.state, &w, &output),
+            Some((origin.x as f64 + 120.0, origin.y as f64 + 35.0))
+        );
+
+        // A rect reported for another output is ignored.
+        h.state.ipc.set_chip(
+            handle,
+            Some(crate::ipc::ChipRect {
+                output: format!("{connector}-other"),
+                rect,
+            }),
+        );
+        assert_eq!(minimize_target(&h.state, &w, &output), dock_at);
     }
 
     /// COMP-02 §11: a track in flight never moves what the shell reports.

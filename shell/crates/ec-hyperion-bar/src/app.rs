@@ -2137,7 +2137,66 @@ pub fn relayout_all(app: &mut App, now: Instant) {
     });
     if app.fixture.is_none() {
         crate::services::set_tap(tap_wanted(app));
+        report_chips(app);
     }
+}
+
+/// Tell the compositor where each window's chip is, in its output's logical
+/// pixels, so minimize can shrink into the real chip (`set_window_chip_rect`).
+/// From the solver's targets and the pill's own placement (the same maths as
+/// [`eye_placement`]); nothing is drawn differently. A bar that is folded,
+/// hidden or unmapped has no chips to aim at and reports none, so the
+/// compositor falls back to the bar's centre.
+fn report_chips(app: &mut App) {
+    // (window, output, x, inset from the anchored edge, width)
+    let mut rows: Vec<(u64, String, f32, f32, f32)> = Vec::new();
+    for bar in app.bars.values() {
+        if !bar.mapped || !bar.fold.pill() {
+            continue;
+        }
+        let air = bar.fold.air;
+        let inset = air.y as f32 + (bar::PILL_H - bar::TASK_H) / 2.0;
+        let windows = crate::view::strip_windows(app, bar);
+        for (w, c) in windows.iter().zip(&bar.layout.chips) {
+            rows.push((
+                w.handle,
+                bar.output_name.clone(),
+                air.x as f32 + c.x,
+                inset,
+                c.width,
+            ));
+        }
+    }
+    let mut heights: HashMap<String, Option<f32>> = HashMap::new();
+    let mut boxes: Vec<(u64, String, crate::conn::ChipBox)> = Vec::with_capacity(rows.len());
+    for (handle, output, x, inset, width) in rows {
+        let y = match app.edge {
+            BarPosition::Top => inset,
+            BarPosition::Bottom => {
+                let conn = &mut app.conn;
+                let Some(h) = *heights
+                    .entry(output.clone())
+                    .or_insert_with(|| conn.output_height(&output))
+                else {
+                    continue;
+                };
+                h - inset - bar::TASK_H
+            }
+        };
+        boxes.push((
+            handle,
+            output,
+            (
+                x.round() as i32,
+                y.round() as i32,
+                width.round() as i32,
+                bar::TASK_H.round() as i32,
+            ),
+        ));
+    }
+    let now: Vec<(u64, &str, crate::conn::ChipBox)> =
+        boxes.iter().map(|(h, o, r)| (*h, o.as_str(), *r)).collect();
+    app.conn.report_chips(&now);
 }
 
 /// Re-solve one bar and point its animations at the answer.

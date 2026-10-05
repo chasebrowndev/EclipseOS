@@ -146,14 +146,138 @@ impl Default for BarConfig {
     }
 }
 
+/// A chip's rectangle in its output's logical, output-local pixels, rounded
+/// to whole pixels so a sub-pixel wobble in the layout is not a change.
+pub type ChipBox = (i32, i32, i32, i32);
+
+/// What the compositor was last told about each window's taskbar chip
+/// (`set_window_chip_rect`), so only a change goes on the wire.
+#[derive(Debug, Default)]
+pub struct ChipReports {
+    sent: std::collections::HashMap<u64, (String, ChipBox)>,
+}
+
+/// One call to make: set `Some` rect, or clear with `None`.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ChipUpdate {
+    pub handle: u64,
+    pub output: String,
+    pub rect: Option<ChipBox>,
+}
+
+impl ChipReports {
+    /// What has to be sent for the chips now drawn (`now`: window handle,
+    /// output, rect), and records it as sent. A window that was reported and
+    /// is no longer drawn gets a clear on the output it was reported for.
+    pub fn diff(&mut self, now: &[(u64, &str, ChipBox)]) -> Vec<ChipUpdate> {
+        let mut out = Vec::new();
+        for &(handle, output, rect) in now {
+            let same = self
+                .sent
+                .get(&handle)
+                .is_some_and(|(o, r)| o == output && *r == rect);
+            if !same {
+                self.sent.insert(handle, (output.to_owned(), rect));
+                out.push(ChipUpdate {
+                    handle,
+                    output: output.to_owned(),
+                    rect: Some(rect),
+                });
+            }
+        }
+        let gone: Vec<u64> = self
+            .sent
+            .keys()
+            .filter(|h| !now.iter().any(|(n, _, _)| n == *h))
+            .copied()
+            .collect();
+        for handle in gone {
+            if let Some((output, _)) = self.sent.remove(&handle) {
+                out.push(ChipUpdate {
+                    handle,
+                    output,
+                    rect: None,
+                });
+            }
+        }
+        out
+    }
+
+    /// The call failed: send it again next time.
+    pub fn forget(&mut self, handle: u64) {
+        self.sent.remove(&handle);
+    }
+
+    /// The compositor went away and came back with no memory of any of it.
+    pub fn reset(&mut self) {
+        self.sent.clear();
+    }
+}
+
+/// An output's logical height from a `get_outputs` row: the mode's height over
+/// the scale, swapped for a quarter turn.
+pub fn logical_height(row: &Value) -> Option<f32> {
+    let mode = row.get("mode")?;
+    let (w, h) = (mode.get("width")?.as_f64()?, mode.get("height")?.as_f64()?);
+    let scale = row
+        .get("scale")
+        .and_then(Value::as_f64)
+        .filter(|s| *s > 0.0)
+        .unwrap_or(1.0);
+    let turned = matches!(
+        row.get("transform").and_then(Value::as_str),
+        Some("90" | "270" | "flipped-90" | "flipped-270")
+    );
+    Some(((if turned { w } else { h }) / scale) as f32)
+}
+
 #[derive(Default)]
 pub struct Conn {
     client: Option<Client>,
+    chips: ChipReports,
 }
 
 impl Conn {
     pub fn new() -> Self {
-        Conn { client: None }
+        Conn {
+            client: None,
+            chips: ChipReports::default(),
+        }
+    }
+
+    /// The logical height of the output named `name`, if the compositor says.
+    pub fn output_height(&mut self, name: &str) -> Option<f32> {
+        self.ensure();
+        let v = self.call("get_outputs", json!({}))?;
+        v.as_array()?
+            .iter()
+            .find(|r| r.get("name").and_then(Value::as_str) == Some(name))
+            .and_then(logical_height)
+    }
+
+    /// Tell abyss where each window's chip is (`set_window_chip_rect`): only
+    /// what changed since the last report, and a clear for each chip that is
+    /// gone. Render-only on the compositor's side. A failed call is retried
+    /// on the next report.
+    pub fn report_chips(&mut self, now: &[(u64, &str, ChipBox)]) {
+        if self.client.is_none() {
+            return;
+        }
+        for u in self.chips.diff(now) {
+            let rect = match u.rect {
+                Some((x, y, w, h)) => json!({"x": x, "y": y, "w": w, "h": h}),
+                None => Value::Null,
+            };
+            let ok = self.call(
+                "set_window_chip_rect",
+                json!({"id": u.handle, "output": u.output, "rect": rect}),
+            );
+            // A clear for a window that has since died is refused; that is
+            // fine, there is nothing left to clear.
+            if ok.is_none() && u.rect.is_some() {
+                self.chips.forget(u.handle);
+            }
+        }
     }
 
     pub fn is_connected(&self) -> bool {
@@ -178,6 +302,7 @@ impl Conn {
             Err(e) => {
                 if matches!(e, Error::Connect(_) | Error::Io(_)) {
                     self.client = None;
+                    self.chips.reset();
                 }
                 None
             }
@@ -652,5 +777,48 @@ mod tests {
     #[test]
     fn no_reply_shape_is_the_defaults() {
         assert_eq!(parse_widgets(&json!(null)), widgets::Config::default());
+    }
+
+    #[test]
+    fn chip_reports_send_only_changes_and_clear_the_gone() {
+        let mut r = ChipReports::default();
+        let a = (1, "DP-1", (10, 4, 100, 34));
+        let b = (2, "DP-1", (120, 4, 100, 34));
+        let first = r.diff(&[a, b]);
+        assert_eq!(first.len(), 2);
+        assert!(r.diff(&[a, b]).is_empty(), "unchanged sends nothing");
+
+        let moved = (2, "DP-1", (130, 4, 100, 34));
+        assert_eq!(
+            r.diff(&[a, moved]),
+            vec![ChipUpdate {
+                handle: 2,
+                output: "DP-1".into(),
+                rect: Some((130, 4, 100, 34)),
+            }]
+        );
+        assert_eq!(
+            r.diff(&[a]),
+            vec![ChipUpdate {
+                handle: 2,
+                output: "DP-1".into(),
+                rect: None,
+            }]
+        );
+        assert!(r.diff(&[a]).is_empty(), "a clear is sent once");
+
+        r.forget(1);
+        assert_eq!(r.diff(&[a]).len(), 1, "a failed send is retried");
+        r.reset();
+        assert_eq!(r.diff(&[a]).len(), 1, "a new compositor knows nothing");
+    }
+
+    #[test]
+    fn logical_height_follows_scale_and_turn() {
+        let row = json!({"mode": {"width": 3840, "height": 2160}, "scale": 2.0, "transform": "normal"});
+        assert_eq!(logical_height(&row), Some(1080.0));
+        let turned = json!({"mode": {"width": 1920, "height": 1080}, "scale": 1.0, "transform": "90"});
+        assert_eq!(logical_height(&turned), Some(1920.0));
+        assert_eq!(logical_height(&json!({"mode": null})), None);
     }
 }

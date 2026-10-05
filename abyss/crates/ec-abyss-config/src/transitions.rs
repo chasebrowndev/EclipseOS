@@ -12,7 +12,17 @@
 //! margin 24
 //! duration-ms 420
 //! curve "ease-out"
+//! reach #true
 //! ```
+//!
+//! `reach` is optional (default `#false`). Off, the quad is the window grown
+//! by `margin` on every side. On, it is still grown by `margin` on every side
+//! and further toward the run's `travel` (window centre plus `travel`, the
+//! dock for a minimize) until that target point sits at least `margin` inside
+//! the quad, so a window can fly to a point far outside itself. `content`
+//! then locates the window inside the off-centre quad; the shader's
+//! `MAX_TEXTURE` (8192 px) limit still applies and a run past it falls back
+//! to the built-in style.
 //!
 //! A pack may also ship one-click presets, `<pack>/presets/<name>.kdl`:
 //!
@@ -74,6 +84,8 @@ pub struct TransitionStyle {
     pub margin: u32,
     pub duration_ms: u32,
     pub curve: Curve,
+    /// The quad also grows toward the run's `travel` so the target is inside.
+    pub reach: bool,
 }
 
 impl TransitionStyle {
@@ -206,6 +218,7 @@ fn parse_style(
     let mut margin = 0i64;
     let mut duration_ms = 250i64;
     let mut curve = Curve::EaseOut;
+    let mut reach = false;
     for node in doc.nodes() {
         let key = node.name().value();
         let args: Vec<&KdlValue> = node
@@ -257,6 +270,11 @@ fn parse_style(
             "shader" => shader = Some(text()?),
             "margin" => margin = int(0, MAX_MARGIN)?,
             "duration-ms" => duration_ms = int(1, MAX_DURATION_MS)?,
+            "reach" => {
+                reach = one()?
+                    .as_bool()
+                    .ok_or_else(|| "`reach` must be #true or #false".to_string())?;
+            }
             "curve" => {
                 let c = text()?;
                 curve = Curve::parse(&c).ok_or_else(|| format!("unknown curve `{c}`"))?;
@@ -279,6 +297,7 @@ fn parse_style(
         margin: margin as u32,
         duration_ms: duration_ms as u32,
         curve,
+        reach,
     })
 }
 
@@ -445,6 +464,33 @@ mod tests {
             std::fs::write(p, text).unwrap();
         }
         d
+    }
+
+    #[test]
+    fn reach_defaults_off_and_parses_a_bool() {
+        let d = root(
+            "reach",
+            &[
+                ("fx/a.kdl", &KDL.replace("swirl.frag", "a.frag")),
+                ("fx/a.frag", FRAG),
+                (
+                    "fx/b.kdl",
+                    &KDL.replace("swirl.frag", "a.frag")
+                        .replace("16\n", "16\nreach #true\n"),
+                ),
+                (
+                    "fx/c.kdl",
+                    &KDL.replace("swirl.frag", "a.frag")
+                        .replace("16\n", "16\nreach \"yes\"\n"),
+                ),
+            ],
+        );
+        let cat = load_from(&d);
+        assert!(!cat.get("fx:a").expect("loaded").reach);
+        assert!(cat.get("fx:b").expect("loaded").reach);
+        assert!(cat.get("fx:c").is_none());
+        assert!(cat.rejected.iter().any(|r| r.reason.contains("`reach`")));
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

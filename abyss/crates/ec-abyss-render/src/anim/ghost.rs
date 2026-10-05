@@ -130,7 +130,8 @@ impl<W> Ghost<W> {
     }
 
     pub fn done(&self, now: Instant) -> bool {
-        self.track().done(now)
+        // A shader run outlives the built-in track when its clock armed late.
+        self.track().done(now) && self.shader().is_none_or(|r| r.done(now))
     }
 
     /// The window a live ghost draws from; `None` for a snapshot.

@@ -740,6 +740,7 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     state.urgent.retain(|w| w != window);
     crate::protocols::standard::foreign_toplevel::window_closed(window);
     let handle = state.ipc.handle_for(window);
+    state.ipc.forget_chip(handle);
     crate::ipc::emit(
         state,
         "window",
