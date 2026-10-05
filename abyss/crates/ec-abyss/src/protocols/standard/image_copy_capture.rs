@@ -129,6 +129,8 @@ struct Session {
     /// Has any frame of this session been serviced yet? The first frame always
     /// carries full damage.
     delivered: bool,
+    /// The client set `paint_cursors` (COMP-02 §8: opt-in, never ambient).
+    paint_cursors: bool,
 }
 
 #[derive(Debug)]
@@ -276,7 +278,7 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for AbyssState {
             Request::CreateSession {
                 session,
                 source,
-                options: _,
+                options,
             } => {
                 // The gate runs before any table entry or event exists.
                 let name = crate::protocols::standard::data_control::client_name(dh, client);
@@ -309,6 +311,7 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for AbyssState {
                         size,
                         frame: None,
                         delivered: false,
+                        paint_cursors: matches!(options, smithay::reexports::wayland_server::WEnum::Value(o) if o.contains(ext_image_copy_capture_manager_v1::Options::PaintCursors)),
                     },
                 );
                 let session = data_init.init(session, SessionData { id: Some(id) });
@@ -533,6 +536,7 @@ fn capture_request(state: &mut AbyssState, resource: &ExtImageCopyCaptureFrameV1
         return;
     };
     let (output_id, size, delivered) = (session.output_id, session.size, session.delivered);
+    let paint_cursors = session.paint_cursors;
 
     // Re-check the gate: a session may have outlived a lock or a reload.
     let name = state.capture_consumer.clone();
@@ -559,7 +563,7 @@ fn capture_request(state: &mut AbyssState, resource: &ExtImageCopyCaptureFrameV1
         output_id,
         region,
         with_damage: !delivered,
-        overlay_cursor: false,
+        overlay_cursor: paint_cursors,
     });
     if let Some(session) = state.image_copy.sessions.get_mut(&sid) {
         session.delivered = true;
