@@ -87,6 +87,16 @@ ADR amends ADR 0066's hook table.
 - **Catalog.** While the hook is on, abyss reads
   `/usr/share/eclipse/transitions/<pack>/<style>.kdl` and `.frag` from that
   constant, package-owned directory. Styles are named `pack:style`.
+- **Pack presets.** A pack may also ship `<pack>/presets/<name>.kdl`: `label`,
+  `base` (a built-in preset key, not `off`) and one `style "<event>" "<style>"`
+  per event, where `<style>` is a bare name from the same pack that serves the
+  event. The id is `pack:name`. The same limits apply (64 KiB, no symlinks, no
+  dot-files); a preset with an unknown event or base, a duplicate event, or a
+  missing or non-serving style is dropped alone and logged like a rejected
+  style. The `presets/` directory is not scanned as styles, and presets exist
+  only while the hook is on. `get_config.animations.pack_presets` lists them
+  (`[]` when none) as `{id, label, base, styles: {event: "pack:style"}}`, so
+  Settings can show a card next to Off/Subtle/Smooth/Lively.
 - **Shader contract.** A shader is a GLSL ES 1.00 fragment body appended to
   abyss's header, with fixed uniforms: `progress`, `eased`, `direction`,
   `kind`, `size`, `content`, `travel`, `side`, `seed`, `time`. It samples only

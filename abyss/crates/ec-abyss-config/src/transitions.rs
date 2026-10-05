@@ -14,6 +14,19 @@
 //! curve "ease-out"
 //! ```
 //!
+//! A pack may also ship one-click presets, `<pack>/presets/<name>.kdl`:
+//!
+//! ```kdl
+//! label "Embers"
+//! base "smooth"
+//! style "window-open" "embers"
+//! ```
+//!
+//! The id is `pack:name`; `base` is a built-in preset (not `off`) and each
+//! `style` names an event and a bare style of the same pack that serves it.
+//! A refused preset drops only itself. The `presets/` subdirectory is never
+//! scanned as styles.
+//!
 //! The style id is `pack:style`. `ec-abyss` reads the catalog only while the
 //! hook is on; reading lives here, drawing in `ec-abyss-render`.
 //!
@@ -29,7 +42,7 @@ use std::path::{Path, PathBuf};
 
 use kdl::{KdlDocument, KdlValue};
 
-use crate::animations::{Curve, Event};
+use crate::animations::{Curve, Event, Preset};
 
 /// Package-owned and root-writable. The one place the path is named: the
 /// loader takes the root as a parameter, so only `ec-abyss` passes this.
@@ -77,9 +90,22 @@ pub struct Rejected {
     pub reason: String,
 }
 
+/// One validated pack preset: a built-in `base` with some events pointed at
+/// the pack's styles.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackPreset {
+    /// `pack:name`.
+    pub id: String,
+    pub label: String,
+    pub base: Preset,
+    /// Event and full style id (`pack:style`).
+    pub styles: Vec<(Event, String)>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Catalog {
     pub styles: Vec<TransitionStyle>,
+    pub presets: Vec<PackPreset>,
     pub rejected: Vec<Rejected>,
 }
 
@@ -256,6 +282,67 @@ fn parse_style(
     })
 }
 
+/// Parse one preset file of `pack`; styles are checked against `styles`.
+fn parse_preset(pack: &str, id: String, kdl: &str, styles: &[TransitionStyle]) -> Result<PackPreset, String> {
+    let doc: KdlDocument = kdl.parse().map_err(|e| format!("not KDL: {e}"))?;
+    let mut label = None;
+    let mut base = None;
+    let mut picks: Vec<(Event, String)> = Vec::new();
+    for node in doc.nodes() {
+        let key = node.name().value();
+        if node.entries().iter().any(|e| e.name().is_some()) || node.children().is_some() {
+            return Err(format!("`{key}` takes only plain arguments"));
+        }
+        let args: Vec<&str> = node
+            .entries()
+            .iter()
+            .map(|e| {
+                e.value()
+                    .as_string()
+                    .ok_or_else(|| format!("`{key}` takes strings"))
+            })
+            .collect::<Result<_, _>>()?;
+        match (key, args.as_slice()) {
+            ("label", [l]) => {
+                if l.is_empty() || l.chars().count() > MAX_LABEL || l.chars().any(char::is_control) {
+                    return Err(format!("`label` must be 1..={MAX_LABEL} printable chars"));
+                }
+                label = Some((*l).to_owned());
+            }
+            ("base", [b]) => {
+                base = Some(
+                    Preset::parse(b)
+                        .filter(|p| *p != Preset::Off)
+                        .ok_or_else(|| format!("unknown base `{b}`"))?,
+                );
+            }
+            ("style", [ev, name]) => {
+                let event = Event::parse(ev).ok_or_else(|| format!("unknown event `{ev}`"))?;
+                if picks.iter().any(|(e, _)| *e == event) {
+                    return Err(format!("event `{ev}` is given twice"));
+                }
+                if !valid_name(name) {
+                    return Err(format!("style `{name}` must be a bare [a-z0-9-]+ name"));
+                }
+                let full = format!("{pack}:{name}");
+                match styles.iter().find(|s| s.id == full) {
+                    Some(s) if s.serves(event) => picks.push((event, full)),
+                    Some(_) => return Err(format!("`{full}` does not serve `{ev}`")),
+                    None => return Err(format!("`{full}` is not in the pack")),
+                }
+            }
+            ("label" | "base" | "style", _) => return Err(format!("`{key}` has the wrong arguments")),
+            (other, _) => return Err(format!("unknown key `{other}`")),
+        }
+    }
+    Ok(PackPreset {
+        id,
+        label: label.ok_or("missing `label`")?,
+        base: base.ok_or("missing `base`")?,
+        styles: picks,
+    })
+}
+
 fn sorted_entries(dir: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect())
@@ -306,6 +393,33 @@ pub fn load_from(root: &Path) -> Catalog {
                 .and_then(|text| parse_style(id, &text, |name| read_limited(&pack_dir.join(name))));
             match parsed {
                 Ok(s) => cat.styles.push(s),
+                Err(reason) => reject(&mut cat, file, reason),
+            }
+        }
+        // Presets read after the pack's styles, so they can name them.
+        let pdir = pack_dir.join("presets");
+        if !std::fs::symlink_metadata(&pdir).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        for file in sorted_entries(&pdir) {
+            if file.extension().is_none_or(|x| x != "kdl") {
+                continue;
+            }
+            let Some(name) = file.file_stem().and_then(|n| n.to_str()).map(str::to_owned) else {
+                continue;
+            };
+            if !valid_name(&name) {
+                reject(&mut cat, file, "preset name must be [a-z0-9-]+".into());
+                continue;
+            }
+            let id = format!("{pack}:{name}");
+            if cat.presets.iter().any(|p| p.id == id) {
+                reject(&mut cat, file, format!("`{id}` is given twice"));
+                continue;
+            }
+            let parsed = read_limited(&file).and_then(|text| parse_preset(&pack, id, &text, &cat.styles));
+            match parsed {
+                Ok(p) => cat.presets.push(p),
                 Err(reason) => reject(&mut cat, file, reason),
             }
         }
@@ -364,6 +478,79 @@ mod tests {
             ]
         );
         assert!(cat.styles.iter().all(|s| s.events.iter().all(|&e| s.serves(e))));
+        let p = cat
+            .presets
+            .iter()
+            .find(|p| p.id == "anim-pack:embers")
+            .expect("preset");
+        assert_eq!((p.label.as_str(), p.base), ("Ultra", Preset::Smooth));
+        assert_eq!(p.styles.len(), 3);
+        assert!(p
+            .styles
+            .contains(&(Event::Minimize, "anim-pack:genie".to_owned())));
+    }
+
+    fn preset_root(tag: &str, preset: &str) -> PathBuf {
+        root(
+            tag,
+            &[
+                ("fx/swirl.kdl", KDL),
+                ("fx/swirl.frag", FRAG),
+                ("fx/presets/p.kdl", preset),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_good_preset_loads_and_presets_are_not_styles() {
+        let d = preset_root(
+            "pgood",
+            "label \"P\"\nbase \"lively\"\nstyle \"window-open\" \"swirl\"\nstyle \"window-close\" \"swirl\"\n",
+        );
+        let cat = load_from(&d);
+        assert!(cat.rejected.is_empty(), "{:?}", cat.rejected);
+        assert_eq!(cat.styles.len(), 1);
+        assert_eq!(cat.presets.len(), 1);
+        let p = &cat.presets[0];
+        assert_eq!((p.id.as_str(), p.base), ("fx:p", Preset::Lively));
+        assert_eq!(p.styles[1], (Event::WindowClose, "fx:swirl".to_owned()));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn bad_presets_are_dropped_alone() {
+        let head = "label \"P\"\nbase \"smooth\"\n";
+        for (tag, bad) in [
+            ("pev", format!("{head}style \"windows\" \"swirl\"\n")),
+            ("pbase", "label \"P\"\nbase \"huge\"\n".to_owned()),
+            ("poff", "label \"P\"\nbase \"off\"\n".to_owned()),
+            (
+                "pdup",
+                format!("{head}style \"window-open\" \"swirl\"\nstyle \"window-open\" \"swirl\"\n"),
+            ),
+            ("pmissing", format!("{head}style \"window-open\" \"nope\"\n")),
+            ("pserve", format!("{head}style \"minimize\" \"swirl\"\n")),
+            ("pcross", format!("{head}style \"window-open\" \"other:swirl\"\n")),
+            ("pkey", format!("{head}surprise 1\n")),
+        ] {
+            let d = preset_root(tag, &bad);
+            let cat = load_from(&d);
+            assert!(cat.presets.is_empty(), "{tag}");
+            assert_eq!(cat.rejected.len(), 1, "{tag}: {:?}", cat.rejected);
+            assert!(cat.get("fx:swirl").is_some(), "{tag}");
+            let _ = std::fs::remove_dir_all(d);
+        }
+        let big = format!("label \"P\"\nbase \"smooth\"\n// {}", "x".repeat(70_000));
+        let d = preset_root("pbig", &big);
+        let cat = load_from(&d);
+        assert!(cat.presets.is_empty() && cat.rejected.len() == 1);
+        let _ = std::fs::remove_dir_all(d);
+        let d = preset_root("plink", "");
+        std::fs::write(d.join("real.txt"), "label \"P\"\nbase \"smooth\"\n").unwrap();
+        std::fs::remove_file(d.join("fx/presets/p.kdl")).unwrap();
+        std::os::unix::fs::symlink(d.join("real.txt"), d.join("fx/presets/p.kdl")).unwrap();
+        assert!(load_from(&d).presets.is_empty());
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

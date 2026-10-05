@@ -45,25 +45,28 @@ fn root() -> PathBuf {
     PathBuf::from(TRANSITIONS_DIR)
 }
 
-/// The styles to install: the catalog while the hook is on, nothing (and no
-/// file read) while it is off.
-fn styles_for(hook_on: bool, root: &Path) -> Vec<transitions::TransitionStyle> {
+/// The catalog to install: read while the hook is on, empty (and no file
+/// read) while it is off.
+fn catalog_for(hook_on: bool, root: &Path) -> transitions::Catalog {
     if !hook_on {
-        return Vec::new();
+        return transitions::Catalog::default();
     }
     let catalog = transitions::load_from(root);
     tracing::info!(
         styles = catalog.styles.len(),
+        presets = catalog.presets.len(),
         rejected = catalog.rejected.len(),
         "transition shader catalog read"
     );
-    catalog.styles
+    catalog
 }
 
 /// Bring the render registry in line with the hook.
 pub fn sync(state: &mut AbyssState) {
     let on = state.addons.hooks.is_on(Hook::TransitionShaders);
-    state.borders.anim.shaders.set_catalog(styles_for(on, &root()));
+    let catalog = catalog_for(on, &root());
+    state.borders.anim.shaders.set_catalog(catalog.styles);
+    state.borders.anim.shaders.set_presets(catalog.presets);
     // A running animation may now draw differently.
     crate::backend::damage_all(state);
 }
@@ -182,8 +185,8 @@ mod tests {
     #[test]
     fn hook_off_ignores_the_catalog() {
         let root = pack("off");
-        assert!(styles_for(false, &root).is_empty());
-        let on = styles_for(true, &root);
+        assert_eq!(catalog_for(false, &root), transitions::Catalog::default());
+        let on = catalog_for(true, &root).styles;
         assert_eq!(on.len(), 1);
         assert_eq!(on[0].id, "fx:ripple");
         let _ = std::fs::remove_dir_all(&root);

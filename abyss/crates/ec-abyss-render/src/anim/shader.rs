@@ -40,7 +40,7 @@ use smithay::utils::{
 };
 
 use ec_abyss_config::animations::{is_addon_style, Animations, Event};
-use ec_abyss_config::transitions::TransitionStyle;
+use ec_abyss_config::transitions::{PackPreset, TransitionStyle};
 
 use super::curve::Leg;
 use super::shed::ShedLevel;
@@ -267,6 +267,7 @@ enum Slot {
 #[derive(Debug, Default)]
 pub struct Registry {
     styles: Vec<TransitionStyle>,
+    presets: Vec<PackPreset>,
     programs: HashMap<String, Slot>,
     /// Styles already warned about, so a missing pack logs once.
     warned: HashSet<String>,
@@ -299,6 +300,15 @@ impl Registry {
         self.overruns.retain(|id, _| keep.contains(id.as_str()));
         self.warned.clear();
         self.styles = styles;
+    }
+
+    /// Install the pack presets the loader read (empty while the hook is off).
+    pub fn set_presets(&mut self, presets: Vec<PackPreset>) {
+        self.presets = presets;
+    }
+
+    pub fn presets(&self) -> &[PackPreset] {
+        &self.presets
     }
 
     pub fn styles(&self) -> &[TransitionStyle] {
