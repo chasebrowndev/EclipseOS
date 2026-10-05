@@ -638,6 +638,19 @@ pub const TABLE: &[Key] = &[
        `ec-ctl config migrate` moves them.",
     ),
     k(
+        "bar.pinned-apps",
+        Ty::StrList,
+        EmptyList,
+        Abyss,
+        Live,
+        "Apps pinned to the taskbar as launchers, in this order, each a \
+       desktop-entry id: the `.desktop` file's name without the suffix, \
+       e.g. `firefox`. A pinned app with no window launches on click; with \
+       a window, it is that window's chip. An id with no installed entry is \
+       skipped by the bar and kept here. Empty pins nothing; a duplicate, \
+       an empty id, a path or a `.desktop` suffix is refused.",
+    ),
+    k(
         "bar.tray.hidden",
         Ty::StrList,
         EmptyList,
@@ -2488,6 +2501,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.fold-curve" => V::Str(c.bar.fold_curve.clone()),
         "bar.position" => V::Str(position_name(c.bar.position).into()),
         "bar.tray.pinned" => c.bar.tray.pinned.as_deref().map_or(V::Null, list),
+        "bar.pinned-apps" => list(&c.bar.pinned_apps),
         "bar.tray.hidden" => list(&c.bar.tray.hidden),
         "bar.rounding" => V::Int(c.bar.rounding as i64),
         "bar.clock.hour-12" => V::Bool(c.bar.clock.hour_12),

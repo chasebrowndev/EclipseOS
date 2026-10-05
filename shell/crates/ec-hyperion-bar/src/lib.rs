@@ -17,6 +17,7 @@ pub mod layout;
 pub mod menu;
 pub mod model;
 pub mod motion;
+pub mod pins;
 #[cfg(debug_assertions)]
 pub mod preview;
 pub mod program;

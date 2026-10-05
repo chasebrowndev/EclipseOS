@@ -20,6 +20,7 @@ pub mod network;
 pub mod oracle;
 pub mod output;
 pub mod pane;
+pub mod pinned;
 pub mod portal;
 pub mod schema;
 pub mod search;

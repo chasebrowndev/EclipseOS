@@ -49,7 +49,8 @@ control-socket connection and custom widget commands run once per session, not
 per monitor; widget data is shared, while layout, fold, pins and drag are per
 bar. One popup exists across all bars, owned by the bar it opened from. Each bar
 shows its output's workspaces, window chips (focus, close, minimize, new
-instance via the matching `.desktop` entry), a clock, widgets (ADR 0065:
+instance via the matching `.desktop` entry), pinned-app chips (ADR 0074:
+`bar.pinned-apps`; idle ones launch, running ones merge with their window), a clock, widgets (ADR 0065:
 Now Playing, System Usage, Volume, network, bluetooth, battery, tray, clock
 and user `widget` blocks; non-important ones shrink together with the chips
 as room runs out, down to a drag bar), network/bluetooth/battery drawers, and the SNI tray with an
@@ -141,6 +142,7 @@ component keeps a config file of its own.
 |---|---|---|
 | `bar.fold-when-inactive`, `bar.fold-height`, `bar.fold-when-idle`, `bar.idle-seconds`, `bar.fold-duration-ms`, `bar.fold-curve` | hyperion, re-read on `config` | live |
 | `bar.position` | hyperion, once, before the surface exists | restart |
+| `bar.pinned-apps` | hyperion (read); hyperion chip menu and ec-settings Taskbar pane (read/write) | live |
 | `bar.tray.pinned`, `bar.tray.hidden` | hyperion (read); ec-settings Taskbar pane (read/write) | live |
 | `bar.rounding` | hyperion, re-read on `config` | live |
 | `decoration.rounding` | hyperion and ec-settings, re-read on `config` | live |
