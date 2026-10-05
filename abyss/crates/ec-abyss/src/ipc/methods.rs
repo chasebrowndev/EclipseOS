@@ -237,6 +237,7 @@ fn get_outputs(state: &mut AbyssState, params: &Value) -> Reply {
             "scale": entry.output.current_scale().fractional_scale(),
             "transform": crate::outputs::transform_name(entry.output.current_transform()),
             "mode": mode.map(|m| json!({"width": m.size.w, "height": m.size.h, "refresh": m.refresh})),
+            "modes": entry.output.modes().iter().map(|m| json!({"width": m.size.w, "height": m.size.h, "refresh": m.refresh})).collect::<Vec<_>>(),
             "position": position.map(|p| json!({"x": p.x, "y": p.y})),
             "workspaces": entry.workspaces.len(),
             "active_workspace": entry.active + 1,
