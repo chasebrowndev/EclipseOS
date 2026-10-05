@@ -280,15 +280,24 @@ fn order_layers(output: &Output) {
 /// Render-only apart from the delay: the closed window is already out of the
 /// layout tree, `space` and the listing, and the neighbours keep the geometry
 /// they were last arranged at (that is what hit-testing and `get_tree` see
-/// and what is drawn). The next layout pass of any kind ends the hold and runs
-/// in full, so nothing asked for in the meantime is lost.
+/// and what is drawn). Layout passes in the meantime (a focus change, a bar
+/// resizing as the chip leaves, a popup) still run, but leave the held
+/// workspace's tiles where they are. The hold ends, and the tiles are laid
+/// out in full, when the ghost is done or the held workspace's tiled set,
+/// tiling area or active index changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetileHold {
     None,
     /// `unmap_window` is finishing; its own passes are the ones deferred.
     Settling,
-    /// Waiting for the ghost; any pass ends it.
-    Held,
+    /// Waiting for the ghost: `output`'s workspace `ws`, holding `tiled`
+    /// windows in `area`. Anything else there means the hold is stale.
+    Held {
+        output: u64,
+        ws: usize,
+        tiled: usize,
+        area: Rectangle<i32, Logical>,
+    },
 }
 
 /// End the hold once its ghost is done. Called before each frame is built,
@@ -296,22 +305,27 @@ pub enum RetileHold {
 /// A ghost that never draws is done after the armed-clock grace, so the hold
 /// cannot outlive it.
 pub fn tick_retile_hold(state: &mut AbyssState) {
-    if state.retile_hold == RetileHold::Held && !state.borders.anim.holding(Instant::now()) {
+    if matches!(state.retile_hold, RetileHold::Held { .. }) && !state.borders.anim.holding(Instant::now()) {
+        state.retile_hold = RetileHold::None;
         arrange(state);
     }
 }
 
-/// Whether closing `window` should hold the layout: it is tiled on an active
-/// workspace and its close ghost is playing (so animations are on, and not
-/// reduced to nothing).
-fn holds_retile(state: &AbyssState, window: &Window) -> bool {
-    state.config.animations.motion()
-        && state.borders.anim.close_playing(window, Instant::now())
-        && state.tile_drag.as_ref().is_none_or(|d| &d.window != window)
-        && state
-            .outputs
-            .iter()
-            .any(|e| e.workspaces[e.active].tiled.windows().contains(window))
+/// The output whose layout closing `window` should hold: it is tiled on that
+/// output's active workspace and its close ghost is playing (so animations
+/// are on, and not reduced to nothing).
+fn holds_retile(state: &AbyssState, window: &Window) -> Option<u64> {
+    if !state.config.animations.motion()
+        || !state.borders.anim.close_playing(window, Instant::now())
+        || state.tile_drag.as_ref().is_some_and(|d| &d.window == window)
+    {
+        return None;
+    }
+    state
+        .outputs
+        .iter()
+        .find(|e| e.workspaces[e.active].tiled.windows().contains(window))
+        .map(|e| e.id)
 }
 
 /// Re-run the layout for every output's active workspace.
@@ -321,7 +335,6 @@ pub fn arrange(state: &mut AbyssState) {
         crate::backend::damage_all(state);
         return;
     }
-    state.retile_hold = RetileHold::None;
     let ids: Vec<u64> = state.outputs.iter().map(|e| e.id).collect();
     for id in ids {
         arrange_output(state, id);
@@ -429,6 +442,26 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         entry.workspaces[ws].tiled.insert(w, None, area, pointer);
     }
 
+    // A close on this workspace is still playing: leave its tiles where they
+    // are, unless what is tiled here (or where) changed, which ends the hold.
+    let frozen = match state.retile_hold {
+        RetileHold::Held { output, .. } if output != id => false,
+        RetileHold::Held {
+            ws: held,
+            tiled,
+            area: held_area,
+            ..
+        } => {
+            let entry = state.outputs.get(id).expect("checked above");
+            let same = held == ws && held_area == area && entry.workspaces[ws].tiled.windows().len() == tiled;
+            if !same {
+                state.retile_hold = RetileHold::None;
+            }
+            same
+        }
+        _ => false,
+    };
+
     let entry = state.outputs.get(id).expect("checked above");
     let kind = entry.workspaces[ws]
         .layout
@@ -458,7 +491,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         .filter(|d| !d.floating)
         .map(|d| d.window.clone());
     for (w, rect) in tiled {
-        if dragged.as_ref() == Some(&w) {
+        if frozen || dragged.as_ref() == Some(&w) {
             continue;
         }
         let inner = shrink(rect, border);
@@ -797,13 +830,29 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     if state.focus.as_ref() == Some(window) {
         state.focus = None;
     }
-    if hold {
+    if hold.is_some() {
         state.retile_hold = RetileHold::Settling;
     }
     arrange(state);
     refocus_topmost(state);
-    if hold {
-        state.retile_hold = RetileHold::Held;
+    if let Some(id) = hold {
+        state.retile_hold = match state.outputs.get(id) {
+            Some(e) => {
+                let output = e.output.clone();
+                let ws = e.active;
+                let tiled = e.workspaces[ws].tiled.windows().len();
+                RetileHold::Held {
+                    output: id,
+                    ws,
+                    tiled,
+                    area: tiling_area(state, &output),
+                }
+            }
+            None => RetileHold::None,
+        };
+        if state.retile_hold == RetileHold::None {
+            arrange(state);
+        }
     }
 }
 
