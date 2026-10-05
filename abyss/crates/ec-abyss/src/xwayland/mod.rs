@@ -110,6 +110,7 @@ fn ready(state: &mut AbyssState, socket: std::os::unix::net::UnixStream, dpy: u3
     // compositor core is single-threaded and no thread has been started yet
     // that reads the environment concurrently.
     std::env::set_var("DISPLAY", format!(":{dpy}"));
+    crate::session::import_display();
 
     apply_scale(state);
     tracing::info!(x11_display = format!(":{dpy}"), "xwayland ready");

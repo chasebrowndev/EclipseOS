@@ -15,6 +15,10 @@
 //! block the calloop.
 
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Set once `import()` has run, so late variables know to follow it.
+static ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// The variables a user service needs to talk to us.
 const VARS: [&str; 3] = ["WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE"];
@@ -42,6 +46,7 @@ fn spawn(program: &str, args: &[&str]) {
 /// set in our own environment — the helpers read it from us, which is the
 /// whole reason the handoff lives here instead of in the wrapper script.
 pub fn import() {
+    ACTIVE.store(true, Ordering::Relaxed);
     spawn(
         "dbus-update-activation-environment",
         &["--systemd", VARS[0], VARS[1], VARS[2]],
@@ -52,6 +57,17 @@ pub fn import() {
     );
     spawn("systemctl", &["--user", "start", TARGET]);
     tracing::info!(target = TARGET, "session handoff requested");
+}
+
+/// Publish `DISPLAY` once XWayland is up, which is after `import()` ran.
+/// No-op outside `--session`. Launchers started as user services need it:
+/// X11-only clients (Qt `xcb` AppImages) die without it.
+pub fn import_display() {
+    if !ACTIVE.load(Ordering::Relaxed) {
+        return;
+    }
+    spawn("dbus-update-activation-environment", &["--systemd", "DISPLAY"]);
+    spawn("systemctl", &["--user", "import-environment", "DISPLAY"]);
 }
 
 /// Stop the user target on the way out. Services that are
