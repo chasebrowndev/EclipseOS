@@ -92,6 +92,10 @@ pub struct ChipIn {
     pub name: f32,
     /// A put-away window yields spare room to one that is up.
     pub minimized: bool,
+    /// A pinned app with no window (ADR 0074): an icon and nothing else, at
+    /// every width. It never buys words, and the room an even share would
+    /// have given it goes to the chips that have some.
+    pub icon_only: bool,
 }
 
 /// What the human last did to a widget with its grip. Lasts until the
@@ -586,7 +590,7 @@ fn expand(chips: &[ChipIn], base_width: f32, avail: f32) -> Vec<f32> {
     let mut widths = vec![base_width; shown];
     if base_width > bar::TASK_MIN {
         for (w, c) in widths.iter_mut().zip(chips) {
-            if cheapest(c) > base_width {
+            if c.icon_only || cheapest(c) > base_width {
                 remaining += base_width - bar::TASK_MIN;
                 *w = bar::TASK_MIN;
             }
@@ -599,12 +603,12 @@ fn expand(chips: &[ChipIn], base_width: f32, avail: f32) -> Vec<f32> {
             remaining -= take;
         }
     };
-    for &i in &order {
+    for &i in order.iter().filter(|&&i| !chips[i].icon_only) {
         if widths[i] < cheapest(&chips[i]) {
             buy(&mut widths, i, cheapest(&chips[i]));
         }
     }
-    for &i in &order {
+    for &i in order.iter().filter(|&&i| !chips[i].icon_only) {
         buy(&mut widths, i, chips[i].whole);
     }
     widths
@@ -668,6 +672,7 @@ mod tests {
                 whole: whole_width("a window title"),
                 name: whole_width("app"),
                 minimized: i % 3 == 0,
+                icon_only: false,
             })
             .collect()
     }
@@ -826,11 +831,13 @@ mod tests {
             whole: whole_width("a long document title"),
             name: whole_width("a-very-long-application-name"),
             minimized: false,
+            icon_only: false,
         };
         let short = ChipIn {
             whole: whole_width("a long document title"),
             name: whole_width("discord"),
             minimized: false,
+            icon_only: false,
         };
         let chips = [mute, mute, short, mute];
         let avail = 4.0 * base + 3.0 * bar::GAP;
@@ -854,6 +861,7 @@ mod tests {
             whole: whole_width("Downloads"),
             name: whole_width("org.gnome.Nautilus"),
             minimized: false,
+            icon_only: false,
         };
         let w = expand(&[titled, mute, mute], base, 3.0 * base + 2.0 * bar::GAP);
         assert_eq!(w[0], titled.whole, "{w:?}");
@@ -875,11 +883,13 @@ mod tests {
                 whole: long,
                 name: whole_width("app"),
                 minimized: true,
+                icon_only: false,
             },
             ChipIn {
                 whole: long,
                 name: whole_width("app"),
                 minimized: false,
+                icon_only: false,
             },
         ];
         assert_eq!(expand(&away_up, base, avail), vec![base, base + want]);
@@ -888,16 +898,48 @@ mod tests {
                 whole: long,
                 name: whole_width("app"),
                 minimized: false,
+                icon_only: false,
             },
             ChipIn {
                 whole: long,
                 name: whole_width("app"),
                 minimized: false,
+                icon_only: false,
             },
         ];
         assert_eq!(expand(&equals, base, avail), vec![base + want, base]);
         // Packed: no slack, every chip at its floor.
         assert_eq!(expand(&equals, base, 2.0 * base + bar::GAP), vec![base, base]);
+    }
+
+    /// ADR 0074: an idle pinned chip is an icon at any width, and the room
+    /// an even share would have given it is the running chip's to spend on
+    /// its title.
+    #[test]
+    fn an_idle_pinned_chip_is_an_icon_and_the_running_one_keeps_its_title() {
+        let long = whole_width("a window title");
+        let idle = ChipIn {
+            whole: 0.0,
+            name: 0.0,
+            minimized: true,
+            icon_only: true,
+        };
+        let running = ChipIn {
+            whole: long,
+            name: whole_width("app"),
+            minimized: false,
+            icon_only: false,
+        };
+        let base = bar::TASK_FULL;
+        let avail = 2.0 * base + bar::GAP;
+        let widths = expand(&[idle, running], base, avail);
+        assert_eq!(widths[0], bar::TASK_MIN);
+        assert!(widths[1] >= long, "the running chip got {}", widths[1]);
+        // Packed at the icon rung: nothing to shrink, nothing to buy.
+        assert_eq!(
+            expand(&[idle, running], bar::TASK_MIN, 2.0 * bar::TASK_MIN + bar::GAP),
+            vec![bar::TASK_MIN; 2]
+        );
     }
 
     // ---- solver invariants

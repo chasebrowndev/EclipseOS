@@ -88,6 +88,10 @@ pub enum LauncherStyle {
 pub struct TrayConfig {
     pub pinned: Option<Vec<String>>,
     pub hidden: Vec<String>,
+    /// `bar.pinned-apps` (ADR 0074): desktop-entry ids in bar order. Rides
+    /// with the tray lists because it is read from the same reply and
+    /// reloaded on the same event.
+    pub pinned_apps: Vec<String>,
 }
 
 /// `bar.fold-curve`, kept as an enum so `BarConfig` stays `Copy`.
@@ -335,6 +339,13 @@ impl Conn {
         }
     }
 
+    /// Write one string-list key. The compositor does its own capability
+    /// check and validation; the bar keeps no copy, the `config` event that
+    /// follows a successful write is what moves the chips.
+    pub fn set_config_list(&mut self, path: &str, list: &[String]) {
+        self.call("set_config_value", json!({ "path": path, "value": list }));
+    }
+
     pub fn focus_window(&mut self, handle: u64) {
         self.call("focus_window", json!({ "handle": handle }));
     }
@@ -554,6 +565,7 @@ impl Conn {
             match key.get("path").and_then(Value::as_str) {
                 Some("bar.tray.pinned") => cfg.pinned = value.and_then(strings),
                 Some("bar.tray.hidden") => cfg.hidden = value.and_then(strings).unwrap_or_default(),
+                Some("bar.pinned-apps") => cfg.pinned_apps = value.and_then(strings).unwrap_or_default(),
                 _ => {}
             }
         }

@@ -112,6 +112,7 @@ fn claimed(path: &str) -> bool {
         || path.starts_with("bar.motion.")
         || path == ORDER
         || path == IMPORTANT
+        || path == crate::pinned::PATH
         || APPEARANCE.contains(&path)
         || FOLDING.contains(&path)
         || bp::BUILTINS.iter().any(|id| widget_keys(id).contains(&path))
@@ -1475,7 +1476,7 @@ fn bar_msg(m: Msg) -> Message {
 /// Every block of `page` after the header.
 pub fn blocks(app: &App, page: Page) -> Vec<Element<'_, Message, Theme>> {
     match page {
-        Page::BarAppearance => vec![appearance(app)],
+        Page::BarAppearance => vec![appearance(app), crate::pinned::view(app)],
         Page::BarFolding => vec![keys_panel(app, FOLDING.to_vec())],
         Page::BarTray => vec![inset(Column::with_children(tray_rows(app))).into()],
         Page::BarMotion => vec![motion_band(app)],

@@ -62,6 +62,10 @@ pub enum Item {
     Mute,
     Unmute,
     NewInstance,
+    /// "Pin to taskbar", on a window of an app that is not pinned yet.
+    Pin,
+    /// "Unpin", on a pinned app's chip, idle or running.
+    Unpin,
 }
 
 /// Which tray applet a drawer is showing.
@@ -133,6 +137,14 @@ pub enum Message {
     Mute(u64, bool),
     /// Start a second copy of the window's application.
     NewInstance(u64),
+    /// An idle pinned chip was clicked: launch the app (ADR 0074), or bring
+    /// the window forward if it is running somewhere this strip is not
+    /// showing.
+    LaunchPin(String),
+    /// Add the window's app to `bar.pinned-apps`.
+    Pin(u64),
+    /// Remove the chip's app from `bar.pinned-apps`.
+    Unpin(u64),
     /// Close the menu without acting: Escape, or a press on the bar that
     /// no cell took ([`Message::BarPress`]).
     Dismiss,
@@ -290,6 +302,10 @@ pub struct App {
     /// `bar.tray.*`: which tray entries are pinned, in what order, and which
     /// are hidden.
     pub tray: crate::conn::TrayConfig,
+    /// `bar.pinned-apps` resolved against the installed desktop entries
+    /// (ADR 0074): the ids that have one, in list order. An id with no entry
+    /// is not here and not drawn, but stays in `tray.pinned_apps`.
+    pub pins: Vec<crate::pins::Pinned>,
     /// `mode` (ADR 0062), refetched on every `config` event. Decides whether
     /// the task strip draws window chips at all.
     pub mode: crate::model::Mode,
@@ -706,6 +722,7 @@ impl App {
             radios: crate::radio::Radios::default(),
             pending_menu: None,
             tray,
+            pins: Vec::new(),
             mode,
             preview: None,
             menu_preview: None,
@@ -723,6 +740,7 @@ impl App {
         };
         // No bar exists yet, so there is nothing to resize: the task is empty.
         let _ = set_key_hints(&mut app, hints);
+        refresh_pins(&mut app);
         app.icons.warm(&app.snapshot.windows);
         app.programs.fill(&mut app.snapshot.windows);
         #[cfg(debug_assertions)]
@@ -874,6 +892,19 @@ fn preview(app: &mut App) {
             .map(str::to_owned)
             .to_vec(),
         );
+    }
+    // `HYPERION_PREVIEW_PINS=steam,discord,…`: `bar.pinned-apps` for a
+    // screenshot, resolved against the host's real desktop entries.
+    if let Ok(ids) = std::env::var("HYPERION_PREVIEW_PINS") {
+        app.tray.pinned_apps = ids
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
+        let entries = ec_services::apps::scan(None);
+        app.pins = crate::pins::resolve(&app.tray.pinned_apps, &entries);
+        let idle: Vec<crate::model::Window> = app.pins.iter().map(|p| p.idle.clone()).collect();
+        app.icons.warm(&idle);
     }
 }
 
@@ -1232,6 +1263,43 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             let _ = handle;
             return dismiss;
         }
+        Message::LaunchPin(id) => {
+            let dismiss = dismiss(app);
+            // Running on another workspace or output: that window is the
+            // answer, a second copy is not.
+            let running = app
+                .snapshot
+                .windows
+                .iter()
+                .find(|w| crate::pins::matches(&id, &w.app_id))
+                .map(|w| w.handle);
+            match running {
+                Some(handle) => {
+                    app.conn.focus_window(handle);
+                    refetch(app);
+                }
+                None => launch_pin(&id),
+            }
+            return dismiss;
+        }
+        Message::Pin(handle) => {
+            let dismiss = dismiss(app);
+            let id = window(app, handle).and_then(|w| entry_id_for(&w.app_id));
+            if let Some(next) = id.and_then(|id| crate::pins::pinned(&app.tray.pinned_apps, &id)) {
+                write_pins(app, &next);
+            }
+            return dismiss;
+        }
+        Message::Unpin(handle) => {
+            let dismiss = dismiss(app);
+            let id = window(app, handle)
+                .and_then(|w| crate::pins::id_for(&app.tray.pinned_apps, w))
+                .map(str::to_owned);
+            if let Some(next) = id.and_then(|id| crate::pins::unpinned(&app.tray.pinned_apps, &id)) {
+                write_pins(app, &next);
+            }
+            return dismiss;
+        }
         Message::Dismiss => return dismiss(app),
         Message::CellPress(id, point) => {
             if let Some(point) = point {
@@ -1465,6 +1533,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                 app.iris.set(crate::eye::Eye::Off, std::time::Instant::now());
             }
             app.tray = app.conn.tray_config();
+            refresh_pins(app);
             if !fixture_pinned() {
                 app.mode = app.conn.mode();
             }
@@ -2154,6 +2223,10 @@ fn report_chips(app: &mut App) {
         let inset = air.y as f32 + (bar::PILL_H - bar::TASK_H) / 2.0;
         let windows = crate::view::strip_windows(app, bar);
         for (w, c) in windows.iter().zip(&bar.layout.chips) {
+            // An idle pinned chip has no window to shrink into it.
+            if crate::pins::is_idle(w) {
+                continue;
+            }
             rows.push((
                 w.handle,
                 bar.output_name.clone(),
@@ -2242,6 +2315,7 @@ pub fn relayout(app: &App, bar: &mut Bar, now: Instant) {
             whole: layout::whole_width(w.label()),
             name: layout::whole_width(w.name()),
             minimized: w.minimized,
+            icon_only: crate::pins::is_idle(w),
         })
         .collect();
     bar.layout = layout::solve(layout::Input {
@@ -2363,8 +2437,66 @@ fn tap_pin(input: &layout::WidgetIn, extent: f32) -> Pin {
 }
 
 fn window(app: &App, handle: u64) -> Option<&crate::model::Window> {
-    app.snapshot.windows.iter().find(|w| w.handle == handle)
+    app.snapshot
+        .windows
+        .iter()
+        .find(|w| w.handle == handle)
+        .or_else(|| app.pins.iter().map(|p| &p.idle).find(|w| w.handle == handle))
 }
+
+/// Re-resolve `bar.pinned-apps` against the installed entries and warm the
+/// idle chips' icons. Runs when the config is (re)read, never per frame.
+fn refresh_pins(app: &mut App) {
+    if fixture_pinned() || app.fixture.is_some() {
+        return;
+    }
+    #[cfg(not(test))]
+    let entries = ec_services::apps::scan(None);
+    #[cfg(test)]
+    let entries: Vec<ec_services::apps::Entry> = Vec::new();
+    app.pins = crate::pins::resolve(&app.tray.pinned_apps, &entries);
+    let idle: Vec<crate::model::Window> = app.pins.iter().map(|p| p.idle.clone()).collect();
+    app.icons.warm(&idle);
+}
+
+/// The list id a window's app would be pinned under: its desktop entry, which
+/// must exist (the same join "Open in new window" makes). `None` for a window
+/// that was not started from one.
+#[cfg(not(test))]
+fn entry_id_for(app_id: &str) -> Option<String> {
+    let entries = ec_services::apps::scan(None);
+    crate::pins::entry_for(&entries, app_id).map(|e| crate::pins::id_of(e).to_owned())
+}
+
+#[cfg(test)]
+fn entry_id_for(app_id: &str) -> Option<String> {
+    (!app_id.is_empty()).then(|| app_id.to_owned())
+}
+
+/// Write the pin list through the control socket and re-read it, so the
+/// chips move on the answer and not on a guess. Nothing is kept locally.
+fn write_pins(app: &mut App, list: &[String]) {
+    app.conn.set_config_list("bar.pinned-apps", list);
+    app.tray = app.conn.tray_config();
+    refresh_pins(app);
+}
+
+/// Start a pinned app: the entry `launch` runs for "Open in new window", on
+/// the human's own click, so no capability check or approval gate.
+#[cfg(not(test))]
+fn launch_pin(id: &str) {
+    let entries = ec_services::apps::scan(None);
+    let Some(entry) = crate::pins::entry_for(&entries, id) else {
+        eprintln!("ec-hyperion-bar: no desktop entry for pinned app {id}");
+        return;
+    };
+    if let Err(e) = ec_services::apps::launch(entry, None) {
+        eprintln!("ec-hyperion-bar: cannot start {}: {e}", entry.id);
+    }
+}
+
+#[cfg(test)]
+fn launch_pin(_id: &str) {}
 
 /// Close the open popup, whichever bar it hangs from, and forget a menu
 /// still on its way. `RemoveWindow` is the macro's own name for closing a
@@ -2403,6 +2535,10 @@ fn items(app: &App, handle: u64) -> Vec<Item> {
     let Some(w) = window(app, handle) else {
         return Vec::new();
     };
+    // An idle pinned chip has no window to act on: it can only be unpinned.
+    if crate::pins::is_idle(w) {
+        return vec![Item::Unpin];
+    }
     let mut items = vec![if w.minimized {
         Item::Unminimize
     } else {
@@ -2412,6 +2548,12 @@ fn items(app: &App, handle: u64) -> Vec<Item> {
         items.push(if muted { Item::Unmute } else { Item::Mute });
     }
     items.push(Item::NewInstance);
+    // Pin only what has an entry to launch it from.
+    if crate::pins::id_for(&app.tray.pinned_apps, w).is_some() {
+        items.push(Item::Unpin);
+    } else if entry_id_for(&w.app_id).is_some() {
+        items.push(Item::Pin);
+    }
     items.push(Item::Close);
     items
 }

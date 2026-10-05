@@ -115,6 +115,8 @@ pub enum Message {
     TrayLive(Option<Vec<String>>),
     /// The Taskbar pane's own messages.
     Bar(crate::taskbar::Msg),
+    /// An edit to `bar.pinned-apps`.
+    Pinned(crate::pinned::Msg),
     /// The sidebar search's messages.
     Search(crate::search_ui::Msg),
     /// Launch the policy viewer, from the Oracle Eyes capture hero.
@@ -256,6 +258,8 @@ pub struct App {
     net: Net,
     /// The tray entry the move pills act on.
     pub(crate) tray_sel: Option<String>,
+    /// The apps `bar.pinned-apps` can take, scanned once at start.
+    pub(crate) installed: Vec<crate::pinned::Choice>,
     /// The running status-notifier items, while the Taskbar pane shows.
     /// `None` is not heard from yet; `Some(None)` is the feed failing.
     pub(crate) tray_live: Option<Option<Vec<String>>>,
@@ -336,6 +340,7 @@ impl App {
             restart_pending: false,
             net: Net::default(),
             tray_sel: None,
+            installed: crate::pinned::installed(),
             tray_live: None,
             glass_radius,
             blur,
@@ -961,6 +966,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::TrayLive(live) => app.tray_live = Some(live),
         Message::Bar(m) => return crate::taskbar::update(app, m),
+        Message::Pinned(m) => crate::pinned::update(app, m),
         Message::Search(m) => return crate::search_ui::update(app, m),
         Message::Anim(m) => return crate::animations::update(app, m),
     }

@@ -963,6 +963,18 @@ misc {
     }
 
     #[test]
+    fn pinned_apps_round_trip_through_a_list_edit() {
+        let out = set_list("", "bar.pinned-apps", &strs(&["firefox", "foot"])).unwrap();
+        assert_eq!(out, "bar {\n    pinned-apps firefox foot\n}\n");
+        let empty = set_list(&out, "bar.pinned-apps", &[]).unwrap();
+        assert_eq!(empty, "bar {\n    pinned-apps\n}\n");
+        assert_eq!(
+            set_list(&empty, "bar.pinned-apps", &strs(&["firefox", "foot"])).unwrap(),
+            out
+        );
+    }
+
+    #[test]
     fn a_list_empties_to_a_bare_node_and_refills() {
         let text = "bar {\n    tray {\n        hidden a b\n    }\n}\n";
         let empty = set_list(text, "bar.tray.hidden", &[]).unwrap();

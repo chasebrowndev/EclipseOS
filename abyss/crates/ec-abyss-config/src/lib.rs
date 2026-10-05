@@ -621,6 +621,9 @@ pub struct Bar {
     pub position: BarPosition,
     /// `tray { ... }`: which applets and StatusNotifierItems the bar shows.
     pub tray: BarTray,
+    /// `pinned-apps`: desktop-entry ids (the `.desktop` basename, no suffix)
+    /// pinned to the taskbar, in bar order (ADR 0074). Empty pins nothing.
+    pub pinned_apps: Vec<String>,
     /// `clock { ... }`: how the bar's clock cell formats time and date.
     pub clock: BarClock,
     /// Where the bar's popups open: under the cell that was clicked, or at
@@ -1023,6 +1026,7 @@ impl Default for Bar {
             fold_curve: "ease-out".to_owned(),
             position: BarPosition::Top,
             tray: BarTray::default(),
+            pinned_apps: Vec::new(),
             clock: BarClock::default(),
             popup_anchor: BarPopupAnchor::Cell,
             eye: true,
@@ -2888,6 +2892,7 @@ impl Config {
     /// deprecated `bar.launcher-style` wherever either sits.
     fn apply_bar(&mut self, node: &KdlNode, style_set: bool) {
         let Some(children) = node.children() else { return };
+        let mut seen_pinned_apps = false;
         for n in children.nodes() {
             match n.name().value() {
                 "fold-when-inactive" => {
@@ -2930,6 +2935,17 @@ impl Config {
                     ),
                 },
                 "tray" => self.apply_bar_tray(n),
+                "pinned-apps" => {
+                    if seen_pinned_apps {
+                        self.reject(
+                            n,
+                            "repeated pinned-apps is ignored; list every id on a single node",
+                        );
+                        continue;
+                    }
+                    seen_pinned_apps = true;
+                    self.bar.pinned_apps = self.pinned_app_ids(n);
+                }
                 "clock" => self.apply_bar_clock(n),
                 "widgets" => self.apply_bar_widgets(n),
                 "motion" => self.apply_bar_motion(n),
@@ -3065,6 +3081,41 @@ impl Config {
                 _ => self.unknown_key(n, "bar.widgets", "bar widgets node"),
             }
         }
+    }
+
+    /// The ids on a `pinned-apps` node (ADR 0074). A bad id is refused and
+    /// dropped, never kept: empty, a path separator, a `.desktop` suffix, or
+    /// a repeat of an earlier id (the first stands).
+    fn pinned_app_ids(&mut self, n: &KdlNode) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for e in n.entries() {
+            if e.name().is_some() {
+                self.reject_entry(e, "pinned app ids are plain strings, not properties");
+                continue;
+            }
+            let Some(id) = e.value().as_string() else {
+                self.reject_entry(e, "a pinned app id is a string");
+                continue;
+            };
+            if id.is_empty() {
+                self.reject_entry(e, "a pinned app id must not be empty");
+            } else if id.contains('/') || id.contains('\\') {
+                self.reject_entry(
+                    e,
+                    format!("pinned app {id:?} is a path; give the desktop-entry id, e.g. \"firefox\""),
+                );
+            } else if id.ends_with(".desktop") {
+                self.reject_entry(
+                    e,
+                    format!("pinned app {id:?} carries the .desktop suffix; drop it"),
+                );
+            } else if out.iter().any(|o| o == id) {
+                self.reject_entry(e, format!("pinned app {id:?} is listed twice"));
+            } else {
+                out.push(id.to_owned());
+            }
+        }
+        out
     }
 
     /// The ids on an `order`/`important` node. Built-in ids are checked now;
@@ -8028,6 +8079,37 @@ mod startup_tests {
         assert!(has(sup_shift, Keysym::L, &|a| {
             matches!(a, Action::Spawn(c) if c == "loginctl lock-session")
         }));
+    }
+
+    /// `bar.pinned-apps` (ADR 0074): ordered desktop-entry ids; bad entries
+    /// are refused one by one and the rest stand.
+    #[test]
+    fn pinned_apps_parse_and_refuse_bad_entries() {
+        let cfg = abyss("");
+        assert!(cfg.errors.is_empty() && cfg.bar.pinned_apps.is_empty());
+
+        let cfg = abyss("bar {\n    pinned-apps \"firefox\" \"org.gnome.Nautilus\" \"foot\"\n}\n");
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.bar.pinned_apps, ["firefox", "org.gnome.Nautilus", "foot"]);
+
+        let cfg = abyss(concat!(
+            "bar {\n    pinned-apps \"a\" \"\" \"/usr/share/applications/b.desktop\" ",
+            "\"c.desktop\" \"a\" 5 x=\"y\" \"d\"\n}\n"
+        ));
+        assert_eq!(cfg.errors.len(), 6, "{:?}", cfg.errors);
+        assert_eq!(cfg.bar.pinned_apps, ["a", "d"]);
+
+        // Round-trip through the editor.
+        let ids = ["firefox", "foot"].map(|i| KdlValue::String(i.into()));
+        let text = edit::set_list("", "bar.pinned-apps", &ids).unwrap();
+        let cfg = abyss(&text);
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.bar.pinned_apps, ["firefox", "foot"]);
+
+        // A repeated node is dropped whole; the first stands.
+        let cfg = abyss("bar {\n    pinned-apps \"a\"\n    pinned-apps \"b\"\n}\n");
+        assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+        assert_eq!(cfg.bar.pinned_apps, ["a"]);
     }
 
     /// A rejected node is dropped whole, never applied as well.

@@ -809,9 +809,11 @@ pub(crate) fn strip_windows<'a>(app: &'a crate::app::App, on: &crate::app::Bar) 
     }
     let snapshot = &app.snapshot;
     let active = active_workspace(snapshot, on.output_id);
-    windows_on(snapshot, on.output_id)
+    let windows = windows_on(snapshot, on.output_id)
         .filter(|w| active.is_none() || w.workspace == active)
-        .collect()
+        .collect();
+    // Pinned apps lead, merged with their windows (ADR 0074).
+    crate::pins::order(&app.pins, windows)
 }
 
 /// The workspace the strip is drawing; a change lands the chips at once
@@ -1021,15 +1023,23 @@ fn task_chip(
         // you reached for is the one answer that is never wanted. `button`
         // swallows only the left press, so the middle-click close and the
         // right-click menu still reach the `mouse_area` around it.
-        let click = if up && !focused {
-            Message::Focus(w.handle)
+        if crate::pins::is_idle(w) {
+            // A pinned app with no window: click starts it, and there is
+            // nothing to close, so no middle click.
+            mouse_area(press.on_press(Message::LaunchPin(w.app_id.clone())))
+                .on_right_press(Message::Menu(w.handle))
+                .into()
         } else {
-            Message::ToggleMinimize(w.handle)
-        };
-        mouse_area(press.on_press(click))
-            .on_middle_press(Message::Close(w.handle))
-            .on_right_press(Message::Menu(w.handle))
-            .into()
+            let click = if up && !focused {
+                Message::Focus(w.handle)
+            } else {
+                Message::ToggleMinimize(w.handle)
+            };
+            mouse_area(press.on_press(click))
+                .on_middle_press(Message::Close(w.handle))
+                .on_right_press(Message::Menu(w.handle))
+                .into()
+        }
     };
     let tone = if accent {
         theme::CellTone::Focused
@@ -1196,6 +1206,8 @@ fn menu_row(item: crate::app::Item, handle: u64) -> Element<'static, Message, Th
         Item::Mute => ("Mute", Message::Mute(handle, true)),
         Item::Unmute => ("Unmute", Message::Mute(handle, false)),
         Item::NewInstance => ("Open in new window", Message::NewInstance(handle)),
+        Item::Pin => ("Pin to taskbar", Message::Pin(handle)),
+        Item::Unpin => ("Unpin", Message::Unpin(handle)),
     };
     let destructive = matches!(item, Item::Close);
     let tint = if destructive { color::DANGER } else { color::TEXT };
@@ -1269,6 +1281,8 @@ fn menu_mark(item: crate::app::Item) -> Element<'static, Message, Theme> {
         Item::Mute => ("audio-volume-muted", color::TEXT_SECONDARY),
         Item::Unmute => ("audio-volume-high", color::TEXT_SECONDARY),
         Item::NewInstance => ("window-new", color::TEXT_SECONDARY),
+        Item::Pin => ("view-pin", color::TEXT_SECONDARY),
+        Item::Unpin => ("list-remove", color::TEXT_SECONDARY),
         // The one red mark on the menu, matching the one red label.
         Item::Close => ("window-close", color::DANGER),
     };
@@ -1738,6 +1752,7 @@ mod tests {
         app.tray = crate::conn::TrayConfig {
             pinned: Some(vec!["discord".into(), "steam".into()]),
             hidden: vec![],
+            pinned_apps: vec![],
         };
         let mut on = crate::app::Bar::new(
             iced::window::Id::unique(),

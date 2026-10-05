@@ -172,6 +172,7 @@ mod tests {
             // `network` is a built-in id: a legacy config's, and ignored.
             pinned: Some(vec!["network".into(), "discord".into(), "steam".into()]),
             hidden: vec!["nm-applet".into(), "battery".into()],
+            pinned_apps: vec![],
         };
         assert_eq!(split(&items, &cfg), (vec![1, 0], vec![]));
         // Unset pins nothing: everything visible waits behind the arrow.
