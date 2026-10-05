@@ -21,8 +21,9 @@
 //! Snapshot for close (taken in `compositor.rs commit()` before
 //! `on_commit_buffer_handler` on `BufferAssignment::Removed`, in
 //! `toplevel_destroyed` and the xwm unmap paths) and for the old frame of a
-//! fullscreen or maximize toggle. A ghost is drawn with the border and shadow
-//! its window had, in the focus state it left in.
+//! fullscreen or maximize toggle. A built-in ghost is drawn with the border and
+//! shadow its window had, in the focus state it left in; a ghost an add-on
+//! shader draws has no decoration at all (a rim would show the whole window).
 //!
 //! - [`Ghost::Layer`]: a layer surface's last frame, for `layer-close` (taken
 //!   in `layer_destroyed` and on a layer's null-buffer commit). It carries no
@@ -87,6 +88,9 @@ pub enum Ghost<W = Window> {
         track: Track,
         /// An add-on shader drawing this instead of `track`, when it can.
         shader: Option<ShaderRun>,
+        /// The window whose close this is, when the shell holds the layout
+        /// of its neighbours until the ghost is done.
+        holds: Option<W>,
     },
     /// A closed layer-shell surface (`layer-close`).
     Layer {
@@ -132,6 +136,19 @@ impl<W> Ghost<W> {
     pub fn done(&self, now: Instant) -> bool {
         // A shader run outlives the built-in track when its clock armed late.
         self.track().done(now) && self.shader().is_none_or(|r| r.done(now))
+    }
+
+    /// Whether this is the close of `window` and the shell is waiting on it.
+    pub fn holds(&self, window: &W, now: Instant) -> bool
+    where
+        W: PartialEq,
+    {
+        matches!(self, Ghost::Snapshot { holds: Some(w), .. } if w == window) && !self.done(now)
+    }
+
+    /// Whether any retile hold waits on this ghost still.
+    pub fn holding(&self, now: Instant) -> bool {
+        matches!(self, Ghost::Snapshot { holds: Some(_), .. }) && !self.done(now)
     }
 
     /// The window a live ghost draws from; `None` for a snapshot.

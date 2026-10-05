@@ -230,6 +230,7 @@ fn redraw(
     out: &Output,
     damage_tracker: &mut OutputDamageTracker,
 ) {
+    crate::shell::tick_retile_hold(state);
     let frame_start = std::time::Instant::now();
     let age = backend.buffer_age().unwrap_or(0);
     let rendered = {

@@ -169,6 +169,11 @@ pub struct AnimStore<W = Window> {
     focused: HashMap<W, bool>,
     /// Windows that have left the space, still playing out.
     pub ghosts: Vec<Ghost<W>>,
+    /// Each window's textures as last drawn, so a window that commits a new
+    /// buffer and closes before the next frame (smithay drops the textures
+    /// with the old buffer, and nothing imports the new one outside a render)
+    /// still has a frame to play out. Only kept while `window-close` is on.
+    last_frame: HashMap<W, Vec<SnapshotSurface>>,
     /// The renderer context the last frame was drawn with, so the shell can
     /// [`snapshot`] a closing window's textures from outside the render path.
     /// `None` until the first frame, when nothing has a texture to keep.
@@ -194,6 +199,7 @@ impl<W> Default for AnimStore<W> {
             targets: HashMap::new(),
             focused: HashMap::new(),
             ghosts: Vec::new(),
+            last_frame: HashMap::new(),
             context: None,
             layers: HashMap::new(),
             shed: ShedLevel::Full,
@@ -242,6 +248,7 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
         self.targets.retain(|w, _| alive(w));
         self.tracks.retain(|w, _| alive(w));
         self.focused.retain(|w, _| alive(w));
+        self.last_frame.retain(|w, _| alive(w));
         // A live ghost whose window is back in the space (switched back to
         // mid-slide) would be drawn twice; the mapped copy wins. One whose
         // client died has nothing left to draw.
@@ -447,6 +454,34 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
     pub fn push_ghost(&mut self, ghost: Ghost<W>) {
         self.ghosts.push(ghost);
         self.running = true;
+    }
+
+    /// Keep `surfaces` as `window`'s last drawn frame (see `last_frame`).
+    pub fn remember(&mut self, window: &W, surfaces: Vec<SnapshotSurface>) {
+        if surfaces.is_empty() {
+            return;
+        }
+        self.last_frame.insert(window.clone(), surfaces);
+    }
+
+    /// Stop keeping frames (`window-close` is off).
+    pub fn forget_frames(&mut self) {
+        self.last_frame.clear();
+    }
+
+    /// The frame [`AnimStore::remember`] kept for `window`.
+    pub fn remembered(&self, window: &W) -> Option<&Vec<SnapshotSurface>> {
+        self.last_frame.get(window)
+    }
+
+    /// Whether the close ghost of `window` is still playing out.
+    pub fn close_playing(&self, window: &W, now: Instant) -> bool {
+        self.ghosts.iter().any(|g| g.holds(window, now))
+    }
+
+    /// Whether any close ghost the shell holds a layout for is still playing.
+    pub fn holding(&self, now: Instant) -> bool {
+        self.ghosts.iter().any(|g| g.holding(now))
     }
 
     /// How to draw `window` this frame. The identity for a window with

@@ -832,15 +832,9 @@ fn ghost_elements(
                 )
             });
             if let Some(element) = element {
+                // No border or shadow: a rim around the whole rectangle
+                // would show the window the shader is burning away.
                 out.push(AbyssRenderElement::Transition(element));
-                let decor = GhostDecor {
-                    output_loc: output_geo.loc,
-                    scale,
-                    rounded: rounding.is_some(),
-                    active: ghost.active(),
-                    alpha: run.visible(now),
-                };
-                ghost_decor(store, config, &decor, at, out);
                 continue;
             }
             t = anim::Transform::identity().compose(ghost.track().at(now).0);
@@ -1199,6 +1193,16 @@ fn window_elements(
     // Compiled (and checked) only once some window actually wants a bezel.
     let mut glass: Option<bool> = None;
 
+    let keep_frames = anim::resolve(
+        &config.animations,
+        ec_abyss_config::animations::Event::WindowClose,
+        store.anim.now(),
+        store.anim.shed(),
+    )
+    .is_some();
+    if !keep_frames {
+        store.anim.forget_frames();
+    }
     // `space.elements()` is bottom-to-top; frames are collected front-to-back.
     for window in live.into_iter().rev() {
         let Some(loc) = space.element_location(&window) else {
@@ -1260,7 +1264,7 @@ fn window_elements(
 
         // The dim overlay belongs above this window but below the ones in
         // front of it, so it is pushed just before the window's own surfaces.
-        if !active && deco.dim_inactive > 0.0 {
+        if !active && deco.dim_inactive > 0.0 && store.anim.window_shader(&window).is_none() {
             if let Some(geo) = geo {
                 let color = [0.0, 0.0, 0.0, deco.dim_inactive * alpha];
                 let buffer = store
@@ -1327,6 +1331,17 @@ fn window_elements(
                 c.size.to_f64().to_physical(scale).to_i32_round(),
             )
         });
+        // Keep what was just imported for a `window-close` that follows a new
+        // commit before the next frame (see `AnimStore::remember`).
+        if keep_frames {
+            if let (Some(context), Some(surface)) = (
+                store.anim.context.as_ref(),
+                smithay::wayland::seat::WaylandFocus::wl_surface(&window),
+            ) {
+                let frame = anim::snapshot(context, &surface, Point::from((0, 0)) - window.geometry().loc);
+                store.anim.remember(&window, frame);
+            }
+        }
         // A window reaching past its output (any size, any placement) is cut
         // to it; one that fits keeps its plain elements and its scanout path.
         let mut bbox = window.bbox();
@@ -1535,6 +1550,13 @@ fn window_elements(
         let Some(geo) = geo else {
             continue;
         };
+        // A shader open draws the window alone: no border, glow or shadow
+        // around the rectangle it is reshaping.
+        if shaded {
+            store.rings.remove(&(output.clone(), window.clone()));
+            store.borders.remove(&(output.clone(), window.clone()));
+            continue;
+        }
         // Border, glow, then shadow, all directly under this window's
         // surfaces. The ring's inner edge is the exact complement of the
         // window's rounded mask, so it never covers window content from below

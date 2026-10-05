@@ -405,6 +405,7 @@ fn redraw(
     out: &Output,
     damage_tracker: &mut OutputDamageTracker,
 ) {
+    crate::shell::tick_retile_hold(state);
     // An output resized by the IPC layer needs a target of the new size before
     // anything is drawn into it; a stale one would crop or stretch the frame.
     if let Some(mode) = out.current_mode() {

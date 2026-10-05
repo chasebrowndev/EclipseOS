@@ -13,6 +13,7 @@ pub mod workspace;
 pub use focus::{focus_surface, focus_window, refocus_topmost};
 
 use std::cell::Cell;
+use std::time::Instant;
 
 use smithay::{
     desktop::{
@@ -273,8 +274,54 @@ fn order_layers(output: &Output) {
     }
 }
 
+/// A layout pass held back while a tiled window's close ghost plays out, so
+/// the windows that stay do not slide into its space before it is gone.
+///
+/// Render-only apart from the delay: the closed window is already out of the
+/// layout tree, `space` and the listing, and the neighbours keep the geometry
+/// they were last arranged at (that is what hit-testing and `get_tree` see
+/// and what is drawn). The next layout pass of any kind ends the hold and runs
+/// in full, so nothing asked for in the meantime is lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetileHold {
+    None,
+    /// `unmap_window` is finishing; its own passes are the ones deferred.
+    Settling,
+    /// Waiting for the ghost; any pass ends it.
+    Held,
+}
+
+/// End the hold once its ghost is done. Called before each frame is built,
+/// so a ghost that is retired in that frame already sees the final layout.
+/// A ghost that never draws is done after the armed-clock grace, so the hold
+/// cannot outlive it.
+pub fn tick_retile_hold(state: &mut AbyssState) {
+    if state.retile_hold == RetileHold::Held && !state.borders.anim.holding(Instant::now()) {
+        arrange(state);
+    }
+}
+
+/// Whether closing `window` should hold the layout: it is tiled on an active
+/// workspace and its close ghost is playing (so animations are on, and not
+/// reduced to nothing).
+fn holds_retile(state: &AbyssState, window: &Window) -> bool {
+    state.config.animations.motion()
+        && state.borders.anim.close_playing(window, Instant::now())
+        && state.tile_drag.as_ref().is_none_or(|d| &d.window != window)
+        && state
+            .outputs
+            .iter()
+            .any(|e| e.workspaces[e.active].tiled.windows().contains(window))
+}
+
 /// Re-run the layout for every output's active workspace.
 pub fn arrange(state: &mut AbyssState) {
+    if state.retile_hold == RetileHold::Settling {
+        // Still repaint: the ghost has to be drawn.
+        crate::backend::damage_all(state);
+        return;
+    }
+    state.retile_hold = RetileHold::None;
     let ids: Vec<u64> = state.outputs.iter().map(|e| e.id).collect();
     for id in ids {
         arrange_output(state, id);
@@ -727,6 +774,7 @@ pub(crate) fn reanchor(state: &mut AbyssState, window: &Window) {
 }
 
 pub fn unmap_window(state: &mut AbyssState, window: &Window) {
+    let hold = holds_retile(state, window);
     for entry in state.outputs.iter_mut() {
         for ws in entry.workspaces.iter_mut() {
             ws.remove(window);
@@ -749,8 +797,14 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     if state.focus.as_ref() == Some(window) {
         state.focus = None;
     }
+    if hold {
+        state.retile_hold = RetileHold::Settling;
+    }
     arrange(state);
     refocus_topmost(state);
+    if hold {
+        state.retile_hold = RetileHold::Held;
+    }
 }
 
 /// Topmost surface at `pos`, honouring the COMP-02 §4 stacking order:
