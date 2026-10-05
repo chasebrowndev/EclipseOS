@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Resolves out of a soft blur as it settles to full size.
+// Teleports in: fine grains resolve and flash gold as they land; runs backwards to leave.
 label "Materialize"
 events "window-open" "window-close"
 shader "materialize.frag"
-margin 24
-duration-ms 320
+margin 32
+duration-ms 340
 curve "ease-out"

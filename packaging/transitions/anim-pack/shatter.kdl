@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Cracks into tiles that spin, shrink and fall away.
+// Close: the window cracks, then bursts into shards.
 label "Shatter"
 events "window-close"
 shader "shatter.frag"
-margin 96
-duration-ms 520
-curve "ease-in"
+margin 160
+duration-ms 560
+curve "linear"
