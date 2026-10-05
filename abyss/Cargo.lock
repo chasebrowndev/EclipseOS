@@ -526,6 +526,11 @@ dependencies = [
 [[package]]
 name = "ec-abyss-bench"
 version = "0.1.0"
+dependencies = [
+ "ec-abyss-config",
+ "ec-abyss-render",
+ "smithay",
+]
 
 [[package]]
 name = "ec-abyss-config"

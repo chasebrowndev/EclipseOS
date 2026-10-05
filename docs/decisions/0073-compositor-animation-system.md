@@ -104,9 +104,24 @@ ADR amends ADR 0066's hook table.
 - **Limits:**
   - at most 64 KiB per file;
   - no `#extension` and no `while`;
-  - compiled lazily;
+  - the styles that the resolved config and the pack presets select are
+    compiled ahead of use, on the frame after the catalog or `animations`
+    config changes, so a run never compiles mid-animation;
   - a compile failure, or repeated budget overruns, drops the style back to its
-    built-in fallback.
+    built-in fallback. The frame that compiles a style, or first renders a run,
+    does not count as an overrun.
+- **Armed clock.** A shader run's clock starts on its first successfully drawn
+  frame, so that frame is `progress == 0`. A run that is never drawn expires
+  after a 1 s grace. The snapshot of a ghost run (close, minimize) is rendered
+  offscreen once and reused; open runs reuse one damage tracker.
+- **`reach`.** A style may set `reach #true`. Its quad then grows toward
+  `travel` until the target lies inside it, with `margin` still applied on the
+  other sides, so `content` may be off-centre. The size limit still applies.
+- **Chip target.** `set_window_chip_rect` (a command, owner-only) lets the
+  taskbar report where it drew a window's chip, as an output-local rect or
+  `null`. abyss keeps it per window and forgets it on unmap. It is render-only:
+  minimize and unminimize aim `travel` at the chip centre, falling back to the
+  dock. It moves nothing and grants nothing.
 - **Missing pack.** A `pack:style` named in config whose pack is not installed
   falls back with one warning. It is not a config error.
 

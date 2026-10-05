@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Burns away along a noise front with a gold rim; runs backwards to appear.
+// Burning paper: a glowing front climbs the window, sparks rise off it; runs backwards to appear.
 label "Embers"
 events "window-open" "window-close"
 shader "embers.frag"
-duration-ms 600
-curve "ease-in-out"
+margin 64
+duration-ms 450
+curve "linear"

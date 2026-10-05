@@ -813,12 +813,12 @@ fn ghost_elements(
                             live_content(renderer, window, origin, scale, 1.0, mask)
                         }
                         anim::Ghost::Snapshot { surfaces, .. } => {
-                            let m = run.margin as i32;
+                            let base = origin.to_f64().to_logical(scale).to_i32_round();
                             let mut content = Vec::new();
                             snapshot_elements(
                                 &mut content,
                                 surfaces,
-                                (m, m).into(),
+                                base,
                                 scale,
                                 Point::default(),
                                 Scale::from(1.0),
@@ -970,26 +970,27 @@ fn transition_quad(
     ) -> Vec<AbyssRenderElement>,
 ) -> Option<anim::ShaderElement> {
     let win: Size<i32, Physical> = at.size.to_f64().to_physical(scale).to_i32_round();
-    let inset = anim::shader::margin_px(run.margin, scale);
-    let origin = Point::from((inset, inset));
+    let quad = run.quad(at.size, scale);
+    let origin = quad.origin();
     // The copy is rendered upright, so its rounding mask is unmirrored.
     let mask = rounded.map(|(program, radius)| {
         let rect = Rectangle::new(origin, win);
         (
             program.clone(),
-            effects::rounding_uniforms(rect, win.h + 2 * inset, false, radius),
+            effects::rounding_uniforms(rect, quad.size(win).h, false, radius),
         )
     });
-    let els = content(renderer, origin, mask);
+    // Built only when the copy is drawn: a frozen ghost's is built once.
     shaders.element(
         renderer,
         context,
         run,
         now,
         win,
+        quad,
         phys(at.loc, scale) - origin,
         scale,
-        &els,
+        |renderer| content(renderer, origin, mask),
     )
 }
 

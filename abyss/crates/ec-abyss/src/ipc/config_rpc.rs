@@ -1395,6 +1395,7 @@ mod tests {
             events: vec![Event::WindowClose],
             source: String::new(),
             margin: 0,
+            reach: false,
             duration_ms: 300,
             curve: Curve::EaseOut,
         };

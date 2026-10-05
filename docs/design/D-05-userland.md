@@ -115,7 +115,7 @@ nothing listening renders empty, never crashes.
 
 | Component | Socket methods | Events | D-Bus |
 |---|---|---|---|
-| hyperion (bar) | `get_workspaces`, `get_windows`, `get_focused`, `get_outputs`, `get_config`, `focus_window`, `close_window`, `set_minimized`, `switch_workspace` | `window`, `workspace`, `focus`, `output`, `config_error`, `config` | system: NetworkManager, BlueZ, UPower. session: SNI watcher/host, MPRIS players (`org.mpris.MediaPlayer2.*`). PipeWire: default sink volume/mute, monitor tap (ADR 0065) |
+| hyperion (bar) | `get_workspaces`, `get_windows`, `get_focused`, `get_outputs`, `get_config`, `focus_window`, `close_window`, `set_minimized`, `set_window_chip_rect`, `switch_workspace` | `window`, `workspace`, `focus`, `output`, `config_error`, `config` | system: NetworkManager, BlueZ, UPower. session: SNI watcher/host, MPRIS players (`org.mpris.MediaPlayer2.*`). PipeWire: default sink volume/mute, monitor tap (ADR 0065) |
 | ec-pairing | — | — | system: BlueZ `org.bluez.Agent1`. session: serves `org.eclipse.Services.Pairing` |
 | ec-toasts | `get_config` (`decoration.rounding`, startup) | — | session: serves `org.freedesktop.Notifications` |
 | ec-center | `get_config` (`decoration.rounding`, startup) | — | system: NetworkManager, BlueZ, UPower (read), logind `login1.Manager` / `login1.Session` |

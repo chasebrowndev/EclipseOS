@@ -62,6 +62,9 @@ pub const TABLE: &[Entry] = &[
     e("move_to_workspace", Kind::Command, true),
     e("set_floating", Kind::Command, true),
     e("set_minimized", Kind::Command, true),
+    // Where the taskbar drew a window's chip, so minimize can aim at it
+    // (ADR 0073). Render-only: it moves nothing and grants nothing.
+    e("set_window_chip_rect", Kind::Command, true),
     e("switch_workspace", Kind::Command, true),
     e("reload_config", Kind::Command, true),
     e("resize", Kind::Command, true),

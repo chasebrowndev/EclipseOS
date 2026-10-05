@@ -121,6 +121,14 @@ impl Conn {
     }
 }
 
+/// A taskbar chip's rectangle in its output's logical, output-local space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChipRect {
+    /// The output's connector name.
+    pub output: String,
+    pub rect: smithay::utils::Rectangle<f64, smithay::utils::Logical>,
+}
+
 /// All control-socket state. Owned by `AbyssState`.
 #[derive(Default)]
 pub struct IpcState {
@@ -131,6 +139,10 @@ pub struct IpcState {
     /// Stable `u64` names for windows, handed out on first sight.
     handles: Vec<(u64, Window)>,
     next_handle: u64,
+    /// Where the bar drew each window's taskbar chip (`set_window_chip_rect`),
+    /// by window handle. Render-only: the minimize animation aims at it and
+    /// nothing else reads it.
+    chips: std::collections::HashMap<u64, ChipRect>,
     /// The connection currently inside its own read callback, if any. Its
     /// calloop source must not be removed from underneath it.
     current: Option<u64>,
@@ -160,6 +172,27 @@ impl IpcState {
         self.handles.iter().find(|(_, w)| w == window).map(|(h, _)| *h)
     }
 
+    /// Record (or with `None`, clear) the chip rect for window `handle`.
+    pub fn set_chip(&mut self, handle: u64, chip: Option<ChipRect>) {
+        match chip {
+            Some(c) => {
+                self.chips.insert(handle, c);
+            }
+            None => {
+                self.chips.remove(&handle);
+            }
+        }
+    }
+
+    pub fn chip(&self, handle: u64) -> Option<&ChipRect> {
+        self.chips.get(&handle)
+    }
+
+    /// The window is gone: drop its chip rect.
+    pub fn forget_chip(&mut self, handle: u64) {
+        self.chips.remove(&handle);
+    }
+
     pub fn window_for(&self, handle: u64) -> Option<Window> {
         self.handles
             .iter()
@@ -172,6 +205,8 @@ impl IpcState {
     fn gc(&mut self) {
         use smithay::utils::IsAlive;
         self.handles.retain(|(_, w)| w.alive());
+        let handles = &self.handles;
+        self.chips.retain(|h, _| handles.iter().any(|(k, _)| k == h));
     }
 }
 

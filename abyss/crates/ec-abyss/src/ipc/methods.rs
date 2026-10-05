@@ -40,6 +40,7 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "move_to_workspace" => move_to_workspace(state, params),
         "set_floating" => set_floating(state, params),
         "set_minimized" => set_minimized(state, params),
+        "set_window_chip_rect" => set_window_chip_rect(state, params),
         "switch_workspace" => switch_workspace(state, params),
         "resize" => resize(state, params),
         "move_workspace_to_output" => move_workspace_to_output(state, params),
@@ -437,6 +438,54 @@ fn set_minimized(state: &mut AbyssState, params: &Value) -> Reply {
     crate::shell::set_minimized(state, &w, value);
     crate::backend::damage_all(state);
     Ok(json!({"ok": true}))
+}
+
+/// Record where the bar drew a window's taskbar chip so minimize can aim at
+/// it. Render-only: nothing moves and hit-testing, focus and `get_tree` never
+/// see it. `rect: null` clears the entry.
+fn set_window_chip_rect(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &["id", "handle", "output", "rect"])?;
+    let obj = params_obj(params);
+    let key = if obj.contains_key("id") { "id" } else { "handle" };
+    let handle = u64_param(params, key)?;
+    let window = state
+        .ipc
+        .window_for(handle)
+        .filter(IsAlive::alive)
+        .ok_or_else(|| RpcError::invalid_params("no such window handle"))?;
+    let name = obj
+        .get("output")
+        .and_then(Value::as_str)
+        .ok_or_else(|| RpcError::invalid_params("output must be an output name"))?;
+    if !state.outputs.iter().any(|e| e.connector == name) {
+        return Err(RpcError::invalid_params("no such output"));
+    }
+    let chip = match obj.get("rect") {
+        None => return Err(RpcError::invalid_params("rect must be an object or null")),
+        Some(Value::Null) => None,
+        Some(r) => Some(crate::ipc::ChipRect {
+            output: name.to_owned(),
+            rect: parse_chip_rect(r)?,
+        }),
+    };
+    let handle = state.ipc.handle_for(&window);
+    state.ipc.set_chip(handle, chip);
+    Ok(json!({"ok": true}))
+}
+
+fn parse_chip_rect(v: &Value) -> Result<smithay::utils::Rectangle<f64, smithay::utils::Logical>, RpcError> {
+    let bad = || RpcError::invalid_params("rect needs finite x, y and positive w, h");
+    let f = |k: &str| {
+        v.get(k)
+            .and_then(Value::as_f64)
+            .filter(|n| n.is_finite())
+            .ok_or_else(bad)
+    };
+    let (x, y, w, h) = (f("x")?, f("y")?, f("w")?, f("h")?);
+    if w <= 0.0 || h <= 0.0 {
+        return Err(bad());
+    }
+    Ok(smithay::utils::Rectangle::new((x, y).into(), (w, h).into()))
 }
 
 fn move_to_workspace(state: &mut AbyssState, params: &Value) -> Reply {
@@ -971,6 +1020,63 @@ mod tests {
         ] {
             assert!(opt_dimension(&bad, "width").is_err(), "{bad} accepted");
         }
+    }
+
+    #[test]
+    fn chip_rect_validation() {
+        let Ok(ok) = parse_chip_rect(&json!({"x": 1.5, "y": -2, "w": 40, "h": 30})) else {
+            panic!("valid chip rect refused");
+        };
+        assert_eq!(
+            (ok.loc.x, ok.loc.y, ok.size.w, ok.size.h),
+            (1.5, -2.0, 40.0, 30.0)
+        );
+        for bad in [
+            json!({"x": 0, "y": 0, "w": 0, "h": 10}),
+            json!({"x": 0, "y": 0, "w": 10, "h": -1}),
+            json!({"x": "0", "y": 0, "w": 10, "h": 10}),
+            json!({"y": 0, "w": 10, "h": 10}),
+            json!(null),
+        ] {
+            assert!(parse_chip_rect(&bad).is_err(), "{bad} accepted");
+        }
+    }
+
+    #[test]
+    fn chip_rect_store_clear_and_cleanup() {
+        use crate::shell::focus::state_tests::{client::Client, harness};
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let t = c.create_toplevel(&mut h);
+        c.commit(&mut h, &t.surface);
+        c.attach(&mut h, &t.surface);
+        let w = h.state.space.elements().next().cloned().expect("mapped");
+        let id = h.state.ipc.handle_for(&w);
+        let rect = json!({"x": 10, "y": 4, "w": 50, "h": 30});
+        let call = |h: &mut crate::shell::focus::state_tests::Harness, p: Value| {
+            dispatch(&mut h.state, 0, "set_window_chip_rect", &p)
+        };
+
+        assert!(call(&mut h, json!({"id": 9999, "output": "test-a", "rect": rect})).is_err());
+        assert!(call(&mut h, json!({"id": id, "output": "nope", "rect": rect})).is_err());
+        assert!(call(
+            &mut h,
+            json!({"id": id, "output": "test-a", "rect": {"x": 0, "y": 0, "w": 0, "h": 1}})
+        )
+        .is_err());
+        assert!(h.state.ipc.chip(id).is_none());
+
+        assert!(call(&mut h, json!({"id": id, "output": "test-a", "rect": rect})).is_ok());
+        let got = h.state.ipc.chip(id).expect("stored").clone();
+        assert_eq!(got.output, "test-a");
+        assert_eq!(got.rect.size.w, 50.0);
+
+        assert!(call(&mut h, json!({"id": id, "output": "test-a", "rect": null})).is_ok());
+        assert!(h.state.ipc.chip(id).is_none());
+
+        assert!(call(&mut h, json!({"id": id, "output": "test-a", "rect": rect})).is_ok());
+        crate::shell::unmap_window(&mut h.state, &w);
+        assert!(h.state.ipc.chip(id).is_none());
     }
 
     #[test]

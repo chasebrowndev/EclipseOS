@@ -235,6 +235,7 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
     /// [`AnimStore::sync`] at a given instant.
     pub fn sync_at(&mut self, space: &Space<W>, anims: &Animations, focus: Option<&W>, now: Instant) {
         self.now = now;
+        self.shaders.select(anims);
         // No per-frame allocation: membership is a scan of the space, which
         // holds a handful of windows.
         let alive = |w: &W| space.elements().any(|l| l == w);
@@ -496,6 +497,8 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
         if self.shaders.styles().is_empty() {
             return;
         }
+        // Everything the config selects, before any run needs it.
+        self.shaders.compile_wanted(renderer);
         let mut live = std::collections::HashSet::new();
         for run in self
             .tracks
