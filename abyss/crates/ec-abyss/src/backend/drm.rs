@@ -1042,7 +1042,6 @@ fn service_captures(state: &mut AbyssState) {
 
 /// Composite every output. Safe to call at any time.
 pub fn render(state: &mut AbyssState) {
-    crate::shell::tick_retile_hold(state);
     let n = state.drm.as_ref().map_or(0, |d| d.outputs.len());
     for i in 0..n {
         render_output(state, i);
@@ -1112,6 +1111,8 @@ fn describe_elements(elements: &[crate::render::overscan::OutputElement], scale:
 
 /// Composite and page-flip one output. A no-op when the session is inactive.
 fn render_output(state: &mut AbyssState, index: usize) {
+    // Every frame path (VBlank, schedule, retry) lands here, not in `render`.
+    crate::shell::tick_retile_hold(state);
     let capture_active = state.capture_active();
     let prompt = crate::trusted_ui::holds_seat(state);
     let Some(drm) = state.drm.as_mut() else { return };
@@ -1247,8 +1248,11 @@ fn render_output(state: &mut AbyssState, index: usize) {
     let Some(drm) = state.drm.as_mut() else { return };
 
     // Annotation and selector fades schedule frames only while in flight.
-    let animating =
-        state.borders.anim.running() || state.annotations.animating() || state.region_select.animating();
+    // A held retile keeps frames coming so the tick sees its ghost finish.
+    let animating = state.borders.anim.running()
+        || state.annotations.animating()
+        || state.region_select.animating()
+        || matches!(state.retile_hold, crate::shell::RetileHold::Held { .. });
 
     // A surface covering the whole output is both the direct-scanout candidate
     // and the trigger for adaptive sync (COMP-03 §8).
