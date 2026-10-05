@@ -153,7 +153,7 @@ pub enum Message {
     Closed(iced::window::Id),
     /// The bar's surface was sized. The task strip's whole ladder hangs off
     /// the width; the height says how far out the start menu's panel is, and
-    /// is when its input region can be sent (see [`sync_region`]).
+    /// is where its input region is kept in step (see [`sync_region`]).
     Sized(iced::window::Id, iced::Size),
     /// The launcher button was clicked: the start menu, or with
     /// `bar.launcher-style "centered"` the separate launcher.
@@ -1801,28 +1801,29 @@ pub fn set_key_hints(app: &mut App, on: bool) -> Task<Message> {
 /// again.
 pub const CENTERED: &str = "--centered";
 
-/// Send the start menu's input region once the surface has reached a size
-/// the region may be sent at (`h`, logical), and only if the boxes differ
-/// from the last ones sent.
+/// Send the start menu's input region for a surface `h` logical pixels
+/// tall, and only if the boxes differ from the last ones sent.
 ///
 /// The region is the pointer's and the glass's at once: abyss draws a layer
 /// whose input region is 2..=4 boxes as their smooth union, so the blur
 /// follows the pill and the panel rather than filling the surface's whole
-/// width under the panel.
+/// width under the panel. Without a region (or with one whose boxes all fall
+/// outside the surface) abyss blurs the layer's whole rect, so the region has
+/// to be there before the surface grows and has to track it while it does.
 ///
-/// The timing is dictated by the transport. `iced_layershell` keeps one
-/// `wl_region` for the life of the process, and before each callback
-/// subtracts the surface's size *as of its last configure*; abyss reads a
-/// subtract that covers the surface as a reset and any other as "no shape"
-/// (`render::blur::Shape::from_region`). So a region sent at a small height
-/// leaves a subtract in the history that does not cover the surface once it
-/// grows, and the glass falls back to one rounded box for good. On a top
-/// bar the boxes do not depend on the height at all (`menu::region`), so
-/// they are sent once, at the fully open height, and every smaller height
-/// is the same boxes cut shorter. A bottom bar's pill rides the surface's
-/// far edge, so its region is re-sent at both ends of the slide — correct
-/// input at rest, at the cost of the fallback box on later openings (see
-/// the report on the compositor contract).
+/// `iced_layershell` keeps one `wl_region` for the life of the process, and
+/// before each callback subtracts the surface's size *as of its last
+/// configure*. That does not poison later sends: the callback's own
+/// `subtract(0, 0, BIG, BIG)` runs after it, so the history always ends in a
+/// subtract that covers the surface, and abyss skips everything before the
+/// last covering subtract (`render::blur::Shape::from_region`). Any height is
+/// therefore safe to send at.
+///
+/// On a top bar the boxes do not depend on the height (`menu::region`), so
+/// the send in [`toggle_start`] holds for the whole slide and the per-configure
+/// sends dedupe to nothing. A bottom bar's pill rides the surface's far edge,
+/// so it is re-sent on every configure of the slide, both ways, and lags the
+/// surface by one configure.
 ///
 /// A bar whose menu has never been out sends nothing and keeps the plain
 /// whole-surface shape.
@@ -1831,18 +1832,7 @@ fn sync_region(app: &App, bar: &mut Bar, h: f32) -> Task<Message> {
         return Task::none();
     }
     let h = h.round().max(0.0) as u32;
-    let rest = bar.fold.geometry(app.edge).height;
-    let full = rest + bar.menu.full(app.show_key_hints).round() as u32;
-    let top = app.edge == BarPosition::Top;
-    let send = if top {
-        h == full
-    } else {
-        h == full || (!bar.menu.open && h == rest)
-    };
-    if !send {
-        return Task::none();
-    }
-    let rects = crate::menu::region(top, app.bar_radius, h);
+    let rects = crate::menu::region(app.edge == BarPosition::Top, app.bar_radius, h);
     if bar.menu.region.as_ref() == Some(&rects) {
         return Task::none();
     }
@@ -1876,8 +1866,14 @@ fn toggle_start(app: &mut App, id: Id) -> Task<Message> {
     let term = app.conn.terminal_command();
     let entries = ec_services::apps::scan_with(term.as_deref(), &app.launcher_menu.search);
     let open = with_bar(app, id, |app, bar| {
+        // The surface's height as it stands, before the menu starts growing
+        // it: the region goes out ahead of the resize, so the glass has its
+        // shape from the first frame of the slide.
+        let h = bar.fold.geometry(app.edge).height + bar.menu.extent(app.show_key_hints);
         bar.menu.open(entries, term, app.launcher_menu, now);
+        let region = sync_region(app, bar, h as f32);
         Task::batch([
+            region,
             // The keyboard, held until the menu closes: the query is typed
             // here, and Escape and the arrows must reach it. On-demand, so
             // a click on a window takes it back and the leave closes us;
@@ -2381,7 +2377,14 @@ fn anchor(app: &App, bar: &Bar, span: Option<(f32, f32)>, edge: Edge) -> (i32, i
                 Edge::Left => left,
                 Edge::Right => right,
             };
-            (x, bar::SHEET_BOTTOM)
+            // The pill's far side from the screen edge: its bottom under a
+            // top bar, its top (surface y 0 when no menu is out) over a
+            // bottom one.
+            let y = match app.edge {
+                BarPosition::Top => bar::SHEET_BOTTOM,
+                BarPosition::Bottom => 0.0,
+            };
+            (x, y)
         }
         // Either the human asked for click-point popups, or the cell has no
         // computable position (a chip in the `+N` tail, a bar that has not
@@ -2389,6 +2392,18 @@ fn anchor(app: &App, bar: &Bar, span: Option<(f32, f32)>, edge: Edge) -> (i32, i
         _ => (bar.cursor.x, bar.cursor.y),
     };
     (point.0 as i32, point.1 as i32, 1, 1)
+}
+
+/// The gravity a popup grows with: down from a top bar, up from a bottom one
+/// (a bottom bar's popup below its anchor would sit off the screen), and
+/// right or left by `side`.
+fn popup_gravity(edge: BarPosition, side: Edge) -> PopupGravity {
+    match (edge, side) {
+        (BarPosition::Top, Edge::Left) => PopupGravity::BottomRight,
+        (BarPosition::Top, Edge::Right) => PopupGravity::BottomLeft,
+        (BarPosition::Bottom, Edge::Left) => PopupGravity::TopRight,
+        (BarPosition::Bottom, Edge::Right) => PopupGravity::TopLeft,
+    }
 }
 
 /// Which end of a cell a popup hangs from.
@@ -2410,7 +2425,7 @@ fn open_menu(app: &mut App, at: Id, handle: u64) -> Task<Message> {
     let size = (crate::view::MENU_W, crate::view::menu_height(&items));
     // Gravity down-and-right, so the menu hangs from the chip's left edge.
     let rect = anchor(app, bar, crate::view::chip_span(app, bar, handle), Edge::Left);
-    let settings = IcedNewPopupSettings::new(at, size, rect).gravity(PopupGravity::BottomRight);
+    let settings = IcedNewPopupSettings::new(at, size, rect).gravity(popup_gravity(app.edge, Edge::Left));
     let (id, open) = Message::popup_open(settings);
     app.popup = Some(Popup {
         id,
@@ -2452,7 +2467,7 @@ fn open_drawer(app: &mut App, at: Id, drawer: Drawer, toggle: bool) -> Task<Mess
     // a drawer growing to the right would hang off the edge of the screen —
     // which is also why it hangs from the cell's right edge and not its left.
     let rect = anchor(app, bar, crate::view::drawer_span(app, bar, drawer), Edge::Right);
-    let settings = IcedNewPopupSettings::new(at, size, rect).gravity(PopupGravity::BottomLeft);
+    let settings = IcedNewPopupSettings::new(at, size, rect).gravity(popup_gravity(app.edge, Edge::Right));
     let (id, open) = Message::popup_open(settings);
     app.popup = Some(Popup {
         id,
@@ -2512,7 +2527,7 @@ fn show_tray_menu(app: &mut App, at: Id, id: String, entries: Vec<crate::radio::
     // Down-and-left from the right end, like the drawer it may have come
     // from: the tray sits at the bar's right end.
     let rect = anchor(app, bar, crate::view::tray_item_span(app, bar, &id), Edge::Right);
-    let settings = IcedNewPopupSettings::new(at, size, rect).gravity(PopupGravity::BottomLeft);
+    let settings = IcedNewPopupSettings::new(at, size, rect).gravity(popup_gravity(app.edge, Edge::Right));
     let (id_, open) = Message::popup_open(settings);
     app.popup = Some(Popup {
         id: id_,
@@ -2920,6 +2935,26 @@ pub(crate) mod tests {
             .set_beacon(false, crate::eye::Eye::Off, std::time::Instant::now());
         let _ = with_bar(&mut a, id, sync_eye);
         assert_eq!(a.bars[&id].eye_surface, None, "leaving debug drops it again");
+    }
+
+    #[test]
+    fn a_bottom_bars_popups_grow_up_and_a_top_bars_down() {
+        assert_eq!(
+            popup_gravity(BarPosition::Top, Edge::Left),
+            PopupGravity::BottomRight
+        );
+        assert_eq!(
+            popup_gravity(BarPosition::Top, Edge::Right),
+            PopupGravity::BottomLeft
+        );
+        assert_eq!(
+            popup_gravity(BarPosition::Bottom, Edge::Left),
+            PopupGravity::TopRight
+        );
+        assert_eq!(
+            popup_gravity(BarPosition::Bottom, Edge::Right),
+            PopupGravity::TopLeft
+        );
     }
 
     #[test]
@@ -3705,30 +3740,68 @@ mod fold_tests {
         );
     }
 
-    /// Every bar keeps its own cache: a bar created after another (a
-    /// hot-plugged output) sends at its own first full configure, whatever
-    /// the first bar already sent.
+    /// Every bar keeps its own cache: a second bar sends its own first
+    /// region, whatever the first bar already sent.
     #[test]
-    fn a_second_bar_sends_its_region_at_its_first_full_configure() {
+    fn a_second_bar_sends_its_own_first_region() {
         let mut a = app();
         let first = bar_on(&mut a, "DP-1", 0);
         let second = bar_on(&mut a, "HDMI-A-1", 1);
         for id in [first, second] {
             a.bars.get_mut(&id).unwrap().menu.open = true;
         }
-        let full = |a: &App, id: Id| {
-            let bar = &a.bars[&id];
-            bar.fold.geometry(a.edge).height as f32 + bar.menu.full(a.show_key_hints).round()
-        };
-        let h1 = full(&a, first);
-        let t1 = with_bar(&mut a, first, |a, b| sync_region(a, b, h1)).unwrap();
+        let t1 = with_bar(&mut a, first, |a, b| sync_region(a, b, 200.0)).unwrap();
         assert_eq!(t1.units(), 1);
-        let h2 = full(&a, second);
         assert!(a.bars[&second].menu.region.is_none());
-        let t2 = with_bar(&mut a, second, |a, b| sync_region(a, b, h2)).unwrap();
-        assert_eq!(t2.units(), 1, "the second bar's first full configure sends");
-        let want = crate::menu::region(a.edge == BarPosition::Top, a.bar_radius, h2 as u32);
-        assert_eq!(a.bars[&second].menu.region.as_ref(), Some(&want));
-        assert!(want.len() >= 2);
+        let t2 = with_bar(&mut a, second, |a, b| sync_region(a, b, 200.0)).unwrap();
+        assert_eq!(t2.units(), 1);
+        assert!(a.bars[&second].menu.region.as_ref().unwrap().len() >= 2);
+    }
+
+    /// A top bar's boxes do not depend on the height, so the region sent as
+    /// the menu opens holds for the whole slide: no resend per configure.
+    #[test]
+    fn a_top_bar_sends_once_and_holds_through_the_slide() {
+        let mut a = app();
+        a.edge = BarPosition::Top;
+        let id = bar_on(&mut a, "DP-1", 0);
+        a.bars.get_mut(&id).unwrap().menu.open = true;
+        let t = with_bar(&mut a, id, |a, b| sync_region(a, b, 60.0)).unwrap();
+        assert_eq!(t.units(), 1);
+        for h in [80.0, 150.0, 300.0, 520.0] {
+            let t = with_bar(&mut a, id, |a, b| sync_region(a, b, h)).unwrap();
+            assert_eq!(t.units(), 0, "h={h}");
+        }
+    }
+
+    /// A bottom bar's pill rides the surface's far edge: every configure of
+    /// the slide moves it, opening or closing, and the closed bar at rest
+    /// still gets its last region.
+    #[test]
+    fn a_bottom_bar_resends_on_every_height_of_the_slide() {
+        let mut a = app();
+        a.edge = BarPosition::Bottom;
+        let id = bar_on(&mut a, "DP-1", 0);
+        a.bars.get_mut(&id).unwrap().menu.open = true;
+        for h in [60.0, 80.0, 150.0, 300.0] {
+            let t = with_bar(&mut a, id, |a, b| sync_region(a, b, h)).unwrap();
+            assert_eq!(t.units(), 1, "opening h={h}");
+        }
+        a.bars.get_mut(&id).unwrap().menu.open = false;
+        for h in [200.0, 100.0, 60.0] {
+            let t = with_bar(&mut a, id, |a, b| sync_region(a, b, h)).unwrap();
+            assert_eq!(t.units(), 1, "closing h={h}");
+            let want = crate::menu::region(false, a.bar_radius, h as u32);
+            assert_eq!(a.bars[&id].menu.region.as_ref(), Some(&want));
+        }
+    }
+
+    /// A bar whose menu has never been out sends nothing.
+    #[test]
+    fn a_bar_that_never_opened_its_menu_sends_no_region() {
+        let mut a = app();
+        let id = bar_on(&mut a, "DP-1", 0);
+        let t = with_bar(&mut a, id, |a, b| sync_region(a, b, 60.0)).unwrap();
+        assert_eq!(t.units(), 0);
     }
 }

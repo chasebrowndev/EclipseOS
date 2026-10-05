@@ -421,6 +421,14 @@ fn start_sheet<'a>(
     } else {
         Column::new().push(panel).push(pill)
     };
+    // The surface is resized a configure after the panel's extent moves, so
+    // for a frame it is taller or shorter than the body. A bottom bar's pill
+    // rides the surface's far edge, so the body is pinned there rather than
+    // left to sit at the top and jump when the configure lands.
+    let body = container(body)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(if top { Alignment::Start } else { Alignment::End });
     stack![parts::shaped_sheet(shape, app.blur), body]
         .width(Length::Fill)
         .height(Length::Fill)
