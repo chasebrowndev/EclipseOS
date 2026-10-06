@@ -39,6 +39,7 @@ pub mod modal;
 pub mod notice;
 pub mod panel;
 pub mod phrase;
+pub mod slot;
 pub mod socket;
 
 use std::{
