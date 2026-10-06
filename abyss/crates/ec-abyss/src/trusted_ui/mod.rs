@@ -23,13 +23,19 @@
 //!
 //! One prompt at a time. `open` refuses a second, and the owner re-queues it.
 //!
-//! Owners: command-widget approval ([`approval`], §3.11, ADR 0067) and the
+//! Owners: command-widget approval ([`approval`], §3.11, ADR 0067), the
 //! destructive-system-action confirmation ([`erase`], §3.10, ADR 0061),
-//! asked for over the root-only [`socket`].
+//! asked for over the root-only [`socket`], the agent consent prompt
+//! ([`consent`], §3.2) and personal-secret entry ([`phrase`], §2).
+//!
+//! Every prompt shows the personal secret in its fixed frame at the top, or
+//! the unconfigured warning while there is none (§2).
 
 pub mod approval;
+pub mod consent;
 pub mod erase;
 pub mod modal;
+pub mod phrase;
 pub mod socket;
 
 use std::{
@@ -72,11 +78,17 @@ const DIM: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const DIM_ALPHA: f32 = 0.6;
 
 /// The answer to a prompt, handed to [`resolve`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
     pub token: u64,
     pub button: usize,
     pub role: Role,
+    /// The prompt's typed text, when it took any.
+    pub typed: Option<modal::Typed>,
+    /// Nobody answered: the timeout picked the `Safe` button. Owners that
+    /// report a timeout differently from a refusal (§3.2 `prompt_timeout`)
+    /// read this.
+    pub timed_out: bool,
 }
 
 #[derive(Debug)]
@@ -105,6 +117,12 @@ pub struct TrustedUi {
     asking: approval::Asking,
     /// The erase prompt's requester, if that is what is up.
     erase: erase::State,
+    /// The personal secret (§2), `None` until the owner sets one.
+    pub phrase: Option<phrase::Phrase>,
+    /// Phrase entry, if that is what is up.
+    entering: phrase::Entering,
+    /// Agent requests waiting on the human (§3.2, COMP-11 §4).
+    pub consent: consent::Queue,
     /// The bound trusted socket, so a clean exit can unlink it.
     pub path: Option<PathBuf>,
 }
@@ -153,7 +171,7 @@ pub fn open(state: &mut AbyssState, modal: modal::Modal) -> bool {
         .insert_source(Timer::from_duration(TIMEOUT), move |_, _, state| {
             if state.trusted_ui.token() == Some(token) {
                 tracing::info!(token, "trusted prompt timed out; resolving to its safe button");
-                choose_safe(state);
+                choose_safe(state, true);
             }
             TimeoutAction::Drop
         });
@@ -215,16 +233,21 @@ pub fn key(state: &mut AbyssState, sym: Keysym) {
     let Some(o) = state.trusted_ui.open.as_mut() else {
         return;
     };
-    let k = modal::key(sym);
+    let k = modal::key(sym, o.modal.takes_text());
     if k != modal::Key::Escape && o.shown.elapsed() < ARM {
         return;
     }
-    match modal::apply(&o.modal, o.focus, k) {
+    match modal::apply(&mut o.modal, o.focus, k) {
         modal::Outcome::Focus(i) => {
             o.focus = i;
             crate::backend::damage_all(state);
         }
-        modal::Outcome::Choose(i) => choose(state, i),
+        modal::Outcome::Edited => {
+            // The cached panel is keyed by focus only; the text changed.
+            state.trusted_ui.art.clear();
+            crate::backend::damage_all(state);
+        }
+        modal::Outcome::Choose(i) => choose(state, i, false),
         modal::Outcome::Nothing => {}
     }
 }
@@ -254,18 +277,18 @@ pub fn button(state: &mut AbyssState, pressed: bool) {
         return;
     }
     if let Some(i) = o.pressed.take().filter(|&p| Some(p) == under) {
-        choose(state, i);
+        choose(state, i, false);
     }
 }
 
-fn choose_safe(state: &mut AbyssState) {
+fn choose_safe(state: &mut AbyssState, timed_out: bool) {
     if let Some(i) = state.trusted_ui.open.as_ref().map(|o| o.modal.safe()) {
-        choose(state, i);
+        choose(state, i, timed_out);
     }
 }
 
 /// Close the prompt with `button` as its answer and hand that to its owner.
-fn choose(state: &mut AbyssState, button: usize) {
+fn choose(state: &mut AbyssState, button: usize, timed_out: bool) {
     let Some(o) = state.trusted_ui.open.take() else {
         return;
     };
@@ -278,11 +301,14 @@ fn choose(state: &mut AbyssState, button: usize) {
         token: o.modal.token,
         button,
         role: b.role,
+        typed: o.modal.typed().cloned(),
+        timed_out,
     };
     crate::backend::damage_all(state);
     resolve(state, choice);
     // Whatever was waiting behind this prompt gets its turn.
     approval::schedule(state);
+    consent::schedule(state);
     // The pointer is re-evaluated as though it had just moved, so whatever is
     // under it gets its enter now rather than on the next motion.
     state.refresh_pointer_focus();
@@ -295,6 +321,10 @@ fn resolve(state: &mut AbyssState, choice: Choice) {
         approval::answer(state, choice);
     } else if erase::owns(state, choice.token) {
         erase::answer(state, choice);
+    } else if phrase::owns(state, choice.token) {
+        phrase::answer(state, choice);
+    } else if consent::owns(state, choice.token) {
+        consent::answer(state, choice);
     }
 }
 
@@ -352,7 +382,12 @@ pub fn elements(
 
     let mut out = Vec::with_capacity(2);
     if ui.art.get(&dev).map(|(f, _)| *f != o.focus).unwrap_or(true) {
-        let raster = modal::rasterize(&o.modal, o.focus, dev);
+        let raster = modal::rasterize(
+            &o.modal,
+            o.focus,
+            dev,
+            ui.phrase.as_ref().map(phrase::Phrase::as_str),
+        );
         match upload(renderer, &raster, dev) {
             Some(buffer) => {
                 ui.art.insert(dev, (o.focus, buffer));

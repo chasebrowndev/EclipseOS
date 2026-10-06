@@ -14,4 +14,6 @@ pub const EVENTS: &[&str] = &[
     "config",
     "keybind",
     "launcher",
+    // COMP-10 §2: whether a personal secret is set. Never the phrase.
+    "phrase",
 ];

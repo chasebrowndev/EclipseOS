@@ -312,6 +312,8 @@ fn boot(
     crate::input::idle::start(&mut state, &handle);
     crate::ipc::start(&mut state, &handle);
     crate::trusted_ui::socket::start(&mut state, &handle);
+    // COMP-10 §2: every prompt shows the personal secret, once one is set.
+    state.trusted_ui.phrase = crate::trusted_ui::phrase::load();
     crate::config::watch::start(&mut state, &handle);
     crate::addons::start(&mut state, &handle);
     // Registered ahead of the wayland sources on purpose: calloop dispatches in

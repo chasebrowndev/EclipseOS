@@ -52,6 +52,9 @@ pub enum EventKind {
     /// `open_launcher` relayed to the bar (`bar.launcher-style "menu"`):
     /// `{"action": "open", "output": <id>, "output_name": "<connector>"}`.
     Launcher,
+    /// Whether a personal secret is set: `{"set": bool}`. Never the phrase
+    /// itself (COMP-10 §2).
+    Phrase,
 }
 
 impl EventKind {
@@ -65,6 +68,7 @@ impl EventKind {
         EventKind::Config,
         EventKind::Keybind,
         EventKind::Launcher,
+        EventKind::Phrase,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -78,6 +82,7 @@ impl EventKind {
             EventKind::Config => "config",
             EventKind::Keybind => "keybind",
             EventKind::Launcher => "launcher",
+            EventKind::Phrase => "phrase",
         }
     }
 

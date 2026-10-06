@@ -231,6 +231,11 @@ impl AbyssState {
     /// evaluated on the human seat only — agent seats carry no bindings
     /// (COMP-04 §5), so injected keys can never reach here.
     fn agent_attention(&mut self) {
+        // COMP-10 §2 (DA-03): with no personal secret set, the chord opens
+        // phrase entry first; its normal target is delayed, never replaced.
+        if crate::trusted_ui::phrase::prompt_if_unset(self) {
+            return;
+        }
         tracing::warn!("agent attention chord pressed; no pending decision queue exists yet");
     }
 
