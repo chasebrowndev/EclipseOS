@@ -507,26 +507,34 @@ impl TaskStore {
     }
 
     /// Opens a task for `principal` on the human's word (A-04 §3, origin
-    /// `human`) and issues its first grant, `scope` parsed by
-    /// [`capabilities`], expiring with the task. Either both happen or
-    /// neither does: a scope that does not parse is refused before the task
-    /// is journalled, and a grant the issuer refuses closes the task again.
+    /// `human`, `origin_ref` naming the commit slot) and issues its first
+    /// grant, `scope` parsed by [`capabilities`], expiring with the task.
+    /// An empty `scope` is a grant with no capability lines: an agent that
+    /// only converses (A-08 §6, conversation is intrinsic). Either both
+    /// happen or neither does: a scope that does not parse is refused before
+    /// the task is journalled, and a grant the issuer refuses closes the task
+    /// again. Returns the task and the grant.
     pub fn open_for_human(
         &mut self,
         principal: &str,
         statement: &str,
         deadline_ms: u64,
         scope: &str,
+        origin_ref: &str,
         now_ms: u64,
-    ) -> Result<Vec<u8>> {
-        let caps = capabilities(scope).ok_or(TaskError::BadScope)?;
+    ) -> Result<(Ulid, Vec<u8>)> {
+        let caps = if scope.trim().is_empty() {
+            Vec::new()
+        } else {
+            capabilities(scope).ok_or(TaskError::BadScope)?
+        };
         if deadline_ms <= now_ms {
             return Err(TaskError::ExpiryBeyondDeadline);
         }
         let task = self.open_task(
             principal,
             Origin::Human,
-            "ec-policyd",
+            origin_ref,
             statement,
             deadline_ms,
             now_ms,
@@ -543,7 +551,7 @@ impl TaskStore {
             unattended: false,
         };
         match self.issue_grant(grant, GrantReason::Manifest, now_ms) {
-            Ok(cose) => Ok(cose),
+            Ok(cose) => Ok((task, cose)),
             Err(e) => {
                 self.apply(task, TaskEvent::Fault)?;
                 Err(e)
@@ -779,15 +787,17 @@ mod tests {
         let verify = |c: &[u8], k: &ed25519_dalek::VerifyingKey| Grant::verify(c, k, 2_000);
         let dir = tmp("human");
         let mut s = store(&dir);
-        let cose = s
+        let (task, cose) = s
             .open_for_human(
                 "agent:a",
                 "tidy",
                 100_000,
                 "scene.list workspace:human\nseat.pointer app_id:foot",
+                "slot:1",
                 1_000,
             )
             .unwrap();
+        assert_eq!(s.task(task).unwrap().origin_ref, "slot:1");
         let g = verify(&cose, &key().verifying_key()).unwrap();
         assert_eq!(
             (g.principal.as_str(), g.expires_ms, g.unattended),
@@ -796,19 +806,30 @@ mod tests {
         assert_eq!(g.capabilities.len(), 2);
         assert_eq!(s.live_task("agent:a").unwrap().id.0, g.task_id.0);
         assert!(matches!(
-            s.open_for_human("agent:a", "again", 100_000, "scene.list workspace:human", 1_000),
+            s.open_for_human(
+                "agent:a",
+                "again",
+                100_000,
+                "scene.list workspace:human",
+                "slot:1",
+                1_000
+            ),
             Err(TaskError::AlreadyLive { .. })
         ));
         // A scope that does not parse opens no task.
         assert!(matches!(
-            s.open_for_human("agent:b", "t", 100_000, "scene.list nonsense", 1_000),
+            s.open_for_human("agent:b", "t", 100_000, "scene.list nonsense", "slot:1", 1_000),
             Err(TaskError::BadScope)
         ));
         assert!(s.live_task("agent:b").is_none());
-        assert!(matches!(
-            s.open_for_human("agent:b", "t", 100_000, "", 1_000),
-            Err(TaskError::BadScope)
-        ));
+        // No capability lines: a conversation-only agent.
+        let (_, cose) = s
+            .open_for_human("agent:b", "t", 100_000, "", "slot:2", 1_000)
+            .unwrap();
+        assert!(verify(&cose, &key().verifying_key())
+            .unwrap()
+            .capabilities
+            .is_empty());
     }
 
     #[test]

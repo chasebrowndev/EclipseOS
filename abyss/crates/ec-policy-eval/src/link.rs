@@ -115,18 +115,6 @@ pub enum FromPolicyd {
         req: u64,
         records: Vec<TailRecord>,
     },
-    /// [`ToPolicyd::OpenTask`] `req` opened a task; `grant` is its first
-    /// grant, COSE_Sign1, naming the new task.
-    TaskOpened {
-        req: u64,
-        grant: Vec<u8>,
-    },
-    /// [`ToPolicyd::OpenTask`] `req` was refused, and the A-04 or S-01 §4
-    /// rule that said no.
-    TaskRefused {
-        req: u64,
-        reason: String,
-    },
     /// The preview for [`ToPolicyd::PreviewTask`] `req` (A-08 §5.2). `preview`
     /// names it for `create_task`; `display` is the canonical CBOR the slot
     /// draws (COMP-10 §3.12), never shown to the client that drafted it.
@@ -229,19 +217,6 @@ pub enum ToPolicyd {
     Terminate { principal: String },
     /// The last `n` audit records naming `principal`.
     AuditTail { req: u64, principal: String, n: u64 },
-    /// The human opened a task for `principal` (A-04 §3, origin `human`):
-    /// `statement` until `deadline_ms`, with a first grant of `scope`, one
-    /// capability per line, each `<capability> <scope> <scope>...`.
-    OpenTask {
-        req: u64,
-        principal: String,
-        statement: String,
-        deadline_ms: u64,
-        scope: String,
-    },
-    /// The human closed `principal`'s live task (A-04 §4): its grants are
-    /// revoked and every peer is told with [`FromPolicyd::Revoked`].
-    CloseTask { principal: String },
     /// The commit slot `slot` holds a new draft: preview it (A-08 §5.1–§5.2).
     /// `deadline_ms` 0 is the package default; `narrowing` is a CBOR scope
     /// list that may only shrink; `continuation` is a task id or empty.
@@ -271,6 +246,9 @@ pub enum ToPolicyd {
         task: String,
         mode: CancelMode,
     },
+    /// agentd: `task`'s agent process ended. `reason` is `completed` (it
+    /// exited 0) or `failed`. Closes the task (A-04 §4).
+    Exited { req: u64, task: String, reason: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -566,14 +544,6 @@ impl FromPolicyd {
                     }),
                 );
             }),
-            FromPolicyd::TaskOpened { req, grant } => message("task_opened", |m| {
-                m.insert("req", uint(*req));
-                m.insert("grant", enc(|w| w.bytes(grant)));
-            }),
-            FromPolicyd::TaskRefused { req, reason } => message("task_refused", |m| {
-                m.insert("req", uint(*req));
-                m.insert("reason", text(reason));
-            }),
             FromPolicyd::Preview {
                 req,
                 preview,
@@ -674,20 +644,6 @@ impl FromPolicyd {
                 FromPolicyd::AuditRecords {
                     req: req.ok_or(MessageError::Shape)?,
                     records: f.records.take().ok_or(MessageError::Shape)?,
-                }
-            }
-            "task_opened" => {
-                shape(&f, F_REQ | F_GRANT)?;
-                FromPolicyd::TaskOpened {
-                    req: req.ok_or(MessageError::Shape)?,
-                    grant: f.grant.ok_or(MessageError::Shape)?.to_vec(),
-                }
-            }
-            "task_refused" => {
-                shape(&f, F_REQ | F_REASON)?;
-                FromPolicyd::TaskRefused {
-                    req: req.ok_or(MessageError::Shape)?,
-                    reason: f.reason.ok_or(MessageError::Shape)?.to_owned(),
                 }
             }
             "preview" => {
@@ -796,22 +752,6 @@ impl ToPolicyd {
                 m.insert("req", uint(*req));
                 m.insert("principal", text(principal));
             }),
-            ToPolicyd::OpenTask {
-                req,
-                principal,
-                statement,
-                deadline_ms,
-                scope,
-            } => message("open_task", |m| {
-                m.insert("req", uint(*req));
-                m.insert("scope", text(scope));
-                m.insert("deadline", uint(*deadline_ms));
-                m.insert("principal", text(principal));
-                m.insert("statement", text(statement));
-            }),
-            ToPolicyd::CloseTask { principal } => {
-                message("close_task", |m| m.insert("principal", text(principal)))
-            }
             ToPolicyd::PreviewTask {
                 req,
                 slot,
@@ -855,6 +795,11 @@ impl ToPolicyd {
                 m.insert("req", uint(*req));
                 m.insert("task", text(task));
                 m.insert("mode", text(mode.as_str()));
+            }),
+            ToPolicyd::Exited { req, task, reason } => message("exited", |m| {
+                m.insert("req", uint(*req));
+                m.insert("task", text(task));
+                m.insert("reason", text(reason));
             }),
         }
     }
@@ -900,22 +845,6 @@ impl ToPolicyd {
                     req: req()?,
                     principal: principal(f.principal)?,
                     n: f.n.ok_or(MessageError::Shape)?.min(256),
-                }
-            }
-            "open_task" => {
-                shape(&f, F_REQ | F_SCOPE | F_DEADLINE | F_PRINCIPAL | F_STATEMENT)?;
-                ToPolicyd::OpenTask {
-                    req: req()?,
-                    principal: principal(f.principal)?,
-                    statement: txt(f.statement)?,
-                    deadline_ms: f.deadline.ok_or(MessageError::Shape)?,
-                    scope: txt(f.scope)?,
-                }
-            }
-            "close_task" => {
-                shape(&f, F_PRINCIPAL)?;
-                ToPolicyd::CloseTask {
-                    principal: principal(f.principal)?,
                 }
             }
             "preview_task" => {
@@ -968,6 +897,18 @@ impl ToPolicyd {
                 ToPolicyd::PauseTask {
                     req: req()?,
                     task: task_id(f.task)?,
+                }
+            }
+            "exited" => {
+                shape(&f, F_REQ | F_TASK | F_REASON)?;
+                let reason = f.reason.ok_or(MessageError::Shape)?;
+                if reason != "completed" && reason != "failed" {
+                    return Err(MessageError::Shape);
+                }
+                ToPolicyd::Exited {
+                    req: req()?,
+                    task: task_id(f.task)?,
+                    reason: reason.to_owned(),
                 }
             }
             "cancel_task" => {
@@ -1060,10 +1001,6 @@ mod tests {
                     },
                 ],
             },
-            FromPolicyd::TaskOpened {
-                req: 8,
-                grant: vec![0xd2],
-            },
             FromPolicyd::Preview {
                 req: 20,
                 preview: 9,
@@ -1098,10 +1035,6 @@ mod tests {
                 grant: vec![1, 2, 3],
                 continuation: String::new(),
             },
-            FromPolicyd::TaskRefused {
-                req: 9,
-                reason: "already_live".into(),
-            },
         ];
         for m in from {
             let b = m.encode();
@@ -1131,13 +1064,6 @@ mod tests {
                 req: 3,
                 principal: "agent:a".into(),
                 n: 20,
-            },
-            ToPolicyd::OpenTask {
-                req: 4,
-                principal: "agent:a".into(),
-                statement: "tidy notes".into(),
-                deadline_ms: 7_200_000,
-                scope: "scene.list workspace:human\nseat.pointer app_id:foot".into(),
             },
             ToPolicyd::PreviewTask {
                 req: 30,
@@ -1175,8 +1101,10 @@ mod tests {
                 task: "t-1".into(),
                 mode: CancelMode::Drain,
             },
-            ToPolicyd::CloseTask {
-                principal: "agent:a".into(),
+            ToPolicyd::Exited {
+                req: 36,
+                task: "t-1".into(),
+                reason: "completed".into(),
             },
         ];
         for m in to {

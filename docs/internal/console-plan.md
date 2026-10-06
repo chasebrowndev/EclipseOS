@@ -85,16 +85,16 @@ Canonical CBOR, tagged by `m`, as today.
 |---|---|---|---|
 | → | `preview_task` | `req`, `slot`, `package`, `statement`, `deadline`, `narrowing` (bytes), `continuation` | `deadline` ms, 0 = package default |
 | ← | `preview` | `req`, `preview`, `display` (bytes) | `display` is the canonical CBOR of [`SlotDisplay`](#slotdisplay) |
-| ← | `preview_refused` | `req`, `reason` | reason code, never a rule id |
+| ← | `refused` | `req`, `reason` | reason code, never a rule id |
 | → | `create_task` | `req`, `slot`, `preview` | |
 | ← | `task_created` | `req`, `task` (text) | |
-| ← | `create_refused` | `req`, `reason` | `preview_stale` re-previews |
+| ← | `refused` | `req`, `reason` | `preview_stale` re-previews |
 | → | `unpause_task` | `req`, `slot`, `task` | human pauses only (A-08 §14.5) |
-| ← | `unpaused` / `unpause_refused` | `req`, `reason?` | |
+| ← | `done` / `refused` | `req`, `reason?` | |
 | → | `install_begin` | `req`, `path` | from `ec-ctl agent install` via the human socket |
 | ← | `install_review` | `req`, `review`, `display` (bytes) | |
 | → | `install_answer` | `review`, `approve` | |
-| ← | `installed` / `install_refused` | `req`, `reason?` | |
+| ← | `done` / `refused` | `req`, `reason?` | |
 | ← | `task_state` | `task`, `state`, `reason` | broadcast; abyss drops slots for closed tasks |
 
 `preview` is a policyd-chosen u64, bound to (draft bytes, table version,
@@ -116,7 +116,8 @@ What the slot draws (F-11), every string already sanitised by policyd:
 | ← | `task_state` | `task`, `state` (`active`/`paused`/`draining`/`closed`), `reason` |
 | → | `pause_task` | `req`, `task` |
 | → | `cancel_task` | `req`, `task`, `mode` (`drain`/`immediate`) |
-| ← | `ack` / `refused` | `req`, `reason?` |
+| → | `exited` | `req`, `task`, `reason` (`completed`/`failed`) |
+| ← | `done` / `refused` | `req`, `reason?` |
 | → | emission | `channel` audit records (message id, size, chain hash; never the body) |
 
 policyd provisions only while an agentd connection is live (A-01 §5,

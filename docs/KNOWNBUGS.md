@@ -144,13 +144,11 @@ which client an agent launched (agents cannot launch yet), so the rule is not
 enforced. It becomes live with agent `launch` (COMP-08); fix it there.
 
 
-## TASK-01: no production path opens a task, and policyd cannot tell abyss from a script
+## TASK-01: policyd authenticates its peers by executable, not by unit
 
-A-08 §5.2 makes the COMP-19 commit slot the only way a task is created:
-abyss previews, the human presses Enter on the slot, abyss sends
-`create_task` to `policyd`. The slot does not exist yet, so nothing in a
-running session opens a task or issues a first grant; only tests do. The link
-message (`open_task`) and `TaskStore::open_for_human` are in place for it.
+policyd now creates a task only from `create_task` on a preview it issued
+(`ec-policyd/src/dispatch.rs`, A-08 §5.2); the compositor's commit slot that
+sends it is the console wave's T1 (`docs/internal/console-plan.md`).
 
 `policyd.sock` used to admit any session-uid peer. It now gives each
 connection a role from the peer's executable (`ec-policyd/src/peer.rs`):

@@ -74,9 +74,7 @@ fn deliver(state: &mut AbyssState, m: FromPolicyd) {
         // Answers to messages this build does not send yet (the console
         // wave), and agentd's pushes. Ignored, not believed: a grant reaches
         // an agent only through admission.
-        FromPolicyd::TaskOpened { .. }
-        | FromPolicyd::TaskRefused { .. }
-        | FromPolicyd::Preview { .. }
+        FromPolicyd::Preview { .. }
         | FromPolicyd::TaskCreated { .. }
         | FromPolicyd::InstallReview { .. }
         | FromPolicyd::Done { .. }

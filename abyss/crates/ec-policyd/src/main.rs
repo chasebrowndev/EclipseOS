@@ -17,10 +17,12 @@
 //!   live task (`TaskStore::mint_from_prompt`), or answers `mint_refused`.
 //! - `defer` runs `TaskStore::defer_check`: `deny` when the principal has no
 //!   task that may act, otherwise `prompt` (COMP-11 §5).
-//! - `open_task` opens a human-origin task and its first grant at once
-//!   (A-04 §3). Its only sender is meant to be abyss's commit slot
-//!   (A-08 §5.2, COMP-19): there is deliberately no CLI or console path to it
-//!   (A-08 §7). `close_task` cancels and tells every peer `revoked`.
+//! - The console wave (A-07 §3, A-08 §5.2) is `ec_policyd::dispatch`:
+//!   `install_begin`/`install_answer`, `preview_task`/`create_task` from the
+//!   compositor's commit slot (the only way a task is created; there is no
+//!   CLI or console path, A-08 §7), `unpause_task` from a slot, and
+//!   `pause_task`/`cancel_task`/`exited` from agentd. Who may send which is
+//!   `ec_policyd::peer`.
 //!
 //! The store has one owner, the main thread. Connection threads decode and
 //! queue; a full queue stops a connection thread reading, which fills the
@@ -28,6 +30,7 @@
 
 use ec_policy_eval::audit::{Emission, MAX_EMISSION};
 use ec_policy_eval::link::{self, FromPolicyd, ToPolicyd};
+use ec_policyd::dispatch::{self, Dispatch, To};
 use ec_policyd::peer::Role;
 use ec_policyd::tasks;
 use std::sync::{Arc, Mutex, Weak};
@@ -221,14 +224,26 @@ fn main() -> std::process::ExitCode {
             std::process::exit(1);
         }
     });
-    write(&mut store, rx, &push)
+    let mut dispatch = match Dispatch::open(&dir, ec_policyd::manifest::roots()) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("policyd: cannot open the install records: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    write(&mut store, &mut dispatch, rx, &push)
 }
 
 /// Appends every queued emission. A record that cannot be written ends the
 /// daemon: abyss sees the link drop and pauses every agent (COMP-01 §6),
 /// which is the fail-closed answer to an audit log that has stopped taking
 /// records. Continuing would let agents act unjournalled.
-fn write(store: &mut tasks::TaskStore, rx: Receiver<Incoming>, push: &Mutex<Push>) -> std::process::ExitCode {
+fn write(
+    store: &mut tasks::TaskStore,
+    dispatch: &mut Dispatch,
+    rx: Receiver<Incoming>,
+    push: &Mutex<Push>,
+) -> std::process::ExitCode {
     for incoming in rx {
         match incoming {
             Incoming::Emission(e) => {
@@ -237,20 +252,27 @@ fn write(store: &mut tasks::TaskStore, rx: Receiver<Incoming>, push: &Mutex<Push
                     return std::process::ExitCode::FAILURE;
                 }
             }
-            Incoming::Message(m, conn) => match answer(store, m, now_ms()) {
-                Ok(Answer::To(reply)) => {
-                    use rustix::net::{send, SendFlags};
-                    // A peer that cannot take the answer has hung up; its
-                    // connection thread sees that and ends.
-                    let _ = send(&*conn, &reply.encode(), SendFlags::NOSIGNAL);
+            Incoming::Message(m, conn) => {
+                let (table_version, agentd_live) = match push.lock() {
+                    Ok(mut p) => {
+                        let live = p.live().any(|(_, r)| r == Role::Agentd);
+                        (p.version, live)
+                    }
+                    Err(_) => (0, false),
+                };
+                let at = Facts {
+                    now_ms: now_ms(),
+                    table_version,
+                    agentd_live,
+                };
+                match answer(store, dispatch, m, at) {
+                    Ok(out) => route(push, &conn, out),
+                    Err(err) => {
+                        eprintln!("policyd: cannot journal a link request: {err}");
+                        return std::process::ExitCode::FAILURE;
+                    }
                 }
-                Ok(Answer::All(m)) => broadcast(push, &m.encode()),
-                Ok(Answer::Nothing) => {}
-                Err(err) => {
-                    eprintln!("policyd: cannot journal a link request: {err}");
-                    return std::process::ExitCode::FAILURE;
-                }
-            },
+            }
         }
     }
     std::process::ExitCode::FAILURE
@@ -262,26 +284,41 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-/// Sends `msg` to every live compositor and agentd connection: the holders
-/// of grants and the host of the agents they name.
-fn broadcast(push: &Mutex<Push>, msg: &[u8]) {
+/// Sends each answer where it belongs. A peer that cannot take one has hung
+/// up; its connection thread sees that and ends.
+fn route(push: &Mutex<Push>, asker: &OwnedFd, out: dispatch::Out) {
     use rustix::net::{send, SendFlags};
-    let Ok(mut p) = push.lock() else { return };
-    for (c, role) in p.live() {
-        if role != Role::Brokerd {
-            let _ = send(&*c, msg, SendFlags::NOSIGNAL);
+    for (to, m) in out {
+        let bytes = m.encode();
+        match to {
+            To::Asker => {
+                let _ = send(asker, &bytes, SendFlags::NOSIGNAL);
+            }
+            To::Agentd | To::All => {
+                let Ok(mut p) = push.lock() else { continue };
+                for (c, role) in p.live() {
+                    let wanted = match to {
+                        To::Agentd => role == Role::Agentd,
+                        _ => role != Role::Brokerd,
+                    };
+                    if wanted {
+                        let _ = send(&*c, &bytes, SendFlags::NOSIGNAL);
+                    }
+                }
+            }
         }
     }
 }
 
-/// Where an answer goes.
-#[derive(Debug, PartialEq)]
-enum Answer {
-    /// Back to the connection that asked.
-    To(FromPolicyd),
-    /// To every connection: a change every holder of a grant must see.
-    All(FromPolicyd),
-    Nothing,
+/// What an answer depends on besides the store.
+#[derive(Debug, Clone, Copy)]
+struct Facts {
+    now_ms: u64,
+    /// The pushed table's version, 0 before the first compile succeeds.
+    table_version: u64,
+    /// Whether an agentd connection is live: tasks are provisioned only to
+    /// one (A-01 §5, A-08 §12).
+    agentd_live: bool,
 }
 
 /// Whether a task error is a policy "no" (answered) rather than a journal
@@ -290,22 +327,42 @@ fn refusal(e: &tasks::TaskError) -> bool {
     !matches!(e, tasks::TaskError::Store(_))
 }
 
+fn asker(m: FromPolicyd) -> dispatch::Out {
+    vec![(To::Asker, m)]
+}
+
 /// The main thread's answer to one link message. An error is a journal
 /// failure, which ends the daemon like a failed emission does; a policy
-/// refusal is an answer.
-fn answer(store: &mut tasks::TaskStore, m: ToPolicyd, now_ms: u64) -> Result<Answer, tasks::TaskError> {
+/// refusal is an answer. The peer's role was checked at receipt
+/// (`peer::Role::may_send`).
+fn answer(
+    store: &mut tasks::TaskStore,
+    dispatch: &mut Dispatch,
+    m: ToPolicyd,
+    at: Facts,
+) -> Result<dispatch::Out, tasks::TaskError> {
+    let now_ms = at.now_ms;
     Ok(match m {
         ToPolicyd::Revoke { principal } | ToPolicyd::Terminate { principal } => {
+            let task = store.live_task(&principal).map(|t| t.id.to_text());
             store.cancel_principal(&principal)?;
-            Answer::To(FromPolicyd::Revoked { principal })
-        }
-        ToPolicyd::CloseTask { principal } => {
-            if !store.cancel_principal(&principal)? {
-                return Ok(Answer::Nothing);
+            let mut out = asker(FromPolicyd::Revoked {
+                principal: principal.clone(),
+            });
+            // agentd stops the agent and closes its conversation.
+            if let Some(task) = task {
+                out.push((
+                    To::Agentd,
+                    FromPolicyd::TaskState {
+                        task,
+                        state: "closed".into(),
+                        reason: "cancelled".into(),
+                    },
+                ));
             }
-            Answer::All(FromPolicyd::Revoked { principal })
+            out
         }
-        ToPolicyd::AuditTail { req, principal, n } => Answer::To(FromPolicyd::AuditRecords {
+        ToPolicyd::AuditTail { req, principal, n } => asker(FromPolicyd::AuditRecords {
             req,
             records: store.tail(&principal, n as usize),
         }),
@@ -315,43 +372,54 @@ fn answer(store: &mut tasks::TaskStore, m: ToPolicyd, now_ms: u64) -> Result<Ans
             scope,
             unattended,
         } => match store.mint_from_prompt(&principal, &scope, unattended, now_ms) {
-            Ok(grant) => Answer::To(FromPolicyd::Minted { req, grant }),
+            Ok(grant) => asker(FromPolicyd::Minted { req, grant }),
             Err(e) if refusal(&e) => {
                 eprintln!("policyd: mint for {principal} refused: {e}");
-                Answer::To(FromPolicyd::MintRefused { req })
+                asker(FromPolicyd::MintRefused { req })
             }
             Err(e) => return Err(e),
         },
-        ToPolicyd::Defer { req, principal, .. } => Answer::To(FromPolicyd::DeferAnswer {
+        ToPolicyd::Defer { req, principal, .. } => asker(FromPolicyd::DeferAnswer {
             req,
             answer: store.defer_check(&principal),
         }),
-        ToPolicyd::OpenTask {
+        ToPolicyd::PreviewTask {
             req,
-            principal,
+            slot,
+            package,
             statement,
             deadline_ms,
-            scope,
-        } => match store.open_for_human(&principal, &statement, deadline_ms, &scope, now_ms) {
-            Ok(grant) => Answer::To(FromPolicyd::TaskOpened { req, grant }),
-            Err(e) if refusal(&e) => Answer::To(FromPolicyd::TaskRefused {
-                req,
-                reason: e.to_string(),
-            }),
-            Err(e) => return Err(e),
-        },
-        // The console wave (docs/internal/console-plan.md, P2–P4) lands these;
-        // until then each is refused, which is the fail-closed answer.
-        ToPolicyd::PreviewTask { req, .. }
-        | ToPolicyd::CreateTask { req, .. }
-        | ToPolicyd::UnpauseTask { req, .. }
-        | ToPolicyd::InstallBegin { req, .. }
-        | ToPolicyd::PauseTask { req, .. }
-        | ToPolicyd::CancelTask { req, .. } => Answer::To(FromPolicyd::Refused {
+            narrowing,
+            continuation,
+        } => dispatch.preview(
+            store,
             req,
-            reason: "unsupported".into(),
-        }),
-        ToPolicyd::InstallAnswer { .. } => Answer::Nothing,
+            slot,
+            &package,
+            &statement,
+            deadline_ms,
+            &narrowing,
+            &continuation,
+            at.table_version,
+            at.agentd_live,
+        ),
+        ToPolicyd::CreateTask { req, slot, preview } => dispatch.create(
+            store,
+            req,
+            slot,
+            preview,
+            at.table_version,
+            at.agentd_live,
+            now_ms,
+        )?,
+        ToPolicyd::UnpauseTask { req, task, .. } => dispatch.unpause(store, req, &task)?,
+        ToPolicyd::InstallBegin { req, path } => dispatch.install_begin(req, &path, now_ms),
+        ToPolicyd::InstallAnswer { review, approve } => {
+            dispatch.install_answer(store, review, approve, now_ms)?
+        }
+        ToPolicyd::PauseTask { req, task } => dispatch.pause(store, req, &task)?,
+        ToPolicyd::CancelTask { req, task, mode } => dispatch.cancel(store, req, &task, mode)?,
+        ToPolicyd::Exited { req, task, reason } => dispatch.exited(store, req, &task, &reason)?,
     })
 }
 

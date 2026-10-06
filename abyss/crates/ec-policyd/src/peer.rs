@@ -102,7 +102,10 @@ impl Role {
 
     /// Whether this role may send `m`.
     pub fn may_send(self, m: &ToPolicyd) -> bool {
-        let agentd = matches!(m, ToPolicyd::PauseTask { .. } | ToPolicyd::CancelTask { .. });
+        let agentd = matches!(
+            m,
+            ToPolicyd::PauseTask { .. } | ToPolicyd::CancelTask { .. } | ToPolicyd::Exited { .. }
+        );
         match self {
             // The console reaches pause and cancel through agentd (A-08 §7);
             // the compositor pauses through its own messages.
