@@ -58,7 +58,8 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
 
 ## TOUCH-01: taskbar and tray context menus cannot be opened by touch
 
-`hyperion/src/view.rs:777`, `:1152`, `:1567` open the window and tray menus
+`shell/crates/ec-hyperion-bar/src/view.rs:1030`, `:1040` and
+`shell/crates/ec-hyperion-bar/src/widgets/tray.rs:86` open the window and tray menus
 with `mouse_area::on_right_press`, and a finger has no right button. iced 0.14's
 `mouse_area` has no long-press. **Repro:** on a touchscreen, hold a finger on a
 taskbar window button or tray icon. No menu opens. **Proposed:** a long-press

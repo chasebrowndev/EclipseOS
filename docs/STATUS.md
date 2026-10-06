@@ -62,10 +62,14 @@ off it.
 Phase 2 (milestones 10–25, the agent protocol) has started: milestone 10 landed
 on `comp16-m10-policyd` as `abyss/crates/ec-policy-eval/` and `abyss/crates/ec-policyd/` — the
 task store, grant issue/revocation and the S-04 §4 audit store. Inside
-`abyss/crates/ec-abyss` itself Phase 2 is still absent: the `policy/`,
-`audit/`, `protocols/agent/` and `protocols/semantic/` directories named in the
-root `CLAUDE.md` module map do not exist on disk (`trusted_ui/` holds only the
-destructive-action prompt, COMP-10 §3.10). Two things landed early —
+`abyss/crates/ec-abyss` Phase 2 is partial: `policy/` holds grant admission
+(`policy/mod.rs`), the `policyd` link (`policy/link.rs`) and the agent scene
+filter (`policy/scene.rs`, whose `class_of` answers `secret` for every surface
+until the M16 table lands); `audit/` emits provenance to `policyd` (COMP-12);
+`protocols/agent/` serves the M11 admission and read-only scene queries; and
+`trusted_ui/` holds the erase (COMP-10 §3.10) and command-approval (§3.11)
+prompts. There is still no enforcement table and no `check()`, and
+`protocols/semantic/` does not exist. Two things landed early —
 frame-level capture redaction (milestones 9d and 22, landed inside milestone 8)
 and the capture indicator (milestone 15, same).
 
@@ -100,7 +104,7 @@ event, which has no source to fire from until milestone 11 lands.
 | # | Milestone | State | Evidence / what the gate needs |
 |---|---|---|---|
 | 1 | winit backend; one xdg toplevel; keyboard + pointer; quit binding | **done** | `backend/winit.rs`, `protocols/standard/xdg_shell.rs`, `input/`. Gate run: terminal clients open, type and close cleanly nested under the host session (`./target/debug/ec-abyss --backend winit`). |
-| 2 | Config (KDL), dwindle + master layouts, workspaces, floating, bindings, layer-shell | **done** | `config/mod.rs` (3344 lines, inotify hot-reload, ADR 0016), `shell/` layouts, `protocols/standard/layer_shell.rs`. Gate run nested: layer-shell bar + launcher + notifier clients run; layouts usable by hand. Config blocks `decoration`, `animations`, `input` and `xwayland` all parse and validate; `decoration` and `animations` now apply in full (milestone 9b), `windowrule` applies except `launching-principal` (stub 7), and `xwayland` is honoured (`enable` gates the spawn, `scaling-client` is applied; `xwayland/mod.rs:41`, `:127`). |
+| 2 | Config (KDL), dwindle + master layouts, workspaces, floating, bindings, layer-shell | **done** | `abyss/crates/ec-abyss-config` (schema, parse, validate) and `config/` (apply, inotify hot-reload, ADR 0016), `shell/` layouts, `protocols/standard/layer_shell.rs`. Gate run nested: layer-shell bar + launcher + notifier clients run; layouts usable by hand. Config blocks `decoration`, `animations`, `input` and `xwayland` all parse and validate; `decoration` and `animations` now apply in full (milestone 9b), `windowrule` applies except `launching-principal` (stub 7), and `xwayland` is honoured (`enable` gates the spawn, `scaling-client` is applied; `xwayland/mod.rs:41`, `:127`). |
 | 3 | DRM backend, multi-output, hotplug, fractional scale, output persistence | **runs on real KMS; gate partially met** | `backend/drm.rs`, `outputs/` (hotplug, layout, persistence), `protocols/standard/fractional_scale.rs`. **Booted on real KMS 2026-09-10**: two connectors, each on its own native mode (HDMI-A-1 1360x768 on crtc 198/plane 52; DP-3 1280x720 on crtc 390/plane 244), a kitty client rendered and typed into, `grim` capture 2640x768. Multi-output composition and per-output modeset are therefore verified. **Still unmet:** three physical monitors, a hotplug event, and a dock/undock cycle restoring a saved layout — this box has two panels and no dock. |
 | 4 | dmabuf + explicit sync + direct scanout + VRR; damage tracking complete | **code complete, gate never run** | `protocols/standard/dmabuf.rs`, `drm_syncobj.rs` (registered only when the driver reports `supports_syncobj_eventfd`, else a warning and no global), `render/` damage + `scanout_candidate` (defined `render/mod.rs:821`, called `backend/drm.rs:1146`), VRR via `VrrSupport::Supported` + per-output `vrr` config. Gate needs Firefox and mpv on real KMS and the COMP-14 frame benchmarks, which have never been collected. The 2026-09-10 KMS boot produced the first real frame timings from any backend (`--stats`: 465 frames, ~1 fps idle rising to 38.1 fps under input, render p50 ~500 us, submit p50 ~166 us) — that is the damage tracker and the submit path behaving, not a COMP-14 measurement, and direct scanout was not confirmed taken. |
 | 5 | Clipboard, primary selection, data-control, DnD, IME | **done** | `data_device.rs`, `primary_selection.rs`, `data_control.rs` (allowlisted per ADR 0027), `text_input.rs`, `input_method.rs`. Gate run nested: copy/paste across clients including primary; `wl-clipboard` via data-control honours the allowlist. |
@@ -133,7 +137,7 @@ across 9d/17/22, 14→15, 15→16, 16→22, 17→24, 18→25. Milestones 10, 12,
 | 14 | Atomic batches, `click`, `wait_for`, dedupe, generations | **not started** | — |
 | 15 | Trusted UI: prompt, emergency panel, phrase | **indicator landed early** | `render::capture::indicator()` draws the compositor-drawn capture indicator (COMP-10 §3.6) in both backends, from milestone 8. `trusted_ui/` holds the destructive-system-action confirmation only (§3.10, ADR 0061, D-07 §6). No consent prompt, no emergency panel, no phrase. |
 | 16 | Policy table enforcement; prompt and defer paths | **not started** | No `policy/`. The IPC gate in `ec-abyss-wire/src/gate.rs` is a separate, narrower mechanism (COMP-13 §2) and must not be mistaken for COMP-11's enforcement table. |
-| 17 | Policy-driven sensitivity classes; classification races | **not started** | Sensitivity is a manual flag on the surface (`state.rs:218`, "Stub until the policy engine"); nothing classifies automatically. |
+| 17 | Policy-driven sensitivity classes; classification races | **not started** | Sensitivity is a manual flag on the surface (`state.rs:236`, "Stub until the policy engine"); nothing classifies automatically. |
 | 18 | Provenance chain; irreversible matcher | **not started** | Blocked on F-03 (defect 13) for the S-07 §5 `stamper` enum. |
 | 19 | `brokerd` | **not started** | Does not exist in any repo. |
 | 20 | Per-agent egress proxy; netns + pasta; stub resolver | **not started** | Does not exist in any repo. |
@@ -191,15 +195,15 @@ compositor's corner radius over `get_config` (`ec_ui::ipc::fetch_config_radius`,
 | COMP-01 backends | `abyss/crates/ec-abyss/src/backend/{mod,winit,drm,gpu}.rs` | winit exercised; headless exercised by wlcs; DRM verified on real KMS 2026-09-10 (two outputs, native modes, live client). `mod.rs` holds the trait; nothing outside it touches winit/DRM/libinput/GBM types. `gpu.rs` is §4's device ranking, unit-tested over synthetic candidates and observable live with `abyss --list-gpus`. |
 | COMP-02 render | `abyss/crates/ec-abyss-render/src/` (14 modules) and `abyss/crates/ec-abyss/src/render/capture.rs` | Damage tracking, direct-scanout candidate selection, frame-level and node-level redaction (`capture.rs`), capture indicator, blur and effects, animations. `sanitize.rs` drops empty rectangles from `FB_DAMAGE_CLIPS` before a DRM commit — the kernel refuses the whole commit with `EINVAL` ("invalid damage clip") on one (COMP-02 §4). |
 | COMP-03 outputs | `abyss/crates/ec-abyss/src/outputs/{mod,power,edid,overscan,calibrate,persist}.rs` | Hotplug, layout, EDID identity, overscan calibration, persistence, per-output rules (mode/position/scale/transform/enabled/vrr/lid-close). No virtual outputs (COMP-03 §6, milestone 24). |
-| COMP-04 input | `abyss/crates/ec-abyss/src/input/{mod,grabs,idle,inject}.rs` (`mod.rs` 1754 lines) | One human seat: keyboard, pointer, touch, tablet tools, touchpad swipe gestures (`gesture` binds), VT-switch intercept, bindings, move/resize grabs. Device config (COMP-04 §2): global `accel-profile`, `accel-speed`, pointer `scroll-method` and touchpad natural-scroll/tap/tap-and-drag/dwt/click-method/scroll-method, overridden per libinput device name by `input { device "<name>" { } }`, which also carries touchscreen/tablet `calibration`; `input::device_settings` resolves them, `backend/drm.rs` applies them on device add and on every reload. `input/inject.rs` is the wlcs/IPC synthetic-event path, not COMP-04 §6 agent injection. No agent seats; the override chord is bound but inert (stub 9). |
+| COMP-04 input | `abyss/crates/ec-abyss/src/input/{mod,grabs,idle,inject}.rs` | One human seat: keyboard, pointer, touch, tablet tools, touchpad swipe gestures (`gesture` binds), VT-switch intercept, bindings, move/resize grabs. Device config (COMP-04 §2): global `accel-profile`, `accel-speed`, pointer `scroll-method` and touchpad natural-scroll/tap/tap-and-drag/dwt/click-method/scroll-method, overridden per libinput device name by `input { device "<name>" { } }`, which also carries touchscreen/tablet `calibration`; `input::device_settings` resolves them, `backend/drm.rs` applies them on device add and on every reload. `input/inject.rs` is the wlcs/IPC synthetic-event path, not COMP-04 §6 agent injection. No agent seats; the override chord is bound but inert (stub 9). |
 | COMP-05 shell | `abyss/crates/ec-abyss/src/shell/mod.rs` | radiant (default, weighted n-ary tree, drop-zone drag, priority; ADR 0058) + dwindle classic + master, workspaces, floating, focus. App identity is a `/proc` stopgap (`data_control.rs:14` TODO) — the provenance record is Phase 2. Window rules match at map time and re-evaluate on commit (`shell/rules.rs`), which also produces the `irreversible_capable` and `class_source` toplevel facts (milestone 9e). |
 | COMP-06 standard protocols | `abyss/crates/ec-abyss/src/protocols/standard/` (32 modules) | activation, compositor, data_control, data_device, decoration, dmabuf, drm_syncobj, foreign, foreign_toplevel, fractional_scale, gamma_control, idle_inhibit, idle_notify, image_copy_capture, input_method, layer_shell, output_management, output_power, pointer_constraints, pointer_extra, presentation, primary_selection, screencopy, seat, security_context, session_lock, shm, surface_extra, tablet, text_input, virtual_pointer, xdg_shell. |
 | COMP-07 XWayland | `abyss/crates/ec-abyss/src/xwayland/{mod,xwm,security}.rs` | Rootless, eager start; the `xwayland` config block is honoured. |
 | COMP-08 agent protocol | — | Does not exist. |
 | COMP-09 semantic protocol | — | Does not exist. |
 | COMP-10 trusted UI | `render/capture.rs::indicator` only | Indicator done; prompts/panel/phrase absent. |
-| COMP-11 policy | `abyss/crates/ec-policy-eval`, `abyss/crates/ec-policyd` | Milestone 10: task store, grant issue/revoke (see the Phase 2 table). No in-compositor `policy/` and no `check()`; sensitivity is a manual stub (`state.rs:218`). |
-| COMP-12 audit | `abyss/crates/ec-policyd/src/audit.rs` | The S-04 §4 store, landed early at milestone 10 (ADR 0046). No in-compositor `audit/`, no provenance emission. |
+| COMP-11 policy | `abyss/crates/ec-policy-eval`, `abyss/crates/ec-policyd` | Milestone 10: task store, grant issue/revoke (see the Phase 2 table). In-compositor `policy/` does grant admission and the agent scene filter; there is no enforcement table and no `check()` (M16), and sensitivity is a manual stub (`state.rs:236`). |
+| COMP-12 audit | `abyss/crates/ec-policyd/src/audit.rs` | The S-04 §4 store, landed early at milestone 10 (ADR 0046). Provenance emission from abyss is `abyss/crates/ec-abyss/src/audit/mod.rs` (M12). |
 | COMP-13 human IPC + config | `abyss/crates/ec-abyss/src/ipc/`, `abyss/crates/ec-abyss/src/config/` (apply, watch), `abyss/crates/ec-abyss-config` (schema, parse, edit), `abyss/crates/ec-ctl`, `abyss/crates/ec-ipc` | Socket, gate table, event stream, KDL parse + hot-reload, plus (2026-09-11) the §1.4 write API: byte-splice in-place edits, a declarative schema over every key, per-file gate rows after the `policy.kdl` split, `ec-ctl config` verbs, and `abyss/crates/ec-ipc` as the client half. |
 | COMP-14 performance | `bench/` | The harness exists (milestone 9f, ADR 0043): a sampler that keeps every sample and reports p50/p99/p99.9/max, the §2.1/§2.1b budget table as data, and §3's counting allocator so a bench on a no-alloc path fails on its first allocation. Nothing real is plugged into it yet — §4.1's five subjects arrive with the milestones that create them — so the frame budgets milestone 4's gate cites are still unmeasured. §5's per-commit baselines and the >10% regression gate are unbuilt. `--stats` remains a live-run diagnostic, separate from the harness. |
 | COMP-15 testing | `cargo test --workspace`, `.github/workflows/gate.yml` | 516 `#[test]` functions across the workspace (abyss 276, hyperion 59, ec-services 47, ec-policy-eval 30, ec-settings 26, policyd 15, the rest under 15 each), enforced by CI. Unit-level. Zero of the twelve COMP-15 §2 security suites exist. No compat matrix. |
@@ -221,7 +225,7 @@ macros anywhere in the workspace.
    Deliberate: all are Phase 2 surface, and the test
    `phase_two_rows_stay_unimplemented` pins the exact list so it cannot drift.
    *Unblocked by:* milestones 11–13.
-2. **Sensitivity flag is manual** (`state.rs:218`, "Stub until the policy
+2. **Sensitivity flag is manual** (`state.rs:236`, "Stub until the policy
    engine"). Surfaces can be flagged sensitive and are then redacted, but
    nothing classifies them automatically. *Unblocked by:* milestone 17.
 3. **App identity is a `/proc` read** (`protocols/standard/data_control.rs:14`,
@@ -230,10 +234,12 @@ macros anywhere in the workspace.
 4. **Cursor capture refused** (`image_copy_capture.rs:329`; `CursorSessionData` at `:344` never produces a frame) — a session asking
    for cursor capture is handed back stopped. Matches the `capture.cursor`
    default of `no`; a real implementation waits on the capability model.
-5. **DRM cursor has no xcursor theme** (`render/cursor.rs`) — client-set
-   cursor surfaces composite correctly at their hotspot, but named
-   `wp_cursor_shape_v1` shapes all fall back to one built-in amber arrow
-   rather than loading the user's theme.
+5. **No xcursor theme, by design** (`abyss/crates/ec-abyss-render/src/cursor.rs:1-7`)
+   — client-set cursor surfaces composite correctly at their hotspot, and
+   named `wp_cursor_shape_v1` shapes all draw one built-in amber arrow. A
+   theme would put a filesystem dependency in the render path, and the
+   trusted pointer must draw whatever the theme directory holds. Compiled-in
+   bitmaps for more shapes are the open direction, not a theme loader.
 6. **Effects all draw** *(the `xwayland` block is now honoured — `enable` and `scaling-client`, `xwayland/mod.rs:41`, `:127`)*: `decoration` and `animations` now parse
    and validate in full (`config/mod.rs`), and `active-opacity` /
    `inactive-opacity` / `dim-inactive` / `rounding` render (`render/mod.rs`,
