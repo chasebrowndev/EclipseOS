@@ -20,6 +20,8 @@ BLUR-02 and TILE-01 were fixed on 2026-09-23 and removed. BLUR-02 came back and
 was fixed for real on 2026-09-28: the line was ec-toasts' idle 1 px
 transparent layer, which the compositor blurred; the stack now has no surface
 while empty.
+TRAY-01 was fixed on 2026-10-06 and removed: the Settings pane remembers
+the tray ids it has listed this session.
 BLUR-01's fix (opaque sheets, because clients could not tell whether blur was on)
 is superseded on 2026-09-29 (C-14): panes read `decoration.blur.mode` and only tint.
 
@@ -106,22 +108,6 @@ behind them. Layers are blurred wherever they leave the surface uncovered
 around both cards. **Proposed:** none committed. Either the client tells the
 compositor where its glass is (`ext-background-effect-v1`, deferred from the
 blur-modes work) or each card becomes its own surface.
-
----
-
-# Settings Taskbar pane — found probing drag and drop, 2026-09-28
-
-## TRAY-01: a tray entry that is not running vanishes when moved to the drawer
-
-`ec-settings/src/tray.rs:81` (`Tray::ids`) lists live items plus those
-named in `pinned` or `hidden`. The drawer is simply "in neither list", so an
-entry that isn't running, once dragged (or keyed) from the bar or hidden row
-into the drawer, is named nowhere and drops out of the pane. The config write
-is correct; the pane just can't show it until the app runs again.
-**Repro:** in `~/.config/eclipse/abyss.kdl` pin a tray id whose app isn't
-running (e.g. `steam`), open Settings, Taskbar, drag it into the drawer row;
-it disappears. **Proposed:** none committed. Either keep ids moved this
-session in the pane's own list, or give the drawer its own config key.
 
 ---
 
