@@ -314,3 +314,33 @@ surface is only input-protected.
   workspace would unify the feature into every `cargo test --workspace`, and
   the "injected is refused" test would stop running; a conformance run must
   pass `--features ec-abyss/wlcs` itself.
+
+## AGENTD-01: agentd gaps against A-08 and A-01
+
+- **The sandbox is partial.** The launcher runs the entrypoint under
+  `systemd-run --user --scope --slice=agents-<pkg>.slice` and `bwrap` with new
+  user/pid/ipc/uts/net/cgroup namespaces, a read-only root, tmpfs `/home`,
+  `/tmp`, `/run` and `/opt`, the package directory read-only and the task's
+  MCP socket as the only bound socket. VOL1 §7 also lists Landlock, seccomp, a
+  filesystem allow-list from the grants and resource limits; none of those are
+  applied, and there is no network at all (no egress proxy yet, milestone 20).
+- **Agent chain is a summary.** An agent post carries `min_trust` from the
+  task (always `standard` today) and the agent principal as head. Nothing feeds
+  the real S-07 chain in, so `min_trust` never reads `untrusted`.
+- **No continuation context.** A-08 §5.3's first `context` message is not
+  written: agentd is not given the predecessor's summary or chain.
+- **No resume, no session records.** A-08 §5.4 needs `session.restore()` and
+  the inference path; History offers Start fresh and Delete only.
+- **A task open at restart is closed.** agentd marks it `closed`, reason
+  `agentd_restart`, and sends policyd `Exited{failed}` once the link is up
+  (queued until then). The agent's scope is not reaped by name or by search.
+- **`pending_decisions` per task is 0.** Only the global count reaches agentd
+  (`decisions_pending`), and A-08 §7's per-task figure has no source.
+- **`ec-ipc` has no `decisions_pending` event kind.** agentd reads that
+  stream on its own connection instead of through `ec_ipc::Client`.
+- **Quota breach audit body.** A breach is a `channel` record with
+  `op: "quota_exceeded"` and `msg_id: 0`; the C2 contract names only
+  `post|read`. policyd must accept the third op.
+- **SIGTERM stops agents; SIGKILL does not.** A crashed agentd leaves agent
+  scopes running until their tasks close.
+

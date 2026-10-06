@@ -650,7 +650,14 @@ dependencies = [
 name = "ec-agentd"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "ec-ipc",
+ "ec-policy-eval",
  "ec-protocols",
+ "kdl",
+ "libc",
+ "rustix 1.1.4",
+ "serde_json",
  "wayland-client",
 ]
 

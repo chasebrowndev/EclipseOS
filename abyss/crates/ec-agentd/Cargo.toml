@@ -1,6 +1,6 @@
 [package]
 name = "ec-agentd"
-description = "EclipseOS agent daemon (A-01), M11 skeleton: admits one agent over the privileged socket"
+description = "EclipseOS agent daemon (A-01, A-08): console backend, task host, MCP server, policyd link; M11 admission client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,10 @@ repository.workspace = true
 # the path dependencies (as in policyd).
 publish = false
 
+[lib]
+name = "ec_agentd"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ec-agentd"
 path = "src/main.rs"
@@ -17,3 +21,15 @@ path = "src/main.rs"
 [dependencies]
 ec-protocols = { path = "../ec-protocols", features = ["client"] }
 wayland-client = "0.31"
+ec-policy-eval = { path = "../ec-policy-eval" }
+ec-ipc = { path = "../ec-ipc" }
+serde_json.workspace = true
+kdl.workspace = true
+blake3.workspace = true
+libc = "0.2"
+rustix = { workspace = true, features = ["net", "process", "fs"] }
+
+[features]
+# Runs an agent's entrypoint as a plain child, no bwrap and no scope, for
+# headless tests. Never enabled by the package build (PKGBUILD).
+dev-unsandboxed = []
