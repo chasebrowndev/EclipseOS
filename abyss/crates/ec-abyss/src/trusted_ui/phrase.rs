@@ -21,9 +21,10 @@
 //! "length-clamped and rendered verbatim; no markup"). The panel's font is
 //! printable ASCII, so nothing else could be drawn.
 //!
-//! Not yet: changing a phrase that is set, which §2 puts behind the human
-//! seat and a prompt. Until then the owner removes the file and sets a new
-//! one.
+//! Changing a phrase that is set needs the human seat and a prompt (§2): it
+//! is offered only from the emergency panel, opened by the human-only
+//! override chord, and asks for confirmation on a prompt that itself shows
+//! the current phrase before the entry screen comes up.
 
 use std::{io::Write, path::PathBuf};
 
@@ -36,6 +37,8 @@ use crate::state::AbyssState;
 /// The token phrase entry is drawn with. Below `erase::TOKEN_BASE`, so the
 /// pointer may answer it.
 pub(super) const TOKEN: u64 = 1 << 61;
+/// The change confirmation.
+const CONFIRM: u64 = TOKEN | 1;
 
 pub const MIN: usize = 4;
 pub const MAX: usize = 48;
@@ -85,6 +88,9 @@ pub fn validate(text: &str) -> Result<Phrase, Refused> {
 pub(super) struct Entering {
     up: bool,
     refused: Option<Refused>,
+    /// The entry replaces a phrase that is set (confirmed from the panel).
+    replace: bool,
+    confirming: bool,
 }
 
 fn path() -> Option<PathBuf> {
@@ -109,6 +115,10 @@ pub fn load() -> Option<Phrase> {
 /// over the old one, so a crash leaves either the old phrase or the new.
 fn store(phrase: &Phrase) -> std::io::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
+    // Tests never touch a real config directory.
+    if cfg!(test) {
+        return Ok(());
+    }
     let p = path().ok_or_else(|| std::io::Error::other("no config directory"))?;
     let dir = p.parent().ok_or_else(|| std::io::Error::other("no parent"))?;
     std::fs::create_dir_all(dir)?;
@@ -126,7 +136,8 @@ fn store(phrase: &Phrase) -> std::io::Result<()> {
 }
 
 const HEADING: &str = "Set your personal secret";
-const BODY: &str = "This screen only ever appears after you press Super+Space. \
+const BODY: &str = "This screen only ever appears after you press Super+Space, or choose \
+Change secret phrase in the emergency panel. \
 If it appears any other way, it is not EclipseOS: do not type here. \
 Every genuine EclipseOS prompt will show this phrase at the top. \
 Pick something you will recognise. It is not a password: it shows whenever \
@@ -173,6 +184,10 @@ pub fn prompt_if_unset(state: &mut AbyssState) -> bool {
     if state.trusted_ui.phrase.is_some() {
         return false;
     }
+    open_entry(state)
+}
+
+fn open_entry(state: &mut AbyssState) -> bool {
     if state.trusted_ui.entering.up {
         return true;
     }
@@ -188,14 +203,66 @@ pub fn prompt_if_unset(state: &mut AbyssState) -> bool {
     }
 }
 
+const CHANGE_HEADING: &str = "Change your personal secret?";
+const CHANGE_BODY: &str =
+    "The phrase at the top of this prompt is the one in use. Change it only from here: \
+EclipseOS never asks for it anywhere else.";
+
+/// The panel's "Change secret phrase": confirm first, then entry. With no
+/// phrase set this is plain first entry.
+pub fn prompt_change(state: &mut AbyssState) -> bool {
+    if state.trusted_ui.phrase.is_none() {
+        return prompt_if_unset(state);
+    }
+    let m = Modal::new(
+        CONFIRM,
+        CHANGE_HEADING,
+        None,
+        CHANGE_BODY,
+        "Next:",
+        "A new phrase replaces this one on every prompt.",
+        vec![
+            Button {
+                label: "Keep it",
+                role: Role::Safe,
+            },
+            Button {
+                label: "Change it",
+                role: Role::Other,
+            },
+        ],
+    );
+    let Ok(m) = m else { return false };
+    if super::open(state, m) {
+        state.trusted_ui.entering.confirming = true;
+        true
+    } else {
+        false
+    }
+}
+
 pub fn owns(state: &AbyssState, token: u64) -> bool {
-    token == TOKEN && state.trusted_ui.entering.up
+    (token == TOKEN && state.trusted_ui.entering.up)
+        || (token == CONFIRM && state.trusted_ui.entering.confirming)
 }
 
 pub fn answer(state: &mut AbyssState, choice: Choice) {
+    if choice.token == CONFIRM {
+        state.trusted_ui.entering.confirming = false;
+        if choice.role == Role::Other {
+            state.trusted_ui.entering.replace = true;
+            open_entry(state);
+        }
+        return;
+    }
     state.trusted_ui.entering.up = false;
     if choice.role == Role::Safe {
         state.trusted_ui.entering.refused = None;
+        state.trusted_ui.entering.replace = false;
+        return;
+    }
+    if state.trusted_ui.phrase.is_some() && !state.trusted_ui.entering.replace {
+        // Only a confirmed change replaces a set phrase.
         return;
     }
     let typed = choice.typed.as_ref().map(|t| t.as_str()).unwrap_or("");
@@ -208,12 +275,13 @@ pub fn answer(state: &mut AbyssState, choice: Choice) {
             }
             tracing::info!("personal secret set");
             state.trusted_ui.entering.refused = None;
+            state.trusted_ui.entering.replace = false;
             state.trusted_ui.phrase = Some(phrase);
             crate::ipc::emit(state, "phrase", serde_json::json!({ "set": true }));
         }
         Err(why) => {
             state.trusted_ui.entering.refused = Some(why);
-            prompt_if_unset(state);
+            open_entry(state);
         }
     }
 }
@@ -268,5 +336,43 @@ mod tests {
     #[test]
     fn the_entry_screen_says_it_only_follows_the_chord() {
         assert!(BODY.contains("only ever appears after you press Super+Space"));
+    }
+
+    fn type_in(s: &mut crate::state::AbyssState, text: &str) {
+        use smithay::input::keyboard::Keysym;
+        super::super::arm_now(s);
+        for c in text.chars() {
+            super::super::key(s, Keysym::from_char(c));
+        }
+        // Focus starts on Later, the safe button; Tab to Set phrase.
+        super::super::key(s, Keysym::Tab);
+        super::super::key(s, Keysym::Return);
+    }
+
+    #[test]
+    fn a_set_phrase_changes_only_through_the_confirmation() {
+        use smithay::input::keyboard::Keysym;
+        let mut h = crate::shell::focus::state_tests::harness();
+        let s = &mut h.state;
+        s.trusted_ui.phrase = Some(validate("old heron").unwrap());
+        // First entry is not offered once a phrase is set.
+        assert!(!prompt_if_unset(s));
+        // The panel's change: confirm first; Escape keeps the phrase.
+        assert!(prompt_change(s));
+        super::super::key(s, Keysym::Escape);
+        assert_eq!(s.trusted_ui.phrase.as_ref().unwrap().as_str(), "old heron");
+        assert!(!s.trusted_ui.is_open());
+        // Confirm, then type a new one.
+        assert!(prompt_change(s));
+        super::super::arm_now(s);
+        super::super::key(s, Keysym::Tab);
+        super::super::key(s, Keysym::space);
+        assert_eq!(
+            s.trusted_ui.token(),
+            Some(TOKEN),
+            "entry follows the confirmation"
+        );
+        type_in(s, "new egret");
+        assert_eq!(s.trusted_ui.phrase.as_ref().unwrap().as_str(), "new egret");
     }
 }

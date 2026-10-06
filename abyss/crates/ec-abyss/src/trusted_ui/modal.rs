@@ -66,8 +66,9 @@ pub const MAX_UNTRUSTED_LINES: usize = 8;
 const UNSPOOFED: &str = "Anti-spoofing is not configured: no personal secret is set.";
 /// The consent prompt's five answers (§3.2) are the most any prompt has.
 const MAX_BUTTONS: usize = 5;
-/// Fact lines kept.
-pub const MAX_FACTS: usize = 14;
+/// Fact lines kept. The emergency panel's agent page is the longest: who,
+/// what, its grants and the last 20 actions (COMP-10 §3.3).
+pub const MAX_FACTS: usize = 32;
 /// The widest label a fact may have, so the value always has room.
 const MAX_LABEL: usize = 16;
 

@@ -125,6 +125,8 @@ pub struct TrustedUi {
     entering: phrase::Entering,
     /// Agent requests waiting on the human (§3.2, COMP-11 §4).
     pub consent: consent::Queue,
+    /// The emergency panel's page, while it is up (§3.3).
+    pub(crate) panel: panel::Panel,
     /// The bound trusted socket, so a clean exit can unlink it.
     pub path: Option<PathBuf>,
 }
@@ -327,9 +329,36 @@ fn resolve(state: &mut AbyssState, choice: Choice) {
         phrase::answer(state, choice);
     } else if consent::owns(state, choice.token) {
         consent::answer(state, choice);
+    } else if panel::owns(state, choice.token) {
+        panel::answer(state, choice);
     } else if notice::owns(choice.token) {
         // Acknowledged; nothing follows from a notice.
     }
+}
+
+/// Swap the prompt that is up for `modal`, if `modal` carries the same
+/// token: its owner learned more (the panel's audit tail arrived). Focus is
+/// kept where it was, or falls back to the safe button; arming is not reset,
+/// because the human is already looking at it.
+pub(crate) fn replace(state: &mut AbyssState, modal: modal::Modal) -> bool {
+    let Some(o) = state.trusted_ui.open.as_mut() else {
+        return false;
+    };
+    if o.modal.token != modal.token {
+        return false;
+    }
+    let focus = if o.focus < modal.buttons().len() {
+        o.focus
+    } else {
+        modal.safe()
+    };
+    o.layout = modal::layout(&modal);
+    o.modal = modal;
+    o.focus = focus;
+    o.pressed = None;
+    state.trusted_ui.art.clear();
+    crate::backend::damage_all(state);
+    true
 }
 
 /// Take prompt `token` down without an answer: its owner withdrew the
