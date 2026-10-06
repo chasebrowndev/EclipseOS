@@ -23,6 +23,7 @@ pub mod palette;
 pub mod sanitize;
 pub mod select;
 pub mod stats;
+pub mod still;
 pub mod text;
 pub mod userdata;
 
@@ -243,6 +244,48 @@ fn layer_radius(surface: &smithay::desktop::LayerSurface, config: &Config) -> i3
     }
 }
 
+/// *(C-17)* A surface anchored to all four edges and as big as the output is
+/// a scrim or a selection overlay (slurp), not a sheet: glass behind it would
+/// smear the whole output it asks the human to read. A sized sheet merely
+/// centred by those anchors still gets its glass.
+fn is_scrim(
+    surface: &smithay::desktop::LayerSurface,
+    size: Size<i32, Logical>,
+    output: Size<i32, Logical>,
+) -> bool {
+    surface.cached_state().anchor.contains(Anchor::all()) && size == output
+}
+
+/// Vol 1 §5.2: a layer whose input region is 2..=4 boxes (a bar pill and the
+/// panel hanging off it) gets glass in that shape, joined by `bar.rounding`
+/// fillets; any other region keeps the single rounded box (`None`). `loc` is
+/// the surface's output-local physical origin.
+fn layer_shape(
+    surface: &smithay::desktop::LayerSurface,
+    size: Size<i32, Logical>,
+    loc: Point<i32, Physical>,
+    scale: Scale<f64>,
+    config: &Config,
+) -> Option<blur::Shape> {
+    let fillet = (config.bar.rounding as f64 * scale.x.max(scale.y)) as f32;
+    with_states(surface.wl_surface(), |states| {
+        let mut attrs = states.cached_state.get::<SurfaceAttributes>();
+        blur::Shape::from_region(attrs.current().input_region.as_ref(), size, loc, scale, fillet)
+    })
+}
+
+/// Whether a layer's glass shows anywhere its opaque region leaves uncovered.
+fn layer_shows(
+    region: Rectangle<i32, Physical>,
+    shape: Option<&blur::Shape>,
+    opaque: Vec<Rectangle<i32, Physical>>,
+) -> bool {
+    match shape {
+        Some(shape) => blur::shape_shows_through(shape, &opaque),
+        None => blur::shows_through(region, 0, opaque),
+    }
+}
+
 /// Four solid quads (top, bottom, left, right) per window.
 type Border = [SolidColorBuffer; 4];
 
@@ -446,8 +489,7 @@ pub fn collect_elements(
                 // (slurp), not a sheet, and glass behind it would smear the
                 // whole output it asks the human to read. A sized sheet merely
                 // centred by those anchors still gets its glass.
-                let scrim =
-                    surface.cached_state().anchor.contains(Anchor::all()) && geo.size == output_geo.size;
+                let scrim = is_scrim(surface, geo.size, output_geo.size);
                 // Cropping can drop surfaces, so the splice index is counted on
                 // what is actually pushed.
                 let pushed =
@@ -474,26 +516,12 @@ pub fn collect_elements(
                     };
                 if blur_layers && !scrim {
                     let region = layer_rect;
-                    // Vol 1 §5.2: a layer whose input region is 2..=4 boxes
-                    // (a bar pill and the panel hanging off it) gets glass in
-                    // that shape, joined by `bar.rounding` fillets; any other
-                    // region keeps the single rounded box.
-                    let fillet = (config.bar.rounding as f64 * scale.x.max(scale.y)) as f32;
                     // The input-region shape is laid out at the target; while
                     // the surface animates, the backdrop is its drawn box.
-                    let shape = t.is_identity().then(|| {
-                        with_states(surface.wl_surface(), |states| {
-                            let mut attrs = states.cached_state.get::<SurfaceAttributes>();
-                            blur::Shape::from_region(
-                                attrs.current().input_region.as_ref(),
-                                geo.size,
-                                loc,
-                                scale,
-                                fillet,
-                            )
-                        })
-                    });
-                    let shape = shape.flatten();
+                    let shape = t
+                        .is_identity()
+                        .then(|| layer_shape(surface, geo.size, loc, scale, config))
+                        .flatten();
                     let opaque = match scaled {
                         Some((origin, by)) => opaque_of(&els, scale)
                             .into_iter()
@@ -501,11 +529,7 @@ pub fn collect_elements(
                             .collect::<Vec<_>>(),
                         None => opaque_of(&els, scale),
                     };
-                    let shows = match &shape {
-                        Some(shape) => blur::shape_shows_through(shape, &opaque),
-                        None => blur::shows_through(region, 0, opaque),
-                    };
-                    if shows {
+                    if layer_shows(region, shape.as_ref(), opaque) {
                         let els = pushed(els);
                         requests.push((
                             blur::BlurKey::Layer(surface.clone()),
@@ -1266,20 +1290,17 @@ fn window_elements(
         // front of it, so it is pushed just before the window's own surfaces.
         if !active && deco.dim_inactive > 0.0 && store.anim.window_shader(&window).is_none() {
             if let Some(geo) = geo {
-                let color = [0.0, 0.0, 0.0, deco.dim_inactive * alpha];
-                let buffer = store
-                    .dims
-                    .entry((output.clone(), window.clone()))
-                    .or_insert_with(|| SolidColorBuffer::new(geo.size, color));
-                buffer.update(geo.size, color);
                 let start = out.len();
-                out.push(AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
-                    buffer,
-                    phys(geo.loc - output_geo.loc, scale),
+                push_dim(
+                    store,
+                    output,
+                    &window,
+                    geo,
+                    output_geo.loc,
                     scale,
-                    1.0,
-                    Kind::Unspecified,
-                )));
+                    deco.dim_inactive * alpha,
+                    out,
+                );
                 crop_decor(out, start, scale, deco_crop);
             }
         }
@@ -1573,10 +1594,35 @@ fn window_elements(
             None => {}
         }
         if let Some(program) = &glow {
-            push_glow(store, program, output, &window, geo, output_geo.loc, config, out);
+            // Follows the border's focus crossfade, so glow fades with focus.
+            let (active, inactive) = glow_colors(config);
+            let color = store.anim.border_color(&window, active, inactive);
+            push_glow(
+                store,
+                program,
+                output,
+                &window,
+                geo,
+                output_geo.loc,
+                config,
+                color,
+                out,
+            );
         }
         if let Some(program) = &shadow {
-            push_shadow(store, program, output, &window, geo, output_geo.loc, config, out);
+            // Focus deepens the shadow, following the border's crossfade.
+            let focus = store.anim.border_color(&window, [1.0, 0.0, 0.0, 0.0], [0.0; 4])[0];
+            push_shadow(
+                store,
+                program,
+                output,
+                &window,
+                geo,
+                output_geo.loc,
+                config,
+                focus,
+                out,
+            );
         }
         crop_decor(out, start, scale, deco_crop);
 
@@ -1642,6 +1688,34 @@ fn push_popups(
 
 /// Cut the decoration elements pushed since `start` to `crop` (a tile),
 /// dropping any that fall wholly outside it. `None` leaves them be.
+/// One window's dim-inactive overlay at `opacity`, over `geo` (global). The
+/// quad is kept per window so its Id, and with it damage, is stable.
+#[allow(clippy::too_many_arguments)]
+fn push_dim(
+    store: &mut BorderStore,
+    output: &Output,
+    window: &Window,
+    geo: Rectangle<i32, Logical>,
+    output_loc: Point<i32, Logical>,
+    scale: Scale<f64>,
+    opacity: f32,
+    out: &mut Vec<AbyssRenderElement>,
+) {
+    let color = [0.0, 0.0, 0.0, opacity];
+    let buffer = store
+        .dims
+        .entry((output.clone(), window.clone()))
+        .or_insert_with(|| SolidColorBuffer::new(geo.size, color));
+    buffer.update(geo.size, color);
+    out.push(AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
+        buffer,
+        phys(geo.loc - output_loc, scale),
+        scale,
+        1.0,
+        Kind::Unspecified,
+    )));
+}
+
 fn crop_decor(
     out: &mut Vec<AbyssRenderElement>,
     start: usize,
@@ -1772,11 +1846,11 @@ fn push_shadow(
     geo: Rectangle<i32, Logical>,
     output_loc: Point<i32, Logical>,
     config: &Config,
+    focus: f32,
     out: &mut Vec<AbyssRenderElement>,
 ) {
     let range = config.decoration.shadow.range;
     let (area, geometry) = shadow_geometry(geo, output_loc, range, shadow_drop(range), config);
-    let focus = store.anim.border_color(window, [1.0, 0.0, 0.0, 0.0], [0.0; 4])[0];
     let params = [geometry[0], geometry[1], geometry[2], focus];
     let uniforms = || effects::shadow_uniforms(geometry, focus);
     let (element, applied) = store
@@ -1796,9 +1870,25 @@ fn push_shadow(
     out.push(AbyssRenderElement::Shader(element.clone()));
 }
 
-/// One window's border glow: a ring in the window's border colour, reaching `GLOW_RANGE` past the border (COMP-02 §9). It follows the
-/// border's focus crossfade, and a state with glow off crossfades to
-/// transparent, so glow fades in or out with focus. Stored and updated like
+/// A window's glow colour when focused and when not, premultiplied, with a
+/// state whose glow is off as transparent (COMP-02 §9). Config colours are
+/// straight alpha; premultiplying before the focus crossfade keeps the fade
+/// to transparent linear.
+fn glow_colors(config: &Config) -> ([f32; 4], [f32; 4]) {
+    let glow = &config.decoration.glow;
+    let k = glow.strength as f32 / 100.0;
+    let on = |yes: bool, [r, g, b, a]: [f32; 4]| match yes {
+        true => [r * a * k, g * a * k, b * a * k, a * k],
+        false => [0.0; 4],
+    };
+    (
+        on(glow.active, config.general.col_active),
+        on(glow.inactive, config.general.col_inactive),
+    )
+}
+
+/// One window's border glow: a ring in `color` (see [`glow_colors`]),
+/// reaching `GLOW_RANGE` past the border (COMP-02 §9). Stored and updated like
 /// `push_shadow`.
 #[allow(clippy::too_many_arguments)]
 fn push_glow(
@@ -1809,21 +1899,9 @@ fn push_glow(
     geo: Rectangle<i32, Logical>,
     output_loc: Point<i32, Logical>,
     config: &Config,
+    color: [f32; 4],
     out: &mut Vec<AbyssRenderElement>,
 ) {
-    let glow = &config.decoration.glow;
-    // Config colours are straight alpha; the shader wants premultiplied, and
-    // premultiplying before the crossfade keeps the fade to transparent linear.
-    let k = glow.strength as f32 / 100.0;
-    let on = |yes: bool, [r, g, b, a]: [f32; 4]| match yes {
-        true => [r * a * k, g * a * k, b * a * k, a * k],
-        false => [0.0; 4],
-    };
-    let color = store.anim.border_color(
-        window,
-        on(glow.active, config.general.col_active),
-        on(glow.inactive, config.general.col_inactive),
-    );
     let (area, [range, radius, _]) = shadow_geometry(geo, output_loc, effects::GLOW_RANGE, 0, config);
     let params = [color[0], color[1], color[2], color[3], range, radius];
     let uniforms = || effects::ring_uniforms(color, range, radius);

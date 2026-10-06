@@ -15,8 +15,7 @@ use smithay::{
         damage::OutputDamageTracker,
         element::{
             solid::{SolidColorBuffer, SolidColorRenderElement},
-            surface::WaylandSurfaceRenderElement,
-            AsRenderElements, Kind,
+            Kind,
         },
         gles::GlesRenderer,
         Bind, ExportMem, Offscreen,
@@ -317,24 +316,30 @@ fn phys(p: Point<i32, Logical>, scale: Scale<f64>) -> Point<i32, Physical> {
 /// Returns the elements front-to-back and the redaction decisions taken. The
 /// cursor, borders and trusted UI are deliberately absent: a capture target is
 /// the shell's content, not the compositor's own chrome.
+///
+/// Every redaction decision is taken here, before `still` sees a surface.
+/// `still` only adds the effects the screen shows (CAP-01) to what survives,
+/// from its own store: a backdrop it builds samples this list, placeholders
+/// included, and never the on-screen frame.
 pub fn capture_elements(
     renderer: &mut GlesRenderer,
     state: &AbyssState,
+    still: &mut crate::render::still::Still,
     output: &Output,
 ) -> (Vec<AbyssRenderElement>, Vec<Redacted>) {
     let scale = Scale::from(output.current_scale().fractional_scale());
-    let output_loc = state
-        .space
-        .output_geometry(output)
-        .map(|g| g.loc)
-        .unwrap_or_default();
+    let output_geo = state.space.output_geometry(output).unwrap_or_default();
+    let output_loc = output_geo.loc;
     let mut elements: Vec<AbyssRenderElement> = Vec::new();
     let mut redacted: Vec<Redacted> = Vec::new();
     let redact_ids = &state.config.capture.redact_app_id;
+    let windows: Vec<Window> = state.space.elements().cloned().collect();
+    let mut fx = still.begin(renderer, output, output_geo, &state.config, &windows);
 
     layer_elements(
         renderer,
         state,
+        &mut fx,
         output,
         [Layer::Overlay, Layer::Top],
         scale,
@@ -402,23 +407,14 @@ pub fn capture_elements(
                 continue;
             }
         }
-        let loc = origin - output_loc;
-        elements.extend(
-            window
-                .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
-                    renderer,
-                    phys(loc, scale),
-                    scale,
-                    1.0,
-                )
-                .into_iter()
-                .map(AbyssRenderElement::Surface),
-        );
+        let active = state.focus.as_ref() == Some(window);
+        fx.window(renderer, window, geo, active, &mut elements);
     }
 
     layer_elements(
         renderer,
         state,
+        &mut fx,
         output,
         [Layer::Bottom, Layer::Background],
         scale,
@@ -426,6 +422,7 @@ pub fn capture_elements(
         &mut redacted,
     );
 
+    fx.finish(renderer, &mut elements);
     (elements, redacted)
 }
 
@@ -433,6 +430,7 @@ pub fn capture_elements(
 fn layer_elements(
     renderer: &mut GlesRenderer,
     state: &AbyssState,
+    fx: &mut crate::render::still::Frame<'_>,
     output: &Output,
     which: [Layer; 2],
     scale: Scale<f64>,
@@ -486,17 +484,7 @@ fn layer_elements(
                     continue;
                 }
             }
-            elements.extend(
-                surface
-                    .render_elements::<WaylandSurfaceRenderElement<GlesRenderer>>(
-                        renderer,
-                        phys(geo.loc, scale),
-                        scale,
-                        1.0,
-                    )
-                    .into_iter()
-                    .map(AbyssRenderElement::Surface),
-            );
+            fx.layer(renderer, surface, geo, elements);
         }
     }
 }
@@ -616,6 +604,8 @@ pub fn service(state: &mut AbyssState, renderer: &mut GlesRenderer, seat_held_by
         return;
     }
     let pending: Vec<Pending> = std::mem::take(&mut state.captures);
+    // Out of `state` for the loop, which only reads it; put back after.
+    let mut still = std::mem::take(&mut state.capture_fx);
     for p in pending {
         if !p.sink.is_alive() {
             continue;
@@ -627,7 +617,7 @@ pub fn service(state: &mut AbyssState, renderer: &mut GlesRenderer, seat_held_by
             p.sink.failed();
             continue;
         }
-        match copy_one(state, renderer, &p, seat_held_by_prompt) {
+        match copy_one(state, &mut still, renderer, &p, seat_held_by_prompt) {
             Ok(transform) => {
                 let now = std::time::Duration::from(state.clock.now());
                 p.sink.ready(p.region, transform, p.with_damage, now);
@@ -639,6 +629,7 @@ pub fn service(state: &mut AbyssState, renderer: &mut GlesRenderer, seat_held_by
             }
         }
     }
+    state.capture_fx = still;
 }
 
 /// COMP-02 §8: cursor is opt-in, never ambient. `overlay_cursor` is the
@@ -652,6 +643,7 @@ fn cursor_overlay_active(overlay_cursor: bool, seat_held_by_prompt: bool) -> boo
 /// Returns the output transform the contents were rendered through.
 fn copy_one(
     state: &AbyssState,
+    still: &mut crate::render::still::Still,
     renderer: &mut GlesRenderer,
     p: &Pending,
     seat_held_by_prompt: bool,
@@ -664,7 +656,7 @@ fn copy_one(
         .current_mode()
         .ok_or_else(|| anyhow::anyhow!("output has no mode"))?;
 
-    let (mut elements, redacted) = capture_elements(renderer, state, &output);
+    let (mut elements, redacted) = capture_elements(renderer, state, still, &output);
     if cursor_overlay_active(p.overlay_cursor, seat_held_by_prompt) {
         let scale = Scale::from(output.current_scale().fractional_scale());
         let output_loc = state

@@ -77,19 +77,18 @@ taskbar window button or tray icon. No menu opens. **Proposed:** a long-press
 
 ## CAP-01: screenshots and screencasts drop every compositor effect
 
-`render/capture.rs:315` (`capture_elements`, TCB) builds its own pass list
-from surface elements only; it deliberately leaves out borders and trusted UI
-(the shell's content, not the compositor's chrome), and in doing so also
-loses blur and its frost/glass modes, rounding, shadow, glow and
-dim-inactive. A capture is therefore not what the user sees: translucent
-windows show the unblurred desktop through square corners. **Repro:** set
-`decoration.blur.mode "glass"`, make a window translucent, `grim` the output;
-the backdrop is sharp and the corners square, identical in every mode.
-**Proposed:** none committed. Redaction must stay authoritative, so the effect
-elements would have to be rebuilt over the *redacted* list (a blurred secret
-is still a secret). The owner's direction is a first-party capture tool — see
-`PROPOSEDFEATURES.md` "Screen capture" — which would own this. Visual checks
-meanwhile use a nested winit abyss captured from the outer compositor.
+**Fix landed 2026-10-06, not yet seen on screen.** `capture_elements`
+(`abyss/crates/ec-abyss/src/render/capture.rs`, TCB) still takes every
+redaction decision itself, then hands each surviving window and layer to
+`abyss/crates/ec-abyss-render/src/still.rs`, which adds opacity, dim-inactive,
+rounding, shadow, glow and blurred backdrops from its own store. A backdrop
+samples only the redacted capture list, placeholders included, so a blurred
+secret is a blurred placeholder. Borders and trusted UI stay out, as before.
+`still.rs` never reads animation state (`scan_tests.rs` pins it), so a capture
+shows the settled frame. There is no GL pixel test; this entry leaves after a
+nested-winit check: `decoration.blur.mode "glass"`, a translucent window over a
+`capture.redact-app-id` window, `grim` the output, and see rounded corners and
+a backdrop with only placeholder grey under the redacted rect.
 
 **Cursor (fixed 2026-09-29):** `wlr_screencopy`'s `overlay_cursor` request
 flag was silently discarded, so no client — with or without the flag set —
@@ -106,7 +105,7 @@ Found 2026-09-28 fixing BLUR-02. While cards show, the compositor blurs the
 whole ec-toasts layer (404 x stack height), including the transparent
 gaps around and between the rounded cards, so a square blurred slab shows
 behind them. Layers are blurred wherever they leave the surface uncovered
-(`render/mod.rs:192`); the toasts surface is larger than what it draws.
+(`abyss/crates/ec-abyss-render/src/lib.rs`, the layer pass of `collect_elements`); the toasts surface is larger than what it draws.
 **Repro:** translucent window top-right, `notify-send` twice; see the slab
 around both cards. **Proposed:** none committed. Either the client tells the
 compositor where its glass is (`ext-background-effect-v1`, deferred from the

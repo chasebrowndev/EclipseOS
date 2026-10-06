@@ -171,6 +171,9 @@ pub struct AbyssState {
     pub tablet_in_use: Option<smithay::wayland::tablet_manager::TabletHandle>,
     /// Per-window border quads, kept alive across frames.
     pub borders: crate::render::BorderStore,
+    /// The capture pass's own effect store (CAP-01): never the on-screen
+    /// `borders`, so a captured backdrop samples only the redacted list.
+    pub capture_fx: crate::render::still::Still,
     /// Live annotation overlays (COMP-18). Untrusted text, drawn below trusted
     /// UI and never into a capture target.
     pub annotations: crate::render::annotation::AnnotationStore,
@@ -533,6 +536,7 @@ impl AbyssState {
             finger_scroll_forwarded: false,
             tablet_in_use: None,
             borders: crate::render::BorderStore::default(),
+            capture_fx: crate::render::still::Still::default(),
             annotations: crate::render::annotation::AnnotationStore::default(),
             region_select: crate::render::select::RegionSelect::default(),
             trusted_ui: crate::trusted_ui::TrustedUi::default(),
