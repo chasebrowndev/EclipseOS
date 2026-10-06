@@ -256,6 +256,8 @@ pub struct AbyssState {
     pub policy_table: Option<ec_policy_eval::check::Table>,
     /// Tasks `policyd` revoked this session.
     pub revoked: crate::policy::lifecycle::Revoked,
+    /// Agents the human paused.
+    pub paused: crate::policy::lifecycle::Paused,
     pub agents: crate::protocols::agent::Agents,
 
     /// Live capture allowlist, shared with the `zwlr_screencopy_v1` bind
@@ -571,6 +573,7 @@ impl AbyssState {
             audit: Default::default(),
             policy_table: None,
             revoked: Default::default(),
+            paused: Default::default(),
             agents: Default::default(),
             session_lock_state,
             lock: Default::default(),

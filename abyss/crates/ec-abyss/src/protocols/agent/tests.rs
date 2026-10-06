@@ -403,6 +403,44 @@ fn a_bad_grant_is_invalid_grant() {
 }
 
 /// F-08: policyd gone, an existing agent is paused and nothing runs.
+/// COMP-04 §6, COMP-10 §3.3: a human pause answers `paused`, one agent or
+/// all of them; resume is explicit; terminate removes the agent.
+#[test]
+fn the_human_can_pause_resume_and_terminate_an_agent() {
+    let (mut h, _path) = hooked("lifecycle.sock", true);
+    h.state.audit.sink = Some(Vec::new());
+    h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
+    let mut p = Peer::inserted(&mut h, true);
+    let (_agent, scene) = p.admit(&mut h, grant("agent:test"));
+    let id = h.state.agents.slots[0].0;
+
+    crate::policy::lifecycle::pause(&mut h.state, id);
+    scene.list_toplevels(1, String::new());
+    p.pump(&mut h);
+    assert_eq!(p.seen.results, vec![(1, PAUSED, String::new())]);
+
+    crate::policy::lifecycle::resume(&mut h.state, id);
+    crate::policy::lifecycle::pause_all(&mut h.state);
+    scene.list_toplevels(2, String::new());
+    p.pump(&mut h);
+    assert_eq!(p.seen.results.last(), Some(&(2, PAUSED, String::new())));
+
+    crate::policy::lifecycle::resume_all(&mut h.state);
+    // The pause and resume records went to the test sink; a fresh one is an
+    // empty audit queue, as after a flush.
+    h.state.audit.sink = Some(Vec::new());
+    scene.list_toplevels(3, String::new());
+    p.pump(&mut h);
+    // Answered, not paused: a listing ends in `done`, not a `result`.
+    assert_eq!(p.seen.results.len(), 2);
+    assert!(!p.seen.done.is_empty());
+
+    crate::policy::lifecycle::terminate(&mut h.state, id);
+    assert!(h.state.agents.slots.is_empty());
+    assert!(h.state.agents.list().is_empty());
+}
+
 #[test]
 fn requests_while_policyd_is_down_are_paused() {
     let (mut h, _path) = hooked("paused.sock", true);

@@ -144,6 +144,24 @@ impl Agent {
         dropped
     }
 
+    /// One line per live grant, for the emergency panel: its capabilities
+    /// and their scopes as written (S-01 §4).
+    pub fn describe_grants(&self) -> Vec<String> {
+        self.grants
+            .iter()
+            .map(|g| {
+                g.capabilities
+                    .iter()
+                    .map(|c| match c.scopes.as_slice() {
+                        [] => c.name.clone(),
+                        s => format!("{} {}", c.name, s.join(" ")),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .collect()
+    }
+
     fn recompile(&mut self) {
         self.view = SceneView::compile(&self.grants);
         self.read = SceneView::compile_for(SCENE_READ, &self.grants);

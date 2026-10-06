@@ -87,7 +87,12 @@ impl Audit {
     fn try_send(&mut self, bytes: &[u8]) -> bool {
         #[cfg(test)]
         if let Some(sink) = &mut self.sink {
-            sink.push(Emission::decode(bytes).expect("an emission policyd accepts"));
+            if ec_policy_eval::link::is_message(bytes) {
+                // A link message on the same queue: well-formed, not a record.
+                ec_policy_eval::link::ToPolicyd::decode(bytes).expect("a link message policyd accepts");
+            } else {
+                sink.push(Emission::decode(bytes).expect("an emission policyd accepts"));
+            }
             return true;
         }
         let Some(fd) = &self.fd else {

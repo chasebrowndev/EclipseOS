@@ -74,6 +74,8 @@ pub struct Agents {
     /// `(id, agent)`. The slot is `None` only while a request has the agent
     /// taken out, so the scene filter can borrow the state alongside it.
     slots: Vec<(u64, Option<Agent>)>,
+    /// The client each agent object belongs to, so terminate can end it.
+    owners: Vec<(u64, ClientId)>,
     next_id: u64,
     /// Clients accepted on the socket, so hook-off can disconnect them.
     /// (wayland-backend's `with_all_clients` spins on the system backend.)
@@ -95,6 +97,58 @@ impl Agents {
             }
         }
         tasks
+    }
+
+    /// Every live agent object's id and principal, in admission order.
+    pub fn list(&self) -> Vec<(u64, String)> {
+        self.slots
+            .iter()
+            .filter_map(|(i, a)| a.as_ref().map(|a| (*i, a.principal().to_owned())))
+            .collect()
+    }
+
+    pub fn principal_of(&self, id: u64) -> Option<String> {
+        self.slots
+            .iter()
+            .find(|(i, _)| *i == id)
+            .and_then(|(_, a)| a.as_ref())
+            .map(|a| a.principal().to_owned())
+    }
+
+    /// The scopes of `id`'s live grants, for the emergency panel.
+    pub fn grants_of(&self, id: u64) -> Vec<String> {
+        self.slots
+            .iter()
+            .find(|(i, _)| *i == id)
+            .and_then(|(_, a)| a.as_ref())
+            .map(Agent::describe_grants)
+            .unwrap_or_default()
+    }
+
+    /// Drop every grant agent `id` holds.
+    pub(crate) fn revoke_id(&mut self, id: u64) {
+        if let Some(a) = self
+            .slots
+            .iter_mut()
+            .find(|(i, _)| *i == id)
+            .and_then(|(_, a)| a.as_mut())
+        {
+            a.revoke(|_| true);
+        }
+    }
+
+    /// End agent `id`'s client. Its objects are destroyed with it, and the
+    /// slot goes in `destroyed`.
+    pub(crate) fn disconnect(&mut self, id: u64) {
+        let Some(client) = self.owners.iter().find(|(i, _)| *i == id).map(|(_, c)| c.clone()) else {
+            return;
+        };
+        if let Some(dh) = &self.display {
+            dh.backend_handle()
+                .kill_client(client, DisconnectReason::ConnectionClosed);
+        }
+        self.owners.retain(|(i, _)| *i != id);
+        self.slots.retain(|(i, _)| *i != id);
     }
 
     /// Whether the privileged socket is up.
@@ -280,6 +334,7 @@ fn stop(state: &mut AbyssState) {
         }
     }
     state.agents.slots.clear();
+    state.agents.owners.clear();
     cleanup(state);
     state.agents.path = None;
     tracing::info!("agents hook off; agent socket removed");
@@ -355,7 +410,7 @@ impl GlobalDispatch<EclipseAgentManagerV1, ()> for AbyssState {
 impl Dispatch<EclipseAgentManagerV1, ()> for AbyssState {
     fn request(
         state: &mut Self,
-        _client: &Client,
+        client: &Client,
         manager: &EclipseAgentManagerV1,
         request: eclipse_agent_manager_v1::Request,
         _data: &(),
@@ -380,6 +435,7 @@ impl Dispatch<EclipseAgentManagerV1, ()> for AbyssState {
                 tracing::info!(agent = aid, principal = agent.principal(), "agent admitted");
                 audit::agent(state, audit::lifecycle(agent.principal(), "start"));
                 state.agents.slots.push((aid, Some(agent)));
+                state.agents.owners.push((aid, client.id()));
                 data_init.init(id, AgentId(aid));
             }
             Err(e) => {
@@ -474,6 +530,9 @@ impl Dispatch<EclipseAgentV1, AgentId> for AbyssState {
             audit::agent(state, audit::lifecycle(&principal, "stop"));
         }
         state.agents.slots.retain(|(i, _)| *i != data.0);
+        state.agents.owners.retain(|(i, _)| *i != data.0);
+        crate::policy::lifecycle::forget(state, data.0);
+        crate::trusted_ui::consent::withdraw(state, data.0);
     }
 }
 
@@ -501,9 +560,10 @@ impl Dispatch<EclipseSceneV1, AgentId> for AbyssState {
             | Request::HitTest { req_id, .. } => *req_id,
             _ => return,
         };
-        // F-08: while policyd is down every agent is paused. Nothing is
-        // looked at, nothing changes, not even grant expiry.
-        if state.policy_key.is_none() {
+        // F-08: while policyd is down every agent is paused, and so is one
+        // the human paused (COMP-04 §6, COMP-10 §3.3). Nothing is looked at,
+        // nothing changes, not even grant expiry.
+        if state.policy_key.is_none() || crate::policy::lifecycle::is_paused(state, data.0) {
             result(scene, req_id, Status::Paused, "");
             return;
         }
