@@ -24,18 +24,36 @@ use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 use crate::outputs::OutputKind;
 use crate::state::AbyssState;
 
-/// The class an agent sees `window` as.
+/// The class an agent sees `window` as. The one place classification plugs
+/// in.
 ///
-/// COMP-11's table does not exist until M16, and with no policy table loaded
-/// every surface is `secret` to agents (S-05 §8). The manual `sensitive`
-/// flag can only raise, so it changes nothing below `secret`. This is the one
-/// place the table plugs in.
-fn class_of(_state: &AbyssState, _window: &Window) -> Class {
+/// - With no enforcement table live, every surface is `secret` to agents
+///   (S-05 §8): nothing has been classified, so nothing is readable.
+/// - With a table, a window starts `private` (F-02 §6) and is raised to
+///   `secret` by the compositor's own sensitive set or by
+///   `capture.redact-app-id` (COMP-02 §7). Nothing here lowers a class; the
+///   table's `classify` matchers (M17) will only raise it further.
+pub(crate) fn class_of(state: &AbyssState, window: &Window) -> Class {
     #[cfg(test)]
-    if let Some(c) = test_class::get(_window) {
+    if let Some(c) = test_class::get(window) {
         return c;
     }
-    Class::Secret
+    if state.policy_table.is_none() {
+        return Class::Secret;
+    }
+    let Some(surface) = crate::shell::window_surface(window) else {
+        // No surface to classify: the strictest answer.
+        return Class::Secret;
+    };
+    let app_id = crate::protocols::standard::data_device::app_id_of(&surface);
+    let redacted = app_id
+        .as_deref()
+        .is_some_and(|id| state.config.capture.redact_app_id.iter().any(|r| r == id));
+    if state.sensitive.contains(&surface) || redacted {
+        Class::Secret
+    } else {
+        Class::Private
+    }
 }
 
 /// The output and workspace `window` is on. Every workspace is a human

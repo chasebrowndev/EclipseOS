@@ -68,8 +68,9 @@ const WINDOWS: &[(&str, Option<Class>)] = &[
 ];
 
 /// Every window an agent could ever see in this world: not `secret`, not
-/// `no-agent`.
-const SEEABLE: &[&str] = &["pubA", "privA", "pubW2", "privW2", "pubB"];
+/// `no-agent`. `unsetA` is unclassified, which with a table live is
+/// `private` (F-02 §6: the default class).
+const SEEABLE: &[&str] = &["pubA", "privA", "unsetA", "pubW2", "privW2", "pubB"];
 /// The `public` ones of those.
 const PUBLIC: &[&str] = &["pubA", "pubW2", "pubB"];
 
@@ -373,8 +374,9 @@ fn detail(e: &eclipse_scene_v1::Event) -> Option<(u32, u32)> {
 fn wire_class(name: &str) -> u32 {
     match WINDOWS.iter().find(|(n, _)| *n == name).and_then(|(_, c)| *c) {
         Some(Class::Public) => 0,
-        Some(Class::Private) => 1,
-        Some(Class::Secret) | None => 2,
+        // S-05 §8: no matching rule is `private`, the default.
+        Some(Class::Private) | None => 1,
+        Some(Class::Secret) => 2,
     }
 }
 
@@ -644,7 +646,7 @@ fn every_grant_sees_exactly_its_scope() {
         (
             "output:test-a workspace:1 class:private",
             lines(&[&["output:test-a", "workspace:1", "class:private"]]),
-            vec!["pubA", "privA"],
+            vec!["pubA", "privA", "unsetA"],
         ),
         (
             "title:Title of pubA",
@@ -695,11 +697,12 @@ fn every_grant_sees_exactly_its_scope() {
 /// S-05 §2 (`secret`: "Not delivered to any agent without a `*.secret`
 /// capability **and** a per-request prompt"), S-01 §2.1 (`scene.list` has no
 /// secret form; `scene.read.secret` "never without per-request prompt"),
-/// S-05 §8 (no table entry: `secret`): no grant, not even one scoped
-/// `class:secret` or naming the secret window by handle or app_id, and not
-/// one holding `scene.read.secret`, sees `secA`, `secB`, `fsec` or the
-/// never-classed `unsetA`. There is no prompt path, so nothing can satisfy
-/// the "and".
+/// S-05 §8: no grant, not even one scoped `class:secret` or naming the
+/// secret window by handle or app_id, and not one holding
+/// `scene.read.secret`, sees `secA`, `secB` or `fsec`. There is no prompt
+/// path, so nothing can satisfy the "and". The never-classed `unsetA` is
+/// `private` (no rule matches: the default), so a handle scope that names it
+/// does see it.
 #[test]
 fn secret_windows_are_never_visible() {
     let mut w = world("secret.sock");
@@ -727,7 +730,11 @@ fn secret_windows_are_never_visible() {
         ),
         ("handle:secA", vec![hs(&w, "secA")], vec![]),
         ("handle:secB", vec![hs(&w, "secB")], vec![]),
-        ("handle:unsetA (never classed)", vec![hs(&w, "unsetA")], vec![]),
+        (
+            "handle:unsetA (never classed)",
+            vec![hs(&w, "unsetA")],
+            vec!["unsetA"],
+        ),
         (
             "output:test-b class:secret",
             lines(&[&["output:test-b", "class:secret"]]),
@@ -1109,4 +1116,28 @@ fn get_toplevel_on_a_visible_window_answers_with_its_own_detail() {
         assert!(at_toplevel < at_detail, "{name}: toplevel before toplevel_detail");
         assert!(results_for(&p, req).is_empty(), "{name}");
     }
+}
+
+/// COMP-02 §7 through the real classifier (no test override): with a table
+/// live, an unclassified window is `private`, and the compositor's
+/// sensitive set raises it to `secret`, which no grant sees.
+#[test]
+fn the_sensitive_set_raises_a_window_to_secret() {
+    let mut w = world("raise.sock");
+    let broad = list_and_read(&lines(&[&["workspace:human", "class:private"]]));
+    let g = w.grant(broad, u64::MAX);
+    let mut p = Peer::inserted(&mut w.h, true);
+    let (_agent, scene) = p.admit(&mut w.h, g);
+    p.pump(&mut w.h);
+    w.ask_everything(&mut p, &scene);
+    assert_sees_exactly(&w, &p, SEEABLE, "unset is private");
+
+    let unset = w.wins.iter().find(|x| x.name == "unsetA").unwrap().window.clone();
+    let surface = crate::shell::window_surface(&unset).unwrap();
+    w.h.state.sensitive.insert(surface);
+    let mut p2 = p;
+    p2.seen = Default::default();
+    w.ask_everything(&mut p2, &scene);
+    let raised: Vec<&str> = SEEABLE.iter().copied().filter(|n| *n != "unsetA").collect();
+    assert_sees_exactly(&w, &p2, &raised, "raised to secret");
 }
