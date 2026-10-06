@@ -34,6 +34,9 @@ const PANEL: Rgba = [0.020, 0.016, 0.012, 1.0];
 const EDGE: Rgba = [1.0, 0.72, 0.20, 1.0];
 const HEADING: Rgba = [1.0, 0.78, 0.26, 1.0];
 const BODY: Rgba = [0.87, 0.76, 0.47, 1.0];
+/// Fact labels: dimmer than the value beside them, which is what the human
+/// must read. Bold stays for the heading and the warning.
+const LABEL: Rgba = [0.66, 0.55, 0.30, 1.0];
 /// The warning line. Brighter than the body and a different hue, so an
 /// altered widget does not read like routine text (§3.2, habituation).
 const WARN: Rgba = [1.0, 0.36, 0.20, 1.0];
@@ -413,7 +416,10 @@ pub struct Layout {
     pub buttons: Vec<(usize, usize, usize, usize)>,
 }
 
-const PHRASE_H: usize = LINE_H + 8;
+/// Taller than the entry field, and framed twice as heavy below: the personal
+/// secret is the anti-spoofing anchor and must not read as one more box.
+const PHRASE_H: usize = LINE_H + 10;
+const PHRASE_EDGE: usize = 2;
 const ENTRY_H: usize = LINE_H + 8;
 
 fn block_h(rows: usize) -> usize {
@@ -519,10 +525,10 @@ pub fn rasterize(modal: &Modal, focus: usize, scale: usize, phrase: Option<&str>
     let ww = COLS * ADVANCE;
     c.fill(x0 - WELL_PAD, BORDER + PAD, ww + WELL_PAD * 2, PHRASE_H, EDGE);
     c.fill(
-        x0 - WELL_PAD + 1,
-        BORDER + PAD + 1,
-        ww + WELL_PAD * 2 - 2,
-        PHRASE_H - 2,
+        x0 - WELL_PAD + PHRASE_EDGE,
+        BORDER + PAD + PHRASE_EDGE,
+        ww + WELL_PAD * 2 - 2 * PHRASE_EDGE,
+        PHRASE_H - 2 * PHRASE_EDGE,
         PHRASE_GROUND,
     );
     let py = BORDER + PAD + (PHRASE_H - GLYPH_H) / 2;
@@ -541,11 +547,17 @@ pub fn rasterize(modal: &Modal, focus: usize, scale: usize, phrase: Option<&str>
         y += block_h(l.warning.len()) + GAP;
     }
     for (i, line) in l.body.iter().enumerate() {
-        c.text(x0, y + i * LINE_H, line, BODY, false);
+        // An irreversible prompt's first body line is its reversal wording
+        // (consent.rs): it carries the warning colour, not just the edge.
+        if modal.accent && i == 0 {
+            c.text(x0, y + i * LINE_H, line, WARN, true);
+        } else {
+            c.text(x0, y + i * LINE_H, line, BODY, false);
+        }
     }
     for (i, (label, value)) in modal.facts.iter().enumerate() {
         let fy = l.facts_y + i * LINE_H;
-        c.text(x0, fy, label, HEADING, true);
+        c.text(x0, fy, label, LABEL, false);
         c.text(x0 + (MAX_LABEL + 1) * ADVANCE, fy, value, BODY, false);
     }
     c.text(x0, l.well_y - LINE_H, modal.well_label, BODY, false);
@@ -583,7 +595,9 @@ pub fn rasterize(modal: &Modal, focus: usize, scale: usize, phrase: Option<&str>
         let ty = by + (bh - GLYPH_H) / 2 + 1;
         if i == focus {
             c.fill(bx, by, bw, bh, EDGE);
-            c.text(tx, ty, b.label, INK, true);
+            // Not bold: a 1 px double strike fills the counters of dark
+            // glyphs on the bright fill. The inverted fill is the focus cue.
+            c.text(tx, ty, b.label, INK, false);
         } else {
             c.fill(bx, by, bw, bh, EDGE);
             c.fill(bx + 1, by + 1, bw - 2, bh - 2, PANEL);
