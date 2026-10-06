@@ -599,3 +599,56 @@ mod tests {
         assert_eq!(centre(tiny, &l), Point::from((0, 0)));
     }
 }
+
+/// Not a check: renders every trusted surface to `$ECLIPSE_DUMP_DIR/*.pam`
+/// for a visual review (`cargo test -p ec-abyss dump_trusted_surfaces --
+/// --ignored`). PAM is RGBA with no dependency; `convert x.pam x.png` turns
+/// it into a PNG.
+#[cfg(test)]
+#[test]
+#[ignore]
+fn dump_trusted_surfaces() {
+    use std::io::Write;
+    let Some(dir) = std::env::var_os("ECLIPSE_DUMP_DIR") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let write = |name: &str, m: &modal::Modal, phrase: Option<&str>| {
+        let r = modal::rasterize(m, m.safe(), 2, phrase);
+        let mut f = std::fs::File::create(dir.join(format!("{name}.pam"))).unwrap();
+        write!(
+            f,
+            "P7\nWIDTH {}\nHEIGHT {}\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n",
+            r.w, r.h
+        )
+        .unwrap();
+        f.write_all(&r.px).unwrap();
+    };
+    let ask = consent::Ask {
+        principal: "agent:research-7".into(),
+        action: "Click \"Send\"".into(),
+        app: "Gmail - Firefox".into(),
+        window: "Compose: Q3 invoice".into(),
+        task: "Summarize this week's invoices".into(),
+        category: Some(("communication.send".into(), consent::Reversal::None)),
+        untrusted_source: Some("acme-invoices.com (web page)".into()),
+        task_scope: "click handle:4".into(),
+        unattended_scope: "click app_id:org.mozilla.firefox".into(),
+        note: "checking the Q3 total before sending".into(),
+    };
+    write(
+        "consent",
+        &consent::modal(1, &ask).unwrap(),
+        Some("blue heron 42"),
+    );
+    let mut routine = ask.clone();
+    routine.category = None;
+    routine.untrusted_source = None;
+    write("consent-routine", &consent::modal(1, &routine).unwrap(), None);
+    let mut h = crate::shell::focus::state_tests::harness();
+    phrase::prompt_if_unset(&mut h.state);
+    if let Some(o) = h.state.trusted_ui.open.as_ref() {
+        write("phrase-entry", &o.modal, None);
+    }
+}
