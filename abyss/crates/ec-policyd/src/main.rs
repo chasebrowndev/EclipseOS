@@ -28,6 +28,7 @@
 
 use ec_policy_eval::audit::{Emission, MAX_EMISSION};
 use ec_policy_eval::link::{self, FromPolicyd, ToPolicyd};
+use ec_policyd::peer::Role;
 use ec_policyd::tasks;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -51,7 +52,15 @@ struct Push {
     /// The encoded `FromPolicyd::Table` message, once a compile has succeeded.
     table: Option<Vec<u8>>,
     version: u64,
-    conns: Vec<Weak<OwnedFd>>,
+    conns: Vec<(Weak<OwnedFd>, Role)>,
+}
+
+impl Push {
+    /// Live connections, dropping the dead ones.
+    fn live(&mut self) -> impl Iterator<Item = (Arc<OwnedFd>, Role)> + '_ {
+        self.conns.retain(|(c, _)| c.strong_count() > 0);
+        self.conns.iter().filter_map(|(c, r)| Some((c.upgrade()?, *r)))
+    }
 }
 
 /// Compile the policy and, on success, replace the pushed table and send it
@@ -87,10 +96,11 @@ fn recompile(push: &Mutex<Push>, key: &ed25519_dalek::SigningKey, dirs: &[PathBu
     let msg = FromPolicyd::Table { table: bytes, sig }.encode();
     p.version = version;
     p.table = Some(msg.clone());
-    p.conns.retain(|c| c.strong_count() > 0);
-    for c in p.conns.iter().filter_map(Weak::upgrade) {
+    for (c, role) in p.live() {
         use rustix::net::{send, SendFlags};
-        let _ = send(&*c, &msg, SendFlags::NOSIGNAL);
+        if role.takes_table() {
+            let _ = send(&*c, &msg, SendFlags::NOSIGNAL);
+        }
     }
     eprintln!(
         "policyd: table {version} pushed ({} deny, {} prompt, {} defer, {} allow)",
@@ -252,13 +262,15 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
-/// Sends `msg` to every live connection: abyss and any CLI on the socket.
+/// Sends `msg` to every live compositor and agentd connection: the holders
+/// of grants and the host of the agents they name.
 fn broadcast(push: &Mutex<Push>, msg: &[u8]) {
     use rustix::net::{send, SendFlags};
     let Ok(mut p) = push.lock() else { return };
-    p.conns.retain(|w| w.strong_count() > 0);
-    for c in p.conns.iter().filter_map(Weak::upgrade) {
-        let _ = send(&*c, msg, SendFlags::NOSIGNAL);
+    for (c, role) in p.live() {
+        if role != Role::Brokerd {
+            let _ = send(&*c, msg, SendFlags::NOSIGNAL);
+        }
     }
 }
 
@@ -388,23 +400,29 @@ fn serve(
             Err(e) => return Err(e.into()),
         };
         // Only the session user is offered the key. The file mode already
-        // says so; this is the kernel's word for it.
-        match net::sockopt::socket_peercred(&conn) {
-            Ok(c) if c.uid == me => {}
+        // says so; this is the kernel's word for it. Then the peer's unit
+        // decides what it may send (`ec_policyd::peer`).
+        let role = match net::sockopt::socket_peercred(&conn) {
+            Ok(c) if c.uid == me => ec_policyd::peer::classify(c.pid.as_raw_pid()),
             _ => continue,
-        }
+        };
+        let Some(role) = role else {
+            eprintln!("policyd: refusing a peer in no known unit");
+            continue;
+        };
         let offer = offer.to_vec();
         let tx = tx.clone();
         let push = push.clone();
-        std::thread::spawn(move || hold(conn, &offer, &tx, &push));
+        std::thread::spawn(move || hold(conn, role, &offer, &tx, &push));
     }
 }
 
 /// Offers the key, then queues every emission the peer sends until it hangs
-/// up. A packet that is oversized, malformed, or of a kind the compositor
-/// does not emit (COMP-12 §2) ends the connection: a source whose stream
-/// cannot be trusted is cut off, not partly believed.
-fn hold(conn: OwnedFd, offer: &[u8], tx: &SyncSender<Incoming>, push: &Mutex<Push>) {
+/// up. A packet that is oversized, malformed, or outside the peer's role (an
+/// emission of a kind it does not witness, COMP-12 §2, or a message it may not
+/// send) ends the connection: a source whose stream cannot be trusted is cut
+/// off, not partly believed.
+fn hold(conn: OwnedFd, role: Role, offer: &[u8], tx: &SyncSender<Incoming>, push: &Mutex<Push>) {
     use rustix::net::{recv, send, RecvFlags, SendFlags};
     if send(&conn, offer, SendFlags::NOSIGNAL).is_err() {
         return;
@@ -413,8 +431,8 @@ fn hold(conn: OwnedFd, offer: &[u8], tx: &SyncSender<Incoming>, push: &Mutex<Pus
     // Registered and given the current table under one lock, so a recompile
     // can neither miss this connection nor send it an older table second.
     if let Ok(mut p) = push.lock() {
-        p.conns.push(Arc::downgrade(&conn));
-        if let Some(t) = &p.table {
+        p.conns.push((Arc::downgrade(&conn), role));
+        if let Some(t) = p.table.as_ref().filter(|_| role.takes_table()) {
             if send(&*conn, t, SendFlags::NOSIGNAL).is_err() {
                 return;
             }
@@ -433,11 +451,11 @@ fn hold(conn: OwnedFd, offer: &[u8], tx: &SyncSender<Incoming>, push: &Mutex<Pus
             Err(rustix::io::Errno::INTR) => continue,
             Err(_) => return,
         };
-        let incoming = match accept(&buf[..n]) {
+        let incoming = match accept(role, &buf[..n]) {
             Some(Accepted::Message(m)) => Incoming::Message(m, conn.clone()),
             Some(Accepted::Emission(e)) => Incoming::Emission(e),
             None => {
-                eprintln!("policyd: malformed audit emission or link message; dropping the peer");
+                eprintln!("policyd: malformed or out-of-role packet from {role:?}; dropping the peer");
                 return;
             }
         };
@@ -454,14 +472,18 @@ enum Accepted {
     Message(ToPolicyd),
 }
 
-/// An emission `policyd` will store from this peer, or a link message.
-fn accept(packet: &[u8]) -> Option<Accepted> {
+/// An emission `policyd` will store from this peer, or a link message it may
+/// send.
+fn accept(role: Role, packet: &[u8]) -> Option<Accepted> {
     if link::is_message(packet) {
-        return ToPolicyd::decode(packet).ok().map(Accepted::Message);
+        return ToPolicyd::decode(packet)
+            .ok()
+            .filter(|m| role.may_send(m))
+            .map(Accepted::Message);
     }
     Emission::decode(packet)
         .ok()
-        .filter(|e| e.kind.from_compositor())
+        .filter(|e| role.may_emit(e.kind))
         .map(Accepted::Emission)
 }
 
@@ -487,13 +509,13 @@ mod tests {
     #[test]
     fn a_compositor_kind_is_accepted() {
         let e = emission(Kind::Request);
-        assert_eq!(accept(&e.encode()), Some(Accepted::Emission(e)));
+        assert_eq!(accept(Role::Compositor, &e.encode()), Some(Accepted::Emission(e)));
     }
 
     #[test]
     fn a_kind_policyd_owns_is_refused_from_the_socket() {
         for k in [Kind::Grant, Kind::Revoke, Kind::Task, Kind::Anchor] {
-            assert_eq!(accept(&emission(k).encode()), None, "{k:?}");
+            assert_eq!(accept(Role::Compositor, &emission(k).encode()), None, "{k:?}");
         }
     }
 
@@ -502,18 +524,33 @@ mod tests {
         let m = ToPolicyd::Terminate {
             principal: "agent:a".into(),
         };
-        assert_eq!(accept(&m.encode()), Some(Accepted::Message(m)));
+        assert_eq!(
+            accept(Role::Compositor, &m.encode()),
+            Some(Accepted::Message(m.clone()))
+        );
+        assert_eq!(accept(Role::Agentd, &m.encode()), None, "out of role");
         let mut bad = ToPolicyd::Terminate {
             principal: "agent:a".into(),
         }
         .encode();
         bad.push(0);
-        assert_eq!(accept(&bad), None);
+        assert_eq!(accept(Role::Compositor, &bad), None);
+    }
+
+    #[test]
+    fn brokerd_may_store_secret_records_and_nothing_else() {
+        let e = emission(Kind::Secret);
+        assert_eq!(
+            accept(Role::Brokerd, &e.encode()),
+            Some(Accepted::Emission(e.clone()))
+        );
+        assert_eq!(accept(Role::Compositor, &e.encode()), None);
+        assert_eq!(accept(Role::Brokerd, &emission(Kind::Request).encode()), None);
     }
 
     #[test]
     fn garbage_is_refused() {
-        assert_eq!(accept(&[0xff, 0x00]), None);
-        assert_eq!(accept(&[]), None);
+        assert_eq!(accept(Role::Compositor, &[0xff, 0x00]), None);
+        assert_eq!(accept(Role::Compositor, &[]), None);
     }
 }

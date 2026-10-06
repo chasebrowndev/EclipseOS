@@ -153,15 +153,18 @@ package_eclipseos-desktop() {
 # never by the floor. Every agent-only process ships here; abyss's half stays
 # dormant until this manifest turns the `agents` hook on.
 package_eclipseos-agents() {
-  pkgdesc="EclipseOS agent stack add-on: policy daemon and audit reader (ADR 0069)"
+  pkgdesc="EclipseOS agent stack add-on: policy daemon, secrets broker and audit reader (ADR 0069)"
   depends=(eclipseos-abyss)
   replaces=(eclipseos-policyd)
   conflicts=(eclipseos-policyd)
 
   _bin ec-policyd
   _bin ec-audit
+  _bin ec-brokerd
   _unit ec-policyd.service
   _want ec-policyd.service
+  _unit ec-brokerd.service
+  _want ec-brokerd.service
   install -Dm0644 "$srcdir/$_src/packaging/addons/eclipseos-agents.kdl" \
     "$pkgdir/usr/share/eclipse/addons/eclipseos-agents.kdl"
 }

@@ -1,0 +1,35 @@
+# The Eclipse secrets broker. Installed to /usr/lib/systemd/user/ec-brokerd.service.
+#
+# A *user* service like ec-policyd: it is unlocked per session, by the session
+# user, through the compositor's trusted UI (S-08 §2). Part of the agent stack
+# add-on (eclipseos-agents), never the floor.
+#
+# Fail-closed ordering, as for policyd: Before= and not BindsTo=, no
+# StartLimitBurst escape, Restart=on-failure. A broker that cannot start stays
+# locked and every secret use is denied with `broker_locked`; abyss still
+# paints.
+#
+# The daemon refuses to run unless it can clear PR_SET_DUMPABLE and zero
+# RLIMIT_CORE, and it creates no plaintext buffer it cannot mlock, so the unit
+# grants the memory-lock budget (LimitMEMLOCK) and nothing else: no
+# capabilities, no new privileges, and only AF_UNIX sockets.
+[Unit]
+Description=Eclipse secrets broker
+PartOf=graphical-session.target
+After=ec-policyd.service
+Before=abyss-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ec-brokerd
+Restart=on-failure
+RestartSec=1
+LimitCORE=0
+LimitMEMLOCK=16M
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+MemoryDenyWriteExecute=yes
+UMask=0077
+
+[Install]
+WantedBy=abyss-session.target

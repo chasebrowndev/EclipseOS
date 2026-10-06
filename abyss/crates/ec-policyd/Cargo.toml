@@ -23,3 +23,10 @@ libc = "0.2"
 rustix.workspace = true
 kdl.workspace = true
 regex.workspace = true
+
+[features]
+# Accept role binaries from any directory, not only /usr/bin, for the
+# `cargo run` dev sessions and the headless end-to-end tests. Never enabled by
+# the package build: in a session it would let any same-uid binary named
+# `ec-abyss` speak for the compositor (src/peer.rs).
+dev-peers = []

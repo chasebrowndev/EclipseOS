@@ -152,10 +152,37 @@ abyss previews, the human presses Enter on the slot, abyss sends
 running session opens a task or issues a first grant; only tests do. The link
 message (`open_task`) and `TaskStore::open_for_human` are in place for it.
 
-Separately, `policyd.sock` admits any peer running as the session user
-(`SO_PEERCRED` uid). A same-uid process other than abyss could send
-`open_task` and mint itself a task, which is exactly the owner-uid-script
-case A-08 §6–7 refuses to trust. Before the slot lands, `open_task` (and
-`mint`) must be accepted only from the compositor's connection. That needs a
-way to authenticate abyss beyond uid, such as a socket-activated fd that
-systemd passes to abyss alone, or a pidfd/exe check. Decide it with the slot.
+`policyd.sock` used to admit any session-uid peer. It now gives each
+connection a role from the peer's executable (`ec-policyd/src/peer.rs`):
+`/usr/bin/ec-abyss`, `ec-agentd` or `ec-brokerd`, and refuses everything
+else and everything under `agents.slice`. Two things remain:
+
+- It is an exe check, not the F-05 unit check, because the compositor must
+  stay in its logind session scope and so cannot be a unit. A same-uid
+  process that can `ptrace` abyss defeats it; that is outside what any
+  socket check can stop (Yama `ptrace_scope` ≥ 1 is assumed).
+- Dev sessions run binaries from `target/`, which only the `dev-peers`
+  feature accepts. Build `ec-policyd --features dev-peers` for `cargo run`;
+  the package build never enables it.
+
+## BROKER-01: brokerd gaps against S-08
+
+`abyss/crates/ec-brokerd/` lands milestone 19 with these known gaps.
+
+- **No TPM sealing.** Only the software/mock sealer and the Argon2id
+  passphrase fallback exist; the daemon uses the passphrase one. S-08 §9.1
+  (policy-signed PCR sealing) is open.
+- **Peer identity is an exe-path check**, not the F-05 cgroup check, for the
+  reason TASK-01 gives for policyd. The proxy's binary name is a guess until
+  M20 lands.
+- **Transient plaintext outside locked memory.** The CBOR response buffer
+  that carries a value to its consumer, the receive buffer for an `add`, and
+  the cipher key schedule on the stack are zeroed after use but are not
+  `mlock`ed. `RLIMIT_MEMLOCK` must also cover the store (unit sets it).
+- **`bound_to` matching choices the spec does not make:** a binding with no
+  port means 443 only; `app:<id>` is a third binding form for `field_fill`
+  into native apps; `materialize` does not consult `bound_to` (a sandbox env
+  var has no host).
+- **No `ec-secret` CLI, no swap scan.** Entering secrets today is the wire
+  `add` request; the S-08 §8 swap scan on a synthetic run is not automated.
+
