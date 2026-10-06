@@ -17,9 +17,10 @@
 //!   live task (`TaskStore::mint_from_prompt`), or answers `mint_refused`.
 //! - `defer` runs `TaskStore::defer_check`: `deny` when the principal has no
 //!   task that may act, otherwise `prompt` (COMP-11 §5).
-//! - `open_task` and `close_task` are the human's (A-04 §3): `ec-policyd task
-//!   open|close`, a client on this same socket. A close tells every peer
-//!   `revoked`, so abyss drops the grants at once.
+//! - `open_task` opens a human-origin task and its first grant at once
+//!   (A-04 §3). Its only sender is meant to be abyss's commit slot
+//!   (A-08 §5.2, COMP-19): there is deliberately no CLI or console path to it
+//!   (A-08 §7). `close_task` cancels and tells every peer `revoked`.
 //!
 //! The store has one owner, the main thread. Connection threads decode and
 //! queue; a full queue stops a connection thread reading, which fills the
@@ -162,10 +163,6 @@ fn load_key(dir: &Path) -> std::io::Result<ed25519_dalek::SigningKey> {
 }
 
 fn main() -> std::process::ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("task") {
-        return cli::task(&args[1..]);
-    }
     let dir = state_dir();
     let key = match load_key(&dir) {
         Ok(k) => k,
@@ -335,8 +332,6 @@ fn answer(store: &mut tasks::TaskStore, m: ToPolicyd, now_ms: u64) -> Result<Ans
 }
 
 /// `$ECLIPSE_POLICYD_SOCKET`, else `$XDG_RUNTIME_DIR/eclipse/policyd.sock`.
-mod cli;
-
 fn socket_path() -> std::io::Result<PathBuf> {
     if let Some(p) = std::env::var_os("ECLIPSE_POLICYD_SOCKET") {
         return Ok(PathBuf::from(p));

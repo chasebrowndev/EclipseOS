@@ -143,3 +143,19 @@ COMP-04 §7 says an agent-launched client cannot steal human focus through
 which client an agent launched (agents cannot launch yet), so the rule is not
 enforced. It becomes live with agent `launch` (COMP-08); fix it there.
 
+
+## TASK-01: no production path opens a task, and policyd cannot tell abyss from a script
+
+A-08 §5.2 makes the COMP-19 commit slot the only way a task is created:
+abyss previews, the human presses Enter on the slot, abyss sends
+`create_task` to `policyd`. The slot does not exist yet, so nothing in a
+running session opens a task or issues a first grant; only tests do. The link
+message (`open_task`) and `TaskStore::open_for_human` are in place for it.
+
+Separately, `policyd.sock` admits any peer running as the session user
+(`SO_PEERCRED` uid). A same-uid process other than abyss could send
+`open_task` and mint itself a task, which is exactly the owner-uid-script
+case A-08 §6–7 refuses to trust. Before the slot lands, `open_task` (and
+`mint`) must be accepted only from the compositor's connection. That needs a
+way to authenticate abyss beyond uid, such as a socket-activated fd that
+systemd passes to abyss alone, or a pidfd/exe check. Decide it with the slot.
