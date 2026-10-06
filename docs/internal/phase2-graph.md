@@ -26,7 +26,10 @@ flowchart TD
   M23[M23 cataclysm: foot fork]:::blocked
   M24[M24 launcher, agent workspaces, virtual outputs]:::blocked
   M25[M25 MCP in agentd, SDK, reference agent]:::todo
-  PD[policyd: task CLI, mint, defer checks]:::todo
+  PD[policyd: mint, defer checks, open_task link]:::part
+  C19[COMP-19 protected surfaces, commit slot]:::todo
+  A08[A-08 console socket in agentd, conversation channel]:::todo
+  CON[agent console pane, ported from the design prototype]:::todo
   EXIT{{PHASE 2 EXIT: open, type, click, read via the protocol}}
 
   M10 --> M11 --> M13
@@ -47,6 +50,12 @@ flowchart TD
   M19 -.parallel.-> EXIT
   M20 -.parallel.-> EXIT
 
+  C19 --> CON
+  A08 --> CON
+  PD --> C19
+  M15 --> C19
+  CON --> EXIT
+
   F03[[F-03: stamper enum undecided]]:::blocked --> M18
   C17[[C-00 §17 item 1: layout model undecided]]:::blocked --> M24
 ```
@@ -62,11 +71,15 @@ flowchart TD
 | B1 ∥ | ~~M21 `cataclysm-pub`~~: already in the tree since the workspace split; STATUS had it as not started | — | done; needs owner review |
 | B2 ∥ | M19 `brokerd` (S-08): sealed store, injection modes; TPM mocked here | backend agent | separable; real TPM is a hardware check |
 | B3 ∥ | M20 egress proxy (S-09) | backend agent, if the container can create netns | separable; may need the dev host |
-| C1 | `policyd`: task create/close CLI, mint from prompt answers, deterministic defer checks | main (TCB) | lets a human drive an agent end to end |
+| C1 | `policyd`: mint from prompt answers, deterministic defer checks, `open_task`/`close_task` on the link | main (TCB) | done except the chain-reading defer predicates (M18); a task CLI was built and removed, since A-08 §7 forbids one |
 | C2 | M22 `eclipse_semantic_v1` server | backend agent | after M21 |
 | C3 | M25 MCP surface in `agentd`, reference agent | backend agent | after M14 and C1; the Phase 2 exit demo |
+| D1 | COMP-19 `eclipse_protected_surface_v1`: protected panes, commit slot (preview → arm → physical Enter → `create_task`), capture exclusion, human-only input | backend agent for protocol plumbing; slot, capture and policyd preview are main (TCB) | the only legal way a task is created (A-08 §5.2); closes TASK-01 |
+| D2 | A-08 §6–7: `console.sock` in `agentd`, `conversation/<task_id>` channel, `list_tasks`, `subscribe`, `cancel_task` drain/immediate | backend agent; policyd task feed is main | the console's data source |
+| D3 | Agent console pane (`shell/crates/ec-console`), ported from the design prototype | frontend agent | after D1 and D2 |
 | — | M18, M23, M24 | blocked | spec decisions (F-03, C-00 §17) and a C fork |
 
-The agent console (being prototyped separately) sits on the human socket's
-agent methods (`get_agents`, `pause_agent`, ...) and the audit tail; nothing
-above waits on it.
+The agent console prototype is in (scratchpad; not committed, 17 MB bundle).
+It matches A-08 and COMP-19: the composer, the decision queue and the resume
+card are compositor-drawn holes, and the console itself talks only to
+`agentd`'s `console.sock`.
