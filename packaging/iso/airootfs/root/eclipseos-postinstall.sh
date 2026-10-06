@@ -27,7 +27,39 @@ if ! mountpoint -q /mnt; then
   ROOT="${ROOT//[[:space:]]/}"
   [[ $ROOT == /* ]] || ROOT="/dev/$ROOT"
   [[ -b $ROOT ]] || die "$ROOT is not a block device"
-  mount "$ROOT" /mnt
+  if [[ $(lsblk -no FSTYPE "$ROOT") == btrfs ]]; then
+    # archinstall's btrfs layout puts / in the `@` subvolume and /home, /var/log
+    # and the rest in siblings. Mounting the device plainly lands in the
+    # top-level subvolume, and everything installed there is invisible to the
+    # system that boots. Find the subvolume /etc lives in.
+    top=$(mktemp -d)
+    mount -o subvolid=5 "$ROOT" "$top"
+    if [[ -d $top/@/etc ]]; then
+      SUBVOL=@
+    elif [[ -d $top/etc ]]; then
+      SUBVOL=
+    else
+      umount "$top"
+      die "no subvolume of $ROOT holds /etc; mount the root at /mnt yourself and rerun"
+    fi
+    umount "$top"
+    rmdir "$top"
+    if [[ -n $SUBVOL ]]; then
+      say "btrfs: mounting subvolume $SUBVOL"
+      mount -o "subvol=$SUBVOL" "$ROOT" /mnt
+    else
+      mount "$ROOT" /mnt
+    fi
+  else
+    mount "$ROOT" /mnt
+  fi
+  # The rest of the layout (btrfs siblings, a separate /home, the ESP) is in
+  # the installed fstab; mount what it names under /mnt. A line that does not
+  # mount here is reported, not fatal: the ESP prompt below still runs.
+  if [[ -f /mnt/etc/fstab ]]; then
+    mount --all --fstab /mnt/etc/fstab --target-prefix /mnt ||
+      say "some fstab entries did not mount; continuing with what did"
+  fi
   # archinstall's ESP. Without it a kernel or bootloader update has nowhere to
   # write, and pacman hooks fail in ways that are hard to read.
   if ! mountpoint -q /mnt/boot; then
@@ -91,6 +123,31 @@ Wants=iwd.service
 After=iwd.service
 NMORDER
   arch-chroot /mnt systemctl enable iwd
+fi
+
+# --- remote access --------------------------------------------------------------
+# Opt in, default no. A machine with no working screen can otherwise only be
+# debugged from a photograph of it.
+read -rp $'\nenable ssh for remote debugging? [y/N] ' SSH
+if [[ $SSH == [yY]* ]]; then
+  read -rp 'user to authorise (an existing account on the new system): ' SSHUSER
+  read -rp 'paste one public key (ssh-ed25519 AAAA...): ' SSHKEY
+  [[ $SSHKEY == ssh-* || $SSHKEY == ecdsa-* || $SSHKEY == sk-* ]] || die "that does not look like a public key"
+  home=$(awk -F: -v u="$SSHUSER" '$1 == u {print $6}' /mnt/etc/passwd)
+  [[ -n $home ]] || die "no user $SSHUSER on the new system"
+  say "installing openssh, authorising one key for $SSHUSER"
+  pacstrap -C "$PACCONF" /mnt openssh
+  install -d -m0700 "/mnt$home/.ssh"
+  printf '%s\n' "$SSHKEY" >>"/mnt$home/.ssh/authorized_keys"
+  chmod 0600 "/mnt$home/.ssh/authorized_keys"
+  arch-chroot /mnt chown -R "$SSHUSER:" "$home/.ssh"
+  # Keys only: a password login over the network is not what was opted into.
+  install -Dm0644 /dev/stdin /mnt/etc/ssh/sshd_config.d/10-eclipseos.conf <<'SSHD'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+SSHD
+  arch-chroot /mnt systemctl enable sshd
 fi
 
 # --- boot menu branding -------------------------------------------------------

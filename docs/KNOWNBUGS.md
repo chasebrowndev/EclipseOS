@@ -45,14 +45,17 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
 
 ## Still open from this install
 
-- **`eclipseos-postinstall.sh` mounts the root partition plainly**, so an
-  archinstall btrfs subvolume layout lands in the top-level subvolume and the
-  install goes to the wrong place. Only ext4 has been walked through.
-- **The installed system has no way in without a screen.** `tailscale` is in no
-  EclipseOS package set; it was installed by hand on the Framework, and it is
-  the only reason any of the above could be diagnosed remotely rather than read
-  off a photographed screen. Worth deciding whether a headless-debuggable image
-  is the default.
+- **`eclipseos-postinstall.sh` on an archinstall btrfs layout is untested.**
+  It used to mount the root partition plainly, landing in the top-level
+  subvolume. It now mounts the subvolume holding `/etc` (`@` in archinstall's
+  layout), then everything the installed `/etc/fstab` names, under `/mnt`
+  (2026-10-06). Nobody has walked a btrfs install through it yet; only ext4
+  has been. This entry leaves when one has.
+- **Remote access is opt-in at install time.** Both installers now ask
+  whether to enable sshd, taking one public key and refusing password logins
+  (2026-10-06). `tailscale` is still in no EclipseOS package set; it was what
+  made the Framework install debuggable, but sshd on the LAN covers the same
+  need without a third-party account.
 
 ---
 
