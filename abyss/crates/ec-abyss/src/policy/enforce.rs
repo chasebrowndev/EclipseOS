@@ -365,7 +365,10 @@ fn answered(state: &mut AbyssState, principal: &str, req: &Request, s: Status, d
 
 /// Step 9.
 fn execute(state: &mut AbyssState, principal: &str, req: &Request, window: &Window) -> Submitted {
-    match crate::protocols::agent::seat::execute(state, req.agent, &req.act, window) {
+    state.audit.acting = Some(principal.to_owned());
+    let done = crate::protocols::agent::seat::execute(state, req.agent, &req.act, window);
+    state.audit.acting = None;
+    match done {
         Ok(detail) => answered(state, principal, req, Status::Ok, detail),
         Err((s, d)) => answered(state, principal, req, s, d),
     }

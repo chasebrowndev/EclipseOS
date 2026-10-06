@@ -63,6 +63,9 @@ pub struct Audit {
     dropped: u64,
     /// The window the last `focus` record moved focus to.
     last_focus: Option<u64>,
+    /// The agent whose act is executing (`policy::enforce`), so a record
+    /// the act causes deeper down names it.
+    pub(crate) acting: Option<String>,
     /// The record being sent. Cleared, never freed, between records.
     buf: Writer,
     /// Tests: where records go instead of a socket. Each is decoded as
@@ -199,6 +202,21 @@ enum Body<'a> {
         from: Option<u64>,
         to: Option<u64>,
     },
+    /// Appendix F-13 `slot`: what happened to a commit slot. The draft is
+    /// named by its hash only: it is human-typed text (S-04 §2).
+    Slot {
+        op: &'a str,
+        draft_hash: [u8; 32],
+        preview: Option<u64>,
+        task: Option<&'a str>,
+    },
+    /// Appendix F-13 `input_refused`: agent-origin input dropped before a
+    /// protected surface. The target is a window handle, 0 when the window
+    /// has none; never what the input was.
+    InputRefused {
+        origin: &'a str,
+        target: u64,
+    },
 }
 
 // Every map below is written with its keys already in canonical order:
@@ -314,6 +332,33 @@ impl Body<'_> {
                     w.text("from_handle");
                     w.u64(h);
                 }
+            }
+            Body::Slot {
+                op,
+                draft_hash,
+                preview,
+                task,
+            } => {
+                w.map(2 + usize::from(preview.is_some()) + usize::from(task.is_some()));
+                w.text("op");
+                w.text(op);
+                if let Some(t) = task {
+                    w.text("task");
+                    w.text(t);
+                }
+                if let Some(p) = preview {
+                    w.text("preview");
+                    w.u64(p);
+                }
+                w.text("draft_hash");
+                w.bytes(&draft_hash);
+            }
+            Body::InputRefused { origin, target } => {
+                w.map(2);
+                w.text("origin");
+                w.text(origin);
+                w.text("target");
+                w.u64(target);
             }
         }
     }
@@ -527,6 +572,48 @@ pub fn focus(state: &mut AbyssState, to: Option<u64>, cause: &str) {
     );
 }
 
+/// `slot` (F-13): `preview`, `arm`, `commit` or `refuse`. A human record:
+/// the human drove the slot. Rings, never waits.
+pub fn slot(
+    state: &mut AbyssState,
+    op: &str,
+    draft_hash: [u8; 32],
+    preview: Option<u64>,
+    task: Option<&str>,
+) {
+    if !on(state) {
+        return;
+    }
+    human(
+        state,
+        record(
+            Kind::Slot,
+            "human",
+            None,
+            Body::Slot {
+                op,
+                draft_hash,
+                preview,
+                task,
+            },
+        ),
+    );
+}
+
+/// `input_refused` (F-13), for agent origins only. `principal` is the agent
+/// whose act was executing, when one was; queued like every agent record.
+pub fn input_refused(state: &mut AbyssState, principal: &str, origin: &str, target: u64) {
+    agent(
+        state,
+        record(
+            Kind::InputRefused,
+            principal,
+            None,
+            Body::InputRefused { origin, target },
+        ),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -663,6 +750,37 @@ mod tests {
                     cause: "human",
                     from: Some(1),
                     to: Some(300),
+                },
+            ),
+            record(
+                Kind::Slot,
+                "human",
+                None,
+                Body::Slot {
+                    op: "commit",
+                    draft_hash: [3; 32],
+                    preview: Some(9),
+                    task: Some("01TASK"),
+                },
+            ),
+            record(
+                Kind::Slot,
+                "human",
+                None,
+                Body::Slot {
+                    op: "preview",
+                    draft_hash: [3; 32],
+                    preview: None,
+                    task: None,
+                },
+            ),
+            record(
+                Kind::InputRefused,
+                "agent:a",
+                None,
+                Body::InputRefused {
+                    origin: "agent_seat",
+                    target: 4,
                 },
             ),
         ] {

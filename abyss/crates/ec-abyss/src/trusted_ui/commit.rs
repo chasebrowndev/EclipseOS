@@ -177,6 +177,8 @@ struct Card {
     refused: Option<String>,
     /// The commit in flight.
     committing: Option<u64>,
+    /// BLAKE3 of the draft as previewed: what `slot` records name it by.
+    draft_hash: [u8; 32],
     sent: Option<(State, Reason)>,
     pulse_until: Option<u64>,
     /// Where to draw it this frame; `None` when it must not be drawn.
@@ -227,12 +229,27 @@ fn card(state: &mut AbyssState, slot: u64) -> &mut Card {
             preview: None,
             refused: None,
             committing: None,
+            draft_hash: [0; 32],
             sent: None,
             pulse_until: None,
             draw: None,
             look: Look::Previewing,
             art: BTreeMap::new(),
         })
+}
+
+/// The draft's BLAKE3 over its canonical CBOR: names it in the audit
+/// record without carrying what the human typed.
+fn draft_hash(d: &protected::Draft) -> [u8; 32] {
+    use ec_policy_eval::cbor::{enc, MapBuilder};
+    let mut m = MapBuilder::new();
+    m.insert("package", enc(|w| w.text(&d.package)));
+    m.insert("resumes", enc(|w| w.text(&d.resumes)));
+    m.insert("deadline", enc(|w| w.u64(u64::from(d.deadline_s))));
+    m.insert("narrowing", enc(|w| w.bytes(&d.narrowing)));
+    m.insert("statement", enc(|w| w.text(&d.statement)));
+    m.insert("continuation", enc(|w| w.text(&d.continuation)));
+    *blake3::hash(&m.finish()).as_bytes()
 }
 
 fn req(state: &mut AbyssState) -> u64 {
@@ -272,7 +289,11 @@ pub fn draft_changed(state: &mut AbyssState, slot: u64) {
             };
             if !d.package.is_empty() && !d.statement.is_empty() {
                 let r = req(state);
-                card(state, slot).asking = Some((r, revision));
+                let hash = draft_hash(&d);
+                let c = card(state, slot);
+                c.asking = Some((r, revision));
+                c.draft_hash = hash;
+                crate::audit::slot(state, "preview", hash, None, None);
                 crate::policy::link::send(
                     state,
                     &ToPolicyd::PreviewTask {
@@ -412,6 +433,8 @@ pub fn refused(state: &mut AbyssState, req: u64, reason: &str) {
         c.asking = None;
     }
     c.refused = Some(reason.to_owned());
+    let hash = c.draft_hash;
+    crate::audit::slot(state, "refuse", hash, None, None);
     tick(state);
 }
 
@@ -419,7 +442,10 @@ pub fn created(state: &mut AbyssState, req: u64, task: &str) {
     let Some((slot, true)) = by_req(state, req) else {
         return;
     };
-    card(state, slot).committing = None;
+    let c = card(state, slot);
+    c.committing = None;
+    let hash = c.draft_hash;
+    crate::audit::slot(state, "commit", hash, None, Some(task));
     protected::send_committed(state, slot, task);
     tick(state);
 }
@@ -598,7 +624,12 @@ pub fn tick(state: &mut AbyssState) {
         }
         if c.sent != Some((st, reason)) {
             c.sent = Some((st, reason));
+            let armed =
+                (st == State::Armed).then(|| (c.draft_hash, c.preview.as_ref().map(|(id, _, _)| *id)));
             protected::send_state(state, slot, st, reason);
+            if let Some((hash, preview)) = armed {
+                crate::audit::slot(state, "arm", hash, preview, None);
+            }
         }
     }
     if damage {

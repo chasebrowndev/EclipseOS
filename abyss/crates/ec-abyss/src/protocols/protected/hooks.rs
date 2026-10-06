@@ -78,4 +78,18 @@ pub fn click(state: &mut AbyssState, slot_id: u64, local_x: i32, local_y: i32, _
 /// the origin and the surface, never the input's content.
 ///
 /// Filled: `audit::input_refused(state, origin, surface)` (F-13).
-pub fn audit_refused(_state: &mut AbyssState, _origin: Origin, _surface: &WlSurface) {}
+pub fn audit_refused(state: &mut AbyssState, origin: Origin, surface: &WlSurface) {
+    let mut root = surface.clone();
+    while let Some(p) = smithay::wayland::compositor::get_parent(&root) {
+        root = p;
+    }
+    let target = crate::shell::window_for_surface(state, &root)
+        .and_then(|w| state.ipc.existing_handle(&w))
+        .unwrap_or(0);
+    let principal = state
+        .audit
+        .acting
+        .clone()
+        .unwrap_or_else(|| "system:abyss".to_owned());
+    crate::audit::input_refused(state, &principal, origin.as_str(), target);
+}

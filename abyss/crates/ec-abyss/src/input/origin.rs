@@ -58,6 +58,18 @@ impl Origin {
         }
     }
 
+    /// The S-04 / F-13 name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Origin::Physical => "physical",
+            Origin::AgentSeat => "agent_seat",
+            Origin::AgentCompat => "agent_compat",
+            Origin::Virtual => "virtual",
+            Origin::Scripted => "scripted",
+            Origin::Injected => "injected",
+        }
+    }
+
     /// An agent drove this (the audited origins, COMP-19 §3).
     #[inline]
     pub fn is_agent(self) -> bool {

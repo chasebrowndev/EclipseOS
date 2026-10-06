@@ -355,9 +355,6 @@ surface is only input-protected.
   left out of capture and out of every agent's scene as a whole, not just
   its protected subtree (`render/capture.rs`, `policy/scene.rs`). Stricter
   than §4 and §1; the console's panes are all protected anyway.
-- **No refused-input audit record.** `protocols/protected/hooks.rs
-  audit_refused` is still a stub; F-13's `input_refused` kind does not exist
-  in `ec-policy-eval::audit::Kind` yet.
 - **`slot_arm_ms` is the default.** The compiled table carries no value for
   it, so every slot arms after 500 ms.
 - **Resume restores nothing yet.** policyd and the slot accept `resumes`
