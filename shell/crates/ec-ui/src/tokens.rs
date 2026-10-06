@@ -910,6 +910,23 @@ pub mod canvas {
     pub const EVENT_PICK_W: f32 = 118.0;
     /// The reading between an event row's speed stepper buttons.
     pub const EVENT_MS_W: f32 = 64.0;
+
+    /// The arrangement canvas (Display): its height. Width is the pane's.
+    pub const ARRANGE_H: f32 = 280.0;
+    /// Breathing room kept around the arranged outputs, in screen pixels.
+    pub const ARRANGE_PAD: f32 = 28.0;
+    /// How much empty canvas surrounds the layout, as a fraction of the
+    /// largest output, so there is somewhere to drop a monitor beside the
+    /// others.
+    pub const ARRANGE_SLACK: f64 = 0.15;
+    /// A dragged output snaps to an edge it passes within this many screen
+    /// pixels.
+    pub const ARRANGE_SNAP_PX: f64 = 14.0;
+    /// A canvas tile's inner padding.
+    pub const ARRANGE_TILE_PAD: f32 = 10.0;
+    /// The rim of a tile and of the dashed-in-spirit outline left where a
+    /// dragged tile started.
+    pub const ARRANGE_RIM: f32 = 1.0;
 }
 
 /// Motion defaults. Taste, not mechanism: the live values are

@@ -11,7 +11,7 @@ use iced::widget::{button, column, container, row, rule, stack, svg, text, Colum
 use iced::{Alignment, Color, Element, Font, Length, Theme};
 
 use crate::theme;
-use crate::tokens::{breakpoint, color, drawer, font, menu, radius, size, space};
+use crate::tokens::{breakpoint, canvas, color, drawer, font, menu, radius, size, space};
 use crate::widget::Fold;
 
 /// A glass panel. The one container every block on a pane sits in.
@@ -2733,4 +2733,69 @@ pub fn sheet_outline(shape: SheetShape, w: f32, h: f32) -> iced::widget::canvas:
         b.arc_to(at(0.0, 0.0), at(top_left, 0.0), top_left);
         b.close();
     })
+}
+
+/// What an arrangement-canvas tile is made of: a numbered mono name over a
+/// reading, on a rounded glass rect that fills the tile's rectangle.
+///
+/// A widget (a styled container with a deliberate shape) because the canvas
+/// lays each tile's content out at whatever size the layout gives it, and the
+/// look of "an output on the desk" must be the same wherever one is drawn.
+/// Selected is the bar's focused-chip glass — a brighter white fill and a
+/// crisp white rim; never gold, never a glow. An output that is off draws
+/// dimmed.  The tile clips rather than wraps when it is small.
+pub fn arrangement_tile<'a, Message: 'a>(
+    ordinal: usize,
+    name: &str,
+    reading: &str,
+    selected: bool,
+    on: bool,
+) -> Element<'a, Message, Theme> {
+    let ink = move |_t: &Theme| iced::widget::text::Style {
+        color: Some(if on { color::TEXT } else { color::TEXT_TERTIARY }),
+    };
+    let mut col = Column::new().spacing(space::LINE_GAP).push(
+        row![
+            text(ordinal.to_string())
+                .font(font::DATA)
+                .size(size::MICRO)
+                .style(theme::text_tertiary),
+            text(name.to_string())
+                .font(font::DATA_MEDIUM)
+                .size(size::MONO)
+                .style(ink)
+                .wrapping(text::Wrapping::None),
+        ]
+        .spacing(space::CHIP_ORDINAL_GAP),
+    );
+    col = col.push(
+        text(reading.to_string())
+            .font(font::DATA)
+            .size(size::MICRO)
+            .style(theme::text_secondary)
+            .wrapping(text::Wrapping::None),
+    );
+    container(col)
+        .padding(canvas::ARRANGE_TILE_PAD)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .clip(true)
+        .style(move |_t: &Theme| container::Style {
+            background: Some(iced::Background::Color(if selected {
+                color::HIGHLIGHT
+            } else {
+                color::GLASS
+            })),
+            border: iced::Border {
+                color: if selected {
+                    color::HIGHLIGHT_STRONG
+                } else {
+                    color::BORDER
+                },
+                width: canvas::ARRANGE_RIM,
+                radius: radius::INSET.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
 }

@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use iced::widget::{column, pick_list, row, scrollable, text_input, Column, Row, Space};
+use iced::widget::{column, pick_list, row, scrollable, text_input, Column, Space};
 use iced::{Element, Length, Subscription, Task, Theme};
 use serde_json::{json, Value};
 
@@ -22,10 +22,12 @@ use ec_ui::motion::{Animated, Motion};
 use ec_ui::theme;
 use ec_ui::tokens::{color, font, radius, size, space};
 use ec_ui::widget::{
-    big_value, color_picker, content_at, dimmed_at, edge_note, hairline, header, list_row, list_row_at,
-    micro_label, nav_item_at, nav_page_at, nav_section_at, panel, pill, pill_group, row_caption, sidebar_at,
-    status_chip, subtitle, swatch_button, value as mono, Density, NumericSlider, Toggle,
+    color_picker, content_at, dimmed_at, edge_note, hairline, header, list_row, list_row_at, micro_label,
+    nav_item_at, nav_page_at, nav_section_at, panel, pill, pill_group, row_caption, sidebar_at, status_chip,
+    subtitle, swatch_button, value as mono, Density, NumericSlider, Toggle,
 };
+
+mod display;
 
 use crate::conn::{Conn, Problem};
 use crate::network::{self, Net};
@@ -92,6 +94,13 @@ pub enum Message {
     OutputEnabled(u64, bool),
     OutputScale(u64, f64),
     OutputScaleReleased(u64),
+    /// A scale preset: written at once, no drag to wait out.
+    OutputScaleSet(u64, f64),
+    /// A mode in `set_output`'s own spelling (`WxH@mHz`).
+    OutputMode(u64, String),
+    OutputSelected(u64),
+    /// An output dropped on the canvas, at its snapped logical position.
+    OutputMoved(u64, i64, i64),
     OutputTransform(u64, String),
     InsetMoved(u64, Edge, f64),
     InsetReleased(u64),
@@ -250,6 +259,8 @@ pub struct App {
     /// The throttled writes of the sliders being held, per path.
     live_writes: HashMap<String, LiveWrite>,
     outputs: Vec<Output>,
+    /// The output the Display card is about; `None` is the focused one.
+    selected: Option<u64>,
     insets: HashMap<u64, Inset>,
     scales: HashMap<u64, f64>,
     calibrating: Option<u64>,
@@ -333,6 +344,7 @@ impl App {
             live_writes: HashMap::new(),
             nums: HashMap::new(),
             outputs: Vec::new(),
+            selected: None,
             insets: HashMap::new(),
             scales: HashMap::new(),
             calibrating: None,
@@ -900,6 +912,13 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 app.set_output(id, "scale", json!(v));
             }
         }
+        Message::OutputScaleSet(id, v) => {
+            app.scales.remove(&id);
+            app.set_output(id, "scale", json!(v));
+        }
+        Message::OutputMode(id, m) => app.set_output(id, "mode", Value::String(m)),
+        Message::OutputSelected(id) => app.pick_output(id),
+        Message::OutputMoved(id, x, y) => app.move_output(id, x, y),
         Message::OutputTransform(id, t) => app.set_output(id, "transform", Value::String(t)),
         Message::InsetMoved(id, edge, v) => {
             let inset = app.insets.entry(id).or_default();
@@ -1235,6 +1254,10 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
             let (state, measure) = app.net.chip();
             controls.push(status_chip(&state, &measure));
         }
+        Section::Display => {
+            let (state, measure) = display::status(app);
+            controls.push(status_chip(&state, &measure));
+        }
         Section::Taskbar => {
             let (state, measure) = crate::taskbar::status(app);
             controls.push(status_chip(&state, &measure));
@@ -1262,7 +1285,7 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         blocks.push(banner(problem, app.glass_radius));
     }
     match app.page {
-        Page::Display => blocks.extend(display_pane(app)),
+        Page::Display => blocks.extend(display::blocks(app)),
         Page::Network => blocks.extend(network::blocks(&app.net, app.glass_radius)),
         Page::Addons => blocks.extend(crate::addons::blocks(app)),
         // A status grid, then the rows: two silhouettes, not two panels of rows.
@@ -1869,101 +1892,6 @@ fn scale_control(app: &App, id: u64, scale: f64) -> Element<'_, Message, Theme> 
     .on_commit(Message::NumberCommitted(num))
     .invalid(invalid)
     .into()
-}
-
-/// Outputs. Modes are read-only — `get_outputs` reports the current mode, not
-/// the list of available ones — and the calibration overlay is drawn by the
-/// compositor (COMP-03 §1.1), so this pane sends verbs and shows numbers.
-fn display_pane(app: &App) -> Vec<Element<'_, Message, Theme>> {
-    const TRANSFORMS: &[&str] = &["normal", "90", "180", "270"];
-
-    if app.outputs.is_empty() {
-        return vec![panel(app.glass_radius, mono("no outputs")).into()];
-    }
-
-    app.outputs
-        .iter()
-        .map(|o| {
-            let scale = app.scales.get(&o.id).copied().unwrap_or(o.scale);
-            let inset = app.insets.get(&o.id).copied().unwrap_or(o.overscan);
-
-            let mut transforms = Row::new().spacing(6);
-            for t in TRANSFORMS {
-                transforms = transforms.push(pill(
-                    t,
-                    o.transform == *t,
-                    Message::OutputTransform(o.id, (*t).to_string()),
-                ));
-            }
-
-            let mut edges = Column::new().spacing(space::ROW_Y);
-            for edge in Edge::ALL {
-                let edge = *edge;
-                let id = o.id;
-                let num = Num::Inset(id, edge);
-                let draft = app.nums.get(&num);
-                let current = inset.get(edge) as f64;
-                let shown = draft.cloned().unwrap_or_else(|| INSET_SPAN.format(current));
-                let invalid = draft.is_some_and(|d| INSET_SPAN.parse(d).is_none());
-                let typed = num.clone();
-                edges = edges.push(list_row(
-                    &crate::schema::sentence_case(edge.label()),
-                    NumericSlider::new(
-                        0.0..=INSET_MAX,
-                        current,
-                        shown,
-                        move |v| Message::InsetMoved(id, edge, v),
-                        move |t| Message::NumberTyped(typed.clone(), t),
-                    )
-                    .step(1.0)
-                    .on_release(Message::InsetReleased(id))
-                    .on_commit(Message::NumberCommitted(num))
-                    .invalid(invalid),
-                ));
-            }
-
-            let calibrating = app.calibrating == Some(o.id);
-            let actions: Row<'_, Message, Theme> = if calibrating {
-                row![
-                    pill("Commit", true, Message::Calibrate(o.id, "commit")),
-                    pill("Cancel", false, Message::Calibrate(o.id, "cancel")),
-                ]
-            } else {
-                row![pill("Calibrate", false, Message::Calibrate(o.id, "start"))]
-            }
-            .spacing(space::PILL_GAP);
-
-            panel(
-                app.glass_radius,
-                column![
-                    row![
-                        micro_label(&o.name),
-                        Space::new().width(Length::Fill),
-                        big_value(&scale.to_string(), "x", o.focused),
-                    ]
-                    .align_y(iced::Alignment::Center),
-                    list_row("Identity", mono(&o.identity)),
-                    list_row("Mode", mono(&o.mode_display())),
-                    list_row("Position", mono(&o.position_display())),
-                    list_row(
-                        "Enabled",
-                        Toggle::new(o.enabled, {
-                            let id = o.id;
-                            move |on| Message::OutputEnabled(id, on)
-                        }),
-                    ),
-                    list_row("Transform", transforms),
-                    list_row("Scale", scale_control(app, o.id, scale)),
-                    hairline(),
-                    micro_label("overscan"),
-                    edges,
-                    actions,
-                ]
-                .spacing(space::ROW_Y),
-            )
-            .into()
-        })
-        .collect()
 }
 
 #[cfg(test)]
