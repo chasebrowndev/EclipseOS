@@ -154,6 +154,15 @@ impl Agents {
             .unwrap_or_default()
     }
 
+    /// Put an already-admitted agent in a slot without a client behind it.
+    #[cfg(test)]
+    pub(crate) fn insert_for_test(&mut self, agent: Agent) -> u64 {
+        self.next_id += 1;
+        let id = self.next_id;
+        self.slots.push((id, Some(agent)));
+        id
+    }
+
     /// Drop every grant agent `id` holds.
     pub(crate) fn revoke_id(&mut self, id: u64) {
         if let Some(a) = self

@@ -57,6 +57,12 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "set_idle_inhibit" => set_idle_inhibit(state, conn, params),
         // The bar's start menu, relayed on the `launcher` event stream.
         "open_launcher" => open_launcher(state, params),
+        // Agent lifecycle from the human seat (COMP-08, COMP-10 §3.3).
+        "get_agents" => get_agents(state),
+        "pause_agent" => pause_agent(state, params),
+        "resume_agent" => resume_agent(state, params),
+        "terminate_agent" => terminate_agent(state, params),
+        "revoke_grants" => revoke_grants(state, params),
         // Config read/write (COMP-13 §1.4). The outer gate already returned
         // `Allow` to reach this line; `config_rpc` tightens onto it per file.
         "get_config"
@@ -993,9 +999,183 @@ fn open_launcher(state: &mut AbyssState, params: &Value) -> Reply {
     Ok(json!({"ok": true, "output": id, "output_name": name, "delivered": delivered}))
 }
 
+// ------------------------------------------------------- agent lifecycle
+//
+// The decisions live in `policy::lifecycle` (TCB); these arms only parse and
+// name the agent. They mirror the emergency panel and are `Privileged`, so
+// the gate has already required the socket owner's uid.
+
+/// `get_agents`: every live agent object, its state and grant summary.
+///
+/// The spec also lists a "recent action count". That is audit data; abyss
+/// does not hold the audit store and the emergency panel gets it from
+/// policyd (VOL1 5226), so it is omitted here.
+fn get_agents(state: &mut AbyssState) -> Reply {
+    use crate::policy::lifecycle::{all_paused, is_paused};
+    let agents: Vec<Value> = state
+        .agents
+        .list()
+        .into_iter()
+        .map(|(id, principal)| {
+            json!({
+                "id": id,
+                "principal": principal,
+                "task": state.agents.task_of(id).map(|t| t.to_string()),
+                "state": if is_paused(state, id) { "paused" } else { "running" },
+                "grants": state.agents.grants_of(id),
+            })
+        })
+        .collect();
+    Ok(json!({"agents": agents, "all_paused": all_paused(state)}))
+}
+
+/// The `id` parameter, which must name a live agent object.
+fn agent_param(state: &AbyssState, params: &Value) -> Result<u64, RpcError> {
+    let id = u64_param(params, "id")?;
+    if state.agents.principal_of(id).is_none() {
+        return Err(RpcError::invalid_params(&format!("no such agent: {id}")));
+    }
+    Ok(id)
+}
+
+/// `{"id":N}` or `{"all":true}`; `None` means every agent.
+fn agent_or_all(state: &AbyssState, params: &Value) -> Result<Option<u64>, RpcError> {
+    only_keys(params, &["id", "all"])?;
+    let p = params_obj(params);
+    match (p.contains_key("id"), p.contains_key("all")) {
+        (true, true) => Err(RpcError::invalid_params("give id or all, not both")),
+        (false, true) => {
+            if bool_param(params, "all")? {
+                Ok(None)
+            } else {
+                Err(RpcError::invalid_params("all must be true"))
+            }
+        }
+        _ => agent_param(state, params).map(Some),
+    }
+}
+
+fn pause_agent(state: &mut AbyssState, params: &Value) -> Reply {
+    match agent_or_all(state, params)? {
+        Some(id) => crate::policy::lifecycle::pause(state, id),
+        None => crate::policy::lifecycle::pause_all(state),
+    }
+    Ok(json!({}))
+}
+
+fn resume_agent(state: &mut AbyssState, params: &Value) -> Reply {
+    match agent_or_all(state, params)? {
+        Some(id) => crate::policy::lifecycle::resume(state, id),
+        None => crate::policy::lifecycle::resume_all(state),
+    }
+    Ok(json!({}))
+}
+
+fn terminate_agent(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &["id"])?;
+    let id = agent_param(state, params)?;
+    crate::policy::lifecycle::terminate(state, id);
+    Ok(json!({}))
+}
+
+fn revoke_grants(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &["id"])?;
+    let id = agent_param(state, params)?;
+    crate::policy::lifecycle::revoke(state, id);
+    Ok(json!({}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The agent lifecycle methods: shapes, state, and unknown ids.
+    #[test]
+    fn agent_lifecycle_methods() {
+        use ec_policy_eval::grant::{cose_sign1, protected_header, sig_structure};
+        use ec_policy_eval::{Capability, Constraints, Grant, Ulid};
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let k = SigningKey::from_bytes(&[3u8; 32]);
+        let g = Grant {
+            id: Ulid([1; 16]),
+            principal: "agent:test".into(),
+            issued_ms: 0,
+            expires_ms: u64::MAX,
+            issuer: "policyd".into(),
+            task_id: Ulid([9; 16]),
+            capabilities: vec![Capability {
+                name: "scene.list".into(),
+                scopes: vec!["workspace:human".into()],
+                quota: None,
+            }],
+            constraints: Constraints::default(),
+            unattended: false,
+        };
+        let protected = protected_header(&k.verifying_key());
+        let payload = g.encode();
+        let sig = k.sign(&sig_structure(&protected, &payload));
+        let cose = cose_sign1(&protected, &payload, &sig.to_bytes());
+        let agent =
+            crate::policy::Agent::admit(&cose, Some(&k.verifying_key()), 1, |_| false).expect("admit");
+
+        let mut h = crate::shell::focus::state_tests::harness();
+        let s = &mut h.state;
+        let id = s.agents.insert_for_test(agent);
+
+        let r = dispatch(s, 0, "get_agents", &Value::Null).ok().expect("list");
+        assert_eq!(r["all_paused"], json!(false));
+        let a = &r["agents"][0];
+        assert_eq!(a["id"], json!(id));
+        assert_eq!(a["principal"], json!("agent:test"));
+        assert_eq!(a["state"], json!("running"));
+        assert_eq!(a["task"], json!(Ulid([9; 16]).to_string()));
+        assert!(a["grants"].as_array().is_some_and(|g| !g.is_empty()));
+
+        assert_eq!(
+            dispatch(s, 0, "pause_agent", &json!({"id": id})).ok(),
+            Some(json!({}))
+        );
+        let r = dispatch(s, 0, "get_agents", &Value::Null).ok().expect("list");
+        assert_eq!(r["agents"][0]["state"], json!("paused"));
+        assert!(dispatch(s, 0, "resume_agent", &json!({"id": id})).is_ok());
+        let r = dispatch(s, 0, "get_agents", &Value::Null).ok().expect("list");
+        assert_eq!(r["agents"][0]["state"], json!("running"));
+
+        assert!(dispatch(s, 0, "pause_agent", &json!({"all": true})).is_ok());
+        let r = dispatch(s, 0, "get_agents", &Value::Null).ok().expect("list");
+        assert_eq!(r["all_paused"], json!(true));
+        assert_eq!(r["agents"][0]["state"], json!("paused"));
+        assert!(dispatch(s, 0, "resume_agent", &json!({"all": true})).is_ok());
+        assert!(!crate::policy::lifecycle::all_paused(s));
+
+        // Malformed and unknown targets are invalid params, and change nothing.
+        for (m, p) in [
+            ("pause_agent", json!({"id": 999})),
+            ("resume_agent", json!({"id": 999})),
+            ("terminate_agent", json!({"id": 999})),
+            ("revoke_grants", json!({"id": 999})),
+            ("pause_agent", json!({})),
+            ("pause_agent", json!({"id": id, "all": true})),
+            ("pause_agent", json!({"all": false})),
+            ("terminate_agent", json!({"all": true})),
+            ("revoke_grants", json!({"id": id, "extra": 1})),
+        ] {
+            let e = dispatch(s, 0, m, &p).err().unwrap_or_else(|| panic!("{m} {p}"));
+            assert_eq!(e.code, super::super::INVALID_PARAMS, "{m} {p}");
+        }
+        assert!(!crate::policy::lifecycle::is_paused(s, id));
+
+        // Revoke drops the grants but keeps the agent object.
+        assert!(dispatch(s, 0, "revoke_grants", &json!({"id": id})).is_ok());
+        let r = dispatch(s, 0, "get_agents", &Value::Null).ok().expect("list");
+        assert_eq!(r["agents"][0]["grants"], json!([]));
+
+        // Terminate succeeds for a live agent. (Removal of the slot rides on
+        // ending its client, which this test agent does not have; that path
+        // is covered in protocols/agent/tests.rs.)
+        assert!(dispatch(s, 0, "terminate_agent", &json!({"id": id})).is_ok());
+    }
 
     #[test]
     fn unknown_parameters_are_refused() {

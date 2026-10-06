@@ -33,6 +33,10 @@ ec-ctl — control the abyss compositor
   ec-ctl output ID overscan SPEC set overscan: N, or top=N,left=N,...
   ec-ctl output ID calibrate [commit|cancel]
                                       drive the on-screen overscan calibration
+  ec-ctl agents                  live agents, their state and grants
+  ec-ctl agent pause|resume ID|--all
+  ec-ctl agent terminate|revoke ID
+                                      human lifecycle controls (owner uid only)
   ec-ctl reload                  re-read the config
   ec-ctl addons                  installed add-ons and the hooks they turn on
   ec-ctl config list [--changed] every setting, its value and its file
@@ -351,15 +355,20 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
             json!({"handle": num(1)?, "workspace": num(2)?}),
             None,
         ),
-        "pause" | "resume" | "terminate" => {
-            // COMP-13 §2.3 spells these as `ec-ctl pause agent:research-7`.
-            // The compositor has no agents yet and answers "not implemented";
-            // the CLI surface exists so the shape does not change later.
-            let id = a(1);
-            if id.is_empty() {
-                return Err("expected an agent id".into());
-            }
-            (format!("{}_agent", a(0)), json!({"agent": id}), None)
+        "agent" => {
+            // `ec-ctl agent pause|resume ID|--all`, `agent terminate|revoke ID`.
+            // The compositor refuses `all` where it makes no sense.
+            let verb = match a(1) {
+                v @ ("pause" | "resume" | "terminate") => format!("{v}_agent"),
+                "revoke" => "revoke_grants".to_string(),
+                other => return Err(format!("expected pause|resume|terminate|revoke, got {other:?}")),
+            };
+            let params = if flags.all && a(2).is_empty() {
+                json!({"all": true})
+            } else {
+                json!({"id": num(2)?})
+            };
+            (verb, params, None)
         }
         "call" => {
             let method = a(1);
@@ -822,6 +831,28 @@ mod tests {
     fn run(args: &[&str]) -> Result<Parsed, String> {
         let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
         parse(&args, &Flags::default())
+    }
+
+    #[test]
+    fn agent_verbs_map_to_lifecycle_methods() {
+        let (m, p, _) = run(&["agent", "pause", "3"]).unwrap();
+        assert_eq!((m.as_str(), p), ("pause_agent", json!({"id": 3})));
+        let (m, p, _) = run(&["agent", "revoke", "3"]).unwrap();
+        assert_eq!((m.as_str(), p), ("revoke_grants", json!({"id": 3})));
+        let (m, p, _) = run(&["agent", "terminate", "4"]).unwrap();
+        assert_eq!((m.as_str(), p), ("terminate_agent", json!({"id": 4})));
+        let args: Vec<String> = ["agent", "resume"].iter().map(|s| (*s).to_string()).collect();
+        let (m, p, _) = parse(
+            &args,
+            &Flags {
+                all: true,
+                ..Flags::default()
+            },
+        )
+        .unwrap();
+        assert_eq!((m.as_str(), p), ("resume_agent", json!({"all": true})));
+        assert!(run(&["agent", "pause"]).is_err());
+        assert!(run(&["agent", "nuke", "1"]).is_err());
     }
 
     #[test]

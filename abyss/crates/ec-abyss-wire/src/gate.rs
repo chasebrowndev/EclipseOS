@@ -103,11 +103,11 @@ pub const TABLE: &[Entry] = &[
     // it carries no answer and can only show the owner a prompt again.
     e("review_widget", Kind::Command, true),
     // Agent lifecycle: the protocol itself is Phase 2 (COMP-08).
-    e("get_agents", Kind::Privileged, false),
-    e("pause_agent", Kind::Privileged, false),
-    e("resume_agent", Kind::Privileged, false),
-    e("terminate_agent", Kind::Privileged, false),
-    e("revoke_grants", Kind::Privileged, false),
+    e("get_agents", Kind::Privileged, true),
+    e("pause_agent", Kind::Privileged, true),
+    e("resume_agent", Kind::Privileged, true),
+    e("terminate_agent", Kind::Privileged, true),
+    e("revoke_grants", Kind::Privileged, true),
     // Scripted input: the gate is real, the injection path is not (COMP-04).
     e("type_text", Kind::ScriptedInput, false),
     e("click_at", Kind::ScriptedInput, false),
@@ -583,24 +583,12 @@ mod tests {
 
     #[test]
     fn phase_two_rows_stay_unimplemented() {
-        // Agent lifecycle (COMP-08) and scripted input (COMP-04) are not
-        // Phase 1; the gate must keep answering "not implemented".
+        // Scripted input (COMP-04) is not Phase 1; the gate must keep answering "not implemented".
         let pending: Vec<&str> = TABLE
             .iter()
             .filter(|e| !e.implemented)
             .map(|e| e.method)
             .collect();
-        assert_eq!(
-            pending,
-            vec![
-                "get_agents",
-                "pause_agent",
-                "resume_agent",
-                "terminate_agent",
-                "revoke_grants",
-                "type_text",
-                "click_at",
-            ]
-        );
+        assert_eq!(pending, vec!["type_text", "click_at",]);
     }
 }
