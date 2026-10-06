@@ -60,6 +60,12 @@ pub fn send(state: &mut AbyssState, m: &ToPolicyd) {
     crate::audit::message(state, m.encode());
 }
 
+/// Tests: as though `m` had arrived from policyd.
+#[cfg(test)]
+pub(crate) fn deliver_for_test(state: &mut AbyssState, m: FromPolicyd) {
+    deliver(state, m);
+}
+
 /// Hand a decoded message to the part of abyss that owns it.
 fn deliver(state: &mut AbyssState, m: FromPolicyd) {
     match m {

@@ -1288,3 +1288,132 @@ fn a_protected_window_is_absent_from_agents_and_from_capture() {
         "windows and layers"
     );
 }
+
+// ------------------------------------------------------------ the slot, end to end
+
+/// A-08 §5.2 through the compositor: a draft is previewed by policyd, the
+/// card arms only after the delay, a physical Enter commits exactly the
+/// preview on screen, an injected one never does, and the client learns
+/// only `committed`.
+#[test]
+fn a_draft_previews_arms_and_commits_on_physical_enter_only() {
+    use ec_policy_eval::cbor::{enc, MapBuilder};
+    use ec_policy_eval::link::{FromPolicyd, ToPolicyd};
+    use rustix::net::{recv, socketpair, AddressFamily, RecvFlags, SocketFlags, SocketType};
+
+    let mut r = rig();
+    r.h.state.policy_key = Some(ed25519_dalek::SigningKey::from_bytes(&[5; 32]).verifying_key());
+    crate::policy::table::install_for_test(&mut r.h.state);
+    let (ours, theirs) = socketpair(
+        AddressFamily::UNIX,
+        SocketType::SEQPACKET,
+        SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+        None,
+    )
+    .unwrap();
+    r.h.state.audit.sink = None;
+    r.h.state.audit.link_for_test(ours);
+    let sent = |theirs: &std::os::fd::OwnedFd| {
+        let mut out = Vec::new();
+        let mut buf = vec![0u8; 65536];
+        while let Ok((n, _)) = recv(theirs, &mut buf[..], RecvFlags::DONTWAIT) {
+            if ec_policy_eval::link::is_message(&buf[..n]) {
+                out.push(ToPolicyd::decode(&buf[..n]).unwrap());
+            }
+        }
+        out
+    };
+
+    let s = r.c.slot(&mut r.h, &r.prot, CKind::TaskCommit, 0, 0);
+    s.set_draft(
+        "ec-ref-agent".into(),
+        "Say hello".into(),
+        0,
+        Vec::new(),
+        String::new(),
+        String::new(),
+        0,
+    );
+    r.pump();
+    let req = match sent(&theirs).as_slice() {
+        [ToPolicyd::PreviewTask {
+            req,
+            package,
+            statement,
+            ..
+        }] => {
+            assert_eq!(
+                (package.as_str(), statement.as_str()),
+                ("ec-ref-agent", "Say hello")
+            );
+            *req
+        }
+        other => panic!("{other:?}"),
+    };
+    let mut d = MapBuilder::new();
+    for (k, v) in [
+        ("package_name", "Reference agent"),
+        ("package", "ec-ref-agent"),
+        ("publisher", "eclipse"),
+        ("statement", "Say hello"),
+        ("continuation", ""),
+    ] {
+        d.insert(k, enc(|w| w.text(v)));
+    }
+    d.insert("deadline_ms", enc(|w| w.u64(7_200_000)));
+    d.insert("could", enc(|w| w.array(0)));
+    d.insert("narrowed", enc(|w| w.bool(false)));
+    d.insert("untrusted_predecessor", enc(|w| w.bool(false)));
+    crate::policy::link::deliver_for_test(
+        &mut r.h.state,
+        FromPolicyd::Preview {
+            req,
+            preview: 9,
+            display: d.finish(),
+        },
+    );
+
+    // Not armed yet: Enter is dropped, not queued, and nothing is sent.
+    key(&mut r.h, Origin::Physical, KEY_ENTER, true);
+    key(&mut r.h, Origin::Physical, KEY_ENTER, false);
+    r.pump();
+    assert!(sent(&theirs).is_empty(), "Enter before the arming delay");
+    std::thread::sleep(std::time::Duration::from_millis(
+        crate::trusted_ui::slot::ARM_DEFAULT_MS + 100,
+    ));
+    crate::trusted_ui::commit::tick(&mut r.h.state);
+    r.pump();
+    assert!(
+        r.c.seen
+            .states
+            .contains(&(State::Armed as u32, Reason::None as u32)),
+        "{:?}",
+        r.c.seen.states
+    );
+
+    // An injected Enter never reaches the slot.
+    key(&mut r.h, Origin::Injected, KEY_ENTER, true);
+    key(&mut r.h, Origin::Injected, KEY_ENTER, false);
+    assert!(sent(&theirs).is_empty(), "injected Enter");
+
+    key(&mut r.h, Origin::Physical, KEY_ENTER, true);
+    key(&mut r.h, Origin::Physical, KEY_ENTER, false);
+    r.pump();
+    let creq = match sent(&theirs).as_slice() {
+        [ToPolicyd::CreateTask { req, preview: 9, .. }] => *req,
+        other => panic!("{other:?}"),
+    };
+    crate::policy::link::deliver_for_test(
+        &mut r.h.state,
+        FromPolicyd::TaskCreated {
+            req: creq,
+            task: "01TASK".into(),
+        },
+    );
+    r.pump();
+    assert_eq!(r.c.seen.committed, vec!["01TASK".to_owned()]);
+    assert!(
+        r.c.seen.keys.iter().all(|(k, _)| *k != KEY_ENTER),
+        "no Enter reached the client"
+    );
+}

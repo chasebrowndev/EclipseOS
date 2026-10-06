@@ -1091,4 +1091,77 @@ mod launched {
         };
         assert_eq!(reason, "failed");
     }
+
+    /// The real reference agent (`ec-ref-agent`) behind agentd's MCP socket,
+    /// driven from the console socket: the agent acknowledges the statement,
+    /// answers a human post, asks back on a question, and exits when the
+    /// task closes. Skipped when the binary has not been built alongside.
+    #[test]
+    fn the_reference_agent_talks_through_the_console() {
+        let exe = std::env::current_exe().unwrap();
+        let bin = exe
+            .parent()
+            .and_then(Path::parent)
+            .map(|d| d.join("ec-ref-agent"));
+        let Some(bin) = bin.filter(|b| b.exists()) else {
+            eprintln!("ec-ref-agent is not built; skipped (cargo build -p ec-ref-agent)");
+            return;
+        };
+        let dir = ec_agentd::scratch_dir("refagent");
+        let root = dir.join("agents");
+        package(&root, &format!("#!/bin/sh\nexec {}\n", bin.display()));
+        let mut rig = Rig::with(
+            dir,
+            T0,
+            Opts {
+                launch: true,
+                packages: vec![(root, "local".into())],
+                ..Opts::default()
+            },
+        );
+        let mut c = rig.console();
+        let id = tid(1);
+        rig.fake().send(&prov(&id, "agent:ref"));
+        let read = |c: &mut Cl, want: usize| {
+            let t = Instant::now();
+            loop {
+                let r = c.ok("conversation_read", json!({ "task_id": id }));
+                let msgs = r["messages"].as_array().cloned().unwrap_or_default();
+                if msgs.len() >= want {
+                    return (msgs, r);
+                }
+                assert!(t.elapsed() < Duration::from_secs(10), "only {msgs:?}");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        let (msgs, _) = read(&mut c, 1);
+        assert_eq!(msgs[0]["kind"], "say");
+        assert!(msgs[0]["text"].as_str().unwrap().contains("Triage the invoices"));
+        assert_eq!(msgs[0]["trust"]["min_trust"], "standard");
+
+        c.ok(
+            "conversation_post",
+            json!({ "task_id": id, "text": "which folder?" }),
+        );
+        let (msgs, r) = read(&mut c, 4);
+        assert_eq!(msgs[1]["kind"], "human");
+        assert!(msgs[2..].iter().any(|m| m["kind"] == "ask"), "{msgs:?}");
+        assert_eq!(r["awaiting_reply"], true);
+
+        // policyd closed it, so agentd stops the agent and does not report
+        // an exit back; the session moves to History.
+        rig.fake().send(&state(&id, "closed", "cancelled"));
+        let t = Instant::now();
+        loop {
+            let r = c.ok("list_sessions", json!({}));
+            if r["sessions"]
+                .as_array()
+                .is_some_and(|s| s.iter().any(|x| x["task_id"] == json!(id)))
+            {
+                break;
+            }
+            assert!(t.elapsed() < Duration::from_secs(5), "never closed");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
 }
