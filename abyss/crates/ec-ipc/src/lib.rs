@@ -55,6 +55,9 @@ pub enum EventKind {
     /// Whether a personal secret is set: `{"set": bool}`. Never the phrase
     /// itself (COMP-10 §2).
     Phrase,
+    /// How many consent prompts are parked: `{"count": N}`. A count, never
+    /// content (A-08 §7, COMP-10 §3.13).
+    DecisionsPending,
 }
 
 impl EventKind {
@@ -69,6 +72,7 @@ impl EventKind {
         EventKind::Keybind,
         EventKind::Launcher,
         EventKind::Phrase,
+        EventKind::DecisionsPending,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -83,6 +87,7 @@ impl EventKind {
             EventKind::Keybind => "keybind",
             EventKind::Launcher => "launcher",
             EventKind::Phrase => "phrase",
+            EventKind::DecisionsPending => "decisions_pending",
         }
     }
 
@@ -97,6 +102,19 @@ pub struct Event {
     pub kind: EventKind,
     /// The notification's `params`, whatever shape that kind carries.
     pub data: Value,
+}
+
+impl Event {
+    /// The parked-prompt count of a `decisions_pending` event.
+    pub fn decisions_pending(&self) -> Option<u32> {
+        if self.kind != EventKind::DecisionsPending {
+            return None;
+        }
+        self.data
+            .get("count")?
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+    }
 }
 
 #[derive(Debug)]
@@ -120,6 +138,12 @@ impl Error {
     /// denial is a policy answer, and a GUI shows it rather than retrying.
     pub fn is_denied(&self) -> bool {
         matches!(self, Error::Rpc { code: -32000, .. })
+    }
+
+    /// True when the call was rate-limited (`-32002`, A-08 §7
+    /// `show_decisions`). The message names `retry_after_ms`.
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(self, Error::Rpc { code: -32002, .. })
     }
 
     /// True when the method is not implemented yet (`-32001`). A pane can
@@ -253,6 +277,21 @@ impl Client {
 
     /// Ask for these event kinds. Replaces any previous subscription, which
     /// is the server's semantics — `subs` is assigned, not extended.
+    /// Ask the compositor to open the decision queue (COMP-10 §3.13). The
+    /// compositor limits this to 1/s; see [`Error::is_rate_limited`].
+    pub fn show_decisions(&mut self) -> Result<()> {
+        self.call("show_decisions", Value::Null).map(drop)
+    }
+
+    /// Begin installing an agent package from `dir`. `dir` must be absolute;
+    /// the review and the decision happen in a trusted modal, not here.
+    pub fn agent_install(&mut self, dir: &std::path::Path) -> Result<()> {
+        let path = dir
+            .to_str()
+            .ok_or_else(|| Error::Protocol("path is not UTF-8".into()))?;
+        self.call("agent_install", json!({ "path": path })).map(drop)
+    }
+
     pub fn subscribe(&mut self, kinds: &[EventKind]) -> Result<()> {
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
         self.call("subscribe", json!({"events": names}))?;
@@ -421,6 +460,29 @@ mod tests {
             assert_eq!(EventKind::parse(k.as_str()), Some(*k));
         }
         assert_eq!(EventKind::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn decisions_pending_event_carries_a_count() {
+        let msg = json!({"jsonrpc":"2.0","method":"event",
+            "params":{"event":"decisions_pending","data":{"count":4}}});
+        let ev = as_event(&msg).expect("event");
+        assert_eq!(ev.kind, EventKind::DecisionsPending);
+        assert_eq!(ev.decisions_pending(), Some(4));
+        let other = Event {
+            kind: EventKind::Focus,
+            data: json!({"count": 4}),
+        };
+        assert_eq!(other.decisions_pending(), None);
+    }
+
+    #[test]
+    fn rate_limited_is_distinguishable() {
+        let e = Error::Rpc {
+            code: -32002,
+            message: "rate_limited: retry_after_ms=900".into(),
+        };
+        assert!(e.is_rate_limited() && !e.is_denied());
     }
 
     #[test]

@@ -172,6 +172,11 @@ package_eclipseos-agents() {
   _want ec-agentd.service
   install -Dm0644 "$srcdir/$_src/packaging/addons/eclipseos-agents.kdl" \
     "$pkgdir/usr/share/eclipse/addons/eclipseos-agents.kdl"
+  # The reference agent package (console wave): manifest beside its binary,
+  # the entrypoint being relative to the package directory (A-07 §7).
+  _ref="$pkgdir/usr/share/eclipse/agents/ec-ref-agent/0.1.0"
+  install -Dm0644 "$srcdir/$_src/packaging/agents/ec-ref-agent/manifest.kdl" "$_ref/manifest.kdl"
+  install -Dm0755 "$srcdir/target/release/ec-ref-agent" "$_ref/bin/ec-ref-agent"
 }
 
 package_eclipseos-setup() {

@@ -362,3 +362,16 @@ surface is only input-protected.
   it, so every slot arms after 500 ms.
 - **Resume is refused in the slot** (`resume_unsupported`): A-06
   `session.restore()` does not exist.
+
+## CONSOLE-01: console wave client pieces are unproven against live peers
+
+- `ec-console-client::protected` has never run against abyss: its protocol XML
+  is a client-only copy written from COMP-19 §2, and the `state` event's
+  numeric order (previewing=0 .. refused=4) is assumed from the spec's list.
+  Compare with `ec-protocols`' canonical file when B1 lands.
+- `ec-console-client::console` parses replies tolerantly from assumed JSON
+  shapes (see the B3 hand-off); agentd's real server (B2) is the authority.
+- `ec-ref-agent` expects `task.inbox` to return `{messages, closed}` as the
+  bare result, `structuredContent`, or JSON text in `content[0].text`.
+- `ipc::hooks` stubs fail closed (`agent_install` refuses, the queue never
+  opens, the pending count is 0) until main wires the TCB side.

@@ -361,6 +361,7 @@ impl Queue {
 /// Park a request and show it if nothing else holds the seat.
 pub fn park(state: &mut AbyssState, agent: u64, req: u64, ask: Ask) -> Result<u64, Refused> {
     let token = state.trusted_ui.consent.park(agent, req, ask)?;
+    crate::ipc::events::decisions_pending_changed(state);
     schedule(state);
     Ok(token)
 }
@@ -372,6 +373,7 @@ pub fn withdraw(state: &mut AbyssState, agent: u64) {
     }
     super::batch::withdraw(state, agent);
     crate::policy::enforce::drain(state);
+    crate::ipc::events::decisions_pending_changed(state);
     schedule(state);
 }
 
@@ -407,6 +409,7 @@ pub fn answer(state: &mut AbyssState, choice: Choice) {
         tracing::info!(agent = r.agent, req = r.req, verdict = ?r.verdict, "consent prompt answered");
     }
     crate::policy::enforce::drain(state);
+    crate::ipc::events::decisions_pending_changed(state);
 }
 
 #[cfg(test)]

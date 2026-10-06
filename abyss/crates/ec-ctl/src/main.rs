@@ -37,6 +37,8 @@ ec-ctl — control the abyss compositor
   ec-ctl agent pause|resume ID|--all
   ec-ctl agent terminate|revoke ID
                                       human lifecycle controls (owner uid only)
+  ec-ctl agent install DIR       review and install an agent package from DIR
+                                      (the decision is made in a compositor modal)
   ec-ctl reload                  re-read the config
   ec-ctl addons                  installed add-ons and the hooks they turn on
   ec-ctl config list [--changed] every setting, its value and its file
@@ -355,6 +357,17 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
             json!({"handle": num(1)?, "workspace": num(2)?}),
             None,
         ),
+        "agent" if a(1) == "install" => {
+            // The compositor wants an absolute, existing directory and
+            // canonicalises it itself; only a relative path is resolved here.
+            let dir = a(2);
+            if dir.is_empty() {
+                return Err("agent install needs a package directory".into());
+            }
+            let path = std::path::absolute(dir).map_err(|e| format!("{dir}: {e}"))?;
+            let path = path.to_str().ok_or("path is not UTF-8")?.to_owned();
+            ("agent_install".into(), json!({"path": path}), None)
+        }
         "agent" => {
             // `ec-ctl agent pause|resume ID|--all`, `agent terminate|revoke ID`.
             // The compositor refuses `all` where it makes no sense.
@@ -853,6 +866,16 @@ mod tests {
         assert_eq!((m.as_str(), p), ("resume_agent", json!({"all": true})));
         assert!(run(&["agent", "pause"]).is_err());
         assert!(run(&["agent", "nuke", "1"]).is_err());
+    }
+
+    #[test]
+    fn agent_install_sends_an_absolute_path() {
+        let (m, p, _) = run(&["agent", "install", "/opt/pkg"]).unwrap();
+        assert_eq!((m.as_str(), p), ("agent_install", json!({"path": "/opt/pkg"})));
+        let (_, p, _) = run(&["agent", "install", "rel/pkg"]).unwrap();
+        let sent = p["path"].as_str().unwrap();
+        assert!(std::path::Path::new(sent).is_absolute() && sent.ends_with("rel/pkg"));
+        assert!(run(&["agent", "install"]).is_err());
     }
 
     #[test]

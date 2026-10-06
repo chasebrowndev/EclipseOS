@@ -89,6 +89,7 @@ pub fn ask(
         targets: described,
         summary: summary.to_owned(),
     });
+    crate::ipc::events::decisions_pending_changed(state);
     schedule(state);
     true
 }

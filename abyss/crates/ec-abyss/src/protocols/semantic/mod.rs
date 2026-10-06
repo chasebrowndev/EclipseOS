@@ -282,11 +282,8 @@ fn taxonomy_known(_state: &AbyssState, _id: &str) -> bool {
 /// current generation, and whether a `secret` node is known (COMP-02 §7,
 /// A-10).
 ///
-/// TCB-HOOK: this has the signature of `render/capture.rs`'s private
-/// `semantics_for` on purpose. Replace its body with
-/// `crate::protocols::semantic::capture_facts(state, surface)`; that turns
-/// on node-level redaction for live trees (the redaction suite's live-tree
-/// arm, COMP-16 M22) and nothing else changes there.
+/// `render/capture.rs`'s `semantics_for` calls this: node-level redaction
+/// for live trees (the redaction suite's live-tree arm, COMP-16 M22).
 ///
 /// Fail-closed throughout; the arms are in `tests.rs`:
 /// - no tree and no secret ever known: `Absent`, not known;

@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: Apache-2.0
+// The mechanical reference agent (console wave, B3). No model: it echoes the
+// human's messages back. Conversation is intrinsic to every task (A-08 §6),
+// so it requests no capabilities.
+agent {
+  id "ec-ref-agent"
+  name "Reference Agent"
+  version "0.1.0"
+  publisher "eclipse"
+  // Relative to the package directory (A-07 §7 refuses a path outside it).
+  entrypoint "bin/ec-ref-agent"
+
+  task {
+    default_deadline "2h"
+    max_depth 0
+  }
+
+  capabilities {
+  }
+
+  sandbox {
+  }
+
+  resumable #false
+}

@@ -19,7 +19,7 @@ use crate::state::AbyssState;
 /// (COMP-19 §5: "size is the compositor's"). Sent as `geometry` when the slot
 /// is created.
 ///
-/// TCB-HOOK: answer from `trusted_ui::slot` (the card's size for the slot's
+/// Filled: answer from `trusted_ui::slot` (the card's size for the slot's
 /// current preview). When the size changes later, call
 /// [`super::send_geometry`].
 pub fn slot_size(kind: Kind) -> (i32, i32) {
@@ -30,7 +30,7 @@ pub fn slot_size(kind: Kind) -> (i32, i32) {
 /// most 10 a second per slot). The slot must disarm (§6) and a new preview
 /// start (A-08 §5.2). Read the draft with [`super::draft`].
 ///
-/// TCB-HOOK: `trusted_ui::slot::on_draft(state, slot_id)`.
+/// Filled: `trusted_ui::slot::on_draft(state, slot_id)`.
 pub fn draft_changed(state: &mut AbyssState, slot_id: u64) {
     crate::trusted_ui::commit::draft_changed(state, slot_id);
 }
@@ -38,7 +38,7 @@ pub fn draft_changed(state: &mut AbyssState, slot_id: u64) {
 /// The slot moved (`move`) and must disarm (§6). Read the new rectangle with
 /// [`super::slot_rect`].
 ///
-/// TCB-HOOK: `trusted_ui::slot::on_moved(state, slot_id)`.
+/// Filled: `trusted_ui::slot::on_moved(state, slot_id)`.
 pub fn slot_moved(state: &mut AbyssState, slot_id: u64) {
     crate::trusted_ui::commit::moved(state, slot_id);
 }
@@ -47,7 +47,7 @@ pub fn slot_moved(state: &mut AbyssState, slot_id: u64) {
 /// destroyed, its surface or client gone. Called before the record is
 /// removed, so [`super::draft`] and [`super::slot_rect`] still answer.
 ///
-/// TCB-HOOK: `trusted_ui::slot::on_gone(state, slot_id)` drops the preview and
+/// Filled: `trusted_ui::slot::on_gone(state, slot_id)` drops the preview and
 /// any armed state.
 pub fn slot_gone(state: &mut AbyssState, slot_id: u64) {
     crate::trusted_ui::commit::gone(state, slot_id);
@@ -58,7 +58,7 @@ pub fn slot_gone(state: &mut AbyssState, slot_id: u64) {
 /// reach the client. Armed: commit. Not armed: drop it, pulse the slot, never
 /// queue it. `now_ms` is the event time.
 ///
-/// TCB-HOOK: `trusted_ui::slot::on_enter(state, slot_id, now_ms)`.
+/// Filled: `trusted_ui::slot::on_enter(state, slot_id, now_ms)`.
 pub fn enter(state: &mut AbyssState, slot_id: u64, _now_ms: u32) {
     crate::trusted_ui::commit::enter(state, slot_id);
 }
@@ -67,7 +67,7 @@ pub fn enter(state: &mut AbyssState, slot_id: u64, _now_ms: u32) {
 /// client never sees it. `local_x`, `local_y` are relative to the slot's top
 /// left, logical px.
 ///
-/// TCB-HOOK: `trusted_ui::slot::on_click(state, slot_id, x, y, now_ms)`.
+/// Filled: `trusted_ui::slot::on_click(state, slot_id, x, y, now_ms)`.
 pub fn click(state: &mut AbyssState, slot_id: u64, local_x: i32, local_y: i32, _now_ms: u32) {
     crate::trusted_ui::commit::click(state, slot_id, local_x, local_y);
 }
@@ -77,5 +77,5 @@ pub fn click(state: &mut AbyssState, slot_id: u64, local_x: i32, local_y: i32, _
 /// once per dropped event, so the audit side decides how to coalesce. Carries
 /// the origin and the surface, never the input's content.
 ///
-/// TCB-HOOK: `audit::input_refused(state, origin, surface)` (F-13).
+/// Filled: `audit::input_refused(state, origin, surface)` (F-13).
 pub fn audit_refused(_state: &mut AbyssState, _origin: Origin, _surface: &WlSurface) {}

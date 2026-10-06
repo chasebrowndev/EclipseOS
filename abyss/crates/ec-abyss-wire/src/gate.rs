@@ -108,6 +108,12 @@ pub const TABLE: &[Entry] = &[
     e("resume_agent", Kind::Privileged, true),
     e("terminate_agent", Kind::Privileged, true),
     e("revoke_grants", Kind::Privileged, true),
+    // Console wave (A-08 §7). `show_decisions` only asks trusted UI to open
+    // the queue (rate-limited, no content); `agent_install` only hands a path
+    // to policyd, whose review is a trusted modal, so it is Privileged and
+    // nothing installs without the human's answer there.
+    e("show_decisions", Kind::Command, true),
+    e("agent_install", Kind::Privileged, true),
     // Scripted input: the gate is real, the injection path is not (COMP-04).
     e("type_text", Kind::ScriptedInput, false),
     e("click_at", Kind::ScriptedInput, false),
@@ -212,6 +218,8 @@ pub const HOOKED: &[HookBinding] = &[
     hb("resume_agent", None, Hook::Agents),
     hb("terminate_agent", None, Hook::Agents),
     hb("revoke_grants", None, Hook::Agents),
+    // Installing an agent package needs the agent stack to review it.
+    hb("agent_install", None, Hook::Agents),
 ];
 
 /// Hook check, tightened onto the outer [`check`] (the ratchet). A binding

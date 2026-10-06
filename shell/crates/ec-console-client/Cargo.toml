@@ -1,0 +1,18 @@
+[package]
+name = "ec-console-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Client library for the console frontend: agentd's console.sock (A-08 §7) and eclipse_protected_surface_v1 (COMP-19). No UI."
+publish = false
+
+[dependencies]
+serde_json.workspace = true
+# `client_system`: the console's window belongs to winit/iced, which owns the
+# wl_display. We attach to that display and surface by pointer, so the system
+# (libwayland) backend is required (`Backend::from_foreign_display`).
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-scanner = "0.31"

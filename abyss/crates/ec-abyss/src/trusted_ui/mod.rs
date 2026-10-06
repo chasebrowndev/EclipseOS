@@ -321,6 +321,7 @@ fn choose(state: &mut AbyssState, button: usize, timed_out: bool) {
     };
     crate::backend::damage_all(state);
     resolve(state, choice);
+    crate::ipc::events::decisions_pending_changed(state);
     // Whatever was waiting behind this prompt gets its turn.
     approval::schedule(state);
     consent::schedule(state);

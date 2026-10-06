@@ -63,6 +63,9 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "resume_agent" => resume_agent(state, params),
         "terminate_agent" => terminate_agent(state, params),
         "revoke_grants" => revoke_grants(state, params),
+        // Console wave (A-08 §7, B3): the decision queue and agent install.
+        "show_decisions" => show_decisions(state, params),
+        "agent_install" => agent_install(state, params),
         // Config read/write (COMP-13 §1.4). The outer gate already returned
         // `Allow` to reach this line; `config_rpc` tightens onto it per file.
         "get_config"
@@ -1085,9 +1088,107 @@ fn revoke_grants(state: &mut AbyssState, params: &Value) -> Reply {
     Ok(json!({}))
 }
 
+// ------------------------------------------------------- console wave
+
+/// Minimum spacing between `show_decisions` calls (A-08 §7: 1/s).
+const SHOW_DECISIONS_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// `show_decisions`: ask the compositor to open the decision queue
+/// (COMP-10 §3.13). Carries no decision content and answers `{}`; the queue
+/// itself is trusted UI and opens with Deny focused.
+fn show_decisions(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &[])?;
+    show_decisions_at(state, std::time::Instant::now())
+}
+
+fn show_decisions_at(state: &mut AbyssState, now: std::time::Instant) -> Reply {
+    if let Some(last) = state.ipc.last_show_decisions {
+        let since = now.saturating_duration_since(last);
+        if since < SHOW_DECISIONS_MIN_GAP {
+            let retry = (SHOW_DECISIONS_MIN_GAP - since).as_millis() as u64;
+            return Err(RpcError::rate_limited(retry));
+        }
+    }
+    state.ipc.last_show_decisions = Some(now);
+    super::hooks::open_decision_queue(state);
+    Ok(json!({}))
+}
+
+/// Validate the `path` of `agent_install`: absolute, an existing directory,
+/// returned canonicalised (symlinks and `..` resolved) so what policyd is
+/// handed is the directory that was checked.
+fn install_path(params: &Value) -> Result<std::path::PathBuf, RpcError> {
+    only_keys(params, &["path"])?;
+    let raw = params_obj(params)
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| RpcError::invalid_params("path must be a string"))?;
+    if raw.is_empty() || raw.contains('\0') {
+        return Err(RpcError::invalid_params("path must be a non-empty path"));
+    }
+    let p = std::path::Path::new(raw);
+    if !p.is_absolute() {
+        return Err(RpcError::invalid_params("path must be absolute"));
+    }
+    let canon = std::fs::canonicalize(p)
+        .map_err(|_| RpcError::invalid_params("path is not an existing directory"))?;
+    if !canon.is_dir() {
+        return Err(RpcError::invalid_params("path is not an existing directory"));
+    }
+    Ok(canon)
+}
+
+/// `agent_install {path}`: begin installing an agent package from a
+/// directory. This only hands the path on; the review is a trusted modal and
+/// nothing is installed without the human's answer there. Privileged, so the
+/// gate has already required the owner uid.
+fn agent_install(state: &mut AbyssState, params: &Value) -> Reply {
+    let path = install_path(params)?;
+    match super::hooks::install_begin(state, &path) {
+        Ok(()) => Ok(json!({})),
+        Err(why) => Err(RpcError::denied(why)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn show_decisions_is_rate_limited_to_one_per_second() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let s = &mut h.state;
+        let t0 = std::time::Instant::now();
+        assert_eq!(show_decisions_at(s, t0).ok(), Some(json!({})));
+        let e = show_decisions_at(s, t0 + std::time::Duration::from_millis(400)).expect_err("limited");
+        assert_eq!(e.code, ec_abyss_wire::rpc::RATE_LIMITED);
+        assert!(e.message.contains("rate_limited"));
+        // A refused call does not restart the window.
+        assert!(show_decisions_at(s, t0 + std::time::Duration::from_millis(1001)).is_ok());
+        assert!(dispatch(s, 0, "show_decisions", &json!({"x": 1})).is_err());
+    }
+
+    #[test]
+    fn agent_install_path_validation() {
+        let dir = std::env::temp_dir().join(format!("ec-install-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let file = dir.join("f");
+        std::fs::write(&file, b"x").expect("write");
+
+        assert!(install_path(&json!({})).is_err());
+        assert!(install_path(&json!({"path": 3})).is_err());
+        assert!(install_path(&json!({"path": "relative/dir"})).is_err());
+        assert!(install_path(&json!({"path": dir.join("missing")})).is_err());
+        assert!(install_path(&json!({"path": file})).is_err());
+        assert!(install_path(&json!({"path": dir, "extra": 1})).is_err());
+        // `..` is resolved, not trusted.
+        let dotted = dir.join("..").join(dir.file_name().expect("name"));
+        assert_eq!(
+            install_path(&json!({"path": dotted})).ok(),
+            Some(std::fs::canonicalize(&dir).expect("canon"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The agent lifecycle methods: shapes, state, and unknown ids.
     #[test]

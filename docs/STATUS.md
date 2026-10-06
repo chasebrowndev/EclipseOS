@@ -836,3 +836,12 @@ presence of CI must not be read as coverage.**
 and NVIDIA are **untested** until the second machine is run. No part of the
 installer has been run against a real disk or a VM yet; the helper's 95 tests
 use a fake runner.
+
+## Console wave, B3 (docs/internal/console-plan.md)
+
+| Item | State | Notes |
+|---|---|---|
+| Human socket: `show_decisions`, `decisions_pending` event, `agent_install {path}` | **built, stubbed behind TCB hooks** | A-08 §7. `ipc/hooks.rs` holds three `TCB-HOOK` stubs (open queue, parked count, install_begin); `ipc/events.rs::decisions_pending_changed` is for the trusted-UI queue to call. `show_decisions` is rate-limited to 1/s (error code -32002 `rate_limited`). `agent_install` requires an absolute, existing, canonicalised directory and fails closed until the policyd forward lands. Gate rows: `show_decisions` Command, `agent_install` Privileged |
+| `ec-ipc` / `ec-ctl` | **done** | `Client::show_decisions`, `Client::agent_install`, `EventKind::DecisionsPending`, `ec-ctl agent install DIR` |
+| `ec-ref-agent` (`abyss/crates/ec-ref-agent`) | **done** | Mechanical MCP client (C6): acknowledges the statement, echoes human messages, asks back on `?`, exits 0 on `closed`. Package at `packaging/agents/ec-ref-agent/`, shipped in `eclipseos-agents` to `/usr/share/eclipse/agents/ec-ref-agent/0.1.0/` |
+| `ec-console-client` (`shell/crates/ec-console-client`) | **done, protected-surface half untested against a compositor** | `console` (every A-08 §7 method, C5 events) is tested over a socketpair. `protected` attaches to a foreign `wl_display`/`wl_surface` and has only pure-logic tests; it carries a client-only copy of the protocol XML until `ec-protocols` has the canonical one |
