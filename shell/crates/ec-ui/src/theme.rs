@@ -8,7 +8,7 @@
 
 use iced::{
     border,
-    widget::{button, container, radio, rule, scrollable, slider, text, text_input},
+    widget::{button, container, radio, rule, scrollable, slider, text, text_editor, text_input},
     Background, Border, Color, Shadow, Theme, Vector,
 };
 
@@ -631,6 +631,170 @@ pub fn eclipse_scrollable(_t: &Theme, status: scrollable::Status) -> scrollable:
             shadow: Shadow::default(),
             icon: color::TEXT_SECONDARY,
         },
+    }
+}
+
+/// A row of the console's fleet: a button that is a whole task. Selected is
+/// the same clearer glass as a focused bar cell, but the label stays white:
+/// the console's one yellow lives in its header, and a selected row that also
+/// glowed gold would be a second.
+pub fn fleet_row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_t, status| {
+        let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: Some(Background::Color(match (selected, lit) {
+                (true, _) => color::CELL_FOCUS,
+                (false, true) => color::CELL_HOVER,
+                (false, false) => Color::TRANSPARENT,
+            })),
+            text_color: color::TEXT,
+            border: Border {
+                color: match (selected, lit) {
+                    (true, _) => color::CELL_FOCUS_RIM,
+                    (false, true) => color::CELL_RIM_HOVER,
+                    (false, false) => Color::TRANSPARENT,
+                },
+                width: space::HAIRLINE,
+                radius: radius::INSET.into(),
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
+/// A neutral selected-option pill, for a pane whose accent is already spent
+/// elsewhere: the same shape as [`pill`], lifted white instead of yellow.
+pub fn pick(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_t, status| {
+        let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: Some(Background::Color(match (selected, lit) {
+                (true, _) => color::HIGHLIGHT,
+                (false, true) => color::LIFT,
+                (false, false) => color::LIFT_SOFT,
+            })),
+            text_color: if selected {
+                color::TEXT
+            } else {
+                color::TEXT_SECONDARY
+            },
+            border: Border {
+                color: if selected {
+                    color::HIGHLIGHT_STRONG
+                } else {
+                    color::BORDER
+                },
+                width: space::HAIRLINE,
+                radius: radius::PILL.into(),
+            },
+            ..button::Style::default()
+        }
+    }
+}
+
+/// A quiet text link: no ground, no rim, secondary ink that lifts to primary
+/// under the pointer. For "Provenance", "Show", "Delete" — verbs that must be
+/// there without being the loudest thing in the row.
+pub fn link(_t: &Theme, status: button::Status) -> button::Style {
+    let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: None,
+        text_color: if lit { color::TEXT } else { color::TEXT_SECONDARY },
+        border: Border::default(),
+        ..button::Style::default()
+    }
+}
+
+/// A pill that is switched off: dimmed to tertiary and inert. Used for a
+/// control that exists but cannot act right now (the agent service is away).
+pub fn pill_disabled(_t: &Theme, _status: button::Status) -> button::Style {
+    button::Style {
+        background: Some(Background::Color(color::LIFT_SOFT)),
+        text_color: color::TEXT_TERTIARY,
+        border: Border {
+            color: color::HAIRLINE,
+            width: space::HAIRLINE,
+            radius: radius::PILL.into(),
+        },
+        ..button::Style::default()
+    }
+}
+
+/// A post of yours in a thread: a clear lift of white, no rim.
+pub fn bubble_human(_t: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(color::LIFT)),
+        border: border::rounded(radius::CARD),
+        ..container::Style::default()
+    }
+}
+
+/// An agent's post: the darker surface, with a hairline. Darker, not lighter,
+/// is how the thread tells agent text from yours before any label is read.
+pub fn bubble_agent(_t: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(color::SIDEBAR)),
+        border: Border {
+            color: color::BORDER,
+            width: space::HAIRLINE,
+            radius: radius::CARD.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// The ground a reply bar or composer sits on: a rounded inset the editor
+/// itself is transparent inside. `lit` brightens the rim for a bar that is
+/// waiting on you; it is white, never the accent.
+pub fn editor_ground(lit: bool) -> impl Fn(&Theme) -> container::Style {
+    move |_t: &Theme| container::Style {
+        background: Some(Background::Color(color::LIFT_SOFT)),
+        border: Border {
+            color: if lit {
+                color::HIGHLIGHT_STRONG
+            } else {
+                color::BORDER
+            },
+            width: space::HAIRLINE,
+            radius: radius::CARD.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// A multi-line editor that is not a box: its ground is [`editor_ground`].
+pub fn bare_editor(_t: &Theme, status: text_editor::Status) -> text_editor::Style {
+    text_editor::Style {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border::default(),
+        placeholder: color::TEXT_TERTIARY,
+        value: if matches!(status, text_editor::Status::Disabled) {
+            color::TEXT_TERTIARY
+        } else {
+            color::TEXT
+        },
+        selection: Color {
+            a: 0.28,
+            ..color::ACCENT
+        },
+    }
+}
+
+/// The send button: a disc that lifts to white once there is something to
+/// send, and sits as a ghost until then.
+pub fn send(ready: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_t, status| {
+        let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: Some(Background::Color(match (ready, lit) {
+                (true, true) => color::HIGHLIGHT_STRONG,
+                (true, false) => color::HIGHLIGHT,
+                (false, _) => color::LIFT_SOFT,
+            })),
+            text_color: if ready { color::TEXT } else { color::TEXT_TERTIARY },
+            border: border::rounded(radius::PILL),
+            ..button::Style::default()
+        }
     }
 }
 

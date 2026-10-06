@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "crates/ec-center",
+  "crates/ec-console",
   "crates/ec-console-client",
   "crates/ec-hyperion-bar",
   "crates/ec-launcher",

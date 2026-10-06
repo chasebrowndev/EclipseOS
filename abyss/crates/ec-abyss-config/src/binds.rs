@@ -165,6 +165,14 @@ pub fn default_binds() -> Vec<Bind> {
             key: Keysym::e,
             action: Action::Spawn("ec-launcher".into()),
         },
+        // The agent console (A-08 §9): an ordinary, rebindable default, since
+        // opening a client grants nothing. Layouts where `/` is shifted need
+        // Super+Shift+<that key> (docs/CONFIG.md).
+        Bind {
+            mods: sup,
+            key: Keysym::slash,
+            action: Action::Spawn("ec-console".into()),
+        },
         // The desktop's own surfaces. Hyprland reaches these through
         // `qs -c eclipse ipc call ui toggle ...`; ours are separate binaries,
         // and each exits on Escape, so a second press of the bind is not a
