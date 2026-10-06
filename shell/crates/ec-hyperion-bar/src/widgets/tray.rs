@@ -83,7 +83,10 @@ pub fn view(app: &App, frame: ShellFrame) -> Parts<'_> {
         .padding(0)
         .style(super::inner)
         .on_press(Message::TrayActivate(item.address.clone()));
-        r = r.push(mouse_area(press).on_right_press(Message::TrayMenu(item.address.clone())));
+        r = r.push(parts::long_press(
+            mouse_area(press).on_right_press(Message::TrayMenu(item.address.clone())),
+            Message::TrayMenu(item.address.clone()),
+        ));
     }
     r = r.push(disclosure(ink));
     Parts {
@@ -139,13 +142,16 @@ pub(crate) fn sheet(app: &App) -> Sheet {
             continue;
         };
         s.row(
-            mouse_area(parts::drawer_choice(
-                tray_mark(&item.icon, drawer::MARK, color::TEXT_SECONDARY),
-                &elide(&item.title, DRAWER_CHARS),
-                None,
-                Some(Message::TrayActivate(item.address.clone())),
-            ))
-            .on_right_press(Message::TrayMenu(item.address.clone()))
+            parts::long_press(
+                mouse_area(parts::drawer_choice(
+                    tray_mark(&item.icon, drawer::MARK, color::TEXT_SECONDARY),
+                    &elide(&item.title, DRAWER_CHARS),
+                    None,
+                    Some(Message::TrayActivate(item.address.clone())),
+                ))
+                .on_right_press(Message::TrayMenu(item.address.clone())),
+                Message::TrayMenu(item.address.clone()),
+            )
             .into(),
         );
     }

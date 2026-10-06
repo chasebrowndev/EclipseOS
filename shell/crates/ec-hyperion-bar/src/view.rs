@@ -1026,19 +1026,26 @@ fn task_chip(
         if crate::pins::is_idle(w) {
             // A pinned app with no window: click starts it, and there is
             // nothing to close, so no middle click.
-            mouse_area(press.on_press(Message::LaunchPin(w.app_id.clone())))
-                .on_right_press(Message::Menu(w.handle))
-                .into()
+            // A finger has no right button: a long press opens the same menu.
+            parts::long_press(
+                mouse_area(press.on_press(Message::LaunchPin(w.app_id.clone())))
+                    .on_right_press(Message::Menu(w.handle)),
+                Message::Menu(w.handle),
+            )
+            .into()
         } else {
             let click = if up && !focused {
                 Message::Focus(w.handle)
             } else {
                 Message::ToggleMinimize(w.handle)
             };
-            mouse_area(press.on_press(click))
-                .on_middle_press(Message::Close(w.handle))
-                .on_right_press(Message::Menu(w.handle))
-                .into()
+            parts::long_press(
+                mouse_area(press.on_press(click))
+                    .on_middle_press(Message::Close(w.handle))
+                    .on_right_press(Message::Menu(w.handle)),
+                Message::Menu(w.handle),
+            )
+            .into()
         }
     };
     let tone = if accent {

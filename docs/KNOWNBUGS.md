@@ -59,20 +59,6 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
 
 ---
 
-# Touchscreen — CSW1322 panel on the dev box, 2026-09-24
-
-## TOUCH-01: taskbar and tray context menus cannot be opened by touch
-
-`shell/crates/ec-hyperion-bar/src/view.rs:1030`, `:1040` and
-`shell/crates/ec-hyperion-bar/src/widgets/tray.rs:86` open the window and tray menus
-with `mouse_area::on_right_press`, and a finger has no right button. iced 0.14's
-`mouse_area` has no long-press. **Repro:** on a touchscreen, hold a finger on a
-taskbar window button or tray icon. No menu opens. **Proposed:** a long-press
-(about 500 ms with no movement past a small slop) in hyperion that sends the same
-`Menu`/`TrayMenu` message.
-
----
-
 # Screen capture — found building blur modes, 2026-09-27
 
 ## CAP-01: screenshots and screencasts drop every compositor effect
@@ -113,6 +99,14 @@ around both cards. **Compositor half fixed 2026-10-06:** abyss implements
 committed blur region replaces the whole-surface backdrop, live and in
 captures. **Still open:** ec-toasts must set a region per card. That is
 frontend (`eclipse-frontend`), and the entry leaves when it lands.
+**Blocked 2026-10-06 on iced_layershell 0.19.1:** the connection is reachable
+(`Settings::with_connection` takes a shared `wayland_client::Connection`, so a
+second event queue can bind `ext_background_effect_manager_v1`), but the
+layer surface's `wl_surface` is not. `window::run` / raw-handle actions fall
+through (`WindowAction::_ => {}` in `multi_window.rs`), and the only callback
+into the window, `SetInputRegion`, hands out a `WlRegion`. Smallest fix: a
+`LayerShellCustomAction` that runs a `Fn(&WlSurface)` callback (modelled on
+`SetInputRegion`), upstream or as a `[patch]`; the rest is client-side only.
 
 ---
 

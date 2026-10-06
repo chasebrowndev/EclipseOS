@@ -942,6 +942,12 @@ pub mod motion {
     pub const REVEAL_MS: u64 = 1200;
     /// Travel under which a grip's press and release is a tap, not a drag.
     pub const TAP_SLOP: f32 = 4.0;
+    /// How long a finger rests on something before it counts as a long
+    /// press: the touch stand-in for a right click.
+    pub const LONG_PRESS_MS: u64 = 500;
+    /// Travel past which a resting finger is moving, not pressing. Wider
+    /// than [`TAP_SLOP`]: a held fingertip drifts more than a tap does.
+    pub const LONG_PRESS_SLOP: f32 = 8.0;
     /// How far ahead a released drag is projected along its velocity, in
     /// seconds, to choose the rest it snaps to: a flick carries past the
     /// midpoint the finger never reached.
