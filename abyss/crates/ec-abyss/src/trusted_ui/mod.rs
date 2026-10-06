@@ -35,10 +35,12 @@ pub mod approval;
 pub mod batch;
 pub mod consent;
 pub mod erase;
+pub mod install;
 pub mod modal;
 pub mod notice;
 pub mod panel;
 pub mod phrase;
+pub mod queue;
 pub mod slot;
 pub mod socket;
 
@@ -131,6 +133,8 @@ pub struct TrustedUi {
     pub(crate) panel: panel::Panel,
     /// Batch prompts waiting or shown (§3.7).
     pub(crate) batches: batch::Batches,
+    /// Agent install reviews waiting or shown (A-07 §3).
+    pub(crate) installs: install::Installs,
     /// The bound trusted socket, so a clean exit can unlink it.
     pub path: Option<PathBuf>,
 }
@@ -318,6 +322,7 @@ fn choose(state: &mut AbyssState, button: usize, timed_out: bool) {
     approval::schedule(state);
     consent::schedule(state);
     batch::schedule(state);
+    install::schedule(state);
     // The pointer is re-evaluated as though it had just moved, so whatever is
     // under it gets its enter now rather than on the next motion.
     state.refresh_pointer_focus();
@@ -338,6 +343,8 @@ fn resolve(state: &mut AbyssState, choice: Choice) {
         batch::answer(state, choice);
     } else if panel::owns(state, choice.token) {
         panel::answer(state, choice);
+    } else if install::owns(state, choice.token) {
+        install::answer(state, choice);
     } else if notice::owns(choice.token) {
         // Acknowledged; nothing follows from a notice.
     }

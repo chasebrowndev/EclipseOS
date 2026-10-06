@@ -351,6 +351,11 @@ impl Queue {
     pub fn is_empty(&self) -> bool {
         self.parked.is_empty()
     }
+
+    /// Parked requests, the one on screen included.
+    pub fn len(&self) -> usize {
+        self.parked.len()
+    }
 }
 
 /// Park a request and show it if nothing else holds the seat.

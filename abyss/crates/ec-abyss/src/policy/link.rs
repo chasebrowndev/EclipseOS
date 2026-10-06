@@ -74,9 +74,17 @@ fn deliver(state: &mut AbyssState, m: FromPolicyd) {
         // Answers to messages this build does not send yet (the console
         // wave), and agentd's pushes. Ignored, not believed: a grant reaches
         // an agent only through admission.
+        FromPolicyd::InstallReview { req, review, display } => {
+            crate::trusted_ui::install::review(state, req, review, &display)
+        }
+        FromPolicyd::Done { req } if crate::trusted_ui::install::owns_req(state, req) => {
+            crate::trusted_ui::install::outcome(state, req, None)
+        }
+        FromPolicyd::Refused { req, reason } if crate::trusted_ui::install::owns_req(state, req) => {
+            crate::trusted_ui::install::outcome(state, req, Some(&reason))
+        }
         FromPolicyd::Preview { .. }
         | FromPolicyd::TaskCreated { .. }
-        | FromPolicyd::InstallReview { .. }
         | FromPolicyd::Done { .. }
         | FromPolicyd::Refused { .. }
         | FromPolicyd::TaskState { .. }

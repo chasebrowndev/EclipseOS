@@ -262,3 +262,11 @@ TCB-HOOKs in `protocols/semantic/mod.rs`, in that order.
   while a secret is known; COMP-02 A-10's "surface's current generation" has
   no other definition in the tree today.
 
+
+## QUEUE-01: the decision queue is the prompt sequence, not a list
+
+COMP-10 §3.13 (Appendix F-12) describes a list of every parked prompt, each
+expanding to its full prompt. Consent prompts in v1 have no "decide later",
+so the oldest parked prompt is always on screen whenever the seat is free,
+and `trusted_ui::queue::open` (Super+Space, `show_decisions`) brings it
+forward with Deny focused. A list view needs deferral first.

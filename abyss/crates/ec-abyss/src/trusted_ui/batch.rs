@@ -39,6 +39,17 @@ pub struct Batches {
     next: u64,
 }
 
+impl Batches {
+    /// Batch prompts waiting or on screen.
+    pub fn len(&self) -> usize {
+        self.waiting.len() + usize::from(self.showing.is_some())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 const HEADING: &str = "An agent is asking to act on several things at once";
 const BODY: &str =
     "Approving lets the agent do this to exactly the targets listed, each once, without asking again.";
