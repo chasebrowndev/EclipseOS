@@ -13,10 +13,13 @@
 //! - `revoke` and `terminate` cancel the principal's live task, which revokes
 //!   its grants in one record, and answer `revoked`.
 //! - `audit_tail` answers from the store's in-memory tail.
-//! - `mint` is refused until grants can be built from a prompt answer.
-//! - `defer` is answered `prompt`: no deterministic check exists yet, and
-//!   escalating to the human is the only answer that neither widens nor
-//!   silently waves the request through (COMP-11 §5).
+//! - `mint` issues exactly the scope the prompt showed, on the principal's
+//!   live task (`TaskStore::mint_from_prompt`), or answers `mint_refused`.
+//! - `defer` runs `TaskStore::defer_check`: `deny` when the principal has no
+//!   task that may act, otherwise `prompt` (COMP-11 §5).
+//! - `open_task` and `close_task` are the human's (A-04 §3): `ec-policyd task
+//!   open|close`, a client on this same socket. A close tells every peer
+//!   `revoked`, so abyss drops the grants at once.
 //!
 //! The store has one owner, the main thread. Connection threads decode and
 //! queue; a full queue stops a connection thread reading, which fills the
@@ -159,6 +162,10 @@ fn load_key(dir: &Path) -> std::io::Result<ed25519_dalek::SigningKey> {
 }
 
 fn main() -> std::process::ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("task") {
+        return cli::task(&args[1..]);
+    }
     let dir = state_dir();
     let key = match load_key(&dir) {
         Ok(k) => k,
@@ -200,20 +207,21 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+    let serving = push.clone();
     std::thread::spawn(move || {
-        if let Err(e) = serve(listener, &offer, tx, push) {
+        if let Err(e) = serve(listener, &offer, tx, serving) {
             eprintln!("policyd: policyd.sock: {e}");
             std::process::exit(1);
         }
     });
-    write(&mut store, rx)
+    write(&mut store, rx, &push)
 }
 
 /// Appends every queued emission. A record that cannot be written ends the
 /// daemon: abyss sees the link drop and pauses every agent (COMP-01 §6),
 /// which is the fail-closed answer to an audit log that has stopped taking
 /// records. Continuing would let agents act unjournalled.
-fn write(store: &mut tasks::TaskStore, rx: Receiver<Incoming>) -> std::process::ExitCode {
+fn write(store: &mut tasks::TaskStore, rx: Receiver<Incoming>, push: &Mutex<Push>) -> std::process::ExitCode {
     for incoming in rx {
         match incoming {
             Incoming::Emission(e) => {
@@ -222,14 +230,15 @@ fn write(store: &mut tasks::TaskStore, rx: Receiver<Incoming>) -> std::process::
                     return std::process::ExitCode::FAILURE;
                 }
             }
-            Incoming::Message(m, conn) => match answer(store, m) {
-                Ok(Some(reply)) => {
+            Incoming::Message(m, conn) => match answer(store, m, now_ms()) {
+                Ok(Answer::To(reply)) => {
                     use rustix::net::{send, SendFlags};
                     // A peer that cannot take the answer has hung up; its
                     // connection thread sees that and ends.
                     let _ = send(&*conn, &reply.encode(), SendFlags::NOSIGNAL);
                 }
-                Ok(None) => {}
+                Ok(Answer::All(m)) => broadcast(push, &m.encode()),
+                Ok(Answer::Nothing) => {}
                 Err(err) => {
                     eprintln!("policyd: cannot journal a link request: {err}");
                     return std::process::ExitCode::FAILURE;
@@ -240,27 +249,94 @@ fn write(store: &mut tasks::TaskStore, rx: Receiver<Incoming>) -> std::process::
     std::process::ExitCode::FAILURE
 }
 
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Sends `msg` to every live connection: abyss and any CLI on the socket.
+fn broadcast(push: &Mutex<Push>, msg: &[u8]) {
+    use rustix::net::{send, SendFlags};
+    let Ok(mut p) = push.lock() else { return };
+    p.conns.retain(|w| w.strong_count() > 0);
+    for c in p.conns.iter().filter_map(Weak::upgrade) {
+        let _ = send(&*c, msg, SendFlags::NOSIGNAL);
+    }
+}
+
+/// Where an answer goes.
+#[derive(Debug, PartialEq)]
+enum Answer {
+    /// Back to the connection that asked.
+    To(FromPolicyd),
+    /// To every connection: a change every holder of a grant must see.
+    All(FromPolicyd),
+    Nothing,
+}
+
+/// Whether a task error is a policy "no" (answered) rather than a journal
+/// failure (fatal).
+fn refusal(e: &tasks::TaskError) -> bool {
+    !matches!(e, tasks::TaskError::Store(_))
+}
+
 /// The main thread's answer to one link message. An error is a journal
-/// failure, which ends the daemon like a failed emission does.
-fn answer(store: &mut tasks::TaskStore, m: ToPolicyd) -> Result<Option<FromPolicyd>, tasks::TaskError> {
+/// failure, which ends the daemon like a failed emission does; a policy
+/// refusal is an answer.
+fn answer(store: &mut tasks::TaskStore, m: ToPolicyd, now_ms: u64) -> Result<Answer, tasks::TaskError> {
     Ok(match m {
         ToPolicyd::Revoke { principal } | ToPolicyd::Terminate { principal } => {
             store.cancel_principal(&principal)?;
-            Some(FromPolicyd::Revoked { principal })
+            Answer::To(FromPolicyd::Revoked { principal })
         }
-        ToPolicyd::AuditTail { req, principal, n } => Some(FromPolicyd::AuditRecords {
+        ToPolicyd::CloseTask { principal } => {
+            if !store.cancel_principal(&principal)? {
+                return Ok(Answer::Nothing);
+            }
+            Answer::All(FromPolicyd::Revoked { principal })
+        }
+        ToPolicyd::AuditTail { req, principal, n } => Answer::To(FromPolicyd::AuditRecords {
             req,
             records: store.tail(&principal, n as usize),
         }),
-        ToPolicyd::Mint { req, .. } => Some(FromPolicyd::MintRefused { req }),
-        ToPolicyd::Defer { req, .. } => Some(FromPolicyd::DeferAnswer {
+        ToPolicyd::Mint {
             req,
-            answer: ec_policy_eval::check::DeferAnswer::Prompt,
+            principal,
+            scope,
+            unattended,
+        } => match store.mint_from_prompt(&principal, &scope, unattended, now_ms) {
+            Ok(grant) => Answer::To(FromPolicyd::Minted { req, grant }),
+            Err(e) if refusal(&e) => {
+                eprintln!("policyd: mint for {principal} refused: {e}");
+                Answer::To(FromPolicyd::MintRefused { req })
+            }
+            Err(e) => return Err(e),
+        },
+        ToPolicyd::Defer { req, principal, .. } => Answer::To(FromPolicyd::DeferAnswer {
+            req,
+            answer: store.defer_check(&principal),
         }),
+        ToPolicyd::OpenTask {
+            req,
+            principal,
+            statement,
+            deadline_ms,
+            scope,
+        } => match store.open_for_human(&principal, &statement, deadline_ms, &scope, now_ms) {
+            Ok(grant) => Answer::To(FromPolicyd::TaskOpened { req, grant }),
+            Err(e) if refusal(&e) => Answer::To(FromPolicyd::TaskRefused {
+                req,
+                reason: e.to_string(),
+            }),
+            Err(e) => return Err(e),
+        },
     })
 }
 
 /// `$ECLIPSE_POLICYD_SOCKET`, else `$XDG_RUNTIME_DIR/eclipse/policyd.sock`.
+mod cli;
+
 fn socket_path() -> std::io::Result<PathBuf> {
     if let Some(p) = std::env::var_os("ECLIPSE_POLICYD_SOCKET") {
         return Ok(PathBuf::from(p));

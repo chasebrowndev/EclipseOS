@@ -69,6 +69,8 @@ pub enum TaskError {
     TaskClosed,
     /// S-01 §4: an unattended prompt-class grant may not exceed one hour.
     UnattendedTooLong,
+    /// A capability line that is empty, or a scope S-01 §3 does not parse.
+    BadScope,
     Store(StoreError),
 }
 
@@ -85,6 +87,7 @@ impl std::fmt::Display for TaskError {
             TaskError::ExpiryBeyondDeadline => f.write_str("grant expiry exceeds the task deadline"),
             TaskError::TaskClosed => f.write_str("the task is closed"),
             TaskError::UnattendedTooLong => f.write_str("an unattended grant may not exceed one hour"),
+            TaskError::BadScope => f.write_str("a capability or scope does not parse"),
             TaskError::Store(e) => write!(f, "{e}"),
         }
     }
@@ -99,6 +102,37 @@ impl From<StoreError> for TaskError {
 }
 
 type Result<T> = std::result::Result<T, TaskError>;
+
+/// Parses a grant scope as the link carries it: one capability per line,
+/// `<capability> <scope> <scope>...`, every scope valid under S-01 §3.
+/// `None` for anything else, including no capability at all.
+pub fn capabilities(scope: &str) -> Option<Vec<ec_policy_eval::grant::Capability>> {
+    let mut out = Vec::new();
+    for line in scope.lines() {
+        let mut words = line.split_whitespace();
+        let name = words.next()?;
+        if !name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b == b'.' || b == b'_')
+        {
+            return None;
+        }
+        let scopes: Vec<String> = words.map(str::to_owned).collect();
+        if scopes.is_empty()
+            || scopes
+                .iter()
+                .any(|s| ec_policy_eval::scope::Scope::parse(s).is_err())
+        {
+            return None;
+        }
+        out.push(ec_policy_eval::grant::Capability {
+            name: name.to_owned(),
+            scopes,
+            quota: None,
+        });
+    }
+    (!out.is_empty()).then_some(out)
+}
 
 /// A grant as `policyd` remembers it: the signed bytes it handed out, plus the
 /// bookkeeping needed to revoke it.
@@ -472,6 +506,100 @@ impl TaskStore {
             .collect()
     }
 
+    /// Opens a task for `principal` on the human's word (A-04 §3, origin
+    /// `human`) and issues its first grant, `scope` parsed by
+    /// [`capabilities`], expiring with the task. Either both happen or
+    /// neither does: a scope that does not parse is refused before the task
+    /// is journalled, and a grant the issuer refuses closes the task again.
+    pub fn open_for_human(
+        &mut self,
+        principal: &str,
+        statement: &str,
+        deadline_ms: u64,
+        scope: &str,
+        now_ms: u64,
+    ) -> Result<Vec<u8>> {
+        let caps = capabilities(scope).ok_or(TaskError::BadScope)?;
+        if deadline_ms <= now_ms {
+            return Err(TaskError::ExpiryBeyondDeadline);
+        }
+        let task = self.open_task(
+            principal,
+            Origin::Human,
+            "ec-policyd",
+            statement,
+            deadline_ms,
+            now_ms,
+        )?;
+        let grant = Grant {
+            id: Ulid([0; 16]),
+            principal: String::new(),
+            issued_ms: now_ms,
+            expires_ms: deadline_ms,
+            issuer: "policyd".into(),
+            task_id: task,
+            capabilities: caps,
+            constraints: ec_policy_eval::grant::Constraints::default(),
+            unattended: false,
+        };
+        match self.issue_grant(grant, GrantReason::Manifest, now_ms) {
+            Ok(cose) => Ok(cose),
+            Err(e) => {
+                self.apply(task, TaskEvent::Fault)?;
+                Err(e)
+            }
+        }
+    }
+
+    /// The human answered a prompt "for this task" or "unattended 1h"
+    /// (COMP-10 §3.2, S-06 §5): mint exactly the scope that was on screen,
+    /// on `principal`'s live task. "For this task" expires with the task;
+    /// "unattended" after one hour, or with the task if that is sooner.
+    pub fn mint_from_prompt(
+        &mut self,
+        principal: &str,
+        scope: &str,
+        unattended: bool,
+        now_ms: u64,
+    ) -> Result<Vec<u8>> {
+        let caps = capabilities(scope).ok_or(TaskError::BadScope)?;
+        let task = self.live_task(principal).ok_or(TaskError::TaskClosed)?;
+        let expires_ms = if unattended {
+            task.deadline_ms
+                .min(now_ms.saturating_add(ec_policy_eval::grant::UNATTENDED_MAX_MS))
+        } else {
+            task.deadline_ms
+        };
+        let grant = Grant {
+            id: Ulid([0; 16]),
+            principal: String::new(),
+            issued_ms: now_ms,
+            expires_ms,
+            issuer: "policyd".into(),
+            task_id: task.id,
+            capabilities: caps,
+            constraints: ec_policy_eval::grant::Constraints::default(),
+            unattended,
+        };
+        self.issue_grant(grant, GrantReason::Prompt, now_ms)
+    }
+
+    /// The deterministic half of a `defer` (S-02 §6, COMP-11 §5), as far as
+    /// the facts on the link reach. A principal with no task that may act
+    /// is denied outright: nothing a human could approve would be allowed to
+    /// run. Otherwise the answer is `prompt`. The defer-only predicates
+    /// (`provenance_contains` over the full chain) need the chain on the
+    /// link, which M18 brings; until then escalating to the human is the
+    /// only answer that neither widens nor waves the request through.
+    /// Never `fallthrough`: that would vouch for a check not made.
+    pub fn defer_check(&self, principal: &str) -> ec_policy_eval::check::DeferAnswer {
+        use ec_policy_eval::check::DeferAnswer;
+        match self.live_task(principal) {
+            Some(t) if t.state.accepts_acting_requests() => DeferAnswer::Prompt,
+            _ => DeferAnswer::Deny,
+        }
+    }
+
     /// The human revoked or terminated `principal` (COMP-10 §3.3): its live
     /// task is cancelled, which revokes every grant on it in one record.
     /// False when it has no live task, so nothing was live to revoke.
@@ -644,6 +772,98 @@ mod tests {
             constraints: Constraints::default(),
             unattended: false,
         }
+    }
+
+    #[test]
+    fn a_human_task_opens_with_its_first_grant_or_not_at_all() {
+        let verify = |c: &[u8], k: &ed25519_dalek::VerifyingKey| Grant::verify(c, k, 2_000);
+        let dir = tmp("human");
+        let mut s = store(&dir);
+        let cose = s
+            .open_for_human(
+                "agent:a",
+                "tidy",
+                100_000,
+                "scene.list workspace:human\nseat.pointer app_id:foot",
+                1_000,
+            )
+            .unwrap();
+        let g = verify(&cose, &key().verifying_key()).unwrap();
+        assert_eq!(
+            (g.principal.as_str(), g.expires_ms, g.unattended),
+            ("agent:a", 100_000, false)
+        );
+        assert_eq!(g.capabilities.len(), 2);
+        assert_eq!(s.live_task("agent:a").unwrap().id.0, g.task_id.0);
+        assert!(matches!(
+            s.open_for_human("agent:a", "again", 100_000, "scene.list workspace:human", 1_000),
+            Err(TaskError::AlreadyLive { .. })
+        ));
+        // A scope that does not parse opens no task.
+        assert!(matches!(
+            s.open_for_human("agent:b", "t", 100_000, "scene.list nonsense", 1_000),
+            Err(TaskError::BadScope)
+        ));
+        assert!(s.live_task("agent:b").is_none());
+        assert!(matches!(
+            s.open_for_human("agent:b", "t", 100_000, "", 1_000),
+            Err(TaskError::BadScope)
+        ));
+    }
+
+    #[test]
+    fn a_prompt_mints_exactly_what_was_shown_for_no_longer_than_allowed() {
+        let verify = |c: &[u8], k: &ed25519_dalek::VerifyingKey| Grant::verify(c, k, 2_000);
+        let dir = tmp("mint");
+        let mut s = store(&dir);
+        let t = s
+            .open_task("agent:a", Origin::Human, "chat:1", "tidy", 10_000_000, 1_000)
+            .unwrap();
+        let task = verify(
+            &s.mint_from_prompt("agent:a", "seat.pointer handle:4", false, 2_000)
+                .unwrap(),
+            &key().verifying_key(),
+        )
+        .unwrap();
+        assert_eq!(
+            (task.task_id.0, task.expires_ms, task.unattended),
+            (t.0, 10_000_000, false)
+        );
+        assert_eq!(task.capabilities[0].scopes, vec!["handle:4".to_owned()]);
+        let un = verify(
+            &s.mint_from_prompt("agent:a", "seat.pointer app_id:foot", true, 2_000)
+                .unwrap(),
+            &key().verifying_key(),
+        )
+        .unwrap();
+        assert_eq!((un.expires_ms, un.unattended), (2_000 + 3_600_000, true));
+        assert!(matches!(
+            s.mint_from_prompt("agent:a", "seat.pointer", false, 2_000),
+            Err(TaskError::BadScope)
+        ));
+        assert!(matches!(
+            s.mint_from_prompt("agent:nobody", "seat.pointer handle:4", false, 2_000),
+            Err(TaskError::TaskClosed)
+        ));
+        s.apply(t, TaskEvent::Pause).unwrap();
+        assert!(matches!(
+            s.mint_from_prompt("agent:a", "seat.pointer handle:4", false, 2_000),
+            Err(TaskError::TaskClosed)
+        ));
+    }
+
+    #[test]
+    fn defer_denies_without_an_acting_task_and_never_falls_through() {
+        use ec_policy_eval::check::DeferAnswer;
+        let dir = tmp("defer");
+        let mut s = store(&dir);
+        assert_eq!(s.defer_check("agent:a"), DeferAnswer::Deny);
+        let t = s
+            .open_task("agent:a", Origin::Human, "chat:1", "tidy", 100_000, 1_000)
+            .unwrap();
+        assert_eq!(s.defer_check("agent:a"), DeferAnswer::Prompt);
+        s.apply(t, TaskEvent::Pause).unwrap();
+        assert_eq!(s.defer_check("agent:a"), DeferAnswer::Deny);
     }
 
     #[test]
