@@ -94,6 +94,12 @@ fn slot_for_focus(state: &AbyssState, focus: &WlSurface) -> Option<u64> {
     })
 }
 
+/// The slot whose host holds the human seat's keyboard focus, if any: the
+/// §6 "host toplevel has keyboard focus" condition the trusted side samples.
+pub fn focused_slot(state: &AbyssState) -> Option<u64> {
+    slot_for_focus(state, &keyboard_focus(state)?)
+}
+
 /// Pointer motion, touch or a tablet tool is about to be aimed at `under`.
 /// Returns what it may actually be aimed at: a protected surface is hidden
 /// (`None`, so the client gets a `leave`, never a `motion`) from an origin

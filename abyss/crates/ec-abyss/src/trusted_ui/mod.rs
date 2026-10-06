@@ -33,6 +33,7 @@
 
 pub mod approval;
 pub mod batch;
+pub mod commit;
 pub mod consent;
 pub mod erase;
 pub mod install;
@@ -135,6 +136,8 @@ pub struct TrustedUi {
     pub(crate) batches: batch::Batches,
     /// Agent install reviews waiting or shown (A-07 §3).
     pub(crate) installs: install::Installs,
+    /// Commit slots' trusted side: preview, arming, cards (COMP-19).
+    pub(crate) cards: commit::Cards,
     /// The bound trusted socket, so a clean exit can unlink it.
     pub path: Option<PathBuf>,
 }
@@ -345,6 +348,8 @@ fn resolve(state: &mut AbyssState, choice: Choice) {
         panel::answer(state, choice);
     } else if install::owns(state, choice.token) {
         install::answer(state, choice);
+    } else if commit::owns(state, choice.token) {
+        commit::answer(state, choice);
     } else if notice::owns(choice.token) {
         // Acknowledged; nothing follows from a notice.
     }
@@ -416,11 +421,13 @@ pub fn elements(
     if locked {
         return Vec::new();
     }
-    let Some(o) = ui.open.as_ref() else {
-        return Vec::new();
-    };
     let Some(logical) = logical_size(output) else {
         return Vec::new();
+    };
+    // Commit-slot cards: above every client, below any prompt and its dim.
+    let cards = commit::elements(renderer, ui, output, output_loc, logical);
+    let Some(o) = ui.open.as_ref() else {
+        return cards;
     };
     let fractional = output.current_scale().fractional_scale();
     let scale = Scale::from(fractional);
@@ -471,6 +478,7 @@ pub fn elements(
         DIM_ALPHA,
         Kind::Unspecified,
     )));
+    out.extend(cards);
     out
 }
 

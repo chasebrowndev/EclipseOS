@@ -175,12 +175,11 @@ fn node_rects(
 /// The semantic facts for a surface: its tree, and whether a `secret` node is
 /// known to exist for it.
 ///
-/// This is the seam COMP-09 fills. `protocols/semantic/` does not exist yet, so
-/// today the honest answer for every surface is "no tree, and no secret node
-/// known" — *not* "present and empty", which would tell [`resolve_nodes`] the
-/// surface had affirmatively declared itself clean.
-fn semantics_for(_state: &AbyssState, _surface: Option<&WlSurface>) -> (SemanticTree, u64, bool) {
-    (SemanticTree::Absent, 0, false)
+/// COMP-09's live tree (`protocols::semantic::capture_facts`). A surface with
+/// no tree answers "absent, no secret known", never "present and empty",
+/// which would tell [`resolve_nodes`] it had declared itself clean.
+fn semantics_for(state: &AbyssState, surface: Option<&WlSurface>) -> (SemanticTree, u64, bool) {
+    crate::protocols::semantic::capture_facts(state, surface)
 }
 
 /// Where a serviced capture reports back to.
@@ -353,6 +352,18 @@ pub fn capture_elements(
             continue;
         };
         let surface = crate::shell::window_surface(window);
+        // COMP-19 §4: a protected surface is never in a pass list. Not
+        // redaction (no placeholder, no record): the capture shows what lies
+        // beneath. The whole window goes, not just the protected subtree:
+        // its elements are generated as one tree, and leaving out exactly
+        // the protected part would be a per-element decision that has to
+        // fire correctly, which is what exclusion by construction avoids.
+        if surface
+            .as_ref()
+            .is_some_and(|s| crate::protocols::protected::has_protected(state, s))
+        {
+            continue;
+        }
         let app_id = surface
             .as_ref()
             .and_then(crate::protocols::standard::data_device::app_id_of);
@@ -450,7 +461,9 @@ fn layer_elements(
                 continue;
             };
             let wl = surface.wl_surface();
-            if omitted_layer(state, surface.namespace(), wl, geo.size) {
+            if omitted_layer(state, surface.namespace(), wl, geo.size)
+                || crate::protocols::protected::has_protected(state, wl)
+            {
                 // Not a redaction: nothing of it reaches the target, so there
                 // is nothing to cover, and what lies beneath shows instead.
                 continue;

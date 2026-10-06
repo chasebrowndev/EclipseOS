@@ -109,8 +109,16 @@ pub(crate) fn with_facts<R>(state: &AbyssState, window: &Window, f: impl FnOnce(
 /// without a `*.secret` capability and a per-request prompt. A `class:secret`
 /// scope narrows; it never makes one visible.
 /// Whether `window` is in `view` and not `secret`: the one visibility rule.
+///
+/// A window holding a protected surface (COMP-19 §1) does not exist for any
+/// agent: not in `list_toplevels`, trees, text reads or hit tests. The whole
+/// window, like `no-agent`, because the protected pane's neighbours in the
+/// same window are drawn by the same client a few pixels away.
 pub(crate) fn visible(state: &AbyssState, view: &SceneView, window: &Window) -> bool {
-    window.alive() && with_facts(state, window, |w| w.class != Class::Secret && view.visible(w))
+    window.alive()
+        && !crate::shell::window_surface(window)
+            .is_some_and(|s| crate::protocols::protected::has_protected(state, &s))
+        && with_facts(state, window, |w| w.class != Class::Secret && view.visible(w))
 }
 
 /// `list_toplevels`: every window that exists for this agent, with its

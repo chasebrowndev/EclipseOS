@@ -30,32 +30,32 @@ use crate::render::{
 
 /// Fixed palette, not themeable (§5: a themeable trusted surface is a
 /// spoofable one). Gold on near-black, like the rest of the system chrome.
-const PANEL: Rgba = [0.020, 0.016, 0.012, 1.0];
-const EDGE: Rgba = [1.0, 0.72, 0.20, 1.0];
-const HEADING: Rgba = [1.0, 0.78, 0.26, 1.0];
-const BODY: Rgba = [0.87, 0.76, 0.47, 1.0];
+pub(super) const PANEL: Rgba = [0.020, 0.016, 0.012, 1.0];
+pub(super) const EDGE: Rgba = [1.0, 0.72, 0.20, 1.0];
+pub(super) const HEADING: Rgba = [1.0, 0.78, 0.26, 1.0];
+pub(super) const BODY: Rgba = [0.87, 0.76, 0.47, 1.0];
 /// Fact labels: dimmer than the value beside them, which is what the human
 /// must read. Bold stays for the heading and the warning.
-const LABEL: Rgba = [0.66, 0.55, 0.30, 1.0];
+pub(super) const LABEL: Rgba = [0.66, 0.55, 0.30, 1.0];
 /// The warning line. Brighter than the body and a different hue, so an
 /// altered widget does not read like routine text (§3.2, habituation).
-const WARN: Rgba = [1.0, 0.36, 0.20, 1.0];
+pub(super) const WARN: Rgba = [1.0, 0.36, 0.20, 1.0];
 /// An irreversible request's edge (§3.2): a different hue from every routine
 /// prompt, so habituation on routine prompts does not carry over.
 const ACCENT: Rgba = [1.0, 0.36, 0.20, 1.0];
 /// The personal secret's frame.
-const PHRASE_GROUND: Rgba = [0.10, 0.075, 0.03, 1.0];
+pub(super) const PHRASE_GROUND: Rgba = [0.10, 0.075, 0.03, 1.0];
 /// The untrusted block sits on a different ground with its own dim edge, so it
 /// cannot pass for the panel around it.
 const WELL: Rgba = [0.070, 0.060, 0.050, 1.0];
 const WELL_EDGE: Rgba = [0.40, 0.29, 0.09, 1.0];
 const WELL_TEXT: Rgba = [0.80, 0.80, 0.78, 1.0];
-const INK: Rgba = [0.020, 0.016, 0.012, 1.0];
+pub(super) const INK: Rgba = [0.020, 0.016, 0.012, 1.0];
 
 /// Text columns. Fixed: the caller has no say in the panel's width.
 pub const COLS: usize = 60;
-const PAD: usize = 16;
-const BORDER: usize = 2;
+pub(super) const PAD: usize = 16;
+pub(super) const BORDER: usize = 2;
 const GAP: usize = 10;
 const WELL_PAD: usize = 8;
 const BTN_PAD: usize = 12;
@@ -66,7 +66,7 @@ pub const MAX_UNTRUSTED_LINES: usize = 8;
 
 /// COMP-10 §2: with no personal secret set, every prompt says anti-spoofing
 /// is unconfigured.
-const UNSPOOFED: &str = "Anti-spoofing is not configured: no personal secret is set.";
+pub(super) const UNSPOOFED: &str = "Anti-spoofing is not configured: no personal secret is set.";
 /// The consent prompt's five answers (§3.2) are the most any prompt has.
 const MAX_BUTTONS: usize = 5;
 /// Fact lines kept. The emergency panel's agent page is the longest: who,
@@ -418,8 +418,8 @@ pub struct Layout {
 
 /// Taller than the entry field, and framed twice as heavy below: the personal
 /// secret is the anti-spoofing anchor and must not read as one more box.
-const PHRASE_H: usize = LINE_H + 10;
-const PHRASE_EDGE: usize = 2;
+pub(super) const PHRASE_H: usize = LINE_H + 10;
+pub(super) const PHRASE_EDGE: usize = 2;
 const ENTRY_H: usize = LINE_H + 8;
 
 fn block_h(rows: usize) -> usize {

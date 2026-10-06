@@ -83,12 +83,15 @@ fn deliver(state: &mut AbyssState, m: FromPolicyd) {
         FromPolicyd::Refused { req, reason } if crate::trusted_ui::install::owns_req(state, req) => {
             crate::trusted_ui::install::outcome(state, req, Some(&reason))
         }
-        FromPolicyd::Preview { .. }
-        | FromPolicyd::TaskCreated { .. }
-        | FromPolicyd::Done { .. }
-        | FromPolicyd::Refused { .. }
-        | FromPolicyd::TaskState { .. }
-        | FromPolicyd::Provision { .. } => {}
+        FromPolicyd::Preview {
+            req,
+            preview,
+            display,
+        } => crate::trusted_ui::commit::preview(state, req, preview, &display),
+        FromPolicyd::TaskCreated { req, task } => crate::trusted_ui::commit::created(state, req, &task),
+        FromPolicyd::Done { req } => crate::trusted_ui::commit::done(state, req),
+        FromPolicyd::Refused { req, reason } => crate::trusted_ui::commit::refused(state, req, &reason),
+        FromPolicyd::TaskState { .. } | FromPolicyd::Provision { .. } => {}
     }
 }
 

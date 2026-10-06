@@ -344,3 +344,21 @@ surface is only input-protected.
 - **SIGTERM stops agents; SIGKILL does not.** A crashed agentd leaves agent
   scopes running until their tasks close.
 
+
+## SLOT-01: commit slot gaps against COMP-19
+
+- **Occlusion is by windows only.** A layer surface above the host (a
+  panel, a notification) does not count as occluding the slot. The card is
+  not drawn while a window overlaps it, rather than drawn dimmed (§7), because
+  the trusted pass composites above every client.
+- **Whole-window exclusion.** A window holding any protected surface is
+  left out of capture and out of every agent's scene as a whole, not just
+  its protected subtree (`render/capture.rs`, `policy/scene.rs`). Stricter
+  than §4 and §1; the console's panes are all protected anyway.
+- **No refused-input audit record.** `protocols/protected/hooks.rs
+  audit_refused` is still a stub; F-13's `input_refused` kind does not exist
+  in `ec-policy-eval::audit::Kind` yet.
+- **`slot_arm_ms` is the default.** The compiled table carries no value for
+  it, so every slot arms after 500 ms.
+- **Resume is refused in the slot** (`resume_unsupported`): A-06
+  `session.restore()` does not exist.

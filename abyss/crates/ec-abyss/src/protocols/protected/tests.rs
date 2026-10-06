@@ -657,10 +657,13 @@ fn both_continuation_and_resumes_is_refused_not_stored() {
     );
     r.pump();
     assert_eq!(r.c.error(), None);
-    assert_eq!(
-        r.c.seen.states,
-        vec![(State::Refused as u32, Reason::Refused as u32)]
-    );
+    // The trusted side also reports the slot's arming state; the refusal is
+    // what matters here.
+    assert!(r
+        .c
+        .seen
+        .states
+        .contains(&(State::Refused as u32, Reason::Refused as u32)));
     let id = slots(&r.h.state).next().expect("slot");
     assert_eq!(draft(&r.h.state, id).map(|d| d.statement.as_str()), Some(""));
 }
@@ -1231,4 +1234,57 @@ fn the_tcb_can_answer_the_client() {
     assert_eq!(r.c.seen.geometry.last(), Some(&(400, 160)));
     assert_eq!(r.c.seen.committed, vec!["01TASK".to_string()]);
     assert_eq!(r.c.seen.cancelled, 1);
+}
+
+// ------------------------------------------------------------ exclusion (§4, §1)
+
+/// COMP-19 §9 "Agent scene" and "Capture": a window holding a protected
+/// surface does not exist for an agent whose scope covers it, and is left
+/// out of every capture pass list; its unprotected neighbour is unaffected.
+#[test]
+fn a_protected_window_is_absent_from_agents_and_from_capture() {
+    use ec_policy_eval::grant::{Capability, Constraints, Grant};
+    use ec_policy_eval::scope::SceneView;
+    use ec_policy_eval::task::Ulid;
+
+    let mut r = rig();
+    let _other = r.c.map(&mut r.h);
+    let grant = Grant {
+        id: Ulid([1; 16]),
+        principal: "agent:x".into(),
+        issued_ms: 0,
+        expires_ms: u64::MAX,
+        issuer: "policyd".into(),
+        task_id: Ulid([2; 16]),
+        capabilities: vec![Capability {
+            name: "scene.list".into(),
+            scopes: vec!["workspace:human".into(), "class:private".into()],
+            quota: None,
+        }],
+        constraints: Constraints::default(),
+        unattended: false,
+    };
+    let view = SceneView::compile([&grant]);
+    let window =
+        |h: &Harness, n| crate::shell::window_for_surface(&h.state, &server_surface(h, n)).expect("window");
+    let (protected, plain) = (window(&r.h, 0), window(&r.h, 1));
+    for w in [&protected, &plain] {
+        crate::policy::scene::test_class::set(w, ec_policy_eval::Class::Public);
+    }
+    assert!(!crate::policy::scene::visible(&r.h.state, &view, &protected));
+    assert!(crate::policy::scene::visible(&r.h.state, &view, &plain));
+    let listed: Vec<_> = crate::policy::scene::list(&mut r.h.state, &view)
+        .into_iter()
+        .map(|(_, w)| w)
+        .collect();
+    assert_eq!(listed, vec![plain.clone()]);
+    // The capture pass asks exactly this of every window and layer surface.
+    assert!(has_protected(&r.h.state, &server_surface(&r.h, 0)));
+    assert!(!has_protected(&r.h.state, &server_surface(&r.h, 1)));
+    let src = include_str!("../../render/capture.rs");
+    assert_eq!(
+        src.matches("protocols::protected::has_protected").count(),
+        2,
+        "windows and layers"
+    );
 }

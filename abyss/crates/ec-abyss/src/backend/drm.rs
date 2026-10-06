@@ -1115,6 +1115,8 @@ fn describe_elements(elements: &[crate::render::overscan::OutputElement], scale:
 fn render_output(state: &mut AbyssState, index: usize) {
     // Every frame path (VBlank, schedule, retry) lands here, not in `render`.
     crate::shell::tick_retile_hold(state);
+    // Commit slots follow their window this frame, not 50 ms later.
+    crate::trusted_ui::commit::tick(state);
     let capture_active = state.capture_active();
     let prompt = crate::trusted_ui::holds_seat(state);
     let Some(drm) = state.drm.as_mut() else { return };

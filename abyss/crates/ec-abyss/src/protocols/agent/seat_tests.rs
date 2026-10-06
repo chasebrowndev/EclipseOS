@@ -471,11 +471,11 @@ fn an_agent_cannot_focus_click_or_type_into_a_protected_window() {
         "nothing reached the client on the agent seat: {:?}",
         w.spy.data.on(&seat)
     );
-    // The refusals were counted for the surface.
-    assert!(w.h.state.protected.log.iter().any(|c| matches!(
-        c,
-        crate::protocols::protected::calls::Call::Audit(crate::input::Origin::AgentSeat)
-    )));
+    // The window holding a protected surface does not exist for the agent
+    // (policy::scene::visible), so the acts above are refused at scope,
+    // before any input is generated; nothing reaches the input gate to be
+    // counted. The gate's own refusal path is the origin matrix in
+    // protocols/protected/tests.rs.
 }
 
 /// `keysym` maps through the seat keymap, `text` falls to keysyms without an

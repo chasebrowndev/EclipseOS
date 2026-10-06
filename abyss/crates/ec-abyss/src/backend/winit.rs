@@ -233,6 +233,8 @@ fn redraw(
     damage_tracker: &mut OutputDamageTracker,
 ) {
     crate::shell::tick_retile_hold(state);
+    // Commit slots follow their window this frame, not 50 ms later.
+    crate::trusted_ui::commit::tick(state);
     let frame_start = std::time::Instant::now();
     let age = backend.buffer_age().unwrap_or(0);
     let rendered = {
