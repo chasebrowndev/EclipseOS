@@ -32,6 +32,7 @@
 //! the unconfigured warning while there is none (§2).
 
 pub mod approval;
+pub mod batch;
 pub mod consent;
 pub mod erase;
 pub mod modal;
@@ -127,6 +128,8 @@ pub struct TrustedUi {
     pub consent: consent::Queue,
     /// The emergency panel's page, while it is up (§3.3).
     pub(crate) panel: panel::Panel,
+    /// Batch prompts waiting or shown (§3.7).
+    pub(crate) batches: batch::Batches,
     /// The bound trusted socket, so a clean exit can unlink it.
     pub path: Option<PathBuf>,
 }
@@ -313,6 +316,7 @@ fn choose(state: &mut AbyssState, button: usize, timed_out: bool) {
     // Whatever was waiting behind this prompt gets its turn.
     approval::schedule(state);
     consent::schedule(state);
+    batch::schedule(state);
     // The pointer is re-evaluated as though it had just moved, so whatever is
     // under it gets its enter now rather than on the next motion.
     state.refresh_pointer_focus();
@@ -329,6 +333,8 @@ fn resolve(state: &mut AbyssState, choice: Choice) {
         phrase::answer(state, choice);
     } else if consent::owns(state, choice.token) {
         consent::answer(state, choice);
+    } else if batch::owns(state, choice.token) {
+        batch::answer(state, choice);
     } else if panel::owns(state, choice.token) {
         panel::answer(state, choice);
     } else if notice::owns(choice.token) {

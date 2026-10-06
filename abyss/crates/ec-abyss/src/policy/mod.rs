@@ -9,6 +9,7 @@
 //! The protocol layer (`protocols/agent/`) owns the Wayland objects and calls
 //! in here; it never reads a grant itself.
 
+pub mod batch;
 pub mod enforce;
 pub mod lifecycle;
 pub mod link;

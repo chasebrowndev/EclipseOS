@@ -32,3 +32,14 @@ pub fn execute(
 
 /// Send a delayed `result` for `req_id` on agent `agent`'s seat object.
 pub fn reply(_state: &mut AbyssState, _agent: u64, _req_id: u32, _status: Status, _detail: &str) {}
+
+/// Send `batch_token` for a `preflight` the human approved.
+pub fn send_batch_token(
+    _state: &mut AbyssState,
+    _agent: u64,
+    _req_id: u32,
+    _token: u64,
+    _covered: u32,
+    _expires_ms: u32,
+) {
+}

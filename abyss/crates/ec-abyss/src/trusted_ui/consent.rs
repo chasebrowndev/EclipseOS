@@ -365,6 +365,7 @@ pub fn withdraw(state: &mut AbyssState, agent: u64) {
     if let Some(token) = state.trusted_ui.consent.withdraw(agent) {
         super::cancel(state, token);
     }
+    super::batch::withdraw(state, agent);
     crate::policy::enforce::drain(state);
     schedule(state);
 }

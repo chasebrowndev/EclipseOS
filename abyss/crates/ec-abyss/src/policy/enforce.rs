@@ -197,6 +197,8 @@ pub struct Request {
     /// `provenance_ids` was the empty array: an act with no asserted input
     /// (`provenance_absent`, COMP-08 §4.1). Not trusted for being empty.
     pub provenance_empty: bool,
+    /// The batch token the act runs under (COMP-08 §4.2); 0 is none.
+    pub batch_token: u64,
 }
 
 /// What [`submit`] did with a request.
@@ -343,6 +345,15 @@ pub fn submit(state: &mut AbyssState, req: Request) -> Submitted {
     match outcome {
         Outcome::Allow => execute(state, &principal, &req, &window),
         Outcome::Deny => answered(state, &principal, &req, Status::PolicyDenied, rule),
+        // "prompt → batch token check first" (COMP-08 §10 step 7): a token
+        // covering this target stands in for the prompt, and nothing else.
+        Outcome::Prompt if req.batch_token != 0 => {
+            let handle = state.ipc.existing_handle(&window).unwrap_or(0);
+            match crate::policy::batch::consume(state, req.agent, req.batch_token, handle) {
+                Ok(()) => execute(state, &principal, &req, &window),
+                Err(s) => answered(state, &principal, &req, s, String::new()),
+            }
+        }
         Outcome::Prompt => park(state, &principal, req, &window, &rule),
         Outcome::Defer => defer(state, &principal, req, rule),
     }
@@ -620,6 +631,7 @@ pub fn drain(state: &mut AbyssState) {
 
 /// Drop everything pending for `agent` (it went away).
 pub fn forget(state: &mut AbyssState, agent: u64) {
+    crate::policy::batch::forget(state, agent);
     state.enforce.prompts.retain(|(_, r)| r.agent != agent);
     state.enforce.defers.retain(|(_, r, _)| r.agent != agent);
 }
