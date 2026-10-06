@@ -46,3 +46,17 @@ rule "channel-laundering" defer {
 rule "default-allow" allow {
     capability "*"
 }
+
+// Sensitivity (S-05 §3): private by default; these raise to secret. The
+// S-02 §3 example's `node_role "password"` line waits on the semantic tree.
+defaults { sensitivity "private"; }
+classify "secret" {
+    app_id "org.keepassxc.KeePassXC" "1password" "bitwarden" "com.bitwarden.desktop"
+    title "(?i)authenticat|password|2fa|one-time"
+}
+
+// App trust (S-05 §6): standard by default. Nothing is trusted implicitly;
+// an owner rule may list its own terminal and editor.
+trust "untrusted" {
+    app_id "steam" "*.flatpak.*"
+}

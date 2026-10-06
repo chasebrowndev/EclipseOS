@@ -14,10 +14,16 @@
 //! - `defer`-only and unbuilt predicates (`time`, `rate_gt`, `grant_scope`,
 //!   `target_handle`, `provenance_min_trust`/`_head`/`_age_gt`/`_mismatch`,
 //!   `egress_bytes_gt`, `secret_bound_host_mismatch`, `node_credential`).
-//! - `classify`, `trust`, `irreversible` and `profile` nodes parse as known
-//!   and are reported as **not yet enforced**, so the owner is told rather than
-//!   left believing a classification is live. `defaults`, `dedupe_exclude` and
-//!   `trusted_endpoint` likewise.
+//! - `classify` and `trust` (S-05 §3.1, §6) compile into the table's
+//!   classifier, with matchers `app_id`, `title` (regex), `url`, `output`,
+//!   `launched_by` and `xwayland`. Matchers that need the semantic tree
+//!   (`node_role`, `node_name`) or facts abyss does not hold yet
+//!   (`workspace`, `pid_exe_hash`, `path`) are compile errors: dropping a
+//!   raising line would leave content under-classified, which fails open.
+//! - `defaults { sensitivity }` sets the default class (`private` or
+//!   `secret`, never `public`). Its other keys, and `irreversible`,
+//!   `profile`, `dedupe_exclude` and `trusted_endpoint`, are reported as
+//!   **not yet enforced**.
 //!
 //! Syntax, where S-02's sketch is not KDL:
 //!
@@ -33,7 +39,9 @@
 
 use std::path::PathBuf;
 
-use ec_policy_eval::check::{CompiledRule, Phases, Pred, Table, Unless};
+use ec_policy_eval::check::{CompiledRule, Phases, Pred, Table, Trust, Unless};
+use ec_policy_eval::classify::{Classifier, ClassifyRule, Matcher, TrustRule};
+use ec_policy_eval::scope::Class;
 use ec_policy_eval::scope::Glob;
 use ec_policy_eval::table::{class_of, regex, trust_of};
 use kdl::{KdlDocument, KdlNode, KdlValue};
@@ -59,6 +67,7 @@ impl std::fmt::Display for CompileError {
 #[derive(Debug)]
 pub struct Compiled {
     pub rules: Phases,
+    pub classifier: Classifier,
     pub not_enforced: Vec<String>,
 }
 
@@ -127,6 +136,7 @@ pub fn stamp(dirs: &[PathBuf]) -> Option<std::time::SystemTime> {
 pub fn compile(files: &[(String, String)]) -> Result<Compiled, CompileError> {
     let mut c = Compiled {
         rules: Phases::default(),
+        classifier: Classifier::default(),
         not_enforced: Vec::new(),
     };
     for (file, text) in files {
@@ -155,8 +165,36 @@ pub fn compile(files: &[(String, String)]) -> Result<Compiled, CompileError> {
                         Phase::Allow => c.rules.allow.push(rule),
                     }
                 }
-                n @ ("classify" | "trust" | "irreversible" | "profile" | "defaults" | "dedupe_exclude"
-                | "trusted_endpoint") => c
+                "classify" => {
+                    let rule = compile_classify(node).map_err(|w| err(None, w))?;
+                    c.classifier.classify.push(rule);
+                }
+                "trust" => {
+                    let rule = compile_trust(node).map_err(|w| err(None, w))?;
+                    c.classifier.trust.push(rule);
+                }
+                "defaults" => {
+                    for d in node.children().map(|c| c.nodes()).unwrap_or_default() {
+                        if d.name().value() == "sensitivity" {
+                            c.classifier.default = match strings(d).as_slice() {
+                                ["private"] => Class::Private,
+                                ["secret"] => Class::Secret,
+                                _ => {
+                                    return Err(err(
+                                        None,
+                                        "defaults sensitivity must be \"private\" or \"secret\"; only a classify \"public\" rule makes something public".into(),
+                                    ))
+                                }
+                            };
+                        } else {
+                            c.not_enforced.push(format!(
+                                "{file}: defaults `{}` parsed, not yet enforced",
+                                d.name().value()
+                            ));
+                        }
+                    }
+                }
+                n @ ("irreversible" | "profile" | "dedupe_exclude" | "trusted_endpoint") => c
                     .not_enforced
                     .push(format!("{file}: `{n}` parsed, not yet enforced")),
                 other => return Err(err(None, format!("unknown node `{other}`"))),
@@ -164,6 +202,85 @@ pub fn compile(files: &[(String, String)]) -> Result<Compiled, CompileError> {
         }
     }
     Ok(c)
+}
+
+fn compile_matchers(node: &KdlNode, what: &str) -> Result<Vec<Matcher>, String> {
+    let Some(children) = node.children() else {
+        return Err(format!("{what} needs a matcher block"));
+    };
+    let mut out = Vec::new();
+    for m in children.nodes() {
+        let name = m.name().value();
+        let vals = strings(m);
+        let globs = || -> Result<Vec<Glob>, String> {
+            if vals.is_empty() || has_props(m) {
+                return Err(format!("{what}: `{name}` takes one or more string arguments"));
+            }
+            Ok(vals.iter().map(|v| Glob::new(v)).collect())
+        };
+        out.push(match name {
+            "app_id" => Matcher::AppId(globs()?),
+            "url" => Matcher::Url(globs()?),
+            "output" => Matcher::Output(globs()?),
+            "launched_by" => Matcher::LaunchedBy(globs()?),
+            "title" => match vals.as_slice() {
+                [src] if !has_props(m) => {
+                    Matcher::Title(regex(src).map_err(|_| format!("{what}: the title regex does not compile"))?)
+                }
+                _ => return Err(format!("{what}: `title` takes one regex argument")),
+            },
+            "xwayland" => Matcher::Xwayland(
+                m.entries()
+                    .first()
+                    .filter(|e| e.name().is_none() && m.entries().len() == 1)
+                    .and_then(|e| e.value().as_bool())
+                    .ok_or(format!("{what}: `xwayland` takes #true or #false"))?,
+            ),
+            n @ ("node_role" | "node_name") => {
+                return Err(format!(
+                    "{what}: `{n}` needs the semantic tree (COMP-09), which is not built; the rule is refused rather \
+                     than compiled without its raise"
+                ))
+            }
+            n @ ("workspace" | "pid_exe_hash" | "path") => {
+                return Err(format!("{what}: `{n}` is not supported by this build's classifier"))
+            }
+            other => return Err(format!("{what}: unknown matcher `{other}`")),
+        });
+    }
+    if out.is_empty() {
+        return Err(format!("{what} needs at least one matcher"));
+    }
+    Ok(out)
+}
+
+fn compile_classify(node: &KdlNode) -> Result<ClassifyRule, String> {
+    let class = match strings(node).as_slice() {
+        [c] => class_of(c).ok_or(format!("classify: unknown class `{c}`"))?,
+        _ => return Err("classify takes one class: classify \"secret\" { ... }".into()),
+    };
+    let what = format!("classify {class:?}");
+    Ok(ClassifyRule {
+        class,
+        matchers: compile_matchers(node, &what)?,
+    })
+}
+
+fn compile_trust(node: &KdlNode) -> Result<TrustRule, String> {
+    let trust = match strings(node).as_slice() {
+        [t] => match trust_of(t) {
+            Some(Trust::Human) | None => {
+                return Err(format!("trust: `{t}` is not untrusted, standard or trusted"))
+            }
+            Some(t) => t,
+        },
+        _ => return Err("trust takes one level: trust \"trusted\" { ... }".into()),
+    };
+    let what = format!("trust {trust:?}");
+    Ok(TrustRule {
+        trust,
+        matchers: compile_matchers(node, &what)?,
+    })
 }
 
 enum Phase {
@@ -395,6 +512,7 @@ pub fn table(compiled: Compiled, version: u64) -> Table {
     Table {
         version,
         rules: compiled.rules,
+        classifier: compiled.classifier,
     }
 }
 
@@ -504,11 +622,29 @@ mod tests {
     }
 
     #[test]
-    fn known_but_unenforced_nodes_are_reported() {
-        let c = one(r#"classify "secret" { app_id "org.keepassxc.KeePassXC"; }
+    fn classify_trust_and_defaults_compile_and_unbuilt_matchers_are_refused() {
+        let c = one(r#"defaults { sensitivity "private"; prompt_timeout "120s"; }
+               classify "secret" { app_id "org.keepassxc.KeePassXC"; title "(?i)password"; }
+               classify "public" { url "https://*.wikipedia.org/*"; }
+               trust "trusted" { app_id "foot"; }
+               trust "untrusted" { app_id "steam"; url "http://*"; }
+               irreversible "communication.send" { url "mail.google.com"; }
                rule "a" allow { capability "*"; }"#)
         .unwrap();
-        assert_eq!(c.not_enforced.len(), 1);
+        assert_eq!(c.classifier.classify.len(), 2);
+        assert_eq!(c.classifier.trust.len(), 2);
+        assert_eq!(c.classifier.default, Class::Private);
+        assert_eq!(c.not_enforced.len(), 2, "prompt_timeout and irreversible");
+        for bad in [
+            r#"classify "secret" { node_role "password"; }"#,
+            r#"classify "secret" { workspace 3; }"#,
+            r#"classify "secret" { }"#,
+            r#"classify "topsecret" { app_id "x"; }"#,
+            r#"trust "human" { app_id "x"; }"#,
+            r#"defaults { sensitivity "public"; }"#,
+        ] {
+            assert!(one(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

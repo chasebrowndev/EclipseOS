@@ -10,6 +10,7 @@
 //! in here; it never reads a grant itself.
 
 pub mod batch;
+pub mod classes;
 pub mod enforce;
 pub mod lifecycle;
 pub mod link;

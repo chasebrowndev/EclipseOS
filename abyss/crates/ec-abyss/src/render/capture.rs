@@ -356,7 +356,13 @@ pub fn capture_elements(
         let app_id = surface
             .as_ref()
             .and_then(crate::protocols::standard::data_device::app_id_of);
-        let in_set = surface.as_ref().is_some_and(|s| state.sensitive.contains(s));
+        // The policy class counts once a table is live (S-05 §2: `secret` is
+        // redacted from capture). With no table the agent-facing answer is
+        // "everything secret", which must not black out the human's own
+        // screenshots, so only the compositor's own set applies then.
+        let in_set = surface.as_ref().is_some_and(|s| state.sensitive.contains(s))
+            || (state.policy_table.is_some()
+                && crate::policy::classes::class_of(state, window) == ec_policy_eval::Class::Secret);
         // Where the surface tree's own (0, 0) lands, and the box it occupies.
         // `geo` is the *placed* rect; a client with CSD shadow insets draws
         // outside it, so covering `geo` alone would leave those pixels through.

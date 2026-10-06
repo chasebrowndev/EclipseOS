@@ -91,7 +91,11 @@ pub(crate) fn install_for_test(state: &mut AbyssState) {
         preds: vec![Pred::Capability(vec![ec_policy_eval::scope::Glob::new("*")])],
         unless: Vec::new(),
     });
-    state.policy_table = Some(Table { version: 1, rules });
+    state.policy_table = Some(Table {
+        version: 1,
+        rules,
+        ..Default::default()
+    });
 }
 
 #[cfg(test)]
@@ -108,7 +112,11 @@ mod tests {
             preds: vec![Pred::Capability(vec![Glob::new("*")])],
             unless: Vec::new(),
         });
-        Table { version, rules }
+        Table {
+            version,
+            rules,
+            ..Default::default()
+        }
     }
 
     #[test]

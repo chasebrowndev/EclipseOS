@@ -22,9 +22,11 @@ use regex::{Regex, RegexBuilder};
 
 use crate::cbor::{self, enc, MapBuilder, Reader, Writer};
 use crate::check::{CompiledRule, Pred, Table, Trust, Unless};
+use crate::classify::{Classifier, ClassifyRule, Matcher, TrustRule};
 use crate::scope::{Class, Glob};
 
-pub const VERSION: u64 = 1;
+/// 2: the table carries the classifier (S-05) as well as the rules.
+pub const VERSION: u64 = 2;
 
 /// Prefixed to the table bytes before signing.
 pub const SIGNING_CONTEXT: &[u8] = b"eclipse-enforcement-table-v1\0";
@@ -206,10 +208,68 @@ fn encode_phase(rules: &[CompiledRule]) -> Vec<u8> {
     })
 }
 
+fn encode_matcher(m: &Matcher) -> Vec<u8> {
+    let mut b = MapBuilder::new();
+    let (name, value): (&str, (&str, Vec<u8>)) = match m {
+        Matcher::AppId(g) => ("app_id", ("a", enc(|w| texts(w, g.iter().map(Glob::as_str))))),
+        Matcher::Title(re) => ("title", ("re", enc(|w| w.text(re.as_str())))),
+        Matcher::Url(g) => ("url", ("a", enc(|w| texts(w, g.iter().map(Glob::as_str))))),
+        Matcher::Output(g) => ("output", ("a", enc(|w| texts(w, g.iter().map(Glob::as_str))))),
+        Matcher::LaunchedBy(g) => (
+            "launched_by",
+            ("a", enc(|w| texts(w, g.iter().map(Glob::as_str)))),
+        ),
+        Matcher::Xwayland(x) => ("xwayland", ("b", enc(|w| w.bool(*x)))),
+    };
+    b.insert("p", enc(|w| w.text(name)));
+    b.insert(value.0, value.1);
+    b.finish()
+}
+
+fn encode_matchers(ms: &[Matcher]) -> Vec<u8> {
+    enc(|w| {
+        w.array(ms.len());
+        for m in ms {
+            w.raw(&encode_matcher(m));
+        }
+    })
+}
+
+fn encode_classifier(c: &Classifier) -> Vec<u8> {
+    let mut m = MapBuilder::new();
+    m.insert(
+        "trust",
+        enc(|w| {
+            w.array(c.trust.len());
+            for t in &c.trust {
+                let mut e = MapBuilder::new();
+                e.insert("trust", enc(|w| w.text(trust_str(t.trust))));
+                e.insert("matchers", encode_matchers(&t.matchers));
+                w.raw(&e.finish());
+            }
+        }),
+    );
+    m.insert("default", enc(|w| w.text(class_str(c.default))));
+    m.insert(
+        "classify",
+        enc(|w| {
+            w.array(c.classify.len());
+            for r in &c.classify {
+                let mut e = MapBuilder::new();
+                e.insert("class", enc(|w| w.text(class_str(r.class))));
+                e.insert("matchers", encode_matchers(&r.matchers));
+                w.raw(&e.finish());
+            }
+        }),
+    );
+    m.finish()
+}
+
 /// The table's canonical bytes: what is signed and what is pushed.
 pub fn encode(t: &Table) -> Vec<u8> {
     let mut m = MapBuilder::new();
     m.insert("v", enc(|w| w.u64(VERSION)));
+    m.insert("classifier", encode_classifier(&t.classifier));
     m.insert("deny", encode_phase(&t.rules.deny));
     m.insert("allow", encode_phase(&t.rules.allow));
     m.insert("defer", encode_phase(&t.rules.defer));
@@ -386,12 +446,131 @@ pub fn hash(bytes: &[u8]) -> [u8; 32] {
     *blake3::hash(bytes).as_bytes()
 }
 
+fn decode_matcher(r: &mut Reader<'_>) -> Result<Matcher, TableError> {
+    let len = r.map_begin()?;
+    let (mut name, mut a, mut re, mut b) = (None, None, None, None);
+    for _ in 0..len {
+        match r.key()? {
+            "a" => a = Some(read_texts(r)?),
+            "b" => b = Some(r.bool()?),
+            "p" => name = Some(r.text()?),
+            "re" => re = Some(r.text()?),
+            _ => return Err(TableError::Shape),
+        }
+    }
+    r.map_end()?;
+    let globs = |v: Option<Vec<&str>>| -> Result<Vec<Glob>, TableError> {
+        Ok(v.ok_or(TableError::Shape)?.into_iter().map(Glob::new).collect())
+    };
+    let fields = [a.is_some(), b.is_some(), re.is_some()]
+        .iter()
+        .filter(|x| **x)
+        .count();
+    if fields != 1 {
+        return Err(TableError::Shape);
+    }
+    Ok(match name.ok_or(TableError::Shape)? {
+        "app_id" => Matcher::AppId(globs(a)?),
+        "title" => Matcher::Title(regex(re.ok_or(TableError::Shape)?)?),
+        "url" => Matcher::Url(globs(a)?),
+        "output" => Matcher::Output(globs(a)?),
+        "launched_by" => Matcher::LaunchedBy(globs(a)?),
+        "xwayland" => Matcher::Xwayland(b.ok_or(TableError::Shape)?),
+        _ => return Err(TableError::Shape),
+    })
+}
+
+fn decode_matchers(r: &mut Reader<'_>) -> Result<Vec<Matcher>, TableError> {
+    let n = r.array_len()?;
+    if n == 0 || n > MAX_ITEMS {
+        return Err(TableError::Shape);
+    }
+    (0..n).map(|_| decode_matcher(r)).collect()
+}
+
+fn decode_classifier(r: &mut Reader<'_>) -> Result<Classifier, TableError> {
+    let len = r.map_begin()?;
+    let (mut default, mut classify, mut trust) = (None, None, None);
+    for _ in 0..len {
+        match r.key()? {
+            "trust" => {
+                let n = r.array_len()?;
+                if n > MAX_RULES {
+                    return Err(TableError::Shape);
+                }
+                let mut v = Vec::with_capacity(n as usize);
+                for _ in 0..n {
+                    let l = r.map_begin()?;
+                    let (mut t, mut ms) = (None, None);
+                    for _ in 0..l {
+                        match r.key()? {
+                            "trust" => t = Some(trust_of(r.text()?).ok_or(TableError::Shape)?),
+                            "matchers" => ms = Some(decode_matchers(r)?),
+                            _ => return Err(TableError::Shape),
+                        }
+                    }
+                    r.map_end()?;
+                    let trust = t.ok_or(TableError::Shape)?;
+                    // A rule cannot hand out `human`: that is the human seat's alone.
+                    if trust == Trust::Human {
+                        return Err(TableError::Shape);
+                    }
+                    v.push(TrustRule {
+                        trust,
+                        matchers: ms.ok_or(TableError::Shape)?,
+                    });
+                }
+                trust = Some(v);
+            }
+            "default" => {
+                let c = class_of(r.text()?).ok_or(TableError::Shape)?;
+                // Only a `classify "public"` match can make a target public.
+                if c == Class::Public {
+                    return Err(TableError::Shape);
+                }
+                default = Some(c);
+            }
+            "classify" => {
+                let n = r.array_len()?;
+                if n > MAX_RULES {
+                    return Err(TableError::Shape);
+                }
+                let mut v = Vec::with_capacity(n as usize);
+                for _ in 0..n {
+                    let l = r.map_begin()?;
+                    let (mut c, mut ms) = (None, None);
+                    for _ in 0..l {
+                        match r.key()? {
+                            "class" => c = Some(class_of(r.text()?).ok_or(TableError::Shape)?),
+                            "matchers" => ms = Some(decode_matchers(r)?),
+                            _ => return Err(TableError::Shape),
+                        }
+                    }
+                    r.map_end()?;
+                    v.push(ClassifyRule {
+                        class: c.ok_or(TableError::Shape)?,
+                        matchers: ms.ok_or(TableError::Shape)?,
+                    });
+                }
+                classify = Some(v);
+            }
+            _ => return Err(TableError::Shape),
+        }
+    }
+    r.map_end()?;
+    Ok(Classifier {
+        default: default.ok_or(TableError::Shape)?,
+        classify: classify.ok_or(TableError::Shape)?,
+        trust: trust.ok_or(TableError::Shape)?,
+    })
+}
+
 /// Decode table bytes. Call only after [`verify`] has passed.
 pub fn decode(buf: &[u8]) -> Result<Table, TableError> {
     let mut r = Reader::new(buf);
     let len = r.map_begin()?;
     let mut t = Table::default();
-    let (mut v, mut version) = (None, None);
+    let (mut v, mut version, mut classifier) = (None, None, None);
     let mut seen = [false; 4];
     for _ in 0..len {
         match r.key()? {
@@ -401,6 +580,7 @@ pub fn decode(buf: &[u8]) -> Result<Table, TableError> {
             "defer" => (t.rules.defer, seen[2]) = (decode_phase(&mut r)?, true),
             "prompt" => (t.rules.prompt, seen[1]) = (decode_phase(&mut r)?, true),
             "version" => version = Some(r.u64()?),
+            "classifier" => classifier = Some(decode_classifier(&mut r)?),
             _ => return Err(TableError::Shape),
         }
     }
@@ -410,6 +590,7 @@ pub fn decode(buf: &[u8]) -> Result<Table, TableError> {
         return Err(TableError::Shape);
     }
     t.version = version.ok_or(TableError::Shape)?;
+    t.classifier = classifier.ok_or(TableError::Shape)?;
     Ok(t)
 }
 
@@ -427,6 +608,31 @@ mod tests {
         let mut t = Table {
             version: 7,
             rules: Phases::default(),
+            classifier: Classifier {
+                default: Class::Private,
+                classify: vec![
+                    ClassifyRule {
+                        class: Class::Secret,
+                        matchers: vec![
+                            Matcher::AppId(vec![Glob::new("bitwarden")]),
+                            Matcher::Title(regex("(?i)password").unwrap()),
+                            Matcher::Xwayland(false),
+                        ],
+                    },
+                    ClassifyRule {
+                        class: Class::Public,
+                        matchers: vec![Matcher::Url(vec![Glob::new("https://*.wikipedia.org/*")])],
+                    },
+                ],
+                trust: vec![TrustRule {
+                    trust: Trust::Trusted,
+                    matchers: vec![
+                        Matcher::AppId(vec![Glob::new("foot")]),
+                        Matcher::Output(vec![Glob::new("eDP-*")]),
+                        Matcher::LaunchedBy(vec![Glob::new("human")]),
+                    ],
+                }],
+            },
         };
         let mut no_secret = rule(
             "no-secret-capture",

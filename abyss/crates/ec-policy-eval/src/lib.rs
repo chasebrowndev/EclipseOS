@@ -17,6 +17,7 @@
 pub mod audit;
 pub mod cbor;
 pub mod check;
+pub mod classify;
 pub mod grant;
 pub mod link;
 pub mod scope;

@@ -169,6 +169,9 @@ pub struct Phases {
 pub struct Table {
     pub version: u64,
     pub rules: Phases,
+    /// Sensitivity and trust assignment (S-05), the `classify`, `trust` and
+    /// `defaults` nodes.
+    pub classifier: crate::classify::Classifier,
 }
 
 /// What `policyd` may answer a deferral with (COMP-11 §5). There is no

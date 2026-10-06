@@ -233,6 +233,8 @@ pub fn hidden_from_agents(window: &Window) -> bool {
 
 /// Evaluate every rule against a newly mapped window.
 pub fn apply(state: &mut AbyssState, window: &Window) -> Placement {
+    // S-05 §5: class is recomputed on map.
+    crate::policy::classes::recompute(state, window);
     let (placement, named) = evaluate(state, window, true);
     let rules = !state.config.window_rules.is_empty();
     let settled = match window.toplevel() {
@@ -258,6 +260,9 @@ pub fn apply(state: &mut AbyssState, window: &Window) -> Placement {
 /// caller then has to re-install the window.
 #[must_use]
 pub fn reevaluate(state: &mut AbyssState, window: &Window) -> Option<Placement> {
+    // S-05 §5: and on every commit, which is how title and app_id changes
+    // arrive.
+    crate::policy::classes::recompute(state, window);
     let rules = !state.config.window_rules.is_empty();
     if window.user_data().get::<Placed>().is_some() {
         if rules {

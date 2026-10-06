@@ -17,11 +17,11 @@ flowchart TD
   M14[M14 atomic batches, wait_for, dedupe, generations]:::todo
   M15[M15 trusted UI: prompt, panel, phrase]:::part
   M16[M16 table enforcement, prompt, defer]:::part
-  M17[M17 policy-driven classes, races]:::todo
+  M17[M17 policy-driven classes, races]:::part
   M18[M18 provenance chain, irreversible matcher]:::blocked
   M19[M19 brokerd secrets]:::todo
   M20[M20 egress proxy]:::todo
-  M21[M21 cataclysm-pub library]:::todo
+  M21[M21 cataclysm-pub library]:::done
   M22[M22 eclipse_semantic_v1 server]:::todo
   M23[M23 cataclysm: foot fork]:::blocked
   M24[M24 launcher, agent workspaces, virtual outputs]:::blocked
@@ -59,7 +59,7 @@ flowchart TD
 | A2 | M16 remainder: golden decision suite (both evaluators), fault-injection no-mutation suite, ≤50 µs bench | main (TCB) | the M16 exit gate |
 | A3 | M17: `classify`/`trust` compiled into the table, class recompute on title/url change, race suite; retire the manual flag | main (TCB) | default policy cannot classify anything until this lands |
 | A4 | M13/M15 suite gaps: X11 posture, trusted-UI suite (agent seat cannot answer a prompt) | main | exit gates of done-ish milestones |
-| B1 ∥ | M21 `cataclysm-pub` (P-04 §7): node model, line diffing, rate policy, C ABI | backend agent | separable, no compositor dependency |
+| B1 ∥ | ~~M21 `cataclysm-pub`~~: already in the tree since the workspace split; STATUS had it as not started | — | done; needs owner review |
 | B2 ∥ | M19 `brokerd` (S-08): sealed store, injection modes; TPM mocked here | backend agent | separable; real TPM is a hardware check |
 | B3 ∥ | M20 egress proxy (S-09) | backend agent, if the container can create netns | separable; may need the dev host |
 | C1 | `policyd`: task create/close CLI, mint from prompt answers, deterministic defer checks | main (TCB) | lets a human drive an agent end to end |

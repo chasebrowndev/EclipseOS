@@ -31,9 +31,7 @@
 
 use std::time::Duration;
 
-use ec_policy_eval::check::{
-    self, DeferAnswer, GrantFact, NodeFacts, Outcome, ProvenanceFacts, RequestCtx, Trust,
-};
+use ec_policy_eval::check::{self, DeferAnswer, GrantFact, NodeFacts, Outcome, ProvenanceFacts, RequestCtx};
 use ec_policy_eval::link::ToPolicyd;
 use ec_protocols::agent::server::eclipse_agent_v1::Status;
 use smithay::desktop::Window;
@@ -214,7 +212,8 @@ pub enum Submitted {
 /// Requests waiting on a prompt or a deferral.
 #[derive(Debug, Default)]
 pub struct Pending {
-    prompts: Vec<(u64, Request)>,
+    /// With the target's class when the prompt went up (S-05 §5 rule 3).
+    prompts: Vec<(u64, Request, ec_policy_eval::Class)>,
     defers: Vec<(u64, Request, String)>,
 }
 
@@ -272,6 +271,7 @@ fn decide(state: &mut AbyssState, req: &Request, window: &Window) -> (Outcome, S
     let n = agent.grant_facts(&mut facts);
     let irreversible_capable = crate::shell::rules::irreversible_capable_of(window);
     let class = scene::class_of(state, window);
+    let app_trust = crate::policy::classes::trust_of(state, window);
     let d = scene::with_facts(state, window, |w| {
         let ctx = RequestCtx {
             principal: agent.principal(),
@@ -281,8 +281,7 @@ fn decide(state: &mut AbyssState, req: &Request, window: &Window) -> (Outcome, S
             app_id: Some(w.app_id).filter(|a| !a.is_empty()),
             title: Some(w.title).filter(|t| !t.is_empty()),
             class,
-            // S-05 app trust is M17: until then every app is `standard`.
-            app_trust: Trust::Standard,
+            app_trust,
             app_irreversible_capable: irreversible_capable,
             node: None::<NodeFacts<'_>>,
             url: None,
@@ -424,7 +423,11 @@ fn park(state: &mut AbyssState, principal: &str, req: Request, window: &Window, 
                 rule,
                 "request parked behind a consent prompt"
             );
-            state.enforce.prompts.push((key(req.agent, req.req_id), req));
+            let class = scene::class_of(state, window);
+            state
+                .enforce
+                .prompts
+                .push((key(req.agent, req.req_id), req, class));
             Submitted::Pending
         }
         Err(consent::Refused::RateLimited) => {
@@ -524,6 +527,7 @@ fn allow_phase(state: &mut AbyssState, req: &Request, window: &Window) -> Option
     let n = agent.grant_facts(&mut facts);
     let class = scene::class_of(state, window);
     let irreversible_capable = crate::shell::rules::irreversible_capable_of(window);
+    let app_trust = crate::policy::classes::trust_of(state, window);
     scene::with_facts(state, window, |w| {
         let ctx = RequestCtx {
             principal: agent.principal(),
@@ -533,7 +537,7 @@ fn allow_phase(state: &mut AbyssState, req: &Request, window: &Window) -> Option
             app_id: Some(w.app_id).filter(|a| !a.is_empty()),
             title: Some(w.title).filter(|t| !t.is_empty()),
             class,
-            app_trust: Trust::Standard,
+            app_trust,
             app_irreversible_capable: irreversible_capable,
             node: None,
             url: None,
@@ -586,10 +590,10 @@ pub fn drain(state: &mut AbyssState) {
             continue;
         };
         let k = key(r.agent, req_id);
-        let Some(i) = state.enforce.prompts.iter().position(|(x, _)| *x == k) else {
+        let Some(i) = state.enforce.prompts.iter().position(|(x, ..)| *x == k) else {
             continue;
         };
-        let (_, req) = state.enforce.prompts.remove(i);
+        let (_, req, asked_class) = state.enforce.prompts.remove(i);
         match r.verdict {
             consent::Verdict::Proceed { mint } => {
                 let Some(principal) = state.agents.principal_of(req.agent) else {
@@ -603,6 +607,13 @@ pub fn drain(state: &mut AbyssState) {
                         continue;
                     }
                 };
+                // S-05 §5 rule 3: the human approved an act on a window of
+                // one class; if it has risen since, the approval is not for
+                // what is there now.
+                if scene::class_of(state, &window) > asked_class {
+                    reply(state, &req, Status::ClassChanged, String::new());
+                    continue;
+                }
                 if let Some(m) = mint {
                     crate::policy::link::send(
                         state,
@@ -632,7 +643,7 @@ pub fn drain(state: &mut AbyssState) {
 /// Drop everything pending for `agent` (it went away).
 pub fn forget(state: &mut AbyssState, agent: u64) {
     crate::policy::batch::forget(state, agent);
-    state.enforce.prompts.retain(|(_, r)| r.agent != agent);
+    state.enforce.prompts.retain(|(_, r, _)| r.agent != agent);
     state.enforce.defers.retain(|(_, r, _)| r.agent != agent);
 }
 

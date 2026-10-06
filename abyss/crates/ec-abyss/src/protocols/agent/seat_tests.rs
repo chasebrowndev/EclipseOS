@@ -630,7 +630,11 @@ fn a_prompted_key_waits_for_the_human_and_runs_only_on_allow() {
         preds: vec![Pred::Capability(vec![Glob::new("*")])],
         unless: Vec::new(),
     });
-    w.h.state.policy_table = Some(Table { version: 2, rules });
+    w.h.state.policy_table = Some(Table {
+        version: 2,
+        rules,
+        ..Default::default()
+    });
     let seat = w.name();
 
     // Parked: no result yet, a consent prompt holds the human seat.
@@ -721,7 +725,11 @@ fn no_denied_step_changes_anything() {
         preds: vec![Pred::Capability(vec![Glob::new("seat.key")])],
         unless: Vec::new(),
     });
-    w.h.state.policy_table = Some(Table { version: 9, rules });
+    w.h.state.policy_table = Some(Table {
+        version: 9,
+        rules,
+        ..Default::default()
+    });
     let id = w.key(KEY_A, true);
     assert_eq!(w.status(id), Some((POLICY_DENIED, "no-keys".into())));
     assert_eq!(snapshot(&w), before, "policy denied");
@@ -740,7 +748,11 @@ fn no_denied_step_changes_anything() {
         preds: vec![Pred::Capability(vec![Glob::new("seat.key")])],
         unless: Vec::new(),
     });
-    w.h.state.policy_table = Some(Table { version: 10, rules });
+    w.h.state.policy_table = Some(Table {
+        version: 10,
+        rules,
+        ..Default::default()
+    });
     let id = w.key(KEY_A, true);
     assert_eq!(w.status(id), None, "deferred: waiting on policyd");
     let k = (agent << 32) | u64::from(id);

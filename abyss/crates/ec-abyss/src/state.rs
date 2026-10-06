@@ -262,6 +262,8 @@ pub struct AbyssState {
     pub enforce: crate::policy::enforce::Pending,
     /// Batch tokens the human approved (COMP-08 §4.2).
     pub batches: crate::policy::batch::Batches,
+    /// Held window classes (S-05 §5 downgrade grace).
+    pub classes: crate::policy::classes::Classes,
     pub agents: crate::protocols::agent::Agents,
     /// Each agent's virtual seat (COMP-04 §3), by agent id. Created lazily by
     /// `get_seat`; never consulted by the human input paths.
@@ -583,6 +585,7 @@ impl AbyssState {
             paused: Default::default(),
             enforce: Default::default(),
             batches: Default::default(),
+            classes: Default::default(),
             agents: Default::default(),
             agent_seats: Vec::new(),
             session_lock_state,
