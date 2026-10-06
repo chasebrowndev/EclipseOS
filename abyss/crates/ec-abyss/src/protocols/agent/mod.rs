@@ -49,6 +49,8 @@ use crate::audit;
 use crate::policy::{scene, AdmitError, Agent, Views};
 use crate::state::{AbyssState, ClientState};
 
+pub mod seat;
+
 #[cfg(test)]
 mod leakage;
 #[cfg(test)]
@@ -97,6 +99,33 @@ impl Agents {
             }
         }
         tasks
+    }
+
+    pub(crate) fn take_agent(&mut self, id: u64) -> Option<Agent> {
+        self.take(id)
+    }
+
+    pub(crate) fn put_agent(&mut self, id: u64, agent: Agent) {
+        self.put(id, agent)
+    }
+
+    pub(crate) fn peek_agent(&self, id: u64) -> Option<&Agent> {
+        self.slots
+            .iter()
+            .find(|(i, _)| *i == id)
+            .and_then(|(_, a)| a.as_ref())
+    }
+
+    pub(crate) fn with_agent<R>(&mut self, id: u64, f: impl FnOnce(&mut Agent) -> R) -> Option<R> {
+        self.slots
+            .iter_mut()
+            .find(|(i, _)| *i == id)
+            .and_then(|(_, a)| a.as_mut())
+            .map(f)
+    }
+
+    pub fn task_of(&self, id: u64) -> Option<ec_policy_eval::Ulid> {
+        self.peek_agent(id).and_then(Agent::task_id)
     }
 
     /// Every live agent object's id and principal, in admission order.
@@ -532,6 +561,7 @@ impl Dispatch<EclipseAgentV1, AgentId> for AbyssState {
         state.agents.slots.retain(|(i, _)| *i != data.0);
         state.agents.owners.retain(|(i, _)| *i != data.0);
         crate::policy::lifecycle::forget(state, data.0);
+        crate::policy::enforce::forget(state, data.0);
         crate::trusted_ui::consent::withdraw(state, data.0);
     }
 }

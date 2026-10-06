@@ -365,6 +365,7 @@ pub fn withdraw(state: &mut AbyssState, agent: u64) {
     if let Some(token) = state.trusted_ui.consent.withdraw(agent) {
         super::cancel(state, token);
     }
+    crate::policy::enforce::drain(state);
     schedule(state);
 }
 
@@ -399,6 +400,7 @@ pub fn answer(state: &mut AbyssState, choice: Choice) {
     if let Some(r) = state.trusted_ui.consent.answer(choice.token, a, choice.timed_out) {
         tracing::info!(agent = r.agent, req = r.req, verdict = ?r.verdict, "consent prompt answered");
     }
+    crate::policy::enforce::drain(state);
 }
 
 #[cfg(test)]
@@ -609,16 +611,13 @@ mod tests {
         // A second request waits behind the first.
         let second = park(s, 7, 43, ask()).unwrap();
         assert_eq!(s.trusted_ui.token(), Some(token));
-        // Escape counts even before the prompt is armed.
+        // Escape counts even before the prompt is armed. The answer is
+        // carried through at once (`policy::enforce::drain` takes the outbox),
+        // so what shows is that the next request comes up.
         super::super::key(s, Keysym::Escape);
-        let r = s.trusted_ui.consent.take_resolved();
-        assert_eq!(
-            r,
-            vec![Resolved {
-                agent: 7,
-                req: 42,
-                verdict: Verdict::Denied
-            }]
+        assert!(
+            s.trusted_ui.consent.take_resolved().is_empty(),
+            "drained on answer"
         );
         assert_eq!(s.trusted_ui.token(), Some(second), "the next one comes up");
         withdraw(s, 7);

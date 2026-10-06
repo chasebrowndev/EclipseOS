@@ -83,7 +83,7 @@ fn place<'a>(state: &'a AbyssState, window: &Window) -> Option<(OutputFacts<'a>,
 /// Runs `f` over the window's facts, borrowed in place. The xdg identity is
 /// read under its lock without copying; X11 properties are owned strings in
 /// Smithay, so that branch copies.
-fn with_facts<R>(state: &AbyssState, window: &Window, f: impl FnOnce(&WindowFacts<'_>) -> R) -> R {
+pub(crate) fn with_facts<R>(state: &AbyssState, window: &Window, f: impl FnOnce(&WindowFacts<'_>) -> R) -> R {
     let placed = place(state, window);
     let base = WindowFacts {
         app_id: "",
@@ -126,7 +126,8 @@ fn with_facts<R>(state: &AbyssState, window: &Window, f: impl FnOnce(&WindowFact
 /// `scene.list.secret`, and S-05 §2 delivers secret content to no agent
 /// without a `*.secret` capability and a per-request prompt. A `class:secret`
 /// scope narrows; it never makes one visible.
-fn visible(state: &AbyssState, view: &SceneView, window: &Window) -> bool {
+/// Whether `window` is in `view` and not `secret`: the one visibility rule.
+pub(crate) fn visible(state: &AbyssState, view: &SceneView, window: &Window) -> bool {
     window.alive() && with_facts(state, window, |w| w.class != Class::Secret && view.visible(w))
 }
 
