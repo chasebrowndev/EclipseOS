@@ -18,6 +18,14 @@ authority beyond the signed grants `policyd` gives it.
   ids, sizes and a chain hash.
 - The `dev-unsandboxed` feature runs agents as plain children for tests. It
   must never appear in the PKGBUILD.
+- The sandbox (`sandbox.rs`, `launcher.rs`) fails closed: no Landlock, an
+  `egress_unavailable` or otherwise unmet `sandbox { }` request, and the launch
+  is refused (`Exited{failed}`). Never add a path that launches an agent with
+  fewer layers outside `dev-unsandboxed`. The init helper is the same binary,
+  unprivileged; there is no root helper.
+- The session record (`session.rs`) is history, never `secret`-class content,
+  and is deleted with the conversation. `session.restore` exists only on a task
+  provisioned with `resumes`, and answers once.
 - Ships only in the `eclipseos-agents` add-on (ADR 0069).
 - SPDX `AGPL-3.0-only` on every file: it is a system daemon, not an SDK.
 - Never logs window titles or other scene content to the journal; `--list`

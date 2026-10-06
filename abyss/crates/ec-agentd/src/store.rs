@@ -103,6 +103,10 @@ pub struct Task {
     /// Absolute deadline, epoch ms, as policyd provisioned it.
     pub deadline_ms: u64,
     pub continuation: String,
+    /// The closed task whose session this one restores (A-08 §5.4), or empty.
+    pub resumes: String,
+    /// `session.restore` was called: it answers once.
+    pub restore_taken: bool,
     /// `active`, `paused`, `draining` or `closed` (A-04 §4).
     pub state: String,
     pub reason: String,
@@ -129,6 +133,8 @@ impl Task {
             statement: String::new(),
             deadline_ms: 0,
             continuation: String::new(),
+            resumes: String::new(),
+            restore_taken: false,
             state: "active".into(),
             reason: String::new(),
             awaiting_reply: false,
@@ -166,6 +172,7 @@ impl Task {
             "closed_ms": self.closed_ms,
             "depth": 0,
             "continuation": self.continuation,
+            "resumes": if self.resumes.is_empty() { Value::Null } else { json!(self.resumes) },
             "awaiting_reply": self.awaiting_reply,
             "pending_decisions": 0,
             "min_trust": self.min_trust,
@@ -199,6 +206,7 @@ impl Task {
         t.statement = s("statement")?;
         t.deadline_ms = u("deadline_ms").unwrap_or(0);
         t.continuation = s("continuation").unwrap_or_default();
+        t.resumes = s("resumes").unwrap_or_default();
         t.state = s("state")?;
         t.reason = s("reason").unwrap_or_default();
         t.awaiting_reply = v.get("awaiting_reply").and_then(Value::as_bool).unwrap_or(false);

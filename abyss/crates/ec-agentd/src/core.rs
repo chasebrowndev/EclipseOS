@@ -13,6 +13,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
@@ -25,8 +26,9 @@ use serde_json::{json, Value};
 use crate::launcher::{self, Running};
 use crate::rpc::{self, p_str, p_u64, Parsed, Request, RpcError};
 use crate::sanitize::{self, MAX_TEXT};
+use crate::session::{self, Sessions};
 use crate::store::{Kind, Message, Store, Task};
-use crate::{net, packages, ulid_from_text, Config};
+use crate::{net, packages, sandbox, ulid_from_text, Config};
 
 /// A-03 §7 defaults, counted on the task.
 pub const MSGS_PER_MIN: usize = 60;
@@ -36,6 +38,8 @@ const WINDOW_MS: u64 = 60_000;
 const PENDING_MS: u64 = 5_000;
 const SWEEP_EVERY_MS: u64 = 3_600_000;
 const AUDIT_QUEUE: usize = 4096;
+/// The MCP tool a resumed task alone has (F-23).
+pub const RESTORE_TOOL: &str = "session.restore";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Surface {
@@ -109,6 +113,7 @@ struct Prov {
     statement: String,
     deadline_ms: u64,
     continuation: String,
+    resumes: String,
 }
 
 pub struct Core {
@@ -116,6 +121,7 @@ pub struct Core {
     tx: Sender<Msg>,
     ids: Arc<AtomicU64>,
     store: Store,
+    sessions: Sessions,
     tasks: BTreeMap<String, Task>,
     conns: HashMap<u64, Conn>,
     link: Option<Sender<Vec<u8>>>,
@@ -139,6 +145,7 @@ fn log(m: &str) {
 impl Core {
     pub fn new(cfg: Config, tx: Sender<Msg>, ids: Arc<AtomicU64>) -> Core {
         let store = Store::new(&cfg.state_dir);
+        let state_dir = cfg.state_dir.clone();
         let now = (cfg.clock)();
         let mut tasks = BTreeMap::new();
         let mut unreported = Vec::new();
@@ -161,6 +168,7 @@ impl Core {
             tx,
             ids,
             store,
+            sessions: Sessions::new(&state_dir),
             tasks,
             conns: HashMap::new(),
             link: None,
@@ -383,6 +391,7 @@ impl Core {
                 statement,
                 deadline_ms,
                 continuation,
+                resumes,
                 ..
             } => self.provision(Prov {
                 task,
@@ -392,6 +401,7 @@ impl Core {
                 statement,
                 deadline_ms,
                 continuation,
+                resumes,
             }),
             FromPolicyd::TaskState { task, state, reason } => self.task_state(&task, &state, &reason),
             FromPolicyd::Revoked { principal } => {
@@ -446,6 +456,7 @@ impl Core {
         if ulid_from_text(&p.task).is_none()
             || !packages::safe_component(&p.package)
             || !packages::safe_component(&p.version)
+            || (!p.resumes.is_empty() && ulid_from_text(&p.resumes).is_none())
         {
             log("refusing to provision a task with a malformed id");
             let req = self.req_id();
@@ -468,6 +479,16 @@ impl Core {
         t.statement = sanitize::clean(&p.statement);
         t.deadline_ms = p.deadline_ms;
         t.continuation = p.continuation;
+        if !p.resumes.is_empty() {
+            // A resume carries the old chain's trust (A-08 §5.4): it starts
+            // where the old task ended, never cleaner. An old task agentd no
+            // longer knows is treated as untrusted (the ratchet only tightens).
+            t.min_trust = match self.tasks.get(&p.resumes) {
+                Some(old) => old.min_trust.clone(),
+                None => "untrusted".to_owned(),
+            };
+            t.resumes = p.resumes;
+        }
         if let Err(e) = self.store.write_meta(&t) {
             log(&format!("cannot persist task {}: {e}", t.id));
             let req = self.req_id();
@@ -479,10 +500,11 @@ impl Core {
             return;
         }
         let id = t.id.clone();
-        self.event(
-            "task_started",
-            json!({"task_id": id, "package": t.package, "statement": t.statement, "deadline_ms": t.deadline_ms}),
-        );
+        let mut started = json!({"task_id": id, "package": t.package, "statement": t.statement, "deadline_ms": t.deadline_ms});
+        if !t.resumes.is_empty() {
+            started["resumes"] = json!(t.resumes);
+        }
+        self.event("task_started", started);
         self.tasks.insert(id.clone(), t);
         if let Err(e) = self.launch(&id) {
             log(&format!("task {id}: agent not started: {e}"));
@@ -525,6 +547,15 @@ impl Core {
             .ok_or("package is not installed")?;
         // TODO(ec-manifest): use the shared parser.
         let entry = packages::entrypoint(&pkg_dir)?;
+        // Fail closed before anything starts (A-01 §6: no sandbox without its
+        // filters): an unreadable or unmet `sandbox { }` request, a
+        // `net.egress` (no egress proxy until M20), or a kernel without
+        // Landlock refuses the launch; the task then ends `Exited{failed}`.
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let decl = packages::sandbox_decl(&pkg_dir)?.resolve(home.as_deref())?;
+        sandbox::preflight()?;
+        let init_exe =
+            std::env::current_exe().map_err(|e| format!("cannot find agentd's own binary: {e}"))?;
         let run = launcher::start(
             &launcher::Spec {
                 task: id,
@@ -532,6 +563,8 @@ impl Core {
                 pkg_dir: &pkg_dir,
                 entrypoint: &entry,
                 mcp_sock: &sock,
+                decl: &decl,
+                init_exe: &init_exe,
             },
             self.tx.clone(),
         )
@@ -582,6 +615,7 @@ impl Core {
         }
         let dir = self.cfg.runtime_dir.join("agents").join(id);
         let _ = std::fs::remove_file(dir.join("mcp.sock"));
+        let _ = std::fs::remove_file(launcher::cfg_path(&dir.join("mcp.sock")));
         let _ = std::fs::remove_dir(&dir);
         let gone: Vec<u64> = self
             .conns
@@ -630,6 +664,7 @@ impl Core {
             .collect();
         for id in old {
             self.store.delete(&id);
+            self.sessions.delete(&id);
             self.tasks.remove(&id);
         }
     }
@@ -658,7 +693,12 @@ impl Core {
         };
         let out = match &surface {
             Surface::Console => self.console_call(conn, &req),
-            Surface::Mcp(task) => Outcome::Now(self.mcp_call(task, &req)),
+            Surface::Mcp(task) => {
+                self.record_request(task, &req);
+                let r = self.mcp_call(task, &req);
+                self.record_response(task, &req, &r);
+                Outcome::Now(r)
+            }
         };
         if let (Some(id), Outcome::Now(r)) = (&req.id, out) {
             self.send(
@@ -669,6 +709,46 @@ impl Core {
                 },
             );
         }
+    }
+
+    /// Appends to the task's session record (A-08 §5.4). A failure is logged
+    /// by id only, never by content, and does not fail the call: the record
+    /// is history, not a gate.
+    fn record(&mut self, task: &str, kind: &str, body: Value) {
+        let e = session::entry(kind, self.now(), body);
+        match self.sessions.append(task, &e) {
+            Ok(true) => {}
+            Ok(false) => log(&format!("task {task}: session record is full; entries dropped")),
+            Err(err) => log(&format!("task {task}: cannot write the session record: {err}")),
+        }
+    }
+
+    fn record_request(&mut self, task: &str, req: &Request) {
+        self.record(
+            task,
+            "mcp_request",
+            json!({"method": req.method, "params": req.params}),
+        );
+    }
+
+    fn record_response(&mut self, task: &str, req: &Request, r: &Result<Value, RpcError>) {
+        // Notifications get no response.
+        if req.id.is_none() {
+            return;
+        }
+        // `session.restore` is recorded like any other result: it is what the
+        // model saw, and a later resume of this task needs it to hand on the
+        // whole history, not only this task's part.
+        let body = match r {
+            Ok(v) => json!({"method": req.method, "result": v}),
+            Err(e) => json!({"method": req.method, "error": e.to_json()}),
+        };
+        self.record(task, "mcp_response", body);
+    }
+
+    /// A conversation message, as `conversation.v1`.
+    fn record_message(&mut self, task: &str, m: &Message) {
+        self.record(task, "message", json!({"message": m.to_json()}));
     }
 
     fn task_ref(&self, id: &str) -> Result<&Task, RpcError> {
@@ -817,6 +897,7 @@ impl Core {
             (msg, cleared)
         };
         self.persist(id);
+        self.record_message(id, &msg);
         self.channel_audit(id, "human", Some(&msg), msg.text.len(), "post");
         self.event("message", message_event(id, &msg));
         if cleared {
@@ -915,7 +996,20 @@ impl Core {
             "reason": t.reason,
             "closed_ms": t.closed_ms,
             "min_trust": t.min_trust,
+            "resumes": (!t.resumes.is_empty()).then(|| t.resumes.clone()),
+            "eligible": self.eligible(t),
         })).collect::<Vec<_>>()}))
+    }
+
+    /// Whether History may offer Resume (A-08 §5.4): closed, its package is
+    /// still installed and `resumable` (F-24), and its session record is on
+    /// disk. S-11 I3/I5/I6 closures are not excluded yet: agentd is not told
+    /// the close was an incident (docs/KNOWNBUGS.md AGENTD-01).
+    fn eligible(&self, t: &Task) -> bool {
+        t.is_closed()
+            && self.sessions.exists(&t.id)
+            && packages::find(&self.cfg.package_roots, &t.package, &t.version)
+                .is_some_and(|(dir, publisher)| packages::resumable(&dir, &publisher))
     }
 
     fn m_delete_session(&mut self, p: &Value) -> Result<Value, RpcError> {
@@ -926,6 +1020,7 @@ impl Core {
             ));
         }
         self.store.delete(id);
+        self.sessions.delete(id);
         self.tasks.remove(id);
         Ok(json!({"deleted": true}))
     }
@@ -950,7 +1045,7 @@ impl Core {
             }
             m if m.starts_with("notifications/") => Ok(Value::Null),
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(tools_list()),
+            "tools/list" => Ok(tools_list(self.task_ref(task)?.resumes.is_empty())),
             "tools/call" => self.mcp_tool(task, &req.params),
             _ => Err(RpcError::new(
                 rpc::METHOD_NOT_FOUND,
@@ -969,6 +1064,9 @@ impl Core {
             "task.say" => self.agent_post(task, Kind::Say, p_str(args, "text")?),
             "task.ask" => self.agent_post(task, Kind::Ask, p_str(args, "question")?),
             "task.inbox" => self.inbox(task, p_u64(args, "since")?.unwrap_or(0)),
+            // F-23: only a task created with `resumes` has this tool; for any
+            // other it is an unknown tool, like a name that never existed.
+            RESTORE_TOOL if self.tasks.get(task).is_some_and(|t| !t.resumes.is_empty()) => self.restore(task),
             _ => return Err(RpcError::invalid_params("unknown tool")),
         };
         Ok(match result {
@@ -1053,6 +1151,7 @@ impl Core {
                 Err("quota_exceeded")
             }
             Res::Posted(msg, changed) => {
+                self.record_message(id, &msg);
                 self.channel_audit(id, &principal, Some(&msg), msg.text.len(), "post");
                 self.event("message", message_event(id, &msg));
                 if changed {
@@ -1061,6 +1160,23 @@ impl Core {
                 Ok(json!({"msg_id": msg.msg_id}))
             }
         }
+    }
+
+    /// `session.restore` (A-06 §7, F-23): the old session's record, then the
+    /// boundary marker. Answers once.
+    fn restore(&mut self, id: &str) -> Result<Value, &'static str> {
+        let t = self.tasks.get(id).ok_or("not_found")?;
+        if t.restore_taken {
+            return Err("already_restored");
+        }
+        let old = t.resumes.clone();
+        let mut entries = self.sessions.read(&old).ok_or("session_unavailable")?;
+        let restored = entries.len();
+        entries.push(session::boundary());
+        if let Some(t) = self.tasks.get_mut(id) {
+            t.restore_taken = true;
+        }
+        Ok(json!({"entries": entries, "restored": restored, "resumes": old}))
     }
 
     /// Human and context messages after a cursor, and whether the task is
@@ -1103,8 +1219,8 @@ fn message_event(task: &str, m: &Message) -> Value {
     v
 }
 
-fn tools_list() -> Value {
-    json!({"tools": [
+fn tools_list(plain: bool) -> Value {
+    let mut tools = json!([
         {
             "name": "task.say",
             "description": "Post a message to the human in this task's conversation.",
@@ -1120,5 +1236,13 @@ fn tools_list() -> Value {
             "description": "Read the human's messages after a cursor. `closed` is true once the task is ending.",
             "inputSchema": {"type": "object", "properties": {"since": {"type": "integer"}}},
         },
-    ]})
+    ]);
+    if !plain {
+        tools.as_array_mut().expect("array").push(json!({
+            "name": RESTORE_TOOL,
+            "description": "Restore the history of the session this task resumes: its recorded entries, then a boundary marker. Callable once. Every handle and revision from that session is invalid afterwards; re-observe before acting.",
+            "inputSchema": {"type": "object", "properties": {}},
+        }));
+    }
+    json!({"tools": tools})
 }

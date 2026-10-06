@@ -344,6 +344,34 @@ fn prov(task: &str, principal: &str) -> FromPolicyd {
     }
 }
 
+fn prov_resumes(task: &str, principal: &str, resumes: &str) -> FromPolicyd {
+    let FromPolicyd::Provision {
+        task,
+        principal,
+        package,
+        version,
+        statement,
+        deadline_ms,
+        grant,
+        continuation,
+        ..
+    } = prov(task, principal)
+    else {
+        unreachable!()
+    };
+    FromPolicyd::Provision {
+        task,
+        principal,
+        package,
+        version,
+        statement,
+        deadline_ms,
+        grant,
+        continuation,
+        resumes: resumes.to_owned(),
+    }
+}
+
 fn state(task: &str, s: &str, reason: &str) -> FromPolicyd {
     FromPolicyd::TaskState {
         task: task.to_owned(),
@@ -981,17 +1009,301 @@ fn show_decisions_is_forwarded_rate_limited_and_the_count_is_relayed() {
     assert_eq!(second["error"]["code"], -32004);
 }
 
+// ---- session records and restore (A-08 §5.4, F-21, F-23) ---------------------
+
+fn wait_task(c: &mut Cl, id: &str) {
+    let t = Instant::now();
+    loop {
+        if c.call("get_task", json!({ "task_id": id }))
+            .get("error")
+            .is_none()
+        {
+            return;
+        }
+        assert!(t.elapsed() < Duration::from_secs(5), "task never appeared");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn wait_closed(c: &mut Cl, id: &str) {
+    let t = Instant::now();
+    loop {
+        if c.ok("list_sessions", json!({}))["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["task_id"] == json!(id))
+        {
+            return;
+        }
+        assert!(t.elapsed() < Duration::from_secs(5), "never closed");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// An installed package `ref` 1 for the resume tests; `extra` is manifest text.
+fn ref_package(root: &Path, extra: &str) {
+    let v = root.join("ref/1");
+    std::fs::create_dir_all(&v).unwrap();
+    std::fs::write(
+        v.join("manifest.kdl"),
+        format!(
+            "agent {{\n id \"ref\"\n name \"Ref\"\n version \"1\"\n entrypoint \"./run.sh\"\n{extra}\n}}\n"
+        ),
+    )
+    .unwrap();
+}
+
+fn tool_names(c: &mut Cl) -> Vec<String> {
+    c.ok("tools/list", json!({}))["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+const BOUNDARY: &str = "The environment changed: every handle and revision from the restored session is invalid. Re-observe before acting.";
+
+#[test]
+fn a_resumed_task_restores_the_old_history_once_and_a_plain_task_cannot() {
+    let dir = ec_agentd::scratch_dir("resume");
+    let root = dir.join("agents");
+    ref_package(&root, "");
+    let mut rig = Rig::with(
+        dir.clone(),
+        T0,
+        Opts {
+            packages: vec![(root, "local".into())],
+            ..Opts::default()
+        },
+    );
+    let mut c = rig.console();
+    let (old, new) = (tid(1), tid(2));
+    rig.fake().send(&prov(&old, "agent:ref"));
+    wait_task(&mut c, &old);
+    let mut a = rig.mcp(&old);
+    let (err, _) = a.tool("task.say", json!({"text": "first words"}));
+    assert!(!err);
+    c.ok(
+        "conversation_post",
+        json!({"task_id": old, "text": "human words"}),
+    );
+
+    // A task not created with `resumes` has no such tool, and a call errors.
+    assert!(!tool_names(&mut a).iter().any(|n| n == "session.restore"));
+    let e = a.call("tools/call", json!({"name": "session.restore", "arguments": {}}));
+    assert_eq!(e["error"]["code"], -32602, "{e}");
+
+    // The record is private on disk.
+    use std::os::unix::fs::PermissionsExt;
+    let rec = dir.join("state/sessions").join(&old);
+    assert_eq!(
+        std::fs::metadata(&rec).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(
+        std::fs::metadata(rec.join("record.jsonl"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+
+    rig.fake().send(&state(&old, "closed", "completed"));
+    wait_closed(&mut c, &old);
+    let sessions = c.ok("list_sessions", json!({}));
+    assert_eq!(sessions["sessions"][0]["eligible"], true);
+
+    rig.fake().send(&prov_resumes(&new, "agent:ref", &old));
+    wait_task(&mut c, &new);
+    let t = c.ok("get_task", json!({"task_id": new}));
+    assert_eq!(t["resumes"], json!(old));
+    assert_eq!(c.ok("get_task", json!({"task_id": old}))["resumes"], Value::Null);
+    let mut b = rig.mcp(&new);
+    assert!(tool_names(&mut b).iter().any(|n| n == "session.restore"));
+    let (err, v) = b.tool("session.restore", json!({}));
+    assert!(!err, "{v}");
+    let entries = v["entries"].as_array().unwrap();
+    // The boundary marker is last, and only it is a boundary.
+    assert_eq!(
+        entries.last().unwrap(),
+        &json!({"kind": "boundary", "text": BOUNDARY})
+    );
+    assert_eq!(v["restored"], json!(entries.len() - 1));
+    assert!(entries[..entries.len() - 1]
+        .iter()
+        .all(|e| e["kind"] != "boundary"));
+    // The old tool call, its result and both conversation messages, in order.
+    let pos = |f: &dyn Fn(&Value) -> bool| {
+        entries
+            .iter()
+            .position(f)
+            .unwrap_or_else(|| panic!("missing in {entries:?}"))
+    };
+    let call = pos(&|e| e["kind"] == "mcp_request" && e["params"]["arguments"]["text"] == "first words");
+    let said = pos(&|e| e["kind"] == "message" && e["message"]["text"] == "first words");
+    let reply = pos(&|e| e["kind"] == "mcp_response" && e["result"]["structuredContent"]["msg_id"] == 1);
+    let human = pos(&|e| e["kind"] == "message" && e["message"]["text"] == "human words");
+    assert!(call < said && said < reply && reply < human);
+    // Once only.
+    assert_eq!(
+        b.tool("session.restore", json!({})),
+        (true, json!({"error": "already_restored"}))
+    );
+    // The new conversation is the new task's own.
+    let r = c.ok("conversation_read", json!({"task_id": new}));
+    assert!(r["messages"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn a_resumed_task_starts_at_the_old_trust() {
+    let mut rig = Rig::new("resume-trust");
+    let mut c = rig.console();
+    let old = tid(1);
+    rig.fake().send(&prov(&old, "agent:x"));
+    wait_task(&mut c, &old);
+    rig.fake().send(&state(&old, "closed", "completed"));
+    wait_closed(&mut c, &old);
+    let (dir, clock) = rig.stop();
+    // Nothing feeds a chain into agentd yet, so make the old task untrusted
+    // on disk, as a real chain would have left it.
+    let meta = dir.join("state/conversations").join(&old).join("meta.json");
+    let text = std::fs::read_to_string(&meta).unwrap();
+    assert!(text.contains("\"min_trust\":\"standard\""));
+    std::fs::write(
+        &meta,
+        text.replace("\"min_trust\":\"standard\"", "\"min_trust\":\"untrusted\""),
+    )
+    .unwrap();
+    let mut rig = Rig::with(dir, clock.load(Ordering::Relaxed), Opts::default());
+    let mut c = rig.console();
+    let (new, ghost) = (tid(2), tid(3));
+    rig.fake().send(&prov_resumes(&new, "agent:x", &old));
+    rig.fake().send(&prov_resumes(&ghost, "agent:x", &tid(9)));
+    wait_task(&mut c, &new);
+    wait_task(&mut c, &ghost);
+    assert_eq!(
+        c.ok("get_task", json!({"task_id": new}))["min_trust"],
+        "untrusted"
+    );
+    // A session agentd no longer knows cannot be shown clean either.
+    assert_eq!(
+        c.ok("get_task", json!({"task_id": ghost}))["min_trust"],
+        "untrusted"
+    );
+    // And an agent post carries it.
+    let mut m = rig.mcp(&new);
+    assert!(!m.tool("task.say", json!({"text": "hi"})).0);
+    let r = c.ok("conversation_read", json!({"task_id": new}));
+    assert_eq!(r["messages"][0]["trust"]["min_trust"], "untrusted");
+    // An unrelated fresh task is unaffected.
+    let fresh = tid(4);
+    rig.fake().send(&prov(&fresh, "agent:x"));
+    wait_task(&mut c, &fresh);
+    assert_eq!(
+        c.ok("get_task", json!({"task_id": fresh}))["min_trust"],
+        "standard"
+    );
+}
+
+#[test]
+fn delete_session_and_retention_remove_the_record() {
+    let dir = ec_agentd::scratch_dir("rec-del");
+    let root = dir.join("agents");
+    ref_package(&root, "resumable #false");
+    let mut rig = Rig::with(
+        dir.clone(),
+        T0,
+        Opts {
+            packages: vec![(root, "local".into())],
+            ..Opts::default()
+        },
+    );
+    let mut c = rig.console();
+    let (a, b) = (tid(1), tid(2));
+    for id in [&a, &b] {
+        rig.fake().send(&prov(id, "agent:ref"));
+        wait_task(&mut c, id);
+        let mut m = rig.mcp(id);
+        assert!(!m.tool("task.say", json!({"text": "x"})).0);
+        rig.fake().send(&state(id, "closed", "completed"));
+        wait_closed(&mut c, id);
+    }
+    let rec = |id: &str| dir.join("state/sessions").join(id);
+    assert!(rec(&a).exists() && rec(&b).exists());
+    // `resumable #false` is listed, not eligible.
+    let l = c.ok("list_sessions", json!({}));
+    assert!(l["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|s| s["eligible"] == false));
+    c.ok("delete_session", json!({"task_id": a}));
+    assert!(!rec(&a).exists() && !dir.join("state/conversations").join(&a).exists());
+    assert!(rec(&b).exists());
+    // Retention takes the other one with the transcript.
+    let (d2, clock) = rig.stop();
+    let day = 24 * 3600 * 1000;
+    let rig2 = Rig::with(d2, clock.load(Ordering::Relaxed) + 31 * day, Opts::default());
+    assert!(!rec(&b).exists());
+    drop(rig2);
+}
+
+#[test]
+fn a_session_without_a_record_is_not_eligible() {
+    let dir = ec_agentd::scratch_dir("rec-elig");
+    let root = dir.join("agents");
+    ref_package(&root, "");
+    let mut rig = Rig::with(
+        dir,
+        T0,
+        Opts {
+            packages: vec![(root, "local".into())],
+            ..Opts::default()
+        },
+    );
+    let mut c = rig.console();
+    let (with, without) = (tid(1), tid(2));
+    for id in [&with, &without] {
+        rig.fake().send(&prov(id, "agent:ref"));
+        wait_task(&mut c, id);
+    }
+    // Only this one talks over MCP, so only it has a record.
+    assert!(!rig.mcp(&with).tool("task.say", json!({"text": "x"})).0);
+    for id in [&with, &without] {
+        rig.fake().send(&state(id, "closed", "completed"));
+        wait_closed(&mut c, id);
+    }
+    let l = c.ok("list_sessions", json!({}));
+    let el = |id: &str| {
+        l["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["task_id"] == json!(id))
+            .unwrap()["eligible"]
+            .clone()
+    };
+    assert_eq!((el(&with), el(&without)), (json!(true), json!(false)));
+}
+
 #[cfg(feature = "dev-unsandboxed")]
 mod launched {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
     fn package(root: &Path, script: &str) {
+        package_with(root, script, "");
+    }
+
+    fn package_with(root: &Path, script: &str, extra: &str) {
         let v = root.join("ref/1");
         std::fs::create_dir_all(&v).unwrap();
         std::fs::write(
             v.join("manifest.kdl"),
-            "agent {\n id \"ref\"\n name \"Ref\"\n version \"1\"\n entrypoint \"./run.sh\"\n}\n",
+            format!("agent {{\n id \"ref\"\n name \"Ref\"\n version \"1\"\n entrypoint \"./run.sh\"\n{extra}\n}}\n"),
         )
         .unwrap();
         std::fs::write(v.join("run.sh"), script).unwrap();
@@ -1164,5 +1476,100 @@ mod launched {
             assert!(t.elapsed() < Duration::from_secs(5), "never closed");
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// A package asking for `net.egress` cannot be sandboxed without the S-09
+    /// proxy (M20): the launch is refused and the task ends `Exited{failed}`.
+    /// A forbidden `fs.read` is refused the same way, a plain one launches.
+    #[test]
+    fn unmet_sandbox_requests_refuse_the_launch() {
+        for (extra, ok) in [
+            ("sandbox {\n net.egress \"api.acme.com:443\"\n}", false),
+            ("sandbox {\n fs.read \"~/.ssh\"\n}", false),
+            ("sandbox {\n fs.write \"/etc\"\n}", false),
+            ("sandbox {\n fs.exec \"/x\"\n}", false),
+            ("sandbox {\n fs.write \"/tmp/out\"\n}", true),
+        ] {
+            let dir = ec_agentd::scratch_dir("sbx-refuse");
+            let root = dir.join("agents");
+            package_with(&root, "#!/bin/sh\nexit 0\n", extra);
+            let mut rig = Rig::with(
+                dir,
+                T0,
+                Opts {
+                    launch: true,
+                    packages: vec![(root, "local".into())],
+                    ..Opts::default()
+                },
+            );
+            rig.fake().send(&prov(&tid(1), "agent:ref"));
+            let ToPolicyd::Exited { reason, .. } = rig.fake().next_msg() else {
+                panic!("expected exited")
+            };
+            // The refusals say `failed` at once; the allowed one runs and exits 0.
+            assert_eq!(reason, if ok { "completed" } else { "failed" }, "{extra}");
+        }
+    }
+
+    /// The real reference agent resumes a session: the second task's agent
+    /// restores the first one's record and says how many entries came back.
+    #[test]
+    fn the_reference_agent_resumes_a_session() {
+        let exe = std::env::current_exe().unwrap();
+        let bin = exe
+            .parent()
+            .and_then(Path::parent)
+            .map(|d| d.join("ec-ref-agent"));
+        let Some(bin) = bin.filter(|b| b.exists()) else {
+            eprintln!("ec-ref-agent is not built; skipped (cargo build -p ec-ref-agent)");
+            return;
+        };
+        let dir = ec_agentd::scratch_dir("refresume");
+        let root = dir.join("agents");
+        package(&root, &format!("#!/bin/sh\nexec {}\n", bin.display()));
+        let mut rig = Rig::with(
+            dir,
+            T0,
+            Opts {
+                launch: true,
+                packages: vec![(root, "local".into())],
+                ..Opts::default()
+            },
+        );
+        let mut c = rig.console();
+        let (old, new) = (tid(1), tid(2));
+        let first_say = |c: &mut Cl, id: &str| {
+            wait_task(c, id);
+            let t = Instant::now();
+            loop {
+                let r = c.ok("conversation_read", json!({ "task_id": id }));
+                if let Some(m) = r["messages"].as_array().and_then(|m| m.first()).cloned() {
+                    return m;
+                }
+                assert!(t.elapsed() < Duration::from_secs(10), "no message from {id}");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        rig.fake().send(&prov(&old, "agent:ref"));
+        let m = first_say(&mut c, &old);
+        // A fresh task restores nothing.
+        assert!(!m["text"].as_str().unwrap().contains("Restored"), "{m}");
+        rig.fake().send(&state(&old, "closed", "completed"));
+        wait_closed(&mut c, &old);
+
+        rig.fake().send(&prov_resumes(&new, "agent:ref", &old));
+        let m = first_say(&mut c, &new);
+        let text = m["text"].as_str().unwrap();
+        let n: usize = text
+            .split("Restored ")
+            .nth(1)
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no restore count in {text:?}"));
+        // initialize, tools/list, the ack and the inbox polls of the first run.
+        assert!(n >= 6, "{text}");
+        assert!(text.contains("Triage the invoices"));
+        assert_eq!(c.ok("get_task", json!({"task_id": new}))["resumes"], json!(old));
+        rig.fake().send(&state(&new, "closed", "cancelled"));
     }
 }

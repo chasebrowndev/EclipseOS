@@ -317,20 +317,44 @@ surface is only input-protected.
 
 ## AGENTD-01: agentd gaps against A-08 and A-01
 
-- **The sandbox is partial.** The launcher runs the entrypoint under
-  `systemd-run --user --scope --slice=agents-<pkg>.slice` and `bwrap` with new
-  user/pid/ipc/uts/net/cgroup namespaces, a read-only root, tmpfs `/home`,
-  `/tmp`, `/run` and `/opt`, the package directory read-only and the task's
-  MCP socket as the only bound socket. VOL1 §7 also lists Landlock, seccomp, a
-  filesystem allow-list from the grants and resource limits; none of those are
-  applied, and there is no network at all (no egress proxy yet, milestone 20).
+- **The sandbox has no network and no egress.** Landlock, seccomp,
+  `no_new_privs`, `--cap-drop ALL`, `fs.read` binds and `MemoryMax`/`TasksMax`/
+  `CPUQuota` on the scope are in (`ec-agentd/src/sandbox.rs`, `launcher.rs`; VOL1
+  §7, A-07 §2, §6); the agent runs with `--unshare-net`. A-07's
+  `sandbox { net.egress ... }` needs the S-09 egress proxy (milestone 20), which
+  does not exist, so a package declaring `net.egress` is refused at launch,
+  reason `egress_unavailable` (`Exited{failed}`). So is an unreadable or unknown
+  `sandbox { }` key, an `fs.read` that reaches `~/.ssh` and the like
+  (`fs_read_forbidden`), and an `fs.write` outside the scratch
+  (`fs_write_outside_scratch`). A kernel without Landlock refuses every launch
+  (`sandbox_unavailable`); there is no degraded mode outside `dev-unsandboxed`.
+  Not done: the filesystem allow-list is built from the manifest's declarations,
+  not from the signed grants (agentd does not decode grants); seccomp is a
+  fixed deny-list, with no per-package profile; Landlock does not restrict
+  `connect()` to a unix socket path before ABI 9 (the MCP socket is the only one
+  bound in, so it does not matter); the slice is `agents-<pkg>.slice`, not
+  VOL1 §7's `agents.slice/agent-<id>.slice`.
 - **Agent chain is a summary.** An agent post carries `min_trust` from the
   task (always `standard` today) and the agent principal as head. Nothing feeds
   the real S-07 chain in, so `min_trust` never reads `untrusted`.
 - **No continuation context.** A-08 §5.3's first `context` message is not
   written: agentd is not given the predecessor's summary or chain.
-- **No resume, no session records.** A-08 §5.4 needs `session.restore()` and
-  the inference path; History offers Start fresh and Delete only.
+- **Session records are MCP-level, not model-level.** agentd writes
+  `$XDG_STATE_HOME/eclipse/sessions/<task>/record.jsonl` (0700/0600, append-only,
+  30-day retention, removed by `delete_session`): every request and response on
+  the task's MCP socket plus every conversation message. There is no inference
+  path yet (F-21, I-02), so the model's own context, thinking and tool
+  arguments it never sent through agentd are not in it. A task resumed with
+  `resumes` gets the extra tool `session.restore` (once; the old entries and
+  then the boundary marker). The record stops at 32 MiB per task. Not done:
+  `list_sessions` marks `eligible` from the manifest's `resumable` (default true
+  for `local`, false otherwise, F-24), the install, and a record on disk, but not
+  from the close reason (agentd is not told an S-11 I3/I5/I6 closure, A-08
+  §5.4); the first `human` message carrying an optional new instruction and
+  the slot's statement are policyd's and the console's, not agentd's; a resumed
+  task's `min_trust` is copied from the old task, which today is always
+  `standard` (the previous bullet), or `untrusted` when the old task is unknown
+  to agentd; the console divider for `resumes` is the console's.
 - **A task open at restart is closed.** agentd marks it `closed`, reason
   `agentd_restart`, and sends policyd `Exited{failed}` once the link is up
   (queued until then). The agent's scope is not reaped by name or by search.

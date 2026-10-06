@@ -55,6 +55,16 @@ fn daemon() -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    // Hidden: the launcher's second stage inside bwrap. It never returns.
+    // `--sandbox-init <cfg> -- <entrypoint> [args...]`.
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().map(String::as_str) == Some("--sandbox-init") {
+        let (Some(cfg), Some("--")) = (argv.get(1), argv.get(2).map(String::as_str)) else {
+            eprintln!("ec-agentd: --sandbox-init <cfg> -- <entrypoint...>");
+            return ExitCode::from(2);
+        };
+        ec_agentd::sandbox::init_main(cfg, &argv[3..]);
+    }
     let mut list = false;
     let mut grant = None;
     for a in std::env::args().skip(1) {

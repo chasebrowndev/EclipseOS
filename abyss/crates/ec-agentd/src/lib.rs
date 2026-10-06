@@ -20,7 +20,9 @@ pub mod link;
 pub mod net;
 pub mod packages;
 pub mod rpc;
+pub mod sandbox;
 pub mod sanitize;
+pub mod session;
 pub mod store;
 
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};

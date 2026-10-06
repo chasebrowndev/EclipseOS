@@ -122,6 +122,45 @@ impl<R: Read, W: Write> Client<R, W> {
         Ok(result)
     }
 
+    /// The names `tools/list` offers.
+    pub fn tool_names(&mut self) -> Result<Vec<String>, Error> {
+        let r = self.request("tools/list", json!({}))?;
+        Ok(r.get("tools")
+            .and_then(Value::as_array)
+            .map(|t| {
+                t.iter()
+                    .filter_map(|t| t.get("name").and_then(Value::as_str).map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// `session.restore` (A-06 §7): the old session's entries, the boundary
+    /// marker last. Returns how many entries came back, the marker not
+    /// counted. The agent re-observes; nothing here re-reads anything.
+    pub fn restore(&mut self) -> Result<usize, Error> {
+        let result = self.call_tool(RESTORE_TOOL, json!({}))?;
+        let payload = match result.get("structuredContent") {
+            Some(s) => s.clone(),
+            None => {
+                let text = result
+                    .pointer("/content/0/text")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| Error::Protocol("session.restore result has no payload".into()))?;
+                serde_json::from_str(text)
+                    .map_err(|e| Error::Protocol(format!("session.restore text: {e}")))?
+            }
+        };
+        let entries = payload
+            .get("entries")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Error::Protocol("session.restore has no entries".into()))?;
+        Ok(entries
+            .iter()
+            .filter(|e| e.get("kind").and_then(Value::as_str) != Some("boundary"))
+            .count())
+    }
+
     pub fn say(&mut self, text: &str) -> Result<(), Error> {
         self.call_tool("task.say", json!({"text": text})).map(drop)
     }
@@ -174,9 +213,18 @@ pub struct Inbox {
     pub cursor: Option<Value>,
 }
 
-/// The acknowledgement said once at start, quoting the statement.
-pub fn acknowledgement(statement: &str) -> String {
-    format!("Acknowledged. My task: \"{statement}\"")
+/// The tool only a resumed task has (A-08 §5.4, F-23).
+pub const RESTORE_TOOL: &str = "session.restore";
+
+/// The acknowledgement said once at start, quoting the statement, and for a
+/// resumed task how many entries of the old session came back.
+pub fn acknowledgement(statement: &str, restored: Option<usize>) -> String {
+    match restored {
+        None => format!("Acknowledged. My task: \"{statement}\""),
+        Some(n) => format!(
+            "Acknowledged. My task: \"{statement}\" Restored {n} entries from the previous session; nothing from it is assumed current."
+        ),
+    }
 }
 
 /// The reply to one human message.
@@ -203,7 +251,14 @@ pub fn run(sock: std::os::unix::net::UnixStream, poll: Duration) -> Result<(), E
 /// The behaviour itself, over any transport.
 pub fn serve<R: Read, W: Write>(mut c: Client<R, W>, poll: Duration) -> Result<(), Error> {
     let statement = c.initialize()?;
-    c.say(&acknowledgement(&statement))?;
+    // Only a task created with `resumes` is offered the tool, and it answers
+    // once: restore at start, before saying anything.
+    let restored = if c.tool_names()?.iter().any(|n| n == RESTORE_TOOL) {
+        Some(c.restore()?)
+    } else {
+        None
+    };
+    c.say(&acknowledgement(&statement, restored))?;
 
     let mut since: Option<Value> = None;
     loop {
@@ -243,7 +298,11 @@ mod tests {
 
     /// Scripted fake server: answers `initialize`, records every tool call, and
     /// serves the queued inbox batches in order (the last one with closed).
-    fn fake(server: UnixStream, batches: Vec<Value>) -> thread::JoinHandle<Vec<(String, Value)>> {
+    fn fake(
+        server: UnixStream,
+        batches: Vec<Value>,
+        tools: Vec<&'static str>,
+    ) -> thread::JoinHandle<Vec<(String, Value)>> {
         thread::spawn(move || {
             let mut r = BufReader::new(server.try_clone().expect("clone"));
             let mut w = server;
@@ -263,11 +322,18 @@ mod tests {
                     "initialize" => json!({"protocolVersion": "2025-03-26", "capabilities": {},
                         "serverInfo": {"name": "fake", "version": "0"},
                         "instructions": "sort the pile"}),
+                    "tools/list" => {
+                        json!({"tools": tools.iter().map(|n| json!({"name": n})).collect::<Vec<_>>()})
+                    }
                     "tools/call" => {
                         let name = req["params"]["name"].as_str().expect("name").to_owned();
                         let args = req["params"]["arguments"].clone();
                         calls.push((name.clone(), args));
-                        if name == "task.inbox" {
+                        if name == RESTORE_TOOL {
+                            json!({"structuredContent": {"entries": [
+                                {"kind": "mcp_request"}, {"kind": "message"}, {"kind": "boundary", "text": "x"}
+                            ], "restored": 2}})
+                        } else if name == "task.inbox" {
                             let b = batches.next().expect("more polls than scripted");
                             json!({"content": [{"type": "text", "text": b.to_string()}]})
                         } else {
@@ -284,8 +350,12 @@ mod tests {
     }
 
     fn drive(batches: Vec<Value>) -> Vec<(String, Value)> {
+        drive_with(batches, vec!["task.say", "task.ask", "task.inbox"])
+    }
+
+    fn drive_with(batches: Vec<Value>, tools: Vec<&'static str>) -> Vec<(String, Value)> {
         let (client, server) = UnixStream::pair().expect("pair");
-        let h = fake(server, batches);
+        let h = fake(server, batches, tools);
         run(client, Duration::from_millis(1)).expect("run");
         h.join().expect("join")
     }
@@ -325,6 +395,32 @@ mod tests {
         assert!(calls[5].1["question"].as_str().expect("q").contains("ready?"));
         // `since` carries the last msg_id seen, and own messages are not echoed.
         assert_eq!(calls[6].1, json!({"since": "c"}));
+    }
+
+    #[test]
+    fn a_resumed_task_restores_once_and_says_how_many() {
+        let calls = drive_with(
+            vec![json!({"messages": [], "closed": true})],
+            vec!["task.say", "task.ask", "task.inbox", RESTORE_TOOL],
+        );
+        let names: Vec<&str> = calls.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, [RESTORE_TOOL, "task.say", "task.inbox"]);
+        // Two entries came back; the boundary marker is not one of them.
+        assert_eq!(
+            calls[1].1["text"],
+            json!(acknowledgement("sort the pile", Some(2)))
+        );
+        assert!(calls[1].1["text"]
+            .as_str()
+            .expect("t")
+            .contains("Restored 2 entries"));
+    }
+
+    #[test]
+    fn a_fresh_task_never_calls_restore() {
+        let calls = drive(vec![json!({"messages": [], "closed": true})]);
+        assert!(calls.iter().all(|(n, _)| n != RESTORE_TOOL));
+        assert_eq!(calls[0].1["text"], json!(acknowledgement("sort the pile", None)));
     }
 
     #[test]
