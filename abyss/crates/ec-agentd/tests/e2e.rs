@@ -340,6 +340,7 @@ fn prov(task: &str, principal: &str) -> FromPolicyd {
         deadline_ms: 7_200_000,
         grant: vec![1, 2, 3],
         continuation: String::new(),
+        resumes: String::new(),
     }
 }
 

@@ -391,6 +391,7 @@ fn answer(
             deadline_ms,
             narrowing,
             continuation,
+            resumes,
         } => dispatch.preview(
             store,
             req,
@@ -400,6 +401,7 @@ fn answer(
             deadline_ms,
             &narrowing,
             &continuation,
+            &resumes,
             at.table_version,
             at.agentd_live,
         ),

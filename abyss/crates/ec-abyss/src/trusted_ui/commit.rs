@@ -100,6 +100,8 @@ pub struct Shown {
     pub could: Vec<String>,
     pub narrowed: bool,
     pub continuation: String,
+    /// The closed task whose session this resumes (A-08 §5.4), or empty.
+    pub resumes: String,
     pub untrusted_predecessor: bool,
 }
 
@@ -124,6 +126,7 @@ pub fn decode(b: &[u8]) -> Option<Shown> {
             "package" => s.package = r.text().ok()?.to_owned(),
             "package_name" => s.package_name = r.text().ok()?.to_owned(),
             "publisher" => s.publisher = r.text().ok()?.to_owned(),
+            "resumes" => s.resumes = r.text().ok()?.to_owned(),
             "statement" => s.statement = r.text().ok()?.to_owned(),
             "untrusted_predecessor" => s.untrusted_predecessor = r.bool().ok()?,
             _ => return None,
@@ -267,11 +270,7 @@ pub fn draft_changed(state: &mut AbyssState, slot: u64) {
             let Some(d) = protected::draft(state, slot).cloned() else {
                 return;
             };
-            if !d.resumes.is_empty() {
-                // A-08 §5.4 needs session restore (A-06), which does not
-                // exist: refused in the slot, never after commit.
-                card(state, slot).refused = Some("resume_unsupported".into());
-            } else if !d.package.is_empty() && !d.statement.is_empty() {
+            if !d.package.is_empty() && !d.statement.is_empty() {
                 let r = req(state);
                 card(state, slot).asking = Some((r, revision));
                 crate::policy::link::send(
@@ -284,6 +283,7 @@ pub fn draft_changed(state: &mut AbyssState, slot: u64) {
                         deadline_ms: u64::from(d.deadline_s) * 1_000,
                         narrowing: d.narrowing,
                         continuation: d.continuation,
+                        resumes: d.resumes,
                     },
                 );
             }
@@ -564,7 +564,6 @@ fn reason_of(c: &Card, arm: Arm) -> (State, Reason, Look) {
                 "preview_stale" => Reason::PreviewStale,
                 "agentd_unavailable" => Reason::AgentdUnavailable,
                 "policy_unavailable" => Reason::PolicyUnavailable,
-                "resume_unsupported" => Reason::Unsupported,
                 _ => Reason::Refused,
             };
             (State::Refused, reason, Look::Refused(why))
@@ -665,6 +664,9 @@ fn modal_card(token: u64, s: &Shown) -> Option<Modal> {
     }
     if !s.continuation.is_empty() {
         m = m.with_facts(&[("Continues", &s.continuation)]);
+    }
+    if !s.resumes.is_empty() {
+        m = m.with_facts(&[("Resumes", &s.resumes)]);
     }
     if s.narrowed {
         m = m.with_facts(&[("Narrowed", "yes, by the draft")]);
@@ -786,13 +788,12 @@ fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str
             }
             y += COULD_ROWS * LINE_H;
             if s.untrusted_predecessor {
-                c.text(
-                    x0,
-                    y,
-                    "Continues a task that read untrusted content.",
-                    modal::WARN,
-                    false,
-                );
+                let line = if s.resumes.is_empty() {
+                    "Continues a task that read untrusted content."
+                } else {
+                    "Resumes a session that may hold untrusted content."
+                };
+                c.text(x0, y, line, modal::WARN, false);
             }
         }
         (_, None) => {

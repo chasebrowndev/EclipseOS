@@ -360,8 +360,9 @@ surface is only input-protected.
   in `ec-policy-eval::audit::Kind` yet.
 - **`slot_arm_ms` is the default.** The compiled table carries no value for
   it, so every slot arms after 500 ms.
-- **Resume is refused in the slot** (`resume_unsupported`): A-06
-  `session.restore()` does not exist.
+- **Resume restores nothing yet.** policyd and the slot accept `resumes`
+  (A-08 §5.4); agentd's session record and `session.restore()` are the next
+  commit.
 
 ## CONSOLE-01: console wave client pieces are unproven against live peers
 

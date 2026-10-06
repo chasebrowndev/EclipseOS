@@ -91,7 +91,8 @@ pub struct Manifest {
     pub default_deadline_ms: u64,
     pub max_depth: u32,
     pub capabilities: Vec<Requested>,
-    pub resumable: bool,
+    /// As written; [`Manifest::is_resumable`] applies the default.
+    pub resumable: Option<bool>,
     /// Sandbox declarations, `(kind, value)`, shown in review.
     pub sandbox: Vec<(String, String)>,
 }
@@ -160,6 +161,14 @@ pub fn origin_of(dir: &Path, roots: &[(PathBuf, Origin)]) -> Option<Origin> {
         let rest = dir.strip_prefix(&r).ok()?;
         (rest.components().count() == 2).then_some(*o)
     })
+}
+
+impl Manifest {
+    /// Appendix F-24: `resumable` defaults to true for the owner's own
+    /// (`local`) packages and false for everyone else's.
+    pub fn is_resumable(&self) -> bool {
+        self.resumable.unwrap_or(self.publisher == "local")
+    }
 }
 
 /// Reads and validates `<dir>/manifest.kdl`.
@@ -239,7 +248,7 @@ pub fn parse(text: &str) -> Result<Manifest, Refusal> {
         default_deadline_ms: DEFAULT_DEADLINE_MS,
         max_depth: 0,
         capabilities: Vec::new(),
-        resumable: false,
+        resumable: None,
         sandbox: Vec::new(),
     };
     let mut seen: Vec<&str> = Vec::new();
@@ -268,9 +277,11 @@ pub fn parse(text: &str) -> Result<Manifest, Refusal> {
                 string(one(n, "runtime")?, "runtime")?;
             }
             "resumable" => {
-                m.resumable = one(n, "resumable")?
-                    .as_bool()
-                    .ok_or(Refusal::Field("resumable"))?
+                m.resumable = Some(
+                    one(n, "resumable")?
+                        .as_bool()
+                        .ok_or(Refusal::Field("resumable"))?,
+                )
             }
             "task" => {
                 for t in n.children().map(KdlDocument::nodes).unwrap_or_default() {
@@ -466,6 +477,17 @@ agent {
         assert_eq!(r.default_deadline_ms, DEFAULT_DEADLINE_MS);
         assert!(r.capabilities.is_empty());
         validate(&r, Origin::System).unwrap();
+        assert!(!r.is_resumable(), "explicit #false");
+        assert!(
+            parse(INVOICE).unwrap().is_resumable(),
+            "local defaults to resumable (F-24)"
+        );
+        assert!(
+            !parse(&REF.replace("  resumable #false\n", ""))
+                .unwrap()
+                .is_resumable(),
+            "everyone else defaults to not"
+        );
 
         let m = parse(INVOICE).unwrap();
         assert_eq!(m.default_deadline_ms, 90 * 60_000);

@@ -154,12 +154,18 @@ pub struct TaskStore {
     /// the emergency panel's "recent actions" reads (COMP-10 §3.3). Bounded;
     /// the journal is the record, this is only its tail.
     recent: std::collections::VecDeque<(String, ec_policy_eval::link::TailRecord)>,
+    /// Each task's statement hash, which outlives the statement itself
+    /// across a restart (ADR 0048).
+    hashes: std::collections::HashMap<[u8; 16], [u8; 32]>,
 }
 
 /// Emissions kept for [`TaskStore::tail`].
 const RECENT: usize = 1024;
 
-fn task_body(t: &Task, op: &str) -> Vec<u8> {
+/// `hash` is the statement's BLAKE3: a replayed task no longer has its
+/// statement (ADR 0048), so the caller passes the hash it remembers rather
+/// than hashing an empty string.
+fn task_body(t: &Task, op: &str, hash: [u8; 32]) -> Vec<u8> {
     let mut m = MapBuilder::new();
     m.insert_opt("agent_note", t.agent_note.as_ref().map(|n| enc(|w| w.text(n))));
     m.insert("chain_root", enc(|w| w.text(&t.chain_root)));
@@ -179,13 +185,14 @@ fn task_body(t: &Task, op: &str) -> Vec<u8> {
     m.insert("origin_ref", enc(|w| w.text(&t.origin_ref)));
     m.insert_opt("parent", t.parent_task_id.map(|p| enc(|w| w.bytes(&p.0))));
     m.insert("state", enc(|w| w.text(t.state.as_str())));
-    m.insert("statement_hash", enc(|w| w.bytes(&t.statement_hash())));
+    m.insert("statement_hash", enc(|w| w.bytes(&hash)));
     m.finish()
 }
 
 /// Rebuilds a task from a `task` record body. The record is the truth; the
 /// in-memory task is a cache of it.
-fn read_task_body(id: Ulid, principal: &str, body: &[u8]) -> cbor::Result<Task> {
+fn read_task_body(id: Ulid, principal: &str, body: &[u8]) -> cbor::Result<(Task, [u8; 32])> {
+    let mut hash = [0u8; 32];
     let mut r = Reader::new(body);
     let n = r.map_begin()?;
     let mut t = Task {
@@ -224,9 +231,7 @@ fn read_task_body(id: Ulid, principal: &str, body: &[u8]) -> cbor::Result<Task> 
             // S-04 §1.1 journals the hash, not the text, so a replayed task
             // has no statement. Nothing in policyd renders one; the text a
             // human saw is recoverable from the m12 `prompt` records.
-            "statement_hash" => {
-                r.byte_array::<32>()?;
-            }
+            "statement_hash" => hash = r.byte_array::<32>()?,
             _ => return Err(cbor::Error::Type),
         }
     }
@@ -239,7 +244,7 @@ fn read_task_body(id: Ulid, principal: &str, body: &[u8]) -> cbor::Result<Task> 
         ("closed", Some(r)) => TaskState::Closed(r),
         _ => return Err(cbor::Error::Type),
     };
-    Ok(t)
+    Ok((t, hash))
 }
 
 impl TaskStore {
@@ -249,6 +254,7 @@ impl TaskStore {
         let mut tasks: Vec<Task> = Vec::new();
         let mut revoked: Vec<Ulid> = Vec::new();
         let mut issued: Vec<Issued> = Vec::new();
+        let mut hashes = std::collections::HashMap::new();
         // A record this process wrote and cannot now read is not a record to
         // skip past: skipping one drops a task or a grant on the floor and the
         // daemon comes up believing it holds less state than it does. Fail
@@ -262,7 +268,8 @@ impl TaskStore {
                 match rec.kind {
                     Kind::Task => {
                         let id = rec.task_id.ok_or(cbor::Error::Type)?;
-                        let t = read_task_body(id, &rec.principal, &rec.body)?;
+                        let (t, h) = read_task_body(id, &rec.principal, &rec.body)?;
+                        hashes.insert(id.0, h);
                         match tasks.iter_mut().find(|x| x.id.0 == id.0) {
                             Some(slot) => *slot = t,
                             None => tasks.push(t),
@@ -302,6 +309,7 @@ impl TaskStore {
             grants: issued,
             signing,
             recent: std::collections::VecDeque::new(),
+            hashes,
         })
     }
 
@@ -311,6 +319,11 @@ impl TaskStore {
 
     pub fn grants(&self) -> &[Issued] {
         &self.grants
+    }
+
+    /// The statement hash of task `id`, live or replayed.
+    pub fn statement_hash(&self, id: Ulid) -> Option<[u8; 32]> {
+        self.hashes.get(&id.0).copied()
     }
 
     pub fn task(&self, id: Ulid) -> Option<&Task> {
@@ -335,6 +348,33 @@ impl TaskStore {
         deadline_ms: u64,
         now_ms: u64,
     ) -> Result<Ulid> {
+        self.open_task_from(
+            principal,
+            origin,
+            origin_ref,
+            statement,
+            deadline_ms,
+            now_ms,
+            None,
+        )
+    }
+
+    /// [`Self::open_task`], optionally resuming a closed task (A-08 §5.4,
+    /// Appendix F-07): the new chain root is a `Collapsed` link naming the
+    /// resumed chain, and the hourly irreversible windows and the
+    /// denied-irreversible streak carry over, so a close-then-resume
+    /// neither clears taint nor resets a breaker. The prompt budget resets.
+    #[allow(clippy::too_many_arguments)]
+    fn open_task_from(
+        &mut self,
+        principal: &str,
+        origin: Origin,
+        origin_ref: &str,
+        statement: &str,
+        deadline_ms: u64,
+        now_ms: u64,
+        resumes: Option<Ulid>,
+    ) -> Result<Ulid> {
         if let Some(t) = self.live_task(principal) {
             return Err(TaskError::AlreadyLive { existing: t.id });
         }
@@ -356,6 +396,18 @@ impl TaskStore {
             chain_root: String::new(),
             counters: Counters::default(),
         };
+        let mut task = task;
+        if let Some(old) = resumes.and_then(|r| self.task(r)) {
+            let root = if old.chain_root.is_empty() {
+                old.id.to_text()
+            } else {
+                old.chain_root.clone()
+            };
+            task.chain_root = format!("collapsed:{root}");
+            task.counters.irreversible = old.counters.irreversible.clone();
+            task.counters.irreversible_by_class = old.counters.irreversible_by_class.clone();
+            task.counters.denied_irreversible_streak = old.counters.denied_irreversible_streak;
+        }
         self.journal(&task, "open")?;
         self.tasks.push(task);
         Ok(id)
@@ -514,6 +566,7 @@ impl TaskStore {
     /// happen or neither does: a scope that does not parse is refused before
     /// the task is journalled, and a grant the issuer refuses closes the task
     /// again. Returns the task and the grant.
+    #[allow(clippy::too_many_arguments)]
     pub fn open_for_human(
         &mut self,
         principal: &str,
@@ -521,6 +574,7 @@ impl TaskStore {
         deadline_ms: u64,
         scope: &str,
         origin_ref: &str,
+        resumes: Option<Ulid>,
         now_ms: u64,
     ) -> Result<(Ulid, Vec<u8>)> {
         let caps = if scope.trim().is_empty() {
@@ -531,13 +585,14 @@ impl TaskStore {
         if deadline_ms <= now_ms {
             return Err(TaskError::ExpiryBeyondDeadline);
         }
-        let task = self.open_task(
+        let task = self.open_task_from(
             principal,
             Origin::Human,
             origin_ref,
             statement,
             deadline_ms,
             now_ms,
+            resumes,
         )?;
         let grant = Grant {
             id: Ulid([0; 16]),
@@ -671,6 +726,14 @@ impl TaskStore {
     }
 
     fn journal(&mut self, task: &Task, op: &str) -> Result<()> {
+        let hash = match self.hashes.get(&task.id.0) {
+            Some(h) => *h,
+            None => {
+                let h = task.statement_hash();
+                self.hashes.insert(task.id.0, h);
+                h
+            }
+        };
         let rec = Record {
             seq: 0,
             ts: 0,
@@ -682,7 +745,7 @@ impl TaskStore {
             chain_id: None,
             req_id: None,
             serial: None,
-            body: task_body(task, op),
+            body: task_body(task, op, hash),
             prev_hash: [0; 32],
             hash: [0; 32],
         };
@@ -794,6 +857,7 @@ mod tests {
                 100_000,
                 "scene.list workspace:human\nseat.pointer app_id:foot",
                 "slot:1",
+                None,
                 1_000,
             )
             .unwrap();
@@ -812,19 +876,28 @@ mod tests {
                 100_000,
                 "scene.list workspace:human",
                 "slot:1",
+                None,
                 1_000
             ),
             Err(TaskError::AlreadyLive { .. })
         ));
         // A scope that does not parse opens no task.
         assert!(matches!(
-            s.open_for_human("agent:b", "t", 100_000, "scene.list nonsense", "slot:1", 1_000),
+            s.open_for_human(
+                "agent:b",
+                "t",
+                100_000,
+                "scene.list nonsense",
+                "slot:1",
+                None,
+                1_000
+            ),
             Err(TaskError::BadScope)
         ));
         assert!(s.live_task("agent:b").is_none());
         // No capability lines: a conversation-only agent.
         let (_, cose) = s
-            .open_for_human("agent:b", "t", 100_000, "", "slot:2", 1_000)
+            .open_for_human("agent:b", "t", 100_000, "", "slot:2", None, 1_000)
             .unwrap();
         assert!(verify(&cose, &key().verifying_key())
             .unwrap()

@@ -165,6 +165,9 @@ pub enum FromPolicyd {
         deadline_ms: u64,
         grant: Vec<u8>,
         continuation: String,
+        /// The closed task whose session this one restores (A-08 §5.4), or
+        /// empty. At most one of this and `continuation` is set.
+        resumes: String,
     },
 }
 
@@ -228,6 +231,9 @@ pub enum ToPolicyd {
         deadline_ms: u64,
         narrowing: Vec<u8>,
         continuation: String,
+        /// A closed task to resume (A-08 §5.4), or empty; exclusive with
+        /// `continuation`.
+        resumes: String,
     },
     /// The human pressed Enter on slot `slot`, armed on `preview`.
     CreateTask { req: u64, slot: u64, preview: u64 },
@@ -297,6 +303,7 @@ struct Fields<'a> {
     approve: Option<bool>,
     state: Option<&'a str>,
     version: Option<&'a str>,
+    resumes: Option<&'a str>,
 }
 
 impl<'a> Fields<'a> {
@@ -333,6 +340,7 @@ impl<'a> Fields<'a> {
             self.approve.is_some(),
             self.state.is_some(),
             self.version.is_some(),
+            self.resumes.is_some(),
         ]
         .into_iter()
         .enumerate()
@@ -373,6 +381,7 @@ const F_REVIEW: u32 = 1 << 24;
 const F_APPROVE: u32 = 1 << 25;
 const F_STATE: u32 = 1 << 26;
 const F_VERSION: u32 = 1 << 27;
+const F_RESUMES: u32 = 1 << 28;
 
 fn read_records(r: &mut Reader<'_>) -> Result<Vec<TailRecord>, MessageError> {
     let n = r.array_len()?;
@@ -444,6 +453,7 @@ fn read_fields(buf: &[u8]) -> Result<Fields<'_>, MessageError> {
             "approve" => f.approve = Some(r.bool()?),
             "state" => f.state = Some(r.text()?),
             "version" => f.version = Some(r.text()?),
+            "resumes" => f.resumes = Some(r.text()?),
             _ => return Err(MessageError::Shape),
         }
     }
@@ -581,7 +591,9 @@ impl FromPolicyd {
                 deadline_ms,
                 grant,
                 continuation,
+                resumes,
             } => message("provision", |m| {
+                m.insert("resumes", text(resumes));
                 m.insert("task", text(task));
                 m.insert("grant", bytes(grant));
                 m.insert("package", text(package));
@@ -700,8 +712,16 @@ impl FromPolicyd {
                         | F_DEADLINE
                         | F_PRINCIPAL
                         | F_STATEMENT
-                        | F_CONTINUATION,
+                        | F_CONTINUATION
+                        | F_RESUMES,
                 )?;
+                let (continuation, resumes) = (
+                    f.continuation.ok_or(MessageError::Shape)?.to_owned(),
+                    f.resumes.ok_or(MessageError::Shape)?.to_owned(),
+                );
+                if !continuation.is_empty() && !resumes.is_empty() {
+                    return Err(MessageError::Shape);
+                }
                 FromPolicyd::Provision {
                     task: task_id(f.task)?,
                     principal: principal(f.principal)?,
@@ -710,7 +730,8 @@ impl FromPolicyd {
                     statement: f.statement.ok_or(MessageError::Shape)?.to_owned(),
                     deadline_ms: f.deadline.ok_or(MessageError::Shape)?,
                     grant: f.grant.ok_or(MessageError::Shape)?.to_vec(),
-                    continuation: f.continuation.ok_or(MessageError::Shape)?.to_owned(),
+                    continuation,
+                    resumes,
                 }
             }
             _ => return Err(MessageError::Shape),
@@ -760,7 +781,9 @@ impl ToPolicyd {
                 deadline_ms,
                 narrowing,
                 continuation,
+                resumes,
             } => message("preview_task", |m| {
+                m.insert("resumes", text(resumes));
                 m.insert("req", uint(*req));
                 m.insert("slot", uint(*slot));
                 m.insert("package", text(package));
@@ -850,8 +873,18 @@ impl ToPolicyd {
             "preview_task" => {
                 shape(
                     &f,
-                    F_REQ | F_SLOT | F_PACKAGE | F_DEADLINE | F_NARROWING | F_STATEMENT | F_CONTINUATION,
+                    F_REQ
+                        | F_SLOT
+                        | F_PACKAGE
+                        | F_DEADLINE
+                        | F_NARROWING
+                        | F_STATEMENT
+                        | F_CONTINUATION
+                        | F_RESUMES,
                 )?;
+                if f.continuation.is_some_and(|c| !c.is_empty()) && f.resumes.is_some_and(|r| !r.is_empty()) {
+                    return Err(MessageError::Shape);
+                }
                 ToPolicyd::PreviewTask {
                     req: req()?,
                     slot: f.slot.ok_or(MessageError::Shape)?,
@@ -860,6 +893,7 @@ impl ToPolicyd {
                     deadline_ms: f.deadline.ok_or(MessageError::Shape)?,
                     narrowing: f.narrowing.ok_or(MessageError::Shape)?.to_vec(),
                     continuation: txt(f.continuation)?,
+                    resumes: txt(f.resumes)?,
                 }
             }
             "create_task" => {
@@ -1034,6 +1068,7 @@ mod tests {
                 deadline_ms: 7_200_000,
                 grant: vec![1, 2, 3],
                 continuation: String::new(),
+                resumes: "t-0".into(),
             },
         ];
         for m in from {
@@ -1073,6 +1108,7 @@ mod tests {
                 deadline_ms: 0,
                 narrowing: vec![],
                 continuation: String::new(),
+                resumes: String::new(),
             },
             ToPolicyd::CreateTask {
                 req: 31,

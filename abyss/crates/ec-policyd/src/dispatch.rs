@@ -99,6 +99,7 @@ struct Preview {
     deadline_ms: u64,
     lines: Vec<String>,
     continuation: String,
+    resumes: String,
     table_version: u64,
     install_seq: u64,
 }
@@ -284,6 +285,7 @@ impl Dispatch {
         deadline_ms: u64,
         narrowing: &[u8],
         continuation: &str,
+        resumes: &str,
         table_version: u64,
         agentd_live: bool,
     ) -> Out {
@@ -316,6 +318,14 @@ impl Dispatch {
             Some(l) => l,
             None => return refused(req, "narrowing_widens"),
         };
+        if !continuation.is_empty() && !resumes.is_empty() {
+            return refused(req, "continuation_and_resumes");
+        }
+        if !resumes.is_empty() {
+            if let Err(why) = resume_ok(store, &m, resumes, statement) {
+                return refused(req, why);
+            }
+        }
         if !continuation.is_empty() {
             let closed = store
                 .tasks()
@@ -325,7 +335,15 @@ impl Dispatch {
                 return refused(req, "continuation_not_closed");
             }
         }
-        let display = slot_display(&m, statement, deadline, &lines, narrowing.len() > 1, continuation);
+        let display = slot_display(
+            &m,
+            statement,
+            deadline,
+            &lines,
+            narrowing.len() > 1,
+            continuation,
+            resumes,
+        );
         if self.previews.len() >= MAX_PREVIEWS {
             self.previews.clear();
         }
@@ -342,6 +360,7 @@ impl Dispatch {
                 deadline_ms: deadline,
                 lines,
                 continuation: continuation.to_owned(),
+                resumes: resumes.to_owned(),
                 table_version,
                 install_seq: install.seq,
             },
@@ -394,12 +413,23 @@ impl Dispatch {
         );
         let deadline = now_ms + p.deadline_ms;
         let scope = p.lines.join("\n");
+        let resumes = if p.resumes.is_empty() {
+            None
+        } else {
+            // Checked at preview; checked again, because a session can be
+            // resumed only while its task is still closed and still known.
+            match store.tasks().iter().find(|t| t.id.to_text() == p.resumes) {
+                Some(t) if !t.state.is_live() => Some(t.id),
+                _ => return Ok(refused(req, "preview_stale")),
+            }
+        };
         let (task, grant) = match store.open_for_human(
             &principal,
             &p.statement,
             deadline,
             &scope,
             &format!("slot:{slot}"),
+            resumes,
             now_ms,
         ) {
             Ok(v) => v,
@@ -426,6 +456,7 @@ impl Dispatch {
                     deadline_ms: deadline,
                     grant,
                     continuation: p.continuation,
+                    resumes: p.resumes,
                 },
             ),
         ])
@@ -563,6 +594,44 @@ impl Dispatch {
     }
 }
 
+/// A-08 §5.4 eligibility, refused at preview: the package must be
+/// resumable (F-24) and still installed (the caller has its manifest), the
+/// task closed, of this package, and not closed by an incident; and the
+/// statement must be the original verbatim, which the human commits again.
+///
+/// No close reason today marks an S-11 incident (I3, I5, I6); when one does,
+/// it is refused here.
+fn resume_ok(
+    store: &TaskStore,
+    m: &Manifest,
+    resumes: &str,
+    statement: &str,
+) -> std::result::Result<(), &'static str> {
+    if !m.is_resumable() {
+        return Err("not_resumable");
+    }
+    let t = store
+        .tasks()
+        .iter()
+        .find(|t| t.id.to_text() == resumes)
+        .ok_or("resume_unknown")?;
+    if t.state.is_live() {
+        return Err("resume_not_closed");
+    }
+    if !t
+        .principal
+        .strip_prefix("agent:")
+        .and_then(|p| p.strip_prefix(m.id.as_str()))
+        .is_some_and(|rest| rest.starts_with('-'))
+    {
+        return Err("resume_other_package");
+    }
+    if store.statement_hash(t.id) != Some(*blake3::hash(statement.as_bytes()).as_bytes()) {
+        return Err("resume_statement_changed");
+    }
+    Ok(())
+}
+
 fn short(e: &TaskError) -> &'static str {
     match e {
         TaskError::AlreadyLive { .. } => "already_live",
@@ -599,6 +668,7 @@ fn narrow(install: &[String], narrowing: &[u8]) -> Option<Vec<String>> {
 /// `could` is the capability summary phrased as possibility: each granted
 /// line as `<capability> on <scopes>` (A-07 §9.2; no taxonomy registry
 /// exists yet to name taxonomies instead).
+#[allow(clippy::too_many_arguments)]
 fn slot_display(
     m: &Manifest,
     statement: &str,
@@ -606,6 +676,7 @@ fn slot_display(
     lines: &[String],
     narrowed: bool,
     cont: &str,
+    resumes: &str,
 ) -> Vec<u8> {
     let mut d = MapBuilder::new();
     d.insert("package_name", enc(|w| w.text(&m.name)));
@@ -624,9 +695,14 @@ fn slot_display(
     );
     d.insert("narrowed", enc(|w| w.bool(narrowed)));
     d.insert("continuation", enc(|w| w.text(cont)));
+    d.insert("resumes", enc(|w| w.text(resumes)));
     // policyd holds no chain summaries; agentd does. Until it reports one,
-    // a continuation is drawn with the warning, the cautious reading.
-    d.insert("untrusted_predecessor", enc(|w| w.bool(!cont.is_empty())));
+    // a continuation or a resume is drawn with the warning, the cautious
+    // reading (A-08 §5.4: a resumed untrusted session stays untrusted).
+    d.insert(
+        "untrusted_predecessor",
+        enc(|w| w.bool(!cont.is_empty() || !resumes.is_empty())),
+    );
     d.finish()
 }
 
@@ -848,6 +924,7 @@ mod tests {
             0,
             narrowing,
             "",
+            "",
             table,
             true,
         )
@@ -958,12 +1035,12 @@ mod tests {
         install(&mut e);
         assert_eq!(preview(&mut e, 0, &[]), refused(2, "policy_unavailable"));
         assert_eq!(
-            e.d.preview(&e.store, 2, 7, "ec-ref-agent", "x", 0, &[], "", 5, false),
+            e.d.preview(&e.store, 2, 7, "ec-ref-agent", "x", 0, &[], "", "", 5, false),
             refused(2, "agentd_unavailable")
         );
         let long = "x".repeat(MAX_STATEMENT + 1);
         assert_eq!(
-            e.d.preview(&e.store, 2, 7, "ec-ref-agent", &long, 0, &[], "", 5, true),
+            e.d.preview(&e.store, 2, 7, "ec-ref-agent", &long, 0, &[], "", "", 5, true),
             refused(2, "statement_length")
         );
         assert_eq!(
@@ -975,6 +1052,7 @@ mod tests {
                 "x",
                 MAX_DEADLINE_MS + 1,
                 &[],
+                "",
                 "",
                 5,
                 true
@@ -1041,5 +1119,101 @@ mod tests {
             e.d.pause(&mut e.store, 15, "nope").unwrap(),
             refused(15, "not_active")
         );
+    }
+
+    /// A-08 §13 "Resume does not launder", "Ineligible sessions": resuming
+    /// needs a resumable package, a closed task of that package and its
+    /// statement verbatim; the new task's chain root collapses the old chain
+    /// and the breaker counters come along.
+    #[test]
+    fn resume_carries_the_chain_and_the_breaker_and_refuses_the_ineligible() {
+        let mut e = env("resume");
+        let preview_r = |e: &mut Env, statement: &str, resumes: &str| {
+            e.d.preview(
+                &e.store,
+                2,
+                7,
+                "ec-ref-agent",
+                statement,
+                0,
+                &[],
+                "",
+                resumes,
+                5,
+                true,
+            )
+        };
+        // Not resumable: the package does not say so (F-24 default for a
+        // non-local publisher).
+        install(&mut e);
+        let p = preview_id(&preview(&mut e, 5, &[]));
+        let out = e.d.create(&mut e.store, 3, 7, p, 5, true, 1_000).unwrap();
+        let FromPolicyd::TaskCreated { task: first, .. } = out[0].1.clone() else {
+            panic!()
+        };
+        let id = e
+            .store
+            .tasks()
+            .iter()
+            .find(|t| t.id.to_text() == first)
+            .unwrap()
+            .id;
+        e.store
+            .update_counters(id, |c| c.denied_irreversible_streak = 2)
+            .unwrap();
+        assert_eq!(
+            preview_r(&mut e, "Say hello", &first),
+            refused(2, "not_resumable")
+        );
+
+        std::fs::write(
+            e.pkg.join("manifest.kdl"),
+            REF.replace("  capabilities {", "  resumable #true\n  capabilities {"),
+        )
+        .unwrap();
+        install(&mut e);
+        assert_eq!(
+            preview_r(&mut e, "Say hello", &first),
+            refused(2, "resume_not_closed")
+        );
+        e.d.exited(&mut e.store, 9, &first, "completed").unwrap();
+        assert_eq!(
+            preview_r(&mut e, "Say hi", &first),
+            refused(2, "resume_statement_changed")
+        );
+        assert_eq!(
+            preview_r(&mut e, "Say hello", "01NOPE"),
+            refused(2, "resume_unknown")
+        );
+        assert_eq!(
+            e.d.preview(
+                &e.store,
+                2,
+                7,
+                "ec-ref-agent",
+                "Say hello",
+                0,
+                &[],
+                &first,
+                &first,
+                5,
+                true
+            ),
+            refused(2, "continuation_and_resumes")
+        );
+
+        let p = preview_id(&preview_r(&mut e, "Say hello", &first));
+        let out = e.d.create(&mut e.store, 3, 7, p, 5, true, 2_000).unwrap();
+        let FromPolicyd::Provision { resumes, task, .. } = &out[1].1 else {
+            panic!()
+        };
+        assert_eq!(resumes, &first);
+        let t = e.store.tasks().iter().find(|t| &t.id.to_text() == task).unwrap();
+        assert_eq!(t.chain_root, format!("collapsed:{first}"));
+        assert_eq!(
+            t.counters.denied_irreversible_streak, 2,
+            "the breaker streak carries"
+        );
+        assert_eq!(t.counters.prompts_shown, 0, "the prompt budget resets");
     }
 }
