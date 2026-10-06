@@ -1806,7 +1806,7 @@ fn bad_nodes_are_skipped_not_fatal() {
 #[test]
 fn both_agent_chords_stay_reserved() {
     let doc: KdlDocument =
-            "bind \"SUPER\" \"Escape\" { quit; }\nbind \"SUPER\" \"space\" { quit; }\nbind \"SUPER\" \"F1\" { quit; }\n"
+            "bind \"SUPER\" \"Escape\" { quit; }\nbind \"SUPER SHIFT\" \"Escape\" { quit; }\nbind \"SUPER\" \"space\" { quit; }\nbind \"SUPER\" \"F1\" { quit; }\n"
                 .parse()
                 .unwrap();
     let mut cfg = Config::default();
@@ -1814,6 +1814,25 @@ fn both_agent_chords_stay_reserved() {
     cfg.apply(&doc, &mut binds);
     assert_eq!(binds.len(), 1, "only the unreserved bind survives");
     assert_eq!(binds[0].key, Keysym::F1);
+}
+
+#[test]
+fn the_terminate_chord_is_built_in_and_cannot_be_unbound() {
+    let sup_shift = m(true, true, false, false);
+    assert!(default_binds().iter().any(|b| b.mods == sup_shift
+        && b.key == Keysym::Escape
+        && matches!(b.action, crate::input::Action::AgentTerminate)));
+    // Neither reserved agent chord can be removed or rebound by a config, so
+    // a config can never leave agent-override or agent-terminate unbound.
+    let doc: KdlDocument =
+        "bind \"SUPER SHIFT\" \"Escape\" { agent-override; }\nbind \"CTRL\" \"F2\" { agent-terminate; }"
+            .parse()
+            .unwrap();
+    let mut cfg = Config::default();
+    let mut binds = Vec::new();
+    cfg.apply(&doc, &mut binds);
+    assert_eq!(binds.len(), 1);
+    assert!(matches!(binds[0].action, crate::input::Action::AgentTerminate));
 }
 
 #[test]

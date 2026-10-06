@@ -132,6 +132,9 @@ pub(crate) fn parse_chord(text: &str) -> Result<Option<(Mods, Keysym)>, String> 
     if mods == m(true, false, false, false) && key == Keysym::Escape {
         return Err("Super+Escape is reserved (COMP-04 §6) and cannot be bound".into());
     }
+    if mods == m(true, true, false, false) && key == Keysym::Escape {
+        return Err("Super+Shift+Escape is reserved (COMP-04 §6) and cannot be bound".into());
+    }
     if mods == m(true, false, false, false) && key == Keysym::space {
         return Err("Super+space is reserved (COMP-13 §1.1) and cannot be bound".into());
     }
@@ -155,6 +158,9 @@ pub(crate) fn parse_bind(node: &KdlNode) -> Result<Bind, String> {
     let action = parse_action(action_node)?;
     if mods == m(true, false, false, false) && key == Keysym::Escape {
         return Err("Super+Escape is reserved (COMP-04 §6) and cannot be bound".into());
+    }
+    if mods == m(true, true, false, false) && key == Keysym::Escape {
+        return Err("Super+Shift+Escape is reserved (COMP-04 §6) and cannot be bound".into());
     }
     if mods == m(true, false, false, false) && key == Keysym::space {
         return Err("Super+space is reserved (COMP-13 §1.1) and cannot be bound".into());
@@ -293,6 +299,7 @@ pub(crate) fn parse_action(node: &KdlNode) -> Result<Action, String> {
         "move-to-workspace" => Action::MoveToWorkspace(workspace_arg(num())?),
         "move-to-output" => Action::MoveToOutputWorkspace(output_number_arg(num())?),
         "agent-override" => Action::AgentOverride,
+        "agent-terminate" => Action::AgentTerminate,
         "agent-attention" => Action::AgentAttention,
         "annotation-select" => Action::AnnotationSelect,
         "annotation-dismiss" => Action::AnnotationDismiss,

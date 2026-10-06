@@ -18,12 +18,13 @@
     for exactly one agent principal, bound by the signed grant it was created
     with.
 
-    This is the M11 subset (COMP-16): admission and the read-only scene
-    queries list_toplevels, get_toplevel and hit_test. The remaining COMP-08
-    interfaces arrive with their milestones.
+    This is the M13 subset (COMP-16): admission, the read-only scene queries
+    list_toplevels, get_toplevel and hit_test (M11), and the per-agent virtual
+    seat eclipse_agent_seat_v1 with its acting requests (M13). Atomic batches,
+    semantic actions, compat locks and preflight arrive with M14.
   </description>
 
-  <interface name="eclipse_agent_manager_v1" version="1">
+  <interface name="eclipse_agent_manager_v1" version="2">
     <description summary="creates agent objects from signed grants (COMP-08 §1)"/>
 
     <enum name="error">
@@ -62,7 +63,7 @@
     </event>
   </interface>
 
-  <interface name="eclipse_agent_v1" version="1">
+  <interface name="eclipse_agent_v1" version="2">
     <description summary="one agent principal (COMP-08 §2)"/>
 
     <enum name="error">
@@ -70,6 +71,8 @@
              summary="add_grant: the grant failed verification or names another principal"/>
       <entry name="policy_unavailable" value="1"
              summary="add_grant: policyd is not connected"/>
+      <entry name="seat_exists" value="2"
+             summary="get_seat: this agent already has a seat"/>
     </enum>
 
     <enum name="status">
@@ -105,6 +108,17 @@
     <request name="get_scene">
       <description summary="the perception interface (COMP-08 §3)"/>
       <arg name="id" type="new_id" interface="eclipse_scene_v1"/>
+    </request>
+
+    <request name="get_seat" since="2">
+      <description summary="this agent's virtual seat (COMP-08 §4, COMP-04 §3)">
+        One seat per agent, created on the first call. A second get_seat on
+        the same agent object is the protocol error seat_exists. The seat
+        is a wl_seat named "agent-N" on the public display, so the clients it
+        acts on receive its events; it holds no compositor bindings. Every
+        request on it goes through the enforcement order (COMP-08 §10).
+      </description>
+      <arg name="id" type="new_id" interface="eclipse_agent_seat_v1"/>
     </request>
 
     <request name="add_grant">
@@ -251,6 +265,215 @@
       <arg name="focus_handle" type="uint"/>
       <arg name="generation" type="uint"/>
       <arg name="latency_us" type="uint"/>
+    </event>
+  </interface>
+
+  <interface name="eclipse_agent_seat_v1" version="1">
+    <description summary="one agent's virtual seat (COMP-08 §4)">
+      Acting requests. Each is checked in the COMP-08 §10 order, runs on this
+      agent's seat only, and ends in exactly one result event carrying its
+      req_id (possibly later, when a prompt or a deferral is pending). Every
+      acting request ends with provenance_ids (COMP-08 §4.1): a CBOR array of
+      chain_ids the agent asserts as inputs. The empty array is legal and
+      means "no asserted inputs"; it does not mean trusted.
+
+      Every acting request also takes batch_token (0 means none) just before
+      provenance_ids.
+
+      Key and text content is never logged. expected_generation is carried
+      and checked from M14; until then it is accepted and ignored.
+    </description>
+
+    <enum name="error">
+      <entry name="bad_state" value="0" summary="button/key state is not 0 or 1"/>
+    </enum>
+
+    <request name="focus">
+      <description summary="keyboard focus on a toplevel (seat.focus)"/>
+      <arg name="req_id" type="uint"/>
+      <arg name="handle" type="uint"/>
+      <arg name="expected_generation" type="uint"/>
+      <arg name="batch_token" type="uint"/>
+      <arg name="provenance_ids" type="array"/>
+    </request>
+
+    <request name="key">
+      <description summary="one key event on this seat (seat.key)">
+        keycode is an evdev code. state is 1 pressed, 0 released. mods is
+        reserved and ignored: press the modifier keys explicitly.
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="keycode" type="uint"/>
+      <arg name="state" type="uint"/>
+      <arg name="mods" type="uint"/>
+      <arg name="batch_token" type="uint"/>
+      <arg name="provenance_ids" type="array"/>
+    </request>
+
+    <request name="keysym">
+      <description summary="a key by keysym, mapped via the seat keymap (seat.key)">
+        May emit several keycodes (a shift modifier plus the key). A keysym
+        the keymap cannot produce is invalid_argument.
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="keysym" type="uint"/>
+      <arg name="state" type="uint"/>
+      <arg name="batch_token" type="uint"/>
+      <arg name="provenance_ids" type="array"/>
+    </request>
+
+    <request name="text">
+      <description summary="type a string into the focused field (seat.text)">
+        result.detail is "text_input" when the string was committed through
+        text_input_v3, "keysym" when it was typed as a keysym sequence, and
+        the request is invalid_argument with detail "unsupported" when
+        neither path can produce it. handle must name the window the seat
+        has focus on, or be 0.
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="handle" type="uint"/>
+      <arg name="node" type="uint"/>
+      <arg name="text" type="string"/>
+      <arg name="expected_generation" type="uint"/>
+      <arg name="batch_token" type="uint"/>
+      <arg name="provenance_ids" type="array"/>
+    </request>
+
+    <request name="pointer_abs">
+      <description summary="move this seat's pointer, global logical coordinates (seat.pointer)"/>
+      <arg name="req_id" type="uint"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="batch_token" type="uint"/>
+      <arg name="provenance_ids" type="array"/>
+    </request>
+
+    <request name="pointer_rel">
+      <description summary="move this seat's pointer by a delta (seat.pointer)"/>
+      <arg name="req_id" type="uint"/>
+      <arg name="dx" type="fixed"/>
+      <arg name="dy" type="fixed"/>
+      <arg name="batch_token" type="uint"/>
+      <arg name="provenance_ids" type="array"/>
+    </request>
+
+    <request name="button">
+      <description summary="a pointer button (seat.pointer)">
+        button is an evdev code. state is 1 pressed, 0 released.
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="button" type="uint"/>
+      <arg name="state" type="uint"/>
+      <arg name="batch_token" type="uint"/>
+      <arg name="provenance_ids" type="array"/>
+    </request>
+
+    <request name="axis">
+      <description summary="a scroll event (seat.pointer)">
+        axis is wl_pointer.axis (0 vertical, 1 horizontal), source is
+        wl_pointer.axis_source.
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="axis" type="uint"/>
+      <arg name="value" type="fixed"/>
+      <arg name="discrete" type="int"/>
+      <arg name="source" type="uint"/>
+      <arg name="batch_token" type="uint"/>
+      <arg name="provenance_ids" type="array"/>
+    </request>
+
+    <request name="touch_down">
+      <arg name="req_id" type="uint"/>
+      <arg name="touch_id" type="int"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="batch_token" type="uint"/>
+      <arg name="provenance_ids" type="array"/>
+    </request>
+
+    <request name="touch_up">
+      <arg name="req_id" type="uint"/>
+      <arg name="touch_id" type="int"/>
+      <arg name="batch_token" type="uint"/>
+      <arg name="provenance_ids" type="array"/>
+    </request>
+
+    <request name="touch_motion">
+      <arg name="req_id" type="uint"/>
+      <arg name="touch_id" type="int"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="batch_token" type="uint"/>
+      <arg name="provenance_ids" type="array"/>
+    </request>
+
+    <request name="click">
+      <description summary="focus, move to a point, press and release (click)">
+        With handle 0 the click lands at (x, y) in global logical
+        coordinates; with a handle it lands at the window's centre.
+        node is reserved for semantic targets (M14).
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="handle" type="uint"/>
+      <arg name="node" type="uint"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="button" type="uint"/>
+      <arg name="expected_generation" type="uint"/>
+      <arg name="batch_token" type="uint"/>
+      <arg name="provenance_ids" type="array"/>
+    </request>
+
+    <request name="preflight">
+      <description summary="ask the human to approve a batch of targets up front (COMP-08 §4.2)">
+        taxonomy_id names the action class. handles and nodes are CBOR arrays
+        of uint, of equal length, zipped into (handle, node) targets; at most
+        1000. Bad CBOR, unequal lengths or too many targets is
+        invalid_argument. The answer is a result, and on approval a
+        batch_token event.
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="taxonomy_id" type="string"/>
+      <arg name="handles" type="array"/>
+      <arg name="nodes" type="array"/>
+      <arg name="summary" type="string"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="releases the seat: held keys are released and the wl_seat goes away"/>
+    </request>
+
+    <event name="result">
+      <description summary="same shape and status values as eclipse_agent_v1.result"/>
+      <arg name="req_id" type="uint"/>
+      <arg name="status" type="uint"/>
+      <arg name="detail" type="string"/>
+      <arg name="focus_handle" type="uint"/>
+      <arg name="generation" type="uint"/>
+      <arg name="latency_us" type="uint"/>
+    </event>
+
+    <event name="batch_token">
+      <description summary="a preflight was approved (COMP-08 §4.2)">
+        Present token as batch_token on the acting requests it covers.
+        covered is how many targets it covers; expires_ms is absolute.
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="token" type="uint"/>
+      <arg name="covered" type="uint"/>
+      <arg name="expires_ms" type="uint"/>
+    </event>
+
+    <event name="focus_changed">
+      <description summary="this seat's keyboard focus moved (generation is 0 until M14)"/>
+      <arg name="handle" type="uint"/>
+      <arg name="generation" type="uint"/>
+    </event>
+
+    <event name="keymap">
+      <description summary="the seat's active keymap (xkb_v1 text), sent on creation"/>
+      <arg name="fd" type="fd"/>
+      <arg name="size" type="uint"/>
     </event>
   </interface>
 </protocol>

@@ -150,8 +150,10 @@ impl AbyssState {
             // can (COMP-10 §4): no client and no binding sees the key,
             // except the override chord, which always works (COMP-04 §6).
             if crate::trusted_ui::holds_seat(state) {
-                if matches!(state.config.action_for(&held, sym), Some(Action::AgentOverride)) {
-                    return FilterResult::Intercept(Action::AgentOverride);
+                match state.config.action_for(&held, sym) {
+                    Some(Action::AgentOverride) => return FilterResult::Intercept(Action::AgentOverride),
+                    Some(Action::AgentTerminate) => return FilterResult::Intercept(Action::AgentTerminate),
+                    _ => {}
                 }
                 return FilterResult::Intercept(Action::Prompt(sym));
             }
@@ -200,6 +202,7 @@ impl AbyssState {
             Action::MoveToWorkspace(n) => shell::move_to_workspace(self, n),
             Action::MoveToOutputWorkspace(n) => shell::move_to_output_workspace(self, n),
             Action::AgentOverride => self.agent_override(),
+            Action::AgentTerminate => self.agent_terminate(),
             Action::AgentAttention => self.agent_attention(),
             Action::Calibrate(step) => {
                 crate::outputs::calibrate::apply(self, step);
@@ -219,12 +222,23 @@ impl AbyssState {
         }
     }
 
-    /// COMP-04 §6: hand the seat back to the human, unconditionally. There are
-    /// no agent seats yet, so there is nothing to take back — but the chord must
-    /// already work, because a chord that silently does nothing on the day it is
-    /// needed is worse than one that was never bound.
+    /// COMP-04 §6: hand the seat back to the human, unconditionally. Every
+    /// agent is paused at once (new requests answer `paused`); resume is
+    /// explicit and human-seat only. Pressed with no agents running it still
+    /// does the same, so the chord is the same muscle memory every time.
     fn agent_override(&mut self) {
-        tracing::warn!("agent override chord pressed; no agent seats exist yet");
+        crate::policy::lifecycle::pause_all(self);
+        // COMP-10 §3.3: the panel is what the human sees after the brakes are
+        // already on.
+        crate::trusted_ui::panel::open(self);
+        tracing::warn!("agent override chord pressed; every agent paused");
+    }
+
+    /// COMP-04 §6, the second reserved chord: pause and terminate every
+    /// agent via `policyd`.
+    fn agent_terminate(&mut self) {
+        crate::policy::lifecycle::terminate_all(self);
+        tracing::warn!("agent terminate chord pressed; every agent terminated");
     }
 
     /// COMP-10 §3.10: opens the pending decision queue. Both agent chords are

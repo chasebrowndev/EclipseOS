@@ -12,7 +12,7 @@ use super::*;
 /// result holds exactly one entry per chord, so `action_for`'s first-match
 /// lookup cannot be shadowed by a default sitting ahead of a user bind.
 ///
-/// `Super+Escape` (COMP-04 §6) and `Super+space` (COMP-13 §1.1) can never be
+/// `Super+Escape`, `Super+Shift+Escape` (COMP-04 §6) and `Super+space` (COMP-13 §1.1) can never be
 /// removed here: `parse_bind` refuses to produce them, so no config entry can
 /// match those defaults and the defaults always survive the merge.
 pub(crate) fn merge_binds(defaults: Vec<Bind>, from_file: Vec<Bind>) -> Vec<Bind> {
@@ -132,6 +132,12 @@ pub fn default_binds() -> Vec<Bind> {
             mods: sup,
             key: Keysym::Escape,
             action: Action::AgentOverride,
+        },
+        // The second reserved chord (COMP-04 §6): pause and terminate.
+        Bind {
+            mods: sup_shift,
+            key: Keysym::Escape,
+            action: Action::AgentTerminate,
         },
         Bind {
             mods: sup,

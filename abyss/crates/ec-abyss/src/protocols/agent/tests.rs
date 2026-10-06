@@ -11,6 +11,7 @@ use ec_policy_eval::grant::{cose_sign1, protected_header, sig_structure};
 use ec_policy_eval::{Capability, Constraints, Grant, Ulid};
 use ec_protocols::agent::client::{
     eclipse_agent_manager_v1::{self, EclipseAgentManagerV1},
+    eclipse_agent_seat_v1::{self, EclipseAgentSeatV1},
     eclipse_agent_v1::{self, EclipseAgentV1},
     eclipse_scene_v1::{self, EclipseSceneV1},
 };
@@ -36,6 +37,12 @@ pub(super) struct Seen {
     pub(super) done: Vec<u32>,
     pub(super) hits: Vec<(u32, u32)>,
     pub(super) results: Vec<(u32, u32, String)>,
+    /// `eclipse_agent_seat_v1` results, `(req_id, status, detail)`.
+    pub(super) seat_results: Vec<(u32, u32, String)>,
+    /// `eclipse_agent_seat_v1.focus_changed` handles.
+    pub(super) seat_focus: Vec<u32>,
+    /// `eclipse_agent_seat_v1.keymap` sizes.
+    pub(super) keymaps: Vec<u32>,
     /// Every `eclipse_scene_v1` event, whole, in arrival order.
     pub(super) scene: Vec<eclipse_scene_v1::Event>,
 }
@@ -87,6 +94,30 @@ impl Dispatch<EclipseAgentV1, ()> for Seen {
         } = e
         {
             s.results.push((req_id, status, detail));
+        }
+    }
+}
+
+impl Dispatch<EclipseAgentSeatV1, ()> for Seen {
+    fn event(
+        s: &mut Self,
+        _: &EclipseAgentSeatV1,
+        e: eclipse_agent_seat_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use eclipse_agent_seat_v1::Event;
+        match e {
+            Event::Result {
+                req_id,
+                status,
+                detail,
+                ..
+            } => s.seat_results.push((req_id, status, detail)),
+            Event::FocusChanged { handle, .. } => s.seat_focus.push(handle),
+            Event::Keymap { size, .. } => s.keymaps.push(size),
+            _ => {}
         }
     }
 }
@@ -198,7 +229,7 @@ impl Peer {
 
     fn manager(&mut self, h: &mut Harness) -> EclipseAgentManagerV1 {
         let name = self.global(MANAGER).expect("manager advertised");
-        let m = self.registry.bind(name, 1, &self.queue.handle(), ());
+        let m = self.registry.bind(name, 2, &self.queue.handle(), ());
         self.pump(h);
         m
     }
@@ -210,6 +241,13 @@ impl Peer {
         let scene = agent.get_scene(&qh, ());
         self.pump(h);
         (agent, scene)
+    }
+
+    /// `get_seat` on `agent`, delivered.
+    pub(super) fn get_seat(&mut self, h: &mut Harness, agent: &EclipseAgentV1) -> EclipseAgentSeatV1 {
+        let seat = agent.get_seat(&self.queue.handle(), ());
+        self.pump(h);
+        seat
     }
 
     /// `(interface, code)` of the protocol error that ended the connection.

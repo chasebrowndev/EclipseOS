@@ -69,9 +69,11 @@ pub enum Action {
     /// display number, not a workspace index or an output handle.
     MoveToOutputWorkspace(u8),
     /// The override chord reserved by COMP-13 §1.1. Accepted and dispatched
-    /// today so a config naming it is valid; it has nothing to revoke until
-    /// agent seats exist (COMP-16 milestone 11).
+    /// today so a config naming it is valid; it pauses every agent (COMP-04 §6).
     AgentOverride,
+    /// The second reserved chord (COMP-04 §6): pause every agent and end
+    /// them via `policyd`. Built in on Super+Shift+Escape, never rebindable.
+    AgentTerminate,
     /// The pending-decision-queue chord reserved by COMP-13 §1.1 (COMP-10
     /// §3.10). Dispatched today for the same reason as `AgentOverride`; the
     /// queue it opens arrives with the trusted UI (COMP-16 milestone 14).

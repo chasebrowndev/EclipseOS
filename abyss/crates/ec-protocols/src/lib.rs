@@ -4,7 +4,7 @@
 //! `eclipse_agent_v1` (COMP-08) is the privileged agent protocol. abyss
 //! links the `server` side; agentd and agent SDKs link `client`.
 
-/// `eclipse_agent_manager_v1`, `eclipse_agent_v1`, `eclipse_scene_v1`.
+/// `eclipse_agent_manager_v1`, `eclipse_agent_v1`, `eclipse_scene_v1`, `eclipse_agent_seat_v1`.
 pub mod agent {
     #[cfg(feature = "client")]
     pub mod client {

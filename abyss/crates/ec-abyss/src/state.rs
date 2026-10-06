@@ -136,7 +136,7 @@ pub struct AbyssState {
     /// Windows that asked for focus and were refused (COMP-05 §5).
     pub urgent: Vec<smithay::desktop::Window>,
 
-    /// The human seat (`seat0`). Agent seats arrive in Phase 2.
+    /// The human seat (`seat0`). Agent seats are in `agent_seats`.
     pub seat: Seat<Self>,
 
     /// What the focused client last asked the pointer to look like (COMP-02 §2).
@@ -263,6 +263,9 @@ pub struct AbyssState {
     /// Batch tokens the human approved (COMP-08 §4.2).
     pub batches: crate::policy::batch::Batches,
     pub agents: crate::protocols::agent::Agents,
+    /// Each agent's virtual seat (COMP-04 §3), by agent id. Created lazily by
+    /// `get_seat`; never consulted by the human input paths.
+    pub agent_seats: Vec<(u64, crate::protocols::agent::seat::AgentSeat)>,
 
     /// Live capture allowlist, shared with the `zwlr_screencopy_v1` bind
     /// filter. Written by the config reload path.
@@ -581,6 +584,7 @@ impl AbyssState {
             enforce: Default::default(),
             batches: Default::default(),
             agents: Default::default(),
+            agent_seats: Vec::new(),
             session_lock_state,
             lock: Default::default(),
             idle: Default::default(),

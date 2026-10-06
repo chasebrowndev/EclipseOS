@@ -125,3 +125,27 @@ whole of a launcher probe. That is correct, not a fault: the launcher holds no
 capability, and logging the query would violate the never-log-human-input
 invariant. Visual state is the only oracle here, so silence is never evidence
 of a dead control in this crate.
+
+---
+
+# Agent seats — found landing M13, 2026-10-06
+
+## SEAT-01: an agent's wl_seat is advertised to every client
+
+`abyss/crates/ec-abyss/src/protocols/agent/seat.rs` creates each agent seat
+with smithay's `SeatState::new_wl_seat`, whose global has no per-client
+filter. Every client on the main display can bind `agent-<id>`, see its
+capabilities, and bind text-input or input-method objects on it. Input is
+still only *delivered* by the agent through `policy::enforce`; what leaks is
+that the seat exists and its focus events. **Repro:** start an agent, call
+`get_seat`, run `wayland-info` on the main socket; `agent-1` is listed.
+**Proposed:** none committed. Either a filtered seat global hand-written like
+`output_power.rs`, or bind visibility to clients the agent has focused.
+
+## SEAT-02: xdg_activation from agent-launched clients is not checked
+
+COMP-04 §7 says an agent-launched client cannot steal human focus through
+`xdg_activation`. `protocols/standard/xdg_activation.rs` has no notion of
+which client an agent launched (agents cannot launch yet), so the rule is not
+enforced. It becomes live with agent `launch` (COMP-08); fix it there.
+

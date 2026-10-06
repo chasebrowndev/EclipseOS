@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The privileged agent socket and `eclipse_agent_v1` (COMP-08), M11 subset:
-//! admission and the read-only scene queries.
+//! The privileged agent socket and `eclipse_agent_v1` (COMP-08), M11 and M13
+//! subsets: admission, the read-only scene queries and the per-agent seat
+//! ([`seat`]).
 //!
 //! Not TCB, and decides nothing. Grants are admitted by
 //! [`crate::policy::Agent`], and every window an agent learns about comes
@@ -54,9 +55,13 @@ pub mod seat;
 #[cfg(test)]
 mod leakage;
 #[cfg(test)]
+mod seat_tests;
+#[cfg(test)]
 mod tests;
 
-const MANAGER_VERSION: u32 = 1;
+/// Version 2 adds `eclipse_agent_v1.get_seat` and `eclipse_agent_seat_v1`
+/// (M13). The agent object it creates carries the manager's version.
+const MANAGER_VERSION: u32 = 2;
 
 /// How long `(agent, req_id)` results are kept (COMP-08 §2.2 default).
 /// Announced on bind; the dedupe table itself is not built yet.
@@ -551,6 +556,7 @@ impl Dispatch<EclipseAgentV1, AgentId> for AbyssState {
                     );
                 }
             }
+            Request::GetSeat { id } => seat::get_seat(state, agent, data.0, id, data_init),
             Request::Destroy => {}
             _ => {}
         }
@@ -569,6 +575,8 @@ impl Dispatch<EclipseAgentV1, AgentId> for AbyssState {
         }
         state.agents.slots.retain(|(i, _)| *i != data.0);
         state.agents.owners.retain(|(i, _)| *i != data.0);
+        // COMP-04 §3: the seat goes with its agent, releasing what it held.
+        seat::remove(state, data.0);
         crate::policy::lifecycle::forget(state, data.0);
         crate::policy::enforce::forget(state, data.0);
         crate::trusted_ui::consent::withdraw(state, data.0);
