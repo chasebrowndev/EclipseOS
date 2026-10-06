@@ -35,6 +35,8 @@ pub mod approval;
 pub mod consent;
 pub mod erase;
 pub mod modal;
+pub mod notice;
+pub mod panel;
 pub mod phrase;
 pub mod socket;
 
@@ -325,6 +327,8 @@ fn resolve(state: &mut AbyssState, choice: Choice) {
         phrase::answer(state, choice);
     } else if consent::owns(state, choice.token) {
         consent::answer(state, choice);
+    } else if notice::owns(choice.token) {
+        // Acknowledged; nothing follows from a notice.
     }
 }
 

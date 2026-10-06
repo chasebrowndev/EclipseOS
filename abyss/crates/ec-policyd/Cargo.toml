@@ -21,3 +21,5 @@ anyhow.workspace = true
 tracing.workspace = true
 libc = "0.2"
 rustix.workspace = true
+kdl.workspace = true
+regex.workspace = true

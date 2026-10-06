@@ -181,6 +181,11 @@ enum Body<'a> {
     Lifecycle {
         event: &'a str,
     },
+    /// A table went live: its version and hash (COMP-11 §2 step 4).
+    Policy {
+        version: u64,
+        hash: [u8; 32],
+    },
     Gap {
         dropped: u64,
     },
@@ -275,6 +280,13 @@ impl Body<'_> {
                 w.map(1);
                 w.text("event");
                 w.text(event);
+            }
+            Body::Policy { version, hash } => {
+                w.map(2);
+                w.text("hash");
+                w.bytes(&hash);
+                w.text("version");
+                w.u64(version);
             }
             Body::Gap { dropped } => {
                 w.map(2);
@@ -397,6 +409,15 @@ pub fn agent(state: &mut AbyssState, r: Rec) {
     }
 }
 
+/// A link message to `policyd` (`policy::link::send`). It rides the same
+/// ordered queue as agent records, so a request is never seen by `policyd`
+/// ahead of the records that led to it, and like them it is queued, never
+/// dropped. Sent whatever the agents hook says: only the link carries it.
+pub fn message(state: &mut AbyssState, bytes: Vec<u8>) {
+    state.audit.pending.push_back(bytes);
+    state.audit.flush();
+}
+
 /// A human-side record (`focus`). Never stalls; rings when it must
 /// (COMP-12 §1).
 pub fn human(state: &mut AbyssState, r: Rec) {
@@ -475,6 +496,11 @@ pub fn result<'a>(principal: &'a str, req_id: u32, status: u32, detail: &'a str,
         latency_us,
     };
     record(Kind::Result, principal, Some(req_id), body)
+}
+
+/// `policy`: an enforcement table went live in the compositor.
+pub fn policy(version: u64, hash: [u8; 32]) -> Rec<'static> {
+    record(Kind::Policy, "system:abyss", None, Body::Policy { version, hash })
 }
 
 /// `lifecycle` (S-04 §1.1): `start`, `stop`, `pause`, `resume`.

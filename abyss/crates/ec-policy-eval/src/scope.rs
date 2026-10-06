@@ -136,6 +136,11 @@ impl Glob {
         Glob(pattern.to_owned())
     }
 
+    /// The pattern as written, for the table's wire form.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
     pub fn matches(&self, s: &str) -> bool {
         let p = self.0.as_bytes();
         let s = s.as_bytes();

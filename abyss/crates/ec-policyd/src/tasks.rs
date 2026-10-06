@@ -116,7 +116,14 @@ pub struct TaskStore {
     tasks: Vec<Task>,
     grants: Vec<Issued>,
     signing: ed25519_dalek::SigningKey,
+    /// The newest source emissions, oldest first, with their principal: what
+    /// the emergency panel's "recent actions" reads (COMP-10 §3.3). Bounded;
+    /// the journal is the record, this is only its tail.
+    recent: std::collections::VecDeque<(String, ec_policy_eval::link::TailRecord)>,
 }
+
+/// Emissions kept for [`TaskStore::tail`].
+const RECENT: usize = 1024;
 
 fn task_body(t: &Task, op: &str) -> Vec<u8> {
     let mut m = MapBuilder::new();
@@ -260,6 +267,7 @@ impl TaskStore {
             tasks,
             grants: issued,
             signing,
+            recent: std::collections::VecDeque::new(),
         })
     }
 
@@ -438,8 +446,41 @@ impl TaskStore {
     /// are bounded by the store's 250 ms fsync (S-04 §4), and nothing is
     /// answered on the strength of them.
     pub fn record(&mut self, e: Emission) -> Result<()> {
-        self.audit.append(Record::from_emission(e))?;
+        let rec = self.audit.append(Record::from_emission(e))?;
+        if self.recent.len() == RECENT {
+            self.recent.pop_front();
+        }
+        self.recent.push_back((
+            rec.principal.clone(),
+            ec_policy_eval::link::TailRecord {
+                kind: rec.kind.as_str().to_owned(),
+                req_id: rec.req_id,
+                at_ns: rec.ts,
+            },
+        ));
         Ok(())
+    }
+
+    /// The last `n` emissions naming `principal`, newest first.
+    pub fn tail(&self, principal: &str, n: usize) -> Vec<ec_policy_eval::link::TailRecord> {
+        self.recent
+            .iter()
+            .rev()
+            .filter(|(p, _)| p == principal)
+            .take(n)
+            .map(|(_, r)| r.clone())
+            .collect()
+    }
+
+    /// The human revoked or terminated `principal` (COMP-10 §3.3): its live
+    /// task is cancelled, which revokes every grant on it in one record.
+    /// False when it has no live task, so nothing was live to revoke.
+    pub fn cancel_principal(&mut self, principal: &str) -> Result<bool> {
+        let Some(id) = self.live_task(principal).map(|t| t.id) else {
+            return Ok(false);
+        };
+        self.apply(id, TaskEvent::Cancel)?;
+        Ok(true)
     }
 
     /// True if the grant exists here and has not been revoked. Expiry is not

@@ -20,6 +20,7 @@ pub mod check;
 pub mod grant;
 pub mod link;
 pub mod scope;
+pub mod table;
 pub mod task;
 
 pub use check::{check, Decision, Outcome, RequestCtx, Table};

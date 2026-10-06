@@ -251,6 +251,11 @@ pub struct AbyssState {
     pub audit: crate::audit::Audit,
     /// The privileged agent socket, its manager global and every admitted
     /// agent object (COMP-08). Empty while the `agents` hook is off.
+    /// The live enforcement table (COMP-11 §2), `None` until `policyd`
+    /// pushes one that verifies.
+    pub policy_table: Option<ec_policy_eval::check::Table>,
+    /// Tasks `policyd` revoked this session.
+    pub revoked: crate::policy::lifecycle::Revoked,
     pub agents: crate::protocols::agent::Agents,
 
     /// Live capture allowlist, shared with the `zwlr_screencopy_v1` bind
@@ -564,6 +569,8 @@ impl AbyssState {
             policy_key: None,
             policy_link: Default::default(),
             audit: Default::default(),
+            policy_table: None,
+            revoked: Default::default(),
             agents: Default::default(),
             session_lock_state,
             lock: Default::default(),

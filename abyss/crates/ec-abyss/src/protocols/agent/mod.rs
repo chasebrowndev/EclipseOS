@@ -84,6 +84,19 @@ pub struct Agents {
 }
 
 impl Agents {
+    /// `policyd` revoked every grant `principal` holds: drop them from every
+    /// agent object it has, and return the tasks they were on.
+    pub(crate) fn revoke_principal(&mut self, principal: &str) -> Vec<ec_policy_eval::Ulid> {
+        let mut tasks = Vec::new();
+        for (_, slot) in &mut self.slots {
+            if let Some(a) = slot.as_mut().filter(|a| a.principal() == principal) {
+                tasks.extend(a.task_id());
+                a.revoke(|_| true);
+            }
+        }
+        tasks
+    }
+
     /// Whether the privileged socket is up.
     pub fn listening(&self) -> bool {
         self.path.is_some()
@@ -353,8 +366,14 @@ impl Dispatch<EclipseAgentManagerV1, ()> for AbyssState {
         let Request::CreateAgent { id, grant } = request else {
             return;
         };
-        // policyd revocation push (main thread)
-        match Agent::admit(&grant, state.policy_key.as_ref(), now_ms(), |_| false) {
+        // No table is the same as no key (COMP-01 §6, COMP-11 §2): degraded
+        // mode, POLICY_UNAVAILABLE. A grant on a task policyd revoked this
+        // session is refused.
+        let key = crate::policy::table::live(state)
+            .then_some(state.policy_key.as_ref())
+            .flatten();
+        let revoked = &state.revoked;
+        match Agent::admit(&grant, key, now_ms(), |g| revoked.covers(g.task_id)) {
             Ok(agent) => {
                 state.agents.next_id += 1;
                 let aid = state.agents.next_id;
@@ -418,8 +437,13 @@ impl Dispatch<EclipseAgentV1, AgentId> for AbyssState {
                     agent.post_error(Error::InvalidGrant, "no such agent");
                     return;
                 };
-                // policyd revocation push (main thread)
-                let r = a.add_grant(&grant, state.policy_key.as_ref(), now_ms(), |_| false);
+                // Same gate as admission: a table must be live, and a grant on
+                // a task policyd revoked this session is refused.
+                let key = crate::policy::table::live(state)
+                    .then_some(state.policy_key.as_ref())
+                    .flatten();
+                let revoked = &state.revoked;
+                let r = a.add_grant(&grant, key, now_ms(), |g| revoked.covers(g.task_id));
                 state.agents.put(data.0, a);
                 if let Err(e) = r {
                     let (code, msg) = refusal(e);

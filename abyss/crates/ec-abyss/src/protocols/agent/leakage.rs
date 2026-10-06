@@ -132,6 +132,7 @@ fn world(sock: &str) -> World {
     let (mut h, _path) = hooked(sock, true);
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
     test_class::clear();
     h.state.config.window_rules = vec![
         rule("W2$", RuleAction::Workspace(2)),

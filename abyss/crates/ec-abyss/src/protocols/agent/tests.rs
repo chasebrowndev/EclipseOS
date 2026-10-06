@@ -347,12 +347,46 @@ fn create_agent_without_policyd_is_policy_unavailable() {
 }
 
 /// COMP-08 §1: anything that is not a good grant is `INVALID_GRANT`.
+/// COMP-01 §6, COMP-11 §2: a key but no table is degraded mode. A valid
+/// grant is refused POLICY_UNAVAILABLE until a table is live.
+#[test]
+fn a_key_without_a_table_is_policy_unavailable() {
+    let (mut h, _path) = hooked("notable.sock", true);
+    h.state.audit.sink = Some(Vec::new());
+    h.state.policy_key = Some(sk().verifying_key());
+    let mut p = Peer::inserted(&mut h, true);
+    p.admit(&mut h, grant("agent:test"));
+    assert_eq!(p.error(), Some((MANAGER.into(), 1)));
+    assert!(h.state.agents.slots.is_empty());
+}
+
+/// A grant on a task policyd revoked this session is not re-admitted.
+#[test]
+fn a_revoked_principal_loses_its_grants_and_cannot_return() {
+    let (mut h, _path) = hooked("revoked.sock", true);
+    h.state.audit.sink = Some(Vec::new());
+    h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
+    let mut p = Peer::inserted(&mut h, true);
+    p.admit(&mut h, grant("agent:test"));
+    assert_eq!(p.error(), None);
+    crate::policy::lifecycle::revoked(&mut h.state, "agent:test");
+    let mut q = Peer::inserted(&mut h, true);
+    q.admit(&mut h, grant("agent:test"));
+    assert_eq!(
+        q.error(),
+        Some((MANAGER.into(), 0)),
+        "the same task's grant is refused"
+    );
+}
+
 #[test]
 fn a_bad_grant_is_invalid_grant() {
     for bad in [b"not cbor".to_vec(), grant("human")] {
         let (mut h, _path) = hooked("bad.sock", true);
         h.state.audit.sink = Some(Vec::new());
         h.state.policy_key = Some(sk().verifying_key());
+        crate::policy::table::install_for_test(&mut h.state);
         let mut p = Peer::inserted(&mut h, true);
         p.admit(&mut h, bad);
         assert_eq!(p.error(), Some((MANAGER.into(), 0)));
@@ -362,6 +396,7 @@ fn a_bad_grant_is_invalid_grant() {
     let (mut h, _path) = hooked("bad.sock", true);
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(SigningKey::from_bytes(&[8u8; 32]).verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
     let mut p = Peer::inserted(&mut h, true);
     p.admit(&mut h, grant("agent:test"));
     assert_eq!(p.error(), Some((MANAGER.into(), 0)));
@@ -373,6 +408,7 @@ fn requests_while_policyd_is_down_are_paused() {
     let (mut h, _path) = hooked("paused.sock", true);
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
     let mut p = Peer::inserted(&mut h, true);
     let (_agent, scene) = p.admit(&mut h, grant("agent:test"));
     assert!(p.error().is_none());
@@ -396,6 +432,7 @@ fn requests_while_policyd_is_down_are_paused() {
     // Reconnect resumes (COMP-01 §6).
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
     scene.list_toplevels(4, String::new());
     p.pump(&mut h);
     assert_eq!(p.seen.done, vec![4]);
@@ -411,6 +448,7 @@ fn every_scene_request_is_request_decision_result() {
     let (mut h, _path) = hooked("audit.sock", true);
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
     let mut p = Peer::inserted(&mut h, true);
     let (_agent, scene) = p.admit(&mut h, grant("agent:test"));
     scene.list_toplevels(1, String::new());
@@ -442,6 +480,7 @@ fn a_full_audit_socket_stalls_the_agent_not_the_human() {
     let (mut h, _path) = hooked("stall.sock", true);
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
     let mut p = Peer::inserted(&mut h, true);
     let (_agent, scene) = p.admit(&mut h, grant("agent:test"));
 
@@ -480,6 +519,7 @@ fn with_a_valid_grant_every_window_is_secret_and_unknown() {
     let (mut h, _path) = hooked("secret.sock", true);
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
 
     let mut app = Client::connect(&mut h);
     app.map_window(&mut h);

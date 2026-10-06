@@ -5,15 +5,27 @@
 //! `policyd.sock` (F-05, COMP-01 §6): each connection from the session user
 //! is offered the grant verifying key and held open, so abyss sees the link
 //! drop when `policyd` does. What the peer then sends is its audit stream
-//! (COMP-12 §1), one emission per packet. The daemon itself lives in the
-//! library next to this file.
+//! (COMP-12 §1), one emission per packet, interleaved with link messages
+//! (`ec_policy_eval::link::ToPolicyd`) that the main thread answers on the
+//! same connection. The daemon itself lives in the library next to this file.
+//!
+//! Link-message answers, as built so far:
+//! - `revoke` and `terminate` cancel the principal's live task, which revokes
+//!   its grants in one record, and answer `revoked`.
+//! - `audit_tail` answers from the store's in-memory tail.
+//! - `mint` is refused until grants can be built from a prompt answer.
+//! - `defer` is answered `prompt`: no deterministic check exists yet, and
+//!   escalating to the human is the only answer that neither widens nor
+//!   silently waves the request through (COMP-11 §5).
 //!
 //! The store has one owner, the main thread. Connection threads decode and
 //! queue; a full queue stops a connection thread reading, which fills the
 //! socket, which is the backpressure abyss stalls the agent on.
 
 use ec_policy_eval::audit::{Emission, MAX_EMISSION};
+use ec_policy_eval::link::{self, FromPolicyd, ToPolicyd};
 use ec_policyd::tasks;
+use std::sync::{Arc, Mutex, Weak};
 
 use std::fs;
 use std::io::Read;
@@ -24,6 +36,85 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 
 /// Emissions decoded but not yet appended, across every connection.
 const QUEUE: usize = 1024;
+
+/// How often the policy directories are checked for a change.
+const WATCH: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The signed table every connection is given, and the connections to push
+/// a new one to. Shared by the connection threads and the watcher.
+#[derive(Default)]
+struct Push {
+    /// The encoded `FromPolicyd::Table` message, once a compile has succeeded.
+    table: Option<Vec<u8>>,
+    version: u64,
+    conns: Vec<Weak<OwnedFd>>,
+}
+
+/// Compile the policy and, on success, replace the pushed table and send it
+/// to every live connection. A failed compile keeps the previous table
+/// (S-02 §4) and says why.
+fn recompile(push: &Mutex<Push>, key: &ed25519_dalek::SigningKey, dirs: &[PathBuf]) {
+    let compiled = ec_policyd::policy::load(dirs).and_then(|f| ec_policyd::policy::compile(&f));
+    let compiled = match compiled {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("policyd: policy not compiled, previous table stays: {e}");
+            return;
+        }
+    };
+    for n in &compiled.not_enforced {
+        eprintln!("policyd: {n}");
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let Ok(mut p) = push.lock() else { return };
+    // Strictly increasing within a run and, by the clock, across restarts:
+    // abyss refuses a table that does not move forward (COMP-11 §2).
+    let version = now_ms.max(p.version + 1);
+    let table = ec_policyd::policy::table(compiled, version);
+    let bytes = ec_policy_eval::table::encode(&table);
+    if bytes.len() + 128 > link::MAX_MESSAGE {
+        eprintln!("policyd: compiled table too large to push, previous table stays");
+        return;
+    }
+    let sig = ec_policy_eval::table::sign(key, &bytes);
+    let msg = FromPolicyd::Table { table: bytes, sig }.encode();
+    p.version = version;
+    p.table = Some(msg.clone());
+    p.conns.retain(|c| c.strong_count() > 0);
+    for c in p.conns.iter().filter_map(Weak::upgrade) {
+        use rustix::net::{send, SendFlags};
+        let _ = send(&*c, &msg, SendFlags::NOSIGNAL);
+    }
+    eprintln!(
+        "policyd: table {version} pushed ({} deny, {} prompt, {} defer, {} allow)",
+        table.rules.deny.len(),
+        table.rules.prompt.len(),
+        table.rules.defer.len(),
+        table.rules.allow.len()
+    );
+}
+
+fn watch(push: Arc<Mutex<Push>>, key: ed25519_dalek::SigningKey, dirs: Vec<PathBuf>) {
+    let mut last = ec_policyd::policy::stamp(&dirs);
+    loop {
+        std::thread::sleep(WATCH);
+        let now = ec_policyd::policy::stamp(&dirs);
+        if now != last {
+            last = now;
+            recompile(&push, &key, &dirs);
+        }
+    }
+}
+
+/// What a connection thread hands the main thread.
+enum Incoming {
+    Emission(Emission),
+    /// A link message, and the connection to answer it on.
+    Message(ToPolicyd, Arc<OwnedFd>),
+}
 
 /// Where the journal and the issuing key live.
 ///
@@ -77,6 +168,15 @@ fn main() -> std::process::ExitCode {
         }
     };
     let offer = ec_policy_eval::link::encode_key_offer(&key.verifying_key());
+    // The table is compiled before anything is served, so the first
+    // connection is given it right after the key (COMP-11 §2).
+    let push = Arc::new(Mutex::new(Push::default()));
+    let dirs = ec_policyd::policy::sources();
+    recompile(&push, &key, &dirs);
+    {
+        let (push, key) = (push.clone(), key.clone());
+        std::thread::spawn(move || watch(push, key, dirs));
+    }
     // A store that will not open is fatal, not a warning: without the journal
     // there is nothing to make a grant accountable to.
     let mut store = match tasks::TaskStore::open(&dir, key) {
@@ -101,7 +201,7 @@ fn main() -> std::process::ExitCode {
         }
     };
     std::thread::spawn(move || {
-        if let Err(e) = serve(listener, &offer, tx) {
+        if let Err(e) = serve(listener, &offer, tx, push) {
             eprintln!("policyd: policyd.sock: {e}");
             std::process::exit(1);
         }
@@ -113,14 +213,51 @@ fn main() -> std::process::ExitCode {
 /// daemon: abyss sees the link drop and pauses every agent (COMP-01 §6),
 /// which is the fail-closed answer to an audit log that has stopped taking
 /// records. Continuing would let agents act unjournalled.
-fn write(store: &mut tasks::TaskStore, rx: Receiver<Emission>) -> std::process::ExitCode {
-    for e in rx {
-        if let Err(err) = store.record(e) {
-            eprintln!("policyd: cannot append an audit record: {err}");
-            return std::process::ExitCode::FAILURE;
+fn write(store: &mut tasks::TaskStore, rx: Receiver<Incoming>) -> std::process::ExitCode {
+    for incoming in rx {
+        match incoming {
+            Incoming::Emission(e) => {
+                if let Err(err) = store.record(e) {
+                    eprintln!("policyd: cannot append an audit record: {err}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            }
+            Incoming::Message(m, conn) => match answer(store, m) {
+                Ok(Some(reply)) => {
+                    use rustix::net::{send, SendFlags};
+                    // A peer that cannot take the answer has hung up; its
+                    // connection thread sees that and ends.
+                    let _ = send(&*conn, &reply.encode(), SendFlags::NOSIGNAL);
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    eprintln!("policyd: cannot journal a link request: {err}");
+                    return std::process::ExitCode::FAILURE;
+                }
+            },
         }
     }
     std::process::ExitCode::FAILURE
+}
+
+/// The main thread's answer to one link message. An error is a journal
+/// failure, which ends the daemon like a failed emission does.
+fn answer(store: &mut tasks::TaskStore, m: ToPolicyd) -> Result<Option<FromPolicyd>, tasks::TaskError> {
+    Ok(match m {
+        ToPolicyd::Revoke { principal } | ToPolicyd::Terminate { principal } => {
+            store.cancel_principal(&principal)?;
+            Some(FromPolicyd::Revoked { principal })
+        }
+        ToPolicyd::AuditTail { req, principal, n } => Some(FromPolicyd::AuditRecords {
+            req,
+            records: store.tail(&principal, n as usize),
+        }),
+        ToPolicyd::Mint { req, .. } => Some(FromPolicyd::MintRefused { req }),
+        ToPolicyd::Defer { req, .. } => Some(FromPolicyd::DeferAnswer {
+            req,
+            answer: ec_policy_eval::check::DeferAnswer::Prompt,
+        }),
+    })
 }
 
 /// `$ECLIPSE_POLICYD_SOCKET`, else `$XDG_RUNTIME_DIR/eclipse/policyd.sock`.
@@ -165,7 +302,12 @@ fn listen() -> std::io::Result<OwnedFd> {
     Ok(listener)
 }
 
-fn serve(listener: OwnedFd, offer: &[u8], tx: SyncSender<Emission>) -> std::io::Result<()> {
+fn serve(
+    listener: OwnedFd,
+    offer: &[u8],
+    tx: SyncSender<Incoming>,
+    push: Arc<Mutex<Push>>,
+) -> std::io::Result<()> {
     use rustix::net::{self, SocketFlags};
     let me = rustix::process::getuid();
     loop {
@@ -182,7 +324,8 @@ fn serve(listener: OwnedFd, offer: &[u8], tx: SyncSender<Emission>) -> std::io::
         }
         let offer = offer.to_vec();
         let tx = tx.clone();
-        std::thread::spawn(move || hold(conn, &offer, &tx));
+        let push = push.clone();
+        std::thread::spawn(move || hold(conn, &offer, &tx, &push));
     }
 }
 
@@ -190,15 +333,26 @@ fn serve(listener: OwnedFd, offer: &[u8], tx: SyncSender<Emission>) -> std::io::
 /// up. A packet that is oversized, malformed, or of a kind the compositor
 /// does not emit (COMP-12 §2) ends the connection: a source whose stream
 /// cannot be trusted is cut off, not partly believed.
-fn hold(conn: OwnedFd, offer: &[u8], tx: &SyncSender<Emission>) {
+fn hold(conn: OwnedFd, offer: &[u8], tx: &SyncSender<Incoming>, push: &Mutex<Push>) {
     use rustix::net::{recv, send, RecvFlags, SendFlags};
     if send(&conn, offer, SendFlags::NOSIGNAL).is_err() {
         return;
     }
+    let conn = Arc::new(conn);
+    // Registered and given the current table under one lock, so a recompile
+    // can neither miss this connection nor send it an older table second.
+    if let Ok(mut p) = push.lock() {
+        p.conns.push(Arc::downgrade(&conn));
+        if let Some(t) = &p.table {
+            if send(&*conn, t, SendFlags::NOSIGNAL).is_err() {
+                return;
+            }
+        }
+    }
     let mut buf = vec![0u8; MAX_EMISSION];
     loop {
         // With TRUNC the second length is the packet's, not what fit.
-        let n = match recv(&conn, &mut buf[..], RecvFlags::TRUNC) {
+        let n = match recv(&*conn, &mut buf[..], RecvFlags::TRUNC) {
             Ok((_, 0)) => return,
             Ok((_, len)) if len > MAX_EMISSION => {
                 eprintln!("policyd: oversized audit emission; dropping the peer");
@@ -208,23 +362,36 @@ fn hold(conn: OwnedFd, offer: &[u8], tx: &SyncSender<Emission>) {
             Err(rustix::io::Errno::INTR) => continue,
             Err(_) => return,
         };
-        match accept(&buf[..n]) {
-            Some(e) => {
-                if tx.send(e).is_err() {
-                    return;
-                }
-            }
+        let incoming = match accept(&buf[..n]) {
+            Some(Accepted::Message(m)) => Incoming::Message(m, conn.clone()),
+            Some(Accepted::Emission(e)) => Incoming::Emission(e),
             None => {
-                eprintln!("policyd: malformed audit emission; dropping the peer");
+                eprintln!("policyd: malformed audit emission or link message; dropping the peer");
                 return;
             }
+        };
+        if tx.send(incoming).is_err() {
+            return;
         }
     }
 }
 
-/// An emission `policyd` will store from this peer.
-fn accept(packet: &[u8]) -> Option<Emission> {
-    Emission::decode(packet).ok().filter(|e| e.kind.from_compositor())
+/// One packet from the peer, decoded.
+#[derive(Debug, PartialEq)]
+enum Accepted {
+    Emission(Emission),
+    Message(ToPolicyd),
+}
+
+/// An emission `policyd` will store from this peer, or a link message.
+fn accept(packet: &[u8]) -> Option<Accepted> {
+    if link::is_message(packet) {
+        return ToPolicyd::decode(packet).ok().map(Accepted::Message);
+    }
+    Emission::decode(packet)
+        .ok()
+        .filter(|e| e.kind.from_compositor())
+        .map(Accepted::Emission)
 }
 
 #[cfg(test)]
@@ -249,7 +416,7 @@ mod tests {
     #[test]
     fn a_compositor_kind_is_accepted() {
         let e = emission(Kind::Request);
-        assert_eq!(accept(&e.encode()), Some(e));
+        assert_eq!(accept(&e.encode()), Some(Accepted::Emission(e)));
     }
 
     #[test]
@@ -257,6 +424,20 @@ mod tests {
         for k in [Kind::Grant, Kind::Revoke, Kind::Task, Kind::Anchor] {
             assert_eq!(accept(&emission(k).encode()), None, "{k:?}");
         }
+    }
+
+    #[test]
+    fn a_link_message_is_accepted_and_a_malformed_one_refused() {
+        let m = ToPolicyd::Terminate {
+            principal: "agent:a".into(),
+        };
+        assert_eq!(accept(&m.encode()), Some(Accepted::Message(m)));
+        let mut bad = ToPolicyd::Terminate {
+            principal: "agent:a".into(),
+        }
+        .encode();
+        bad.push(0);
+        assert_eq!(accept(&bad), None);
     }
 
     #[test]
