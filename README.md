@@ -21,14 +21,33 @@
 
 ## What is EclipseOS
 
-EclipseOS is an Arch-based operating system built around **Abyss**, its own Wayland compositor written in Rust. The desktop is dark by default with a gold accent: translucent, blurred glass layers, rounded corners, soft depth and fluid motion.
+EclipseOS is an Arch-based operating system where the compositor, the desktop shell, the installer and the security model are designed together, as one thing. It is not a distro with a theme on top. At its heart is **Abyss**, a Wayland compositor written in Rust. The shell around it is written in Rust too.
 
-Under the glass, a few things are different:
+**Philosophy**
 
-- **Agents get their own seats.** AI agents drive the desktop through a compositor-native protocol on their own input seats, so they never race or steal your focus, and everything they do is attributable.
-- **No ambient authority.** Every agent action crosses a policy check first, and fails closed.
-- **Trusted UI is drawn by the compositor**, above every app, so consent prompts can't be spoofed.
-- **Your input is never logged by content.** Not in logs, not in the audit trail.
+- **Glass first.** Dark by default with a gold accent: translucent, blurred layers, rounded corners, soft depth, fluid motion.
+- **Keyboard first.** Tiling windows and workspaces, with gestures, touch and tablet as full citizens.
+- **Nothing ambient.** Every sensitive operation crosses a capability check, and the check fails closed.
+- **Your input is yours.** Keystrokes, clipboard and IME are never logged by content, not in logs and not in the audit trail.
+
+## Highlights
+
+- **A compositor written from scratch.** Abyss is Rust on Smithay with a single-threaded core, handle-based state and no locks on the hot path. It has booted on real KMS hardware with two outputs, and it passes the Wayland conformance suite (WLCS) in CI.
+- **Liquid-glass rendering.** Dual-Kawase blur, soft SDF shadows, rounded corners and animated focus, workspace and window transitions.
+- **Tiling that stays out of the way.** Radiant, dwindle and master layouts, workspaces, window rules, three-finger workspace swipes and touch/tablet support.
+- **Config you can't break.** One KDL file that hot-reloads and never takes the session down on a bad edit. The Settings app edits the same file in place.
+- **A complete desktop, not a parts bin.** The Hyperion bar, launcher with search, toasts and notification centre, policy viewer and secret prompt are all native and share one design system.
+- **Trusted UI that can't be spoofed.** Consent and confirmation prompts are drawn by the compositor above every app, never by a client. Screen capture is redacted fail-closed, and a visible indicator shows whenever something is capturing.
+- **A tamper-evident audit trail.** Grants are signed, and decisions go into an append-only, hash-chained journal you can verify with `ec-audit`.
+- **Agents as guests, not owners.** AI agents get their own input seats and a policy-checked protocol, so they never steal your focus and everything they do is attributable.
+- **Installs like an OS should.** A graphical installer with Minimal, Standard, Full and Agentic profiles, and updates through a signed `pacman` repository.
+
+## Built on
+
+- **Spec first.** Two spec volumes and a set of [ADRs](docs/decisions) govern the code, and where they disagree it is treated as a bug.
+- **Hard invariants.** No ambient authority, a ratchet that can only tighten a decision, no allocation on the input and policy hot paths, and backends isolated behind one trait.
+- **A real gate.** `rustfmt`, `clippy -D warnings`, the full test suite, `cargo-deny` and WLCS conformance run on every PR, with a pinned toolchain and a pinned Smithay.
+- **Reviewed trust boundary.** The enforcement path, policy daemon and sandbox get line-by-line owner review.
 
 **Status:** early. The installer and desktop work, but EclipseOS is not a daily driver yet. [STATUS.md](docs/STATUS.md) lists what is verified and what is still stubbed.
 
@@ -62,6 +81,7 @@ Want to build the ISO yourself? See [D-03](docs/design/D-03-installation-media.m
 | [STATUS.md](docs/STATUS.md) | what is built, stubbed and verified |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the pieces fit together |
 | [CONFIG.md](docs/CONFIG.md) | configuring the desktop |
+| [STYLE.md](docs/STYLE.md) | the visual language |
 
 ## Licence
 

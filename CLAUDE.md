@@ -132,6 +132,12 @@ file dumps until it compacts mid-task and loses the plan.
   have. Subagents are for medium and larger changes, where keeping the main
   context clean pays. The one exception: **all** frontend goes to
   `eclipse-frontend`, every time, whatever the size.
+- **Subagents run one model tier below the orchestrator.** An Opus
+  orchestrator spawns Sonnet subagents (`model: "sonnet"`); a Sonnet
+  orchestrator spawns Haiku ones. Resuming an agent keeps its old model, so
+  to change tier, start a fresh agent pointed at the partial worktree diff.
+  Exploratory agents (`Explore`, read-only sweeps, lookups) always use
+  Haiku (`model: "haiku"`), whatever the orchestrator's tier.
 - **Build barrier when several agents run at once.** Each brief says: no
   cargo build/check/clippy/test, gate, or headless screenshot until the main
   thread gives the go-ahead. An agent finishes its code, messages main
