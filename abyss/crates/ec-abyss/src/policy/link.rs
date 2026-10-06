@@ -71,10 +71,18 @@ fn deliver(state: &mut AbyssState, m: FromPolicyd) {
         FromPolicyd::AuditRecords { req, records } => {
             crate::trusted_ui::panel::audit_records(state, req, records)
         }
-        // Answers to the human's task CLI, which abyss never asks; one
-        // reaching here is policyd answering someone else. Ignored, not
-        // believed: a grant reaches an agent only through admission.
-        FromPolicyd::TaskOpened { .. } | FromPolicyd::TaskRefused { .. } => {}
+        // Answers to messages this build does not send yet (the console
+        // wave), and agentd's pushes. Ignored, not believed: a grant reaches
+        // an agent only through admission.
+        FromPolicyd::TaskOpened { .. }
+        | FromPolicyd::TaskRefused { .. }
+        | FromPolicyd::Preview { .. }
+        | FromPolicyd::TaskCreated { .. }
+        | FromPolicyd::InstallReview { .. }
+        | FromPolicyd::Done { .. }
+        | FromPolicyd::Refused { .. }
+        | FromPolicyd::TaskState { .. }
+        | FromPolicyd::Provision { .. } => {}
     }
 }
 

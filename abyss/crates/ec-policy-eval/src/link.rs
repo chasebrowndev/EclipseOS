@@ -127,6 +127,82 @@ pub enum FromPolicyd {
         req: u64,
         reason: String,
     },
+    /// The preview for [`ToPolicyd::PreviewTask`] `req` (A-08 §5.2). `preview`
+    /// names it for `create_task`; `display` is the canonical CBOR the slot
+    /// draws (COMP-10 §3.12), never shown to the client that drafted it.
+    Preview {
+        req: u64,
+        preview: u64,
+        display: Vec<u8>,
+    },
+    /// [`ToPolicyd::CreateTask`] `req` minted task `task`.
+    TaskCreated {
+        req: u64,
+        task: String,
+    },
+    /// An install to review on the human seat (A-07 §3); `display` is what
+    /// the review modal draws.
+    InstallReview {
+        req: u64,
+        review: u64,
+        display: Vec<u8>,
+    },
+    /// Request `req` did what it asked: an unpause, an install, a pause or a
+    /// cancel.
+    Done {
+        req: u64,
+    },
+    /// Request `req` was refused. `reason` is a code, never a rule id
+    /// (A-05 §5): `preview_stale`, `agentd_unavailable`, `not_found`, ...
+    Refused {
+        req: u64,
+        reason: String,
+    },
+    /// Task `task` changed state (A-04 §4): `active`, `paused`, `draining`
+    /// or `closed`, with the reason it did.
+    TaskState {
+        task: String,
+        state: String,
+        reason: String,
+    },
+    /// To agentd only: provision the task just created (A-08 §5.2, A-01 §4).
+    /// `grant` is its first grant, COSE_Sign1; `continuation` is a task id
+    /// or empty (§5.3).
+    Provision {
+        task: String,
+        principal: String,
+        package: String,
+        version: String,
+        statement: String,
+        deadline_ms: u64,
+        grant: Vec<u8>,
+        continuation: String,
+    },
+}
+
+/// How [`ToPolicyd::CancelTask`] ends a task (A-04 §8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelMode {
+    /// Finish in-flight work, accept no new acting request.
+    Drain,
+    Immediate,
+}
+
+impl CancelMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CancelMode::Drain => "drain",
+            CancelMode::Immediate => "immediate",
+        }
+    }
+
+    fn parse(s: &str) -> Result<CancelMode, MessageError> {
+        match s {
+            "drain" => Ok(CancelMode::Drain),
+            "immediate" => Ok(CancelMode::Immediate),
+            _ => Err(MessageError::Shape),
+        }
+    }
 }
 
 /// abyss → policyd, besides audit emissions.
@@ -166,6 +242,35 @@ pub enum ToPolicyd {
     /// The human closed `principal`'s live task (A-04 §4): its grants are
     /// revoked and every peer is told with [`FromPolicyd::Revoked`].
     CloseTask { principal: String },
+    /// The commit slot `slot` holds a new draft: preview it (A-08 §5.1–§5.2).
+    /// `deadline_ms` 0 is the package default; `narrowing` is a CBOR scope
+    /// list that may only shrink; `continuation` is a task id or empty.
+    PreviewTask {
+        req: u64,
+        slot: u64,
+        package: String,
+        statement: String,
+        deadline_ms: u64,
+        narrowing: Vec<u8>,
+        continuation: String,
+    },
+    /// The human pressed Enter on slot `slot`, armed on `preview`.
+    CreateTask { req: u64, slot: u64, preview: u64 },
+    /// The human pressed Enter on a `task.unpause` slot (A-08 §3).
+    UnpauseTask { req: u64, slot: u64, task: String },
+    /// Begin installing the package directory at `path` (A-07 §3); the
+    /// answer is an [`FromPolicyd::InstallReview`].
+    InstallBegin { req: u64, path: String },
+    /// The human's answer to install review `review`, from the modal.
+    InstallAnswer { review: u64, approve: bool },
+    /// agentd: the human paused `task` from the console (A-08 §7).
+    PauseTask { req: u64, task: String },
+    /// agentd: the human cancelled `task` from the console (A-08 §7).
+    CancelTask {
+        req: u64,
+        task: String,
+        mode: CancelMode,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,6 +306,19 @@ struct Fields<'a> {
     reason: Option<&'a str>,
     deadline: Option<u64>,
     statement: Option<&'a str>,
+    slot: Option<u64>,
+    package: Option<&'a str>,
+    narrowing: Option<&'a [u8]>,
+    continuation: Option<&'a str>,
+    preview: Option<u64>,
+    display: Option<&'a [u8]>,
+    task: Option<&'a str>,
+    mode: Option<&'a str>,
+    path: Option<&'a str>,
+    review: Option<u64>,
+    approve: Option<bool>,
+    state: Option<&'a str>,
+    version: Option<&'a str>,
 }
 
 impl<'a> Fields<'a> {
@@ -224,6 +342,19 @@ impl<'a> Fields<'a> {
             self.reason.is_some(),
             self.deadline.is_some(),
             self.statement.is_some(),
+            self.slot.is_some(),
+            self.package.is_some(),
+            self.narrowing.is_some(),
+            self.continuation.is_some(),
+            self.preview.is_some(),
+            self.display.is_some(),
+            self.task.is_some(),
+            self.mode.is_some(),
+            self.path.is_some(),
+            self.review.is_some(),
+            self.approve.is_some(),
+            self.state.is_some(),
+            self.version.is_some(),
         ]
         .into_iter()
         .enumerate()
@@ -251,6 +382,19 @@ const F_UNATTENDED: u32 = 1 << 11;
 const F_REASON: u32 = 1 << 12;
 const F_DEADLINE: u32 = 1 << 13;
 const F_STATEMENT: u32 = 1 << 14;
+const F_SLOT: u32 = 1 << 15;
+const F_PACKAGE: u32 = 1 << 16;
+const F_NARROWING: u32 = 1 << 17;
+const F_CONTINUATION: u32 = 1 << 18;
+const F_PREVIEW: u32 = 1 << 19;
+const F_DISPLAY: u32 = 1 << 20;
+const F_TASK: u32 = 1 << 21;
+const F_MODE: u32 = 1 << 22;
+const F_PATH: u32 = 1 << 23;
+const F_REVIEW: u32 = 1 << 24;
+const F_APPROVE: u32 = 1 << 25;
+const F_STATE: u32 = 1 << 26;
+const F_VERSION: u32 = 1 << 27;
 
 fn read_records(r: &mut Reader<'_>) -> Result<Vec<TailRecord>, MessageError> {
     let n = r.array_len()?;
@@ -309,6 +453,19 @@ fn read_fields(buf: &[u8]) -> Result<Fields<'_>, MessageError> {
             "reason" => f.reason = Some(r.text()?),
             "deadline" => f.deadline = Some(r.u64()?),
             "statement" => f.statement = Some(r.text()?),
+            "slot" => f.slot = Some(r.u64()?),
+            "package" => f.package = Some(r.text()?),
+            "narrowing" => f.narrowing = Some(r.bytes()?),
+            "continuation" => f.continuation = Some(r.text()?),
+            "preview" => f.preview = Some(r.u64()?),
+            "display" => f.display = Some(r.bytes()?),
+            "task" => f.task = Some(r.text()?),
+            "mode" => f.mode = Some(r.text()?),
+            "path" => f.path = Some(r.text()?),
+            "review" => f.review = Some(r.u64()?),
+            "approve" => f.approve = Some(r.bool()?),
+            "state" => f.state = Some(r.text()?),
+            "version" => f.version = Some(r.text()?),
             _ => return Err(MessageError::Shape),
         }
     }
@@ -338,6 +495,16 @@ fn principal(p: Option<&str>) -> Result<String, MessageError> {
     }
 }
 
+/// A task id: non-empty, printable, bounded. Its meaning is policyd's.
+fn task_id(t: Option<&str>) -> Result<String, MessageError> {
+    let t = t.ok_or(MessageError::Shape)?;
+    if !t.is_empty() && t.len() <= 128 && t.bytes().all(|b| b.is_ascii_graphic()) {
+        Ok(t.to_owned())
+    } else {
+        Err(MessageError::Shape)
+    }
+}
+
 fn message(tag: &str, f: impl FnOnce(&mut MapBuilder)) -> Vec<u8> {
     let mut m = MapBuilder::new();
     m.insert("m", enc(|w| w.text(tag)));
@@ -352,6 +519,10 @@ fn text(s: &str) -> Vec<u8> {
 
 fn uint(n: u64) -> Vec<u8> {
     enc(|w| w.u64(n))
+}
+
+fn bytes(b: &[u8]) -> Vec<u8> {
+    enc(|w| w.bytes(b))
 }
 
 impl FromPolicyd {
@@ -402,6 +573,53 @@ impl FromPolicyd {
             FromPolicyd::TaskRefused { req, reason } => message("task_refused", |m| {
                 m.insert("req", uint(*req));
                 m.insert("reason", text(reason));
+            }),
+            FromPolicyd::Preview {
+                req,
+                preview,
+                display,
+            } => message("preview", |m| {
+                m.insert("req", uint(*req));
+                m.insert("preview", uint(*preview));
+                m.insert("display", bytes(display));
+            }),
+            FromPolicyd::TaskCreated { req, task } => message("task_created", |m| {
+                m.insert("req", uint(*req));
+                m.insert("task", text(task));
+            }),
+            FromPolicyd::InstallReview { req, review, display } => message("install_review", |m| {
+                m.insert("req", uint(*req));
+                m.insert("review", uint(*review));
+                m.insert("display", bytes(display));
+            }),
+            FromPolicyd::Done { req } => message("done", |m| m.insert("req", uint(*req))),
+            FromPolicyd::Refused { req, reason } => message("refused", |m| {
+                m.insert("req", uint(*req));
+                m.insert("reason", text(reason));
+            }),
+            FromPolicyd::TaskState { task, state, reason } => message("task_state", |m| {
+                m.insert("task", text(task));
+                m.insert("state", text(state));
+                m.insert("reason", text(reason));
+            }),
+            FromPolicyd::Provision {
+                task,
+                principal,
+                package,
+                version,
+                statement,
+                deadline_ms,
+                grant,
+                continuation,
+            } => message("provision", |m| {
+                m.insert("task", text(task));
+                m.insert("grant", bytes(grant));
+                m.insert("package", text(package));
+                m.insert("version", text(version));
+                m.insert("deadline", uint(*deadline_ms));
+                m.insert("principal", text(principal));
+                m.insert("statement", text(statement));
+                m.insert("continuation", text(continuation));
             }),
         }
     }
@@ -472,6 +690,73 @@ impl FromPolicyd {
                     reason: f.reason.ok_or(MessageError::Shape)?.to_owned(),
                 }
             }
+            "preview" => {
+                shape(&f, F_REQ | F_PREVIEW | F_DISPLAY)?;
+                FromPolicyd::Preview {
+                    req: req.ok_or(MessageError::Shape)?,
+                    preview: f.preview.ok_or(MessageError::Shape)?,
+                    display: f.display.ok_or(MessageError::Shape)?.to_vec(),
+                }
+            }
+            "task_created" => {
+                shape(&f, F_REQ | F_TASK)?;
+                FromPolicyd::TaskCreated {
+                    req: req.ok_or(MessageError::Shape)?,
+                    task: task_id(f.task)?,
+                }
+            }
+            "install_review" => {
+                shape(&f, F_REQ | F_REVIEW | F_DISPLAY)?;
+                FromPolicyd::InstallReview {
+                    req: req.ok_or(MessageError::Shape)?,
+                    review: f.review.ok_or(MessageError::Shape)?,
+                    display: f.display.ok_or(MessageError::Shape)?.to_vec(),
+                }
+            }
+            "done" => {
+                shape(&f, F_REQ)?;
+                FromPolicyd::Done {
+                    req: req.ok_or(MessageError::Shape)?,
+                }
+            }
+            "refused" => {
+                shape(&f, F_REQ | F_REASON)?;
+                FromPolicyd::Refused {
+                    req: req.ok_or(MessageError::Shape)?,
+                    reason: f.reason.ok_or(MessageError::Shape)?.to_owned(),
+                }
+            }
+            "task_state" => {
+                shape(&f, F_TASK | F_STATE | F_REASON)?;
+                FromPolicyd::TaskState {
+                    task: task_id(f.task)?,
+                    state: f.state.ok_or(MessageError::Shape)?.to_owned(),
+                    reason: f.reason.ok_or(MessageError::Shape)?.to_owned(),
+                }
+            }
+            "provision" => {
+                shape(
+                    &f,
+                    F_TASK
+                        | F_GRANT
+                        | F_PACKAGE
+                        | F_VERSION
+                        | F_DEADLINE
+                        | F_PRINCIPAL
+                        | F_STATEMENT
+                        | F_CONTINUATION,
+                )?;
+                FromPolicyd::Provision {
+                    task: task_id(f.task)?,
+                    principal: principal(f.principal)?,
+                    package: f.package.ok_or(MessageError::Shape)?.to_owned(),
+                    version: f.version.ok_or(MessageError::Shape)?.to_owned(),
+                    statement: f.statement.ok_or(MessageError::Shape)?.to_owned(),
+                    deadline_ms: f.deadline.ok_or(MessageError::Shape)?,
+                    grant: f.grant.ok_or(MessageError::Shape)?.to_vec(),
+                    continuation: f.continuation.ok_or(MessageError::Shape)?.to_owned(),
+                }
+            }
             _ => return Err(MessageError::Shape),
         })
     }
@@ -527,6 +812,50 @@ impl ToPolicyd {
             ToPolicyd::CloseTask { principal } => {
                 message("close_task", |m| m.insert("principal", text(principal)))
             }
+            ToPolicyd::PreviewTask {
+                req,
+                slot,
+                package,
+                statement,
+                deadline_ms,
+                narrowing,
+                continuation,
+            } => message("preview_task", |m| {
+                m.insert("req", uint(*req));
+                m.insert("slot", uint(*slot));
+                m.insert("package", text(package));
+                m.insert("deadline", uint(*deadline_ms));
+                m.insert("narrowing", bytes(narrowing));
+                m.insert("statement", text(statement));
+                m.insert("continuation", text(continuation));
+            }),
+            ToPolicyd::CreateTask { req, slot, preview } => message("create_task", |m| {
+                m.insert("req", uint(*req));
+                m.insert("slot", uint(*slot));
+                m.insert("preview", uint(*preview));
+            }),
+            ToPolicyd::UnpauseTask { req, slot, task } => message("unpause_task", |m| {
+                m.insert("req", uint(*req));
+                m.insert("slot", uint(*slot));
+                m.insert("task", text(task));
+            }),
+            ToPolicyd::InstallBegin { req, path } => message("install_begin", |m| {
+                m.insert("req", uint(*req));
+                m.insert("path", text(path));
+            }),
+            ToPolicyd::InstallAnswer { review, approve } => message("install_answer", |m| {
+                m.insert("review", uint(*review));
+                m.insert("approve", enc(|w| w.bool(*approve)));
+            }),
+            ToPolicyd::PauseTask { req, task } => message("pause_task", |m| {
+                m.insert("req", uint(*req));
+                m.insert("task", text(task));
+            }),
+            ToPolicyd::CancelTask { req, task, mode } => message("cancel_task", |m| {
+                m.insert("req", uint(*req));
+                m.insert("task", text(task));
+                m.insert("mode", text(mode.as_str()));
+            }),
         }
     }
 
@@ -587,6 +916,66 @@ impl ToPolicyd {
                 shape(&f, F_PRINCIPAL)?;
                 ToPolicyd::CloseTask {
                     principal: principal(f.principal)?,
+                }
+            }
+            "preview_task" => {
+                shape(
+                    &f,
+                    F_REQ | F_SLOT | F_PACKAGE | F_DEADLINE | F_NARROWING | F_STATEMENT | F_CONTINUATION,
+                )?;
+                ToPolicyd::PreviewTask {
+                    req: req()?,
+                    slot: f.slot.ok_or(MessageError::Shape)?,
+                    package: txt(f.package)?,
+                    statement: txt(f.statement)?,
+                    deadline_ms: f.deadline.ok_or(MessageError::Shape)?,
+                    narrowing: f.narrowing.ok_or(MessageError::Shape)?.to_vec(),
+                    continuation: txt(f.continuation)?,
+                }
+            }
+            "create_task" => {
+                shape(&f, F_REQ | F_SLOT | F_PREVIEW)?;
+                ToPolicyd::CreateTask {
+                    req: req()?,
+                    slot: f.slot.ok_or(MessageError::Shape)?,
+                    preview: f.preview.ok_or(MessageError::Shape)?,
+                }
+            }
+            "unpause_task" => {
+                shape(&f, F_REQ | F_SLOT | F_TASK)?;
+                ToPolicyd::UnpauseTask {
+                    req: req()?,
+                    slot: f.slot.ok_or(MessageError::Shape)?,
+                    task: task_id(f.task)?,
+                }
+            }
+            "install_begin" => {
+                shape(&f, F_REQ | F_PATH)?;
+                ToPolicyd::InstallBegin {
+                    req: req()?,
+                    path: txt(f.path)?,
+                }
+            }
+            "install_answer" => {
+                shape(&f, F_REVIEW | F_APPROVE)?;
+                ToPolicyd::InstallAnswer {
+                    review: f.review.ok_or(MessageError::Shape)?,
+                    approve: f.approve.ok_or(MessageError::Shape)?,
+                }
+            }
+            "pause_task" => {
+                shape(&f, F_REQ | F_TASK)?;
+                ToPolicyd::PauseTask {
+                    req: req()?,
+                    task: task_id(f.task)?,
+                }
+            }
+            "cancel_task" => {
+                shape(&f, F_REQ | F_TASK | F_MODE)?;
+                ToPolicyd::CancelTask {
+                    req: req()?,
+                    task: task_id(f.task)?,
+                    mode: CancelMode::parse(f.mode.ok_or(MessageError::Shape)?)?,
                 }
             }
             _ => return Err(MessageError::Shape),
@@ -675,6 +1064,40 @@ mod tests {
                 req: 8,
                 grant: vec![0xd2],
             },
+            FromPolicyd::Preview {
+                req: 20,
+                preview: 9,
+                display: vec![0xa0],
+            },
+            FromPolicyd::TaskCreated {
+                req: 21,
+                task: "t-1".into(),
+            },
+            FromPolicyd::InstallReview {
+                req: 22,
+                review: 3,
+                display: vec![0xa0],
+            },
+            FromPolicyd::Done { req: 23 },
+            FromPolicyd::Refused {
+                req: 24,
+                reason: "preview_stale".into(),
+            },
+            FromPolicyd::TaskState {
+                task: "t-1".into(),
+                state: "paused".into(),
+                reason: "human".into(),
+            },
+            FromPolicyd::Provision {
+                task: "t-1".into(),
+                principal: "agent:ref".into(),
+                package: "ref".into(),
+                version: "0.1.0".into(),
+                statement: "Say hello".into(),
+                deadline_ms: 7_200_000,
+                grant: vec![1, 2, 3],
+                continuation: String::new(),
+            },
             FromPolicyd::TaskRefused {
                 req: 9,
                 reason: "already_live".into(),
@@ -715,6 +1138,42 @@ mod tests {
                 statement: "tidy notes".into(),
                 deadline_ms: 7_200_000,
                 scope: "scene.list workspace:human\nseat.pointer app_id:foot".into(),
+            },
+            ToPolicyd::PreviewTask {
+                req: 30,
+                slot: 1,
+                package: "ref".into(),
+                statement: "Say hello".into(),
+                deadline_ms: 0,
+                narrowing: vec![],
+                continuation: String::new(),
+            },
+            ToPolicyd::CreateTask {
+                req: 31,
+                slot: 1,
+                preview: 9,
+            },
+            ToPolicyd::UnpauseTask {
+                req: 32,
+                slot: 1,
+                task: "t-1".into(),
+            },
+            ToPolicyd::InstallBegin {
+                req: 33,
+                path: "/home/u/agents/ref".into(),
+            },
+            ToPolicyd::InstallAnswer {
+                review: 3,
+                approve: true,
+            },
+            ToPolicyd::PauseTask {
+                req: 34,
+                task: "t-1".into(),
+            },
+            ToPolicyd::CancelTask {
+                req: 35,
+                task: "t-1".into(),
+                mode: CancelMode::Drain,
             },
             ToPolicyd::CloseTask {
                 principal: "agent:a".into(),

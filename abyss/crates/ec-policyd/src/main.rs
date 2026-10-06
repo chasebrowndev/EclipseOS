@@ -340,6 +340,18 @@ fn answer(store: &mut tasks::TaskStore, m: ToPolicyd, now_ms: u64) -> Result<Ans
             }),
             Err(e) => return Err(e),
         },
+        // The console wave (docs/internal/console-plan.md, P2–P4) lands these;
+        // until then each is refused, which is the fail-closed answer.
+        ToPolicyd::PreviewTask { req, .. }
+        | ToPolicyd::CreateTask { req, .. }
+        | ToPolicyd::UnpauseTask { req, .. }
+        | ToPolicyd::InstallBegin { req, .. }
+        | ToPolicyd::PauseTask { req, .. }
+        | ToPolicyd::CancelTask { req, .. } => Answer::To(FromPolicyd::Refused {
+            req,
+            reason: "unsupported".into(),
+        }),
+        ToPolicyd::InstallAnswer { .. } => Answer::Nothing,
     })
 }
 

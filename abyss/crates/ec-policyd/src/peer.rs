@@ -102,10 +102,14 @@ impl Role {
 
     /// Whether this role may send `m`.
     pub fn may_send(self, m: &ToPolicyd) -> bool {
-        // Everything the link carries today is the compositor's, which is why
-        // a message this match does not name is refused for the other roles
-        // rather than allowed.
-        matches!((self, m), (Role::Compositor, _))
+        let agentd = matches!(m, ToPolicyd::PauseTask { .. } | ToPolicyd::CancelTask { .. });
+        match self {
+            // The console reaches pause and cancel through agentd (A-08 §7);
+            // the compositor pauses through its own messages.
+            Role::Agentd => agentd,
+            Role::Compositor => !agentd,
+            Role::Brokerd => false,
+        }
     }
 
     /// Whether this role is pushed the signed table and the key. Only the
@@ -161,12 +165,26 @@ mod tests {
     }
 
     #[test]
-    fn only_the_compositor_sends_link_messages_today() {
+    fn each_role_sends_only_its_own_messages() {
         let m = ToPolicyd::Terminate {
             principal: "agent:a".into(),
         };
         assert!(Role::Compositor.may_send(&m));
         assert!(!Role::Agentd.may_send(&m));
         assert!(!Role::Brokerd.may_send(&m));
+        let create = ToPolicyd::CreateTask {
+            req: 1,
+            slot: 1,
+            preview: 1,
+        };
+        assert!(Role::Compositor.may_send(&create));
+        assert!(!Role::Agentd.may_send(&create), "agentd cannot create a task");
+        let pause = ToPolicyd::PauseTask {
+            req: 1,
+            task: "t".into(),
+        };
+        assert!(Role::Agentd.may_send(&pause));
+        assert!(!Role::Compositor.may_send(&pause));
+        assert!(!Role::Brokerd.may_send(&pause));
     }
 }
