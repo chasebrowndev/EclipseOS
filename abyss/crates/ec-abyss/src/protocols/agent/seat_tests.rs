@@ -661,3 +661,98 @@ fn a_prompted_key_waits_for_the_human_and_runs_only_on_allow() {
     );
     assert!(!crate::trusted_ui::holds_seat(&w.h.state));
 }
+
+/// COMP-16 M16 gate: no state mutation on any denied path. Each step of
+/// COMP-08 §10 that can refuse is made to refuse in turn; after every one the
+/// target's agent-seat input log, the seat's focus and the human's focus are
+/// exactly what they were before.
+#[test]
+fn no_denied_step_changes_anything() {
+    use ec_policy_eval::check::{CompiledRule, Phases, Pred, Table};
+    use ec_policy_eval::scope::Glob;
+    const PAUSED: u32 = 14;
+    const OUT_OF_SCOPE: u32 = 2;
+    const POLICY_DENIED: u32 = 10;
+    const INVALID_ARGUMENT: u32 = 15;
+
+    let mut w = world(
+        "seat-nomut.sock",
+        &["scene.list", "seat.focus", "seat.key", "seat.text"],
+    );
+    let f = w.focus();
+    assert_eq!(w.status(f), Some((OK, String::new())));
+    let seat = w.name();
+    let agent = w.h.state.agent_seats[0].0;
+    let snapshot = |w: &World| {
+        (
+            w.spy.data.on(&seat),
+            crate::protocols::agent::seat::focused_window(&w.h.state, agent),
+            w.h.state.focus.clone(),
+        )
+    };
+    let before = snapshot(&w);
+
+    // Step 1: invalid argument (empty text).
+    let id = w.id();
+    w.seat.text(id, w.handle, 0, String::new(), 0, 0, vec![0x80]);
+    w.pump();
+    assert_eq!(w.status(id).map(|s| s.0), Some(INVALID_ARGUMENT));
+    assert_eq!(snapshot(&w), before, "invalid argument");
+
+    // Step 3: paused.
+    crate::policy::lifecycle::pause(&mut w.h.state, agent);
+    let id = w.key(KEY_A, true);
+    assert_eq!(w.status(id).map(|s| s.0), Some(PAUSED));
+    assert_eq!(snapshot(&w), before, "paused");
+    crate::policy::lifecycle::resume(&mut w.h.state, agent);
+    w.h.state.audit.sink = Some(Vec::new());
+
+    // Step 4: out of scope (a handle the agent cannot see).
+    let id = w.id();
+    w.seat.text(id, 9999, 0, "x".into(), 0, 0, vec![0x80]);
+    w.pump();
+    assert_eq!(w.status(id).map(|s| s.0), Some(OUT_OF_SCOPE));
+    assert_eq!(snapshot(&w), before, "out of scope");
+
+    // Step 7: the table denies.
+    let mut rules = Phases::default();
+    rules.deny.push(CompiledRule {
+        id: "no-keys".into(),
+        preds: vec![Pred::Capability(vec![Glob::new("seat.key")])],
+        unless: Vec::new(),
+    });
+    w.h.state.policy_table = Some(Table { version: 9, rules });
+    let id = w.key(KEY_A, true);
+    assert_eq!(w.status(id), Some((POLICY_DENIED, "no-keys".into())));
+    assert_eq!(snapshot(&w), before, "policy denied");
+
+    // Step 7: an empty table (no rule matches) denies too.
+    w.h.state.policy_table = Some(Table::default());
+    let id = w.key(KEY_A, true);
+    assert_eq!(w.status(id).map(|s| s.0), Some(POLICY_DENIED));
+    assert_eq!(snapshot(&w), before, "no matching rule");
+
+    // Step 7 defer: policyd answers deny, and then the timeout path (no
+    // answer) for a second request.
+    let mut rules = Phases::default();
+    rules.defer.push(CompiledRule {
+        id: "think".into(),
+        preds: vec![Pred::Capability(vec![Glob::new("seat.key")])],
+        unless: Vec::new(),
+    });
+    w.h.state.policy_table = Some(Table { version: 10, rules });
+    let id = w.key(KEY_A, true);
+    assert_eq!(w.status(id), None, "deferred: waiting on policyd");
+    let k = (agent << 32) | u64::from(id);
+    crate::policy::enforce::defer_answer(&mut w.h.state, k, ec_policy_eval::check::DeferAnswer::Deny);
+    w.pump();
+    assert_eq!(w.status(id), Some((POLICY_DENIED, "think".into())));
+    assert_eq!(snapshot(&w), before, "defer denied");
+    // A fallthrough with no allow rule is still a denial.
+    let id = w.key(KEY_A, true);
+    let k = (agent << 32) | u64::from(id);
+    crate::policy::enforce::defer_answer(&mut w.h.state, k, ec_policy_eval::check::DeferAnswer::Fallthrough);
+    w.pump();
+    assert_eq!(w.status(id).map(|s| s.0), Some(POLICY_DENIED));
+    assert_eq!(snapshot(&w), before, "fallthrough never widens");
+}
