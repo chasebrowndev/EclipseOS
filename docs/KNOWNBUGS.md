@@ -270,3 +270,47 @@ expanding to its full prompt. Consent prompts in v1 have no "decide later",
 so the oldest parked prompt is always on screen whenever the seat is free,
 and `trusted_ui::queue::open` (Super+Space, `show_decisions`) brings it
 forward with Deny focused. A list view needs deferral first.
+
+---
+
+# Protected surfaces — found landing B1 (console wave), 2026-10-06
+
+## PROT-01: COMP-19 plumbing is in, the TCB half is not
+
+The protocol, registry, input origin and Enter/slot-rectangle isolation are
+in `protocols/protected/` and `input/`. Nothing yet draws, arms or commits a
+slot, excludes a protected surface from capture, or from the agent scene, and
+the audit record for refused agent input is not emitted: each is a
+`TCB-HOOK` in `protocols/protected/hooks.rs`, or a call to
+`protocols::protected::is_protected`, for main to wire. Until then a protected
+surface is only input-protected.
+
+## PROT-02: gaps against COMP-19
+
+- **Origin is a tag on the state, not a field on every event.** The entry
+  point sets `AbyssState::input_origin` for its duration and the deliveries
+  read it; an event no entry point tagged reads as `injected` (refused on a
+  protected surface in a release build). The control socket's `type_text` and
+  `click_at` and `zwp_virtual_keyboard` do not exist yet, so `scripted` and the
+  keyboard half of `virtual` have no producer, and `agent_compat` has none
+  either: compat locks hold the *human's* input, they do not route agent acts
+  through the human seat (LOCK-01). The tags and the drop are ready for them.
+- **A toplevel holding a protected subsurface takes no non-physical keys, and
+  an agent cannot focus it.** The keyboard focus is the toplevel, and the
+  compositor cannot tell which widget the client routes a key to, so the
+  whole toplevel is refused. COMP-19 does not say; this is the safe reading.
+- **A slot on a popup or a layer surface has no rectangle** (`slot_rect` is
+  `None`): only toplevels and their subsurfaces are located.
+- **Touch inside a slot's rectangle is dropped, not a click.** COMP-19 §6
+  names the pointer.
+- **`both continuation and resumes`** has no protocol error in COMP-19 §2: the
+  draft is refused (`state(refused, refused)`) and not stored.
+- **The fifth slot of a client** is the protocol error `slot_exists`; §8 says
+  only "at most 4".
+- **A focus change with no input event behind it** (a window mapping, closing)
+  may focus a protected surface; only focus caused by an event of a
+  non-physical origin is refused.
+- **`ec-abyss-wlcs` does not enable `ec-abyss/wlcs`.** Doing so from the
+  workspace would unify the feature into every `cargo test --workspace`, and
+  the "injected is refused" test would stop running; a conformance run must
+  pass `--features ec-abyss/wlcs` itself.

@@ -327,6 +327,11 @@ pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool
     let Some(surface) = window_surface(window) else {
         return;
     };
+    // Keyboard focus enters a protected surface only through physical input
+    // (COMP-19 §3).
+    if !crate::protocols::protected::gate::focus_allowed(state, &surface) {
+        return;
+    }
     // X11 focus is compositor-driven: activate, raise in the X stack, then
     // let the keyboard follow (COMP-07 §1).
     if let Some(x11) = window.x11_surface() {
@@ -424,6 +429,13 @@ pub fn focus_surface(state: &mut AbyssState, surface: Option<WlSurface>) {
     // The destructive-action prompt keeps the keyboard until it is answered.
     if state.trusted_ui.active() {
         return;
+    }
+    // Keyboard focus enters a protected surface only through physical input
+    // (COMP-19 §3).
+    if let Some(s) = &surface {
+        if !crate::protocols::protected::gate::focus_allowed(state, s) {
+            return;
+        }
     }
     // A layer surface, popup grab or nothing is recorded as "no window", so
     // focus leaving a window and coming back is two records, not none.

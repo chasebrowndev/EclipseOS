@@ -12,6 +12,10 @@ use ec_protocols::agent::client::{
     eclipse_agent_seat_v1::EclipseAgentSeatV1, eclipse_agent_v1::EclipseAgentV1,
     eclipse_scene_v1::EclipseSceneV1,
 };
+use ec_protocols::protected::client::{
+    eclipse_protected_surface_manager_v1::EclipseProtectedSurfaceManagerV1,
+    eclipse_protected_surface_v1::EclipseProtectedSurfaceV1,
+};
 use smithay::backend::input::KeyState;
 use smithay::input::keyboard::Keycode;
 use wayland_client::{
@@ -81,6 +85,8 @@ struct Spy {
     shm: WlShm,
     wm: XdgWmBase,
     toplevels: Vec<(WlSurface, XdgSurface, XdgToplevel)>,
+    /// `eclipse_protected_surface_manager_v1`, for COMP-19 §3.
+    protected: Option<EclipseProtectedSurfaceManagerV1>,
 }
 
 impl Dispatch<WlRegistry, ()> for SpyData {
@@ -175,6 +181,8 @@ delegate_noop!(SpyData: ignore WlShm);
 delegate_noop!(SpyData: ignore WlBuffer);
 delegate_noop!(SpyData: ignore WlSurface);
 delegate_noop!(SpyData: ignore XdgToplevel);
+delegate_noop!(SpyData: EclipseProtectedSurfaceManagerV1);
+delegate_noop!(SpyData: ignore EclipseProtectedSurfaceV1);
 
 impl Spy {
     fn connect(h: &mut Harness) -> Self {
@@ -210,6 +218,11 @@ impl Spy {
         let shm = registry.bind(n, 1, &qh, ());
         let (n, _) = find("xdg_wm_base");
         let wm = registry.bind(n, 1, &qh, ());
+        let protected = data
+            .list
+            .iter()
+            .find(|g| g.1 == "eclipse_protected_surface_manager_v1")
+            .map(|g| registry.bind(g.0, 1, &qh, ()));
         let mut s = Spy {
             conn,
             queue,
@@ -218,6 +231,7 @@ impl Spy {
             shm,
             wm,
             toplevels: Vec::new(),
+            protected,
         };
         s.pump(h);
         s
@@ -410,6 +424,58 @@ fn an_agent_key_reaches_the_target_on_the_agent_seat_only() {
     );
     // The seat's focus is the agent's own; the human's never moved.
     assert!(crate::protocols::agent::seat::focused_window(&w.h.state, w.h.state.agent_seats[0].0).is_some());
+}
+
+/// COMP-19 §3: an agent's `focus` naming a protected surface fails
+/// `out_of_scope`, its click and keys land on nothing, and nothing reaches the
+/// client on the agent seat. Unprotected, the same acts work.
+#[test]
+fn an_agent_cannot_focus_click_or_type_into_a_protected_window() {
+    const OUT_OF_SCOPE: u32 = 2;
+    let mut w = world(
+        "seat-protected.sock",
+        &["scene.list", "seat.focus", "seat.key", "click"],
+    );
+    let qh = w.spy.queue.handle();
+    let surface = w.spy.toplevels[0].0.clone();
+    let _p = w
+        .spy
+        .protected
+        .as_ref()
+        .expect("the global is on the public display")
+        .protect(&surface, &qh, ());
+    w.pump();
+    assert!(!w.h.state.protected.is_empty());
+    let seat = w.name();
+
+    let f = w.focus();
+    assert_eq!(w.status(f).map(|s| s.0), Some(OUT_OF_SCOPE), "focus");
+    let g =
+        w.h.state
+            .space
+            .element_geometry(&find(&w.h, "seatapp"))
+            .expect("mapped");
+    let id = w.id();
+    w.seat
+        .click(id, w.handle, 0, g.loc.x + 7, g.loc.y + 9, 0x110, 0, 0, vec![0x80]);
+    w.pump();
+    assert_eq!(w.status(id).map(|s| s.0), Some(OUT_OF_SCOPE), "click");
+    w.key(KEY_A, true);
+    w.key(KEY_A, false);
+    assert!(
+        w.spy
+            .data
+            .on(&seat)
+            .iter()
+            .all(|e| !matches!(e, Ev::Key(..) | Ev::Enter)),
+        "nothing reached the client on the agent seat: {:?}",
+        w.spy.data.on(&seat)
+    );
+    // The refusals were counted for the surface.
+    assert!(w.h.state.protected.log.iter().any(|c| matches!(
+        c,
+        crate::protocols::protected::calls::Call::Audit(crate::input::Origin::AgentSeat)
+    )));
 }
 
 /// `keysym` maps through the seat keymap, `text` falls to keysyms without an

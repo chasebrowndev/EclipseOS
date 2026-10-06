@@ -40,6 +40,8 @@ impl CompositorHandler for AbyssState {
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
+        // A protected surface's protection and slot go with it (COMP-19).
+        crate::protocols::protected::surface_destroyed(self, surface);
         // A touch point whose target dies must still be lifted: the client is
         // owed an `up` for every id it saw come down (COMP-04 §6).
         if !self.touch_points.is_empty() {
@@ -49,6 +51,9 @@ impl CompositorHandler for AbyssState {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        // A destroyed protected object stops protecting at the surface's
+        // next commit (COMP-19 §2).
+        crate::protocols::protected::on_commit(self, surface);
         // A mapped toplevel committing a null buffer is closing (or hiding):
         // keep its last frame for `window-close` (or `layer-close`) before smithay drops the
         // textures with the buffer.

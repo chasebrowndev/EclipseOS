@@ -237,18 +237,22 @@ impl Dispatch<ZwlrVirtualPointerV1, VirtualPointerData> for AbyssState {
                 if crate::trusted_ui::holds_seat(state) {
                     return;
                 }
-                if let Some(delta) = relative {
-                    state.inject_pointer_relative(delta, time);
-                }
-                if let Some(location) = absolute {
-                    state.inject_pointer_absolute(location, time);
-                }
-                for (button, pressed) in buttons {
-                    state.inject_pointer_button(button, pressed, time);
-                }
-                if let Some(axis) = axis {
-                    state.inject_pointer_axis(axis);
-                }
+                // Everything this frame causes is `virtual` input: a protected
+                // surface drops it (COMP-19 §3).
+                state.with_origin(crate::input::Origin::Virtual, |state| {
+                    if let Some(delta) = relative {
+                        state.inject_pointer_relative(delta, time);
+                    }
+                    if let Some(location) = absolute {
+                        state.inject_pointer_absolute(location, time);
+                    }
+                    for (button, pressed) in buttons {
+                        state.inject_pointer_button(button, pressed, time);
+                    }
+                    if let Some(axis) = axis {
+                        state.inject_pointer_axis(axis);
+                    }
+                });
             }
             Request::Destroy => {}
             _ => unreachable!(),

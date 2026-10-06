@@ -267,6 +267,13 @@ pub struct AbyssState {
     pub agents: crate::protocols::agent::Agents,
     /// `eclipse_semantic_v1` (COMP-09): each toplevel's published tree.
     pub semantic: crate::protocols::semantic::SemanticState,
+    /// `eclipse_protected_surface_v1` (COMP-19): protected surfaces and the
+    /// commit slots they host.
+    pub protected: crate::protocols::protected::Protected,
+    /// The origin of the input event being handled, set by the entry point
+    /// that created it and read where it is delivered (COMP-19 §3). `None`
+    /// outside any entry point; deliveries read that as `Injected`.
+    pub input_origin: Option<crate::input::Origin>,
     /// Each agent's virtual seat (COMP-04 §3), by agent id. Created lazily by
     /// `get_seat`; never consulted by the human input paths.
     pub agent_seats: Vec<(u64, crate::protocols::agent::seat::AgentSeat)>,
@@ -590,6 +597,8 @@ impl AbyssState {
             classes: Default::default(),
             agents: Default::default(),
             semantic: crate::protocols::semantic::SemanticState::new(&display.handle()),
+            protected: crate::protocols::protected::Protected::new(&display.handle()),
+            input_origin: None,
             agent_seats: Vec::new(),
             session_lock_state,
             lock: Default::default(),

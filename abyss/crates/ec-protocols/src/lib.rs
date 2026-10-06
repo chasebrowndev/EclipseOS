@@ -44,3 +44,8 @@ pub mod agent {
 /// `eclipse_semantic_manager_v1` and `eclipse_semantic_surface_v1` (COMP-09):
 /// a client publishes a live semantic tree for one of its toplevels.
 pub mod semantic;
+
+/// `eclipse_protected_surface_manager_v1`, `eclipse_protected_surface_v1` and
+/// `eclipse_commit_slot_v1` (COMP-19): a client marks a surface human-input
+/// only and may host a compositor-drawn commit slot in it.
+pub mod protected;

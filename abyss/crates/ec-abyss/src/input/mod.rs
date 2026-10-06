@@ -31,6 +31,9 @@ use crate::state::AbyssState;
 pub mod grabs;
 pub mod idle;
 pub mod inject;
+pub mod origin;
+
+pub use origin::Origin;
 
 // The binding data types are plain data produced by the config parser, so they
 // live in `ec-abyss-config`; the dispatch that acts on them stays here.
@@ -68,7 +71,13 @@ const VT_SWITCH_FIRST: u32 = 0x1008_FE01;
 const VT_SWITCH_LAST: u32 = 0x1008_FE0C;
 
 impl AbyssState {
+    /// An event from a device on the human seat (libinput, winit): the
+    /// origin of everything it causes is `Physical` (COMP-19 §3).
     pub fn process_input_event<B: InputBackend>(&mut self, event: InputEvent<B>) {
+        self.with_origin(Origin::Physical, |s| s.process_event::<B>(event));
+    }
+
+    fn process_event<B: InputBackend>(&mut self, event: InputEvent<B>) {
         // Activity only — never the event's content (COMP-04, F-02).
         idle::on_activity(self);
         match event {
@@ -131,8 +140,20 @@ impl AbyssState {
         if self.lock.locked && keyboard.is_grabbed() {
             keyboard.unset_grab(self);
         }
+        // The key's keysym and whether any modifier but a lock is down, for
+        // the protected-surface gate below (COMP-19 §6).
+        let mut facts = (0u32, false);
         let (filtered, mods_changed) =
             keyboard.input_intercept(self, key_code, key_state, |state, mods, handle| {
+                facts = (
+                    handle.modified_sym().raw(),
+                    !(mods.shift
+                        || mods.ctrl
+                        || mods.alt
+                        || mods.logo
+                        || mods.iso_level3_shift
+                        || mods.iso_level5_shift),
+                );
                 if key_state != KeyState::Pressed {
                     return FilterResult::Forward;
                 }
@@ -190,6 +211,12 @@ impl AbyssState {
                 // An agent's compat lock holds the human's key for the
                 // locked window, to be delivered on release (COMP-04 §7).
                 let pressed = key_state == KeyState::Pressed;
+                // A protected surface takes physical keys only, and an
+                // unmodified Enter is the commit slot's, never the client's
+                // (COMP-19 §3, §6).
+                if crate::protocols::protected::gate::key(self, pressed, facts.0, facts.1, time) {
+                    return;
+                }
                 if !crate::protocols::agent::lock::hold_key(self, key_code, pressed, time) {
                     keyboard.input_forward(self, key_code, key_state, serial, time, mods_changed);
                 }
@@ -433,6 +460,15 @@ impl AbyssState {
         }
         let serial = SERIAL_COUNTER.next_serial();
         let under = self.surface_under(pos);
+        // A protected surface is not pointed at by anything but a physical
+        // device, and nothing is pointed at inside a commit slot (COMP-19).
+        crate::protocols::protected::gate::note_pointer_origin(self);
+        let under = crate::protocols::protected::gate::filter_under(
+            self,
+            under,
+            pos,
+            crate::protocols::protected::gate::Mode::Event,
+        );
 
         // Focus-follows-mouse (decided 2026-09-05), config-gated. The rules
         // themselves live in one pure function (ADR 0042); this path only
@@ -497,6 +533,13 @@ impl AbyssState {
             return;
         };
         let under = self.surface_under(self.pointer_location);
+        let location = self.pointer_location;
+        let under = crate::protocols::protected::gate::filter_under(
+            self,
+            under,
+            location,
+            crate::protocols::protected::gate::Mode::Refresh,
+        );
         let next = under.as_ref().map(|(s, p)| (s.clone(), p.to_i32_round()));
         // Smithay forwards a same-focus refresh as an unconditional
         // `wl_pointer.motion`, so only deliver when something actually moved.
@@ -816,11 +859,17 @@ impl AbyssState {
     /// The surface a tablet tool at `pos` talks to. `None` under the lock or
     /// a selection, which smithay turns into a proximity-out: the tool fails
     /// closed exactly like the pointer.
-    fn tablet_focus(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
+    fn tablet_focus(&mut self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         if self.lock.locked || self.seat_held() {
             return None;
         }
-        self.surface_under(pos)
+        let under = self.surface_under(pos);
+        crate::protocols::protected::gate::filter_under(
+            self,
+            under,
+            pos,
+            crate::protocols::protected::gate::Mode::Event,
+        )
     }
 
     /// Tool in or out of proximity (COMP-06 §1). The tool is added to the
@@ -952,6 +1001,24 @@ impl AbyssState {
             }
             return;
         }
+        // A protected surface takes physical buttons only, and a press inside
+        // a commit slot is the slot's, never the client's (COMP-19 §3, §6).
+        match crate::protocols::protected::gate::button(self, button, pressed) {
+            crate::protocols::protected::gate::Button::Pass => {}
+            crate::protocols::protected::gate::Button::Drop => return,
+            crate::protocols::protected::gate::Button::Slot { slot, x, y } => {
+                // The click still focuses the host, as any click would.
+                if self.popup_grabs.is_empty() && !self.lock.locked {
+                    let pos = self.pointer_location;
+                    let action = crate::shell::focus::decide_pointer_focus(
+                        &crate::shell::focus::click_focus_ctx(self, pos),
+                    );
+                    crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Click);
+                }
+                crate::protocols::protected::on_click(self, slot, x, y, time);
+                return;
+            }
+        }
         // A compat lock held by an agent queues the human's buttons for the
         // locked window, delivered on release (COMP-04 §7).
         if crate::protocols::agent::lock::hold_button(self, button, pressed, time) {
@@ -1047,6 +1114,10 @@ impl AbyssState {
             } else if source == AxisSource::Finger {
                 frame = frame.stop(axis);
             }
+        }
+        // Physical scrolling only reaches a protected surface (COMP-19 §3).
+        if crate::protocols::protected::gate::axis(self) {
+            return;
         }
         if crate::protocols::agent::lock::hold_axis(self, frame) {
             return;

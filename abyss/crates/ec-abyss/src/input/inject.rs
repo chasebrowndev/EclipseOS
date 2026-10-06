@@ -40,9 +40,19 @@ impl AbyssState {
         }
         super::idle::on_activity(self);
         let pointer = self.seat.get_pointer().unwrap();
+        // A protected surface hears no relative motion from an origin that
+        // may not reach it (COMP-19 §3).
+        let here = self.pointer_location;
+        let under = self.surface_under(here);
+        let under = crate::protocols::protected::gate::filter_under(
+            self,
+            under,
+            here,
+            crate::protocols::protected::gate::Mode::Event,
+        );
         pointer.relative_motion(
             self,
-            self.surface_under(self.pointer_location),
+            under,
             &RelativeMotionEvent {
                 delta,
                 delta_unaccel: delta,
@@ -61,6 +71,13 @@ impl AbyssState {
             return;
         }
         super::idle::on_activity(self);
+        // Injected buttons reach a protected surface only if their origin may
+        // (COMP-19 §3), and never a commit slot's rectangle.
+        if crate::protocols::protected::gate::button(self, button, pressed)
+            != crate::protocols::protected::gate::Button::Pass
+        {
+            return;
+        }
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
         // Click-to-focus. Skipped under a grab (an active drag or popup grab
@@ -105,6 +122,9 @@ impl AbyssState {
             return;
         }
         super::idle::on_activity(self);
+        if crate::protocols::protected::gate::axis(self) {
+            return;
+        }
         let pointer = self.seat.get_pointer().unwrap();
         pointer.axis(self, frame);
         pointer.frame(self);
@@ -133,7 +153,13 @@ impl AbyssState {
         let focus = if self.lock.locked {
             None
         } else {
-            self.surface_under(location)
+            let under = self.surface_under(location);
+            crate::protocols::protected::gate::filter_under(
+                self,
+                under,
+                location,
+                crate::protocols::protected::gate::Mode::Event,
+            )
         };
         if !self.lock.locked && !touch.is_grabbed() {
             // As above: one focus path, shared with the pointer. The context is
@@ -183,7 +209,13 @@ impl AbyssState {
         let focus = if self.lock.locked {
             None
         } else {
-            self.surface_under(location)
+            let under = self.surface_under(location);
+            crate::protocols::protected::gate::filter_under(
+                self,
+                under,
+                location,
+                crate::protocols::protected::gate::Mode::Event,
+            )
         };
         touch.motion(
             self,

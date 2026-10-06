@@ -38,6 +38,12 @@ Read the root `CLAUDE.md` first. This file only adds crate-local rules.
   the seams the TCB and agent protocol call (`capture_facts`, `read_tree`, `request_action`). It
   consumes the scene filter's class and never decides one. Tests: `tests.rs` (wire + redaction live-tree
   arm), `fuzz.rs` (COMP-15 §3 loops), `refclient.rs` (reference client over `ec-cataclysm-pub`).
+- `protocols/protected/`: `eclipse_protected_surface_v1` (COMP-19, public socket). Not TCB. `mod.rs` is the
+  registry and the Wayland side, `gate.rs` the input rules (physical only; Enter and the slot rectangle
+  belong to the slot), `hooks.rs` the stubs the TCB replaces (`TCB-HOOK`: slot card, arming, commit, audit).
+  `input/origin.rs` holds `Origin`, set by the entry point for the duration of the event
+  (`with_origin`); untagged reads as `injected`. `is_protected(state, &WlSurface)` is the question capture and
+  the agent scene ask. The `wlcs` feature accepts `injected` on protected surfaces and is never a release build.
 - Human keystrokes are never logged by content. Log keysym names only behind `trace`.
 - Logs go to journald: `journalctl --user -t ec-abyss -o cat --since "5 min ago"`.
 - Nested test under the host session (itself abyss): `./target/debug/ec-abyss --backend winit & pid=$!`,

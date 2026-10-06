@@ -52,6 +52,7 @@ use smithay::wayland::text_input::TextInputSeat;
 
 use super::dedupe::Admit;
 use super::{atomic, generation, lock, AgentId};
+use crate::input::Origin;
 use crate::policy::enforce::{self, Act, Request, Submitted};
 use crate::protocols::standard::seat::KeyboardFocusTarget;
 use crate::state::AbyssState;
@@ -253,6 +254,9 @@ pub fn execute(
                 _ => return Err(invalid("source")),
             };
             sync_pointer(state, agent, &h, window);
+            if pointer_refused(state, &h.pointer) {
+                return Ok(String::new());
+            }
             let mut frame = AxisFrame::new(now_ms(state)).source(source).value(axis, value);
             if discrete != 0 {
                 frame = frame.v120(axis, discrete.saturating_mul(120));
@@ -510,6 +514,9 @@ fn slot(id: i32) -> Result<TouchSlot, (Status, String)> {
 /// One key event on the agent's keyboard. No filter intercepts: agent seats
 /// hold no compositor bindings (COMP-04 §5).
 fn key(state: &mut AbyssState, h: &Handles, code: Keycode, pressed: bool) {
+    if keyboard_refused(state, &h.keyboard) {
+        return;
+    }
     let time = now_ms(state);
     h.keyboard.input::<(), _>(
         state,
@@ -533,6 +540,11 @@ fn focus(state: &mut AbyssState, agent: u64, h: &Handles, window: &Window) -> Re
     let Some(surface) = crate::shell::window_surface(window) else {
         return Err((Status::FocusLost, String::new()));
     };
+    // Keyboard focus enters a protected surface only through physical input;
+    // an agent's `focus` naming one is out of scope (COMP-19 §3).
+    if refuse_surface(state, &surface) {
+        return Err((Status::OutOfScope, "protected".into()));
+    }
     h.keyboard.set_focus(
         state,
         Some(KeyboardFocusTarget::Wl(surface)),
@@ -558,17 +570,53 @@ fn focus(state: &mut AbyssState, agent: u64, h: &Handles, window: &Window) -> Re
 /// other window above it means the agent's pointer would be hitting that
 /// instead, and so it hits nothing.
 fn target_under(
-    state: &AbyssState,
+    state: &mut AbyssState,
     window: &Window,
     pos: Point<f64, Logical>,
 ) -> Option<(WlSurface, Point<f64, Logical>)> {
     if crate::shell::layer_at(state, pos).is_some() {
         return None;
     }
-    match state.space.element_under(pos) {
+    let hit = match state.space.element_under(pos) {
         Some((w, _)) if w == window => crate::shell::surface_under(state, pos),
         _ => None,
+    };
+    // A protected surface takes physical input only (COMP-19 §3): the
+    // agent's pointer lands on nothing there, counted and audited.
+    if let Some((s, _)) = &hit {
+        if crate::protocols::protected::is_protected(state, s) {
+            crate::protocols::protected::refuse(state, Origin::AgentSeat, s);
+            return None;
+        }
     }
+    hit
+}
+
+/// Does the seat's keyboard focus sit on a protected surface, or a toplevel
+/// holding one? Its keys are then refused: the compositor cannot tell which
+/// widget of the toplevel the client routes them to (COMP-19 §3).
+fn keyboard_refused(state: &mut AbyssState, kbd: &KeyboardHandle<AbyssState>) -> bool {
+    let Some(KeyboardFocusTarget::Wl(surface)) = kbd.current_focus() else {
+        return false;
+    };
+    refuse_surface(state, &surface)
+}
+
+/// The same for a button or scroll, which goes to the pointer's focus.
+fn pointer_refused(state: &mut AbyssState, pointer: &PointerHandle<AbyssState>) -> bool {
+    match pointer.current_focus() {
+        Some(surface) => refuse_surface(state, &surface),
+        None => false,
+    }
+}
+
+fn refuse_surface(state: &mut AbyssState, surface: &WlSurface) -> bool {
+    use crate::protocols::protected::{has_protected, is_protected, refuse};
+    if is_protected(state, surface) || has_protected(state, surface) {
+        refuse(state, Origin::AgentSeat, surface);
+        return true;
+    }
+    false
 }
 
 /// `pos` pulled inside `window`'s geometry: relative motion cannot walk the
@@ -632,6 +680,9 @@ fn button_event(
     if pressed {
         sync_pointer(state, agent, h, window);
     }
+    if pointer_refused(state, &h.pointer) {
+        return;
+    }
     let time = now_ms(state);
     h.pointer.button(
         state,
@@ -691,6 +742,9 @@ impl KeySeq {
 }
 
 fn send_key(state: &mut AbyssState, kbd: &KeyboardHandle<AbyssState>, code: Keycode, pressed: bool) {
+    if keyboard_refused(state, kbd) {
+        return;
+    }
     let time = now_ms(state);
     kbd.input::<(), _>(
         state,
@@ -771,6 +825,14 @@ fn type_text(
     let focused = entry(state, agent).and_then(|s| s.focus.clone());
     if focused.as_ref() != Some(window) {
         return Err((Status::FocusLost, String::new()));
+    }
+    // A `text_input` commit goes to the focused client's field, wherever in
+    // its toplevel that is, so a toplevel holding a protected surface takes
+    // none (COMP-19 §3).
+    if let Some(surface) = crate::shell::window_surface(window) {
+        if refuse_surface(state, &surface) {
+            return Err((Status::OutOfScope, "protected".into()));
+        }
     }
     let th = h.seat.text_input().clone();
     let mut committed = false;

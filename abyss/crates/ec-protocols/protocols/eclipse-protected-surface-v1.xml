@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<protocol name="eclipse_protected_surface_v1">
+  <copyright>
+    Copyright EclipseOS contributors. Apache-2.0 (F-05 section 3, 4): clients
+    and toolkit bridges link the client side under any licence.
+  </copyright>
+
+  <description summary="protected surfaces and commit slots (COMP-19)">
+    A client marks one of its own wl_surfaces, and with it every subsurface
+    and popup below it, as protected: only physical human input reaches it,
+    it is never captured, and it is invisible to agents. Marking only
+    restricts, so any client may do it, and it can name only its own
+    surfaces.
+
+    A protected surface may host one commit slot: a card the compositor
+    draws inside it, with a draft the compositor holds, that the human
+    commits with Enter or a click. The client positions the slot and keeps
+    its rectangle empty; it never sees the preview and cannot submit.
+
+    Published on the public socket only; the agent socket never holds it.
+    Protection is not trust: the surface's pixels are still the client's.
+  </description>
+
+  <interface name="eclipse_protected_surface_manager_v1" version="1">
+    <description summary="protected surface factory">
+      The global.
+    </description>
+
+    <enum name="error">
+      <description summary="protocol errors">
+        Codes are shared by every interface of this protocol so a client
+        sees one numbering (COMP-19 section 2).
+      </description>
+      <entry name="already_protected" value="0" summary="the wl_surface already has a protected surface object"/>
+      <entry name="slot_exists" value="1" summary="the protected surface already has a commit slot, or the client its limit of slots"/>
+      <entry name="not_owner" value="2" summary="the wl_surface belongs to another client"/>
+      <entry name="bad_kind" value="3" summary="unknown slot kind, or a request that does not fit the slot's kind"/>
+      <entry name="draft_too_large" value="4" summary="a draft statement over 1000 characters"/>
+    </enum>
+
+    <request name="protect">
+      <description summary="protect a surface">
+        One per wl_surface; a second call while the first object lives is
+        protocol error already_protected. The surface must belong to the
+        calling client (not_owner).
+      </description>
+      <arg name="id" type="new_id" interface="eclipse_protected_surface_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager"/>
+    </request>
+  </interface>
+
+  <interface name="eclipse_protected_surface_v1" version="1">
+    <description summary="a protected wl_surface">
+      While this object lives the surface, its subsurfaces and its popups
+      take physical input only, and are never captured or shown to agents.
+      Protection starts at once and ends at the surface's first commit after
+      destroy.
+    </description>
+
+    <enum name="error">
+      <entry name="already_protected" value="0" summary="reserved"/>
+      <entry name="slot_exists" value="1" summary="one slot per protected surface, four per client"/>
+      <entry name="not_owner" value="2" summary="reserved"/>
+      <entry name="bad_kind" value="3" summary="kind is neither task_commit nor task_unpause"/>
+      <entry name="draft_too_large" value="4" summary="reserved"/>
+    </enum>
+
+    <enum name="kind">
+      <description summary="what a commit slot commits"/>
+      <entry name="task_commit" value="1" summary="dispatch a task, or resume a session"/>
+      <entry name="task_unpause" value="2" summary="unpause a paused task"/>
+    </enum>
+
+    <request name="get_slot">
+      <description summary="host a commit slot">
+        x and y are the surface-local logical position of the slot's top
+        left. One slot per protected surface (slot_exists); no other kinds
+        at v1 (bad_kind).
+      </description>
+      <arg name="id" type="new_id" interface="eclipse_commit_slot_v1"/>
+      <arg name="kind" type="uint" enum="kind"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="end protection">
+        Protection ends at the surface's next commit. Any slot is cancelled.
+      </description>
+    </request>
+
+    <event name="input_refused">
+      <description summary="non-physical input was dropped">
+        Coalesced, at most once a second: input that was not physical and
+        was aimed at this surface was dropped. Carries no origin detail.
+      </description>
+      <arg name="count" type="uint"/>
+    </event>
+  </interface>
+
+  <interface name="eclipse_commit_slot_v1" version="1">
+    <description summary="a compositor-drawn commit card">
+      The compositor draws the card, holds the draft, previews it and, when
+      the human commits, sends it on. The client receives no preview content.
+    </description>
+
+    <enum name="error">
+      <entry name="already_protected" value="0" summary="reserved"/>
+      <entry name="slot_exists" value="1" summary="reserved"/>
+      <entry name="not_owner" value="2" summary="reserved"/>
+      <entry name="bad_kind" value="3" summary="set_draft on a task_unpause slot, or set_unpause on a task_commit slot"/>
+      <entry name="draft_too_large" value="4" summary="statement over 1000 characters"/>
+    </enum>
+
+    <enum name="state">
+      <entry name="previewing" value="0"/>
+      <entry name="armed" value="1"/>
+      <entry name="disarmed" value="2"/>
+      <entry name="suspended" value="3"/>
+      <entry name="refused" value="4"/>
+    </enum>
+
+    <enum name="reason">
+      <description summary="reason codes, never rule ids"/>
+      <entry name="none" value="0"/>
+      <entry name="overflow" value="1"/>
+      <entry name="policy_unavailable" value="2"/>
+      <entry name="preview_stale" value="3"/>
+      <entry name="not_focused" value="4"/>
+      <entry name="occluded" value="5"/>
+      <entry name="locked" value="6"/>
+      <entry name="modal" value="7"/>
+      <entry name="fullscreen" value="8"/>
+      <entry name="refused" value="9"/>
+      <entry name="agentd_unavailable" value="10"/>
+      <entry name="unsupported" value="11"/>
+    </enum>
+
+    <request name="set_draft">
+      <description summary="replace the draft">
+        narrowing is a CBOR scope list and may only shrink. continuation and
+        resumes are a task id or empty, at most one non-empty. Replaces the
+        draft and disarms. Limited to ten a second; the latest draft wins.
+        Only on a task_commit slot (bad_kind).
+      </description>
+      <arg name="package" type="string"/>
+      <arg name="statement" type="string"/>
+      <arg name="deadline_s" type="uint"/>
+      <arg name="narrowing" type="array"/>
+      <arg name="continuation" type="string"/>
+      <arg name="resumes" type="string"/>
+      <arg name="workspace" type="uint"/>
+    </request>
+
+    <request name="set_unpause">
+      <description summary="name the task to unpause">
+        Only on a task_unpause slot (bad_kind).
+      </description>
+      <arg name="task_id" type="string"/>
+    </request>
+
+    <request name="move">
+      <description summary="move the slot; disarms">
+        Surface-local logical position of the slot's top left.
+      </description>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+    </request>
+
+    <request name="cancel">
+      <description summary="withdraw the slot's draft"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the slot"/>
+    </request>
+
+    <event name="geometry">
+      <description summary="the slot's size">
+        Chosen by the compositor, surface-local logical pixels. The client
+        keeps this rectangle free of its own content. Re-sent if the
+        preview's size changes.
+      </description>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </event>
+
+    <event name="state">
+      <arg name="state" type="uint" enum="state"/>
+      <arg name="reason" type="uint" enum="reason"/>
+    </event>
+
+    <event name="committed">
+      <arg name="task_id" type="string"/>
+    </event>
+
+    <event name="cancelled"/>
+  </interface>
+</protocol>
