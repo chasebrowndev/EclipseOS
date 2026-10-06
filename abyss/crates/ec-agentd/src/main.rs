@@ -192,10 +192,10 @@ fn run(list: bool, grant_path: &str) -> Result<(), String> {
     let registry = conn.display().get_registry(&qh, ());
     let mut app = App::default();
     queue.roundtrip(&mut app).map_err(explain)?;
-    let (name, _) = app
+    let (name, version) = app
         .manager
         .ok_or("no eclipse_agent_manager_v1 on this socket (is the agents add-on on?)")?;
-    let manager: EclipseAgentManagerV1 = registry.bind(name, 1, &qh, ());
+    let manager: EclipseAgentManagerV1 = registry.bind(name, version.min(3), &qh, ());
     let agent = manager.create_agent(grant, &qh, ());
     let scene = agent.get_scene(&qh, ());
     queue.roundtrip(&mut app).map_err(explain)?;

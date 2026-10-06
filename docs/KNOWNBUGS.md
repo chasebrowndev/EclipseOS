@@ -186,3 +186,81 @@ else and everything under `agents.slice`. Two things remain:
 - **No `ec-secret` CLI, no swap scan.** Entering secrets today is the wire
   `add` request; the S-08 §8 swap scan on a synthetic run is not automated.
 
+
+# Agent batches, generations and locks — found landing M14, 2026-10-06
+
+## BATCH-01: a batch is all-or-nothing only up to what the compositor can check without running a step
+
+`protocols/agent/atomic.rs` queues a batch's steps and checks the whole batch
+before running any (paused, a target gone or unmapped, a focus-dependent step
+with no focus, a stale generation). `policy::enforce` (TCB) has no "decide
+without executing" entry, so a step the *policy* refuses (deny, a prompt that
+parks, a rule change mid-batch) is only seen when its turn comes. Earlier steps
+have then run: the commit answers that step's status with detail
+`partial:<n>`, and a step that parks behind a prompt ends the batch with
+`batch_interrupted`. **Proposed:** `policy::enforce::dry_run` (steps 1 to 8 for
+every request, nothing executed), called from `atomic::commit` at the marked
+`TCB-HOOK`. Also: `max_frames` is validated and carried, but delivery is
+synchronous (0 frames), and an open batch is abandoned after 5 s, a constant
+the spec does not give.
+
+## GEN-01: generations track what a toplevel reports, not its tree
+
+COMP-09's semantic tree does not exist, so a toplevel's generation bumps on a
+change of app id, title, geometry, workspace, output or the
+maximized/fullscreen/floating/minimized bits (`generation.rs`). A change
+inside the client's content that moves none of those is not seen. Step 8 of
+COMP-08 §10 runs in `seat::execute` (after the table, and after the 8b class
+re-check for a prompted request) rather than between 7 and 8b, and dedupe
+(step 2) runs in `seat.rs` before the request reaches `enforce`. Both want to
+move into `policy::enforce` (see the `TCB-HOOK` in `seat::execute`).
+
+## LOCK-01: compat_lock holds human input, but does not yet route agent acts through the human seat
+
+`protocols/agent/lock.rs` queues the human's keys, buttons and scrolls for the
+locked window and replays them on release. Not done: the COMP-10 §3.4
+indicator (TCB), the table check for `seat.compat_lock` (the grant must hold
+it and `seat.focus` reaching the window instead), queueing of touch and tablet
+input, and the compat fallback that sends an agent's acts through the human
+seat for a `seat-compat lock` app (COMP-04 §8). Queued input is discarded, not
+delivered, if the human's focus has left the window by release.
+
+## WAIT-01: wait_for has no semantic or terminal predicates
+
+`node`, `text_contains`, `node_gone` (COMP-09) and `command_finished` are
+refused `invalid_argument` "unsupported". A wait is polled every 25 ms, not
+woken by the change; `waited` is not audited beyond the request's own record.
+
+---
+
+# Semantic protocol — found landing M22, 2026-10-06
+
+## SEM-01: the semantic tree is stored but nothing consumes it yet
+
+`protocols/semantic/` serves `eclipse_semantic_v1` and exposes
+`capture_facts`, `read_tree`, `request_action`/`take_done` and `focus_hint`,
+but the three consumers are TCB or agent-protocol code that has not been
+switched over: `render/capture.rs::semantics_for` still returns `Absent`, the
+`eclipse_agent_v1` XML has no `get_tree`, and `eclipse_agent_seat_v1.action`
+does not forward to a publisher. Until they do, node-level redaction is not
+live and agents cannot read or act on a native tree. **Proposed:** the
+TCB-HOOKs in `protocols/semantic/mod.rs`, in that order.
+
+## SEM-02: gaps against COMP-09 §3
+
+- **Commit coalescing** ("at most one visible generation per frame") is not
+  done: every `commit` that changes something is published at once.
+- **Popup rectangles** are clamped to the toplevel's `bbox()`, not validated
+  against the popup's actual geometry, so a menu extending past the window
+  has its node rectangle pulled inside it.
+- **`registryd` export** of native trees does not exist.
+- **`ext.irreversible`** is dropped always: the S-06 taxonomy is not in the
+  table until M18.
+- **A tree that vanishes holding a secret** (publisher destroyed, replaced)
+  keeps its surface covered whole until the surface dies. This is the
+  ratchet, and it will cover a legitimate restart of a login window's
+  publisher.
+- **Staleness** is a surface resize since the last structural commit, only
+  while a secret is known; COMP-02 A-10's "surface's current generation" has
+  no other definition in the tree today.
+

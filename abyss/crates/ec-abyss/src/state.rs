@@ -265,6 +265,8 @@ pub struct AbyssState {
     /// Held window classes (S-05 §5 downgrade grace).
     pub classes: crate::policy::classes::Classes,
     pub agents: crate::protocols::agent::Agents,
+    /// `eclipse_semantic_v1` (COMP-09): each toplevel's published tree.
+    pub semantic: crate::protocols::semantic::SemanticState,
     /// Each agent's virtual seat (COMP-04 §3), by agent id. Created lazily by
     /// `get_seat`; never consulted by the human input paths.
     pub agent_seats: Vec<(u64, crate::protocols::agent::seat::AgentSeat)>,
@@ -587,6 +589,7 @@ impl AbyssState {
             batches: Default::default(),
             classes: Default::default(),
             agents: Default::default(),
+            semantic: crate::protocols::semantic::SemanticState::new(&display.handle()),
             agent_seats: Vec::new(),
             session_lock_state,
             lock: Default::default(),

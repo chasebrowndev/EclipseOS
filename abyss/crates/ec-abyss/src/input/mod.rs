@@ -131,54 +131,69 @@ impl AbyssState {
         if self.lock.locked && keyboard.is_grabbed() {
             keyboard.unset_grab(self);
         }
-        let action = keyboard.input(self, key_code, key_state, serial, time, |state, mods, handle| {
-            if key_state != KeyState::Pressed {
-                return FilterResult::Forward;
-            }
-            let sym = handle.modified_sym();
-            let held = held_mods(mods);
-            let raw = sym.raw();
-            if (VT_SWITCH_FIRST..=VT_SWITCH_LAST).contains(&raw) {
-                return FilterResult::Intercept(Action::SwitchVt((raw - VT_SWITCH_FIRST + 1) as i32));
-            }
-            // Locked: no binding may act on the session behind the lock.
-            // Keys still reach the locker, which holds keyboard focus.
-            if state.lock.locked {
-                return FilterResult::Forward;
-            }
-            // A trusted prompt takes the keyboard before anything else
-            // can (COMP-10 §4): no client and no binding sees the key,
-            // except the override chord, which always works (COMP-04 §6).
-            if crate::trusted_ui::holds_seat(state) {
-                match state.config.action_for(&held, sym) {
-                    Some(Action::AgentOverride) => return FilterResult::Intercept(Action::AgentOverride),
-                    Some(Action::AgentTerminate) => return FilterResult::Intercept(Action::AgentTerminate),
-                    _ => {}
+        let (filtered, mods_changed) =
+            keyboard.input_intercept(self, key_code, key_state, |state, mods, handle| {
+                if key_state != KeyState::Pressed {
+                    return FilterResult::Forward;
                 }
-                return FilterResult::Intercept(Action::Prompt(sym));
+                let sym = handle.modified_sym();
+                let held = held_mods(mods);
+                let raw = sym.raw();
+                if (VT_SWITCH_FIRST..=VT_SWITCH_LAST).contains(&raw) {
+                    return FilterResult::Intercept(Action::SwitchVt((raw - VT_SWITCH_FIRST + 1) as i32));
+                }
+                // Locked: no binding may act on the session behind the lock.
+                // Keys still reach the locker, which holds keyboard focus.
+                if state.lock.locked {
+                    return FilterResult::Forward;
+                }
+                // A trusted prompt takes the keyboard before anything else
+                // can (COMP-10 §4): no client and no binding sees the key,
+                // except the override chord, which always works (COMP-04 §6).
+                if crate::trusted_ui::holds_seat(state) {
+                    match state.config.action_for(&held, sym) {
+                        Some(Action::AgentOverride) => return FilterResult::Intercept(Action::AgentOverride),
+                        Some(Action::AgentTerminate) => {
+                            return FilterResult::Intercept(Action::AgentTerminate)
+                        }
+                        _ => {}
+                    }
+                    return FilterResult::Intercept(Action::Prompt(sym));
+                }
+                // Calibration owns the seat outright while it runs: every key
+                // is consumed, including ones that are bound to something else.
+                if let Some(step) = crate::outputs::calibrate::step_for(state, mods, sym) {
+                    return FilterResult::Intercept(Action::Calibrate(step));
+                }
+                // So does the region selector: a modal grab that leaked a
+                // chord through would let the human act on the session while
+                // the screen says it is picking a rectangle.
+                if state.region_select.active() {
+                    let chord = matches!(
+                        state.config.action_for(&held, sym),
+                        Some(Action::AnnotationSelect)
+                    );
+                    return FilterResult::Intercept(Action::RegionSelect(crate::render::select::key(
+                        sym, chord,
+                    )));
+                }
+                match state.config.action_for(&held, sym) {
+                    Some(a) => FilterResult::Intercept(a.clone()),
+                    None => FilterResult::Forward,
+                }
+            });
+        // `KeyboardHandle::input` is this split: the filter decides, then the
+        // key is forwarded to the focus unless a binding took it.
+        match filtered {
+            FilterResult::Intercept(action) => self.run_action(action),
+            FilterResult::Forward => {
+                // An agent's compat lock holds the human's key for the
+                // locked window, to be delivered on release (COMP-04 §7).
+                let pressed = key_state == KeyState::Pressed;
+                if !crate::protocols::agent::lock::hold_key(self, key_code, pressed, time) {
+                    keyboard.input_forward(self, key_code, key_state, serial, time, mods_changed);
+                }
             }
-            // Calibration owns the seat outright while it runs: every key
-            // is consumed, including ones that are bound to something else.
-            if let Some(step) = crate::outputs::calibrate::step_for(state, mods, sym) {
-                return FilterResult::Intercept(Action::Calibrate(step));
-            }
-            // So does the region selector: a modal grab that leaked a
-            // chord through would let the human act on the session while
-            // the screen says it is picking a rectangle.
-            if state.region_select.active() {
-                let chord = matches!(
-                    state.config.action_for(&held, sym),
-                    Some(Action::AnnotationSelect)
-                );
-                return FilterResult::Intercept(Action::RegionSelect(crate::render::select::key(sym, chord)));
-            }
-            match state.config.action_for(&held, sym) {
-                Some(a) => FilterResult::Intercept(a.clone()),
-                None => FilterResult::Forward,
-            }
-        });
-        if let Some(action) = action {
-            self.run_action(action);
         }
     }
 
@@ -937,6 +952,11 @@ impl AbyssState {
             }
             return;
         }
+        // A compat lock held by an agent queues the human's buttons for the
+        // locked window, delivered on release (COMP-04 §7).
+        if crate::protocols::agent::lock::hold_button(self, button, pressed, time) {
+            return;
+        }
         // A `mousebind` press (Alt+drag by default) starts a compositor-owned
         // move/resize. The grab has to be in place *before* the seat sees the
         // press: it clears pointer focus, so the press goes into the grab and
@@ -1027,6 +1047,9 @@ impl AbyssState {
             } else if source == AxisSource::Finger {
                 frame = frame.stop(axis);
             }
+        }
+        if crate::protocols::agent::lock::hold_axis(self, frame) {
+            return;
         }
         let pointer = self.seat.get_pointer().unwrap();
         pointer.axis(self, frame);

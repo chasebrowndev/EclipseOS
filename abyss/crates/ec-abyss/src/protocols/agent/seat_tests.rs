@@ -10,6 +10,7 @@ use std::sync::Arc;
 use ec_policy_eval::{Capability, Constraints, Grant, Ulid};
 use ec_protocols::agent::client::{
     eclipse_agent_seat_v1::EclipseAgentSeatV1, eclipse_agent_v1::EclipseAgentV1,
+    eclipse_scene_v1::EclipseSceneV1,
 };
 use smithay::backend::input::KeyState;
 use smithay::input::keyboard::Keycode;
@@ -299,6 +300,7 @@ struct World {
     spy: Spy,
     peer: Peer,
     agent: EclipseAgentV1,
+    scene: EclipseSceneV1,
     seat: EclipseAgentSeatV1,
     /// The mapped window's IPC handle.
     handle: u32,
@@ -319,7 +321,7 @@ fn world(sock: &str, caps: &[&str]) -> World {
     crate::policy::scene::test_class::set(&w, ec_policy_eval::Class::Public);
     let handle = u32::try_from(h.state.ipc.handle_for(&w)).expect("handle");
     let mut peer = Peer::inserted(&mut h, true);
-    let (agent, _scene) = peer.admit(&mut h, grant(caps));
+    let (agent, scene) = peer.admit(&mut h, grant(caps));
     assert_eq!(peer.error(), None, "admitted");
     let seat = peer.get_seat(&mut h, &agent);
     assert_eq!(peer.error(), None, "seat created");
@@ -329,6 +331,7 @@ fn world(sock: &str, caps: &[&str]) -> World {
         spy,
         peer,
         agent,
+        scene,
         seat,
         handle,
         next: 1,
@@ -767,4 +770,832 @@ fn no_denied_step_changes_anything() {
     w.pump();
     assert_eq!(w.status(id).map(|s| s.0), Some(POLICY_DENIED));
     assert_eq!(snapshot(&w), before, "fallthrough never widens");
+}
+
+/// COMP-16 M14: atomic batches, `click`, `wait_for`, dedupe, generations and
+/// `compat_lock` (COMP-04 §4, §7; COMP-08 §2.2, §3, §4, §10).
+mod m14 {
+    use super::*;
+    use crate::protocols::agent::generation;
+    use crate::xwayland::security::SeatCompat;
+
+    const STALE_GENERATION: u32 = 4;
+    const FOCUS_LOST: u32 = 5;
+    const NO_SUCH_ACTION: u32 = 8;
+    const PAUSED: u32 = 14;
+    const INVALID_ARGUMENT: u32 = 15;
+    const DUPLICATE: u32 = 17;
+
+    impl World {
+        /// Every result for `req`, in arrival order.
+        fn all(&self, req: u32) -> Vec<(u32, String)> {
+            self.peer
+                .seen
+                .seat_results
+                .iter()
+                .filter(|(r, ..)| *r == req)
+                .map(|(_, s, d)| (*s, d.clone()))
+                .collect()
+        }
+
+        /// The keys the target heard on the agent seat.
+        fn agent_keys(&self) -> Vec<Ev> {
+            let seat = self.name();
+            self.spy
+                .data
+                .on(&seat)
+                .into_iter()
+                .filter(|e| matches!(e, Ev::Key(..)))
+                .collect()
+        }
+
+        /// The scene's current generation for the mapped window, read the
+        /// way an agent does: `list_toplevels`, last `toplevel` event.
+        fn generation(&mut self) -> u32 {
+            let id = self.id();
+            self.scene.list_toplevels(id, String::new());
+            self.pump();
+            self.peer
+                .seen
+                .generations
+                .iter()
+                .rev()
+                .find(|(r, h, _)| *r == id && *h == self.handle)
+                .map(|(_, _, g)| *g)
+                .expect("a toplevel event with a generation")
+        }
+
+        fn begin(&mut self) -> u32 {
+            let id = self.id();
+            self.seat.begin_atomic(id, 0);
+            self.pump();
+            id
+        }
+
+        fn commit(&mut self) -> u32 {
+            let id = self.id();
+            self.seat.commit_atomic(id);
+            self.pump();
+            id
+        }
+
+        /// Close the mapped window the way a client does.
+        fn close_window(&mut self) {
+            let (surface, xdg, top) = self.spy.toplevels.remove(0);
+            top.destroy();
+            xdg.destroy();
+            surface.destroy();
+            self.pump();
+        }
+
+        fn wait(&mut self, predicate: &str, timeout_ms: u32) -> u32 {
+            let id = self.id();
+            self.scene.wait_for(id, predicate.into(), timeout_ms);
+            self.pump();
+            id
+        }
+
+        /// Pump until `req` has a `waited` event, for up to two seconds.
+        fn until_waited(&mut self, req: u32) -> Option<(u32, u32, u32, u32)> {
+            for _ in 0..200 {
+                if let Some(e) = self.peer.seen.waited.iter().find(|e| e.0 == req) {
+                    return Some(*e);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                self.pump();
+            }
+            None
+        }
+
+        fn retitle(&mut self, title: &str) {
+            self.spy.toplevels[0].2.set_title(title.into());
+            self.spy.toplevels[0].0.commit();
+            self.spy.pump(&mut self.h);
+        }
+    }
+
+    const BATCH_CAPS: [&str; 5] = ["scene.list", "seat.focus", "seat.key", "seat.atomic", "click"];
+
+    /// Exit gate: the whole batch or nothing.
+    #[test]
+    fn a_batch_applies_every_step_on_commit_and_none_before() {
+        let mut w = world("m14-commit.sock", &BATCH_CAPS);
+        let f = w.focus();
+        assert_eq!(w.status(f), Some((OK, String::new())));
+
+        let b = w.begin();
+        assert_eq!(w.status(b), Some((OK, String::new())));
+        let down = w.key(KEY_A, true);
+        let up = w.key(KEY_A, false);
+        assert_eq!(w.status(down), None, "queued, not answered");
+        assert_eq!(w.status(up), None);
+        assert!(
+            w.agent_keys().is_empty(),
+            "nothing reaches the target before commit"
+        );
+
+        let c = w.commit();
+        assert_eq!(w.status(down), Some((OK, String::new())));
+        assert_eq!(w.status(up), Some((OK, String::new())));
+        assert_eq!(w.status(c), Some((OK, "2".into())), "detail is the step count");
+        assert_eq!(w.agent_keys(), vec![Ev::Key(KEY_A, 1), Ev::Key(KEY_A, 0)]);
+    }
+
+    /// Exit gate: a batch aborts cleanly on focus loss, nothing partially
+    /// applied. The target goes away after the steps were queued, and again
+    /// between two queued steps.
+    #[test]
+    fn a_batch_aborts_on_focus_loss_with_nothing_applied() {
+        for mid_queue in [false, true] {
+            let mut w = world("m14-focus-loss.sock", &BATCH_CAPS);
+            w.focus();
+            let keys_before = w.agent_keys();
+            let focus_events = w.peer.seen.seat_focus.len();
+            w.begin();
+            let a = w.key(KEY_A, true);
+            if mid_queue {
+                w.close_window();
+                // The next request finds the target gone and aborts the
+                // whole batch then, answering what was already queued.
+                let b = w.key(KEY_A, false);
+                assert_eq!(w.status(a).map(|s| s.0), Some(FOCUS_LOST), "queued step answered");
+                assert_eq!(w.status(b).map(|s| s.0), Some(FOCUS_LOST));
+                let c = w.commit();
+                assert_eq!(
+                    w.status(c).map(|s| s.0),
+                    Some(FOCUS_LOST),
+                    "the commit repeats the cause"
+                );
+            } else {
+                let b = w.key(KEY_A, false);
+                w.close_window();
+                let c = w.commit();
+                for r in [a, b, c] {
+                    assert_eq!(w.status(r).map(|s| s.0), Some(FOCUS_LOST), "req {r}");
+                }
+            }
+            // Nothing partially applied: no key, no focus change, and the
+            // batch is over (a new one may begin).
+            assert_eq!(w.agent_keys(), keys_before, "no key was delivered");
+            assert_eq!(w.peer.seen.seat_focus.len(), focus_events);
+            let b = w.begin();
+            assert_eq!(
+                w.status(b),
+                Some((OK, String::new())),
+                "the aborted batch is gone"
+            );
+        }
+    }
+
+    /// A step that needs the seat's focus is judged against the focus the
+    /// batch's own earlier steps set.
+    #[test]
+    fn a_batch_judges_steps_against_the_focus_earlier_steps_set() {
+        let mut w = world("m14-focus-sim.sock", &BATCH_CAPS);
+        // No focus yet: a lone key would be focus_lost, but a focus step
+        // first makes it valid.
+        w.begin();
+        let f = w.id();
+        w.seat.focus(f, w.handle, 0, 0, vec![0x80]);
+        w.pump();
+        let k = w.key(KEY_A, true);
+        let c = w.commit();
+        assert_eq!(w.status(f), Some((OK, String::new())));
+        assert_eq!(w.status(k), Some((OK, String::new())));
+        assert_eq!(w.status(c), Some((OK, "2".into())));
+
+        // A key with no focus anywhere and nothing to set it aborts all.
+        let mut w = world("m14-focus-none.sock", &BATCH_CAPS);
+        w.begin();
+        let k = w.key(KEY_A, true);
+        assert_eq!(w.status(k).map(|s| s.0), Some(FOCUS_LOST));
+        let c = w.commit();
+        assert_eq!(w.status(c).map(|s| s.0), Some(FOCUS_LOST));
+        assert!(w.agent_keys().is_empty());
+    }
+
+    #[test]
+    fn begin_commit_and_abort_have_their_own_errors() {
+        let mut w = world("m14-batch-errors.sock", &BATCH_CAPS);
+        w.focus();
+        // commit and abort with nothing open.
+        let c = w.commit();
+        assert_eq!(w.status(c), Some((INVALID_ARGUMENT, "no_batch".into())));
+        let a = w.id();
+        w.seat.abort_atomic(a);
+        w.pump();
+        assert_eq!(w.status(a), Some((INVALID_ARGUMENT, "no_batch".into())));
+        // nested, and max_frames out of range.
+        let b = w.begin();
+        assert_eq!(w.status(b), Some((OK, String::new())));
+        let n = w.begin();
+        assert_eq!(w.status(n), Some((INVALID_ARGUMENT, "nested".into())));
+        // abort discards every queued step.
+        let k = w.key(KEY_A, true);
+        let a = w.id();
+        w.seat.abort_atomic(a);
+        w.pump();
+        assert_eq!(w.status(a), Some((OK, String::new())));
+        assert_eq!(w.status(k), Some((INVALID_ARGUMENT, "aborted".into())));
+        assert!(w.agent_keys().is_empty());
+        let id = w.id();
+        w.seat.begin_atomic(id, 61);
+        w.pump();
+        assert_eq!(w.status(id), Some((INVALID_ARGUMENT, "max_frames".into())));
+    }
+
+    #[test]
+    fn begin_needs_seat_atomic_and_pause_aborts_an_open_batch() {
+        let mut w = world("m14-batch-cap.sock", &["scene.list", "seat.focus", "seat.key"]);
+        w.focus();
+        let b = w.begin();
+        assert_eq!(w.status(b), Some((NO_CAPABILITY, "seat.atomic".into())));
+        // Without a batch, acts run as before.
+        let k = w.key(KEY_A, true);
+        assert_eq!(w.status(k), Some((OK, String::new())));
+
+        let mut w = world("m14-batch-paused.sock", &BATCH_CAPS);
+        w.focus();
+        let agent = w.h.state.agent_seats[0].0;
+        w.begin();
+        let k = w.key(KEY_A, true);
+        assert_eq!(w.status(k), None);
+        crate::policy::lifecycle::pause(&mut w.h.state, agent);
+        let k2 = w.key(KEY_A, false);
+        assert_eq!(
+            w.status(k).map(|s| s.0),
+            Some(PAUSED),
+            "pause aborts the open batch"
+        );
+        assert_eq!(w.status(k2).map(|s| s.0), Some(PAUSED));
+        let c = w.commit();
+        assert_eq!(w.status(c).map(|s| s.0), Some(PAUSED));
+        assert!(w.agent_keys().is_empty());
+    }
+
+    /// Exit gate: a repeated req_id replays the stored result and executes
+    /// nothing (COMP-08 §2.2).
+    #[test]
+    fn a_repeated_req_id_replays_without_executing() {
+        let mut w = world("m14-dedupe.sock", &BATCH_CAPS);
+        w.focus();
+        let id = w.key(KEY_A, true);
+        assert_eq!(w.all(id), vec![(OK, String::new())]);
+        assert_eq!(w.agent_keys(), vec![Ev::Key(KEY_A, 1)]);
+
+        // The same req_id again, as a client retry would send it.
+        w.seat.key(id, KEY_A, 1, 0, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(
+            w.all(id),
+            vec![(OK, String::new()), (DUPLICATE, "0".into())],
+            "replayed as duplicate with the original status"
+        );
+        assert_eq!(w.agent_keys(), vec![Ev::Key(KEY_A, 1)], "nothing ran twice");
+
+        // A denial is replayed as the denial, and still runs nothing.
+        let mut w = world("m14-dedupe-deny.sock", &["scene.list", "seat.focus"]);
+        w.focus();
+        let k = w.key(KEY_A, true);
+        assert_eq!(w.all(k), vec![(NO_CAPABILITY, "seat.key".into())]);
+        w.seat.key(k, KEY_A, 1, 0, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.all(k)[1], (DUPLICATE, "1:seat.key".into()));
+
+        // Control requests are deduped too: a retried begin_atomic does not
+        // report "nested".
+        let mut w = world("m14-dedupe-ctl.sock", &BATCH_CAPS);
+        let b = w.begin();
+        w.seat.begin_atomic(b, 0);
+        w.pump();
+        assert_eq!(w.all(b), vec![(OK, String::new()), (DUPLICATE, "0".into())]);
+    }
+
+    /// A request parked behind a prompt answers a repeat `pending`, and runs
+    /// exactly once when the human allows it.
+    #[test]
+    fn a_repeat_while_a_prompt_is_open_is_pending_and_runs_once() {
+        use ec_policy_eval::check::{CompiledRule, Phases, Pred, Table};
+        use ec_policy_eval::scope::Glob;
+        use smithay::input::keyboard::Keysym;
+
+        let mut w = world("m14-dedupe-prompt.sock", &BATCH_CAPS);
+        w.focus();
+        let mut rules = Phases::default();
+        rules.prompt.push(CompiledRule {
+            id: "ask".into(),
+            preds: vec![Pred::Capability(vec![Glob::new("seat.key")])],
+            unless: Vec::new(),
+        });
+        rules.allow.push(CompiledRule {
+            id: "default-allow".into(),
+            preds: vec![Pred::Capability(vec![Glob::new("*")])],
+            unless: Vec::new(),
+        });
+        w.h.state.policy_table = Some(Table {
+            version: 2,
+            rules,
+            ..Default::default()
+        });
+        let id = w.key(KEY_A, true);
+        assert_eq!(w.status(id), None, "parked");
+        w.seat.key(id, KEY_A, 1, 0, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.all(id), vec![(DUPLICATE, "pending".into())]);
+        crate::trusted_ui::arm_now(&mut w.h.state);
+        crate::trusted_ui::key(&mut w.h.state, Keysym::Tab);
+        crate::trusted_ui::key(&mut w.h.state, Keysym::Tab);
+        crate::trusted_ui::key(&mut w.h.state, Keysym::space);
+        w.pump();
+        assert_eq!(
+            w.all(id),
+            vec![(DUPLICATE, "pending".into()), (OK, String::new())]
+        );
+        assert_eq!(w.agent_keys(), vec![Ev::Key(KEY_A, 1)], "ran once");
+    }
+
+    /// Exit gate: `stale_generation` fires on a changed tree, with nothing
+    /// done, and carries the current generation.
+    #[test]
+    fn stale_generation_fires_when_the_window_changed() {
+        let mut w = world("m14-stale.sock", &BATCH_CAPS);
+        let g = w.generation();
+        assert!(g > 0, "generations start at 1; 0 is unchecked");
+        assert_eq!(w.generation(), g, "reading changes nothing");
+
+        // Fresh: the act runs.
+        let f = w.id();
+        w.seat.focus(f, w.handle, g, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.status(f), Some((OK, String::new())));
+        let focus_events = w.peer.seen.seat_focus.len();
+        assert_eq!(w.generation(), g, "focusing is not a change of the window");
+
+        // The window changes under the agent.
+        w.retitle("something else");
+        let now = w.generation();
+        assert!(now > g, "a title change bumps the generation");
+
+        // The stale act is refused with the current generation, nothing runs.
+        let stale = w.id();
+        w.seat.focus(stale, w.handle, g, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.status(stale), Some((STALE_GENERATION, now.to_string())));
+        assert_eq!(w.peer.seen.seat_focus.len(), focus_events, "nothing was done");
+
+        // Click carries it too; the current one runs; 0 is unchecked.
+        let click = w.id();
+        w.seat.click(click, w.handle, 0, 1, 1, 0x110, g, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.status(click), Some((STALE_GENERATION, now.to_string())));
+        let ok = w.id();
+        w.seat.focus(ok, w.handle, now, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.status(ok), Some((OK, String::new())));
+        let unchecked = w.id();
+        w.seat.focus(unchecked, w.handle, 0, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.status(unchecked), Some((OK, String::new())));
+        // The seat's results report the focus window's generation.
+        assert!(w
+            .peer
+            .seen
+            .seat_generations
+            .iter()
+            .any(|(r, g)| *r == unchecked && *g == now));
+    }
+
+    /// A stale step in a batch aborts the whole batch before anything runs.
+    #[test]
+    fn a_stale_step_aborts_the_batch() {
+        let mut w = world("m14-batch-stale.sock", &BATCH_CAPS);
+        let g = w.generation();
+        w.focus();
+        w.retitle("changed");
+        w.begin();
+        let k = w.key(KEY_A, true);
+        let stale = w.id();
+        w.seat.focus(stale, w.handle, g, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.status(stale).map(|s| s.0), Some(STALE_GENERATION));
+        assert_eq!(
+            w.status(k).map(|s| s.0),
+            Some(STALE_GENERATION),
+            "queued step aborted"
+        );
+        let c = w.commit();
+        assert_eq!(w.status(c).map(|s| s.0), Some(STALE_GENERATION));
+        assert!(w.agent_keys().is_empty(), "nothing applied");
+    }
+
+    /// COMP-08 §4 `click`: node 0 means (x, y); a nonzero node needs the
+    /// semantic tree; the click must land on the window it names.
+    #[test]
+    fn click_lands_at_the_point_and_refuses_a_node() {
+        let mut w = world("m14-click.sock", &["scene.list", "click"]);
+        let window = find(&w.h, "seatapp");
+        let g = w.h.state.space.element_geometry(&window).expect("mapped");
+        let (px, py) = (g.loc.x + 7, g.loc.y + 9);
+
+        let id = w.id();
+        w.seat.click(id, w.handle, 0, px, py, 0x110, 0, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.status(id), Some((OK, String::new())));
+        let at = w.h.state.agent_seats[0].1.pointer_position();
+        assert_eq!(
+            (at.x, at.y),
+            (f64::from(px), f64::from(py)),
+            "node 0 clicks (x, y)"
+        );
+        assert_eq!(w.peer.seen.seat_focus, vec![w.handle], "a click focuses first");
+
+        // Handle 0: whatever is topmost and visible at the point.
+        let id = w.id();
+        w.seat.click(id, 0, 0, px + 1, py, 0x110, 0, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.status(id), Some((OK, String::new())));
+
+        // A nonzero node has no tree to resolve in.
+        let id = w.id();
+        w.seat.click(id, w.handle, 5, px, py, 0x110, 0, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.status(id), Some((INVALID_ARGUMENT, "node".into())));
+
+        // A point off the window is not a click on it, and moves nothing.
+        let before = w.h.state.agent_seats[0].1.pointer_position();
+        let id = w.id();
+        w.seat.click(
+            id,
+            w.handle,
+            0,
+            g.loc.x + g.size.w + 50,
+            g.loc.y,
+            0x110,
+            0,
+            0,
+            vec![0x80],
+        );
+        w.pump();
+        assert_ne!(w.status(id).map(|s| s.0), Some(OK));
+        assert_eq!(w.h.state.agent_seats[0].1.pointer_position(), before);
+    }
+
+    /// A click is one atomic composite: in a batch it runs at commit.
+    #[test]
+    fn a_click_in_a_batch_runs_at_commit() {
+        let mut w = world("m14-click-batch.sock", &BATCH_CAPS);
+        let window = find(&w.h, "seatapp");
+        let g = w.h.state.space.element_geometry(&window).expect("mapped");
+        w.begin();
+        let id = w.id();
+        w.seat
+            .click(id, w.handle, 0, g.loc.x + 3, g.loc.y + 3, 0x110, 0, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.status(id), None);
+        assert!(w.peer.seen.seat_focus.is_empty(), "queued: no focus yet");
+        let c = w.commit();
+        assert_eq!(w.status(id), Some((OK, String::new())));
+        assert_eq!(w.status(c), Some((OK, "1".into())));
+        assert_eq!(w.peer.seen.seat_focus, vec![w.handle]);
+    }
+
+    /// `action` needs the semantic tree, which does not exist yet.
+    #[test]
+    fn action_is_no_such_action_for_now() {
+        let mut w = world("m14-action.sock", &["scene.list", "seat.action"]);
+        let id = w.id();
+        w.seat.action(id, w.handle, 1, 0, String::new(), 0, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.status(id), Some((NO_SUCH_ACTION, "semantic".into())));
+
+        let mut w = world("m14-action-cap.sock", &["scene.list"]);
+        let id = w.id();
+        w.seat.action(id, w.handle, 1, 0, String::new(), 0, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.status(id), Some((NO_CAPABILITY, "seat.action".into())));
+    }
+
+    #[test]
+    fn wait_for_answers_now_later_and_on_timeout() {
+        let mut w = world("m14-wait.sock", &["scene.list"]);
+        let g = w.generation();
+
+        // Already true: answered at once, with the generation at satisfaction.
+        let id = w.wait("toplevel_appears app_id=\"seatapp\"", 1000);
+        assert_eq!(w.peer.seen.waited, vec![(id, 1, w.handle, g)]);
+
+        // Not yet true: parked, then satisfied when the window appears.
+        let late = w.wait("toplevel_appears app_id=\"late\"", 5000);
+        assert!(w.peer.seen.waited.iter().all(|e| e.0 != late), "parked");
+        w.spy.map(&mut w.h, "late");
+        let late_window = find(&w.h, "late");
+        // Unset test classes are `secret`, which no agent can see.
+        crate::policy::scene::test_class::set(&late_window, ec_policy_eval::Class::Public);
+        let (_, satisfied, handle, gen_at) = w.until_waited(late).expect("satisfied");
+        assert_eq!(satisfied, 1);
+        assert_eq!(u64::from(handle), w.h.state.ipc.handle_for(&late_window));
+        assert_eq!(
+            gen_at,
+            generation::of(&mut w.h.state, &late_window),
+            "generation at satisfaction"
+        );
+
+        // Timeout: satisfied 0.
+        let gt = w.wait(&format!("generation_gt handle={} n=4000000", w.handle), 40);
+        let (_, satisfied, ..) = w.until_waited(gt).expect("timed out");
+        assert_eq!(satisfied, 0);
+
+        // A generation bump satisfies generation_gt, reporting the new value.
+        // (Mapping the second window may have re-tiled this one: read afresh.)
+        let g = w.generation();
+        let gt = w.wait(&format!("generation_gt handle={} n={g}", w.handle), 5000);
+        assert!(w.peer.seen.waited.iter().all(|e| e.0 != gt), "not yet");
+        w.retitle("renamed");
+        let (_, satisfied, handle, gen_at) = w.until_waited(gt).expect("bumped");
+        assert_eq!((satisfied, handle), (1, w.handle));
+        assert!(gen_at > g);
+    }
+
+    #[test]
+    fn wait_for_title_focus_idle_and_unmapped() {
+        let mut w = world("m14-wait2.sock", &["scene.list", "seat.focus"]);
+        w.retitle("Inbox (3)");
+        let t = w.wait(
+            &format!("title_matches handle={} regex=\"^Inbox [(][0-9]+[)]$\"", w.handle),
+            500,
+        );
+        assert_eq!(
+            w.peer.seen.waited.iter().find(|e| e.0 == t).map(|e| e.1),
+            Some(1),
+            "{:?}",
+            w.peer.seen.results
+        );
+
+        // focus on an agent seat: parks until the agent focuses.
+        let seat = w.name();
+        let f = w.wait(&format!("focus seat=\"{seat}\" handle={}", w.handle), 5000);
+        assert!(w.peer.seen.waited.iter().all(|e| e.0 != f));
+        w.focus();
+        assert_eq!(w.until_waited(f).map(|e| e.1), Some(1));
+
+        // idle: nothing changed for 30 ms.
+        let i = w.wait(&format!("idle handle={} ms=30", w.handle), 5000);
+        assert_eq!(w.until_waited(i).map(|e| e.1), Some(1));
+
+        // unmapped: the window goes away; it was visible when asked.
+        let u = w.wait(&format!("unmapped handle={}", w.handle), 5000);
+        assert!(w.peer.seen.waited.iter().all(|e| e.0 != u));
+        w.close_window();
+        assert_eq!(w.until_waited(u).map(|e| e.1), Some(1));
+    }
+
+    #[test]
+    fn wait_for_refuses_what_it_cannot_answer_and_can_be_cancelled() {
+        let mut w = world("m14-wait3.sock", &["scene.list"]);
+        let result = |w: &World, id: u32| {
+            w.peer
+                .seen
+                .results
+                .iter()
+                .find(|(r, ..)| *r == id)
+                .map(|(_, s, d)| (*s, d.clone()))
+        };
+        for (p, detail) in [
+            ("node handle=1 id=2", "unsupported"),
+            ("text_contains handle=1 node=2 needle=\"x\"", "unsupported"),
+            ("gibberish", "predicate"),
+            ("unmapped handle=424242", "handle"),
+        ] {
+            let id = w.wait(p, 100);
+            assert_eq!(result(&w, id), Some((INVALID_ARGUMENT, detail.into())), "{p}");
+        }
+        let id = w.wait("idle handle=1 ms=1", 0);
+        assert_eq!(result(&w, id), Some((INVALID_ARGUMENT, "timeout_ms".into())));
+
+        // A parked wait ends, unsatisfied, when cancelled.
+        let id = w.wait("toplevel_appears app_id=\"nope\"", 60_000);
+        assert!(w.peer.seen.waited.iter().all(|e| e.0 != id));
+        w.scene.cancel_wait(id);
+        w.pump();
+        assert_eq!(
+            w.peer.seen.waited.iter().find(|e| e.0 == id).map(|e| e.1),
+            Some(0)
+        );
+        // Cancelling what is not pending says so.
+        let other = w.id();
+        w.scene.cancel_wait(other);
+        w.pump();
+        assert_eq!(result(&w, other), Some((INVALID_ARGUMENT, "req_id".into())));
+        assert_eq!(w.h.state.agents.waits.len(), 0, "no waits left");
+    }
+
+    /// COMP-04 §7: while an agent holds a compat lock, the human's keys for
+    /// that window are queued and delivered, in order, on release.
+    #[test]
+    fn a_compat_lock_queues_human_keys_and_delivers_them_on_release() {
+        use std::cell::Cell;
+        let caps = ["scene.list", "seat.focus", "seat.compat_lock"];
+        let mut w = world("m14-lock.sock", &caps);
+        let window = find(&w.h, "seatapp");
+
+        // Not a compat-flagged app: refused.
+        let id = w.id();
+        w.seat.compat_lock(id, w.handle, 0);
+        w.pump();
+        assert_eq!(w.status(id), Some((INVALID_ARGUMENT, "not_compat".into())));
+
+        window
+            .user_data()
+            .insert_if_missing(|| crate::shell::rules::RuleSeat(Cell::new(SeatCompat::Lock)));
+        // The human's keyboard is on the window, and reaches it freely.
+        let human_key = |w: &mut World, code: u32, pressed: bool| {
+            let st = if pressed {
+                KeyState::Pressed
+            } else {
+                KeyState::Released
+            };
+            w.h.state.keyboard_key(Keycode::new(code + 8), st, 1);
+            w.pump();
+        };
+        human_key(&mut w, KEY_A, true);
+        human_key(&mut w, KEY_A, false);
+        let heard = |w: &World| -> Vec<Ev> {
+            w.spy
+                .data
+                .on("seat0")
+                .into_iter()
+                .filter(|e| matches!(e, Ev::Key(..)))
+                .collect()
+        };
+        assert_eq!(
+            heard(&w),
+            vec![Ev::Key(KEY_A, 1), Ev::Key(KEY_A, 0)],
+            "precondition: the human's keys reach the window"
+        );
+
+        let lock = w.id();
+        w.seat.compat_lock(lock, w.handle, 0);
+        w.pump();
+        assert_eq!(w.status(lock), Some((OK, String::new())));
+        assert_eq!(w.h.state.agents.locks.active().count(), 1);
+
+        let before = heard(&w).len();
+        human_key(&mut w, KEY_ESC, true);
+        human_key(&mut w, KEY_ESC, false);
+        human_key(&mut w, KEY_A, true);
+        human_key(&mut w, KEY_A, false);
+        assert_eq!(heard(&w).len(), before, "held while locked, not dropped");
+
+        let un = w.id();
+        w.seat.compat_unlock(un);
+        w.pump();
+        assert_eq!(w.status(un), Some((OK, String::new())));
+        assert_eq!(
+            heard(&w)[before..],
+            [
+                Ev::Key(KEY_ESC, 1),
+                Ev::Key(KEY_ESC, 0),
+                Ev::Key(KEY_A, 1),
+                Ev::Key(KEY_A, 0)
+            ],
+            "delivered in order on release"
+        );
+        assert_eq!(w.h.state.agents.locks.active().count(), 0);
+        let un = w.id();
+        w.seat.compat_unlock(un);
+        w.pump();
+        assert_eq!(w.status(un), Some((INVALID_ARGUMENT, "no_lock".into())));
+
+        // Live again after release.
+        human_key(&mut w, KEY_A, true);
+        assert_eq!(heard(&w).len(), before + 5);
+    }
+
+    /// The lock gives the seat back by itself: on timeout, on pause (the
+    /// human override), and when the agent goes.
+    #[test]
+    fn a_compat_lock_ends_on_timeout_pause_and_teardown() {
+        use std::cell::Cell;
+        let caps = ["scene.list", "seat.focus", "seat.compat_lock"];
+        let take = |sock: &str| {
+            let mut w = world(sock, &caps);
+            let window = find(&w.h, "seatapp");
+            window
+                .user_data()
+                .insert_if_missing(|| crate::shell::rules::RuleSeat(Cell::new(SeatCompat::Lock)));
+            let id = w.id();
+            w.seat.compat_lock(id, w.handle, 40);
+            w.pump();
+            assert_eq!(w.status(id), Some((OK, String::new())));
+            w
+        };
+        let key = |w: &mut World| {
+            w.h.state
+                .keyboard_key(Keycode::new(KEY_A + 8), KeyState::Pressed, 1);
+            w.pump();
+        };
+        let heard = |w: &World| {
+            w.spy
+                .data
+                .on("seat0")
+                .iter()
+                .filter(|e| matches!(e, Ev::Key(..)))
+                .count()
+        };
+
+        // Timeout.
+        let mut w = take("m14-lock-timeout.sock");
+        key(&mut w);
+        assert_eq!(heard(&w), 0);
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            w.pump();
+        }
+        assert_eq!(w.h.state.agents.locks.active().count(), 0, "expired");
+        assert_eq!(heard(&w), 1, "the held key arrived on expiry");
+
+        // Pause.
+        let mut w = take("m14-lock-pause.sock");
+        let agent = w.h.state.agent_seats[0].0;
+        key(&mut w);
+        assert_eq!(heard(&w), 0);
+        crate::policy::lifecycle::pause(&mut w.h.state, agent);
+        key(&mut w);
+        assert_eq!(w.h.state.agents.locks.active().count(), 0, "paused: released");
+        assert_eq!(heard(&w), 2, "held and live keys both arrived");
+
+        // The agent goes.
+        let mut w = take("m14-lock-gone.sock");
+        key(&mut w);
+        w.agent.destroy();
+        w.pump();
+        assert_eq!(w.h.state.agents.locks.active().count(), 0);
+        assert_eq!(heard(&w), 1);
+    }
+
+    #[test]
+    fn a_compat_lock_needs_its_capability_and_a_sane_timeout() {
+        use std::cell::Cell;
+        let mut w = world("m14-lock-cap.sock", &["scene.list", "seat.focus"]);
+        let id = w.id();
+        w.seat.compat_lock(id, w.handle, 0);
+        w.pump();
+        assert_eq!(w.status(id), Some((NO_CAPABILITY, "seat.compat_lock".into())));
+
+        let mut w = world("m14-lock-cap2.sock", &["scene.list", "seat.compat_lock"]);
+        let id = w.id();
+        w.seat.compat_lock(id, w.handle, 0);
+        w.pump();
+        assert_eq!(
+            w.status(id),
+            Some((NO_CAPABILITY, "seat.focus".into())),
+            "scope comes from seat.focus"
+        );
+
+        let mut w = world(
+            "m14-lock-big.sock",
+            &["scene.list", "seat.focus", "seat.compat_lock"],
+        );
+        let window = find(&w.h, "seatapp");
+        window
+            .user_data()
+            .insert_if_missing(|| crate::shell::rules::RuleSeat(Cell::new(SeatCompat::Lock)));
+        let id = w.id();
+        w.seat.compat_lock(id, w.handle, 60_001);
+        w.pump();
+        assert_eq!(w.status(id), Some((INVALID_ARGUMENT, "timeout_ms".into())));
+    }
+
+    /// COMP-16 M11 gate for `wait_for`: a `secret` window is never seen,
+    /// named or satisfied on, however the predicate is phrased.
+    #[test]
+    fn wait_for_never_resolves_on_a_hidden_window() {
+        let mut w = world("m14-wait-hidden.sock", &["scene.list"]);
+        w.spy.map(&mut w.h, "hidden"); // unset test class: secret
+        let hidden = find(&w.h, "hidden");
+        let hh = w.h.state.ipc.handle_for(&hidden);
+
+        let id = w.wait("toplevel_appears app_id=\"hidden\"", 60);
+        assert_eq!(
+            w.until_waited(id).map(|e| e.1),
+            Some(0),
+            "timed out, never satisfied"
+        );
+        for p in [format!("unmapped handle={hh}"), format!("idle handle={hh} ms=1")] {
+            let id = w.wait(&p, 60);
+            let r = w.peer.seen.results.iter().find(|(r, ..)| *r == id).cloned();
+            assert_eq!(r, Some((id, INVALID_ARGUMENT, "handle".into())), "{p}");
+        }
+    }
+
+    /// Batch control writes the same audit trail an act does (COMP-12 §1).
+    #[test]
+    fn control_requests_are_audited() {
+        let mut w = world("m14-audit.sock", &BATCH_CAPS);
+        w.focus();
+        let before = w.h.state.audit.sink.as_ref().map_or(0, Vec::len);
+        w.begin();
+        let after = w.h.state.audit.sink.as_ref().map_or(0, Vec::len);
+        assert!(after > before, "begin_atomic wrote audit records");
+    }
 }

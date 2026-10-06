@@ -578,6 +578,7 @@ dependencies = [
  "ec-abyss-config",
  "ec-abyss-render",
  "ec-abyss-wire",
+ "ec-cataclysm-pub",
  "ec-policy-eval",
  "ec-protocols",
  "ed25519-dalek",
@@ -734,6 +735,7 @@ version = "0.1.0"
 dependencies = [
  "wayland-backend",
  "wayland-client",
+ "wayland-protocols",
  "wayland-scanner",
  "wayland-server",
 ]

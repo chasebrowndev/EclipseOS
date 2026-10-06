@@ -212,7 +212,6 @@ pub fn trust_of(window: &Window) -> Option<AppTrust> {
 }
 
 /// The seat concurrency a matched rule pinned on this window, if any.
-#[allow(dead_code)] // consumed when COMP-04 §8 focus locks land
 pub fn seat_compat_of(window: &Window) -> Option<SeatCompat> {
     window.user_data().get::<RuleSeat>().map(|s| s.0.get())
 }

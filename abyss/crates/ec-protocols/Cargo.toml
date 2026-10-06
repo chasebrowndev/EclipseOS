@@ -14,7 +14,9 @@ wayland-backend = "0.3"
 wayland-scanner = "0.31"
 wayland-client = { version = "0.31", optional = true }
 wayland-server = { version = "0.31", optional = true }
+# eclipse_semantic_v1 names xdg_toplevel (COMP-09 section 2).
+wayland-protocols = { version = "0.32", optional = true }
 
 [features]
-client = ["dep:wayland-client"]
-server = ["dep:wayland-server"]
+client = ["dep:wayland-client", "dep:wayland-protocols", "wayland-protocols/client"]
+server = ["dep:wayland-server", "dep:wayland-protocols", "wayland-protocols/server"]

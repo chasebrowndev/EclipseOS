@@ -18,13 +18,14 @@
     for exactly one agent principal, bound by the signed grant it was created
     with.
 
-    This is the M13 subset (COMP-16): admission, the read-only scene queries
-    list_toplevels, get_toplevel and hit_test (M11), and the per-agent virtual
-    seat eclipse_agent_seat_v1 with its acting requests (M13). Atomic batches,
-    semantic actions, compat locks and preflight arrive with M14.
+    This is the M14 subset (COMP-16): admission, the read-only scene queries
+    list_toplevels, get_toplevel, hit_test and wait_for (M11, M14), and the
+    per-agent virtual seat eclipse_agent_seat_v1 with its acting requests
+    (M13) and, from version 3 (M14), atomic batches, expected_generation
+    checks, request dedupe, compat locks and action.
   </description>
 
-  <interface name="eclipse_agent_manager_v1" version="2">
+  <interface name="eclipse_agent_manager_v1" version="3">
     <description summary="creates agent objects from signed grants (COMP-08 §1)"/>
 
     <enum name="error">
@@ -63,7 +64,7 @@
     </event>
   </interface>
 
-  <interface name="eclipse_agent_v1" version="2">
+  <interface name="eclipse_agent_v1" version="3">
     <description summary="one agent principal (COMP-08 §2)"/>
 
     <enum name="error">
@@ -136,7 +137,8 @@
     <event name="result">
       <description summary="the outcome of a request that produced no data event">
         status is an eclipse_agent_v1.status value. focus_handle, generation
-        and latency_us are 0 until the acting interfaces exist.
+        and latency_us are what the seat's own result carries (see
+        eclipse_agent_seat_v1.result); this event reports 0 for them.
       </description>
       <arg name="req_id" type="uint"/>
       <arg name="status" type="uint"/>
@@ -147,7 +149,7 @@
     </event>
   </interface>
 
-  <interface name="eclipse_scene_v1" version="1">
+  <interface name="eclipse_scene_v1" version="3">
     <description summary="read-only scene queries (COMP-08 §3)">
       Every response is filtered to the agent's scene.list scope and
       sensitivity class. A handle the agent cannot see, whether out of scope,
@@ -158,8 +160,14 @@
       toplevel_detail, hit); a refused one ends in exactly one result event
       instead. The provenance event (M12) is not sent yet.
 
+      generation is the toplevel's generation (COMP-08 §3): a counter that
+      changes whenever what an agent could act on changes (app_id, title,
+      geometry, workspace, output, maximized, fullscreen, floating,
+      minimized). It is never reused and never 0. Until the semantic tree
+      exists (COMP-09) the counter tracks those facts, not tree contents.
+
       Fields not yet backed by compositor state carry placeholders: semantic,
-      generation, app_trust and parent are 0, launched_by_self is 0.
+      app_trust and parent are 0, launched_by_self is 0.
     </description>
 
     <enum name="sensitivity">
@@ -257,6 +265,49 @@
       <arg name="generation" type="uint"/>
     </event>
 
+    <request name="wait_for" since="3">
+      <description summary="wait until a predicate holds (COMP-08 §3)">
+        predicate is one KDL node: toplevel_appears app_id="x" title="y"
+        (either or both), title_matches handle=N regex="re",
+        focus seat="human|agent-N" handle=N, generation_gt handle=N n=G,
+        unmapped handle=N, idle handle=N ms=M (the toplevel's generation has
+        not changed for M ms). node, text_contains, node_gone and
+        command_finished need the semantic tree or a terminal channel and
+        are invalid_argument "unsupported". An unparsable predicate is
+        invalid_argument "predicate"; a handle the agent cannot see is
+        invalid_argument "handle". timeout_ms is 1 to 600000.
+
+        The answer is one waited event. A refused request ends in a result
+        event instead, and so does a duplicate req_id among live waits.
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="predicate" type="string"/>
+      <arg name="timeout_ms" type="uint"/>
+    </request>
+
+    <request name="cancel_wait" since="3">
+      <description summary="drop a pending wait_for">
+        req_id names the wait_for. The wait ends with waited satisfied 0. A
+        req_id with no pending wait is a result with invalid_argument "req_id".
+      </description>
+      <arg name="req_id" type="uint"/>
+    </request>
+
+    <event name="waited" since="3">
+      <description summary="a wait_for ended (COMP-08 §3)">
+        satisfied is 1 when the predicate held, 0 on timeout or cancel.
+        generation is the toplevel's generation at satisfaction, not at
+        request time and not at delivery (P-07 §5.3). handle is the toplevel
+        the predicate was satisfied by (0 when none). node is 0 until the
+        semantic tree exists.
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="satisfied" type="uint"/>
+      <arg name="handle" type="uint"/>
+      <arg name="node" type="uint"/>
+      <arg name="generation" type="uint"/>
+    </event>
+
     <event name="result">
       <description summary="same shape and status values as eclipse_agent_v1.result"/>
       <arg name="req_id" type="uint"/>
@@ -268,7 +319,7 @@
     </event>
   </interface>
 
-  <interface name="eclipse_agent_seat_v1" version="1">
+  <interface name="eclipse_agent_seat_v1" version="3">
     <description summary="one agent's virtual seat (COMP-08 §4)">
       Acting requests. Each is checked in the COMP-08 §10 order, runs on this
       agent's seat only, and ends in exactly one result event carrying its
@@ -280,8 +331,29 @@
       Every acting request also takes batch_token (0 means none) just before
       provenance_ids.
 
-      Key and text content is never logged. expected_generation is carried
-      and checked from M14; until then it is accepted and ignored.
+      Key and text content is never logged.
+
+      expected_generation (focus, text, click, action) is a toplevel
+      generation as the scene reported it. 0 means unchecked. Otherwise, after
+      the policy decision and before anything runs (COMP-08 §10 step 8), a
+      different current generation is stale_generation with the current one
+      as detail and nothing is done.
+
+      Every request carries a req_id, unique per agent within the dedupe
+      window (the manager's dedupe_window event, COMP-08 §2.2). A repeated
+      req_id gets one result with status duplicate and detail "status" or
+      "status:detail" of the original; nothing runs again. A request
+      that is still waiting on a prompt answers duplicate with detail
+      "pending".
+
+      Atomic batches (COMP-04 §4): begin_atomic opens a batch; acting requests
+      that follow are queued, not run, and answer when the batch ends.
+      commit_atomic checks every queued step and runs them in order with no
+      human input between them. A target that is gone or unmapped, a seat
+      focus that was lost, a stale generation or a pause aborts the whole
+      batch before any step runs: every queued request and the commit answer
+      with the cause (focus_lost, stale_generation, paused) and nothing was
+      applied.
     </description>
 
     <enum name="error">
@@ -409,9 +481,10 @@
 
     <request name="click">
       <description summary="focus, move to a point, press and release (click)">
-        With handle 0 the click lands at (x, y) in global logical
-        coordinates; with a handle it lands at the window's centre.
-        node is reserved for semantic targets (M14).
+        The click lands at (x, y) in global logical coordinates (COMP-08 §4,
+        node 0). handle names the window it must land on (0: whichever is
+        topmost and visible there). A nonzero node needs the semantic tree
+        (COMP-09) and is invalid_argument "node" until it exists.
       </description>
       <arg name="req_id" type="uint"/>
       <arg name="handle" type="uint"/>
@@ -422,6 +495,70 @@
       <arg name="expected_generation" type="uint"/>
       <arg name="batch_token" type="uint"/>
       <arg name="provenance_ids" type="array"/>
+    </request>
+
+    <request name="begin_atomic" since="3">
+      <description summary="open an atomic batch (COMP-04 §4, needs seat.atomic)">
+        max_frames is how many frames the batch may take to deliver (1 to 60;
+        0 means the default, 4). An open batch that is not committed within
+        5 seconds is abandoned. A second begin_atomic while one is open is
+        invalid_argument "nested".
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="max_frames" type="uint"/>
+    </request>
+
+    <request name="commit_atomic" since="3">
+      <description summary="run the queued steps, all or none">
+        Answers ok with the number of steps run as detail, or the cause that
+        aborted the batch. With no open batch: invalid_argument "no_batch".
+      </description>
+      <arg name="req_id" type="uint"/>
+    </request>
+
+    <request name="abort_atomic" since="3">
+      <description summary="discard the open batch">
+        Every queued request answers invalid_argument "aborted"; nothing ran.
+      </description>
+      <arg name="req_id" type="uint"/>
+    </request>
+
+    <request name="action" since="3">
+      <description summary="a semantic action on a node (COMP-08 §4, COMP-09 §4)">
+        Needs seat.action and the semantic tree, which does not exist yet
+        (COMP-09): every action is no_such_action.
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="handle" type="uint"/>
+      <arg name="node" type="uint"/>
+      <arg name="verb" type="uint"/>
+      <arg name="args" type="string"/>
+      <arg name="expected_generation" type="uint"/>
+      <arg name="batch_token" type="uint"/>
+      <arg name="provenance_ids" type="array"/>
+    </request>
+
+    <request name="compat_lock" since="3">
+      <description summary="exclusive lock on a seat-compat lock toplevel (COMP-04 §7)">
+        Needs seat.compat_lock and seat.focus on the window, and the window
+        must carry seat-compat lock (X11 windows always do), else
+        invalid_argument "not_compat". While held, the human's keys, buttons
+        and scrolls for that window are queued and delivered in order on
+        release. timeout_ms is the lock's lifetime (1 to 60000; 0 means
+        10000). One lock per window: another agent's lock is quota_exceeded
+        "compat_lock". Released by compat_unlock, expiry, pause, or the seat
+        going away.
+      </description>
+      <arg name="req_id" type="uint"/>
+      <arg name="handle" type="uint"/>
+      <arg name="timeout_ms" type="uint"/>
+    </request>
+
+    <request name="compat_unlock" since="3">
+      <description summary="release this agent's compat lock">
+        With no lock held: invalid_argument "no_lock".
+      </description>
+      <arg name="req_id" type="uint"/>
     </request>
 
     <request name="preflight">
@@ -465,7 +602,7 @@
     </event>
 
     <event name="focus_changed">
-      <description summary="this seat's keyboard focus moved (generation is 0 until M14)"/>
+      <description summary="this seat's keyboard focus moved (generation is the toplevel's)"/>
       <arg name="handle" type="uint"/>
       <arg name="generation" type="uint"/>
     </event>

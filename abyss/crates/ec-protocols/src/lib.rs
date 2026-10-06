@@ -40,3 +40,7 @@ pub mod agent {
         wayland_scanner::generate_server_code!("protocols/eclipse-agent-v1.xml");
     }
 }
+
+/// `eclipse_semantic_manager_v1` and `eclipse_semantic_surface_v1` (COMP-09):
+/// a client publishes a live semantic tree for one of its toplevels.
+pub mod semantic;

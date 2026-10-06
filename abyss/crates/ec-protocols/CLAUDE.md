@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # ec-protocols — EclipseOS Wayland protocol bindings
 
-Governing spec: COMP-08 (`eclipse_agent_v1`). **Not TCB**: generated
+Governing spec: COMP-08 (`eclipse_agent_v1`), COMP-09 (`eclipse_semantic_v1`, public socket). **Not TCB**: generated
 marshalling only; every check lives in abyss (`protocols/agent/`, `policy/`).
 
 - **Apache-2.0**, not AGPL (F-05 §3, §4): agents link the client side under

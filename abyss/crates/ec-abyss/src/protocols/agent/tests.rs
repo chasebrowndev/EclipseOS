@@ -45,6 +45,12 @@ pub(super) struct Seen {
     pub(super) keymaps: Vec<u32>,
     /// Every `eclipse_scene_v1` event, whole, in arrival order.
     pub(super) scene: Vec<eclipse_scene_v1::Event>,
+    /// `eclipse_agent_seat_v1.result` `(req_id, generation)`.
+    pub(super) seat_generations: Vec<(u32, u32)>,
+    /// `eclipse_scene_v1.toplevel` `(req_id, handle, generation)`.
+    pub(super) generations: Vec<(u32, u32, u32)>,
+    /// `eclipse_scene_v1.waited` `(req_id, satisfied, handle, generation)`.
+    pub(super) waited: Vec<(u32, u32, u32, u32)>,
 }
 
 impl Dispatch<WlRegistry, ()> for Seen {
@@ -113,8 +119,12 @@ impl Dispatch<EclipseAgentSeatV1, ()> for Seen {
                 req_id,
                 status,
                 detail,
+                generation,
                 ..
-            } => s.seat_results.push((req_id, status, detail)),
+            } => {
+                s.seat_results.push((req_id, status, detail));
+                s.seat_generations.push((req_id, generation));
+            }
             Event::FocusChanged { handle, .. } => s.seat_focus.push(handle),
             Event::Keymap { size, .. } => s.keymaps.push(size),
             _ => {}
@@ -133,7 +143,22 @@ impl Dispatch<EclipseSceneV1, ()> for Seen {
     ) {
         use eclipse_scene_v1::Event;
         match &e {
-            Event::Toplevel { req_id, handle, .. } => s.toplevels.push((*req_id, *handle)),
+            Event::Toplevel {
+                req_id,
+                handle,
+                generation,
+                ..
+            } => {
+                s.toplevels.push((*req_id, *handle));
+                s.generations.push((*req_id, *handle, *generation));
+            }
+            Event::Waited {
+                req_id,
+                satisfied,
+                handle,
+                generation,
+                ..
+            } => s.waited.push((*req_id, *satisfied, *handle, *generation)),
             Event::ToplevelsDone { req_id } => s.done.push(*req_id),
             Event::Hit { req_id, handle, .. } => s.hits.push((*req_id, *handle)),
             Event::Result {
@@ -229,7 +254,7 @@ impl Peer {
 
     fn manager(&mut self, h: &mut Harness) -> EclipseAgentManagerV1 {
         let name = self.global(MANAGER).expect("manager advertised");
-        let m = self.registry.bind(name, 2, &self.queue.handle(), ());
+        let m = self.registry.bind(name, 3, &self.queue.handle(), ());
         self.pump(h);
         m
     }
