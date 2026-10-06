@@ -604,3 +604,60 @@ fn preflight_targets_decode_strictly() {
     trailing.push(0);
     assert_eq!(decode_targets(&trailing, &arr(&[1])), None, "trailing bytes");
 }
+
+/// The whole chain behind a consent prompt (COMP-11 §4, COMP-10 §3.2): a
+/// table rule makes `seat.key` a `prompt`; the request is parked with no
+/// answer; Escape is `prompt_denied` and nothing is typed; "Allow once" runs
+/// it, re-validated, on the agent seat only.
+#[test]
+fn a_prompted_key_waits_for_the_human_and_runs_only_on_allow() {
+    use ec_policy_eval::check::{CompiledRule, Phases, Pred, Table};
+    use ec_policy_eval::scope::Glob;
+    use smithay::input::keyboard::Keysym;
+    const PROMPT_DENIED: u32 = 11;
+
+    let mut w = world("seat-prompt.sock", &["scene.list", "seat.focus", "seat.key"]);
+    let f = w.focus();
+    assert_eq!(w.status(f), Some((OK, String::new())));
+    let mut rules = Phases::default();
+    rules.prompt.push(CompiledRule {
+        id: "ask-before-keys".into(),
+        preds: vec![Pred::Capability(vec![Glob::new("seat.key")])],
+        unless: Vec::new(),
+    });
+    rules.allow.push(CompiledRule {
+        id: "default-allow".into(),
+        preds: vec![Pred::Capability(vec![Glob::new("*")])],
+        unless: Vec::new(),
+    });
+    w.h.state.policy_table = Some(Table { version: 2, rules });
+    let seat = w.name();
+
+    // Parked: no result yet, a consent prompt holds the human seat.
+    let p = w.key(KEY_A, true);
+    assert_eq!(w.status(p), None, "no answer while the human decides");
+    assert!(crate::trusted_ui::holds_seat(&w.h.state));
+    crate::trusted_ui::key(&mut w.h.state, Keysym::Escape);
+    w.pump();
+    assert_eq!(w.status(p), Some((PROMPT_DENIED, String::new())));
+    assert!(
+        !w.spy.data.on(&seat).iter().any(|e| matches!(e, Ev::Key(..))),
+        "a denied key is never typed"
+    );
+
+    // Asked again; the human picks "Allow once" (Tab from Deny wraps to it;
+    // Space activates a grant, Enter never does).
+    let q = w.key(KEY_A, true);
+    assert_eq!(w.status(q), None);
+    crate::trusted_ui::arm_now(&mut w.h.state);
+    crate::trusted_ui::key(&mut w.h.state, Keysym::Tab);
+    crate::trusted_ui::key(&mut w.h.state, Keysym::Tab);
+    crate::trusted_ui::key(&mut w.h.state, Keysym::space);
+    w.pump();
+    assert_eq!(w.status(q), Some((OK, String::new())));
+    assert!(
+        w.spy.data.on(&seat).contains(&Ev::Key(KEY_A, 1)),
+        "the allowed key reached the target on the agent seat"
+    );
+    assert!(!crate::trusted_ui::holds_seat(&w.h.state));
+}
