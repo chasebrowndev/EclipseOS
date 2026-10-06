@@ -107,9 +107,12 @@ gaps around and between the rounded cards, so a square blurred slab shows
 behind them. Layers are blurred wherever they leave the surface uncovered
 (`abyss/crates/ec-abyss-render/src/lib.rs`, the layer pass of `collect_elements`); the toasts surface is larger than what it draws.
 **Repro:** translucent window top-right, `notify-send` twice; see the slab
-around both cards. **Proposed:** none committed. Either the client tells the
-compositor where its glass is (`ext-background-effect-v1`, deferred from the
-blur-modes work) or each card becomes its own surface.
+around both cards. **Compositor half fixed 2026-10-06:** abyss implements
+`ext_background_effect_v1`
+(`abyss/crates/ec-abyss/src/protocols/standard/background_effect.rs`), and a
+committed blur region replaces the whole-surface backdrop, live and in
+captures. **Still open:** ec-toasts must set a region per card. That is
+frontend (`eclipse-frontend`), and the entry leaves when it lands.
 
 ---
 

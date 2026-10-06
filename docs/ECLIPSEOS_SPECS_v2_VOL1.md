@@ -3565,6 +3565,7 @@ ships with `wl_compositor` (one Smithay global pair) and `xdg_output` with
 | `wlr_screencopy` / `ext_image_copy_capture` | 3 / 1 | screen sharing via portal — **capability- and sensitivity-gated** (§3) |
 | `wlr_gamma_control` | 1 | night light |
 | `content_type`, `wp_alpha_modifier`, `cursor_shape` | 1 | small, expected by modern toolkits |
+| `ext_background_effect` *(added BLUR-03, 2026-10-06)* | 1 | client-specified blur region; `blur` advertised only while `decoration.blur.mode` is not `off`; a committed region replaces the compositor's whole-surface backdrop (COMP-02 §9), in captures too |
 
 ## 2. Deliberately Not Implemented
 

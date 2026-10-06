@@ -38,9 +38,9 @@ use smithay::{
 use ec_abyss_config::{BlurMode, Config};
 
 use crate::{
-    blur, effects, glow_colors, glow_program, insert_blur, is_scrim, layer_radius, layer_shape, layer_shows,
-    opaque_of, phys, push_dim, push_glow, push_popups, push_shadow, shadow_program, userdata,
-    window_backdrop, AbyssRenderElement, BlurRequest, BorderStore,
+    blur, effects, explicit_blur, explicit_window_backdrop, glow_colors, glow_program, insert_blur, is_scrim,
+    layer_radius, layer_shape, layer_shows, opaque_of, phys, push_dim, push_glow, push_popups, push_shadow,
+    shadow_program, userdata, window_backdrop, AbyssRenderElement, BlurRequest, BorderStore,
 };
 
 /// The capture pass's own effect store. Kept between captures so a
@@ -190,18 +190,26 @@ impl Frame<'_> {
             None => 0,
         };
         // No bezel: it replaces the border, and borders are not captured.
+        // `ext_background_effect_v1`, read exactly as the live path does.
+        let explicit = smithay::wayland::seat::WaylandFocus::wl_surface(window)
+            .and_then(|surface| explicit_blur(&surface, window.bbox().size, render_loc, scale));
         let backdrop = (mode != BlurMode::Off)
             .then(|| {
-                window_backdrop(
-                    mode,
-                    alpha,
-                    rect,
-                    corner,
-                    opaque_of(&surfaces, scale),
-                    deco.rounding,
-                    self.config.general.border_size,
-                    None,
-                )
+                let opaque = opaque_of(&surfaces, scale);
+                match explicit {
+                    Some(area) => explicit_window_backdrop(area, alpha, corner, opaque, deco.rounding),
+                    None => window_backdrop(
+                        mode,
+                        alpha,
+                        rect,
+                        corner,
+                        opaque,
+                        deco.rounding,
+                        self.config.general.border_size,
+                        None,
+                    )
+                    .map(|(region, radius, _)| (region, radius, None)),
+                }
             })
             .flatten();
 
@@ -251,7 +259,7 @@ impl Frame<'_> {
             );
         }
 
-        if let Some((region, radius, _)) = backdrop {
+        if let Some((region, radius, shape)) = backdrop {
             self.requests.push((
                 blur::BlurKey::Window(window.clone()),
                 out.len(),
@@ -259,7 +267,7 @@ impl Frame<'_> {
                 mode,
                 radius,
                 None,
-                None,
+                shape,
                 None,
             ));
         }
@@ -286,10 +294,24 @@ impl Frame<'_> {
         );
         let region = Rectangle::new(loc, geo.size.to_f64().to_physical(scale).to_i32_round());
         let crop = (!out_rect.contains_rect(region)).then_some(out_rect);
-        let wants = mode != BlurMode::Off && !is_scrim(surface, geo.size, self.output_geo.size);
-        let shape = wants
-            .then(|| layer_shape(surface, geo.size, loc, scale, self.config))
-            .flatten();
+        // `ext_background_effect_v1` replaces the layer rect and input shape;
+        // an empty region is no blur, a scrim included.
+        let explicit = explicit_blur(surface.wl_surface(), geo.size, loc, scale);
+        let wants = mode != BlurMode::Off
+            && match &explicit {
+                Some(area) => *area != blur::BlurArea::Nothing,
+                None => !is_scrim(surface, geo.size, self.output_geo.size),
+            };
+        let (region, shape) = match explicit {
+            Some(blur::BlurArea::Rect(r)) => (r, None),
+            Some(blur::BlurArea::Shape(s)) => (s.bounds().unwrap_or(region), Some(s)),
+            _ => (
+                region,
+                wants
+                    .then(|| layer_shape(surface, geo.size, loc, scale, self.config))
+                    .flatten(),
+            ),
+        };
         let shows = wants && layer_shows(region, shape.as_ref(), opaque_of(&els, scale));
         let els: Vec<AbyssRenderElement> = match crop {
             Some(crop) => els

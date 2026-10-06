@@ -289,6 +289,8 @@ pub struct AbyssState {
     pub idle_inhibit_state: IdleInhibitManagerState,
     /// `zwlr_virtual_pointer_v1`.
     pub virtual_pointer: crate::protocols::standard::virtual_pointer::VirtualPointerState,
+    /// `ext_background_effect_v1` (BLUR-03).
+    pub background_effect: crate::protocols::standard::background_effect::BackgroundEffectGlobals,
     /// `zwlr_output_power_management_v1`.
     pub output_power: crate::protocols::standard::output_power::OutputPowerState,
 
@@ -435,6 +437,10 @@ impl AbyssState {
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         let output_power = crate::protocols::standard::output_power::OutputPowerState::new(&dh);
+        let background_effect = crate::protocols::standard::background_effect::BackgroundEffectGlobals::new(
+            &dh,
+            config.decoration.blur.mode != crate::config::BlurMode::Off,
+        );
         let virtual_pointer = crate::protocols::standard::virtual_pointer::VirtualPointerState::new(&dh);
         // Capture reads every pixel of an output: allowlisted, fail-closed.
         let screencopy = crate::protocols::standard::screencopy::ScreencopyState::new(
@@ -565,6 +571,7 @@ impl AbyssState {
             idle_notifier,
             idle_inhibit_state,
             output_power,
+            background_effect,
             virtual_pointer,
             xwayland_shell_state,
             xwayland: Default::default(),
