@@ -1387,6 +1387,11 @@ fn a_draft_previews_arms_and_commits_on_physical_enter_only() {
             display: d.finish(),
         },
     );
+    // The client moves the slot after the preview (a growing layout does):
+    // the preview stays, and no new one is asked for.
+    s._move(0, 20);
+    r.pump();
+    assert!(sent(&theirs).is_empty(), "a move asks policyd for nothing");
 
     // Not armed yet: Enter is dropped, not queued, and nothing is sent.
     key(&mut r.h, Origin::Physical, KEY_ENTER, true);
