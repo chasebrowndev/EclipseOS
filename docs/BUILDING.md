@@ -195,6 +195,20 @@ later with it enabled; agentd refuses a launch without it and says why in
 `journalctl --user -u ec-agentd`). Log out and back in afterwards so the
 session starts with the add-on and its units in place.
 
+The Claude agent (`ec-claude-agent`, ADR 0076) reaches a model only through
+the inference router, `ec-inferenced`, which gets the API key from brokerd per
+request. Agents never see it. One-time setup, then once per login:
+
+```
+ec-secret init                                              # choose a store passphrase
+ec-secret unlock                                            # after every login
+ec-secret add anthropic-api-key --bind host:api.anthropic.com   # paste the key; not echoed
+```
+
+In the symlinked dev install, `ec-inferenced` must be a `dev-peers` build too
+(the command above). Without an unlocked store the agent answers in the console
+that brokerd is locked.
+
 ## Packaging
 
 The distribution path (D-01..D-03), all under `packaging/`:

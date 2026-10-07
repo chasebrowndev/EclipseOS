@@ -1,0 +1,20 @@
+[package]
+name = "ec-secret"
+description = "Owner CLI for the secrets broker (S-08 §2)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "ec-secret"
+path = "src/main.rs"
+
+[dependencies]
+# Wire types, binding parser, status codes and `LockedBuf`: one definition of
+# the protocol, shared with the daemon, so the client cannot drift from it.
+ec-brokerd = { path = "../ec-brokerd" }
+rustix = { workspace = true, features = ["net", "termios", "stdio"] }
+zeroize = "1"

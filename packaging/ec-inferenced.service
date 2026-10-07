@@ -1,0 +1,30 @@
+# The Eclipse inference router. Installed to /usr/lib/systemd/user/ec-inferenced.service.
+#
+# Serves agentd's `inference.complete` (I-02, ADR 0076): the API backend asks
+# brokerd for the Anthropic key per request and calls api.anthropic.com. It is
+# the only agent-stack process with network egress to a model provider, which
+# is why it is its own unit and not part of agentd. Part of the agent stack
+# add-on (eclipseos-agents), never the floor.
+#
+# Ordered After=ec-brokerd.service because every request needs the broker; if
+# brokerd is down or locked, requests fail with a named kind, they do not hang.
+# BindsTo= the session target so it stops with the session, as agentd does.
+[Unit]
+Description=Eclipse inference router
+PartOf=graphical-session.target
+After=abyss-session.target ec-brokerd.service
+BindsTo=abyss-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ec-inferenced
+Restart=on-failure
+RestartSec=1
+KillMode=process
+UMask=0077
+NoNewPrivileges=yes
+# AF_UNIX for brokerd and agentd, AF_INET/AF_INET6 for the model API.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=abyss-session.target

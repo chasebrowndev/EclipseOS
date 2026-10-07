@@ -18,7 +18,7 @@
 # peers by executable path, and a symlinked session's executables resolve into
 # this checkout, so both must be dev-peers builds:
 #
-#     (cd abyss && cargo build --release -p ec-policyd -p ec-brokerd --features dev-peers)
+#     (cd abyss && cargo build --release -p ec-policyd -p ec-brokerd -p ec-inferenced --features dev-peers)
 #
 # The agents also need bubblewrap and a kernel with Landlock.
 set -eu
@@ -38,9 +38,10 @@ user="${SUDO_USER:-}"
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 bin="$here/../target/release"
 home=$(getent passwd "$user" | cut -d: -f6)
-agent_bins='ec-policyd ec-brokerd ec-agentd ec-audit'
-agent_units='ec-policyd ec-brokerd ec-agentd'
+agent_bins='ec-policyd ec-brokerd ec-agentd ec-audit ec-secret ec-inferenced'
+agent_units='ec-policyd ec-brokerd ec-agentd ec-inferenced'
 ref_agent=/usr/share/eclipse/agents/ec-ref-agent/0.1.0
+claude_agent=/usr/share/eclipse/agents/ec-claude-agent/0.1.0
 
 for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher \
          ec-settings ec-policy-viewer ec-console ec-ctl ec-screensaver ec-secret-prompt \
@@ -48,15 +49,15 @@ for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher \
     [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
 done
 if [ "$do_agents" -eq 1 ]; then
-    for b in $agent_bins ec-ref-agent; do
+    for b in $agent_bins ec-ref-agent ec-claude-agent; do
         [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
     done
     # A strict build refuses every peer of a symlinked session, which reads
     # exactly like policyd being down. Refuse to install one.
-    for b in ec-policyd ec-brokerd; do
+    for b in ec-policyd ec-brokerd ec-inferenced; do
         [ "$("$bin/$b" --build-info 2>/dev/null)" = dev-peers ] || {
             echo "$bin/$b is not a dev-peers build; it would refuse this session's compositor and agentd." >&2
-            echo "Build it with: (cd abyss && cargo build --release -p ec-policyd -p ec-brokerd --features dev-peers)" >&2
+            echo "Build it with: (cd abyss && cargo build --release -p ec-policyd -p ec-brokerd -p ec-inferenced --features dev-peers)" >&2
             exit 1
         }
     done
@@ -108,6 +109,8 @@ if [ "$do_agents" -eq 1 ]; then
     install -Dm 0644 "$here/addons/eclipseos-agents.kdl" /usr/share/eclipse/addons/eclipseos-agents.kdl
     install -Dm 0644 "$here/agents/ec-ref-agent/manifest.kdl" "$ref_agent/manifest.kdl"
     install -Dm 0755 "$bin/ec-ref-agent" "$ref_agent/bin/ec-ref-agent"
+    install -Dm 0644 "$here/agents/ec-claude-agent/manifest.kdl" "$claude_agent/manifest.kdl"
+    install -Dm 0755 "$bin/ec-claude-agent" "$claude_agent/bin/ec-claude-agent"
 fi
 
 # 4. The apps a human launches. The bar, toasts and launcher are session
@@ -127,7 +130,7 @@ done
 uid=$(id -u "$user")
 rt="/run/user/$uid"
 units="ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service"
-[ "$do_agents" -eq 1 ] && units="$units ec-policyd.service ec-brokerd.service ec-agentd.service"
+[ "$do_agents" -eq 1 ] && units="$units ec-policyd.service ec-brokerd.service ec-agentd.service ec-inferenced.service"
 if [ -S "$rt/bus" ]; then
     as_user() {
         runuser -u "$user" -- env XDG_RUNTIME_DIR="$rt" DBUS_SESSION_BUS_ADDRESS="unix:path=$rt/bus" "$@"

@@ -23,6 +23,7 @@ ec-protocols = { path = "../ec-protocols", features = ["client"] }
 wayland-client = "0.31"
 ec-policy-eval = { path = "../ec-policy-eval" }
 ec-ipc = { path = "../ec-ipc" }
+ec-inference-wire = { path = "../ec-inference-wire" }
 serde_json.workspace = true
 kdl.workspace = true
 blake3.workspace = true

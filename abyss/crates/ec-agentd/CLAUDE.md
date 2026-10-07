@@ -26,6 +26,10 @@ authority beyond the signed grants `policyd` gives it.
 - The session record (`session.rs`) is history, never `secret`-class content,
   and is deleted with the conversation. `session.restore` exists only on a task
   provisioned with `resumes`, and answers once.
+- `inference.complete` (ADR 0076) exists only for a task whose package manifest
+  declares `inference { backend; model }`; both come from the manifest, never
+  from the call. The core never blocks on it: `router.rs` is the satellite that
+  owns the `inferenced.sock` connection. One call in flight per task.
 - Ships only in the `eclipseos-agents` add-on (ADR 0069).
 - SPDX `AGPL-3.0-only` on every file: it is a system daemon, not an SDK.
 - Never logs window titles or other scene content to the journal; `--list`

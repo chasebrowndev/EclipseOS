@@ -1,0 +1,19 @@
+[package]
+name = "ec-claude-agent"
+description = "A Claude-backed conversational agent: an MCP client that drives the model through inference.complete (ADR 0076)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# An SDK-like example others may copy from (F-05 §3).
+license = "Apache-2.0"
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "ec-claude-agent"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true

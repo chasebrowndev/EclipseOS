@@ -9,8 +9,9 @@
 //!
 //! What is recorded today: every MCP request and response on the task's
 //! socket (tool calls and their results, `initialize`, `tools/list`) and every
-//! conversation message, as [`entry`] builds them. There is no inference path
-//! yet (F-21), so this is MCP-level history, not the model's own context
+//! conversation message, as [`entry`] builds them. An `inference.complete`
+//! call and its answer are MCP traffic like the rest, so a model's reply is in
+//! the record; what an agent keeps in its own context beyond that is not
 //! (docs/KNOWNBUGS.md AGENTD-01).
 //!
 //! `secret`-class content never reaches the record (A-08 §5.4, S-05 §2). It

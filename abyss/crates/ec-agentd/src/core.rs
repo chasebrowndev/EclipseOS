@@ -28,7 +28,8 @@ use crate::rpc::{self, p_str, p_u64, Parsed, Request, RpcError};
 use crate::sanitize::{self, MAX_TEXT};
 use crate::session::{self, Sessions};
 use crate::store::{Kind, Message, Store, Task};
-use crate::{net, packages, sandbox, ulid_from_text, Config};
+use crate::{net, packages, router, sandbox, ulid_from_text, Config};
+use ec_inference_wire::{Completion, Failure, Request as InferRequest, ToRouter};
 
 /// A-03 §7 defaults, counted on the task.
 pub const MSGS_PER_MIN: usize = 60;
@@ -40,6 +41,9 @@ const SWEEP_EVERY_MS: u64 = 3_600_000;
 const AUDIT_QUEUE: usize = 4096;
 /// The MCP tool a resumed task alone has (F-23).
 pub const RESTORE_TOOL: &str = "session.restore";
+/// The MCP tool a task whose package declares `inference { }` alone has
+/// (ADR 0076).
+pub const INFERENCE_TOOL: &str = "inference.complete";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Surface {
@@ -76,8 +80,20 @@ pub enum Msg {
         id: Option<Value>,
         result: Result<Value, RpcError>,
     },
+    /// The router's answer to one `inference.complete`, or its failure.
+    Inference {
+        id: u64,
+        result: Result<Completion, Failure>,
+    },
     Tick,
     Shutdown,
+}
+
+/// An `inference.complete` waiting on the router: where its answer goes.
+struct InferCall {
+    task: String,
+    conn: u64,
+    mcp_id: Value,
 }
 
 struct Conn {
@@ -133,6 +149,12 @@ pub struct Core {
     procs: HashMap<String, Running>,
     mcp_stop: HashMap<String, Arc<AtomicBool>>,
     last_sweep_ms: u64,
+    /// To the inference router satellite (`router.rs`).
+    router: Sender<ToRouter>,
+    next_infer: u64,
+    infer_pending: HashMap<u64, InferCall>,
+    /// Task -> its one in-flight call.
+    infer_by_task: HashMap<String, u64>,
     /// Tasks found open on disk at startup: policyd is told `Exited` once the
     /// link is up.
     unreported: Vec<String>,
@@ -146,6 +168,8 @@ impl Core {
     pub fn new(cfg: Config, tx: Sender<Msg>, ids: Arc<AtomicU64>) -> Core {
         let store = Store::new(&cfg.state_dir);
         let state_dir = cfg.state_dir.clone();
+        let runtime_dir = cfg.runtime_dir.clone();
+        let tx_core = tx.clone();
         let now = (cfg.clock)();
         let mut tasks = BTreeMap::new();
         let mut unreported = Vec::new();
@@ -180,6 +204,10 @@ impl Core {
             procs: HashMap::new(),
             mcp_stop: HashMap::new(),
             last_sweep_ms: now,
+            router: router::spawn(runtime_dir.join("inferenced.sock"), tx_core),
+            next_infer: 1,
+            infer_pending: HashMap::new(),
+            infer_by_task: HashMap::new(),
             unreported,
         };
         c.sweep();
@@ -228,6 +256,11 @@ impl Core {
             Msg::Closed { conn } => {
                 self.conns.remove(&conn);
                 self.pending.retain(|_, p| p.conn != conn);
+                // Its answer would have nowhere to go; the router's reply, if
+                // it comes, finds no entry.
+                self.infer_pending.retain(|_, c| c.conn != conn);
+                self.infer_by_task
+                    .retain(|_, id| self.infer_pending.contains_key(id));
             }
             Msg::LinkUp(tx) => {
                 self.link = Some(tx);
@@ -284,6 +317,7 @@ impl Core {
                     );
                 }
             }
+            Msg::Inference { id, result } => self.on_inference(id, &result),
             Msg::Tick => self.tick(),
             Msg::Shutdown => return false,
         }
@@ -479,6 +513,13 @@ impl Core {
         t.statement = sanitize::clean(&p.statement);
         t.deadline_ms = p.deadline_ms;
         t.continuation = p.continuation;
+        // An unreadable or invalid block gives no tool: fail closed.
+        if let Some(dir) = packages::find_dir(&self.cfg.package_roots, &t.package, &t.version) {
+            match packages::inference(&dir) {
+                Ok(i) => t.inference = i,
+                Err(e) => log(&format!("task {}: inference block ignored: {e}", t.id)),
+            }
+        }
         if !p.resumes.is_empty() {
             // A resume carries the old chain's trust (A-08 §5.4): it starts
             // where the old task ended, never cleaner. An old task agentd no
@@ -629,6 +670,11 @@ impl Core {
             }
         }
         self.pending.retain(|_, p| p.task != id);
+        // A call still waiting is dropped, and the router told so it can let
+        // go of anything it holds for the task.
+        self.infer_pending.retain(|_, c| c.task != id);
+        self.infer_by_task.remove(id);
+        let _ = self.router.send(ToRouter::Close { task: id.to_owned() });
         self.event("task_closed", json!({"task_id": id, "reason": reason}));
     }
 
@@ -695,9 +741,19 @@ impl Core {
             Surface::Console => self.console_call(conn, &req),
             Surface::Mcp(task) => {
                 self.record_request(task, &req);
-                let r = self.mcp_call(task, &req);
-                self.record_response(task, &req, &r);
-                Outcome::Now(r)
+                match self.inference_call(conn, task, &req) {
+                    Some(Outcome::Now(r)) => {
+                        self.record_response(task, &req, &r);
+                        Outcome::Now(r)
+                    }
+                    // Recorded when the router answers (`on_inference`).
+                    Some(Outcome::Deferred) => Outcome::Deferred,
+                    None => {
+                        let r = self.mcp_call(task, &req);
+                        self.record_response(task, &req, &r);
+                        Outcome::Now(r)
+                    }
+                }
             }
         };
         if let (Some(id), Outcome::Now(r)) = (&req.id, out) {
@@ -1045,7 +1101,10 @@ impl Core {
             }
             m if m.starts_with("notifications/") => Ok(Value::Null),
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(tools_list(self.task_ref(task)?.resumes.is_empty())),
+            "tools/list" => {
+                let t = self.task_ref(task)?;
+                Ok(tools_list(t.resumes.is_empty(), t.inference.is_some()))
+            }
             "tools/call" => self.mcp_tool(task, &req.params),
             _ => Err(RpcError::new(
                 rpc::METHOD_NOT_FOUND,
@@ -1053,6 +1112,89 @@ impl Core {
                 "unknown method",
             )),
         }
+    }
+
+    /// `tools/call inference.complete` on a task whose package declares
+    /// inference. `None` for anything else, so the ordinary path answers (an
+    /// undeclared task gets the unknown-tool error of a name that never
+    /// existed).
+    ///
+    /// backend and model are the manifest's, stamped here; the arguments may
+    /// not carry them. The core does not wait: the request goes to the router
+    /// satellite and the answer comes back as `Msg::Inference`.
+    fn inference_call(&mut self, conn: u64, task: &str, req: &Request) -> Option<Outcome> {
+        if req.method != "tools/call"
+            || req.params.get("name").and_then(Value::as_str) != Some(INFERENCE_TOOL)
+        {
+            return None;
+        }
+        let t = self.tasks.get(task)?;
+        let decl = t.inference.clone()?;
+        let package = t.package.clone();
+        // A notification has no one to answer; do not spend a model call on it.
+        let Some(mcp_id) = req.id.clone() else {
+            return Some(Outcome::Now(Ok(Value::Null)));
+        };
+        if t.is_closed() {
+            return Some(Outcome::Now(Err(RpcError::closed())));
+        }
+        let empty = json!({});
+        let args = match router::parse_args(req.params.get("arguments").unwrap_or(&empty)) {
+            Ok(a) => a,
+            Err(m) => return Some(Outcome::Now(Err(RpcError::invalid_params(m)))),
+        };
+        let fail = |kind: &str, msg: &str| {
+            Some(Outcome::Now(Ok(router::tool_result(&Err(router::failure(
+                kind, msg,
+            ))))))
+        };
+        if self.infer_by_task.contains_key(task) {
+            return fail("rate_limited", "one inference call at a time per task");
+        }
+        let id = self.next_infer;
+        self.next_infer += 1;
+        let sent = self.router.send(ToRouter::Complete(InferRequest {
+            id,
+            task: task.to_owned(),
+            package,
+            backend: decl.backend,
+            model: decl.model,
+            system: args.system,
+            messages: args.messages,
+            tools: args.tools,
+            max_tokens: args.max_tokens,
+        }));
+        if sent.is_err() {
+            return fail("backend_unavailable", router::DOWN_MESSAGE);
+        }
+        self.infer_by_task.insert(task.to_owned(), id);
+        self.infer_pending.insert(
+            id,
+            InferCall {
+                task: task.to_owned(),
+                conn,
+                mcp_id,
+            },
+        );
+        Some(Outcome::Deferred)
+    }
+
+    /// The router answered (or failed) a call. The answer goes through the
+    /// same session-record path as every other MCP response. Its content is
+    /// recorded there and nowhere else: the audit chain's `Model` provenance
+    /// links are not stamped yet (docs/KNOWNBUGS.md AGENTD-01).
+    fn on_inference(&mut self, id: u64, result: &Result<Completion, Failure>) {
+        let Some(call) = self.infer_pending.remove(&id) else {
+            return;
+        };
+        self.infer_by_task.remove(&call.task);
+        let v = router::tool_result(result);
+        self.record(
+            &call.task,
+            "mcp_response",
+            json!({"method": "tools/call", "result": v}),
+        );
+        self.send(call.conn, rpc::ok(&call.mcp_id, v));
     }
 
     fn mcp_tool(&mut self, task: &str, p: &Value) -> Result<Value, RpcError> {
@@ -1219,7 +1361,7 @@ fn message_event(task: &str, m: &Message) -> Value {
     v
 }
 
-fn tools_list(plain: bool) -> Value {
+fn tools_list(plain: bool, inference: bool) -> Value {
     let mut tools = json!([
         {
             "name": "task.say",
@@ -1242,6 +1384,23 @@ fn tools_list(plain: bool) -> Value {
             "name": RESTORE_TOOL,
             "description": "Restore the history of the session this task resumes: its recorded entries, then a boundary marker. Callable once. Every handle and revision from that session is invalid afterwards; re-observe before acting.",
             "inputSchema": {"type": "object", "properties": {}},
+        }));
+    }
+    if inference {
+        tools.as_array_mut().expect("array").push(json!({
+            "name": INFERENCE_TOOL,
+            "description": "Ask the model this package is declared to use for one completion (Messages API shape). The model and backend are fixed by the package manifest. One call at a time per task.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "system": {"type": "string"},
+                    "messages": {"type": "array", "minItems": 1, "items": {"type": "object"}},
+                    "tools": {"type": "array", "items": {"type": "object"}},
+                    "max_tokens": {"type": "integer", "minimum": 1, "maximum": router::MAX_TOKENS_CAP, "default": router::MAX_TOKENS_DEFAULT},
+                },
+                "required": ["messages"],
+                "additionalProperties": false,
+            },
         }));
     }
     json!({"tools": tools})

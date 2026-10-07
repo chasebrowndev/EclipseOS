@@ -1573,3 +1573,357 @@ mod launched {
         rig.fake().send(&state(&new, "closed", "cancelled"));
     }
 }
+
+// ---- inference.complete (ADR 0076) ------------------------------------------
+
+/// A fake `ec-inferenced`: a listener at the path agentd dials.
+struct FakeRouter {
+    listener: UnixListener,
+}
+
+struct RouterConn {
+    s: UnixStream,
+}
+
+impl FakeRouter {
+    fn start(rig: &Rig) -> FakeRouter {
+        let listener = UnixListener::bind(rig.dir.join("run/inferenced.sock")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        FakeRouter { listener }
+    }
+
+    fn accept(&self) -> RouterConn {
+        let t = Instant::now();
+        loop {
+            match self.listener.accept() {
+                Ok((s, _)) => {
+                    s.set_nonblocking(false).unwrap();
+                    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    return RouterConn { s };
+                }
+                Err(_) if t.elapsed() < Duration::from_secs(5) => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(e) => panic!("agentd never dialled the router: {e}"),
+            }
+        }
+    }
+}
+
+impl RouterConn {
+    fn recv(&mut self) -> ec_inference_wire::ToRouter {
+        let v = ec_inference_wire::read_frame(&mut self.s)
+            .expect("router read")
+            .expect("agentd closed the router connection");
+        ec_inference_wire::ToRouter::from_json(&v).expect("a valid frame")
+    }
+
+    fn complete(&mut self) -> ec_inference_wire::Request {
+        match self.recv() {
+            ec_inference_wire::ToRouter::Complete(r) => r,
+            other => panic!("expected a complete, got {other:?}"),
+        }
+    }
+
+    fn reply(&mut self, r: &ec_inference_wire::Reply) {
+        ec_inference_wire::write_frame(&mut self.s, &r.to_json()).unwrap();
+    }
+
+    fn ok(&mut self, id: u64, text: &str) {
+        self.reply(&ec_inference_wire::Reply {
+            id,
+            result: Ok(ec_inference_wire::Completion {
+                content: json!([{"type": "text", "text": text}]),
+                stop_reason: "end_turn".into(),
+                model: "claude-test-1".into(),
+                input_tokens: 3,
+                output_tokens: 1,
+            }),
+        });
+    }
+}
+
+const INF_BLOCK: &str = " inference {\n  backend \"api\"\n  model \"claude-test-1\"\n }";
+
+/// Packages `ref` (with an inference block) and `plain` (without).
+fn inference_rig(tag: &str) -> Rig {
+    let dir = ec_agentd::scratch_dir(tag);
+    let root = dir.join("agents");
+    ref_package(&root, INF_BLOCK);
+    let v = root.join("plain/1");
+    std::fs::create_dir_all(&v).unwrap();
+    std::fs::write(
+        v.join("manifest.kdl"),
+        "agent {\n id \"plain\"\n version \"1\"\n entrypoint \"./run.sh\"\n}\n",
+    )
+    .unwrap();
+    Rig::with(
+        dir,
+        T0,
+        Opts {
+            packages: vec![(root, "local".into())],
+            ..Opts::default()
+        },
+    )
+}
+
+fn start_task(rig: &mut Rig, n: u64, package: &str) -> (String, Cl) {
+    let id = tid(n);
+    let mut p = prov(&id, &format!("agent:{package}"));
+    if let FromPolicyd::Provision { package: pk, .. } = &mut p {
+        *pk = package.to_owned();
+    }
+    rig.fake().send(&p);
+    wait_task(&mut rig.console(), &id);
+    let m = rig.mcp(&id);
+    (id, m)
+}
+
+fn msgs() -> Value {
+    json!([{"role": "user", "content": "hi"}])
+}
+
+/// Sends a `tools/call inference.complete` without waiting for the answer.
+fn send_inf(c: &mut Cl, id: u64, args: Value) {
+    c.raw(
+        &json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": "inference.complete", "arguments": args}})
+        .to_string(),
+    );
+}
+
+fn read_resp(c: &mut Cl, id: u64) -> Value {
+    loop {
+        let v = c.read().expect("connection closed");
+        if v.get("id") == Some(&json!(id)) {
+            return v;
+        }
+    }
+}
+
+/// `(isError, parsed text)` of a tool-call response.
+fn inf_result(v: &Value) -> (bool, Value) {
+    let r = &v["result"];
+    let text = r["content"][0]["text"].as_str().unwrap_or_else(|| panic!("{v}"));
+    (
+        r["isError"].as_bool().unwrap(),
+        serde_json::from_str(text).unwrap(),
+    )
+}
+
+#[test]
+fn the_inference_tool_is_listed_only_for_a_package_that_declares_it() {
+    let mut rig = inference_rig("inf-list");
+    let (_, mut with) = start_task(&mut rig, 1, "ref");
+    let (_, mut without) = start_task(&mut rig, 2, "plain");
+    let tools = with.ok("tools/list", json!({}))["tools"].clone();
+    let t = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "inference.complete")
+        .expect("listed");
+    assert_eq!(t["inputSchema"]["required"], json!(["messages"]));
+    assert!(t["inputSchema"]["properties"].get("model").is_none());
+    assert!(!tool_names(&mut without).iter().any(|n| n == "inference.complete"));
+    // A task without the declaration gets the unknown-tool error, exactly as
+    // for a name that never existed.
+    let a = without.call(
+        "tools/call",
+        json!({"name": "inference.complete", "arguments": {"messages": msgs()}}),
+    );
+    let b = without.call("tools/call", json!({"name": "no.such.tool", "arguments": {}}));
+    assert_eq!(a["error"], b["error"]);
+    assert_eq!(a["error"]["code"], -32602);
+}
+
+#[test]
+fn a_call_goes_to_the_router_with_the_manifests_backend_and_model() {
+    let mut rig = inference_rig("inf-ok");
+    let router = FakeRouter::start(&rig);
+    let (id, mut m) = start_task(&mut rig, 1, "ref");
+
+    // Bad arguments never reach the router, and neither does an attempt to
+    // choose the model or the backend.
+    for bad in [
+        json!({}),
+        json!({"messages": []}),
+        json!({"messages": msgs(), "tools": "x"}),
+        json!({"messages": msgs(), "system": 1}),
+        json!({"messages": msgs(), "max_tokens": 0}),
+        json!({"messages": msgs(), "max_tokens": 64001}),
+        json!({"messages": msgs(), "model": "claude-opus-9"}),
+        json!({"messages": msgs(), "backend": "claude-code"}),
+    ] {
+        send_inf(&mut m, 100, bad.clone());
+        let v = read_resp(&mut m, 100);
+        assert_eq!(v["error"]["code"], -32602, "{bad}: {v}");
+    }
+
+    send_inf(
+        &mut m,
+        101,
+        json!({"system": "be brief", "messages": msgs(), "tools": [{"name": "t", "input_schema": {}}], "max_tokens": 777}),
+    );
+    let mut rc = router.accept();
+    let r = rc.complete();
+    assert_eq!(r.task, id);
+    assert_eq!(r.package, "ref");
+    assert_eq!(r.backend, ec_inference_wire::Backend::Api);
+    assert_eq!(r.model, "claude-test-1");
+    assert_eq!(r.system, "be brief");
+    assert_eq!(r.max_tokens, 777);
+    assert_eq!(r.messages, msgs());
+    rc.ok(r.id, "hello");
+    let (err, body) = inf_result(&read_resp(&mut m, 101));
+    assert!(!err);
+    assert_eq!(body["content"][0]["text"], "hello");
+    assert_eq!(body["stop_reason"], "end_turn");
+    assert_eq!(body["model"], "claude-test-1");
+
+    // Defaults, a fresh request id, and the same connection.
+    send_inf(&mut m, 102, json!({"messages": msgs()}));
+    let r2 = rc.complete();
+    assert_ne!(r2.id, r.id);
+    assert_eq!(r2.max_tokens, 16000);
+    assert_eq!(r2.system, "");
+    assert_eq!(r2.tools, json!([]));
+    rc.reply(&ec_inference_wire::Reply {
+        id: r2.id,
+        result: Err(ec_inference_wire::Failure {
+            kind: "broker_locked".into(),
+            message: "unlock with ec-secret unlock".into(),
+        }),
+    });
+    let (err, body) = inf_result(&read_resp(&mut m, 102));
+    assert!(err);
+    assert_eq!(
+        body,
+        json!({"kind": "broker_locked", "message": "unlock with ec-secret unlock"})
+    );
+
+    // The call and both answers are in the session record, like any MCP traffic.
+    let rec = std::fs::read_to_string(rig.dir.join("state/sessions").join(&id).join("record.jsonl")).unwrap();
+    let lines: Vec<Value> = rec.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert!(lines
+        .iter()
+        .any(|e| e["kind"] == "mcp_request" && e["params"]["name"] == "inference.complete"));
+    assert!(lines.iter().any(|e| e["kind"] == "mcp_response"
+        && e["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("hello"))));
+    assert!(lines
+        .iter()
+        .any(|e| e["kind"] == "mcp_response" && e["result"]["isError"] == true));
+}
+
+#[test]
+fn one_inference_call_at_a_time_per_task() {
+    let mut rig = inference_rig("inf-single");
+    let router = FakeRouter::start(&rig);
+    let (_, mut a) = start_task(&mut rig, 1, "ref");
+    let (_, mut b) = start_task(&mut rig, 2, "ref");
+    send_inf(&mut a, 1, json!({"messages": msgs()}));
+    let mut rc = router.accept();
+    let first = rc.complete();
+
+    // A second call on the same task is refused at once; the first is not
+    // disturbed. Another task is not affected.
+    send_inf(&mut a, 2, json!({"messages": msgs()}));
+    let (err, body) = inf_result(&read_resp(&mut a, 2));
+    assert!(err);
+    assert_eq!(body["kind"], "rate_limited");
+    assert_eq!(body["message"], "one inference call at a time per task");
+    send_inf(&mut b, 1, json!({"messages": msgs()}));
+    let other = rc.complete();
+    assert_ne!(other.task, first.task);
+
+    rc.ok(first.id, "one");
+    assert!(!inf_result(&read_resp(&mut a, 1)).0);
+    rc.ok(other.id, "other");
+    assert!(!inf_result(&read_resp(&mut b, 1)).0);
+
+    // Once answered the task may call again.
+    send_inf(&mut a, 3, json!({"messages": msgs()}));
+    let again = rc.complete();
+    rc.ok(again.id, "two");
+    assert!(!inf_result(&read_resp(&mut a, 3)).0);
+}
+
+#[test]
+fn a_closing_task_drops_its_call_and_the_router_is_told() {
+    let mut rig = inference_rig("inf-close");
+    let router = FakeRouter::start(&rig);
+    let (id, mut m) = start_task(&mut rig, 1, "ref");
+    send_inf(&mut m, 1, json!({"messages": msgs()}));
+    let mut rc = router.accept();
+    let r = rc.complete();
+    // The router stays silent; the task closes.
+    rig.fake().send(&state(&id, "closed", "cancelled"));
+    match rc.recv() {
+        ec_inference_wire::ToRouter::Close { task } => assert_eq!(task, id),
+        other => panic!("expected close, got {other:?}"),
+    }
+    // A late answer for the dropped call is ignored, and agentd carries on.
+    rc.ok(r.id, "too late");
+    let (id2, mut m2) = start_task(&mut rig, 2, "ref");
+    send_inf(&mut m2, 1, json!({"messages": msgs()}));
+    let r2 = rc.complete();
+    assert_eq!(r2.task, id2);
+    rc.ok(r2.id, "fine");
+    assert!(!inf_result(&read_resp(&mut m2, 1)).0);
+}
+
+#[test]
+fn an_absent_router_fails_fast_and_a_returning_one_is_redialled() {
+    let mut rig = inference_rig("inf-down");
+    let (_, mut m) = start_task(&mut rig, 1, "ref");
+    let t = Instant::now();
+    send_inf(&mut m, 1, json!({"messages": msgs()}));
+    let (err, body) = inf_result(&read_resp(&mut m, 1));
+    assert!(t.elapsed() < Duration::from_secs(2));
+    assert!(err);
+    assert_eq!(body["kind"], "backend_unavailable");
+    assert_eq!(
+        body["message"],
+        "the inference router (ec-inferenced) is not running"
+    );
+
+    // The router appears: the next call dials it.
+    let router = FakeRouter::start(&rig);
+    send_inf(&mut m, 2, json!({"messages": msgs()}));
+    let mut rc = router.accept();
+    let _ = rc.complete();
+    // It dies with the call in flight: the call fails, it does not hang.
+    drop(rc);
+    let (err, body) = inf_result(&read_resp(&mut m, 2));
+    assert!(err);
+    assert_eq!(body["kind"], "backend_unavailable");
+
+    // And comes back again.
+    send_inf(&mut m, 3, json!({"messages": msgs()}));
+    let mut rc = router.accept();
+    let r = rc.complete();
+    rc.ok(r.id, "back");
+    assert!(!inf_result(&read_resp(&mut m, 3)).0);
+}
+
+#[test]
+fn a_long_inference_call_fits_on_a_task_socket_but_not_the_console() {
+    let mut rig = inference_rig("inf-long");
+    let router = FakeRouter::start(&rig);
+    let (_, mut m) = start_task(&mut rig, 1, "ref");
+    let big = "x".repeat(1024 * 1024);
+    send_inf(&mut m, 1, json!({"messages": [{"role": "user", "content": big}]}));
+    let mut rc = router.accept();
+    let r = rc.complete();
+    assert_eq!(r.messages[0]["content"].as_str().unwrap().len(), 1024 * 1024);
+    rc.ok(r.id, "ok");
+    assert!(!inf_result(&read_resp(&mut m, 1)).0);
+
+    // The console keeps the 64 KiB cap: an over-long line ends the connection.
+    let mut c = rig.console();
+    let pad = "y".repeat(100 * 1024);
+    c.raw(&json!({"jsonrpc": "2.0", "id": 1, "method": "list_tasks", "params": {"pad": pad}}).to_string());
+    assert!(c.read().is_none());
+}

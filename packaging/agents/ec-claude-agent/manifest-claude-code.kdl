@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: Apache-2.0
+// The same agent on the claude-code backend (ADR 0076). Identical to
+// manifest.kdl apart from the backend. NOTE: it becomes selectable only once
+// ec-inferenced has a claude-code backend; it is not installed until then.
+agent {
+  id "ec-claude-agent"
+  name "Claude"
+  version "0.1.0"
+  publisher "eclipse"
+  // Relative to the package directory (A-07 §7 refuses a path outside it).
+  entrypoint "bin/ec-claude-agent"
+
+  task {
+    default_deadline "8h"
+    max_depth 0
+  }
+
+  capabilities {
+  }
+
+  inference {
+    backend "claude-code"
+    model "claude-opus-5-5"
+  }
+
+  sandbox {
+  }
+
+  resumable #true
+}
