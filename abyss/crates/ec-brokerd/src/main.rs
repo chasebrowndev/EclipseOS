@@ -261,6 +261,18 @@ fn hygiene_probe() -> std::process::ExitCode {
 }
 
 fn main() -> std::process::ExitCode {
+    // As policyd's: tells the dev install whether this is a `dev-peers` build.
+    if std::env::args().nth(1).as_deref() == Some("--build-info") {
+        println!(
+            "{}",
+            if cfg!(feature = "dev-peers") {
+                "dev-peers"
+            } else {
+                "strict-peers"
+            }
+        );
+        return std::process::ExitCode::SUCCESS;
+    }
     if std::env::args().nth(1).as_deref() == Some("--hygiene-probe") {
         return hygiene_probe();
     }

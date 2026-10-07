@@ -161,7 +161,9 @@ else and everything under `agents.slice`. Two things remain:
   socket check can stop (Yama `ptrace_scope` ≥ 1 is assumed).
 - Dev sessions run binaries from `target/`, which only the `dev-peers`
   feature accepts. Build `ec-policyd --features dev-peers` for `cargo run`;
-  the package build never enables it.
+  the package build never enables it. `packaging/install-session.sh --agents`
+  symlinks the session into `target/release` too, so it refuses a policyd or
+  brokerd whose `--build-info` is not `dev-peers`.
 
 ## BROKER-01: brokerd gaps against S-08
 

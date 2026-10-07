@@ -9,7 +9,27 @@
 # live at the next login and nothing has to be reinstalled. A distribution
 # install copies packaging/abyss.desktop and packaging/abyss-session in unmodified and
 # ships real binaries in /usr/bin instead.
+#
+#     sudo ./packaging/install-session.sh --agents
+#
+# also installs the agent stack add-on (ADR 0069): ec-policyd, ec-brokerd,
+# ec-agentd and ec-audit, their units, the add-on manifest that turns abyss's
+# agents hook on, and the reference agent. policyd and brokerd recognise their
+# peers by executable path, and a symlinked session's executables resolve into
+# this checkout, so both must be dev-peers builds:
+#
+#     (cd abyss && cargo build --release -p ec-policyd -p ec-brokerd --features dev-peers)
+#
+# The agents also need bubblewrap and a kernel with Landlock.
 set -eu
+
+do_agents=0
+for arg in "$@"; do
+    case "$arg" in
+        --agents) do_agents=1 ;;
+        *) echo "unknown flag: $arg (the only flag is --agents)" >&2; exit 2 ;;
+    esac
+done
 
 [ "$(id -u)" -eq 0 ] || { echo "run me with sudo" >&2; exit 1; }
 user="${SUDO_USER:-}"
@@ -18,12 +38,30 @@ user="${SUDO_USER:-}"
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 bin="$here/../target/release"
 home=$(getent passwd "$user" | cut -d: -f6)
+agent_bins='ec-policyd ec-brokerd ec-agentd ec-audit'
+agent_units='ec-policyd ec-brokerd ec-agentd'
+ref_agent=/usr/share/eclipse/agents/ec-ref-agent/0.1.0
 
 for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher \
          ec-settings ec-policy-viewer ec-console ec-ctl ec-screensaver ec-secret-prompt \
          ec-pairing; do
     [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
 done
+if [ "$do_agents" -eq 1 ]; then
+    for b in $agent_bins ec-ref-agent; do
+        [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
+    done
+    # A strict build refuses every peer of a symlinked session, which reads
+    # exactly like policyd being down. Refuse to install one.
+    for b in ec-policyd ec-brokerd; do
+        [ "$("$bin/$b" --build-info 2>/dev/null)" = dev-peers ] || {
+            echo "$bin/$b is not a dev-peers build; it would refuse this session's compositor and agentd." >&2
+            echo "Build it with: (cd abyss && cargo build --release -p ec-policyd -p ec-brokerd --features dev-peers)" >&2
+            exit 1
+        }
+    done
+    command -v bwrap >/dev/null || { echo "--agents needs bubblewrap (bwrap): install your distribution's bubblewrap package" >&2; exit 1; }
+fi
 
 # 1. Binaries. Symlinks, so the session always runs what was last built.
 install -d /usr/local/bin
@@ -32,6 +70,11 @@ for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher \
          ec-pairing; do
     ln -sfn "$bin/$b" "/usr/local/bin/$b"
 done
+if [ "$do_agents" -eq 1 ]; then
+    for b in $agent_bins; do
+        ln -sfn "$bin/$b" "/usr/local/bin/$b"
+    done
+fi
 install -m 0755 "$here/abyss-session" /usr/local/bin/abyss-session
 
 # 2. The session entry the greeter lists. Exec is the wrapper, not the binary:
@@ -45,7 +88,9 @@ sed -i 's|^Exec=.*|Exec=/usr/local/bin/abyss-session|' /usr/share/wayland-sessio
 dest="$home/.config/systemd/user"
 install -d -o "$user" -g "$user" "$dest"
 install -m 0644 -o "$user" -g "$user" "$here/abyss-session.target" "$dest/abyss-session.target"
-for unit in ec-hyperion-bar ec-toasts ec-wallpaper ec-screensaver ec-pairing; do
+units_here="ec-hyperion-bar ec-toasts ec-wallpaper ec-screensaver ec-pairing"
+[ "$do_agents" -eq 1 ] && units_here="$units_here $agent_units"
+for unit in $units_here; do
     sed 's|/usr/bin/|/usr/local/bin/|' "$here/$unit.service" > "$dest/$unit.service"
     chown "$user:$user" "$dest/$unit.service"
 done
@@ -55,6 +100,15 @@ done
 install -Dm 0644 "$here/addons/hyperion.kdl" /usr/share/eclipse/addons/hyperion.kdl
 #     Its premade command widgets, approved by shipping (ADR 0067).
 install -Dm 0644 -t /usr/share/eclipse/widgets "$here"/widgets/*.kdl
+
+# 3c. The agent stack's add-on manifest and the reference agent (--agents).
+#     The agent is copied, not symlinked: agentd binds its package directory
+#     into the sandbox, and a link into the checkout would point outside it.
+if [ "$do_agents" -eq 1 ]; then
+    install -Dm 0644 "$here/addons/eclipseos-agents.kdl" /usr/share/eclipse/addons/eclipseos-agents.kdl
+    install -Dm 0644 "$here/agents/ec-ref-agent/manifest.kdl" "$ref_agent/manifest.kdl"
+    install -Dm 0755 "$bin/ec-ref-agent" "$ref_agent/bin/ec-ref-agent"
+fi
 
 # 4. The apps a human launches. The bar, toasts and launcher are session
 #    components, not applications, and deliberately have no entry.
@@ -73,6 +127,7 @@ done
 uid=$(id -u "$user")
 rt="/run/user/$uid"
 units="ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service"
+[ "$do_agents" -eq 1 ] && units="$units ec-policyd.service ec-brokerd.service ec-agentd.service"
 if [ -S "$rt/bus" ]; then
     as_user() {
         runuser -u "$user" -- env XDG_RUNTIME_DIR="$rt" DBUS_SESSION_BUS_ADDRESS="unix:path=$rt/bus" "$@"

@@ -21,6 +21,10 @@
 #   --no-build    skip cargo, install what is already in target/release
 #   --uninstall   remove everything this script installs, then exit
 #   --yes         do not ask before installing packages
+#   --agents      also install the agent stack add-on (ADR 0069): ec-policyd,
+#                 ec-brokerd, ec-agentd, ec-audit, their units, the add-on
+#                 manifest that turns abyss's agents hook on, and the
+#                 reference agent. Needs bubblewrap and a Landlock kernel.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -30,15 +34,20 @@ BINS='ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher
       ec-settings ec-policy-viewer ec-console ec-ctl ec-screensaver ec-secret-prompt
       ec-pairing'
 UNITS='ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service'
+# The agent stack add-on, as the PKGBUILD's eclipseos-agents ships it.
+AGENT_BINS='ec-policyd ec-brokerd ec-agentd ec-audit'
+AGENT_UNITS='ec-policyd.service ec-brokerd.service ec-agentd.service'
+REF_AGENT=/usr/share/eclipse/agents/ec-ref-agent/0.1.0
 
-do_deps=1 do_build=1 assume_yes=0 uninstall=0
+do_deps=1 do_build=1 assume_yes=0 uninstall=0 do_agents=0
 for arg in "$@"; do
     case "$arg" in
         --no-deps)   do_deps=0 ;;
         --no-build)  do_build=0 ;;
         --yes|-y)    assume_yes=1 ;;
         --uninstall) uninstall=1 ;;
-        -h|--help)   sed -n '3,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --agents)    do_agents=1 ;;
+        -h|--help)   sed -n '3,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)           echo "unknown flag: $arg (try --help)" >&2; exit 2 ;;
     esac
 done
@@ -50,9 +59,11 @@ die() { printf 'install.sh: %s\n' "$*" >&2; exit 1; }
 
 if [ "$uninstall" -eq 1 ]; then
     say "removing Abyss"
-    systemctl --user disable --now $UNITS 2>/dev/null || true
+    systemctl --user disable --now $UNITS $AGENT_UNITS 2>/dev/null || true
     # shellcheck disable=SC2086
-    sudo rm -f $(for b in $BINS; do printf '/usr/bin/%s ' "$b"; done) \
+    sudo rm -f $(for b in $BINS $AGENT_BINS; do printf '/usr/bin/%s ' "$b"; done) \
+               $(for u in $AGENT_UNITS; do printf '/usr/lib/systemd/user/%s ' "$u"; done) \
+               /usr/share/eclipse/addons/eclipseos-agents.kdl \
                /usr/bin/abyss-session \
                /usr/share/wayland-sessions/abyss.desktop \
                $(for u in $UNITS; do printf '/usr/lib/systemd/user/%s ' "$u"; done) \
@@ -61,7 +72,7 @@ if [ "$uninstall" -eq 1 ]; then
                /usr/share/applications/ec-center.desktop \
                /usr/share/applications/ec-policy-viewer.desktop \
                /usr/share/applications/ec-settings.desktop
-    sudo rm -rf /usr/share/eclipse/widgets
+    sudo rm -rf /usr/share/eclipse/widgets "$REF_AGENT"
     systemctl --user daemon-reload 2>/dev/null || true
     echo "Removed. /etc/eclipse/ and your ~/.config/eclipse/ were left alone."
     exit 0
@@ -77,6 +88,11 @@ command -v sudo >/dev/null || die "sudo is required"
 user=$(id -un)
 home=$(getent passwd "$user" | cut -d: -f6)
 [ -n "$home" ] || die "no home directory for $user"
+if [ "$do_agents" -eq 1 ]; then
+    # agentd starts every agent under bubblewrap and refuses to without it;
+    # it also refuses a kernel with no Landlock, which it probes at launch.
+    command -v bwrap >/dev/null || die "--agents needs bubblewrap (bwrap): install your distribution's bubblewrap package"
+fi
 
 # ---------------------------------------------------------------- packages --
 
@@ -128,7 +144,9 @@ if [ "$do_build" -eq 1 ]; then
 fi
 
 bin="$root/target/release"
-for b in $BINS; do
+want=$BINS
+[ "$do_agents" -eq 1 ] && want="$BINS $AGENT_BINS ec-ref-agent"
+for b in $want; do
     [ -x "$bin/$b" ] || die "missing $bin/$b — drop --no-build, or run
              cargo build --release --workspace --bins (in abyss/, shell/ and installer/)"
 done
@@ -167,6 +185,20 @@ sudo install -Dm 0644 -t /usr/share/applications "$here"/applications/*.desktop
 
 # 6. Premade command widgets, approved by shipping (ADR 0067).
 sudo install -Dm 0644 -t /usr/share/eclipse/widgets "$here"/widgets/*.kdl
+
+# 7. The agent stack add-on (--agents), as eclipseos-agents ships it. A strict
+#    build: policyd and brokerd recognise their peers only in /usr/bin, which
+#    is where step 1 and this step put them.
+if [ "$do_agents" -eq 1 ]; then
+    # shellcheck disable=SC2086
+    sudo install -Dm 0755 -t /usr/bin $(for b in $AGENT_BINS; do printf '%s ' "$bin/$b"; done)
+    # shellcheck disable=SC2086
+    sudo install -Dm 0644 -t /usr/lib/systemd/user $(for u in $AGENT_UNITS; do printf '%s ' "$here/$u"; done)
+    sudo install -Dm 0644 "$here/addons/eclipseos-agents.kdl" /usr/share/eclipse/addons/eclipseos-agents.kdl
+    sudo install -Dm 0644 "$here/agents/ec-ref-agent/manifest.kdl" "$REF_AGENT/manifest.kdl"
+    sudo install -Dm 0755 "$bin/ec-ref-agent" "$REF_AGENT/bin/ec-ref-agent"
+    UNITS="$UNITS $AGENT_UNITS"
+fi
 
 # ---------------------------------------------------------------- seat/perms --
 

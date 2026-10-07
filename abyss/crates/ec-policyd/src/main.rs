@@ -176,6 +176,20 @@ fn load_key(dir: &Path) -> std::io::Result<ed25519_dalek::SigningKey> {
 }
 
 fn main() -> std::process::ExitCode {
+    // For the dev install (`install-session.sh --agents`), which cannot see
+    // cargo features: a symlinked session needs `dev-peers` or every peer is
+    // refused. Says nothing else about the build.
+    if std::env::args().nth(1).as_deref() == Some("--build-info") {
+        println!(
+            "{}",
+            if cfg!(feature = "dev-peers") {
+                "dev-peers"
+            } else {
+                "strict-peers"
+            }
+        );
+        return std::process::ExitCode::SUCCESS;
+    }
     let dir = state_dir();
     let key = match load_key(&dir) {
         Ok(k) => k,
