@@ -631,6 +631,21 @@ fn the_statement_limit_counts_characters() {
 }
 
 #[test]
+fn the_pointer_on_a_drawn_card_gets_the_compositors_arrow() {
+    let mut r = rig();
+    let _s = r.c.slot(&mut r.h, &r.prot, CKind::TaskCommit, 4, 5);
+    r.pump();
+    crate::trusted_ui::commit::tick(&mut r.h.state);
+    let rects = crate::trusted_ui::commit::drawn(&r.h.state.trusted_ui.cards);
+    let card = *rects.first().expect("the card is drawn");
+    let centre = card.loc + Point::from((card.size.w / 2, card.size.h / 2));
+    r.h.state.pointer_location = centre.to_f64();
+    assert!(crate::trusted_ui::pointer_on_card(&r.h.state));
+    r.h.state.pointer_location = (card.loc - Point::from((1, 1))).to_f64();
+    assert!(!crate::trusted_ui::pointer_on_card(&r.h.state));
+}
+
+#[test]
 fn a_slot_is_told_its_size_and_the_unpause_task_is_held() {
     let mut r = rig();
     let s = r.c.slot(&mut r.h, &r.prot, CKind::TaskUnpause, 4, 5);

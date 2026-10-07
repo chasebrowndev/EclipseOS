@@ -208,13 +208,22 @@ struct Card {
     draw: Option<Draw>,
     look: Look,
     art: BTreeMap<usize, (Look, TextureBuffer<GlesTexture>)>,
+    /// When the card last started being drawn, for the fade-in.
+    shown_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Draw {
     rect: Rectangle<i32, Logical>,
     marker: Option<Rectangle<i32, Logical>>,
+    /// Opacity, 0..=255: the card fades in over [`FADE_MS`] once its host
+    /// window has settled. Well inside the arming delay, so a card is never
+    /// armed while it is still faint.
+    alpha: u8,
 }
+
+/// The card's fade-in. Must stay below `slot::ARM_DEFAULT_MS` (a test holds it).
+const FADE_MS: u64 = 150;
 
 /// Every slot's trusted side, owned by `TrustedUi`.
 #[derive(Debug, Default)]
@@ -258,6 +267,7 @@ fn card(state: &mut AbyssState, slot: u64) -> &mut Card {
             draw: None,
             look: Look::Previewing,
             art: BTreeMap::new(),
+            shown_at: None,
         })
 }
 
@@ -525,7 +535,13 @@ fn sample(state: &AbyssState, slot: u64) -> Option<(Conditions, Option<Draw>)> {
                     above = true;
                 }
             }
-            on_output && g.contains_rect(r) && !above
+            // While the host window animates (open, move, resize), the card
+            // is not drawn: a trusted card sliding or scaling with a client
+            // is one more shape to fake, and its rect would not match what
+            // is on screen. It fades in once the window has settled.
+            let settled = state.borders.anim.window_shader(w).is_none()
+                && state.borders.anim.transform(w) == ec_abyss_render::anim::Transform::identity();
+            on_output && g.contains_rect(r) && !above && settled
         }
         _ => false,
     };
@@ -565,6 +581,7 @@ fn sample(state: &AbyssState, slot: u64) -> Option<(Conditions, Option<Draw>)> {
     };
     let draw = rect.filter(|_| visible && !state.lock.locked).map(|r| Draw {
         rect: r,
+        alpha: 0,
         marker: win_geo.filter(|_| !maximized && !fullscreen).map(|g| {
             Rectangle::new(
                 (g.loc.x - MARKER_GAP - MARKER_W, r.loc.y).into(),
@@ -573,6 +590,13 @@ fn sample(state: &AbyssState, slot: u64) -> Option<(Conditions, Option<Draw>)> {
         }),
     });
     Some((conditions, draw))
+}
+
+/// Opacity `ms` into the fade-in, 0..=255, ease-out.
+fn fade(ms: u64) -> u8 {
+    let t = (ms as f32 / FADE_MS as f32).min(1.0);
+    let e = 1.0 - (1.0 - t) * (1.0 - t);
+    (e * 255.0).round() as u8
 }
 
 fn root_of(
@@ -620,8 +644,6 @@ fn reason_of(c: &Card, arm: Arm) -> (State, Reason, Look) {
     }
 }
 
-/// Samples every slot, moves its arming on, and tells its client and the
-/// renderer what changed.
 /// The personal secret changed: every card drawn with the old one (or with
 /// none) is redrawn on its next frame.
 pub fn phrase_changed(state: &mut AbyssState) {
@@ -630,6 +652,8 @@ pub fn phrase_changed(state: &mut AbyssState) {
     }
 }
 
+/// Samples every slot, moves its arming on, and tells its client and the
+/// renderer what changed.
 pub fn tick(state: &mut AbyssState) {
     let now = now_ms(state);
     let slots: Vec<u64> = protected::slots(state).collect();
@@ -637,10 +661,14 @@ pub fn tick(state: &mut AbyssState) {
     let mut damage = false;
     for slot in slots {
         let _ = card(state, slot);
-        let Some((cond, draw)) = sample(state, slot) else {
+        let Some((cond, mut draw)) = sample(state, slot) else {
             continue;
         };
         let c = state.trusted_ui.cards.by_slot.get_mut(&slot).expect("just made");
+        c.shown_at = draw.and(c.shown_at.or(Some(now)));
+        if let (Some(d), Some(at)) = (draw.as_mut(), c.shown_at) {
+            d.alpha = fade(now.saturating_sub(at));
+        }
         c.arming.observe(cond, now);
         let (st, reason, mut look) = reason_of(c, c.arming.state(now));
         if c.pulse_until.is_some_and(|u| u > now) {
@@ -904,6 +932,30 @@ fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str
     c.into_raster(scale)
 }
 
+/// Whether `p` (global logical) is on a card that is drawn. The DRM path
+/// then draws the compositor's own arrow above the cards and hides the
+/// client's cursor, as it does under a modal: a client cursor drawn over a
+/// card could cover it with pixels the client chose (COMP-10 §5), and one
+/// drawn under it is invisible.
+pub fn under_pointer(cards: &Cards, p: Point<f64, Logical>) -> bool {
+    cards.by_slot.values().any(|c| {
+        c.draw.is_some_and(|d| {
+            let r = d.rect.to_f64();
+            p.x >= r.loc.x && p.y >= r.loc.y && p.x < r.loc.x + r.size.w && p.y < r.loc.y + r.size.h
+        })
+    })
+}
+
+/// The rects of the cards drawn now, for tests.
+#[cfg(test)]
+pub fn drawn(cards: &Cards) -> Vec<Rectangle<i32, Logical>> {
+    cards
+        .by_slot
+        .values()
+        .filter_map(|c| c.draw.map(|d| d.rect))
+        .collect()
+}
+
 /// Sample cards for `dump_trusted_surfaces` (mod.rs), at 2x.
 #[cfg(test)]
 pub(super) fn dump_cards() -> Vec<(&'static str, Raster)> {
@@ -996,7 +1048,7 @@ pub fn elements(
                 TextureRenderElement::from_texture_buffer(
                     local.to_f64().to_physical(scale),
                     buffer,
-                    None,
+                    Some(f32::from(d.alpha) / 255.0),
                     None,
                     None,
                     ElementKind::Unspecified,
@@ -1098,6 +1150,19 @@ mod tests {
             assert!(l.len() <= COLS, "{l}");
         }
         assert!(IDLE_COMMIT.len() < STATEMENT_ROWS + 1 + COULD_ROWS);
+    }
+
+    #[test]
+    fn no_card_is_under_the_pointer_when_none_is_drawn() {
+        assert!(!under_pointer(&Cards::default(), Point::from((10.0, 10.0))));
+    }
+
+    #[test]
+    fn the_fade_in_ends_before_the_card_can_arm() {
+        const { assert!(FADE_MS < super::super::slot::ARM_DEFAULT_MS) };
+        assert_eq!(fade(0), 0);
+        assert_eq!(fade(FADE_MS), 255);
+        assert!(fade(FADE_MS / 2) > 127, "ease-out");
     }
 
     #[test]

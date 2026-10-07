@@ -161,6 +161,11 @@ impl TrustedUi {
 }
 
 /// Whether a prompt holds the human seat right now. False under the lock.
+/// The pointer is on a drawn commit slot card (`commit::under_pointer`).
+pub fn pointer_on_card(state: &AbyssState) -> bool {
+    commit::under_pointer(&state.trusted_ui.cards, state.pointer_location)
+}
+
 pub fn holds_seat(state: &AbyssState) -> bool {
     state.trusted_ui.is_open() && !state.lock.locked
 }
