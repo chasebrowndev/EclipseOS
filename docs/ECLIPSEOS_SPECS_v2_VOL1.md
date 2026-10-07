@@ -2149,7 +2149,7 @@ display lives outside it.
 | Process | Unit | Role | Trust |
 |---|---|---|---|
 | `abyss` | `abyss.service` (user) | DRM, input, rendering, protocol servers, policy enforcement | TCB |
-| `policyd` | `policyd.service` | Policy compilation, audit store, defer path | TCB |
+| `policyd` | `ec-policyd.service` (ADR 0070) | Policy compilation, audit store, defer path | TCB |
 | `agentd` | `eclipse-agentd.service` | Agent gateway, MCP surface | semi-trusted |
 | `registryd` | `eclipse-registryd.service` | AT-SPI aggregation, coordinate join, vision fallback | semi-trusted |
 
@@ -2348,7 +2348,7 @@ The `policyd` public key used to verify grants and tables (S-01 §6) is
 received over IPC from a peer abyss has authenticated *(amended F-05,
 2026-09-30)*. abyss dials `policyd`'s socket when the `agents` hook turns on,
 and requires the peer to have the session user's uid (`SO_PEERCRED`) and to
-be a member of the `policyd.service` cgroup. Only then does it accept the key.
+be a member of the `ec-policyd.service` cgroup (ADR 0070). Only then does it accept the key.
 That key is pinned for the session: a reconnect presenting a different key is
 refused and surfaced in trusted UI and the journal. A process impersonating
 `policyd` therefore cannot supply its own key. Agent sandboxes can reach
@@ -7442,13 +7442,13 @@ same day (ADR 0069). F-06..F-14 added 2026-10-01.
 | F-02 | D-07 §4.4 | `policyd` leaves the floor. The Agentic profile installs `eclipseos-agents`; no other profile does. Enabling it later is `pacman -S eclipseos-agents` until COMP-10's trusted admin prompt makes a Settings button possible | yes |
 | F-03 | COMP-16 Phase 2; COMP-15 §2 | Phase 2 suites run in CI with the `agents` hook on. One added test: with the hook off, no agent global is reachable and no agent socket file exists | yes |
 | F-04 | ADR 0066 add-ons | `fog-activity` depends on `eclipseos-agents` | yes |
-| F-05 | COMP-01 §6 | abyss gets the `policyd` key by dialing `policyd` and authenticating the peer (session uid via `SO_PEERCRED`, `policyd.service` cgroup), then pins it for the session; a changed key on reconnect is refused. Replaces the root-owned `/etc/eclipse/policyd.pub`, which a per-user `policyd` (D-01 §3.4) cannot use | yes |
+| F-05 | COMP-01 §6 | abyss gets the `policyd` key by dialing `policyd` and authenticating the peer (session uid via `SO_PEERCRED`, `ec-policyd.service` cgroup, ADR 0070), then pins it for the session; a changed key on reconnect is refused. Replaces the root-owned `/etc/eclipse/policyd.pub`, which a per-user `policyd` (D-01 §3.4) cannot use | yes |
 
 | F-06 | C-00 §1.3, §8.1; COMP-01 §5; COMP-08 preamble; COMP-13 §3; ADR 0066, 0069 | *(2026-10-01, owner ruling)* The agent socket is `$XDG_RUNTIME_DIR/eclipse/ec-agent.sock`, mode 0600, beside `policyd.sock`. A second compositor (the nested test session) overrides it by environment. Closes Appendix C open item 1 | yes |
 | F-07 | COMP-08 §3; S-01 §3 | *(2026-10-01, owner ruling)* A handle the agent cannot see is indistinguishable from one that never existed: `invalid_argument`, detail `handle`, same code path. `out_of_scope` stays for a visible target excluded by a held capability's scope | yes |
 | F-08 | S-01 §6 (policyd unavailable) | *(2026-10-01, owner ruling)* COMP-01 §6 governs: when `policyd` dies, every agent pauses until it reconnects with the pinned key. "Existing grants remain valid until expiry" is withdrawn, since revocation cannot reach abyss while `policyd` is down | yes |
 | F-09 | COMP-08 §1 | `set_policy_key` is removed: the key arrives over the dialled `policyd` link (F-05), never over Wayland | yes |
-| F-10 | C-00 §17 | `policyd`'s unit is `policyd.service`, as shipped | yes |
+| F-10 | C-00 §17 | `policyd`'s unit is `ec-policyd.service`, as shipped (renamed from `policyd.service` by ADR 0070) | yes |
 | F-11 | S-04 §1.1 | *(2026-10-01, owner ruling)* A `grant` record carries the signed grant (COSE_Sign1) rather than its KDL, since only the signed form can be checked, plus readable `issuer` and `reason`. A `revoke` record lists every grant one operation revoked, so closing a task is one record, never a partial revocation | yes |
 | F-12 | COMP-12 §1, §6 | *(2026-10-01, owner ruling)* An agent whose records cannot be accepted is answered `paused` and its request does nothing, rather than the request blocking. The agent retries; it already handles `paused` from the `policyd`-down path, and the compositor holds no waiting requests | yes |
 | F-13 | COMP-12 §1; S-04 §1.1 | *(2026-10-01, owner ruling)* The gap marker is a `lifecycle` record from `system:abyss`, event `audit_gap`, with `dropped`: the number of human-side records the ring had no room for. No new kind | yes |
