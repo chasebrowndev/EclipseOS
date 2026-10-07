@@ -8,8 +8,8 @@
 //! fractional output scale takes the nearer of the two, and the GPU scales
 //! that last fraction; there is no third atlas and no smearing hack.
 //!
-//! This is a separate face from [`crate::font`] (Spleen, 1-bit), which
-//! trusted UI keeps using unchanged.
+//! This is a separate set from [`crate::glyphs`], the trusted UI's, which
+//! keeps an exact integer grid at every scale.
 //!
 //! Layout is always done in 1x logical metrics, which every scale shares:
 //! a column is [`ADVANCE`] logical px wide whatever atlas draws it, so a

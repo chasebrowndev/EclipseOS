@@ -15,6 +15,7 @@ pub mod curve;
 pub mod drop;
 pub mod effects;
 pub mod font;
+pub mod glyphs;
 pub mod hud;
 pub mod hud_font;
 pub mod output_overscan;

@@ -24,42 +24,66 @@
 use smithay::input::keyboard::Keysym;
 
 use crate::render::{
-    font::{ADVANCE, GLYPH_H, LINE_H},
+    glyphs::{ADVANCE, CELL_H as GLYPH_H, LINE_H},
     text::{self, Canvas, Raster, Rgba},
 };
 
 /// Fixed palette, not themeable (§5: a themeable trusted surface is a
-/// spoofable one). Gold on near-black, like the rest of the system chrome.
-pub(super) const PANEL: Rgba = [0.020, 0.016, 0.012, 1.0];
-pub(super) const EDGE: Rgba = [1.0, 0.72, 0.20, 1.0];
-pub(super) const HEADING: Rgba = [1.0, 0.78, 0.26, 1.0];
-pub(super) const BODY: Rgba = [0.87, 0.76, 0.47, 1.0];
-/// Fact labels: dimmer than the value beside them, which is what the human
-/// must read. Bold stays for the heading and the warning.
-pub(super) const LABEL: Rgba = [0.66, 0.55, 0.30, 1.0];
-/// The warning line. Brighter than the body and a different hue, so an
-/// altered widget does not read like routine text (§3.2, habituation).
-pub(super) const WARN: Rgba = [1.0, 0.36, 0.20, 1.0];
-/// An irreversible request's edge (§3.2): a different hue from every routine
-/// prompt, so habituation on routine prompts does not carry over.
-const ACCENT: Rgba = [1.0, 0.36, 0.20, 1.0];
-/// The personal secret's frame.
-pub(super) const PHRASE_GROUND: Rgba = [0.10, 0.075, 0.03, 1.0];
-/// The untrusted block sits on a different ground with its own dim edge, so it
-/// cannot pass for the panel around it.
-const WELL: Rgba = [0.070, 0.060, 0.050, 1.0];
-const WELL_EDGE: Rgba = [0.40, 0.29, 0.09, 1.0];
-const WELL_TEXT: Rgba = [0.80, 0.80, 0.78, 1.0];
-pub(super) const INK: Rgba = [0.020, 0.016, 0.012, 1.0];
+/// spoofable one). STYLE.md's warm near-black and hairlines, compiled in:
+/// translucent tokens are pre-composited over the ground, so nothing here
+/// depends on what is behind the panel.
+pub(super) const PANEL: Rgba = [0.071, 0.063, 0.043, 1.0];
+/// The panel's hairline: white at .14 over the ground.
+pub(super) const EDGE: Rgba = [0.200, 0.195, 0.177, 1.0];
+pub(super) const HEADING: Rgba = [1.0, 1.0, 1.0, 1.0];
+pub(super) const BODY: Rgba = [1.0, 1.0, 1.0, 0.74];
+/// A fact's value: what the human must read, so brighter than the body.
+pub(super) const VALUE: Rgba = [1.0, 1.0, 1.0, 0.92];
+/// Fact labels: dimmer than the value beside them.
+pub(super) const LABEL: Rgba = [1.0, 1.0, 1.0, 0.46];
+/// The warning line. A different hue from everything else, so an altered
+/// widget does not read like routine text (§3.2, habituation).
+pub(super) const WARN: Rgba = [1.0, 0.48, 0.35, 1.0];
+/// An irreversible request's edge (§3.2): the warning hue, twice as heavy,
+/// so habituation on routine prompts does not carry over.
+const ACCENT: Rgba = WARN;
+/// The accent (#f2c33c): the armed control, the focused button's label.
+pub(super) const GOLD: Rgba = [0.949, 0.765, 0.235, 1.0];
+/// The personal secret's frame: gold at .09 over the ground, a .30 rim and
+/// the accent's text tint. The only gold-tinted ground on any trusted
+/// surface, so it reads as the anchor and not one more box.
+pub(super) const PHRASE_GROUND: Rgba = [0.150, 0.126, 0.060, 1.0];
+pub(super) const PHRASE_RIM: Rgba = [0.333, 0.275, 0.102, 1.0];
+pub(super) const PHRASE_TEXT: Rgba = [0.961, 0.812, 0.361, 1.0];
+/// The untrusted block sits on a darker ground with its own dim rim and
+/// neutral grey text, so it cannot pass for the panel around it.
+const WELL: Rgba = [0.035, 0.031, 0.024, 1.0];
+const WELL_EDGE: Rgba = [0.110, 0.106, 0.098, 1.0];
+const WELL_TEXT: Rgba = [0.80, 0.78, 0.75, 1.0];
+/// The secret-entry field's rim while it takes the keyboard.
+const ENTRY_EDGE: Rgba = [0.470, 0.390, 0.140, 1.0];
+/// Text on the gold control.
+pub(super) const INK: Rgba = PANEL;
+/// Buttons: glass lozenges, a step clearer when focused (STYLE.md, "the
+/// focused chip"), gold on the label only.
+const BTN: Rgba = [0.118, 0.110, 0.090, 1.0];
+const BTN_LINE: Rgba = [0.180, 0.175, 0.157, 1.0];
+const BTN_FOCUS: Rgba = [0.180, 0.175, 0.157, 1.0];
+const BTN_FOCUS_LINE: Rgba = [0.310, 0.300, 0.280, 1.0];
+/// Corner radii: the panel, then the frames inside it (concentric enough at
+/// this padding), then pills.
+pub(super) const PANEL_R: usize = 16;
+pub(super) const FRAME_R: usize = 10;
+pub(super) const PILL: usize = usize::MAX;
 
 /// Text columns. Fixed: the caller has no say in the panel's width.
 pub const COLS: usize = 60;
-pub(super) const PAD: usize = 16;
+pub(super) const PAD: usize = 20;
 pub(super) const BORDER: usize = 2;
-const GAP: usize = 10;
-const WELL_PAD: usize = 8;
-const BTN_PAD: usize = 12;
-const BTN_H: usize = GLYPH_H + 8;
+const GAP: usize = 12;
+pub(super) const WELL_PAD: usize = 10;
+const BTN_PAD: usize = 16;
+const BTN_H: usize = GLYPH_H + 14;
 const BTN_GAP: usize = 12;
 /// Lines of untrusted text kept. The rest is dropped, and says so.
 pub const MAX_UNTRUSTED_LINES: usize = 8;
@@ -418,11 +442,10 @@ pub struct Layout {
     pub buttons: Vec<(usize, usize, usize, usize)>,
 }
 
-/// Taller than the entry field, and framed twice as heavy below: the personal
+/// Taller than the entry field, on its own gold-tinted ground: the personal
 /// secret is the anti-spoofing anchor and must not read as one more box.
-pub(super) const PHRASE_H: usize = LINE_H + 10;
-pub(super) const PHRASE_EDGE: usize = 2;
-const ENTRY_H: usize = LINE_H + 8;
+pub(super) const PHRASE_H: usize = LINE_H + 14;
+const ENTRY_H: usize = LINE_H + 12;
 
 fn block_h(rows: usize) -> usize {
     rows * LINE_H
@@ -518,26 +541,13 @@ pub fn hit(layout: &Layout, x: i32, y: i32) -> Option<usize> {
 /// its fixed frame at the top, verbatim, or the unconfigured warning is.
 pub fn rasterize(modal: &Modal, focus: usize, scale: usize, phrase: Option<&str>) -> Raster {
     let l = layout(modal);
-    let edge = if modal.accent { ACCENT } else { EDGE };
+    let rim = if modal.accent { (2, ACCENT) } else { (1, EDGE) };
     let mut c = Canvas::new(l.w, l.h);
-    c.fill(0, 0, l.w, l.h, edge);
-    c.fill(BORDER, BORDER, l.w - BORDER * 2, l.h - BORDER * 2, PANEL);
+    c.round(0, 0, l.w, l.h, PANEL_R, PANEL, Some(rim));
 
     let x0 = BORDER + PAD;
     let ww = COLS * ADVANCE;
-    c.fill(x0 - WELL_PAD, BORDER + PAD, ww + WELL_PAD * 2, PHRASE_H, EDGE);
-    c.fill(
-        x0 - WELL_PAD + PHRASE_EDGE,
-        BORDER + PAD + PHRASE_EDGE,
-        ww + WELL_PAD * 2 - 2 * PHRASE_EDGE,
-        PHRASE_H - 2 * PHRASE_EDGE,
-        PHRASE_GROUND,
-    );
-    let py = BORDER + PAD + (PHRASE_H - GLYPH_H) / 2;
-    match phrase {
-        Some(p) => c.text(x0, py, p, HEADING, true),
-        None => c.text(x0, py, UNSPOOFED, WARN, false),
-    }
+    phrase_frame(&mut c, x0, BORDER + PAD, ww, phrase);
 
     let mut y = l.heading_y;
     c.text(x0, y, modal.heading, HEADING, true);
@@ -560,53 +570,72 @@ pub fn rasterize(modal: &Modal, focus: usize, scale: usize, phrase: Option<&str>
     for (i, (label, value)) in modal.facts.iter().enumerate() {
         let fy = l.facts_y + i * LINE_H;
         c.text(x0, fy, label, LABEL, false);
-        c.text(x0 + (MAX_LABEL + 1) * ADVANCE, fy, value, BODY, false);
+        c.text(x0 + (MAX_LABEL + 1) * ADVANCE, fy, value, VALUE, false);
     }
-    c.text(x0, l.well_y - LINE_H, modal.well_label, BODY, false);
+    c.text(x0, l.well_y - LINE_H, modal.well_label, LABEL, false);
 
-    c.fill(x0 - WELL_PAD, l.well_y, ww + WELL_PAD * 2, l.well_h, WELL_EDGE);
-    c.fill(
-        x0 - WELL_PAD + 1,
-        l.well_y + 1,
-        ww + WELL_PAD * 2 - 2,
-        l.well_h - 2,
+    c.round(
+        x0 - WELL_PAD,
+        l.well_y,
+        ww + WELL_PAD * 2,
+        l.well_h,
+        FRAME_R,
         WELL,
+        Some((1, WELL_EDGE)),
     );
     for (i, line) in modal.untrusted.iter().enumerate() {
         c.text(x0, l.well_y + WELL_PAD + i * LINE_H, line, WELL_TEXT, false);
     }
     if let Some(e) = &modal.entry {
-        c.fill(x0 - WELL_PAD, l.entry_y, ww + WELL_PAD * 2, ENTRY_H, EDGE);
-        c.fill(
-            x0 - WELL_PAD + 1,
-            l.entry_y + 1,
-            ww + WELL_PAD * 2 - 2,
-            ENTRY_H - 2,
-            PANEL,
+        c.round(
+            x0 - WELL_PAD,
+            l.entry_y,
+            ww + WELL_PAD * 2,
+            ENTRY_H,
+            FRAME_R,
+            WELL,
+            Some((1, ENTRY_EDGE)),
         );
         let ty = l.entry_y + (ENTRY_H - GLYPH_H) / 2;
         let typed = e.text.as_str();
         c.text(x0, ty, typed, HEADING, false);
         // The caret: a bar after the last character.
         let cx = x0 + typed.chars().count() * ADVANCE;
-        c.fill(cx, ty, 2, GLYPH_H, HEADING);
+        c.fill(cx, ty + 1, 2, GLYPH_H - 2, GOLD);
     }
 
     for (i, (b, &(bx, by, bw, bh))) in modal.buttons.iter().zip(&l.buttons).enumerate() {
         let tx = bx + BTN_PAD;
         let ty = by + (bh - GLYPH_H) / 2 + 1;
         if i == focus {
-            c.fill(bx, by, bw, bh, EDGE);
-            // Not bold: a 1 px double strike fills the counters of dark
-            // glyphs on the bright fill. The inverted fill is the focus cue.
-            c.text(tx, ty, b.label, INK, false);
+            c.round(bx, by, bw, bh, PILL, BTN_FOCUS, Some((1, BTN_FOCUS_LINE)));
+            c.text(tx, ty, b.label, PHRASE_TEXT, true);
         } else {
-            c.fill(bx, by, bw, bh, EDGE);
-            c.fill(bx + 1, by + 1, bw - 2, bh - 2, PANEL);
-            c.text(tx, ty, b.label, HEADING, false);
+            c.round(bx, by, bw, bh, PILL, BTN, Some((1, BTN_LINE)));
+            c.text(tx, ty, b.label, VALUE, false);
         }
     }
     c.into_raster(scale.max(1))
+}
+
+/// The personal secret's frame at `(x0, y)` around a `ww`-wide text column:
+/// the secret verbatim, or the unconfigured notice. Shared with the commit
+/// slot card, so the anchor looks the same on every trusted surface.
+pub(super) fn phrase_frame(c: &mut Canvas, x0: usize, y: usize, ww: usize, phrase: Option<&str>) {
+    c.round(
+        x0 - WELL_PAD,
+        y,
+        ww + WELL_PAD * 2,
+        PHRASE_H,
+        FRAME_R,
+        PHRASE_GROUND,
+        Some((1, PHRASE_RIM)),
+    );
+    let py = y + (PHRASE_H - GLYPH_H) / 2 + 1;
+    match phrase {
+        Some(p) => c.text(x0, py, p, PHRASE_TEXT, true),
+        None => c.text(x0, py, UNSPOOFED, WARN, false),
+    }
 }
 
 #[cfg(test)]
@@ -755,9 +784,17 @@ mod tests {
 
     #[test]
     fn the_panel_is_opaque() {
-        // Nothing behind a prompt may show through it and be read as part of it.
+        // Nothing behind a prompt may show through it and be read as part of
+        // it: only the rounded corners are cut, and nothing is translucent.
         let m = modal("echo hi");
         let r = rasterize(&m, m.safe(), 1, None);
-        assert!(r.px.chunks(4).all(|p| p[3] == 255));
+        let (w, h) = (r.w as usize, r.h as usize);
+        for y in 0..h {
+            for x in 0..w {
+                let a = r.px[(y * w + x) * 4 + 3];
+                let corner = (x < PANEL_R || x >= w - PANEL_R) && (y < PANEL_R || y >= h - PANEL_R);
+                assert!(corner || a == 255, "({x}, {y}) is see-through");
+            }
+        }
     }
 }

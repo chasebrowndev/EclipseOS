@@ -631,8 +631,7 @@ fn dump_trusted_surfaces() {
     };
     let dir = std::path::PathBuf::from(dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let write = |name: &str, m: &modal::Modal, phrase: Option<&str>| {
-        let r = modal::rasterize(m, m.safe(), 2, phrase);
+    let raw = |name: &str, r: &crate::render::text::Raster| {
         let mut f = std::fs::File::create(dir.join(format!("{name}.pam"))).unwrap();
         write!(
             f,
@@ -642,6 +641,12 @@ fn dump_trusted_surfaces() {
         .unwrap();
         f.write_all(&r.px).unwrap();
     };
+    let write = |name: &str, m: &modal::Modal, phrase: Option<&str>| {
+        raw(name, &modal::rasterize(m, m.safe(), 2, phrase));
+    };
+    for (name, r) in commit::dump_cards() {
+        raw(name, &r);
+    }
     let ask = consent::Ask {
         principal: "agent:research-7".into(),
         action: "Click \"Send\"".into(),
