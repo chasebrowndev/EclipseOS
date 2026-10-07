@@ -960,6 +960,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-console"
+version = "0.1.0"
+dependencies = [
+ "ec-console-client",
+ "ec-ui",
+ "iced",
+ "libc",
+ "raw-window-handle",
+ "serde_json",
+]
+
+[[package]]
+name = "ec-console-client"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+]
+
+[[package]]
 name = "ec-hyperion-bar"
 version = "0.1.0"
 dependencies = [

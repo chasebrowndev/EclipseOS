@@ -2,7 +2,7 @@
 //! Where each tray entry lives: `bar.tray.pinned` and `bar.tray.hidden` read
 //! as three lanes, and every move written back as those two lists.
 //!
-//! The rules are the taskbar's (`hyperion/src/view.rs::tray_entries`), not
+//! The rules are the taskbar's (`ec-hyperion-bar/src/widgets/tray.rs`), not
 //! this app's: hidden wins over pinned, anything neither pinned nor hidden is
 //! in the overflow drawer, and an unset `pinned` pins nothing.
 //!
@@ -42,6 +42,10 @@ pub struct Tray {
     pub hidden: Vec<String>,
     /// Ids of the status-notifier items running now, first seen first.
     pub live: Vec<String>,
+    /// Ids this pane has listed before this session (TRAY-01). An entry
+    /// that is not running and was moved to the drawer is named in neither
+    /// list, so without this it would drop out of the pane.
+    pub seen: Vec<String>,
 }
 
 /// A move, as the writes it needs. `None` leaves that key alone.
@@ -67,6 +71,7 @@ impl Tray {
             pinned: strings(pinned),
             hidden: strings(hidden).unwrap_or_default(),
             live: Vec::new(),
+            seen: Vec::new(),
         }
     }
 
@@ -77,10 +82,14 @@ impl Tray {
 
     /// Every id there is anything to say about: the live items, then
     /// whatever else the two lists name (an app that is not running keeps its
-    /// place), first mention first.
+    /// place), then whatever this pane listed earlier, first mention first.
     pub fn ids(&self) -> Vec<String> {
         let mut all: Vec<String> = Vec::new();
-        let named = self.wanted().into_iter().chain(self.hidden.iter().cloned());
+        let named = self
+            .wanted()
+            .into_iter()
+            .chain(self.hidden.iter().cloned())
+            .chain(self.seen.iter().cloned());
         for id in self.live.iter().cloned().chain(named) {
             if !all.contains(&id) {
                 all.push(id);
@@ -290,6 +299,17 @@ mod tests {
         assert_eq!(t.ids(), ["spotify", "org.syncthing", "steam", "nm-applet"]);
         assert_eq!(t.lane_of("spotify"), Lane::Overflow);
         assert_eq!(t.in_lane(Lane::Overflow), ["spotify"]);
+    }
+
+    #[test]
+    fn a_stopped_entry_moved_to_the_drawer_stays_listed() {
+        let before = tray(json!(["steam"]), json!([]));
+        let w = before.moved("steam", Lane::Overflow);
+        let mut after = tray(json!(w.pinned.unwrap()), json!([]));
+        assert!(!after.ids().contains(&"steam".to_owned()));
+        after.seen = before.ids();
+        assert_eq!(after.ids(), ["steam"]);
+        assert_eq!(after.in_lane(Lane::Overflow), ["steam"]);
     }
 
     #[test]

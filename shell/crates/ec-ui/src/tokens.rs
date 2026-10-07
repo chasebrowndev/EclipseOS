@@ -942,6 +942,12 @@ pub mod motion {
     pub const REVEAL_MS: u64 = 1200;
     /// Travel under which a grip's press and release is a tap, not a drag.
     pub const TAP_SLOP: f32 = 4.0;
+    /// How long a finger rests on something before it counts as a long
+    /// press: the touch stand-in for a right click.
+    pub const LONG_PRESS_MS: u64 = 500;
+    /// Travel past which a resting finger is moving, not pressing. Wider
+    /// than [`TAP_SLOP`]: a held fingertip drifts more than a tap does.
+    pub const LONG_PRESS_SLOP: f32 = 8.0;
     /// How far ahead a released drag is projected along its velocity, in
     /// seconds, to choose the rest it snaps to: a flick carries past the
     /// midpoint the finger never reached.
@@ -1033,6 +1039,51 @@ pub mod secret {
     pub const H: f32 = 228.0;
     /// Air between the heading's kind label and the target's name.
     pub const TITLE_GAP: f32 = 4.0;
+}
+
+/// The agent console (A-08 §8, D-05): a fleet column beside one task's
+/// thread, with a reply bar or a compositor-drawn slot at the foot.
+pub mod console {
+    /// The window's opening size: the spec window (STYLE.md).
+    pub const WINDOW_W: f32 = 1120.0;
+    pub const WINDOW_H: f32 = 720.0;
+    /// The fleet column. Wider than the settings rail: a row carries a
+    /// statement, an agent and a state.
+    pub const FLEET_W: f32 = 300.0;
+    /// Below this the fleet and the thread stack and one is shown at a time.
+    pub const NARROW: f32 = 720.0;
+    /// The thread, the header and the foot share one reading measure.
+    pub const THREAD_MAX: f32 = 760.0;
+    /// The commit slot's footprint until the compositor reports its own
+    /// (`geometry`). Never drawn into; only room kept free.
+    pub const HOLE_W: f32 = 560.0;
+    pub const HOLE_H: f32 = 120.0;
+    /// Body line height as a multiple of the type size: messages are prose.
+    pub const LINE: f32 = 1.45;
+    /// A thread entry's share of the row, out of four: a human post is
+    /// pushed to the right edge and an agent post to the left.
+    pub const BUBBLE_PORTION: u16 = 3;
+    /// The send button's side.
+    pub const SEND: f32 = 32.0;
+    /// The reply editor's grow range, in px.
+    pub const EDITOR_MIN: f32 = 22.0;
+    pub const EDITOR_MAX: f32 = 140.0;
+    /// The statement editor in the composer, same idea at hero scale.
+    pub const COMPOSER_MIN: f32 = 96.0;
+    pub const COMPOSER_MAX: f32 = 240.0;
+    /// Indent of a subtask under its parent.
+    pub const SUB_INDENT: f32 = 16.0;
+    /// Characters of a statement a fleet row shows before it ends in `…`.
+    pub const ROW_CHARS: usize = 26;
+    /// Characters of a history row's statement.
+    pub const HISTORY_CHARS: usize = 26;
+    /// The deadline hero's bar height.
+    pub const BAR_H: f32 = 4.0;
+    /// The cancel menu's width.
+    pub const MENU_W: f32 = 236.0;
+    /// Resolution of a fractional bar: its two halves are weighted out of
+    /// this many parts.
+    pub const BAR_PARTS: u16 = 1000;
 }
 
 /// Clock format defaults. Taste, not mechanism: the live values are

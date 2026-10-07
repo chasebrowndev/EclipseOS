@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The privileged agent socket and `eclipse_agent_v1` (COMP-08), M11 subset:
-//! admission and the read-only scene queries.
+//! The privileged agent socket and `eclipse_agent_v1` (COMP-08), M11, M13 and
+//! M14 subsets: admission, the read-only scene queries (and `wait_for`,
+//! [`wait`]), the per-agent seat ([`seat`]) and what M14 adds around it:
+//! atomic batches ([`atomic`]), request dedupe ([`dedupe`]), toplevel
+//! generations ([`generation`]) and compat locks ([`lock`]).
 //!
 //! Not TCB, and decides nothing. Grants are admitted by
 //! [`crate::policy::Agent`], and every window an agent learns about comes
@@ -49,16 +52,43 @@ use crate::audit;
 use crate::policy::{scene, AdmitError, Agent, Views};
 use crate::state::{AbyssState, ClientState};
 
+pub mod atomic;
+pub mod dedupe;
+pub mod generation;
+pub mod lock;
+pub mod seat;
+pub mod wait;
+
 #[cfg(test)]
 mod leakage;
 #[cfg(test)]
+mod seat_tests;
+#[cfg(test)]
 mod tests;
 
-const MANAGER_VERSION: u32 = 1;
+/// Version 2 adds `eclipse_agent_v1.get_seat` and `eclipse_agent_seat_v1`
+/// (M13); version 3 (M14) adds atomic batches, `action`, `compat_lock`,
+/// `eclipse_scene_v1.wait_for` and generations. The agent object it creates
+/// carries the manager's version.
+const MANAGER_VERSION: u32 = 3;
 
 /// How long `(agent, req_id)` results are kept (COMP-08 §2.2 default).
-/// Announced on bind; the dedupe table itself is not built yet.
-const DEDUPE_WINDOW_S: u32 = 60;
+/// Announced on bind; [`dedupe`] keeps them.
+const DEDUPE_WINDOW_S: u32 = dedupe::WINDOW.as_secs() as u32;
+
+/// What the M14 machinery keeps per agent object, beside its
+/// [`policy::Agent`](crate::policy::Agent) (which is TCB and not touched).
+/// Created on first use, dropped with the agent.
+#[derive(Debug, Default)]
+pub(crate) struct AgentAux {
+    /// `(agent, req_id) -> result` (COMP-08 §2.2).
+    pub(crate) dedupe: dedupe::Dedupe,
+    /// The open atomic batch, if any.
+    pub(crate) batch: Option<atomic::Batch>,
+    /// `expected_generation` of requests in flight, `(req_id, act, expected)`:
+    /// checked at step 8 by [`seat::execute`].
+    pub(crate) expect: Vec<(u32, crate::policy::enforce::Act, u32)>,
+}
 
 /// The socket, the global and the live agent objects.
 #[derive(Debug, Default)]
@@ -74,7 +104,17 @@ pub struct Agents {
     /// `(id, agent)`. The slot is `None` only while a request has the agent
     /// taken out, so the scene filter can borrow the state alongside it.
     slots: Vec<(u64, Option<Agent>)>,
+    /// The client each agent object belongs to, so terminate can end it.
+    owners: Vec<(u64, ClientId)>,
     next_id: u64,
+    /// Per-agent M14 state, `(id, aux)`.
+    aux: Vec<(u64, AgentAux)>,
+    /// Toplevel generations (COMP-08 §3), across agents.
+    pub(crate) generations: generation::Generations,
+    /// Compat locks held by agents (COMP-04 §7).
+    pub(crate) locks: lock::Locks,
+    /// Pending `wait_for`s.
+    pub(crate) waits: wait::Waits,
     /// Clients accepted on the socket, so hook-off can disconnect them.
     /// (wayland-backend's `with_all_clients` spins on the system backend.)
     clients: Vec<ClientId>,
@@ -84,6 +124,120 @@ pub struct Agents {
 }
 
 impl Agents {
+    /// `policyd` revoked every grant `principal` holds: drop them from every
+    /// agent object it has, and return the tasks they were on.
+    pub(crate) fn revoke_principal(&mut self, principal: &str) -> Vec<ec_policy_eval::Ulid> {
+        let mut tasks = Vec::new();
+        for (_, slot) in &mut self.slots {
+            if let Some(a) = slot.as_mut().filter(|a| a.principal() == principal) {
+                tasks.extend(a.task_id());
+                a.revoke(|_| true);
+            }
+        }
+        tasks
+    }
+
+    pub(crate) fn take_agent(&mut self, id: u64) -> Option<Agent> {
+        self.take(id)
+    }
+
+    pub(crate) fn put_agent(&mut self, id: u64, agent: Agent) {
+        self.put(id, agent)
+    }
+
+    pub(crate) fn peek_agent(&self, id: u64) -> Option<&Agent> {
+        self.slots
+            .iter()
+            .find(|(i, _)| *i == id)
+            .and_then(|(_, a)| a.as_ref())
+    }
+
+    pub(crate) fn with_agent<R>(&mut self, id: u64, f: impl FnOnce(&mut Agent) -> R) -> Option<R> {
+        self.slots
+            .iter_mut()
+            .find(|(i, _)| *i == id)
+            .and_then(|(_, a)| a.as_mut())
+            .map(f)
+    }
+
+    /// Agent `id`'s M14 state, made on first use. `None` for an agent that
+    /// does not exist.
+    pub(crate) fn aux_mut(&mut self, id: u64) -> Option<&mut AgentAux> {
+        if let Some(i) = self.aux.iter().position(|(a, _)| *a == id) {
+            return Some(&mut self.aux[i].1);
+        }
+        if !self.slots.iter().any(|(i, _)| *i == id) {
+            return None;
+        }
+        self.aux.push((id, AgentAux::default()));
+        self.aux.last_mut().map(|(_, a)| a)
+    }
+
+    pub fn task_of(&self, id: u64) -> Option<ec_policy_eval::Ulid> {
+        self.peek_agent(id).and_then(Agent::task_id)
+    }
+
+    /// Every live agent object's id and principal, in admission order.
+    pub fn list(&self) -> Vec<(u64, String)> {
+        self.slots
+            .iter()
+            .filter_map(|(i, a)| a.as_ref().map(|a| (*i, a.principal().to_owned())))
+            .collect()
+    }
+
+    pub fn principal_of(&self, id: u64) -> Option<String> {
+        self.slots
+            .iter()
+            .find(|(i, _)| *i == id)
+            .and_then(|(_, a)| a.as_ref())
+            .map(|a| a.principal().to_owned())
+    }
+
+    /// The scopes of `id`'s live grants, for the emergency panel.
+    pub fn grants_of(&self, id: u64) -> Vec<String> {
+        self.slots
+            .iter()
+            .find(|(i, _)| *i == id)
+            .and_then(|(_, a)| a.as_ref())
+            .map(Agent::describe_grants)
+            .unwrap_or_default()
+    }
+
+    /// Put an already-admitted agent in a slot without a client behind it.
+    #[cfg(test)]
+    pub(crate) fn insert_for_test(&mut self, agent: Agent) -> u64 {
+        self.next_id += 1;
+        let id = self.next_id;
+        self.slots.push((id, Some(agent)));
+        id
+    }
+
+    /// Drop every grant agent `id` holds.
+    pub(crate) fn revoke_id(&mut self, id: u64) {
+        if let Some(a) = self
+            .slots
+            .iter_mut()
+            .find(|(i, _)| *i == id)
+            .and_then(|(_, a)| a.as_mut())
+        {
+            a.revoke(|_| true);
+        }
+    }
+
+    /// End agent `id`'s client. Its objects are destroyed with it, and the
+    /// slot goes in `destroyed`.
+    pub(crate) fn disconnect(&mut self, id: u64) {
+        let Some(client) = self.owners.iter().find(|(i, _)| *i == id).map(|(_, c)| c.clone()) else {
+            return;
+        };
+        if let Some(dh) = &self.display {
+            dh.backend_handle()
+                .kill_client(client, DisconnectReason::ConnectionClosed);
+        }
+        self.owners.retain(|(i, _)| *i != id);
+        self.slots.retain(|(i, _)| *i != id);
+    }
+
     /// Whether the privileged socket is up.
     pub fn listening(&self) -> bool {
         self.path.is_some()
@@ -267,6 +421,7 @@ fn stop(state: &mut AbyssState) {
         }
     }
     state.agents.slots.clear();
+    state.agents.owners.clear();
     cleanup(state);
     state.agents.path = None;
     tracing::info!("agents hook off; agent socket removed");
@@ -342,7 +497,7 @@ impl GlobalDispatch<EclipseAgentManagerV1, ()> for AbyssState {
 impl Dispatch<EclipseAgentManagerV1, ()> for AbyssState {
     fn request(
         state: &mut Self,
-        _client: &Client,
+        client: &Client,
         manager: &EclipseAgentManagerV1,
         request: eclipse_agent_manager_v1::Request,
         _data: &(),
@@ -353,14 +508,21 @@ impl Dispatch<EclipseAgentManagerV1, ()> for AbyssState {
         let Request::CreateAgent { id, grant } = request else {
             return;
         };
-        // policyd revocation push (main thread)
-        match Agent::admit(&grant, state.policy_key.as_ref(), now_ms(), |_| false) {
+        // No table is the same as no key (COMP-01 §6, COMP-11 §2): degraded
+        // mode, POLICY_UNAVAILABLE. A grant on a task policyd revoked this
+        // session is refused.
+        let key = crate::policy::table::live(state)
+            .then_some(state.policy_key.as_ref())
+            .flatten();
+        let revoked = &state.revoked;
+        match Agent::admit(&grant, key, now_ms(), |g| revoked.covers(g.task_id)) {
             Ok(agent) => {
                 state.agents.next_id += 1;
                 let aid = state.agents.next_id;
                 tracing::info!(agent = aid, principal = agent.principal(), "agent admitted");
                 audit::agent(state, audit::lifecycle(agent.principal(), "start"));
                 state.agents.slots.push((aid, Some(agent)));
+                state.agents.owners.push((aid, client.id()));
                 data_init.init(id, AgentId(aid));
             }
             Err(e) => {
@@ -418,8 +580,13 @@ impl Dispatch<EclipseAgentV1, AgentId> for AbyssState {
                     agent.post_error(Error::InvalidGrant, "no such agent");
                     return;
                 };
-                // policyd revocation push (main thread)
-                let r = a.add_grant(&grant, state.policy_key.as_ref(), now_ms(), |_| false);
+                // Same gate as admission: a table must be live, and a grant on
+                // a task policyd revoked this session is refused.
+                let key = crate::policy::table::live(state)
+                    .then_some(state.policy_key.as_ref())
+                    .flatten();
+                let revoked = &state.revoked;
+                let r = a.add_grant(&grant, key, now_ms(), |g| revoked.covers(g.task_id));
                 state.agents.put(data.0, a);
                 if let Err(e) = r {
                     let (code, msg) = refusal(e);
@@ -433,6 +600,7 @@ impl Dispatch<EclipseAgentV1, AgentId> for AbyssState {
                     );
                 }
             }
+            Request::GetSeat { id } => seat::get_seat(state, agent, data.0, id, data_init),
             Request::Destroy => {}
             _ => {}
         }
@@ -450,6 +618,15 @@ impl Dispatch<EclipseAgentV1, AgentId> for AbyssState {
             audit::agent(state, audit::lifecycle(&principal, "stop"));
         }
         state.agents.slots.retain(|(i, _)| *i != data.0);
+        state.agents.owners.retain(|(i, _)| *i != data.0);
+        // COMP-04 §3: the seat goes with its agent, releasing what it held.
+        seat::remove(state, data.0);
+        lock::release_agent(state, data.0);
+        wait::forget(state, data.0);
+        state.agents.aux.retain(|(i, _)| *i != data.0);
+        crate::policy::lifecycle::forget(state, data.0);
+        crate::policy::enforce::forget(state, data.0);
+        crate::trusted_ui::consent::withdraw(state, data.0);
     }
 }
 
@@ -474,12 +651,15 @@ impl Dispatch<EclipseSceneV1, AgentId> for AbyssState {
         let req_id = match &request {
             Request::ListToplevels { req_id, .. }
             | Request::GetToplevel { req_id, .. }
-            | Request::HitTest { req_id, .. } => *req_id,
+            | Request::HitTest { req_id, .. }
+            | Request::WaitFor { req_id, .. }
+            | Request::CancelWait { req_id } => *req_id,
             _ => return,
         };
-        // F-08: while policyd is down every agent is paused. Nothing is
-        // looked at, nothing changes, not even grant expiry.
-        if state.policy_key.is_none() {
+        // F-08: while policyd is down every agent is paused, and so is one
+        // the human paused (COMP-04 §6, COMP-10 §3.3). Nothing is looked at,
+        // nothing changes, not even grant expiry.
+        if state.policy_key.is_none() || crate::policy::lifecycle::is_paused(state, data.0) {
             result(scene, req_id, Status::Paused, "");
             return;
         }
@@ -502,7 +682,7 @@ impl Dispatch<EclipseSceneV1, AgentId> for AbyssState {
             result(scene, req_id, Status::Paused, "");
             return;
         }
-        let out = answer(state, scene, &mut agent, request);
+        let out = answer(state, scene, data.0, &mut agent, request);
         let us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
         audit::agent(
             state,
@@ -522,6 +702,8 @@ fn describe(request: &eclipse_scene_v1::Request) -> (&'static str, audit::Args<'
         Request::ListToplevels { filter, .. } => ("list_toplevels", audit::Args::Filter(filter)),
         Request::GetToplevel { handle, .. } => ("get_toplevel", audit::Args::Handle(u64::from(*handle))),
         Request::HitTest { x, y, .. } => ("hit_test", audit::Args::Point(i64::from(*x), i64::from(*y))),
+        Request::WaitFor { .. } => ("wait_for", audit::Args::None),
+        Request::CancelWait { .. } => ("cancel_wait", audit::Args::None),
         _ => ("unknown", audit::Args::None),
     }
 }
@@ -587,6 +769,7 @@ impl Outcome {
 fn answer(
     state: &mut AbyssState,
     scene: &EclipseSceneV1,
+    aid: u64,
     agent: &mut Agent,
     request: eclipse_scene_v1::Request,
 ) -> Outcome {
@@ -596,7 +779,9 @@ fn answer(
         let req_id = match request {
             Request::ListToplevels { req_id, .. }
             | Request::GetToplevel { req_id, .. }
-            | Request::HitTest { req_id, .. } => req_id,
+            | Request::HitTest { req_id, .. }
+            | Request::WaitFor { req_id, .. }
+            | Request::CancelWait { req_id } => req_id,
             _ => return Outcome::unknown(),
         };
         return Outcome::refused(scene, req_id, Status::NoCapability, SCENE_LIST, SCENE_LIST);
@@ -648,8 +833,38 @@ fn answer(
             if !scene::readable(state, views.read, &window) {
                 return Outcome::refused(scene, req_id, unreadable(views), SCENE_READ, SCENE_READ);
             }
-            scene.hit(req_id, handle, local.x as i32, local.y as i32, 0, 0);
+            let generation = generation::of(state, &window);
+            scene.hit(req_id, handle, local.x as i32, local.y as i32, 0, generation);
             Outcome::ok(SCENE_READ)
+        }
+        Request::WaitFor {
+            req_id,
+            predicate,
+            timeout_ms,
+        } => {
+            if timeout_ms == 0 || timeout_ms > wait::MAX_TIMEOUT_MS {
+                return Outcome::invalid(scene, req_id, SCENE_LIST, "timeout_ms");
+            }
+            let pred = match wait::parse(state, view, &predicate) {
+                Ok(p) => p,
+                Err(detail) => return Outcome::invalid(scene, req_id, SCENE_LIST, detail),
+            };
+            // Already true: answer now, park nothing.
+            if let Some(hit) = wait::holds_now(state, view, &pred) {
+                wait::answer_now(scene, req_id, hit);
+                return Outcome::ok(SCENE_LIST);
+            }
+            match wait::add(state, aid, req_id, scene, pred, timeout_ms) {
+                Ok(()) => Outcome::ok(SCENE_LIST),
+                Err((status, detail)) => Outcome::refused(scene, req_id, status, SCENE_LIST, detail),
+            }
+        }
+        Request::CancelWait { req_id } => {
+            if wait::cancel(state, aid, req_id) {
+                Outcome::ok(SCENE_LIST)
+            } else {
+                Outcome::invalid(scene, req_id, SCENE_LIST, "req_id")
+            }
         }
         _ => Outcome::unknown(),
     }
@@ -746,8 +961,14 @@ fn facts(state: &AbyssState, handle: u32, window: &Window) -> Facts {
     }
 }
 
-fn send_toplevel(state: &AbyssState, scene: &EclipseSceneV1, req_id: u32, handle: u32, window: &Window) {
+fn send_toplevel(state: &mut AbyssState, scene: &EclipseSceneV1, req_id: u32, handle: u32, window: &Window) {
     let t = facts(state, handle, window);
+    let fingerprint = generation::fingerprint(&t);
+    let (generation, _) =
+        state
+            .agents
+            .generations
+            .observe(u64::from(handle), fingerprint, std::time::Instant::now());
     scene.toplevel(
         req_id,
         t.handle,
@@ -765,7 +986,7 @@ fn send_toplevel(state: &AbyssState, scene: &EclipseSceneV1, req_id: u32, handle
         sensitivity(state, window),
         0,
         0,
-        0,
+        generation,
         0,
         0,
     );
@@ -774,7 +995,7 @@ fn send_toplevel(state: &AbyssState, scene: &EclipseSceneV1, req_id: u32, handle
 /// `get_toplevel`'s answer: the listing's `toplevel`, then what only
 /// `scene.read` adds. One event cannot carry both (libwayland caps an event
 /// at 20 arguments).
-fn send_detail(state: &AbyssState, scene: &EclipseSceneV1, req_id: u32, handle: u32, window: &Window) {
+fn send_detail(state: &mut AbyssState, scene: &EclipseSceneV1, req_id: u32, handle: u32, window: &Window) {
     send_toplevel(state, scene, req_id, handle, window);
     // Server-side decorations are not drawn yet, so the decorated rect is the
     // window's own. Popups and per-seat focus arrive with their milestones.

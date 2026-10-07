@@ -11,12 +11,18 @@
 //! While the link is down, `state.policy_key` is `None` and every agent is
 //! paused (S-01 §6, F-08). It is redialled every [`RETRY`] while the agents
 //! hook is on.
+//!
+//! Once the key is pinned, every further packet is a link message
+//! (`ec_policy_eval::link::FromPolicyd`, v2), handed to its owner by
+//! [`deliver`]. A packet that does not decode drops the link: a peer whose
+//! stream cannot be trusted is cut off, not partly believed. [`send`] puts a
+//! message on the audit queue, so it keeps its place among the records.
 
 use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ec_policy_eval::link::decode_key_offer;
+use ec_policy_eval::link::{decode_key_offer, FromPolicyd, ToPolicyd, MAX_MESSAGE};
 use ec_policy_eval::VerifyingKey;
 use rustix::net::{self, AddressFamily, RecvFlags, SocketAddrUnix, SocketFlags, SocketType};
 use smithay::reexports::calloop::{
@@ -42,6 +48,57 @@ pub struct Link {
     busy: bool,
     /// A changed key was offered; nothing more is dialled this session.
     refused: bool,
+    /// Receive buffer, [`MAX_MESSAGE`] once the link has been up: a table
+    /// does not fit on the stack.
+    buf: Vec<u8>,
+}
+
+/// Send `m` to `policyd`, in order with the audit stream. While the link is
+/// down it waits in the queue; a caller that needs an answer in bounded time
+/// (a deferral) runs its own timer and fails closed.
+pub fn send(state: &mut AbyssState, m: &ToPolicyd) {
+    crate::audit::message(state, m.encode());
+}
+
+/// Tests: as though `m` had arrived from policyd.
+#[cfg(test)]
+pub(crate) fn deliver_for_test(state: &mut AbyssState, m: FromPolicyd) {
+    deliver(state, m);
+}
+
+/// Hand a decoded message to the part of abyss that owns it.
+fn deliver(state: &mut AbyssState, m: FromPolicyd) {
+    match m {
+        FromPolicyd::Table { table, sig } => crate::policy::table::receive(state, &table, &sig),
+        FromPolicyd::Revoked { principal } => crate::policy::lifecycle::revoked(state, &principal),
+        FromPolicyd::DeferAnswer { req, answer } => crate::policy::enforce::defer_answer(state, req, answer),
+        FromPolicyd::Minted { req, grant } => crate::policy::enforce::minted(state, req, Some(grant)),
+        FromPolicyd::MintRefused { req } => crate::policy::enforce::minted(state, req, None),
+        FromPolicyd::AuditRecords { req, records } => {
+            crate::trusted_ui::panel::audit_records(state, req, records)
+        }
+        // Answers to messages this build does not send yet (the console
+        // wave), and agentd's pushes. Ignored, not believed: a grant reaches
+        // an agent only through admission.
+        FromPolicyd::InstallReview { req, review, display } => {
+            crate::trusted_ui::install::review(state, req, review, &display)
+        }
+        FromPolicyd::Done { req } if crate::trusted_ui::install::owns_req(state, req) => {
+            crate::trusted_ui::install::outcome(state, req, None)
+        }
+        FromPolicyd::Refused { req, reason } if crate::trusted_ui::install::owns_req(state, req) => {
+            crate::trusted_ui::install::outcome(state, req, Some(&reason))
+        }
+        FromPolicyd::Preview {
+            req,
+            preview,
+            display,
+        } => crate::trusted_ui::commit::preview(state, req, preview, &display),
+        FromPolicyd::TaskCreated { req, task } => crate::trusted_ui::commit::created(state, req, &task),
+        FromPolicyd::Done { req } => crate::trusted_ui::commit::done(state, req),
+        FromPolicyd::Refused { req, reason } => crate::trusted_ui::commit::refused(state, req, &reason),
+        FromPolicyd::TaskState { .. } | FromPolicyd::Provision { .. } => {}
+    }
 }
 
 fn socket_path() -> Option<PathBuf> {
@@ -176,8 +233,15 @@ fn pin(pinned: &mut Option<VerifyingKey>, offered: VerifyingKey) -> Pin {
 
 /// Handles one readable event. False when the link must come down.
 fn readable(state: &mut AbyssState, fd: &OwnedFd) -> bool {
-    let mut buf = [0u8; 256];
-    let n = match net::recv(fd, &mut buf, RecvFlags::DONTWAIT | RecvFlags::TRUNC) {
+    let mut buf = std::mem::take(&mut state.policy_link.buf);
+    buf.resize(MAX_MESSAGE, 0);
+    let ok = readable_into(state, fd, &mut buf);
+    state.policy_link.buf = buf;
+    ok
+}
+
+fn readable_into(state: &mut AbyssState, fd: &OwnedFd, buf: &mut [u8]) -> bool {
+    let n = match net::recv(fd, &mut *buf, RecvFlags::DONTWAIT | RecvFlags::TRUNC) {
         // With TRUNC the second value is the message's real length.
         Ok((n, full)) if n == full && n > 0 => n,
         Err(rustix::io::Errno::AGAIN) => return true,
@@ -185,11 +249,17 @@ fn readable(state: &mut AbyssState, fd: &OwnedFd) -> bool {
         // EOF, error, or a message too large to be anything we speak.
         _ => return false,
     };
-    // Only the offer is defined so far (revocation push comes later); once
-    // up, anything further is a protocol error.
     if state.policy_key.is_some() {
-        tracing::warn!("unexpected message from policyd; dropping the link");
-        return false;
+        return match FromPolicyd::decode(&buf[..n]) {
+            Ok(m) => {
+                deliver(state, m);
+                true
+            }
+            Err(e) => {
+                tracing::warn!(?e, "malformed message from policyd; dropping the link");
+                false
+            }
+        };
     }
     let offered = match decode_key_offer(&buf[..n]) {
         Ok(k) => k,

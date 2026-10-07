@@ -16,11 +16,15 @@
 
 pub mod audit;
 pub mod cbor;
+pub mod check;
+pub mod classify;
 pub mod grant;
 pub mod link;
 pub mod scope;
+pub mod table;
 pub mod task;
 
+pub use check::{check, Decision, Outcome, RequestCtx, Table};
 pub use grant::{Capability, Constraints, Grant, Rate, VerifyError};
 pub use scope::{Class, SceneView, WindowFacts};
 // Re-exported so the verifier's one key type is the one callers hold.

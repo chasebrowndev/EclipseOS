@@ -247,5 +247,25 @@ arch-chroot /mnt passwd
 say "set a password for $USERNAME"
 arch-chroot /mnt passwd "$USERNAME"
 
+# --- remote access --------------------------------------------------------------
+# Opt in, default no. openssh is in the package set; sshd stays off unless asked
+# for, and then takes keys only. A machine with no working screen can otherwise
+# only be debugged from a photograph of it.
+read -rp $'\nenable ssh for remote debugging? [y/N] ' SSH
+if [[ $SSH == [yY]* ]]; then
+  read -rp "paste one public key for $USERNAME (ssh-ed25519 AAAA...): " SSHKEY
+  [[ $SSHKEY == ssh-* || $SSHKEY == ecdsa-* || $SSHKEY == sk-* ]] || die "that does not look like a public key"
+  install -d -m0700 "/mnt/home/$USERNAME/.ssh"
+  printf '%s\n' "$SSHKEY" >"/mnt/home/$USERNAME/.ssh/authorized_keys"
+  chmod 0600 "/mnt/home/$USERNAME/.ssh/authorized_keys"
+  arch-chroot /mnt chown -R "$USERNAME:" "/home/$USERNAME/.ssh"
+  install -Dm0644 /dev/stdin /mnt/etc/ssh/sshd_config.d/10-eclipseos.conf <<'SSHD'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+SSHD
+  arch-chroot /mnt systemctl enable sshd
+fi
+
 umount -R /mnt
 say "done. reboot, pick Abyss at the greeter."

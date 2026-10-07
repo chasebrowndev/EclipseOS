@@ -33,6 +33,12 @@ ec-ctl — control the abyss compositor
   ec-ctl output ID overscan SPEC set overscan: N, or top=N,left=N,...
   ec-ctl output ID calibrate [commit|cancel]
                                       drive the on-screen overscan calibration
+  ec-ctl agents                  live agents, their state and grants
+  ec-ctl agent pause|resume ID|--all
+  ec-ctl agent terminate|revoke ID
+                                      human lifecycle controls (owner uid only)
+  ec-ctl agent install DIR       review and install an agent package from DIR
+                                      (the decision is made in a compositor modal)
   ec-ctl reload                  re-read the config
   ec-ctl addons                  installed add-ons and the hooks they turn on
   ec-ctl config list [--changed] every setting, its value and its file
@@ -351,15 +357,31 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
             json!({"handle": num(1)?, "workspace": num(2)?}),
             None,
         ),
-        "pause" | "resume" | "terminate" => {
-            // COMP-13 §2.3 spells these as `ec-ctl pause agent:research-7`.
-            // The compositor has no agents yet and answers "not implemented";
-            // the CLI surface exists so the shape does not change later.
-            let id = a(1);
-            if id.is_empty() {
-                return Err("expected an agent id".into());
+        "agent" if a(1) == "install" => {
+            // The compositor wants an absolute, existing directory and
+            // canonicalises it itself; only a relative path is resolved here.
+            let dir = a(2);
+            if dir.is_empty() {
+                return Err("agent install needs a package directory".into());
             }
-            (format!("{}_agent", a(0)), json!({"agent": id}), None)
+            let path = std::path::absolute(dir).map_err(|e| format!("{dir}: {e}"))?;
+            let path = path.to_str().ok_or("path is not UTF-8")?.to_owned();
+            ("agent_install".into(), json!({"path": path}), None)
+        }
+        "agent" => {
+            // `ec-ctl agent pause|resume ID|--all`, `agent terminate|revoke ID`.
+            // The compositor refuses `all` where it makes no sense.
+            let verb = match a(1) {
+                v @ ("pause" | "resume" | "terminate") => format!("{v}_agent"),
+                "revoke" => "revoke_grants".to_string(),
+                other => return Err(format!("expected pause|resume|terminate|revoke, got {other:?}")),
+            };
+            let params = if flags.all && a(2).is_empty() {
+                json!({"all": true})
+            } else {
+                json!({"id": num(2)?})
+            };
+            (verb, params, None)
         }
         "call" => {
             let method = a(1);
@@ -822,6 +844,38 @@ mod tests {
     fn run(args: &[&str]) -> Result<Parsed, String> {
         let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
         parse(&args, &Flags::default())
+    }
+
+    #[test]
+    fn agent_verbs_map_to_lifecycle_methods() {
+        let (m, p, _) = run(&["agent", "pause", "3"]).unwrap();
+        assert_eq!((m.as_str(), p), ("pause_agent", json!({"id": 3})));
+        let (m, p, _) = run(&["agent", "revoke", "3"]).unwrap();
+        assert_eq!((m.as_str(), p), ("revoke_grants", json!({"id": 3})));
+        let (m, p, _) = run(&["agent", "terminate", "4"]).unwrap();
+        assert_eq!((m.as_str(), p), ("terminate_agent", json!({"id": 4})));
+        let args: Vec<String> = ["agent", "resume"].iter().map(|s| (*s).to_string()).collect();
+        let (m, p, _) = parse(
+            &args,
+            &Flags {
+                all: true,
+                ..Flags::default()
+            },
+        )
+        .unwrap();
+        assert_eq!((m.as_str(), p), ("resume_agent", json!({"all": true})));
+        assert!(run(&["agent", "pause"]).is_err());
+        assert!(run(&["agent", "nuke", "1"]).is_err());
+    }
+
+    #[test]
+    fn agent_install_sends_an_absolute_path() {
+        let (m, p, _) = run(&["agent", "install", "/opt/pkg"]).unwrap();
+        assert_eq!((m.as_str(), p), ("agent_install", json!({"path": "/opt/pkg"})));
+        let (_, p, _) = run(&["agent", "install", "rel/pkg"]).unwrap();
+        let sent = p["path"].as_str().unwrap();
+        assert!(std::path::Path::new(sent).is_absolute() && sent.ends_with("rel/pkg"));
+        assert!(run(&["agent", "install"]).is_err());
     }
 
     #[test]

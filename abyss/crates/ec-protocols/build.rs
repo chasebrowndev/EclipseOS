@@ -3,4 +3,6 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=protocols/eclipse-agent-v1.xml");
+    println!("cargo:rerun-if-changed=protocols/eclipse-semantic-v1.xml");
+    println!("cargo:rerun-if-changed=protocols/eclipse-protected-surface-v1.xml");
 }

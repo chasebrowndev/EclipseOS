@@ -332,7 +332,7 @@ Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #fa
 
 ### `bind`
 
-A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPER SHIFT" "Return" { spawn "foot"; }`. `Super+Escape` and `Super+space` are reserved and cannot be bound.
+A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPER SHIFT" "Return" { spawn "foot"; }`. `Super+Escape`, `Super+Shift+Escape` and `Super+space` are reserved and cannot be bound.
 
 | action | example | what it does |
 | --- | --- | --- |
@@ -357,7 +357,8 @@ A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPE
 | `workspace-prev` | `workspace-prev` | The workspace before the active one on the focused output. |
 | `move-to-workspace <1..10>` | `move-to-workspace 3` | Send the focused window to a workspace. |
 | `move-to-output <1..255>` | `move-to-output 2` | Send the focused window to display `number`'s active workspace. |
-| `agent-override` | `agent-override` | The reserved override chord (COMP-13 §1.1). Nothing to revoke until agent seats exist. |
+| `agent-override` | `agent-override` | The reserved override chord (COMP-04 §6): pauses every agent (the emergency panel follows with COMP-10). |
+| `agent-terminate` | `agent-terminate` | The second reserved chord (COMP-04 §6): pauses every agent and terminates them via `policyd`. |
 | `agent-attention` | `agent-attention` | The pending-decision-queue chord (COMP-10 §3.10). The queue arrives with the trusted UI. |
 | `annotation-select` | `annotation-select` | Start a region selection (COMP-18 §1.3). |
 | `annotation-dismiss` | `annotation-dismiss` | Forwarded to the annotation addon on the `keybind` event stream. |

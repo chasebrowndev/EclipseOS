@@ -61,6 +61,27 @@ fn the_capture_pass_cannot_see_animation_or_ghosts() {
     }
 }
 
+/// CAP-01: captures draw the screen's effects through `still.rs`, which must
+/// hold the same line `capture.rs` does. It never reads the on-screen store's
+/// in-flight state or ghosts (so nothing mid-transition reaches a capture),
+/// and it never names the on-screen store (so a captured backdrop can only
+/// sample the redacted list it is spliced into).
+#[test]
+fn the_capture_effects_cannot_see_animation_or_the_screen_store() {
+    let src = include_str!("../../../ec-abyss-render/src/still.rs").to_ascii_lowercase();
+    for word in ["anim", "ghost", "snapshot", "annotation", "select", "drop::"] {
+        assert!(
+            !src.contains(word),
+            "still.rs references `{word}`; the capture effects must not read it"
+        );
+    }
+    let capture = include_str!("capture.rs");
+    assert!(
+        !capture.contains("state.borders") && !capture.contains("collect_elements"),
+        "capture.rs reaches the on-screen render store; its effects must come from `still`"
+    );
+}
+
 #[test]
 fn the_capture_pass_cannot_see_the_selector() {
     let src = include_str!("capture.rs");

@@ -28,6 +28,8 @@ impl XdgShellHandler for AbyssState {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        // COMP-09 §3: its semantic tree is kept for a second, then dropped.
+        crate::protocols::semantic::toplevel_destroyed(self, surface.xdg_toplevel());
         // Not `space`: a window on a hidden workspace or minimized is not
         // mapped there, and missing it leaves a dead tile in the layout.
         let found = crate::shell::owned_windows(self)

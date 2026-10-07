@@ -1,0 +1,373 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<protocol name="eclipse_semantic_v1">
+  <copyright>
+    Copyright EclipseOS contributors. Apache-2.0 (F-05 section 3, 4): clients
+    and toolkit bridges link the client side under any licence.
+  </copyright>
+
+  <description summary="live semantic tree for a toplevel (COMP-09)">
+    A client publishes a live semantic tree (P-01) for one of its own
+    toplevels. The compositor stores the authoritative copy and serves it to
+    agents; an agent query never reaches the client. Everything the client
+    says is data: rectangles are clamped, sensitivity can only be raised and
+    password values are discarded.
+
+    Published on the public socket. A client can describe only its own
+    surfaces, which object ownership enforces. Node ids are chosen by the
+    client, are nonzero and are scoped to one eclipse_semantic_surface_v1.
+    Changes are applied to the compositor's model as they arrive but are
+    invisible to agents until commit.
+  </description>
+
+  <interface name="eclipse_semantic_manager_v1" version="1">
+    <description summary="semantic tree factory">
+      The global. The compositor announces its capabilities on bind.
+    </description>
+
+    <enum name="error">
+      <description summary="manager protocol errors">
+        Codes are shared with eclipse_semantic_surface_v1.error so a client
+        sees one numbering (COMP-09 section 2).
+      </description>
+      <entry name="already_exists" value="3" summary="the toplevel already has a semantic surface"/>
+      <entry name="not_owner" value="4" summary="the toplevel belongs to another client"/>
+    </enum>
+
+    <enum name="capability">
+      <entry name="actions" value="1" summary="action_requested and ack_action are served"/>
+      <entry name="diff" value="2" summary="incremental updates are applied"/>
+      <entry name="sensitivity" value="4" summary="raise-only sensitivity is enforced"/>
+    </enum>
+
+    <request name="get_semantic_surface">
+      <description summary="attach a semantic tree to a toplevel">
+        One per toplevel; a second call while the first object lives is
+        protocol error already_exists.
+      </description>
+      <arg name="id" type="new_id" interface="eclipse_semantic_surface_v1"/>
+      <arg name="toplevel" type="object" interface="xdg_toplevel"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager"/>
+    </request>
+
+    <event name="capabilities">
+      <description summary="what this compositor serves"/>
+      <arg name="flags" type="uint" summary="bitmask of capability"/>
+    </event>
+  </interface>
+
+  <interface name="eclipse_semantic_surface_v1" version="1">
+    <description summary="the semantic tree of one toplevel">
+      Requests edit a pending model; commit applies it atomically. A commit
+      that changes structure, rectangles, roles, states, actions or
+      sensitivity bumps the tree generation; one that changes only names,
+      descriptions, values or extensions bumps the value revision.
+    </description>
+
+    <enum name="error">
+      <entry name="invalid_node" value="0" summary="unknown or zero node id, or commit with no root"/>
+      <entry name="invalid_parent" value="1" summary="parent missing, root moved, or tree too deep"/>
+      <entry name="cycle" value="2" summary="move_node would make a node its own ancestor"/>
+      <entry name="already_exists" value="3" summary="node id in use, or a root already set"/>
+      <entry name="not_owner" value="4" summary="reserved"/>
+      <entry name="lower_classification" value="5" summary="attempt to lower sensitivity, ext.irreversible or ext.credential (the wire code of v0.1 LOWER_SENSITIVITY)"/>
+      <entry name="ext_limit" value="6" summary="ext key count or size, or the model node limit, exceeded"/>
+      <entry name="uncommitted_destroy" value="7" summary="destroyed with uncommitted changes"/>
+    </enum>
+
+    <enum name="role">
+      <description summary="P-01 section 1.1, in listing order"/>
+      <entry name="window" value="0"/>
+      <entry name="dialog" value="1"/>
+      <entry name="alert" value="2"/>
+      <entry name="popup" value="3"/>
+      <entry name="menu" value="4"/>
+      <entry name="menubar" value="5"/>
+      <entry name="menuitem" value="6"/>
+      <entry name="toolbar" value="7"/>
+      <entry name="statusbar" value="8"/>
+      <entry name="panel" value="9"/>
+      <entry name="group" value="10"/>
+      <entry name="section" value="11"/>
+      <entry name="list" value="12"/>
+      <entry name="listitem" value="13"/>
+      <entry name="tree" value="14"/>
+      <entry name="treeitem" value="15"/>
+      <entry name="table" value="16"/>
+      <entry name="row" value="17"/>
+      <entry name="cell" value="18"/>
+      <entry name="columnheader" value="19"/>
+      <entry name="button" value="20"/>
+      <entry name="togglebutton" value="21"/>
+      <entry name="checkbox" value="22"/>
+      <entry name="radio" value="23"/>
+      <entry name="switch" value="24"/>
+      <entry name="link" value="25"/>
+      <entry name="tab" value="26"/>
+      <entry name="tablist" value="27"/>
+      <entry name="textfield" value="28"/>
+      <entry name="textarea" value="29"/>
+      <entry name="password" value="30"/>
+      <entry name="searchbox" value="31"/>
+      <entry name="combobox" value="32"/>
+      <entry name="spinbutton" value="33"/>
+      <entry name="slider" value="34"/>
+      <entry name="progressbar" value="35"/>
+      <entry name="label" value="36"/>
+      <entry name="heading" value="37"/>
+      <entry name="paragraph" value="38"/>
+      <entry name="text" value="39"/>
+      <entry name="image" value="40"/>
+      <entry name="icon" value="41"/>
+      <entry name="canvas" value="42"/>
+      <entry name="video" value="43"/>
+      <entry name="scrollbar" value="44"/>
+      <entry name="scrollarea" value="45"/>
+      <entry name="separator" value="46"/>
+      <entry name="tooltip" value="47"/>
+      <entry name="terminal" value="48"/>
+      <entry name="terminal_line" value="49"/>
+      <entry name="terminal_cell" value="50"/>
+      <entry name="document" value="51"/>
+      <entry name="article" value="52"/>
+      <entry name="region" value="53"/>
+      <entry name="navigation" value="54"/>
+      <entry name="form" value="55"/>
+      <entry name="landmark" value="56"/>
+      <entry name="unknown" value="57"/>
+    </enum>
+
+    <enum name="state">
+      <description summary="P-01 section 1.2, in listing order"/>
+      <entry name="focused" value="0"/>
+      <entry name="focusable" value="1"/>
+      <entry name="selected" value="2"/>
+      <entry name="selectable" value="3"/>
+      <entry name="checked" value="4"/>
+      <entry name="mixed" value="5"/>
+      <entry name="expanded" value="6"/>
+      <entry name="collapsed" value="7"/>
+      <entry name="disabled" value="8"/>
+      <entry name="readonly" value="9"/>
+      <entry name="required" value="10"/>
+      <entry name="invalid" value="11"/>
+      <entry name="busy" value="12"/>
+      <entry name="modal" value="13"/>
+      <entry name="hidden" value="14"/>
+      <entry name="offscreen" value="15"/>
+      <entry name="editable" value="16"/>
+      <entry name="multiline" value="17"/>
+      <entry name="multiselectable" value="18"/>
+      <entry name="pressed" value="19"/>
+      <entry name="default_button" value="20"/>
+      <entry name="scrollable_x" value="21"/>
+      <entry name="scrollable_y" value="22"/>
+    </enum>
+
+    <enum name="verb">
+      <description summary="P-01 section 1.4 verbs; 256 and above are custom, named by set_action_label"/>
+      <entry name="activate" value="0"/>
+      <entry name="set_value" value="1"/>
+      <entry name="focus" value="2"/>
+      <entry name="scroll_to" value="3"/>
+      <entry name="expand" value="4"/>
+      <entry name="collapse" value="5"/>
+      <entry name="select" value="6"/>
+      <entry name="toggle" value="7"/>
+      <entry name="increment" value="8"/>
+      <entry name="decrement" value="9"/>
+      <entry name="dismiss" value="10"/>
+      <entry name="context_menu" value="11"/>
+      <entry name="custom_base" value="256"/>
+    </enum>
+
+    <enum name="class">
+      <description summary="S-05 sensitivity classes"/>
+      <entry name="public" value="0"/>
+      <entry name="private" value="1" summary="the default"/>
+      <entry name="secret" value="2"/>
+    </enum>
+
+    <enum name="action_status">
+      <description summary="result of an action"/>
+      <entry name="ok" value="0"/>
+      <entry name="failed" value="1"/>
+      <entry name="unsupported" value="2"/>
+      <entry name="invalid_args" value="3"/>
+      <entry name="client_timeout" value="4" summary="compositor-reported only; a client ack of 4 or more counts as failed"/>
+    </enum>
+
+    <request name="set_root">
+      <description summary="create the root node">
+        Creates the root with this id. A root already set is already_exists;
+        remove_node the root first to replace it.
+      </description>
+      <arg name="node" type="uint"/>
+    </request>
+
+    <request name="add_node">
+      <description summary="create a node under a parent"/>
+      <arg name="node" type="uint"/>
+      <arg name="parent" type="uint"/>
+      <arg name="index" type="uint" summary="position among the parent's children; past the end appends"/>
+    </request>
+
+    <request name="remove_node">
+      <description summary="remove a node and its subtree"/>
+      <arg name="node" type="uint"/>
+    </request>
+
+    <request name="move_node">
+      <description summary="reparent a node"/>
+      <arg name="node" type="uint"/>
+      <arg name="new_parent" type="uint"/>
+      <arg name="index" type="uint"/>
+    </request>
+
+    <request name="set_role">
+      <description summary="the node's role"/>
+      <arg name="node" type="uint"/>
+      <arg name="role" type="uint" summary="role enum"/>
+    </request>
+
+    <request name="set_name">
+      <description summary="the accessible name"/>
+      <arg name="node" type="uint"/>
+      <arg name="name" type="string"/>
+    </request>
+
+    <request name="set_description">
+      <description summary="the accessible description"/>
+      <arg name="node" type="uint"/>
+      <arg name="desc" type="string"/>
+    </request>
+
+    <request name="set_rect">
+      <description summary="surface-local logical rectangle, including CSD offsets">
+        Clamped to the surface at commit; a clamped node carries ext.clamped.
+      </description>
+      <arg name="node" type="uint"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="w" type="int"/>
+      <arg name="h" type="int"/>
+    </request>
+
+    <request name="set_states">
+      <description summary="the full state set, replacing the old one"/>
+      <arg name="node" type="uint"/>
+      <arg name="states" type="array" summary="uint32 state codes"/>
+    </request>
+
+    <request name="set_value_text">
+      <description summary="text value; discarded for password nodes"/>
+      <arg name="node" type="uint"/>
+      <arg name="text" type="string"/>
+      <arg name="cursor" type="int"/>
+      <arg name="sel_start" type="int"/>
+      <arg name="sel_end" type="int"/>
+    </request>
+
+    <request name="set_value_number">
+      <description summary="numeric value"/>
+      <arg name="node" type="uint"/>
+      <arg name="value" type="fixed"/>
+      <arg name="min" type="fixed"/>
+      <arg name="max" type="fixed"/>
+      <arg name="step" type="fixed"/>
+    </request>
+
+    <request name="set_value_url">
+      <description summary="url value"/>
+      <arg name="node" type="uint"/>
+      <arg name="href" type="string"/>
+    </request>
+
+    <request name="clear_value">
+      <description summary="no value"/>
+      <arg name="node" type="uint"/>
+    </request>
+
+    <request name="set_actions">
+      <description summary="the full verb set, replacing the old one"/>
+      <arg name="node" type="uint"/>
+      <arg name="verbs" type="array" summary="uint32 verb codes"/>
+    </request>
+
+    <request name="set_action_label">
+      <description summary="label (or custom verb name) for a verb the node offers"/>
+      <arg name="node" type="uint"/>
+      <arg name="verb" type="uint"/>
+      <arg name="label" type="string"/>
+    </request>
+
+    <request name="set_sensitivity">
+      <description summary="raise only">
+        The default is private. Declaring a lower class than the node
+        already has is protocol error lower_classification. The compositor
+        may hold a higher class than declared and says nothing about it.
+      </description>
+      <arg name="node" type="uint"/>
+      <arg name="class" type="uint" summary="class enum; an unknown value counts as secret"/>
+    </request>
+
+    <request name="set_ext">
+      <description summary="bounded string extension">
+        At most 16 keys per node, keys up to 64 bytes, values up to 256.
+        Reserved keys: irreversible (a taxonomy id) and credential (a
+        bool) are raise-only, like set_sensitivity; clamped is set by the
+        compositor and ignored here.
+      </description>
+      <arg name="node" type="uint"/>
+      <arg name="key" type="string"/>
+      <arg name="value" type="string"/>
+    </request>
+
+    <request name="commit">
+      <description summary="apply all pending changes atomically">
+        Nothing is visible to agents until commit.
+      </description>
+    </request>
+
+    <request name="ack_action">
+      <description summary="the result of an action_requested"/>
+      <arg name="serial" type="uint"/>
+      <arg name="status" type="uint" summary="action_status enum"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the semantic surface">
+        Destroying with uncommitted changes is protocol error
+        uncommitted_destroy. The compositor keeps the last committed tree
+        for one second so an agent's in-flight query answers client_gone.
+      </description>
+    </request>
+
+    <event name="action_requested">
+      <description summary="perform an action for an agent">
+        Already policy-checked. The client must ack within 2 s or the
+        compositor reports client_timeout to the agent.
+      </description>
+      <arg name="serial" type="uint"/>
+      <arg name="node" type="uint"/>
+      <arg name="verb" type="uint"/>
+      <arg name="args" type="string"/>
+    </event>
+
+    <event name="focus_hint">
+      <description summary="the node an agent seat is targeting for text commit"/>
+      <arg name="node" type="uint"/>
+    </event>
+
+    <event name="budget_exceeded">
+      <description summary="the tree was truncated, or an extension was dropped">
+        The client should prune, for example by virtualising offscreen
+        lists. Also sent when an ext.irreversible id is not in the compiled
+        taxonomy and was dropped.
+      </description>
+    </event>
+  </interface>
+</protocol>

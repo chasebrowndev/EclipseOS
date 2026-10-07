@@ -23,5 +23,10 @@
 // regexes, and `eclipse-secret-prompt-foo` must not inherit the class.
 windowrule "sensitivity secret" { app-id "^ec-secret-prompt$"; }
 
+// The agent console shows every agent's conversation: no agent may see it,
+// hit it or capture it (A-08 §10). App-id is client-chosen, so this hides
+// rather than trusts; the guarantee is the console's protected surface.
+windowrule "no-agent" { app-id "^eclipse-console$"; }
+
 // The taskbar's Oracle-Eyes eye is on-screen only; captures see the static eclipse.
 capture { hide-layer "ec-hyperion-bar:eclipse-eye"; }

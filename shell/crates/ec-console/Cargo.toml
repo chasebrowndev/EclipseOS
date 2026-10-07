@@ -1,0 +1,38 @@
+[package]
+name = "ec-console"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The agent console: fleet, conversation, composer. Carries no authority (A-08 §1)."
+publish = false
+
+[lib]
+name = "ec_console"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ec-console"
+path = "src/main.rs"
+
+[features]
+# A software renderer beside wgpu, for hosts with no GPU: iced falls back to it
+# when no adapter exists. Off in the shipped build; on for the screenshot loop.
+shot = ["iced/tiny-skia"]
+
+[dependencies]
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
+ec-ui = { path = "../ec-ui" }
+# The only way this crate reaches agentd (console.sock) or the compositor
+# (eclipse_protected_surface_v1). There is no other IPC path here.
+ec-console-client = { path = "../ec-console-client" }
+# The window's wl_display and wl_surface, as winit hands them out: the
+# protected-surface glue attaches to those by pointer.
+raw-window-handle = "0.6"
+# Local wall-clock time through `localtime_r`, as the bar does, so there is no
+# time crate here.
+libc = "0.2"
+# Task and message values from the console socket carry their raw JSON; the
+# fixtures and the model tests build them.
+serde_json.workspace = true

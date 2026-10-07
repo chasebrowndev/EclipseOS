@@ -9,8 +9,13 @@
 //! The protocol layer (`protocols/agent/`) owns the Wayland objects and calls
 //! in here; it never reads a grant itself.
 
+pub mod batch;
+pub mod classes;
+pub mod enforce;
+pub mod lifecycle;
 pub mod link;
 pub mod scene;
+pub mod table;
 
 use ec_policy_eval::scope::SCENE_READ;
 use ec_policy_eval::{Grant, SceneView, VerifyError, VerifyingKey};
@@ -38,6 +43,8 @@ pub struct Agent {
     grants: Vec<Grant>,
     view: SceneView,
     read: SceneView,
+    /// One per [`SEAT_CAPS`] entry, same order.
+    acts: Vec<SceneView>,
 }
 
 /// What one request is filtered through, compiled from the live grants.
@@ -54,6 +61,18 @@ pub struct Views<'a> {
     /// [`read`]: Views::read
     pub read_held: bool,
 }
+
+/// The acting capabilities a seat request can need (COMP-08 §4, S-01 §2).
+/// Each gets its own visibility, compiled when the grants change, so the
+/// request path looks one up and allocates nothing.
+pub const SEAT_CAPS: [&str; 6] = [
+    "seat.focus",
+    "seat.key",
+    "seat.text",
+    "seat.pointer",
+    "seat.touch",
+    "click",
+];
 
 /// The principal prefix every agent grant carries (S-01 §4).
 const AGENT_PREFIX: &str = "agent:";
@@ -74,6 +93,7 @@ impl Agent {
             grants: vec![grant],
             view: SceneView::default(),
             read: SceneView::default(),
+            acts: Vec::new(),
         };
         agent.recompile();
         Ok(agent)
@@ -141,9 +161,68 @@ impl Agent {
         dropped
     }
 
+    /// The visibility acting capability `cap` reaches, after dropping
+    /// expired grants. `None` when no live grant names `cap` at all: the
+    /// request is `no_capability`, not merely out of scope.
+    pub fn act_view(&mut self, now_ms: u64, cap: &str) -> Option<&SceneView> {
+        let before = self.grants.len();
+        self.grants.retain(|g| g.is_valid_at(now_ms).is_ok());
+        if self.grants.len() != before {
+            self.recompile();
+        }
+        let i = SEAT_CAPS.iter().position(|c| *c == cap)?;
+        let held = self
+            .grants
+            .iter()
+            .any(|g| g.capabilities.iter().any(|c| c.name == cap));
+        held.then(|| &self.acts[i])
+    }
+
+    /// The grant facts an `unless` clause may test (S-02 §3), written into
+    /// `out` with no allocation. Facts past `out.len()` are dropped, which
+    /// can only stop an `unless` from relaxing a rule: fail closed.
+    pub fn grant_facts<'a>(&'a self, out: &mut [ec_policy_eval::check::GrantFact<'a>]) -> usize {
+        let mut n = 0;
+        for g in &self.grants {
+            for c in &g.capabilities {
+                if n == out.len() {
+                    return n;
+                }
+                out[n] = ec_policy_eval::check::GrantFact {
+                    capability: &c.name,
+                    unattended: g.unattended,
+                };
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// One line per live grant, for the emergency panel: its capabilities
+    /// and their scopes as written (S-01 §4).
+    pub fn describe_grants(&self) -> Vec<String> {
+        self.grants
+            .iter()
+            .map(|g| {
+                g.capabilities
+                    .iter()
+                    .map(|c| match c.scopes.as_slice() {
+                        [] => c.name.clone(),
+                        s => format!("{} {}", c.name, s.join(" ")),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .collect()
+    }
+
     fn recompile(&mut self) {
         self.view = SceneView::compile(&self.grants);
         self.read = SceneView::compile_for(SCENE_READ, &self.grants);
+        self.acts = SEAT_CAPS
+            .iter()
+            .map(|c| SceneView::compile_for(c, &self.grants))
+            .collect();
     }
 }
 

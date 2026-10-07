@@ -310,6 +310,16 @@ jobs:
           fi
           echo "ratchet holds"
 
+  doc-refs:
+    name: doc references resolve
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # F-07 §7: docs/ is the source of truth, so a path it cites must exist.
+      - name: check doc paths
+        run: abyss/ci/doc-refs.sh
+
   spec-trail:
     name: PR cites a spec section
     runs-on: ubuntu-24.04

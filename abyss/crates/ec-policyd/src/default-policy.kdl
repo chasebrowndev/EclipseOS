@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// The policy policyd enforces when no file exists in /etc/eclipse/policy/ or
+// ~/.config/eclipse/policy/: the fast-path rules of S-02 §3's example.
+// Rules evaluate deny -> prompt -> defer -> allow; first match in a phase wins.
+
+rule "no-secret-capture" deny {
+    capability "capture.*"
+    target_class "secret"
+    unless { grant_has "capture.secret" unattended=#true; }
+}
+
+rule "irreversible-prompts" prompt {
+    capability "seat.action" "seat.key" "seat.pointer" "seat.text" "click"
+    irreversible "*"
+}
+
+rule "vision-in-irreversible-apps" prompt {
+    capability "click"
+    node_source "vision"
+    app_irreversible_capable #true
+}
+
+rule "blind-irreversible" prompt {
+    capability "seat.action" "seat.pointer" "seat.key" "seat.text" "click"
+    irreversible "*"
+    provenance_absent
+}
+
+rule "human-workspace" prompt {
+    capability "workspace.human" "seat.focus.human"
+}
+
+rule "untrusted-origin-into-shell" defer {
+    capability "seat.text" "seat.key"
+    target_app_id "foot" "alacritty" "kitty"
+    provenance_contains trust="untrusted"
+}
+
+rule "channel-laundering" defer {
+    capability "seat.action"
+    irreversible "*"
+    provenance_contains source="channel"
+}
+
+// Reached only when the grant already permits the request (COMP-08 §10).
+rule "default-allow" allow {
+    capability "*"
+}
+
+// Sensitivity (S-05 §3): private by default; these raise to secret. The
+// S-02 §3 example's `node_role "password"` line waits on the semantic tree.
+defaults { sensitivity "private"; }
+classify "secret" {
+    app_id "org.keepassxc.KeePassXC" "1password" "bitwarden" "com.bitwarden.desktop"
+    title "(?i)authenticat|password|2fa|one-time"
+}
+
+// App trust (S-05 §6): standard by default. Nothing is trusted implicitly;
+// an owner rule may list its own terminal and editor.
+trust "untrusted" {
+    app_id "steam" "*.flatpak.*"
+}

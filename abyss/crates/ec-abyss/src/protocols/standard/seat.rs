@@ -127,7 +127,12 @@ impl SeatHandler for AbyssState {
         );
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+    fn cursor_image(&mut self, seat: &Seat<Self>, image: CursorImageStatus) {
+        // COMP-04 §3: an agent seat's pointer focus is a real client, which
+        // may set a cursor on it. That is not the human's cursor.
+        if seat != &self.seat {
+            return;
+        }
         // Named shapes from `wp_cursor_shape_v1` arrive here too, so this one
         // path covers both. The winit backend draws the host cursor and ignores
         // this; the DRM backend composites it (`render::cursor`).

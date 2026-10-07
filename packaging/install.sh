@@ -27,7 +27,7 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$here/.." && pwd)
 
 BINS='ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher
-      ec-settings ec-policy-viewer ec-ctl ec-screensaver ec-secret-prompt
+      ec-settings ec-policy-viewer ec-console ec-ctl ec-screensaver ec-secret-prompt
       ec-pairing'
 UNITS='ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service'
 

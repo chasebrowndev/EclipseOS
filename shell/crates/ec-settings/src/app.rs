@@ -274,6 +274,9 @@ pub struct App {
     /// The running status-notifier items, while the Taskbar pane shows.
     /// `None` is not heard from yet; `Some(None)` is the feed failing.
     pub(crate) tray_live: Option<Option<Vec<String>>>,
+    /// Every tray id the pane has listed at a move, kept for the session
+    /// (TRAY-01, [`Tray::seen`]).
+    pub(crate) tray_seen: Vec<String>,
     /// Every panel's glass radius, live-synced to `decoration.rounding`
     /// (BLUR-06): read once at startup and refetched on every `Config` event,
     /// so a live-reload can never leave this pane's glass drifted from the
@@ -354,6 +357,7 @@ impl App {
             tray_sel: None,
             installed: crate::pinned::installed(),
             tray_live: None,
+            tray_seen: Vec::new(),
             glass_radius,
             blur,
             bar: crate::taskbar::Bar::default(),
@@ -460,11 +464,13 @@ impl App {
         if let Some(Some(live)) = &self.tray_live {
             t.live = live.clone();
         }
+        t.seen = self.tray_seen.clone();
         t
     }
 
     /// Write a tray move: only the lists it changed.
     pub(crate) fn write_tray(&mut self, w: Writes) {
+        self.tray_seen = self.tray().ids();
         if let Some(p) = w.pinned {
             self.write(TRAY_PINNED, json!(p));
         }

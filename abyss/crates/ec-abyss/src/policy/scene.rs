@@ -24,18 +24,18 @@ use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 use crate::outputs::OutputKind;
 use crate::state::AbyssState;
 
-/// The class an agent sees `window` as.
+/// The class an agent sees `window` as. The one place classification plugs
+/// in.
 ///
-/// COMP-11's table does not exist until M16, and with no policy table loaded
-/// every surface is `secret` to agents (S-05 §8). The manual `sensitive`
-/// flag can only raise, so it changes nothing below `secret`. This is the one
-/// place the table plugs in.
-fn class_of(_state: &AbyssState, _window: &Window) -> Class {
+/// Delegates to `policy::classes`, which joins the table's `classify` rules
+/// with the compositor's own raises and holds raises through the downgrade
+/// grace (S-05 §3, §5). With no table, everything is `secret`.
+pub(crate) fn class_of(state: &AbyssState, window: &Window) -> Class {
     #[cfg(test)]
-    if let Some(c) = test_class::get(_window) {
+    if let Some(c) = test_class::get(window) {
         return c;
     }
-    Class::Secret
+    crate::policy::classes::class_of(state, window)
 }
 
 /// The output and workspace `window` is on. Every workspace is a human
@@ -65,7 +65,7 @@ fn place<'a>(state: &'a AbyssState, window: &Window) -> Option<(OutputFacts<'a>,
 /// Runs `f` over the window's facts, borrowed in place. The xdg identity is
 /// read under its lock without copying; X11 properties are owned strings in
 /// Smithay, so that branch copies.
-fn with_facts<R>(state: &AbyssState, window: &Window, f: impl FnOnce(&WindowFacts<'_>) -> R) -> R {
+pub(crate) fn with_facts<R>(state: &AbyssState, window: &Window, f: impl FnOnce(&WindowFacts<'_>) -> R) -> R {
     let placed = place(state, window);
     let base = WindowFacts {
         app_id: "",
@@ -108,8 +108,17 @@ fn with_facts<R>(state: &AbyssState, window: &Window, f: impl FnOnce(&WindowFact
 /// `scene.list.secret`, and S-05 §2 delivers secret content to no agent
 /// without a `*.secret` capability and a per-request prompt. A `class:secret`
 /// scope narrows; it never makes one visible.
-fn visible(state: &AbyssState, view: &SceneView, window: &Window) -> bool {
-    window.alive() && with_facts(state, window, |w| w.class != Class::Secret && view.visible(w))
+/// Whether `window` is in `view` and not `secret`: the one visibility rule.
+///
+/// A window holding a protected surface (COMP-19 §1) does not exist for any
+/// agent: not in `list_toplevels`, trees, text reads or hit tests. The whole
+/// window, like `no-agent`, because the protected pane's neighbours in the
+/// same window are drawn by the same client a few pixels away.
+pub(crate) fn visible(state: &AbyssState, view: &SceneView, window: &Window) -> bool {
+    window.alive()
+        && !crate::shell::window_surface(window)
+            .is_some_and(|s| crate::protocols::protected::has_protected(state, &s))
+        && with_facts(state, window, |w| w.class != Class::Secret && view.visible(w))
 }
 
 /// `list_toplevels`: every window that exists for this agent, with its

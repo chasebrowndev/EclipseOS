@@ -44,8 +44,9 @@ use smithay::{
     },
     desktop::{LayerSurface, Window},
     output::Output,
+    reexports::wayland_server::DisplayHandle,
     utils::{Buffer as BufferCoords, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
-    wayland::compositor::{RectangleKind, RegionAttributes},
+    wayland::compositor::{Cacheable, RectangleKind, RegionAttributes},
 };
 
 use ec_abyss_config::Blur;
@@ -458,6 +459,101 @@ impl Shape {
     /// The live rectangles, output-local physical.
     pub fn rects(&self) -> &[Rectangle<i32, Physical>] {
         &self.rects[..self.len]
+    }
+
+    /// The smallest rectangle holding every box.
+    pub fn bounds(&self) -> Option<Rectangle<i32, Physical>> {
+        self.rects().iter().copied().reduce(|a, b| a.merge(b))
+    }
+}
+
+/// A client's `ext_background_effect_v1` blur region, double-buffered on the
+/// surface (the protocol handler writes `pending`; `wl_surface.commit` latches
+/// it into `current`, which is all the renderer reads).
+///
+/// `None` is "no object": the compositor's own choice of backdrop stands.
+/// `Some(region)` is a live object's committed region, surface-local and
+/// logical; the protocol's initial value and a NULL `wl_region` are both the
+/// empty region, which means no blur at all.
+#[derive(Debug, Clone, Default)]
+pub struct BackgroundEffectState {
+    pub blur: Option<RegionAttributes>,
+}
+
+impl Cacheable for BackgroundEffectState {
+    fn commit(&mut self, _dh: &DisplayHandle) -> Self {
+        self.clone()
+    }
+
+    fn merge_into(self, into: &mut Self, _dh: &DisplayHandle) {
+        *into = self;
+    }
+}
+
+/// Where a client asked for blur, in output-local physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BlurArea {
+    /// Nothing is to be blurred (an empty region, or one wholly off the surface).
+    Nothing,
+    /// One box: the plain rounded-box backdrop, cut to it.
+    Rect(Rectangle<i32, Physical>),
+    /// 2..=4 boxes, unioned exactly (no fillet).
+    Shape(Shape),
+}
+
+impl BlurArea {
+    /// The box the backdrop texture is cut to: the box itself, or the
+    /// bounds of the shape's boxes. `None` for [`BlurArea::Nothing`].
+    pub fn bounds(&self) -> Option<Rectangle<i32, Physical>> {
+        match self {
+            BlurArea::Nothing => None,
+            BlurArea::Rect(r) => Some(*r),
+            BlurArea::Shape(s) => s.bounds(),
+        }
+    }
+}
+
+/// The backdrop area a committed background-effect `region` asks for.
+///
+/// `size` is the surface's logical size (the region is clipped to it) and `loc`
+/// the surface origin, output-local physical. 2..=4 added boxes become a
+/// [`Shape`] (fillet 0, so the union is exact). Anything [`Shape`] cannot
+/// carry (one box, more than four, or a partial subtract) falls back to the
+/// bounding box of the added boxes clipped to the surface, which over-blurs
+/// in the last two cases; a subtract that covers the surface erases what came
+/// before it, as in [`Shape::from_region`].
+pub fn blur_area(
+    region: &RegionAttributes,
+    size: Size<i32, Logical>,
+    loc: Point<i32, Physical>,
+    scale: Scale<f64>,
+) -> BlurArea {
+    if let Some(shape) = Shape::from_region(Some(region), size, loc, scale, 0.0) {
+        return BlurArea::Shape(shape);
+    }
+    let bounds = Rectangle::<i32, Logical>::from_size(size);
+    let start = region
+        .rects
+        .iter()
+        .rposition(|(kind, rect)| matches!(kind, RectangleKind::Subtract) && rect.contains_rect(bounds))
+        .map_or(0, |i| i + 1);
+    let hull = region.rects[start..]
+        .iter()
+        .filter(|(kind, _)| matches!(kind, RectangleKind::Add))
+        .filter_map(|(_, rect)| rect.intersection(bounds).filter(|r| !r.is_empty()))
+        .reduce(|a, b| a.merge(b));
+    let Some(r) = hull else {
+        return BlurArea::Nothing;
+    };
+    let x = |v: i32| loc.x + (v as f64 * scale.x).round() as i32;
+    let y = |v: i32| loc.y + (v as f64 * scale.y).round() as i32;
+    let (x0, y0) = (x(r.loc.x), y(r.loc.y));
+    let (x1, y1) = (x(r.loc.x + r.size.w), y(r.loc.y + r.size.h));
+    let out = Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into());
+    if out.is_empty() {
+        BlurArea::Nothing
+    } else {
+        BlurArea::Rect(out)
     }
 }
 
@@ -1373,6 +1469,57 @@ mod tests {
             shape_of(&[pill, (true, (500, 0, 10, 10)), (true, (0, 0, 0, 5))], 1.0, 20.0),
             None
         );
+    }
+
+    fn area(rects: &[RegionRect], scale: f64) -> BlurArea {
+        blur_area(
+            &region(rects),
+            Size::from((400, 300)),
+            Point::from((10, 20)),
+            Scale::from(scale),
+        )
+    }
+
+    /// An explicit background-effect region: empty is nothing, one box is a
+    /// rect, 2..=4 a hard-edged shape, and what a shape cannot carry falls
+    /// back to the bounding box clipped to the surface.
+    #[test]
+    fn a_background_effect_region_becomes_an_area() {
+        assert_eq!(area(&[], 1.0), BlurArea::Nothing, "empty region, no blur");
+        assert_eq!(
+            area(&[(true, (500, 0, 10, 10))], 1.0),
+            BlurArea::Nothing,
+            "off the surface"
+        );
+        assert_eq!(
+            area(&[(true, (0, 0, 400, 300)), (false, (0, 0, 400, 300))], 1.0),
+            BlurArea::Nothing,
+            "added then wholly subtracted"
+        );
+        // One box, clipped to the surface, scaled by edges and placed.
+        assert_eq!(
+            area(&[(true, (50, 40, 1000, 100))], 1.5),
+            BlurArea::Rect(r(85, 80, 525, 150))
+        );
+        let two = [(true, (0, 0, 100, 40)), (true, (200, 100, 100, 100))];
+        match area(&two, 1.0) {
+            BlurArea::Shape(s) => {
+                assert_eq!(s.rects(), &[r(10, 20, 100, 40), r(210, 120, 100, 100)]);
+                assert_eq!(s.fillet, 0.0);
+                assert_eq!(s.bounds(), Some(r(10, 20, 300, 200)));
+            }
+            other => panic!("expected a shape, got {other:?}"),
+        }
+        // Five boxes, and a partial subtract: bounding box of the adds.
+        let five = [(true, (0, 0, 10, 10)); 4]
+            .into_iter()
+            .chain([(true, (90, 90, 10, 10))])
+            .collect::<Vec<_>>();
+        assert_eq!(area(&five, 1.0), BlurArea::Rect(r(10, 20, 100, 100)));
+        let holed = [(true, (0, 0, 100, 100)), (false, (40, 40, 10, 10))];
+        assert_eq!(area(&holed, 1.0), BlurArea::Rect(r(10, 20, 100, 100)));
+        assert_eq!(area(&two, 1.0).bounds(), Some(r(10, 20, 300, 200)));
+        assert_eq!(BlurArea::Nothing.bounds(), None);
     }
 
     #[test]

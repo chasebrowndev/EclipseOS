@@ -1,0 +1,19 @@
+[package]
+name = "ec-ref-agent"
+description = "Mechanical reference agent for the console wave: an MCP client that echoes (console-plan C6, A-08 §6)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# An SDK-like reference others may copy from (F-05 §3).
+license = "Apache-2.0"
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "ec-ref-agent"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true

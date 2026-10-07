@@ -689,6 +689,8 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     crate::input::idle::start(&mut state, &handle);
     crate::ipc::start(&mut state, &handle);
     crate::trusted_ui::socket::start(&mut state, &handle);
+    // COMP-10 §2: every prompt shows the personal secret, once one is set.
+    state.trusted_ui.phrase = crate::trusted_ui::phrase::load();
     crate::config::watch::start(&mut state, &handle);
     crate::addons::start(&mut state, &handle);
     crate::xwayland::start(&mut state);
@@ -1113,6 +1115,8 @@ fn describe_elements(elements: &[crate::render::overscan::OutputElement], scale:
 fn render_output(state: &mut AbyssState, index: usize) {
     // Every frame path (VBlank, schedule, retry) lands here, not in `render`.
     crate::shell::tick_retile_hold(state);
+    // Commit slots follow their window this frame, not 50 ms later.
+    crate::trusted_ui::commit::tick(state);
     let capture_active = state.capture_active();
     let prompt = crate::trusted_ui::holds_seat(state);
     let Some(drm) = state.drm.as_mut() else { return };

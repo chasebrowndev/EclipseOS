@@ -11,6 +11,7 @@ use ec_policy_eval::grant::{cose_sign1, protected_header, sig_structure};
 use ec_policy_eval::{Capability, Constraints, Grant, Ulid};
 use ec_protocols::agent::client::{
     eclipse_agent_manager_v1::{self, EclipseAgentManagerV1},
+    eclipse_agent_seat_v1::{self, EclipseAgentSeatV1},
     eclipse_agent_v1::{self, EclipseAgentV1},
     eclipse_scene_v1::{self, EclipseSceneV1},
 };
@@ -36,8 +37,20 @@ pub(super) struct Seen {
     pub(super) done: Vec<u32>,
     pub(super) hits: Vec<(u32, u32)>,
     pub(super) results: Vec<(u32, u32, String)>,
+    /// `eclipse_agent_seat_v1` results, `(req_id, status, detail)`.
+    pub(super) seat_results: Vec<(u32, u32, String)>,
+    /// `eclipse_agent_seat_v1.focus_changed` handles.
+    pub(super) seat_focus: Vec<u32>,
+    /// `eclipse_agent_seat_v1.keymap` sizes.
+    pub(super) keymaps: Vec<u32>,
     /// Every `eclipse_scene_v1` event, whole, in arrival order.
     pub(super) scene: Vec<eclipse_scene_v1::Event>,
+    /// `eclipse_agent_seat_v1.result` `(req_id, generation)`.
+    pub(super) seat_generations: Vec<(u32, u32)>,
+    /// `eclipse_scene_v1.toplevel` `(req_id, handle, generation)`.
+    pub(super) generations: Vec<(u32, u32, u32)>,
+    /// `eclipse_scene_v1.waited` `(req_id, satisfied, handle, generation)`.
+    pub(super) waited: Vec<(u32, u32, u32, u32)>,
 }
 
 impl Dispatch<WlRegistry, ()> for Seen {
@@ -91,6 +104,34 @@ impl Dispatch<EclipseAgentV1, ()> for Seen {
     }
 }
 
+impl Dispatch<EclipseAgentSeatV1, ()> for Seen {
+    fn event(
+        s: &mut Self,
+        _: &EclipseAgentSeatV1,
+        e: eclipse_agent_seat_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use eclipse_agent_seat_v1::Event;
+        match e {
+            Event::Result {
+                req_id,
+                status,
+                detail,
+                generation,
+                ..
+            } => {
+                s.seat_results.push((req_id, status, detail));
+                s.seat_generations.push((req_id, generation));
+            }
+            Event::FocusChanged { handle, .. } => s.seat_focus.push(handle),
+            Event::Keymap { size, .. } => s.keymaps.push(size),
+            _ => {}
+        }
+    }
+}
+
 impl Dispatch<EclipseSceneV1, ()> for Seen {
     fn event(
         s: &mut Self,
@@ -102,7 +143,22 @@ impl Dispatch<EclipseSceneV1, ()> for Seen {
     ) {
         use eclipse_scene_v1::Event;
         match &e {
-            Event::Toplevel { req_id, handle, .. } => s.toplevels.push((*req_id, *handle)),
+            Event::Toplevel {
+                req_id,
+                handle,
+                generation,
+                ..
+            } => {
+                s.toplevels.push((*req_id, *handle));
+                s.generations.push((*req_id, *handle, *generation));
+            }
+            Event::Waited {
+                req_id,
+                satisfied,
+                handle,
+                generation,
+                ..
+            } => s.waited.push((*req_id, *satisfied, *handle, *generation)),
             Event::ToplevelsDone { req_id } => s.done.push(*req_id),
             Event::Hit { req_id, handle, .. } => s.hits.push((*req_id, *handle)),
             Event::Result {
@@ -198,7 +254,7 @@ impl Peer {
 
     fn manager(&mut self, h: &mut Harness) -> EclipseAgentManagerV1 {
         let name = self.global(MANAGER).expect("manager advertised");
-        let m = self.registry.bind(name, 1, &self.queue.handle(), ());
+        let m = self.registry.bind(name, 3, &self.queue.handle(), ());
         self.pump(h);
         m
     }
@@ -210,6 +266,13 @@ impl Peer {
         let scene = agent.get_scene(&qh, ());
         self.pump(h);
         (agent, scene)
+    }
+
+    /// `get_seat` on `agent`, delivered.
+    pub(super) fn get_seat(&mut self, h: &mut Harness, agent: &EclipseAgentV1) -> EclipseAgentSeatV1 {
+        let seat = agent.get_seat(&self.queue.handle(), ());
+        self.pump(h);
+        seat
     }
 
     /// `(interface, code)` of the protocol error that ended the connection.
@@ -347,12 +410,46 @@ fn create_agent_without_policyd_is_policy_unavailable() {
 }
 
 /// COMP-08 §1: anything that is not a good grant is `INVALID_GRANT`.
+/// COMP-01 §6, COMP-11 §2: a key but no table is degraded mode. A valid
+/// grant is refused POLICY_UNAVAILABLE until a table is live.
+#[test]
+fn a_key_without_a_table_is_policy_unavailable() {
+    let (mut h, _path) = hooked("notable.sock", true);
+    h.state.audit.sink = Some(Vec::new());
+    h.state.policy_key = Some(sk().verifying_key());
+    let mut p = Peer::inserted(&mut h, true);
+    p.admit(&mut h, grant("agent:test"));
+    assert_eq!(p.error(), Some((MANAGER.into(), 1)));
+    assert!(h.state.agents.slots.is_empty());
+}
+
+/// A grant on a task policyd revoked this session is not re-admitted.
+#[test]
+fn a_revoked_principal_loses_its_grants_and_cannot_return() {
+    let (mut h, _path) = hooked("revoked.sock", true);
+    h.state.audit.sink = Some(Vec::new());
+    h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
+    let mut p = Peer::inserted(&mut h, true);
+    p.admit(&mut h, grant("agent:test"));
+    assert_eq!(p.error(), None);
+    crate::policy::lifecycle::revoked(&mut h.state, "agent:test");
+    let mut q = Peer::inserted(&mut h, true);
+    q.admit(&mut h, grant("agent:test"));
+    assert_eq!(
+        q.error(),
+        Some((MANAGER.into(), 0)),
+        "the same task's grant is refused"
+    );
+}
+
 #[test]
 fn a_bad_grant_is_invalid_grant() {
     for bad in [b"not cbor".to_vec(), grant("human")] {
         let (mut h, _path) = hooked("bad.sock", true);
         h.state.audit.sink = Some(Vec::new());
         h.state.policy_key = Some(sk().verifying_key());
+        crate::policy::table::install_for_test(&mut h.state);
         let mut p = Peer::inserted(&mut h, true);
         p.admit(&mut h, bad);
         assert_eq!(p.error(), Some((MANAGER.into(), 0)));
@@ -362,17 +459,57 @@ fn a_bad_grant_is_invalid_grant() {
     let (mut h, _path) = hooked("bad.sock", true);
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(SigningKey::from_bytes(&[8u8; 32]).verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
     let mut p = Peer::inserted(&mut h, true);
     p.admit(&mut h, grant("agent:test"));
     assert_eq!(p.error(), Some((MANAGER.into(), 0)));
 }
 
 /// F-08: policyd gone, an existing agent is paused and nothing runs.
+/// COMP-04 §6, COMP-10 §3.3: a human pause answers `paused`, one agent or
+/// all of them; resume is explicit; terminate removes the agent.
+#[test]
+fn the_human_can_pause_resume_and_terminate_an_agent() {
+    let (mut h, _path) = hooked("lifecycle.sock", true);
+    h.state.audit.sink = Some(Vec::new());
+    h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
+    let mut p = Peer::inserted(&mut h, true);
+    let (_agent, scene) = p.admit(&mut h, grant("agent:test"));
+    let id = h.state.agents.slots[0].0;
+
+    crate::policy::lifecycle::pause(&mut h.state, id);
+    scene.list_toplevels(1, String::new());
+    p.pump(&mut h);
+    assert_eq!(p.seen.results, vec![(1, PAUSED, String::new())]);
+
+    crate::policy::lifecycle::resume(&mut h.state, id);
+    crate::policy::lifecycle::pause_all(&mut h.state);
+    scene.list_toplevels(2, String::new());
+    p.pump(&mut h);
+    assert_eq!(p.seen.results.last(), Some(&(2, PAUSED, String::new())));
+
+    crate::policy::lifecycle::resume_all(&mut h.state);
+    // The pause and resume records went to the test sink; a fresh one is an
+    // empty audit queue, as after a flush.
+    h.state.audit.sink = Some(Vec::new());
+    scene.list_toplevels(3, String::new());
+    p.pump(&mut h);
+    // Answered, not paused: a listing ends in `done`, not a `result`.
+    assert_eq!(p.seen.results.len(), 2);
+    assert!(!p.seen.done.is_empty());
+
+    crate::policy::lifecycle::terminate(&mut h.state, id);
+    assert!(h.state.agents.slots.is_empty());
+    assert!(h.state.agents.list().is_empty());
+}
+
 #[test]
 fn requests_while_policyd_is_down_are_paused() {
     let (mut h, _path) = hooked("paused.sock", true);
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
     let mut p = Peer::inserted(&mut h, true);
     let (_agent, scene) = p.admit(&mut h, grant("agent:test"));
     assert!(p.error().is_none());
@@ -396,6 +533,7 @@ fn requests_while_policyd_is_down_are_paused() {
     // Reconnect resumes (COMP-01 §6).
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
     scene.list_toplevels(4, String::new());
     p.pump(&mut h);
     assert_eq!(p.seen.done, vec![4]);
@@ -411,6 +549,7 @@ fn every_scene_request_is_request_decision_result() {
     let (mut h, _path) = hooked("audit.sock", true);
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
     let mut p = Peer::inserted(&mut h, true);
     let (_agent, scene) = p.admit(&mut h, grant("agent:test"));
     scene.list_toplevels(1, String::new());
@@ -442,6 +581,7 @@ fn a_full_audit_socket_stalls_the_agent_not_the_human() {
     let (mut h, _path) = hooked("stall.sock", true);
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
     let mut p = Peer::inserted(&mut h, true);
     let (_agent, scene) = p.admit(&mut h, grant("agent:test"));
 
@@ -480,6 +620,7 @@ fn with_a_valid_grant_every_window_is_secret_and_unknown() {
     let (mut h, _path) = hooked("secret.sock", true);
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
 
     let mut app = Client::connect(&mut h);
     app.map_window(&mut h);

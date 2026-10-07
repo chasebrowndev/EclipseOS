@@ -1,0 +1,38 @@
+# The Eclipse agent daemon. Installed to /usr/lib/systemd/user/ec-agentd.service.
+#
+# Console backend (console.sock), agent host (per-task MCP sockets and the
+# launcher) and the policyd link that provisions tasks (A-08 §7, A-01 §4).
+# Part of the agent stack add-on (eclipseos-agents), never the floor. Semi-
+# trusted (VOL1 §1.1): it holds no authority beyond what policyd hands it.
+#
+# VOL1 orders agentd After= the compositor and BindsTo= it so it stops when the
+# session stops. The compositor's unit here is abyss-session.target (abyss
+# starts it once its Wayland socket exists), so that is what it binds to.
+# After=ec-policyd.service only shortens the wait: agentd redials policyd.sock
+# every second and shows tasks unavailable until it is there (A-08 §12).
+#
+# Agents are NOT children of this unit. Each one runs in its own transient
+# scope under agents.slice (agents-<package>.slice), so the unit's cgroup is
+# never an agent's, and the console socket's `agents.slice` check keeps its
+# meaning. KillMode=process leaves a scope alone when the daemon restarts; the
+# restarted daemon closes tasks it can no longer vouch for.
+[Unit]
+Description=Eclipse agent daemon
+PartOf=graphical-session.target
+After=abyss-session.target ec-policyd.service
+BindsTo=abyss-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ec-agentd
+Restart=on-failure
+RestartSec=1
+KillMode=process
+Slice=session.slice
+UMask=0077
+NoNewPrivileges=yes
+# Sockets only: systemd-run reaches the user manager over AF_UNIX.
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=abyss-session.target

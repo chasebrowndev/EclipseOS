@@ -54,10 +54,11 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo build --workspace --all-targets
 cargo test --workspace
 cargo deny check advisories bans licenses sources
+abyss/ci/doc-refs.sh             # every repo-rooted path docs/ cites exists
 cargo run -- --backend winit    # nested window under the host session (abyss)
 journalctl --user -t ec-abyss -f  # logs (tracing → journald)
 ```
-The first five are exactly what CI runs (`../.github/workflows/gate.yml` — the
+The first six are exactly what CI runs (`../.github/workflows/gate.yml` — the
 workflows sit at the repository root, one level above this crate tree). If you
 change one, change both — a local gate that differs from CI is worse than no
 local gate.

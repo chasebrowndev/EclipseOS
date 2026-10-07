@@ -1858,7 +1858,7 @@ pub struct Collection {
 }
 
 pub const COLLECTIONS: &[Collection] = &[
-    Collection { node: "bind", owner: Abyss, doc: "A key binding: `bind [\"<modifiers>\"] \"<keysym>\" { <action>; }`, e.g. `bind \"SUPER SHIFT\" \"Return\" { spawn \"foot\"; }`. `Super+Escape` and `Super+space` are reserved and cannot be bound." },
+    Collection { node: "bind", owner: Abyss, doc: "A key binding: `bind [\"<modifiers>\"] \"<keysym>\" { <action>; }`, e.g. `bind \"SUPER SHIFT\" \"Return\" { spawn \"foot\"; }`. `Super+Escape`, `Super+Shift+Escape` and `Super+space` are reserved and cannot be bound." },
     Collection { node: "gesture", owner: Abyss, doc: "A touchpad swipe binding: `gesture \"swipe\" <fingers> \"<direction>\" { <action>; }`. `fingers` is 3 or 4, `direction` is `left`, `right`, `up` or `down`, and the action is anything `bind` accepts. A bound finger count is the compositor's for the whole swipe; unbound swipes, pinches and holds reach the app. Defaults: 3-finger `left` runs `workspace-next`, 3-finger `right` runs `workspace-prev`. A `gesture` for the same fingers and direction replaces the default. A touchpad window drag: `gesture \"drag\" <fingers> \"<modifiers>\" { move-window; }`. `fingers` is 2, 3 or 4 and at least one modifier is required. With exactly those modifiers held when the fingers start moving, the drag moves the window under the pointer the way a `mousebind` move does, and none of it reaches the app; without them two-finger scrolling is untouched. A finger count cannot be both swiped and dragged. Default: `gesture \"drag\" 2 \"Super\" { move-window; }`. A drag for the same fingers replaces the default; `gesture \"drag\" <fingers> { none; }` switches it off." },
     Collection { node: "mousebind", owner: Abyss, doc: "A modifier + mouse-button binding: `mousebind \"<modifiers>\" \"<button>\" { <action>; }`. `button` is `left`, `right` or `middle`, and the action is `move-window` or `resize-window`. With exactly those modifiers held, pressing the button over a window drags it (move) or drags its nearest corner (resize). Under the `radiant` layout a moved tile drags over its placeholder and lands on the drop the guides show; under the other layouts, and for a resize, a tiled window is floated first. The press never reaches the client. At least one modifier is required. Defaults: `Alt` + `left` runs `move-window`, `Alt` + `right` runs `resize-window`. A `mousebind` for the same modifiers and button replaces the default." },
     Collection { node: "output", owner: Abyss, doc: "Per-output settings: `output \"<glob>\" { … }`. The glob (`*` only) matches the connector name or the persistent identity; later blocks override earlier ones key by key." },
@@ -2394,7 +2394,13 @@ pub const BIND_ACTIONS: &[Form] = &[
         &["agent-override"],
         "",
         &["agent-override"],
-        "The reserved override chord (COMP-13 §1.1). Nothing to revoke until agent seats exist.",
+        "The reserved override chord (COMP-04 §6): pauses every agent (the emergency panel follows with COMP-10).",
+    ),
+    form(
+        &["agent-terminate"],
+        "",
+        &["agent-terminate"],
+        "The second reserved chord (COMP-04 §6): pauses every agent and terminates them via `policyd`.",
     ),
     form(
         &["agent-attention"],

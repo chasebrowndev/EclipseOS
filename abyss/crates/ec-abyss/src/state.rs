@@ -136,7 +136,7 @@ pub struct AbyssState {
     /// Windows that asked for focus and were refused (COMP-05 §5).
     pub urgent: Vec<smithay::desktop::Window>,
 
-    /// The human seat (`seat0`). Agent seats arrive in Phase 2.
+    /// The human seat (`seat0`). Agent seats are in `agent_seats`.
     pub seat: Seat<Self>,
 
     /// What the focused client last asked the pointer to look like (COMP-02 §2).
@@ -171,6 +171,9 @@ pub struct AbyssState {
     pub tablet_in_use: Option<smithay::wayland::tablet_manager::TabletHandle>,
     /// Per-window border quads, kept alive across frames.
     pub borders: crate::render::BorderStore,
+    /// The capture pass's own effect store (CAP-01): never the on-screen
+    /// `borders`, so a captured backdrop samples only the redacted list.
+    pub capture_fx: crate::render::still::Still,
     /// Live annotation overlays (COMP-18). Untrusted text, drawn below trusted
     /// UI and never into a capture target.
     pub annotations: crate::render::annotation::AnnotationStore,
@@ -248,7 +251,32 @@ pub struct AbyssState {
     pub audit: crate::audit::Audit,
     /// The privileged agent socket, its manager global and every admitted
     /// agent object (COMP-08). Empty while the `agents` hook is off.
+    /// The live enforcement table (COMP-11 §2), `None` until `policyd`
+    /// pushes one that verifies.
+    pub policy_table: Option<ec_policy_eval::check::Table>,
+    /// Tasks `policyd` revoked this session.
+    pub revoked: crate::policy::lifecycle::Revoked,
+    /// Agents the human paused.
+    pub paused: crate::policy::lifecycle::Paused,
+    /// Acting requests waiting on a prompt or a deferral.
+    pub enforce: crate::policy::enforce::Pending,
+    /// Batch tokens the human approved (COMP-08 §4.2).
+    pub batches: crate::policy::batch::Batches,
+    /// Held window classes (S-05 §5 downgrade grace).
+    pub classes: crate::policy::classes::Classes,
     pub agents: crate::protocols::agent::Agents,
+    /// `eclipse_semantic_v1` (COMP-09): each toplevel's published tree.
+    pub semantic: crate::protocols::semantic::SemanticState,
+    /// `eclipse_protected_surface_v1` (COMP-19): protected surfaces and the
+    /// commit slots they host.
+    pub protected: crate::protocols::protected::Protected,
+    /// The origin of the input event being handled, set by the entry point
+    /// that created it and read where it is delivered (COMP-19 §3). `None`
+    /// outside any entry point; deliveries read that as `Injected`.
+    pub input_origin: Option<crate::input::Origin>,
+    /// Each agent's virtual seat (COMP-04 §3), by agent id. Created lazily by
+    /// `get_seat`; never consulted by the human input paths.
+    pub agent_seats: Vec<(u64, crate::protocols::agent::seat::AgentSeat)>,
 
     /// Live capture allowlist, shared with the `zwlr_screencopy_v1` bind
     /// filter. Written by the config reload path.
@@ -286,6 +314,8 @@ pub struct AbyssState {
     pub idle_inhibit_state: IdleInhibitManagerState,
     /// `zwlr_virtual_pointer_v1`.
     pub virtual_pointer: crate::protocols::standard::virtual_pointer::VirtualPointerState,
+    /// `ext_background_effect_v1` (BLUR-03).
+    pub background_effect: crate::protocols::standard::background_effect::BackgroundEffectGlobals,
     /// `zwlr_output_power_management_v1`.
     pub output_power: crate::protocols::standard::output_power::OutputPowerState,
 
@@ -432,6 +462,10 @@ impl AbyssState {
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         let output_power = crate::protocols::standard::output_power::OutputPowerState::new(&dh);
+        let background_effect = crate::protocols::standard::background_effect::BackgroundEffectGlobals::new(
+            &dh,
+            config.decoration.blur.mode != crate::config::BlurMode::Off,
+        );
         let virtual_pointer = crate::protocols::standard::virtual_pointer::VirtualPointerState::new(&dh);
         // Capture reads every pixel of an output: allowlisted, fail-closed.
         let screencopy = crate::protocols::standard::screencopy::ScreencopyState::new(
@@ -533,6 +567,7 @@ impl AbyssState {
             finger_scroll_forwarded: false,
             tablet_in_use: None,
             borders: crate::render::BorderStore::default(),
+            capture_fx: crate::render::still::Still::default(),
             annotations: crate::render::annotation::AnnotationStore::default(),
             region_select: crate::render::select::RegionSelect::default(),
             trusted_ui: crate::trusted_ui::TrustedUi::default(),
@@ -554,13 +589,24 @@ impl AbyssState {
             policy_key: None,
             policy_link: Default::default(),
             audit: Default::default(),
+            policy_table: None,
+            revoked: Default::default(),
+            paused: Default::default(),
+            enforce: Default::default(),
+            batches: Default::default(),
+            classes: Default::default(),
             agents: Default::default(),
+            semantic: crate::protocols::semantic::SemanticState::new(&display.handle()),
+            protected: crate::protocols::protected::Protected::new(&display.handle()),
+            input_origin: None,
+            agent_seats: Vec::new(),
             session_lock_state,
             lock: Default::default(),
             idle: Default::default(),
             idle_notifier,
             idle_inhibit_state,
             output_power,
+            background_effect,
             virtual_pointer,
             xwayland_shell_state,
             xwayland: Default::default(),

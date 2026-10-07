@@ -23,13 +23,26 @@
 //!
 //! One prompt at a time. `open` refuses a second, and the owner re-queues it.
 //!
-//! Owners: command-widget approval ([`approval`], §3.11, ADR 0067) and the
+//! Owners: command-widget approval ([`approval`], §3.11, ADR 0067), the
 //! destructive-system-action confirmation ([`erase`], §3.10, ADR 0061),
-//! asked for over the root-only [`socket`].
+//! asked for over the root-only [`socket`], the agent consent prompt
+//! ([`consent`], §3.2) and personal-secret entry ([`phrase`], §2).
+//!
+//! Every prompt shows the personal secret in its fixed frame at the top, or
+//! the unconfigured warning while there is none (§2).
 
 pub mod approval;
+pub mod batch;
+pub mod commit;
+pub mod consent;
 pub mod erase;
+pub mod install;
 pub mod modal;
+pub mod notice;
+pub mod panel;
+pub mod phrase;
+pub mod queue;
+pub mod slot;
 pub mod socket;
 
 use std::{
@@ -72,11 +85,17 @@ const DIM: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 const DIM_ALPHA: f32 = 0.6;
 
 /// The answer to a prompt, handed to [`resolve`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
     pub token: u64,
     pub button: usize,
     pub role: Role,
+    /// The prompt's typed text, when it took any.
+    pub typed: Option<modal::Typed>,
+    /// Nobody answered: the timeout picked the `Safe` button. Owners that
+    /// report a timeout differently from a refusal (§3.2 `prompt_timeout`)
+    /// read this.
+    pub timed_out: bool,
 }
 
 #[derive(Debug)]
@@ -105,6 +124,20 @@ pub struct TrustedUi {
     asking: approval::Asking,
     /// The erase prompt's requester, if that is what is up.
     erase: erase::State,
+    /// The personal secret (§2), `None` until the owner sets one.
+    pub phrase: Option<phrase::Phrase>,
+    /// Phrase entry, if that is what is up.
+    entering: phrase::Entering,
+    /// Agent requests waiting on the human (§3.2, COMP-11 §4).
+    pub consent: consent::Queue,
+    /// The emergency panel's page, while it is up (§3.3).
+    pub(crate) panel: panel::Panel,
+    /// Batch prompts waiting or shown (§3.7).
+    pub(crate) batches: batch::Batches,
+    /// Agent install reviews waiting or shown (A-07 §3).
+    pub(crate) installs: install::Installs,
+    /// Commit slots' trusted side: preview, arming, cards (COMP-19).
+    pub(crate) cards: commit::Cards,
     /// The bound trusted socket, so a clean exit can unlink it.
     pub path: Option<PathBuf>,
 }
@@ -153,7 +186,7 @@ pub fn open(state: &mut AbyssState, modal: modal::Modal) -> bool {
         .insert_source(Timer::from_duration(TIMEOUT), move |_, _, state| {
             if state.trusted_ui.token() == Some(token) {
                 tracing::info!(token, "trusted prompt timed out; resolving to its safe button");
-                choose_safe(state);
+                choose_safe(state, true);
             }
             TimeoutAction::Drop
         });
@@ -215,16 +248,21 @@ pub fn key(state: &mut AbyssState, sym: Keysym) {
     let Some(o) = state.trusted_ui.open.as_mut() else {
         return;
     };
-    let k = modal::key(sym);
+    let k = modal::key(sym, o.modal.takes_text());
     if k != modal::Key::Escape && o.shown.elapsed() < ARM {
         return;
     }
-    match modal::apply(&o.modal, o.focus, k) {
+    match modal::apply(&mut o.modal, o.focus, k) {
         modal::Outcome::Focus(i) => {
             o.focus = i;
             crate::backend::damage_all(state);
         }
-        modal::Outcome::Choose(i) => choose(state, i),
+        modal::Outcome::Edited => {
+            // The cached panel is keyed by focus only; the text changed.
+            state.trusted_ui.art.clear();
+            crate::backend::damage_all(state);
+        }
+        modal::Outcome::Choose(i) => choose(state, i, false),
         modal::Outcome::Nothing => {}
     }
 }
@@ -254,18 +292,18 @@ pub fn button(state: &mut AbyssState, pressed: bool) {
         return;
     }
     if let Some(i) = o.pressed.take().filter(|&p| Some(p) == under) {
-        choose(state, i);
+        choose(state, i, false);
     }
 }
 
-fn choose_safe(state: &mut AbyssState) {
+fn choose_safe(state: &mut AbyssState, timed_out: bool) {
     if let Some(i) = state.trusted_ui.open.as_ref().map(|o| o.modal.safe()) {
-        choose(state, i);
+        choose(state, i, timed_out);
     }
 }
 
 /// Close the prompt with `button` as its answer and hand that to its owner.
-fn choose(state: &mut AbyssState, button: usize) {
+fn choose(state: &mut AbyssState, button: usize, timed_out: bool) {
     let Some(o) = state.trusted_ui.open.take() else {
         return;
     };
@@ -278,11 +316,17 @@ fn choose(state: &mut AbyssState, button: usize) {
         token: o.modal.token,
         button,
         role: b.role,
+        typed: o.modal.typed().cloned(),
+        timed_out,
     };
     crate::backend::damage_all(state);
     resolve(state, choice);
+    crate::ipc::events::decisions_pending_changed(state);
     // Whatever was waiting behind this prompt gets its turn.
     approval::schedule(state);
+    consent::schedule(state);
+    batch::schedule(state);
+    install::schedule(state);
     // The pointer is re-evaluated as though it had just moved, so whatever is
     // under it gets its enter now rather than on the next motion.
     state.refresh_pointer_focus();
@@ -295,7 +339,46 @@ fn resolve(state: &mut AbyssState, choice: Choice) {
         approval::answer(state, choice);
     } else if erase::owns(state, choice.token) {
         erase::answer(state, choice);
+    } else if phrase::owns(state, choice.token) {
+        phrase::answer(state, choice);
+    } else if consent::owns(state, choice.token) {
+        consent::answer(state, choice);
+    } else if batch::owns(state, choice.token) {
+        batch::answer(state, choice);
+    } else if panel::owns(state, choice.token) {
+        panel::answer(state, choice);
+    } else if install::owns(state, choice.token) {
+        install::answer(state, choice);
+    } else if commit::owns(state, choice.token) {
+        commit::answer(state, choice);
+    } else if notice::owns(choice.token) {
+        // Acknowledged; nothing follows from a notice.
     }
+}
+
+/// Swap the prompt that is up for `modal`, if `modal` carries the same
+/// token: its owner learned more (the panel's audit tail arrived). Focus is
+/// kept where it was, or falls back to the safe button; arming is not reset,
+/// because the human is already looking at it.
+pub(crate) fn replace(state: &mut AbyssState, modal: modal::Modal) -> bool {
+    let Some(o) = state.trusted_ui.open.as_mut() else {
+        return false;
+    };
+    if o.modal.token != modal.token {
+        return false;
+    }
+    let focus = if o.focus < modal.buttons().len() {
+        o.focus
+    } else {
+        modal.safe()
+    };
+    o.layout = modal::layout(&modal);
+    o.modal = modal;
+    o.focus = focus;
+    o.pressed = None;
+    state.trusted_ui.art.clear();
+    crate::backend::damage_all(state);
+    true
 }
 
 /// Take prompt `token` down without an answer: its owner withdrew the
@@ -339,11 +422,13 @@ pub fn elements(
     if locked {
         return Vec::new();
     }
-    let Some(o) = ui.open.as_ref() else {
-        return Vec::new();
-    };
     let Some(logical) = logical_size(output) else {
         return Vec::new();
+    };
+    // Commit-slot cards: above every client, below any prompt and its dim.
+    let cards = commit::elements(renderer, ui, output, output_loc, logical);
+    let Some(o) = ui.open.as_ref() else {
+        return cards;
     };
     let fractional = output.current_scale().fractional_scale();
     let scale = Scale::from(fractional);
@@ -352,7 +437,12 @@ pub fn elements(
 
     let mut out = Vec::with_capacity(2);
     if ui.art.get(&dev).map(|(f, _)| *f != o.focus).unwrap_or(true) {
-        let raster = modal::rasterize(&o.modal, o.focus, dev);
+        let raster = modal::rasterize(
+            &o.modal,
+            o.focus,
+            dev,
+            ui.phrase.as_ref().map(phrase::Phrase::as_str),
+        );
         match upload(renderer, &raster, dev) {
             Some(buffer) => {
                 ui.art.insert(dev, (o.focus, buffer));
@@ -389,6 +479,7 @@ pub fn elements(
         DIM_ALPHA,
         Kind::Unspecified,
     )));
+    out.extend(cards);
     out
 }
 
@@ -523,5 +614,58 @@ mod tests {
         assert_eq!(p.x, 1920 + (1920 - l.w as i32) / 2);
         let tiny = Rectangle::new(Point::from((0, 0)), Size::from((100, 100)));
         assert_eq!(centre(tiny, &l), Point::from((0, 0)));
+    }
+}
+
+/// Not a check: renders every trusted surface to `$ECLIPSE_DUMP_DIR/*.pam`
+/// for a visual review (`cargo test -p ec-abyss dump_trusted_surfaces --
+/// --ignored`). PAM is RGBA with no dependency; `convert x.pam x.png` turns
+/// it into a PNG.
+#[cfg(test)]
+#[test]
+#[ignore]
+fn dump_trusted_surfaces() {
+    use std::io::Write;
+    let Some(dir) = std::env::var_os("ECLIPSE_DUMP_DIR") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let write = |name: &str, m: &modal::Modal, phrase: Option<&str>| {
+        let r = modal::rasterize(m, m.safe(), 2, phrase);
+        let mut f = std::fs::File::create(dir.join(format!("{name}.pam"))).unwrap();
+        write!(
+            f,
+            "P7\nWIDTH {}\nHEIGHT {}\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n",
+            r.w, r.h
+        )
+        .unwrap();
+        f.write_all(&r.px).unwrap();
+    };
+    let ask = consent::Ask {
+        principal: "agent:research-7".into(),
+        action: "Click \"Send\"".into(),
+        app: "Gmail - Firefox".into(),
+        window: "Compose: Q3 invoice".into(),
+        task: "Summarize this week's invoices".into(),
+        category: Some(("communication.send".into(), consent::Reversal::None)),
+        untrusted_source: Some("acme-invoices.com (web page)".into()),
+        task_scope: "click handle:4".into(),
+        unattended_scope: "click app_id:org.mozilla.firefox".into(),
+        note: "checking the Q3 total before sending".into(),
+    };
+    write(
+        "consent",
+        &consent::modal(1, &ask).unwrap(),
+        Some("blue heron 42"),
+    );
+    let mut routine = ask.clone();
+    routine.category = None;
+    routine.untrusted_source = None;
+    write("consent-routine", &consent::modal(1, &routine).unwrap(), None);
+    let mut h = crate::shell::focus::state_tests::harness();
+    phrase::prompt_if_unset(&mut h.state);
+    if let Some(o) = h.state.trusted_ui.open.as_ref() {
+        write("phrase-entry", &o.modal, None);
     }
 }

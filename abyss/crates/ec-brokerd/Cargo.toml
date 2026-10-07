@@ -1,0 +1,35 @@
+[package]
+name = "ec-brokerd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Secrets broker: sealed store, injection modes, unlock via trusted UI (S-08)."
+# A system daemon, never published (same reason as ec-policyd).
+publish = false
+
+[dependencies]
+ec-policy-eval = { path = "../ec-policy-eval" }
+# AEAD for the store (S-08 §2). No default features: the default pulls
+# `getrandom` through rand_core 0.6, and nonces come from our own entropy call.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+# Passphrase fallback KDF (S-08 §2). `zeroize` wipes its block matrix.
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = "1"
+# TOTP (S-08 §4): HMAC-SHA1 per RFC 6238.
+hmac = "0.12"
+sha1 = "0.10"
+getrandom = "0.4.3"
+libc = "0.2"
+rustix = { workspace = true, features = ["net", "process", "fs"] }
+tracing.workspace = true
+
+[features]
+# Recognise peer binaries from any directory, not only /usr/bin, for a dev
+# tree. Never enabled by the package build (src/main.rs `classify`).
+dev-peers = []
+
+[dev-dependencies]
+blake3 = { version = "1.8.7", default-features = false, features = ["std"] }
+sha2 = "0.10"

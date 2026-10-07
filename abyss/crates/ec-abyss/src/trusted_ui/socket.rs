@@ -386,6 +386,8 @@ mod tests {
                 token: token + 1,
                 button: 1,
                 role: crate::trusted_ui::Role::Grant,
+                typed: None,
+                timed_out: false,
             },
         );
         assert!(answer(&client).is_none(), "a stale token must not answer");

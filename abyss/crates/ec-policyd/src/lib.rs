@@ -13,4 +13,8 @@
 #![forbid(unsafe_code)]
 
 pub mod audit;
+pub mod dispatch;
+pub mod manifest;
+pub mod peer;
+pub mod policy;
 pub mod tasks;

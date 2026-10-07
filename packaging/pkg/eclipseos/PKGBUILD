@@ -130,12 +130,15 @@ package_eclipseos-launcher() {
 }
 
 package_eclipseos-desktop() {
-  pkgdesc="EclipseOS desktop apps: settings, policy viewer, screensaver, welcome, pairing agent, secret prompt"
+  pkgdesc="EclipseOS desktop apps: settings, policy viewer, agent console, screensaver, welcome, pairing agent, secret prompt"
   # Fonts for ec-welcome (D-07 step 0). Lora has no official package; the
   # version label falls back to a serif.
   depends=(eclipseos-abyss wayland libxkbcommon mesa networkmanager bluez ttf-cormorant noto-fonts-cjk)
 
-  for b in ec-settings ec-policy-viewer ec-screensaver ec-welcome; do _bin "$b"; done
+  # ec-console is here, not in eclipseos-agents, because Super+/ is a
+  # shipped default bind and every one names an installed binary; without
+  # agentd it shows the agents as unavailable (A-08 §12).
+  for b in ec-settings ec-policy-viewer ec-console ec-screensaver ec-welcome; do _bin "$b"; done
   # The Bluetooth pairing agent and the prompt it and the taskbar spawn by name
   # from PATH for pairing PINs and wifi passphrases (ADR 0053). Here, not in the
   # taskbar's package, so pairing works with no taskbar (ADR 0066).
@@ -147,23 +150,37 @@ package_eclipseos-desktop() {
   _want ec-pairing.service
   _app ec-settings.desktop
   _app ec-policy-viewer.desktop
+  _app ec-console.desktop
 }
 
 # The agent stack is one add-on (ADR 0069): installed by the Agentic profile,
 # never by the floor. Every agent-only process ships here; abyss's half stays
 # dormant until this manifest turns the `agents` hook on.
 package_eclipseos-agents() {
-  pkgdesc="EclipseOS agent stack add-on: policy daemon and audit reader (ADR 0069)"
-  depends=(eclipseos-abyss)
+  pkgdesc="EclipseOS agent stack add-on: policy daemon, secrets broker, agent daemon and audit reader (ADR 0069)"
+  depends=(eclipseos-abyss bubblewrap)
   replaces=(eclipseos-policyd)
   conflicts=(eclipseos-policyd)
 
   _bin ec-policyd
   _bin ec-audit
+  _bin ec-brokerd
+  # The console backend and agent host (A-08). Never built with the
+  # `dev-unsandboxed` feature. It starts agents under bwrap.
+  _bin ec-agentd
   _unit ec-policyd.service
   _want ec-policyd.service
+  _unit ec-brokerd.service
+  _want ec-brokerd.service
+  _unit ec-agentd.service
+  _want ec-agentd.service
   install -Dm0644 "$srcdir/$_src/packaging/addons/eclipseos-agents.kdl" \
     "$pkgdir/usr/share/eclipse/addons/eclipseos-agents.kdl"
+  # The reference agent package (console wave): manifest beside its binary,
+  # the entrypoint being relative to the package directory (A-07 §7).
+  _ref="$pkgdir/usr/share/eclipse/agents/ec-ref-agent/0.1.0"
+  install -Dm0644 "$srcdir/$_src/packaging/agents/ec-ref-agent/manifest.kdl" "$_ref/manifest.kdl"
+  install -Dm0755 "$srcdir/target/release/ec-ref-agent" "$_ref/bin/ec-ref-agent"
 }
 
 package_eclipseos-setup() {

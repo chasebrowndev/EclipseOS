@@ -45,10 +45,14 @@ pub enum Kind {
     Net,
     Secret,
     Anchor,
+    /// A commit slot's preview, arm, commit or refusal (Appendix F-13).
+    Slot,
+    /// Agent-origin input dropped before a protected surface (F-13).
+    InputRefused,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 19] = [
+    pub const ALL: [Kind; 21] = [
         Kind::Request,
         Kind::Decision,
         Kind::Prompt,
@@ -68,6 +72,8 @@ impl Kind {
         Kind::Net,
         Kind::Secret,
         Kind::Anchor,
+        Kind::Slot,
+        Kind::InputRefused,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -91,6 +97,8 @@ impl Kind {
             Kind::Net => "net",
             Kind::Secret => "secret",
             Kind::Anchor => "anchor",
+            Kind::Slot => "slot",
+            Kind::InputRefused => "input_refused",
         }
     }
 
@@ -117,6 +125,8 @@ impl Kind {
                 | Kind::Launch
                 | Kind::Lifecycle
                 | Kind::Policy
+                | Kind::Slot
+                | Kind::InputRefused
         )
     }
 }

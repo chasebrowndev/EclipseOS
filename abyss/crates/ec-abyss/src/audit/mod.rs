@@ -63,6 +63,9 @@ pub struct Audit {
     dropped: u64,
     /// The window the last `focus` record moved focus to.
     last_focus: Option<u64>,
+    /// The agent whose act is executing (`policy::enforce`), so a record
+    /// the act causes deeper down names it.
+    pub(crate) acting: Option<String>,
     /// The record being sent. Cleared, never freed, between records.
     buf: Writer,
     /// Tests: where records go instead of a socket. Each is decoded as
@@ -87,7 +90,12 @@ impl Audit {
     fn try_send(&mut self, bytes: &[u8]) -> bool {
         #[cfg(test)]
         if let Some(sink) = &mut self.sink {
-            sink.push(Emission::decode(bytes).expect("an emission policyd accepts"));
+            if ec_policy_eval::link::is_message(bytes) {
+                // A link message on the same queue: well-formed, not a record.
+                ec_policy_eval::link::ToPolicyd::decode(bytes).expect("a link message policyd accepts");
+            } else {
+                sink.push(Emission::decode(bytes).expect("an emission policyd accepts"));
+            }
             return true;
         }
         let Some(fd) = &self.fd else {
@@ -181,6 +189,11 @@ enum Body<'a> {
     Lifecycle {
         event: &'a str,
     },
+    /// A table went live: its version and hash (COMP-11 §2 step 4).
+    Policy {
+        version: u64,
+        hash: [u8; 32],
+    },
     Gap {
         dropped: u64,
     },
@@ -188,6 +201,21 @@ enum Body<'a> {
         cause: &'a str,
         from: Option<u64>,
         to: Option<u64>,
+    },
+    /// Appendix F-13 `slot`: what happened to a commit slot. The draft is
+    /// named by its hash only: it is human-typed text (S-04 §2).
+    Slot {
+        op: &'a str,
+        draft_hash: [u8; 32],
+        preview: Option<u64>,
+        task: Option<&'a str>,
+    },
+    /// Appendix F-13 `input_refused`: agent-origin input dropped before a
+    /// protected surface. The target is a window handle, 0 when the window
+    /// has none; never what the input was.
+    InputRefused {
+        origin: &'a str,
+        target: u64,
     },
 }
 
@@ -276,6 +304,13 @@ impl Body<'_> {
                 w.text("event");
                 w.text(event);
             }
+            Body::Policy { version, hash } => {
+                w.map(2);
+                w.text("hash");
+                w.bytes(&hash);
+                w.text("version");
+                w.u64(version);
+            }
             Body::Gap { dropped } => {
                 w.map(2);
                 w.text("event");
@@ -297,6 +332,33 @@ impl Body<'_> {
                     w.text("from_handle");
                     w.u64(h);
                 }
+            }
+            Body::Slot {
+                op,
+                draft_hash,
+                preview,
+                task,
+            } => {
+                w.map(2 + usize::from(preview.is_some()) + usize::from(task.is_some()));
+                w.text("op");
+                w.text(op);
+                if let Some(t) = task {
+                    w.text("task");
+                    w.text(t);
+                }
+                if let Some(p) = preview {
+                    w.text("preview");
+                    w.u64(p);
+                }
+                w.text("draft_hash");
+                w.bytes(&draft_hash);
+            }
+            Body::InputRefused { origin, target } => {
+                w.map(2);
+                w.text("origin");
+                w.text(origin);
+                w.text("target");
+                w.u64(target);
             }
         }
     }
@@ -397,6 +459,15 @@ pub fn agent(state: &mut AbyssState, r: Rec) {
     }
 }
 
+/// A link message to `policyd` (`policy::link::send`). It rides the same
+/// ordered queue as agent records, so a request is never seen by `policyd`
+/// ahead of the records that led to it, and like them it is queued, never
+/// dropped. Sent whatever the agents hook says: only the link carries it.
+pub fn message(state: &mut AbyssState, bytes: Vec<u8>) {
+    state.audit.pending.push_back(bytes);
+    state.audit.flush();
+}
+
 /// A human-side record (`focus`). Never stalls; rings when it must
 /// (COMP-12 §1).
 pub fn human(state: &mut AbyssState, r: Rec) {
@@ -477,6 +548,11 @@ pub fn result<'a>(principal: &'a str, req_id: u32, status: u32, detail: &'a str,
     record(Kind::Result, principal, Some(req_id), body)
 }
 
+/// `policy`: an enforcement table went live in the compositor.
+pub fn policy(version: u64, hash: [u8; 32]) -> Rec<'static> {
+    record(Kind::Policy, "system:abyss", None, Body::Policy { version, hash })
+}
+
 /// `lifecycle` (S-04 §1.1): `start`, `stop`, `pause`, `resume`.
 pub fn lifecycle<'a>(principal: &'a str, event: &'a str) -> Rec<'a> {
     record(Kind::Lifecycle, principal, None, Body::Lifecycle { event })
@@ -493,6 +569,48 @@ pub fn focus(state: &mut AbyssState, to: Option<u64>, cause: &str) {
     human(
         state,
         record(Kind::Focus, "human", None, Body::Focus { cause, from, to }),
+    );
+}
+
+/// `slot` (F-13): `preview`, `arm`, `commit` or `refuse`. A human record:
+/// the human drove the slot. Rings, never waits.
+pub fn slot(
+    state: &mut AbyssState,
+    op: &str,
+    draft_hash: [u8; 32],
+    preview: Option<u64>,
+    task: Option<&str>,
+) {
+    if !on(state) {
+        return;
+    }
+    human(
+        state,
+        record(
+            Kind::Slot,
+            "human",
+            None,
+            Body::Slot {
+                op,
+                draft_hash,
+                preview,
+                task,
+            },
+        ),
+    );
+}
+
+/// `input_refused` (F-13), for agent origins only. `principal` is the agent
+/// whose act was executing, when one was; queued like every agent record.
+pub fn input_refused(state: &mut AbyssState, principal: &str, origin: &str, target: u64) {
+    agent(
+        state,
+        record(
+            Kind::InputRefused,
+            principal,
+            None,
+            Body::InputRefused { origin, target },
+        ),
     );
 }
 
@@ -632,6 +750,37 @@ mod tests {
                     cause: "human",
                     from: Some(1),
                     to: Some(300),
+                },
+            ),
+            record(
+                Kind::Slot,
+                "human",
+                None,
+                Body::Slot {
+                    op: "commit",
+                    draft_hash: [3; 32],
+                    preview: Some(9),
+                    task: Some("01TASK"),
+                },
+            ),
+            record(
+                Kind::Slot,
+                "human",
+                None,
+                Body::Slot {
+                    op: "preview",
+                    draft_hash: [3; 32],
+                    preview: None,
+                    task: None,
+                },
+            ),
+            record(
+                Kind::InputRefused,
+                "agent:a",
+                None,
+                Body::InputRefused {
+                    origin: "agent_seat",
+                    target: 4,
                 },
             ),
         ] {

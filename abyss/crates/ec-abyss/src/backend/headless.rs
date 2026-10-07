@@ -312,6 +312,8 @@ fn boot(
     crate::input::idle::start(&mut state, &handle);
     crate::ipc::start(&mut state, &handle);
     crate::trusted_ui::socket::start(&mut state, &handle);
+    // COMP-10 §2: every prompt shows the personal secret, once one is set.
+    state.trusted_ui.phrase = crate::trusted_ui::phrase::load();
     crate::config::watch::start(&mut state, &handle);
     crate::addons::start(&mut state, &handle);
     // Registered ahead of the wayland sources on purpose: calloop dispatches in
@@ -406,6 +408,8 @@ fn redraw(
     damage_tracker: &mut OutputDamageTracker,
 ) {
     crate::shell::tick_retile_hold(state);
+    // Commit slots follow their window this frame, not 50 ms later.
+    crate::trusted_ui::commit::tick(state);
     // An output resized by the IPC layer needs a target of the new size before
     // anything is drawn into it; a stale one would crop or stretch the frame.
     if let Some(mode) = out.current_mode() {

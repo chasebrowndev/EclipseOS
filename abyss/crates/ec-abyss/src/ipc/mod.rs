@@ -15,7 +15,9 @@
 //! `get_tree`, no capture, no grant manipulation (COMP-13 §2).
 
 pub(crate) mod config_rpc;
+pub mod events;
 pub mod gate;
+pub(crate) mod hooks;
 pub(crate) mod methods;
 
 use std::{
@@ -146,6 +148,11 @@ pub struct IpcState {
     /// The connection currently inside its own read callback, if any. Its
     /// calloop source must not be removed from underneath it.
     current: Option<u64>,
+    /// When `show_decisions` last ran, for its 1/s limit (A-08 §7).
+    last_show_decisions: Option<std::time::Instant>,
+    /// The parked-prompt count last announced as `decisions_pending`, so the
+    /// event fires on a change and not on every poke.
+    last_pending: u32,
 }
 
 impl IpcState {

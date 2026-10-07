@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Eclipse Console
+Comment=Agent tasks and conversations
+Exec=ec-console
+StartupWMClass=eclipse-console
+Categories=Utility;
+Keywords=agent;task;conversation;console;eclipse;

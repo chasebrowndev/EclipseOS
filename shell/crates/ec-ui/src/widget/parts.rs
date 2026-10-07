@@ -1046,6 +1046,49 @@ pub fn pill<'a, Message: Clone + 'a>(
     .into()
 }
 
+/// A pill for a choice whose selection is not the pane's yellow: the chosen
+/// one is lifted white ([`theme::pick`]). A widget-level sibling of [`pill`]
+/// for a pane that has two choice groups and one accent, which is every pane
+/// that has two choice groups.
+pub fn pick_pill<'a, Message: Clone + 'a>(
+    label: &str,
+    selected: bool,
+    on_press: Option<Message>,
+) -> Element<'a, Message, Theme> {
+    let b = button(
+        text(label.to_string())
+            .font(font::UI_MEDIUM)
+            .size(size::BODY_SMALL),
+    )
+    .padding([space::PILL_Y, space::PILL_X]);
+    match on_press {
+        Some(m) => b.on_press(m).style(theme::pick(selected)).into(),
+        None => b.style(theme::pill_disabled).into(),
+    }
+}
+
+/// A bar that fills its row to `fraction`, left to right, in `fill`, over the
+/// standard track.
+///
+/// A widget because [`meter_bar`] takes an absolute pixel width, and a hero
+/// that spans its panel has no such number; this one weights its two halves
+/// out of [`crate::tokens::console::BAR_PARTS`] instead, so it is exact at any
+/// width and never needs a measuring pass.
+pub fn progress_bar<'a, Message: 'a>(fraction: f32, fill: Color) -> Element<'a, Message, Theme> {
+    let parts = crate::tokens::console::BAR_PARTS;
+    let lit = ((fraction.clamp(0.0, 1.0) * f32::from(parts)).round() as u16).min(parts);
+    let h = Length::Fixed(crate::tokens::console::BAR_H);
+    let r = drawer::RADIUS_METER;
+    let mut row = Row::new().width(Length::Fill).height(h);
+    if lit > 0 {
+        row = row.push(quad(Length::FillPortion(lit), h, fill, r));
+    }
+    if lit < parts {
+        row = row.push(quad(Length::FillPortion(parts - lit), h, color::TRACK, r));
+    }
+    row.into()
+}
+
 /// A segmented choice: pills in a row, one of them accented. The row wraps
 /// onto a second line rather than running past its panel.
 pub fn segmented<'a, T, Message>(

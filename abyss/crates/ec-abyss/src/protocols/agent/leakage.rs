@@ -68,8 +68,9 @@ const WINDOWS: &[(&str, Option<Class>)] = &[
 ];
 
 /// Every window an agent could ever see in this world: not `secret`, not
-/// `no-agent`.
-const SEEABLE: &[&str] = &["pubA", "privA", "pubW2", "privW2", "pubB"];
+/// `no-agent`. `unsetA` is unclassified, which with a table live is
+/// `private` (F-02 §6: the default class).
+const SEEABLE: &[&str] = &["pubA", "privA", "unsetA", "pubW2", "privW2", "pubB"];
 /// The `public` ones of those.
 const PUBLIC: &[&str] = &["pubA", "pubW2", "pubB"];
 
@@ -132,6 +133,7 @@ fn world(sock: &str) -> World {
     let (mut h, _path) = hooked(sock, true);
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
+    crate::policy::table::install_for_test(&mut h.state);
     test_class::clear();
     h.state.config.window_rules = vec![
         rule("W2$", RuleAction::Workspace(2)),
@@ -372,8 +374,9 @@ fn detail(e: &eclipse_scene_v1::Event) -> Option<(u32, u32)> {
 fn wire_class(name: &str) -> u32 {
     match WINDOWS.iter().find(|(n, _)| *n == name).and_then(|(_, c)| *c) {
         Some(Class::Public) => 0,
-        Some(Class::Private) => 1,
-        Some(Class::Secret) | None => 2,
+        // S-05 §8: no matching rule is `private`, the default.
+        Some(Class::Private) | None => 1,
+        Some(Class::Secret) => 2,
     }
 }
 
@@ -643,7 +646,7 @@ fn every_grant_sees_exactly_its_scope() {
         (
             "output:test-a workspace:1 class:private",
             lines(&[&["output:test-a", "workspace:1", "class:private"]]),
-            vec!["pubA", "privA"],
+            vec!["pubA", "privA", "unsetA"],
         ),
         (
             "title:Title of pubA",
@@ -694,11 +697,12 @@ fn every_grant_sees_exactly_its_scope() {
 /// S-05 §2 (`secret`: "Not delivered to any agent without a `*.secret`
 /// capability **and** a per-request prompt"), S-01 §2.1 (`scene.list` has no
 /// secret form; `scene.read.secret` "never without per-request prompt"),
-/// S-05 §8 (no table entry: `secret`): no grant, not even one scoped
-/// `class:secret` or naming the secret window by handle or app_id, and not
-/// one holding `scene.read.secret`, sees `secA`, `secB`, `fsec` or the
-/// never-classed `unsetA`. There is no prompt path, so nothing can satisfy
-/// the "and".
+/// S-05 §8: no grant, not even one scoped `class:secret` or naming the
+/// secret window by handle or app_id, and not one holding
+/// `scene.read.secret`, sees `secA`, `secB` or `fsec`. There is no prompt
+/// path, so nothing can satisfy the "and". The never-classed `unsetA` is
+/// `private` (no rule matches: the default), so a handle scope that names it
+/// does see it.
 #[test]
 fn secret_windows_are_never_visible() {
     let mut w = world("secret.sock");
@@ -726,7 +730,11 @@ fn secret_windows_are_never_visible() {
         ),
         ("handle:secA", vec![hs(&w, "secA")], vec![]),
         ("handle:secB", vec![hs(&w, "secB")], vec![]),
-        ("handle:unsetA (never classed)", vec![hs(&w, "unsetA")], vec![]),
+        (
+            "handle:unsetA (never classed)",
+            vec![hs(&w, "unsetA")],
+            vec!["unsetA"],
+        ),
         (
             "output:test-b class:secret",
             lines(&[&["output:test-b", "class:secret"]]),
@@ -1108,4 +1116,90 @@ fn get_toplevel_on_a_visible_window_answers_with_its_own_detail() {
         assert!(at_toplevel < at_detail, "{name}: toplevel before toplevel_detail");
         assert!(results_for(&p, req).is_empty(), "{name}");
     }
+}
+
+/// COMP-02 §7 through the real classifier (no test override): with a table
+/// live, an unclassified window is `private`, and the compositor's
+/// sensitive set raises it to `secret`, which no grant sees.
+#[test]
+fn the_sensitive_set_raises_a_window_to_secret() {
+    let mut w = world("raise.sock");
+    let broad = list_and_read(&lines(&[&["workspace:human", "class:private"]]));
+    let g = w.grant(broad, u64::MAX);
+    let mut p = Peer::inserted(&mut w.h, true);
+    let (_agent, scene) = p.admit(&mut w.h, g);
+    p.pump(&mut w.h);
+    w.ask_everything(&mut p, &scene);
+    assert_sees_exactly(&w, &p, SEEABLE, "unset is private");
+
+    let unset = w.wins.iter().find(|x| x.name == "unsetA").unwrap().window.clone();
+    let surface = crate::shell::window_surface(&unset).unwrap();
+    w.h.state.sensitive.insert(surface);
+    let mut p2 = p;
+    p2.seen = Default::default();
+    w.ask_everything(&mut p2, &scene);
+    let raised: Vec<&str> = SEEABLE.iter().copied().filter(|n| *n != "unsetA").collect();
+    assert_sees_exactly(&w, &p2, &raised, "raised to secret");
+}
+
+/// S-05 §9 race harness, the title-flicker attack: a client flips its
+/// title between a value a `classify "secret"` rule matches and a plain one,
+/// committing each time, while an agent reads. Every read while the title is
+/// secret, and every read inside the downgrade grace after it stops, finds
+/// the window absent. Only once the raising title has been gone for the whole
+/// grace does the window come back.
+#[test]
+fn a_flickering_title_never_leaks_and_downgrades_only_after_the_grace() {
+    use ec_policy_eval::classify::{ClassifyRule, Matcher};
+    let mut w = world("flicker.sock");
+    // The real classifier, not the test override, for this window.
+    let unset = w.wins.iter().find(|x| x.name == "unsetA").unwrap().window.clone();
+    crate::policy::scene::test_class::clear();
+    for x in &w.wins {
+        if let Some(c) = WINDOWS.iter().find(|(n, _)| *n == x.name).and_then(|(_, c)| *c) {
+            crate::policy::scene::test_class::set(&x.window, c);
+        }
+    }
+    let mut table = w.h.state.policy_table.clone().unwrap();
+    table.classifier.classify.push(ClassifyRule {
+        class: Class::Secret,
+        matchers: vec![Matcher::Title(regex::Regex::new("(?i)password").unwrap())],
+    });
+    w.h.state.policy_table = Some(table);
+
+    let broad = list_and_read(&lines(&[&["workspace:human", "class:private"]]));
+    let g = w.grant(broad, u64::MAX);
+    let mut p = Peer::inserted(&mut w.h, true);
+    let (_agent, scene) = p.admit(&mut w.h, g);
+    p.pump(&mut w.h);
+    let hidden: Vec<&str> = SEEABLE.iter().copied().filter(|n| *n != "unsetA").collect();
+
+    let set_title = |w: &mut World, t: &str| {
+        let i = w.toplevels.iter().position(|(n, _)| *n == "unsetA").unwrap();
+        w.toplevels[i].1.toplevel.set_title(t.into());
+        let surface = w.toplevels[i].1.surface.clone();
+        w.app.commit(&mut w.h, &surface);
+    };
+    let read = |w: &mut World, p: Peer, want: &[&str], case: &str| -> Peer {
+        let mut p = p;
+        p.seen = Default::default();
+        w.ask_everything(&mut p, &scene);
+        assert_sees_exactly(w, &p, want, case);
+        p
+    };
+
+    // Flicker at "frame rate": never visible while any recent title raised.
+    for i in 0..20 {
+        set_title(&mut w, if i % 2 == 0 { "Enter password" } else { "Inbox" });
+        p = read(&mut w, p, &hidden, &format!("flicker {i}"));
+    }
+    // Plain now, but inside the grace: still hidden.
+    set_title(&mut w, "Inbox");
+    p = read(&mut w, p, &hidden, "inside the grace");
+    // After the grace, a commit lets the downgrade through.
+    std::thread::sleep(crate::policy::classes::DOWNGRADE_GRACE + std::time::Duration::from_millis(50));
+    // Back to the world's own title, which the listing oracle expects.
+    set_title(&mut w, &title("unsetA"));
+    let _ = read(&mut w, p, SEEABLE, "after the grace");
+    assert_eq!(crate::policy::scene::class_of(&w.h.state, &unset), Class::Private);
 }
