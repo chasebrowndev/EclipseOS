@@ -45,13 +45,15 @@ fn probe_child() {
     note("write_outside", std::fs::write(&outside, b"x").is_ok());
     note("write_scratch", std::fs::write(scratch.join("ok"), b"x").is_ok());
     // SAFETY: plain syscalls with integer arguments.
-    let (ptrace_ok, packet_ok, raw_ok, userns_ok, tcp_ok) = unsafe {
+    let (ptrace_ok, packet_ok, raw_ok, userns_ok, tcp_ok, uevent_ok, route_ok) = unsafe {
         (
             libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) == 0,
             libc::socket(libc::AF_PACKET, libc::SOCK_RAW, 0) >= 0,
             libc::socket(libc::AF_INET, libc::SOCK_RAW, 1) >= 0,
             libc::unshare(libc::CLONE_NEWUSER) == 0,
             libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) >= 0,
+            libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, libc::NETLINK_KOBJECT_UEVENT) >= 0,
+            libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, libc::NETLINK_ROUTE) >= 0,
         )
     };
     note("ptrace", ptrace_ok);
@@ -60,6 +62,9 @@ fn probe_child() {
     note("unshare_user", userns_ok);
     // An ordinary socket still works: the filter is a deny-list, not a wall.
     note("tcp_socket", tcp_ok);
+    note("netlink_uevent", uevent_ok);
+    // What libc (getaddrinfo, if_nameindex) and bwrap's loopback need.
+    note("netlink_route", route_ok);
     std::fs::write(scratch.join("result"), out).unwrap();
 }
 
@@ -123,11 +128,13 @@ fn a_sandboxed_child_cannot_read_ssh_ptrace_or_open_raw_sockets() {
         "packet_socket",
         "raw_socket",
         "unshare_user",
+        "netlink_uevent",
     ] {
         assert_eq!(got(k), "denied", "{k}\n{result}");
     }
     assert_eq!(got("write_scratch"), "allowed", "{result}");
     assert_eq!(got("tcp_socket"), "allowed", "{result}");
+    assert_eq!(got("netlink_route"), "allowed", "{result}");
     assert!(!Path::new(&outside).exists());
 }
 

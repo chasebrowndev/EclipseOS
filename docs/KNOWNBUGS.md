@@ -336,6 +336,16 @@ surface is only input-protected.
   `connect()` to a unix socket path before ABI 9 (the MCP socket is the only one
   bound in, so it does not matter); the slice is `agents-<pkg>.slice`, not
   VOL1 §7's `agents.slice/agent-<id>.slice`.
+- **agentd's unit allows `AF_NETLINK`.** Agents launch through
+  `systemd-run --scope`, so bwrap runs in `ec-agentd.service`'s process tree
+  and inherits its `RestrictAddressFamilies`; bwrap brings the sandbox's loopback
+  up over `NETLINK_ROUTE`, so the unit allows `AF_UNIX AF_NETLINK` (a launcher
+  test holds the two together). The agent's own seccomp then denies every
+  netlink protocol but `NETLINK_ROUTE`. Moving the launch to a transient service
+  would keep agentd at `AF_UNIX` but loses the scope's child process the reaper
+  waits on. Two VOL1 C-00 seccomp items are not enforced: `bind` on families
+  other than `AF_UNIX` (seccomp cannot read the sockaddr; it needs Landlock's
+  network rules, ABI 4) and denying `pidfd_getfd` and `personality`.
 - **Agent chain is a summary.** An agent post carries `min_trust` from the
   task (always `standard` today) and the agent principal as head. Nothing feeds
   the real S-07 chain in, so `min_trust` never reads `untrusted`.

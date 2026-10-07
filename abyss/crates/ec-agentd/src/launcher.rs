@@ -286,6 +286,23 @@ mod tests {
             .windows(2)
             .any(|w| w[0] == "/run/eclipse/mcp.sock" && w[1] == "--setenv"));
         assert!(args.contains(&"/opt/agent/bin/run".to_owned()));
+        // The scope runs bwrap inside agentd's own process tree, so bwrap
+        // inherits the unit's address-family filter, and a new network
+        // namespace is brought up over NETLINK_ROUTE. A unit that drops
+        // AF_NETLINK fails every launch at "loopback" (it did, once).
+        let unit = include_str!("../../../../packaging/ec-agentd.service");
+        let families = unit
+            .lines()
+            .find_map(|l| l.strip_prefix("RestrictAddressFamilies="))
+            .expect("the unit restricts address families");
+        let unshares_net =
+            args.contains(&"--unshare-all".to_owned()) && !args.contains(&"--share-net".to_owned());
+        if unshares_net {
+            assert!(
+                families.split_whitespace().any(|f| f == "AF_NETLINK"),
+                "packaging/ec-agentd.service allows {families:?}; bwrap needs AF_NETLINK"
+            );
+        }
     }
 
     #[cfg(not(feature = "dev-unsandboxed"))]

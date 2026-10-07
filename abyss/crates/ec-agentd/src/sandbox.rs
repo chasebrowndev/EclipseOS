@@ -472,6 +472,8 @@ pub const CLONE_NS_MASK: u32 = 0x7e02_0000;
 const AF_INET: u32 = libc::AF_INET as u32;
 const AF_INET6: u32 = libc::AF_INET6 as u32;
 const AF_PACKET: u32 = libc::AF_PACKET as u32;
+const AF_NETLINK: u32 = libc::AF_NETLINK as u32;
+const NETLINK_ROUTE: u32 = libc::NETLINK_ROUTE as u32;
 const SOCK_RAW: u32 = libc::SOCK_RAW as u32;
 
 const RET_ALLOW: u32 = 0x7fff_0000;
@@ -538,15 +540,22 @@ pub fn build_filter() -> Vec<libc::sock_filter> {
     p.push(jmp(JEQ_K, libc::SYS_clone as u32, T::Next, T::Next)); // patched
     let socket = p.len();
     p.push(jmp(JEQ_K, libc::SYS_socket as u32, T::Next, T::Allow));
-    // socket(domain, type, _): AF_PACKET; SOCK_RAW on AF_INET/AF_INET6.
+    // socket(domain, type, protocol): AF_PACKET; AF_NETLINK other than
+    // NETLINK_ROUTE (VOL1 C-00: "except NETLINK_ROUTE read"); SOCK_RAW on
+    // AF_INET/AF_INET6. "Read" is not something seccomp can see: rtnetlink
+    // writes need CAP_NET_ADMIN, which bwrap's --cap-drop ALL has taken, and
+    // the namespace holds only loopback.
     p.push(st(LD_W_ABS, 16));
     p.push(jmp(JEQ_K, AF_PACKET, T::Deny, T::Next));
     let n = p.len();
-    p.push(jmp(JEQ_K, AF_INET, T::At(n + 2), T::Next));
-    p.push(jmp(JEQ_K, AF_INET6, T::At(n + 2), T::Allow));
-    p.push(st(LD_W_ABS, 24)); // n + 2
+    p.push(jmp(JEQ_K, AF_NETLINK, T::At(n + 6), T::Next));
+    p.push(jmp(JEQ_K, AF_INET, T::At(n + 3), T::Next));
+    p.push(jmp(JEQ_K, AF_INET6, T::At(n + 3), T::Allow));
+    p.push(st(LD_W_ABS, 24)); // n + 3
     p.push(st(ALU_AND_K, 0xf)); // the type, without SOCK_NONBLOCK|CLOEXEC
     p.push(jmp(JEQ_K, SOCK_RAW, T::Deny, T::Allow));
+    p.push(st(LD_W_ABS, 32)); // n + 6: the netlink protocol
+    p.push(jmp(JEQ_K, NETLINK_ROUTE, T::Allow, T::Deny));
     // clone3 -> ENOSYS block, then clone flags block, placed after the socket
     // block; the earlier compares jump here.
     let clone3_block = p.len();
@@ -770,6 +779,23 @@ mod tests {
         assert_eq!(sock(AF_INET, libc::SOCK_STREAM as u32), RET_ALLOW);
         assert_eq!(sock(AF_INET6, libc::SOCK_DGRAM as u32 | flags), RET_ALLOW);
         assert_eq!(sock(libc::AF_UNIX as u32, libc::SOCK_STREAM as u32), RET_ALLOW);
+    }
+
+    #[test]
+    fn netlink_is_route_only() {
+        let nl = |t: u32, proto: u32| verdict(libc::SYS_socket, [AF_NETLINK, t, proto, 0, 0, 0]);
+        let raw = SOCK_RAW | libc::SOCK_CLOEXEC as u32;
+        assert_eq!(nl(raw, NETLINK_ROUTE), RET_ALLOW);
+        assert_eq!(nl(libc::SOCK_DGRAM as u32, NETLINK_ROUTE), RET_ALLOW);
+        for proto in [
+            libc::NETLINK_AUDIT,
+            libc::NETLINK_KOBJECT_UEVENT,
+            libc::NETLINK_SOCK_DIAG,
+            libc::NETLINK_NETFILTER,
+            libc::NETLINK_GENERIC,
+        ] {
+            assert_eq!(nl(raw, proto as u32), EPERM, "{proto}");
+        }
     }
 
     #[test]

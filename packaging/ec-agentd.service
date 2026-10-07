@@ -31,8 +31,13 @@ KillMode=process
 Slice=session.slice
 UMask=0077
 NoNewPrivileges=yes
-# Sockets only: systemd-run reaches the user manager over AF_UNIX.
-RestrictAddressFamilies=AF_UNIX
+# systemd-run reaches the user manager over AF_UNIX. AF_NETLINK because each
+# agent's bwrap runs in this unit's process tree (a --scope, not a service)
+# and so inherits this filter, and bwrap brings the sandbox's new network
+# namespace's loopback up over NETLINK_ROUTE. The agent's own seccomp
+# (ec-agentd --sandbox-init) narrows netlink back to NETLINK_ROUTE (VOL1 C-00).
+# A launcher test fails if this line loses AF_NETLINK.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
 
 [Install]
 WantedBy=abyss-session.target
