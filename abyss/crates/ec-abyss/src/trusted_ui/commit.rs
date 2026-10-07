@@ -346,7 +346,21 @@ pub fn draft_changed(state: &mut AbyssState, slot: u64) {
     tick(state);
 }
 
-pub fn moved(state: &mut AbyssState, _slot: u64) {
+/// The slot moved. A move bumps the slot's revision but not what it says,
+/// so the preview in hand (or the one still being asked for) stays good: it
+/// is re-stamped with the new revision rather than dropped. Dropping it left
+/// the card on "Checking with policy..." for good, since a move sends no new
+/// preview. The move still restarts the arming delay, through the geometry
+/// in the arming conditions.
+pub fn moved(state: &mut AbyssState, slot: u64) {
+    let revision = protected::revision(state, slot).unwrap_or(0);
+    let c = card(state, slot);
+    if let Some((_, _, rev)) = c.preview.as_mut() {
+        *rev = revision;
+    }
+    if let Some((_, rev)) = c.asking.as_mut() {
+        *rev = revision;
+    }
     tick(state);
 }
 
