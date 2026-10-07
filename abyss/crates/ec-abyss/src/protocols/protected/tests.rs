@@ -51,7 +51,7 @@ const KEY_A: u32 = 30;
 const BTN_LEFT: u32 = 0x110;
 
 /// Buffer size of a mapped window: roomy enough for a slot.
-const WIN: (i32, i32) = (500, 300);
+const WIN: (i32, i32) = (560, 400);
 
 // error codes
 const E_ALREADY_PROTECTED: u32 = 0;

@@ -171,6 +171,30 @@ would infer it, but only from `WAYLAND_DISPLAY` and `DISPLAY` both being unset;
 a greeter that leaked either into the session environment would silently get a
 nested `winit` compositor rather than a login session.
 
+### The agent stack
+
+Neither install script puts the agent stack on the machine by default: it is
+an add-on (ADR 0069), and without it the agent console opens with every control
+off ("Policy service unavailable") and the commit slot cannot arm. Pass
+`--agents` to add `ec-policyd`, `ec-brokerd`, `ec-agentd`, `ec-audit`, their
+user units, the add-on manifest that turns abyss's `agents` hook on, and the
+reference agent:
+
+```
+# system install: strict peers, real binaries in /usr/bin
+./packaging/install.sh --agents
+
+# dev symlink install: policyd and brokerd must accept peers outside /usr/bin
+(cd abyss && cargo build --release -p ec-policyd -p ec-brokerd --features dev-peers)
+sudo ./packaging/install-session.sh --agents
+```
+
+Agents run under bubblewrap with Landlock and seccomp, so `bwrap` must be
+installed (both scripts check) and the kernel must have Landlock (5.13 or
+later with it enabled; agentd refuses a launch without it and says why in
+`journalctl --user -u ec-agentd`). Log out and back in afterwards so the
+session starts with the add-on and its units in place.
+
 ## Packaging
 
 The distribution path (D-01..D-03), all under `packaging/`:

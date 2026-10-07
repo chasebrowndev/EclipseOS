@@ -54,7 +54,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 use super::modal::{self, Button, Modal, Role};
 use super::slot::{Arming, Conditions, Disarm, Enter, State as Arm, ARM_DEFAULT_MS};
 use crate::protocols::protected::{self as protected, Kind, Reason, State};
-use crate::render::font::{ADVANCE, GLYPH_H, LINE_H};
+use crate::render::glyphs::{ADVANCE, CELL_H as GLYPH_H, LINE_H};
 use crate::render::text::{self, Canvas, Raster};
 use crate::render::AbyssRenderElement;
 use crate::state::AbyssState;
@@ -73,9 +73,9 @@ const PULSE: Duration = Duration::from_millis(300);
 const STATEMENT_ROWS: usize = 4;
 const COULD_ROWS: usize = 3;
 const COLS: usize = 56;
-const PAD: usize = 12;
+const PAD: usize = 16;
 const BORDER: usize = modal::BORDER;
-const CONTROL_H: usize = GLYPH_H + 10;
+const CONTROL_H: usize = GLYPH_H + 14;
 const MARKER_W: i32 = 4;
 const MARKER_GAP: i32 = 3;
 
@@ -84,7 +84,7 @@ const MARKER_GAP: i32 = 3;
 pub const fn card_size() -> (i32, i32) {
     let w = COLS * ADVANCE + 2 * (PAD + BORDER);
     let rows = 1 + 1 + STATEMENT_ROWS + 1 + COULD_ROWS + 1;
-    let h = 2 * (PAD + BORDER) + modal::PHRASE_H + rows * LINE_H + 6 + CONTROL_H;
+    let h = 2 * (PAD + BORDER) + modal::PHRASE_H + rows * LINE_H + 10 + CONTROL_H;
     (w as i32, h as i32)
 }
 
@@ -143,6 +143,29 @@ fn deadline_text(ms: u64) -> String {
         (0, m) => format!("{m} min"),
         (h, 0) => format!("{h} h"),
         (h, m) => format!("{h} h {m} min"),
+    }
+}
+
+/// The idle card's explanation, pre-wrapped to [`COLS`] (a test holds it).
+const IDLE_COMMIT: &[&str] = &[
+    "Describe the task in the console. This card is drawn",
+    "by the system, not the console: it shows exactly what",
+    "will run and what it could do, and only Enter on this",
+    "card starts it.",
+];
+const IDLE_UNPAUSE: &[&str] = &[
+    "This card is drawn by the system, not the console.",
+    "Only Enter on this card lets the task act again.",
+];
+
+/// A policyd refusal reason as the card says it. Known codes get words; an
+/// unknown one is shown as sent, sanitised.
+fn refusal(r: &str) -> String {
+    match r {
+        "policy_unavailable" => "Can't reach the policy service (ec-policyd)".into(),
+        "agentd_unavailable" => "Can't reach the agent service (ec-agentd)".into(),
+        "preview_stale" => "The draft changed: check it and press Enter again".into(),
+        _ => format!("Refused: {}", text::sanitize_line(r)),
     }
 }
 
@@ -576,7 +599,7 @@ fn reason_of(c: &Card, arm: Arm) -> (State, Reason, Look) {
         Arm::Disarmed(Disarm::PolicyUnavailable) => (
             State::Disarmed,
             Reason::PolicyUnavailable,
-            Look::Waiting("Policy is unavailable"),
+            Look::Waiting("Can't reach the policy service (ec-policyd)"),
         ),
         Arm::Disarmed(Disarm::Locked) => (State::Disarmed, Reason::Locked, Look::Waiting("Session locked")),
         Arm::Suspended => (
@@ -599,6 +622,14 @@ fn reason_of(c: &Card, arm: Arm) -> (State, Reason, Look) {
 
 /// Samples every slot, moves its arming on, and tells its client and the
 /// renderer what changed.
+/// The personal secret changed: every card drawn with the old one (or with
+/// none) is redrawn on its next frame.
+pub fn phrase_changed(state: &mut AbyssState) {
+    for c in state.trusted_ui.cards.by_slot.values_mut() {
+        c.art.clear();
+    }
+}
+
 pub fn tick(state: &mut AbyssState) {
     let now = now_ms(state);
     let slots: Vec<u64> = protected::slots(state).collect();
@@ -753,32 +784,24 @@ fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str
     let (w, h) = card_size();
     let (w, h) = (w as usize, h as usize);
     let dim = !matches!(look, Look::Armed | Look::Pulse);
-    let edge = match look {
-        Look::Armed => modal::EDGE,
-        Look::Pulse | Look::Refused(_) => modal::WARN,
-        _ => modal::LABEL,
+    let rim = match look {
+        Look::Pulse | Look::Refused(_) => (2, modal::WARN),
+        _ => (1, modal::EDGE),
     };
     let body = if dim { modal::LABEL } else { modal::BODY };
     let mut c = Canvas::new(w, h);
-    c.fill(0, 0, w, h, edge);
-    c.fill(BORDER, BORDER, w - 2 * BORDER, h - 2 * BORDER, modal::PANEL);
+    c.round(0, 0, w, h, modal::FRAME_R, modal::PANEL, Some(rim));
     let x0 = BORDER + PAD;
     let inner = w - 2 * x0;
     let mut y = BORDER + PAD;
-    c.fill(x0, y, inner, modal::PHRASE_H, edge);
-    c.fill(
-        x0 + modal::PHRASE_EDGE,
-        y + modal::PHRASE_EDGE,
-        inner - 2 * modal::PHRASE_EDGE,
-        modal::PHRASE_H - 2 * modal::PHRASE_EDGE,
-        modal::PHRASE_GROUND,
+    modal::phrase_frame(
+        &mut c,
+        x0 + modal::WELL_PAD,
+        y,
+        inner - 2 * modal::WELL_PAD,
+        phrase,
     );
-    let py = y + (modal::PHRASE_H - GLYPH_H) / 2;
-    match phrase {
-        Some(p) => c.text(x0 + 6, py, p, modal::HEADING, true),
-        None => c.text(x0 + 6, py, "No personal secret is set.", modal::WARN, false),
-    }
-    y += modal::PHRASE_H + 4;
+    y += modal::PHRASE_H + 8;
     match (kind, shown) {
         (_, Some(s)) => {
             let who = if s.package_name.is_empty() {
@@ -828,6 +851,16 @@ fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str
             }
         }
         (_, None) => {
+            // Nothing to show yet: say what this card is, in fixed text, so
+            // an empty card is not a mystery box.
+            let (head, lines) = match kind {
+                Kind::TaskUnpause => ("Let a paused task act again", IDLE_UNPAUSE),
+                _ => ("Start an agent task", IDLE_COMMIT),
+            };
+            c.text(x0, y, head, modal::HEADING, true);
+            for (i, l) in lines.iter().enumerate() {
+                c.text(x0, y + (i + 1) * LINE_H, l, modal::LABEL, false);
+            }
             y += (1 + STATEMENT_ROWS + 1 + COULD_ROWS) * LINE_H;
         }
     }
@@ -837,23 +870,23 @@ fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str
         Look::Armed => String::new(),
         Look::Pulse => "Not ready: nothing was sent.".into(),
         Look::Waiting(w) => (*w).into(),
-        Look::Refused(r) => format!("Refused: {}", text::sanitize_line(r)),
+        Look::Refused(r) => refusal(r),
     };
     let _ = y;
     let cy = h - BORDER - PAD - CONTROL_H;
     if matches!(look, Look::Armed) {
-        c.fill(x0, cy, inner, CONTROL_H, modal::EDGE);
+        c.round(x0, cy, inner, CONTROL_H, modal::PILL, modal::GOLD, None);
         let label = if kind == Kind::TaskUnpause {
             "Enter: let it act again"
         } else {
             "Enter: start this task"
         };
         c.text(
-            x0 + 8,
+            x0 + 16,
             cy + (CONTROL_H - GLYPH_H) / 2 + 1,
             label,
             modal::INK,
-            false,
+            true,
         );
     } else {
         c.text(
@@ -869,6 +902,57 @@ fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str
         );
     }
     c.into_raster(scale)
+}
+
+/// Sample cards for `dump_trusted_surfaces` (mod.rs), at 2x.
+#[cfg(test)]
+pub(super) fn dump_cards() -> Vec<(&'static str, Raster)> {
+    let shown = Shown {
+        package_name: "Inbox triage".into(),
+        package: "local.inbox".into(),
+        publisher: "local".into(),
+        statement:
+            "Sort this week's unread mail into folders and draft replies to anything from the accountant."
+                .into(),
+        deadline_ms: 0,
+        could: vec![
+            "read mail in Thunderbird".into(),
+            "draft replies (not send)".into(),
+        ],
+        ..Default::default()
+    };
+    vec![
+        (
+            "card-armed",
+            rasterize(
+                &Look::Armed,
+                Some(&shown),
+                Kind::TaskCommit,
+                Some("blue heron 42"),
+                2,
+            ),
+        ),
+        (
+            "card-unavailable",
+            rasterize(
+                &Look::Waiting("Can't reach the policy service (ec-policyd)"),
+                None,
+                Kind::TaskCommit,
+                None,
+                2,
+            ),
+        ),
+        (
+            "card-refused",
+            rasterize(
+                &Look::Refused("deadline over the policy maximum".into()),
+                Some(&shown),
+                Kind::TaskCommit,
+                Some("blue heron 42"),
+                2,
+            ),
+        ),
+    ]
 }
 
 /// The cards for one output, front-to-back, to sit below any modal and above
@@ -924,7 +1008,7 @@ pub fn elements(
                 let buf = cards
                     .marker
                     .entry((m.size.w, m.size.h))
-                    .or_insert_with(|| SolidColorBuffer::new(m.size, modal::EDGE));
+                    .or_insert_with(|| SolidColorBuffer::new(m.size, modal::GOLD));
                 out.push(AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
                     buf,
                     (m.loc - output_loc).to_physical_precise_round(scale),
@@ -1001,6 +1085,19 @@ mod tests {
         }
         assert_eq!(deadline_text(7_200_000), "2 h");
         assert_eq!(deadline_text(5_400_000), "1 h 30 min");
+    }
+
+    #[test]
+    fn the_anti_spoofing_notice_fits_the_card() {
+        assert!(modal::UNSPOOFED.len() * ADVANCE <= COLS * ADVANCE - 2 * modal::WELL_PAD);
+    }
+
+    #[test]
+    fn the_idle_text_fits_the_card() {
+        for l in IDLE_COMMIT.iter().chain(IDLE_UNPAUSE) {
+            assert!(l.len() <= COLS, "{l}");
+        }
+        assert!(IDLE_COMMIT.len() < STATEMENT_ROWS + 1 + COULD_ROWS);
     }
 
     #[test]
