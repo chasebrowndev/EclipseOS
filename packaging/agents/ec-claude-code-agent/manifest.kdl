@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: Apache-2.0
+// The same agent as ec-claude-agent, on the Claude Code backend (ADR 0076):
+// one warm `claude -p` session per task in ec-inferenced, using the owner's
+// Claude Code login (`claude setup-token`, then
+// `ec-secret add claude-code-token --bind host:api.anthropic.com`). Installed
+// beside ec-claude-agent with its own copy of the same binary; only the id,
+// name and backend differ.
+agent {
+  id "ec-claude-code-agent"
+  name "Claude (Claude Code)"
+  version "0.1.0"
+  publisher "eclipse"
+  // Relative to the package directory (A-07 §7 refuses a path outside it).
+  entrypoint "bin/ec-claude-agent"
+
+  task {
+    default_deadline "8h"
+    max_depth 0
+  }
+
+  capabilities {
+  }
+
+  inference {
+    backend "claude-code"
+    model "claude-opus-5-5"
+  }
+
+  sandbox {
+  }
+
+  resumable #true
+}

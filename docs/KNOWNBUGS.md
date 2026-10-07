@@ -413,3 +413,24 @@ surface is only input-protected.
   bare result, `structuredContent`, or JSON text in `content[0].text`.
 - `ipc::hooks` stubs fail closed (`agent_install` refuses, the queue never
   opens, the pending count is 0) until main wires the TCB side.
+
+## INFER-01: inference router gaps (ADR 0076)
+
+- **The Claude Code backend's sandbox has not run against real bwrap.** The
+  bwrap argv (no token in it) and the session lifecycle are tested against a
+  fake `claude`; the token hand-off (`--perms 0400 --file <fd>`) and the
+  Landlock allow-list for a real `claude` are first exercised on the owner's
+  machine. If `claude` needs a path the allow-list lacks, the session fails at
+  start with the helper's reason in `journalctl --user -u ec-inferenced`.
+- **The Claude Code process has an unrestricted network namespace** until the
+  S-09 egress proxy (M20). It holds no files and no secret beyond its own token.
+- **The token sits in that process's environment** for the session's life
+  (readable by same-uid processes through `/proc/<pid>/environ`), and a revoked
+  token does not affect a warm session until it restarts.
+- **A stopped router leaves session directories behind** (SIGTERM runs no
+  destructors); `--die-with-parent` ends the `claude` processes, and the next
+  start sweeps the directories. They hold no token.
+- **`cost_usd` is passed through as Claude Code reports it**, which may be a
+  per-session running total rather than per turn. It is logged, not audited:
+  I-02 `Model` provenance records are not written yet (AGENTD-01).
+

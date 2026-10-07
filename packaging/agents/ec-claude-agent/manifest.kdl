@@ -5,7 +5,7 @@
 // block below; the agent itself has no network and holds no key.
 agent {
   id "ec-claude-agent"
-  name "Claude"
+  name "Claude (API)"
   version "0.1.0"
   publisher "eclipse"
   // Relative to the package directory (A-07 §7 refuses a path outside it).

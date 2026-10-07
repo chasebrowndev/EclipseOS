@@ -105,6 +105,7 @@ pub fn parse_response(status: u16, body: &[u8], requested_model: &str) -> Result
             .to_owned(),
         input_tokens: n("input_tokens"),
         output_tokens: n("output_tokens"),
+        cost_usd: None,
     })
 }
 

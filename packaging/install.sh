@@ -39,6 +39,7 @@ AGENT_BINS='ec-policyd ec-brokerd ec-agentd ec-audit ec-secret ec-inferenced'
 AGENT_UNITS='ec-policyd.service ec-brokerd.service ec-agentd.service ec-inferenced.service'
 REF_AGENT=/usr/share/eclipse/agents/ec-ref-agent/0.1.0
 CLAUDE_AGENT=/usr/share/eclipse/agents/ec-claude-agent/0.1.0
+CLAUDE_CODE_AGENT=/usr/share/eclipse/agents/ec-claude-code-agent/0.1.0
 
 do_deps=1 do_build=1 assume_yes=0 uninstall=0 do_agents=0
 for arg in "$@"; do
@@ -200,6 +201,8 @@ if [ "$do_agents" -eq 1 ]; then
     sudo install -Dm 0755 "$bin/ec-ref-agent" "$REF_AGENT/bin/ec-ref-agent"
     sudo install -Dm 0644 "$here/agents/ec-claude-agent/manifest.kdl" "$CLAUDE_AGENT/manifest.kdl"
     sudo install -Dm 0755 "$bin/ec-claude-agent" "$CLAUDE_AGENT/bin/ec-claude-agent"
+    sudo install -Dm 0644 "$here/agents/ec-claude-code-agent/manifest.kdl" "$CLAUDE_CODE_AGENT/manifest.kdl"
+    sudo install -Dm 0755 "$bin/ec-claude-agent" "$CLAUDE_CODE_AGENT/bin/ec-claude-agent"
     UNITS="$UNITS $AGENT_UNITS"
 fi
 

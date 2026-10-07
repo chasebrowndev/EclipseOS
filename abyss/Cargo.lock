@@ -752,6 +752,7 @@ dependencies = [
 name = "ec-inferenced"
 version = "0.1.0"
 dependencies = [
+ "ec-agentd",
  "ec-brokerd",
  "ec-inference-wire",
  "rustix 1.1.4",

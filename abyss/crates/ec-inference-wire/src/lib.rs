@@ -92,6 +92,11 @@ pub struct Completion {
     pub model: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// What the backend says the call cost, in US dollars, as Claude Code
+    /// reports it (`result.total_cost_usd`; may be per-session cumulative, not
+    /// per turn). `None` for the API backend and from an older router. Optional on the wire so old peers still parse;
+    /// reserved for the I-02 audit record.
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -159,15 +164,18 @@ impl ToRouter {
 impl Reply {
     pub fn to_json(&self) -> Value {
         match &self.result {
-            Ok(c) => serde_json::json!({
-                "id": self.id,
-                "ok": {
+            Ok(c) => {
+                let mut ok = serde_json::json!({
                     "content": c.content,
                     "stop_reason": c.stop_reason,
                     "model": c.model,
                     "usage": {"input_tokens": c.input_tokens, "output_tokens": c.output_tokens},
+                });
+                if let Some(cost) = c.cost_usd {
+                    ok["cost_usd"] = serde_json::json!(cost);
                 }
-            }),
+                serde_json::json!({"id": self.id, "ok": ok})
+            }
             Err(f) => serde_json::json!({
                 "id": self.id,
                 "error": {"kind": f.kind, "message": f.message},
@@ -191,6 +199,7 @@ impl Reply {
                     model: s(ok, "model").unwrap_or_default(),
                     input_tokens: usage.and_then(|x| u(x, "input_tokens")).unwrap_or(0),
                     output_tokens: usage.and_then(|x| u(x, "output_tokens")).unwrap_or(0),
+                    cost_usd: ok.get("cost_usd").and_then(Value::as_f64),
                 }),
             });
         }
@@ -283,6 +292,7 @@ mod tests {
                     model: "claude-opus-5-5".into(),
                     input_tokens: 3,
                     output_tokens: 1,
+                    cost_usd: Some(0.0123),
                 }),
             },
             Reply {
@@ -295,6 +305,28 @@ mod tests {
         ] {
             assert_eq!(Reply::from_json(&reply.to_json()), Some(reply));
         }
+    }
+
+    #[test]
+    fn cost_is_optional_on_the_wire() {
+        let mut r = Reply {
+            id: 1,
+            result: Ok(Completion {
+                content: json!([]),
+                stop_reason: "end_turn".into(),
+                model: "m".into(),
+                input_tokens: 1,
+                output_tokens: 2,
+                cost_usd: None,
+            }),
+        };
+        // None is not written at all, and an old peer's reply (no field)
+        // parses to None.
+        assert!(r.to_json()["ok"].get("cost_usd").is_none());
+        assert_eq!(Reply::from_json(&r.to_json()), Some(r.clone()));
+        r.result.as_mut().unwrap().cost_usd = Some(0.5);
+        assert_eq!(r.to_json()["ok"]["cost_usd"], json!(0.5));
+        assert_eq!(Reply::from_json(&r.to_json()), Some(r));
     }
 
     #[test]
