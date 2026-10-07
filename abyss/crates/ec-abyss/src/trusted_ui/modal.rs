@@ -65,8 +65,10 @@ const BTN_GAP: usize = 12;
 pub const MAX_UNTRUSTED_LINES: usize = 8;
 
 /// COMP-10 §2: with no personal secret set, every prompt says anti-spoofing
-/// is unconfigured.
-pub(super) const UNSPOOFED: &str = "Anti-spoofing is not configured: no personal secret is set.";
+/// is unconfigured, and how to set one: the `agent-attention` chord opens
+/// entry while none is set (`phrase.rs`), and it is reserved, so the text
+/// cannot go stale with the user's binds.
+pub(super) const UNSPOOFED: &str = "Anti-spoofing off. Press Super+Space to set a secret.";
 /// The consent prompt's five answers (§3.2) are the most any prompt has.
 const MAX_BUTTONS: usize = 5;
 /// Fact lines kept. The emergency panel's agent page is the longest: who,

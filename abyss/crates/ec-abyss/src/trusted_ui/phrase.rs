@@ -277,6 +277,7 @@ pub fn answer(state: &mut AbyssState, choice: Choice) {
             state.trusted_ui.entering.refused = None;
             state.trusted_ui.entering.replace = false;
             state.trusted_ui.phrase = Some(phrase);
+            super::commit::phrase_changed(state);
             crate::ipc::emit(state, "phrase", serde_json::json!({ "set": true }));
         }
         Err(why) => {

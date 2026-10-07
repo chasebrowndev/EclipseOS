@@ -599,6 +599,14 @@ fn reason_of(c: &Card, arm: Arm) -> (State, Reason, Look) {
 
 /// Samples every slot, moves its arming on, and tells its client and the
 /// renderer what changed.
+/// The personal secret changed: every card drawn with the old one (or with
+/// none) is redrawn on its next frame.
+pub fn phrase_changed(state: &mut AbyssState) {
+    for c in state.trusted_ui.cards.by_slot.values_mut() {
+        c.art.clear();
+    }
+}
+
 pub fn tick(state: &mut AbyssState) {
     let now = now_ms(state);
     let slots: Vec<u64> = protected::slots(state).collect();
@@ -776,7 +784,7 @@ fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str
     let py = y + (modal::PHRASE_H - GLYPH_H) / 2;
     match phrase {
         Some(p) => c.text(x0 + 6, py, p, modal::HEADING, true),
-        None => c.text(x0 + 6, py, "No personal secret is set.", modal::WARN, false),
+        None => c.text(x0 + 6, py, modal::UNSPOOFED, modal::WARN, false),
     }
     y += modal::PHRASE_H + 4;
     match (kind, shown) {
@@ -1001,6 +1009,11 @@ mod tests {
         }
         assert_eq!(deadline_text(7_200_000), "2 h");
         assert_eq!(deadline_text(5_400_000), "1 h 30 min");
+    }
+
+    #[test]
+    fn the_anti_spoofing_notice_fits_the_card() {
+        assert!(modal::UNSPOOFED.len() * ADVANCE + 6 <= COLS * ADVANCE);
     }
 
     #[test]
