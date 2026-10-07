@@ -778,9 +778,18 @@ fn review_display(m: &Manifest, previous: Option<&Install>) -> Vec<u8> {
     d.insert(
         "sandbox",
         enc(|w| {
-            w.array(m.sandbox.len());
+            // The model backend is shown with the sandbox: it is where the
+            // package's text goes (ADR 0076).
+            let inference = m
+                .inference
+                .as_ref()
+                .map(|i| format!("inference {} {}", i.backend, i.model));
+            w.array(m.sandbox.len() + usize::from(inference.is_some()));
             for (k, v) in &m.sandbox {
                 w.text(&format!("{k} {v}"));
+            }
+            if let Some(i) = &inference {
+                w.text(i);
             }
         }),
     );

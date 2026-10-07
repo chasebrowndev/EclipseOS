@@ -14,7 +14,8 @@
 pub enum Peer {
     /// abyss: trusted UI, `field_fill`, session lock/end.
     Compositor,
-    /// The per-agent egress proxy (S-09): `proxy_header` substitution.
+    /// The per-agent egress proxy (S-09), and the inference router
+    /// (`ec-inferenced`, ADR 0076): `proxy_header` substitution.
     Proxy,
     /// The sandbox launcher in `agentd`: `materialize`, TOTP issuance.
     Agentd,

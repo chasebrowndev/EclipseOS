@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["bench", "crates/ec-abyss", "crates/ec-abyss-config", "crates/ec-abyss-render", "crates/ec-abyss-wire", "crates/ec-agentd", "crates/ec-audit", "crates/ec-brokerd", "crates/ec-cataclysm-pub", "crates/ec-ctl", "crates/ec-ipc", "crates/ec-policyd", "crates/ec-policy-eval", "crates/ec-protocols", "crates/ec-abyss-wlcs", "crates/ec-ref-agent"]
+members = ["bench", "crates/ec-abyss", "crates/ec-abyss-config", "crates/ec-abyss-render", "crates/ec-abyss-wire", "crates/ec-agentd", "crates/ec-audit", "crates/ec-brokerd", "crates/ec-cataclysm-pub", "crates/ec-ctl", "crates/ec-ipc", "crates/ec-policyd", "crates/ec-policy-eval", "crates/ec-protocols", "crates/ec-abyss-wlcs", "crates/ec-ref-agent", "crates/ec-inference-wire"]
 # `cargo run -- --backend winit` is the documented dev loop (CLAUDE.md, and
 # docs/BUILDING.md). Once the workspace held more than one binary that line
 # became ambiguous; this keeps a bare `cargo run` meaning the compositor.

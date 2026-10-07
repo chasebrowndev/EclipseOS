@@ -93,9 +93,18 @@ fn classify(pid: i32) -> Option<Peer> {
     if !cfg!(feature = "dev-peers") && exe.parent()? != std::path::Path::new("/usr/bin") {
         return None;
     }
-    match exe.file_name()?.to_str()? {
+    peer_named(exe.file_name()?.to_str()?)
+}
+
+/// The role a recognised executable name plays.
+fn peer_named(name: &str) -> Option<Peer> {
+    match name {
         "ec-abyss" => Some(Peer::Compositor),
-        "ec-egress-proxy" => Some(Peer::Proxy),
+        // The inference router (I-02, ADR 0076) takes a model provider's
+        // credential exactly as the egress proxy takes any other: released
+        // for the secret's bound host, at the network boundary, never to an
+        // agent or agentd.
+        "ec-egress-proxy" | "ec-inferenced" => Some(Peer::Proxy),
         "ec-agentd" => Some(Peer::Agentd),
         "ec-secret" | "ec-ctl" => Some(Peer::Owner),
         _ => None,
@@ -346,4 +355,23 @@ fn main() -> std::process::ExitCode {
         }
     }
     std::process::ExitCode::FAILURE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_inference_router_is_a_proxy_and_agentd_is_not() {
+        assert_eq!(peer_named("ec-inferenced"), Some(Peer::Proxy));
+        assert_eq!(peer_named("ec-egress-proxy"), Some(Peer::Proxy));
+        // agentd forwards inference but never receives a value.
+        assert_eq!(peer_named("ec-agentd"), Some(Peer::Agentd));
+        assert!(!ec_brokerd::gate::allowed(
+            Peer::Agentd,
+            ec_brokerd::gate::Op::Substitute
+        ));
+        assert_eq!(peer_named("ec-claude-agent"), None);
+        assert_eq!(peer_named("claude"), None);
+    }
 }

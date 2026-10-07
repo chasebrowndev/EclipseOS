@@ -1,0 +1,12 @@
+[package]
+name = "ec-inference-wire"
+description = "agentd <-> ec-inferenced wire contract: Messages-API-shaped requests and replies, length-framed JSON (ADR 0076, I-02)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# A protocol crate (F-05 §3).
+license = "Apache-2.0"
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
