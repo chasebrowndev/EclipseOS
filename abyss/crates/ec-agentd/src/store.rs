@@ -117,6 +117,9 @@ pub struct Task {
     /// A drain cancel was acknowledged: the agent's inbox reports closed.
     pub drain_requested: bool,
     pub counters: Counters,
+    /// The package manifest's `inference` block, read at provision. Not
+    /// persisted: a task found open at startup is closed.
+    pub inference: Option<crate::packages::Inference>,
     pub msgs: Vec<Message>,
     pub next_msg: u64,
     /// (time_ms, bytes) of agent posts in the last minute, for A-03 §7.
@@ -143,6 +146,7 @@ impl Task {
             min_trust: "standard".into(),
             drain_requested: false,
             counters: Counters::default(),
+            inference: None,
             msgs: Vec::new(),
             next_msg: 1,
             window: VecDeque::new(),

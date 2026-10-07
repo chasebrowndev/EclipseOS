@@ -19,6 +19,7 @@ pub mod launcher;
 pub mod link;
 pub mod net;
 pub mod packages;
+pub mod router;
 pub mod rpc;
 pub mod sandbox;
 pub mod sanitize;

@@ -1,0 +1,31 @@
+[package]
+name = "ec-inferenced"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Inference router: serves agentd's inference.complete over inferenced.sock (I-02, ADR 0076)."
+# A system daemon, never published (same reason as ec-brokerd).
+publish = false
+
+[dependencies]
+ec-inference-wire = { path = "../ec-inference-wire" }
+# The brokerd wire module (public) is the one encoding of `Substitute`; a
+# second hand-written client would drift from it.
+ec-brokerd = { path = "../ec-brokerd" }
+serde_json.workspace = true
+rustix = { workspace = true, features = ["net", "process"] }
+zeroize = "1"
+# HTTPS client. `rustls-no-provider` rather than the default `rustls`
+# feature: the default drags in webpki-roots (CDLA, disallowed by deny.toml).
+# Roots come from the system store through rustls-native-certs, and the
+# crypto provider is installed explicitly (ring).
+ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "gzip"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+
+[features]
+# Recognise agentd from any directory, not only /usr/bin, for a dev tree.
+# Never enabled by the package build (src/peer.rs).
+dev-peers = []

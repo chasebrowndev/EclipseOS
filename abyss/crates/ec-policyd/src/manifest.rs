@@ -95,6 +95,16 @@ pub struct Manifest {
     pub resumable: Option<bool>,
     /// Sandbox declarations, `(kind, value)`, shown in review.
     pub sandbox: Vec<(String, String)>,
+    /// `inference { backend "api"|"claude-code"; model "…" }` (ADR 0076):
+    /// which router backend and model serve the package's
+    /// `inference.complete`. Absent: the tool is not offered.
+    pub inference: Option<Inference>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Inference {
+    pub backend: String,
+    pub model: String,
 }
 
 /// Why a manifest is refused at install, with no review offered (A-07 §7).
@@ -198,6 +208,37 @@ fn string(v: &KdlValue, what: &'static str) -> Result<String, Refusal> {
 }
 
 /// The node's single positional argument.
+/// `inference { backend "api"|"claude-code"; model "…" }`. Both required;
+/// anything else in the block is refused, as everywhere in a manifest.
+fn inference(n: &KdlNode) -> Result<Inference, Refusal> {
+    let (mut backend, mut model) = (None, None);
+    for c in n.children().map(KdlDocument::nodes).unwrap_or_default() {
+        let slot = match c.name().value() {
+            "backend" => &mut backend,
+            "model" => &mut model,
+            other => return Err(Refusal::UnknownNode(format!("inference.{other}"))),
+        };
+        if slot.is_some() {
+            return Err(Refusal::Field("inference"));
+        }
+        *slot = Some(string(one(c, "inference")?, "inference")?);
+    }
+    let backend = backend.ok_or(Refusal::Field("inference.backend"))?;
+    let model = model.ok_or(Refusal::Field("inference.model"))?;
+    let model_ok = !model.is_empty()
+        && model.len() <= 64
+        && model
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.');
+    if !matches!(backend.as_str(), "api" | "claude-code") {
+        return Err(Refusal::Field("inference.backend"));
+    }
+    if !model_ok {
+        return Err(Refusal::Field("inference.model"));
+    }
+    Ok(Inference { backend, model })
+}
+
 fn one<'a>(n: &'a KdlNode, what: &'static str) -> Result<&'a KdlValue, Refusal> {
     let mut args = n.entries().iter().filter(|e| e.name().is_none());
     match (
@@ -249,6 +290,7 @@ pub fn parse(text: &str) -> Result<Manifest, Refusal> {
         max_depth: 0,
         capabilities: Vec::new(),
         resumable: None,
+        inference: None,
         sandbox: Vec::new(),
     };
     let mut seen: Vec<&str> = Vec::new();
@@ -314,9 +356,10 @@ pub fn parse(text: &str) -> Result<Manifest, Refusal> {
                     return Err(Refusal::UnregisteredSchema);
                 }
             }
-            // Shown nowhere yet and authorise nothing; parsed so a manifest
-            // that has them is not refused for it.
-            "inference" | "integrity" => {}
+            "inference" => m.inference = Some(inference(n)?),
+            // Shown nowhere yet and authorises nothing; parsed so a manifest
+            // that has it is not refused for it.
+            "integrity" => {}
             other => return Err(Refusal::UnknownNode(other.to_owned())),
         }
     }
@@ -498,6 +541,35 @@ agent {
         );
         assert_eq!(m.capabilities[1].because, "Read the invoice table");
         validate(&m, Origin::Owner).unwrap();
+    }
+
+    #[test]
+    fn an_inference_block_names_a_backend_and_a_model() {
+        let with = |block: &str| parse(&INVOICE.replace("  sandbox {", &format!("  {block}\n  sandbox {{")));
+        let m = with(r#"inference { backend "api"; model "claude-opus-5-5" }"#).unwrap();
+        assert_eq!(
+            m.inference,
+            Some(Inference {
+                backend: "api".into(),
+                model: "claude-opus-5-5".into()
+            })
+        );
+        assert_eq!(
+            parse(INVOICE).unwrap().inference,
+            None,
+            "absent means no inference"
+        );
+        assert!(with(r#"inference { backend "claude-code"; model "sonnet" }"#).is_ok());
+        for bad in [
+            r#"inference { backend "openai"; model "x" }"#,
+            r#"inference { backend "api" }"#,
+            r#"inference { model "x" }"#,
+            r#"inference { backend "api"; model "has space" }"#,
+            r#"inference { backend "api"; model "a"; model "b" }"#,
+            r#"inference { backend "api"; model "a"; key "sk-..." }"#,
+        ] {
+            assert!(with(bad).is_err(), "{bad}");
+        }
     }
 
     fn with_caps(caps: &str) -> String {

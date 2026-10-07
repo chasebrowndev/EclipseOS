@@ -15,6 +15,10 @@ use crate::core::{Msg, Surface};
 /// The longest request line either socket accepts.
 pub const MAX_LINE: usize = 64 * 1024;
 
+/// The same for a per-task MCP socket: an `inference.complete` carries a whole
+/// conversation, and the router accepts frames up to this size.
+pub const MCP_MAX_LINE: usize = ec_inference_wire::MAX_FRAME;
+
 pub type PeerPolicy = Arc<dyn Fn(&UnixStream) -> bool + Send + Sync>;
 
 /// `(uid, pid)` of the connected peer.
@@ -122,22 +126,31 @@ fn start_conn(s: UnixStream, surface: &Surface, tx: &Sender<Msg>, ids: &AtomicU6
         return false;
     }
     let tx = tx.clone();
+    let max_line = match surface {
+        Surface::Console => MAX_LINE,
+        Surface::Mcp(_) => MCP_MAX_LINE,
+    };
     std::thread::spawn(move || {
         let mut buf: Vec<u8> = Vec::new();
-        let mut chunk = [0u8; 4096];
+        let mut chunk = vec![0u8; 64 * 1024];
         'outer: loop {
             match r.read(&mut chunk) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     buf.extend_from_slice(&chunk[..n]);
                     while let Some(p) = buf.iter().position(|b| *b == b'\n') {
+                        // A line over the cap is refused even when its newline
+                        // arrived in the same read as the overflow.
+                        if p > max_line {
+                            break 'outer;
+                        }
                         let line: Vec<u8> = buf.drain(..=p).collect();
                         let s = String::from_utf8_lossy(&line[..line.len() - 1]).into_owned();
                         if !s.trim().is_empty() && tx.send(Msg::Line { conn, line: s }).is_err() {
                             return;
                         }
                     }
-                    if buf.len() > MAX_LINE {
+                    if buf.len() > max_line {
                         break 'outer;
                     }
                 }

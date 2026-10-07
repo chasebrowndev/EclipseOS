@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: Apache-2.0
+// Claude as a conversational agent (ADR 0076). Chat only: it has no screen or
+// input tools yet, so it requests no capabilities. The model is reached through
+// the task's inference.complete tool, which agentd serves from the inference
+// block below; the agent itself has no network and holds no key.
+agent {
+  id "ec-claude-agent"
+  name "Claude"
+  version "0.1.0"
+  publisher "eclipse"
+  // Relative to the package directory (A-07 §7 refuses a path outside it).
+  entrypoint "bin/ec-claude-agent"
+
+  task {
+    default_deadline "8h"
+    max_depth 0
+  }
+
+  capabilities {
+  }
+
+  inference {
+    backend "api"
+    model "claude-opus-5-5"
+  }
+
+  sandbox {
+  }
+
+  resumable #true
+}

@@ -157,7 +157,7 @@ package_eclipseos-desktop() {
 # never by the floor. Every agent-only process ships here; abyss's half stays
 # dormant until this manifest turns the `agents` hook on.
 package_eclipseos-agents() {
-  pkgdesc="EclipseOS agent stack add-on: policy daemon, secrets broker, agent daemon and audit reader (ADR 0069)"
+  pkgdesc="EclipseOS agent stack add-on: policy daemon, secrets broker, agent daemon, inference router and audit reader (ADR 0069, 0076)"
   depends=(eclipseos-abyss bubblewrap)
   replaces=(eclipseos-policyd)
   conflicts=(eclipseos-policyd)
@@ -165,15 +165,22 @@ package_eclipseos-agents() {
   _bin ec-policyd
   _bin ec-audit
   _bin ec-brokerd
+  # Owner CLI for brokerd (S-08 §2); brokerd classifies it as the Owner peer.
+  _bin ec-secret
   # The console backend and agent host (A-08). Never built with the
   # `dev-unsandboxed` feature. It starts agents under bwrap.
   _bin ec-agentd
+  # The inference router (I-02, ADR 0076): the only process that holds a
+  # model credential, released by brokerd per request.
+  _bin ec-inferenced
   _unit ec-policyd.service
   _want ec-policyd.service
   _unit ec-brokerd.service
   _want ec-brokerd.service
   _unit ec-agentd.service
   _want ec-agentd.service
+  _unit ec-inferenced.service
+  _want ec-inferenced.service
   install -Dm0644 "$srcdir/$_src/packaging/addons/eclipseos-agents.kdl" \
     "$pkgdir/usr/share/eclipse/addons/eclipseos-agents.kdl"
   # The reference agent package (console wave): manifest beside its binary,
@@ -181,6 +188,10 @@ package_eclipseos-agents() {
   _ref="$pkgdir/usr/share/eclipse/agents/ec-ref-agent/0.1.0"
   install -Dm0644 "$srcdir/$_src/packaging/agents/ec-ref-agent/manifest.kdl" "$_ref/manifest.kdl"
   install -Dm0755 "$srcdir/target/release/ec-ref-agent" "$_ref/bin/ec-ref-agent"
+  # Claude as a conversational agent (ADR 0076), chat only for now.
+  _claude="$pkgdir/usr/share/eclipse/agents/ec-claude-agent/0.1.0"
+  install -Dm0644 "$srcdir/$_src/packaging/agents/ec-claude-agent/manifest.kdl" "$_claude/manifest.kdl"
+  install -Dm0755 "$srcdir/target/release/ec-claude-agent" "$_claude/bin/ec-claude-agent"
 }
 
 package_eclipseos-setup() {

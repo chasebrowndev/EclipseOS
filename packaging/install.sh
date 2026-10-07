@@ -35,9 +35,10 @@ BINS='ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher
       ec-pairing'
 UNITS='ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service'
 # The agent stack add-on, as the PKGBUILD's eclipseos-agents ships it.
-AGENT_BINS='ec-policyd ec-brokerd ec-agentd ec-audit'
-AGENT_UNITS='ec-policyd.service ec-brokerd.service ec-agentd.service'
+AGENT_BINS='ec-policyd ec-brokerd ec-agentd ec-audit ec-secret ec-inferenced'
+AGENT_UNITS='ec-policyd.service ec-brokerd.service ec-agentd.service ec-inferenced.service'
 REF_AGENT=/usr/share/eclipse/agents/ec-ref-agent/0.1.0
+CLAUDE_AGENT=/usr/share/eclipse/agents/ec-claude-agent/0.1.0
 
 do_deps=1 do_build=1 assume_yes=0 uninstall=0 do_agents=0
 for arg in "$@"; do
@@ -72,7 +73,7 @@ if [ "$uninstall" -eq 1 ]; then
                /usr/share/applications/ec-center.desktop \
                /usr/share/applications/ec-policy-viewer.desktop \
                /usr/share/applications/ec-settings.desktop
-    sudo rm -rf /usr/share/eclipse/widgets "$REF_AGENT"
+    sudo rm -rf /usr/share/eclipse/widgets "$REF_AGENT" "$CLAUDE_AGENT"
     systemctl --user daemon-reload 2>/dev/null || true
     echo "Removed. /etc/eclipse/ and your ~/.config/eclipse/ were left alone."
     exit 0
@@ -145,7 +146,7 @@ fi
 
 bin="$root/target/release"
 want=$BINS
-[ "$do_agents" -eq 1 ] && want="$BINS $AGENT_BINS ec-ref-agent"
+[ "$do_agents" -eq 1 ] && want="$BINS $AGENT_BINS ec-ref-agent ec-claude-agent"
 for b in $want; do
     [ -x "$bin/$b" ] || die "missing $bin/$b — drop --no-build, or run
              cargo build --release --workspace --bins (in abyss/, shell/ and installer/)"
@@ -197,6 +198,8 @@ if [ "$do_agents" -eq 1 ]; then
     sudo install -Dm 0644 "$here/addons/eclipseos-agents.kdl" /usr/share/eclipse/addons/eclipseos-agents.kdl
     sudo install -Dm 0644 "$here/agents/ec-ref-agent/manifest.kdl" "$REF_AGENT/manifest.kdl"
     sudo install -Dm 0755 "$bin/ec-ref-agent" "$REF_AGENT/bin/ec-ref-agent"
+    sudo install -Dm 0644 "$here/agents/ec-claude-agent/manifest.kdl" "$CLAUDE_AGENT/manifest.kdl"
+    sudo install -Dm 0755 "$bin/ec-claude-agent" "$CLAUDE_AGENT/bin/ec-claude-agent"
     UNITS="$UNITS $AGENT_UNITS"
 fi
 

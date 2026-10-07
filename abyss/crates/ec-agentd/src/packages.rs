@@ -15,6 +15,8 @@ use std::path::{Component, Path, PathBuf};
 use kdl::KdlDocument;
 use serde_json::{json, Value};
 
+use ec_inference_wire::Backend;
+
 use crate::sandbox::RawDecl;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +121,64 @@ pub fn resumable(pkg_dir: &Path, publisher: &str) -> bool {
     read_manifest(pkg_dir)
         .and_then(|m| m.get_arg("resumable").and_then(|v| v.as_bool()))
         .unwrap_or(publisher == "local")
+}
+
+/// The manifest's `inference { backend; model }` (A-07, ADR 0076): which
+/// backend and model a package's tasks may ask the inference router for.
+/// agentd stamps these on every request; the agent never names them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Inference {
+    pub backend: Backend,
+    pub model: String,
+}
+
+/// Reads the `inference` block with policyd's rules (`ec-policyd`'s manifest
+/// parser): both keys required and single-valued, backend `api` or
+/// `claude-code`, model ASCII alphanumerics, `-` and `.` up to 64 bytes,
+/// nothing else in the block. `Ok(None)` when the manifest declares none; an
+/// invalid block is an error, so the package gets no inference tool.
+pub fn inference(pkg_dir: &Path) -> Result<Option<Inference>, String> {
+    let m = read_manifest(pkg_dir).ok_or("no readable manifest")?;
+    let mut nodes = m.nodes().iter().filter(|n| n.name().value() == "inference");
+    let Some(block) = nodes.next() else {
+        return Ok(None);
+    };
+    if nodes.next().is_some() {
+        return Err("inference declared twice".into());
+    }
+    let (mut backend, mut model) = (None::<String>, None::<String>);
+    for c in block.children().map(|d| d.nodes()).unwrap_or_default() {
+        let slot = match c.name().value() {
+            "backend" => &mut backend,
+            "model" => &mut model,
+            other => return Err(format!("unknown node inference.{other}")),
+        };
+        let mut args = c.entries().iter().filter(|e| e.name().is_none());
+        let (Some(a), None) = (args.next(), args.next()) else {
+            return Err("inference keys take one value".into());
+        };
+        if slot.is_some() || c.entries().iter().any(|e| e.name().is_some()) {
+            return Err("inference key repeated or has properties".into());
+        }
+        *slot = Some(
+            a.value()
+                .as_string()
+                .ok_or("inference values are strings")?
+                .to_owned(),
+        );
+    }
+    let backend = backend.ok_or("inference.backend is required")?;
+    let model = model.ok_or("inference.model is required")?;
+    let backend = Backend::parse(&backend).ok_or("inference.backend must be api or claude-code")?;
+    if model.is_empty()
+        || model.len() > 64
+        || !model
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+    {
+        return Err("inference.model is malformed".into());
+    }
+    Ok(Some(Inference { backend, model }))
 }
 
 /// The manifest's `sandbox { fs.read ...; fs.write ...; net.egress ... }`
@@ -235,6 +295,50 @@ mod tests {
         assert!(resumable(&d, "eclipse"));
         write("  sandbox {\n    fs.exec \"/x\"\n  }");
         assert_eq!(sandbox_decl(&d).unwrap_err(), "sandbox_unknown_key");
+    }
+
+    #[test]
+    fn reads_the_inference_block_with_policyds_rules() {
+        let tmp = crate::scratch_dir("pkgs-inf");
+        let d = tmp.join("a/1");
+        std::fs::create_dir_all(&d).unwrap();
+        let write = |body: &str| {
+            std::fs::write(
+                d.join("manifest.kdl"),
+                format!("agent {{\n  id \"a\"\n  version \"1\"\n  entrypoint \"x\"\n{body}\n}}\n"),
+            )
+            .unwrap()
+        };
+        let block = |inner: &str| format!("  inference {{\n{inner}\n  }}");
+        write("");
+        assert_eq!(inference(&d), Ok(None));
+        write(&block("    backend \"api\"\n    model \"claude-opus-4.5\""));
+        assert_eq!(
+            inference(&d),
+            Ok(Some(Inference {
+                backend: Backend::Api,
+                model: "claude-opus-4.5".into()
+            }))
+        );
+        let long = format!("    backend \"api\"\n    model \"{}\"", "m".repeat(65));
+        for bad in [
+            block("    backend \"api\""),
+            block("    model \"m\""),
+            block("    backend \"gpt\"\n    model \"m\""),
+            block("    backend \"api\"\n    model \"a/b\""),
+            block("    backend \"api\"\n    model \"\""),
+            block("    backend \"api\"\n    backend \"api\"\n    model \"m\""),
+            block("    backend \"api\"\n    model \"m\"\n    url \"x\""),
+            block(&long),
+            format!(
+                "{}\n{}",
+                block("    backend \"api\"\n    model \"m\""),
+                block("    backend \"api\"\n    model \"m\"")
+            ),
+        ] {
+            write(&bad);
+            assert!(inference(&d).is_err(), "{bad}");
+        }
     }
 
     #[test]

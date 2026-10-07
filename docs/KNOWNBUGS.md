@@ -354,9 +354,13 @@ surface is only input-protected.
 - **Session records are MCP-level, not model-level.** agentd writes
   `$XDG_STATE_HOME/eclipse/sessions/<task>/record.jsonl` (0700/0600, append-only,
   30-day retention, removed by `delete_session`): every request and response on
-  the task's MCP socket plus every conversation message. There is no inference
-  path yet (F-21, I-02), so the model's own context, thinking and tool
-  arguments it never sent through agentd are not in it. A task resumed with
+  the task's MCP socket plus every conversation message, which now includes
+  `inference.complete` calls and the router's answers (ADR 0076), so a model
+  reply is in the record as the MCP result. The model's own thinking and any
+  context an agent keeps without sending it through agentd are not in it. I-02's
+  `Model` provenance links are not stamped into the audit chain yet: the call
+  and reply exist in the session record only, and agentd emits no audit record
+  for an inference call. A task resumed with
   `resumes` gets the extra tool `session.restore` (once; the old entries and
   then the boundary marker). The record stops at 32 MiB per task. Not done:
   `list_sessions` marks `eligible` from the manifest's `resumable` (default true

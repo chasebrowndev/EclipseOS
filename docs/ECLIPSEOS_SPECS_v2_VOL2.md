@@ -1073,6 +1073,10 @@ Depends on: S-03, S-01 §2.7, S-05, S-06. Consumed by: A-01, A-06, S-09.
 
 Agents never see credential values. An agent holds `secret.use:<name>`; a
 broker performs the substitution at a boundary the agent cannot observe.
+*(Amended, ADR 0076.)* A model provider's credential is released, the same
+way, to the inference router (`ec-inferenced`, I-02) as a `Proxy` peer, never
+to an agent or agentd. The router's Claude Code backend hands its token to a
+sandboxed `claude` process it owns, outside every agent's sandbox.
 
 What this buys: an agent that is hijacked, or whose context is exfiltrated
 to a model provider, does not leak the credential itself. Passwords and API
@@ -4103,6 +4107,10 @@ action, in-flight batch).
 - No model calls. Inference goes through the router (I-02) so `Model`
   provenance links get stamped; an SDK-side HTTP client to a provider would
   bypass that and is not offered.
+  *(Amended, ADR 0076.)* The router is `ec-inferenced`, reached through
+  agentd's `inference.complete` tool; its backends are the Anthropic API and
+  a sandboxed per-task Claude Code session, both behind the Messages API's
+  shape.
 - No caching of trees across reads. A cache is a stale-revision generator.
 - No "retry until it works" helper at any level.
 - No credential handling of any kind (S-08 §1).
