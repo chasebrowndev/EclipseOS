@@ -1119,6 +1119,8 @@ fn render_output(state: &mut AbyssState, index: usize) {
     crate::trusted_ui::commit::tick(state);
     let capture_active = state.capture_active();
     let prompt = crate::trusted_ui::holds_seat(state);
+    // Over a slot card too, the compositor's arrow replaces the client cursor.
+    let arrow = prompt || crate::trusted_ui::pointer_on_card(state);
     let Some(drm) = state.drm.as_mut() else { return };
     if !drm.session.is_active() {
         return;
@@ -1156,7 +1158,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
     // arrow above it: the client cursor surface is not drawn while a prompt
     // holds the seat, so nothing a client chose sits on top of the prompt.
     let mut elements: Vec<AbyssRenderElement> = Vec::new();
-    if prompt {
+    if arrow {
         elements.extend(crate::render::cursor::elements(
             &mut drm.renderer,
             &smithay::input::pointer::CursorImageStatus::default_named(),
@@ -1188,7 +1190,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
     // They go in here, at `annotations_at`, once everything below them has
     // been collected: their glass panels blur what is behind them.
     let annotations_at = elements.len();
-    if !prompt {
+    if !arrow {
         elements.extend(crate::render::cursor::elements(
             &mut drm.renderer,
             &state.cursor_status,
