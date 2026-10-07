@@ -2,6 +2,7 @@
 //! Backend dispatch.
 
 use crate::api::{self, failure, Http};
+use crate::claude_code::{ClaudeCode, ClaudeConfig};
 use crate::credential::Credentials;
 use ec_inference_wire::{Backend, Completion, Failure, Request};
 use std::sync::Arc;
@@ -9,11 +10,23 @@ use std::sync::Arc;
 pub struct Router {
     http: Arc<dyn Http>,
     creds: Arc<dyn Credentials>,
+    claude: ClaudeCode,
 }
 
 impl Router {
     pub fn new(http: Arc<dyn Http>, creds: Arc<dyn Credentials>) -> Router {
-        Router { http, creds }
+        Router::with_claude(http, creds, ClaudeConfig::from_env())
+    }
+
+    /// As [`Router::new`] with an explicit Claude Code configuration (tests).
+    pub fn with_claude(http: Arc<dyn Http>, creds: Arc<dyn Credentials>, cfg: ClaudeConfig) -> Router {
+        let claude = ClaudeCode::new(cfg, creds.clone());
+        Router { http, creds, claude }
+    }
+
+    /// The Claude Code backend, for diagnostics and tests.
+    pub fn claude(&self) -> &ClaudeCode {
+        &self.claude
     }
 
     /// Serve one completion. Blocks for the whole model call; the server runs
@@ -24,12 +37,9 @@ impl Router {
         }
         match req.backend {
             Backend::Api => self.complete_api(req),
-            // The Claude Code backend lands here: a warm `claude -p` session
-            // keyed by `req.task`, released in `close`.
-            Backend::ClaudeCode => Err(failure(
-                "backend_unavailable",
-                "the Claude Code backend is not built yet",
-            )),
+            // A warm `claude -p` session keyed by `req.task`, released in
+            // `close`.
+            Backend::ClaudeCode => self.claude.complete(req),
         }
     }
 
@@ -39,7 +49,9 @@ impl Router {
         api::complete(&*self.http, &key, req)
     }
 
-    /// The task closed. The API backend is stateless, so there is nothing to
-    /// drop; a stateful backend releases its per-task session here.
-    pub fn close(&self, _task: &str) {}
+    /// The task closed: the API backend is stateless, so only the Claude Code
+    /// session (if any) is dropped.
+    pub fn close(&self, task: &str) {
+        self.claude.close(task);
+    }
 }

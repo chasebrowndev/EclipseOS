@@ -7,8 +7,8 @@
 //! took from the package manifest and never from the agent.
 //!
 //! * [`api`]: `POST /v1/messages` with a key brokerd releases per request.
-//! * `claude-code`: not built yet; [`router::Router`] answers
-//!   `backend_unavailable` until it is.
+//! * [`claude_code`]: one warm, sandboxed `claude -p` per task; its tool calls
+//!   come back as the agent's `tool_use` blocks through [`shim`].
 //!
 //! The network and brokerd sit behind the [`api::Http`] and
 //! [`credential::Credentials`] traits so the server is testable end to end
@@ -21,8 +21,10 @@
 #![deny(unsafe_code)]
 
 pub mod api;
+pub mod claude_code;
 pub mod credential;
 pub mod peer;
 pub mod router;
 pub mod secret;
 pub mod server;
+pub mod shim;

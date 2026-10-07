@@ -1638,6 +1638,7 @@ impl RouterConn {
                 model: "claude-test-1".into(),
                 input_tokens: 3,
                 output_tokens: 1,
+                cost_usd: None,
             }),
         });
     }

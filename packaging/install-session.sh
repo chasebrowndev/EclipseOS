@@ -42,6 +42,7 @@ agent_bins='ec-policyd ec-brokerd ec-agentd ec-audit ec-secret ec-inferenced'
 agent_units='ec-policyd ec-brokerd ec-agentd ec-inferenced'
 ref_agent=/usr/share/eclipse/agents/ec-ref-agent/0.1.0
 claude_agent=/usr/share/eclipse/agents/ec-claude-agent/0.1.0
+claude_code_agent=/usr/share/eclipse/agents/ec-claude-code-agent/0.1.0
 
 for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher \
          ec-settings ec-policy-viewer ec-console ec-ctl ec-screensaver ec-secret-prompt \
@@ -111,6 +112,8 @@ if [ "$do_agents" -eq 1 ]; then
     install -Dm 0755 "$bin/ec-ref-agent" "$ref_agent/bin/ec-ref-agent"
     install -Dm 0644 "$here/agents/ec-claude-agent/manifest.kdl" "$claude_agent/manifest.kdl"
     install -Dm 0755 "$bin/ec-claude-agent" "$claude_agent/bin/ec-claude-agent"
+    install -Dm 0644 "$here/agents/ec-claude-code-agent/manifest.kdl" "$claude_code_agent/manifest.kdl"
+    install -Dm 0755 "$bin/ec-claude-agent" "$claude_code_agent/bin/ec-claude-agent"
 fi
 
 # 4. The apps a human launches. The bar, toasts and launcher are session

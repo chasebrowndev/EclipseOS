@@ -192,6 +192,11 @@ package_eclipseos-agents() {
   _claude="$pkgdir/usr/share/eclipse/agents/ec-claude-agent/0.1.0"
   install -Dm0644 "$srcdir/$_src/packaging/agents/ec-claude-agent/manifest.kdl" "$_claude/manifest.kdl"
   install -Dm0755 "$srcdir/target/release/ec-claude-agent" "$_claude/bin/ec-claude-agent"
+  # The same agent on the Claude Code backend: its own package directory (the
+  # manifest id names the install path), the same binary.
+  _claudecode="$pkgdir/usr/share/eclipse/agents/ec-claude-code-agent/0.1.0"
+  install -Dm0644 "$srcdir/$_src/packaging/agents/ec-claude-code-agent/manifest.kdl" "$_claudecode/manifest.kdl"
+  install -Dm0755 "$srcdir/target/release/ec-claude-agent" "$_claudecode/bin/ec-claude-agent"
 }
 
 package_eclipseos-setup() {

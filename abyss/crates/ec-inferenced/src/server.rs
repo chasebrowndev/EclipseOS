@@ -62,9 +62,10 @@ fn send(w: &Writer, reply: &Reply) {
 }
 
 /// One log line per request: never content, never the key.
-fn log(req: &Request, outcome: &str, input: u64, output: u64) {
+fn log(req: &Request, outcome: &str, input: u64, output: u64, cost_usd: Option<f64>) {
+    let cost = cost_usd.map(|c| format!(" cost_usd={c:.4}")).unwrap_or_default();
     eprintln!(
-        "ec-inferenced: task={} package={} model={} outcome={} input_tokens={} output_tokens={}",
+        "ec-inferenced: task={} package={} model={} outcome={} input_tokens={} output_tokens={}{cost}",
         req.task, req.package, req.model, outcome, input, output
     );
 }
@@ -104,7 +105,7 @@ pub fn serve_conn(server: Arc<Server>, stream: UnixStream) {
 
 fn dispatch(server: &Arc<Server>, writer: &Writer, req: Request) {
     let Some(slot) = server.acquire() else {
-        log(&req, "rate_limited", 0, 0);
+        log(&req, "rate_limited", 0, 0, None);
         send(
             writer,
             &Reply {
@@ -121,8 +122,8 @@ fn dispatch(server: &Arc<Server>, writer: &Writer, req: Request) {
             let _slot = slot;
             let result = server.router.complete(&req);
             match &result {
-                Ok(c) => log(&req, "ok", c.input_tokens, c.output_tokens),
-                Err(f) => log(&req, &f.kind, 0, 0),
+                Ok(c) => log(&req, "ok", c.input_tokens, c.output_tokens, c.cost_usd),
+                Err(f) => log(&req, &f.kind, 0, 0, None),
             }
             send(&writer, &Reply { id: req.id, result });
         });
@@ -256,15 +257,18 @@ mod tests {
     }
 
     #[test]
-    fn claude_code_is_unavailable_and_close_is_accepted() {
+    fn claude_code_without_a_token_source_is_unavailable_and_close_is_accepted() {
         let mut c = start(FakeHttp::new(), FakeCreds(Ok("sk-x")), 4);
         call(&mut c, &ToRouter::Close { task: "T".into() });
         call(&mut c, &request(2, Backend::ClaudeCode, "m"));
         let r = reply(&mut c);
         assert_eq!(r.id, 2);
         let f = r.result.unwrap_err();
+        // No runtime dir, no `claude` here, or the fake credentials have no
+        // token to give: whichever comes first, it is `backend_unavailable`
+        // and nothing is started.
         assert_eq!(f.kind, "backend_unavailable");
-        assert_eq!(f.message, "the Claude Code backend is not built yet");
+        assert_ne!(f.message, "the Claude Code backend is not built yet");
     }
 
     #[test]

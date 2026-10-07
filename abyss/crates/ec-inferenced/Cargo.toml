@@ -8,14 +8,20 @@ repository.workspace = true
 description = "Inference router: serves agentd's inference.complete over inferenced.sock (I-02, ADR 0076)."
 # A system daemon, never published (same reason as ec-brokerd).
 publish = false
+# The test double `fake-claude` is a binary too; list both explicitly so cargo
+# does not also auto-discover it under another name.
+autobins = false
 
 [dependencies]
 ec-inference-wire = { path = "../ec-inference-wire" }
 # The brokerd wire module (public) is the one encoding of `Substitute`; a
 # second hand-written client would drift from it.
 ec-brokerd = { path = "../ec-brokerd" }
+# Library only: the agents' Landlock + seccomp second stage (`init_main`) is
+# reused as-is for the Claude Code sandbox, so the two cannot drift apart.
+ec-agentd = { path = "../ec-agentd" }
 serde_json.workspace = true
-rustix = { workspace = true, features = ["net", "process"] }
+rustix = { workspace = true, features = ["net", "process", "pipe"] }
 zeroize = "1"
 # HTTPS client. `rustls-no-provider` rather than the default `rustls`
 # feature: the default drags in webpki-roots (CDLA, disallowed by deny.toml).
@@ -29,3 +35,20 @@ rustls-native-certs = "0.8"
 # Recognise agentd from any directory, not only /usr/bin, for a dev tree.
 # Never enabled by the package build (src/peer.rs).
 dev-peers = []
+# Builds the `fake-claude` test double (a scripted stand-in for `claude -p`)
+# and enables the tests that drive it. Never enabled by the package build.
+fake-claude = []
+
+[[bin]]
+name = "ec-inferenced"
+path = "src/main.rs"
+
+[[bin]]
+name = "fake-claude"
+path = "src/bin/fake_claude.rs"
+required-features = ["fake-claude"]
+
+[[test]]
+name = "claude_code"
+path = "tests/claude_code.rs"
+required-features = ["fake-claude"]

@@ -18,6 +18,9 @@ BindsTo=abyss-session.target
 [Service]
 Type=simple
 ExecStart=/usr/bin/ec-inferenced
+# `claude` (Claude Code backend) is found on this PATH; the native installer puts
+# it in ~/.local/bin. Override with ECLIPSE_CLAUDE_BIN.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=1
 KillMode=process

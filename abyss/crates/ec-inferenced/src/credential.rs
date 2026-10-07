@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Getting the API key from brokerd, one request at a time.
+//! Getting the API key (and the Claude Code token) from brokerd.
 //!
 //! brokerd releases a value only through `Substitute` (S-08 §3.1), which it
 //! allows to a `Proxy` peer. The router is the proxy for the model API: it
 //! asks for `anthropic-api-key` at `api.anthropic.com:443` as
 //! `agent:<package>`, holds the value for one HTTP call and drops it.
 //! Nothing is cached: a rotate or revoke takes effect on the next request.
+//!
+//! The Claude Code backend asks the same way for `claude-code-token`, once per
+//! session start (the sandboxed `claude` keeps it for the session's life; see
+//! `claude_code`).
 
 use crate::api::failure;
 use crate::secret::ApiKey;
@@ -16,20 +20,37 @@ use rustix::net::{self, AddressFamily, RecvFlags, SendFlags, SocketAddrUnix, Soc
 use std::path::PathBuf;
 
 pub const SECRET_NAME: &str = "anthropic-api-key";
+/// The Claude Code login token (`claude setup-token`), released the same way
+/// and bound to the same host.
+pub const TOKEN_NAME: &str = "claude-code-token";
 pub const HOST: &str = "api.anthropic.com";
 pub const PORT: u16 = 443;
 
 pub trait Credentials: Send + Sync {
     /// The key for a request made on behalf of `package`.
     fn api_key(&self, package: &str) -> Result<ApiKey, Failure>;
+
+    /// The Claude Code OAuth token for a session started on behalf of
+    /// `package`. Released once per session start and handed to the sandboxed
+    /// `claude`, never cached here. The default answers "unavailable" so a
+    /// test double that only serves the API backend need not implement it.
+    fn claude_code_token(&self, _package: &str) -> Result<ApiKey, Failure> {
+        Err(failure("backend_unavailable", "no Claude Code token source"))
+    }
 }
 
 /// The Substitute request for `package`.
 pub fn substitute_request(package: &str) -> Request {
+    substitute_request_for(package, SECRET_NAME)
+}
+
+/// The Substitute request for the secret `name` (same host) on behalf of
+/// `package`.
+pub fn substitute_request_for(package: &str, name: &str) -> Request {
     Request::Substitute(SubstituteWire(SubstituteFields {
         principal: format!("agent:{package}"),
         grant: None,
-        name: SECRET_NAME.into(),
+        name: name.into(),
         host: HOST.into(),
         port: PORT,
         url: None,
@@ -40,24 +61,40 @@ pub fn substitute_request(package: &str) -> Request {
 
 /// A brokerd response to a key, or the Failure the caller should return.
 pub fn interpret(resp: Response) -> Result<ApiKey, Failure> {
+    interpret_with(
+        resp,
+        "the stored value is not usable as an API key: rotate it with `ec-secret rotate anthropic-api-key`",
+        "no key stored: run `ec-secret add anthropic-api-key --bind host:api.anthropic.com`",
+    )
+}
+
+/// A brokerd response to the Claude Code token, or the Failure to return.
+pub fn interpret_token(resp: Response) -> Result<ApiKey, Failure> {
+    interpret_with(
+        resp,
+        "the stored value is not usable as a Claude Code token: rotate it with `ec-secret rotate claude-code-token`",
+        "no Claude Code token stored: run `claude setup-token`, then `ec-secret add claude-code-token --bind host:api.anthropic.com`",
+    )
+}
+
+fn interpret_with(resp: Response, unusable: &str, none: &str) -> Result<ApiKey, Failure> {
     match resp {
-        Response::Value { value, .. } => ApiKey::from_bytes(&value).ok_or_else(|| {
-            failure(
-                "no_credential",
-                "the stored value is not usable as an API key: rotate it with `ec-secret rotate anthropic-api-key`",
-            )
-        }),
+        Response::Value { value, .. } => {
+            ApiKey::from_bytes(&value).ok_or_else(|| failure("no_credential", unusable))
+        }
         Response::Err(code) => Err(match Status::from_code(code) {
-            Some(Status::BrokerLocked) => failure("broker_locked", "brokerd is locked: run `ec-secret unlock`"),
+            Some(Status::BrokerLocked) => {
+                failure("broker_locked", "brokerd is locked: run `ec-secret unlock`")
+            }
             // brokerd answers an unknown name with no_capability and a name
             // not bound to this host with out_of_scope; both are "no usable key".
-            Some(Status::NoCapability | Status::OutOfScope) => failure(
-                "no_credential",
-                "no key stored: run `ec-secret add anthropic-api-key --bind host:api.anthropic.com`",
-            ),
+            Some(Status::NoCapability | Status::OutOfScope) => failure("no_credential", none),
             Some(Status::RateLimited) => failure("rate_limited", "brokerd is rate-limiting key requests"),
             Some(Status::InvalidArgument) => failure("bad_request", "brokerd refused the key request"),
-            _ => failure("backend_unavailable", format!("brokerd failed the key request (status {code})")),
+            _ => failure(
+                "backend_unavailable",
+                format!("brokerd failed the key request (status {code})"),
+            ),
         }),
         _ => Err(failure("backend_unavailable", "brokerd sent an unexpected reply")),
     }
@@ -96,16 +133,28 @@ impl BrokerdClient {
         // the receive copy on drop.
         Some(buf[..n].to_vec())
     }
-}
 
-impl Credentials for BrokerdClient {
-    fn api_key(&self, package: &str) -> Result<ApiKey, Failure> {
+    fn substitute(
+        &self,
+        req: Request,
+        interpret: fn(Response) -> Result<ApiKey, Failure>,
+    ) -> Result<ApiKey, Failure> {
         let unavailable = || failure("backend_unavailable", "brokerd is not reachable");
-        let packet = zeroize::Zeroizing::new(substitute_request(package).encode());
+        let packet = zeroize::Zeroizing::new(req.encode());
         let reply = self.exchange(&packet).ok_or_else(unavailable)?;
         let reply = zeroize::Zeroizing::new(reply);
         let resp = Response::decode(&reply).map_err(|_| unavailable())?;
         interpret(resp)
+    }
+}
+
+impl Credentials for BrokerdClient {
+    fn api_key(&self, package: &str) -> Result<ApiKey, Failure> {
+        self.substitute(substitute_request(package), interpret)
+    }
+
+    fn claude_code_token(&self, package: &str) -> Result<ApiKey, Failure> {
+        self.substitute(substitute_request_for(package, TOKEN_NAME), interpret_token)
     }
 }
 
@@ -128,6 +177,38 @@ mod tests {
         // And it survives the wire.
         let again = Request::decode(&substitute_request("ec-claude-agent").encode()).unwrap();
         assert_eq!(again, substitute_request("ec-claude-agent"));
+    }
+
+    #[test]
+    fn token_request_and_messages() {
+        let Request::Substitute(SubstituteWire(f)) =
+            substitute_request_for("ec-claude-code-agent", TOKEN_NAME)
+        else {
+            panic!("not a substitute");
+        };
+        assert_eq!(f.principal, "agent:ec-claude-code-agent");
+        assert_eq!(
+            (f.name.as_str(), f.host.as_str(), f.port),
+            ("claude-code-token", "api.anthropic.com", 443)
+        );
+        let f = interpret_token(Response::Err(Status::NoCapability.code())).unwrap_err();
+        assert_eq!(f.kind, "no_credential");
+        assert_eq!(
+            f.message,
+            "no Claude Code token stored: run `claude setup-token`, then `ec-secret add claude-code-token --bind host:api.anthropic.com`"
+        );
+        let k = interpret_token(Response::Value {
+            rotation_counter: 1,
+            value: Secret::new(b"sk-ant-oat01-x\n".to_vec()),
+        })
+        .unwrap();
+        assert_eq!(k.expose(), "sk-ant-oat01-x");
+        assert_eq!(
+            interpret_token(Response::Err(Status::BrokerLocked.code()))
+                .unwrap_err()
+                .kind,
+            "broker_locked"
+        );
     }
 
     #[test]
