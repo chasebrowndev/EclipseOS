@@ -3,8 +3,8 @@
 //! comes from (F-05, COMP-01 §6). TCB.
 //!
 //! abyss dials `policyd`, and trusts the far end only if the kernel says it
-//! is the session user's `policyd.service`: the `SO_PEERCRED` uid is ours
-//! and the peer pid's cgroup leaf is `policyd.service`. The first key offered
+//! is the session user's `ec-policyd.service`: the `SO_PEERCRED` uid is ours
+//! and the peer pid's cgroup leaf is `ec-policyd.service`. The first key offered
 //! is pinned for the life of the compositor; a different key on a later
 //! connection is refused and the link stays down.
 //!
@@ -36,8 +36,9 @@ use crate::state::AbyssState;
 
 const RETRY: Duration = Duration::from_secs(1);
 
-/// The systemd unit `policyd` must run as (`dist/policyd.service`).
-const UNIT: &str = "policyd.service";
+/// The systemd unit `policyd` must run as (`packaging/ec-policyd.service`;
+/// renamed from `policyd.service` by ADR 0070).
+const UNIT: &str = "ec-policyd.service";
 
 /// The link's state. `state.policy_key` is the key while the link is up.
 #[derive(Debug, Default)]
@@ -194,7 +195,7 @@ fn authenticate(fd: &OwnedFd) -> Result<(), &'static str> {
     let cgroup = std::fs::read_to_string(format!("/proc/{}/cgroup", cred.pid.as_raw_pid()))
         .map_err(|_| "peer cgroup unreadable")?;
     if !cgroup_is_policyd(&cgroup) {
-        return Err("peer is not in policyd.service");
+        return Err("peer is not in ec-policyd.service");
     }
     Ok(())
 }
@@ -301,17 +302,20 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     #[test]
-    fn only_a_unit_named_policyd_service_passes() {
-        let ok = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/policyd.service\n";
+    fn only_a_unit_named_ec_policyd_service_passes() {
+        let ok = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/ec-policyd.service\n";
         assert!(cgroup_is_policyd(ok));
         for bad in [
             "",
+            // The pre-ADR 0070 unit name: the shipped unit is ec-policyd.service.
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/policyd.service\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/not-ec-policyd.service\n",
             "0::/user.slice/user-1000.slice/user@1000.service/app.slice/evil-policyd.service\n",
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/policyd.service/sub\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/ec-policyd.service/sub\n",
             "0::/user.slice/user-1000.slice/session-2.scope\n",
-            "1:name=systemd:/policyd.service\n",
+            "1:name=systemd:/ec-policyd.service\n",
             // A v1 hierarchy line alongside: not the single v2 line we expect.
-            "1:cpu:/x\n0::/a/policyd.service\n",
+            "1:cpu:/x\n0::/a/ec-policyd.service\n",
         ] {
             assert!(!cgroup_is_policyd(bad), "{bad:?}");
         }
