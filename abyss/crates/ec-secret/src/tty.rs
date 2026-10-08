@@ -143,3 +143,20 @@ fn fill(line: &mut Line, tty: bool) -> Result<(), InputError> {
     }
     Ok(())
 }
+
+/// Puts echo and signals back on stdin's terminal, for a read that was left
+/// blocked in another thread (its guard will never drop). No-op off a tty.
+pub fn restore_echo() {
+    if !isatty(stdin()) {
+        return;
+    }
+    if let Ok(mut t) = tcgetattr(stdin()) {
+        t.local_modes.insert(LocalModes::ECHO | LocalModes::ISIG);
+        let _ = tcsetattr(stdin(), OptionalActions::Now, &t);
+    }
+}
+
+/// Whether stdin is a terminal.
+pub fn stdin_is_tty() -> bool {
+    isatty(stdin())
+}

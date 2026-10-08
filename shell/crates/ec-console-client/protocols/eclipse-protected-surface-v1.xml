@@ -22,7 +22,7 @@
     Protection is not trust: the surface's pixels are still the client's.
   </description>
 
-  <interface name="eclipse_protected_surface_manager_v1" version="1">
+  <interface name="eclipse_protected_surface_manager_v1" version="2">
     <description summary="protected surface factory">
       The global.
     </description>
@@ -54,7 +54,7 @@
     </request>
   </interface>
 
-  <interface name="eclipse_protected_surface_v1" version="1">
+  <interface name="eclipse_protected_surface_v1" version="2">
     <description summary="a protected wl_surface">
       While this object lives the surface, its subsurfaces and its popups
       take physical input only, and are never captured or shown to agents.
@@ -103,7 +103,7 @@
     </event>
   </interface>
 
-  <interface name="eclipse_commit_slot_v1" version="1">
+  <interface name="eclipse_commit_slot_v1" version="2">
     <description summary="a compositor-drawn commit card">
       The compositor draws the card, holds the draft, previews it and, when
       the human commits, sends it on. The client receives no preview content.
@@ -115,6 +115,7 @@
       <entry name="not_owner" value="2" summary="reserved"/>
       <entry name="bad_kind" value="3" summary="set_draft on a task_unpause slot, or set_unpause on a task_commit slot"/>
       <entry name="draft_too_large" value="4" summary="statement over 1000 characters"/>
+      <entry name="bad_account" value="5" summary="set_account with a name outside the account rule" since="2"/>
     </enum>
 
     <enum name="state">
@@ -178,6 +179,18 @@
 
     <request name="destroy" type="destructor">
       <description summary="destroy the slot"/>
+    </request>
+
+    <request name="set_account" since="2">
+      <description summary="name the account the task runs under">
+        The owner's account the task's inference runs under (ADR 0077):
+        empty for the default account, or 1 to 32 of [A-Za-z0-9_-]. It is
+        part of the draft: it survives set_draft, is shown on the card, and
+        a change re-previews and disarms like set_draft, under the same rate
+        limit. Only on a task_commit slot (bad_kind); a name outside the rule
+        is bad_account.
+      </description>
+      <arg name="account" type="string"/>
     </request>
 
     <event name="geometry">

@@ -227,7 +227,9 @@ fn reply(state: &mut AbyssState, resp: Option<Response>) {
     };
     match resp {
         Response::State {
-            unlocked, initialised, ..
+            unlocked,
+            initialised,
+            ..
         } => {
             if unlocked || (login && !initialised) {
                 state.trusted_ui.broker.step = Step::Idle;
@@ -387,7 +389,12 @@ fn ask(state: &mut AbyssState, req: Request) {
         reply(state, None);
         return;
     }
-    let sent = state.trusted_ui.broker.tx.as_ref().is_some_and(|tx| tx.send(req).is_ok());
+    let sent = state
+        .trusted_ui
+        .broker
+        .tx
+        .as_ref()
+        .is_some_and(|tx| tx.send(req).is_ok());
     if !sent {
         state.trusted_ui.broker.tx = None;
         reply(state, None);
@@ -405,16 +412,18 @@ fn spawn(state: &mut AbyssState) -> bool {
         tracing::warn!(%e, "brokerd prompt: no event source");
         return false;
     }
-    let thread = std::thread::Builder::new().name("ec-brokerd-ui".into()).spawn(move || {
-        let mut conn: Option<OwnedFd> = None;
-        for req in req_rx {
-            let resp = call(&mut conn, &req);
-            drop(req);
-            if resp_tx.send(resp).is_err() {
-                return;
+    let thread = std::thread::Builder::new()
+        .name("ec-brokerd-ui".into())
+        .spawn(move || {
+            let mut conn: Option<OwnedFd> = None;
+            for req in req_rx {
+                let resp = call(&mut conn, &req);
+                drop(req);
+                if resp_tx.send(resp).is_err() {
+                    return;
+                }
             }
-        }
-    });
+        });
     if thread.is_err() {
         return false;
     }
@@ -437,7 +446,13 @@ fn call(conn: &mut Option<OwnedFd>, req: &Request) -> Option<Response> {
 }
 
 fn dial() -> Option<OwnedFd> {
-    let fd = net::socket_with(AddressFamily::UNIX, SocketType::SEQPACKET, SocketFlags::CLOEXEC, None).ok()?;
+    let fd = net::socket_with(
+        AddressFamily::UNIX,
+        SocketType::SEQPACKET,
+        SocketFlags::CLOEXEC,
+        None,
+    )
+    .ok()?;
     let addr = SocketAddrUnix::new(&socket_path()?).ok()?;
     net::connect(&fd, &addr).ok()?;
     Some(fd)

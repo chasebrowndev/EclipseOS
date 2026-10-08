@@ -84,7 +84,9 @@ pub struct Request {
 /// An account name (ADR 0077): empty (the default), or 1–32 of
 /// `[A-Za-z0-9_-]`. The same rule as `ec_policy_eval::link::account_ok`.
 pub fn account_ok(a: &str) -> bool {
-    a.len() <= 32 && a.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    a.len() <= 32
+        && a.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// The brokerd secret that holds `base` for `account`: `base` itself for the
@@ -293,9 +295,18 @@ mod tests {
 
     #[test]
     fn account_names_map_to_secret_names() {
-        assert_eq!(secret_name("claude-code-token", "").as_deref(), Some("claude-code-token"));
-        assert_eq!(secret_name("claude-code-token", "default").as_deref(), Some("claude-code-token"));
-        assert_eq!(secret_name("claude-code-token", "work").as_deref(), Some("claude-code-token.work"));
+        assert_eq!(
+            secret_name("claude-code-token", "").as_deref(),
+            Some("claude-code-token")
+        );
+        assert_eq!(
+            secret_name("claude-code-token", "default").as_deref(),
+            Some("claude-code-token")
+        );
+        assert_eq!(
+            secret_name("claude-code-token", "work").as_deref(),
+            Some("claude-code-token.work")
+        );
         assert_eq!(secret_name("claude-code-token", "a.b"), None);
         let mut r = req();
         r.account = "../x".into();

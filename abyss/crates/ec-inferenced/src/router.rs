@@ -45,7 +45,7 @@ impl Router {
 
     fn complete_api(&self, req: &Request) -> Result<Completion, Failure> {
         // Held for this one call only; zeroed when it drops at scope end.
-        let key = self.creds.api_key(&req.package)?;
+        let key = self.creds.api_key(&req.package, &req.account)?;
         api::complete(&*self.http, &key, req)
     }
 

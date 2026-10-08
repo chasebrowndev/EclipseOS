@@ -16,5 +16,15 @@ path = "src/main.rs"
 # Wire types, binding parser, status codes and `LockedBuf`: one definition of
 # the protocol, shared with the daemon, so the client cannot drift from it.
 ec-brokerd = { path = "../ec-brokerd" }
-rustix = { workspace = true, features = ["net", "termios", "stdio"] }
+# `pty` is for `account login` (a pseudo-terminal for `claude setup-token`);
+# `process` (workspace default) for killing the child's process group.
+rustix = { workspace = true, features = ["net", "termios", "stdio", "pty", "process"] }
 zeroize = "1"
+# Only the SIGINT/SIGTERM/SIGHUP handler of `account login` (src/sig.rs), so a
+# cancelled login still kills `claude` and removes its temp config dir.
+libc = "0.2"
+
+[dev-dependencies]
+# Pins the account-name and secret-name rules in `src/accounts.rs` to the ones
+# ec-inferenced reads them by (drift test only).
+ec-inference-wire = { path = "../ec-inference-wire" }

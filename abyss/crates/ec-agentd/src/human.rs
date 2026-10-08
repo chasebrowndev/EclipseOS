@@ -20,9 +20,20 @@ use crate::rpc::{RpcError, DENIED, UNAVAILABLE};
 
 /// `show_decisions` on abyss, blocking: run it off the core thread.
 pub fn show_decisions(path: &std::path::Path) -> Result<Value, RpcError> {
+    forward(path, "show_decisions")
+}
+
+/// `secrets_unlock_prompt` on abyss (opens the compositor-drawn passphrase
+/// prompt), blocking: run it off the core thread.
+pub fn unlock_secrets(path: &std::path::Path) -> Result<Value, RpcError> {
+    forward(path, "secrets_unlock_prompt")
+}
+
+/// One parameterless call on abyss's human socket.
+fn forward(path: &std::path::Path, method: &str) -> Result<Value, RpcError> {
     let mut c = ec_ipc::Client::connect_to(path)
         .map_err(|e| RpcError::new(UNAVAILABLE, "unavailable", &format!("compositor: {e}")))?;
-    c.call("show_decisions", json!({})).map_err(|e| match e {
+    c.call(method, json!({})).map_err(|e| match e {
         ec_ipc::Error::Rpc { code, message } => RpcError::new(
             if code == -32000 { DENIED } else { code },
             "compositor_refused",

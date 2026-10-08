@@ -96,6 +96,13 @@ pub struct Draft {
     pub workspace: u32,
 }
 
+/// The account rule: empty, or 1 to 32 of `[A-Za-z0-9_-]`.
+fn account_name_ok(a: &str) -> bool {
+    a.len() <= 32
+        && a.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
 impl Draft {
     fn check(&self) -> Result<(), Error> {
         if !self.continuation.is_empty() && !self.resumes.is_empty() {
@@ -245,7 +252,7 @@ impl Protected {
             registry_queue_init::<State>(&conn).map_err(|e| Error::Wayland(e.to_string()))?;
         let qh = queue.handle();
         let manager: EclipseProtectedSurfaceManagerV1 =
-            globals.bind(&qh, 1..=1, ()).map_err(|_| Error::NoManager)?;
+            globals.bind(&qh, 1..=2, ()).map_err(|_| Error::NoManager)?;
         let surface = manager.protect(&wl_surface, &qh, ());
         conn.flush().map_err(|e| Error::Wayland(e.to_string()))?;
         Ok(Protected {
@@ -327,6 +334,27 @@ impl Protected {
             d.workspace,
         );
         self.conn.flush().map_err(|e| Error::Wayland(e.to_string()))
+    }
+
+    /// Name the account a `task.commit` slot's task runs under (ADR 0077):
+    /// empty for the default, else 1 to 32 of `[A-Za-z0-9_-]`. Part of the
+    /// draft; the compositor re-previews and disarms like `set_draft`.
+    ///
+    /// Returns `Ok(true)` when sent, and `Ok(false)` without sending anything
+    /// when the compositor speaks protocol v1 (it has no accounts; the task
+    /// runs under the default one). A bad name or a missing / wrong-kind slot
+    /// is `Err`, refused here so the compositor never raises `bad_account`.
+    pub fn set_account(&self, account: &str) -> Result<bool, Error> {
+        if !account_name_ok(account) {
+            return Err(Error::Refused("account is not 1 to 32 of A-Za-z0-9_-"));
+        }
+        let slot = self.slot_of(SlotKind::TaskCommit)?;
+        if slot.version() < 2 {
+            return Ok(false);
+        }
+        slot.set_account(account.to_owned());
+        self.conn.flush().map_err(|e| Error::Wayland(e.to_string()))?;
+        Ok(true)
     }
 
     /// Name the task a `task.unpause` slot would unpause.
@@ -478,6 +506,16 @@ mod tests {
             ..ok
         };
         assert!(nul.check().is_err());
+    }
+
+    #[test]
+    fn account_names_are_checked_before_the_wire() {
+        for bad in ["a.b", "has space", "x\0", &"y".repeat(33)] {
+            assert!(!account_name_ok(bad), "{bad:?}");
+        }
+        for good in ["", "work", "a-b_C9", &"z".repeat(32)] {
+            assert!(account_name_ok(good), "{good:?}");
+        }
     }
 
     #[test]

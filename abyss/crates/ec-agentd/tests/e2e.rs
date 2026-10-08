@@ -341,6 +341,7 @@ fn prov(task: &str, principal: &str) -> FromPolicyd {
         grant: vec![1, 2, 3],
         continuation: String::new(),
         resumes: String::new(),
+        account: String::new(),
     }
 }
 
@@ -354,6 +355,7 @@ fn prov_resumes(task: &str, principal: &str, resumes: &str) -> FromPolicyd {
         deadline_ms,
         grant,
         continuation,
+        account,
         ..
     } = prov(task, principal)
     else {
@@ -369,6 +371,7 @@ fn prov_resumes(task: &str, principal: &str, resumes: &str) -> FromPolicyd {
         grant,
         continuation,
         resumes: resumes.to_owned(),
+        account,
     }
 }
 
@@ -953,6 +956,41 @@ fn list_packages_reads_manifests() {
 }
 
 #[test]
+fn list_packages_shows_the_inference_backend() {
+    let dir = ec_agentd::scratch_dir("pk-be");
+    let root = dir.join("agents");
+    ref_package(&root, INF_BLOCK);
+    let rig = Rig::with(
+        dir,
+        T0,
+        Opts {
+            packages: vec![(root, "local".into())],
+            ..Opts::default()
+        },
+    );
+    let r = rig.console().ok("list_packages", json!({}));
+    assert_eq!(r["packages"][0]["id"], "ref");
+    assert_eq!(r["packages"][0]["backend"], "api");
+}
+
+#[test]
+fn a_provisioned_account_reaches_the_inference_request() {
+    let mut rig = inference_rig("inf-acct");
+    let router = FakeRouter::start(&rig);
+    let id = tid(1);
+    let mut p = prov(&id, "agent:ref");
+    if let FromPolicyd::Provision { account, .. } = &mut p {
+        *account = "work".into();
+    }
+    rig.fake().send(&p);
+    wait_task(&mut rig.console(), &id);
+    let mut m = rig.mcp(&id);
+    send_inf(&mut m, 101, json!({"messages": msgs()}));
+    let mut rc = router.accept();
+    assert_eq!(rc.complete().account, "work");
+}
+
+#[test]
 fn show_decisions_is_forwarded_rate_limited_and_the_count_is_relayed() {
     let dir = ec_agentd::scratch_dir("dec");
     let hs = dir.join("abyss.sock");
@@ -983,6 +1021,9 @@ fn show_decisions_is_forwarded_rate_limited_and_the_count_is_relayed() {
                             )
                             .unwrap();
                         }
+                        "secrets_unlock_prompt" => {
+                            writeln!(w, "{}", json!({"jsonrpc": "2.0", "id": id, "result": {}})).unwrap();
+                        }
                         _ => {}
                     }
                 }
@@ -1007,6 +1048,12 @@ fn show_decisions_is_forwarded_rate_limited_and_the_count_is_relayed() {
     assert_eq!(first["result"], json!({"opened": true}), "{first}");
     let second = c.call("show_decisions", json!({}));
     assert_eq!(second["error"]["code"], -32004);
+
+    // unlock_secrets is forwarded to secrets_unlock_prompt, with its own 1/s limit.
+    let u = c.call("unlock_secrets", json!({}));
+    assert_eq!(u["result"], json!({}), "{u}");
+    let u2 = c.call("unlock_secrets", json!({}));
+    assert_eq!(u2["error"]["code"], -32004);
 }
 
 // ---- session records and restore (A-08 §5.4, F-21, F-23) ---------------------
@@ -1774,6 +1821,7 @@ fn a_call_goes_to_the_router_with_the_manifests_backend_and_model() {
     assert_eq!(r.model, "claude-test-1");
     assert_eq!(r.system, "be brief");
     assert_eq!(r.max_tokens, 777);
+    assert_eq!(r.account, "", "no account chosen: the default");
     assert_eq!(r.messages, msgs());
     rc.ok(r.id, "hello");
     let (err, body) = inf_result(&read_resp(&mut m, 101));

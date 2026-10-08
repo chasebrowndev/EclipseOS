@@ -159,6 +159,9 @@ pub struct Package {
     pub name: String,
     pub publisher: String,
     pub version: String,
+    /// The manifest's inference backend (`api` or `claude-code`); `None`
+    /// for a package that declares none.
+    pub backend: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -513,6 +516,7 @@ impl Console {
                 name: s(p, "name"),
                 publisher: s(p, "publisher"),
                 version: s(p, "version"),
+                backend: p.get("backend").and_then(Value::as_str).map(str::to_owned),
             })
             .collect())
     }
@@ -569,6 +573,12 @@ impl Console {
     /// Ask the compositor (via agentd) to open the decision queue. 1/s.
     pub fn show_decisions(&self) -> Result<()> {
         self.call("show_decisions", Value::Null).map(drop)
+    }
+
+    /// Ask the compositor (via agentd) to open the secrets-unlock prompt
+    /// (`secrets_unlock_prompt`). Rate limited like `show_decisions`: 1/s.
+    pub fn unlock_secrets(&self) -> Result<()> {
+        self.call("unlock_secrets", Value::Null).map(drop)
     }
 
     pub fn list_sessions(&self, since: Option<u64>) -> Result<Vec<Session>> {

@@ -397,7 +397,9 @@ const F_ACCOUNT: u32 = 1 << 29;
 /// account), or 1–32 of `[A-Za-z0-9_-]`. It becomes a brokerd secret-name
 /// suffix after a `.`, so nothing else may appear in it.
 pub fn account_ok(a: &str) -> bool {
-    a.len() <= 32 && a.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    a.len() <= 32
+        && a.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 fn account(a: Option<&str>) -> Result<String, MessageError> {

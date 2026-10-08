@@ -862,7 +862,11 @@ impl Dispatch<EclipseCommitSlotV1, SlotData> for AbyssState {
                     resource.state(State::Refused, Reason::Refused);
                     return;
                 }
-                let account = state.protected.slot(id).map(|s| latest_draft(s).account.clone()).unwrap_or_default();
+                let account = state
+                    .protected
+                    .slot(id)
+                    .map(|s| latest_draft(s).account.clone())
+                    .unwrap_or_default();
                 submit_draft(
                     state,
                     id,

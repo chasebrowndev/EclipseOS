@@ -4,6 +4,7 @@
 //! from `/proc/<pid>/cmdline` by every process of the same user, which
 //! includes a sandboxed agent's neighbours.
 
+use crate::accounts::Kind;
 use ec_brokerd::bind::Binding;
 use ec_brokerd::record::name_ok;
 
@@ -27,6 +28,17 @@ pub enum Cmd {
     Revoke {
         name: String,
     },
+    Account(AccountCmd),
+}
+
+/// `ec-secret account ...` (ADR 0077). Account names are validated when the
+/// command runs, so a `--json` caller gets a `bad_account` error object.
+#[derive(Debug, PartialEq, Eq)]
+pub enum AccountCmd {
+    List { json: bool },
+    Login { account: String, json: bool },
+    AddKey { account: String, stdin: bool },
+    Remove { account: String, kind: Kind, json: bool },
 }
 
 pub const HELP: &str = "\
@@ -43,6 +55,22 @@ USAGE
   ec-secret rotate <name> [--stdin]    replace a secret's value
   ec-secret revoke <name>              delete a secret
   ec-secret list                       names, bindings, rotation counter (never values)
+
+ACCOUNTS (the Claude accounts a task can run under, ADR 0077)
+  ec-secret account list [--json]      accounts and their kind (claude-code | api-key)
+  ec-secret account login <account> [--json]
+                                       sign in with `claude setup-token`; stores the token
+                                       as claude-code-token[.account]. Prints a URL, then
+                                       reads the code it shows from the terminal (echo off)
+                                       or, with --json, one line of stdin. --json writes
+                                       events on stdout: url, code_needed, stored, error.
+  ec-secret account add-key <account> [--stdin]
+                                       store an API key as anthropic-api-key[.account]
+  ec-secret account remove <account> --kind claude-code|api-key [--json]
+                                       revoke that account's token or key
+  An account is 1 to 32 of A-Z a-z 0-9 _ -; `default` is the account tasks
+  use when none is chosen. There is no rename: brokerd cannot read a value back.
+  EC_SECRET_CLAUDE=<path> runs that program instead of `claude` (tests only).
 
 BINDINGS
   host:api.anthropic.com               a host (port defaults to 443)
@@ -146,7 +174,77 @@ pub fn parse(args: &[String]) -> Result<Cmd, String> {
                 stdin,
             })
         }
+        "account" => parse_account(rest),
         other => Err(format!("unknown subcommand `{other}`")),
+    }
+}
+
+fn parse_account(args: &[String]) -> Result<Cmd, String> {
+    let Some(sub) = args.first() else {
+        return Err("`account` needs list, login, add-key or remove".into());
+    };
+    let (mut json, mut stdin, mut kind) = (false, false, None);
+    let mut pos = Vec::new();
+    let mut it = args[1..].iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--json" => json = true,
+            "--stdin" => stdin = true,
+            "--kind" => kind = Some(it.next().ok_or("--kind needs a value")?.as_str()),
+            k if k.starts_with("--kind=") => kind = Some(&k["--kind=".len()..]),
+            o if o.starts_with('-') => return Err(format!("unknown option `{o}`")),
+            _ => pos.push(a.clone()),
+        }
+    }
+    let one = |what: &str| -> Result<String, String> {
+        match pos.as_slice() {
+            [a] => Ok(a.clone()),
+            [] => Err(format!("`account {what}` needs an account name")),
+            _ => Err(format!("`account {what}` takes one account name")),
+        }
+    };
+    let only = |ok: bool, opt: &str| {
+        if ok {
+            Ok(())
+        } else {
+            Err(format!("{opt} does not apply to `account {sub}`"))
+        }
+    };
+    let acct = |c: AccountCmd| Ok(Cmd::Account(c));
+    match sub.as_str() {
+        "list" => {
+            only(pos.is_empty(), "an account name")?;
+            only(!stdin && kind.is_none(), "--stdin and --kind")?;
+            acct(AccountCmd::List { json })
+        }
+        "login" => {
+            only(!stdin && kind.is_none(), "--stdin and --kind")?;
+            acct(AccountCmd::Login {
+                account: one("login")?,
+                json,
+            })
+        }
+        "add-key" => {
+            only(!json && kind.is_none(), "--json and --kind")?;
+            acct(AccountCmd::AddKey {
+                account: one("add-key")?,
+                stdin,
+            })
+        }
+        "remove" => {
+            only(!stdin, "--stdin")?;
+            let kind = match kind.ok_or("`account remove` needs --kind claude-code|api-key")? {
+                "claude-code" => Kind::ClaudeCode,
+                "api-key" => Kind::ApiKey,
+                _ => return Err("--kind is claude-code or api-key".into()),
+            };
+            acct(AccountCmd::Remove {
+                account: one("remove")?,
+                kind,
+                json,
+            })
+        }
+        other => Err(format!("unknown account command `{other}`")),
     }
 }
 
@@ -210,6 +308,59 @@ mod tests {
         assert_eq!(p("revoke k"), Ok(Cmd::Revoke { name: "k".into() }));
         assert!(p("revoke").is_err());
         assert!(p("revoke a b").is_err());
+    }
+
+    #[test]
+    fn account_commands() {
+        use AccountCmd as A;
+        let a = |c| Ok(Cmd::Account(c));
+        assert_eq!(p("account list"), a(A::List { json: false }));
+        assert_eq!(p("account list --json"), a(A::List { json: true }));
+        assert_eq!(
+            p("account login work --json"),
+            a(A::Login {
+                account: "work".into(),
+                json: true
+            })
+        );
+        assert_eq!(
+            p("account add-key work --stdin"),
+            a(A::AddKey {
+                account: "work".into(),
+                stdin: true
+            })
+        );
+        assert_eq!(
+            p("account remove work --kind api-key"),
+            a(A::Remove {
+                account: "work".into(),
+                kind: Kind::ApiKey,
+                json: false
+            })
+        );
+        assert_eq!(
+            p("account remove work --kind=claude-code --json"),
+            a(A::Remove {
+                account: "work".into(),
+                kind: Kind::ClaudeCode,
+                json: true
+            })
+        );
+        for bad in [
+            "account",
+            "account frob",
+            "account login",
+            "account login a b",
+            "account list work",
+            "account remove work",
+            "account remove work --kind other",
+            "account add-key work --json",
+            "account login work --stdin",
+        ] {
+            assert!(p(bad).is_err(), "{bad}");
+        }
+        // The name is checked when the command runs, so a bad one parses.
+        assert!(p("account login a.b").is_ok());
     }
 
     #[test]
