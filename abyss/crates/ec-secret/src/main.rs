@@ -49,21 +49,38 @@ fn run(cmd: Cmd) -> u8 {
         print!("{}", args::HELP);
         return OK;
     }
+    let conn = match Conn::connect() {
+        Ok(c) => c,
+        Err(e) => return transport(e),
+    };
     // Typed secrets live in this process: no core dump, not ptrace-able by
     // a same-uid peer. Refuse rather than carry on unprotected.
+    //
+    // Order matters. brokerd decides who a connection is once, at accept,
+    // from `/proc/<pid>/exe`, and clearing dumpable makes this process's
+    // `/proc/<pid>` root-owned, so a process hardened first is a peer
+    // brokerd cannot name and is dropped unheard. So: connect, complete one
+    // Status round trip (a reply means brokerd has classified this
+    // connection), then harden, then use the same connection.
     if matches!(
         cmd,
         Cmd::Init | Cmd::Unlock | Cmd::Add { .. } | Cmd::Rotate { .. }
     ) {
+        if let Err(e) = state(&conn) {
+            return match e {
+                Fail::Transport(t) => transport(t),
+                Fail::Refused(code) => refused(code),
+                Fail::Input(e) => {
+                    eprintln!("ec-secret: {}", e.message());
+                    USAGE
+                }
+            };
+        }
         if let Err(e) = ec_brokerd::hygiene::harden() {
             eprintln!("ec-secret: cannot harden this process: {e}");
             return REFUSED;
         }
     }
-    let conn = match Conn::connect() {
-        Ok(c) => c,
-        Err(e) => return transport(e),
-    };
     match exec(&conn, cmd) {
         Ok(code) => code,
         Err(Fail::Transport(e)) => transport(e),
