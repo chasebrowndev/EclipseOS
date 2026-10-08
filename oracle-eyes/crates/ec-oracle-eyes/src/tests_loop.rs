@@ -397,6 +397,10 @@ fn dismiss_while_the_model_thinks_drops_the_reply() {
 fn a_second_select_replaces_the_first_question() {
     // One query in flight (§3.4): the first is cancelled, not queued.
     let mut r = Rig::new(false);
+    // Both calls are slow: each runs on its own worker, and they take their
+    // scripted reply in whichever order the threads get there. With only one
+    // `Slow`, the cancelled call could draw a plain answer and never count.
+    r.script(Says::Slow(Duration::from_millis(300)));
     r.script(Says::Slow(Duration::from_millis(300)));
     r.chord(select(0, 0, 800, 450), 0);
     r.chord(select(0, 0, 400, 450), 20);
