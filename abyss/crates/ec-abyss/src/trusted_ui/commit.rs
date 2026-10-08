@@ -102,6 +102,9 @@ pub struct Shown {
     pub continuation: String,
     /// The closed task whose session this resumes (A-08 §5.4), or empty.
     pub resumes: String,
+    /// The account the task's inference runs under (ADR 0077), or empty
+    /// for the default one.
+    pub account: String,
     pub untrusted_predecessor: bool,
 }
 
@@ -111,6 +114,7 @@ pub fn decode(b: &[u8]) -> Option<Shown> {
     let mut s = Shown::default();
     for _ in 0..n {
         match r.key().ok()? {
+            "account" => s.account = r.text().ok()?.to_owned(),
             "continuation" => s.continuation = r.text().ok()?.to_owned(),
             "could" => {
                 let k = r.array_len().ok()?;
@@ -276,6 +280,7 @@ fn card(state: &mut AbyssState, slot: u64) -> &mut Card {
 fn draft_hash(d: &protected::Draft) -> [u8; 32] {
     use ec_policy_eval::cbor::{enc, MapBuilder};
     let mut m = MapBuilder::new();
+    m.insert("account", enc(|w| w.text(&d.account)));
     m.insert("package", enc(|w| w.text(&d.package)));
     m.insert("resumes", enc(|w| w.text(&d.resumes)));
     m.insert("deadline", enc(|w| w.u64(u64::from(d.deadline_s))));
@@ -338,6 +343,7 @@ pub fn draft_changed(state: &mut AbyssState, slot: u64) {
                         narrowing: d.narrowing,
                         continuation: d.continuation,
                         resumes: d.resumes,
+                        account: d.account,
                     },
                 );
             }
@@ -772,6 +778,9 @@ fn modal_card(token: u64, s: &Shown) -> Option<Modal> {
     if !s.resumes.is_empty() {
         m = m.with_facts(&[("Resumes", &s.resumes)]);
     }
+    if !s.account.is_empty() {
+        m = m.with_facts(&[("Account", &s.account)]);
+    }
     if s.narrowed {
         m = m.with_facts(&[("Narrowed", "yes, by the draft")]);
     }
@@ -863,13 +872,18 @@ fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str
             }
             y += STATEMENT_ROWS * LINE_H;
             if kind == Kind::TaskCommit {
-                c.text(
-                    x0,
-                    y,
-                    &format!("Until: {}", deadline_text(s.deadline_ms)),
-                    modal::LABEL,
-                    false,
-                );
+                let until = deadline_text(s.deadline_ms);
+                // The account is part of what the human commits (ADR 0077):
+                // a task on another account is said so on the card itself.
+                let line: String = if s.account.is_empty() {
+                    format!("Until: {until}")
+                } else {
+                    format!("Until: {until}   Account: {}", text::sanitize_line(&s.account))
+                }
+                .chars()
+                .take(COLS)
+                .collect();
+                c.text(x0, y, &line, modal::LABEL, false);
             }
             y += LINE_H;
             if s.could.is_empty() && kind == Kind::TaskCommit {

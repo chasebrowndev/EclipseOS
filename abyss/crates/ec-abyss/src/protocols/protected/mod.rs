@@ -116,7 +116,7 @@ mod tests;
 pub use eclipse_commit_slot_v1::{Reason, State};
 pub use eclipse_protected_surface_v1::Kind;
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 /// COMP-19 §8: slots one client may hold.
 pub const MAX_SLOTS_PER_CLIENT: usize = 4;
 /// COMP-19 §8: the longest `statement`, in characters.
@@ -136,6 +136,7 @@ const SLOT_EXISTS: u32 = 1;
 const NOT_OWNER: u32 = 2;
 const BAD_KIND: u32 = 3;
 const DRAFT_TOO_LARGE: u32 = 4;
+const BAD_ACCOUNT: u32 = 5;
 
 /// The compositor's copy of a task draft (COMP-19 §2 `set_draft`). Human
 /// text: never logged.
@@ -150,6 +151,9 @@ pub struct Draft {
     pub continuation: String,
     pub resumes: String,
     pub workspace: u32,
+    /// The account the task runs under (`set_account`, ADR 0077), or empty
+    /// for the default. Survives `set_draft`.
+    pub account: String,
 }
 
 impl std::fmt::Debug for Draft {
@@ -159,6 +163,7 @@ impl std::fmt::Debug for Draft {
             .field("statement_chars", &self.statement.chars().count())
             .field("deadline_s", &self.deadline_s)
             .field("workspace", &self.workspace)
+            .field("account", &self.account)
             .finish_non_exhaustive()
     }
 }
@@ -590,6 +595,12 @@ fn flush_draft(state: &mut AbyssState, id: u64) {
 
 /// `set_draft` after validation: apply now if the slot's 10/s allows, else
 /// keep only the latest and flush it on a timer.
+/// The draft the slot will hold once the rate limit lets it: the held-back
+/// one if there is one, else the current one.
+fn latest_draft(s: &Slot) -> &Draft {
+    s.pending.as_ref().unwrap_or(&s.draft)
+}
+
 fn submit_draft(state: &mut AbyssState, id: u64, draft: Draft) {
     let now = Instant::now();
     let Some(s) = state.protected.slot_mut(id) else {
@@ -851,6 +862,7 @@ impl Dispatch<EclipseCommitSlotV1, SlotData> for AbyssState {
                     resource.state(State::Refused, Reason::Refused);
                     return;
                 }
+                let account = state.protected.slot(id).map(|s| latest_draft(s).account.clone()).unwrap_or_default();
                 submit_draft(
                     state,
                     id,
@@ -862,8 +874,27 @@ impl Dispatch<EclipseCommitSlotV1, SlotData> for AbyssState {
                         continuation,
                         resumes,
                         workspace,
+                        account,
                     },
                 );
+            }
+            Request::SetAccount { account } => {
+                if kind != Kind::TaskCommit {
+                    resource.post_error(BAD_KIND, "set_account needs a task_commit slot");
+                    return;
+                }
+                if !ec_policy_eval::link::account_ok(&account) {
+                    resource.post_error(BAD_ACCOUNT, "account outside [A-Za-z0-9_-]{0,32}");
+                    return;
+                }
+                let Some(mut draft) = state.protected.slot(id).map(|s| latest_draft(s).clone()) else {
+                    return;
+                };
+                if draft.account == account {
+                    return;
+                }
+                draft.account = account;
+                submit_draft(state, id, draft);
             }
             Request::SetUnpause { task_id } => {
                 if kind != Kind::TaskUnpause {

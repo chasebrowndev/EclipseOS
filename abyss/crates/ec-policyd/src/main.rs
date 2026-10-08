@@ -406,6 +406,7 @@ fn answer(
             narrowing,
             continuation,
             resumes,
+            account,
         } => dispatch.preview(
             store,
             req,
@@ -416,6 +417,7 @@ fn answer(
             &narrowing,
             &continuation,
             &resumes,
+            &account,
             at.table_version,
             at.agentd_live,
         ),

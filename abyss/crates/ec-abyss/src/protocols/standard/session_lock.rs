@@ -108,6 +108,8 @@ impl AbyssState {
     pub(crate) fn engage_lock(&mut self) {
         self.lock.locked = true;
         tracing::info!("session locked");
+        // S-08 §2: the secret store locks with the screen.
+        crate::trusted_ui::broker::session_locked(self);
         // A window mid-drag goes back to its tile rather than landing blind.
         crate::shell::cancel_tile_drag(self);
         self.gesture_drag = None;
@@ -164,6 +166,7 @@ impl SessionLockHandler for AbyssState {
         tracing::info!("session unlocked");
         crate::shell::refocus_topmost(self);
         crate::backend::damage_all(self);
+        crate::trusted_ui::broker::session_unlocked(self);
     }
 
     fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {

@@ -1102,7 +1102,9 @@ compile policy).
   bound to PCRs covering firmware, bootloader, and kernel; fallback to a
   passphrase-derived key (Argon2id) on machines without a usable TPM.
 - Unlock: at first human login of the session, via trusted UI. Locked again
-  on screen lock and on session end. In-flight injections during a lock
+  on screen lock and on session end. The trusted UI is abyss's own prompt
+  (`trusted_ui/broker.rs`, ADR 0077): first-run setup and unlock, also on
+  demand through the control socket's `secrets_unlock_prompt`. In-flight injections during a lock
   fail closed with `broker_locked`.
 - Memory hygiene: `mlock` on plaintext buffers, `zeroize` on drop,
   `PR_SET_DUMPABLE=0`, no core dumps, no swap (the reference machine runs
@@ -4953,6 +4955,10 @@ request set_unpause(task_id: string)         -- for kind task.unpause only
 request move(x: int, y: int)                  -- disarms
 request cancel()
 request destroy()
+request set_account(account: string)          -- since 2 (ADR 0077)
+  -- "" (the default account) or 1-32 of [A-Za-z0-9_-], else bad_account.
+  -- Part of the draft: survives set_draft, shown on the card, re-previews
+  -- and disarms like set_draft, under its rate limit. task.commit only.
 
 event   geometry(width: int, height: int)
   -- Compositor-chosen, surface-local logical px. The client must keep this
@@ -5674,7 +5680,7 @@ mark applied, per the Appendix A convention.
 | F-08 | A-04 §8 | Unpausing a paused task requires a trusted step: a `task.unpause` commit slot, the queue, or the emergency panel. It is never a socket call. A breaker or incident pause is unpaused from the emergency panel only (A-08 §14.5, proposed). |
 | F-09 | A-01 §2, §8 | `agentd` serves `$XDG_RUNTIME_DIR/eclipse/console.sock` (A-08 §7), refusing peers in `agents.slice`. |
 | F-10 | COMP-10 §3.9 | The policy editor is no longer summoned by `agent-attention`. It is reached from the pending-decision queue (§3.13) and the emergency panel (§3.3). Closes Appendix C open item 5. |
-| F-11 | COMP-10, new §3.12 | **Commit slot.** Content: the personal phrase; package name and publisher; the statement verbatim; deadline; capability summary as the taxonomies the grant *could* reach, phrased as possibility (A-07 §9.2); narrowing; continuation or resumed session, and the untrusted-predecessor warning (S-07 §8); a single commit control. Geometry and behaviour per COMP-19 §5–§7. Fixed design from `ec_ui` tokens, not themeable. |
+| F-11 | COMP-10, new §3.12 | **Commit slot.** Content: the personal phrase; package name and publisher; the statement verbatim; deadline; capability summary as the taxonomies the grant *could* reach, phrased as possibility (A-07 §9.2); narrowing; continuation or resumed session, and the untrusted-predecessor warning (S-07 §8); the account the task runs under, when not the default (ADR 0077); a single commit control. Geometry and behaviour per COMP-19 §5–§7. Fixed design from `ec_ui` tokens, not themeable. |
 | F-12 | COMP-10, new §3.13 | **Pending-decision queue.** Opened by `agent-attention` (`Super+Space`) or `show_decisions`. Lists every parked prompt across all agents (COMP-11 §4), oldest first. Each entry expands to its full §3.2 prompt. Deny is focused. Links to the emergency panel and the policy editor. Answers here are identical to answering the modal prompt. |
 | F-13 | S-04 §1.1 | New kinds: `slot` (preview, arm, commit, refuse; draft hash, preview_id, task_id) and `input_refused` (origin, target surface; agent origins only). |
 | F-14 | COMP-13 §1.1 | `SUPER+space` stays reserved as `agent-attention`, now targeting the queue. New default bind `SUPER+slash` → `spawn "eclipse-console"` (single-instance, focuses if running), ordinary and rebindable. New policy-owned key `slot-arm-ms` (300–2000, default 500). |

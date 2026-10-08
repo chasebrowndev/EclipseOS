@@ -33,6 +33,7 @@
 
 pub mod approval;
 pub mod batch;
+pub mod broker;
 pub mod commit;
 pub mod consent;
 pub mod erase;
@@ -138,6 +139,7 @@ pub struct TrustedUi {
     pub(crate) installs: install::Installs,
     /// Commit slots' trusted side: preview, arming, cards (COMP-19).
     pub(crate) cards: commit::Cards,
+    pub(crate) broker: broker::Broker,
     /// The bound trusted socket, so a clean exit can unlink it.
     pub path: Option<PathBuf>,
 }
@@ -332,6 +334,7 @@ fn choose(state: &mut AbyssState, button: usize, timed_out: bool) {
     consent::schedule(state);
     batch::schedule(state);
     install::schedule(state);
+    broker::schedule(state);
     // The pointer is re-evaluated as though it had just moved, so whatever is
     // under it gets its enter now rather than on the next motion.
     state.refresh_pointer_focus();
@@ -346,6 +349,8 @@ fn resolve(state: &mut AbyssState, choice: Choice) {
         erase::answer(state, choice);
     } else if phrase::owns(state, choice.token) {
         phrase::answer(state, choice);
+    } else if broker::owns(state, choice.token) {
+        broker::answer(state, choice);
     } else if consent::owns(state, choice.token) {
         consent::answer(state, choice);
     } else if batch::owns(state, choice.token) {

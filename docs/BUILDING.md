@@ -195,15 +195,26 @@ later with it enabled; agentd refuses a launch without it and says why in
 `journalctl --user -u ec-agentd`). Log out and back in afterwards so the
 session starts with the add-on and its units in place.
 
-The Claude agent (`ec-claude-agent`, ADR 0076) reaches a model only through
-the inference router, `ec-inferenced`, which gets the API key from brokerd per
-request. Agents never see it. One-time setup, then once per login:
+The Claude agents (ADR 0076) reach a model only through the inference router,
+`ec-inferenced`, which gets the credential from brokerd per request. Agents
+never see it. Each task runs on the account picked in the console's New task
+composer (ADR 0077).
+
+Everything is in **Settings → Accounts**: set up or unlock the secret store
+(a compositor-drawn passphrase prompt, which also appears at login once a store
+exists), sign in to a Claude Code account (the token is captured, never shown),
+or add an API key. The same from a terminal:
 
 ```
-ec-secret init                                              # choose a store passphrase
-ec-secret unlock                                            # after every login
-ec-secret add anthropic-api-key --bind host:api.anthropic.com   # paste the key; not echoed
+ec-secret init                                  # choose a store passphrase
+ec-secret unlock                                # after every login (or answer the login prompt)
+ec-secret account login work                    # Claude Code: sign in, paste the code; token stored as account "work"
+ec-secret account add-key personal              # API key; not echoed
+ec-secret account list                          # names and kinds, never values
 ```
+
+`default` is the account a task uses when none is picked; a token stored under
+the old bare names (`claude-code-token`, `anthropic-api-key`) is that account.
 
 In the symlinked dev install, `ec-inferenced` must be a `dev-peers` build too
 (the command above). Without an unlocked store the agent answers in the console
