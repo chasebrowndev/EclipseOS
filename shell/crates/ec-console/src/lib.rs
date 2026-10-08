@@ -6,6 +6,7 @@
 //! commits the compositor's card, which this window leaves a hole for and never
 //! draws.
 
+pub mod accounts;
 pub mod app;
 #[cfg(debug_assertions)]
 pub mod fixture;

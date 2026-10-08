@@ -558,7 +558,7 @@ impl Inner {
             ));
         }
         // Held only until it has been handed to the child; zeroed on drop.
-        let token = self.creds.claude_code_token(&req.package)?;
+        let token = self.creds.claude_code_token(&req.package, &req.account)?;
 
         // `<task>-<n>`: unique per start, so a killed session's cleanup can
         // never remove a newer session's directory.
@@ -902,7 +902,7 @@ fn map_error(ev: &Value) -> Failure {
         Some(s @ (401 | 403)) => failure(
             "no_credential",
             format!(
-                "Claude Code rejected the stored token (HTTP {s}): run `claude setup-token`, then `ec-secret rotate claude-code-token`"
+                "Claude Code rejected the stored token (HTTP {s}): sign in again in Settings → Accounts, or run `ec-secret account login <account>`"
             ),
         ),
         Some(s) => failure("provider_error", format!("Claude Code failed (HTTP {s}): {text}")),

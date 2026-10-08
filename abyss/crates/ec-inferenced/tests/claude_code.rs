@@ -21,8 +21,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const TOKEN: &str = "sk-ant-oat01-TEST-TOKEN-VALUE";
-const NO_TOKEN: &str =
-    "no Claude Code token stored: run `claude setup-token`, then `ec-secret add claude-code-token --bind host:api.anthropic.com`";
+const NO_TOKEN: &str = "no Claude Code token for the default account: add it in Settings → Accounts, or run `ec-secret account login default`";
+const NO_TOKEN_WORK: &str = "no Claude Code token for account \"work\": add it in Settings → Accounts, or run `ec-secret account login work`";
 
 struct NoHttp;
 impl Http for NoHttp {
@@ -31,12 +31,18 @@ impl Http for NoHttp {
     }
 }
 
-struct Creds(bool);
+/// `Creds(token_available, accounts_asked)`: the second records the account
+/// of every token fetch, in order.
+struct Creds(bool, Arc<std::sync::Mutex<Vec<String>>>);
 impl Credentials for Creds {
-    fn api_key(&self, _: &str) -> Result<ApiKey, Failure> {
+    fn api_key(&self, _: &str, _: &str) -> Result<ApiKey, Failure> {
         Err(failure("no_credential", "no API key"))
     }
-    fn claude_code_token(&self, _: &str) -> Result<ApiKey, Failure> {
+    fn claude_code_token(&self, _: &str, account: &str) -> Result<ApiKey, Failure> {
+        self.1.lock().unwrap().push(account.to_owned());
+        if account == "work" && !self.0 {
+            return Err(failure("no_credential", NO_TOKEN_WORK));
+        }
         if self.0 {
             Ok(ApiKey::from_bytes(TOKEN.as_bytes()).unwrap())
         } else {
@@ -86,7 +92,7 @@ fn config(tmp: &Tmp) -> ClaudeConfig {
 }
 
 fn router_with(cfg: ClaudeConfig, token: bool) -> Router {
-    Router::with_claude(Arc::new(NoHttp), Arc::new(Creds(token)), cfg)
+    Router::with_claude(Arc::new(NoHttp), Arc::new(Creds(token, Arc::default())), cfg)
 }
 
 fn router(tmp: &Tmp) -> Router {
@@ -104,6 +110,7 @@ fn req(task: &str, system: &str, messages: Value, tools: Value) -> Request {
         messages,
         tools,
         max_tokens: 1000,
+        account: String::new(),
     }
 }
 
@@ -563,4 +570,45 @@ fn stale_directories_are_swept_only_on_request() {
     // ...the daemon asks for the sweep once, at start-up.
     r.claude().sweep_stale();
     assert!(!stale.exists());
+}
+
+#[test]
+fn the_requests_account_picks_the_token_and_a_warm_session_keeps_it() {
+    let tmp = Tmp::new("acct");
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let r = Router::with_claude(
+        Arc::new(NoHttp),
+        Arc::new(Creds(true, seen.clone())),
+        config(&tmp),
+    );
+    let mut work = req("t1", "", json!([user("hello")]), json!([]));
+    work.account = "work".into();
+    let c = r.complete(&work).unwrap();
+    assert_eq!(*seen.lock().unwrap(), ["work"]);
+    // The next turn of the same task rides the warm session: no new fetch,
+    // so the token it started with stays.
+    let mut again = req(
+        "t1",
+        "",
+        json!([user("hello"), assistant(&c), user("more")]),
+        json!([]),
+    );
+    again.account = "other".into();
+    r.complete(&again).unwrap();
+    assert_eq!(*seen.lock().unwrap(), ["work"]);
+    // Another task starts its own session under its own account.
+    r.complete(&req("t2", "", json!([user("hi")]), json!([])))
+        .unwrap();
+    assert_eq!(*seen.lock().unwrap(), ["work", ""]);
+}
+
+#[test]
+fn a_missing_token_names_the_account() {
+    let tmp = Tmp::new("acct-missing");
+    let r = router_with(config(&tmp), false);
+    let mut w = req("t1", "", json!([user("hello")]), json!([]));
+    w.account = "work".into();
+    let f = r.complete(&w).unwrap_err();
+    assert_eq!(f.message, NO_TOKEN_WORK);
+    assert_eq!(r.claude().session_count(), 0);
 }

@@ -129,6 +129,13 @@ impl Typed {
     }
 }
 
+impl Drop for Typed {
+    // A passphrase is typed here too (`broker.rs`): wipe it on the way out.
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
 impl std::fmt::Debug for Typed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Typed(<{} chars>)", self.0.chars().count())
@@ -140,6 +147,8 @@ impl std::fmt::Debug for Typed {
 struct Entry {
     text: Typed,
     max: usize,
+    /// Drawn as one dot per character: a passphrase is never on screen.
+    masked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,11 +271,24 @@ impl Modal {
 
     /// Give the prompt one line of typed text, at most `max` characters.
     pub fn with_entry(mut self, max: usize) -> Modal {
+        let max = max.clamp(1, COLS);
         self.entry = Some(Entry {
-            text: Typed::default(),
-            max: max.clamp(1, COLS),
+            // Room for all of it up front, so typing never reallocates and
+            // leaves a copy of the start behind in freed memory.
+            text: Typed(String::with_capacity(max)),
+            max,
+            masked: false,
         });
         self
+    }
+
+    /// [`Modal::with_entry`], drawn masked: for a passphrase.
+    pub fn with_secret_entry(self, max: usize) -> Modal {
+        let mut m = self.with_entry(max);
+        if let Some(e) = m.entry.as_mut() {
+            e.masked = true;
+        }
+        m
     }
 
     /// What has been typed, if the prompt takes text.
@@ -597,10 +619,14 @@ pub fn rasterize(modal: &Modal, focus: usize, scale: usize, phrase: Option<&str>
             Some((1, ENTRY_EDGE)),
         );
         let ty = l.entry_y + (ENTRY_H - GLYPH_H) / 2;
-        let typed = e.text.as_str();
-        c.text(x0, ty, typed, HEADING, false);
+        let n = e.text.as_str().chars().count();
+        if e.masked {
+            c.text(x0, ty, &"*".repeat(n), HEADING, false);
+        } else {
+            c.text(x0, ty, e.text.as_str(), HEADING, false);
+        }
         // The caret: a bar after the last character.
-        let cx = x0 + typed.chars().count() * ADVANCE;
+        let cx = x0 + n * ADVANCE;
         c.fill(cx, ty + 1, 2, GLYPH_H - 2, GOLD);
     }
 

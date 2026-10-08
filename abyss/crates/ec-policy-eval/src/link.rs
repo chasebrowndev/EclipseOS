@@ -168,6 +168,10 @@ pub enum FromPolicyd {
         /// The closed task whose session this one restores (A-08 §5.4), or
         /// empty. At most one of this and `continuation` is set.
         resumes: String,
+        /// The owner's account the task's inference runs under (ADR 0077),
+        /// or empty for the default one. Chosen by the human in the draft;
+        /// [`account_ok`] holds.
+        account: String,
     },
 }
 
@@ -234,6 +238,9 @@ pub enum ToPolicyd {
         /// A closed task to resume (A-08 §5.4), or empty; exclusive with
         /// `continuation`.
         resumes: String,
+        /// The account the task runs under (ADR 0077), or empty for the
+        /// default; [`account_ok`] holds.
+        account: String,
     },
     /// The human pressed Enter on slot `slot`, armed on `preview`.
     CreateTask { req: u64, slot: u64, preview: u64 },
@@ -304,6 +311,7 @@ struct Fields<'a> {
     state: Option<&'a str>,
     version: Option<&'a str>,
     resumes: Option<&'a str>,
+    account: Option<&'a str>,
 }
 
 impl<'a> Fields<'a> {
@@ -341,6 +349,7 @@ impl<'a> Fields<'a> {
             self.state.is_some(),
             self.version.is_some(),
             self.resumes.is_some(),
+            self.account.is_some(),
         ]
         .into_iter()
         .enumerate()
@@ -382,6 +391,25 @@ const F_APPROVE: u32 = 1 << 25;
 const F_STATE: u32 = 1 << 26;
 const F_VERSION: u32 = 1 << 27;
 const F_RESUMES: u32 = 1 << 28;
+const F_ACCOUNT: u32 = 1 << 29;
+
+/// An account name as a draft carries it (ADR 0077): empty (the default
+/// account), or 1–32 of `[A-Za-z0-9_-]`. It becomes a brokerd secret-name
+/// suffix after a `.`, so nothing else may appear in it.
+pub fn account_ok(a: &str) -> bool {
+    a.len() <= 32
+        && a.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+fn account(a: Option<&str>) -> Result<String, MessageError> {
+    let a = a.ok_or(MessageError::Shape)?;
+    if account_ok(a) {
+        Ok(a.to_owned())
+    } else {
+        Err(MessageError::Shape)
+    }
+}
 
 fn read_records(r: &mut Reader<'_>) -> Result<Vec<TailRecord>, MessageError> {
     let n = r.array_len()?;
@@ -454,6 +482,7 @@ fn read_fields(buf: &[u8]) -> Result<Fields<'_>, MessageError> {
             "state" => f.state = Some(r.text()?),
             "version" => f.version = Some(r.text()?),
             "resumes" => f.resumes = Some(r.text()?),
+            "account" => f.account = Some(r.text()?),
             _ => return Err(MessageError::Shape),
         }
     }
@@ -592,7 +621,9 @@ impl FromPolicyd {
                 grant,
                 continuation,
                 resumes,
+                account,
             } => message("provision", |m| {
+                m.insert("account", text(account));
                 m.insert("resumes", text(resumes));
                 m.insert("task", text(task));
                 m.insert("grant", bytes(grant));
@@ -713,7 +744,8 @@ impl FromPolicyd {
                         | F_PRINCIPAL
                         | F_STATEMENT
                         | F_CONTINUATION
-                        | F_RESUMES,
+                        | F_RESUMES
+                        | F_ACCOUNT,
                 )?;
                 let (continuation, resumes) = (
                     f.continuation.ok_or(MessageError::Shape)?.to_owned(),
@@ -732,6 +764,7 @@ impl FromPolicyd {
                     grant: f.grant.ok_or(MessageError::Shape)?.to_vec(),
                     continuation,
                     resumes,
+                    account: account(f.account)?,
                 }
             }
             _ => return Err(MessageError::Shape),
@@ -782,7 +815,9 @@ impl ToPolicyd {
                 narrowing,
                 continuation,
                 resumes,
+                account,
             } => message("preview_task", |m| {
+                m.insert("account", text(account));
                 m.insert("resumes", text(resumes));
                 m.insert("req", uint(*req));
                 m.insert("slot", uint(*slot));
@@ -880,7 +915,8 @@ impl ToPolicyd {
                         | F_NARROWING
                         | F_STATEMENT
                         | F_CONTINUATION
-                        | F_RESUMES,
+                        | F_RESUMES
+                        | F_ACCOUNT,
                 )?;
                 if f.continuation.is_some_and(|c| !c.is_empty()) && f.resumes.is_some_and(|r| !r.is_empty()) {
                     return Err(MessageError::Shape);
@@ -894,6 +930,7 @@ impl ToPolicyd {
                     narrowing: f.narrowing.ok_or(MessageError::Shape)?.to_vec(),
                     continuation: txt(f.continuation)?,
                     resumes: txt(f.resumes)?,
+                    account: account(f.account)?,
                 }
             }
             "create_task" => {
@@ -1069,6 +1106,7 @@ mod tests {
                 grant: vec![1, 2, 3],
                 continuation: String::new(),
                 resumes: "t-0".into(),
+                account: "work".into(),
             },
         ];
         for m in from {
@@ -1109,6 +1147,7 @@ mod tests {
                 narrowing: vec![],
                 continuation: String::new(),
                 resumes: String::new(),
+                account: String::new(),
             },
             ToPolicyd::CreateTask {
                 req: 31,
@@ -1202,5 +1241,25 @@ mod tests {
         assert!(!is_message(&encode_key_offer(
             &ed25519_dalek::SigningKey::from_bytes(&[7; 32]).verifying_key()
         )));
+    }
+
+    #[test]
+    fn an_account_outside_the_name_rule_is_refused() {
+        assert!(account_ok("") && account_ok("work") && account_ok("Team_2-b"));
+        for bad in ["a.b", "a/b", "a b", "a:b", &"x".repeat(33)] {
+            assert!(!account_ok(bad), "{bad}");
+            let m = ToPolicyd::PreviewTask {
+                req: 1,
+                slot: 1,
+                package: "ref".into(),
+                statement: "s".into(),
+                deadline_ms: 0,
+                narrowing: vec![],
+                continuation: String::new(),
+                resumes: String::new(),
+                account: bad.to_owned(),
+            };
+            assert_eq!(ToPolicyd::decode(&m.encode()), Err(MessageError::Shape));
+        }
     }
 }

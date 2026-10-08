@@ -238,6 +238,9 @@ pub fn start(state: &mut AbyssState, handle: &LoopHandle<'static, AbyssState>) {
     crate::config::transitions::start(handle);
     crate::config::transitions::sync(state);
     crate::policy::link::start(state);
+    if state.addons.hooks.is_on(Hook::Agents) {
+        crate::trusted_ui::broker::start(state);
+    }
     crate::protocols::agent::sync(state);
 
     // SAFETY: `inotify_init1` takes only flags and returns a new fd or -1.
@@ -329,6 +332,7 @@ pub fn apply(state: &mut AbyssState, next: Addons) {
     let turned_off = |h: Hook| before.is_on(h) && !now.is_on(h);
     if now.is_on(Hook::Agents) {
         crate::policy::link::start(state);
+        crate::trusted_ui::broker::start(state);
     }
     crate::protocols::agent::sync(state);
 

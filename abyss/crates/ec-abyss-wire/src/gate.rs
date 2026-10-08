@@ -113,6 +113,9 @@ pub const TABLE: &[Entry] = &[
     // to policyd, whose review is a trusted modal, so it is Privileged and
     // nothing installs without the human's answer there.
     e("show_decisions", Kind::Command, true),
+    // Opens the compositor's brokerd setup/unlock prompt (S-08 §2, ADR 0077).
+    // Only asks: the passphrase is typed into trusted UI, never sent here.
+    e("secrets_unlock_prompt", Kind::Command, true),
     e("agent_install", Kind::Privileged, true),
     // Scripted input: the gate is real, the injection path is not (COMP-04).
     e("type_text", Kind::ScriptedInput, false),

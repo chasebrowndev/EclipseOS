@@ -94,6 +94,7 @@ fn console_methods_are_exactly_the_spec_table() {
         "pause_task",
         "cancel_task",
         "show_decisions",
+        "unlock_secrets",
         "list_sessions",
         "delete_session",
         "subscribe",

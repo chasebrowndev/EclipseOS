@@ -7,12 +7,20 @@
 //! no op that returns one to the Owner), never takes one from argv or the
 //! environment, and zeroes the buffers it typed them into.
 //!
+//! `account ...` manages the owner's Claude accounts (ADR 0077): see
+//! `account.rs` and `login.rs`.
+//!
 //! Exit codes: 0 ok, 1 refused by brokerd, 2 usage, 3 brokerd unreachable.
 
 #![deny(unsafe_code)]
 
+mod account;
+mod accounts;
 mod args;
 mod client;
+mod login;
+mod scan;
+mod sig;
 mod tty;
 
 use args::Cmd;
@@ -49,9 +57,13 @@ fn run(cmd: Cmd) -> u8 {
         print!("{}", args::HELP);
         return OK;
     }
+    let style = match &cmd {
+        Cmd::Account(a) => account::style(a),
+        _ => None,
+    };
     let conn = match Conn::connect() {
         Ok(c) => c,
-        Err(e) => return transport(e),
+        Err(e) => return account::unreachable(style, e),
     };
     // Typed secrets live in this process: no core dump, not ptrace-able by
     // a same-uid peer. Refuse rather than carry on unprotected.
@@ -62,34 +74,80 @@ fn run(cmd: Cmd) -> u8 {
     // brokerd cannot name and is dropped unheard. So: connect, complete one
     // Status round trip (a reply means brokerd has classified this
     // connection), then harden, then use the same connection.
-    if matches!(
-        cmd,
-        Cmd::Init | Cmd::Unlock | Cmd::Add { .. } | Cmd::Rotate { .. }
-    ) {
+    let hardens = match &cmd {
+        Cmd::Init | Cmd::Unlock | Cmd::Add { .. } | Cmd::Rotate { .. } => true,
+        Cmd::Account(a) => account::holds_secret(a),
+        _ => false,
+    };
+    if hardens {
         if let Err(e) = state(&conn) {
-            return match e {
-                Fail::Transport(t) => transport(t),
-                Fail::Refused(code) => refused(code),
-                Fail::Input(e) => {
-                    eprintln!("ec-secret: {}", e.message());
-                    USAGE
-                }
+            return match style {
+                Some(_) => account_fail(style, e),
+                None => fail_plain(e),
             };
         }
         if let Err(e) = ec_brokerd::hygiene::harden() {
-            eprintln!("ec-secret: cannot harden this process: {e}");
+            let m = format!("cannot harden this process: {e}");
+            match style {
+                Some(s) => account::emit_error(s, "refused", &m),
+                None => eprintln!("ec-secret: {m}"),
+            }
             return REFUSED;
         }
     }
+    if let Cmd::Account(a) = cmd {
+        return account::run(&conn, a);
+    }
     match exec(&conn, cmd) {
         Ok(code) => code,
-        Err(Fail::Transport(e)) => transport(e),
-        Err(Fail::Input(e)) => {
+        Err(f) => fail_plain(f),
+    }
+}
+
+fn fail_plain(f: Fail) -> u8 {
+    match f {
+        Fail::Transport(e) => transport(e),
+        Fail::Input(e) => {
             eprintln!("ec-secret: {}", e.message());
             USAGE
         }
-        Err(Fail::Refused(code)) => refused(code),
+        Fail::Refused(code) => refused(code),
     }
+}
+
+/// A pre-hardening failure of a `--json` account command, as its error event.
+fn account_fail(style: Option<account::Style>, f: Fail) -> u8 {
+    let Some(s) = style else { return fail_plain(f) };
+    match f {
+        Fail::Transport(e) => account::unreachable(Some(s), e),
+        Fail::Input(e) => {
+            account::emit_error(s, "refused", e.message());
+            USAGE
+        }
+        Fail::Refused(c) => {
+            account::emit_error(s, "refused", &format!("brokerd refused: {}", status_name(c).0));
+            REFUSED
+        }
+    }
+}
+
+/// `s` as a JSON string literal.
+pub fn json_str(s: &str) -> String {
+    let mut o = String::with_capacity(s.len() + 2);
+    o.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
 }
 
 enum Fail {
@@ -217,6 +275,7 @@ fn passphrase_ok(p: &[u8]) -> bool {
 fn exec(conn: &Conn, cmd: Cmd) -> Result<u8, Fail> {
     match cmd {
         Cmd::Help => unreachable!("handled before connecting"),
+        Cmd::Account(_) => unreachable!("handled before exec"),
         Cmd::Status => {
             let s = state(conn)?;
             println!("initialised: {}", if s.initialised { "yes" } else { "no" });

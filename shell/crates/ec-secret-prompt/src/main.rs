@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! `ec-secret-prompt wifi <ssid>` | `bt <addr> pin|passkey|authorize`
-//! | `bt <addr> confirm <passkey>` | `bt <addr> show <code>`.
+//! | `bt <addr> confirm <passkey>` | `bt <addr> show <code>` | `api-key <account>`.
 //!
 //! A plain xdg_toplevel, not a layer surface: windowrules — and with them the
 //! `secret` sensitivity class — only match toplevels (ADR 0053). Fixed size,
@@ -16,7 +16,7 @@ fn main() -> iced::Result {
     let target = match Target::parse(&args) {
         Ok(t) => t,
         Err(usage) => {
-            // The arguments name a network or a device, never the secret, so
+            // The arguments name a network, a device or an account, never the secret, so
             // echoing the usage line leaks nothing.
             eprintln!("{usage}");
             std::process::exit(2);

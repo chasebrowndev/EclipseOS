@@ -35,6 +35,7 @@ use ec_ui::widget::{
     pick_pill, pill, progress_bar, status_cell, status_chip, status_grid, subtitle, Hole,
 };
 
+use crate::accounts::Store;
 use crate::app::{outcome_word, App, Message};
 use crate::model::{self, Entry, HistoryItem, Link, Outcome, Phase, Selection, Voice};
 use crate::shield::Guard;
@@ -1067,10 +1068,10 @@ fn closed_bar<'a>(s: &Subject<'a>) -> El<'a> {
 
 // -------------------------------------------------------------- composer
 
-/// The composer. Its yellow is the chosen deadline; the statement, the agent
-/// and the follow-up are white. What is typed here is a *draft*: it goes to the
-/// compositor's card and nowhere else, and the card, not this screen, commits
-/// it.
+/// The composer. Its yellow is the chosen deadline; the statement, the agent,
+/// the account and the follow-up are white. What is typed here is a *draft*:
+/// it goes to the compositor's card and nowhere else, and the card, not this
+/// screen, commits it.
 fn composer(app: &App) -> El<'_> {
     let m = &app.m;
     let usable = m.usable();
@@ -1257,17 +1258,20 @@ fn composer(app: &App) -> El<'_> {
             }
         })
         .collect();
-    col = col.push(
-        column![
-            row![micro_label("Agent"), ec_ui::widget::pill_group(agents)]
-                .spacing(space::BLOCK)
-                .align_y(Alignment::Center),
-            row![micro_label("Deadline"), ec_ui::widget::pill_group(deadlines)]
-                .spacing(space::BLOCK)
-                .align_y(Alignment::Center),
-        ]
-        .spacing(space::ROW_Y),
+    let mut choices = Column::new().spacing(space::ROW_Y).push(
+        row![choice_label("Agent"), ec_ui::widget::pill_group(agents)]
+            .spacing(space::BLOCK)
+            .align_y(Alignment::Center),
     );
+    if let Some(account) = account_row(app) {
+        choices = choices.push(account);
+    }
+    choices = choices.push(
+        row![choice_label("Deadline"), ec_ui::widget::pill_group(deadlines)]
+            .spacing(space::BLOCK)
+            .align_y(Alignment::Center),
+    );
+    col = col.push(choices);
 
     if over && app.resume.is_none() {
         col = col.push(small(format!(
@@ -1285,6 +1289,121 @@ fn composer(app: &App) -> El<'_> {
         .style(theme::eclipse_scrollable)
         .height(Length::Fill)
         .into()
+}
+
+/// The composer's choice rows, by label. Every label is laid in one column as
+/// wide as the widest, so each row's pills start at the same x.
+const CHOICE_LABELS: [&str; 3] = ["Agent", "Account", "Deadline"];
+
+/// Characters in the widest of [`CHOICE_LABELS`].
+const CHOICE_CHARS: usize = {
+    let mut i = 0;
+    let mut most = 0;
+    while i < CHOICE_LABELS.len() {
+        if CHOICE_LABELS[i].len() > most {
+            most = CHOICE_LABELS[i].len();
+        }
+        i += 1;
+    }
+    most
+};
+
+/// That label's width: `micro_label` sets each character and a thin space
+/// after it, every one a mono cell at [`size::MICRO`] (the data face's cell,
+/// `MONO_CHAR_W`, scaled from [`size::MONO`]).
+const CHOICE_LABEL_W: f32 =
+    (2 * CHOICE_CHARS) as f32 * ec_ui::tokens::canvas::MONO_CHAR_W * size::MICRO / size::MONO;
+
+/// A composer row's label, in the shared column.
+fn choice_label<'a>(label: &str) -> El<'a> {
+    debug_assert!(CHOICE_LABELS.contains(&label), "add {label} to CHOICE_LABELS");
+    container(micro_label(label))
+        .width(Length::Fixed(CHOICE_LABEL_W))
+        .into()
+}
+
+/// Which account the task runs as (ADR 0077): the store's names of the kind
+/// the chosen agent's backend uses, neutral like the agent pills, or one line
+/// saying why there is nothing to pick and what to do about it. Hidden for an
+/// agent that declares no backend. Names only: nothing here is a secret.
+fn account_row(app: &App) -> Option<El<'_>> {
+    let kind = app.account_kind()?;
+    let usable = app.m.usable();
+    // Every state keeps a pill's height, so the card's hole below never
+    // moves (a move disarms it) as the store locks, unlocks or goes away.
+    let line = |s: &str, quiet: bool| -> El<'static> {
+        container(
+            text(s.to_owned())
+                .font(font::UI)
+                .size(size::BODY_SMALL)
+                .style(if quiet {
+                    theme::text_tertiary
+                } else {
+                    theme::text_secondary
+                }),
+        )
+        .padding([space::PILL_Y, 0.0])
+        .into()
+    };
+    let note = |s: &str, next: Option<El<'static>>| -> El<'static> {
+        let mut r = Row::new()
+            .spacing(space::HEADER_GAP)
+            .align_y(Alignment::Center)
+            .push(line(s, false));
+        if let Some(n) = next {
+            r = r.push(n);
+        }
+        r.into()
+    };
+    let unlock = |label: &str| act(label, usable.then_some(Message::Unlock));
+    let body: El<'_> = match &app.accounts {
+        Store::Unknown => line("Reading accounts", true),
+        Store::Unavailable => line(
+            "Accounts are unavailable. The task runs as the default account.",
+            true,
+        ),
+        Store::Locked if app.unlocking => {
+            line("Enter your passphrase in the prompt to unlock accounts", true)
+        }
+        Store::Uninitialised if app.unlocking => {
+            line("Choose a passphrase in the prompt to set up the store", true)
+        }
+        Store::Locked => note("Accounts are locked", Some(unlock("Unlock"))),
+        Store::Uninitialised => note("Set up your secret store", Some(unlock("Set up"))),
+        store => {
+            let names = store.names(kind);
+            if names.is_empty() {
+                note(
+                    kind.none_yet(),
+                    Some(act("Add in Settings", Some(Message::OpenAccounts))),
+                )
+            } else {
+                let chosen = app.chosen_account();
+                let mut pills: Vec<El<'_>> = names
+                    .iter()
+                    .map(|n| {
+                        pick_pill(
+                            n,
+                            chosen == Some(*n),
+                            usable.then(|| Message::PickAccount((*n).to_owned())),
+                        )
+                    })
+                    .collect();
+                pills.push(
+                    container(link("Manage", Some(Message::OpenAccounts)))
+                        .padding([space::PILL_Y, space::PILL_X])
+                        .into(),
+                );
+                ec_ui::widget::pill_group(pills)
+            }
+        }
+    };
+    Some(
+        row![choice_label("Account"), body]
+            .spacing(space::BLOCK)
+            .align_y(Alignment::Center)
+            .into(),
+    )
 }
 
 /// The `/resume` picker: History's closed tasks, each with Resume.

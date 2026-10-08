@@ -397,6 +397,10 @@ fn dismiss_while_the_model_thinks_drops_the_reply() {
 fn a_second_select_replaces_the_first_question() {
     // One query in flight (§3.4): the first is cancelled, not queued.
     let mut r = Rig::new(false);
+    // Both calls are slow: each runs on its own worker, and they take their
+    // scripted reply in whichever order the threads get there. With only one
+    // `Slow`, the cancelled call could draw a plain answer and never count.
+    r.script(Says::Slow(Duration::from_millis(300)));
     r.script(Says::Slow(Duration::from_millis(300)));
     r.chord(select(0, 0, 800, 450), 0);
     r.chord(select(0, 0, 400, 450), 20);
@@ -405,6 +409,12 @@ fn a_second_select_replaces_the_first_question() {
     std::thread::sleep(Duration::from_millis(400));
     r.step(600);
     assert_eq!(r.ctl.creates().len(), 1, "the first reply was dropped");
+    // The worker counts the cancel when it next looks at the flag, on its
+    // own thread: wait for it rather than race it.
+    let until = Instant::now() + Duration::from_secs(2);
+    while r.ask.0.lock().unwrap().cancelled == 0 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(2));
+    }
     assert_eq!(r.ask.0.lock().unwrap().cancelled, 1);
 }
 

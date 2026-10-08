@@ -74,6 +74,32 @@ pub struct Request {
     /// Messages API `tools`: an array, possibly empty.
     pub tools: Value,
     pub max_tokens: u32,
+    /// The owner's account this task runs under (ADR 0077), or empty for
+    /// the default. Chosen by the human when the task was committed and
+    /// carried here by agentd from policyd's provision, never from the
+    /// agent. [`account_ok`] holds.
+    pub account: String,
+}
+
+/// An account name (ADR 0077): empty (the default), or 1–32 of
+/// `[A-Za-z0-9_-]`. The same rule as `ec_policy_eval::link::account_ok`.
+pub fn account_ok(a: &str) -> bool {
+    a.len() <= 32
+        && a.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// The brokerd secret that holds `base` for `account`: `base` itself for the
+/// default account, `base.account` otherwise. `None` when `account` breaks
+/// [`account_ok`]; `default` names the default account too.
+pub fn secret_name(base: &str, account: &str) -> Option<String> {
+    if !account_ok(account) {
+        return None;
+    }
+    Some(match account {
+        "" | "default" => base.to_owned(),
+        a => format!("{base}.{a}"),
+    })
 }
 
 /// router -> agentd.
@@ -130,6 +156,7 @@ impl ToRouter {
                 "messages": r.messages,
                 "tools": r.tools,
                 "max_tokens": r.max_tokens,
+                "account": r.account,
             }),
             ToRouter::Close { task } => serde_json::json!({"type": "close", "task": task}),
         }
@@ -153,7 +180,9 @@ impl ToRouter {
                     messages,
                     tools,
                     max_tokens: u32::try_from(u(v, "max_tokens")?).ok()?,
+                    account: s(v, "account").unwrap_or_default(),
                 }))
+                .filter(|m| matches!(m, ToRouter::Complete(r) if account_ok(&r.account)))
             }
             "close" => Some(ToRouter::Close { task: s(v, "task")? }),
             _ => None,
@@ -260,7 +289,28 @@ mod tests {
             messages: json!([{"role": "user", "content": "hi"}]),
             tools: json!([]),
             max_tokens: 16000,
+            account: "work".into(),
         }
+    }
+
+    #[test]
+    fn account_names_map_to_secret_names() {
+        assert_eq!(
+            secret_name("claude-code-token", "").as_deref(),
+            Some("claude-code-token")
+        );
+        assert_eq!(
+            secret_name("claude-code-token", "default").as_deref(),
+            Some("claude-code-token")
+        );
+        assert_eq!(
+            secret_name("claude-code-token", "work").as_deref(),
+            Some("claude-code-token.work")
+        );
+        assert_eq!(secret_name("claude-code-token", "a.b"), None);
+        let mut r = req();
+        r.account = "../x".into();
+        assert_eq!(ToRouter::from_json(&ToRouter::Complete(r).to_json()), None);
     }
 
     #[test]

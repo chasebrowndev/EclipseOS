@@ -220,6 +220,7 @@ mod tests {
             messages: json!([{"role": "user", "content": "hi"}]),
             tools: json!([{"name": "t", "description": "d", "input_schema": {"type": "object"}}]),
             max_tokens: 1000,
+            account: String::new(),
         }
     }
 

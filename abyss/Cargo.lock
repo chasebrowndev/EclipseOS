@@ -609,6 +609,7 @@ dependencies = [
  "ec-abyss-config",
  "ec-abyss-render",
  "ec-abyss-wire",
+ "ec-brokerd",
  "ec-cataclysm-pub",
  "ec-policy-eval",
  "ec-protocols",
@@ -627,6 +628,7 @@ dependencies = [
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "xkbcommon",
+ "zeroize",
 ]
 
 [[package]]
@@ -820,6 +822,8 @@ name = "ec-secret"
 version = "0.1.0"
 dependencies = [
  "ec-brokerd",
+ "ec-inference-wire",
+ "libc",
  "rustix 1.1.4",
  "zeroize",
 ]

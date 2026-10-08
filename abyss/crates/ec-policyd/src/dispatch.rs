@@ -100,6 +100,9 @@ struct Preview {
     lines: Vec<String>,
     continuation: String,
     resumes: String,
+    /// The account the task runs under (ADR 0077), or empty: shown on the
+    /// card and carried to agentd unchanged.
+    account: String,
     table_version: u64,
     install_seq: u64,
 }
@@ -286,11 +289,17 @@ impl Dispatch {
         narrowing: &[u8],
         continuation: &str,
         resumes: &str,
+        account: &str,
         table_version: u64,
         agentd_live: bool,
     ) -> Out {
         if table_version == 0 {
             return refused(req, "policy_unavailable");
+        }
+        // The link refuses a bad name already; a preview is the last place
+        // it is still only a string, so say so again (ADR 0077).
+        if !ec_policy_eval::link::account_ok(account) {
+            return refused(req, "bad_account");
         }
         if !agentd_live {
             return refused(req, "agentd_unavailable");
@@ -343,6 +352,7 @@ impl Dispatch {
             narrowing.len() > 1,
             continuation,
             resumes,
+            account,
         );
         if self.previews.len() >= MAX_PREVIEWS {
             self.previews.clear();
@@ -361,6 +371,7 @@ impl Dispatch {
                 lines,
                 continuation: continuation.to_owned(),
                 resumes: resumes.to_owned(),
+                account: account.to_owned(),
                 table_version,
                 install_seq: install.seq,
             },
@@ -457,6 +468,7 @@ impl Dispatch {
                     grant,
                     continuation: p.continuation,
                     resumes: p.resumes,
+                    account: p.account,
                 },
             ),
         ])
@@ -677,6 +689,7 @@ fn slot_display(
     narrowed: bool,
     cont: &str,
     resumes: &str,
+    account: &str,
 ) -> Vec<u8> {
     let mut d = MapBuilder::new();
     d.insert("package_name", enc(|w| w.text(&m.name)));
@@ -696,6 +709,7 @@ fn slot_display(
     d.insert("narrowed", enc(|w| w.bool(narrowed)));
     d.insert("continuation", enc(|w| w.text(cont)));
     d.insert("resumes", enc(|w| w.text(resumes)));
+    d.insert("account", enc(|w| w.text(account)));
     // policyd holds no chain summaries; agentd does. Until it reports one,
     // a continuation or a resume is drawn with the warning, the cautious
     // reading (A-08 §5.4: a resumed untrusted session stays untrusted).
@@ -934,6 +948,7 @@ mod tests {
             narrowing,
             "",
             "",
+            "work",
             table,
             true,
         )
@@ -958,12 +973,15 @@ mod tests {
                 grant,
                 principal,
                 deadline_ms,
+                account,
                 ..
             },
         )] = out.as_slice()
         else {
             panic!("{out:?}")
         };
+        // The account the card showed is the one agentd is told (ADR 0077).
+        assert_eq!(account, "work");
         let g = ec_policy_eval::grant::Grant::verify(
             grant,
             &ed25519_dalek::SigningKey::from_bytes(&[3; 32]).verifying_key(),
@@ -1044,12 +1062,12 @@ mod tests {
         install(&mut e);
         assert_eq!(preview(&mut e, 0, &[]), refused(2, "policy_unavailable"));
         assert_eq!(
-            e.d.preview(&e.store, 2, 7, "ec-ref-agent", "x", 0, &[], "", "", 5, false),
+            e.d.preview(&e.store, 2, 7, "ec-ref-agent", "x", 0, &[], "", "", "", 5, false),
             refused(2, "agentd_unavailable")
         );
         let long = "x".repeat(MAX_STATEMENT + 1);
         assert_eq!(
-            e.d.preview(&e.store, 2, 7, "ec-ref-agent", &long, 0, &[], "", "", 5, true),
+            e.d.preview(&e.store, 2, 7, "ec-ref-agent", &long, 0, &[], "", "", "", 5, true),
             refused(2, "statement_length")
         );
         assert_eq!(
@@ -1061,6 +1079,7 @@ mod tests {
                 "x",
                 MAX_DEADLINE_MS + 1,
                 &[],
+                "",
                 "",
                 "",
                 5,
@@ -1148,6 +1167,7 @@ mod tests {
                 &[],
                 "",
                 resumes,
+                "",
                 5,
                 true,
             )
@@ -1205,6 +1225,7 @@ mod tests {
                 &[],
                 &first,
                 &first,
+                "",
                 5,
                 true
             ),

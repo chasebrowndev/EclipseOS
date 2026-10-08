@@ -298,8 +298,8 @@ impl Cli {
         let (n, v) = find(&seen, "wl_seat");
         let _seat: WlSeat = registry.bind(n, v.min(5), &qh, ());
         let (n, v) = find(&seen, "eclipse_protected_surface_manager_v1");
-        assert_eq!(v, 1);
-        let manager = registry.bind(n, 1, &qh, ());
+        assert_eq!(v, 2);
+        let manager = registry.bind(n, 2, &qh, ());
         pump(&mut seen, &mut q, h);
         Self {
             conn,
@@ -846,6 +846,27 @@ fn a_draft_after_the_interval_is_applied_at_once() {
     r.pump();
     assert_eq!(draft(&r.h.state, id).map(|d| d.statement.as_str()), Some("two"));
     assert!(!has_pending_draft(&r.h.state, id));
+}
+
+/// The account is part of the draft (ADR 0077): it survives a new
+/// statement, and a name outside the rule is a protocol error.
+#[test]
+fn an_account_survives_set_draft_and_a_bad_one_is_bad_account() {
+    let mut r = rig();
+    let s = r.c.slot(&mut r.h, &r.prot, CKind::TaskCommit, 0, 0);
+    let id = slots(&r.h.state).next().expect("slot");
+    s.set_account("work".into());
+    r.pump();
+    std::thread::sleep(DRAFT_INTERVAL + Duration::from_millis(20));
+    say(&s, "two");
+    r.pump();
+    std::thread::sleep(DRAFT_INTERVAL + Duration::from_millis(20));
+    r.pump();
+    let d = draft(&r.h.state, id).expect("draft");
+    assert_eq!((d.statement.as_str(), d.account.as_str()), ("two", "work"));
+    s.set_account("a.b".into());
+    r.pump();
+    assert!(r.c.conn.protocol_error().is_some_and(|e| e.code == 5));
 }
 
 // ------------------------------------------------------------ origin matrix

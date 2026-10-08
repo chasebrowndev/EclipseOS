@@ -187,8 +187,9 @@ mod tests {
 
     struct FakeCreds(Result<&'static str, (&'static str, &'static str)>);
     impl Credentials for FakeCreds {
-        fn api_key(&self, package: &str) -> Result<ApiKey, Failure> {
+        fn api_key(&self, package: &str, account: &str) -> Result<ApiKey, Failure> {
             assert_eq!(package, "pkg");
+            assert_eq!(account, "");
             match self.0 {
                 Ok(k) => Ok(ApiKey::from_bytes(k.as_bytes()).unwrap()),
                 Err((kind, m)) => Err(failure(kind, m)),
@@ -207,6 +208,7 @@ mod tests {
             messages: json!([{"role": "user", "content": "hi"}]),
             tools: json!([]),
             max_tokens: 100,
+            account: String::new(),
         })
     }
 

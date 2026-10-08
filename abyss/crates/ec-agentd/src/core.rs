@@ -130,6 +130,7 @@ struct Prov {
     deadline_ms: u64,
     continuation: String,
     resumes: String,
+    account: String,
 }
 
 pub struct Core {
@@ -146,6 +147,7 @@ pub struct Core {
     next_req: u64,
     decisions: u64,
     last_show_ms: Option<u64>,
+    last_unlock_ms: Option<u64>,
     procs: HashMap<String, Running>,
     mcp_stop: HashMap<String, Arc<AtomicBool>>,
     last_sweep_ms: u64,
@@ -201,6 +203,7 @@ impl Core {
             next_req: 1,
             decisions: 0,
             last_show_ms: None,
+            last_unlock_ms: None,
             procs: HashMap::new(),
             mcp_stop: HashMap::new(),
             last_sweep_ms: now,
@@ -426,6 +429,7 @@ impl Core {
                 deadline_ms,
                 continuation,
                 resumes,
+                account,
                 ..
             } => self.provision(Prov {
                 task,
@@ -436,6 +440,7 @@ impl Core {
                 deadline_ms,
                 continuation,
                 resumes,
+                account,
             }),
             FromPolicyd::TaskState { task, state, reason } => self.task_state(&task, &state, &reason),
             FromPolicyd::Revoked { principal } => {
@@ -513,6 +518,13 @@ impl Core {
         t.statement = sanitize::clean(&p.statement);
         t.deadline_ms = p.deadline_ms;
         t.continuation = p.continuation;
+        // The policyd link validated the name (`account_ok`); a name that
+        // still fails the rule falls back to the default account.
+        t.account = if ec_inference_wire::account_ok(&p.account) {
+            p.account
+        } else {
+            String::new()
+        };
         // An unreadable or invalid block gives no tool: fail closed.
         if let Some(dir) = packages::find_dir(&self.cfg.package_roots, &t.package, &t.version) {
             match packages::inference(&dir) {
@@ -825,6 +837,7 @@ impl Core {
             "conversation_post" => self.m_post(p),
             "pause_task" | "cancel_task" => return self.m_pause_cancel(conn, req),
             "show_decisions" => return self.m_show(conn, req),
+            "unlock_secrets" => return self.m_unlock(conn, req),
             "list_sessions" => self.m_list_sessions(p),
             "delete_session" => self.m_delete_session(p),
             "subscribe" => {
@@ -1037,6 +1050,30 @@ impl Core {
         Outcome::Deferred
     }
 
+    /// `unlock_secrets`: asks the compositor to open the brokerd passphrase
+    /// prompt. Same limiter and error mapping as `show_decisions`.
+    fn m_unlock(&mut self, conn: u64, req: &Request) -> Outcome {
+        let now = self.now();
+        if self.last_unlock_ms.is_some_and(|l| now.saturating_sub(l) < 1000) {
+            return Outcome::Now(Err(RpcError::new(
+                rpc::RATE_LIMITED,
+                "rate_limited",
+                "unlock_secrets is limited to once a second",
+            )));
+        }
+        let Some(path) = self.cfg.human_socket.clone() else {
+            return Outcome::Now(Err(RpcError::unavailable()));
+        };
+        self.last_unlock_ms = Some(now);
+        let tx = self.tx.clone();
+        let id = req.id.clone();
+        std::thread::spawn(move || {
+            let result = crate::human::unlock_secrets(&path);
+            let _ = tx.send(Msg::HumanReply { conn, id, result });
+        });
+        Outcome::Deferred
+    }
+
     fn m_list_sessions(&self, p: &Value) -> Result<Value, RpcError> {
         let since = p_u64(p, "since")?.unwrap_or(0);
         let mut v: Vec<&Task> = self
@@ -1131,6 +1168,7 @@ impl Core {
         let t = self.tasks.get(task)?;
         let decl = t.inference.clone()?;
         let package = t.package.clone();
+        let account = t.account.clone();
         // A notification has no one to answer; do not spend a model call on it.
         let Some(mcp_id) = req.id.clone() else {
             return Some(Outcome::Now(Ok(Value::Null)));
@@ -1163,6 +1201,7 @@ impl Core {
             messages: args.messages,
             tools: args.tools,
             max_tokens: args.max_tokens,
+            account,
         }));
         if sent.is_err() {
             return fail("backend_unavailable", router::DOWN_MESSAGE);

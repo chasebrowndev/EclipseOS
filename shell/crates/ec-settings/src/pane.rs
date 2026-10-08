@@ -26,6 +26,7 @@ pub enum Section {
     Session,
     System,
     Privacy,
+    Accounts,
     Addons,
     OracleEyes,
 }
@@ -73,6 +74,7 @@ pub enum Page {
     Setup,
     General,
     Privacy,
+    Accounts,
     Addons,
     // Oracle Eyes
     OeGeneral,
@@ -93,6 +95,7 @@ impl Section {
         Section::Session,
         Section::System,
         Section::Privacy,
+        Section::Accounts,
         Section::Addons,
         Section::OracleEyes,
     ];
@@ -110,6 +113,7 @@ impl Section {
             Section::Session => "Session",
             Section::System => "System",
             Section::Privacy => "Privacy",
+            Section::Accounts => "Accounts",
             Section::Addons => "Add-ons",
             Section::OracleEyes => "Oracle Eyes",
         }
@@ -142,6 +146,7 @@ impl Section {
             Section::Session => &[Page::Session],
             Section::System => &[Page::Rendering, Page::Xwayland, Page::Setup, Page::General],
             Section::Privacy => &[Page::Privacy],
+            Section::Accounts => &[Page::Accounts],
             Section::Addons => &[Page::Addons],
             Section::OracleEyes => &[Page::OeGeneral, Page::OeColours],
         }
@@ -192,6 +197,7 @@ impl Page {
             Page::Session => Section::Session,
             Page::Rendering | Page::Xwayland | Page::Setup | Page::General => Section::System,
             Page::Privacy => Section::Privacy,
+            Page::Accounts => Section::Accounts,
             Page::Addons => Section::Addons,
             Page::OeGeneral | Page::OeColours => Section::OracleEyes,
         }
@@ -270,6 +276,9 @@ impl Page {
             Page::Setup => "The first-run profile.",
             Page::General => "Settings that apply across the desktop.",
             Page::Privacy => "Capture, clipboard and input scripting.",
+            Page::Accounts => {
+                "The Claude accounts a task can sign in as. Names only; values stay in the store."
+            }
             Page::Addons => "Optional packages, and the hooks they switch on.",
             Page::OeGeneral => "What the add-on may see, the model it asks, and how long answers stay.",
             Page::OeColours => "The colours the compositor draws answers and the region selector in.",
@@ -289,6 +298,7 @@ impl Page {
                 | Page::BarAppearance
                 | Page::BarFolding
                 | Page::Animations
+                | Page::Accounts
         )
     }
 
@@ -514,6 +524,8 @@ mod tests {
         assert_eq!(Page::from_arg("addons"), Some(Page::Addons));
         assert_eq!(Page::from_arg("Add-ons"), Some(Page::Addons));
         assert_eq!(Page::from_arg("NETWORK"), Some(Page::Network));
+        // The agent console opens `ec-settings accounts`.
+        assert_eq!(Page::from_arg("accounts"), Some(Page::Accounts));
         assert_eq!(Page::from_arg("nope"), None);
     }
 
@@ -565,7 +577,7 @@ mod tests {
             assert_eq!(owners, 1, "{page:?}");
             assert!(page.section().pages().contains(&page));
         }
-        assert_eq!(Page::all().count(), 35);
+        assert_eq!(Page::all().count(), 36);
     }
 
     #[test]

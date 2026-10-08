@@ -65,6 +65,11 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "revoke_grants" => revoke_grants(state, params),
         // Console wave (A-08 §7, B3): the decision queue and agent install.
         "show_decisions" => show_decisions(state, params),
+        "secrets_unlock_prompt" => {
+            only_keys(params, &[])?;
+            crate::trusted_ui::broker::prompt(state);
+            Ok(json!({}))
+        }
         "agent_install" => agent_install(state, params),
         // Config read/write (COMP-13 §1.4). The outer gate already returned
         // `Allow` to reach this line; `config_rpc` tightens onto it per file.

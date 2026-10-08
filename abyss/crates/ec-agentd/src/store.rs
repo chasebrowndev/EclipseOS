@@ -103,6 +103,9 @@ pub struct Task {
     /// Absolute deadline, epoch ms, as policyd provisioned it.
     pub deadline_ms: u64,
     pub continuation: String,
+    /// The owner's account its inference runs under (ADR 0077), or empty
+    /// for the default. Set at provision from policyd; not persisted.
+    pub account: String,
     /// The closed task whose session this one restores (A-08 §5.4), or empty.
     pub resumes: String,
     /// `session.restore` was called: it answers once.
@@ -136,6 +139,7 @@ impl Task {
             statement: String::new(),
             deadline_ms: 0,
             continuation: String::new(),
+            account: String::new(),
             resumes: String::new(),
             restore_taken: false,
             state: "active".into(),

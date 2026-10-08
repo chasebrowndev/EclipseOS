@@ -25,11 +25,18 @@ pub struct Package {
     pub name: String,
     pub publisher: String,
     pub version: String,
+    /// The manifest's `inference.backend`, when it declares a valid block.
+    pub backend: Option<Backend>,
 }
 
 impl Package {
     pub fn to_json(&self) -> Value {
-        json!({"id": self.id, "name": self.name, "publisher": self.publisher, "version": self.version})
+        let mut v =
+            json!({"id": self.id, "name": self.name, "publisher": self.publisher, "version": self.version});
+        if let Some(b) = self.backend {
+            v["backend"] = json!(b.as_str());
+        }
+        v
     }
 }
 
@@ -85,7 +92,9 @@ pub fn list(roots: &[(PathBuf, String)]) -> Vec<Package> {
                 {
                     continue;
                 }
+                let backend = inference(&ver.path()).ok().flatten().map(|i| i.backend);
                 out.push(Package {
+                    backend,
                     name: arg(&m, "name").unwrap_or_else(|| id_name.clone()),
                     id: id_name.clone(),
                     publisher: publisher.clone(),

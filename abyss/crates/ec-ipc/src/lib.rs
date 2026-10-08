@@ -283,6 +283,14 @@ impl Client {
         self.call("show_decisions", Value::Null).map(drop)
     }
 
+    /// Ask the compositor to open its secret-store prompt (S-08 §2, ADR
+    /// 0077): first-run setup when brokerd has no store yet, unlock when it
+    /// is locked, nothing when it is unlocked. The passphrase is typed into
+    /// the compositor's prompt; this call returns as soon as it is asked.
+    pub fn secrets_unlock_prompt(&mut self) -> Result<()> {
+        self.call("secrets_unlock_prompt", Value::Null).map(drop)
+    }
+
     /// Begin installing an agent package from `dir`. `dir` must be absolute;
     /// the review and the decision happen in a trusted modal, not here.
     pub fn agent_install(&mut self, dir: &std::path::Path) -> Result<()> {

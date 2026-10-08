@@ -132,6 +132,8 @@ pub enum Message {
     OpenPolicyViewer,
     /// The Animations page's own messages.
     Anim(crate::animations::Msg),
+    /// The Accounts page's own messages.
+    Accounts(crate::accounts::Msg),
 }
 
 /// Somewhere to take the user: a page, and optionally a row on it by its
@@ -304,6 +306,8 @@ pub struct App {
     viewer: Option<std::process::Child>,
     /// The Animations page's looping previews.
     pub(crate) anim: crate::animations::Anim,
+    /// The Accounts page: the store, its account names, and a sign-in.
+    pub(crate) accounts: crate::accounts::Accounts,
 }
 
 /// How long "Cleared" stands in for the button.
@@ -367,6 +371,7 @@ impl App {
             oe_grant: crate::oracle::Grant::Unread,
             viewer: None,
             anim: crate::animations::Anim::default(),
+            accounts: crate::accounts::Accounts::default(),
         };
         // Debug builds only: open with a tray entry selected, so the selected
         // state can be screenshotted without pointer injection.
@@ -378,6 +383,8 @@ impl App {
         app.reload();
         #[cfg(debug_assertions)]
         crate::taskbar::preview_env(&mut app);
+        #[cfg(debug_assertions)]
+        crate::accounts::preview_env(&mut app.accounts);
         if app.page == Page::Animations {
             crate::animations::sync(&mut app);
         }
@@ -672,6 +679,47 @@ const SCROLL: &str = "content";
 /// `SETTINGS_PREVIEW_SEARCH` opens with that query in the sidebar search,
 /// and `SETTINGS_PREVIEW_SEARCH_SEL` with that result selected.
 pub fn boot(page: Page) -> (App, Task<Message>) {
+    #[allow(unused_mut)]
+    let (app, mut task) = boot_inner(page);
+    #[cfg(debug_assertions)]
+    if let Ok(path) = std::env::var("SETTINGS_PREVIEW_SHOT") {
+        task = Task::batch([task, preview_shot(path)]);
+    }
+    (app, task)
+}
+
+/// How long a debug build's `SETTINGS_PREVIEW_SHOT` waits for the window to
+/// map and settle before it reads the frame back.
+#[cfg(debug_assertions)]
+const SHOT_AFTER: Duration = Duration::from_millis(3000);
+
+/// Debug builds only: read the window's own frame back after
+/// [`SHOT_AFTER`], write it to `path` as `WxH\n` and raw RGBA, and exit. The
+/// screenshot loop on a host with no screencopy client (a headless abyss
+/// in CI) has no other way to see the pane.
+#[cfg(debug_assertions)]
+fn preview_shot(path: String) -> Task<Message> {
+    let (tx, rx) = iced::futures::channel::oneshot::channel::<()>();
+    std::thread::spawn(move || {
+        std::thread::sleep(SHOT_AFTER);
+        let _ = tx.send(());
+    });
+    Task::perform(
+        async move {
+            let _ = rx.await;
+        },
+        |()| (),
+    )
+    .then(|()| iced::window::latest())
+    .and_then(iced::window::screenshot)
+    .then(move |shot| {
+        let head = format!("{}x{}\n", shot.size.width, shot.size.height);
+        let _ = std::fs::write(&path, [head.as_bytes(), &shot.rgba[..]].concat());
+        iced::exit()
+    })
+}
+
+fn boot_inner(page: Page) -> (App, Task<Message>) {
     #[allow(unused_mut)]
     let mut app = App::with_page(page);
     #[cfg(debug_assertions)]
@@ -994,6 +1042,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::Pinned(m) => crate::pinned::update(app, m),
         Message::Search(m) => return crate::search_ui::update(app, m),
         Message::Anim(m) => return crate::animations::update(app, m),
+        Message::Accounts(m) => return crate::accounts::update(app, m),
     }
     Task::none()
 }
@@ -1127,6 +1176,10 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     }
     if app.page == Page::Animations {
         subs.push(iced::window::frames().map(|t| Message::Anim(crate::animations::Msg::Frame(t))));
+    }
+    // The account list is re-read only while its pane shows.
+    if app.page == Page::Accounts && app.accounts.polls() {
+        subs.push(crate::accounts::poll());
     }
     Subscription::batch(subs)
 }
@@ -1276,6 +1329,10 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
             let (state, measure) = crate::oracle::status(app);
             controls.push(status_chip(&state, &measure));
         }
+        Section::Accounts => {
+            let (state, measure) = crate::accounts::status(app);
+            controls.push(status_chip(&state, &measure));
+        }
         _ if app.page == Page::Animations => {
             let (state, measure) = crate::animations::status(app);
             controls.push(status_chip(&state, &measure));
@@ -1300,6 +1357,7 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
             blocks.push(schema_page(app));
         }
         Page::Animations => blocks.extend(crate::animations::blocks(app)),
+        Page::Accounts => blocks.extend(crate::accounts::blocks(app)),
         p if p.section() == Section::Taskbar => blocks.extend(crate::taskbar::blocks(app, p)),
         _ => blocks.push(schema_page(app)),
     }
