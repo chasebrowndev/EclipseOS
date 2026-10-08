@@ -262,6 +262,22 @@ pub fn bespoke() -> Vec<SearchEntry> {
             &["addons", "extensions", "plugins", "packages", "hooks", "optional"],
         ),
         (
+            "accounts",
+            "Accounts",
+            "Accounts",
+            "The Claude accounts a task can sign in as: add, sign in again, remove.",
+            &[
+                "claude",
+                "account",
+                "sign in",
+                "login",
+                "api key",
+                "token",
+                "secret store",
+                "unlock",
+            ],
+        ),
+        (
             "taskbar.widgets",
             "Widget editor",
             "Taskbar › Widgets",
@@ -934,6 +950,7 @@ mod tests {
         assert_top3(&e, "bluetooth", "pane:network.bluetooth");
         assert_top3(&e, "plugins", "pane:addons");
         assert_top3(&e, "custom widget", "pane:taskbar.widgets");
+        assert_top3(&e, "api key", "pane:accounts");
     }
 
     #[test]

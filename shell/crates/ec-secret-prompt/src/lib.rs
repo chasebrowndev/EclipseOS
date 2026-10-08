@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! `ec-secret-prompt` — one password field, then exit (ADR 0053).
 //!
-//! The taskbar starts this process with the network or device to prompt for
-//! and never sees what is typed: the value goes from the field straight to
-//! the status service's action and is overwritten. Its whole window is
+//! The taskbar starts this process with the network or device to prompt for,
+//! and Settings starts it with the account an API key is for; neither sees
+//! what is typed. The value goes from the field straight to the status
+//! service's action, or to `ec-secret`'s stdin, and is overwritten. Its whole window is
 //! classified `secret` by the owner windowrule on its exact app-id, so the
 //! compositor redacts it from capture.
 
@@ -52,8 +53,34 @@ impl fmt::Debug for Code {
 /// shown and logged; the value typed for them is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    Wifi { ssid: String },
-    Bluetooth { addr: String, code: Code },
+    Wifi {
+        ssid: String,
+    },
+    Bluetooth {
+        addr: String,
+        code: Code,
+    },
+    /// An API key for a Claude account, stored as `anthropic-api-key[.account]`
+    /// by `ec-secret account add-key` (ADR 0077). The account name is not
+    /// secret; the key is.
+    ApiKey {
+        account: String,
+    },
+}
+
+/// Longest account name (ADR 0077): 1–32 of `[A-Za-z0-9_-]`.
+const ACCOUNT_MAX: usize = 32;
+/// Longest key the field takes. `ec-secret` reads at most 8 KiB a line; a
+/// real key is about a hundred characters, so this only stops a runaway
+/// paste.
+const KEY_MAX: usize = 4096;
+
+/// An account name `ec-secret` accepts. `default` is one by this rule too.
+pub fn valid_account(name: &str) -> bool {
+    (1..=ACCOUNT_MAX).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 /// Legacy PINs are at most 16 characters (Bluetooth Core, Vol 3 Part C §3.2.1).
@@ -62,7 +89,7 @@ const PIN_MAX: usize = 16;
 const PASSKEY_DIGITS: usize = 6;
 
 const USAGE: &str = "usage: ec-secret-prompt wifi <ssid> | bt <addr> pin|passkey|authorize \
-                     | bt <addr> confirm <passkey> | bt <addr> show <code>";
+                     | bt <addr> confirm <passkey> | bt <addr> show <code> | api-key <account>";
 
 /// One to six ASCII digits, as a passkey.
 fn passkey(value: &str) -> Option<u32> {
@@ -82,6 +109,12 @@ impl Target {
         };
         match args {
             [kind, ssid] if kind == "wifi" && !ssid.is_empty() => Ok(Target::Wifi { ssid: ssid.clone() }),
+            [kind, account] if kind == "api-key" && valid_account(account) => Ok(Target::ApiKey {
+                account: account.clone(),
+            }),
+            [kind, _] if kind == "api-key" => {
+                Err("api-key takes an account name: 1 to 32 letters, digits, - or _".to_owned())
+            }
             [kind, addr, code] if kind == "bt" && !addr.is_empty() => match code.as_str() {
                 "pin" => bt(addr, Code::Pin),
                 "passkey" => bt(addr, Code::Passkey),
@@ -155,6 +188,7 @@ impl Target {
             Target::Bluetooth {
                 code: Code::Show(_), ..
             } => "Pairing code",
+            Target::ApiKey { .. } => "Add API key",
             _ => "Enter password",
         }
     }
@@ -178,6 +212,7 @@ impl Target {
             Target::Bluetooth {
                 code: Code::Show(_), ..
             } => "Type this on the device",
+            Target::ApiKey { .. } => "API key",
         }
     }
 
@@ -185,6 +220,16 @@ impl Target {
         match self {
             Target::Wifi { ssid } => ssid,
             Target::Bluetooth { addr, .. } => addr,
+            Target::ApiKey { account } => account,
+        }
+    }
+
+    /// The line under the kind label: the network or device, or for a key
+    /// the sentence that says which account it is for.
+    pub fn heading(&self) -> String {
+        match self {
+            Target::ApiKey { account } => format!("Add API key for {account}"),
+            other => other.name().to_owned(),
         }
     }
 
@@ -192,6 +237,7 @@ impl Target {
     pub fn verb(&self) -> &'static str {
         match self {
             Target::Wifi { .. } => "Join",
+            Target::ApiKey { .. } => "Save",
             Target::Bluetooth {
                 code: Code::Show(_), ..
             } => "Done",
@@ -204,6 +250,7 @@ impl Target {
         match self {
             Target::Wifi { .. } => "Joining…",
             Target::Bluetooth { .. } => "Pairing…",
+            Target::ApiKey { .. } => "Saving…",
         }
     }
 
@@ -221,6 +268,7 @@ impl Target {
             Target::Bluetooth {
                 code: Code::Show(_), ..
             } => "Then press Enter on the device.",
+            Target::ApiKey { .. } => "Kept by the secret broker only.",
             _ => "Sent to the service, never stored.",
         }
     }
@@ -230,6 +278,7 @@ impl Target {
     pub fn hint(&self) -> &'static str {
         match self {
             Target::Wifi { .. } => "8 to 63 characters",
+            Target::ApiKey { .. } => "paste the key",
             Target::Bluetooth { code: Code::Pin, .. } => "up to 16 characters",
             Target::Bluetooth {
                 code: Code::Passkey, ..
@@ -244,6 +293,7 @@ impl Target {
     pub fn admits(&self, typed: &str) -> bool {
         match self {
             Target::Wifi { .. } => true,
+            Target::ApiKey { .. } => typed.len() <= KEY_MAX,
             Target::Bluetooth { code: Code::Pin, .. } => typed.chars().count() <= PIN_MAX,
             Target::Bluetooth {
                 code: Code::Passkey, ..
@@ -257,6 +307,9 @@ impl Target {
     pub fn ready(&self, typed: &str) -> bool {
         match self {
             Target::Wifi { .. } => (8..=64).contains(&typed.chars().count()),
+            // A paste often carries a stray space or newline; the key is sent
+            // trimmed, so only what is left counts.
+            Target::ApiKey { .. } => !typed.trim().is_empty(),
             Target::Bluetooth {
                 code: Code::Pin | Code::Passkey,
                 ..
@@ -403,6 +456,30 @@ mod tests {
         assert!(t.admits("012345"));
         assert!(!t.admits("0123456"));
         assert!(!t.admits("12a"));
+    }
+
+    #[test]
+    fn an_api_key_target_takes_an_account_name_only() {
+        assert_eq!(
+            Target::parse(&args(&["api-key", "work"])),
+            Ok(Target::ApiKey {
+                account: "work".to_owned()
+            })
+        );
+        assert!(Target::parse(&args(&["api-key", "default"])).is_ok());
+        assert!(Target::parse(&args(&["api-key", "a_b-9"])).is_ok());
+        assert!(Target::parse(&args(&["api-key", ""])).is_err());
+        assert!(Target::parse(&args(&["api-key", "has space"])).is_err());
+        assert!(Target::parse(&args(&["api-key", "dot.ted"])).is_err());
+        assert!(Target::parse(&args(&["api-key", &"a".repeat(33)])).is_err());
+        assert!(Target::parse(&args(&["api-key"])).is_err());
+        let t = Target::ApiKey {
+            account: "work".to_owned(),
+        };
+        assert_eq!(t.heading(), "Add API key for work");
+        assert!(t.takes_input() && t.answers());
+        assert!(!t.ready("  \n"));
+        assert!(t.ready(" k \n"));
     }
 
     #[test]

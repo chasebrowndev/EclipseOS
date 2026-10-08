@@ -5,7 +5,7 @@
 //! the one field, or in the yes/no and display modes the code itself — and an
 //! action row. Three silhouettes: bare text, a glass band, a row of pills.
 //!
-//! Accent ledger: the one yellow is the committing pill ("Join" / "Pair").
+//! Accent ledger: the one yellow is the committing pill ("Join" / "Pair" / "Save").
 //! A `Show` window commits nothing — its pill only dismisses — so there the
 //! yellow moves to the code the human has to type. The band is neutral, the
 //! caret is furniture, and a refusal is `DANGER`, which is not the accent.
@@ -31,6 +31,11 @@ const CODE_MARKER: &str = "#";
 const ASK_MARKER: &str = "?";
 /// The field's placeholder once its value is with the service.
 const SENT: &str = "sent";
+/// The field's placeholder once the service has kept the value.
+const STORED: &str = "stored";
+/// How long a stored API key's window says so before it closes: long
+/// enough to read one word, short enough not to be a second dialog.
+const SAVED_FOR: std::time::Duration = std::time::Duration::from_millis(900);
 
 #[derive(Clone)]
 pub enum Message {
@@ -40,6 +45,8 @@ pub enum Message {
     /// The service's verdict on the one attempt in flight.
     Done(Result<(), String>),
     Cancel,
+    /// The success note has been read; the window goes.
+    Close,
 }
 
 impl fmt::Debug for Message {
@@ -49,6 +56,7 @@ impl fmt::Debug for Message {
             Message::Submit => f.write_str("Submit"),
             Message::Done(r) => write!(f, "Done({r:?})"),
             Message::Cancel => f.write_str("Cancel"),
+            Message::Close => f.write_str("Close"),
         }
     }
 }
@@ -61,6 +69,9 @@ pub struct App {
     /// An attempt is with the service. A second Submit waits for its answer
     /// rather than racing it.
     pending: bool,
+    /// The service took it. Only an API key window lingers on this (the
+    /// key has no other visible effect); the rest close at once.
+    saved: bool,
 }
 
 impl App {
@@ -71,20 +82,56 @@ impl App {
             typed: Buffer::default(),
             problem: None,
             pending: false,
+            saved: false,
         };
         // Debug-build fixture: open already waiting on the service, so the
         // pending state can be looked at without sending anything anywhere.
         #[cfg(debug_assertions)]
-        if std::env::var_os("SECRET_PROMPT_PREVIEW").is_some_and(|v| v == "pending") {
-            app.pending = true;
+        match std::env::var("SECRET_PROMPT_PREVIEW").as_deref() {
+            Ok("pending") => app.pending = true,
+            Ok("saved") => app.saved = true,
+            Ok("refused") => app.problem = Some("The secret store is locked. Unlock it first.".to_owned()),
+            _ => {}
         }
         // The window exists for one keystroke sequence; it opens ready for it.
-        (app, iced::widget::operation::focus(FIELD))
+        #[allow(unused_mut)]
+        let mut task = iced::widget::operation::focus(FIELD);
+        #[cfg(debug_assertions)]
+        if let Ok(path) = std::env::var("SECRET_PROMPT_SHOT") {
+            task = Task::batch([task, preview_shot(path)]);
+        }
+        (app, task)
     }
 
     pub fn title(&self) -> &'static str {
         self.target.title()
     }
+}
+
+/// Debug builds only: read the window's frame back after a moment, write it
+/// to `path` as `WxH\n` and raw RGBA, and exit — the screenshot loop on a
+/// host with no screencopy client. The field is empty in every fixture, so
+/// nothing secret can land in the file.
+#[cfg(debug_assertions)]
+fn preview_shot(path: String) -> Task<Message> {
+    let (tx, rx) = iced::futures::channel::oneshot::channel::<()>();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(3000));
+        let _ = tx.send(());
+    });
+    Task::perform(
+        async move {
+            let _ = rx.await;
+        },
+        |()| (),
+    )
+    .then(|()| iced::window::latest())
+    .and_then(iced::window::screenshot)
+    .then(move |shot| {
+        let head = format!("{}x{}\n", shot.size.width, shot.size.height);
+        let _ = std::fs::write(&path, [head.as_bytes(), &shot.rgba[..]].concat());
+        iced::exit()
+    })
 }
 
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
@@ -123,12 +170,25 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                 Message::Done,
             );
         }
+        Message::Done(Ok(())) if matches!(app.target, Target::ApiKey { .. }) => {
+            app.pending = false;
+            app.saved = true;
+            let (tx, rx) = iced::futures::channel::oneshot::channel();
+            std::thread::spawn(move || {
+                std::thread::sleep(SAVED_FOR);
+                let _ = tx.send(());
+            });
+            return Task::perform(async move { rx.await.ok() }, |_| Message::Close);
+        }
         Message::Done(Ok(())) => return iced::exit(),
+        Message::Close => return iced::exit(),
         Message::Done(Err(problem)) => {
             app.pending = false;
             app.problem = Some(problem);
             return iced::widget::operation::focus(FIELD);
         }
+        // Saved, and on its way out: nothing left to refuse.
+        Message::Cancel if app.saved => return iced::exit(),
         Message::Cancel => {
             app.typed.clear();
             // No-op for a `Show` window: there is no request to refuse.
@@ -144,7 +204,7 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
 
     let heading = column![
         micro_label(t.kind()),
-        text(t.name().to_owned())
+        text(t.heading())
             .font(font::UI_MEDIUM)
             .size(size::CARD_TITLE)
             .style(theme::text_primary),
@@ -172,14 +232,18 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
         // would be typed into a value that is already gone. The value has
         // been taken, so the placeholder says where it went rather than
         // inviting a retype.
-        let hint = if app.pending { SENT } else { t.hint() };
+        let hint = match (app.saved, app.pending) {
+            (true, _) => STORED,
+            (false, true) => SENT,
+            (false, false) => t.hint(),
+        };
         let mut field = text_input(hint, app.typed.as_str())
             .id(FIELD)
             .secure(true)
             .font(font::DATA)
             .size(size::BODY)
             .style(theme::prompt_input);
-        if !app.pending {
+        if !app.pending && !app.saved {
             field = field.on_input(Message::Typed).on_submit(Message::Submit);
         }
         prompt_band(MARKER, field, None)
@@ -197,6 +261,10 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
     // Left of the pills: the refusal if there is one, the wait while the
     // service has the attempt, otherwise the promise.
     let note: Element<'_, Message, Theme> = match (&app.problem, app.pending) {
+        _ if app.saved => text("Saved.")
+            .size(size::BODY_SMALL)
+            .style(theme::text_secondary)
+            .into(),
         (Some(p), _) => text(p.clone())
             .size(size::BODY_SMALL)
             .style(theme::text_danger)
@@ -215,7 +283,10 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
     let mut actions = row![container(note).width(Length::Fill)]
         .spacing(space::CONTROL_GAP)
         .align_y(Alignment::Center);
-    if t.answers() {
+    if app.saved {
+        // Done is the only thing left to say; the window is already going.
+        actions = actions.push(pill("Done", false, Message::Close));
+    } else if t.answers() {
         actions =
             actions
                 .push(pill("Cancel", false, Message::Cancel))

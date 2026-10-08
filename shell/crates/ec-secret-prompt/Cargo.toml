@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Asks for one secret (a wifi passphrase, a Bluetooth PIN), hands it to the service, and exits."
+description = "Asks for one secret (a wifi passphrase, a Bluetooth PIN, an API key), hands it to the service, and exits."
 # Its own process so the secret never passes through the taskbar (ADR 0053),
 # and its own crate so anyone replacing the taskbar can reuse it (ADR 0052).
 publish = false
