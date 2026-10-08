@@ -1049,8 +1049,11 @@ fn proc_pid_mem_is_closed_to_an_unprivileged_same_uid_reader() {
         eprintln!("skipping /proc/<pid>/mem read: running as root");
         return;
     }
-    // A non-dumpable process's /proc entries are owned by root.
-    assert_eq!(fs::metadata(format!("/proc/{}", p.pid)).unwrap().uid(), 0);
-    let e = fs::File::open(format!("/proc/{}/mem", p.pid)).unwrap_err();
+    // A non-dumpable process's /proc entries are owned by root. The entries,
+    // not the /proc/<pid> directory: current kernels leave the directory
+    // with the task's own uid, so `mem` itself is what is checked.
+    let mem = format!("/proc/{}/mem", p.pid);
+    assert_eq!(fs::metadata(&mem).unwrap().uid(), 0);
+    let e = fs::File::open(&mem).unwrap_err();
     assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
 }
