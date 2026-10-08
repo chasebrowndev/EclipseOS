@@ -11,6 +11,7 @@ use iced::{window, Element, Point, Size, Subscription, Task, Theme};
 use ec_console_client::console::{CancelMode, MsgId};
 use ec_ui::tokens::console as metrics;
 
+use crate::accounts::{self, Kind, Picks, Store};
 use crate::model::{self, Deadline, Model, Outcome, Phase, Selection, Want};
 use crate::net::{self, Cmd, Handle, Update};
 use crate::shield::{self, Guard, Outcome as Slot, Shield};
@@ -50,6 +51,13 @@ pub enum Message {
     Resume(String),
     ClearResume,
     EditInstruction(String),
+    /// A fresh read of the secret store's account names.
+    Accounts(Store),
+    PickAccount(String),
+    /// Ask the compositor for its unlock (or set-up) prompt.
+    Unlock,
+    /// Open Settings at Accounts.
+    OpenAccounts,
 
     EditReply(text_editor::Action),
     SendReply,
@@ -91,6 +99,14 @@ pub struct App {
     /// it is posted as a conversation message on the new task once the
     /// compositor reports `committed`.
     pub instruction: String,
+    /// The account names the secret store holds, as last read. Names only:
+    /// no value ever reaches this process.
+    pub accounts: Store,
+    /// The account picked per kind, for this session.
+    pub picks: Picks,
+    /// The unlock prompt was asked for and the store is still locked.
+    /// Cleared by a failure, or by a read that is no longer locked.
+    pub unlocking: bool,
 
     pub reply: text_editor::Content,
     pub cancel_open: bool,
@@ -125,6 +141,9 @@ impl App {
             follow: None,
             resume: None,
             instruction: String::new(),
+            accounts: Store::Unknown,
+            picks: Picks::default(),
+            unlocking: false,
             reply: text_editor::Content::new(),
             cancel_open: false,
             provenance: HashSet::new(),
@@ -145,6 +164,19 @@ impl App {
         if let Some(h) = &self.net {
             h.send(c);
         }
+    }
+
+    /// The account kind the chosen agent runs on. `None` when the agent
+    /// declares no inference backend, which hides the picker.
+    pub fn account_kind(&self) -> Option<Kind> {
+        let id = self.package.as_deref()?;
+        let p = self.m.packages.iter().find(|p| p.id == id)?;
+        Kind::for_backend(p.backend.as_deref()?)
+    }
+
+    /// The account the task would run as, if the store has one to offer.
+    pub fn chosen_account(&self) -> Option<&str> {
+        self.picks.chosen(&self.accounts, self.account_kind()?)
     }
 
     /// The statement as typed.
@@ -268,6 +300,10 @@ impl App {
                 }
                 self.notice = Some(match what {
                     "decisions" => "The decision queue could not be opened.".to_owned(),
+                    "unlock" => {
+                        self.unlocking = false;
+                        "The unlock prompt did not open. Try again in a moment.".to_owned()
+                    }
                     "reply" => format!("Your reply was not sent. {text}"),
                     "pause" | "cancel" => format!("That did not go through. {text}"),
                     _ => text,
@@ -334,7 +370,11 @@ impl App {
             Selection::Compose => None,
         };
         let want = self.want();
-        self.shield.reconcile(want, unpause.as_deref(), draft.as_ref());
+        // The empty string is the default account, and is what goes out when
+        // the store cannot be read: the card then says nothing about it.
+        let account = accounts::wire(self.chosen_account());
+        self.shield
+            .reconcile(want, unpause.as_deref(), draft.as_ref(), &account);
         if self.shield.guard == Guard::Waiting
             && self
                 .handles_asked
@@ -451,6 +491,27 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             app.instruction.clear();
         }
         Message::EditInstruction(s) => app.instruction = s,
+        Message::Accounts(store) => {
+            if !matches!(store, Store::Locked | Store::Uninitialised) {
+                app.unlocking = false;
+            }
+            app.accounts = store;
+        }
+        Message::PickAccount(name) => {
+            if let Some(kind) = app.account_kind() {
+                app.picks.set(kind, &name);
+            }
+        }
+        Message::Unlock => {
+            app.notice = None;
+            app.unlocking = true;
+            app.send(Cmd::UnlockSecrets);
+        }
+        Message::OpenAccounts => {
+            if accounts::open_settings().is_err() {
+                app.notice = Some("Settings could not be opened.".to_owned());
+            }
+        }
         Message::Resume(id) => {
             let h = app.m.history().iter().find(|h| h.task_id == id).cloned();
             if let Some(h) = h {
@@ -518,6 +579,10 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     };
     if live {
         subs.push(net::feed());
+        // The account list is read only while the composer is on screen.
+        if app.want() == Want::Commit {
+            subs.push(accounts::feed());
+        }
     }
     #[cfg(debug_assertions)]
     if app.fixture {

@@ -45,6 +45,10 @@ pub enum Cmd {
     Pause(String),
     Cancel(String, CancelMode),
     ShowDecisions,
+    /// Ask for the compositor's secret-store unlock (or set-up) prompt,
+    /// which agentd forwards. Its result is not returned: the account list's
+    /// next read shows it.
+    UnlockSecrets,
     DeleteSession(String),
 }
 
@@ -270,6 +274,12 @@ fn run(c: &Console, cmd: Cmd, out: &mut Out) -> bool {
             // 1/s: pressing twice is not an error worth a notice.
             Err(e) if e.is_rate_limited() => true,
             Err(e) => fail(out, "decisions", &e),
+        },
+        Cmd::UnlockSecrets => match c.unlock_secrets() {
+            Ok(()) => true,
+            // Pressing twice is not an error worth a notice.
+            Err(e) if e.is_rate_limited() => true,
+            Err(e) => fail(out, "unlock", &e),
         },
         Cmd::DeleteSession(id) => match c.delete_session(&id) {
             Ok(()) => refresh(c, out),

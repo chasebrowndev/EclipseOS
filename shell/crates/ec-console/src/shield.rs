@@ -46,6 +46,9 @@ pub struct Shield {
     pub state: Option<(SlotState, SlotReason)>,
     sent_draft: Option<Draft>,
     sent_unpause: Option<String>,
+    /// The account last handed to the slot (`set_account`), the empty string
+    /// being the default.
+    sent_account: Option<String>,
     /// The last request the glue refused, for a notice.
     pub error: Option<String>,
 }
@@ -61,6 +64,7 @@ impl Default for Shield {
             state: None,
             sent_draft: None,
             sent_unpause: None,
+            sent_account: None,
             error: None,
         }
     }
@@ -156,13 +160,18 @@ impl Shield {
         self.size = None;
         self.sent_draft = None;
         self.sent_unpause = None;
+        self.sent_account = None;
     }
 
     /// Bring the compositor's slot in line with what the screen needs: create,
     /// move or cancel it, then keep its draft (or its unpause target) current.
     /// Called from the heartbeat, so the draft goes out a few times a second at
     /// most, inside the compositor's own ten-a-second limit.
-    pub fn reconcile(&mut self, want: Want, unpause: Option<&str>, draft: Option<&Draft>) {
+    ///
+    /// `account` is the composer's account pick, the empty string for the
+    /// default. It goes out before the draft, and a change re-sends the draft
+    /// too, so the card is always previewed with the account it will show.
+    pub fn reconcile(&mut self, want: Want, unpause: Option<&str>, draft: Option<&Draft>, account: &str) {
         let Some(p) = self.prot.as_mut() else {
             return;
         };
@@ -177,6 +186,7 @@ impl Shield {
                     };
                     self.sent_draft = None;
                     self.sent_unpause = None;
+                    self.sent_account = None;
                     self.state = None;
                 }
                 Err(e) => self.error = Some(e.to_string()),
@@ -199,6 +209,19 @@ impl Shield {
         }
         match (self.held.kind, want) {
             (Some(SlotKind::TaskCommit), Want::Commit) => {
+                if self.sent_account.as_deref() != Some(account) {
+                    match p.set_account(account) {
+                        // `false`: a version-1 compositor, which has no
+                        // accounts. Nothing went out, and nothing will.
+                        Ok(sent) => {
+                            self.sent_account = Some(account.to_owned());
+                            if sent {
+                                self.sent_draft = None;
+                            }
+                        }
+                        Err(e) => self.error = Some(e.to_string()),
+                    }
+                }
                 if let Some(d) = draft {
                     if self.sent_draft.as_ref() != Some(d) {
                         match p.set_draft(d) {

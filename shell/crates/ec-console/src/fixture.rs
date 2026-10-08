@@ -16,6 +16,7 @@ use ec_console_client::protected::{SlotReason, SlotState};
 use iced::widget::{container, stack, Space};
 use iced::{Element, Length, Subscription, Task as Cmd, Theme};
 
+use crate::accounts::{Account, Kind, Store};
 use crate::app::{App, Message};
 use crate::model::{Deadline, Link, Selection};
 use crate::shield::Guard;
@@ -33,12 +34,35 @@ pub fn size() -> Option<(f32, f32)> {
     Some((w.parse().ok()?, h.parse().ok()?))
 }
 
-fn pkg(id: &str, name: &str) -> Package {
+fn pkg(id: &str, name: &str, backend: Option<&str>) -> Package {
     Package {
         id: id.into(),
         name: name.into(),
         publisher: "fixture".into(),
         version: "1.0".into(),
+        backend: backend.map(Into::into),
+    }
+}
+
+/// The secret store a `composer-acct-*` fixture shows. Names only, as the
+/// real list is.
+fn store(sc: &str) -> Store {
+    let acct = |name: &str, kind| Account {
+        name: name.into(),
+        kind,
+    };
+    match sc {
+        "composer-acct" | "composer-acct-api" => Store::Ready(vec![
+            acct("default", Kind::ClaudeCode),
+            acct("work", Kind::ClaudeCode),
+            acct("studio-team", Kind::ClaudeCode),
+            acct("ci", Kind::ApiKey),
+        ]),
+        "composer-acct-locked" | "composer-acct-unlocking" => Store::Locked,
+        "composer-acct-uninit" => Store::Uninitialised,
+        "composer-acct-none" => Store::Ready(vec![acct("ci", Kind::ApiKey)]),
+        "composer-acct-down" => Store::Unavailable,
+        _ => Store::Unknown,
     }
 }
 
@@ -106,11 +130,11 @@ pub fn apply(app: &mut App) {
     m.link = Link::Online;
     m.available = true;
     m.packages = vec![
-        pkg("inv", "Invoice Triage"),
-        pkg("ven", "Vendor Research"),
-        pkg("inbox", "Inbox Sweeper"),
-        pkg("cal", "Calendar Steward"),
-        pkg("notes", "Meeting Notes"),
+        pkg("inv", "Invoice Triage", Some("claude-code")),
+        pkg("ven", "Vendor Research", Some("api")),
+        pkg("inbox", "Inbox Sweeper", Some("claude-code")),
+        pkg("cal", "Calendar Steward", None),
+        pkg("notes", "Meeting Notes", None),
     ];
     app.package = Some("inv".into());
 
@@ -299,6 +323,7 @@ pub fn apply(app: &mut App) {
             sel = Selection::Compose;
         }
         "resumed" => sel = Selection::Task("t10".into()),
+        s if s.starts_with("composer-acct") => sel = Selection::Compose,
         "down" => {
             m.link = Link::Offline("no socket".into());
             m.available = false;
@@ -379,6 +404,16 @@ pub fn apply(app: &mut App) {
             app.package = Some("ven".into());
             app.resume = Some(("t2".into(), "Compare three hosting quotes".into()));
             app.instruction = "Also check support hours".into();
+        }
+        s if s.starts_with("composer-acct") => {
+            app.accounts = store(s);
+            app.unlocking = s == "composer-acct-unlocking";
+            if s == "composer-acct-api" {
+                app.package = Some("ven".into());
+            } else {
+                app.picks.set(Kind::ClaudeCode, "work");
+            }
+            app.draft = crate::app::content_with("Draft a reply to Halcyon accepting the revised quote.");
         }
         "slash-resume" => app.draft = crate::app::content_with("/resume"),
         "followup" => {
