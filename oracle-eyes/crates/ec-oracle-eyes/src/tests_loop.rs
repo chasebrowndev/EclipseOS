@@ -405,6 +405,12 @@ fn a_second_select_replaces_the_first_question() {
     std::thread::sleep(Duration::from_millis(400));
     r.step(600);
     assert_eq!(r.ctl.creates().len(), 1, "the first reply was dropped");
+    // The worker counts the cancel when it next looks at the flag, on its
+    // own thread: wait for it rather than race it.
+    let until = Instant::now() + Duration::from_secs(2);
+    while r.ask.0.lock().unwrap().cancelled == 0 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(2));
+    }
     assert_eq!(r.ask.0.lock().unwrap().cancelled, 1);
 }
 
