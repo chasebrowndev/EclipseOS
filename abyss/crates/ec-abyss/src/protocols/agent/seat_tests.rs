@@ -851,6 +851,7 @@ mod m14 {
     const PAUSED: u32 = 14;
     const INVALID_ARGUMENT: u32 = 15;
     const DUPLICATE: u32 = 17;
+    const POLICY_DENIED: u32 = 10;
 
     impl World {
         /// Every result for `req`, in arrival order.
@@ -1135,6 +1136,96 @@ mod m14 {
         w.seat.begin_atomic(b, 0);
         w.pump();
         assert_eq!(w.all(b), vec![(OK, String::new()), (DUPLICATE, "0".into())]);
+    }
+
+    /// A table holding `rule` for `cap` in phase `phase`, over a default allow.
+    fn table(w: &mut World, phase: &str, cap: &str) {
+        use ec_policy_eval::check::{CompiledRule, Phases, Pred, Table};
+        use ec_policy_eval::scope::Glob;
+        let mut rules = Phases::default();
+        let rule = CompiledRule {
+            id: "rule-x".into(),
+            preds: vec![Pred::Capability(vec![Glob::new(cap)])],
+            unless: Vec::new(),
+        };
+        match phase {
+            "deny" => rules.deny.push(rule),
+            "prompt" => rules.prompt.push(rule),
+            _ => rules.defer.push(rule),
+        }
+        rules.allow.push(CompiledRule {
+            id: "default-allow".into(),
+            preds: vec![Pred::Capability(vec![Glob::new("*")])],
+            unless: Vec::new(),
+        });
+        w.h.state.policy_table = Some(Table {
+            version: 2,
+            rules,
+            ..Default::default()
+        });
+    }
+
+    /// BATCH-01: the table is asked about every step before any runs. A
+    /// later step the policy refuses (deny, a prompt, a deferral, or a
+    /// capability the agent lacks) leaves the earlier ones unapplied too.
+    #[test]
+    fn a_policy_refusal_anywhere_in_a_batch_runs_nothing() {
+        for (phase, cap, want) in [
+            ("deny", "seat.key", (POLICY_DENIED, "rule-x".to_owned())),
+            ("prompt", "seat.key", (POLICY_DENIED, "needs_prompt:1".to_owned())),
+            ("defer", "seat.key", (POLICY_DENIED, "needs_defer:1".to_owned())),
+            ("deny", "seat.atomic", (POLICY_DENIED, "rule-x".to_owned())),
+        ] {
+            let mut w = world(&format!("m14-dry-{phase}-{cap}.sock"), &BATCH_CAPS);
+            table(&mut w, phase, cap);
+            let focus_events = w.peer.seen.seat_focus.len();
+            w.begin();
+            let f = w.id();
+            w.seat.focus(f, w.handle, 0, 0, vec![0x80]);
+            let k = w.key(KEY_A, true);
+            let c = w.commit();
+            for id in [f, k, c] {
+                assert_eq!(w.status(id), Some(want.clone()), "{phase} {cap}: req {id}");
+            }
+            assert_eq!(
+                w.peer.seen.seat_focus.len(),
+                focus_events,
+                "{phase} {cap}: focus not applied"
+            );
+            assert!(w.agent_keys().is_empty(), "{phase} {cap}: no key");
+        }
+
+        let mut w = world("m14-dry-nocap.sock", &["scene.list", "seat.focus", "seat.atomic"]);
+        let focus_events = w.peer.seen.seat_focus.len();
+        w.begin();
+        let f = w.id();
+        w.seat.focus(f, w.handle, 0, 0, vec![0x80]);
+        let k = w.key(KEY_A, true);
+        let c = w.commit();
+        assert_eq!(w.status(c), Some((NO_CAPABILITY, "seat.key".into())));
+        assert_eq!(w.status(f), Some((NO_CAPABILITY, "seat.key".into())));
+        assert_eq!(w.status(k), Some((NO_CAPABILITY, "seat.key".into())));
+        assert_eq!(
+            w.peer.seen.seat_focus.len(),
+            focus_events,
+            "the focus step did not run"
+        );
+    }
+
+    /// GEN-01: step 2 runs on arrival, inside `policy::enforce`, for a
+    /// queued batch step too: a repeated step is `duplicate` and queued once.
+    #[test]
+    fn a_repeated_batch_step_is_a_duplicate_and_runs_once() {
+        let mut w = world("m14-dedupe-batch.sock", &BATCH_CAPS);
+        w.focus();
+        w.begin();
+        let k = w.key(KEY_A, true);
+        w.seat.key(k, KEY_A, 1, 0, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.all(k), vec![(DUPLICATE, "pending".into())]);
+        let c = w.commit();
+        assert_eq!(w.status(c), Some((OK, "1".into())));
+        assert_eq!(w.agent_keys(), vec![Ev::Key(KEY_A, 1)]);
     }
 
     /// A request parked behind a prompt answers a repeat `pending`, and runs
@@ -1608,15 +1699,13 @@ mod m14 {
         w.pump();
         assert_eq!(w.status(id), Some((NO_CAPABILITY, "seat.compat_lock".into())));
 
+        // Its own scope bounds it (S-01 §2.2); seat.focus is not needed. The
+        // window is not flagged, so it is reached and refused as not compat.
         let mut w = world("m14-lock-cap2.sock", &["scene.list", "seat.compat_lock"]);
         let id = w.id();
         w.seat.compat_lock(id, w.handle, 0);
         w.pump();
-        assert_eq!(
-            w.status(id),
-            Some((NO_CAPABILITY, "seat.focus".into())),
-            "scope comes from seat.focus"
-        );
+        assert_eq!(w.status(id), Some((INVALID_ARGUMENT, "not_compat".into())));
 
         let mut w = world(
             "m14-lock-big.sock",

@@ -123,24 +123,37 @@ pub fn refused(state: &mut AbyssState, agent: u64, req_id: u32, timed_out: bool)
 /// Step 7, for a `prompt` outcome on a request carrying `token`: consume
 /// `(handle, 0)` from it, or say why not.
 pub fn consume(state: &mut AbyssState, agent: u64, token: u64, handle: u64) -> Result<(), Status> {
+    let (t, i) = find(state, agent, token, handle)?;
+    state.batches.tokens[t].targets.remove(i);
+    state.batches.tokens.retain(|t| !t.targets.is_empty());
+    Ok(())
+}
+
+/// What [`consume`] would answer, consuming nothing (an atomic batch's dry
+/// run).
+pub fn covers(state: &AbyssState, agent: u64, token: u64, handle: u64) -> Result<(), Status> {
+    find(state, agent, token, handle).map(|_| ())
+}
+
+/// The token and target index `(handle, 0)` is at.
+fn find(state: &AbyssState, agent: u64, token: u64, handle: u64) -> Result<(usize, usize), Status> {
     let task = state.agents.task_of(agent);
     let Some(t) = state
         .batches
         .tokens
-        .iter_mut()
-        .find(|t| t.token == token && t.agent == agent)
+        .iter()
+        .position(|t| t.token == token && t.agent == agent)
     else {
         return Err(Status::BatchExhausted);
     };
-    if t.task.map(|x| x.0) != task.map(|x| x.0) {
+    let tok = &state.batches.tokens[t];
+    if tok.task.map(|x| x.0) != task.map(|x| x.0) {
         return Err(Status::TaskClosed);
     }
-    let Some(i) = t.targets.iter().position(|x| *x == (handle, 0)) else {
+    let Some(i) = tok.targets.iter().position(|x| *x == (handle, 0)) else {
         return Err(Status::BatchExhausted);
     };
-    t.targets.remove(i);
-    state.batches.tokens.retain(|t| !t.targets.is_empty());
-    Ok(())
+    Ok((t, i))
 }
 
 /// The agent is gone: its tokens go with it.

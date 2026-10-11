@@ -62,16 +62,18 @@ pub struct Views<'a> {
     pub read_held: bool,
 }
 
-/// The acting capabilities a seat request can need (COMP-08 §4, S-01 §2).
+/// The acting capabilities a seat request can need (COMP-08 §4, S-01 §2.2).
 /// Each gets its own visibility, compiled when the grants change, so the
 /// request path looks one up and allocates nothing.
-pub const SEAT_CAPS: [&str; 6] = [
+pub const SEAT_CAPS: [&str; 8] = [
     "seat.focus",
     "seat.key",
     "seat.text",
     "seat.pointer",
     "seat.touch",
     "click",
+    "seat.atomic",
+    "seat.compat_lock",
 ];
 
 /// The principal prefix every agent grant carries (S-01 §4).
