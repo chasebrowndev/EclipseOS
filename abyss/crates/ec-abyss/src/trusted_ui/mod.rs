@@ -37,6 +37,7 @@ pub mod broker;
 pub mod commit;
 pub mod consent;
 pub mod erase;
+pub mod indicator;
 pub mod install;
 pub mod modal;
 pub mod notice;
@@ -139,6 +140,8 @@ pub struct TrustedUi {
     pub(crate) installs: install::Installs,
     /// Commit slots' trusted side: preview, arming, cards (COMP-19).
     pub(crate) cards: commit::Cards,
+    /// The compat-lock indicator's state (§3.4).
+    pub(crate) marks: indicator::Marks,
     pub(crate) broker: broker::Broker,
     /// The bound trusted socket, so a clean exit can unlink it.
     pub path: Option<PathBuf>,
@@ -436,7 +439,15 @@ pub fn elements(
         return Vec::new();
     };
     // Commit-slot cards: above every client, below any prompt and its dim.
-    let cards = commit::elements(renderer, ui, output, output_loc, logical);
+    let mut cards = commit::elements(renderer, ui, output, output_loc, logical);
+    // Compat-lock pills and outlines (§3.4): above every client, below cards.
+    cards.extend(indicator::elements(
+        renderer,
+        &mut ui.marks,
+        output,
+        output_loc,
+        logical,
+    ));
     let Some(o) = ui.open.as_ref() else {
         return cards;
     };
@@ -657,6 +668,7 @@ fn dump_trusted_surfaces() {
     for (name, r) in commit::dump_cards() {
         raw(name, &r);
     }
+    raw("compat-lock", &indicator::dump_pill());
     let ask = consent::Ask {
         principal: "agent:research-7".into(),
         action: "Click \"Send\"".into(),

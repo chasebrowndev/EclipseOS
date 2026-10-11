@@ -1595,6 +1595,11 @@ mod m14 {
         w.pump();
         assert_eq!(w.status(lock), Some((OK, String::new())));
         assert_eq!(w.h.state.agents.locks.active().count(), 1);
+        // COMP-10 §3.4: the pill is up and the window outlined.
+        let drawn = crate::trusted_ui::indicator::drawn(&w.h.state);
+        assert_eq!(drawn.len(), 1);
+        assert_eq!(drawn[0], (0, w.h.state.space.element_geometry(&window)));
+        assert!(drawn[0].1.is_some(), "the locked window is outlined");
 
         let before = heard(&w).len();
         human_key(&mut w, KEY_ESC, true);
@@ -1602,6 +1607,12 @@ mod m14 {
         human_key(&mut w, KEY_A, true);
         human_key(&mut w, KEY_A, false);
         assert_eq!(heard(&w).len(), before, "held while locked, not dropped");
+        crate::trusted_ui::indicator::tick(&mut w.h.state);
+        assert_eq!(
+            crate::trusted_ui::indicator::drawn(&w.h.state)[0].0,
+            4,
+            "the pill counts what is held"
+        );
 
         let un = w.id();
         w.seat.compat_unlock(un);
@@ -1618,6 +1629,11 @@ mod m14 {
             "delivered in order on release"
         );
         assert_eq!(w.h.state.agents.locks.active().count(), 0);
+        crate::trusted_ui::indicator::tick(&mut w.h.state);
+        assert!(
+            crate::trusted_ui::indicator::drawn(&w.h.state).is_empty(),
+            "gone with the lock"
+        );
         let un = w.id();
         w.seat.compat_unlock(un);
         w.pump();
