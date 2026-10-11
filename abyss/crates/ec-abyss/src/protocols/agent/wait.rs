@@ -5,8 +5,13 @@
 //! the windows it names (resolved through the agent's `scene.list` view when
 //! the request arrives, so an unknown, hidden or out-of-scope handle is the
 //! same `invalid_argument` "handle" as everywhere, F-07). It is evaluated
-//! when the request arrives and then on a 25 ms calloop timer that runs only
-//! while some wait is pending. Every evaluation goes through the agent's
+//! when the request arrives and then by [`wake`], which each backend's loop
+//! calls through `agent::flush` after every dispatch round: a toplevel
+//! mapping or unmapping, a title or focus change and a generation bump all
+//! happen inside a dispatch, so the wait is answered in the same round as the
+//! change, and nothing runs while nothing happens. The only timer is one
+//! deadline timer armed for the earliest instant a wait can end without any
+//! event: its own timeout, or the end of an `idle` quiet period. Every evaluation goes through the agent's
 //! *current* view again: a window that has since become invisible to the
 //! agent satisfies nothing (except `unmapped`, for a window it did see), so a
 //! wait is no oracle on windows the agent lost sight of.
@@ -35,8 +40,6 @@ use super::{generation, seat};
 use crate::policy::scene;
 use crate::state::AbyssState;
 
-/// How often pending waits are re-evaluated.
-const POLL: Duration = Duration::from_millis(25);
 /// The longest a wait may be.
 pub const MAX_TIMEOUT_MS: u32 = 600_000;
 /// Pending waits one agent may hold.
@@ -94,10 +97,17 @@ struct Wait {
 #[derive(Debug, Default)]
 pub struct Waits {
     waits: Vec<Wait>,
-    timer: Option<RegistrationToken>,
+    /// The one deadline timer, and the instant it is set for.
+    timer: Option<(RegistrationToken, Instant)>,
 }
 
 impl Waits {
+    /// When the deadline timer fires, if one is armed.
+    #[cfg(test)]
+    pub(crate) fn armed(&self) -> Option<Instant> {
+        self.timer.as_ref().map(|t| t.1)
+    }
+
     /// Waits pending.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
@@ -325,15 +335,6 @@ pub fn add(
     if mine.count() >= MAX_WAITS {
         return Err((Status::QuotaExceeded, "waits"));
     }
-    if state.agents.waits.timer.is_none() {
-        let t = state
-            .loop_handle
-            .insert_source(Timer::from_duration(POLL), |_, _, st| poll(st));
-        match t {
-            Ok(t) => state.agents.waits.timer = Some(t),
-            Err(_) => return Err((Status::QuotaExceeded, "timer")),
-        }
-    }
     state.agents.waits.waits.push(Wait {
         agent,
         req_id,
@@ -341,6 +342,61 @@ pub fn add(
         pred,
         deadline: Instant::now() + Duration::from_millis(u64::from(timeout_ms)),
     });
+    if rearm(state).is_err() {
+        // No timer means no bound on the wait: refuse.
+        state.agents.waits.waits.pop();
+        return Err((Status::QuotaExceeded, "timer"));
+    }
+    Ok(())
+}
+
+/// The earliest instant after `now` at which a pending wait ends with no
+/// event to cause it: a timeout, or the end of an `idle` quiet period.
+fn next_due(state: &mut AbyssState, now: Instant) -> Option<Instant> {
+    let mut next: Option<Instant> = None;
+    let mut take = |t: Instant| next = Some(next.map_or(t, |n| n.min(t)));
+    for i in 0..state.agents.waits.waits.len() {
+        let w = &state.agents.waits.waits[i];
+        take(w.deadline);
+        if let Pred::Idle { window, ms, .. } = &w.pred {
+            let (window, ms) = (window.clone(), *ms);
+            let due = generation::observe(state, &window).1 + Duration::from_millis(ms);
+            // Past and still unanswered: not visible to the agent. A later
+            // event, not a timer that would fire at once forever, decides it.
+            if due > now {
+                take(due);
+            }
+        }
+    }
+    next
+}
+
+/// Keep the deadline timer at, or before, [`next_due`]. A timer that fires
+/// early only re-arms itself; none is armed while no wait is pending.
+fn rearm(state: &mut AbyssState) -> Result<(), ()> {
+    let next = next_due(state, Instant::now());
+    let armed = state.agents.waits.timer.as_ref().map(|t| t.1);
+    let Some(next) = next else {
+        if let Some((t, _)) = state.agents.waits.timer.take() {
+            state.loop_handle.remove(t);
+        }
+        return Ok(());
+    };
+    if armed.is_some_and(|a| a <= next) {
+        return Ok(());
+    }
+    if let Some((t, _)) = state.agents.waits.timer.take() {
+        state.loop_handle.remove(t);
+    }
+    let t = state
+        .loop_handle
+        .insert_source(Timer::from_deadline(next), |_, _, st| {
+            st.agents.waits.timer = None;
+            wake(st);
+            TimeoutAction::Drop
+        })
+        .map_err(|_| ())?;
+    state.agents.waits.timer = Some((t, next));
     Ok(())
 }
 
@@ -365,8 +421,13 @@ pub fn forget(state: &mut AbyssState, agent: u64) {
     state.agents.waits.waits.retain(|w| w.agent != agent);
 }
 
-/// The timer: answer every wait that now holds or has run out.
-fn poll(state: &mut AbyssState) -> TimeoutAction {
+/// Answer every wait that now holds or has run out. Called after every
+/// dispatch round (`agent::flush`) and by the deadline timer; returns at once
+/// with no wait pending.
+pub fn wake(state: &mut AbyssState) {
+    if state.agents.waits.waits.is_empty() {
+        return;
+    }
     let now = Instant::now();
     let waits = std::mem::take(&mut state.agents.waits.waits);
     let mut keep = Vec::with_capacity(waits.len());
@@ -387,12 +448,11 @@ fn poll(state: &mut AbyssState) -> TimeoutAction {
             None => keep.push(w),
         }
     }
-    state.agents.waits.waits.extend(keep);
-    if state.agents.waits.waits.is_empty() {
-        state.agents.waits.timer = None;
-        TimeoutAction::Drop
-    } else {
-        TimeoutAction::ToDuration(POLL)
+    // Waits added while evaluating (none today) stay behind the kept ones.
+    keep.append(&mut state.agents.waits.waits);
+    state.agents.waits.waits = keep;
+    if rearm(state).is_err() {
+        tracing::warn!("wait_for deadline timer could not be armed");
     }
 }
 
