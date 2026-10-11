@@ -189,39 +189,32 @@ else and everything under `agents.slice`. Two things remain:
 
 # Agent batches, generations and locks — found landing M14, 2026-10-06
 
-## BATCH-01: a batch is all-or-nothing only up to what the compositor can check without running a step
+## BATCH-01: a step that fails while running leaves the steps before it applied
 
-`protocols/agent/atomic.rs` queues a batch's steps and checks the whole batch
-before running any (paused, a target gone or unmapped, a focus-dependent step
-with no focus, a stale generation). `policy::enforce` (TCB) has no "decide
-without executing" entry, so a step the *policy* refuses (deny, a prompt that
-parks, a rule change mid-batch) is only seen when its turn comes. Earlier steps
-have then run: the commit answers that step's status with detail
-`partial:<n>`, and a step that parks behind a prompt ends the batch with
-`batch_interrupted`. **Proposed:** `policy::enforce::dry_run` (steps 1 to 8 for
-every request, nothing executed), called from `atomic::commit` at the marked
-`TCB-HOOK`. Also: `max_frames` is validated and carried, but delivery is
-synchronous (0 frames), and an open batch is abandoned after 5 s, a constant
-the spec does not give.
+`atomic::commit` asks `policy::enforce::dry_run` about every step (steps 1 and
+3 to 8, `seat.atomic` on each target included) before any runs, so a policy
+refusal, a prompt or a deferral anywhere in the batch runs nothing. What the
+dry run cannot foresee is a step failing as it executes (a `keysym` the keymap
+cannot type, the client gone): the steps before it stay applied and the commit
+answers `partial:<n>`. Also: `max_frames` is validated and carried, but
+delivery is synchronous (0 frames), and an open batch is abandoned after 5 s,
+a constant the spec does not give. A prompt or deferral inside a batch is
+refused (`needs_prompt:<i>` / `needs_defer:<i>`): owner decision 2026-10-11,
+the spec does not say.
 
 ## GEN-01: generations track what a toplevel reports, not its tree
 
 COMP-09's semantic tree does not exist, so a toplevel's generation bumps on a
 change of app id, title, geometry, workspace, output or the
 maximized/fullscreen/floating/minimized bits (`generation.rs`). A change
-inside the client's content that moves none of those is not seen. Step 8 of
-COMP-08 §10 runs in `seat::execute` (after the table, and after the 8b class
-re-check for a prompted request) rather than between 7 and 8b, and dedupe
-(step 2) runs in `seat.rs` before the request reaches `enforce`. Both want to
-move into `policy::enforce` (see the `TCB-HOOK` in `seat::execute`).
+inside the client's content that moves none of those is not seen. Needs the
+COMP-09 tree (M22).
 
 ## LOCK-01: compat_lock holds human input, but does not yet route agent acts through the human seat
 
 `protocols/agent/lock.rs` queues the human's keys, buttons and scrolls for the
 locked window and replays them on release. Not done: the COMP-10 §3.4
-indicator (TCB), the table check for `seat.compat_lock` (the grant must hold
-it and `seat.focus` reaching the window instead), queueing of touch and tablet
-input, and the compat fallback that sends an agent's acts through the human
+indicator (TCB), queueing of touch and tablet input, and the compat fallback that sends an agent's acts through the human
 seat for a `seat-compat lock` app (COMP-04 §8). Queued input is discarded, not
 delivered, if the human's focus has left the window by release.
 

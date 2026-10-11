@@ -353,7 +353,11 @@
       focus that was lost, a stale generation or a pause aborts the whole
       batch before any step runs: every queued request and the commit answer
       with the cause (focus_lost, stale_generation, paused) and nothing was
-      applied.
+      applied. So does a step the policy refuses: every step is decided,
+      seat.atomic on its target included, before any runs. A step the table
+      would prompt for (with no batch token covering its target) or defer is
+      refused too, policy_denied "needs_prompt:i" / "needs_defer:i" with i
+      the step's index: a batch never waits halfway; preflight first.
     </description>
 
     <enum name="error">
@@ -540,8 +544,9 @@
 
     <request name="compat_lock" since="3">
       <description summary="exclusive lock on a seat-compat lock toplevel (COMP-04 §7)">
-        Needs seat.compat_lock and seat.focus on the window, and the window
-        must carry seat-compat lock (X11 windows always do), else
+        Needs seat.compat_lock reaching the window and allowed by the policy
+        (a rule that would prompt or defer is policy_denied "needs_prompt" /
+        "needs_defer"), and the window must carry seat-compat lock (X11 windows always do), else
         invalid_argument "not_compat". While held, the human's keys, buttons
         and scrolls for that window are queued and delivered in order on
         release. timeout_ms is the lock's lifetime (1 to 60000; 0 means

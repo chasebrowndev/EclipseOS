@@ -85,9 +85,6 @@ pub(crate) struct AgentAux {
     pub(crate) dedupe: dedupe::Dedupe,
     /// The open atomic batch, if any.
     pub(crate) batch: Option<atomic::Batch>,
-    /// `expected_generation` of requests in flight, `(req_id, act, expected)`:
-    /// checked at step 8 by [`seat::execute`].
-    pub(crate) expect: Vec<(u32, crate::policy::enforce::Act, u32)>,
 }
 
 /// The socket, the global and the live agent objects.

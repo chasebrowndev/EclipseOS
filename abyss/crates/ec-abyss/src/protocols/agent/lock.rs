@@ -24,9 +24,9 @@
 //! [`hold_axis`]) return at once, with no allocation, while no lock exists.
 //!
 //! TCB-HOOK (COMP-10 §3.4): the trusted-UI focus-steal/compat-lock indicator
-//! has to be drawn while [`Locks::active`] is non-empty. Enforcement of the
-//! request itself (the table's `check()` for `seat.compat_lock`) is a
-//! TCB-HOOK in [`lock`].
+//! has to be drawn while [`Locks::active`] is non-empty. The request itself
+//! is decided by `policy::enforce::control` (scope and table for
+//! `seat.compat_lock`).
 
 use std::time::{Duration, Instant};
 
@@ -39,7 +39,6 @@ use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::RegistrationToken;
 use smithay::utils::{IsAlive, SERIAL_COUNTER};
 
-use super::atomic;
 use crate::protocols::standard::seat::KeyboardFocusTarget;
 use crate::state::AbyssState;
 use crate::xwayland::security::SeatCompat;
@@ -89,15 +88,9 @@ pub(super) fn lock(state: &mut AbyssState, agent: u64, handle: u64, timeout_ms: 
     if timeout_ms > MAX_TIMEOUT_MS {
         return (Status::InvalidArgument, "timeout_ms".to_owned());
     }
-    // TCB-HOOK: run `check()` for capability `seat.compat_lock` (step 7) with
-    // the target's facts, and add `seat.compat_lock` to `policy::SEAT_CAPS`
-    // so its scope is compiled; honour prompt/defer. Until then the grant
-    // must hold `seat.compat_lock` AND `seat.focus` reaching the window
-    // (so a `seat.focus` scope bounds it), which is tighter than the spec.
-    if !atomic::held(state, agent, "seat.compat_lock") {
-        return (Status::NoCapability, "seat.compat_lock".to_owned());
-    }
-    let window = match atomic::visible_window(state, agent, "seat.focus", handle) {
+    // Steps 3 to 7: `seat.compat_lock`'s scope reaches the window and the
+    // table allows it (S-01 §2.2). A prompt or defer is refused, not waited.
+    let window = match crate::policy::enforce::control(state, agent, "seat.compat_lock", handle) {
         Ok(w) => w,
         Err(e) => return e,
     };
