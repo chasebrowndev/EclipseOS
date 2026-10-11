@@ -1117,10 +1117,14 @@ fn render_output(state: &mut AbyssState, index: usize) {
     crate::shell::tick_retile_hold(state);
     // Commit slots follow their window this frame, not 50 ms later.
     crate::trusted_ui::commit::tick(state);
+    crate::trusted_ui::indicator::tick(state);
     let capture_active = state.capture_active();
     let prompt = crate::trusted_ui::holds_seat(state);
-    // Over a slot card too, the compositor's arrow replaces the client cursor.
-    let arrow = prompt || crate::trusted_ui::pointer_on_card(state);
+    // Over a slot card or an indicator too, the compositor's arrow replaces
+    // the client cursor.
+    let arrow = prompt
+        || crate::trusted_ui::pointer_on_card(state)
+        || crate::trusted_ui::indicator::at(state, state.pointer_location);
     let Some(drm) = state.drm.as_mut() else { return };
     if !drm.session.is_active() {
         return;

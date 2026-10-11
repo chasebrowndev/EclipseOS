@@ -410,6 +410,7 @@ fn redraw(
     crate::shell::tick_retile_hold(state);
     // Commit slots follow their window this frame, not 50 ms later.
     crate::trusted_ui::commit::tick(state);
+    crate::trusted_ui::indicator::tick(state);
     // An output resized by the IPC layer needs a target of the new size before
     // anything is drawn into it; a stale one would crop or stretch the frame.
     if let Some(mode) = out.current_mode() {

@@ -78,6 +78,14 @@ impl Locks {
     pub fn active(&self) -> impl Iterator<Item = (u64, &Window)> {
         self.locks.iter().map(|l| (l.agent, &l.window))
     }
+
+    /// Each lock with when it ends and how many human events it holds, for
+    /// the trusted-UI indicator (COMP-10 §3.4).
+    pub fn shown(&self) -> impl Iterator<Item = (u64, &Window, Instant, usize)> {
+        self.locks
+            .iter()
+            .map(|l| (l.agent, &l.window, l.expires, l.held.len()))
+    }
 }
 
 /// `compat_lock`. The answer for the caller to send.
@@ -129,6 +137,7 @@ pub(super) fn lock(state: &mut AbyssState, agent: u64, handle: u64, timeout_ms: 
         held: Vec::new(),
     });
     tracing::info!(agent, "compat lock taken");
+    crate::trusted_ui::indicator::tick(state);
     (Status::Ok, String::new())
 }
 
