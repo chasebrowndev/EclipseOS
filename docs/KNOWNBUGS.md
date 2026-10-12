@@ -137,10 +137,13 @@ pre-map `_NET_WM_STATE` message, from an undecorated screen-sized window
   Wine's fullscreen windows are undecorated and screen-sized, so they are
   caught by the legacy rule. **Proposed:** a Smithay bump, or read the property in a patched
   `update_properties`.
-- **`zwp_xwayland_keyboard_grab_v1` is not advertised.** Smithay's grab
-  pins keyboard focus to the X surface. Granting it is an input-capture
-  capability, so it needs a policy decision before it ships (root invariants:
-  no ambient authority; trusted UI holds the seat).
+- **`zwp_xwayland_keyboard_grab_v1` is not advertised: decided 2026-10-12,
+  by design.** Smithay's grab only pins keyboard focus to the X surface.
+  abyss's binding filter still runs first, so shortcut pass-through would
+  also need the filter bypassed. X is one untrusted domain (ADR 0026), so
+  any X client could take that grab. Nothing in use needs it. If an app
+  ever does, the design is a per-app opt-in, default off, with the session
+  lock, trusted prompts and a reserved escape chord always exempt.
 - **X restack requests are dropped** (`configure_request` ignores `Reorder`).
 - **`scaling "client"` takes one scale at Xwayland start**, so outputs with
   mixed scales are wrong until restart (documented in `xwayland/mod.rs`).
