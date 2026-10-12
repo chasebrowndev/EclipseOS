@@ -184,8 +184,8 @@ pub struct Xwayland {
     /// available: no X11 trust domain exists (COMP-07 §7).
     pub enable: bool,
     /// `false` (default): the compositor upscales X11 clients rendering at
-    /// scale 1 — blurry but always correct. `true`: hand the clients DPI
-    /// hints and let them render natively (COMP-07 §4).
+    /// scale 1 — blurry but always correct. `true`: X11 pixels map 1:1 to
+    /// physical pixels at the focused output's scale (COMP-07 §4).
     pub scaling_client: bool,
 }
 

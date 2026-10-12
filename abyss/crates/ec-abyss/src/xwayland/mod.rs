@@ -10,6 +10,7 @@ pub mod xwm;
 
 use smithay::{
     reexports::wayland_server::Client,
+    utils::{Logical, Rectangle},
     wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
     xwayland::{xwm::XwmId, X11Surface, X11Wm, XWayland, XWaylandEvent},
 };
@@ -29,8 +30,90 @@ pub struct XWaylandState {
     /// the human to see, excluded from the managed window set and (later)
     /// from the agent scene (COMP-07 §1).
     pub unmanaged: Vec<X11Surface>,
+    /// Override-redirect windows whose geometry is still the creation-time
+    /// one (no `ConfigureNotify` yet); see [`creation_geometry`].
+    pub unrefreshed: Vec<X11Surface>,
     /// Client-side scale currently advertised through XSETTINGS.
     pub advertised_scale: Option<i32>,
+    /// The `client_scale` handed to smithay for the XWayland client: X pixels
+    /// per logical pixel. `None` (read as 1.0) in compositor mode. Set once
+    /// when the X server comes up; reload semantics are `restart`, so live
+    /// windows never see it change under them.
+    pub client_scale: Option<f64>,
+}
+
+/// X pixels per logical pixel for the X11 domain; 1.0 unless `scaling "client"`.
+pub fn client_scale(state: &AbyssState) -> f64 {
+    state.xwayland.client_scale.unwrap_or(1.0)
+}
+
+/// A rectangle in X space (physical pixels at `scale`) as abyss logical space.
+///
+/// smithay's `X11Surface` already converts at every boundary it owns
+/// (`configure`, `configure_request`, `configure_notify`, `geometry`, size
+/// hints), so abyss works in logical space throughout. The one place it does
+/// not is a window's geometry at creation, which smithay divides by the
+/// *truncated* scale; [`creation_geometry`] undoes that.
+pub fn from_x11(rect: Rectangle<i32, Logical>, scale: f64) -> Rectangle<i32, Logical> {
+    if scale == 1.0 {
+        return rect;
+    }
+    Rectangle::new(
+        (
+            (rect.loc.x as f64 / scale).round() as i32,
+            (rect.loc.y as f64 / scale).round() as i32,
+        )
+            .into(),
+        (
+            ((rect.size.w as f64 / scale).round() as i32).max(1),
+            ((rect.size.h as f64 / scale).round() as i32).max(1),
+        )
+            .into(),
+    )
+}
+
+/// The inverse of [`from_x11`].
+#[cfg(test)]
+pub fn to_x11(rect: Rectangle<i32, Logical>, scale: f64) -> Rectangle<i32, Logical> {
+    if scale == 1.0 {
+        return rect;
+    }
+    Rectangle::new(
+        (
+            (rect.loc.x as f64 * scale).round() as i32,
+            (rect.loc.y as f64 * scale).round() as i32,
+        )
+            .into(),
+        (
+            ((rect.size.w as f64 * scale).round() as i32).max(1),
+            ((rect.size.h as f64 * scale).round() as i32).max(1),
+        )
+            .into(),
+    )
+}
+
+/// A window's geometry as smithay stored it at creation, before any
+/// `ConfigureNotify` refreshed it: X pixels divided by `scale as i32`
+/// (smithay `xwm/mod.rs:1455`), so only correct when `scale` is integral.
+/// Redo the division with the real scale.
+pub fn creation_geometry(raw: Rectangle<i32, Logical>, scale: f64) -> Rectangle<i32, Logical> {
+    let truncated = (scale as i32).max(1) as f64;
+    if scale == truncated {
+        return raw;
+    }
+    let x = Rectangle::new(
+        (
+            (raw.loc.x as f64 * truncated).round() as i32,
+            (raw.loc.y as f64 * truncated).round() as i32,
+        )
+            .into(),
+        (
+            (raw.size.w as f64 * truncated).round() as i32,
+            (raw.size.h as f64 * truncated).round() as i32,
+        )
+            .into(),
+    );
+    from_x11(x, scale)
 }
 
 /// Spawn the X server and arm the event source (COMP-07 §1).
@@ -135,6 +218,24 @@ pub fn apply_scale(state: &mut AbyssState) {
     let dpi = (96.0 * scale).round() as i32;
     if state.xwayland.advertised_scale == Some(dpi) {
         return;
+    }
+    if state.xwayland.wm.is_none() {
+        return;
+    }
+    if state.config.xwayland.scaling_client && state.xwayland.client_scale.is_none() {
+        // Map X pixels 1:1 to physical pixels: smithay then reads X sizes and
+        // positions as `x / scale` logical, and X buffers as that logical size.
+        if let Some(client) = state.xwayland.client.clone() {
+            use smithay::wayland::compositor::CompositorHandler;
+            state.client_compositor_state(&client).set_client_scale(scale);
+            state.xwayland.client_scale = Some(scale);
+            // Outputs the X server already bound only see the new scale on
+            // the next state change; without this its root stays logical-sized.
+            let outputs: Vec<_> = state.space.outputs().cloned().collect();
+            for output in outputs {
+                output.change_current_state(None, None, None, None);
+            }
+        }
     }
     let Some(wm) = state.xwayland.wm.as_mut() else {
         return;
