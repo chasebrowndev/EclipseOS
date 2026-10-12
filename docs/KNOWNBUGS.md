@@ -124,6 +124,27 @@ of a dead control in this crate.
 
 # Agent seats — found landing M13, 2026-10-06
 
+## XWL-01: X11 gaps left after the 2026-10 game audit
+
+Fixed in that pass: physical motion reaches `zwp_relative_pointer`
+(Proton mouse-look), and the pre-map fullscreen request is honoured, from a
+pre-map `_NET_WM_STATE` message, from an undecorated screen-sized window
+(KWin's "legacy fullscreen") or from a tiled window resizing to the screen
+(`abyss/crates/ec-abyss/src/xwayland/xwm.rs`). Still open:
+- **Pre-map `_NET_WM_STATE` property alone.** Smithay 0.7.0 never reads the
+  property a client writes on a withdrawn window (it tracks only states the
+  WM set). A *decorated* window that asks for fullscreen this way maps tiled.
+  Wine's fullscreen windows are undecorated and screen-sized, so they are
+  caught by the legacy rule. **Proposed:** a Smithay bump, or read the property in a patched
+  `update_properties`.
+- **`zwp_xwayland_keyboard_grab_v1` is not advertised.** Smithay's grab
+  pins keyboard focus to the X surface. Granting it is an input-capture
+  capability, so it needs a policy decision before it ships (root invariants:
+  no ambient authority; trusted UI holds the seat).
+- **X restack requests are dropped** (`configure_request` ignores `Reorder`).
+- **`scaling "client"` takes one scale at Xwayland start**, so outputs with
+  mixed scales are wrong until restart (documented in `xwayland/mod.rs`).
+
 ## SEAT-01: an agent's wl_seat is advertised to every client
 
 `abyss/crates/ec-abyss/src/protocols/agent/seat.rs` creates each agent seat

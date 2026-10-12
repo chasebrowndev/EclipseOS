@@ -33,6 +33,12 @@ pub struct XWaylandState {
     /// Override-redirect windows whose geometry is still the creation-time
     /// one (no `ConfigureNotify` yet); see [`creation_geometry`].
     pub unrefreshed: Vec<X11Surface>,
+    /// Managed windows that asked for fullscreen (or maximize) before they
+    /// were mapped. There is no `Window` to act on yet, so the request is
+    /// parked here and applied at map, the way `map_toplevel` replays the xdg
+    /// pending state.
+    pub wants_fullscreen: Vec<X11Surface>,
+    pub wants_maximized: Vec<X11Surface>,
     /// Client-side scale currently advertised through XSETTINGS.
     pub advertised_scale: Option<i32>,
     /// The `client_scale` handed to smithay for the XWayland client: X pixels
