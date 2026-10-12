@@ -1439,7 +1439,8 @@ pub const TABLE: &[Key] = &[
         Abyss,
         NeedsRestart,
         "`compositor` upscales X11 clients — blurry but always correct. \
-       `client` hands them DPI hints and lets them render natively.",
+       `client` maps X11 pixels 1:1 to physical pixels: games and DPI-aware \
+       apps render sharp; old non-DPI-aware X apps render small.",
     ),
     // idle
     k(

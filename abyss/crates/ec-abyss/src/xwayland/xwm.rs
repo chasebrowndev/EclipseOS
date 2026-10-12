@@ -32,7 +32,10 @@ use smithay::{
 use crate::{
     shell,
     state::AbyssState,
-    xwayland::security::{self, X11Class},
+    xwayland::{
+        self,
+        security::{self, X11Class},
+    },
 };
 
 /// Sensitivity/trust class of every X11 window. Constant by construction:
@@ -95,6 +98,7 @@ impl XwmHandler for AbyssState {
 
     fn new_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
         tracing::debug!(class = window.class(), "x11 override-redirect window created");
+        self.xwayland.unrefreshed.push(window);
     }
 
     /// A managed window wants to be on screen: honour it, then place it
@@ -112,7 +116,10 @@ impl XwmHandler for AbyssState {
     /// Override-redirect: menus, tooltips, DnD icons. The client owns their
     /// geometry outright; the compositor only stacks and draws them.
     fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
-        let geo = window.geometry();
+        let mut geo = window.geometry();
+        if self.xwayland.unrefreshed.contains(&window) {
+            geo = xwayland::creation_geometry(geo, xwayland::client_scale(self));
+        }
         let element = Window::new_x11_window(window.clone());
         self.xwayland.unmanaged.push(window);
         self.space.map_element(element.clone(), geo.loc, true);
@@ -127,6 +134,7 @@ impl XwmHandler for AbyssState {
             shell::unmap_window(self, &element);
         }
         self.xwayland.unmanaged.retain(|s| *s != window);
+        self.xwayland.unrefreshed.retain(|s| *s != window);
         if !window.is_override_redirect() {
             let _ = window.set_mapped(false);
         }
@@ -140,6 +148,7 @@ impl XwmHandler for AbyssState {
             shell::unmap_window(self, &element);
         }
         self.xwayland.unmanaged.retain(|s| *s != window);
+        self.xwayland.unrefreshed.retain(|s| *s != window);
     }
 
     /// Geometry requests. Tiled windows are held to the layout, so the
@@ -239,6 +248,7 @@ impl XwmHandler for AbyssState {
         if !window.is_override_redirect() {
             return;
         }
+        self.xwayland.unrefreshed.retain(|s| *s != window);
         let Some(element) = window_for(self, &window) else {
             return;
         };
@@ -335,8 +345,10 @@ impl XwmHandler for AbyssState {
             shell::unmap_window(self, &w);
         }
         self.xwayland.unmanaged.clear();
+        self.xwayland.unrefreshed.clear();
         self.xwayland.wm = None;
         self.xwayland.advertised_scale = None;
+        self.xwayland.client_scale = None;
     }
 }
 
@@ -360,5 +372,45 @@ mod tests {
             requested_rect(base, None, Some(-4), None, Some(0)),
             r(10, -4, 300, 1)
         );
+    }
+
+    #[test]
+    fn x11_rect_round_trips_at_every_scale() {
+        // Identity at 1.0.
+        let x = r(30, 50, 1280, 720);
+        assert_eq!(xwayland::from_x11(x, 1.0), x);
+        assert_eq!(xwayland::to_x11(x, 1.0), x);
+        for scale in [1.0, 1.9, 2.0] {
+            // Logical -> X -> logical is lossless (X has more pixels).
+            let l = r(10, 20, 800, 600);
+            assert_eq!(
+                xwayland::from_x11(xwayland::to_x11(l, scale), scale),
+                l,
+                "{scale}"
+            );
+        }
+        assert_eq!(
+            xwayland::from_x11(r(190, 95, 1900, 950), 1.9),
+            r(100, 50, 1000, 500)
+        );
+        assert_eq!(xwayland::from_x11(r(0, 0, 1, 1), 2.0), r(0, 0, 1, 1));
+    }
+
+    #[test]
+    fn creation_geometry_redoes_smithays_truncated_division() {
+        // 1.9 truncates to 1: smithay left X pixels untouched.
+        assert_eq!(
+            xwayland::creation_geometry(r(190, 95, 1900, 950), 1.9),
+            r(100, 50, 1000, 500)
+        );
+        // 2.5 truncates to 2: smithay halved.
+        assert_eq!(
+            xwayland::creation_geometry(r(100, 50, 500, 250), 2.5),
+            r(80, 40, 400, 200)
+        );
+        // Integral scales were already right.
+        let g = r(10, 20, 300, 200);
+        assert_eq!(xwayland::creation_geometry(g, 2.0), g);
+        assert_eq!(xwayland::creation_geometry(g, 1.0), g);
     }
 }
