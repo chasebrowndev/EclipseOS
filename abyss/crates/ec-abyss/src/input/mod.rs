@@ -16,7 +16,7 @@ use smithay::{
         pointer::{
             AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
             GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
-            GestureSwipeUpdateEvent, MotionEvent,
+            GestureSwipeUpdateEvent, MotionEvent, RelativeMotionEvent,
         },
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -594,8 +594,48 @@ impl AbyssState {
     }
 
     fn on_pointer_motion<B: InputBackend>(&mut self, event: B::PointerMotionEvent) {
+        // The raw delta goes out on `zwp_relative_pointer_v1` before the
+        // absolute motion, as libinput reports it. A locked pointer
+        // never moves, so mouse-look in games (and Xwayland's warp
+        // emulation and XI2 raw motion) lives entirely on this event (COMP-06 §1).
+        self.relative_motion(event.delta(), event.delta_unaccel(), event.time());
         let pos = self.pointer_location + event.delta();
         self.pointer_moved(pos, event.time_msec());
+    }
+
+    /// Send one `zwp_relative_pointer_v1` motion to the surface under the
+    /// pointer. Shared by device and injected motion. Nothing is sent while
+    /// the session lock, a trusted prompt or a region selection holds the
+    /// seat, because the focused client must not hear motion it isn't shown.
+    pub(crate) fn relative_motion(
+        &mut self,
+        delta: Point<f64, Logical>,
+        delta_unaccel: Point<f64, Logical>,
+        utime: u64,
+    ) {
+        if self.lock.locked || self.seat_held() {
+            return;
+        }
+        let pointer = self.seat.get_pointer().unwrap();
+        // A protected surface hears no relative motion from an origin that
+        // may not reach it (COMP-19 §3).
+        let here = self.pointer_location;
+        let under = self.surface_under(here);
+        let under = crate::protocols::protected::gate::filter_under(
+            self,
+            under,
+            here,
+            crate::protocols::protected::gate::Mode::Event,
+        );
+        pointer.relative_motion(
+            self,
+            under,
+            &RelativeMotionEvent {
+                delta,
+                delta_unaccel,
+                utime,
+            },
+        );
     }
 
     pub(crate) fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {

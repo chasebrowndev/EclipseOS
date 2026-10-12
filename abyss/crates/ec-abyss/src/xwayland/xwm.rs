@@ -62,6 +62,61 @@ fn window_for(state: &AbyssState, surface: &X11Surface) -> Option<Window> {
         .find(|w| w.x11_surface() == Some(surface))
 }
 
+/// KWin's "legacy fullscreen": an undecorated, non-transient window whose
+/// `rect` covers the whole of its output is fullscreen, whatever it said.
+///
+/// Wine/Proton and SDL ask for fullscreen *before* mapping by writing
+/// `_NET_WM_STATE` straight onto the withdrawn window (EWMH §5.1 leaves no
+/// other way). Smithay 0.7 never reads that property, so the request is
+/// otherwise invisible: the game maps as a screen-sized window, gets tiled,
+/// and fights the tile for its size.
+fn legacy_fullscreen(
+    state: &AbyssState,
+    x11: &X11Surface,
+    element: &Window,
+    rect: Rectangle<i32, Logical>,
+) -> bool {
+    let output = shell::output_of_window(state, element)
+        .or_else(|| state.outputs.focused().map(|e| e.id))
+        .and_then(|id| state.outputs.get(id))
+        .and_then(|e| state.space.output_geometry(&e.output));
+    covers_output(
+        x11.is_override_redirect() || x11.is_transient_for().is_some(),
+        x11.is_decorated(),
+        rect,
+        output,
+    )
+}
+
+/// The rule behind [`legacy_fullscreen`], free of X. `client_decorated` is
+/// smithay's `is_decorated`: Motif hints asked the WM for no decorations.
+fn covers_output(
+    secondary: bool,
+    client_decorated: bool,
+    rect: Rectangle<i32, Logical>,
+    output: Option<Rectangle<i32, Logical>>,
+) -> bool {
+    !secondary
+        && client_decorated
+        && output.is_some_and(|o| rect.size.w >= o.size.w && rect.size.h >= o.size.h)
+}
+
+/// Remove `surface` from a parked-request list; true if it was there.
+fn take(list: &mut Vec<X11Surface>, surface: &X11Surface) -> bool {
+    let before = list.len();
+    list.retain(|s| s != surface);
+    list.len() != before
+}
+
+/// Park a state request from a window that is not mapped yet (`on`), or drop
+/// a parked one (`!on`). Override-redirect windows have no such state.
+fn park(list: &mut Vec<X11Surface>, surface: &X11Surface, on: bool) {
+    take(list, surface);
+    if on && !surface.is_override_redirect() {
+        list.push(surface.clone());
+    }
+}
+
 /// `base` with whichever of x/y/w/h the client asked to change.
 fn requested_rect(
     base: Rectangle<i32, Logical>,
@@ -103,14 +158,27 @@ impl XwmHandler for AbyssState {
 
     /// A managed window wants to be on screen: honour it, then place it
     /// through the same shell path every Wayland toplevel takes, so layout,
-    /// workspaces and rules apply identically (COMP-07 §1).
+    /// workspaces and rules apply identically (COMP-07 §1). A fullscreen or
+    /// maximize asked for before the map is applied once the window is placed.
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Err(e) = window.set_mapped(true) {
             tracing::warn!(error = %e, "could not map x11 window");
             return;
         }
-        let element = Window::new_x11_window(window);
-        shell::place_new_window(self, element);
+        let requested = window.geometry();
+        let element = Window::new_x11_window(window.clone());
+        shell::place_new_window(self, element.clone());
+        let maximized = take(&mut self.xwayland.wants_maximized, &window) || window.is_maximized();
+        let fullscreen = take(&mut self.xwayland.wants_fullscreen, &window)
+            || window.is_fullscreen()
+            || legacy_fullscreen(self, &window, &element, requested);
+        if maximized {
+            shell::set_x11_state(self, &element, false, true);
+        }
+        if fullscreen {
+            tracing::debug!(class = window.class(), "x11 window mapped fullscreen");
+            shell::set_x11_state(self, &element, true, true);
+        }
     }
 
     /// Override-redirect: menus, tooltips, DnD icons. The client owns their
@@ -135,6 +203,8 @@ impl XwmHandler for AbyssState {
         }
         self.xwayland.unmanaged.retain(|s| *s != window);
         self.xwayland.unrefreshed.retain(|s| *s != window);
+        self.xwayland.wants_fullscreen.retain(|s| *s != window);
+        self.xwayland.wants_maximized.retain(|s| *s != window);
         if !window.is_override_redirect() {
             let _ = window.set_mapped(false);
         }
@@ -149,10 +219,14 @@ impl XwmHandler for AbyssState {
         }
         self.xwayland.unmanaged.retain(|s| *s != window);
         self.xwayland.unrefreshed.retain(|s| *s != window);
+        self.xwayland.wants_fullscreen.retain(|s| *s != window);
+        self.xwayland.wants_maximized.retain(|s| *s != window);
     }
 
     /// Geometry requests. Tiled windows are held to the layout, so the
-    /// compositor re-asserts it; floating windows get what they asked for
+    /// compositor re-asserts it, unless the request makes the window a
+    /// [`legacy_fullscreen`] one (a game switching to a fullscreen
+    /// resolution), which is honoured as fullscreen; floating windows get what they asked for
     /// (through the shell's float rect, so the layout keeps it); unmanaged
     /// windows get what they asked for outright.
     fn configure_request(
@@ -171,7 +245,12 @@ impl XwmHandler for AbyssState {
             Some(element) => {
                 let held = self.space.element_geometry(element).unwrap_or(current);
                 if !shell::is_floating(self, element) {
-                    held
+                    if legacy_fullscreen(self, &window, element, requested_rect(held, x, y, w, h)) {
+                        shell::set_x11_state(self, element, true, true);
+                        self.space.element_geometry(element).unwrap_or(held)
+                    } else {
+                        held
+                    }
                 } else {
                     let want = requested_rect(held, x, y, w, h);
                     if want != held {
@@ -188,26 +267,34 @@ impl XwmHandler for AbyssState {
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(w) = window_for(self, &window) {
-            shell::set_x11_state(self, &w, false, true);
+        match window_for(self, &window) {
+            Some(w) => shell::set_x11_state(self, &w, false, true),
+            None if !window.is_mapped() => park(&mut self.xwayland.wants_maximized, &window, true),
+            None => {}
         }
     }
 
     fn unmaximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(w) = window_for(self, &window) {
-            shell::set_x11_state(self, &w, false, false);
+        match window_for(self, &window) {
+            Some(w) => shell::set_x11_state(self, &w, false, false),
+            None if !window.is_mapped() => park(&mut self.xwayland.wants_maximized, &window, false),
+            None => {}
         }
     }
 
     fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(w) = window_for(self, &window) {
-            shell::set_x11_state(self, &w, true, true);
+        match window_for(self, &window) {
+            Some(w) => shell::set_x11_state(self, &w, true, true),
+            None if !window.is_mapped() => park(&mut self.xwayland.wants_fullscreen, &window, true),
+            None => {}
         }
     }
 
     fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        if let Some(w) = window_for(self, &window) {
-            shell::set_x11_state(self, &w, true, false);
+        match window_for(self, &window) {
+            Some(w) => shell::set_x11_state(self, &w, true, false),
+            None if !window.is_mapped() => park(&mut self.xwayland.wants_fullscreen, &window, false),
+            None => {}
         }
     }
 
@@ -372,6 +459,25 @@ mod tests {
             requested_rect(base, None, Some(-4), None, Some(0)),
             r(10, -4, 300, 1)
         );
+    }
+
+    #[test]
+    fn an_undecorated_screen_sized_window_is_legacy_fullscreen() {
+        let out = Some(r(0, 0, 1920, 1280));
+        // A Proton game at the output's size, or larger (a saved 2880x1920
+        // on a 1.5x panel), with Motif "no decorations".
+        assert!(covers_output(false, true, r(0, 0, 1920, 1280), out));
+        assert!(covers_output(false, true, r(0, 0, 2880, 1920), out));
+        // Position does not matter; X places it at the root origin anyway.
+        assert!(covers_output(false, true, r(40, 40, 1920, 1280), out));
+        // Smaller in either dimension: an ordinary window.
+        assert!(!covers_output(false, true, r(0, 0, 1920, 1279), out));
+        assert!(!covers_output(false, true, r(0, 0, 1280, 720), out));
+        // A decorated window that happens to be screen-sized stays a window.
+        assert!(!covers_output(false, false, r(0, 0, 1920, 1280), out));
+        // Dialogs and popups never qualify, nor anything with no output.
+        assert!(!covers_output(true, true, r(0, 0, 1920, 1280), out));
+        assert!(!covers_output(false, true, r(0, 0, 1920, 1280), None));
     }
 
     #[test]

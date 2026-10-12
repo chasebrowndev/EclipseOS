@@ -13,7 +13,7 @@
 use smithay::{
     backend::input::{ButtonState, TouchSlot},
     input::{
-        pointer::{ButtonEvent, RelativeMotionEvent},
+        pointer::ButtonEvent,
         touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent},
     },
     utils::{Logical, Point, SERIAL_COUNTER},
@@ -39,26 +39,7 @@ impl AbyssState {
             return;
         }
         super::idle::on_activity(self);
-        let pointer = self.seat.get_pointer().unwrap();
-        // A protected surface hears no relative motion from an origin that
-        // may not reach it (COMP-19 §3).
-        let here = self.pointer_location;
-        let under = self.surface_under(here);
-        let under = crate::protocols::protected::gate::filter_under(
-            self,
-            under,
-            here,
-            crate::protocols::protected::gate::Mode::Event,
-        );
-        pointer.relative_motion(
-            self,
-            under,
-            &RelativeMotionEvent {
-                delta,
-                delta_unaccel: delta,
-                utime: time as u64 * 1000,
-            },
-        );
+        self.relative_motion(delta, delta, time as u64 * 1000);
         let location = self.pointer_location + delta;
         self.pointer_moved(location, time);
     }
