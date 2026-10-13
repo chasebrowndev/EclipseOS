@@ -458,4 +458,88 @@ mod initial_commit_placement {
             .collect();
         assert!(window_events.is_empty(), "{window_events:?}");
     }
+
+    // ---- fullscreen owns its workspace (COMP-05 §4, amendment C-19)
+
+    /// A mapped toplevel that went fullscreen after its first buffer.
+    fn fullscreen(h: &mut Harness, c: &mut Client) -> (Toplevel, Window) {
+        let t = c.create_toplevel(h);
+        c.commit(h, &t.surface);
+        c.attach(h, &t.surface);
+        t.toplevel.set_fullscreen(None);
+        c.pump(h);
+        let w = window_of(h, &t).expect("placed");
+        assert!(h.state.fullscreen.contains_key(&w), "went fullscreen");
+        (t, w)
+    }
+
+    /// The topmost window in the space.
+    fn top(h: &Harness) -> Window {
+        h.state
+            .space
+            .elements()
+            .last()
+            .cloned()
+            .expect("something mapped")
+    }
+
+    fn focus(h: &mut Harness, w: &Window, raise: bool) {
+        h.state.with_origin(crate::input::Origin::Physical, |s| {
+            crate::shell::focus::focus_window_raising(s, w, raise)
+        });
+    }
+
+    #[test]
+    fn a_new_window_takes_fullscreen_away() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_f, full) = fullscreen(&mut h, &mut c);
+
+        let n = c.create_toplevel(&mut h);
+        c.commit(&mut h, &n.surface);
+        c.attach(&mut h, &n.surface);
+        let new = window_of(&h, &n).expect("placed");
+
+        assert!(!h.state.fullscreen.contains_key(&full), "fullscreen ended");
+        assert_eq!(h.state.focus.as_ref(), Some(&new), "the new window has focus");
+    }
+
+    #[test]
+    fn a_dialog_of_the_fullscreen_window_opens_above_it_and_keeps_it_fullscreen() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (f, full) = fullscreen(&mut h, &mut c);
+
+        let d = c.create_toplevel(&mut h);
+        d.toplevel.set_parent(Some(&f.toplevel));
+        c.commit(&mut h, &d.surface);
+        c.attach(&mut h, &d.surface);
+        let dialog = window_of(&h, &d).expect("placed");
+
+        assert!(h.state.fullscreen.contains_key(&full), "still fullscreen");
+        assert_eq!(top(&h), dialog, "the dialog is above its fullscreen parent");
+
+        // Clicking back into the fullscreen window must not bury its dialog.
+        focus(&mut h, &full, true);
+        assert!(h.state.fullscreen.contains_key(&full));
+        assert_eq!(top(&h), dialog, "the dialog stays above after refocus");
+    }
+
+    #[test]
+    fn focusing_another_window_ends_fullscreen_but_passive_focus_does_not() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (other_t, _) = neighbour(&mut h, &mut c);
+        let other = window_of(&h, &other_t).expect("placed");
+        let (_f, full) = fullscreen(&mut h, &mut c);
+
+        // Focus-follows-mouse or a scene refresh: no restack, no change.
+        focus(&mut h, &other, false);
+        assert!(h.state.fullscreen.contains_key(&full), "passive focus keeps it");
+        assert_eq!(top(&h), full, "and it stays on top");
+
+        // A bind, a click on the taskbar, IPC: the human wants the other one.
+        focus(&mut h, &other, true);
+        assert!(!h.state.fullscreen.contains_key(&full), "fullscreen ended");
+    }
 }

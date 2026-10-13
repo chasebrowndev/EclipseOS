@@ -348,6 +348,12 @@ pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool
             }
         }
     }
+    // Focus that restacks is the human asking for this window; a fullscreen
+    // window that would hide it steps aside (COMP-05 §4, amendment C-19).
+    // Passive focus (focus-follows-mouse, the scene refresh) never does.
+    if raise {
+        crate::shell::yield_fullscreen(state, window);
+    }
     state.focus = Some(window.clone());
     state.urgent.retain(|w| w != window);
     if let Some(id) = output_of_window(state, window) {
