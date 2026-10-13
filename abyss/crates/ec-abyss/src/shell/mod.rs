@@ -523,6 +523,96 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         state.space.map_element(w.clone(), inner.loc, false);
         state.space.raise_element(&w, false);
     }
+    raise_fullscreen(state, id);
+}
+
+/// A fullscreen window is the top of its workspace's stack, whatever the
+/// floating order says. Only its own dialogs go above it, so a file picker
+/// opened from a fullscreen app stays visible (COMP-05 §4, amendment C-19).
+/// Override-redirect menus are raised over everything afterwards by `arrange`.
+fn raise_fullscreen(state: &mut AbyssState, id: u64) {
+    let Some(entry) = state.outputs.get(id) else {
+        return;
+    };
+    let ws = &entry.workspaces[entry.active];
+    let fullscreen: Vec<Window> = ws
+        .floating
+        .iter()
+        .filter(|f| state.fullscreen.contains_key(&f.window))
+        .map(|f| f.window.clone())
+        .collect();
+    if fullscreen.is_empty() {
+        return;
+    }
+    let floating: Vec<Window> = ws.floating.iter().map(|f| f.window.clone()).collect();
+    for full in fullscreen {
+        // Its dialogs, in their own floating order.
+        let dialogs: Vec<Window> = floating
+            .iter()
+            .filter(|w| **w != full && descends_from(state, w, &full))
+            .cloned()
+            .collect();
+        state.space.raise_element(&full, false);
+        for w in &dialogs {
+            state.space.raise_element(w, false);
+        }
+    }
+}
+
+/// The window `window` is a dialog of: its xdg parent, or the X11 window it is
+/// `WM_TRANSIENT_FOR`.
+fn parent_of(state: &AbyssState, window: &Window) -> Option<Window> {
+    if let Some(toplevel) = window.toplevel() {
+        return toplevel.parent().and_then(|p| window_for_surface(state, &p));
+    }
+    x11_parent(state, window)
+}
+
+/// Is `window` a dialog of `ancestor`, directly or through a chain of dialogs?
+/// Bounded, so a malformed parent loop cannot hang the loop.
+fn descends_from(state: &AbyssState, window: &Window, ancestor: &Window) -> bool {
+    let mut cur = window.clone();
+    for _ in 0..8 {
+        match parent_of(state, &cur) {
+            Some(p) if &p == ancestor => return true,
+            Some(p) => cur = p,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// Focus is moving to `window` on purpose (a click, a bind, IPC, a newly
+/// mapped window that takes focus). A fullscreen window on the same workspace
+/// would hide it, so that window leaves fullscreen, unless `window` is that
+/// fullscreen window or one of its dialogs (COMP-05 §4, amendment C-19).
+pub(crate) fn yield_fullscreen(state: &mut AbyssState, window: &Window) {
+    if state.fullscreen.is_empty() {
+        return;
+    }
+    let covering: Vec<Window> = state
+        .outputs
+        .iter()
+        .flat_map(|e| e.workspaces.iter())
+        .find(|ws| ws.holds(window))
+        .map(|ws| {
+            ws.floating
+                .iter()
+                .map(|f| f.window.clone())
+                .filter(|f| {
+                    state.fullscreen.contains_key(f) && f != window && !descends_from(state, window, f)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for full in covering {
+        tracing::debug!("focus moved to another window: leaving fullscreen");
+        if let Some(toplevel) = full.toplevel().cloned() {
+            unfullscreen_toplevel(state, &toplevel);
+        } else if full.x11_surface().is_some() {
+            set_x11_state(state, &full, true, false);
+        }
+    }
 }
 
 /// Pin a window to an exact window-geometry rectangle, floating it out of the

@@ -3342,6 +3342,16 @@ Layout is a trait; two implementations plus floating in v1.
   configured without `Maximized`. Fullscreen takes the full output and wins
   over maximized; leaving fullscreen returns to maximized. There is no
   maximize or fullscreen bind action yet (code owed).
+  *(added C-19, 2026-10-13)* A fullscreen window is the top of its
+  workspace's stack. Only its own dialogs (an xdg parent or an X11
+  `WM_TRANSIENT_FOR`, transitively) are drawn above it. Focus that restacks
+  (a click, a bind, IPC, activation, or a newly mapped window taking focus)
+  moving to any other window on that workspace ends the fullscreen, and the
+  client is told. Passive focus (focus-follows-mouse, the scene refresh)
+  never does. A new window blocked from taking focus (§5) maps behind it and
+  is marked urgent instead. An X11 window still gets fullscreen from a
+  pre-map `_NET_WM_STATE` message, or from the undecorated, origin-anchored,
+  output-covering "legacy fullscreen" rule (COMP-07 §5).
 - *(added C-04, 2026-09-23)* Default placement floats dialogs (an xdg parent,
   an X11 transient, or a dialog/utility/toolbar/splash window type) and
   fixed-size toplevels (min == max, both non-zero, judged once a buffer
