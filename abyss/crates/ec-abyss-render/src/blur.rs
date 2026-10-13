@@ -805,6 +805,7 @@ impl BlurStore {
                 level0.as_mut()?,
                 chain.get_mut(&(crop.size.w, crop.size.h))?,
                 (tex, crop),
+                scale,
                 down.as_ref()?,
                 up.as_ref()?,
                 behind,
@@ -942,6 +943,7 @@ fn render_chain<E>(
     level0: &mut GlesTexture,
     mid: &mut [GlesTexture],
     (tex, crop): (Rectangle<i32, Physical>, Rectangle<i32, Physical>),
+    scale: Scale<f64>,
     down: &GlesTexProgram,
     up: &GlesTexProgram,
     behind: &[E],
@@ -957,11 +959,12 @@ where
     //    backdrop in it. Each element is cut to `crop` so only the part the
     //    blur samples is drawn; the texture itself stays output-sized, which
     //    keeps `gl_FragCoord` (the elements' rounding masks) where they expect.
+    //    `crop` is physical, so the elements' geometry must be taken at the
+    //    output's own `scale`: at 1.0 a surface's size is its logical one, and
+    //    the crop cuts its source in the wrong proportion (a wallpaper squashed
+    //    into the window).
     {
-        let cropped: Vec<_> = behind
-            .iter()
-            .filter_map(|e| CropRenderElement::from_element(e, Scale::from(1.0), crop))
-            .collect();
+        let cropped = crop_behind(behind, scale, crop);
         let mut fb = Bind::bind(renderer, level0)?;
         backdrop
             .render_output(renderer, &mut fb, 0, &cropped, CLEAR)
@@ -1021,6 +1024,20 @@ fn sized(
         Some(t) if t.size() == size => Ok(t),
         _ => Offscreen::<GlesTexture>::create_buffer(renderer, FORMAT, size),
     }
+}
+
+/// `behind` cut to the physical `crop`. The crop's source rectangle is worked
+/// out from each element's geometry *at `scale`*, which therefore has to be the
+/// scale the output (and so `crop`) is in.
+fn crop_behind<E: Element>(
+    behind: &[E],
+    scale: Scale<f64>,
+    crop: Rectangle<i32, Physical>,
+) -> Vec<CropRenderElement<&E>> {
+    behind
+        .iter()
+        .filter_map(|e| CropRenderElement::from_element(e, scale, crop))
+        .collect()
 }
 
 /// Two distinct elements of `chain` as `(&src, &mut dst)`.
@@ -1642,6 +1659,66 @@ mod tests {
                 "src past the texture at {s}"
             );
         }
+    }
+
+    /// A full-output image whose size at scale 1 is its logical one, like a
+    /// wallpaper surface: only its geometry depends on the scale.
+    struct Wallpaper(Id);
+
+    impl Element for Wallpaper {
+        fn id(&self) -> &Id {
+            &self.0
+        }
+        fn current_commit(&self) -> CommitCounter {
+            CommitCounter::default()
+        }
+        fn src(&self) -> Rectangle<f64, BufferCoords> {
+            Rectangle::from_size((1920.0, 1080.0).into())
+        }
+        fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+            Rectangle::from_size(
+                (
+                    (1516.0 * scale.x).round() as i32,
+                    (1011.0 * scale.y).round() as i32,
+                )
+                    .into(),
+            )
+        }
+        fn transform(&self) -> Transform {
+            Transform::Normal
+        }
+        fn damage_since(&self, _: Scale<f64>, _: Option<CommitCounter>) -> DamageSet<i32, Physical> {
+            DamageSet::default()
+        }
+        fn opaque_regions(&self, _: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+            OpaqueRegions::default()
+        }
+        fn alpha(&self) -> f32 {
+            1.0
+        }
+        fn kind(&self) -> Kind {
+            Kind::Unspecified
+        }
+    }
+
+    /// The backdrop is cut with the output's scale: at 1.0 on a 1.9 output the
+    /// crop took a wallpaper's whole width for the part of it under the window
+    /// (the squashed backdrop).
+    #[test]
+    fn the_backdrop_crop_cuts_the_source_in_proportion_at_the_output_scale() {
+        let behind = [Wallpaper(Id::new())];
+        let crop = r(0, 0, 1584, 1920);
+        let scale = Scale::from(1.9);
+        let geo = behind[0].geometry(scale);
+        let cropped = crop_behind(&behind, scale, crop);
+        assert_eq!(cropped.len(), 1);
+        let src = cropped[0].src();
+        let want_w = 1920.0 * crop.size.w as f64 / geo.size.w as f64;
+        assert!((src.size.w - want_w).abs() < 1.0, "{} vs {want_w}", src.size.w);
+        assert!(src.size.w < 1920.0 * 0.6, "the crop took most of the image");
+        // Documents the old behaviour: the whole image, hence the squash.
+        let wrong = crop_behind(&behind, Scale::from(1.0), crop);
+        assert!(wrong[0].src().size.w > 1900.0);
     }
 
     /// A cropped result texture is sampled at the region's offset into it.
