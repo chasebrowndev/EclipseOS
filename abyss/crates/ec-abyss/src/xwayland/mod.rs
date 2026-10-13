@@ -30,19 +30,18 @@ pub struct XWaylandState {
     /// the human to see, excluded from the managed window set and (later)
     /// from the agent scene (COMP-07 §1).
     pub unmanaged: Vec<X11Surface>,
-    /// A managed window being mapped whose fullscreen/maximized state is
+    /// A managed window being mapped whose fullscreen state is
     /// already known: placement must not configure it (the first configure the
     /// client sees has to be the final rect). Set only across `place_new_window`.
     pub mapping: Option<smithay::desktop::Window>,
     /// Override-redirect windows whose geometry is still the creation-time
     /// one (no `ConfigureNotify` yet); see [`creation_geometry`].
     pub unrefreshed: Vec<X11Surface>,
-    /// Managed windows that asked for fullscreen (or maximize) before they
+    /// Managed windows that asked for fullscreen before they
     /// were mapped. There is no `Window` to act on yet, so the request is
     /// parked here and applied at map, the way `map_toplevel` replays the xdg
     /// pending state.
     pub wants_fullscreen: Vec<X11Surface>,
-    pub wants_maximized: Vec<X11Surface>,
     /// Client-side scale currently advertised through XSETTINGS.
     pub advertised_scale: Option<i32>,
     /// The `client_scale` handed to smithay for the XWayland client: X pixels

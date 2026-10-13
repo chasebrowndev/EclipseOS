@@ -430,6 +430,47 @@ mod initial_commit_placement {
         );
     }
 
+    /// Abyss has no maximized state: `set_maximized` is answered with a
+    /// configure that does not carry it, and the window stays tiled.
+    #[test]
+    fn set_maximized_is_declined_and_the_window_stays_tiled() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, tile) = neighbour(&mut h, &mut c);
+        let window = window_of(&h, &n).expect("placed");
+        let before = c.configured_sizes(&n.toplevel).len();
+
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        assert!(
+            c.configured_sizes(&n.toplevel).len() > before,
+            "the request is answered"
+        );
+        assert_eq!(c.maximized_configures(&n.toplevel), 0);
+        assert_eq!(c.configured_sizes(&n.toplevel).last(), Some(&tile));
+        assert!(!floats(&h, &window), "still tiled");
+
+        n.toplevel.unset_maximized();
+        c.pump(&mut h);
+        assert_eq!(c.maximized_configures(&n.toplevel), 0);
+        assert!(!floats(&h, &window));
+    }
+
+    /// Before the initial configure the request is just dropped from the
+    /// pending state, so the first configure does not carry it either.
+    #[test]
+    fn set_maximized_before_the_initial_commit_is_dropped() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let t = c.create_toplevel(&mut h);
+        t.toplevel.set_maximized();
+        c.pump(&mut h);
+        c.commit(&mut h, &t.surface);
+        let window = window_of(&h, &t).expect("placed at the initial commit");
+        assert_eq!(c.maximized_configures(&t.toplevel), 0);
+        assert!(!floats(&h, &window));
+    }
+
     #[test]
     fn a_toplevel_destroyed_before_its_initial_commit_never_touches_the_layout() {
         let mut h = harness();
