@@ -395,6 +395,12 @@ impl XwmHandler for AbyssState {
             "x11 unfullscreen request"
         );
         match window_for(self, &window) {
+            // Wine/Proton drops fullscreen when it loses focus, which a
+            // workspace switch causes. A fullscreen window on an unviewed
+            // workspace stays fullscreen there; the client is told so.
+            Some(w) if self.fullscreen.contains_key(&w) && !self.space.elements().any(|e| e == &w) => {
+                let _ = window.set_fullscreen(true);
+            }
             Some(w) => shell::set_x11_fullscreen(self, &w, false),
             None if !window.is_mapped() => park(&mut self.xwayland.wants_fullscreen, &window, false),
             None => {}

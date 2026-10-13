@@ -1543,6 +1543,22 @@ pub fn unfullscreen_toplevel(
     anim::toggle(state, window, |state| unfullscreen_toplevel_now(state, surface));
 }
 
+/// The `toggle-fullscreen` bind: the same shell state a client request
+/// reaches, so the human and the app can each end what the other started.
+pub fn toggle_fullscreen(state: &mut AbyssState) {
+    let Some(window) = state.focus.clone() else { return };
+    let on = !state.fullscreen.contains_key(&window);
+    if let Some(toplevel) = window.toplevel().cloned() {
+        if on {
+            fullscreen_toplevel(state, &toplevel, None);
+        } else {
+            unfullscreen_toplevel(state, &toplevel);
+        }
+    } else if window.x11_surface().is_some() {
+        set_x11_fullscreen(state, &window, on);
+    }
+}
+
 pub fn set_x11_fullscreen(state: &mut AbyssState, window: &Window, on: bool) {
     anim::toggle(state, Some(window.clone()), |state| {
         set_x11_fullscreen_now(state, window, on)
