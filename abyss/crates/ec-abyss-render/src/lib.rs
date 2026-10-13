@@ -250,6 +250,15 @@ fn fills_area(window: &Window) -> bool {
         .is_some_and(|x| x.is_maximized() || x.is_fullscreen())
 }
 
+/// Is `window` fullscreen? Fullscreen windows are drawn without rounding.
+fn is_fullscreen(window: &Window) -> bool {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+    if let Some(toplevel) = window.toplevel() {
+        return toplevel.current_state().states.contains(State::Fullscreen);
+    }
+    window.x11_surface().is_some_and(|x| x.is_fullscreen())
+}
+
 /// Whether the glass program can draw on `output` this frame: compiled on
 /// first use, and never on a rotated output (see [`effects::fb_y_mirrored`]).
 fn glass_ready(renderer: &mut GlesRenderer, store: &mut BorderStore, output: &Output) -> bool {
@@ -1311,6 +1320,9 @@ fn window_elements(
         let Some(loc) = space.element_location(&window) else {
             continue;
         };
+        // A fullscreen window is square: a rounded corner would only show the
+        // border and the wallpaper behind it.
+        let rounding = rounding.clone().filter(|_| !is_fullscreen(&window));
         // A tiled client that ignored its configure (Electron holds its own
         // min width) is cut back to its tile rather than drawn under its
         // neighbour. Only a window that actually overhangs is cropped, so one

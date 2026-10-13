@@ -263,7 +263,7 @@ pub(crate) fn pointer_focus_ctx(state: &AbyssState, pos: Point<f64, Logical>) ->
             .space
             .element_under(pos)
             .filter(|_| layer_under.is_none())
-            .filter(|(w, _)| !w.x11_surface().is_some_and(|x| x.is_override_redirect()))
+            .filter(|(w, _)| !crate::shell::is_unmanaged_x11(state, w))
             .map(|(w, _)| w.clone()),
         layer_under,
         click: false,
@@ -321,7 +321,7 @@ pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool
         return;
     }
     // Override-redirect menus/tooltips never take focus or activation; the owning client keeps it.
-    if window.x11_surface().is_some_and(|x| x.is_override_redirect()) {
+    if crate::shell::is_unmanaged_x11(state, window) {
         return;
     }
     let Some(surface) = window_surface(window) else {

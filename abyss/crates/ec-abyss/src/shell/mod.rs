@@ -364,12 +364,20 @@ fn raise_override_redirect(state: &mut AbyssState) {
     let menus: Vec<Window> = state
         .space
         .elements()
-        .filter(|w| w.x11_surface().is_some_and(|x| x.is_override_redirect()))
+        .filter(|w| is_unmanaged_x11(state, w))
         .cloned()
         .collect();
     for w in menus {
         state.space.raise_element(&w, false);
     }
+}
+
+/// An X11 window the client positions itself: override-redirect, or a managed
+/// popup-type one (menu, tooltip) mapped outside any workspace.
+pub fn is_unmanaged_x11(state: &AbyssState, window: &Window) -> bool {
+    window
+        .x11_surface()
+        .is_some_and(|x| x.is_override_redirect() || state.xwayland.unmanaged.contains(x))
 }
 
 /// Whether `window` is floating on some workspace.
@@ -488,6 +496,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         .map(|f| (f.window.clone(), f.rect))
         .collect();
     let focus = state.focus.clone();
+    let mapping = state.xwayland.mapping.clone();
 
     // A tiled window being dragged keeps its leaf as a placeholder so its
     // neighbours hold still, but the grab owns where it is drawn.
@@ -502,7 +511,9 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         }
         let inner = shrink(rect, border);
         let size = clamp_size(&w, inner.size, true);
-        configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
+        if mapping.as_ref() != Some(&w) {
+            configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
+        }
         fractional_scale::update_window_scale(&w, &output);
         set_tile_clip(&w, Some(inner));
         set_owner_output(&w, &output);
@@ -516,7 +527,9 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
             shrink(rect, border)
         };
         let size = clamp_size(&w, inner.size, false);
-        configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
+        if mapping.as_ref() != Some(&w) {
+            configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
+        }
         fractional_scale::update_window_scale(&w, &output);
         set_tile_clip(&w, None);
         set_owner_output(&w, &output);
@@ -1665,7 +1678,7 @@ fn unmaximize_toplevel_now(state: &mut AbyssState, surface: &smithay::wayland::s
 pub fn x11_properties_changed(state: &mut AbyssState, surface: &smithay::xwayland::X11Surface) {
     let Some(window) = owned_windows(state)
         .into_iter()
-        .find(|w| w.x11_surface() == Some(surface) && !surface.is_override_redirect())
+        .find(|w| w.x11_surface() == Some(surface) && !is_unmanaged_x11(state, w))
     else {
         return;
     };
@@ -1713,6 +1726,12 @@ fn set_x11_state_now(state: &mut AbyssState, window: &Window, fullscreen: bool, 
         } else {
             usable_area(state, &output)
         };
+        tracing::debug!(
+            class = x11.class(),
+            fullscreen,
+            ?area,
+            "configuring x11 window for fullscreen/maximize"
+        );
         let restore = detach_from_layout(state, id, window);
         let ws = state.outputs.get(id).expect("just resolved").active;
         state.outputs.get_mut(id).expect("just resolved").workspaces[ws]

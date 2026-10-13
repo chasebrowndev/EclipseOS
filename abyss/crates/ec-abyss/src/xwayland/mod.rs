@@ -30,6 +30,10 @@ pub struct XWaylandState {
     /// the human to see, excluded from the managed window set and (later)
     /// from the agent scene (COMP-07 §1).
     pub unmanaged: Vec<X11Surface>,
+    /// A managed window being mapped whose fullscreen/maximized state is
+    /// already known: placement must not configure it (the first configure the
+    /// client sees has to be the final rect). Set only across `place_new_window`.
+    pub mapping: Option<smithay::desktop::Window>,
     /// Override-redirect windows whose geometry is still the creation-time
     /// one (no `ConfigureNotify` yet); see [`creation_geometry`].
     pub unrefreshed: Vec<X11Surface>,
@@ -246,6 +250,7 @@ pub fn apply_scale(state: &mut AbyssState) {
     let Some(wm) = state.xwayland.wm.as_mut() else {
         return;
     };
+    let cursor = cursor_size(std::env::var("XCURSOR_SIZE").ok().as_deref(), scale);
     let settings = [
         // XSETTINGS carries Xft.dpi multiplied by 1024.
         ("Xft/DPI".to_string(), Value::Integer(dpi * 1024)),
@@ -254,13 +259,61 @@ pub fn apply_scale(state: &mut AbyssState) {
             Value::Integer(scale.round().max(1.0) as i32),
         ),
         ("Gdk/UnscaledDPI".to_string(), Value::Integer(96 * 1024)),
+        ("Gtk/CursorThemeSize".to_string(), Value::Integer(cursor)),
     ];
     if let Err(e) = wm.set_xsettings(settings.into_iter()) {
         tracing::warn!(error = %e, "could not publish XSETTINGS");
         return;
     }
     state.xwayland.advertised_scale = Some(dpi);
-    tracing::debug!(dpi, scale, "xwayland scaling updated");
+    tracing::debug!(dpi, cursor, scale, "xwayland scaling updated");
+    if let Some(dpy) = state.xwayland.display {
+        publish_resource_manager(dpy, dpi, cursor);
+    }
+}
+
+/// X cursor size in pixels: the session's `XCURSOR_SIZE` (24 if unset or
+/// unparsable) times the client scale.
+fn cursor_size(base: Option<&str>, scale: f64) -> i32 {
+    let base = base
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(24);
+    (f64::from(base) * scale).round().max(1.0) as i32
+}
+
+/// The `RESOURCE_MANAGER` text libXcursor and Chromium/CEF read.
+fn resource_manager(dpi: i32, cursor: i32) -> String {
+    format!("Xft.dpi:\t{dpi}\nXcursor.size:\t{cursor}\n")
+}
+
+/// Write `RESOURCE_MANAGER` on the X root. smithay keeps its X connection
+/// private, so this opens a short-lived one, off the loop thread.
+fn publish_resource_manager(dpy: u32, dpi: i32, cursor: i32) {
+    let text = resource_manager(dpi, cursor);
+    std::thread::spawn(move || {
+        use x11rb::{
+            connection::Connection,
+            protocol::xproto::{AtomEnum, PropMode},
+            wrapper::ConnectionExt,
+        };
+        let run = || -> Result<(), Box<dyn std::error::Error>> {
+            let (conn, screen) = x11rb::connect(Some(&format!(":{dpy}")))?;
+            let root = conn.setup().roots[screen].root;
+            conn.change_property8(
+                PropMode::REPLACE,
+                root,
+                AtomEnum::RESOURCE_MANAGER,
+                AtomEnum::STRING,
+                text.as_bytes(),
+            )?
+            .check()?;
+            Ok(())
+        };
+        if let Err(e) = run() {
+            tracing::warn!(error = %e, "could not set RESOURCE_MANAGER on the X root");
+        }
+    });
 }
 
 impl XWaylandShellHandler for AbyssState {
@@ -298,4 +351,22 @@ fn xwayland_on_path() -> bool {
         return false;
     };
     std::env::split_paths(&path).any(|dir| std::fs::metadata(dir.join("Xwayland")).is_ok_and(|m| m.is_file()))
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    #[test]
+    fn cursor_size_scales_the_session_base() {
+        assert_eq!(cursor_size(None, 1.9), 46);
+        assert_eq!(cursor_size(Some("32"), 2.0), 64);
+        assert_eq!(cursor_size(Some("junk"), 1.0), 24);
+        assert_eq!(cursor_size(Some("0"), 1.0), 24);
+    }
+
+    #[test]
+    fn resource_manager_text() {
+        assert_eq!(resource_manager(182, 46), "Xft.dpi:\t182\nXcursor.size:\t46\n");
+    }
 }

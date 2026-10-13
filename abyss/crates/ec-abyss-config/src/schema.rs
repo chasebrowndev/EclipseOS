@@ -1441,7 +1441,9 @@ pub const TABLE: &[Key] = &[
         "`client` maps X11 pixels 1:1 to physical pixels: games and DPI-aware \
        apps render sharp; old non-DPI-aware X apps render small. `compositor` \
        upscales X11 clients: blurry but always the right size. Default changed \
-       by ADR 0078.",
+       by ADR 0078. In `client` mode X cursors are `XCURSOR_SIZE` (24 if \
+       unset) times the scale, published as XSETTINGS `Gtk/CursorThemeSize` \
+       and root `RESOURCE_MANAGER` `Xcursor.size`.",
     ),
     // idle
     k(
