@@ -1314,12 +1314,22 @@ pub fn minimize_window(state: &mut AbyssState, window: &Window) {
         });
         t.send_pending_configure();
     }
+    // The X11 equivalent of the xdg state above: `_NET_WM_STATE_HIDDEN` is how
+    // a client learns it is iconic and, on restore, that it is shown again. A
+    // Wine game that iconified itself and never hears it was restored keeps
+    // its swapchain parked, which is a black window.
+    if let Some(x11) = window.x11_surface() {
+        let _ = x11.set_suspended(true);
+    }
     if state.focus.as_ref() == Some(window) {
         state.focus = None;
     }
     arrange(state);
     refocus_topmost(state);
     emit_minimized(state, window, true);
+    // A minimized fullscreen window no longer hides the bar; the bar only
+    // folds on what it is told.
+    focus::emit_output_state(state, id);
 }
 
 /// Bring a minimized window back to the layout it left and focus it.
@@ -1351,6 +1361,9 @@ pub fn unminimize_window(state: &mut AbyssState, window: &Window) {
             .tiled
             .insert(window.clone(), None, area, pointer),
     }
+    if let Some(x11) = window.x11_surface() {
+        let _ = x11.set_suspended(false);
+    }
     arrange(state);
     // Restoring onto an inactive workspace must not steal the screen: the
     // window is in the layout, but only a switch back will show it.
@@ -1359,6 +1372,7 @@ pub fn unminimize_window(state: &mut AbyssState, window: &Window) {
     }
     anim::unminimize(state, window);
     emit_minimized(state, window, false);
+    focus::emit_output_state(state, id);
 }
 
 fn emit_minimized(state: &mut AbyssState, window: &Window, minimized: bool) {
@@ -1726,7 +1740,7 @@ fn set_x11_state_now(state: &mut AbyssState, window: &Window, fullscreen: bool, 
         } else {
             usable_area(state, &output)
         };
-        tracing::debug!(
+        tracing::info!(
             class = x11.class(),
             fullscreen,
             ?area,
