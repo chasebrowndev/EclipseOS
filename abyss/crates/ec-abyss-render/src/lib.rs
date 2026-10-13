@@ -215,7 +215,8 @@ fn scale_area(area: blur::BlurArea, origin: Point<i32, Physical>, by: Scale<f64>
 /// and the shape if it has several boxes. Empty areas get none. The client has
 /// declared where it is translucent, so the opaque region only vetoes it where
 /// it covers the whole area. No bezel: the ring would not be where the client
-/// asked for glass.
+/// asked for glass. [`explicit_bezel`] is the exception: an area that is the
+/// whole window gets the compositor-chosen backdrop and its bezel instead.
 fn explicit_window_backdrop(
     area: blur::BlurArea,
     alpha: f32,
@@ -236,6 +237,15 @@ fn explicit_window_backdrop(
         };
         (region, rounding, shape)
     })
+}
+
+/// Does a client's explicit `area` take the compositor-chosen backdrop, bezel
+/// included? Only an unshaped box that covers the whole window `rect` (a pixel
+/// of slack for the area's own rounding) does: the ring then sits where the
+/// client asked for glass, and the window looks the same as one that asked for
+/// nothing. A partial or shaped area keeps its own box and no bezel.
+fn explicit_bezel(area: &blur::BlurArea, rect: Rectangle<i32, Physical>, bezel: Option<i32>) -> bool {
+    bezel.is_some() && matches!(area, blur::BlurArea::Rect(r) if blur::grow(*r, 1).contains_rect(rect))
 }
 
 /// Is `window` fullscreen? Fullscreen windows are drawn without rounding.
@@ -1563,9 +1573,11 @@ fn window_elements(
                     None => opaque_of(&surfaces, scale),
                 };
                 match explicit {
-                    Some(area) => explicit_window_backdrop(area, alpha, corner, opaque, deco.rounding)
-                        .map(|(region, radius, shape)| (region, radius, None, shape)),
-                    None => window_backdrop(
+                    Some(area) if !explicit_bezel(&area, rect, bezel) => {
+                        explicit_window_backdrop(area, alpha, corner, opaque, deco.rounding)
+                            .map(|(region, radius, shape)| (region, radius, None, shape))
+                    }
+                    _ => window_backdrop(
                         mode,
                         alpha,
                         rect,
@@ -2341,6 +2353,37 @@ mod tests {
             explicit_window_backdrop(area, 0.9, 0, opaque, 12).is_some(),
             "a fade shows through"
         );
+    }
+
+    /// An explicit area that is the whole window takes the bezel path (one
+    /// glass look for every window); a partial or shaped one keeps its box.
+    #[test]
+    fn a_whole_window_area_takes_the_bezel() {
+        let r = |x, y, w, h| Rectangle::<i32, Physical>::new((x, y).into(), (w, h).into());
+        let window = r(10, 10, 400, 300);
+        let whole = blur::BlurArea::Rect(r(10, 10, 400, 300));
+        assert!(explicit_bezel(&whole, window, Some(2)));
+        // A pixel short from the area's own rounding still covers it.
+        assert!(explicit_bezel(
+            &blur::BlurArea::Rect(r(10, 11, 400, 299)),
+            window,
+            Some(2)
+        ));
+        // A CSD surface larger than the window geometry covers it too.
+        assert!(explicit_bezel(
+            &blur::BlurArea::Rect(r(0, 0, 500, 400)),
+            window,
+            Some(2)
+        ));
+        // No bezel on this output (not glass, no border, fullscreen): unchanged.
+        assert!(!explicit_bezel(&whole, window, None));
+        // A strip or nothing keeps its own box.
+        assert!(!explicit_bezel(
+            &blur::BlurArea::Rect(r(10, 10, 400, 40)),
+            window,
+            Some(2)
+        ));
+        assert!(!explicit_bezel(&blur::BlurArea::Nothing, window, Some(2)));
     }
 
     #[test]
