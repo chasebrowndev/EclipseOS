@@ -15,7 +15,7 @@ pub mod workspace;
 pub use focus::{focus_surface, focus_window, refocus_topmost};
 // Likewise the drag-to-tile and toplevel-map entry points.
 pub use drop_guides::*;
-use toplevel::has_buffer;
+pub(crate) use toplevel::has_buffer;
 pub use toplevel::{handle_commit, reset_toplevel_map};
 
 use std::cell::Cell;

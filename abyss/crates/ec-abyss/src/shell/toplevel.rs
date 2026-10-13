@@ -8,7 +8,7 @@ use super::*;
 struct MapConfigured;
 
 /// True once `surface` has a committed buffer, i.e. the window is mapped.
-pub(super) fn has_buffer(surface: &WlSurface) -> bool {
+pub(crate) fn has_buffer(surface: &WlSurface) -> bool {
     smithay::backend::renderer::utils::with_renderer_surface_state(surface, |s| s.buffer().is_some())
         .unwrap_or(false)
 }

@@ -158,6 +158,11 @@ fn is_popup_type(surface: &X11Surface) -> bool {
     popup_type(surface.window_type())
 }
 
+/// Has `surface` committed a buffer yet?
+fn drawn(surface: &X11Surface) -> bool {
+    surface.wl_surface().is_some_and(|s| shell::has_buffer(&s))
+}
+
 /// Remove `surface` from a parked-request list; true if it was there.
 fn take(list: &mut Vec<X11Surface>, surface: &X11Surface) -> bool {
     let before = list.len();
@@ -376,6 +381,16 @@ impl XwmHandler for AbyssState {
             "x11 maximize request"
         );
         match window_for(self, &window) {
+            // Same policy as xdg (COMP-05 §4): a tiled window that has not
+            // drawn yet keeps its tile. Steam re-asserts its remembered
+            // maximize right after mapping; honouring it filled the screen.
+            Some(w) if !shell::is_floating(self, &w) && !drawn(&window) => {
+                tracing::info!(
+                    class = window.class(),
+                    "startup maximize ignored; window keeps its tile"
+                );
+                let _ = window.set_maximized(false);
+            }
             Some(w) => shell::set_x11_state(self, &w, false, true),
             None if !window.is_mapped() => park(&mut self.xwayland.wants_maximized, &window, true),
             None => {}
