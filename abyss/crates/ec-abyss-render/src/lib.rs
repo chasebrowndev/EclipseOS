@@ -142,10 +142,10 @@ struct Bezel {
 
 /// The bezel width (physical px) a window's border becomes, or `None` when it
 /// stays painted: only in `glass` mode, with the glass program available on
-/// this output, a border to replace, and a window that is not maximized or
+/// this output, a border to replace, and a window that is not
 /// fullscreen (those have no border inset to fill).
-fn bezel_width(mode: BlurMode, glass: bool, fills_area: bool, border: i32, upscale: f64) -> Option<i32> {
-    (mode == BlurMode::Glass && glass && !fills_area && border > 0)
+fn bezel_width(mode: BlurMode, glass: bool, fullscreen: bool, border: i32, upscale: f64) -> Option<i32> {
+    (mode == BlurMode::Glass && glass && !fullscreen && border > 0)
         .then(|| ((border as f64 * upscale).round() as i32).max(1))
 }
 
@@ -236,18 +236,6 @@ fn explicit_window_backdrop(
         };
         (region, rounding, shape)
     })
-}
-
-/// Is `window` maximized or fullscreen, filling its area with no border inset?
-fn fills_area(window: &Window) -> bool {
-    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
-    if let Some(toplevel) = window.toplevel() {
-        let states = toplevel.current_state().states;
-        return states.contains(State::Maximized) || states.contains(State::Fullscreen);
-    }
-    window
-        .x11_surface()
-        .is_some_and(|x| x.is_maximized() || x.is_fullscreen())
 }
 
 /// Is `window` fullscreen? Fullscreen windows are drawn without rounding.
@@ -1536,7 +1524,7 @@ fn window_elements(
         let bezel = match border.is_some() && mode == BlurMode::Glass && geo.is_some() {
             true => {
                 let ready = *glass.get_or_insert_with(|| glass_ready(renderer, store, output));
-                bezel_width(mode, ready, fills_area(&window), border_size, upscale)
+                bezel_width(mode, ready, is_fullscreen(&window), border_size, upscale)
             }
             false => None,
         };
@@ -2452,7 +2440,7 @@ mod tests {
 
     #[test]
     fn no_bezel_where_the_border_stays_painted() {
-        // Maximized/fullscreen, no border, no glass program, other modes.
+        // Fullscreen, no border, no glass program, other modes.
         assert_eq!(bezel_width(BlurMode::Glass, true, true, 6, 1.0), None);
         assert_eq!(bezel_width(BlurMode::Glass, true, false, 0, 1.0), None);
         assert_eq!(bezel_width(BlurMode::Glass, false, false, 6, 1.0), None);

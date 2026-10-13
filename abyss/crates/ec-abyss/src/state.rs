@@ -64,16 +64,9 @@ pub struct AbyssState {
     pub space: Space<Window>,
     pub popups: PopupManager,
 
-    /// Windows currently maximized (COMP-05 §4), with the placement to restore
-    /// on unmaximize: `Some(rect)` for a floating window's prior rectangle,
-    /// `None` for a window that was tiled.
-    pub maximized: std::collections::HashMap<Window, Option<smithay::utils::Rectangle<i32, Logical>>>,
-
     /// Windows currently fullscreen (COMP-05 §4), with the placement to restore
-    /// on unfullscreen, same semantics as [`Self::maximized`]. A window may be in
-    /// both maps: fullscreening a maximized toplevel keeps its maximized entry, so
-    /// unfullscreen drops it back to the usable area rather than its pre-maximize
-    /// rectangle, which is what xdg-shell asks for.
+    /// on unfullscreen: `Some(rect)` for a floating window's prior rectangle,
+    /// `None` for a window that was tiled. Abyss has no maximized state.
     pub fullscreen: std::collections::HashMap<Window, Option<smithay::utils::Rectangle<i32, Logical>>>,
 
     /// Last-seen `Window::geometry().loc` per space element (COMP-05 §3).
@@ -509,7 +502,6 @@ impl AbyssState {
             socket_name: socket.socket_name().to_string_lossy().into_owned(),
             space: Space::default(),
             popups: PopupManager::default(),
-            maximized: std::collections::HashMap::new(),
             fullscreen: std::collections::HashMap::new(),
             geo_loc: std::collections::HashMap::new(),
             compositor_state,

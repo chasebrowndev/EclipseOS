@@ -1745,7 +1745,7 @@ a session) exposed to agents. Associated metadata:
 ```
 handle, app_id, title, pid, cgroup, launching_principal,
 workspace, output, geometry (global logical px), scale,
-state {focused_by: [seats], minimized, maximized, fullscreen, floating},
+state {focused_by: [seats], minimized, maximized, fullscreen, floating},  // maximized: always false (C-20)
 sensitivity: {public | private | secret},
 semantic: {none | atspi | native}, parent (for dialogs), children (popups)
 ```
@@ -3254,7 +3254,7 @@ Toplevel {
   launching_principal,               // §6
   workspace, output, geometry, scale,
   states: {focused_by[], minimized, maximized, fullscreen, floating,
-           urgent, sticky},
+           urgent, sticky},           // maximized: always false (C-20)
   sensitivity: public|private|secret,     // S-05, default private
   app_trust: trusted|standard|untrusted,  // S-05
   semantic: none|atspi|native,
@@ -3342,6 +3342,15 @@ Layout is a trait; two implementations plus floating in v1.
   configured without `Maximized`. Fullscreen takes the full output and wins
   over maximized; leaving fullscreen returns to maximized. There is no
   maximize or fullscreen bind action yet (code owed).
+  *(superseded C-20, 2026-10-13)* There is no maximize. A window is
+  minimized (out of the layout, restorable from the taskbar), in the layout
+  (tiled, or floating by placement), or fullscreen. A client's
+  `xdg_toplevel.set_maximized` is answered with a configure that does not
+  carry `Maximized` and leaves the window where it was. An X11
+  `_NET_WM_STATE_MAXIMIZED_*` request is declined, and the property is cleared
+  so the client sees it. A window alone on a workspace already fills it as a
+  tile, so maximize only added a second, floating "almost fullscreen" that
+  kept rounded corners and hid nothing. Fullscreen windows are drawn square.
   *(added C-19, 2026-10-13)* A fullscreen window is the top of its
   workspace's stack. Only its own dialogs (an xdg parent or an X11
   `WM_TRANSIENT_FOR`, transitively) are drawn above it. Focus that restacks
@@ -4025,7 +4034,7 @@ request create_workspace(req_id, output, layout: uint)   event workspace_created
 request destroy_workspace(req_id, id)
 request move_toplevel(req_id, handle, workspace, expected_generation)
 request set_geometry(req_id, handle, x, y, w, h, expected_generation)
-request set_state(req_id, handle, state: uint, value: uint)   -- minimized|maximized|fullscreen|floating
+request set_state(req_id, handle, state: uint, value: uint)   -- minimized|maximized|fullscreen|floating; maximized is refused (C-20)
 request close(req_id, handle)                                 -- xdg_toplevel.close (graceful)
 request create_virtual_output(req_id, w, h, scale)   event virtual_output_created(req_id, id)
 request resize_virtual_output(req_id, id, w, h)
@@ -7377,6 +7386,8 @@ against source before it was written. Nothing was renumbered.
 | C-16 | COMP-02 §9 | *(2026-09-29, owner ruling)* Glass is the shipped look: `decoration.blur.mode` defaults to `glass`, the shadow ships on (`range` 16), `rounding` 9, `border-size` 1, the active border a translucent gold `#f2c33c73` and the inactive one a faint white hairline `#ffffff1a` (the bezel's rim, C-15). Gaps ship as `gaps-in` 5, `gaps-out` 3, `gaps-in-vertical` 3, `gaps-out-vertical` 7; the vertical keys are set rather than mirroring, and still mirror when unset | yes |
 | C-17 | COMP-02 §9 | *(2026-09-30, owner ruling)* A layer surface anchored to all four edges and spanning its output gets no backdrop: it is a scrim or a selection overlay (slurp), not a sheet, and glass behind it smears the whole output it asks the human to read | yes |
 | C-18 | COMP-02 §9, §11; COMP-13 §1.1; COMP-14 §6 | *(2026-10-04, owner ruling)* Animations ship on: `animations { preset "smooth" }`, with per-event styles and presets `off`/`subtle`/`smooth`/`lively` (ADR 0073). Animations are render-only rather than geometry-only (offset, scale, alpha, add-on transition shaders); closing and leaving windows are drawn as ghosts that are never listed, hit-tested or captured. Amends C-01's "animations off" | yes |
+| C-19 | COMP-05 §4 | *(2026-10-13, owner ruling)* A fullscreen window owns its workspace: it tops the stack under only its own dialogs, and focus that restacks to another window on that workspace ends it. A new window that may not take focus maps behind it and is marked urgent | yes |
+| C-20 | COMP-05 §4; COMP-07 §1 | *(2026-10-13, owner ruling)* Three window states: minimized, in the layout, fullscreen. Maximize is removed. xdg `set_maximized` is answered without `Maximized`; X11 maximize requests are declined and `_NET_WM_STATE` is cleared. The `maximized` state bit in the scene and agent protocol is always false, and `set_state(maximized)` is refused. Supersedes C-04's maximize semantics | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing

@@ -215,8 +215,8 @@ impl XwmHandler for AbyssState {
 
     /// A managed window wants to be on screen: honour it, then place it
     /// through the same shell path every Wayland toplevel takes, so layout,
-    /// workspaces and rules apply identically (COMP-07 §1). A fullscreen or
-    /// maximize asked for before the map is applied once the window is placed.
+    /// workspaces and rules apply identically (COMP-07 §1). A fullscreen
+    /// asked for before the map is applied once the window is placed.
     #[allow(clippy::mutable_key_type)]
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Err(e) = window.set_mapped(true) {
@@ -240,7 +240,10 @@ impl XwmHandler for AbyssState {
         }
         // Decide the state before placing, so the first configure the client
         // sees is the final rect, not a tile it then stretches its swapchain to.
-        let maximized = take(&mut self.xwayland.wants_maximized, &window) || window.is_maximized();
+        // No maximized state: clear one the client set before the map.
+        if window.is_maximized() {
+            let _ = window.set_maximized(false);
+        }
         let fullscreen = take(&mut self.xwayland.wants_fullscreen, &window)
             || window.is_fullscreen()
             || legacy_fullscreen(self, &window, &element, requested);
@@ -248,28 +251,21 @@ impl XwmHandler for AbyssState {
             class = window.class(),
             ?requested,
             output = ?output_rect(self, &element),
-            maximized,
             fullscreen,
             decorated = window.is_decorated(),
             transient = window.is_transient_for().is_some(),
             "x11 window map decision"
         );
-        if maximized || fullscreen {
+        if fullscreen {
             self.xwayland.mapping = Some(element.clone());
         }
         shell::place_new_window(self, element.clone());
         self.xwayland.mapping = None;
-        if maximized {
-            shell::set_x11_state(self, &element, false, true);
-        }
         if fullscreen {
             tracing::info!(class = window.class(), "x11 window mapped fullscreen");
-            shell::set_x11_state(self, &element, true, true);
+            shell::set_x11_fullscreen(self, &element, true);
         }
-        if (maximized || fullscreen)
-            && !self.maximized.contains_key(&element)
-            && !self.fullscreen.contains_key(&element)
-        {
+        if fullscreen && !self.fullscreen.contains_key(&element) {
             // The state did not stick; the placement configure was withheld.
             shell::arrange(self);
         }
@@ -298,7 +294,6 @@ impl XwmHandler for AbyssState {
         self.xwayland.unmanaged.retain(|s| *s != window);
         self.xwayland.unrefreshed.retain(|s| *s != window);
         self.xwayland.wants_fullscreen.retain(|s| *s != window);
-        self.xwayland.wants_maximized.retain(|s| *s != window);
         if !window.is_override_redirect() {
             let _ = window.set_mapped(false);
         }
@@ -314,7 +309,6 @@ impl XwmHandler for AbyssState {
         self.xwayland.unmanaged.retain(|s| *s != window);
         self.xwayland.unrefreshed.retain(|s| *s != window);
         self.xwayland.wants_fullscreen.retain(|s| *s != window);
-        self.xwayland.wants_maximized.retain(|s| *s != window);
     }
 
     /// Geometry requests. Tiled windows are held to the layout, so the
@@ -349,7 +343,7 @@ impl XwmHandler for AbyssState {
                     if configure_may_fullscreen(x, y)
                         && legacy_fullscreen(self, &window, element, requested_rect(held, x, y, w, h))
                     {
-                        shell::set_x11_state(self, element, true, true);
+                        shell::set_x11_fullscreen(self, element, true);
                         self.space.element_geometry(element).unwrap_or(held)
                     } else {
                         held
@@ -359,8 +353,8 @@ impl XwmHandler for AbyssState {
                     if want != held {
                         shell::place_at(self, element, want);
                     }
-                    // `place_at` configures through the layout; a maximized or
-                    // fullscreen window is not pinned, so re-assert what it has.
+                    // `place_at` configures through the layout; a fullscreen
+                    // window is not pinned, so re-assert what it has.
                     self.space.element_geometry(element).unwrap_or(want)
                 }
             }
@@ -369,30 +363,16 @@ impl XwmHandler for AbyssState {
         let _ = window.configure(rect);
     }
 
+    /// Abyss has no maximized state: decline, and clear the property so the
+    /// client's `_NET_WM_STATE` stays truthful.
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        tracing::info!(
-            class = window.class(),
-            mapped = window.is_mapped(),
-            "x11 maximize request"
-        );
-        match window_for(self, &window) {
-            Some(w) => shell::set_x11_state(self, &w, false, true),
-            None if !window.is_mapped() => park(&mut self.xwayland.wants_maximized, &window, true),
-            None => {}
-        }
+        tracing::debug!(class = window.class(), "x11 maximize request declined");
+        let _ = window.set_maximized(false);
     }
 
     fn unmaximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        tracing::info!(
-            class = window.class(),
-            mapped = window.is_mapped(),
-            "x11 unmaximize request"
-        );
-        match window_for(self, &window) {
-            Some(w) => shell::set_x11_state(self, &w, false, false),
-            None if !window.is_mapped() => park(&mut self.xwayland.wants_maximized, &window, false),
-            None => {}
-        }
+        tracing::debug!(class = window.class(), "x11 unmaximize request declined");
+        let _ = window.set_maximized(false);
     }
 
     fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
@@ -402,7 +382,7 @@ impl XwmHandler for AbyssState {
             "x11 fullscreen request"
         );
         match window_for(self, &window) {
-            Some(w) => shell::set_x11_state(self, &w, true, true),
+            Some(w) => shell::set_x11_fullscreen(self, &w, true),
             None if !window.is_mapped() => park(&mut self.xwayland.wants_fullscreen, &window, true),
             None => {}
         }
@@ -415,7 +395,7 @@ impl XwmHandler for AbyssState {
             "x11 unfullscreen request"
         );
         match window_for(self, &window) {
-            Some(w) => shell::set_x11_state(self, &w, true, false),
+            Some(w) => shell::set_x11_fullscreen(self, &w, false),
             None if !window.is_mapped() => park(&mut self.xwayland.wants_fullscreen, &window, false),
             None => {}
         }

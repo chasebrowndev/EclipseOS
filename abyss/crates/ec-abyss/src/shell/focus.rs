@@ -1204,6 +1204,8 @@ pub(crate) mod state_tests {
             layer_configures: usize,
             /// Every `xdg_toplevel.configure` size, as (toplevel id, w, h).
             configures: Vec<(u32, i32, i32)>,
+            /// Configures that carried the `maximized` state, per toplevel id.
+            maximized_configures: Vec<u32>,
         }
 
         /// A toplevel's three client objects, for tests that drive its
@@ -1315,8 +1317,17 @@ pub(crate) mod state_tests {
                 _: &Connection,
                 _: &QueueHandle<Self>,
             ) {
-                if let xdg_toplevel::Event::Configure { width, height, .. } = event {
+                if let xdg_toplevel::Event::Configure {
+                    width,
+                    height,
+                    states,
+                } = event
+                {
                     g.configures.push((toplevel.id().protocol_id(), width, height));
+                    // `states` is an array of native-endian u32; maximized = 1.
+                    if states.chunks_exact(4).any(|c| c == 1u32.to_ne_bytes()) {
+                        g.maximized_configures.push(toplevel.id().protocol_id());
+                    }
                 }
             }
         }
@@ -1505,6 +1516,16 @@ pub(crate) mod state_tests {
                     .filter(|(t, _, _)| *t == id)
                     .map(|&(_, w, h)| (w, h))
                     .collect()
+            }
+
+            /// How many configures `toplevel` has received carrying `maximized`.
+            pub fn maximized_configures(&self, toplevel: &XdgToplevel) -> usize {
+                let id = toplevel.id().protocol_id();
+                self.data
+                    .maximized_configures
+                    .iter()
+                    .filter(|&&t| t == id)
+                    .count()
             }
 
             /// An input method on the seat, with the keyboard grabbed.
