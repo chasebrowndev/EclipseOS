@@ -531,6 +531,27 @@ mod initial_commit_placement {
     }
 
     #[test]
+    fn a_background_window_is_detached_from_its_own_workspace() {
+        // The X11 fullscreen path reaches windows on unviewed workspaces
+        // (`owned_windows`); acting on the viewed one left the window on its
+        // own and copied it onto the viewed one, so it followed the human.
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let t = c.create_toplevel(&mut h);
+        c.commit(&mut h, &t.surface);
+        c.attach(&mut h, &t.surface);
+        let w = window_of(&h, &t).expect("placed");
+        let id = crate::shell::output_of_window(&h.state, &w).expect("on an output");
+
+        crate::shell::switch_workspace(&mut h.state, 2);
+        assert_eq!(crate::shell::home_workspace(&h.state, id, &w), 0);
+        crate::shell::detach_from_layout(&mut h.state, id, &w);
+
+        let ws = &h.state.outputs.get(id).expect("output").workspaces;
+        assert!(!ws[0].holds_live(&w), "detached from its own workspace");
+    }
+
+    #[test]
     fn a_new_window_takes_fullscreen_away() {
         let mut h = harness();
         let mut c = Client::connect(&mut h);

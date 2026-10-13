@@ -1592,8 +1592,8 @@ fn set_x11_fullscreen_now(state: &mut AbyssState, window: &Window, on: bool) {
             ?area,
             "configuring x11 window for fullscreen"
         );
+        let ws = home_workspace(state, id, window);
         let restore = detach_from_layout(state, id, window);
-        let ws = state.outputs.get(id).expect("just resolved").active;
         state.outputs.get_mut(id).expect("just resolved").workspaces[ws]
             .floating
             .push(Floating {
@@ -1606,9 +1606,9 @@ fn set_x11_fullscreen_now(state: &mut AbyssState, window: &Window, on: bool) {
         let restore = state.fullscreen.remove(window);
         let area = tiling_area(state, &output);
         let pointer = state.pointer_location;
+        let ws = home_workspace(state, id, window);
         detach_from_layout(state, id, window);
         let entry = state.outputs.get_mut(id).expect("just resolved");
-        let ws = entry.active;
         match restore.flatten() {
             Some(rect) => entry.workspaces[ws].floating.push(Floating {
                 window: window.clone(),
@@ -1625,11 +1625,24 @@ fn set_x11_fullscreen_now(state: &mut AbyssState, window: &Window, on: bool) {
     focus::emit_output_state(state, id);
 }
 
-/// Remove `window` from whatever placement it holds on `id`'s active workspace,
-/// returning its floating rectangle if it had one and `None` if it was tiled.
+/// The workspace on `id` that holds `window`, else the active one. A state
+/// change acts where the window lives: a background app going fullscreen must
+/// not be copied onto the workspace the human is looking at.
+fn home_workspace(state: &AbyssState, id: u64, window: &Window) -> usize {
+    state.outputs.get(id).map_or(0, |e| {
+        e.workspaces
+            .iter()
+            .position(|ws| ws.holds_live(window))
+            .unwrap_or(e.active)
+    })
+}
+
+/// Remove `window` from whatever placement it holds on `id`'s workspace that
+/// holds it, returning its floating rectangle if it had one and `None` if it
+/// was tiled.
 fn detach_from_layout(state: &mut AbyssState, id: u64, window: &Window) -> Option<Rectangle<i32, Logical>> {
+    let ws = home_workspace(state, id, window);
     let entry = state.outputs.get_mut(id)?;
-    let ws = entry.active;
     if let Some(i) = entry.workspaces[ws]
         .floating
         .iter()
@@ -1701,10 +1714,15 @@ fn fullscreen_toplevel_now(
 
     // Detach from wherever it lives now, which may be a different output than
     // the one the client asked to be fullscreen on.
+    // Same output: stay on the window's own workspace. Moving to another
+    // output lands on that output's active one.
+    let ws = match current {
+        Some(from) if from == id => home_workspace(state, id, &window),
+        _ => state.outputs.get(id).expect("just resolved").active,
+    };
     let restore = current.and_then(|from| detach_from_layout(state, from, &window));
 
     let entry = state.outputs.get_mut(id).expect("just resolved");
-    let ws = entry.active;
     entry.workspaces[ws].floating.push(Floating {
         window: window.clone(),
         rect: area,
@@ -1758,9 +1776,9 @@ fn unfullscreen_toplevel_now(
     let area = tiling_area(state, &output);
     let pointer = state.pointer_location;
 
+    let ws = home_workspace(state, id, &window);
     detach_from_layout(state, id, &window);
     let entry = state.outputs.get_mut(id).expect("just resolved");
-    let ws = entry.active;
     let size = match restore {
         Some(rect) => {
             entry.workspaces[ws].floating.push(Floating {
