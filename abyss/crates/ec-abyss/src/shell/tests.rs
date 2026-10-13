@@ -552,6 +552,24 @@ mod initial_commit_placement {
     }
 
     #[test]
+    fn fullscreen_survives_switching_workspaces_away_and_back() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let n = c.create_toplevel(&mut h);
+        c.commit(&mut h, &n.surface);
+        c.attach(&mut h, &n.surface);
+        let (_f, full) = fullscreen(&mut h, &mut c);
+
+        crate::shell::switch_workspace(&mut h.state, 2);
+        c.pump(&mut h);
+        assert!(h.state.fullscreen.contains_key(&full), "kept while away");
+        crate::shell::switch_workspace(&mut h.state, 1);
+        c.pump(&mut h);
+        assert!(h.state.fullscreen.contains_key(&full), "kept on return");
+        assert_eq!(top(&h), full, "still on top on return");
+    }
+
+    #[test]
     fn a_new_window_takes_fullscreen_away() {
         let mut h = harness();
         let mut c = Client::connect(&mut h);
