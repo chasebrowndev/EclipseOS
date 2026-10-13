@@ -24,7 +24,7 @@ use smithay::{
         SelectionTarget,
     },
     xwayland::{
-        xwm::{Reorder, ResizeEdge, WmWindowProperty, X11Window, XwmId},
+        xwm::{Reorder, ResizeEdge, WmWindowProperty, WmWindowType, X11Window, XwmId},
         X11Surface, X11Wm, XwmHandler,
     },
 };
@@ -102,6 +102,32 @@ fn covers_output(
         && output.is_some_and(|o| rect.loc == o.loc && rect.size.w >= o.size.w && rect.size.h >= o.size.h)
 }
 
+/// A configure request can only turn a tiled window into a legacy-fullscreen
+/// one if the client moved it. A resize-only request has x/y defaulted to the
+/// held tile, which sits at the output origin when it is the only tile.
+fn configure_may_fullscreen(x: Option<i32>, y: Option<i32>) -> bool {
+    x.is_some() || y.is_some()
+}
+
+/// `_NET_WM_WINDOW_TYPE`s whose windows position themselves like
+/// override-redirect ones: menus, tooltips, notifications.
+fn popup_type(ty: Option<WmWindowType>) -> bool {
+    matches!(
+        ty,
+        Some(
+            WmWindowType::DropdownMenu
+                | WmWindowType::PopupMenu
+                | WmWindowType::Menu
+                | WmWindowType::Tooltip
+                | WmWindowType::Notification
+        )
+    )
+}
+
+fn is_popup_type(surface: &X11Surface) -> bool {
+    popup_type(surface.window_type())
+}
+
 /// Remove `surface` from a parked-request list; true if it was there.
 fn take(list: &mut Vec<X11Surface>, surface: &X11Surface) -> bool {
     let before = list.len();
@@ -161,6 +187,7 @@ impl XwmHandler for AbyssState {
     /// through the same shell path every Wayland toplevel takes, so layout,
     /// workspaces and rules apply identically (COMP-07 §1). A fullscreen or
     /// maximize asked for before the map is applied once the window is placed.
+    #[allow(clippy::mutable_key_type)]
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Err(e) = window.set_mapped(true) {
             tracing::warn!(error = %e, "could not map x11 window");
@@ -171,17 +198,40 @@ impl XwmHandler for AbyssState {
         // as screen-sized.
         let requested = xwayland::creation_geometry(window.geometry(), xwayland::client_scale(self));
         let element = Window::new_x11_window(window.clone());
-        shell::place_new_window(self, element.clone());
+        // Menus and tooltips place themselves: map them where they asked, like
+        // override-redirect windows, outside rules, layout and focus.
+        if is_popup_type(&window) {
+            // Brings smithay's stored geometry in line with `requested`.
+            let _ = window.configure(requested);
+            self.xwayland.unmanaged.push(window);
+            self.space.map_element(element.clone(), requested.loc, true);
+            self.space.raise_element(&element, true);
+            return;
+        }
+        // Decide the state before placing, so the first configure the client
+        // sees is the final rect, not a tile it then stretches its swapchain to.
         let maximized = take(&mut self.xwayland.wants_maximized, &window) || window.is_maximized();
         let fullscreen = take(&mut self.xwayland.wants_fullscreen, &window)
             || window.is_fullscreen()
             || legacy_fullscreen(self, &window, &element, requested);
+        if maximized || fullscreen {
+            self.xwayland.mapping = Some(element.clone());
+        }
+        shell::place_new_window(self, element.clone());
+        self.xwayland.mapping = None;
         if maximized {
             shell::set_x11_state(self, &element, false, true);
         }
         if fullscreen {
             tracing::debug!(class = window.class(), "x11 window mapped fullscreen");
             shell::set_x11_state(self, &element, true, true);
+        }
+        if (maximized || fullscreen)
+            && !self.maximized.contains_key(&element)
+            && !self.fullscreen.contains_key(&element)
+        {
+            // The state did not stick; the placement configure was withheld.
+            shell::arrange(self);
         }
     }
 
@@ -200,7 +250,7 @@ impl XwmHandler for AbyssState {
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(element) = window_for(self, &window) {
-            if !window.is_override_redirect() {
+            if !shell::is_unmanaged_x11(self, &element) {
                 shell::anim::close(self, &element);
             }
             shell::unmap_window(self, &element);
@@ -216,7 +266,7 @@ impl XwmHandler for AbyssState {
 
     fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Some(element) = window_for(self, &window) {
-            if !window.is_override_redirect() {
+            if !shell::is_unmanaged_x11(self, &element) {
                 shell::anim::close(self, &element);
             }
             shell::unmap_window(self, &element);
@@ -246,10 +296,19 @@ impl XwmHandler for AbyssState {
         let current = window.geometry();
         let element = window_for(self, &window);
         let rect = match &element {
+            // A popup-type window mapped outside the layout: it positions itself.
+            Some(element) if self.xwayland.unmanaged.contains(&window) => {
+                let want = requested_rect(current, x, y, w, h);
+                self.space.map_element(element.clone(), want.loc, true);
+                self.space.raise_element(element, true);
+                want
+            }
             Some(element) => {
                 let held = self.space.element_geometry(element).unwrap_or(current);
                 if !shell::is_floating(self, element) {
-                    if legacy_fullscreen(self, &window, element, requested_rect(held, x, y, w, h)) {
+                    if configure_may_fullscreen(x, y)
+                        && legacy_fullscreen(self, &window, element, requested_rect(held, x, y, w, h))
+                    {
                         shell::set_x11_state(self, element, true, true);
                         self.space.element_geometry(element).unwrap_or(held)
                     } else {
@@ -483,6 +542,32 @@ mod tests {
         // Dialogs and popups never qualify, nor anything with no output.
         assert!(!covers_output(true, true, r(0, 0, 1920, 1280), out));
         assert!(!covers_output(false, true, r(0, 0, 1920, 1280), None));
+    }
+
+    #[test]
+    fn a_resize_only_request_never_makes_legacy_fullscreen() {
+        // Steam resizing itself while its tile sits at the output origin.
+        assert!(!configure_may_fullscreen(None, None));
+        assert!(configure_may_fullscreen(Some(0), None));
+        assert!(configure_may_fullscreen(None, Some(0)));
+        assert!(configure_may_fullscreen(Some(0), Some(0)));
+    }
+
+    #[test]
+    fn menu_like_window_types_are_popups() {
+        for ty in [
+            WmWindowType::DropdownMenu,
+            WmWindowType::PopupMenu,
+            WmWindowType::Menu,
+            WmWindowType::Tooltip,
+            WmWindowType::Notification,
+        ] {
+            assert!(popup_type(Some(ty)), "{ty:?}");
+        }
+        assert!(!popup_type(Some(WmWindowType::Normal)));
+        assert!(!popup_type(Some(WmWindowType::Dialog)));
+        assert!(!popup_type(Some(WmWindowType::Splash)));
+        assert!(!popup_type(None));
     }
 
     #[test]

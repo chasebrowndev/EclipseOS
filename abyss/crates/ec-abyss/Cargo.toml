@@ -47,6 +47,9 @@ ec-policy-eval = { path = "../ec-policy-eval" }
 # The brokerd wire format, for the compositor's own unlock prompt (S-08 §2).
 ec-brokerd = { path = "../ec-brokerd" }
 zeroize = "1"
+# RESOURCE_MANAGER on the X root (smithay keeps its X connection private).
+# Same version smithay already resolves.
+x11rb = { version = "0.13.2", default-features = false }
 # eclipse_agent_v1 server bindings (COMP-08).
 ec-protocols = { path = "../ec-protocols", features = ["server"] }
 

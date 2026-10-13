@@ -258,7 +258,7 @@ Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #fa
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `xwayland.enable` | bool | `#true` | restart | Run an X server. Off is the strongest isolation available (ADR 0026). |
-| `xwayland.scaling` | compositor \| client | `"client"` | restart | `client` maps X11 pixels 1:1 to physical pixels: games and DPI-aware apps render sharp; old non-DPI-aware X apps render small. `compositor` upscales X11 clients: blurry but always the right size. Default changed by ADR 0078. |
+| `xwayland.scaling` | compositor \| client | `"client"` | restart | `client` maps X11 pixels 1:1 to physical pixels: games and DPI-aware apps render sharp; old non-DPI-aware X apps render small. `compositor` upscales X11 clients: blurry but always the right size. Default changed by ADR 0078. In `client` mode X cursors are `XCURSOR_SIZE` (24 if unset) times the scale, published as XSETTINGS `Gtk/CursorThemeSize` and root `RESOURCE_MANAGER` `Xcursor.size`. |
 
 ### `idle`
 
