@@ -339,6 +339,7 @@ A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPE
 | `spawn <command>` / `exec <command>` | `spawn "foot"` | Run a command. |
 | `close-window` / `killactive` | `close-window` | Ask the focused window to close. |
 | `toggle-floating` | `toggle-floating` | Float or tile the focused window. |
+| `toggle-fullscreen` / `fullscreen` | `toggle-fullscreen` | Fullscreen the focused window, or end its fullscreen. |
 | `minimize` | `minimize` | Send the focused window away. |
 | `unminimize` / `restore` | `unminimize` | Bring back the last window sent away on the active workspace. |
 | `toggle-layout` | `toggle-layout` | Cycle the workspace layout: radiant, dwindle, master. |

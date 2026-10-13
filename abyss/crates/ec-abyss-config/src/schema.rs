@@ -2306,6 +2306,12 @@ pub const BIND_ACTIONS: &[Form] = &[
         &["toggle-floating"],
         "Float or tile the focused window.",
     ),
+    form(
+        &["toggle-fullscreen", "fullscreen"],
+        "",
+        &["toggle-fullscreen"],
+        "Fullscreen the focused window, or end its fullscreen.",
+    ),
     form(&["minimize"], "", &["minimize"], "Send the focused window away."),
     form(
         &["unminimize", "restore"],
