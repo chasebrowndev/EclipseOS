@@ -71,22 +71,52 @@ fn window_for(state: &AbyssState, surface: &X11Surface) -> Option<Window> {
 /// other way). Smithay 0.7 never reads that property, so the request is
 /// otherwise invisible: the game maps as a screen-sized window, gets tiled,
 /// and fights the tile for its size.
+///
+/// A window whose size hints leave it resizable (see [`hints_resizable`]) is
+/// never legacy-fullscreen: Steam/CEF maps undecorated at the origin with
+/// its saved, screen-sized geometry and a min-size hint only, and is an
+/// ordinary window. Games that mean it (SDL, Wine/Proton) pin their size with
+/// min == max, or carry no size hints at all.
 fn legacy_fullscreen(
     state: &AbyssState,
     x11: &X11Surface,
     element: &Window,
     rect: Rectangle<i32, Logical>,
 ) -> bool {
-    let output = shell::output_of_window(state, element)
-        .or_else(|| state.outputs.focused().map(|e| e.id))
-        .and_then(|id| state.outputs.get(id))
-        .and_then(|e| state.space.output_geometry(&e.output));
-    covers_output(
+    let output = output_rect(state, element);
+    let covers = covers_output(
         x11.is_override_redirect() || x11.is_transient_for().is_some(),
         x11.is_decorated(),
         rect,
         output,
-    )
+    );
+    if covers && hints_resizable(x11.min_size(), x11.max_size()) {
+        tracing::debug!(
+            class = x11.class(),
+            "screen-sized undecorated x11 window has resizable size hints; not legacy fullscreen"
+        );
+        return false;
+    }
+    covers
+}
+
+/// Do `WM_NORMAL_HINTS` leave the window resizable? Only a window that pins
+/// its size (`min == max`) or says nothing is a fixed-mode game; one with a
+/// min (or a max) that does not pin it is a normal application window.
+fn hints_resizable(min: Option<Size<i32, Logical>>, max: Option<Size<i32, Logical>>) -> bool {
+    match (min, max) {
+        (None, None) => false,
+        (Some(min), Some(max)) => min != max,
+        _ => true,
+    }
+}
+
+/// The geometry of the output `element` is on, else of the focused one.
+fn output_rect(state: &AbyssState, element: &Window) -> Option<Rectangle<i32, Logical>> {
+    shell::output_of_window(state, element)
+        .or_else(|| state.outputs.focused().map(|e| e.id))
+        .and_then(|id| state.outputs.get(id))
+        .and_then(|e| state.space.output_geometry(&e.output))
 }
 
 /// The rule behind [`legacy_fullscreen`], free of X. `client_decorated` is
@@ -214,6 +244,16 @@ impl XwmHandler for AbyssState {
         let fullscreen = take(&mut self.xwayland.wants_fullscreen, &window)
             || window.is_fullscreen()
             || legacy_fullscreen(self, &window, &element, requested);
+        tracing::info!(
+            class = window.class(),
+            ?requested,
+            output = ?output_rect(self, &element),
+            maximized,
+            fullscreen,
+            decorated = window.is_decorated(),
+            transient = window.is_transient_for().is_some(),
+            "x11 window map decision"
+        );
         if maximized || fullscreen {
             self.xwayland.mapping = Some(element.clone());
         }
@@ -223,7 +263,7 @@ impl XwmHandler for AbyssState {
             shell::set_x11_state(self, &element, false, true);
         }
         if fullscreen {
-            tracing::debug!(class = window.class(), "x11 window mapped fullscreen");
+            tracing::info!(class = window.class(), "x11 window mapped fullscreen");
             shell::set_x11_state(self, &element, true, true);
         }
         if (maximized || fullscreen)
@@ -330,6 +370,11 @@ impl XwmHandler for AbyssState {
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        tracing::info!(
+            class = window.class(),
+            mapped = window.is_mapped(),
+            "x11 maximize request"
+        );
         match window_for(self, &window) {
             Some(w) => shell::set_x11_state(self, &w, false, true),
             None if !window.is_mapped() => park(&mut self.xwayland.wants_maximized, &window, true),
@@ -338,6 +383,11 @@ impl XwmHandler for AbyssState {
     }
 
     fn unmaximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        tracing::info!(
+            class = window.class(),
+            mapped = window.is_mapped(),
+            "x11 unmaximize request"
+        );
         match window_for(self, &window) {
             Some(w) => shell::set_x11_state(self, &w, false, false),
             None if !window.is_mapped() => park(&mut self.xwayland.wants_maximized, &window, false),
@@ -346,6 +396,11 @@ impl XwmHandler for AbyssState {
     }
 
     fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        tracing::info!(
+            class = window.class(),
+            mapped = window.is_mapped(),
+            "x11 fullscreen request"
+        );
         match window_for(self, &window) {
             Some(w) => shell::set_x11_state(self, &w, true, true),
             None if !window.is_mapped() => park(&mut self.xwayland.wants_fullscreen, &window, true),
@@ -354,6 +409,11 @@ impl XwmHandler for AbyssState {
     }
 
     fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        tracing::info!(
+            class = window.class(),
+            mapped = window.is_mapped(),
+            "x11 unfullscreen request"
+        );
         match window_for(self, &window) {
             Some(w) => shell::set_x11_state(self, &w, true, false),
             None if !window.is_mapped() => park(&mut self.xwayland.wants_fullscreen, &window, false),
@@ -362,12 +422,22 @@ impl XwmHandler for AbyssState {
     }
 
     fn minimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        tracing::info!(
+            class = window.class(),
+            mapped = window.is_mapped(),
+            "x11 minimize request"
+        );
         if let Some(w) = window_for(self, &window) {
             shell::set_minimized(self, &w, true);
         }
     }
 
     fn unminimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        tracing::info!(
+            class = window.class(),
+            mapped = window.is_mapped(),
+            "x11 unminimize request"
+        );
         if let Some(w) = window_for(self, &window) {
             shell::set_minimized(self, &w, false);
         }
@@ -542,6 +612,18 @@ mod tests {
         // Dialogs and popups never qualify, nor anything with no output.
         assert!(!covers_output(true, true, r(0, 0, 1920, 1280), out));
         assert!(!covers_output(false, true, r(0, 0, 1920, 1280), None));
+    }
+
+    #[test]
+    fn only_pinned_or_unhinted_windows_may_be_legacy_fullscreen() {
+        let sz = |w, h| Some(Size::<i32, Logical>::from((w, h)));
+        // SDL / Wine: fixed size, or no hints.
+        assert!(!hints_resizable(None, None));
+        assert!(!hints_resizable(sz(1515, 1010), sz(1515, 1010)));
+        // Steam/CEF: a min size, nothing pinning it.
+        assert!(hints_resizable(sz(1000, 600), None));
+        assert!(hints_resizable(sz(400, 300), sz(4000, 3000)));
+        assert!(hints_resizable(None, sz(4000, 3000)));
     }
 
     #[test]

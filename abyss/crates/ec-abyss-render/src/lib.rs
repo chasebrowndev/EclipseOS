@@ -1320,9 +1320,20 @@ fn window_elements(
         let Some(loc) = space.element_location(&window) else {
             continue;
         };
+        // An X11 window with no wl_surface has nothing to show. An InputOnly
+        // one never gets a surface: Wine's screen-sized cursor-clip window would
+        // otherwise be drawn as a blurred backdrop and shadow over the game.
+        if smithay::wayland::seat::WaylandFocus::wl_surface(&window).is_none() {
+            continue;
+        }
         // A fullscreen window is square: a rounded corner would only show the
         // border and the wallpaper behind it.
-        let rounding = rounding.clone().filter(|_| !is_fullscreen(&window));
+        // Only abyss's own fullscreen counts: it holds those windows floating,
+        // untiled. A tiled window that merely carries the X11/xdg fullscreen
+        // state (a client that set it itself) keeps its rounding.
+        let rounding = rounding
+            .clone()
+            .filter(|_| !(is_fullscreen(&window) && userdata::tile_clip(&window).is_none()));
         // A tiled client that ignored its configure (Electron holds its own
         // min width) is cut back to its tile rather than drawn under its
         // neighbour. Only a window that actually overhangs is cropped, so one
