@@ -72,6 +72,7 @@ writing a new ADR that says so.
 | 0071 | [Annotation HUD: liquid-glass presentation, owner colours, error kind](0071-annotation-hud-presentation.md) | accepted |
 | 0072 | [Oracle Eyes' settings live in abyss.kdl; a changed model command needs approval](0072-oracle-eyes-settings-in-abyss-kdl.md) | accepted |
 | 0073 | [Compositor animation system: events, presets, ghosts, transition shaders](0073-compositor-animation-system.md) | accepted |
+| 0078 | [XWayland defaults to client scaling](0078-xwayland-client-scaling-default.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

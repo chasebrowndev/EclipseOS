@@ -1435,12 +1435,13 @@ pub const TABLE: &[Key] = &[
     k(
         "xwayland.scaling",
         Ty::Enum(&["compositor", "client"]),
-        Str("compositor"),
+        Str("client"),
         Abyss,
         NeedsRestart,
-        "`compositor` upscales X11 clients — blurry but always correct. \
-       `client` maps X11 pixels 1:1 to physical pixels: games and DPI-aware \
-       apps render sharp; old non-DPI-aware X apps render small.",
+        "`client` maps X11 pixels 1:1 to physical pixels: games and DPI-aware \
+       apps render sharp; old non-DPI-aware X apps render small. `compositor` \
+       upscales X11 clients: blurry but always the right size. Default changed \
+       by ADR 0078.",
     ),
     // idle
     k(

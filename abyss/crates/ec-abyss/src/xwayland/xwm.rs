@@ -62,8 +62,9 @@ fn window_for(state: &AbyssState, surface: &X11Surface) -> Option<Window> {
         .find(|w| w.x11_surface() == Some(surface))
 }
 
-/// KWin's "legacy fullscreen": an undecorated, non-transient window whose
-/// `rect` covers the whole of its output is fullscreen, whatever it said.
+/// KWin's "legacy fullscreen": an undecorated, non-transient window that sits
+/// at its output's origin and covers the whole output is fullscreen, whatever
+/// it said. The origin matters: a large CSD window (Steam) is placed elsewhere.
 ///
 /// Wine/Proton and SDL ask for fullscreen *before* mapping by writing
 /// `_NET_WM_STATE` straight onto the withdrawn window (EWMH §5.1 leaves no
@@ -98,7 +99,7 @@ fn covers_output(
 ) -> bool {
     !secondary
         && client_decorated
-        && output.is_some_and(|o| rect.size.w >= o.size.w && rect.size.h >= o.size.h)
+        && output.is_some_and(|o| rect.loc == o.loc && rect.size.w >= o.size.w && rect.size.h >= o.size.h)
 }
 
 /// Remove `surface` from a parked-request list; true if it was there.
@@ -165,7 +166,10 @@ impl XwmHandler for AbyssState {
             tracing::warn!(error = %e, "could not map x11 window");
             return;
         }
-        let requested = window.geometry();
+        // At a fractional client scale smithay has not converted this yet
+        // (see `creation_geometry`). Taken raw, an ordinary Steam window read
+        // as screen-sized.
+        let requested = xwayland::creation_geometry(window.geometry(), xwayland::client_scale(self));
         let element = Window::new_x11_window(window.clone());
         shell::place_new_window(self, element.clone());
         let maximized = take(&mut self.xwayland.wants_maximized, &window) || window.is_maximized();
@@ -468,8 +472,9 @@ mod tests {
         // on a 1.5x panel), with Motif "no decorations".
         assert!(covers_output(false, true, r(0, 0, 1920, 1280), out));
         assert!(covers_output(false, true, r(0, 0, 2880, 1920), out));
-        // Position does not matter; X places it at the root origin anyway.
-        assert!(covers_output(false, true, r(40, 40, 1920, 1280), out));
+        // Large but not at the origin: a CSD app window (Steam), not a game.
+        assert!(!covers_output(false, true, r(40, 40, 1920, 1280), out));
+        assert!(!covers_output(false, true, r(0, 40, 2000, 1300), out));
         // Smaller in either dimension: an ordinary window.
         assert!(!covers_output(false, true, r(0, 0, 1920, 1279), out));
         assert!(!covers_output(false, true, r(0, 0, 1280, 720), out));

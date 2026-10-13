@@ -1818,8 +1818,9 @@ Clipboard: agents read/write the clipboard through `eclipse_agent_v1`, not
 - Rootless XWayland via Smithay `X11Wm`, started lazily.
 - X11 windows get surface handles like native toplevels. Semantic layer is
   weaker (AT-SPI via the X11 app if it supports it; otherwise vision).
-- Scaling: XWayland scaled by compositor; optional per-app "let X11 handle
-  DPI" mode.
+- Scaling: ~~XWayland scaled by compositor; optional per-app "let X11 handle
+  DPI" mode.~~ *(ADR 0078)* X11 clients handle DPI by default; compositor
+  upscaling is the opt-out (COMP-07 §4).
 - X11 clients cannot participate in `eclipse_semantic_v1`; they are always
   `semantic: atspi|none`.
 - Security: X11 clients can snoop each other. Policy default: X11 windows
@@ -3668,10 +3669,16 @@ Consequences, all enforced:
 
 ## 4. Scaling
 
-- XWayland is scaled by the compositor by default: X11 clients render at
-  scale 1 and are upscaled, which is blurry but always correct.
+- ~~XWayland is scaled by the compositor by default: X11 clients render at
+  scale 1 and are upscaled, which is blurry but always correct.~~
+  *(ADR 0078)* XWayland defaults to client scaling: X11 clients get
+  `Xft.dpi`-style hints for the output's scale and render natively, so
+  games and DPI-aware apps are sharp. `xwayland { scaling "compositor" }`
+  restores upscaling (blurry, but DPI-unaware apps keep their size).
 - Per-app rule `xwayland-scaling "client"` sets `Xft.dpi`/`GDK_SCALE`-style
   hints and lets the client render natively for apps that handle DPI well.
+  *(ADR 0078: implemented as the global `xwayland.scaling` key; a per-app
+  rule is not implemented.)*
 - Mixed-DPI multi-output with X11 clients is a known-imperfect area; the
   compositor picks the scale of the output the window is mostly on.
 
