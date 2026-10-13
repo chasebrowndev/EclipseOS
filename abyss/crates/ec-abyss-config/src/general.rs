@@ -183,9 +183,10 @@ pub struct Xwayland {
     /// Run an X server at all. Disabling it is the strongest isolation
     /// available: no X11 trust domain exists (COMP-07 §7).
     pub enable: bool,
-    /// `false` (default): the compositor upscales X11 clients rendering at
-    /// scale 1 — blurry but always correct. `true`: X11 pixels map 1:1 to
-    /// physical pixels at the focused output's scale (COMP-07 §4).
+    /// `true` (default, ADR 0078): X11 pixels map 1:1 to physical pixels at
+    /// the focused output's scale (COMP-07 §4). `false`: the compositor
+    /// upscales X11 clients rendering at scale 1, which is blurry but sizes
+    /// DPI-unaware apps correctly.
     pub scaling_client: bool,
 }
 
@@ -193,7 +194,7 @@ impl Default for Xwayland {
     fn default() -> Self {
         Self {
             enable: true,
-            scaling_client: false,
+            scaling_client: true,
         }
     }
 }

@@ -207,10 +207,10 @@ fn ready(state: &mut AbyssState, socket: std::os::unix::net::UnixStream, dpy: u3
 
 /// Cursor scale / DPI hints for X11 clients (COMP-07 §4).
 ///
-/// Default is compositor scaling: clients are told the world is 96 dpi at
-/// scale 1 and the compositor upscales the result — blurry but always
-/// correct. `xwayland { scaling "client" }` instead hands out the focused
-/// output's scale and lets the client render natively.
+/// Default is client scaling (ADR 0078): the focused output's scale is handed
+/// out and the client renders natively. `xwayland { scaling "compositor" }`
+/// instead tells clients the world is 96 dpi at scale 1 and the compositor
+/// upscales the result, which is blurry but sizes DPI-unaware apps correctly.
 pub fn apply_scale(state: &mut AbyssState) {
     use smithay::xwayland::xwm::settings::Value;
 
