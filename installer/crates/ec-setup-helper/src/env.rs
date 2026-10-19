@@ -45,6 +45,8 @@ pub struct Paths {
     pub ntp_synced: PathBuf,
     /// How long `Preflight` waits for the clock before refusing.
     pub clock_wait: Duration,
+    /// Pause between `umount -R` attempts at the end of an install.
+    pub umount_backoff: Duration,
     /// The live medium's saved connections (D-07 §4.3).
     pub nm_connections: PathBuf,
     /// Progress log; not secret by construction, so world-readable for the GUI.
@@ -79,6 +81,7 @@ impl Paths {
             keymaps: "/usr/share/kbd/keymaps".into(),
             ntp_synced: "/run/systemd/timesync/synchronized".into(),
             clock_wait: Duration::from_secs(30),
+            umount_backoff: Duration::from_secs(1),
             nm_connections: "/etc/NetworkManager/system-connections".into(),
             install_log: "/run/eclipseos-install.log".into(),
         }

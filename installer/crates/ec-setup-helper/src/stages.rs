@@ -285,10 +285,66 @@ pub fn mount(env: &Env, l: &Layout) -> Result<()> {
     )
 }
 
-/// Best effort; also run after a failure so the disk is not left busy.
+/// Attempts at `umount -R` before giving up (about 5 s with the 1 s backoff).
+const UMOUNT_TRIES: u32 = 5;
+
+/// Stop the daemons the keyring stages left running against the target's
+/// gnupg home (`pacman-key` via pacstrap -K, and the host-side `--gpgdir` calls
+/// start gpg-agent/dirmngr/keyboxd there). They hold the mount busy until they
+/// exit on their own. Best effort.
+fn stop_target_daemons(env: &Env) {
+    let ring = env.paths.target.join("etc/pacman.d/gnupg");
+    if !ring.is_dir() {
+        return;
+    }
+    let _ = env.runner.run(
+        &Cmd::new(Tool::Gpgconf)
+            .arg("--homedir")
+            .arg(&ring)
+            .args(["--kill", "all"]),
+    );
+    // Agents started from inside the chroot hash their socket dir from the
+    // in-chroot path, so the host-side call may not reach them.
+    let _ =
+        env.runner
+            .run(&chroot(env).args(["gpgconf", "--homedir", "/etc/pacman.d/gnupg", "--kill", "all"]));
+}
+
+/// Append what is still mounted under the target to the install log, so a busy
+/// mount is diagnosable. Mount paths and device names only.
+fn log_busy_mounts(env: &Env) {
+    let Ok(out) = env
+        .runner
+        .capture(&Cmd::new(Tool::Findmnt).arg("-R").arg(&env.paths.target))
+    else {
+        return;
+    };
+    if let Ok(mut f) = fs::OpenOptions::new().append(true).open(&env.paths.install_log) {
+        let _ = writeln!(f, "umount of the target failed; still mounted:");
+        let _ = f.write_all(&out);
+    }
+}
+
+/// Stop the target's key daemons, flush, then `umount -R`, retrying briefly:
+/// a process that is on its way out can hold a mount for a moment. Never a lazy
+/// unmount. Also run after a failure so the disk is not left busy.
 pub fn unmount(env: &Env) -> Result<()> {
-    env.runner
-        .run(&Cmd::new(Tool::Umount).arg("-R").arg(&env.paths.target))
+    stop_target_daemons(env);
+    let _ = env.runner.run(&Cmd::new(Tool::Sync));
+    let mut res = Ok(());
+    for i in 0..UMOUNT_TRIES {
+        if i > 0 {
+            std::thread::sleep(env.paths.umount_backoff);
+        }
+        res = env
+            .runner
+            .run(&Cmd::new(Tool::Umount).arg("-R").arg(&env.paths.target));
+        if res.is_ok() {
+            return res;
+        }
+    }
+    log_busy_mounts(env);
+    res
 }
 
 // ---- Pacstrap ----------------------------------------------------------------

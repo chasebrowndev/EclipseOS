@@ -67,6 +67,7 @@ pub fn fake_paths(t: &TempDir) -> Paths {
         keymaps: r.join("usr/share/kbd/keymaps"),
         ntp_synced: r.join("run/systemd/timesync/synchronized"),
         clock_wait: std::time::Duration::ZERO,
+        umount_backoff: std::time::Duration::ZERO,
         nm_connections: r.join("etc/NetworkManager/system-connections"),
         install_log: r.join("run/eclipseos-install.log"),
     }
