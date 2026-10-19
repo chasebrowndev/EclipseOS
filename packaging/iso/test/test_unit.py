@@ -16,6 +16,7 @@ import zlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import compare  # noqa: E402
 import imgtools as it  # noqa: E402
+import scenario as sc  # noqa: E402
 import vm as vmmod  # noqa: E402
 
 
@@ -261,6 +262,308 @@ class TestPidSafety(Base):
     def test_long_socket_path_shortened(self):
         v = vmmod.VM(os.path.join(self.tmp, "x" * 120))
         self.assertLess(len(v.qmp_path.encode()), 108)
+
+
+class TestQemuArgs(unittest.TestCase):
+    def args(self, **kw):
+        base = dict(iso="/i.iso", disk="/d.qcow2")
+        base.update(kw)
+        return vmmod.build_qemu_args("qemu", "kvm", "/c.fd", "/v.fd", "/q.sock", "/s.log", **base)
+
+    def test_defaults_match_the_old_layout(self):
+        a = self.args()
+        self.assertIn("virtio-blk-pci,drive=hd,serial=eclipse0,bootindex=2", a)
+        self.assertIn("ide-cd,drive=cd,id=cdrom0,bootindex=1", a)
+        self.assertEqual(a.count("if=pflash,format=raw,readonly=on,file=/c.fd"), 1)
+        self.assertIn("user,id=n0", a)
+
+    def test_nvme_second_disk_hostfwd_bios_no_net(self):
+        a = self.args(disk_bus="nvme", disk2="/d2.qcow2", hostfwd=[(2222, 22)])
+        self.assertIn("nvme,drive=hd,serial=eclipse0,bootindex=2", a)
+        self.assertIn("nvme,drive=hd2,serial=eclipse1", a)
+        self.assertIn("user,id=n0,hostfwd=tcp:127.0.0.1:2222-:22", a)
+        b = self.args(bios=True, net=False)
+        self.assertFalse(any("pflash" in x for x in b))
+        self.assertIn("-nic", b)
+        self.assertNotIn("-netdev", b)
+        with self.assertRaises(vmmod.HarnessError):
+            self.args(disk_bus="scsi")
+
+    def test_eject_falls_back_to_tray_commands(self):
+        d = tempfile.mkdtemp()
+        try:
+            p = os.path.join(d, "q.sock")
+            fq = FakeQEMU(p, [])
+            fq.start()
+            v = vmmod.VM(d)
+            v.qmp_path = p
+            v.eject_cd()
+            self.assertEqual([m["execute"] for m in fq.log][-1], "eject")
+            self.assertEqual(fq.log[-1]["arguments"], {"id": "cdrom0", "force": True})
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class TestScenarioArgs(unittest.TestCase):
+    def test_defaults_and_options(self):
+        a = sc.parse_args(["--iso", "x.iso"])
+        self.assertEqual((a.profile, a.disk, a.res, a.reboot_count), ("standard", "virtio", "1280x800", 0))
+        a = sc.parse_args(["--iso", "x", "--profile", "agentic", "--disk", "nvme", "--second-disk", "8G",
+                           "--wifi", "--reboot-count", "2", "--res", "1920x1080", "--keep"])
+        self.assertEqual((a.profile, a.disk, a.second_disk, a.wifi, a.reboot_count, a.keep),
+                         ("agentic", "nvme", "8G", True, 2, True))
+        self.assertEqual(sc.parse_res(a.res), (1920, 1080))
+
+    def test_rejections(self):
+        for argv in (["--iso", "x", "--res", "big"], ["--iso", "x", "--disk-size", "lots"],
+                     ["--iso", "x", "--reboot-count", "-1"], ["--iso", "x", "--wifi", "--no-net"],
+                     ["--iso", "x", "--bios", "--wifi"], ["--iso", "x", "--bios", "--no-net"]):
+            with self.assertRaises(vmmod.HarnessError, msg=argv):
+                sc.parse_args(argv)
+        with self.assertRaises(SystemExit):
+            sc.parse_args(["--iso", "x", "--profile", "ultra"])
+
+    def test_every_plan_profile_is_known(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        src = os.path.join(here, "..", "..", "..", "installer", "crates", "ec-setup-plan", "src", "lib.rs")
+        if not os.path.isfile(src):
+            self.skipTest("installer sources not in this checkout")
+        text = open(src).read()
+        body = text.split("pub enum Profile {")[1].split("}")[0]
+        names = [w.strip().rstrip(",").lower() for w in body.splitlines()
+                 if w.strip() and not w.strip().startswith(("#", "//"))]
+        self.assertEqual(sorted(names), sorted(sc.PROFILES))
+
+
+class TestStepTable(unittest.TestCase):
+    ctx = {"by_id": "virtio-eclipse0", "wifi": False}
+
+    def test_covers_every_screen_but_the_last_in_order(self):
+        plan = sc.step_plan(self.ctx)
+        self.assertEqual(sc.screens_covered(plan), list(sc.SCREENS[:-1]))
+        self.assertEqual(plan[0]["go"], [("key", "spc")])
+
+    def test_matches_the_wizard_source(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        src = os.path.join(here, "..", "..", "..", "installer", "crates", "ec-setup", "src", "model.rs")
+        if not os.path.isfile(src):
+            self.skipTest("installer sources not in this checkout")
+        text = open(src).read()
+        block = text.split("pub const ALL: [Step;")[1].split("];")[0]
+        names = [w.strip().rstrip(",").replace("Step::", "").lower() for w in block.splitlines()[1:] if "Step::" in w]
+        self.assertEqual(names, list(sc.SCREENS))
+
+    def test_typing_is_never_part_of_a_go(self):
+        # `go` must change the screen by itself; typing in `go` would fake a transition
+        for item in sc.step_plan(self.ctx):
+            self.assertFalse(any(a[0] == "type" for a in item["go"]), item["screen"])
+
+    def test_secrets_and_disk_name_land_where_expected(self):
+        plan = {p["screen"]: p for p in sc.step_plan(self.ctx)}
+        typed = [a[1] for a in plan["identity"]["prep"] if a[0] == "type"]
+        self.assertEqual(typed, [sc.USER, sc.PASSWORD, sc.PASSWORD])
+        self.assertEqual([a[1] for a in plan["review"]["prep"] if a[0] == "type"], ["virtio-eclipse0"])
+        self.assertIn(("key", "down"), plan["disk"]["prep"])
+        click = [a for a in plan["keyboard"]["prep"] if a[0] == "click"][0]
+        self.assertTrue(0 < click[1] < 0.15 and 0 < click[2] < 1)
+
+    def test_wifi_adds_the_join_to_the_network_step(self):
+        net = {p["screen"]: p for p in sc.step_plan(dict(self.ctx, wifi=True))}["network"]
+        self.assertTrue(any(a[0] == "click" for a in net["prep"]))
+        self.assertIn(("type", sc.WIFI_PSK), net["prep"])
+        plain = {p["screen"]: p for p in sc.step_plan(self.ctx)}["network"]
+        self.assertEqual(plain["prep"], [])
+
+
+class TestDiskNames(unittest.TestCase):
+    def test_expected_and_preferred(self):
+        self.assertEqual(sc.expected_by_id("virtio"), "virtio-eclipse0")
+        self.assertEqual(sc.expected_by_id("nvme", "eclipse1"), "nvme-QEMU_NVMe_Ctrl_eclipse1")
+        names = ["nvme-eui.0025", "nvme-QEMU_NVMe_Ctrl_eclipse0_1", "nvme-QEMU_NVMe_Ctrl_eclipse0"]
+        self.assertEqual(sc.preferred_by_id(names), "nvme-QEMU_NVMe_Ctrl_eclipse0")
+        self.assertEqual(sc.preferred_by_id(["wwn-0x1", "ata-X_1"]), "ata-X_1")
+        self.assertIsNone(sc.preferred_by_id([]))
+
+    def test_listing_filter_drops_partitions(self):
+        lst = "virtio-eclipse0\nvirtio-eclipse0-part1\nvirtio-eclipse1\n"
+        self.assertEqual(sc.disk_ids_from_listing(lst, "eclipse0"), ["virtio-eclipse0"])
+
+
+class TestChecks(unittest.TestCase):
+    def test_units(self):
+        inst = {"eclipseos-hyperion", "eclipseos-toasts", "eclipseos-desktop"}
+        self.assertEqual(sc.expected_user_units(inst),
+                         ["ec-hyperion-bar.service", "ec-toasts.service", "ec-screensaver.service", "ec-pairing.service"])
+        self.assertIn("ec-policyd.service", sc.expected_user_units(inst | {"eclipseos-agents"}))
+        kv = sc.parse_kv("ec-toasts.service=active\nec-hyperion-bar.service=failed\nnoise\n")
+        ok, detail = sc.eval_active(kv, ["ec-toasts.service", "ec-hyperion-bar.service", "ec-x.service"])
+        self.assertFalse(ok)
+        self.assertIn("ec-hyperion-bar.service=failed", detail)
+        self.assertIn("ec-x.service=missing", detail)
+        self.assertTrue(sc.eval_active({"a": "active"}, ["a"])[0])
+        self.assertTrue(sc.eval_active({"a": "enabled"}, ["a"], want="enabled")[0])
+
+    def test_health_script_lists_every_unit(self):
+        s = sc.health_script(["a.service", "b.socket"])
+        self.assertIn("systemctl --user is-active a.service", s)
+        self.assertIn("XDG_RUNTIME_DIR=/run/user/", s)
+        self.assertNotIn("!", s)
+
+    def test_journal_filter(self):
+        text = ("Oct 18 host ec-abyss[1]: bad thing\nOct 18 host kernel: ACPI error\n"
+                "Oct 18 host systemd[1]: ec-toasts.service: failed\nOct 18 host selection[1]: tec-no\n")
+        got = sc.journal_ec_errors(text)
+        self.assertEqual(len(got), 2)
+        self.assertEqual(sc.journal_ec_errors(text, ignore=[r"ec-abyss"]), [got[1]])
+
+    def test_limine(self):
+        conf = ("/EclipseOS\n  path: boot():/vmlinuz-linux\n/EclipseOS (fallback)\n  path: boot():/vmlinuz-linux\n")
+        self.assertEqual(sc.limine_kernels(conf), ["linux"])
+        ok, detail = sc.eval_limine(conf, ["linux", "linux-lts"])
+        self.assertFalse(ok)
+        self.assertIn("linux-lts", detail)
+        both = conf + "/LTS\n  path: boot():/vmlinuz-linux-lts\n"
+        self.assertTrue(sc.eval_limine(both, ["linux", "linux-lts"])[0])
+        self.assertFalse(sc.eval_limine("", ["linux"])[0])
+
+    def test_packages(self):
+        floor = ["base", "linux"]
+        self.assertEqual(sc.expected_packages("standard", floor)[:2], floor)
+        self.assertNotIn(sc.AGENTS_PACKAGE, sc.expected_packages("standard", floor))
+        self.assertIn(sc.AGENTS_PACKAGE, sc.expected_packages("agentic", floor))
+        self.assertIn("eclipseos-hyperion", sc.expected_packages("full", floor))
+        self.assertNotIn("eclipseos-hyperion", sc.expected_packages("minimal", floor))
+        self.assertEqual(sc.expected_packages("standard", ["base", "eclipseos-toasts"]).count("eclipseos-toasts"), 1)
+
+    def test_floor_file_parses(self):
+        if not os.path.isfile(sc.FLOOR_LIST):
+            self.skipTest("package list not in this checkout")
+        floor = sc.read_floor(sc.FLOOR_LIST)
+        self.assertIn("linux", floor)
+        self.assertIn("eclipseos-meta", floor)
+        self.assertTrue(all(not p.startswith("#") for p in floor))
+
+    def test_session_ready(self):
+        out = "  c1 1000 tester seat0 tty1\n  2 0 root - -\n"
+        self.assertTrue(sc.session_ready(out, "tester"))
+        self.assertFalse(sc.session_ready("  c2 1001 other seat0\n", "tester"))
+        self.assertFalse(sc.session_ready("", "tester"))
+
+    def test_selectable_profiles_follow_the_source(self):
+        d = tempfile.mkdtemp()
+        try:
+            p = os.path.join(d, "data.rs")
+            open(p, "w").write("pub fn selectable(p: Profile) -> bool {\n    matches!(p, Profile::Standard | Profile::Agentic)\n}\n")
+            self.assertEqual(sc.selectable_profiles(p), {"standard", "agentic"})
+            self.assertEqual(sc.selectable_profiles(os.path.join(d, "none")), {"standard"})
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_profile_click_only_for_non_default(self):
+        std = {p["screen"]: p for p in sc.step_plan({"by_id": "x", "profile": "standard"})}
+        self.assertEqual(std["profile"]["prep"], [])
+        ag = {p["screen"]: p for p in sc.step_plan({"by_id": "x", "profile": "agentic"})}
+        self.assertEqual(ag["profile"]["prep"][0][0], "click")
+
+
+class TestMarkersAndScripts(unittest.TestCase):
+    def test_wrap_and_parse(self):
+        line = sc.wrap_command("echo hi; false", "t7")
+        self.assertIn("/dev/ttyS0", line)
+        self.assertNotIn("!", line)
+        log_ = "boot noise\r\n@@B:t7\r\nhi\r\n@@E:t7:1\r\n"
+        self.assertEqual(sc.parse_marker(log_, "t7"), (1, "hi\n"))
+        self.assertIsNone(sc.parse_marker(log_, "t8"))
+        self.assertIsNone(sc.parse_marker("@@B:t7\nhalf", "t7"))
+        self.assertEqual(sc.parse_marker("@@B:t1\n@@E:t1:0\n", "t1"), (0, ""))
+
+    def test_sections(self):
+        sec = sc.parse_sections("x\n@@S:hostname\neclipse\n@@S:passwd\ntester:x:1000\n\n@@S:end\n")
+        self.assertEqual(sec["hostname"], "eclipse")
+        self.assertEqual(sec["passwd"], "tester:x:1000")
+        self.assertEqual(sec["end"], "")
+
+    def test_probe_script_substitutions(self):
+        s = sc.target_probe_script("virtio-eclipse0", "ssh-ed25519 AAAA test")
+        self.assertIn("ID=virtio-eclipse0", s)
+        self.assertIn("'ssh-ed25519 AAAA test'", s)
+        self.assertIn("PasswordAuthentication no", s)
+        self.assertIn("systemctl --root=/mnt/t enable sshd", s)
+        self.assertLess(s.index("PasswordAuthentication"), s.index("umount -R"))
+        self.assertNotIn("%(", s)
+
+    def test_ap_script(self):
+        s = sc.wifi_ap_script()
+        for needle in ("mac80211_hwsim radios=2", "ssid=eclipse-test", "wpa=2", "CCMP",
+                       "wpa_passphrase=" + sc.WIFI_PSK, "hostapd -B", "dnsmasq", "netns"):
+            self.assertIn(needle, s)
+        self.assertNotIn("%(", s)
+
+    def test_script_server_serves_and_404s(self):
+        import urllib.error
+        import urllib.request
+        srv = sc.ScriptServer({"a.sh": "echo hi\n"})
+        try:
+            url = "http://127.0.0.1:%d/" % srv.port
+            self.assertEqual(urllib.request.urlopen(url + "a.sh", timeout=5).read(), b"echo hi\n")
+            srv.files["b.sh"] = "x"
+            self.assertEqual(urllib.request.urlopen(url + "b.sh", timeout=5).read(), b"x")
+            with self.assertRaises(urllib.error.HTTPError):
+                urllib.request.urlopen(url + "nope", timeout=5)
+        finally:
+            srv.close()
+
+
+class TestResultsAndSsh(unittest.TestCase):
+    def test_results_json_and_verdict(self):
+        a = sc.parse_args(["--iso", "x.iso"])
+        r = sc.Results(a)
+        self.assertFalse(r.passed)  # nothing checked is not a pass
+        r.add("a", True)
+        r.skip("b", "n/a")
+        self.assertTrue(r.passed)
+        r.add("c", False, "x" * 5000)
+        self.assertFalse(r.passed)
+        d = tempfile.mkdtemp()
+        try:
+            p = os.path.join(d, "result.json")
+            r.write(p)
+            j = json.load(open(p))
+            self.assertEqual([c["name"] for c in j["checks"]], ["a", "b", "c"])
+            self.assertFalse(j["pass"])
+            self.assertEqual(len(j["checks"][2]["detail"]), 2000)
+            self.assertTrue(j["checks"][1]["skipped"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_ssh_argv_is_key_only_and_password_stays_off_argv(self):
+        s = sc.Ssh(2222, "/k")
+        argv = s.argv("true")
+        self.assertIn("BatchMode=yes", argv)
+        self.assertEqual(argv[-2:], ["tester@127.0.0.1", "true"])
+        self.assertIn("2222", argv)
+        self.assertNotIn(sc.PASSWORD, " ".join(argv))
+
+    def test_free_port_and_key(self):
+        self.assertGreater(sc.free_port(), 0)
+        if shutil.which("ssh-keygen"):
+            d = tempfile.mkdtemp()
+            try:
+                key, pub = sc.make_ssh_key(os.path.join(d, "k"))
+                self.assertTrue(pub.startswith("ssh-ed25519 "))
+                self.assertEqual(sc.make_ssh_key(os.path.join(d, "k"))[1], pub)  # reused, not regenerated
+            finally:
+                shutil.rmtree(d, ignore_errors=True)
+
+    def test_nonselectable_profile_is_reported_not_run(self):
+        d = tempfile.mkdtemp()
+        try:
+            self.assertEqual(sc.main(["--iso", "x.iso", "--work", os.path.join(d, "w"), "--profile", "full"]), 1)
+            j = json.load(open(os.path.join(d, "w", "result.json")))
+            self.assertEqual(j["checks"][0]["name"], "profile_selectable")
+            self.assertFalse(j["pass"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":
