@@ -582,6 +582,28 @@ mod tests {
     }
 
     #[test]
+    fn the_baked_repo_db_is_not_left_in_the_target() {
+        let (_t, p) = live();
+        let sync = p.target.join("var/lib/pacman/sync");
+        let inner = machine_runner(&p);
+        let s = sync.clone();
+        let r = FakeRunner::new(move |c| {
+            if c.tool == Tool::Pacstrap {
+                fs::create_dir_all(&s).unwrap();
+                fs::write(s.join("eclipseos.db"), b"baked").unwrap();
+                fs::write(s.join("eclipseos.db.sig"), b"baked").unwrap();
+                fs::write(s.join("core.db"), b"core").unwrap();
+            }
+            inner.capture(c)
+        });
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        assert!(!sync.join("eclipseos.db").exists());
+        assert!(!sync.join("eclipseos.db.sig").exists());
+        assert!(sync.join("core.db").exists());
+    }
+
+    #[test]
     fn stale_signatures_are_wiped_after_confirm_and_before_partitioning() {
         let (_t, p) = live();
         let r = machine_runner(&p);
