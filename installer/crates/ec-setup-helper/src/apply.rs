@@ -173,7 +173,7 @@ pub fn preflight(env: &Env, v: &Validated, plan: &Plan) -> Result<Prepared> {
         .map_err(|_| Error::Refused("could not trust the packaging key"))?;
     env.runner
         .run(&pacman(&["-Sy", "--noconfirm", "archlinux-keyring"]))
-        .map_err(|_| Error::Refused("could not refresh the package keyring"))?;
+        .map_err(|_| Error::Refused("could not sync the package databases"))?;
     env.runner
         .run(&Cmd::new(Tool::PacmanKey).args(["--populate", "archlinux"]))
         .map_err(|_| Error::Refused("could not refresh the package keyring"))?;

@@ -101,7 +101,7 @@ KEYID="$(gpg --show-keys --with-colons /root/eclipseos-packaging.asc 2>/dev/null
          awk -F: '/^fpr:/{print $10; exit}')"
 PACCONF=/root/eclipseos-install-pacman.conf
 cp /etc/pacman.conf "$PACCONF"
-if [[ -d /root/eclipseos-repo ]]; then
+if [[ -d /opt/eclipseos-repo ]]; then
   # The packages are signed by the EclipseOS packaging key. TrustAll is not
   # enough on its own -- pacman cannot verify against a key it does not hold,
   # so import it here and again into the installed system further down.
@@ -113,10 +113,10 @@ if [[ -d /root/eclipseos-repo ]]; then
 # here is unsigned (rebuilt at bake time); the packages in it are signed.
 [eclipseos]
 SigLevel = PackageRequired DatabaseOptional
-Server = file:///root/eclipseos-repo
+Server = file:///opt/eclipseos-repo
 REPO
 else
-  say "WARNING: /root/eclipseos-repo is missing -- this medium was built"
+  say "WARNING: /opt/eclipseos-repo is missing -- this medium was built"
   say "         without the EclipseOS packages. Falling back to the tailnet."
 fi
 
