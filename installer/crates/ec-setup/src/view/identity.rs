@@ -68,7 +68,7 @@ pub fn body(m: &Model) -> Body<'_> {
                 false,
                 !m.hostname.is_empty() && !m.hostname_ok(),
                 Message::Hostname,
-                Message::Key(Key::Tab),
+                Message::Key(Key::Enter),
             ),
         ));
         form = form.push(parts::link("Fewer options", Message::More(false)));
