@@ -45,6 +45,8 @@ pub const NAMES: &[&str] = &[
     "identity-invalid",
     "profile",
     "profile-more",
+    "profile-agentic",
+    "profile-agentic-more",
     "mode",
     "layout",
     "components",
@@ -55,6 +57,7 @@ pub const NAMES: &[&str] = &[
     "apps-full",
     "review",
     "review-armed",
+    "review-agentic",
     "install",
     "install-confirm",
     "install-done",
@@ -62,6 +65,11 @@ pub const NAMES: &[&str] = &[
 ];
 
 fn walk(m: &mut Model, to: Step, snapshot_online: bool) {
+    walk_as(m, to, snapshot_online, Profile::Standard);
+}
+
+/// [`walk`], choosing `profile` on the way through the profile step.
+fn walk_as(m: &mut Model, to: Step, snapshot_online: bool, profile: Profile) {
     m.update(Message::Begin);
     loop {
         match m.step {
@@ -84,6 +92,9 @@ fn walk(m: &mut Model, to: Step, snapshot_online: bool) {
             Step::Disk => {
                 m.update(Message::DisksLoaded(Ok(fake_disks())));
                 m.update(Message::SelectDisk(fake_disks()[0].by_id.clone()));
+            }
+            Step::Profile => {
+                m.update(Message::Profile(profile));
             }
             Step::Identity => {
                 m.update(Message::Username("chase".into()));
@@ -174,6 +185,13 @@ pub fn fixture(name: &str) -> Option<Model> {
             walk(&mut m, Step::Profile, true);
             m.update(Message::More(true));
         }
+        "profile-agentic" | "profile-agentic-more" => {
+            walk(&mut m, Step::Profile, true);
+            m.update(Message::Profile(Profile::Agentic));
+            if name.ends_with("more") {
+                m.update(Message::More(true));
+            }
+        }
         "mode" => walk(&mut m, Step::Mode, true),
         "layout" => walk(&mut m, Step::Layout, true),
         "components" => walk(&mut m, Step::Components, true),
@@ -197,11 +215,17 @@ pub fn fixture(name: &str) -> Option<Model> {
             m.choices = Choices::for_profile(Profile::Full);
         }
         "review" => walk(&mut m, Step::Review, true),
-        "review-armed" | "install" | "install-confirm" | "install-done" | "install-failed" => {
-            walk(&mut m, Step::Review, true);
+        "review-armed" | "review-agentic" | "install" | "install-confirm" | "install-done"
+        | "install-failed" => {
+            let p = if name == "review-agentic" {
+                Profile::Agentic
+            } else {
+                Profile::Standard
+            };
+            walk_as(&mut m, Step::Review, true, p);
             let id = m.disk.clone().unwrap_or_default();
             m.update(Message::Confirm(id));
-            if name != "review-armed" {
+            if !matches!(name, "review-armed" | "review-agentic") {
                 // The effects are dropped, and with them the request and its password.
                 drop(m.update(Message::Apply));
             }
@@ -311,7 +335,7 @@ mod tests {
                 n if n.starts_with("components") => Step::Components,
                 n if n.starts_with("appearance") => Step::Appearance,
                 n if n.starts_with("apps") => Step::Apps,
-                "review" | "review-armed" => Step::Review,
+                "review" | "review-armed" | "review-agentic" => Step::Review,
                 _ => Step::Install,
             };
             assert_eq!(m.step, want, "{name}");
