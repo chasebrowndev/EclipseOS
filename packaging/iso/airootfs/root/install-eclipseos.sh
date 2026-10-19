@@ -125,8 +125,10 @@ fi
 NVIDIA_OPEN=0
 for d in /sys/bus/pci/devices/*; do
   [[ -r $d/class && -r $d/vendor && -r $d/device ]] || continue
-  [[ $(<"$d/class") == 0x03* && $(<"$d/vendor") == 0x10de ]] || continue
-  if (( $(<"$d/device") >= 0x1e00 )); then NVIDIA_OPEN=1; fi
+  v="$(<"$d/vendor")"; dev="$(<"$d/device")"
+  [[ $v =~ ^0x[0-9a-fA-F]{4}$ && $dev =~ ^0x[0-9a-fA-F]{4}$ ]] || continue
+  [[ $(<"$d/class") == 0x03* && ${v,,} == 0x10de ]] || continue
+  if (( dev >= 0x1e00 )); then NVIDIA_OPEN=1; fi
 done
 if (( NVIDIA_OPEN )); then
   say "NVIDIA Turing or newer detected: installing nvidia-open-dkms"
@@ -200,13 +202,10 @@ if (( NVIDIA_OPEN )); then
     compgen -G "${k}updates/dkms/nvidia.ko*" >/dev/null ||
       die "the NVIDIA kernel module did not build for $(basename "$k"); not continuing"
   done
-  # D-01 §2.3: modules load in early userspace and `kms` comes out of the hooks.
-  # The target's own hook list (busybox or systemd based), minus `kms`.
-  HOOKS_NOKMS="$(bash -c 'source /mnt/etc/mkinitcpio.conf; for h in "${HOOKS[@]}"; do [[ $h == kms ]] || printf "%s " "$h"; done')"
-  [[ -n $HOOKS_NOKMS ]] || die "could not read HOOKS from the target's mkinitcpio.conf"
-  install -Dm0644 /dev/stdin /mnt/etc/mkinitcpio.conf.d/eclipseos-nvidia.conf <<MKINIT
-MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)
-HOOKS=(${HOOKS_NOKMS% })
+  # D-01 §2.3: modules load in early userspace; the stock hooks (kms too) stay,
+  # since `modconf` carries nvidia-utils' nouveau blacklist into the initramfs.
+  install -Dm0644 /dev/stdin /mnt/etc/mkinitcpio.conf.d/eclipseos-nvidia.conf <<'MKINIT'
+MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)
 MKINIT
 fi
 

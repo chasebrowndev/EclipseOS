@@ -122,7 +122,7 @@ So there are two reference machines, and they are not symmetric:
 | Driver | `amdgpu`, in-kernel | `nvidia-open-dkms` + `nvidia-utils` |
 | Extra packages | `amd-ucode`, `linux-firmware-amdgpu` | `linux-headers`, `linux-lts-headers` for DKMS |
 | Bootloader params | none beyond stock | `nvidia-drm.modeset=1`, set explicitly |
-| `mkinitcpio` | stock, `kms` hook kept | `MODULES=(nvidia …)`, `kms` hook removed |
+| `mkinitcpio` | stock, `kms` hook kept | `MODULES+=(nvidia …)`, `kms` hook kept |
 | Rebuild on kernel upgrade | no | yes, DKMS |
 
 The AMD path is the simpler one in every row, and that is the point: the first
@@ -172,9 +172,10 @@ worse) but it means **the image, not the compositor, is responsible for the
 parameter being right.** An NVIDIA profile in D-03 owns it and must fail loudly
 at install time if the parameter is not set.
 
-For this path only, `mkinitcpio` carries `MODULES=(nvidia nvidia_modeset
-nvidia_uvm nvidia_drm)` and the `kms` hook comes **out**, which is the standard
-Arch NVIDIA arrangement.
+For this path only, a `mkinitcpio` drop-in appends `MODULES+=(nvidia
+nvidia_modeset nvidia_uvm nvidia_drm)`. The stock hooks stay, `kms` included:
+`nvidia-utils` ships a `modprobe.d` blacklist for nouveau and the `modconf` hook
+carries it into the initramfs, so dropping `kms` is not needed.
 
 ### 2.4 Firmware
 

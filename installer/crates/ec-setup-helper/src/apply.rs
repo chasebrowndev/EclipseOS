@@ -848,6 +848,75 @@ mod tests {
         }
     }
 
+    /// A Turing+ display controller in the fake sysfs.
+    fn add_turing(p: &Paths) {
+        let d = p.sys_pci.join("0000:01:00.0");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("class"), "0x030000\n").unwrap();
+        fs::write(d.join("vendor"), "0x10de\n").unwrap();
+        fs::write(d.join("device"), "0x2684\n").unwrap();
+    }
+
+    /// A runner that also lets pacstrap's DKMS hook leave the module behind.
+    fn dkms_runner(p: &Paths, build: bool) -> FakeRunner {
+        let inner = machine_runner(p);
+        let k = p.target.join("usr/lib/modules/6.1-arch1-1");
+        FakeRunner::new(move |c| {
+            let out = inner.capture(c);
+            if c.tool == Tool::Pacstrap && build {
+                fs::create_dir_all(k.join("updates/dkms")).unwrap();
+                fs::write(k.join("vmlinuz"), b"k").unwrap();
+                fs::write(k.join("updates/dkms/nvidia.ko.zst"), b"m").unwrap();
+            }
+            out
+        })
+    }
+
+    #[test]
+    fn the_nvidia_module_check_runs_after_pacstrap_and_before_the_initramfs() {
+        // Turing+, module built: the run completes, drop-in and cmdline in place.
+        let (_t, p) = live();
+        add_turing(&p);
+        let target = p.target.clone();
+        let r = dkms_runner(&p, true);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let dropin = fs::read_to_string(target.join("etc/mkinitcpio.conf.d/eclipseos-nvidia.conf")).unwrap();
+        assert!(dropin.starts_with("MODULES+=("));
+        let conf = fs::read_to_string(target.join("boot/limine.conf")).unwrap();
+        assert!(conf.contains("nvidia-drm.modeset=1"));
+        let tools = r.tools();
+        let strap = tools.iter().position(|t| *t == Tool::Pacstrap).unwrap();
+        let chroot = tools.iter().position(|t| *t == Tool::ArchChroot).unwrap();
+        assert!(strap < chroot);
+
+        // Turing+, module missing: refused at the Pacstrap stage, before any
+        // chroot command (mkinitcpio) or boot entry.
+        let (_t, p) = live();
+        add_turing(&p);
+        let target = p.target.clone();
+        let r = dkms_runner(&p, false);
+        let mut out = Vec::new();
+        assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let last = progress(&out).last().cloned().unwrap();
+        assert_eq!((last.stage, last.failed), (Stage::Pacstrap, true));
+        assert!(last.msg.contains("NVIDIA"), "{}", last.msg);
+        assert!(!r.issued(Tool::ArchChroot) && !r.issued(Tool::Efibootmgr));
+        assert!(!target.join("boot/limine.conf").exists());
+
+        // No Turing+ GPU: no module needed, no drop-in, no NVIDIA parameters.
+        let (_t, p) = live();
+        let target = p.target.clone();
+        let r = dkms_runner(&p, false);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        assert!(!target
+            .join("etc/mkinitcpio.conf.d/eclipseos-nvidia.conf")
+            .exists());
+        let conf = fs::read_to_string(target.join("boot/limine.conf")).unwrap();
+        assert!(!conf.contains("nvidia"));
+    }
+
     #[test]
     fn a_failing_stage_stops_the_run_and_unmounts() {
         let (_t, p) = live();

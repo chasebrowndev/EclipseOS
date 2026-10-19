@@ -186,44 +186,10 @@ pub fn locale_packages(locale: &str) -> &'static [&'static str] {
 /// explicitly rather than inherited from a default upstream may flip.
 pub const NVIDIA_CMDLINE: &str = " nvidia-drm.modeset=1 nvidia-drm.fbdev=1";
 
-/// Drop-in for `mkinitcpio` on the NVIDIA path (D-01 §2.3): the modules load in
-/// early userspace and `kms` comes out of the target's own hook list, whatever
-/// that list is (busybox or systemd based). `None` if no `HOOKS=(...)` parses.
-pub fn mkinitcpio_nvidia(conf: &str) -> Option<String> {
-    let mut hooks: Option<Vec<&str>> = None;
-    let mut open: Option<Vec<&str>> = None;
-    for l in conf.lines() {
-        let l = l.split('#').next().unwrap_or("").trim();
-        let body = match open {
-            Some(_) => l,
-            None => match l.strip_prefix("HOOKS=(") {
-                Some(r) => {
-                    open = Some(Vec::new());
-                    r
-                }
-                None => continue,
-            },
-        };
-        let (body, closed) = match body.split_once(')') {
-            Some((b, _)) => (b, true),
-            None => (body, false),
-        };
-        if let Some(v) = open.as_mut() {
-            v.extend(body.split_whitespace());
-        }
-        if closed {
-            hooks = open.take();
-        }
-    }
-    let hooks: Vec<&str> = hooks?.into_iter().filter(|h| *h != "kms").collect();
-    if hooks.is_empty() || !hooks.iter().all(|h| valid_pkg_name(h)) {
-        return None;
-    }
-    Some(format!(
-        "MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)\nHOOKS=({})\n",
-        hooks.join(" ")
-    ))
-}
+/// Drop-in for `mkinitcpio` on the NVIDIA path (D-01 §2.3): the modules load
+/// in early userspace. `+=`, so the stock hooks (`kms` included) stay: the
+/// `modconf` hook carries `nvidia-utils`' nouveau blacklist into the initramfs.
+pub const MKINITCPIO_NVIDIA: &str = "MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)\n";
 
 pub fn limine_conf(root_uuid: &str, ucode: Option<Ucode>, nvidia: bool) -> String {
     let pstate = if ucode == Some(Ucode::Amd) {
@@ -473,10 +439,7 @@ pub fn configure(env: &Env, plan: &Plan, nvidia: bool) -> Result<()> {
     )?;
     target::write(t, TargetFile::ZramGenerator, ZRAM_CONF.as_bytes())?;
     if nvidia {
-        let conf = String::from_utf8(target::read(t, TargetFile::MkinitcpioConf)?)
-            .map_err(|_| Error::Refused("target mkinitcpio.conf"))?;
-        let dropin = mkinitcpio_nvidia(&conf).ok_or(Error::Refused("target mkinitcpio.conf hooks"))?;
-        target::write(t, TargetFile::MkinitcpioNvidia, dropin.as_bytes())?;
+        target::write(t, TargetFile::MkinitcpioNvidia, MKINITCPIO_NVIDIA.as_bytes())?;
     }
     target::write(t, TargetFile::SudoersWheel, SUDOERS_WHEEL.as_bytes())?;
 
@@ -682,35 +645,12 @@ mod tests {
     }
 
     #[test]
-    fn nvidia_initramfs_drops_kms_from_the_targets_hooks() {
-        let busybox = "# c\nMODULES=()\nHOOKS=(base udev autodetect microcode modconfig kms keyboard keymap consolefont block filesystems fsck)\n";
-        let systemd = "#HOOKS=(base udev)\nHOOKS=(base systemd autodetect microcode modconfig kms keyboard sd-vconsole block filesystems fsck) # x\n";
-        let multi = "HOOKS=(base udev\n  kms block # note\n  filesystems)\n";
-        let want = |h: &str| format!("MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)\nHOOKS=({h})\n");
+    fn nvidia_initramfs_appends_modules_and_leaves_hooks_alone() {
         assert_eq!(
-            mkinitcpio_nvidia(busybox).unwrap(),
-            want(
-                "base udev autodetect microcode modconfig keyboard keymap consolefont block filesystems fsck"
-            )
+            MKINITCPIO_NVIDIA,
+            "MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)\n"
         );
-        assert_eq!(
-            mkinitcpio_nvidia(systemd).unwrap(),
-            want("base systemd autodetect microcode modconfig keyboard sd-vconsole block filesystems fsck")
-        );
-        assert_eq!(
-            mkinitcpio_nvidia(multi).unwrap(),
-            want("base udev block filesystems")
-        );
-        for bad in [
-            "",
-            "MODULES=()\n",
-            "HOOKS=(base\n",
-            "HOOKS=()\n",
-            "HOOKS=(kms)\n",
-            "HOOKS=(a$b)\n",
-        ] {
-            assert!(mkinitcpio_nvidia(bad).is_none(), "{bad:?}");
-        }
+        assert!(!MKINITCPIO_NVIDIA.contains("HOOKS"));
     }
 
     #[test]
