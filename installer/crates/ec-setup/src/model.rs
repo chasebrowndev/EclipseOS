@@ -884,7 +884,7 @@ impl Model {
                     if !self
                         .disk
                         .as_ref()
-                        .is_some_and(|id| v.iter().any(|d| &d.by_id == id))
+                        .is_some_and(|id| v.iter().any(|d| &d.by_id == id && data::disk_fits(d)))
                     {
                         self.disk = None;
                         self.confirm.clear();
@@ -898,7 +898,8 @@ impl Model {
                 fx.push(Effect::LoadDisks);
             }
             Message::SelectDisk(id) => {
-                if matches!(&self.disks, Load::Ready(v) if v.iter().any(|d| d.by_id == id)) {
+                if matches!(&self.disks, Load::Ready(v) if v.iter().any(|d| d.by_id == id && data::disk_fits(d)))
+                {
                     if self.disk.as_deref() != Some(id.as_str()) {
                         self.confirm.clear();
                     }
@@ -1148,11 +1149,12 @@ impl Model {
             Step::Disk => {
                 let target = match &self.disks {
                     Load::Ready(v) => {
+                        let fit: Vec<&Disk> = v.iter().filter(|d| data::disk_fits(d)).collect();
                         let cur = self
                             .disk
                             .as_ref()
-                            .and_then(|a| v.iter().position(|x| &x.by_id == a));
-                        shift(v.len(), cur, delta).map(|i| v[i].by_id.clone())
+                            .and_then(|a| fit.iter().position(|x| &x.by_id == a));
+                        shift(fit.len(), cur, delta).map(|i| fit[i].by_id.clone())
                     }
                     _ => None,
                 };
@@ -1473,6 +1475,27 @@ mod tests {
         let id = crate::helper::fake_disks()[0].by_id.clone();
         m.update(Message::SelectDisk(id.clone()));
         assert_eq!(m.disk.as_deref(), Some(id.as_str()));
+        assert!(m.can_next());
+    }
+
+    #[test]
+    fn a_disk_below_the_minimum_cannot_be_chosen() {
+        let mut m = at(Step::Disk);
+        let small = Disk {
+            by_id: "virtio-vda-test".into(),
+            model: String::new(),
+            size_bytes: 8 << 30,
+            partitions: vec![],
+        };
+        let mut v = vec![small.clone()];
+        m.update(Message::DisksLoaded(Ok(v.clone())));
+        m.update(Message::SelectDisk(small.by_id.clone()));
+        assert_eq!(m.disk, None);
+        assert!(!m.can_next());
+        v.push(crate::helper::fake_disks().remove(1));
+        m.update(Message::DisksLoaded(Ok(v)));
+        m.update(Message::Key(Key::Down));
+        assert_ne!(m.disk.as_deref(), Some(small.by_id.as_str()));
         assert!(m.can_next());
     }
 

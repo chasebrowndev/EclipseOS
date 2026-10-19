@@ -25,8 +25,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Smaller than this cannot hold the package set plus a usable home.
-pub const MIN_DISK_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+pub use ec_setup_plan::MIN_DISK_BYTES;
 
 /// Sized for the Abyss desktop plus the installer running from RAM. `MemTotal`
 /// reads a little under the fitted amount, so this is roughly a 2 GB machine.
