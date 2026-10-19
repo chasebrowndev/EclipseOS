@@ -297,12 +297,18 @@ fn stop_target_daemons(env: &Env) {
     if !ring.is_dir() {
         return;
     }
-    let _ = env.runner.run(
-        &Cmd::new(Tool::Gpgconf)
-            .arg("--homedir")
-            .arg(&ring)
-            .args(["--kill", "all"]),
-    );
+    // gpg hashes its socket dir from the homedir string as given, and pacstrap
+    // spells it `<root>//etc/pacman.d/gnupg`, so kill under both spellings.
+    let mut pacstrap_ring = env.paths.target.clone().into_os_string();
+    pacstrap_ring.push("//etc/pacman.d/gnupg");
+    for home in [ring.into_os_string(), pacstrap_ring] {
+        let _ = env.runner.run(
+            &Cmd::new(Tool::Gpgconf)
+                .arg("--homedir")
+                .arg(&home)
+                .args(["--kill", "all"]),
+        );
+    }
     // Agents started from inside the chroot hash their socket dir from the
     // in-chroot path, so the host-side call may not reach them.
     let _ =

@@ -942,9 +942,15 @@ mod tests {
                 && l.args.iter().any(|a| a == "--kill")
                 && l.args.iter().any(|a| Path::new(a) == ring)
         });
+        // pacstrap's own spelling, which gpg hashes to a different socket dir.
+        let pacstrap_ring = format!(
+            "{}//etc/pacman.d/gnupg",
+            ring.ancestors().nth(3).unwrap().display()
+        );
+        let kill2 = pos(&|l| l.tool == Tool::Gpgconf && l.args.contains(&pacstrap_ring));
         let sync = pos(&|l| l.tool == Tool::Sync);
         let um = pos(&|l| l.tool == Tool::Umount);
-        assert!(kill < sync && sync < um);
+        assert!(kill < sync && kill2 < sync && sync < um);
         // The last chroot stage is over by then.
         let last_chroot = log
             .iter()
