@@ -566,5 +566,42 @@ class TestResultsAndSsh(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+
+class TestProgressBar(unittest.TestCase):
+    def img(self, step, w=1920, h=1080):
+        data = bytearray(3 * w * h)
+        left = (w - 776) // 2
+        y = int(h * 0.037)
+        for i in range(13):
+            x0 = left + round(26.1 * i)
+            width = 41 if i == step else 21
+            v = 255 if i == step else 110
+            for x in range(x0, x0 + width):
+                j = 3 * (y * w + x)
+                data[j:j + 3] = bytes([v, v, v])
+        return sc.it.Image(w, h, data)
+
+    def test_step_is_read_from_the_bright_segment(self):
+        for step in (0, 4, 12):
+            self.assertEqual(sc.bar_index(self.img(step)), step)
+        self.assertEqual(sc.bar_index(self.img(5, 1280, 800)), 5)
+
+    def test_no_bar_means_none(self):
+        self.assertIsNone(sc.bar_index(sc.it.Image(64, 64, bytes(3 * 64 * 64))))
+
+    def test_targets(self):
+        self.assertIsNone(sc.step_bar_target("welcome"))
+        self.assertEqual(sc.step_bar_target("language"), 0)
+        self.assertEqual(sc.step_bar_target("review"), 12)
+        self.assertIsNone(sc.step_bar_target("install"))
+
+
+class TestDiskGib(unittest.TestCase):
+    def test_sizes(self):
+        self.assertEqual(sc.disk_gib("8G"), 8)
+        self.assertEqual(sc.disk_gib("20g"), 20)
+        self.assertEqual(sc.disk_gib("512M"), 0.5)
+        self.assertLess(sc.disk_gib("8G"), sc.MIN_DISK_GIB)
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

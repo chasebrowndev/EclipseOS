@@ -134,3 +134,12 @@ Honest limits:
   to a particular banner. `--bios` expects the helper to refuse before any erase prompt.
 - Click targets are screen fractions (`CLICK_*` in `scenario.py`), calibrated at 1280x800.
 - Throwaway credentials (`tester` / `eclipse-test-pw`) are typed through `type`, so they appear in argv.
+- Options: `--stop-at SCREEN` ends the walk at a wizard screen (recorded as a pass), `--force-profile`
+  skips the check that the profile is selectable in the wizard, `--boot-entry lts` reboots through the
+  Limine menu into the LTS entry and asserts `uname -r`.
+- Step pacing uses the wizard's progress bar as truth for the step index; BIOS and 2560x1600 get extra
+  pacing because the display lags the keys (about 3 minutes per step at 2560x1600).
+- The install needs a disk of at least 16 GiB; smaller disks are asserted to be refused.
+- VT round trips before the install are avoided (input died after one on ISOs without the libinput
+  resume fix), so the Wi-Fi row needs the fixed ISO.
+- The installed `[eclipseos]` repo is `chase-pc:8088` (D-03), unreachable from the VM; `pacman -Sy` notes it.

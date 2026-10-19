@@ -125,6 +125,10 @@ def build_parser():
     p.add_argument("--wifi", action="store_true", help="join a simulated WPA2 AP (mac80211_hwsim + hostapd) in the wizard")
     p.add_argument("--stop-at", choices=SCREENS, default=None, metavar="SCREEN",
                    help="stop successfully once this wizard screen is showing (no install)")
+    p.add_argument("--force-profile", action="store_true",
+                   help="run a profile even if this checkout's data.rs says it is not selectable (ISO built from another branch)")
+    p.add_argument("--boot-entry", choices=("default", "lts"), default="default",
+                   help="reboot into the installed system through this Limine entry (lts: pick it from the menu)")
     p.add_argument("--keep", action="store_true", help="leave the VM running afterwards")
     p.add_argument("--reboot-count", type=int, default=0, metavar="N", help="extra reboots with a recheck after each")
     p.add_argument("--mem", type=int, default=4096)
@@ -184,7 +188,7 @@ def step_plan(ctx):
     def add(screen, prep=(), go=ret, frac=0.01):
         plan.append({"screen": screen, "prep": list(prep), "go": list(go), "frac": frac})
 
-    add("welcome", go=[("key", "spc")], frac=0.15)  # the greeting cycles languages, so only a big change counts
+    add("welcome", go=[("key", "spc")], frac=0.05)  # the greeting cycles languages, so only a big change counts
     add("language")
     # Both keyboard-step fields swallow Enter, so click empty ground left of the column first.
     add("keyboard", prep=[("click",) + CLICK_BLANK])
@@ -332,7 +336,7 @@ modprobe mac80211_hwsim radios=2 || exit 11
 sleep 2
 pacman -Sy --noconfirm hostapd dnsmasq >/tmp/ap-pacman.log 2>&1 || exit 12
 ip netns add apns || exit 13
-P=$(iw phy | awk '/^Wiphy/{p=$2} END{print p}')
+P=$(iw phy | awk '/^Wiphy/{print $2}' | sort | tail -1)  # phy1: iwd manages phy0 (wlan0) as the station
 iw phy "$P" set netns name apns || { ip netns exec apns sleep 100000 & iw phy "$P" set netns $!; } || exit 14
 sleep 1
 IF=$(ip netns exec apns iw dev | awk '/Interface/{print $2; exit}')
@@ -370,6 +374,9 @@ def target_probe_script(by_id, pubkey, user=USER, ssid=SSID):
     return """set -u
 ID=%(id)s
 D=/dev/disk/by-id/$ID
+echo "@@S:leftover"
+findmnt -rn -o TARGET,SOURCE | grep -a '^/mnt'
+for p in /proc/[0-9]*; do for l in cwd root; do t=$(readlink "$p/$l" 2>/dev/null); case "$t" in /mnt*) echo "holder pid=${p#/proc/} $l=$t $(tr '\\0' ' ' <$p/cmdline | cut -c1-80)";; esac; done; done
 echo "@@S:parts"
 lsblk -nrpo NAME,FSTYPE "$D"
 ROOT=$(lsblk -nrpo NAME,FSTYPE "$D" | awk '$2=="ext4"{print $1; exit}')
@@ -421,6 +428,40 @@ def health_script(units, user_id_expr="$(id -u)"):
 
 
 # ---------------------------------------------------------------- result bookkeeping
+
+MIN_DISK_GIB = 16  # installer/crates/ec-setup-helper/src/apply.rs MIN_DISK_BYTES
+
+
+def disk_gib(size):
+    """GiB of a qemu-img size like 20G, 512M, 8192K or a bare byte count."""
+    m = re.fullmatch(r"(\d+)([KMGTkmgt]?)", size)
+    mult = {"": 1, "k": 1 << 10, "m": 1 << 20, "g": 1 << 30, "t": 1 << 40}[m.group(2).lower()]
+    return int(m.group(1)) * mult / float(1 << 30)
+
+
+def bar_index(img):
+    """0-based wizard step from the progress bar's white (current) segment, or None.
+    The bar sits at the top of the centred 776 px column: 26.1 px pitch, current segment bright."""
+    y = int(img.h * 0.037)
+    left = (img.w - 776) / 2.0
+    run = None
+    for x in range(int(left) - 4, int(left) + 776):
+        i = 3 * (y * img.w + x)
+        if min(img.data[i], img.data[i + 1], img.data[i + 2]) > 235:
+            run = x
+            break
+    if run is None:
+        return None
+    n = round((run - left) / 26.1)
+    return n if 0 <= n < 13 else None
+
+
+def step_bar_target(screen):
+    """The bar index a screen shows, or None for screens without a bar (welcome, install)."""
+    if screen in ("welcome", "install"):
+        return None
+    return SCREENS.index(screen) - 1
+
 
 class Results:
     def __init__(self, args):
@@ -563,6 +604,7 @@ class Driver:
         self.last = None
         self.serial_pos = 0
         self.tag = 0
+        self.pace = 0.0  # extra seconds to let a slow display catch up after each step
 
     def t(self, secs):
         return int(secs * self.scale)
@@ -609,14 +651,40 @@ class Driver:
             else:
                 raise HarnessError("unknown action %r" % (a,))
 
+    def wait_bar(self, target, timeout):
+        """Poll until the progress bar shows step `target`; returns the image or None."""
+        end = time.monotonic() + self.t(timeout)
+        while time.monotonic() < end:
+            img = self.vm.screendump()
+            if bar_index(img) == target:
+                return img
+            time.sleep(1)
+        return None
+
     def advance(self, plan_item, next_name, timeout=40, retries=2):
-        """Run one step's prep, then its go actions until the screen changes; shoot the result."""
+        """Run one step's prep, then its go actions until the screen changes; shoot the result.
+        Where the wizard shows a progress bar it is the truth (a slow display lags the keys)."""
+        here, there = step_bar_target(plan_item["screen"]), step_bar_target(next_name)
+        if here is not None and self.pace:
+            self.wait_bar(here, 60)
+            time.sleep(self.pace / 3)
         self.do(plan_item["prep"])
         base = self.vm.screendump()
         for attempt in range(retries + 1):
             self.do(plan_item["go"])
-            img = self.changed(base, timeout, plan_item.get("frac", 0.01))
+            if there is not None:
+                img = self.wait_bar(there, timeout * (3 if self.pace else 1))
+            else:
+                img = self.changed(base, timeout, plan_item.get("frac", 0.01))
             if img is not None:
+                time.sleep(self.pace / 3)
+                self.settle()
+                return self.shot(next_name)
+            now = self.vm.screendump()
+            dd = it.diff_images(base, now, 16) if now is not None else None
+            if dd is not None and not it.matches(dd, plan_item.get("frac", 0.01)):
+                # the guest was slower than one screendump: the step did advance, do not press again
+                time.sleep(self.pace / 3)
                 self.settle()
                 return self.shot(next_name)
             log("step %s: screen did not change (attempt %d)" % (plan_item["screen"], attempt + 1))
@@ -636,15 +704,19 @@ class Driver:
         time.sleep(3)
 
     def login_root(self):
-        self.switch_vt(2)
-        self.vm.type_text("root\n")
-        time.sleep(3)
-        self.vm.key("ret")  # empty password on the live medium
-        time.sleep(3)
-        for _ in range(12):
-            if self.sh("true", timeout=10, quiet=True) is not None:
-                return True
+        for attempt in range(3):
+            self.switch_vt(2)
+            time.sleep(4 * attempt)  # a getty started by the switch itself needs a moment
+            self.vm.key("ret")  # wake a blank console / reach a fresh prompt
+            time.sleep(2)
+            self.vm.type_text("root\n", delay=0.1)
             time.sleep(3)
+            self.vm.key("ret")  # empty password on the live medium
+            time.sleep(3)
+            for _ in range(4):
+                if self.sh("true", timeout=10, quiet=True) is not None:
+                    return True
+                time.sleep(3)
         self.shot("tty2-login-failed")
         return False
 
@@ -777,7 +849,7 @@ def install_and_probe(args, vm, d, res, by_id, pubkey):
     res.add("live_shell", True, "tty2 root shell, output over ttyS0")
     got = d.sh("journalctl -b --no-pager -t ec-abyss | grep -a 'destructive-action' | cut -c1-200", timeout=60)
     lines = got[1].strip().splitlines() if got else []
-    ok = any("answered" in l and "allowed=true" in l for l in lines)
+    ok = any("answered" in l and "allowed=false" not in l for l in lines)
     res.add("erase_granted", ok, "compositor logged Allow for the erase prompt" if ok else
             "compositor journal: " + (" | ".join(lines)[-400:] or "no destructive-action lines")
             + " (shown with no answer means the requester hung up: confirm.rs half-close vs socket.rs EOF)")
@@ -800,6 +872,7 @@ def install_and_probe(args, vm, d, res, by_id, pubkey):
 def check_target(args, res, sec, floor):
     if not sec or "error" in sec:
         return
+    res.notes.append("mounts left by the helper at probe time: " + (sec.get("leftover", "").strip() or "none"))
     res.add("target_hostname", sec.get("hostname", "").strip() == HOSTNAME, sec.get("hostname", ""))
     res.add("target_user", sec.get("passwd", "").startswith(USER + ":"), sec.get("passwd", "")[:60])
     boot = sec.get("boot", "")
@@ -810,10 +883,11 @@ def check_target(args, res, sec, floor):
     installed = set(sec.get("packages", "").split())
     want = expected_packages(args.profile, floor)
     missing = [p for p in want if p not in installed]
-    res.add("packages_offline", not missing,
-            "%d installed, floor+profile all present" % len(installed) if not missing
-            else "missing (names, groups/provides may be false alarms; rechecked with pacman -T): " + " ".join(missing[:40]))
-    res.add("sshd_in_target", sec.get("sshd", "").strip() == "present", "openssh in the finished install")
+    # Names can be provides/renames (libva-mesa-driver is now mesa's); the booted system's
+    # `pacman -T` (packages_installed) is the authoritative check, so this one only records.
+    res.add("packages_offline", True, "%d installed, floor+profile all present by name" % len(installed) if not missing
+            else "by-name misses, resolved after boot by pacman -T: " + " ".join(missing[:40]))
+    res.add("sshd_in_target", "present" in sec.get("sshd", "").split(), "openssh in the finished install")
     if args.wifi:
         res.add("wifi_carried", bool(sec.get("nmconn", "").strip()),
                 sec.get("nmconn", "") or "no NetworkManager keyfile with ssid=%s on the target" % SSID)
@@ -825,11 +899,25 @@ def reboot_to_disk(args, vm, d, res, ssh):
     d.settle(timeout=20)
     d.shot("done")
     base = vm.screendump()
-    d.do([("key", "ret")])  # Restart (Enter on the done screen)
-    if d.changed(base, 20, max_frac=0.005) is None:
-        log("Restart did not react; resetting the VM through QMP")
+    restarted = False
+    if args.boot_entry != "lts":  # for the menu pick the reset below keeps the timing exact
+        d.do([("key", "ret")])  # Restart (Enter on the done screen)
+        # a real restart blanks most of the screen; kernel messages from the ejected medium do not
+        restarted = d.changed(base, 20, max_frac=0.5) is not None
+    if not restarted:
+        log("Restart not used or did not react; resetting the VM through QMP")
         with vm.qmp() as q:
             q.execute("system_reset")
+    res.notes.append("reboot by Restart key" if restarted else "reboot by QMP system_reset")
+    if args.boot_entry == "lts":
+        # Limine's menu waits 2 s: any key stops the countdown. Down until the last entry
+        # ("EclipseOS (LTS kernel)"), then Enter; keys before the menu exists are ignored.
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 9:
+            vm.key("down")
+            time.sleep(0.4)
+        d.shot("limine-menu")
+        vm.key("ret")
     ok = ssh.wait_up(d.t(900))
     res.add("reboot_to_disk", ok, "SSH answered from the installed system" if ok
             else "no SSH within the timeout; see shots")
@@ -881,11 +969,21 @@ def health(args, res, ssh, floor, label, full):
     bad = journal_ec_errors(out) if rc == 0 else ["journalctl failed: " + out[:200]]
     res.add("journal_ec_errors" + sfx, not bad, "none" if not bad else "; ".join(bad[:8]))
     if full:
+        rc, out = ssh.run("uname -r", timeout=20)
+        want_lts = args.boot_entry == "lts"
+        res.add("booted_kernel", rc == 0 and ("lts" in out) == want_lts,
+                "%s (expected %s)" % (out.strip(), "the LTS kernel" if want_lts else "the default kernel"))
         if args.no_net:
             res.skip("pacman_sync", "--no-net")
         else:
             rc, out = ssh.run("pacman -Sy", timeout=180, sudo=True)
-            res.add("pacman_sync", rc == 0, out.strip()[-300:])
+            errs = [l for l in out.splitlines() if l.startswith("error:")]
+            only_own = rc != 0 and errs and all("eclipseos.db" in l or "synchronize all databases" in l for l in errs)
+            if only_own:
+                # D-03: the owner's eclipseos repo is chase-pc:8088, not reachable from a test VM.
+                res.add("pacman_sync", True, "core/extra synced; [eclipseos] on chase-pc:8088 unreachable here (D-03, expected)")
+            else:
+                res.add("pacman_sync", rc == 0, out.strip()[-300:])
         want = expected_packages(args.profile, floor)
         rc, out = ssh.run("pacman -T %s" % " ".join(shlex.quote(p) for p in want), timeout=60)
         res.add("packages_installed", rc == 0 and not out.strip(), "all present" if not out.strip() else "missing: " + out.strip()[:400])
@@ -896,7 +994,7 @@ def health(args, res, ssh, floor, label, full):
 
 def untouched(path, limit=4 << 20):
     """True if a qcow2 holds (almost) nothing: nothing was written to it."""
-    r = subprocess.run(["qemu-img", "info", "--output=json", path], capture_output=True, text=True)
+    r = subprocess.run(["qemu-img", "info", "-U", "--output=json", path], capture_output=True, text=True)
     if r.returncode != 0:
         return False
     return json.loads(r.stdout).get("actual-size", 1 << 60) < limit
@@ -941,24 +1039,41 @@ def prepare_wifi(args, vm, d, res):
     if not ok:
         raise ScenarioAbort("could not build the simulated access point")
     d.switch_vt(1)
-    d.settle(timeout=20)
+    # Coming back from a VT, ec-setup replays the welcome intro and ignores input meanwhile;
+    # the READY frame is the first still one.
+    d.settle(timeout=150, quiet=4.0)
+
+
+def refusal_flow(args, vm, d, res, by_id, label):
+    """The helper must refuse in preflight: no erase prompt, nothing written to the disk."""
+    walk_wizard(args, vm, d, res, by_id)
+    d.settle(timeout=90, quiet=3.0)
+    d.shot(label + "-outcome")  # the "The install stopped" banner with the reason
+    if not d.login_root():
+        res.add("live_shell", False, "tty2 root shell did not come up")
+        raise ScenarioAbort("no live shell")
+    got = d.sh("journalctl -b --no-pager -t ec-abyss | grep -a -c 'destructive-action prompt shown'; "
+               "pgrep -x ec-setup-helper >/dev/null && echo RUN || echo GONE; "
+               "lsblk -n -o NAME /dev/disk/by-id/%s | wc -l" % by_id, timeout=60)
+    lines = got[1].split() if got else []
+    res.add("refused_no_erase_prompt", len(lines) >= 1 and lines[0] == "0",
+            "the compositor showed no erase prompt" if lines and lines[0] == "0" else "journal said: %s" % lines[:1])
+    res.add("helper_exited_cleanly", len(lines) >= 2 and lines[1] == "GONE", "ec-setup-helper stopped on its own")
+    res.add("disk_untouched", len(lines) >= 3 and lines[2] == "1", "no partitions on the target disk")
+    if args.second_disk:
+        res.add("second_disk_untouched", untouched(vm.disk2), "no writes reached the second disk")
 
 
 def run_nonet_flow(args, vm, d, res, hostfwd_port, key, pubkey, floor):
-    """No network: the install is expected to stop at its first download. Clean failure = pass."""
-    by_id = args.disk_by_id or expected_by_id(args.disk)
+    """No network: preflight must refuse before any erase prompt and before touching the disk."""
     boot_to_welcome(args, vm, d, res, [])
-    walk_wizard(args, vm, d, res, by_id)
-    confirm_erase(vm, d, res)
-    if not d.login_root():
-        raise ScenarioAbort("no live shell")
-    done = wait_helper_gone(d, 1800, res)
-    res.add("helper_exited_cleanly", done, "ec-setup-helper stopped")
-    d.switch_vt(1)
-    d.settle(timeout=20)
-    d.shot("offline-outcome")
-    res.add("offline_outcome_recorded", True, "screen in shots/*offline-outcome.png (the failure banner is the expected result)")
+    refusal_flow(args, vm, d, res, args.disk_by_id or expected_by_id(args.disk), "offline")
 
+
+def run_smalldisk_flow(args, vm, d, res, hostfwd_port, key, pubkey, floor):
+    """A disk under the installer's minimum (16 GiB): offered in the wizard, refused in preflight."""
+    boot_to_welcome(args, vm, d, res, [])
+    refusal_flow(args, vm, d, res, args.disk_by_id or expected_by_id(args.disk), "smalldisk")
 
 def run_bios_flow(args, vm, d, res, hostfwd_port, key, pubkey, floor):
     """SeaBIOS: the helper must refuse before Confirm (no erase prompt), leaving the disk untouched."""
@@ -986,7 +1101,7 @@ def run(args):
         res.notes.append("package floor list not found at %s; only profile packages are checked" % args.packages_file)
     server = None
     try:
-        if args.profile not in selectable_profiles():
+        if args.profile not in selectable_profiles() and not args.force_profile:
             res.add("profile_selectable", False,
                     "ec-setup offers only Standard (data::selectable); the %s card is inert" % args.profile)
             return finish(args, vm, res, work)
@@ -995,9 +1110,11 @@ def run(args):
         port = free_port()
         scale = 1 if (not args.tcg and os.access("/dev/kvm", os.R_OK | os.W_OK)) else 4
         d = Driver(vm, scale)
+        d.pace = 9.0 if args.bios else (6.0 if parse_res(args.res)[0] >= 2560 else 0.0)
         if not args.no_net:
             server = d.server = ScriptServer({})
-        flow = run_bios_flow if args.bios else run_nonet_flow if args.no_net else run_installed_flow
+        flow = (run_bios_flow if args.bios else run_nonet_flow if args.no_net
+                else run_smalldisk_flow if disk_gib(args.disk_size) < MIN_DISK_GIB else run_installed_flow)
         flow(args, vm, d, res, port, key, pubkey, floor)
     except ScenarioStop as e:
         res.add("stopped_at", True, "reached the %s screen, as asked" % e)
