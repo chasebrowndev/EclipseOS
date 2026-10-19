@@ -59,6 +59,8 @@ pub const NAMES: &[&str] = &[
     "install-confirm",
     "install-done",
     "install-failed",
+    "install-failed-refused",
+    "install-done-refused",
 ];
 
 fn walk(m: &mut Model, to: Step, snapshot_online: bool) {
@@ -197,7 +199,13 @@ pub fn fixture(name: &str) -> Option<Model> {
             m.choices = Choices::for_profile(Profile::Full);
         }
         "review" => walk(&mut m, Step::Review, true),
-        "review-armed" | "install" | "install-confirm" | "install-done" | "install-failed" => {
+        "review-armed"
+        | "install"
+        | "install-confirm"
+        | "install-done"
+        | "install-failed"
+        | "install-failed-refused"
+        | "install-done-refused" => {
             walk(&mut m, Step::Review, true);
             let id = m.disk.clone().unwrap_or_default();
             m.update(Message::Confirm(id));
@@ -216,6 +224,16 @@ pub fn fixture(name: &str) -> Option<Model> {
                 ),
                 "install-done" => progress(&mut m, Stage::Done, 100, "installed", false),
                 "install-failed" => progress(&mut m, Stage::Pacstrap, 44, "package download failed", true),
+                "install-failed-refused" => {
+                    progress(&mut m, Stage::Pacstrap, 44, "package download failed", true);
+                    drop(m.update(Message::Restart));
+                    m.update(Message::Restarted(Err("the restart was refused".into())));
+                }
+                "install-done-refused" => {
+                    progress(&mut m, Stage::Done, 100, "installed", false);
+                    drop(m.update(Message::Restart));
+                    m.update(Message::Restarted(Err("the restart was refused".into())));
+                }
                 _ => {}
             }
         }

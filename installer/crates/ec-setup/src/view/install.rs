@@ -55,7 +55,7 @@ pub fn body(m: &Model) -> Body<'_> {
         Phase::Failed => {
             let failed = ins.failed_at.or(stage).unwrap_or(Stage::Validate);
             let sentence = if touched_disk(failed) {
-                "The disk had already been changed, so it may not start. Try again, or restart and reinstall."
+                "The disk had already been changed, so it may not start. Try again to go back and change something, or restart and reinstall."
             } else {
                 "Nothing on the disk was changed."
             };
