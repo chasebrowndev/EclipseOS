@@ -148,7 +148,13 @@ On `amdgpu` there is no module parameter the image has to set, so the failure
 mode where a wrong bootloader entry produces a black screen with no explanation
 does not exist on the ISO target.
 
-### 2.3 The NVIDIA path (mainframe only, not in the first ISO)
+### 2.3 The NVIDIA path (Turing or newer: installed automatically)
+
+Owner decision 2026-10-18: the installer detects NVIDIA Turing-or-newer GPUs
+(PCI device id >= `0x1e00`) and applies this path automatically; older NVIDIA
+stays on nouveau/NVK. The install fails loudly if the DKMS module did not build
+for every installed kernel (D-03 §2). The installer also installs `linux-lts` as a second kernel
+(owner decision 2026-10-18), with a third Limine entry; on this path its headers are always added.
 
 `nvidia-open-dkms` plus `nvidia-utils`, and `linux-headers`/`linux-lts-headers`
 for DKMS.

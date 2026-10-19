@@ -108,6 +108,17 @@ pub fn preflight(env: &Env, v: &Validated, plan: &Plan) -> Result<Prepared> {
             pkgs.push(extra.to_owned());
         }
     }
+    // D-01 §2: a second kernel to fall back to. DKMS builds only for kernels
+    // with headers, so the NVIDIA path carries the LTS pair too.
+    let mut kernels = vec!["linux-lts"];
+    if machine.nvidia_open() {
+        kernels.push("linux-lts-headers");
+    }
+    for extra in kernels {
+        if !pkgs.iter().any(|q| q == extra) {
+            pkgs.push(extra.to_owned());
+        }
+    }
     for extra in stages::locale_packages(&plan.locale) {
         if !pkgs.iter().any(|q| q == extra) {
             pkgs.push((*extra).to_owned());
@@ -185,6 +196,7 @@ pub fn preflight(env: &Env, v: &Validated, plan: &Plan) -> Result<Prepared> {
         pkgs,
         keyid,
         ucode: machine.ucode(),
+        nvidia: machine.nvidia_open(),
         warnings,
     })
 }
@@ -268,13 +280,17 @@ impl Run<'_, '_> {
             Ok(l)
         })?;
         self.stage(Stage::Pacstrap, 30, "installing packages", |_| {
-            stages::pacstrap(env, &prep)
+            stages::pacstrap(env, &prep)?;
+            if prep.nvidia {
+                stages::verify_nvidia(env)?;
+            }
+            Ok(())
         })?;
         self.stage(Stage::Configure, 75, "configuring the system", |_| {
-            stages::configure(env, &req.plan)
+            stages::configure(env, &req.plan, prep.nvidia)
         })?;
         self.stage(Stage::Bootloader, 85, "installing the bootloader", |_| {
-            stages::bootloader(env, &layout, prep.ucode)
+            stages::bootloader(env, &layout, prep.ucode, prep.nvidia)
         })?;
         self.stage(Stage::User, 90, "creating the user", |_| stages::user(env, req))?;
         let outcome = self.stage(Stage::Seed, 94, "carrying over settings", |_| {
