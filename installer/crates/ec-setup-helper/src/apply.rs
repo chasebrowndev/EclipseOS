@@ -47,7 +47,7 @@ struct Reporter<'a> {
 fn open_log(p: &Paths) -> Option<fs::File> {
     let _ = fs::remove_file(&p.install_log);
     fs::OpenOptions::new()
-        .write(true)
+        .append(true)
         .create_new(true)
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
         .mode(0o644)
@@ -981,5 +981,63 @@ mod tests {
         assert!(lines
             .iter()
             .any(|l| l.stage == Stage::Seed && l.msg == "seed absent"));
+    }
+
+    /// A runner whose first `fails` umounts report busy.
+    fn busy_umount(inner: FakeRunner, fails: u32) -> FakeRunner {
+        let n = std::cell::Cell::new(0u32);
+        FakeRunner::new(move |c| {
+            if c.tool == Tool::Umount {
+                n.set(n.get() + 1);
+                if n.get() <= fails {
+                    return Err(Error::Command {
+                        tool: "umount",
+                        code: Some(32),
+                    });
+                }
+            }
+            inner.capture(c)
+        })
+    }
+
+    #[test]
+    fn unmount_retries_and_succeeds_on_a_later_attempt() {
+        let (_t, p) = live();
+        let r = busy_umount(machine_runner(&p), 2);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let n = r.tools().iter().filter(|t| **t == Tool::Umount).count();
+        assert_eq!(n, 3);
+        assert!(!r.issued(Tool::Findmnt));
+        assert_eq!(progress(&out).last().unwrap().stage, Stage::Done);
+    }
+
+    #[test]
+    fn the_target_is_synced_after_the_last_chroot_and_before_unmount() {
+        let (_t, p) = live();
+        let r = machine_runner(&p);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let t = r.tools();
+        let last_chroot = t.iter().rposition(|t| *t == Tool::ArchChroot).unwrap();
+        let sync = t.iter().position(|t| *t == Tool::Sync).unwrap();
+        let um = t.iter().position(|t| *t == Tool::Umount).unwrap();
+        assert!(last_chroot < sync && sync < um);
+    }
+
+    #[test]
+    fn a_persistent_busy_mount_fails_the_install_and_is_diagnosed() {
+        let (_t, p) = live();
+        let log_path = p.install_log.clone();
+        let r = busy_umount(machine_runner(&p), u32::MAX);
+        let mut out = Vec::new();
+        assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let n = r.tools().iter().filter(|t| **t == Tool::Umount).count();
+        assert_eq!(n, 5);
+        assert!(r.issued(Tool::Findmnt));
+        let last = progress(&out).last().cloned().unwrap();
+        assert!(last.failed && last.msg == "could not unmount the target");
+        let log = fs::read_to_string(log_path).unwrap();
+        assert!(log.contains("still mounted"));
     }
 }
