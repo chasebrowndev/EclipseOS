@@ -26,7 +26,8 @@
  * ACCENT LEDGER — one live yellow: the SELECTED SESSION. This ISO exists so
  * that "Abyss" is in that list, so the session field is the accented state and
  * Login is the accented action. Everything else is white at 1.0 / .64 / .40.
- * The accent appears as a soft glow, never as a hard edge on black.
+ * Glassy, not glowy: focus and selection are a brighter fill plus a crisp
+ * white rim; the accent never blooms or haloes past a control's edge.
  */
 
 /* ── palette, literal (docs/STYLE.md) ─────────────────────────────────── */
@@ -105,7 +106,6 @@ grid {
     padding: 28px 30px;
     margin: 16px 0 20px 0;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16),
-                inset 0 0 120px rgba(242, 195, 60, 0.04),
                 0 34px 84px -22px rgba(0, 0, 0, 0.92);
 }
 
@@ -143,15 +143,14 @@ combobox button:hover {
     border-color: @edge;
 }
 
-/* Focus: a soft accent bloom, not a ring. */
+/* Focus: brighter fill and a crisp white rim; no halo, no bloom. */
 entry:focus,
 entry:focus-within,
 combobox button:focus,
 combobox button:focus-within {
-    border-color: rgba(242, 195, 60, 0.45);
-    background-color: rgba(242, 195, 60, 0.08);
-    box-shadow: 0 0 0 4px rgba(242, 195, 60, 0.12),
-                0 10px 30px -14px rgba(242, 195, 60, 0.55);
+    border-color: rgba(255, 255, 255, 0.30);
+    background-color: rgba(255, 255, 255, 0.10);
+    box-shadow: none;
 }
 
 entry placeholder,
@@ -179,8 +178,7 @@ combobox.session button {
     color: @accent_text;
     background-color: rgba(242, 195, 60, 0.10);
     border: 1px solid rgba(242, 195, 60, 0.30);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12),
-                0 12px 34px -18px rgba(242, 195, 60, 0.65);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
 grid > combobox:nth-child(5) button:hover,
@@ -277,9 +275,9 @@ button:hover {
 }
 
 button:focus {
-    border-color: rgba(242, 195, 60, 0.45);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12),
-                0 0 0 4px rgba(242, 195, 60, 0.12);
+    background-color: @glass_hi;
+    border-color: rgba(255, 255, 255, 0.30);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
 button:active,
@@ -303,7 +301,7 @@ grid > button.text-button {
     font-weight: 700;
     letter-spacing: 0.06em;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38),
-                0 14px 32px -18px rgba(242, 195, 60, 0.55);
+                0 8px 20px -12px rgba(0, 0, 0, 0.55);
 }
 
 button.suggested-action:hover,

@@ -23,7 +23,7 @@ pub fn body(m: &Model) -> Body<'_> {
     let field = text_input("Type here to try the keyboard", &m.kb_test)
         .id(ids::KB_TEST)
         .on_input(Message::KbTest)
-        .on_submit(Message::Noop)
+        .on_submit(Message::Key(Key::Enter))
         .font(font::DATA)
         .size(size::PROMPT)
         .padding(0)
@@ -45,7 +45,7 @@ pub fn body(m: &Model) -> Body<'_> {
             false,
             false,
             Message::KbFilter,
-            Message::Key(Key::Tab),
+            Message::KbFilterSubmit,
         );
         let mut layouts = Column::new();
         for l in m.visible_layouts() {

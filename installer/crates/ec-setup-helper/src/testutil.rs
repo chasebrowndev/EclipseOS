@@ -53,7 +53,7 @@ pub fn fake_paths(t: &TempDir) -> Paths {
         locale_gen: r.join("etc/locale.gen"),
         passwd: r.join("etc/passwd"),
         target: r.join("mnt"),
-        repo: r.join("root/eclipseos-repo"),
+        repo: r.join("opt/eclipseos-repo"),
         pkg_list: r.join("root/eclipseos-packages.txt"),
         packaging_key: r.join("root/eclipseos-packaging.asc"),
         live_pacman_conf: r.join("etc/pacman.conf"),

@@ -83,14 +83,14 @@ pub fn view(m: &Model) -> El<'_, Message> {
         blocks = blocks.push(b);
     }
     let blocks: El<'_, Message> = if body.scroll {
-        scrollable(container(blocks).padding(iced::Padding {
-            right: space::CARD,
-            ..iced::Padding::ZERO
-        }))
-        .style(theme::eclipse_scrollable)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        // The rail floats over the cards' own inner padding and is only drawn
+        // when the content overflows, so a column that fits keeps its full
+        // measure and lines up with the header and the footer.
+        scrollable(blocks)
+            .style(theme::eclipse_scrollable)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     } else {
         container(blocks).width(Length::Fill).height(Length::Fill).into()
     };
@@ -174,6 +174,16 @@ fn footer(m: &Model) -> El<'_, Message> {
 /// A list on the inset ground, filling the height it is given. `top` is an
 /// optional block above the rows (a filter field).
 pub(crate) fn list_box<'a>(top: Option<El<'a, Message>>, rows: Column<'a, Message>) -> El<'a, Message> {
+    list_box_sized(top, rows, Length::Fill)
+}
+
+/// [`list_box`] at a chosen height, for a list that should hug a short
+/// content instead of stretching to the footer.
+pub(crate) fn list_box_sized<'a>(
+    top: Option<El<'a, Message>>,
+    rows: Column<'a, Message>,
+    height: Length,
+) -> El<'a, Message> {
     let mut col = Column::new().spacing(space::CHIP_GAP);
     if let Some(t) = top {
         col = col.push(t);
@@ -186,7 +196,7 @@ pub(crate) fn list_box<'a>(top: Option<El<'a, Message>>, rows: Column<'a, Messag
     );
     ec_ui::widget::inset(col)
         .padding(space::CARD)
-        .height(Length::Fill)
+        .height(height)
         .into()
 }
 

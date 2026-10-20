@@ -30,6 +30,8 @@ pub struct Prepared {
     pub keyid: String,
     /// What this machine's CPU needs loaded ahead of the initramfs.
     pub ucode: Option<Ucode>,
+    /// Turing-or-newer NVIDIA present: DKMS module, cmdline and initramfs setup.
+    pub nvidia: bool,
     /// Non-fatal findings, reported to the user before the erase.
     pub warnings: Vec<&'static str>,
 }
@@ -182,12 +184,22 @@ pub fn locale_packages(locale: &str) -> &'static [&'static str] {
     }
 }
 
-pub fn limine_conf(root_uuid: &str, ucode: Option<Ucode>) -> String {
+/// Kernel parameters for the proprietary open module (D-01 §2.3): set
+/// explicitly rather than inherited from a default upstream may flip.
+pub const NVIDIA_CMDLINE: &str = " nvidia-drm.modeset=1 nvidia-drm.fbdev=1";
+
+/// Drop-in for `mkinitcpio` on the NVIDIA path (D-01 §2.3): the modules load
+/// in early userspace. `+=`, so the stock hooks (`kms` included) stay: the
+/// `modconf` hook carries `nvidia-utils`' nouveau blacklist into the initramfs.
+pub const MKINITCPIO_NVIDIA: &str = "MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)\n";
+
+pub fn limine_conf(root_uuid: &str, ucode: Option<Ucode>, nvidia: bool) -> String {
     let pstate = if ucode == Some(Ucode::Amd) {
         " amd_pstate=active"
     } else {
         ""
     };
+    let nv = if nvidia { NVIDIA_CMDLINE } else { "" };
     let ucode = ucode
         .map(|u| format!("    module_path: boot():/{}\n", u.image()))
         .unwrap_or_default();
@@ -196,15 +208,59 @@ pub fn limine_conf(root_uuid: &str, ucode: Option<Ucode>) -> String {
          /EclipseOS\n\
          \x20   protocol: linux\n\
          \x20   path: boot():/vmlinuz-linux\n\
-         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0{pstate}\n\
+         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0{pstate}{nv}\n\
          {ucode}\
          \x20   module_path: boot():/initramfs-linux.img\n\n\
          /EclipseOS (fallback initramfs)\n\
          \x20   protocol: linux\n\
          \x20   path: boot():/vmlinuz-linux\n\
-         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0\n\
-         \x20   module_path: boot():/initramfs-linux-fallback.img\n"
+         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0{nv}\n\
+         \x20   module_path: boot():/initramfs-linux-fallback.img\n\n\
+         /EclipseOS (LTS kernel)\n\
+         \x20   protocol: linux\n\
+         \x20   path: boot():/vmlinuz-linux-lts\n\
+         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0{pstate}{nv}\n\
+         {ucode}\
+         \x20   module_path: boot():/initramfs-linux-lts.img\n"
     )
+}
+
+/// True when every installed kernel (a directory under `usr/lib/modules` that
+/// holds a `vmlinuz`) has the NVIDIA module DKMS built for it. Reads the target
+/// tree only; runs nothing.
+pub fn nvidia_modules_built(modules_dir: &std::path::Path) -> bool {
+    let Ok(rd) = fs::read_dir(modules_dir) else {
+        return false;
+    };
+    let mut kernels = 0;
+    for k in rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("vmlinuz").is_file())
+    {
+        kernels += 1;
+        let dkms = k.join("updates/dkms");
+        let built = ["nvidia.ko", "nvidia.ko.zst", "nvidia.ko.xz", "nvidia.ko.gz"]
+            .iter()
+            .any(|n| dkms.join(n).is_file());
+        if !built {
+            return false;
+        }
+    }
+    kernels > 0
+}
+
+/// After pacstrap: the DKMS pacman hook has run in the target, so a missing
+/// module means the install would boot to a black screen. Fail now, loudly.
+pub fn verify_nvidia(env: &Env) -> Result<()> {
+    if nvidia_modules_built(&env.paths.target.join("usr/lib/modules")) {
+        Ok(())
+    } else {
+        Err(Error::Refused(
+            "the NVIDIA kernel module did not build for every installed kernel; \
+             this machine cannot be installed with the NVIDIA driver",
+        ))
+    }
 }
 
 fn chroot(env: &Env) -> Cmd {
@@ -447,7 +503,7 @@ pub fn pacstrap(env: &Env, prep: &Prepared) -> Result<()> {
 
 // ---- Configure ---------------------------------------------------------------
 
-pub fn configure(env: &Env, plan: &Plan) -> Result<()> {
+pub fn configure(env: &Env, plan: &Plan, nvidia: bool) -> Result<()> {
     let t = &env.paths.target;
     target::write(t, TargetFile::Hostname, format!("{}\n", plan.hostname).as_bytes())?;
     target::link_localtime(t, &plan.timezone)?;
@@ -478,6 +534,9 @@ pub fn configure(env: &Env, plan: &Plan) -> Result<()> {
         format!("KEYMAP={}\n", plan.keymap).as_bytes(),
     )?;
     target::write(t, TargetFile::ZramGenerator, ZRAM_CONF.as_bytes())?;
+    if nvidia {
+        target::write(t, TargetFile::MkinitcpioNvidia, MKINITCPIO_NVIDIA.as_bytes())?;
+    }
     target::write(t, TargetFile::SudoersWheel, SUDOERS_WHEEL.as_bytes())?;
 
     env.runner.run(&chroot(env).arg("locale-gen"))?;
@@ -489,7 +548,7 @@ pub fn configure(env: &Env, plan: &Plan) -> Result<()> {
 
 // ---- Bootloader --------------------------------------------------------------
 
-pub fn bootloader(env: &Env, l: &Layout, ucode: Option<Ucode>) -> Result<()> {
+pub fn bootloader(env: &Env, l: &Layout, ucode: Option<Ucode>, nvidia: bool) -> Result<()> {
     let t = &env.paths.target;
     // Limine's UEFI install is two files: the stub at the removable fallback
     // path, which needs no NVRAM entry, and a config that says what it does.
@@ -508,7 +567,11 @@ pub fn bootloader(env: &Env, l: &Layout, ucode: Option<Ucode>) -> Result<()> {
         return Err(Error::Refused("root uuid"));
     }
     let ucode = ucode.filter(|u| t.join("boot").join(u.image()).is_file());
-    target::write(t, TargetFile::LimineConf, limine_conf(uuid, ucode).as_bytes())?;
+    target::write(
+        t,
+        TargetFile::LimineConf,
+        limine_conf(uuid, ucode, nvidia).as_bytes(),
+    )?;
     // A firmware entry as well as the removable path, so machines that prefer
     // NVRAM entries boot it. Best effort: the fallback path is what must work.
     let _ = env.runner.run(
@@ -687,14 +750,56 @@ mod tests {
 
     #[test]
     fn limine_config_matches_the_reference() {
-        let c = limine_conf("abcd-1234", Some(Ucode::Amd));
+        let c = limine_conf("abcd-1234", Some(Ucode::Amd), false);
         assert!(c.starts_with("timeout: 2\n\n/EclipseOS\n    protocol: linux\n"));
         assert!(c.contains("    cmdline: root=UUID=abcd-1234 rootfstype=ext4 rw zswap.enabled=0 amd_pstate=active\n    module_path: boot():/amd-ucode.img\n    module_path: boot():/initramfs-linux.img\n"));
         assert!(c.contains("/EclipseOS (fallback initramfs)"));
-        assert!(!limine_conf("u", None).contains("ucode"));
-        let i = limine_conf("u", Some(Ucode::Intel));
+        assert!(!limine_conf("u", None, false).contains("ucode"));
+        let i = limine_conf("u", Some(Ucode::Intel), false);
         assert!(i.contains("module_path: boot():/intel-ucode.img") && !i.contains("amd_pstate"));
         assert!(valid_uuid("1b2c-3D4e") && !valid_uuid("a b") && !valid_uuid("x\ny") && !valid_uuid(""));
+    }
+
+    #[test]
+    fn nvidia_cmdline_is_on_every_entry_only_for_turing_plus() {
+        let on = limine_conf("u", Some(Ucode::Amd), true);
+        assert_eq!(on.matches("nvidia-drm.modeset=1 nvidia-drm.fbdev=1").count(), 3);
+        assert_eq!(on.matches("cmdline:").count(), 3);
+        assert!(on.contains("path: boot():/vmlinuz-linux-lts") && on.contains("initramfs-linux-lts.img"));
+        assert!(!limine_conf("u", Some(Ucode::Amd), false).contains("nvidia"));
+    }
+
+    #[test]
+    fn nvidia_initramfs_appends_modules_and_leaves_hooks_alone() {
+        assert_eq!(
+            MKINITCPIO_NVIDIA,
+            "MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)\n"
+        );
+        assert!(!MKINITCPIO_NVIDIA.contains("HOOKS"));
+    }
+
+    #[test]
+    fn nvidia_build_is_checked_for_every_kernel() {
+        let t = crate::testutil::TempDir::new();
+        let m = t.path().join("usr/lib/modules");
+        assert!(!nvidia_modules_built(&m), "no modules dir");
+        let kernel = |name: &str, built: bool| {
+            let d = m.join(name);
+            fs::create_dir_all(d.join("updates/dkms")).unwrap();
+            fs::write(d.join("vmlinuz"), b"k").unwrap();
+            if built {
+                fs::write(d.join("updates/dkms/nvidia.ko.zst"), b"m").unwrap();
+            }
+        };
+        kernel("6.1-arch1-1", true);
+        assert!(nvidia_modules_built(&m));
+        kernel("6.2-lts", false);
+        assert!(!nvidia_modules_built(&m), "one kernel missing the module");
+        kernel("6.2-lts", true);
+        assert!(nvidia_modules_built(&m));
+        // A leftover dir with no kernel image is not a kernel.
+        fs::create_dir_all(m.join("extramodules-old")).unwrap();
+        assert!(nvidia_modules_built(&m));
     }
 
     #[test]

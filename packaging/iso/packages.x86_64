@@ -8,7 +8,9 @@
 linux
 linux-firmware
 linux-firmware-amdgpu
+linux-firmware-nvidia
 amd-ucode
+intel-ucode
 mkinitcpio
 mkinitcpio-archiso
 mkinitcpio-nfs-utils

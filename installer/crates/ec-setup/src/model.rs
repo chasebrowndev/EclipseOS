@@ -352,6 +352,9 @@ pub enum Message {
     Keymap(String),
     CarryNetwork(bool),
     KbFilter(String),
+    /// Enter in the layout filter: choose the first layout it shows and move
+    /// to the test field; with nothing typed, it is Enter like any other.
+    KbFilterSubmit,
     KbTest(String),
     ConfigResult(&'static str, Result<(), WriteError>),
 
@@ -395,8 +398,7 @@ pub enum Message {
     Restart,
     Restarted(Result<(), String>),
 
-    /// Nothing to do: a focus task with no target, and Enter in the keyboard
-    /// test field, which must not advance the wizard.
+    /// Nothing to do: a focus task with no target.
     Noop,
 }
 
@@ -786,6 +788,16 @@ impl Model {
                 }
             }
             Message::KbFilter(s) => self.kb_filter = s,
+            Message::KbFilterSubmit => {
+                let first = self.visible_layouts().first().map(|l| l.code.clone());
+                match first {
+                    Some(code) if !self.kb_filter.trim().is_empty() => {
+                        fx.extend(self.update(Message::Layout(code)));
+                        fx.push(Effect::Focus(ids::KB_TEST));
+                    }
+                    _ => self.key(Key::Enter, &mut fx),
+                }
+            }
             Message::KbTest(s) => self.kb_test = s,
             Message::ConfigResult(key, result) => {
                 if key == config::KB_LAYOUT || key == config::KB_VARIANT {
@@ -884,7 +896,7 @@ impl Model {
                     if !self
                         .disk
                         .as_ref()
-                        .is_some_and(|id| v.iter().any(|d| &d.by_id == id))
+                        .is_some_and(|id| v.iter().any(|d| &d.by_id == id && data::disk_fits(d)))
                     {
                         self.disk = None;
                         self.confirm.clear();
@@ -898,7 +910,8 @@ impl Model {
                 fx.push(Effect::LoadDisks);
             }
             Message::SelectDisk(id) => {
-                if matches!(&self.disks, Load::Ready(v) if v.iter().any(|d| d.by_id == id)) {
+                if matches!(&self.disks, Load::Ready(v) if v.iter().any(|d| d.by_id == id && data::disk_fits(d)))
+                {
                     if self.disk.as_deref() != Some(id.as_str()) {
                         self.confirm.clear();
                     }
@@ -1148,11 +1161,12 @@ impl Model {
             Step::Disk => {
                 let target = match &self.disks {
                     Load::Ready(v) => {
+                        let fit: Vec<&Disk> = v.iter().filter(|d| data::disk_fits(d)).collect();
                         let cur = self
                             .disk
                             .as_ref()
-                            .and_then(|a| v.iter().position(|x| &x.by_id == a));
-                        shift(v.len(), cur, delta).map(|i| v[i].by_id.clone())
+                            .and_then(|a| fit.iter().position(|x| &x.by_id == a));
+                        shift(fit.len(), cur, delta).map(|i| fit[i].by_id.clone())
                     }
                     _ => None,
                 };
@@ -1477,6 +1491,27 @@ mod tests {
     }
 
     #[test]
+    fn a_disk_below_the_minimum_cannot_be_chosen() {
+        let mut m = at(Step::Disk);
+        let small = Disk {
+            by_id: "virtio-vda-test".into(),
+            model: String::new(),
+            size_bytes: 8 << 30,
+            partitions: vec![],
+        };
+        let mut v = vec![small.clone()];
+        m.update(Message::DisksLoaded(Ok(v.clone())));
+        m.update(Message::SelectDisk(small.by_id.clone()));
+        assert_eq!(m.disk, None);
+        assert!(!m.can_next());
+        v.push(crate::helper::fake_disks().remove(1));
+        m.update(Message::DisksLoaded(Ok(v)));
+        m.update(Message::Key(Key::Down));
+        assert_ne!(m.disk.as_deref(), Some(small.by_id.as_str()));
+        assert!(m.can_next());
+    }
+
+    #[test]
     fn arrow_keys_move_the_disk_choice() {
         let mut m = at(Step::Disk);
         m.update(Message::DisksLoaded(Ok(crate::helper::fake_disks())));
@@ -1548,15 +1583,33 @@ mod tests {
     }
 
     #[test]
-    fn only_standard_is_selectable_and_the_default() {
+    fn standard_is_the_default_and_agentic_is_selectable() {
         let mut m = at(Step::Profile);
         assert_eq!(m.profile, Profile::Standard);
-        for p in [Profile::Minimal, Profile::Full, Profile::Agentic] {
+        for p in [Profile::Minimal, Profile::Full] {
             m.update(Message::Profile(p));
             assert_eq!(m.profile, Profile::Standard, "{p:?} must not be selectable");
         }
+        m.update(Message::Profile(Profile::Agentic));
+        assert_eq!(m.profile, Profile::Agentic);
+        assert!(m.can_next());
         m.update(Message::Profile(Profile::Standard));
         assert!(m.can_next());
+    }
+
+    #[test]
+    fn the_agentic_plan_carries_the_agents_flag_and_standard_does_not() {
+        for (p, agents) in [(Profile::Agentic, true), (Profile::Standard, false)] {
+            let mut m = review_ready();
+            m.update(Message::Profile(p));
+            let fx = m.update(Message::Apply);
+            let r = fx.iter().find_map(|e| match e {
+                Effect::Apply(r) => Some(r),
+                _ => None,
+            });
+            let r = r.expect("a request");
+            assert_eq!((r.plan.profile, r.plan.agents), (p, agents));
+        }
     }
 
     /// The `Config` effects among `fx`, as (key, value).
@@ -2088,11 +2141,52 @@ mod tests {
     }
 
     #[test]
-    fn enter_in_the_keyboard_test_field_does_not_advance() {
-        // The field submits Noop, which takes the key so the wizard does not.
+    fn enter_in_the_keyboard_test_field_advances_and_in_the_filter_applies_it() {
+        // The test field submits `Key(Enter)`: the step is complete, so it advances.
         let mut m = at(Step::Keyboard);
-        assert!(m.update(Message::Noop).is_empty());
+        m.update(Message::Key(Key::Enter));
+        assert_eq!(m.step, Step::Keyboard.next().unwrap());
+
+        // The filter picks the first layout it shows and hands focus to the
+        // test field; the step has not moved yet.
+        let mut m = at(Step::Keyboard);
+        m.update(Message::KbFilter("ger".into()));
+        let first = m.visible_layouts()[0].code.clone();
+        let fx = m.update(Message::KbFilterSubmit);
+        assert_eq!(m.layout, first);
         assert_eq!(m.step, Step::Keyboard);
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Focus(id) if *id == ids::KB_TEST)));
+
+        // With nothing typed it is a plain Enter.
+        let mut m = at(Step::Keyboard);
+        m.update(Message::KbFilterSubmit);
+        assert_eq!(m.step, Step::Keyboard.next().unwrap());
+
+        // A filter that matches nothing leaves the layout alone and still moves on.
+        let mut m = at(Step::Keyboard);
+        let before = m.layout.clone();
+        m.update(Message::KbFilter("zzzz-no-such".into()));
+        m.update(Message::KbFilterSubmit);
+        assert_eq!(m.layout, before);
+        assert_eq!(m.step, Step::Keyboard.next().unwrap());
+    }
+
+    #[test]
+    fn enter_in_the_last_identity_field_advances_or_surfaces_the_problem() {
+        let mut m = at(Step::Identity);
+        fill_identity(&mut m);
+        m.update(Message::Key(Key::Enter));
+        assert_eq!(m.step, Step::Identity.next().unwrap());
+
+        // A bad host name is the problem, and Enter from that field says so too.
+        let mut m = at(Step::Identity);
+        fill_identity(&mut m);
+        m.hostname = "Bad Host".into();
+        m.update(Message::Key(Key::Enter));
+        assert_eq!(m.step, Step::Identity);
+        assert!(m.more);
     }
 
     #[test]
