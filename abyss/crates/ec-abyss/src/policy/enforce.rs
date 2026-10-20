@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The enforcement order for acting agent requests (COMP-08 §10). TCB.
 //!
-//! Every `eclipse_agent_seat_v1` request comes through [`submit`] as an
-//! [`Act`]. This module decides; `protocols::agent::seat` only executes what
-//! it is told to and carries the answer back. The order, and where each step
-//! stands:
+//! Every `eclipse_agent_seat_v1` request comes through [`admit`] on arrival
+//! and then [`submit`] as an [`Act`] (an atomic batch's steps through
+//! [`dry_run`] first). This module decides; `protocols::agent::seat` only
+//! executes what it is told to and carries the answer back. The order, and
+//! where each step stands:
 //!
 //! 1. Validate arguments: `invalid_argument`.
-//! 2. Dedupe: not yet (M14).
+//! 2. Dedupe ([`dedupe`], every seat request with a `req_id`): a repeat is
+//!    `duplicate` with the original status in the detail, and runs nothing.
 //! 3. Paused (policyd down, or paused by the human): `paused`.
 //! 4. Capability and scope: the agent's view for the act's capability
 //!    resolves the target (a handle, a point, or the seat's focus) or the
@@ -20,10 +22,13 @@
 //!    `allow` runs; `deny` is `policy_denied`; `prompt` parks the request
 //!    behind the consent prompt; `defer` asks `policyd`, bounded by
 //!    [`DEFER_TIMEOUT`], and no answer is `deferred_timeout`.
-//! 8. Generations: not yet (M14).
+//! 8. Generation: a nonzero `expected_generation` that is no longer the
+//!    target's is `stale_generation`, with the current one as detail.
+//!    Generations only rise, so it is also checked before a prompt goes up.
 //!
 //!    8b. Before a parked request runs, steps 3 to 6 run again: a human
-//!    "allow" is permission, not a snapshot of the world (COMP-11 §4 step 5).
+//!    "allow" is permission, not a snapshot of the world (COMP-11 §4 step 5),
+//!    and a target whose class rose is `class_changed`.
 //! 9. Execute. Then `result`, and the audit records.
 //!
 //! Nothing is mutated before step 9. The audit `request` record goes into
@@ -197,6 +202,8 @@ pub struct Request {
     pub provenance_empty: bool,
     /// The batch token the act runs under (COMP-08 §4.2); 0 is none.
     pub batch_token: u64,
+    /// The target generation the agent acted on (step 8); 0 is unchecked.
+    pub expected_generation: u32,
 }
 
 /// What [`submit`] did with a request.
@@ -231,6 +238,16 @@ fn now_ms() -> u64 {
 
 /// Steps 3 to 6: whether the agent may act on anything now, and on what.
 fn resolve(state: &mut AbyssState, req: &Request) -> Result<Window, (Status, String)> {
+    let focus = crate::protocols::agent::seat::focused_window(state, req.agent);
+    resolve_at(state, req, focus)
+}
+
+/// [`resolve`], with `focus` standing for the seat's focus.
+fn resolve_at(
+    state: &mut AbyssState,
+    req: &Request,
+    focus: Option<Window>,
+) -> Result<Window, (Status, String)> {
     if state.policy_key.is_none() || crate::policy::lifecycle::is_paused(state, req.agent) {
         return Err((Status::Paused, String::new()));
     }
@@ -245,7 +262,7 @@ fn resolve(state: &mut AbyssState, req: &Request) -> Result<Window, (Status, Str
             Aim::Point(x, y) => scene::hit(state, view, Point::from((f64::from(x), f64::from(y))))
                 .map(|(w, _)| w)
                 .ok_or((Status::OutOfScope, cap.to_owned())),
-            Aim::SeatFocus => match crate::protocols::agent::seat::focused_window(state, req.agent) {
+            Aim::SeatFocus => match focus {
                 None => Err((Status::FocusLost, String::new())),
                 Some(w) if scene::visible(state, view, &w) => Ok(w),
                 Some(_) => Err((Status::OutOfScope, cap.to_owned())),
@@ -256,9 +273,16 @@ fn resolve(state: &mut AbyssState, req: &Request) -> Result<Window, (Status, Str
     target
 }
 
-/// Step 7, with no allocation: the table's answer for `req` on `window`.
-fn decide(state: &mut AbyssState, req: &Request, window: &Window) -> (Outcome, String) {
-    let Some(agent) = state.agents.peek_agent(req.agent) else {
+/// Step 7, with no allocation: the table's answer for `agent` using `cap`
+/// on `window`.
+fn decide(
+    state: &mut AbyssState,
+    agent: u64,
+    cap: &str,
+    provenance_empty: bool,
+    window: &Window,
+) -> (Outcome, String) {
+    let Some(agent) = state.agents.peek_agent(agent) else {
         return (Outcome::Deny, check::NO_MATCH.to_owned());
     };
     let Some(table) = state.policy_table.as_ref() else {
@@ -277,7 +301,7 @@ fn decide(state: &mut AbyssState, req: &Request, window: &Window) -> (Outcome, S
             principal: agent.principal(),
             profile: "",
             grants: &facts[..n],
-            capability: req.act.capability(),
+            capability: cap,
             app_id: Some(w.app_id).filter(|a| !a.is_empty()),
             title: Some(w.title).filter(|t| !t.is_empty()),
             class,
@@ -288,7 +312,7 @@ fn decide(state: &mut AbyssState, req: &Request, window: &Window) -> (Outcome, S
             // The S-06 taxonomy matcher is M18: nothing matches yet.
             irreversible: None,
             provenance: ProvenanceFacts {
-                empty: req.provenance_empty,
+                empty: provenance_empty,
                 trusts: [false; 4],
                 sources: &[],
             },
@@ -298,7 +322,44 @@ fn decide(state: &mut AbyssState, req: &Request, window: &Window) -> (Outcome, S
     (d.outcome, d.rule.to_owned())
 }
 
-/// Submit one acting request. Called by the seat protocol for every one.
+/// Step 2 for any seat request carrying a `req_id` (COMP-08 §2.2). `Err` is
+/// the answer to a repeat (`duplicate`, the original status in the detail)
+/// or to a full table (`quota_exceeded` "dedupe"): sent as is, not itself
+/// remembered, and nothing runs.
+pub fn dedupe(state: &mut AbyssState, agent: u64, req_id: u32) -> Result<(), (Status, String)> {
+    use crate::protocols::agent::dedupe::Admit;
+    let Some(aux) = state.agents.aux_mut(agent) else {
+        return Err((Status::ClientGone, String::new()));
+    };
+    match aux.dedupe.admit(req_id, std::time::Instant::now()) {
+        Admit::Fresh => Ok(()),
+        Admit::Replay(detail) => Err((Status::Duplicate, detail)),
+        Admit::Full => Err((Status::QuotaExceeded, "dedupe".to_owned())),
+    }
+}
+
+/// Steps 1 and 2 for an acting request, on arrival (a batch step too, when
+/// it is queued). `Err` is answered as [`dedupe`]'s is.
+pub fn admit(state: &mut AbyssState, req: &Request) -> Result<(), (Status, String)> {
+    if !req.act.valid() {
+        return Err((Status::InvalidArgument, String::new()));
+    }
+    dedupe(state, req.agent, req.req_id)
+}
+
+/// Step 8: the generation the agent acted on is still the target's.
+fn current(state: &mut AbyssState, req: &Request, window: &Window) -> Result<(), (Status, String)> {
+    if req.expected_generation == 0 {
+        return Ok(());
+    }
+    let now = crate::protocols::agent::generation::of(state, window);
+    if now != req.expected_generation {
+        return Err((Status::StaleGeneration, now.to_string()));
+    }
+    Ok(())
+}
+
+/// Steps 3 to 9 for one acting request that [`admit`] let in.
 pub fn submit(state: &mut AbyssState, req: Request) -> Submitted {
     if !req.act.valid() {
         return Submitted::Answered(Status::InvalidArgument, String::new());
@@ -322,7 +383,13 @@ pub fn submit(state: &mut AbyssState, req: Request) -> Submitted {
         Ok(w) => w,
         Err((s, d)) => return answered(state, &principal, &req, s, d),
     };
-    let (outcome, rule) = decide(state, &req, &window);
+    let (outcome, rule) = decide(
+        state,
+        req.agent,
+        req.act.capability(),
+        req.provenance_empty,
+        &window,
+    );
     let phase = match outcome {
         Outcome::Allow => "allow",
         Outcome::Deny => "deny",
@@ -341,6 +408,11 @@ pub fn submit(state: &mut AbyssState, req: Request) -> Submitted {
             0,
         ),
     );
+    if outcome != Outcome::Deny {
+        if let Err((s, d)) = current(state, &req, &window) {
+            return answered(state, &principal, &req, s, d);
+        }
+    }
     match outcome {
         Outcome::Allow => execute(state, &principal, &req, &window),
         Outcome::Deny => answered(state, &principal, &req, Status::PolicyDenied, rule),
@@ -355,6 +427,109 @@ pub fn submit(state: &mut AbyssState, req: Request) -> Submitted {
         }
         Outcome::Prompt => park(state, &principal, req, &window, &rule),
         Outcome::Defer => defer(state, &principal, req, rule),
+    }
+}
+
+/// Steps 1 and 3 to 8 for every step of agent `agent`'s atomic batch, in
+/// order, executing and consuming nothing (COMP-08 §4, §10). Step 2 ran when
+/// each was queued. A step aimed at the seat's focus is judged against the
+/// focus the steps before it leave. Every target must also be within
+/// `seat.atomic`'s scope and allowed by the table for it.
+///
+/// A step the table would `prompt` for, with no batch token covering its
+/// target, or would `defer`, refuses the batch (`policy_denied`, detail
+/// `needs_prompt:<i>` / `needs_defer:<i>`): a batch never waits halfway, and
+/// asking once for many acts is `preflight` (S-06 §6). `Err` carries the
+/// index of the first refused step.
+pub fn dry_run(state: &mut AbyssState, agent: u64, reqs: &[Request]) -> Result<(), (usize, Status, String)> {
+    let mut focus = crate::protocols::agent::seat::focused_window(state, agent);
+    // Batch-token targets the steps before this one will consume.
+    let mut claimed: Vec<(u64, u64)> = Vec::new();
+    for (i, req) in reqs.iter().enumerate() {
+        let window = dry_step(state, i, req, focus.clone(), &mut claimed).map_err(|(s, d)| (i, s, d))?;
+        if matches!(req.act, Act::Focus { .. } | Act::Click { .. }) {
+            focus = Some(window);
+        }
+    }
+    Ok(())
+}
+
+fn dry_step(
+    state: &mut AbyssState,
+    i: usize,
+    req: &Request,
+    focus: Option<Window>,
+    claimed: &mut Vec<(u64, u64)>,
+) -> Result<Window, (Status, String)> {
+    if !req.act.valid() {
+        return Err((Status::InvalidArgument, String::new()));
+    }
+    let window = resolve_at(state, req, focus)?;
+    in_scope(state, req.agent, "seat.atomic", &window)?;
+    for cap in [req.act.capability(), "seat.atomic"] {
+        match decide(state, req.agent, cap, req.provenance_empty, &window) {
+            (Outcome::Allow, _) => {}
+            (Outcome::Deny, rule) => return Err((Status::PolicyDenied, rule)),
+            (Outcome::Prompt, _) if req.batch_token != 0 && cap == req.act.capability() => {
+                let target = (req.batch_token, state.ipc.existing_handle(&window).unwrap_or(0));
+                if claimed.contains(&target) {
+                    return Err((Status::BatchExhausted, String::new()));
+                }
+                crate::policy::batch::covers(state, req.agent, target.0, target.1)
+                    .map_err(|s| (s, String::new()))?;
+                claimed.push(target);
+            }
+            (Outcome::Prompt, _) => return Err((Status::PolicyDenied, format!("needs_prompt:{i}"))),
+            (Outcome::Defer, _) => return Err((Status::PolicyDenied, format!("needs_defer:{i}"))),
+        }
+    }
+    current(state, req, &window)?;
+    Ok(window)
+}
+
+/// Step 4 for a capability judged on a window already resolved: `cap`'s
+/// view reaches it.
+fn in_scope(state: &mut AbyssState, agent: u64, cap: &str, window: &Window) -> Result<(), (Status, String)> {
+    let Some(mut a) = state.agents.take_agent(agent) else {
+        return Err((Status::NoCapability, cap.to_owned()));
+    };
+    let r = match a.act_view(now_ms(), cap) {
+        None => Err((Status::NoCapability, cap.to_owned())),
+        Some(view) if scene::visible(state, view, window) => Ok(()),
+        Some(_) => Err((Status::OutOfScope, cap.to_owned())),
+    };
+    state.agents.put_agent(agent, a);
+    r
+}
+
+/// Steps 3 to 7 for a seat request that is not an [`Act`] but is aimed at
+/// a window (`compat_lock`): the window `handle` names, if `cap` reaches it
+/// and the table allows it. It answers at once, so a `prompt` or `defer` is
+/// refused (`needs_prompt` / `needs_defer`), never waited on.
+pub fn control(
+    state: &mut AbyssState,
+    agent: u64,
+    cap: &'static str,
+    handle: u64,
+) -> Result<Window, (Status, String)> {
+    if state.policy_key.is_none() || crate::policy::lifecycle::is_paused(state, agent) {
+        return Err((Status::Paused, String::new()));
+    }
+    let Some(mut a) = state.agents.take_agent(agent) else {
+        return Err((Status::NoCapability, cap.to_owned()));
+    };
+    let window = match a.act_view(now_ms(), cap) {
+        None => Err((Status::NoCapability, cap.to_owned())),
+        Some(view) => scene::resolve(state, view, handle).ok_or((Status::OutOfScope, cap.to_owned())),
+    };
+    state.agents.put_agent(agent, a);
+    let window = window?;
+    // A control request carries no `provenance_ids`: absent, not asserted.
+    match decide(state, agent, cap, true, &window) {
+        (Outcome::Allow, _) => Ok(window),
+        (Outcome::Deny, rule) => Err((Status::PolicyDenied, rule)),
+        (Outcome::Prompt, _) => Err((Status::PolicyDenied, "needs_prompt".to_owned())),
+        (Outcome::Defer, _) => Err((Status::PolicyDenied, "needs_defer".to_owned())),
     }
 }
 
@@ -476,8 +651,9 @@ fn resolve_defer(state: &mut AbyssState, k: u64, answer: Option<DeferAnswer>) {
     let Some(principal) = state.agents.principal_of(req.agent) else {
         return;
     };
-    // The world may have moved while policyd thought: steps 3 to 6 again.
-    let window = match resolve(state, &req) {
+    // The world may have moved while policyd thought: steps 3 to 6 again,
+    // and 8.
+    let window = match resolve(state, &req).and_then(|w| current(state, &req, &w).map(|()| w)) {
         Ok(w) => w,
         Err((s, d)) => return reply(state, &req, s, d),
     };
@@ -602,8 +778,8 @@ pub fn drain(state: &mut AbyssState) {
                 let Some(principal) = state.agents.principal_of(req.agent) else {
                     continue;
                 };
-                // COMP-11 §4 step 5, COMP-08 §10 step 8b: re-validate.
-                let window = match resolve(state, &req) {
+                // COMP-11 §4 step 5, COMP-08 §10 steps 8 and 8b: re-validate.
+                let window = match resolve(state, &req).and_then(|w| current(state, &req, &w).map(|()| w)) {
                     Ok(w) => w,
                     Err((s, d)) => {
                         reply(state, &req, s, d);

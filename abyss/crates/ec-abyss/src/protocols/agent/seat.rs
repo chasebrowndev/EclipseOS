@@ -50,7 +50,6 @@ use smithay::reexports::wayland_server::{
 use smithay::utils::{IsAlive, Logical, Point, SERIAL_COUNTER};
 use smithay::wayland::text_input::TextInputSeat;
 
-use super::dedupe::Admit;
 use super::{atomic, generation, lock, AgentId};
 use crate::input::Origin;
 use crate::policy::enforce::{self, Act, Request, Submitted};
@@ -177,19 +176,6 @@ pub fn execute(
     // No surface behind the lock screen sees agent input either.
     if state.lock.locked {
         return Err((Status::FocusLost, "locked".into()));
-    }
-    // COMP-08 §10 step 8: the generation the agent acted on is still the
-    // window's. Before any mutation, so a stale act changes nothing.
-    // TCB-HOOK: `policy::enforce` should make this call itself between step
-    // 7 and step 9, with the request's own `req_id`, so it also runs before
-    // the 8b class re-check as the spec orders them. `take_expected` matches
-    // by act value because `execute` does not receive the `req_id`.
-    let expected = take_expected(state, agent, act);
-    if expected != 0 {
-        let current = generation::of(state, window);
-        if current != expected {
-            return Err((Status::StaleGeneration, current.to_string()));
-        }
     }
     match *act {
         Act::Focus { .. } => {
@@ -344,8 +330,7 @@ pub fn reply(state: &mut AbyssState, agent: u64, req_id: u32, status: Status, de
 }
 
 /// The one place a seat `result` leaves from, so every answer is also what
-/// the dedupe table replays (COMP-08 §2.2) and the request's pending
-/// `expected_generation` is released.
+/// the dedupe table replays (COMP-08 §2.2).
 fn send_result(
     state: &mut AbyssState,
     agent: u64,
@@ -356,7 +341,6 @@ fn send_result(
 ) {
     if let Some(aux) = state.agents.aux_mut(agent) {
         aux.dedupe.complete(req_id, status, detail, Instant::now());
-        aux.expect.retain(|(r, ..)| *r != req_id);
     }
     let Some(window) = entry(state, agent).and_then(|s| s.focus.clone()) else {
         return emit(state, agent, req_id, status, detail, 0, 0, latency_us);
@@ -404,36 +388,6 @@ fn emit(
     );
 }
 
-/// The generation `act` was submitted with, released: one per act value, in
-/// submission order.
-fn take_expected(state: &mut AbyssState, agent: u64, act: &Act) -> u32 {
-    let Some(aux) = state.agents.aux_mut(agent) else {
-        return 0;
-    };
-    match aux.expect.iter().position(|(_, a, _)| a == act) {
-        Some(i) => aux.expect.remove(i).2,
-        None => 0,
-    }
-}
-
-/// Step 1 to 9 for one acting request, with its `expected_generation` held
-/// for step 8.
-pub(super) fn submit_act(state: &mut AbyssState, req: Request, expected: u32) -> Submitted {
-    let (agent, req_id) = (req.agent, req.req_id);
-    if expected != 0 {
-        if let Some(aux) = state.agents.aux_mut(agent) {
-            aux.expect.push((req_id, req.act.clone(), expected));
-        }
-    }
-    let submitted = enforce::submit(state, req);
-    if matches!(submitted, Submitted::Answered(..)) {
-        if let Some(aux) = state.agents.aux_mut(agent) {
-            aux.expect.retain(|(r, ..)| *r != req_id);
-        }
-    }
-    submitted
-}
-
 /// Seat teardown (COMP-04 §3): release every key and button the seat holds
 /// so nothing sticks, leave the focus, drop the capabilities and the global.
 /// Safe to call for an agent with no seat.
@@ -446,7 +400,6 @@ pub(super) fn remove(state: &mut AbyssState, agent: u64) {
     lock::release_agent(state, agent);
     if let Some(aux) = state.agents.aux_mut(agent) {
         aux.batch = None;
-        aux.expect.clear();
     }
     let time = now_ms(state);
     for code in s.keyboard.pressed_keys() {
@@ -1021,21 +974,13 @@ fn provenance_empty(ids: &[u8]) -> bool {
     ids.is_empty() || ids == [0x80]
 }
 
-/// Step 2 of COMP-08 §10 for any request carrying a `req_id`: whether it is
-/// new. A repeat is answered here (`duplicate`, the original status in the
-/// detail) and nothing runs; a full table refuses (`quota_exceeded`).
+/// Step 2 of COMP-08 §10 ([`enforce::dedupe`]) for a request that is not an
+/// act: whether it is new. Otherwise it is answered here and nothing runs.
 fn fresh(state: &mut AbyssState, agent: u64, req_id: u32) -> bool {
-    let Some(aux) = state.agents.aux_mut(agent) else {
-        return false;
-    };
-    match aux.dedupe.admit(req_id, Instant::now()) {
-        Admit::Fresh => true,
-        Admit::Replay(detail) => {
-            emit(state, agent, req_id, Status::Duplicate, &detail, 0, 0, 0);
-            false
-        }
-        Admit::Full => {
-            emit(state, agent, req_id, Status::QuotaExceeded, "dedupe", 0, 0, 0);
+    match enforce::dedupe(state, agent, req_id) {
+        Ok(()) => true,
+        Err((s, d)) => {
+            emit(state, agent, req_id, s, &d, 0, 0, 0);
             false
         }
     }
@@ -1431,23 +1376,27 @@ impl Dispatch<EclipseAgentSeatV1, AgentId> for AbyssState {
             }
             _ => return,
         };
-        if !fresh(state, agent, req_id) {
-            return;
-        }
         let req = Request {
             agent,
             req_id,
             act,
             provenance_empty: provenance_empty(&prov),
             batch_token: u64::from(batch_token),
+            expected_generation: expected,
         };
+        // Steps 1 and 2: an invalid or repeated request is answered outside
+        // the dedupe table.
+        if let Err((s, d)) = enforce::admit(state, &req) {
+            emit(state, agent, req_id, s, &d, 0, 0, 0);
+            return;
+        }
         // An open batch queues the step; it answers when the batch ends.
         if atomic::is_open(state, agent) {
-            atomic::queue(state, agent, req, expected);
+            atomic::queue(state, agent, req);
             return;
         }
         let started = Instant::now();
-        match submit_act(state, req, expected) {
+        match enforce::submit(state, req) {
             Submitted::Answered(status, detail) => {
                 let us = u32::try_from(started.elapsed().as_micros()).unwrap_or(u32::MAX);
                 send_result(state, agent, req_id, status, &detail, us);
