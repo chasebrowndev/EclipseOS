@@ -195,8 +195,11 @@ Step 12 has two independent parts.
 `policyd`, `agentd`, `brokerd`, the egress proxy, `registryd`, the inference
 router and `cataclysm`. Nothing agent-only is in the floor. Default on for
 Agentic, off otherwise. Installing it later is `pacman -S eclipseos-agents`
-until a Settings button can use COMP-10's trusted admin prompt. Until Phase 2 delivers them (COMP-16 M11–M25) the
-Agentic card is marked **preview** and the row lists only what exists.
+until a Settings button can use COMP-10's trusted admin prompt. Agentic is
+selectable (owner decision, 2026-10-18): its payload is Standard plus
+`eclipseos-agents` as the package ships it today; components Phase 2 has not
+delivered (COMP-16 M11–M25) are simply absent. Until step 12 exists in the
+wizard, the profile alone sets the flag.
 
 **Policy starting point.** Two options, both offered:
 

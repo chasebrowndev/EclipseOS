@@ -569,17 +569,17 @@ pub const CARDS: [Card; 4] = [
     },
 ];
 
-/// Profiles a user can pick in this version. The others are shown and refused:
-/// their payload (mode, components, the agent stack) is not built yet.
+/// Profiles a user can pick in this version. Agentic is Standard plus the
+/// `eclipseos-agents` add-on (ADR 0069); the others are shown and refused:
+/// their payload is not built yet.
 pub fn selectable(p: Profile) -> bool {
-    p == Profile::Standard
+    matches!(p, Profile::Standard | Profile::Agentic)
 }
 
 /// A profile that is offered but not finished, with the word the card shows.
 pub fn status_word(p: Profile) -> Option<&'static str> {
     match p {
-        Profile::Standard => None,
-        Profile::Agentic => Some("preview"),
+        Profile::Standard | Profile::Agentic => None,
         Profile::Minimal | Profile::Full => Some("coming"),
     }
 }
@@ -595,6 +595,16 @@ pub const STANDARD_SEEDS: [(&str, &str); 8] = [
     ("agent stack", "off"),
     ("policy starting point", "locked down"),
 ];
+
+/// What `p` seeds: Standard's table, with the agent stack on for Agentic
+/// (Standard plus the `eclipseos-agents` add-on; policy stays locked down).
+pub fn seeds(p: Profile) -> [(&'static str, &'static str); 8] {
+    let mut s = STANDARD_SEEDS;
+    if p.agents_default() {
+        s[6].1 = "on";
+    }
+    s
+}
 
 pub use ec_setup_plan::MIN_DISK_BYTES;
 
@@ -865,11 +875,14 @@ mod tests {
     }
 
     #[test]
-    fn only_standard_is_selectable_and_the_others_say_why() {
+    fn standard_and_agentic_are_selectable_and_the_others_say_why() {
         for c in &CARDS {
-            assert_eq!(selectable(c.profile), c.profile == Profile::Standard);
+            assert_eq!(
+                selectable(c.profile),
+                matches!(c.profile, Profile::Standard | Profile::Agentic)
+            );
         }
-        assert_eq!(status_word(Profile::Agentic), Some("preview"));
+        assert_eq!(status_word(Profile::Agentic), None);
         assert_eq!(status_word(Profile::Minimal), Some("coming"));
         assert_eq!(status_word(Profile::Full), Some("coming"));
         assert_eq!(status_word(Profile::Standard), None);

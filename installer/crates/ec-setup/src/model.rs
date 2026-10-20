@@ -1571,15 +1571,33 @@ mod tests {
     }
 
     #[test]
-    fn only_standard_is_selectable_and_the_default() {
+    fn standard_is_the_default_and_agentic_is_selectable() {
         let mut m = at(Step::Profile);
         assert_eq!(m.profile, Profile::Standard);
-        for p in [Profile::Minimal, Profile::Full, Profile::Agentic] {
+        for p in [Profile::Minimal, Profile::Full] {
             m.update(Message::Profile(p));
             assert_eq!(m.profile, Profile::Standard, "{p:?} must not be selectable");
         }
+        m.update(Message::Profile(Profile::Agentic));
+        assert_eq!(m.profile, Profile::Agentic);
+        assert!(m.can_next());
         m.update(Message::Profile(Profile::Standard));
         assert!(m.can_next());
+    }
+
+    #[test]
+    fn the_agentic_plan_carries_the_agents_flag_and_standard_does_not() {
+        for (p, agents) in [(Profile::Agentic, true), (Profile::Standard, false)] {
+            let mut m = review_ready();
+            m.update(Message::Profile(p));
+            let fx = m.update(Message::Apply);
+            let r = fx.iter().find_map(|e| match e {
+                Effect::Apply(r) => Some(r),
+                _ => None,
+            });
+            let r = r.expect("a request");
+            assert_eq!((r.plan.profile, r.plan.agents), (p, agents));
+        }
     }
 
     /// The `Config` effects among `fx`, as (key, value).
