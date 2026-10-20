@@ -25,8 +25,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Smaller than this cannot hold the package set plus a usable home.
-pub const MIN_DISK_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+pub use ec_setup_plan::MIN_DISK_BYTES;
 
 /// Sized for the Abyss desktop plus the installer running from RAM. `MemTotal`
 /// reads a little under the fitted amount, so this is roughly a 2 GB machine.
@@ -48,7 +47,7 @@ struct Reporter<'a> {
 fn open_log(p: &Paths) -> Option<fs::File> {
     let _ = fs::remove_file(&p.install_log);
     fs::OpenOptions::new()
-        .write(true)
+        .append(true)
         .create_new(true)
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
         .mode(0o644)
@@ -104,6 +103,17 @@ pub fn preflight(env: &Env, v: &Validated, plan: &Plan) -> Result<Prepared> {
         return Err(Error::Refused("not enough memory"));
     }
     for extra in machine.packages() {
+        if !pkgs.iter().any(|q| q == extra) {
+            pkgs.push(extra.to_owned());
+        }
+    }
+    // D-01 §2: a second kernel to fall back to. DKMS builds only for kernels
+    // with headers, so the NVIDIA path carries the LTS pair too.
+    let mut kernels = vec!["linux-lts"];
+    if machine.nvidia_open() {
+        kernels.push("linux-lts-headers");
+    }
+    for extra in kernels {
         if !pkgs.iter().any(|q| q == extra) {
             pkgs.push(extra.to_owned());
         }
@@ -173,7 +183,7 @@ pub fn preflight(env: &Env, v: &Validated, plan: &Plan) -> Result<Prepared> {
         .map_err(|_| Error::Refused("could not trust the packaging key"))?;
     env.runner
         .run(&pacman(&["-Sy", "--noconfirm", "archlinux-keyring"]))
-        .map_err(|_| Error::Refused("could not refresh the package keyring"))?;
+        .map_err(|_| Error::Refused("could not sync the package databases"))?;
     env.runner
         .run(&Cmd::new(Tool::PacmanKey).args(["--populate", "archlinux"]))
         .map_err(|_| Error::Refused("could not refresh the package keyring"))?;
@@ -185,6 +195,7 @@ pub fn preflight(env: &Env, v: &Validated, plan: &Plan) -> Result<Prepared> {
         pkgs,
         keyid,
         ucode: machine.ucode(),
+        nvidia: machine.nvidia_open(),
         warnings,
     })
 }
@@ -268,13 +279,17 @@ impl Run<'_, '_> {
             Ok(l)
         })?;
         self.stage(Stage::Pacstrap, 30, "installing packages", |_| {
-            stages::pacstrap(env, &prep)
+            stages::pacstrap(env, &prep)?;
+            if prep.nvidia {
+                stages::verify_nvidia(env)?;
+            }
+            Ok(())
         })?;
         self.stage(Stage::Configure, 75, "configuring the system", |_| {
-            stages::configure(env, &req.plan)
+            stages::configure(env, &req.plan, prep.nvidia)
         })?;
         self.stage(Stage::Bootloader, 85, "installing the bootloader", |_| {
-            stages::bootloader(env, &layout, prep.ucode)
+            stages::bootloader(env, &layout, prep.ucode, prep.nvidia)
         })?;
         self.stage(Stage::User, 90, "creating the user", |_| stages::user(env, req))?;
         let outcome = self.stage(Stage::Seed, 94, "carrying over settings", |_| {
@@ -854,6 +869,75 @@ mod tests {
         }
     }
 
+    /// A Turing+ display controller in the fake sysfs.
+    fn add_turing(p: &Paths) {
+        let d = p.sys_pci.join("0000:01:00.0");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("class"), "0x030000\n").unwrap();
+        fs::write(d.join("vendor"), "0x10de\n").unwrap();
+        fs::write(d.join("device"), "0x2684\n").unwrap();
+    }
+
+    /// A runner that also lets pacstrap's DKMS hook leave the module behind.
+    fn dkms_runner(p: &Paths, build: bool) -> FakeRunner {
+        let inner = machine_runner(p);
+        let k = p.target.join("usr/lib/modules/6.1-arch1-1");
+        FakeRunner::new(move |c| {
+            let out = inner.capture(c);
+            if c.tool == Tool::Pacstrap && build {
+                fs::create_dir_all(k.join("updates/dkms")).unwrap();
+                fs::write(k.join("vmlinuz"), b"k").unwrap();
+                fs::write(k.join("updates/dkms/nvidia.ko.zst"), b"m").unwrap();
+            }
+            out
+        })
+    }
+
+    #[test]
+    fn the_nvidia_module_check_runs_after_pacstrap_and_before_the_initramfs() {
+        // Turing+, module built: the run completes, drop-in and cmdline in place.
+        let (_t, p) = live();
+        add_turing(&p);
+        let target = p.target.clone();
+        let r = dkms_runner(&p, true);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let dropin = fs::read_to_string(target.join("etc/mkinitcpio.conf.d/eclipseos-nvidia.conf")).unwrap();
+        assert!(dropin.starts_with("MODULES+=("));
+        let conf = fs::read_to_string(target.join("boot/limine.conf")).unwrap();
+        assert!(conf.contains("nvidia-drm.modeset=1"));
+        let tools = r.tools();
+        let strap = tools.iter().position(|t| *t == Tool::Pacstrap).unwrap();
+        let chroot = tools.iter().position(|t| *t == Tool::ArchChroot).unwrap();
+        assert!(strap < chroot);
+
+        // Turing+, module missing: refused at the Pacstrap stage, before any
+        // chroot command (mkinitcpio) or boot entry.
+        let (_t, p) = live();
+        add_turing(&p);
+        let target = p.target.clone();
+        let r = dkms_runner(&p, false);
+        let mut out = Vec::new();
+        assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let last = progress(&out).last().cloned().unwrap();
+        assert_eq!((last.stage, last.failed), (Stage::Pacstrap, true));
+        assert!(last.msg.contains("NVIDIA"), "{}", last.msg);
+        assert!(!r.issued(Tool::ArchChroot) && !r.issued(Tool::Efibootmgr));
+        assert!(!target.join("boot/limine.conf").exists());
+
+        // No Turing+ GPU: no module needed, no drop-in, no NVIDIA parameters.
+        let (_t, p) = live();
+        let target = p.target.clone();
+        let r = dkms_runner(&p, false);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        assert!(!target
+            .join("etc/mkinitcpio.conf.d/eclipseos-nvidia.conf")
+            .exists());
+        let conf = fs::read_to_string(target.join("boot/limine.conf")).unwrap();
+        assert!(!conf.contains("nvidia"));
+    }
+
     #[test]
     fn a_failing_stage_stops_the_run_and_unmounts() {
         let (_t, p) = live();
@@ -919,5 +1003,63 @@ mod tests {
         assert!(lines
             .iter()
             .any(|l| l.stage == Stage::Seed && l.msg == "seed absent"));
+    }
+
+    /// A runner whose first `fails` umounts report busy.
+    fn busy_umount(inner: FakeRunner, fails: u32) -> FakeRunner {
+        let n = std::cell::Cell::new(0u32);
+        FakeRunner::new(move |c| {
+            if c.tool == Tool::Umount {
+                n.set(n.get() + 1);
+                if n.get() <= fails {
+                    return Err(Error::Command {
+                        tool: "umount",
+                        code: Some(32),
+                    });
+                }
+            }
+            inner.capture(c)
+        })
+    }
+
+    #[test]
+    fn unmount_retries_and_succeeds_on_a_later_attempt() {
+        let (_t, p) = live();
+        let r = busy_umount(machine_runner(&p), 2);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let n = r.tools().iter().filter(|t| **t == Tool::Umount).count();
+        assert_eq!(n, 3);
+        assert!(!r.issued(Tool::Findmnt));
+        assert_eq!(progress(&out).last().unwrap().stage, Stage::Done);
+    }
+
+    #[test]
+    fn the_target_is_synced_after_the_last_chroot_and_before_unmount() {
+        let (_t, p) = live();
+        let r = machine_runner(&p);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let t = r.tools();
+        let last_chroot = t.iter().rposition(|t| *t == Tool::ArchChroot).unwrap();
+        let sync = t.iter().position(|t| *t == Tool::Sync).unwrap();
+        let um = t.iter().position(|t| *t == Tool::Umount).unwrap();
+        assert!(last_chroot < sync && sync < um);
+    }
+
+    #[test]
+    fn a_persistent_busy_mount_fails_the_install_and_is_diagnosed() {
+        let (_t, p) = live();
+        let log_path = p.install_log.clone();
+        let r = busy_umount(machine_runner(&p), u32::MAX);
+        let mut out = Vec::new();
+        assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let n = r.tools().iter().filter(|t| **t == Tool::Umount).count();
+        assert_eq!(n, 5);
+        assert!(r.issued(Tool::Findmnt));
+        let last = progress(&out).last().cloned().unwrap();
+        assert!(last.failed && last.msg == "could not unmount the target");
+        let log = fs::read_to_string(log_path).unwrap();
+        assert!(log.contains("still mounted"));
     }
 }

@@ -61,8 +61,8 @@ Framework 13 AMD choices and why:
 | `amd-ucode` | Installed when `/proc/cpuinfo` says AMD; `intel-ucode` when Intel; neither in a VM. The Limine entry adds it as a `module_path` ahead of the initramfs. Intel is **untested** until the second machine is run. |
 | `linux-firmware-amdgpu` | Split out of `linux-firmware` upstream; without it amdgpu does not come up on this generation. Named explicitly rather than relied on as a transitive pull. |
 | `vulkan-radeon` + `mesa` + `libva-mesa-driver` | The RADV path. `amdvlk` is not installed — two Vulkan ICDs on one system is a loader-ordering problem, not a choice worth offering. |
-| Detected GPUs (sysfs) | AMD as above; Intel adds `vulkan-intel` and `intel-media-driver`; NVIDIA uses the open-source nouveau/NVK stack (`vulkan-nouveau`), no proprietary or DKMS module. Intel and NVIDIA are detected and installed but **untested**. |
-| *(no DKMS anything)* | amdgpu is in-tree. There is no out-of-tree module, so there is no `dkms`, no headers package, and **no kernel-upgrade step that can fail after reboot**. This is the single biggest reason the target hardware is AMD; it is a property of the install, not a preference. |
+| Detected GPUs (sysfs) | AMD as above; Intel adds `vulkan-intel` and `intel-media-driver`; NVIDIA Turing or newer (PCI vendor `0x10de`, device id >= `0x1e00`) gets `nvidia-open-dkms`, `nvidia-utils` and `linux-headers` and `linux-lts-headers` (the installer always adds `linux-lts` as a second kernel, D-01 §2), the §2.3 cmdline and `mkinitcpio` arrangement, and an install-time check that the module built for every installed kernel; older NVIDIA uses nouveau/NVK (`vulkan-nouveau`). Owner decision 2026-10-18; see D-01 §2.3. Intel and NVIDIA are detected and installed but **untested**. |
+| *(no DKMS on AMD/Intel)* | amdgpu is in-tree. On AMD and Intel there is no out-of-tree module, so there is no `dkms`, no headers package, and **no kernel-upgrade step that can fail after reboot** (the NVIDIA Turing+ path above is the one exception). This is the single biggest reason the target hardware is AMD; it is a property of the install, not a preference. |
 
 Beyond that: disk tooling the installer calls (`gptfdisk`, `dosfstools`,
 `e2fsprogs`, `arch-install-scripts`), the D-Bus services the bar consumes
@@ -102,7 +102,7 @@ disagreement with the installed system is the design, not an oversight:
   Requiring signatures would mean seeding the packaging key into `mkarchiso`'s
   throwaway keyring to verify a claim the path already establishes.
 - **On the installed system**, `/etc/pacman.d/eclipseos.conf` (shipped by
-  `eclipseos-meta`) points at `http://chase-pc:8088/x86_64` with
+  `eclipseos-meta`) points at the `repo-x86_64` GitHub release (D-02) with
   `Required DatabaseRequired`, because there the packages cross a network.
 
 `TrustAll` is therefore scoped to a local path on the build machine and never
@@ -189,7 +189,9 @@ The medium boots to a session, not a prompt. `airootfs/` carries:
   `abyss-session.target` and conditioned on `/run/archiso`. It starts the
   installer. It is the medium's own unit, not a key in any `abyss.kdl`.
 - **`/etc/polkit-1/rules.d/50-eclipse-live-install.rules`**, allowing
-  `org.eclipse.install.apply` for a local, active `liveuser` only.
+  `org.eclipse.install.apply` and NetworkManager's
+  `settings.modify.system` (the Wi-Fi join in D-07 §4.3) for a local, active
+  `liveuser` only.
 - **`kernel.yama.ptrace_scope = 1`**, so a same-uid client cannot trace the
   compositor that draws the erase confirmation (D-07 §6).
 - **No sshd, no mDNS listener.** `sshd` is not enabled and its `PermitRootLogin`

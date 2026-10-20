@@ -29,12 +29,13 @@ pub enum TargetFile {
     LimineHook,
     Vconsole,
     ZramGenerator,
+    MkinitcpioNvidia,
     InstallLog,
     SyncDb,
     SyncDbSig,
 }
 
-pub const ALL: [TargetFile; 15] = [
+pub const ALL: [TargetFile; 16] = [
     TargetFile::Hostname,
     TargetFile::LocaleGen,
     TargetFile::LocaleConf,
@@ -47,6 +48,7 @@ pub const ALL: [TargetFile; 15] = [
     TargetFile::LimineHook,
     TargetFile::Vconsole,
     TargetFile::ZramGenerator,
+    TargetFile::MkinitcpioNvidia,
     TargetFile::InstallLog,
     TargetFile::SyncDb,
     TargetFile::SyncDbSig,
@@ -68,6 +70,7 @@ impl TargetFile {
             TargetFile::LimineHook => "etc/pacman.d/hooks/95-limine-esp.hook",
             TargetFile::Vconsole => "etc/vconsole.conf",
             TargetFile::ZramGenerator => "etc/systemd/zram-generator.conf",
+            TargetFile::MkinitcpioNvidia => "etc/mkinitcpio.conf.d/eclipseos-nvidia.conf",
             TargetFile::InstallLog => "var/log/eclipseos-install/install.log",
             TargetFile::SyncDb => "var/lib/pacman/sync/eclipseos.db",
             TargetFile::SyncDbSig => "var/lib/pacman/sync/eclipseos.db.sig",

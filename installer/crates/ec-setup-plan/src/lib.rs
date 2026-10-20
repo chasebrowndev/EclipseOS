@@ -13,6 +13,10 @@
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+/// The smallest target disk: smaller cannot hold the package set plus a usable
+/// home. The helper refuses below it; the wizard uses it to refuse early.
+pub const MIN_DISK_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+
 /// COMP-17 §2.1. A seed, never a runtime layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

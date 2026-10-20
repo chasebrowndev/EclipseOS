@@ -569,17 +569,17 @@ pub const CARDS: [Card; 4] = [
     },
 ];
 
-/// Profiles a user can pick in this version. The others are shown and refused:
-/// their payload (mode, components, the agent stack) is not built yet.
+/// Profiles a user can pick in this version. Agentic is Standard plus the
+/// `eclipseos-agents` add-on (ADR 0069); the others are shown and refused:
+/// their payload is not built yet.
 pub fn selectable(p: Profile) -> bool {
-    p == Profile::Standard
+    matches!(p, Profile::Standard | Profile::Agentic)
 }
 
 /// A profile that is offered but not finished, with the word the card shows.
 pub fn status_word(p: Profile) -> Option<&'static str> {
     match p {
-        Profile::Standard => None,
-        Profile::Agentic => Some("preview"),
+        Profile::Standard | Profile::Agentic => None,
         Profile::Minimal | Profile::Full => Some("coming"),
     }
 }
@@ -595,6 +595,49 @@ pub const STANDARD_SEEDS: [(&str, &str); 8] = [
     ("agent stack", "off"),
     ("policy starting point", "locked down"),
 ];
+
+/// What `p` seeds: Standard's table, with the agent stack on for Agentic
+/// (Standard plus the `eclipseos-agents` add-on; policy stays locked down).
+pub fn seeds(p: Profile) -> [(&'static str, &'static str); 8] {
+    let mut s = STANDARD_SEEDS;
+    if p.agents_default() {
+        s[6].1 = "on";
+    }
+    s
+}
+
+pub use ec_setup_plan::MIN_DISK_BYTES;
+
+/// Whether the helper would accept this disk.
+pub fn disk_fits(d: &ec_setup_plan::Disk) -> bool {
+    d.size_bytes >= MIN_DISK_BYTES
+}
+
+/// What to call a disk: its model, or, when the model is empty (virtio and some
+/// USB bridges report none), the transport read off the by-id name.
+pub fn disk_name(d: &ec_setup_plan::Disk) -> String {
+    let model = d.model.trim();
+    if !model.is_empty() && !model.eq_ignore_ascii_case("unknown") {
+        return model.to_owned();
+    }
+    let id = d.by_id.to_ascii_lowercase();
+    let kind = if id.starts_with("virtio-") {
+        "Virtual disk"
+    } else if id.starts_with("nvme-") {
+        "NVMe disk"
+    } else if id.starts_with("usb-") {
+        "USB disk"
+    } else if id.starts_with("ata-") {
+        "SATA disk"
+    } else if id.starts_with("scsi-") {
+        "SCSI disk"
+    } else if id.starts_with("mmc-") {
+        "SD or eMMC disk"
+    } else {
+        "Disk"
+    };
+    kind.to_owned()
+}
 
 /// A byte count in binary units, the way `lsblk` and the helper's own messages
 /// say it: `512 MiB`, `931.5 GiB`, `1.82 TiB`.
@@ -620,6 +663,35 @@ pub fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ec_setup_plan::Disk;
+
+    fn disk(by_id: &str, model: &str, size_bytes: u64) -> Disk {
+        Disk {
+            by_id: by_id.into(),
+            model: model.into(),
+            size_bytes,
+            partitions: vec![],
+        }
+    }
+
+    #[test]
+    fn disks_below_the_minimum_do_not_fit() {
+        let gib = 1u64 << 30;
+        assert!(!disk_fits(&disk("virtio-a", "", 8 * gib)));
+        assert!(!disk_fits(&disk("virtio-a", "", 16 * gib - 1)));
+        assert!(disk_fits(&disk("virtio-a", "", 16 * gib)));
+    }
+
+    #[test]
+    fn a_missing_model_falls_back_to_the_transport() {
+        assert_eq!(disk_name(&disk("nvme-X", "Samsung 970", 1)), "Samsung 970");
+        assert_eq!(disk_name(&disk("virtio-vda1", "", 1)), "Virtual disk");
+        assert_eq!(disk_name(&disk("virtio-vda1", "  ", 1)), "Virtual disk");
+        assert_eq!(disk_name(&disk("nvme-X", "Unknown", 1)), "NVMe disk");
+        assert_eq!(disk_name(&disk("usb-X", "", 1)), "USB disk");
+        assert_eq!(disk_name(&disk("ata-X", "", 1)), "SATA disk");
+        assert_eq!(disk_name(&disk("weird", "", 1)), "Disk");
+    }
 
     /// The helper's catalog holds exactly these ids. `foot` is a floor package
     /// and a seed key, not a candidate, and `none` is the absence of one:
@@ -803,11 +875,14 @@ mod tests {
     }
 
     #[test]
-    fn only_standard_is_selectable_and_the_others_say_why() {
+    fn standard_and_agentic_are_selectable_and_the_others_say_why() {
         for c in &CARDS {
-            assert_eq!(selectable(c.profile), c.profile == Profile::Standard);
+            assert_eq!(
+                selectable(c.profile),
+                matches!(c.profile, Profile::Standard | Profile::Agentic)
+            );
         }
-        assert_eq!(status_word(Profile::Agentic), Some("preview"));
+        assert_eq!(status_word(Profile::Agentic), None);
         assert_eq!(status_word(Profile::Minimal), Some("coming"));
         assert_eq!(status_word(Profile::Full), Some("coming"));
         assert_eq!(status_word(Profile::Standard), None);

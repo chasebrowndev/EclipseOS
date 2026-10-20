@@ -16,8 +16,10 @@ use ec_setup_plan::{Plan, Request};
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 use zeroize::Zeroizing;
 
 /// Everything the pre-disk stages worked out for the later ones.
@@ -28,6 +30,8 @@ pub struct Prepared {
     pub keyid: String,
     /// What this machine's CPU needs loaded ahead of the initramfs.
     pub ucode: Option<Ucode>,
+    /// Turing-or-newer NVIDIA present: DKMS module, cmdline and initramfs setup.
+    pub nvidia: bool,
     /// Non-fatal findings, reported to the user before the erase.
     pub warnings: Vec<&'static str>,
 }
@@ -180,12 +184,22 @@ pub fn locale_packages(locale: &str) -> &'static [&'static str] {
     }
 }
 
-pub fn limine_conf(root_uuid: &str, ucode: Option<Ucode>) -> String {
+/// Kernel parameters for the proprietary open module (D-01 §2.3): set
+/// explicitly rather than inherited from a default upstream may flip.
+pub const NVIDIA_CMDLINE: &str = " nvidia-drm.modeset=1 nvidia-drm.fbdev=1";
+
+/// Drop-in for `mkinitcpio` on the NVIDIA path (D-01 §2.3): the modules load
+/// in early userspace. `+=`, so the stock hooks (`kms` included) stay: the
+/// `modconf` hook carries `nvidia-utils`' nouveau blacklist into the initramfs.
+pub const MKINITCPIO_NVIDIA: &str = "MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)\n";
+
+pub fn limine_conf(root_uuid: &str, ucode: Option<Ucode>, nvidia: bool) -> String {
     let pstate = if ucode == Some(Ucode::Amd) {
         " amd_pstate=active"
     } else {
         ""
     };
+    let nv = if nvidia { NVIDIA_CMDLINE } else { "" };
     let ucode = ucode
         .map(|u| format!("    module_path: boot():/{}\n", u.image()))
         .unwrap_or_default();
@@ -194,15 +208,59 @@ pub fn limine_conf(root_uuid: &str, ucode: Option<Ucode>) -> String {
          /EclipseOS\n\
          \x20   protocol: linux\n\
          \x20   path: boot():/vmlinuz-linux\n\
-         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0{pstate}\n\
+         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0{pstate}{nv}\n\
          {ucode}\
          \x20   module_path: boot():/initramfs-linux.img\n\n\
          /EclipseOS (fallback initramfs)\n\
          \x20   protocol: linux\n\
          \x20   path: boot():/vmlinuz-linux\n\
-         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0\n\
-         \x20   module_path: boot():/initramfs-linux-fallback.img\n"
+         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0{nv}\n\
+         \x20   module_path: boot():/initramfs-linux-fallback.img\n\n\
+         /EclipseOS (LTS kernel)\n\
+         \x20   protocol: linux\n\
+         \x20   path: boot():/vmlinuz-linux-lts\n\
+         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0{pstate}{nv}\n\
+         {ucode}\
+         \x20   module_path: boot():/initramfs-linux-lts.img\n"
     )
+}
+
+/// True when every installed kernel (a directory under `usr/lib/modules` that
+/// holds a `vmlinuz`) has the NVIDIA module DKMS built for it. Reads the target
+/// tree only; runs nothing.
+pub fn nvidia_modules_built(modules_dir: &std::path::Path) -> bool {
+    let Ok(rd) = fs::read_dir(modules_dir) else {
+        return false;
+    };
+    let mut kernels = 0;
+    for k in rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("vmlinuz").is_file())
+    {
+        kernels += 1;
+        let dkms = k.join("updates/dkms");
+        let built = ["nvidia.ko", "nvidia.ko.zst", "nvidia.ko.xz", "nvidia.ko.gz"]
+            .iter()
+            .any(|n| dkms.join(n).is_file());
+        if !built {
+            return false;
+        }
+    }
+    kernels > 0
+}
+
+/// After pacstrap: the DKMS pacman hook has run in the target, so a missing
+/// module means the install would boot to a black screen. Fail now, loudly.
+pub fn verify_nvidia(env: &Env) -> Result<()> {
+    if nvidia_modules_built(&env.paths.target.join("usr/lib/modules")) {
+        Ok(())
+    } else {
+        Err(Error::Refused(
+            "the NVIDIA kernel module did not build for every installed kernel; \
+             this machine cannot be installed with the NVIDIA driver",
+        ))
+    }
 }
 
 fn chroot(env: &Env) -> Cmd {
@@ -285,10 +343,104 @@ pub fn mount(env: &Env, l: &Layout) -> Result<()> {
     )
 }
 
-/// Best effort; also run after a failure so the disk is not left busy.
+/// Attempts at `umount -R` before giving up (about 5 s with the 1 s backoff).
+const UMOUNT_TRIES: u32 = 5;
+
+/// The daemons gpg starts on demand for a keyring.
+const GPG_DAEMONS: [&str; 4] = ["gpg-agent", "dirmngr", "keyboxd", "scdaemon"];
+
+/// Pids under `proc` of gpg daemons that belong to the target: chrooted into
+/// it, or given a `--homedir` inside it under any spelling. pacstrap spells it
+/// `<root>//etc/pacman.d/gnupg`, and with no `/run/user/0` gpg keeps its socket
+/// in the homedir, so two spellings share one socket and the agent that lost it
+/// cannot be reached by `gpgconf --kill`. Hence finding them by process.
+pub fn target_gpg_pids(proc: &Path, target: &Path) -> Vec<i32> {
+    let Ok(dir) = fs::read_dir(proc) else {
+        return Vec::new();
+    };
+    let mut pids = Vec::new();
+    for e in dir.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<i32>().ok()) else {
+            continue;
+        };
+        let p = e.path();
+        let comm = fs::read_to_string(p.join("comm")).unwrap_or_default();
+        if !GPG_DAEMONS.contains(&comm.trim_end()) {
+            continue;
+        }
+        let rooted =
+            fs::read_link(p.join("root")).is_ok_and(|r| r != Path::new("/") && r.starts_with(target));
+        let cmdline = fs::read(p.join("cmdline")).unwrap_or_default();
+        let mut args = cmdline.split(|b| *b == 0);
+        let homed = std::iter::from_fn(|| args.next())
+            .skip_while(|a| *a != b"--homedir")
+            .nth(1)
+            .is_some_and(|h| Path::new(std::ffi::OsStr::from_bytes(h)).starts_with(target));
+        if rooted || homed {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
+/// Stop the daemons the keyring stages left running against the target's
+/// gnupg home (pacstrap -K, and the host-side `--gpgdir` calls). They hold the
+/// mount busy until they exit on their own. TERM, a short wait, then KILL.
+fn stop_target_daemons(env: &Env) {
+    use rustix::process::{kill_process, Pid, Signal};
+    let p = &env.paths;
+    for sig in [Signal::TERM, Signal::KILL] {
+        let pids = target_gpg_pids(&p.proc, &p.target);
+        if pids.is_empty() {
+            return;
+        }
+        for pid in pids.iter().filter_map(|&n| Pid::from_raw(n)) {
+            let _ = kill_process(pid, sig);
+        }
+        for _ in 0..20 {
+            if target_gpg_pids(&p.proc, &p.target).is_empty() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+/// Append what is still mounted under the target to the install log, so a busy
+/// mount is diagnosable. Mount paths and device names only.
+fn log_busy_mounts(env: &Env) {
+    let Ok(out) = env
+        .runner
+        .capture(&Cmd::new(Tool::Findmnt).arg("-R").arg(&env.paths.target))
+    else {
+        return;
+    };
+    if let Ok(mut f) = fs::OpenOptions::new().append(true).open(&env.paths.install_log) {
+        let _ = writeln!(f, "umount of the target failed; still mounted:");
+        let _ = f.write_all(&out);
+    }
+}
+
+/// Stop the target's key daemons, flush, then `umount -R`, retrying briefly:
+/// a process that is on its way out can hold a mount for a moment. Never a lazy
+/// unmount. Also run after a failure so the disk is not left busy.
 pub fn unmount(env: &Env) -> Result<()> {
-    env.runner
-        .run(&Cmd::new(Tool::Umount).arg("-R").arg(&env.paths.target))
+    stop_target_daemons(env);
+    let _ = env.runner.run(&Cmd::new(Tool::Sync));
+    let mut res = Ok(());
+    for i in 0..UMOUNT_TRIES {
+        if i > 0 {
+            std::thread::sleep(env.paths.umount_backoff);
+        }
+        res = env
+            .runner
+            .run(&Cmd::new(Tool::Umount).arg("-R").arg(&env.paths.target));
+        if res.is_ok() {
+            return res;
+        }
+    }
+    log_busy_mounts(env);
+    res
 }
 
 // ---- Pacstrap ----------------------------------------------------------------
@@ -358,7 +510,7 @@ pub fn pacstrap(env: &Env, prep: &Prepared) -> Result<()> {
 
 // ---- Configure ---------------------------------------------------------------
 
-pub fn configure(env: &Env, plan: &Plan) -> Result<()> {
+pub fn configure(env: &Env, plan: &Plan, nvidia: bool) -> Result<()> {
     let t = &env.paths.target;
     target::write(t, TargetFile::Hostname, format!("{}\n", plan.hostname).as_bytes())?;
     target::link_localtime(t, &plan.timezone)?;
@@ -389,6 +541,9 @@ pub fn configure(env: &Env, plan: &Plan) -> Result<()> {
         format!("KEYMAP={}\n", plan.keymap).as_bytes(),
     )?;
     target::write(t, TargetFile::ZramGenerator, ZRAM_CONF.as_bytes())?;
+    if nvidia {
+        target::write(t, TargetFile::MkinitcpioNvidia, MKINITCPIO_NVIDIA.as_bytes())?;
+    }
     target::write(t, TargetFile::SudoersWheel, SUDOERS_WHEEL.as_bytes())?;
 
     env.runner.run(&chroot(env).arg("locale-gen"))?;
@@ -400,7 +555,7 @@ pub fn configure(env: &Env, plan: &Plan) -> Result<()> {
 
 // ---- Bootloader --------------------------------------------------------------
 
-pub fn bootloader(env: &Env, l: &Layout, ucode: Option<Ucode>) -> Result<()> {
+pub fn bootloader(env: &Env, l: &Layout, ucode: Option<Ucode>, nvidia: bool) -> Result<()> {
     let t = &env.paths.target;
     // Limine's UEFI install is two files: the stub at the removable fallback
     // path, which needs no NVRAM entry, and a config that says what it does.
@@ -419,7 +574,11 @@ pub fn bootloader(env: &Env, l: &Layout, ucode: Option<Ucode>) -> Result<()> {
         return Err(Error::Refused("root uuid"));
     }
     let ucode = ucode.filter(|u| t.join("boot").join(u.image()).is_file());
-    target::write(t, TargetFile::LimineConf, limine_conf(uuid, ucode).as_bytes())?;
+    target::write(
+        t,
+        TargetFile::LimineConf,
+        limine_conf(uuid, ucode, nvidia).as_bytes(),
+    )?;
     // A firmware entry as well as the removable path, so machines that prefer
     // NVRAM entries boot it. Best effort: the fallback path is what must work.
     let _ = env.runner.run(
@@ -491,6 +650,35 @@ pub fn units(env: &Env, entries: &[&Entry]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_gpg_daemons_are_found_under_any_spelling_or_chroot() {
+        let t = crate::testutil::TempDir::new();
+        let proc = t.path().join("proc");
+        let fake = |pid: &str, comm: &str, cmdline: &[&str], root: &str| {
+            let d = proc.join(pid);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("comm"), format!("{comm}\n")).unwrap();
+            fs::write(d.join("cmdline"), cmdline.join("\0") + "\0").unwrap();
+            std::os::unix::fs::symlink(root, d.join("root")).unwrap();
+        };
+        let agent = |h: &'static str| ["gpg-agent", "--homedir", h, "--daemon"];
+        fake("10", "gpg-agent", &agent("/mnt//etc/pacman.d/gnupg"), "/");
+        fake("11", "gpg-agent", &agent("/mnt/etc/pacman.d/gnupg"), "/");
+        fake(
+            "12",
+            "keyboxd",
+            &["keyboxd", "--homedir", "/etc/pacman.d/gnupg"],
+            "/mnt",
+        );
+        fake("20", "gpg-agent", &agent("/etc/pacman.d/gnupg"), "/");
+        fake("21", "zsh", &["zsh", "--homedir", "/mnt/x"], "/");
+        fake("22", "gpg-agent", &agent("/mntx/etc/pacman.d/gnupg"), "/");
+        fs::create_dir_all(proc.join("self")).unwrap();
+        let mut got = target_gpg_pids(&proc, Path::new("/mnt"));
+        got.sort();
+        assert_eq!(got, vec![10, 11, 12]);
+    }
     use crate::catalog::Catalog;
 
     #[test]
@@ -569,14 +757,56 @@ mod tests {
 
     #[test]
     fn limine_config_matches_the_reference() {
-        let c = limine_conf("abcd-1234", Some(Ucode::Amd));
+        let c = limine_conf("abcd-1234", Some(Ucode::Amd), false);
         assert!(c.starts_with("timeout: 2\n\n/EclipseOS\n    protocol: linux\n"));
         assert!(c.contains("    cmdline: root=UUID=abcd-1234 rootfstype=ext4 rw zswap.enabled=0 amd_pstate=active\n    module_path: boot():/amd-ucode.img\n    module_path: boot():/initramfs-linux.img\n"));
         assert!(c.contains("/EclipseOS (fallback initramfs)"));
-        assert!(!limine_conf("u", None).contains("ucode"));
-        let i = limine_conf("u", Some(Ucode::Intel));
+        assert!(!limine_conf("u", None, false).contains("ucode"));
+        let i = limine_conf("u", Some(Ucode::Intel), false);
         assert!(i.contains("module_path: boot():/intel-ucode.img") && !i.contains("amd_pstate"));
         assert!(valid_uuid("1b2c-3D4e") && !valid_uuid("a b") && !valid_uuid("x\ny") && !valid_uuid(""));
+    }
+
+    #[test]
+    fn nvidia_cmdline_is_on_every_entry_only_for_turing_plus() {
+        let on = limine_conf("u", Some(Ucode::Amd), true);
+        assert_eq!(on.matches("nvidia-drm.modeset=1 nvidia-drm.fbdev=1").count(), 3);
+        assert_eq!(on.matches("cmdline:").count(), 3);
+        assert!(on.contains("path: boot():/vmlinuz-linux-lts") && on.contains("initramfs-linux-lts.img"));
+        assert!(!limine_conf("u", Some(Ucode::Amd), false).contains("nvidia"));
+    }
+
+    #[test]
+    fn nvidia_initramfs_appends_modules_and_leaves_hooks_alone() {
+        assert_eq!(
+            MKINITCPIO_NVIDIA,
+            "MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)\n"
+        );
+        assert!(!MKINITCPIO_NVIDIA.contains("HOOKS"));
+    }
+
+    #[test]
+    fn nvidia_build_is_checked_for_every_kernel() {
+        let t = crate::testutil::TempDir::new();
+        let m = t.path().join("usr/lib/modules");
+        assert!(!nvidia_modules_built(&m), "no modules dir");
+        let kernel = |name: &str, built: bool| {
+            let d = m.join(name);
+            fs::create_dir_all(d.join("updates/dkms")).unwrap();
+            fs::write(d.join("vmlinuz"), b"k").unwrap();
+            if built {
+                fs::write(d.join("updates/dkms/nvidia.ko.zst"), b"m").unwrap();
+            }
+        };
+        kernel("6.1-arch1-1", true);
+        assert!(nvidia_modules_built(&m));
+        kernel("6.2-lts", false);
+        assert!(!nvidia_modules_built(&m), "one kernel missing the module");
+        kernel("6.2-lts", true);
+        assert!(nvidia_modules_built(&m));
+        // A leftover dir with no kernel image is not a kernel.
+        fs::create_dir_all(m.join("extramodules-old")).unwrap();
+        assert!(nvidia_modules_built(&m));
     }
 
     #[test]

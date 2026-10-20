@@ -53,7 +53,7 @@ pub fn fake_paths(t: &TempDir) -> Paths {
         locale_gen: r.join("etc/locale.gen"),
         passwd: r.join("etc/passwd"),
         target: r.join("mnt"),
-        repo: r.join("root/eclipseos-repo"),
+        repo: r.join("opt/eclipseos-repo"),
         pkg_list: r.join("root/eclipseos-packages.txt"),
         packaging_key: r.join("root/eclipseos-packaging.asc"),
         live_pacman_conf: r.join("etc/pacman.conf"),
@@ -67,8 +67,10 @@ pub fn fake_paths(t: &TempDir) -> Paths {
         keymaps: r.join("usr/share/kbd/keymaps"),
         ntp_synced: r.join("run/systemd/timesync/synchronized"),
         clock_wait: std::time::Duration::ZERO,
+        umount_backoff: std::time::Duration::ZERO,
         nm_connections: r.join("etc/NetworkManager/system-connections"),
         install_log: r.join("run/eclipseos-install.log"),
+        proc: r.join("proc"),
     }
 }
 
