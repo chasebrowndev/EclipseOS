@@ -73,7 +73,7 @@ if ! mountpoint -q /mnt; then
 fi
 
 [[ -d /mnt/etc ]] || die "/mnt does not look like an installed system (no /etc)"
-[[ -d /root/eclipseos-repo ]] || die "this medium has no /root/eclipseos-repo"
+[[ -d /opt/eclipseos-repo ]] || die "this medium has no /opt/eclipseos-repo"
 
 # --- trust the packaging key on the live medium ------------------------------
 KEYID="$(gpg --show-keys --with-colons /root/eclipseos-packaging.asc |
@@ -88,7 +88,7 @@ cat >>"$PACCONF" <<'REPO'
 
 [eclipseos]
 SigLevel = PackageRequired DatabaseOptional
-Server = file:///root/eclipseos-repo
+Server = file:///opt/eclipseos-repo
 REPO
 
 # --- install ------------------------------------------------------------------

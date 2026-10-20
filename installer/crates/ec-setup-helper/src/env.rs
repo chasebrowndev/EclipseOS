@@ -65,7 +65,7 @@ impl Paths {
             locale_gen: "/etc/locale.gen".into(),
             passwd: "/etc/passwd".into(),
             target: "/mnt".into(),
-            repo: "/root/eclipseos-repo".into(),
+            repo: "/opt/eclipseos-repo".into(),
             pkg_list: "/root/eclipseos-packages.txt".into(),
             packaging_key: "/root/eclipseos-packaging.asc".into(),
             live_pacman_conf: "/etc/pacman.conf".into(),

@@ -57,7 +57,7 @@ The installer installs `eclipseos-base`: the compositor, `policyd`, the greeter
 set, the D-Bus services D-01 §1 names, `foot`, **every D-05 component** and
 `ec-setup`. This is the setup floor: it is what D-03 §2.1 already says,
 "what you booted is what you install". Today `build-iso.sh` bakes the signed
-`[eclipseos]` packages into the medium (`/root/eclipseos-repo`) and
+`[eclipseos]` packages into the medium (`/opt/eclipseos-repo`) and
 `install-eclipseos.sh` pacstraps from that copy, so **the EclipseOS packages
 install offline**. Their dependencies from the Arch repositories (mesa, fonts,
 `networkmanager`, …) still come from a mirror, so the floor as a whole does
