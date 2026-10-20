@@ -35,6 +35,8 @@ pub enum Tool {
     Wipefs,
     Blkdiscard,
     Efibootmgr,
+    Sync,
+    Findmnt,
 }
 
 impl Tool {
@@ -59,6 +61,8 @@ impl Tool {
             Tool::Wipefs => "/usr/bin/wipefs",
             Tool::Blkdiscard => "/usr/bin/blkdiscard",
             Tool::Efibootmgr => "/usr/bin/efibootmgr",
+            Tool::Sync => "/usr/bin/sync",
+            Tool::Findmnt => "/usr/bin/findmnt",
         }
     }
 
@@ -83,6 +87,8 @@ impl Tool {
             Tool::Wipefs => "wipefs",
             Tool::Blkdiscard => "blkdiscard",
             Tool::Efibootmgr => "efibootmgr",
+            Tool::Sync => "sync",
+            Tool::Findmnt => "findmnt",
         }
     }
 

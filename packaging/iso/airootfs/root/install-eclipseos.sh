@@ -101,7 +101,7 @@ KEYID="$(gpg --show-keys --with-colons /root/eclipseos-packaging.asc 2>/dev/null
          awk -F: '/^fpr:/{print $10; exit}')"
 PACCONF=/root/eclipseos-install-pacman.conf
 cp /etc/pacman.conf "$PACCONF"
-if [[ -d /root/eclipseos-repo ]]; then
+if [[ -d /opt/eclipseos-repo ]]; then
   # The packages are signed by the EclipseOS packaging key. TrustAll is not
   # enough on its own -- pacman cannot verify against a key it does not hold,
   # so import it here and again into the installed system further down.
@@ -113,12 +113,31 @@ if [[ -d /root/eclipseos-repo ]]; then
 # here is unsigned (rebuilt at bake time); the packages in it are signed.
 [eclipseos]
 SigLevel = PackageRequired DatabaseOptional
-Server = file:///root/eclipseos-repo
+Server = file:///opt/eclipseos-repo
 REPO
 else
-  say "WARNING: /root/eclipseos-repo is missing -- this medium was built"
+  say "WARNING: /opt/eclipseos-repo is missing -- this medium was built"
   say "         without the EclipseOS packages. Falling back to the tailnet."
 fi
+
+# D-01 §2.3: NVIDIA Turing or newer (PCI device id >= 0x1e00) gets the open
+# kernel module via DKMS; older NVIDIA stays on nouveau. Sysfs only.
+NVIDIA_OPEN=0
+for d in /sys/bus/pci/devices/*; do
+  [[ -r $d/class && -r $d/vendor && -r $d/device ]] || continue
+  v="$(<"$d/vendor")"; dev="$(<"$d/device")"
+  [[ $v =~ ^0x[0-9a-fA-F]{4}$ && $dev =~ ^0x[0-9a-fA-F]{4}$ ]] || continue
+  [[ $(<"$d/class") == 0x03* && ${v,,} == 0x10de ]] || continue
+  if (( dev >= 0x1e00 )); then NVIDIA_OPEN=1; fi
+done
+if (( NVIDIA_OPEN )); then
+  say "NVIDIA Turing or newer detected: installing nvidia-open-dkms"
+  PKGS+=(nvidia-open-dkms nvidia-utils linux-headers)
+  PKGS+=(linux-lts-headers)
+fi
+
+# D-01 §2: a second kernel to fall back to (not on the live medium itself).
+PKGS+=(linux-lts)
 
 pacstrap -K -C "$PACCONF" /mnt "${PKGS[@]}"
 genfstab -U /mnt >>/mnt/etc/fstab
@@ -173,6 +192,23 @@ fi
 grep -q 'eclipseos.conf' /mnt/etc/pacman.conf ||
   printf '\n# EclipseOS packages (D-02)\nInclude = /etc/pacman.d/eclipseos.conf\n' >>/mnt/etc/pacman.conf
 
+NVCMD=""
+if (( NVIDIA_OPEN )); then
+  NVCMD=" nvidia-drm.modeset=1 nvidia-drm.fbdev=1"
+  # The DKMS hook ran during pacstrap. A kernel without the module boots to a
+  # black screen, so refuse here rather than after the reboot.
+  for k in /mnt/usr/lib/modules/*/; do
+    [[ -f ${k}vmlinuz ]] || continue
+    compgen -G "${k}updates/dkms/nvidia.ko*" >/dev/null ||
+      die "the NVIDIA kernel module did not build for $(basename "$k"); not continuing"
+  done
+  # D-01 §2.3: modules load in early userspace; the stock hooks (kms too) stay,
+  # since `modconf` carries nvidia-utils' nouveau blacklist into the initramfs.
+  install -Dm0644 /dev/stdin /mnt/etc/mkinitcpio.conf.d/eclipseos-nvidia.conf <<'MKINIT'
+MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)
+MKINIT
+fi
+
 arch-chroot /mnt /bin/bash -euo pipefail <<CHROOT
 if [[ -f /root/eclipseos-packaging.asc ]]; then
   pacman-key --add /root/eclipseos-packaging.asc
@@ -216,15 +252,22 @@ timeout: 2
 /EclipseOS
     protocol: linux
     path: boot():/vmlinuz-linux
-    cmdline: root=UUID=$ROOT_UUID rw amd_pstate=active
+    cmdline: root=UUID=$ROOT_UUID rw amd_pstate=active$NVCMD
     $UCODE
     module_path: boot():/initramfs-linux.img
 
 /EclipseOS (fallback initramfs)
     protocol: linux
     path: boot():/vmlinuz-linux
-    cmdline: root=UUID=$ROOT_UUID rw
+    cmdline: root=UUID=$ROOT_UUID rw$NVCMD
     module_path: boot():/initramfs-linux-fallback.img
+
+/EclipseOS (LTS kernel)
+    protocol: linux
+    path: boot():/vmlinuz-linux-lts
+    cmdline: root=UUID=$ROOT_UUID rw amd_pstate=active$NVCMD
+    $UCODE
+    module_path: boot():/initramfs-linux-lts.img
 LIMINE
 
 # Nothing else refreshes the copy on the ESP, so a `limine` upgrade would leave

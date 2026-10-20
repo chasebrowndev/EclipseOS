@@ -10,11 +10,10 @@
 //! a disk is a choice.
 
 use super::Body;
-use crate::data::format_size;
+use crate::data::{disk_fits, disk_name, format_size, MIN_DISK_BYTES};
 use crate::model::{Load, Message, Model};
 use crate::parts::{self, El, Ink};
 use ec_setup_plan::Disk;
-use ec_ui::theme;
 use ec_ui::tokens::{color, font, size, space};
 use ec_ui::widget::{hairline, inset, list_row, micro_label, value};
 use iced::widget::{column, container, row, text, Column, Row, Space};
@@ -70,6 +69,14 @@ pub fn body(m: &Model) -> Body<'_> {
     }
 
     let mut blocks: Vec<El<'_, Message>> = Vec::new();
+    if !disks.iter().any(disk_fits) {
+        blocks.push(parts::strong("No disk is large enough."));
+        blocks.push(parts::body(format!(
+            "The install needs a disk of at least {}. Attach a larger one, then scan again.",
+            format_size(MIN_DISK_BYTES)
+        )));
+        blocks.push(row![parts::primary("Rescan", Some(Message::ReloadDisks))].into());
+    }
     let mut cards = Column::new().spacing(space::CARD);
     for d in disks {
         cards = cards.push(disk_card(d, m.disk.as_deref() == Some(d.by_id.as_str())));
@@ -137,34 +144,49 @@ fn disk_card(d: &Disk, selected: bool) -> El<'_, Message> {
             fs.join("  ")
         )
     };
+    let fits = disk_fits(d);
+    let ink = if fits { color::TEXT } else { color::TEXT_TERTIARY };
+    let note = if fits {
+        summary
+    } else {
+        format!("too small, needs {}  {summary}", format_size(MIN_DISK_BYTES))
+    };
     let content = column![
         row![
-            text(d.model.clone())
+            text(disk_name(d))
                 .font(font::UI_SEMIBOLD)
                 .size(size::PROMPT)
-                .style(theme::text_primary),
+                .color(ink),
             Space::new().width(Length::Fill),
             text(format_size(d.size_bytes))
                 .font(font::DATA_MEDIUM)
                 .size(size::PROMPT)
-                .style(theme::text_primary),
+                .color(ink),
         ]
         .align_y(Alignment::Center),
         parts::disk_bar(&sizes, d.size_bytes, Ink::Neutral),
-        parts::mono(summary, color::TEXT_SECONDARY),
+        parts::mono(
+            note,
+            if fits {
+                color::TEXT_SECONDARY
+            } else {
+                color::TEXT_TERTIARY
+            }
+        ),
     ]
     .spacing(space::CHIP_GAP + 2.0);
     parts::card(
         content,
         Length::Shrink,
-        selected,
-        Some(Message::SelectDisk(d.by_id.clone())),
+        selected && fits,
+        fits.then(|| Message::SelectDisk(d.by_id.clone())),
     )
 }
 
 fn partitions(d: &Disk) -> El<'_, Message> {
-    let mut rows = Column::new()
-        .push(container(micro_label(&format!("On {} now", d.model))).padding([space::ROW_Y, space::CARD]));
+    let mut rows = Column::new().push(
+        container(micro_label(&format!("On {} now", disk_name(d)))).padding([space::ROW_Y, space::CARD]),
+    );
     if d.partitions.is_empty() {
         rows = rows.push(hairline()).push(
             container(parts::body("Nothing. The disk has no partitions."))

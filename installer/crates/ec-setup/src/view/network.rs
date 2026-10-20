@@ -8,7 +8,8 @@
 //! packages.
 //! The accented value: the selected network row (offline), or "Connected".
 
-use super::{list_box, Body};
+use super::{list_box_sized, Body};
+use crate::metrics;
 use crate::model::{ids, Load, Message, Model, Secret};
 use crate::net::Link;
 use crate::parts::{self, El};
@@ -105,8 +106,15 @@ fn wifi(m: &Model) -> El<'_, Message> {
         rows = rows.push(container(parts::body(note)).padding([space::ROW_Y, space::CARD]));
     }
 
+    // The box hugs its rows (the empty note counts as one) up to a cap, then
+    // scrolls; it does not stretch to the footer around four networks.
+    let shown = count.clamp(1, 6) as f32;
     let mut col = Column::new().spacing(space::BLOCK).height(Length::Fill);
-    col = col.push(list_box(None, rows));
+    col = col.push(list_box_sized(
+        None,
+        rows,
+        Length::Fixed(shown * metrics::ROW_H + 2.0 * space::CARD),
+    ));
 
     if let Some(ap) = m.ap_choice() {
         let status: Option<El<'_, Message>> = if m.joining {
