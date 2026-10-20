@@ -189,7 +189,9 @@ The medium boots to a session, not a prompt. `airootfs/` carries:
   `abyss-session.target` and conditioned on `/run/archiso`. It starts the
   installer. It is the medium's own unit, not a key in any `abyss.kdl`.
 - **`/etc/polkit-1/rules.d/50-eclipse-live-install.rules`**, allowing
-  `org.eclipse.install.apply` for a local, active `liveuser` only.
+  `org.eclipse.install.apply` and NetworkManager's
+  `settings.modify.system` (the Wi-Fi join in D-07 §4.3) for a local, active
+  `liveuser` only.
 - **`kernel.yama.ptrace_scope = 1`**, so a same-uid client cannot trace the
   compositor that draws the erase confirmation (D-07 §6).
 - **No sshd, no mDNS listener.** `sshd` is not enabled and its `PermitRootLogin`
