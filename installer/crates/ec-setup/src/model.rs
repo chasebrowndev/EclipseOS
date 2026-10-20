@@ -977,7 +977,7 @@ impl Model {
 
             Message::Helper(ev) => self.helper(ev),
             Message::Restart => {
-                if self.install.phase == Phase::Done && !self.install.restarting {
+                if matches!(self.install.phase, Phase::Done | Phase::Failed) && !self.install.restarting {
                     self.install.restarting = true;
                     self.install.restart_error = None;
                     fx.push(Effect::Reboot);
@@ -2067,7 +2067,7 @@ mod tests {
     }
 
     #[test]
-    fn restart_is_offered_only_when_the_install_is_done() {
+    fn restart_is_offered_only_when_the_install_is_over() {
         let mut m = review_ready();
         m.update(Message::Apply);
         assert!(m.update(Message::Restart).is_empty());
@@ -2084,6 +2084,17 @@ mod tests {
         assert!(m.update(Message::Restart).is_empty());
         m.update(Message::Restarted(Err("the restart was refused".into())));
         assert!(m.install.restart_error.is_some());
+    }
+
+    #[test]
+    fn restart_is_offered_after_a_failure_but_enter_does_not_fire_it() {
+        let mut m = review_ready();
+        m.update(Message::Apply);
+        m.update(Message::Helper(HelperEvent::Ended { clean: false }));
+        assert_eq!(m.install.phase, Phase::Failed);
+        assert!(m.update(Message::Key(Key::Enter)).is_empty());
+        let fx = m.update(Message::Restart);
+        assert!(matches!(fx.as_slice(), [Effect::Reboot]));
     }
 
     #[test]

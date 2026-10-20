@@ -182,9 +182,10 @@ mod tests {
         assert_eq!(d.model.install.failed_at, Some(Stage::Pacstrap));
         assert!(crate::model::touched_disk(Stage::Pacstrap));
 
-        // Restart is not on offer after a failure.
+        // Restart is on offer after a failure, so the user is never stuck.
         d.send(Message::Restart);
-        assert!(!d.log.iter().any(|l| l == "Reboot"));
+        assert!(d.log.iter().any(|l| l == "Reboot"));
+        d.send(Message::Restarted(Err("the restart was refused".into())));
 
         d.send(Message::Back);
         assert_eq!(d.model.step, Step::Identity);

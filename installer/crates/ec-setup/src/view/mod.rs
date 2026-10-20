@@ -143,7 +143,7 @@ fn footer(m: &Model) -> El<'_, Message> {
     let forward: El<'_, Message> = match m.step {
         Step::Review => parts::commit("Erase and install", m.can_apply().then_some(Message::Apply)),
         Step::Install => match m.install.phase {
-            Phase::Done => parts::commit(
+            Phase::Done | Phase::Failed => parts::commit(
                 if m.install.restarting {
                     "Restarting"
                 } else {
@@ -151,7 +151,6 @@ fn footer(m: &Model) -> El<'_, Message> {
                 },
                 (!m.install.restarting).then_some(Message::Restart),
             ),
-            Phase::Failed => Space::new().width(Length::Shrink).into(),
             _ => parts::primary("Installing", None),
         },
         Step::Network if !m.online() => parts::primary("Skip", m.can_next().then_some(Message::Next)),
