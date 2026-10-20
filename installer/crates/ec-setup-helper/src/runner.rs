@@ -35,7 +35,6 @@ pub enum Tool {
     Wipefs,
     Blkdiscard,
     Efibootmgr,
-    Gpgconf,
     Sync,
     Findmnt,
 }
@@ -62,7 +61,6 @@ impl Tool {
             Tool::Wipefs => "/usr/bin/wipefs",
             Tool::Blkdiscard => "/usr/bin/blkdiscard",
             Tool::Efibootmgr => "/usr/bin/efibootmgr",
-            Tool::Gpgconf => "/usr/bin/gpgconf",
             Tool::Sync => "/usr/bin/sync",
             Tool::Findmnt => "/usr/bin/findmnt",
         }
@@ -89,7 +87,6 @@ impl Tool {
             Tool::Wipefs => "wipefs",
             Tool::Blkdiscard => "blkdiscard",
             Tool::Efibootmgr => "efibootmgr",
-            Tool::Gpgconf => "gpgconf",
             Tool::Sync => "sync",
             Tool::Findmnt => "findmnt",
         }

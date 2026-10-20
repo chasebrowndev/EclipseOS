@@ -70,6 +70,7 @@ pub fn fake_paths(t: &TempDir) -> Paths {
         umount_backoff: std::time::Duration::ZERO,
         nm_connections: r.join("etc/NetworkManager/system-connections"),
         install_log: r.join("run/eclipseos-install.log"),
+        proc: r.join("proc"),
     }
 }
 

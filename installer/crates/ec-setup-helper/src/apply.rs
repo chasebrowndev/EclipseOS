@@ -929,34 +929,16 @@ mod tests {
     }
 
     #[test]
-    fn gpg_agents_are_killed_and_synced_before_unmount() {
+    fn the_target_is_synced_after_the_last_chroot_and_before_unmount() {
         let (_t, p) = live();
-        let ring = p.target.join("etc/pacman.d/gnupg");
         let r = machine_runner(&p);
         let mut out = Vec::new();
         assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
-        let log = r.log.borrow();
-        let pos = |f: &dyn Fn(&crate::testutil::Logged) -> bool| log.iter().position(f).unwrap();
-        let kill = pos(&|l| {
-            l.tool == Tool::Gpgconf
-                && l.args.iter().any(|a| a == "--kill")
-                && l.args.iter().any(|a| Path::new(a) == ring)
-        });
-        // pacstrap's own spelling, which gpg hashes to a different socket dir.
-        let pacstrap_ring = format!(
-            "{}//etc/pacman.d/gnupg",
-            ring.ancestors().nth(3).unwrap().display()
-        );
-        let kill2 = pos(&|l| l.tool == Tool::Gpgconf && l.args.contains(&pacstrap_ring));
-        let sync = pos(&|l| l.tool == Tool::Sync);
-        let um = pos(&|l| l.tool == Tool::Umount);
-        assert!(kill < sync && kill2 < sync && sync < um);
-        // The last chroot stage is over by then.
-        let last_chroot = log
-            .iter()
-            .rposition(|l| l.tool == Tool::ArchChroot && !l.args.iter().any(|a| a == "gpgconf"))
-            .unwrap();
-        assert!(last_chroot < kill);
+        let t = r.tools();
+        let last_chroot = t.iter().rposition(|t| *t == Tool::ArchChroot).unwrap();
+        let sync = t.iter().position(|t| *t == Tool::Sync).unwrap();
+        let um = t.iter().position(|t| *t == Tool::Umount).unwrap();
+        assert!(last_chroot < sync && sync < um);
     }
 
     #[test]
