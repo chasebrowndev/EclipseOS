@@ -571,7 +571,7 @@ class TestProgressBar(unittest.TestCase):
     def img(self, step, w=1920, h=1080):
         data = bytearray(3 * w * h)
         left = (w - 776) // 2
-        y = int(h * 0.037)
+        y = 40
         for i in range(13):
             x0 = left + round(26.1 * i)
             width = 41 if i == step else 21

@@ -33,7 +33,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import imgtools as it  # noqa: E402
 import vm as vmmod  # noqa: E402
-from vm import HarnessError, VM, log  # noqa: E402
+from vm import HarnessError, QMPError, VM, log  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FLOOR_LIST = os.path.join(HERE, "..", "airootfs", "root", "eclipseos-packages.txt")
@@ -129,6 +129,9 @@ def build_parser():
                    help="run a profile even if this checkout's data.rs says it is not selectable (ISO built from another branch)")
     p.add_argument("--boot-entry", choices=("default", "lts"), default="default",
                    help="reboot into the installed system through this Limine entry (lts: pick it from the menu)")
+    p.add_argument("--vt-test", action="store_true", help="after login: tty3 round trip, then check input still reaches the session")
+    p.add_argument("--polkit-workaround", action="store_true",
+                   help="plant a live polkit rule letting liveuser use NetworkManager (the ISO ships none; join otherwise fails)")
     p.add_argument("--keep", action="store_true", help="leave the VM running afterwards")
     p.add_argument("--reboot-count", type=int, default=0, metavar="N", help="extra reboots with a recheck after each")
     p.add_argument("--mem", type=int, default=4096)
@@ -194,8 +197,8 @@ def step_plan(ctx):
     add("keyboard", prep=[("click",) + CLICK_BLANK])
     add("timezone")  # the search box is focused; its Enter advances
     if ctx.get("wifi"):
-        add("network", prep=[("click",) + CLICK_WIFI_LINK, ("sleep", 2), ("key", "down"),
-                             ("sleep", 1), ("type", WIFI_PSK), ("key", "ret"), ("wait", 6)])
+        add("network", prep=[("click",) + CLICK_WIFI_LINK, ("sleep", 3), ("click",) + CLICK_WIFI_SSID, ("sleep", 2), ("click",) + CLICK_WIFI_PSK,
+                             ("sleep", 1), ("type", WIFI_PSK), ("key", "ret"), ("sleep", 10), ("wait", 6), ("shot", "network-joined")])
     else:
         add("network")
     add("disk", prep=[("sleep", 2), ("key", "down")])
@@ -211,9 +214,12 @@ def step_plan(ctx):
 
 # Fractions of the screen, tuned against real screenshots (see README, "Calibration").
 CLICK_BLANK = (0.04, 0.50)  # empty ground left of the centred content column
-CLICK_WIFI_LINK = (0.37, 0.36)  # "Connect to Wi-Fi" under the Network lead
+CLICK_WIFI_LINK = (0.25, 0.246)  # "Connect to Wi-Fi" under the Network lead (recalibrated 2026-10-19)
+CLICK_WIFI_SSID = (0.5, 0.281)  # the (only) SSID row: it must be selected before the passphrase field exists
+CLICK_WIFI_PSK = (0.44, 0.409)  # passphrase field once the SSID row is shown (SSID preselected)
 # Profile cards stacked in the order of data.rs CARDS; Standard is the default and needs no click.
-PROFILE_CARDS = {"minimal": (0.5, 0.30), "full": (0.5, 0.62), "agentic": (0.5, 0.78)}
+PROFILE_CARDS = {"agentic": (0.5, 0.435)}  # 2026-10-19: only Standard (preselected) and Agentic are offered
+CLICK_RESTART_BR = (57, 41)  # done screen Restart: centre, px left of the column edge and up from the bottom (same at 1280x800 and 1920x1080)
 CLICK_PASSWORD = (0.50, 0.58)  # greeter password field, if it is not focused already
 
 
@@ -338,8 +344,8 @@ pacman -Sy --noconfirm hostapd dnsmasq >/tmp/ap-pacman.log 2>&1 || exit 12
 ip netns add apns || exit 13
 P=$(iw phy | awk '/^Wiphy/{print $2}' | sort | tail -1)  # phy1: iwd manages phy0 (wlan0) as the station
 iw phy "$P" set netns name apns || { ip netns exec apns sleep 100000 & iw phy "$P" set netns $!; } || exit 14
-sleep 1
-IF=$(ip netns exec apns iw dev | awk '/Interface/{print $2; exit}')
+IF=
+for i in 1 2 3 4 5 6 7 8 9 10; do sleep 1; IF=$(ip netns exec apns iw dev | awk '/Interface/{print $2; exit}'); test -n "$IF" && break; done
 test -n "$IF" || exit 15
 ip netns exec apns ip addr add 192.168.77.1/24 dev "$IF"
 ip netns exec apns ip link set "$IF" up
@@ -358,8 +364,7 @@ ip netns exec apns hostapd -B -P /tmp/hostapd.pid /tmp/hostapd.conf >/tmp/hostap
 ip netns exec apns dnsmasq --conf-file=/dev/null --interface="$IF" --bind-interfaces \\
   --except-interface=lo --dhcp-range=192.168.77.50,192.168.77.99,12h --dhcp-option=3 \\
   --pid-file=/tmp/dnsmasq.pid || exit 17
-nmcli device wifi rescan >/dev/null 2>&1
-sleep 3
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do nmcli device wifi rescan >/dev/null 2>&1; sleep 3; nmcli -t -f SSID device wifi list | grep -qx '%(ssid)s' && break; done
 echo "@@S:ap"
 echo up
 echo "@@S:nm"
@@ -374,9 +379,20 @@ def target_probe_script(by_id, pubkey, user=USER, ssid=SSID):
     return """set -u
 ID=%(id)s
 D=/dev/disk/by-id/$ID
+echo "@@S:installlog"
+tail -25 /run/eclipseos-install.log 2>&1 | cut -c1-240
 echo "@@S:leftover"
 findmnt -rn -o TARGET,SOURCE | grep -a '^/mnt'
-for p in /proc/[0-9]*; do for l in cwd root; do t=$(readlink "$p/$l" 2>/dev/null); case "$t" in /mnt*) echo "holder pid=${p#/proc/} $l=$t $(tr '\\0' ' ' <$p/cmdline | cut -c1-80)";; esac; done; done
+for p in /proc/[0-9]*; do for l in cwd root; do t=$(readlink "$p/$l" 2>/dev/null); case "$t" in /mnt*) echo "holder pid=${p#/proc/} comm=$(cat $p/comm 2>/dev/null) $l=$t $(tr '\\0' ' ' <$p/cmdline | cut -c1-80)";; esac; done; done
+for p in /proc/[0-9]*; do for f in $p/fd/*; do t=$(readlink "$f" 2>/dev/null); case "$t" in /mnt/*) echo "openfile pid=${p#/proc/} $(cat $p/comm) $t";; esac; done; done 2>/dev/null | sort -u | head -20
+echo "nsmounts: $(grep -l -a ' /mnt' /proc/[0-9]*/mountinfo 2>/dev/null | tr '\\n' ' ')"
+echo "procs: $(ps -eo pid,comm | grep -a -E 'gpg|dirmngr|keyboxd|pacman|chroot|agent' | tr '\\n' ';')"
+echo "maps: $(grep -l -a '/mnt/' /proc/[0-9]*/maps 2>/dev/null | tr '\\n' ' ')"
+for p in $(pgrep -x -a 'gpg-agent|dirmngr|keyboxd' | cut -d' ' -f1); do echo "agent pid=$p ppid=$(awk '/^PPid/{print $2}' /proc/$p/status) start=$(ps -o lstart= -p $p) cmd=$(tr '\\0' ' ' </proc/$p/cmdline) fds=$(ls -l /proc/$p/fd 2>/dev/null | awk '{print $NF}' | tr '\\n' ' ' | cut -c1-300)"; done
+echo "livenm: $(ls -l /etc/NetworkManager/system-connections 2>&1 | tr '\\n' ';')"
+nmcli -t -f NAME,TYPE,DEVICE connection show | sed 's/^/livecon: /'
+echo "umount-try: $(umount /mnt 2>&1 | head -2)"
+findmnt -rn -o TARGET,SOURCE | grep -a '^/mnt'
 echo "@@S:parts"
 lsblk -nrpo NAME,FSTYPE "$D"
 ROOT=$(lsblk -nrpo NAME,FSTYPE "$D" | awk '$2=="ext4"{print $1; exit}')
@@ -442,7 +458,7 @@ def disk_gib(size):
 def bar_index(img):
     """0-based wizard step from the progress bar's white (current) segment, or None.
     The bar sits at the top of the centred 776 px column: 26.1 px pitch, current segment bright."""
-    y = int(img.h * 0.037)
+    y = 40  # fixed px: the bar sits 40 px from the top at 1280x800 and 1920x1080 alike
     left = (img.w - 776) / 2.0
     run = None
     for x in range(int(left) - 4, int(left) + 776):
@@ -644,6 +660,12 @@ class Driver:
                 w, h = self.size or self.vm.screen_size()
                 self.vm.click(int(a[1] * w), int(a[2] * h), size=(w, h))
                 time.sleep(0.5)
+            elif kind == "clickbr":  # px offsets from the bottom-right of the 776 px content column
+                w, h = self.size or self.vm.screen_size()
+                self.vm.click(int((w + 776) / 2 - a[1]), int(h - a[2]), size=(w, h))
+                time.sleep(0.5)
+            elif kind == "shot":
+                self.shot(a[1])
             elif kind == "sleep":
                 time.sleep(a[1])
             elif kind == "wait":
@@ -690,6 +712,20 @@ class Driver:
             log("step %s: screen did not change (attempt %d)" % (plan_item["screen"], attempt + 1))
         self.shot("stuck-" + plan_item["screen"])
         raise ScenarioAbort("screen did not leave %s" % plan_item["screen"])
+
+    @staticmethod
+    def is_prompt(img):
+        """The compositor's erase dialog: it carries red warning text ("This cannot be undone") in the
+        middle of the screen; the plain installing screen has no red there."""
+        w, h = img.w, img.h
+        n = 0
+        for y in range(h // 2 - 250, h // 2 + 100, 2):
+            for x in range(w // 2 - 260, w // 2 + 260, 2):
+                i = 3 * (y * w + x)
+                r, g, b = img.data[i], img.data[i + 1], img.data[i + 2]
+                if r > 190 and g < 150 and b < 130:
+                    n += 1
+        return n > 150
 
     # -- serial side channel (live root shell on tty2)
     def serial_text(self):
@@ -804,7 +840,15 @@ def walk_wizard(args, vm, d, res, by_id):
 def confirm_erase(vm, d, res):
     """The compositor-drawn prompt: Deny holds focus, so Tab to Erase then Space (Enter never grants)."""
     base = d.last  # the install-start shot: the prompt is a full-screen change from it
-    img = d.changed(base, 180, max_frac=0.05)
+    img = d.changed(base, 12, max_frac=0.05)
+    if img is None:
+        # At 1280x800 the prompt can already be on screen in the install-start shot (it settles
+        # after the prompt appears). The prompt is on a trusted-UI timer, so look at the pixels:
+        # the dialog panel sits in the middle of the dimmed progress screen.
+        cur = vm.screendump()
+        dd = it.diff_images(base, cur, 16) if cur is not None else None
+        if dd is not None and it.matches(dd, 0.05) and d.is_prompt(base):
+            img = base
     if img is None:
         d.shot("no-erase-prompt")
         if d.login_root():
@@ -860,6 +904,9 @@ def install_and_probe(args, vm, d, res, by_id, pubkey):
     got = d.sh("journalctl -b --no-pager | grep -a -i -E 'ec-setup|helper|pacstrap|pacman' | tail -25", timeout=60)
     if got:
         res.notes.append("install journal tail: " + got[1][-1500:])
+    got = d.sh("journalctl -b --no-pager | grep -a -i -E 'unmount|umount|gpg-agent|dirmngr' | tail -12 | cut -c1-220", timeout=60)
+    if got:
+        res.notes.append("helper unmount journal: " + got[1][-1500:])
     got = d.sh_script("probe.sh", target_probe_script(by_id, pubkey), timeout=180)
     if not got:
         res.add("target_probe", False, "probe script gave no answer")
@@ -872,7 +919,12 @@ def install_and_probe(args, vm, d, res, by_id, pubkey):
 def check_target(args, res, sec, floor):
     if not sec or "error" in sec:
         return
+    res.notes.append("install log tail: " + sec.get("installlog", "")[-2500:])
     res.notes.append("mounts left by the helper at probe time: " + (sec.get("leftover", "").strip() or "none"))
+    lines = [l for l in sec.get("installlog", "").splitlines() if l.strip()]
+    last = lines[-1] if lines else ""
+    res.add("install_log_ok", bool(lines) and '"failed":true' not in last.replace(" ", ""),
+            "last progress line: " + (last[:200] or "install log empty"))
     res.add("target_hostname", sec.get("hostname", "").strip() == HOSTNAME, sec.get("hostname", ""))
     res.add("target_user", sec.get("passwd", "").startswith(USER + ":"), sec.get("passwd", "")[:60])
     boot = sec.get("boot", "")
@@ -894,21 +946,63 @@ def check_target(args, res, sec, floor):
 
 
 def reboot_to_disk(args, vm, d, res, ssh):
-    vm.eject_cd()
+    # The ISO must stay in the drive while the done screen is up: ec-setup lives on the live
+    # squashfs, and ejecting first fills tty1 with SQUASHFS read errors (2026-10-19 calibration).
     d.switch_vt(1)
     d.settle(timeout=20)
     d.shot("done")
     base = vm.screendump()
+    try:
+        txt = subprocess.run(["tesseract", os.path.join(vm.shots, "%02d-done.png" % (d.n - 1)), "-"],
+                             capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        txt = ""
+    low = txt.lower()
+    res.add("done_screen_success", "installed" in low and "stopped" not in low and "could not" not in low,
+            "OCR: " + " ".join(txt.split())[:160])
     restarted = False
     if args.boot_entry != "lts":  # for the menu pick the reset below keeps the timing exact
-        d.do([("key", "ret")])  # Restart (Enter on the done screen)
-        # a real restart blanks most of the screen; kernel messages from the ejected medium do not
-        restarted = d.changed(base, 20, max_frac=0.5) is not None
+        # Hold a QMP connection across the click: the guest's own reboot shows up as a RESET
+        # event with guest=true. The ISO must stay until then (ejecting while the live system is
+        # still shutting down hangs it on SQUASHFS read errors, 2026-10-20 row 1).
+        with vm.qmp(timeout=5.0) as q:
+            # QMP serves one client at a time, so the click goes through the held connection
+            w, h = d.size or vm.screen_size(q)
+            vm._abs(q, int((w + 776) / 2 - CLICK_RESTART_BR[0]), int(h - CLICK_RESTART_BR[1]), w, h)
+            time.sleep(0.05)
+            for down in (True, False):
+                q.execute("input-send-event", events=[{"type": "btn", "data": {"down": down, "button": "left"}}])
+                time.sleep(0.05)
+            deadline = time.monotonic() + d.t(300)
+            while time.monotonic() < deadline and not restarted:
+                if any(e.get("event") == "RESET" and e.get("data", {}).get("guest") for e in q.events):
+                    restarted = True
+                    break
+                try:
+                    r = q._read()
+                except QMPError:
+                    continue  # read timeout: poll again
+                if "event" in r:
+                    q.events.append(r)
+        if restarted:
+            # the firmware boots the ISO again within seconds of the reset, so eject right away
+            vm.eject_cd()
+        if not restarted:
+            d.shot("restart-clicked-no-reaction")
+            if d.login_root():
+                got = d.sh("journalctl -b --no-pager | grep -a -i -E 'reboot|restart|polkit|logind|ec-setup' | tail -15 | cut -c1-240", timeout=60)
+                res.notes.append("journal after the Restart click: " + (got[1][-2500:] if got else "?"))
+                d.sh("true", timeout=10, quiet=True)
+            d.switch_vt(1)
+    else:
+        vm.eject_cd()
     if not restarted:
         log("Restart not used or did not react; resetting the VM through QMP")
         with vm.qmp() as q:
             q.execute("system_reset")
-    res.notes.append("reboot by Restart key" if restarted else "reboot by QMP system_reset")
+    res.add("restart_button", restarted or args.boot_entry == "lts",
+            "the Restart button rebooted the VM" if restarted else "Restart not clicked or did not reboot (see 18-done)")
+    res.notes.append("reboot by Restart button" if restarted else "reboot by QMP system_reset")
     if args.boot_entry == "lts":
         # Limine's menu waits 2 s: any key stops the countdown. Down until the last entry
         # ("EclipseOS (LTS kernel)"), then Enter; keys before the menu exists are ignored.
@@ -976,20 +1070,21 @@ def health(args, res, ssh, floor, label, full):
         if args.no_net:
             res.skip("pacman_sync", "--no-net")
         else:
+            rc, out = ssh.run("grep -rh -B1 -A3 -i 'eclipseos' /etc/pacman.conf /etc/pacman.d/eclipseos* 2>/dev/null | head -20", timeout=30)
+            res.notes.append("[eclipseos] config: " + out.strip()[:500])
+            rc, out = ssh.run("grep -rh 'Server' /etc/pacman.conf /etc/pacman.d/ 2>/dev/null | grep -a releases/download/repo-x86_64", timeout=30)
+            res.add("eclipseos_repo_url", rc == 0 and "chasebrowndev/EclipseOS/releases/download/repo-x86_64" in out,
+                    out.strip()[:200] or "no Server line with the GitHub release URL")
+            rc, out = ssh.run("ls /var/lib/pacman/sync/ | tr '\\n' ' '; pacman -T pacman 2>&1 | grep -a ^error", timeout=60, sudo=True)
+            res.add("pacman_T_before_sync", "error:" not in out, "first pacman -T on first boot; sync dir + errors: " + out.strip()[:200])
             rc, out = ssh.run("pacman -Sy", timeout=180, sudo=True)
-            errs = [l for l in out.splitlines() if l.startswith("error:")]
-            only_own = rc != 0 and errs and all("eclipseos.db" in l or "synchronize all databases" in l for l in errs)
-            if only_own:
-                # D-03: the owner's eclipseos repo is chase-pc:8088, not reachable from a test VM.
-                res.add("pacman_sync", True, "core/extra synced; [eclipseos] on chase-pc:8088 unreachable here (D-03, expected)")
-            else:
-                res.add("pacman_sync", rc == 0, out.strip()[-300:])
+            res.add("pacman_sync", rc == 0, out.strip()[-300:])
         want = expected_packages(args.profile, floor)
         rc, out = ssh.run("pacman -T %s" % " ".join(shlex.quote(p) for p in want), timeout=60)
         res.add("packages_installed", rc == 0 and not out.strip(), "all present" if not out.strip() else "missing: " + out.strip()[:400])
         if args.wifi:
             rc, out = ssh.run("nmcli -t -f NAME,TYPE connection show", timeout=30)
-            res.add("wifi_profile_known_to_nm", SSID in out, out.strip()[:200])
+            res.add("wifi_profile_known_to_nm", any(SSID in l and "802-11-wireless" in l for l in out.splitlines()), out.strip()[:200])
 
 
 def untouched(path, limit=4 << 20):
@@ -1015,6 +1110,8 @@ def run_installed_flow(args, vm, d, res, hostfwd_port, key, pubkey, floor):
     if not greeter_login(vm, d, res, ssh):
         return
     health(args, res, ssh, floor, "boot0", full=True)
+    if args.vt_test:
+        vt_regression(vm, d, res, ssh)
     for n in range(1, args.reboot_count + 1):
         ssh.run("systemctl reboot", timeout=20, sudo=True)
         ssh.wait_down(d.t(120))
@@ -1025,6 +1122,37 @@ def run_installed_flow(args, vm, d, res, hostfwd_port, key, pubkey, floor):
             break
         if greeter_login(vm, d, res, ssh, label):
             health(args, res, ssh, floor, label, full=False)
+
+
+def vt_regression(vm, d, res, ssh):
+    """tty3 and back; the session must still take input (Super+E opens the launcher)."""
+    rc, out = ssh.run("loginctl show-session $(loginctl list-sessions --no-legend | awk '$3==\"%s\"{print $1;exit}') -p VTNr -p Active" % USER, timeout=20)
+    m = re.search(r"VTNr=(\d+)", out)
+    vt = int(m.group(1)) if m and int(m.group(1)) > 0 else 1
+    res.notes.append("session VT: %s (%s)" % (vt, out.strip().replace("\n", " ")))
+    def launcher_up():
+        rc, _ = ssh.run("pgrep -x ec-launcher", timeout=20)
+        return rc == 0
+    d.do([("key", "meta_l+e"), ("sleep", 3)])  # control: input works before the switch
+    pre = launcher_up()
+    d.shot("vt-before-launcher")
+    d.do([("key", "esc"), ("sleep", 2)])
+    res.add("vt_input_before", pre, "Super+E opened the launcher before the VT switch" if pre else "launcher did not open before the switch (bind or input broken)")
+    d.switch_vt(3)
+    time.sleep(3)
+    d.shot("vt-tty3")
+    d.switch_vt(vt)
+    time.sleep(5)
+    d.settle(timeout=30)
+    d.shot("vt-back")
+    d.do([("key", "meta_l+e"), ("sleep", 3)])
+    post = launcher_up()
+    d.shot("vt-after-launcher")
+    res.add("vt_input_after", post, "Super+E opened the launcher after tty3 and back to VT%d" % vt if post
+            else "no launcher after the VT round trip: input is dead")
+    d.do([("key", "esc")])
+    rc, out = ssh.run("journalctl -b --no-pager -t ec-abyss | tail -15", timeout=30, sudo=True)
+    res.notes.append("abyss journal after VT: " + out[-1500:])
 
 
 def prepare_wifi(args, vm, d, res):
@@ -1038,6 +1166,11 @@ def prepare_wifi(args, vm, d, res):
             else "ap script failed: rc=%s %s" % (got[0] if got else "?", (got[1] if got else "")[-300:]))
     if not ok:
         raise ScenarioAbort("could not build the simulated access point")
+    if args.polkit_workaround:
+        rule = ('polkit.addRule(function(a,s){ if (a.id.indexOf("org.freedesktop.NetworkManager.")==0 && '
+                's.user=="liveuser" && s.local && s.active) return polkit.Result.YES; });')
+        d.sh_script("pk.sh", "cat >/etc/polkit-1/rules.d/60-test-nm.rules <<'EOF'\n%s\nEOF\necho done" % rule, timeout=30)
+        res.notes.append("WORKAROUND: live polkit rule planted for liveuser/NetworkManager (--polkit-workaround)")
     d.switch_vt(1)
     # Coming back from a VT, ec-setup replays the welcome intro and ignores input meanwhile;
     # the READY frame is the first still one.
