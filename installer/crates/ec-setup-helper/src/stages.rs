@@ -495,6 +495,13 @@ pub fn pacstrap(env: &Env, prep: &Prepared) -> Result<()> {
             .arg("--lsign-key")
             .arg(&prep.keyid),
     )?;
+    // pacstrap synced `[eclipseos]` from the medium's baked repo, whose
+    // database build-iso.sh re-signs, so it differs from the published one but
+    // is newer. The target's first `pacman -Sy` would keep that db (the server
+    // answers 304) and fetch the published signature: a bad signature until a
+    // later sync. Drop the pair so the first sync fetches both.
+    target::remove(&p.target, TargetFile::SyncDb)?;
+    target::remove(&p.target, TargetFile::SyncDbSig)?;
     let fstab = r.capture(&Cmd::new(Tool::Genfstab).arg("-U").arg(&p.target))?;
     let mut all = target::read(&p.target, TargetFile::Fstab)?;
     all.extend_from_slice(&fstab);
