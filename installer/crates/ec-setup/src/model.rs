@@ -352,6 +352,9 @@ pub enum Message {
     Keymap(String),
     CarryNetwork(bool),
     KbFilter(String),
+    /// Enter in the layout filter: choose the first layout it shows and move
+    /// to the test field; with nothing typed, it is Enter like any other.
+    KbFilterSubmit,
     KbTest(String),
     ConfigResult(&'static str, Result<(), WriteError>),
 
@@ -395,8 +398,7 @@ pub enum Message {
     Restart,
     Restarted(Result<(), String>),
 
-    /// Nothing to do: a focus task with no target, and Enter in the keyboard
-    /// test field, which must not advance the wizard.
+    /// Nothing to do: a focus task with no target.
     Noop,
 }
 
@@ -786,6 +788,16 @@ impl Model {
                 }
             }
             Message::KbFilter(s) => self.kb_filter = s,
+            Message::KbFilterSubmit => {
+                let first = self.visible_layouts().first().map(|l| l.code.clone());
+                match first {
+                    Some(code) if !self.kb_filter.trim().is_empty() => {
+                        fx.extend(self.update(Message::Layout(code)));
+                        fx.push(Effect::Focus(ids::KB_TEST));
+                    }
+                    _ => self.key(Key::Enter, &mut fx),
+                }
+            }
             Message::KbTest(s) => self.kb_test = s,
             Message::ConfigResult(key, result) => {
                 if key == config::KB_LAYOUT || key == config::KB_VARIANT {
@@ -2129,11 +2141,52 @@ mod tests {
     }
 
     #[test]
-    fn enter_in_the_keyboard_test_field_does_not_advance() {
-        // The field submits Noop, which takes the key so the wizard does not.
+    fn enter_in_the_keyboard_test_field_advances_and_in_the_filter_applies_it() {
+        // The test field submits `Key(Enter)`: the step is complete, so it advances.
         let mut m = at(Step::Keyboard);
-        assert!(m.update(Message::Noop).is_empty());
+        m.update(Message::Key(Key::Enter));
+        assert_eq!(m.step, Step::Keyboard.next().unwrap());
+
+        // The filter picks the first layout it shows and hands focus to the
+        // test field; the step has not moved yet.
+        let mut m = at(Step::Keyboard);
+        m.update(Message::KbFilter("ger".into()));
+        let first = m.visible_layouts()[0].code.clone();
+        let fx = m.update(Message::KbFilterSubmit);
+        assert_eq!(m.layout, first);
         assert_eq!(m.step, Step::Keyboard);
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Focus(id) if *id == ids::KB_TEST)));
+
+        // With nothing typed it is a plain Enter.
+        let mut m = at(Step::Keyboard);
+        m.update(Message::KbFilterSubmit);
+        assert_eq!(m.step, Step::Keyboard.next().unwrap());
+
+        // A filter that matches nothing leaves the layout alone and still moves on.
+        let mut m = at(Step::Keyboard);
+        let before = m.layout.clone();
+        m.update(Message::KbFilter("zzzz-no-such".into()));
+        m.update(Message::KbFilterSubmit);
+        assert_eq!(m.layout, before);
+        assert_eq!(m.step, Step::Keyboard.next().unwrap());
+    }
+
+    #[test]
+    fn enter_in_the_last_identity_field_advances_or_surfaces_the_problem() {
+        let mut m = at(Step::Identity);
+        fill_identity(&mut m);
+        m.update(Message::Key(Key::Enter));
+        assert_eq!(m.step, Step::Identity.next().unwrap());
+
+        // A bad host name is the problem, and Enter from that field says so too.
+        let mut m = at(Step::Identity);
+        fill_identity(&mut m);
+        m.hostname = "Bad Host".into();
+        m.update(Message::Key(Key::Enter));
+        assert_eq!(m.step, Step::Identity);
+        assert!(m.more);
     }
 
     #[test]
