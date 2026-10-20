@@ -40,6 +40,8 @@ pub const NAMES: &[&str] = &[
     "disk",
     "disk-empty",
     "disk-none",
+    "disk-small",
+    "disk-all-small",
     "disk-more",
     "identity",
     "identity-invalid",
@@ -154,6 +156,14 @@ pub fn fixture(name: &str) -> Option<Model> {
         "disk-none" => {
             walk(&mut m, Step::Disk, true);
             m.update(Message::DisksLoaded(Ok(vec![])));
+        }
+        "disk-small" => {
+            walk(&mut m, Step::Disk, true);
+            m.update(Message::DisksLoaded(Ok(small_disks(true))));
+        }
+        "disk-all-small" => {
+            walk(&mut m, Step::Disk, true);
+            m.update(Message::DisksLoaded(Ok(small_disks(false))));
         }
         "disk-more" => {
             walk(&mut m, Step::Disk, true);
@@ -287,6 +297,20 @@ pub fn render(name: &str, size: (f32, f32), scale: f32, path: &Path) -> Result<(
         image::ColorType::Rgba8,
     )
     .map_err(|e| e.to_string())
+}
+
+/// A virtio disk with no model and no room, optionally beside a good one.
+fn small_disks(with_good: bool) -> Vec<ec_setup_plan::Disk> {
+    let mut v = vec![ec_setup_plan::Disk {
+        by_id: "virtio-vda-test".into(),
+        model: String::new(),
+        size_bytes: 8 << 30,
+        partitions: vec![],
+    }];
+    if with_good {
+        v.push(fake_disks().remove(1));
+    }
+    v
 }
 
 #[cfg(test)]

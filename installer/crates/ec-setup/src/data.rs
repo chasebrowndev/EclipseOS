@@ -596,6 +596,39 @@ pub const STANDARD_SEEDS: [(&str, &str); 8] = [
     ("policy starting point", "locked down"),
 ];
 
+pub use ec_setup_plan::MIN_DISK_BYTES;
+
+/// Whether the helper would accept this disk.
+pub fn disk_fits(d: &ec_setup_plan::Disk) -> bool {
+    d.size_bytes >= MIN_DISK_BYTES
+}
+
+/// What to call a disk: its model, or, when the model is empty (virtio and some
+/// USB bridges report none), the transport read off the by-id name.
+pub fn disk_name(d: &ec_setup_plan::Disk) -> String {
+    let model = d.model.trim();
+    if !model.is_empty() && !model.eq_ignore_ascii_case("unknown") {
+        return model.to_owned();
+    }
+    let id = d.by_id.to_ascii_lowercase();
+    let kind = if id.starts_with("virtio-") {
+        "Virtual disk"
+    } else if id.starts_with("nvme-") {
+        "NVMe disk"
+    } else if id.starts_with("usb-") {
+        "USB disk"
+    } else if id.starts_with("ata-") {
+        "SATA disk"
+    } else if id.starts_with("scsi-") {
+        "SCSI disk"
+    } else if id.starts_with("mmc-") {
+        "SD or eMMC disk"
+    } else {
+        "Disk"
+    };
+    kind.to_owned()
+}
+
 /// A byte count in binary units, the way `lsblk` and the helper's own messages
 /// say it: `512 MiB`, `931.5 GiB`, `1.82 TiB`.
 pub fn format_size(bytes: u64) -> String {
@@ -620,6 +653,35 @@ pub fn format_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ec_setup_plan::Disk;
+
+    fn disk(by_id: &str, model: &str, size_bytes: u64) -> Disk {
+        Disk {
+            by_id: by_id.into(),
+            model: model.into(),
+            size_bytes,
+            partitions: vec![],
+        }
+    }
+
+    #[test]
+    fn disks_below_the_minimum_do_not_fit() {
+        let gib = 1u64 << 30;
+        assert!(!disk_fits(&disk("virtio-a", "", 8 * gib)));
+        assert!(!disk_fits(&disk("virtio-a", "", 16 * gib - 1)));
+        assert!(disk_fits(&disk("virtio-a", "", 16 * gib)));
+    }
+
+    #[test]
+    fn a_missing_model_falls_back_to_the_transport() {
+        assert_eq!(disk_name(&disk("nvme-X", "Samsung 970", 1)), "Samsung 970");
+        assert_eq!(disk_name(&disk("virtio-vda1", "", 1)), "Virtual disk");
+        assert_eq!(disk_name(&disk("virtio-vda1", "  ", 1)), "Virtual disk");
+        assert_eq!(disk_name(&disk("nvme-X", "Unknown", 1)), "NVMe disk");
+        assert_eq!(disk_name(&disk("usb-X", "", 1)), "USB disk");
+        assert_eq!(disk_name(&disk("ata-X", "", 1)), "SATA disk");
+        assert_eq!(disk_name(&disk("weird", "", 1)), "Disk");
+    }
 
     /// The helper's catalog holds exactly these ids. `foot` is a floor package
     /// and a seed key, not a candidate, and `none` is the absence of one:
