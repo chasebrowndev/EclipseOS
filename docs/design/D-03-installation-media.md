@@ -102,7 +102,7 @@ disagreement with the installed system is the design, not an oversight:
   Requiring signatures would mean seeding the packaging key into `mkarchiso`'s
   throwaway keyring to verify a claim the path already establishes.
 - **On the installed system**, `/etc/pacman.d/eclipseos.conf` (shipped by
-  `eclipseos-meta`) points at `http://chase-pc:8088/x86_64` with
+  `eclipseos-meta`) points at the `repo-x86_64` GitHub release (D-02) with
   `Required DatabaseRequired`, because there the packages cross a network.
 
 `TrustAll` is therefore scoped to a local path on the build machine and never
