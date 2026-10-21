@@ -72,6 +72,56 @@ part() { [[ $DISK == *nvme* || $DISK == *mmcblk* ]] && echo "${DISK}p$1" || echo
 ESP="$(part 1)"
 ROOT="$(part 2)"
 
+# --- leftovers from an earlier attempt --------------------------------------
+# A failed run leaves the target mounted, and gpg daemons started by pacstrap -K
+# keep it busy. Release both, so running this script again just works instead of
+# failing on "target is busy" until someone unmounts by hand. No lazy unmount.
+stop_target_daemons() {
+  local sig p comm
+  for sig in TERM KILL; do
+    local found=0
+    for p in /proc/[0-9]*; do
+      comm="$(cat "$p/comm" 2>/dev/null)" || continue
+      case $comm in gpg-agent|dirmngr|keyboxd|scdaemon) ;; *) continue ;; esac
+      if [[ "$(readlink "$p/root" 2>/dev/null)" == /mnt* ]] ||
+         tr '\0' ' ' <"$p/cmdline" 2>/dev/null | grep -q -- '--homedir /mnt'; then
+        found=1
+        kill "-$sig" "${p#/proc/}" 2>/dev/null || true
+      fi
+    done
+    (( found )) || return 0
+    sleep 1
+  done
+}
+
+unmount_target() {
+  local i
+  stop_target_daemons
+  sync
+  for i in 1 2 3 4 5; do
+    mountpoint -q /mnt || return 0
+    umount -R /mnt 2>/dev/null && return 0
+    sleep 1
+  done
+  mountpoint -q /mnt && return 1
+  return 0
+}
+
+reclaim_leftovers() {
+  local mp
+  if mountpoint -q /mnt; then
+    say "/mnt is still mounted from an earlier attempt; unmounting it"
+    unmount_target || die "could not unmount /mnt (something is using it). See: findmnt -R /mnt ; fuser -vm /mnt"
+  fi
+  # Any other mount from the chosen disk would make the wipe below fail.
+  while read -r mp; do
+    [[ $mp == /* ]] || continue
+    say "unmounting $mp (on $DISK)"
+    umount -R "$mp" || die "could not unmount $mp; unmount it and run this script again"
+  done < <(lsblk -nrpo MOUNTPOINTS "$DISK" | tr ' ' '\n' | sort -r)
+}
+reclaim_leftovers
+
 # --- partition ---------------------------------------------------------------
 say "partitioning $DISK"
 sgdisk --zap-all "$DISK"
@@ -101,6 +151,11 @@ KEYID="$(gpg --show-keys --with-colons /root/eclipseos-packaging.asc 2>/dev/null
          awk -F: '/^fpr:/{print $10; exit}')"
 PACCONF=/root/eclipseos-install-pacman.conf
 cp /etc/pacman.conf "$PACCONF"
+# A slow or filtered link must not abort a transaction ("Operation too slow",
+# pacman's low-speed timeout), and many parallel streams over a bad link starve
+# each other. Applies to pacstrap and to the pacman calls below via this config.
+sed -i -E '/^[[:space:]]*#?[[:space:]]*(DisableDownloadTimeout|ParallelDownloads)([[:space:]=]|$)/d' "$PACCONF"
+sed -i '/^\[options\]/a DisableDownloadTimeout\nParallelDownloads = 3' "$PACCONF"
 if [[ -d /opt/eclipseos-repo ]]; then
   # The packages are signed by the EclipseOS packaging key. TrustAll is not
   # enough on its own -- pacman cannot verify against a key it does not hold,
@@ -139,7 +194,72 @@ fi
 # D-01 §2: a second kernel to fall back to (not on the live medium itself).
 PKGS+=(linux-lts)
 
-pacstrap -K -C "$PACCONF" /mnt "${PKGS[@]}"
+# --- pacstrap, with retries --------------------------------------------------
+# Same classes and wording as the graphical installer (ec-setup-helper stages.rs).
+classify_pacstrap() {
+  local log="$1"
+  if grep -qiE 'no space left on device|not enough free disk space|too full' "$log"; then
+    echo disk
+  elif grep -qiE 'pgp signature|signature from|is unknown trust|is marginal trust|key is disabled|required key missing|keyring is not writable|could not be looked up remotely|invalid or corrupted database' "$log"; then
+    echo signature
+  elif grep -qiE 'failed retrieving file|operation too slow|operation timed out|connection timed out|could not resolve|failed to connect|connection reset|connection refused|ssl connect error|failed to synchronize|invalid or corrupted package \(checksum\)|unexpected error' "$log"; then
+    echo network
+  else
+    echo other
+  fi
+}
+
+# Move the first Server line to the end, so the mirror that just failed goes last.
+rotate_mirrorlist() {
+  local ml=/etc/pacman.d/mirrorlist
+  [[ $(grep -c '^[[:space:]]*Server' "$ml" 2>/dev/null) -ge 2 ]] || return 0
+  awk '/^[[:space:]]*Server/ && !done { first=$0; done=1; next } { print } END { if (done) print first }' \
+    "$ml" >"$ml.new" && cat "$ml.new" >"$ml"
+  rm -f "$ml.new"
+}
+
+pacstrap_failed() {
+  local class="$1" msg
+  case $class in
+    network)   msg="Downloads stalled on every mirror — check the connection (a filtered network or captive portal can do this), then run this script again." ;;
+    disk)      msg="The target disk ran out of space — pick a larger disk, then run this script again." ;;
+    signature) msg="Package signature check failed — check that the clock is right and the network is not altering downloads (captive portal, proxy), then run this script again." ;;
+    *)         msg="Installing packages failed — read the pacman errors above, then run this script again." ;;
+  esac
+  printf '\n!! %s\n' "$msg" >&2
+  unmount_target || true
+  cat >&2 <<'NEXT'
+
+   Nothing is left mounted. To try again:   /root/install-eclipseos.sh
+   (it will unmount /mnt first if anything is still there). Packages already
+   downloaded are kept for retries within one run, not across runs.
+NEXT
+  exit 1
+}
+
+# Downloaded packages stay in the target's pacman cache, so a retry fetches only
+# what is missing. Only a network-class failure is retried, three attempts in
+# all: a bad signature or a full disk would fail the same way every time.
+ERRLOG="$(mktemp)"
+attempt=1
+while :; do
+  : >"$ERRLOG"
+  rc=0
+  LC_ALL=C pacstrap -K -C "$PACCONF" /mnt "${PKGS[@]}" 2> >(tee "$ERRLOG" >&2) || rc=$?
+  wait "$!" 2>/dev/null || true   # let tee flush before the log is read
+  (( rc == 0 )) && break
+  class="$(classify_pacstrap "$ERRLOG")"
+  if [[ $class == network ]] && (( attempt < 3 )); then
+    attempt=$((attempt + 1))
+    say "downloads failed; retrying on a different mirror (attempt $attempt of 3)"
+    stop_target_daemons
+    rotate_mirrorlist
+    sleep $((5 * (attempt - 1)))
+    continue
+  fi
+  pacstrap_failed "$class"
+done
+rm -f "$ERRLOG"
 # The baked db is re-signed at bake time, so it differs from the published one
 # but looks newer; left in place, the first `pacman -Sy` keeps it and fetches the
 # published signature (a bad signature). Let the first sync fetch both.

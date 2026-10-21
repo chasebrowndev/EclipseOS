@@ -12,6 +12,9 @@ pub enum Error {
     Refused(&'static str),
     /// A filesystem or process operation failed; the context is a fixed string.
     Io(&'static str),
+    /// A classified failure whose fixed text is already the user-facing
+    /// sentence (what went wrong and what to do next).
+    Failed(&'static str),
     /// A fixed-argv command exited non-zero or could not be spawned.
     Command { tool: &'static str, code: Option<i32> },
 }
@@ -22,6 +25,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Refused(why) => write!(f, "refused: {why}"),
+            Error::Failed(msg) => f.write_str(msg),
             Error::Io(ctx) => write!(f, "i/o failure: {ctx}"),
             Error::Command { tool, code: Some(c) } => write!(f, "command failed: {tool} (exit {c})"),
             Error::Command { tool, code: None } => write!(f, "command failed: {tool}"),
