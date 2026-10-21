@@ -174,6 +174,26 @@ output. Beyond that:
 
 ---
 
+## RGB lighting
+
+Owner request (2026-10-21): an RGB management app or system, eventually as an
+add-on (ADR 0066 shape: manifest plus off-by-default hooks, no plugin API).
+The first real machine, an ASUS PRIME B550 desktop, has an AURA USB LED
+controller driving ARGB fans, plus a HyperX keyboard, Razer mouse and headset,
+and its lights default to bright rainbow. Today the only control is the
+`openrgb` CLI and a hand-written user unit that applies an "off" profile at
+login.
+
+- **Backend:** OpenRGB's SDK server (it already supports AURA, HyperX, Razer and
+  most boards), not a reimplementation of vendor protocols.
+- **Surface:** a Settings pane, or a center tile: per-device on/off,
+  brightness, colour and the static/breathing modes, plus "all off".
+- **System integration:** lights off with DPMS/screensaver, back on at wake;
+  optionally follow the accent colour (`ec_ui::tokens`, see "Everything
+  configurable").
+- **Permissions:** the udev rules for hidraw/i2c that `openrgb` ships; nothing
+  privileged in the session.
+
 ## Known bugs that are really missing features
 
 See `docs/KNOWNBUGS.md` for defects.
