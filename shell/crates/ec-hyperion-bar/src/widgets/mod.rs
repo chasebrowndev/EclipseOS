@@ -390,6 +390,7 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
     if presence <= 0.0 {
         return None;
     }
+    let radius = app.bar.widget_rounding as f32;
     let extent = anim.extent.value().max(0.0);
     let core_run = input.core_run();
     let reveal_run = input.reveal_run();
@@ -419,13 +420,14 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
         return Some(Cell {
             presence,
             closed: 0.0,
-            element: parts::glass_cell_faded(
+            element: parts::glass_cell_rounded(
                 body,
                 core_run,
                 visible,
                 false,
                 ClipEdge::Right,
                 frame.ground_alpha(),
+                radius,
             ),
         });
     }
@@ -450,6 +452,7 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
         closed,
         slide: bar::GRIP_HOVER_SLIDE * hover,
         overlay,
+        radius,
     };
     // Grips appear on hover only: at rest the bar is content on clear glass.
     // A widget compressed to its grip keeps it in proportion to how shut it

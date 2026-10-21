@@ -31,7 +31,7 @@ use ec_ui::widget::{
     arg_chip, art_thumb, badge, bar_cell_frame, bar_sheet, battery_gauge, big_value, chip, config_error,
     drag_bar, drag_ghost, draggable, drop_well, drop_zone, edge_note, edge_quad, elide, glide_track,
     hairline, inset, key_hints, list_row, mark, micro_label, mini_meter, outline, panel, pill, pin, placed,
-    ring, track_label, viz_bars, widget_shell, Grip, NumericSlider, Toggle, Well,
+    ring, track_label, viz_bars, widget_shell_rounded, Grip, NumericSlider, Toggle, Well,
 };
 
 use crate::app::{App, Message};
@@ -82,6 +82,17 @@ const FOLDING: [&str; 6] = [
     "bar.fold-curve",
 ];
 
+/// The corner radius every widget on the bar wears; 17 is the full capsule.
+const WIDGET_ROUNDING: &str = "bar.widgets.rounding";
+
+/// The widgets' live corner radius, for the previews: the row's value as it
+/// is edited, the capsule when the compositor does not report one.
+fn widget_radius(app: &App) -> f32 {
+    app.key(WIDGET_ROUNDING)
+        .and_then(|k| k.value.as_u64())
+        .map_or(bar::RADIUS_WIDGET, |r| r as f32)
+}
+
 /// The keys each built-in's sheet shows, in order.
 fn widget_keys(id: &str) -> &'static [&'static str] {
     match id {
@@ -111,6 +122,7 @@ fn claimed(path: &str) -> bool {
     path.starts_with("bar.tray.")
         || path.starts_with("bar.motion.")
         || path == ORDER
+        || path == WIDGET_ROUNDING
         || path == IMPORTANT
         || path == crate::pinned::PATH
         || APPEARANCE.contains(&path)
@@ -124,6 +136,7 @@ fn label(key: &Key) -> std::borrow::Cow<'_, str> {
         "components.bar" => "Show the bar",
         "bar.position" => "Position",
         "bar.rounding" => "Corner radius",
+        WIDGET_ROUNDING => "Corner radius",
         "bar.popup-anchor" => "Popups open",
         "bar.fold-when-inactive" => "Fold when inactive",
         "bar.fold-when-idle" => "Fold when idle",
@@ -193,6 +206,7 @@ pub fn stand_in(rows: &mut Vec<Key>) {
         l("bar.tray.pinned", Value::Null),
         l("bar.tray.hidden", json!([])),
         i("bar.rounding", 20, 0, 64),
+        i(WIDGET_ROUNDING, 17, 0, 17),
         b("bar.clock.hour-12", true),
         b("bar.clock.date-mdy", true),
         e("bar.popup-anchor", "cell", &["cell", "pointer"]),
@@ -1499,6 +1513,9 @@ fn widgets(app: &App) -> Vec<Element<'_, Message, Theme>> {
         ));
     }
     out.push(hero(app));
+    if let Some(r) = key_row(app, WIDGET_ROUNDING) {
+        out.push(panel(app.glass_radius, r).into());
+    }
     if let Some(s) = sheet(app) {
         out.push(s);
     }
@@ -1771,15 +1788,16 @@ fn picture(app: &App) -> Element<'_, Message, Theme> {
                 bar::WIDGET_H,
                 bar::HAIRLINE,
                 color::BORDER_STRONG,
-                bar::RADIUS_CELL,
+                widget_radius(app),
             )
         } else if c.cell.grip() {
-            widget_shell(
+            widget_shell_rounded(
                 drag_bar::<Message>().state(Grip::Rest),
                 core_of(app, &c.id),
                 None,
                 drawn_span(c),
                 c.cell.frame(c.extent.value(), presence),
+                widget_radius(app),
             )
         } else {
             container(
@@ -1799,7 +1817,7 @@ fn picture(app: &App) -> Element<'_, Message, Theme> {
         layers.push(placed(
             x,
             draggable(body)
-                .ghost(drag_ghost(core_of(app, &c.id), bar::RADIUS_CELL))
+                .ghost(drag_ghost(core_of(app, &c.id), widget_radius(app)))
                 .lifted(lifted)
                 .on_move(move |p| bar_msg(Msg::Move(what.clone(), p)))
                 .on_release(|p| bar_msg(Msg::Release(p)))
@@ -1824,7 +1842,7 @@ fn picture(app: &App) -> Element<'_, Message, Theme> {
                     bar::WIDGET_H,
                     bar::HAIRLINE,
                     color::ACCENT,
-                    bar::RADIUS_CELL,
+                    widget_radius(app),
                 ),
             ));
         }
@@ -1890,7 +1908,7 @@ fn pickable<'a>(app: &'a App, id: String, name: &str) -> Element<'a, Message, Th
     let what = Payload::Pick(id.clone());
     let lifted = app.bar.drag.as_ref().filter(|d| d.what == what).map(|d| d.at);
     draggable(chip(None, name, false, bar_msg(Msg::Add(id.clone()))))
-        .ghost(drag_ghost(core_of(app, &id), bar::RADIUS_CELL))
+        .ghost(drag_ghost(core_of(app, &id), widget_radius(app)))
         .lifted(lifted)
         .on_move(move |p| bar_msg(Msg::Move(what.clone(), p)))
         .on_release(|p| bar_msg(Msg::Release(p)))

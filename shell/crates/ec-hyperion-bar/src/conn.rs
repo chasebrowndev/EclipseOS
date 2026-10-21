@@ -51,6 +51,9 @@ pub struct BarConfig {
     /// `launcher.style` (an older compositor's `bar.launcher-style`): what
     /// the eclipse button opens.
     pub launcher: LauncherStyle,
+    /// `bar.widgets.rounding`: the widgets' corner radius in px (17 is the
+    /// full capsule). Whole pixels so the config stays `Eq`.
+    pub widget_rounding: u32,
 }
 
 /// The `launcher.*` keys the start menu reads (COMP-13), at startup and on
@@ -146,6 +149,7 @@ impl Default for BarConfig {
             popup_anchor: ec_ui::tokens::popup::ANCHOR,
             eye: true,
             launcher: LauncherStyle::Centered,
+            widget_rounding: ec_ui::tokens::bar::RADIUS_WIDGET.round() as u32,
         }
     }
 }
@@ -454,6 +458,11 @@ impl Conn {
                 Some("bar.clock.date-mdy") => {
                     if let Some(b) = value.and_then(Value::as_bool) {
                         cfg.date_mdy = b;
+                    }
+                }
+                Some("bar.widgets.rounding") => {
+                    if let Some(r) = value.and_then(Value::as_u64) {
+                        cfg.widget_rounding = r.min(u64::from(u32::MAX)) as u32;
                     }
                 }
                 Some("bar.eye") => {
