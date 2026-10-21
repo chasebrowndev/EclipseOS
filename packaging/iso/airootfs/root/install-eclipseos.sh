@@ -271,10 +271,14 @@ say "configuring the installed system"
 echo "$HOSTNAME" >/mnt/etc/hostname
 # Asked, not assumed. A wrong timezone is silent -- it looks like the clock is
 # just wrong -- and it is the sort of thing nobody goes back to fix.
-read -rp $'timezone [America/New_York]: ' TZ
-TZ="${TZ//[[:space:]]/}"
-TZ="${TZ:-America/New_York}"
-[[ -f /usr/share/zoneinfo/$TZ ]] || die "$TZ is not a timezone. See: timedatectl list-timezones"
+# A typo asks again: dying here would throw away a finished pacstrap.
+while :; do
+  read -rp $'timezone [America/New_York]: ' TZ
+  TZ="${TZ//[[:space:]]/}"
+  TZ="${TZ:-America/New_York}"
+  [[ $TZ != *..* && -f /usr/share/zoneinfo/$TZ ]] && break
+  say "$TZ is not a timezone; use Region/City, e.g. America/Chicago, Europe/London"
+done
 ln -sf "/usr/share/zoneinfo/$TZ" /mnt/etc/localtime
 
 # The live medium's wifi lives in iwd; the installed system runs NetworkManager
@@ -416,22 +420,20 @@ arch-chroot /mnt passwd "$USERNAME"
 
 # --- remote access --------------------------------------------------------------
 # Opt in, default no. openssh is in the package set; sshd stays off unless asked
-# for, and then takes keys only. A machine with no working screen can otherwise
-# only be debugged from a photograph of it.
-read -rp $'\nenable ssh for remote debugging? [y/N] ' SSH
+# for. This runs on a tty, where nothing can be pasted, so it does not ask for a
+# key: the user's password works from the LAN and the tailnet (private,
+# link-local and CGNAT ranges), keys work from anywhere, root never logs in.
+read -rp $'\nenable ssh (password login from your LAN/tailnet)? [y/N] ' SSH
 if [[ $SSH == [yY]* ]]; then
-  read -rp "paste one public key for $USERNAME (ssh-ed25519 AAAA...): " SSHKEY
-  [[ $SSHKEY == ssh-* || $SSHKEY == ecdsa-* || $SSHKEY == sk-* ]] || die "that does not look like a public key"
-  install -d -m0700 "/mnt/home/$USERNAME/.ssh"
-  printf '%s\n' "$SSHKEY" >"/mnt/home/$USERNAME/.ssh/authorized_keys"
-  chmod 0600 "/mnt/home/$USERNAME/.ssh/authorized_keys"
-  arch-chroot /mnt chown -R "$USERNAME:" "/home/$USERNAME/.ssh"
   install -Dm0644 /dev/stdin /mnt/etc/ssh/sshd_config.d/10-eclipseos.conf <<'SSHD'
+PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
-PermitRootLogin no
+Match Address 127.0.0.0/8,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,169.254.0.0/16,fc00::/7,fe80::/10
+    PasswordAuthentication yes
 SSHD
   arch-chroot /mnt systemctl enable sshd
+  say "ssh enabled: ssh $USERNAME@$HOSTNAME (or its LAN/tailnet address)"
 fi
 
 umount -R /mnt
