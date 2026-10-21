@@ -193,6 +193,11 @@ fi
 
 # D-01 §2: a second kernel to fall back to (not on the live medium itself).
 PKGS+=(linux-lts)
+# The bar is an add-on package (ec-hyperion-bar is the `components.bar`
+# default), so the medium's list does not carry it; without it the first login
+# is the bare base-colour wallpaper and looks like a black screen. Same set as
+# ec-setup's Standard profile.
+PKGS+=(eclipseos-hyperion)
 
 # --- pacstrap, with retries --------------------------------------------------
 # Same classes and wording as the graphical installer (ec-setup-helper stages.rs).
