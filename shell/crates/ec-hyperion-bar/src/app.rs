@@ -42,6 +42,9 @@ pub const LAUNCHER: &str = "ec-launcher";
 /// ends the wait at once.
 const POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// One turn of a drawer's spinner.
+const SPIN_PERIOD: std::time::Duration = std::time::Duration::from_millis(900);
+
 /// How long the event thread waits out a full channel before offering the
 /// same message again. A paint, roughly.
 const BACKPRESSURE: std::time::Duration = std::time::Duration::from_millis(8);
@@ -90,9 +93,11 @@ pub enum Drawer {
 pub enum Kind {
     /// A window's right-click menu.
     Menu { handle: u64, items: Vec<Item> },
-    /// A tray drawer, and the height its surface was created at. The view
-    /// draws from live data; when that data would need a different height the
-    /// drawer is reopened at the new one rather than clipped (see [`reflow`]).
+    /// The tray overflow drawer, and the height its surface was created at.
+    /// The view draws from live data; when that data would need a different
+    /// height the popup is reopened at the new one rather than clipped (see
+    /// [`reflow`]). The wifi and bluetooth drawers are not popups: they grow
+    /// the bar's own surface (see [`crate::drawer`]).
     Drawer { which: Drawer, height: u32 },
     /// A StatusNotifierItem's own menu, fetched once when it opened.
     TrayMenu {
@@ -359,6 +364,8 @@ pub struct App {
     /// `launcher.menu.*` and `launcher.search.*`: the start menu's rows and
     /// what it indexes. Read at startup and on every `config` event.
     pub launcher_menu: crate::conn::MenuConfig,
+    /// When the app started: the spinner's phase is read off it.
+    pub epoch: Instant,
 }
 
 /// One output's bar: everything that depends on *where* it is drawn.
@@ -399,6 +406,8 @@ pub struct Bar {
     pub motion: crate::motion::Bar,
     /// The start menu, with `bar.launcher-style "menu"`.
     pub menu: crate::menu::Menu,
+    /// The wifi or bluetooth drawer, rolled out of the pill under its cell.
+    pub drawer: crate::drawer::Drawer,
 }
 
 impl Bar {
@@ -418,6 +427,7 @@ impl Bar {
             layout: layout::Layout::default(),
             motion: m,
             menu: crate::menu::Menu::new(motion),
+            drawer: crate::drawer::Drawer::new(motion),
         }
     }
 }
@@ -680,6 +690,20 @@ impl Default for App {
 }
 
 impl App {
+    /// The spinner's turn, in revolutions: one every [`SPIN_PERIOD`], so every
+    /// spinner on screen is at the same angle. The frame tick runs while
+    /// something spins (see [`App::spinning`]).
+    pub fn spin_phase(&self) -> f32 {
+        (self.epoch.elapsed().as_secs_f32() / SPIN_PERIOD.as_secs_f32()).fract()
+    }
+
+    /// Something in an open drawer is waiting on the radio: a wifi scan, or a
+    /// join. The frame clock stays alive for it.
+    pub fn spinning(&self) -> bool {
+        (self.radios.wifi_scanning || self.radios.connecting.is_some())
+            && self.bars.values().any(|b| b.drawer.showing())
+    }
+
     pub fn new() -> Self {
         let mut conn = Conn::new();
         let snapshot = conn.snapshot();
@@ -737,6 +761,7 @@ impl App {
             fixture: None,
             show_key_hints: true,
             launcher_menu,
+            epoch: Instant::now(),
         };
         // No bar exists yet, so there is nothing to resize: the task is empty.
         let _ = set_key_hints(&mut app, hints);
@@ -1306,14 +1331,23 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                 let _ = step(app, Message::Pointer(id, point), at);
             }
             let now = Instant::now();
-            return each_bar(app, |_, bar| {
+            return each_bar(app, |app, bar| {
                 // The search cell and the rows are the menu's own cells.
                 let in_menu = bar.id == id && bar.cursor.x < bar::PANEL_W;
-                if bar.menu.open && !in_menu {
+                let start = if bar.menu.open && !in_menu {
                     close_start(bar, now)
                 } else {
                     Task::none()
-                }
+                };
+                // The drawer's own rows, and the cell that opened it (whose
+                // click is the toggle), are not outside.
+                let keep = bar.id == id && (on_drawer_panel(app, bar) || on_drawer_cell(app, bar));
+                let drawer = if bar.drawer.open && !keep {
+                    close_drawer(bar, now)
+                } else {
+                    Task::none()
+                };
+                Task::batch([start, drawer])
             });
         }
         Message::BarPress(id, point) => {
@@ -1335,6 +1369,14 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                 .get(&id)
                 .is_some_and(|b| b.menu.open && b.cursor.x < bar::PANEL_W);
             if in_menu {
+                return dismiss_popup(app);
+            }
+            // Bare glass inside an open drawer's panel is still the drawer.
+            if app
+                .bars
+                .get(&id)
+                .is_some_and(|b| b.drawer.open && on_drawer_panel(app, b))
+            {
                 return dismiss_popup(app);
             }
             return dismiss(app);
@@ -1461,11 +1503,17 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         Message::Unfocused(id) => {
             let now = Instant::now();
             return with_bar(app, id, |_, bar| {
-                if bar.menu.open {
+                let start = if bar.menu.open {
                     close_start(bar, now)
                 } else {
                     Task::none()
-                }
+                };
+                let drawer = if bar.drawer.open {
+                    close_drawer(bar, now)
+                } else {
+                    Task::none()
+                };
+                Task::batch([start, drawer])
             })
             .unwrap_or_else(Task::none);
         }
@@ -1578,6 +1626,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                     // Boxes for the old edge or the old air: the next open
                     // sends fresh ones.
                     bar.menu.region = None;
+                    bar.drawer.region = None;
                     let eye = match bar.eye_surface.take() {
                         Some(id) => Task::done(Message::RemoveWindow(id)),
                         None => Task::none(),
@@ -1594,6 +1643,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                     bar.motion.set_motion(motion);
                     bar.motion.set_chip_anims(add, remove);
                     bar.menu.reveal.set_motion(motion);
+                    bar.drawer.reveal.set_motion(motion);
                 }
                 crate::services::configure(&app.widget_cfg);
             }
@@ -1612,7 +1662,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         // springs back until the bus answers reads as broken — and are set
         // here and corrected by the next reading if the radio disagrees.
         Message::WifiEnable(on) => {
-            app.radios.wifi_enabled = on;
+            app.radios.set_wifi_enabled(on);
             crate::radio::actions::set_wifi_enabled(on);
             return reflow(app);
         }
@@ -1624,6 +1674,10 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                 let dismiss = dismiss(app);
                 spawn_once(SECRET_PROMPT, &["wifi", &ssid]);
                 return dismiss;
+            }
+            // Connecting from the click, until the feed confirms or fails.
+            if crate::radio::actions::available() {
+                app.radios.begin_join(&ssid);
             }
             crate::radio::actions::connect(&ssid);
             return Task::none();
@@ -1682,6 +1736,9 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             crate::radio::actions::tray_menu_click(&id, entry);
             return dismiss;
         }
+        // A fixture's drawers are the thing being screenshotted; the live
+        // service's lists must not replace them.
+        Message::Radio(_) if app.fixture.is_some() => return Task::none(),
         Message::Radio(feed) => return radio(app, feed),
         // Shared state, so one action however many bars draw the widget.
         Message::Widget(feed) => {
@@ -1718,6 +1775,16 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                     sized.push(bar.id);
                 }
             }
+            // The drawers: the same rule, with the sheet's own height.
+            let mut bars = std::mem::take(&mut app.bars);
+            for bar in bars.values_mut() {
+                let before = drawer_extent(app, bar);
+                bar.drawer.reveal.tick(now);
+                if drawer_extent(app, bar) != before && !sized.contains(&bar.id) {
+                    sized.push(bar.id);
+                }
+            }
+            app.bars = bars;
             #[cfg(debug_assertions)]
             crate::preview::frame(app, now);
             let tasks: Vec<_> = sized
@@ -1728,6 +1795,20 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             return Task::batch(tasks);
         }
         Message::Script(n) => {
+            // `open-wifi` / `open-bt` roll the drawer out at step 1 and back
+            // at step 2, for frame captures of the reveal.
+            #[cfg(debug_assertions)]
+            {
+                let which = match std::env::var("HYPERION_PREVIEW_SCRIPT").as_deref() {
+                    Ok("open-wifi") => Some((Drawer::Network, crate::drawer::DrawerKind::Wifi)),
+                    Ok("open-bt") => Some((Drawer::Bluetooth, crate::drawer::DrawerKind::Bluetooth)),
+                    _ => None,
+                };
+                if let Some((drawer, kind)) = which {
+                    let ids: Vec<Id> = app.bars.keys().copied().collect();
+                    return Task::batch(ids.into_iter().map(|id| toggle_drawer(app, id, drawer, kind)));
+                }
+            }
             #[cfg(debug_assertions)]
             crate::preview::step(app, n);
             #[cfg(not(debug_assertions))]
@@ -1839,7 +1920,10 @@ fn push_size(app: &App, bar: &Bar) -> Task<Message> {
     let g = bar.fold.geometry(app.edge);
     Task::done(Message::SizeChange {
         id: bar.id,
-        size: (0, g.height + bar.menu.extent(app.show_key_hints)),
+        size: (
+            0,
+            g.height + bar.menu.extent(app.show_key_hints) + drawer_extent(app, bar),
+        ),
     })
 }
 
@@ -1897,15 +1981,40 @@ pub const CENTERED: &str = "--centered";
 /// A bar whose menu has never been out sends nothing and keeps the plain
 /// whole-surface shape.
 fn sync_region(app: &App, bar: &mut Bar, h: f32) -> Task<Message> {
-    if !bar.menu.open && bar.menu.region.is_none() {
-        return Task::none();
-    }
+    let top = app.edge == BarPosition::Top;
     let h = h.round().max(0.0) as u32;
-    let rects = crate::menu::region(app.edge == BarPosition::Top, app.bar_radius, h);
-    if bar.menu.region.as_ref() == Some(&rects) {
+    // A drawer owns the region while it is out, and until the start menu
+    // takes it over: the last send was its, and a bottom bar's pill moves.
+    let drawer = bar.drawer.open || (!bar.menu.open && bar.drawer.region.is_some());
+    let rects = if drawer {
+        if bar.drawer.region.is_none() && !bar.drawer.open {
+            return Task::none();
+        }
+        let left = bar.drawer.anchor_x().round() as i32;
+        let w = bar.drawer.width().round() as i32;
+        crate::drawer::region(top, left, w, h)
+    } else {
+        if !bar.menu.open && bar.menu.region.is_none() {
+            return Task::none();
+        }
+        crate::menu::region(top, app.bar_radius, h)
+    };
+    let sent = if drawer {
+        &bar.drawer.region
+    } else {
+        &bar.menu.region
+    };
+    if sent.as_ref() == Some(&rects) {
         return Task::none();
     }
-    bar.menu.region = Some(rects.clone());
+    // One region on the surface: whichever sent last owns the dedupe.
+    if drawer {
+        bar.drawer.region = Some(rects.clone());
+        bar.menu.region = None;
+    } else {
+        bar.menu.region = Some(rects.clone());
+        bar.drawer.region = None;
+    }
     let callback = iced_layershell::actions::ActionCallback::new(move |region| {
         // The whole plane first, not just the surface: a box from an
         // earlier, taller send must not survive into this one.
@@ -1952,6 +2061,121 @@ fn toggle_start(app: &mut App, id: Id) -> Task<Message> {
                 keyboard_interactivity: iced_layershell::reexport::KeyboardInteractivity::OnDemand,
             }),
             iced::widget::operation::focus(crate::menu::INPUT_ID),
+            push_size(app, bar),
+        ])
+    })
+    .unwrap_or_else(Task::none);
+    Task::batch([closed, open])
+}
+
+/// The drawer a cell's `Message::Open` names, if it is one of the reveal
+/// drawers. The tray overflow is a popup.
+fn drawer_kind(drawer: Drawer) -> Option<crate::drawer::DrawerKind> {
+    match drawer {
+        Drawer::Network => Some(crate::drawer::DrawerKind::Wifi),
+        Drawer::Bluetooth => Some(crate::drawer::DrawerKind::Bluetooth),
+        Drawer::Overflow => None,
+    }
+}
+
+/// The height the sheet of `kind` needs right now. The kinds with no sheet
+/// yet (audio, the calendar) need none.
+fn drawer_full(app: &App, kind: crate::drawer::DrawerKind) -> u32 {
+    use crate::drawer::DrawerKind;
+    match kind {
+        DrawerKind::Wifi => crate::view::drawer_height(app, Drawer::Network),
+        DrawerKind::Bluetooth => crate::view::drawer_height(app, Drawer::Bluetooth),
+        DrawerKind::Audio | DrawerKind::Calendar => 0,
+    }
+}
+
+/// How much of the drawer's panel the bar's surface holds, in pixels.
+fn drawer_extent(app: &App, bar: &Bar) -> u32 {
+    match bar.drawer.which() {
+        Some(kind) if bar.drawer.showing() => bar.drawer.extent(drawer_full(app, kind)),
+        _ => 0,
+    }
+}
+
+/// The pointer is over the open drawer's panel: below the pill on a top bar,
+/// above it on a bottom one.
+fn on_drawer_panel(app: &App, bar: &Bar) -> bool {
+    if !bar.drawer.showing() {
+        return false;
+    }
+    let left = bar.drawer.anchor_x();
+    let x = bar.cursor.x;
+    if x < left || x >= left + bar.drawer.width() {
+        return false;
+    }
+    match app.edge {
+        BarPosition::Top => bar.cursor.y >= bar::PILL_H,
+        BarPosition::Bottom => {
+            let total = bar.fold.geometry(app.edge).height + drawer_extent(app, bar);
+            bar.cursor.y < total as f32 - bar::PILL_H
+        }
+    }
+}
+
+/// The pointer is over the cell the open drawer hangs from. Its click is the
+/// toggle, so the press that comes first must not close the drawer under it.
+fn on_drawer_cell(app: &App, bar: &Bar) -> bool {
+    let Some(drawer) = (match bar.drawer.which() {
+        Some(crate::drawer::DrawerKind::Wifi) => Some(Drawer::Network),
+        Some(crate::drawer::DrawerKind::Bluetooth) => Some(Drawer::Bluetooth),
+        _ => None,
+    }) else {
+        return false;
+    };
+    crate::view::drawer_span(app, bar, drawer)
+        .is_some_and(|(left, right)| bar.cursor.x >= left && bar.cursor.x < right)
+}
+
+/// Start the drawer's slide back into the pill and give the keyboard back.
+fn close_drawer(bar: &mut Bar, now: Instant) -> Task<Message> {
+    bar.drawer.close(now);
+    Task::done(Message::KeyboardInteractivityChange {
+        id: bar.id,
+        keyboard_interactivity: iced_layershell::reexport::KeyboardInteractivity::None,
+    })
+}
+
+/// A wifi or bluetooth cell's click: roll its drawer out of the pill, or
+/// close it if it is the one already out. Opening closes the start menu, a
+/// popup and the other drawer.
+fn toggle_drawer(app: &mut App, id: Id, drawer: Drawer, kind: crate::drawer::DrawerKind) -> Task<Message> {
+    let now = Instant::now();
+    if app.bars.get(&id).is_some_and(|b| b.drawer.is_open(kind)) {
+        return with_bar(app, id, |_, bar| close_drawer(bar, now)).unwrap_or_else(Task::none);
+    }
+    // Only a bar showing its pill has a cell to grow from.
+    if !app.bars.get(&id).is_some_and(|b| b.fold.pill()) {
+        return Task::none();
+    }
+    let closed = dismiss(app);
+    if kind == crate::drawer::DrawerKind::Wifi && crate::radio::actions::available() {
+        // The picker opening is the moment a fresh list matters.
+        app.radios.start_wifi_scan();
+        crate::radio::actions::scan();
+    }
+    let full = drawer_full(app, kind) as f32;
+    let open = with_bar(app, id, |app, bar| {
+        let center = crate::view::drawer_span(app, bar, drawer)
+            .map_or(bar.cursor.x, |(left, right)| (left + right) / 2.0);
+        let left = crate::drawer::panel_left(kind, center, bar.width);
+        // The surface's height as it stands, before the drawer starts
+        // growing it: the region goes out ahead of the resize.
+        let h = bar.fold.geometry(app.edge).height + drawer_extent(app, bar);
+        bar.drawer.open(kind, left, full, now);
+        let region = sync_region(app, bar, h as f32);
+        Task::batch([
+            region,
+            // On-demand, so Escape reaches the bar; a click on a window takes
+            // it back and the leave closes us (abyss `shell::focus`).
+            Task::done(Message::KeyboardInteractivityChange {
+                id,
+                keyboard_interactivity: iced_layershell::reexport::KeyboardInteractivity::OnDemand,
+            }),
             push_size(app, bar),
         ])
     })
@@ -2025,7 +2249,12 @@ fn fold_and_eye(app: &App, bar: &mut Bar) -> Task<Message> {
     } else {
         Task::none()
     };
-    Task::batch([fold, menu, sync_eye(app, bar)])
+    let drawer = if bar.drawer.open && bar.fold.target != FoldTarget::Shown {
+        close_drawer(bar, Instant::now())
+    } else {
+        Task::none()
+    };
+    Task::batch([fold, menu, drawer, sync_eye(app, bar)])
 }
 
 /// Where the eye's surface sits: the launcher button's own box, anchored to
@@ -2502,17 +2731,23 @@ fn launch_pin(_id: &str) {}
 /// still on its way. `RemoveWindow` is the macro's own name for closing a
 /// surface it created.
 ///
-/// The start menu goes with it: every path here is the human doing something
+/// The start menu and any drawer go with it: every path here is the human doing something
 /// else — Escape, a click on bare bar, a chip's action, a popup opening.
 fn dismiss(app: &mut App) -> Task<Message> {
     let popup = dismiss_popup(app);
     let now = Instant::now();
     let menus = each_bar(app, |_, bar| {
-        if bar.menu.open {
+        let start = if bar.menu.open {
             close_start(bar, now)
         } else {
             Task::none()
-        }
+        };
+        let drawer = if bar.drawer.open {
+            close_drawer(bar, now)
+        } else {
+            Task::none()
+        };
+        Task::batch([start, drawer])
     });
     Task::batch([popup, menus])
 }
@@ -2636,18 +2871,23 @@ fn open_menu(app: &mut App, at: Id, handle: u64) -> Task<Message> {
     Task::batch([closed, open])
 }
 
-/// Open a tray drawer, under the pointer, on exactly the machinery the context
-/// menu uses — one anchored popup, sized before layout, dismissed by the
-/// compositor when the pointer leaves it.
+/// A tray applet's click. The wifi and bluetooth cells roll their drawer out
+/// of the bar ([`toggle_drawer`]); the overflow arrow opens its popup, under
+/// the pointer, on exactly the machinery the context menu uses — one anchored
+/// popup, sized before layout, dismissed by the compositor when the pointer
+/// leaves it.
 ///
 /// Clicking the applet whose drawer is already open closes it and opens
 /// nothing: an applet button is a toggle, the way a tray is on every other
 /// desktop. The same applet on another bar is another button: its click
 /// moves the drawer there.
 ///
-/// `toggle` is false when the drawer is being *re*opened at a new height by
+/// `toggle` is false when the popup is being *re*opened at a new height by
 /// [`reflow`], which must never read as a second click.
 fn open_drawer(app: &mut App, at: Id, drawer: Drawer, toggle: bool) -> Task<Message> {
+    if let Some(kind) = drawer_kind(drawer) {
+        return toggle_drawer(app, at, drawer, kind);
+    }
     let same = matches!(
         app.popup.as_ref(),
         Some(Popup { owner, kind: Kind::Drawer { which, .. }, .. }) if *which == drawer && *owner == at
@@ -2659,9 +2899,6 @@ fn open_drawer(app: &mut App, at: Id, drawer: Drawer, toggle: bool) -> Task<Mess
     let Some(bar) = app.bars.get(&at) else {
         return closed;
     };
-    if drawer == Drawer::Network && toggle {
-        crate::radio::actions::scan();
-    }
     let height = crate::view::drawer_height(app, drawer);
     let size = (crate::view::DRAWER_W, height);
     // Gravity down-and-*left*: the tray lives at the right end of the bar, so
@@ -2681,27 +2918,50 @@ fn open_drawer(app: &mut App, at: Id, drawer: Drawer, toggle: bool) -> Task<Mess
     Task::batch([closed, open])
 }
 
-/// Keep an open drawer's surface the height its content now needs.
+/// Keep what is open the height its content now needs.
 ///
-/// A popup's size is fixed when it is created, so a scan that finds three more
-/// networks cannot grow the sheet in place. The drawer is closed and reopened
-/// at the new height instead, on the same bar — one frame of churn, against a
-/// sheet that would otherwise clip its own link row or hang empty glass
-/// under it.
+/// A reveal drawer moves its extent to the new height ([`resize_drawers`]):
+/// the same animation, no close and reopen. The overflow popup's size is
+/// fixed when it is created, so it is closed and reopened at the new height on
+/// the same bar — one frame of churn, against a sheet that would otherwise
+/// clip its own last row or hang empty glass under it.
 fn reflow(app: &mut App) -> Task<Message> {
+    let sized = resize_drawers(app);
     let Some(Popup {
         owner,
         kind: Kind::Drawer { which, height },
         ..
     }) = app.popup.as_ref()
     else {
-        return Task::none();
+        return sized;
     };
     let (owner, which) = (*owner, *which);
     if crate::view::drawer_height(app, which) == *height {
-        return Task::none();
+        return sized;
     }
-    open_drawer(app, owner, which, false)
+    Task::batch([sized, open_drawer(app, owner, which, false)])
+}
+
+/// Retarget every open reveal drawer to the height its sheet needs now.
+fn resize_drawers(app: &mut App) -> Task<Message> {
+    let now = Instant::now();
+    let mut sized = Vec::new();
+    let mut bars = std::mem::take(&mut app.bars);
+    for bar in bars.values_mut() {
+        if let Some(kind) = bar.drawer.which().filter(|_| bar.drawer.open) {
+            let full = drawer_full(app, kind) as f32;
+            if bar.drawer.retarget_height(full, now) {
+                sized.push(bar.id);
+            }
+        }
+    }
+    app.bars = bars;
+    Task::batch(
+        sized
+            .into_iter()
+            .filter_map(|id| app.bars.get(&id))
+            .map(|bar| push_size(app, bar)),
+    )
 }
 
 /// Ask for a tray item's own menu. It opens in [`radio`], when the entries
@@ -2741,8 +3001,10 @@ fn show_tray_menu(app: &mut App, at: Id, id: String, entries: Vec<crate::radio::
 /// Fold one service report into the model.
 fn radio(app: &mut App, feed: crate::radio::Feed) -> Task<Message> {
     use crate::radio::Feed;
+    // The optimistic state (connecting, scanning) settles first.
+    app.radios.note(&feed);
     match feed {
-        Feed::WifiEnabled(on) => app.radios.wifi_enabled = on,
+        Feed::WifiEnabled(_) | Feed::Joined(_) | Feed::JoinFailed { .. } => {}
         Feed::Networks(networks) => app.radios.networks = networks,
         Feed::Devices(devices) => app.radios.devices = devices,
         Feed::Scanning(on) => app.radios.scanning = on,
@@ -2810,7 +3072,8 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     if app
         .bars
         .values()
-        .any(|b| b.motion.animating() || b.menu.reveal.animating())
+        .any(|b| b.motion.animating() || b.menu.reveal.animating() || b.drawer.reveal.animating())
+        || app.spinning()
         || fixture_moves(app)
     {
         subs.push(frames());
@@ -2934,7 +3197,12 @@ fn compositor() -> Subscription<Message> {
                 let status = ec_services::status::spawn().ok();
                 // Wifi, bluetooth and the tray: the services behind the
                 // drawers' actions, whose answers come back here.
-                let feeds = crate::radio::take_feeds();
+                // They report from threads of their own, the moment they
+                // have something (see `Feeds::pump`), not at the next poll.
+                if let Some(feeds) = crate::radio::take_feeds() {
+                    let out = sender.clone();
+                    feeds.pump(move |feed| send(&mut out.clone(), Message::Radio(feed)));
+                }
                 let mut minute = String::new();
                 loop {
                     if client.is_none() {
@@ -3010,13 +3278,6 @@ fn compositor() -> Subscription<Message> {
                     if let Some(status) = status.as_ref() {
                         while let Some(update) = status.try_recv() {
                             if !send(&mut sender, Message::Status(update)) {
-                                return;
-                            }
-                        }
-                    }
-                    if let Some(feeds) = feeds.as_ref() {
-                        for feed in feeds.drain() {
-                            if !send(&mut sender, Message::Radio(feed)) {
                                 return;
                             }
                         }
@@ -3520,6 +3781,49 @@ pub(crate) mod tests {
         assert_eq!(a.popup.as_ref().map(|p| p.owner), Some(two), "moved");
         let _ = open_drawer(&mut a, two, Drawer::Overflow, true);
         assert!(a.popup.is_none(), "toggled shut");
+    }
+
+    /// The wifi cell rolls its drawer out of the bar; the same cell closes it,
+    /// the other cell takes the panel over, and the start menu and the drawer
+    /// are never out together.
+    #[test]
+    fn a_radio_drawer_toggles_and_excludes_the_start_menu() {
+        use crate::drawer::DrawerKind;
+        let mut a = app();
+        let id = bar_on(&mut a, "DP-1", 1);
+        let _ = open_drawer(&mut a, id, Drawer::Network, true);
+        assert!(a.bars[&id].drawer.is_open(DrawerKind::Wifi));
+        assert!(a.popup.is_none(), "a reveal, not a popup");
+        let _ = open_drawer(&mut a, id, Drawer::Network, true);
+        assert!(!a.bars[&id].drawer.open, "the same cell toggles it shut");
+        let _ = open_drawer(&mut a, id, Drawer::Network, true);
+        let _ = open_drawer(&mut a, id, Drawer::Bluetooth, true);
+        assert!(
+            a.bars[&id].drawer.is_open(DrawerKind::Bluetooth),
+            "the other cell takes over"
+        );
+        // Opening the start menu closes the drawer; opening a drawer closes
+        // the menu.
+        let _ = dismiss(&mut a);
+        assert!(!a.bars[&id].drawer.open, "Escape closes it");
+        a.bars.get_mut(&id).unwrap().menu.open = true;
+        let _ = open_drawer(&mut a, id, Drawer::Network, true);
+        assert!(!a.bars[&id].menu.open);
+        assert!(a.bars[&id].drawer.open);
+    }
+
+    /// Content that grows or shrinks moves the open drawer's target; it does
+    /// not close it.
+    #[test]
+    fn a_radio_drawer_follows_its_content_without_closing() {
+        let mut a = app();
+        let id = bar_on(&mut a, "DP-1", 1);
+        let _ = open_drawer(&mut a, id, Drawer::Network, true);
+        let before = a.bars[&id].drawer.reveal.target();
+        a.radios.networks = crate::radio::Radios::preview().networks;
+        let _ = reflow(&mut a);
+        assert!(a.bars[&id].drawer.open);
+        assert!(a.bars[&id].drawer.reveal.target() > before);
     }
 
     fn live(names: &[&str]) -> Vec<(u64, String)> {

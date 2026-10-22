@@ -412,9 +412,32 @@ pub fn drawer_sheet_head<'a, Message: 'a>(heading: &str) -> Element<'a, Message,
         .into()
 }
 
-/// [`drawer_sheet`] with a head the caller builds — a [`drawer_switch_head`]
-/// rather than a bare label. The glass, padding and edge highlight are still
-/// decided once, here.
+/// A drawer's content with no ground of its own: head, then rows, padded.
+///
+/// A widget because a radio drawer now lives *inside* the bar's sheet (the
+/// bar surface grows and the panel reveals out of the pill, like the start
+/// menu), so the material under it is the bar's shaped sheet and a second
+/// ground here would paint the glass twice. What this owns is the rhythm the
+/// rows hang off, decided once.
+pub fn drawer_body<'a, Message: 'a>(
+    head: Element<'a, Message, Theme>,
+    rows: Vec<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    let mut col = Column::new().push(head);
+    for r in rows {
+        col = col.push(r);
+    }
+    container(col)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(drawer::PAD)
+        .into()
+}
+
+/// [`drawer_body`] on a ground of its own, for a drawer that is still a
+/// popup (the tray overflow). The ground is the context-menu surface and not
+/// the bar's translucent glass: a popup is not given the compositor's layer
+/// material, so a translucent tint on it is a tint on the desktop.
 pub fn drawer_frame<'a, Message: 'a>(
     radius: f32,
     head: Element<'a, Message, Theme>,
@@ -484,19 +507,25 @@ pub fn drawer_row<'a, Message: 'a>(
 ///
 /// A widget because the head is the drawer's one control and both radio
 /// drawers (wi-fi, bluetooth) must put it in the same place at the same
-/// height — [`drawer::HEAD_SWITCH_H`], which the popup's size arithmetic
-/// also reads. The toggle's lit track is the drawer's one yellow.
+/// height — [`drawer::HEAD_SWITCH_H`], which the sheet's size arithmetic
+/// also reads. The toggle's lit track is the drawer's one yellow. `busy` is
+/// a [`spinner`] phase, shown after the label while the radio is scanning:
+/// the list below stays live, so the head is where the work is admitted to.
 pub fn drawer_switch_head<'a, Message: 'a>(
     heading: &str,
+    busy: Option<f32>,
     toggle: impl Into<Element<'a, Message, Theme>>,
 ) -> Element<'a, Message, Theme> {
+    let mut r = row![micro_label(heading)]
+        .spacing(drawer::MARK_GAP)
+        .align_y(Alignment::Center);
+    if let Some(phase) = busy {
+        r = r.push(spinner(phase, color::TEXT_TERTIARY));
+    }
     container(
-        row![
-            micro_label(heading),
-            Space::new().width(Length::Fill),
-            toggle.into()
-        ]
-        .align_y(Alignment::Center),
+        r.push(Space::new().width(Length::Fill))
+            .push(toggle.into())
+            .align_y(Alignment::Center),
     )
     .width(Length::Fill)
     .height(Length::Fixed(drawer::HEAD_SWITCH_H))
@@ -505,13 +534,78 @@ pub fn drawer_switch_head<'a, Message: 'a>(
     .into()
 }
 
+/// A ring with an arc travelling round it: work in flight.
+///
+/// A widget because a scan and a join are the two things in a radio drawer
+/// that take time, and both must say so the same way. `phase` is in
+/// revolutions (any float; the fraction is the angle), so the caller owns
+/// the clock and the draw stays a pure function of it. Quiet on purpose: a
+/// ring in the ink ramp, never the accent, no glow.
+pub fn spinner<'a, Message: 'a>(phase: f32, tint: Color) -> Element<'a, Message, Theme> {
+    iced::widget::canvas(Spinner { phase, tint })
+        .width(Length::Fixed(drawer::SPIN))
+        .height(Length::Fixed(drawer::SPIN))
+        .into()
+}
+
+struct Spinner {
+    phase: f32,
+    tint: Color,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for Spinner {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{self, path::Arc, Path, Stroke};
+        use iced::Radians;
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let c = iced::Point::new(bounds.width / 2.0, bounds.height / 2.0);
+        let r = (bounds.width.min(bounds.height) - drawer::SPIN_W) / 2.0;
+        frame.stroke(
+            &Path::circle(c, r),
+            Stroke::default()
+                .with_color(Color {
+                    a: self.tint.a * drawer::SPIN_TRACK,
+                    ..self.tint
+                })
+                .with_width(drawer::SPIN_W),
+        );
+        let start = self.phase.fract() * std::f32::consts::TAU;
+        let arc = Path::new(|b| {
+            b.arc(Arc {
+                center: c,
+                radius: r,
+                start_angle: Radians(start),
+                end_angle: Radians(start + drawer::SPIN_SWEEP),
+            });
+        });
+        frame.stroke(
+            &arc,
+            Stroke::default()
+                .with_color(self.tint)
+                .with_width(drawer::SPIN_W)
+                .with_line_cap(canvas::LineCap::Round),
+        );
+        vec![frame.into_geometry()]
+    }
+}
+
 /// The hero row of a radio drawer: the one network or device the radio is
 /// on, two lines tall, with the verb that ends it at the right.
 ///
 /// A widget because it is the drawer's hero and must not share a silhouette
 /// with the rows under it: taller ([`drawer::CURRENT_H`]), a larger mark, a
-/// semibold name over a mono state line. Built from [`drawer_row`] it would
-/// read as the first item of the list, which is the exact failure the
+/// semibold name over a mono state line, on the focused-chip glass (a clearer
+/// white fill and a crisp rim — never a halo). Built from [`drawer_row`] it
+/// would read as the first item of the list, which is the exact failure the
 /// composition rules exist to stop.
 pub fn drawer_current<'a, Message: Clone + 'a>(
     mark: Element<'a, Message, Theme>,
@@ -556,16 +650,24 @@ pub fn drawer_current<'a, Message: Clone + 'a>(
                     .color(color::TEXT_SECONDARY),
             )
             .padding([space::ROW_Y / 2.0, drawer::ROW_X])
-            .style(drawer_lift)
+            .style(drawer_pill)
             .on_press(msg),
         );
     }
-    container(r)
-        .width(Length::Fill)
-        .height(Length::Fixed(drawer::CURRENT_H))
-        .align_y(Alignment::Center)
-        .padding([0.0, drawer::ROW_X])
-        .into()
+    // The lozenge is the slot inset, so the hero's ground never touches the
+    // rows above and below it.
+    container(
+        container(r)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(Alignment::Center)
+            .padding([0.0, drawer::ROW_X])
+            .style(drawer_hero_ground),
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(drawer::CURRENT_H))
+    .padding([drawer::ROW_INSET, 0.0])
+    .into()
 }
 
 /// One pickable row of a drawer: a mark, a name, an optional trailing mark,
@@ -605,13 +707,98 @@ pub fn drawer_choice<'a, Message: Clone + 'a>(
         .padding([0.0, drawer::ROW_X]);
     let b = button(face)
         .width(Length::Fill)
-        .height(Length::Fixed(drawer::ROW_H))
+        .height(Length::Fill)
         .padding(0)
         .style(drawer_lift);
-    match on_press {
+    slot(match on_press {
         Some(m) => b.on_press(m).into(),
         None => b.into(),
-    }
+    })
+}
+
+/// A row's slot: [`drawer::ROW_H`] tall, with the row's lozenge inset on the
+/// vertical so neighbours never touch. The sheet's arithmetic reads the slot.
+fn slot<'a, Message: 'a>(body: Element<'a, Message, Theme>) -> Element<'a, Message, Theme> {
+    container(body)
+        .width(Length::Fill)
+        .height(Length::Fixed(drawer::ROW_H))
+        .padding([drawer::ROW_INSET, 0.0])
+        .into()
+}
+
+/// A row for work in flight — "Connecting…": a mark, the name, and a
+/// [`spinner`] where a lock would be.
+///
+/// A widget rather than a [`drawer_choice`] with no press because a row that
+/// is merely inert looks disabled; this one is lit a step clearer than the
+/// list (it is the one thing the human just asked for) and says why it does
+/// not answer the pointer. `phase` is the spinner's, in revolutions.
+pub fn drawer_pending<'a, Message: 'a>(
+    mark: Element<'a, Message, Theme>,
+    label: &str,
+    note: &str,
+    phase: f32,
+) -> Element<'a, Message, Theme> {
+    slot(
+        container(
+            row![
+                container(mark)
+                    .width(Length::Fixed(drawer::MARK))
+                    .height(Length::Fixed(drawer::MARK))
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center),
+                text(label.to_string())
+                    .font(font::UI)
+                    .size(size::BODY_SMALL)
+                    .color(color::TEXT),
+                Space::new().width(Length::Fill),
+                text(note.to_string())
+                    .font(font::DATA)
+                    .size(size::MICRO)
+                    .color(color::TEXT_TERTIARY),
+                spinner(phase, color::TEXT),
+            ]
+            .spacing(drawer::MARK_GAP)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(Alignment::Center)
+        .padding([0.0, drawer::ROW_X])
+        .style(drawer_rest_ground)
+        .into(),
+    )
+}
+
+/// An inline failure under the list — "couldn't join", "wrong password".
+///
+/// A widget because the alternative was a toast: the human is looking at the
+/// row they clicked, and the reason belongs there. One [`drawer::ROW_H`]
+/// slot, the reason elided by the caller. Plain glass with danger ink: the
+/// colour is the text's, never a fill, a rim or a glow.
+pub fn drawer_error<'a, Message: 'a>(reason: &str) -> Element<'a, Message, Theme> {
+    slot(
+        container(
+            text(reason.to_string())
+                .font(font::DATA)
+                .size(size::MICRO)
+                .color(color::DANGER),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(Alignment::Center)
+        .padding([0.0, drawer::ROW_X])
+        .style(|_t: &Theme| container::Style {
+            background: Some(iced::Background::Color(color::CELL)),
+            border: iced::Border {
+                color: color::CELL_RIM,
+                width: space::HAIRLINE,
+                radius: drawer::RADIUS_ROW.into(),
+            },
+            ..container::Style::default()
+        })
+        .into(),
+    )
 }
 
 /// The drawer's way out to the full pane: a quiet label and an arrow, on a
@@ -638,13 +825,15 @@ pub fn drawer_link<'a, Message: Clone + 'a>(label: &str, on_press: Message) -> E
     .height(Length::Fill)
     .align_y(Alignment::Center)
     .padding([0.0, drawer::ROW_X]);
-    button(face)
-        .width(Length::Fill)
-        .height(Length::Fixed(drawer::ROW_H))
-        .padding(0)
-        .style(drawer_lift)
-        .on_press(on_press)
-        .into()
+    slot(
+        button(face)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(0)
+            .style(drawer_quiet)
+            .on_press(on_press)
+            .into(),
+    )
 }
 
 /// A drawer row that says why the list is empty — "off", "searching…".
@@ -666,18 +855,93 @@ pub fn drawer_note<'a, Message: 'a>(note: &str) -> Element<'a, Message, Theme> {
     .into()
 }
 
-/// A drawer row's ground: nothing at rest, a flat white lift under the
-/// pointer. Never the accent — a hover is not a state.
+/// A drawer row's ground at rest: the bar cell's own glass lozenge.
+///
+/// The cell tokens and not [`color::LIFT`]: they are STYLE.md's figures
+/// brought back to linear light, which is how iced blends, so a row reads as
+/// the same glass as the chips on the pill above it and not a grey slab.
+fn drawer_rest_ground(_t: &Theme) -> container::Style {
+    container::Style {
+        background: Some(iced::Background::Color(color::CELL)),
+        border: iced::Border {
+            color: color::CELL_RIM,
+            width: space::HAIRLINE,
+            radius: drawer::RADIUS_ROW.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// The hero's ground: the focused-chip glass — a step clearer fill and a
+/// crisp white rim, neutral. No accent and no glow.
+fn drawer_hero_ground(_t: &Theme) -> container::Style {
+    container::Style {
+        background: Some(iced::Background::Color(color::CELL_FOCUS)),
+        border: iced::Border {
+            color: color::CELL_FOCUS_RIM,
+            width: space::HAIRLINE,
+            radius: drawer::RADIUS_HERO.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// A pickable row: a glass lozenge at rest that lifts a step and takes a
+/// brighter hairline under the pointer. Never the accent — a hover is not a
+/// state.
 fn drawer_lift(_t: &Theme, status: button::Status) -> button::Style {
-    let background = match status {
-        button::Status::Hovered => color::LIFT,
-        button::Status::Pressed => color::LIFT_STRONG,
-        _ => Color::TRANSPARENT,
+    let (fill, rim) = match status {
+        button::Status::Hovered => (color::CELL_HOVER, color::CELL_RIM_HOVER),
+        button::Status::Pressed => (color::CELL_PRESS, color::CELL_RIM_HOVER),
+        _ => (color::CELL, color::CELL_RIM),
     };
+    glass_button(fill, rim, drawer::RADIUS_ROW)
+}
+
+/// A quiet row (the way out): no ground at rest, the same lozenge on hover.
+fn drawer_quiet(t: &Theme, status: button::Status) -> button::Style {
+    match status {
+        button::Status::Hovered | button::Status::Pressed => drawer_lift(t, status),
+        _ => glass_button(Color::TRANSPARENT, Color::TRANSPARENT, drawer::RADIUS_ROW),
+    }
+}
+
+/// A verb on the hero (Disconnect): a pill of glass on the hero's glass.
+fn drawer_pill(_t: &Theme, status: button::Status) -> button::Style {
+    let (fill, rim) = match status {
+        button::Status::Hovered => (color::CELL_FOCUS_HOVER, color::CELL_FOCUS_RIM_HOVER),
+        button::Status::Pressed => (color::CELL_FOCUS_PRESS, color::CELL_FOCUS_RIM_HOVER),
+        _ => (color::CELL, color::CELL_FOCUS_RIM),
+    };
+    glass_button(fill, rim, radius::PILL)
+}
+
+/// The rule between a drawer's groups: [`menu_separator`]'s height with a
+/// quieter line, inset to the rows' edge.
+///
+/// A widget because the sheet's arithmetic reads the height and the popup
+/// separator's [`color::BORDER`] is too bright on the bar's glass.
+pub fn drawer_rule<'a, Message: 'a>() -> Element<'a, Message, Theme> {
+    container(edge_quad(
+        Length::Fill,
+        Length::Fixed(space::HAIRLINE),
+        color::CELL_RIM_HOVER,
+    ))
+    .height(Length::Fixed(menu::SEP_H))
+    .align_y(iced::Alignment::Center)
+    .padding([0.0, drawer::ROW_X])
+    .into()
+}
+
+fn glass_button(fill: Color, rim: Color, corner: f32) -> button::Style {
     button::Style {
-        background: Some(iced::Background::Color(background)),
+        background: Some(iced::Background::Color(fill)),
         text_color: color::TEXT,
-        border: iced::border::rounded(drawer::RADIUS_ROW),
+        border: iced::Border {
+            color: rim,
+            width: space::HAIRLINE,
+            radius: corner.into(),
+        },
         ..button::Style::default()
     }
 }
@@ -2649,7 +2913,11 @@ pub enum SheetEdge {
 pub struct SheetShape {
     /// The pill's height; the panel is everything past it.
     pub pill_h: f32,
-    /// The panel's width, from the sheet's left edge.
+    /// The panel's left edge, from the sheet's left edge. `0` is the start
+    /// menu's panel flush with the pill's end; a drawer hangs under its cell
+    /// and so has a fillet on both sides.
+    pub panel_x: f32,
+    /// The panel's width.
     pub panel_w: f32,
     /// The glass radius, clamped per corner to what each box has room for.
     pub radius: f32,
@@ -2722,13 +2990,16 @@ pub fn sheet_outline(shape: SheetShape, w: f32, h: f32) -> iced::widget::canvas:
     use iced::Point;
     let SheetShape {
         pill_h,
+        panel_x,
         panel_w,
         radius,
         fillet,
         edge,
     } = shape;
     let pill_h = pill_h.min(h);
-    let panel_w = panel_w.min(w);
+    let panel_x = panel_x.clamp(0.0, (w - panel_w.min(w)).max(0.0));
+    let panel_w = panel_w.min(w - panel_x);
+    let panel_r = panel_x + panel_w;
     // Mirrored for a bottom bar: the pill sits on the bottom edge and the
     // panel grows up from it. `arc_to` is tangent-based, so the same corner
     // sequence traces either way up.
@@ -2755,25 +3026,50 @@ pub fn sheet_outline(shape: SheetShape, w: f32, h: f32) -> iced::widget::canvas:
         // The panel's far corners have only the drop below the pill to turn
         // in while it is still opening; the fillet takes what they leave.
         let rb = radius.min(panel_w / 2.0).min(drop).max(0.0);
-        let kf = fillet.min(drop - rb).min(w - panel_w - rp).max(0.0);
-        // The panel is the one box at the top-left corner, so its radius —
-        // clamped to its own size, as the mask clamps it — is the corner's.
-        let top_left = radius.min(panel_w / 2.0).min(h / 2.0).max(0.0);
-        b.move_to(at(top_left, 0.0));
-        b.line_to(at(w - rp, 0.0));
-        b.arc_to(at(w, 0.0), at(w, rp), rp);
-        b.line_to(at(w, pill_h - rp));
-        b.arc_to(at(w, pill_h), at(w - rp, pill_h), rp);
-        b.line_to(at(panel_w + kf, pill_h));
-        if kf > 0.0 {
-            b.quadratic_curve_to(at(panel_w, pill_h), at(panel_w, pill_h + kf));
+        let kf = fillet.min(drop - rb).min(w - panel_r - rp).max(0.0);
+        if panel_x <= 0.5 {
+            // The panel is the one box at the top-left corner, so its radius —
+            // clamped to its own size, as the mask clamps it — is the corner's.
+            let top_left = radius.min(panel_w / 2.0).min(h / 2.0).max(0.0);
+            b.move_to(at(top_left, 0.0));
+            b.line_to(at(w - rp, 0.0));
+            b.arc_to(at(w, 0.0), at(w, rp), rp);
+            b.line_to(at(w, pill_h - rp));
+            b.arc_to(at(w, pill_h), at(w - rp, pill_h), rp);
+            b.line_to(at(panel_w + kf, pill_h));
+            if kf > 0.0 {
+                b.quadratic_curve_to(at(panel_w, pill_h), at(panel_w, pill_h + kf));
+            }
+            b.line_to(at(panel_w, h - rb));
+            b.arc_to(at(panel_w, h), at(panel_w - rb, h), rb);
+            b.line_to(at(rb, h));
+            b.arc_to(at(0.0, h), at(0.0, h - rb), rb);
+            b.line_to(at(0.0, top_left));
+            b.arc_to(at(0.0, 0.0), at(top_left, 0.0), top_left);
+        } else {
+            let kl = fillet.min(drop - rb).min(panel_x - rp).max(0.0);
+            b.move_to(at(rp, 0.0));
+            b.line_to(at(w - rp, 0.0));
+            b.arc_to(at(w, 0.0), at(w, rp), rp);
+            b.line_to(at(w, pill_h - rp));
+            b.arc_to(at(w, pill_h), at(w - rp, pill_h), rp);
+            b.line_to(at(panel_r + kf, pill_h));
+            if kf > 0.0 {
+                b.quadratic_curve_to(at(panel_r, pill_h), at(panel_r, pill_h + kf));
+            }
+            b.line_to(at(panel_r, h - rb));
+            b.arc_to(at(panel_r, h), at(panel_r - rb, h), rb);
+            b.line_to(at(panel_x + rb, h));
+            b.arc_to(at(panel_x, h), at(panel_x, h - rb), rb);
+            b.line_to(at(panel_x, pill_h + kl));
+            if kl > 0.0 {
+                b.quadratic_curve_to(at(panel_x, pill_h), at(panel_x - kl, pill_h));
+            }
+            b.line_to(at(rp, pill_h));
+            b.arc_to(at(0.0, pill_h), at(0.0, pill_h - rp), rp);
+            b.line_to(at(0.0, rp));
+            b.arc_to(at(0.0, 0.0), at(rp, 0.0), rp);
         }
-        b.line_to(at(panel_w, h - rb));
-        b.arc_to(at(panel_w, h), at(panel_w - rb, h), rb);
-        b.line_to(at(rb, h));
-        b.arc_to(at(0.0, h), at(0.0, h - rb), rb);
-        b.line_to(at(0.0, top_left));
-        b.arc_to(at(0.0, 0.0), at(top_left, 0.0), top_left);
         b.close();
     })
 }
