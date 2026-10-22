@@ -86,6 +86,8 @@ pub enum Drawer {
     Bluetooth,
     /// The tray overflow, opened from the disclosure arrow.
     Overflow,
+    /// The audio picker, opened from the volume cell.
+    Audio,
 }
 
 /// What an open popup is.
@@ -239,6 +241,16 @@ pub enum Message {
     Widget(widgets::Feed),
     /// The playback streams, which the per-window mute reads.
     Streams(Vec<ec_services::audio::Stream>),
+    /// The audio service's sinks, and the default one's name.
+    Outputs(Vec<ec_services::audio::Device>, Option<String>),
+    /// Its sources (no monitors), and the default one's name.
+    Inputs(Vec<ec_services::audio::Device>, Option<String>),
+    /// An output row was picked: make it the default and move the streams.
+    AudioOutput(String),
+    AudioInput(String),
+    /// The input level slider, `1.0` = 100%.
+    InputVolume(f32),
+    InputMute(bool),
     /// A widget's grip, by widget key.
     Grip(String, GripEv),
     /// One frame of the bar's motion. Only sent while something moves.
@@ -353,6 +365,8 @@ pub struct App {
     pub widgets: widgets::State,
     /// The audio service's playback streams, for the per-window mute.
     pub streams: Vec<ec_services::audio::Stream>,
+    /// The audio picker's device lists.
+    pub audio: crate::audio::Devices,
     /// Debug previews only: when a widget fixture started. A fixture bar
     /// neither refetches nor starts services — the fixture stands in for
     /// both.
@@ -758,6 +772,7 @@ impl App {
             widget_cfg,
             widgets: widgets::State::default(),
             streams: Vec::new(),
+            audio: crate::audio::Devices::default(),
             fixture: None,
             show_key_hints: true,
             launcher_menu,
@@ -1753,6 +1768,56 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             app.streams = streams;
             return Task::none();
         }
+        // A fixture's devices are the thing being screenshotted.
+        Message::Outputs(..) | Message::Inputs(..) if app.fixture.is_some() => return Task::none(),
+        Message::Outputs(devices, default) => {
+            app.audio.outputs = devices;
+            app.audio.default_output = default;
+            return reflow(app);
+        }
+        Message::Inputs(devices, default) => {
+            app.audio.inputs = devices;
+            app.audio.default_input = default;
+            return reflow(app);
+        }
+        // Set here as well as asked for, like the wi-fi switch: the row
+        // moves now, and the next report corrects it.
+        Message::AudioOutput(name) => {
+            app.audio.pick_output(&name);
+            if app.fixture.is_none() {
+                if let Some(a) = crate::services::audio_actions() {
+                    a.set_default_output(&name);
+                }
+            }
+            return reflow(app);
+        }
+        Message::AudioInput(name) => {
+            app.audio.pick_input(&name);
+            if app.fixture.is_none() {
+                if let Some(a) = crate::services::audio_actions() {
+                    a.set_default_input(&name);
+                }
+            }
+            return reflow(app);
+        }
+        Message::InputVolume(v) => {
+            app.audio.set_input_volume(v);
+            if app.fixture.is_none() {
+                if let Some(a) = crate::services::audio_actions() {
+                    a.set_input_volume(v);
+                }
+            }
+            return Task::none();
+        }
+        Message::InputMute(m) => {
+            app.audio.set_input_muted(m);
+            if app.fixture.is_none() {
+                if let Some(a) = crate::services::audio_actions() {
+                    a.set_input_muted(m);
+                }
+            }
+            return Task::none();
+        }
         // A grip is a gesture on one bar: the pins and the drag are that
         // bar's own.
         Message::Grip(key, ev) => {
@@ -1802,6 +1867,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                 let which = match std::env::var("HYPERION_PREVIEW_SCRIPT").as_deref() {
                     Ok("open-wifi") => Some((Drawer::Network, crate::drawer::DrawerKind::Wifi)),
                     Ok("open-bt") => Some((Drawer::Bluetooth, crate::drawer::DrawerKind::Bluetooth)),
+                    Ok("open-audio") => Some((Drawer::Audio, crate::drawer::DrawerKind::Audio)),
                     _ => None,
                 };
                 if let Some((drawer, kind)) = which {
@@ -2074,18 +2140,20 @@ fn drawer_kind(drawer: Drawer) -> Option<crate::drawer::DrawerKind> {
     match drawer {
         Drawer::Network => Some(crate::drawer::DrawerKind::Wifi),
         Drawer::Bluetooth => Some(crate::drawer::DrawerKind::Bluetooth),
+        Drawer::Audio => Some(crate::drawer::DrawerKind::Audio),
         Drawer::Overflow => None,
     }
 }
 
-/// The height the sheet of `kind` needs right now. The kinds with no sheet
-/// yet (audio, the calendar) need none.
+/// The height the sheet of `kind` needs right now. The calendar has no sheet
+/// yet and needs none.
 fn drawer_full(app: &App, kind: crate::drawer::DrawerKind) -> u32 {
     use crate::drawer::DrawerKind;
     match kind {
         DrawerKind::Wifi => crate::view::drawer_height(app, Drawer::Network),
         DrawerKind::Bluetooth => crate::view::drawer_height(app, Drawer::Bluetooth),
-        DrawerKind::Audio | DrawerKind::Calendar => 0,
+        DrawerKind::Audio => crate::view::drawer_height(app, Drawer::Audio),
+        DrawerKind::Calendar => 0,
     }
 }
 
@@ -2118,7 +2186,7 @@ fn on_drawer_panel(app: &App, bar: &Bar) -> bool {
 }
 
 /// The cells a drawer hangs from.
-const DRAWER_CELLS: [Drawer; 2] = [Drawer::Network, Drawer::Bluetooth];
+const DRAWER_CELLS: [Drawer; 3] = [Drawer::Network, Drawer::Bluetooth, Drawer::Audio];
 
 /// The pointer is over a cell a drawer hangs from. Its click is the toggle or
 /// the switch, so the press that comes first must not close the open drawer:

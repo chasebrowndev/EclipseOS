@@ -35,8 +35,10 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use pulseaudio::protocol::{
-    ChannelVolume, Command as Pa, GetSinkInfo, Prop, Props, ProtocolError, ServerInfo, SetDeviceMuteParams,
-    SetDeviceVolumeParams, SetStreamMuteParams, SinkInfo, SinkInputInfoList, SubscriptionEventFacility,
+    port_info::{PortInfo, PortType},
+    ChannelVolume, Command as Pa, GetSinkInfo, GetSourceInfo, MoveStreamParams, Prop, Props, ProtocolError,
+    ServerInfo, SetDeviceMuteParams, SetDeviceVolumeParams, SetStreamMuteParams, SinkInfo, SinkInfoList,
+    SinkInputInfoList, SourceInfo, SourceInfoList, SourceOutputInfoList, SubscriptionEventFacility,
     SubscriptionMask, Volume,
 };
 
@@ -62,6 +64,41 @@ pub enum Update {
     Streams(Vec<Stream>),
     /// Monitor band levels, about 60 Hz while the tap is on.
     Levels(Bands),
+    /// Every sink, and the name of the default one.
+    Outputs {
+        devices: Vec<Device>,
+        default: Option<String>,
+    },
+    /// Every source except monitors, and the name of the default one.
+    Inputs {
+        devices: Vec<Device>,
+        default: Option<String>,
+    },
+}
+
+/// A sink or source, as the device picker lists it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Device {
+    /// The PulseAudio name, the id `set_default_*` takes.
+    pub name: String,
+    pub description: String,
+    /// Linear, `1.0` = 100%.
+    pub volume: f32,
+    pub muted: bool,
+    pub kind: DeviceKind,
+}
+
+/// What a device is, guessed from its active port, form factor and bus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceKind {
+    Speakers,
+    Headphones,
+    Headset,
+    Hdmi,
+    Usb,
+    Bluetooth,
+    Mic,
+    Other,
 }
 
 /// The default sink.
@@ -90,6 +127,10 @@ enum Command {
     SetVolume(f32),
     SetMuted(bool),
     SetAppMuted { pid: u32, muted: bool },
+    SetDefaultOutput(String),
+    SetDefaultInput(String),
+    SetInputVolume(f32),
+    SetInputMuted(bool),
     Tap(bool),
 }
 
@@ -141,6 +182,25 @@ impl Actions {
     /// (a browser plays from a content child, not the window's process).
     pub fn set_app_muted(&self, pid: u32, m: bool) {
         let _ = self.commands.send(Command::SetAppMuted { pid, muted: m });
+    }
+
+    /// Make sink `name` the default, and move every playing stream to it.
+    pub fn set_default_output(&self, name: &str) {
+        let _ = self.commands.send(Command::SetDefaultOutput(name.to_owned()));
+    }
+
+    /// Make source `name` the default, and move every recording stream to it.
+    pub fn set_default_input(&self, name: &str) {
+        let _ = self.commands.send(Command::SetDefaultInput(name.to_owned()));
+    }
+
+    /// Default-source volume, linear, `1.0` = 100%.
+    pub fn set_input_volume(&self, v: f32) {
+        let _ = self.commands.send(Command::SetInputVolume(v));
+    }
+
+    pub fn set_input_muted(&self, m: bool) {
+        let _ = self.commands.send(Command::SetInputMuted(m));
     }
 }
 
@@ -208,6 +268,12 @@ struct Current {
     monitor: Option<CString>,
 }
 
+/// The default source, as far as actions need it.
+struct CurrentSource {
+    index: u32,
+    channels: usize,
+}
+
 /// A connected server.
 struct Live {
     path: PathBuf,
@@ -229,6 +295,9 @@ struct Service {
     generation: u64,
     live: Option<Live>,
     sink: Option<Current>,
+    source: Option<CurrentSource>,
+    sent_outputs: Option<(Vec<Device>, Option<String>)>,
+    sent_inputs: Option<(Vec<Device>, Option<String>)>,
     sent_sink: Option<Option<Sink>>,
     sent_streams: Option<Vec<Stream>>,
     tap_wanted: bool,
@@ -275,6 +344,9 @@ impl Service {
             generation: 0,
             live: None,
             sink: None,
+            source: None,
+            sent_outputs: None,
+            sent_inputs: None,
             sent_sink: None,
             sent_streams: None,
             tap_wanted: false,
@@ -321,7 +393,10 @@ impl Service {
         // Subscribe before the first read, so no change slips between them.
         let mut events = wire::connect(&path, c"Eclipse events")?;
         events.ack(&Pa::Subscribe(
-            SubscriptionMask::SINK | SubscriptionMask::SINK_INPUT | SubscriptionMask::SERVER,
+            SubscriptionMask::SINK
+                | SubscriptionMask::SINK_INPUT
+                | SubscriptionMask::SOURCE
+                | SubscriptionMask::SERVER,
         ))?;
         events.stream().set_read_timeout(None)?;
         let shut = events.stream().try_clone()?;
@@ -351,7 +426,9 @@ impl Service {
             events: shut,
         });
         self.refresh_sink()?;
-        self.refresh_streams()
+        self.refresh_streams()?;
+        self.refresh_outputs()?;
+        self.refresh_inputs()
     }
 
     /// Handle messages until the server is lost or the GUI hangs up. Bursts
@@ -370,7 +447,7 @@ impl Service {
                     Err(_) => return Exit::Quit,
                 },
             };
-            let (mut sink, mut streams) = (false, false);
+            let (mut sink, mut streams, mut inputs) = (false, false, false);
             let mut next = first;
             while let Some(message) = next {
                 match message {
@@ -378,9 +455,12 @@ impl Service {
                     Internal::Gone(g) if g == self.generation => return Exit::Lost,
                     Internal::Event { generation, facility } if generation == self.generation => {
                         match facility {
-                            SubscriptionEventFacility::Sink | SubscriptionEventFacility::Server => {
+                            SubscriptionEventFacility::Sink => sink = true,
+                            SubscriptionEventFacility::Server => {
                                 sink = true;
+                                inputs = true;
                             }
+                            SubscriptionEventFacility::Source => inputs = true,
                             SubscriptionEventFacility::SinkInput => streams = true,
                             _ => {}
                         }
@@ -395,7 +475,10 @@ impl Service {
                 }
                 next = rx.try_recv().ok();
             }
-            if sink && self.refresh_sink().is_err() {
+            if sink && (self.refresh_sink().is_err() || self.refresh_outputs().is_err()) {
+                return Exit::Lost;
+            }
+            if inputs && self.refresh_inputs().is_err() {
                 return Exit::Lost;
             }
             if streams && self.refresh_streams().is_err() {
@@ -444,6 +527,37 @@ impl Service {
                 }))
             }
             Command::SetAppMuted { pid, muted } => set_app_muted(&mut live.conn, pid, muted),
+            Command::SetDefaultOutput(name) => match CString::new(name) {
+                Ok(name) => set_default_output(&mut live.conn, name),
+                Err(_) => Ok(()),
+            },
+            Command::SetDefaultInput(name) => match CString::new(name) {
+                Ok(name) => set_default_input(&mut live.conn, name),
+                Err(_) => Ok(()),
+            },
+            Command::SetInputVolume(v) => {
+                let Some(source) = &self.source else {
+                    return Ok(());
+                };
+                let Some(volume) = channel_volume(v, source.channels) else {
+                    return Ok(());
+                };
+                live.conn.ack(&Pa::SetSourceVolume(SetDeviceVolumeParams {
+                    device_index: Some(source.index),
+                    device_name: None,
+                    volume,
+                }))
+            }
+            Command::SetInputMuted(mute) => {
+                let Some(source) = &self.source else {
+                    return Ok(());
+                };
+                live.conn.ack(&Pa::SetSourceMute(SetDeviceMuteParams {
+                    device_index: Some(source.index),
+                    device_name: None,
+                    mute,
+                }))
+            }
             Command::Tap(_) => Ok(()),
         };
         match result {
@@ -481,6 +595,68 @@ impl Service {
         });
         self.emit_sink(sink);
         self.sync_tap(Instant::now());
+        Ok(())
+    }
+
+    /// Re-read every sink and publish the list.
+    fn refresh_outputs(&mut self) -> wire::Result<()> {
+        let Some(live) = self.live.as_mut() else {
+            return Ok(());
+        };
+        let server: ServerInfo = live.conn.request(&Pa::GetServerInfo)?;
+        let list: SinkInfoList = live.conn.request(&Pa::GetSinkInfoList)?;
+        let devices = list
+            .iter()
+            .map(|i| {
+                device_of(
+                    &i.name,
+                    i.description.as_deref(),
+                    &i.props,
+                    &i.ports,
+                    i.active_port,
+                    &i.cvolume,
+                    i.muted,
+                    false,
+                )
+            })
+            .collect();
+        self.emit_outputs(devices, server.default_sink_name.map(lossy));
+        Ok(())
+    }
+
+    /// Re-read the default source and every non-monitor source, and publish
+    /// them.
+    fn refresh_inputs(&mut self) -> wire::Result<()> {
+        let Some(live) = self.live.as_mut() else {
+            return Ok(());
+        };
+        let server: ServerInfo = live.conn.request(&Pa::GetServerInfo)?;
+        let list: SourceInfoList = live.conn.request(&Pa::GetSourceInfoList)?;
+        self.source = server
+            .default_source_name
+            .as_ref()
+            .and_then(|name| list.iter().find(|i| &i.name == name))
+            .map(|i| CurrentSource {
+                index: i.index,
+                channels: i.cvolume.channels().len(),
+            });
+        let devices = list
+            .iter()
+            .filter(|i| !is_monitor(i))
+            .map(|i| {
+                device_of(
+                    &i.name,
+                    i.description.as_deref(),
+                    &i.props,
+                    &i.ports,
+                    i.active_port,
+                    &i.cvolume,
+                    i.muted,
+                    true,
+                )
+            })
+            .collect();
+        self.emit_inputs(devices, server.default_source_name.map(lossy));
         Ok(())
     }
 
@@ -570,8 +746,33 @@ impl Service {
         self.tap_retry = Backoff::new();
         self.live = None;
         self.sink = None;
+        self.source = None;
         self.emit_sink(None);
         self.emit_streams(Vec::new());
+        self.emit_outputs(Vec::new(), None);
+        self.emit_inputs(Vec::new(), None);
+    }
+
+    fn emit_outputs(&mut self, devices: Vec<Device>, default: Option<String>) {
+        let now = (devices, default);
+        if self.sent_outputs.as_ref() != Some(&now) {
+            let _ = self.updates.send(Update::Outputs {
+                devices: now.0.clone(),
+                default: now.1.clone(),
+            });
+            self.sent_outputs = Some(now);
+        }
+    }
+
+    fn emit_inputs(&mut self, devices: Vec<Device>, default: Option<String>) {
+        let now = (devices, default);
+        if self.sent_inputs.as_ref() != Some(&now) {
+            let _ = self.updates.send(Update::Inputs {
+                devices: now.0.clone(),
+                default: now.1.clone(),
+            });
+            self.sent_inputs = Some(now);
+        }
     }
 
     fn emit_sink(&mut self, sink: Option<Sink>) {
@@ -601,6 +802,143 @@ fn set_app_muted(conn: &mut Conn, pid: u32, mute: bool) -> wire::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Make sink `name` the default and move every playing stream onto it. A
+/// stream the server refuses to move is left where it is.
+fn set_default_output(conn: &mut Conn, name: CString) -> wire::Result<()> {
+    conn.ack(&Pa::SetDefaultSink(name.clone()))?;
+    let sink: SinkInfo = conn.request(&Pa::GetSinkInfo(GetSinkInfo {
+        index: None,
+        name: Some(name),
+    }))?;
+    let list: SinkInputInfoList = conn.request(&Pa::GetSinkInputInfoList)?;
+    for input in list.iter().filter(|i| i.sink_index != sink.index) {
+        let moved = conn.ack(&Pa::MoveSinkInput(MoveStreamParams {
+            index: Some(input.index),
+            device_index: Some(sink.index),
+            device_name: None,
+        }));
+        match moved {
+            Err(ProtocolError::ServerError(_)) => {}
+            other => other?,
+        }
+    }
+    Ok(())
+}
+
+/// [`set_default_output`] for sources. Streams recording a monitor (a
+/// visualizer, a loopback) stay on it: they are not microphone users.
+fn set_default_input(conn: &mut Conn, name: CString) -> wire::Result<()> {
+    conn.ack(&Pa::SetDefaultSource(name.clone()))?;
+    let source: SourceInfo = conn.request(&Pa::GetSourceInfo(GetSourceInfo {
+        index: None,
+        name: Some(name),
+    }))?;
+    let sources: SourceInfoList = conn.request(&Pa::GetSourceInfoList)?;
+    let list: SourceOutputInfoList = conn.request(&Pa::GetSourceOutputInfoList)?;
+    for output in list.iter().filter(|o| o.source_index != source.index) {
+        if sources
+            .iter()
+            .any(|s| s.index == output.source_index && is_monitor(s))
+        {
+            continue;
+        }
+        let moved = conn.ack(&Pa::MoveSourceOutput(MoveStreamParams {
+            index: Some(output.index),
+            device_index: Some(source.index),
+            device_name: None,
+        }));
+        match moved {
+            Err(ProtocolError::ServerError(_)) => {}
+            other => other?,
+        }
+    }
+    Ok(())
+}
+
+fn is_monitor(source: &SourceInfo) -> bool {
+    source.monitor_of_sink_index.is_some() || is_monitor_name(&source.name.to_string_lossy())
+}
+
+/// A monitor source is named `<sink>.monitor`.
+fn is_monitor_name(name: &str) -> bool {
+    name.ends_with(".monitor")
+}
+
+fn lossy(s: CString) -> String {
+    s.to_string_lossy().into_owned()
+}
+
+/// A property as text, without its trailing NUL.
+fn prop_text(props: &Props, prop: Prop) -> String {
+    let raw = props.get(prop).unwrap_or_default();
+    let raw = raw.strip_suffix(&[0]).unwrap_or(raw);
+    String::from_utf8_lossy(raw).to_ascii_lowercase()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn device_of(
+    name: &CString,
+    description: Option<&std::ffi::CStr>,
+    props: &Props,
+    ports: &[PortInfo],
+    active: usize,
+    cvolume: &ChannelVolume,
+    muted: bool,
+    input: bool,
+) -> Device {
+    let name = name.to_string_lossy().into_owned();
+    Device {
+        kind: guess_kind(
+            &name,
+            ports.get(active).map(|p| p.port_type),
+            &prop_text(props, Prop::DeviceFormFactor),
+            &prop_text(props, Prop::DeviceBus),
+            input,
+        ),
+        description: description.map_or_else(|| name.clone(), |d| d.to_string_lossy().into_owned()),
+        name,
+        volume: volume_of(cvolume),
+        muted,
+    }
+}
+
+/// Best-effort kind: Bluetooth by name or bus, then the active port, then
+/// the form factor, then the bus. An unknown input is a microphone.
+fn guess_kind(name: &str, port: Option<PortType>, form_factor: &str, bus: &str, input: bool) -> DeviceKind {
+    if name.starts_with("bluez_") || bus == "bluetooth" {
+        return DeviceKind::Bluetooth;
+    }
+    match port {
+        Some(PortType::Speaker) => return DeviceKind::Speakers,
+        Some(PortType::Headphones) => return DeviceKind::Headphones,
+        Some(PortType::Headset) => return DeviceKind::Headset,
+        Some(PortType::Hdmi) => return DeviceKind::Hdmi,
+        Some(PortType::Usb) => return DeviceKind::Usb,
+        Some(PortType::Bluetooth) => return DeviceKind::Bluetooth,
+        Some(PortType::Mic) => return DeviceKind::Mic,
+        _ => {}
+    }
+    match form_factor {
+        "speaker" | "internal" => return DeviceKind::Speakers,
+        "headphone" | "hands-free" => return DeviceKind::Headphones,
+        "headset" => return DeviceKind::Headset,
+        "hdmi" | "tv" => return DeviceKind::Hdmi,
+        "microphone" | "webcam" => return DeviceKind::Mic,
+        _ => {}
+    }
+    if bus == "usb" {
+        return DeviceKind::Usb;
+    }
+    if name.contains("hdmi") {
+        return DeviceKind::Hdmi;
+    }
+    if input {
+        DeviceKind::Mic
+    } else {
+        DeviceKind::Other
+    }
 }
 
 /// A stream's `application.process.id`.
@@ -679,6 +1017,42 @@ mod tests {
         assert_eq!(pid_of(&props), Some(4242));
         props.set(Prop::ApplicationProcessId, c"not a pid");
         assert_eq!(pid_of(&props), None);
+    }
+
+    #[test]
+    fn monitors_are_recognised_by_name() {
+        assert!(is_monitor_name(
+            "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
+        ));
+        assert!(!is_monitor_name("alsa_input.usb-Blue_Yeti-00.analog-stereo"));
+    }
+
+    #[test]
+    fn kind_is_guessed_from_name_port_form_factor_and_bus() {
+        let k = guess_kind;
+        assert_eq!(k("bluez_output.AA", None, "", "", false), DeviceKind::Bluetooth);
+        assert_eq!(k("x", None, "", "bluetooth", false), DeviceKind::Bluetooth);
+        assert_eq!(k("x", Some(PortType::Hdmi), "", "pci", false), DeviceKind::Hdmi);
+        assert_eq!(
+            k("x", Some(PortType::Headphones), "speaker", "", false),
+            DeviceKind::Headphones
+        );
+        assert_eq!(
+            k("x", Some(PortType::Speaker), "", "", false),
+            DeviceKind::Speakers
+        );
+        assert_eq!(
+            k("x", Some(PortType::Analog), "headset", "", false),
+            DeviceKind::Headset
+        );
+        assert_eq!(k("x", None, "microphone", "", true), DeviceKind::Mic);
+        assert_eq!(
+            k("alsa_output.hdmi-stereo", None, "", "", false),
+            DeviceKind::Hdmi
+        );
+        assert_eq!(k("x", None, "", "usb", false), DeviceKind::Usb);
+        assert_eq!(k("x", None, "", "", true), DeviceKind::Mic);
+        assert_eq!(k("x", None, "", "", false), DeviceKind::Other);
     }
 
     /// A service with a wanted tap on sink monitor `mon`, and no server.
@@ -768,14 +1142,29 @@ mod tests {
         // Never the human's server: a socket path that does not exist.
         let h = spawn_at(Some(PathBuf::from("/nonexistent/eclipse-test/pulse/native")));
         assert_eq!(
-            collect(&h, 2),
-            vec![Update::Sink(None), Update::Streams(Vec::new())]
+            collect(&h, 4),
+            vec![
+                Update::Sink(None),
+                Update::Streams(Vec::new()),
+                Update::Outputs {
+                    devices: Vec::new(),
+                    default: None
+                },
+                Update::Inputs {
+                    devices: Vec::new(),
+                    default: None
+                },
+            ]
         );
         // Actions without a server are dropped, not queued or fatal.
         let a = h.actions();
         a.clone().set_volume(0.5);
         a.set_muted(true);
         a.set_app_muted(1, true);
+        a.set_default_output("x");
+        a.set_default_input("y");
+        a.set_input_volume(0.5);
+        a.set_input_muted(true);
         h.set_tap(true);
         h.set_tap(false);
         std::thread::sleep(Duration::from_millis(50));

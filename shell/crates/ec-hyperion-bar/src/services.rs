@@ -148,6 +148,8 @@ pub fn drain() -> Vec<Message> {
                 audio::Update::Sink(s) => Message::Widget(Feed::Volume(volume::Feed::Sink(s))),
                 audio::Update::Streams(s) => Message::Streams(s),
                 audio::Update::Levels(b) => Message::Widget(Feed::NowPlaying(now_playing::Feed::Levels(b.0))),
+                audio::Update::Outputs { devices, default } => Message::Outputs(devices, default),
+                audio::Update::Inputs { devices, default } => Message::Inputs(devices, default),
             });
         }
     }
@@ -208,6 +210,12 @@ pub fn act(action: Action) {
             }
         }
     }
+}
+
+/// The audio service's actions, if it is running.
+pub fn audio_actions() -> Option<audio::Actions> {
+    counted(Call::Act);
+    handles().audio.as_ref().map(audio::Handle::actions)
 }
 
 /// Mute or unmute every stream `pid` owns.
