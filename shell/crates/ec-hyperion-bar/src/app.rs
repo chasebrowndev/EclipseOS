@@ -88,6 +88,22 @@ pub enum Drawer {
     Overflow,
     /// The audio picker, opened from the volume cell.
     Audio,
+    /// The month calendar, opened from the clock cell.
+    Calendar,
+}
+
+/// The keys the calendar drawer answers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalKey {
+    Left,
+    Right,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    /// Home or T: back to today.
+    Today,
+    Enter,
 }
 
 /// What an open popup is.
@@ -251,6 +267,22 @@ pub enum Message {
     /// The input level slider, `1.0` = 100%.
     InputVolume(f32),
     InputMute(bool),
+    /// The calendar drawer: month back, month forward, back to today.
+    CalPrev,
+    CalNext,
+    CalToday,
+    /// A day cell was picked.
+    CalSelect(i32, u32, u32),
+    /// "Open in calendar": hand the selected day to the provider.
+    CalOpenDay,
+    /// An event row was picked: hand it to the provider.
+    CalOpenEvent(String),
+    /// The wheel over the grid: a month per notch, up is earlier.
+    CalScroll(iced::mouse::ScrollDelta),
+    /// A key while the calendar drawer is out.
+    CalKey(CalKey),
+    /// The calendar provider's feed.
+    CalendarFeed(crate::calendar::Feed),
     /// A widget's grip, by widget key.
     Grip(String, GripEv),
     /// One frame of the bar's motion. Only sent while something moves.
@@ -367,6 +399,9 @@ pub struct App {
     pub streams: Vec<ec_services::audio::Stream>,
     /// The audio picker's device lists.
     pub audio: crate::audio::Devices,
+    /// The calendar drawer: the month in view, the selected day, the
+    /// provider's events.
+    pub calendar: crate::calendar::Calendar,
     /// Debug previews only: when a widget fixture started. A fixture bar
     /// neither refetches nor starts services — the fixture stands in for
     /// both.
@@ -773,6 +808,7 @@ impl App {
             widgets: widgets::State::default(),
             streams: Vec::new(),
             audio: crate::audio::Devices::default(),
+            calendar: crate::calendar::Calendar::default(),
             fixture: None,
             show_key_hints: true,
             launcher_menu,
@@ -1501,6 +1537,88 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                     bar.menu.step(delta);
                 }
             }
+            if app
+                .bars
+                .values()
+                .any(|b| b.drawer.is_open(crate::drawer::DrawerKind::Calendar))
+            {
+                cal_step(app, |c| c.step_days(7 * i64::from(delta)));
+            }
+            return Task::none();
+        }
+        Message::CalPrev => {
+            cal_step(app, |c| c.step_months(-1));
+            return Task::none();
+        }
+        Message::CalNext => {
+            cal_step(app, |c| c.step_months(1));
+            return Task::none();
+        }
+        Message::CalToday => {
+            cal_step(app, crate::calendar::Calendar::reset);
+            return Task::none();
+        }
+        Message::CalSelect(y, m, d) => {
+            cal_step(app, |c| c.select(y, m, d));
+            return Task::none();
+        }
+        Message::CalScroll(delta) => {
+            let notches = app.calendar.wheel.count(delta, Instant::now());
+            if notches != 0 {
+                cal_step(app, |c| c.step_months(-notches));
+            }
+            return Task::none();
+        }
+        Message::CalOpenDay => {
+            if app.calendar.provider {
+                let (y, m, d) = app.calendar.selected;
+                if let Some(a) = crate::services::calendar_actions() {
+                    a.open_day(crate::calendar::local_midnight(y, m, d));
+                }
+            }
+            return dismiss(app);
+        }
+        Message::CalOpenEvent(id) => {
+            if let Some(a) = crate::services::calendar_actions() {
+                a.open(&id);
+            }
+            return dismiss(app);
+        }
+        Message::CalKey(key) => {
+            use crate::calendar::Calendar;
+            // Only while the calendar is out; everywhere else the keys are
+            // someone else's.
+            if !app
+                .bars
+                .values()
+                .any(|b| b.drawer.is_open(crate::drawer::DrawerKind::Calendar))
+            {
+                return Task::none();
+            }
+            match key {
+                CalKey::Left => cal_step(app, |c| c.step_days(-1)),
+                CalKey::Right => cal_step(app, |c| c.step_days(1)),
+                CalKey::Up => cal_step(app, |c| c.step_days(-7)),
+                CalKey::Down => cal_step(app, |c| c.step_days(7)),
+                CalKey::PageUp => cal_step(app, |c| c.step_months(-1)),
+                CalKey::PageDown => cal_step(app, |c| c.step_months(1)),
+                CalKey::Today => cal_step(app, Calendar::reset),
+                CalKey::Enter => {
+                    if app.calendar.provider {
+                        let (y, m, d) = app.calendar.selected;
+                        if let Some(a) = crate::services::calendar_actions() {
+                            a.open_day(crate::calendar::local_midnight(y, m, d));
+                        }
+                        return dismiss(app);
+                    }
+                }
+            }
+            return Task::none();
+        }
+        // The grid is six weeks and the detail scrolls: the sheet is always
+        // the same height, so there is nothing to resize.
+        Message::CalendarFeed(feed) => {
+            app.calendar.apply(feed);
             return Task::none();
         }
         Message::MenuActivate => {
@@ -1868,6 +1986,12 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                     Ok("open-wifi") => Some((Drawer::Network, crate::drawer::DrawerKind::Wifi)),
                     Ok("open-bt") => Some((Drawer::Bluetooth, crate::drawer::DrawerKind::Bluetooth)),
                     Ok("open-audio") => Some((Drawer::Audio, crate::drawer::DrawerKind::Audio)),
+                    Ok("open-calendar") => Some((Drawer::Calendar, crate::drawer::DrawerKind::Calendar)),
+                    Ok("open-calendar-empty") => {
+                        app.calendar.provider = false;
+                        app.calendar.events.clear();
+                        Some((Drawer::Calendar, crate::drawer::DrawerKind::Calendar))
+                    }
                     _ => None,
                 };
                 if let Some((drawer, kind)) = which {
@@ -2141,19 +2265,19 @@ fn drawer_kind(drawer: Drawer) -> Option<crate::drawer::DrawerKind> {
         Drawer::Network => Some(crate::drawer::DrawerKind::Wifi),
         Drawer::Bluetooth => Some(crate::drawer::DrawerKind::Bluetooth),
         Drawer::Audio => Some(crate::drawer::DrawerKind::Audio),
+        Drawer::Calendar => Some(crate::drawer::DrawerKind::Calendar),
         Drawer::Overflow => None,
     }
 }
 
-/// The height the sheet of `kind` needs right now. The calendar has no sheet
-/// yet and needs none.
+/// The height the sheet of `kind` needs right now.
 fn drawer_full(app: &App, kind: crate::drawer::DrawerKind) -> u32 {
     use crate::drawer::DrawerKind;
     match kind {
         DrawerKind::Wifi => crate::view::drawer_height(app, Drawer::Network),
         DrawerKind::Bluetooth => crate::view::drawer_height(app, Drawer::Bluetooth),
         DrawerKind::Audio => crate::view::drawer_height(app, Drawer::Audio),
-        DrawerKind::Calendar => 0,
+        DrawerKind::Calendar => crate::view::drawer_height(app, Drawer::Calendar),
     }
 }
 
@@ -2186,7 +2310,12 @@ fn on_drawer_panel(app: &App, bar: &Bar) -> bool {
 }
 
 /// The cells a drawer hangs from.
-const DRAWER_CELLS: [Drawer; 3] = [Drawer::Network, Drawer::Bluetooth, Drawer::Audio];
+const DRAWER_CELLS: [Drawer; 4] = [
+    Drawer::Network,
+    Drawer::Bluetooth,
+    Drawer::Audio,
+    Drawer::Calendar,
+];
 
 /// The pointer is over a cell a drawer hangs from. Its click is the toggle or
 /// the switch, so the press that comes first must not close the open drawer:
@@ -2196,6 +2325,24 @@ fn on_drawer_cell(app: &App, bar: &Bar) -> bool {
         crate::view::drawer_span(app, bar, drawer)
             .is_some_and(|(left, right)| bar.cursor.x >= left && bar.cursor.x < right)
     })
+}
+
+/// Tell the calendar service which months the drawer shows: the one in
+/// view and one either side.
+fn cal_range(app: &App) {
+    if let Some(a) = crate::services::calendar_actions() {
+        let (start, end) = app.calendar.range();
+        a.set_range(start, end);
+    }
+}
+
+/// Change what the calendar shows and keep the service on the visible months.
+fn cal_step(app: &mut App, f: impl FnOnce(&mut crate::calendar::Calendar)) {
+    let before = (app.calendar.view_y, app.calendar.view_m);
+    f(&mut app.calendar);
+    if before != (app.calendar.view_y, app.calendar.view_m) {
+        cal_range(app);
+    }
 }
 
 /// Start the drawer's slide back into the pill and give the keyboard back.
@@ -2224,6 +2371,11 @@ fn toggle_drawer(app: &mut App, id: Id, drawer: Drawer, kind: crate::drawer::Dra
         // The picker opening is the moment a fresh list matters.
         app.radios.start_wifi_scan();
         crate::radio::actions::scan();
+    }
+    if kind == crate::drawer::DrawerKind::Calendar {
+        // Always opens on today's month with today selected.
+        app.calendar.reset();
+        cal_range(app);
     }
     let full = drawer_full(app, kind) as f32;
     let open = with_bar(app, id, |app, bar| {
@@ -3228,6 +3380,37 @@ fn pointer() -> Subscription<Message> {
             key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
             ..
         }) => Some(Message::Dismiss),
+        // The calendar's keys; `update` drops them unless its drawer is out.
+        // Only keys no widget took: the start menu's field keeps its own.
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(named),
+            ..
+        }) if status == Status::Ignored
+            && matches!(
+                named,
+                Named::ArrowLeft
+                    | Named::ArrowRight
+                    | Named::PageUp
+                    | Named::PageDown
+                    | Named::Home
+                    | Named::Enter
+            ) =>
+        {
+            Some(Message::CalKey(match named {
+                Named::ArrowLeft => CalKey::Left,
+                Named::ArrowRight => CalKey::Right,
+                Named::PageUp => CalKey::PageUp,
+                Named::PageDown => CalKey::PageDown,
+                Named::Enter => CalKey::Enter,
+                _ => CalKey::Today,
+            }))
+        }
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Character(c),
+            ..
+        }) if status == Status::Ignored && c.eq_ignore_ascii_case("t") => {
+            Some(Message::CalKey(CalKey::Today))
+        }
         // The start menu's selection. Whichever surface has the keyboard, the
         // message names it, and only a bar with its menu open acts on it.
         iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {

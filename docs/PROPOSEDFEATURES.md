@@ -38,10 +38,13 @@ defaults.
   identity — tint strength, edge highlight intensity, maybe a settings-exposed
   frost amount — rather than reusing the same translucent constant every
   `surface` uses.
-- **Clock → calendar drawer.** Clicking the time/date opens a full calendar
-  panel, the way Windows does. Not built: `shell/crates/ec-hyperion-bar/src/view.rs` carries
-  the `TODO`. The clock formats shipped as `bar.clock.hour-12` and
-  `bar.clock.date-mdy` (2026-09-23).
+- **Clock → calendar drawer — built (ADR 0079).** Clicking the clock unrolls a
+  month grid with a day detail beside it. Events come from whatever owns
+  `org.eclipse.Calendar1` on the session bus (`ec-services::calendar`). Until a
+  provider exists the drawer shows dates only. What is left:
+  - **Ethereal**, the calendar add-on that will own the interface and sync
+    external calendars. Creating and editing events belong there, not in the
+    drawer.
 - **Sustained hover shows the full detail.** Resting the pointer on a chip pops
   the detail the ladder dropped — full title and path, whatever the chip itself
   had to shed. It goes away as soon as the pointer moves again. This is the
@@ -215,8 +218,6 @@ first, then where the code goes, then the COMP-16 milestone.
   KDL-only `output` child in `config/schema.rs`; Appearance-pane rows in
   ec-settings; `packaging/` unit `ec-wallpaper.service` and split package
   `eclipseos-wallpaper` under `eclipseos-meta`. *Phase 1, DE userland.*
-- **Taskbar clock: calendar drawer.** See Taskbar above;
-  `shell/crates/ec-hyperion-bar/src/view.rs`. *Phase 1, DE userland.*
 - **Re-verify, don't write:** the ghost-window entry above (against
   `8f76207`). BLUR-02 was fixed again at `227c678` (#47).
 - **Manual gates** (COMP-16 table; `docs/STATUS.md` "Deferred hardware

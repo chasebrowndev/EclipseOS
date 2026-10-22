@@ -207,6 +207,7 @@ pub fn widgets(app: &mut App, idle: bool, output: u64) {
         }))),
     );
     app.audio = fixture_audio();
+    app.calendar = fixture_calendar();
     let state = &mut app.widgets;
     state.custom.entry("weather".to_owned()).or_default().out = Some(Output {
         text: "18°".to_owned(),
@@ -214,6 +215,88 @@ pub fn widgets(app: &mut App, idle: bool, output: u64) {
         tooltip: None,
         state: None,
     });
+}
+
+/// The calendar drawer's fixture: a provider and about six events across
+/// this month. One all-day, one three days long, two on today in different
+/// colours (one with a location), two more scattered.
+fn fixture_calendar() -> crate::calendar::Calendar {
+    use crate::calendar::{days_in_month, local_midnight, today, Calendar};
+    use ec_services::calendar::Event;
+    let (y, m, now) = today();
+    let day = |d: u32| d.min(days_in_month(y, m));
+    let at = |d: u32, h: i64, min: i64| local_midnight(y, m, day(d)) + h * 3600 + min * 60;
+    let event = |id: &str, title: &str, start, end, all_day, colour, location: Option<&str>| Event {
+        id: id.to_owned(),
+        title: title.to_owned(),
+        start,
+        end,
+        all_day,
+        calendar: "fixture".to_owned(),
+        colour: Some(colour),
+        location: location.map(str::to_owned),
+    };
+    let events = vec![
+        event(
+            "e1",
+            "Release freeze",
+            local_midnight(y, m, day(5)),
+            local_midnight(y, m, day(5) + 1),
+            true,
+            0x4f8cff,
+            None,
+        ),
+        event(
+            "e2",
+            "Offsite",
+            local_midnight(y, m, day(14)),
+            local_midnight(y, m, day(14) + 3),
+            true,
+            0x3ecf8e,
+            Some("Lisbon"),
+        ),
+        event(
+            "e3",
+            "Standup",
+            at(now, 9, 30),
+            at(now, 10, 0),
+            false,
+            0xe5a13a,
+            None,
+        ),
+        event(
+            "e4",
+            "Design review",
+            at(now, 13, 0),
+            at(now, 14, 0),
+            false,
+            0xc86dd7,
+            Some("Room 4"),
+        ),
+        event(
+            "e5",
+            "Dentist",
+            at(day(8), 8, 15),
+            at(day(8), 9, 0),
+            false,
+            0xef5b5b,
+            None,
+        ),
+        event(
+            "e6",
+            "Dinner",
+            at(day(27), 19, 0),
+            at(day(27), 21, 0),
+            false,
+            0x4fd1c5,
+            Some("Café Luz"),
+        ),
+    ];
+    Calendar {
+        provider: true,
+        events,
+        ..Calendar::default()
+    }
 }
 
 /// The audio picker's fixture: three outputs, two inputs, the mic at 60%.
@@ -291,7 +374,9 @@ fn plan(name: &str) -> Vec<(u32, Duration)> {
         "drag-half" => (1..=DRAG_HALF_STEPS + 2).map(|n| (n, ms(40))).collect(),
         // Press, push into the detent and hold, then push past it and hold.
         "drag-hold" => vec![(1, ms(0)), (2, ms(40)), (3, ms(4000))],
-        "open-wifi" | "open-bt" | "open-audio" => vec![(1, ms(0)), (2, ms(9000))],
+        "open-wifi" | "open-bt" | "open-audio" | "open-calendar" | "open-calendar-empty" => {
+            vec![(1, ms(0)), (2, ms(9000))]
+        }
         "np-out" => vec![(1, ms(0))],
         "np-back" => vec![(1, ms(0)), (2, ms(1600))],
         "interrupt" => vec![(1, ms(0)), (2, ms(350))],

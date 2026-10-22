@@ -271,6 +271,13 @@ pub mod color {
     /// [`NEUTRAL`] off, [`ACCENT`] powered-but-idle, this connected.
     pub const CONNECTED: Color = rgb(0x4f9fe0);
     pub const OK: Color = rgb(0x7fae5e);
+
+    /// A colour that arrives as data — a calendar's own `0xRRGGBB` — rather
+    /// than a choice of ours. The only runtime door into `rgb`, so a provider's
+    /// palette is never mistaken for a token and nothing else needs one.
+    pub const fn data(hex: u32) -> Color {
+        rgb(hex)
+    }
 }
 
 pub mod radius {
@@ -1048,6 +1055,30 @@ pub mod drawer {
     pub const LEVEL_RAIL: f32 = 4.0;
     pub const LEVEL_KNOB_R: f32 = 6.0;
     pub const LEVEL_READOUT_W: f32 = 32.0;
+
+    /// The calendar drawer's width: a month grid and a day's detail side by
+    /// side, so the one drawer wider than [`W`].
+    pub const CAL_W: f32 = 540.0;
+    /// A day cell. Seven of them are the grid's width.
+    pub const CAL_CELL_W: f32 = 40.0;
+    pub const CAL_CELL_H: f32 = 36.0;
+    /// The optional ISO-week column left of the grid.
+    pub const CAL_WEEK_W: f32 = 26.0;
+    /// The month header strip (month, year, Today, chevrons).
+    pub const CAL_HEAD_H: f32 = 36.0;
+    /// The weekday initials strip.
+    pub const CAL_WEEKDAY_H: f32 = 22.0;
+    /// Air between the grid and the day's detail, on both sides of the rule.
+    pub const CAL_GAP: f32 = 14.0;
+    /// An event dot under a day number, and the air between dots.
+    pub const CAL_DOT: f32 = 4.0;
+    pub const CAL_DOT_GAP: f32 = 3.0;
+    /// The colour bar that leads an event row.
+    pub const CAL_BAR_W: f32 = 3.0;
+    /// The square chevron buttons in the month header.
+    pub const CAL_NAV: f32 = 26.0;
+    /// The time column of an event row.
+    pub const CAL_TIME_W: f32 = 52.0;
 }
 
 /// The secret prompt: one field in a fixed-size toplevel. Fixed because

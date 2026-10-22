@@ -22,6 +22,24 @@ pub fn time(hour_12: bool) -> String {
     format!("{hour}:{:02} {meridiem}", tm.tm_min)
 }
 
+/// A unix instant as local wall-clock text, in the same two forms as [`time`]:
+/// an event's start or end in the calendar's day detail.
+pub fn hm(unix: i64, hour_12: bool) -> String {
+    let t: libc::time_t = unix;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: `t` is a valid time_t and `tm` is a live, owned, zeroed struct;
+    // `localtime_r` is the reentrant form and writes only through the pointer.
+    let out = unsafe { libc::localtime_r(&t, &mut tm) };
+    if out.is_null() {
+        return "--:--".to_owned();
+    }
+    if !hour_12 {
+        return format!("{:02}:{:02}", tm.tm_hour, tm.tm_min);
+    }
+    let (hour, meridiem) = twelve(tm.tm_hour);
+    format!("{hour}:{:02} {meridiem}", tm.tm_min)
+}
+
 /// `9/12/26` when `mdy` (`bar.clock.date-mdy`), ISO `2026-09-12` otherwise —
 /// the date as a reading, not as a sentence. A bar cell is 74px wide and
 /// "Friday, September 12" is not a thing that fits in it; the spelled-out form
