@@ -2117,18 +2117,17 @@ fn on_drawer_panel(app: &App, bar: &Bar) -> bool {
     }
 }
 
-/// The pointer is over the cell the open drawer hangs from. Its click is the
-/// toggle, so the press that comes first must not close the drawer under it.
+/// The cells a drawer hangs from.
+const DRAWER_CELLS: [Drawer; 2] = [Drawer::Network, Drawer::Bluetooth];
+
+/// The pointer is over a cell a drawer hangs from. Its click is the toggle or
+/// the switch, so the press that comes first must not close the open drawer:
+/// a quick click would otherwise close it on the press and lose the release.
 fn on_drawer_cell(app: &App, bar: &Bar) -> bool {
-    let Some(drawer) = (match bar.drawer.which() {
-        Some(crate::drawer::DrawerKind::Wifi) => Some(Drawer::Network),
-        Some(crate::drawer::DrawerKind::Bluetooth) => Some(Drawer::Bluetooth),
-        _ => None,
-    }) else {
-        return false;
-    };
-    crate::view::drawer_span(app, bar, drawer)
-        .is_some_and(|(left, right)| bar.cursor.x >= left && bar.cursor.x < right)
+    DRAWER_CELLS.iter().any(|&drawer| {
+        crate::view::drawer_span(app, bar, drawer)
+            .is_some_and(|(left, right)| bar.cursor.x >= left && bar.cursor.x < right)
+    })
 }
 
 /// Start the drawer's slide back into the pill and give the keyboard back.
