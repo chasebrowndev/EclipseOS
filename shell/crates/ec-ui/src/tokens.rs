@@ -1043,6 +1043,11 @@ pub mod drawer {
     pub const SPIN_TRACK: f32 = 0.18;
     /// Revolutions per second of the spinner.
     pub const SPIN_HZ: f32 = 0.9;
+    /// A level row's rail, its round knob's radius, and the fixed box the
+    /// percent reading sits in so the rail never moves when `9` becomes `10`.
+    pub const LEVEL_RAIL: f32 = 4.0;
+    pub const LEVEL_KNOB_R: f32 = 6.0;
+    pub const LEVEL_READOUT_W: f32 = 32.0;
 }
 
 /// The secret prompt: one field in a fixed-size toplevel. Fixed because

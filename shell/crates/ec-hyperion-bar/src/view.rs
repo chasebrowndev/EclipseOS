@@ -914,6 +914,7 @@ pub fn drawer_span(
     match drawer {
         crate::app::Drawer::Network => widget_span(app, on, &WidgetId::Network),
         crate::app::Drawer::Bluetooth => widget_span(app, on, &WidgetId::Bluetooth),
+        crate::app::Drawer::Audio => widget_span(app, on, &WidgetId::Volume),
         crate::app::Drawer::Overflow => {
             let (_, right) = widget_span(app, on, &WidgetId::Tray)?;
             let right = right - bar::WIDGET_X;
@@ -1386,6 +1387,12 @@ impl Sheet {
         self.height += drawer::CURRENT_H;
     }
 
+    /// A section's label strip, [`drawer::HEAD_H`] tall, mid-sheet.
+    pub(crate) fn section(&mut self, label: &str) {
+        self.rows.push(parts::drawer_sheet_head(label));
+        self.height += drawer::HEAD_H;
+    }
+
     pub(crate) fn rule(&mut self) {
         self.rows.push(parts::drawer_rule());
         self.height += menu::SEP_H;
@@ -1404,6 +1411,7 @@ fn sheet(app: &crate::app::App, which: crate::app::Drawer) -> Sheet {
         crate::app::Drawer::Network => crate::widgets::network::sheet(app),
         crate::app::Drawer::Bluetooth => crate::widgets::bluetooth::sheet(app),
         crate::app::Drawer::Overflow => crate::widgets::tray::sheet(app),
+        crate::app::Drawer::Audio => crate::widgets::volume::sheet(app),
     }
 }
 
@@ -1425,6 +1433,7 @@ fn drawer_sheet<'a>(
     let top = app.edge == crate::conn::BarPosition::Top;
     let which = match on.drawer.which() {
         Some(crate::drawer::DrawerKind::Bluetooth) => crate::app::Drawer::Bluetooth,
+        Some(crate::drawer::DrawerKind::Audio) => crate::app::Drawer::Audio,
         _ => crate::app::Drawer::Network,
     };
     let anchor = on.drawer.anchor_x();

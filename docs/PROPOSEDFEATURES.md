@@ -91,14 +91,6 @@ separate work:
   before the blur element. Blocked on BLUR-03: the toast surface is bigger than
   its cards, so the shadow would frame the whole block.
 
-## Window management
-
-- **Per-window mute needs a real audio abstraction.** `hyperion/src/audio.rs`
-  shells out to `pactl -f json list sink-inputs` and joins on pid (or any
-  descendant pid). That works, but it puts a subprocess on a UI path and it
-  hardcodes PulseAudio/PipeWire's CLI. A proper audio service belongs in the
-  userland crates.
-
 ## Screen capture
 
 - **A first-party capture / screenshot tool.** Today capture is whatever

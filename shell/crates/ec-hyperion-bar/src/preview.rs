@@ -206,12 +206,44 @@ pub fn widgets(app: &mut App, idle: bool, output: u64) {
             description: "Speakers".to_owned(),
         }))),
     );
+    app.audio = fixture_audio();
+    let state = &mut app.widgets;
     state.custom.entry("weather".to_owned()).or_default().out = Some(Output {
         text: "18°".to_owned(),
         detail: vec!["Clear".to_owned()],
         tooltip: None,
         state: None,
     });
+}
+
+/// The audio picker's fixture: three outputs, two inputs, the mic at 60%.
+fn fixture_audio() -> crate::audio::Devices {
+    use ec_services::audio::{Device, DeviceKind};
+    let device = |name: &str, description: &str, volume, kind| Device {
+        name: name.to_owned(),
+        description: description.to_owned(),
+        volume,
+        muted: false,
+        kind,
+    };
+    crate::audio::Devices {
+        outputs: vec![
+            device(
+                "fixture.speakers",
+                "Built-in Speakers",
+                0.64,
+                DeviceKind::Speakers,
+            ),
+            device("bluez_output.fixture", "WH-1000XM5", 0.5, DeviceKind::Bluetooth),
+            device("fixture.hdmi", "DELL U2723QE", 1.0, DeviceKind::Hdmi),
+        ],
+        inputs: vec![
+            device("fixture.mic", "Built-in Microphone", 0.6, DeviceKind::Mic),
+            device("fixture.usb-mic", "Yeti Stereo Microphone", 0.8, DeviceKind::Usb),
+        ],
+        default_output: Some("fixture.speakers".to_owned()),
+        default_input: Some("fixture.mic".to_owned()),
+    }
 }
 
 /// One frame of a fixture: the visualizer, from the clock.
@@ -259,7 +291,7 @@ fn plan(name: &str) -> Vec<(u32, Duration)> {
         "drag-half" => (1..=DRAG_HALF_STEPS + 2).map(|n| (n, ms(40))).collect(),
         // Press, push into the detent and hold, then push past it and hold.
         "drag-hold" => vec![(1, ms(0)), (2, ms(40)), (3, ms(4000))],
-        "open-wifi" | "open-bt" => vec![(1, ms(0)), (2, ms(9000))],
+        "open-wifi" | "open-bt" | "open-audio" => vec![(1, ms(0)), (2, ms(9000))],
         "np-out" => vec![(1, ms(0))],
         "np-back" => vec![(1, ms(0)), (2, ms(1600))],
         "interrupt" => vec![(1, ms(0)), (2, ms(350))],
