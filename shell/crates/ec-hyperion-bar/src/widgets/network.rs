@@ -12,7 +12,7 @@ use ec_ui::widget::{self as parts, ShellFrame};
 
 use super::{Parts, Spans};
 use crate::app::{App, Drawer, Message};
-use crate::view::{blank_mark, elide, Sheet, DRAWER_CHARS};
+use crate::view::{elide, Sheet, DRAWER_CHARS, DRAWER_ERR_CHARS};
 
 pub fn spans(_app: &App) -> Spans {
     Spans {
@@ -43,13 +43,18 @@ pub(crate) fn glyph(network: &Network) -> &'static str {
     match network {
         Network::Offline => "network-wireless-offline",
         Network::Wired { .. } | Network::Other { .. } => "network-wireless-connected",
-        Network::Wifi { strength, .. } => match strength {
-            0..=10 => "network-wireless-signal-none",
-            11..=35 => "network-wireless-signal-weak",
-            36..=60 => "network-wireless-signal-ok",
-            61..=80 => "network-wireless-signal-good",
-            _ => "network-wireless-signal-excellent",
-        },
+        Network::Wifi { strength, .. } => signal_glyph(*strength),
+    }
+}
+
+/// The cone's rung for a 0..=100 strength.
+fn signal_glyph(strength: u8) -> &'static str {
+    match strength {
+        0..=10 => "network-wireless-signal-none",
+        11..=35 => "network-wireless-signal-weak",
+        36..=60 => "network-wireless-signal-ok",
+        61..=80 => "network-wireless-signal-good",
+        _ => "network-wireless-signal-excellent",
     }
 }
 
@@ -79,8 +84,14 @@ pub(crate) fn network_mark(network: &Network, side: f32, alpha: f32) -> Element<
 /// The wi-fi drawer. See `view::drawer_view` for its anatomy and ledger.
 pub(crate) fn sheet(app: &App) -> Sheet {
     let on = app.radios.wifi_enabled;
+    let phase = app.spin_phase();
+    let scanning = on && app.radios.wifi_scanning;
     let mut s = Sheet::new(
-        parts::drawer_switch_head("wi-fi", parts::Toggle::new(on, Message::WifiEnable)),
+        parts::drawer_switch_head(
+            "wi-fi",
+            scanning.then_some(phase),
+            parts::Toggle::new(on, Message::WifiEnable),
+        ),
         drawer::HEAD_SWITCH_H,
     );
     if !on {
@@ -130,15 +141,44 @@ pub(crate) fn sheet(app: &App) -> Sheet {
                     color::TEXT_TERTIARY,
                 )
             });
-            s.row(parts::drawer_choice(
-                blank_mark(),
-                &elide(&n.ssid, DRAWER_CHARS),
-                lock,
-                Some(Message::WifiConnect(n.ssid.clone())),
-            ));
+            let name = elide(&n.ssid, DRAWER_CHARS);
+            // The leading mark is the access point's signal, on the ink ramp:
+            // strength is a reading, not a state, so it never takes a colour.
+            let signal = || {
+                parts::mark(
+                    crate::icons::symbolic(signal_glyph(n.strength)),
+                    drawer::MARK,
+                    color::TEXT_SECONDARY,
+                )
+            };
+            // The list stays clickable while it scans; only the row being
+            // joined is spoken for.
+            if app.radios.connecting.as_deref() == Some(n.ssid.as_str()) {
+                s.row(parts::drawer_pending(
+                    signal(),
+                    &name,
+                    "Connecting\u{2026}",
+                    phase,
+                ));
+            } else {
+                s.row(parts::drawer_choice(
+                    signal(),
+                    &name,
+                    lock,
+                    Some(Message::WifiConnect(n.ssid.clone())),
+                ));
+            }
+            // Why the join failed hangs under the row it was about.
+            if let Some((_, why)) = app.radios.join_error.as_ref().filter(|(ssid, _)| ssid == &n.ssid) {
+                s.row(parts::drawer_error(&elide(why, DRAWER_ERR_CHARS)));
+            }
         }
         if current.is_none() && app.radios.networks.is_empty() {
-            s.row(parts::drawer_note("searching\u{2026}"));
+            s.row(parts::drawer_note(if scanning {
+                "scanning\u{2026}"
+            } else {
+                "no networks in range"
+            }));
         }
     }
     s.rule();
