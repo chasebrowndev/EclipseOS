@@ -9,6 +9,7 @@
 
 pub mod app;
 pub mod audio;
+pub mod calendar;
 pub mod clock;
 pub mod conn;
 pub mod drawer;

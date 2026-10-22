@@ -115,6 +115,25 @@ impl Config {
             let slot = match n.name().value() {
                 "hour-12" => &mut self.bar.clock.hour_12,
                 "date-mdy" => &mut self.bar.clock.date_mdy,
+                "week-numbers" => {
+                    self.bar.clock.week_numbers = arg(n).and_then(KdlValue::as_bool).unwrap_or(false);
+                    continue;
+                }
+                "week-start" => {
+                    match arg(n).and_then(KdlValue::as_string) {
+                        Some("auto") => self.bar.clock.week_start = BarWeekStart::Auto,
+                        Some("monday") => self.bar.clock.week_start = BarWeekStart::Monday,
+                        Some("sunday") => self.bar.clock.week_start = BarWeekStart::Sunday,
+                        other => self.reject(
+                            n,
+                            format!(
+                                "bar clock week-start must be \"auto\", \"monday\" or \"sunday\", keeping default (other={:?})",
+                                other
+                            ),
+                        ),
+                    }
+                    continue;
+                }
                 _ => {
                     self.unknown_key(n, "bar.clock", "bar clock node");
                     continue;

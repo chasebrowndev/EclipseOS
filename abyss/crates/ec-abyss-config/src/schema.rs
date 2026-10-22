@@ -18,7 +18,9 @@
 //! 3. schema → defaults: [`get`] on a default `Config` returns exactly the
 //!    `default` column for every row.
 
-use super::{AnnotationColors, BarPopupAnchor, BarPosition, Config, FloatingPlacement, LayoutKind};
+use super::{
+    AnnotationColors, BarPopupAnchor, BarPosition, BarWeekStart, Config, FloatingPlacement, LayoutKind,
+};
 
 /// The type of a key's value, and whatever constrains it. A GUI maps this
 /// straight onto a control: `Bool` is a toggle, `Int{min,max}` a slider,
@@ -686,6 +688,23 @@ pub const TABLE: &[Key] = &[
         Live,
         "Write the taskbar date month/day/year; off is ISO year-month-day \
        (2026-09-23).",
+    ),
+    k(
+        "bar.clock.week-start",
+        Ty::Enum(&["auto", "monday", "sunday"]),
+        Str("auto"),
+        Abyss,
+        Live,
+        "First weekday of the calendar that opens from the taskbar clock; \
+       auto follows the locale.",
+    ),
+    k(
+        "bar.clock.week-numbers",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Show ISO week numbers beside the calendar's weeks.",
     ),
     k(
         "bar.popup-anchor",
@@ -2524,6 +2543,15 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.rounding" => V::Int(c.bar.rounding as i64),
         "bar.clock.hour-12" => V::Bool(c.bar.clock.hour_12),
         "bar.clock.date-mdy" => V::Bool(c.bar.clock.date_mdy),
+        "bar.clock.week-start" => V::Str(
+            match c.bar.clock.week_start {
+                BarWeekStart::Auto => "auto",
+                BarWeekStart::Monday => "monday",
+                BarWeekStart::Sunday => "sunday",
+            }
+            .into(),
+        ),
+        "bar.clock.week-numbers" => V::Bool(c.bar.clock.week_numbers),
         "bar.eye" => V::Bool(c.bar.eye),
         "bar.widgets.order" => list(&c.bar.widgets.order),
         "bar.widgets.important" => list(&c.bar.widgets.important),

@@ -915,6 +915,7 @@ pub fn drawer_span(
         crate::app::Drawer::Network => widget_span(app, on, &WidgetId::Network),
         crate::app::Drawer::Bluetooth => widget_span(app, on, &WidgetId::Bluetooth),
         crate::app::Drawer::Audio => widget_span(app, on, &WidgetId::Volume),
+        crate::app::Drawer::Calendar => widget_span(app, on, &WidgetId::Clock),
         crate::app::Drawer::Overflow => {
             let (_, right) = widget_span(app, on, &WidgetId::Tray)?;
             let right = right - bar::WIDGET_X;
@@ -1393,6 +1394,13 @@ impl Sheet {
         self.height += drawer::HEAD_H;
     }
 
+    /// A free-form block of `height` pixels, for a drawer whose body is a
+    /// layout and not a list of rows (the calendar's two columns).
+    pub(crate) fn block(&mut self, body: Element<'static, Message, Theme>, height: f32) {
+        self.rows.push(body);
+        self.height += height;
+    }
+
     pub(crate) fn rule(&mut self) {
         self.rows.push(parts::drawer_rule());
         self.height += menu::SEP_H;
@@ -1412,6 +1420,7 @@ fn sheet(app: &crate::app::App, which: crate::app::Drawer) -> Sheet {
         crate::app::Drawer::Bluetooth => crate::widgets::bluetooth::sheet(app),
         crate::app::Drawer::Overflow => crate::widgets::tray::sheet(app),
         crate::app::Drawer::Audio => crate::widgets::volume::sheet(app),
+        crate::app::Drawer::Calendar => crate::widgets::clock::sheet(app),
     }
 }
 
@@ -1434,6 +1443,7 @@ fn drawer_sheet<'a>(
     let which = match on.drawer.which() {
         Some(crate::drawer::DrawerKind::Bluetooth) => crate::app::Drawer::Bluetooth,
         Some(crate::drawer::DrawerKind::Audio) => crate::app::Drawer::Audio,
+        Some(crate::drawer::DrawerKind::Calendar) => crate::app::Drawer::Calendar,
         _ => crate::app::Drawer::Network,
     };
     let anchor = on.drawer.anchor_x();
@@ -1442,7 +1452,7 @@ fn drawer_sheet<'a>(
     let shape = SheetShape {
         pill_h: bar::PILL_H,
         panel_x: anchor,
-        panel_w: drawer::W,
+        panel_w: on.drawer.width(),
         radius: app.bar_radius,
         fillet: app.bar_radius,
         edge: if top { SheetEdge::Top } else { SheetEdge::Bottom },
@@ -1454,10 +1464,10 @@ fn drawer_sheet<'a>(
     // container, so the rows never reflow while the sheet opens: they are
     // uncovered, from the pill's side outward.
     let body = container(parts::drawer_body(head, rows))
-        .width(Length::Fixed(drawer::W))
+        .width(Length::Fixed(on.drawer.width()))
         .height(Length::Fixed(height));
     let panel = container(body)
-        .width(Length::Fixed(drawer::W))
+        .width(Length::Fixed(on.drawer.width()))
         .height(Length::Fixed(extent))
         .align_y(if top { Alignment::Start } else { Alignment::End })
         .clip(true);

@@ -33,7 +33,8 @@ impl DrawerKind {
     /// more room (the calendar) says so here and the region follows.
     pub fn width(self) -> f32 {
         match self {
-            DrawerKind::Wifi | DrawerKind::Bluetooth | DrawerKind::Audio | DrawerKind::Calendar => drawer::W,
+            DrawerKind::Wifi | DrawerKind::Bluetooth | DrawerKind::Audio => drawer::W,
+            DrawerKind::Calendar => drawer::CAL_W,
         }
     }
 }
