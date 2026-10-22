@@ -693,8 +693,10 @@ pub const TABLE: &[Key] = &[
         Str("cell"),
         Abyss,
         Live,
-        "Where taskbar popups open: under the cell that was clicked, or at \
-       the pointer.",
+        "Where taskbar popups (tray menus, the tray overflow) open: under the \
+       cell that was clicked, or at the pointer. The wifi and bluetooth \
+       drawers are not popups: they unroll from the bar under their own \
+       cell, like the start menu.",
     ),
     k(
         "bar.eye",
