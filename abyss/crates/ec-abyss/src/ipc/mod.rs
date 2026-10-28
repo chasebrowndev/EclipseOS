@@ -217,7 +217,14 @@ impl IpcState {
     }
 }
 
+/// Where every compositor-side socket lives. `ECLIPSE_SOCKET_DIR` overrides
+/// the default so a second (nested, headless) instance gets sockets of its own
+/// and `ec-ctl` can be pointed at it; it is also what a headless run sets for
+/// itself, so it never collides with the host session's.
 pub(crate) fn socket_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("ECLIPSE_SOCKET_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
     let base = std::env::var_os("XDG_RUNTIME_DIR")?;
     Some(PathBuf::from(base).join("eclipse"))
 }

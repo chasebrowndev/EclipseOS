@@ -143,6 +143,11 @@ pub struct Outputs {
 }
 
 impl Outputs {
+    /// Stop reading and writing the remembered output layout (headless).
+    pub fn disable_persistence(&mut self) {
+        self.persist.disable();
+    }
+
     pub fn new() -> Self {
         Self {
             next_id: 1,

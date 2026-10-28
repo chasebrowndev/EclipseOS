@@ -259,7 +259,9 @@ impl XwmHandler for AbyssState {
         if fullscreen {
             self.xwayland.mapping = Some(element.clone());
         }
+        self.xwayland.requested = Some(requested);
         shell::place_new_window(self, element.clone());
+        self.xwayland.requested = None;
         self.xwayland.mapping = None;
         if fullscreen {
             tracing::info!(class = window.class(), "x11 window mapped fullscreen");
@@ -269,6 +271,14 @@ impl XwmHandler for AbyssState {
             // The state did not stick; the placement configure was withheld.
             shell::arrange(self);
         }
+    }
+
+    /// The X server now lists the window in `_NET_CLIENT_LIST_STACKING`, at the
+    /// top. The stack pushed while it was still being placed did not include
+    /// it, so redo the sync against the compositor's order.
+    fn map_window_notify(&mut self, _xwm: XwmId, _window: X11Surface) {
+        self.xwayland.stacking.clear();
+        xwayland::sync_stacking(self);
     }
 
     /// Override-redirect: menus, tooltips, DnD icons. The client owns their
@@ -552,6 +562,7 @@ impl XwmHandler for AbyssState {
         }
         self.xwayland.unmanaged.clear();
         self.xwayland.unrefreshed.clear();
+        self.xwayland.stacking.clear();
         self.xwayland.wm = None;
         self.xwayland.advertised_scale = None;
         self.xwayland.client_scale = None;

@@ -345,6 +345,7 @@ pub fn arrange(state: &mut AbyssState) {
         arrange_output(state, id);
     }
     raise_override_redirect(state);
+    crate::xwayland::sync_stacking(state);
     refresh_reactive_popups(state);
     // Layout changes are not driven by a client commit: an unmapped surface
     // sends nothing, so without this the last composite stays on screen and a
@@ -696,6 +697,10 @@ pub fn place_new_window(state: &mut AbyssState, window: Window) {
 /// still land. The window keeps its handle and its identity — only where it
 /// sits changes.
 pub fn replace_window(state: &mut AbyssState, window: &Window, placement: &rules::Placement) {
+    // A window the client positions itself is never put into the layout.
+    if is_unmanaged_x11(state, window) {
+        return;
+    }
     for entry in state.outputs.iter_mut() {
         for ws in entry.workspaces.iter_mut() {
             ws.remove(window);
@@ -744,10 +749,19 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
         .workspace
         .map(|n| (n as usize - 1).min(entry.workspaces.len() - 1))
         .unwrap_or(entry.active);
+    // An X11 window floats at the size it asked to map at, clamped to the
+    // output, rather than at half the area (a dialog narrower than its
+    // contents hides its buttons).
+    let x11_request = window.x11_surface().and(state.xwayland.requested);
+    let x11_min = window
+        .x11_surface()
+        .and_then(|x| x.min_size())
+        .unwrap_or_default();
     if placement.float {
         let size = placement
             .size
             .map(Size::from)
+            .or_else(|| x11_request.map(|r| x11_float_size(r.size, x11_min, area.size)))
             .or_else(|| geometry.map(|g| g.size))
             .unwrap_or_else(|| Size::from((area.size.w / 2, area.size.h / 2)));
         // A `position` rule is relative to the output's tiling area, so the
@@ -756,11 +770,11 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
         let loc: Point<i32, Logical> = match placement.position {
             Some((x, y)) => (area.loc.x + x, area.loc.y + y).into(),
             None => match parent_rect {
-                // A transient dialog opens centred over its parent.
-                Some(p) => Point::from((
-                    p.loc.x + (p.size.w - size.w) / 2,
-                    p.loc.y + (p.size.h - size.h) / 2,
-                )),
+                // A transient dialog opens centred over its parent, kept on
+                // the output.
+                Some(p) => centered_in(p, size, area),
+                // An X11 window opens centred, wherever the pointer is.
+                None if x11_request.is_some() => centered_in(area, size, area),
                 None => floating_origin(mode, area, size, pointer, entry.workspaces[ws].floating.len()),
             },
         };
@@ -1444,6 +1458,36 @@ pub(crate) fn floating_origin(
             (area.loc.x + n, area.loc.y + n).into()
         }
     }
+}
+
+/// The size an X11 window floats at: what it asked for, no smaller than its
+/// minimum, no larger than the area.
+pub(crate) fn x11_float_size(
+    requested: Size<i32, Logical>,
+    min: Size<i32, Logical>,
+    area: Size<i32, Logical>,
+) -> Size<i32, Logical> {
+    let w = requested.w.max(min.w).max(1);
+    let h = requested.h.max(min.h).max(1);
+    Size::from((
+        if area.w > 0 { w.min(area.w) } else { w },
+        if area.h > 0 { h.min(area.h) } else { h },
+    ))
+}
+
+/// `size` centred on `anchor`, then moved to lie inside `area` (the area's
+/// origin wins when it does not fit).
+pub(crate) fn centered_in(
+    anchor: Rectangle<i32, Logical>,
+    size: Size<i32, Logical>,
+    area: Rectangle<i32, Logical>,
+) -> Point<i32, Logical> {
+    let max_x = (area.loc.x + area.size.w - size.w).max(area.loc.x);
+    let max_y = (area.loc.y + area.size.h - size.h).max(area.loc.y);
+    Point::from((
+        (anchor.loc.x + (anchor.size.w - size.w) / 2).clamp(area.loc.x, max_x),
+        (anchor.loc.y + (anchor.size.h - size.h) / 2).clamp(area.loc.y, max_y),
+    ))
 }
 
 pub fn toggle_floating(state: &mut AbyssState) {
@@ -2232,7 +2276,7 @@ pub fn move_workspace_to_output(
         .unwrap_or_default();
     let entry = state.outputs.get_mut(from).expect("checked above");
     let tiled = entry.workspaces[target].tiled.windows();
-    let floating: Vec<Floating> = entry.workspaces[target].floating.drain(..).collect();
+    let floating: Vec<Floating> = std::mem::take(&mut entry.workspaces[target].floating);
     let pending: Vec<Window> = std::mem::take(&mut entry.workspaces[target].pending);
     for w in &tiled {
         entry.workspaces[target].tiled.remove(w);
@@ -2342,3 +2386,42 @@ pub fn focus_layer_if_wanted(state: &mut AbyssState, surface: &WlSurface) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod x11_float_tests {
+    use super::*;
+
+    fn sz(w: i32, h: i32) -> Size<i32, Logical> {
+        Size::from((w, h))
+    }
+
+    fn r(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new((x, y).into(), sz(w, h))
+    }
+
+    #[test]
+    fn x11_float_size_keeps_the_request_within_min_and_area() {
+        let area = sz(1920, 1000);
+        assert_eq!(x11_float_size(sz(700, 500), sz(0, 0), area), sz(700, 500));
+        // Below the minimum: the minimum.
+        assert_eq!(x11_float_size(sz(300, 200), sz(600, 400), area), sz(600, 400));
+        // Larger than the output: clamped to it.
+        assert_eq!(x11_float_size(sz(4000, 3000), sz(0, 0), area), sz(1920, 1000));
+        // No area known: the request stands.
+        assert_eq!(x11_float_size(sz(700, 500), sz(0, 0), sz(0, 0)), sz(700, 500));
+    }
+
+    #[test]
+    fn centered_in_stays_on_the_area() {
+        let area = r(0, 30, 1920, 1000);
+        // Over the area itself.
+        assert_eq!(centered_in(area, sz(600, 400), area), Point::from((660, 330)));
+        // Over a parent hanging off the right edge: pulled back in.
+        assert_eq!(
+            centered_in(r(1700, 100, 600, 400), sz(800, 300), area),
+            Point::from((1120, 150))
+        );
+        // Bigger than the area: its origin.
+        assert_eq!(centered_in(area, sz(2000, 1200), area), Point::from((0, 30)));
+    }
+}

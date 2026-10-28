@@ -117,9 +117,13 @@ pub const TABLE: &[Entry] = &[
     // Only asks: the passphrase is typed into trusted UI, never sent here.
     e("secrets_unlock_prompt", Kind::Command, true),
     e("agent_install", Kind::Privileged, true),
-    // Scripted input: the gate is real, the injection path is not (COMP-04).
-    e("type_text", Kind::ScriptedInput, false),
-    e("click_at", Kind::ScriptedInput, false),
+    // Scripted input (COMP-13 §2.2): refused unless `misc { scripted-input }`
+    // is on. OWNER REVIEW: `press_key` and `scroll_at` are new rows beside the
+    // two the spec names; they carry the same kind and so the same gate.
+    e("type_text", Kind::ScriptedInput, true),
+    e("click_at", Kind::ScriptedInput, true),
+    e("press_key", Kind::ScriptedInput, true),
+    e("scroll_at", Kind::ScriptedInput, true),
 ];
 
 /// Which config file an operation names (COMP-13 §1.3). Not a path: the
@@ -593,13 +597,12 @@ mod tests {
     }
 
     #[test]
-    fn phase_two_rows_stay_unimplemented() {
-        // Scripted input (COMP-04) is not Phase 1; the gate must keep answering "not implemented".
+    fn every_row_is_implemented() {
         let pending: Vec<&str> = TABLE
             .iter()
             .filter(|e| !e.implemented)
             .map(|e| e.method)
             .collect();
-        assert_eq!(pending, vec!["type_text", "click_at",]);
+        assert!(pending.is_empty(), "{pending:?}");
     }
 }

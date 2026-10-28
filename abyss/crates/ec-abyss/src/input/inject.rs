@@ -21,6 +21,55 @@ use smithay::{
 
 use crate::state::AbyssState;
 
+use smithay::input::keyboard::{Keycode, Keysym};
+
+/// A key, and the Shift that must be held to get its keysym.
+#[derive(Clone, Copy)]
+struct KeySeq {
+    shift: Option<Keycode>,
+    key: Keycode,
+}
+
+/// Find the key that types `sym` in the seat's active layout, bare or shifted.
+fn find_key(state: &mut AbyssState, sym: u32) -> Option<KeySeq> {
+    let kbd = state.seat.get_keyboard()?;
+    kbd.with_xkb_state(state, |ctx| {
+        let xkb = ctx.xkb().lock().ok()?;
+        // SAFETY: the keymap reference does not outlive the guard.
+        let keymap = unsafe { xkb.keymap() };
+        let active = xkb.active_layout().0;
+        let target = Keysym::new(sym);
+        let shift = Keysym::new(0xffe1);
+        let mut shift_key = None;
+        let mut best: Option<(Keycode, u32)> = None;
+        for raw in keymap.min_keycode().raw()..=keymap.max_keycode().raw() {
+            let code = Keycode::new(raw);
+            let layouts = keymap.num_layouts_for_key(code);
+            if layouts == 0 {
+                continue;
+            }
+            let layout = active.min(layouts - 1);
+            for level in 0..keymap.num_levels_for_key(code, layout).min(2) {
+                let syms = keymap.key_get_syms_by_level(code, layout, level);
+                if level == 0 && shift_key.is_none() && syms == [shift] {
+                    shift_key = Some(code);
+                }
+                if syms.contains(&target) && best.is_none_or(|(_, l)| level < l) {
+                    best = Some((code, level));
+                }
+            }
+        }
+        let (key, level) = best?;
+        match level {
+            0 => Some(KeySeq { shift: None, key }),
+            _ => Some(KeySeq {
+                shift: Some(shift_key?),
+                key,
+            }),
+        }
+    })
+}
+
 impl AbyssState {
     /// Absolute pointer motion, in global compositor coordinates.
     pub fn inject_pointer_absolute(&mut self, location: Point<f64, Logical>, time: u32) {
@@ -227,6 +276,96 @@ impl AbyssState {
             },
         );
         touch.frame(self);
+    }
+
+    /// Scripted click (COMP-13 §2.2): move to `location`, then press and
+    /// release `button` `count` times, through the same entry points a device
+    /// uses so focus rules, grabs and gating all apply.
+    pub fn inject_click(&mut self, location: Point<f64, Logical>, button: u32, count: u32) {
+        let time = self.start_time.elapsed().as_millis() as u32;
+        self.inject_pointer_absolute(location, time);
+        for _ in 0..count {
+            self.pointer_button(button, ButtonState::Pressed, time);
+            self.pointer_button(button, ButtonState::Released, time);
+        }
+    }
+
+    /// Scripted scroll: move to `location`, then one wheel frame of `dx`/`dy`
+    /// detents (positive is down/right).
+    pub fn inject_scroll(&mut self, location: Point<f64, Logical>, dx: f64, dy: f64) {
+        use smithay::backend::input::{Axis, AxisSource};
+        let time = self.start_time.elapsed().as_millis() as u32;
+        self.inject_pointer_absolute(location, time);
+        let mut frame = smithay::input::pointer::AxisFrame::new(time).source(AxisSource::Wheel);
+        for (axis, d) in [(Axis::Horizontal, dx), (Axis::Vertical, dy)] {
+            if d != 0.0 {
+                frame = frame.value(axis, d * 15.0).v120(axis, (d * 120.0) as i32);
+            }
+        }
+        self.inject_pointer_axis(frame);
+    }
+
+    /// Scripted text: each character as the key (and Shift) that types it in
+    /// the active layout. Every character is resolved before any key is sent,
+    /// so a string that cannot be typed types nothing. The text is never
+    /// logged. Returns how many characters were typed.
+    pub fn inject_text(&mut self, text: &str) -> Result<usize, &'static str> {
+        let mut seqs = Vec::with_capacity(text.len());
+        for c in text.chars() {
+            let sym = match c {
+                '\n' => 0xff0d,
+                '\t' => 0xff09,
+                c if c.is_control() => return Err("character cannot be typed"),
+                c => Keysym::from_char(c).raw(),
+            };
+            seqs.push(find_key(self, sym).ok_or("character cannot be typed")?);
+        }
+        let n = seqs.len();
+        for seq in seqs {
+            self.send_seq(seq, &[]);
+        }
+        Ok(n)
+    }
+
+    /// Scripted key by keysym name (`Return`, `Escape`, `a`), with optional
+    /// held modifiers (`ctrl`, `alt`, `shift`, `logo`).
+    pub fn inject_key(&mut self, name: &str, mods: &[&str]) -> Result<(), &'static str> {
+        let sym = smithay::input::keyboard::xkb::keysym_from_name(
+            name,
+            smithay::input::keyboard::xkb::KEYSYM_NO_FLAGS,
+        )
+        .raw();
+        if sym == 0 {
+            return Err("unknown key name");
+        }
+        let mut held = Vec::with_capacity(mods.len());
+        for m in mods {
+            let msym = match *m {
+                "ctrl" => 0xffe3,
+                "alt" => 0xffe9,
+                "shift" => 0xffe1,
+                "logo" | "super" => 0xffeb,
+                _ => return Err("unknown modifier"),
+            };
+            held.push(find_key(self, msym).ok_or("modifier has no key")?.key);
+        }
+        let seq = find_key(self, sym).ok_or("key is not on the active layout")?;
+        self.send_seq(seq, &held);
+        Ok(())
+    }
+
+    fn send_seq(&mut self, seq: KeySeq, held: &[Keycode]) {
+        use smithay::backend::input::KeyState;
+        let time = self.start_time.elapsed().as_millis() as u32;
+        super::idle::on_activity(self);
+        for code in held.iter().copied().chain(seq.shift) {
+            self.keyboard_key(code, KeyState::Pressed, time);
+        }
+        self.keyboard_key(seq.key, KeyState::Pressed, time);
+        self.keyboard_key(seq.key, KeyState::Released, time);
+        for code in seq.shift.into_iter().chain(held.iter().rev().copied()) {
+            self.keyboard_key(code, KeyState::Released, time);
+        }
     }
 
     /// Release every touch point that came down on `surface`.

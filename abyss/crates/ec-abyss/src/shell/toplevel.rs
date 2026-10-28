@@ -303,8 +303,14 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
             );
         }
         // Title-matching rules are re-evaluated on title change (COMP-05 §4).
-        if let Some(placement) = rules::reevaluate(state, &window) {
-            replace_window(state, &window, &placement);
+        // Not for an X11 window that places itself (override-redirect menu,
+        // tooltip): it was never placed by a rule, so the pass would read its
+        // transient/popup hints as a dialog and re-install it as a floating
+        // window centred on the output, away from where X put it.
+        if !is_unmanaged_x11(state, &window) {
+            if let Some(placement) = rules::reevaluate(state, &window) {
+                replace_window(state, &window, &placement);
+            }
         }
         if window.toplevel().is_none() {
             // X11: no configure handshake to complete on this side.
