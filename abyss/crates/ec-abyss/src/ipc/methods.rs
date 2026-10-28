@@ -47,6 +47,13 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "set_output" => set_output(state, params),
         "calibrate_output" => calibrate_output(state, params),
         "reload_config" => reload_config(state),
+        // Scripted input (COMP-13 §2.2); the gate already required the
+        // `misc { scripted-input }` toggle to reach these. Tagged `Scripted`,
+        // so a protected surface never takes it.
+        "click_at" => scripted(state, |s| click_at(s, params)),
+        "type_text" => scripted(state, |s| type_text(s, params)),
+        "press_key" => scripted(state, |s| press_key(s, params)),
+        "scroll_at" => scripted(state, |s| scroll_at(s, params)),
         // Annotation overlays (COMP-18 §3). `conn` is the owner: a caller may
         // address only the handles it created.
         "annotation_create" => annotation_create(state, conn, params),
@@ -83,6 +90,87 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         // `handle_line` rejects anything the table marks unimplemented.
         other => Err(RpcError::not_implemented(other)),
     }
+}
+
+// ------------------------------------------------------- scripted input
+
+fn scripted(state: &mut AbyssState, f: impl FnOnce(&mut AbyssState) -> Reply) -> Reply {
+    state.with_origin(crate::input::Origin::Scripted, f)
+}
+
+fn f64_param(params: &Value, name: &str) -> Result<f64, RpcError> {
+    params_obj(params)
+        .get(name)
+        .and_then(Value::as_f64)
+        .filter(|v| v.is_finite())
+        .ok_or_else(|| RpcError::invalid_params(&format!("{name} must be a number")))
+}
+
+fn click_at(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &["x", "y", "button", "count"])?;
+    let (x, y) = (f64_param(params, "x")?, f64_param(params, "y")?);
+    let button = match params_obj(params)
+        .get("button")
+        .and_then(Value::as_str)
+        .unwrap_or("left")
+    {
+        "left" => 0x110,
+        "right" => 0x111,
+        "middle" => 0x112,
+        _ => return Err(RpcError::invalid_params("button is left, right or middle")),
+    };
+    let count = match params_obj(params).get("count") {
+        None => 1,
+        Some(v) => v
+            .as_u64()
+            .filter(|c| (1..=3).contains(c))
+            .ok_or_else(|| RpcError::invalid_params("count is 1 to 3"))? as u32,
+    };
+    state.inject_click((x, y).into(), button, count);
+    Ok(json!({}))
+}
+
+fn scroll_at(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &["x", "y", "dx", "dy"])?;
+    let (x, y) = (f64_param(params, "x")?, f64_param(params, "y")?);
+    let dx = f64_param(params, "dx").unwrap_or(0.0);
+    let dy = f64_param(params, "dy").unwrap_or(0.0);
+    if dx.abs() > 100.0 || dy.abs() > 100.0 {
+        return Err(RpcError::invalid_params("dx and dy are at most 100 detents"));
+    }
+    state.inject_scroll((x, y).into(), dx, dy);
+    Ok(json!({}))
+}
+
+/// The text is never logged or echoed back, only counted.
+fn type_text(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &["text"])?;
+    let text = params_obj(params)
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| RpcError::invalid_params("text must be a string"))?;
+    if text.chars().count() > 4096 {
+        return Err(RpcError::invalid_params("text is at most 4096 characters"));
+    }
+    let typed = state.inject_text(text).map_err(RpcError::invalid_params)?;
+    Ok(json!({"typed": typed}))
+}
+
+fn press_key(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &["key", "modifiers"])?;
+    let key = params_obj(params)
+        .get("key")
+        .and_then(Value::as_str)
+        .ok_or_else(|| RpcError::invalid_params("key must be a keysym name"))?;
+    let mods: Vec<&str> = match params_obj(params).get("modifiers") {
+        None => Vec::new(),
+        Some(v) => v
+            .as_array()
+            .and_then(|a| a.iter().map(Value::as_str).collect())
+            .ok_or_else(|| RpcError::invalid_params("modifiers must be an array of strings"))?,
+    };
+    state.inject_key(key, &mods).map_err(RpcError::invalid_params)?;
+    Ok(json!({}))
 }
 
 // ---------------------------------------------------------------- helpers

@@ -332,15 +332,13 @@ pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool
     if !crate::protocols::protected::gate::focus_allowed(state, &surface) {
         return;
     }
-    // X11 focus is compositor-driven: activate, raise in the X stack, then
-    // let the keyboard follow (COMP-07 §1).
+    // X11 focus is compositor-driven: activate, then let the keyboard follow (COMP-07 §1).
     if let Some(x11) = window.x11_surface() {
         x11.set_activated(true).ok();
-        if raise {
-            if let Some(wm) = state.xwayland.wm.as_mut() {
-                let _ = wm.raise_window(x11);
-            }
-        }
+        // The X stack follows the compositor's, not the other way round:
+        // `arrange` below ends in `xwayland::sync_stacking`. Raising the
+        // focused window here put a tiled window above the floating dialogs
+        // the compositor draws over it.
         let others: Vec<Window> = state.space.elements().filter(|w| *w != window).cloned().collect();
         for w in others {
             if let Some(other) = w.x11_surface() {
