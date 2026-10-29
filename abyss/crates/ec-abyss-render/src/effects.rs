@@ -760,9 +760,13 @@ void main() {
     vec2 q = abs(p) - half_inner + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
 
-    // `step` drops everything under the window: the glow is a ring, so a
-    // translucent window is not tinted by its own glow.
-    float a = (1.0 - smoothstep(0.0, blur, d)) * step(0.0, d);
+    // A squared falloff reads as light spreading rather than a band, and the
+    // glow eases in from the window edge (as the shadow does) so it never
+    // starts at full strength against the rim. Nothing is drawn under the
+    // window: the glow is a ring, so a translucent window is not tinted by
+    // its own glow.
+    float fall = 1.0 - smoothstep(0.0, blur, d);
+    float a = fall * fall * smoothstep(0.0, blur * 0.3, d);
     gl_FragColor = shadow_color * (a * alpha);
 }
 "#;
@@ -847,13 +851,16 @@ void main() {
     float ambient_sigma = max(range * mix(0.24, 0.33, focus), 1.0);
     float d_contact = rounded_box(p - centre - vec2(0.0, drop * 0.2), half_size, r);
     float d_ambient = rounded_box(p - centre - vec2(0.0, drop), half_size, r);
-    float contact = soft(d_contact, contact_sigma) * mix(0.16, 0.22, focus);
-    float ambient = soft(d_ambient, ambient_sigma) * mix(0.26, 0.42, focus);
+    float contact = soft(d_contact, contact_sigma) * mix(0.08, 0.12, focus);
+    float ambient = soft(d_ambient, ambient_sigma) * mix(0.22, 0.34, focus);
     float a = 1.0 - (1.0 - contact) * (1.0 - ambient);
 
     // Zero at the element edge (`d_ambient` >= range all round it).
     a *= 1.0 - smoothstep(range * 0.5, range, d_ambient);
-    a *= step(0.0, d_in);
+    // Nothing under the window, and the shadow eases in from its edge rather
+    // than starting at full strength: a dark band hugging the rim reads as a
+    // square patch in each rounded corner, and the rim already marks the edge.
+    a *= smoothstep(0.0, range * 0.4, d_in);
     gl_FragColor = vec4(0.0, 0.0, 0.0, a * alpha);
 }
 "#;
