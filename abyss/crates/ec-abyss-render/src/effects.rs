@@ -851,8 +851,13 @@ void main() {
     float ambient_sigma = max(range * mix(0.40, 0.50, focus), 1.0);
     float d_contact = rounded_box(p - centre - vec2(0.0, drop * 0.2), half_size, r);
     float d_ambient = rounded_box(p - centre - vec2(0.0, drop), half_size, r);
-    float contact = soft(d_contact, contact_sigma) * mix(0.08, 0.12, focus);
-    float ambient = soft(d_ambient, ambient_sigma) * mix(0.34, 0.46, focus);
+    // The boxes sit `drop` lower than the window, so a window's rounded
+    // bottom corners lie inside them: coverage there would be full strength,
+    // a dark wedge filling the cutout. Measure from the box edge outward only
+    // (coverage caps at one half, its value at the edge), so the corner is as
+    // dark as the straight edge beside it.
+    float contact = soft(max(d_contact, 0.0), contact_sigma) * mix(0.08, 0.12, focus);
+    float ambient = soft(max(d_ambient, 0.0), ambient_sigma) * mix(0.34, 0.46, focus);
     float a = 1.0 - (1.0 - contact) * (1.0 - ambient);
 
     // Zero at the element edge (`d_ambient` >= range all round it).
