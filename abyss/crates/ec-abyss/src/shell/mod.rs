@@ -1305,9 +1305,12 @@ pub fn minimize_window(state: &mut AbyssState, window: &Window) {
     // The X11 equivalent of the xdg state above: `_NET_WM_STATE_HIDDEN` is how
     // a client learns it is iconic and, on restore, that it is shown again. A
     // Wine game that iconified itself and never hears it was restored keeps
-    // its swapchain parked, which is a black window.
+    // its swapchain parked, which is a black window. Wine reads only the ICCCM
+    // `WM_STATE`, never `_NET_WM_STATE_HIDDEN`: without the Iconic → Normal
+    // transition `set_mapped` writes, it never learns it was restored.
     if let Some(x11) = window.x11_surface() {
         let _ = x11.set_suspended(true);
+        let _ = x11.set_mapped(false);
     }
     if state.focus.as_ref() == Some(window) {
         state.focus = None;
@@ -1350,6 +1353,7 @@ pub fn unminimize_window(state: &mut AbyssState, window: &Window) {
             .insert(window.clone(), None, area, pointer),
     }
     if let Some(x11) = window.x11_surface() {
+        let _ = x11.set_mapped(true);
         let _ = x11.set_suspended(false);
     }
     arrange(state);
