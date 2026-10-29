@@ -135,8 +135,8 @@ struct Bezel {
     inner: i32,
     /// Nothing shows through the window itself, so only the ring is glass.
     opaque: bool,
-    /// The hairline colour, premultiplied: the border colour, crossfading
-    /// with focus like the painted border does.
+    /// The hairline colour, premultiplied white, dimmed while unfocused and
+    /// crossfading with focus like the painted border does.
     rim: [f32; 4],
 }
 
@@ -145,7 +145,7 @@ struct Bezel {
 /// this output, a border to replace, and a window that is not
 /// fullscreen (those have no border inset to fill).
 fn bezel_width(mode: BlurMode, glass: bool, fullscreen: bool, border: i32, upscale: f64) -> Option<i32> {
-    (mode == BlurMode::Glass && glass && !fullscreen && border > 0)
+    (matches!(mode, BlurMode::Glass | BlurMode::Frost) && glass && !fullscreen && border > 0)
         .then(|| ((border as f64 * upscale).round() as i32).max(1))
 }
 
@@ -257,19 +257,29 @@ fn is_fullscreen(window: &Window) -> bool {
     window.x11_surface().is_some_and(|x| x.is_fullscreen())
 }
 
-/// Whether the glass program can draw on `output` this frame: compiled on
-/// first use, and never on a rotated output (see [`effects::fb_y_mirrored`]).
-fn glass_ready(renderer: &mut GlesRenderer, store: &mut BorderStore, output: &Output) -> bool {
+/// Whether `mode`'s backdrop program (glass or frost) can draw a bezel on
+/// `output` this frame: compiled on first use, and never on a rotated output
+/// (see [`effects::fb_y_mirrored`]).
+fn bezel_ready(
+    renderer: &mut GlesRenderer,
+    store: &mut BorderStore,
+    output: &Output,
+    mode: BlurMode,
+) -> bool {
     if effects::fb_y_mirrored(output.current_transform()).is_none() || output.current_mode().is_none() {
         return false;
     }
-    if store.glass.is_none() {
-        match effects::compile_glass(renderer) {
-            Ok(program) => store.glass = Some(program),
-            Err(err) => tracing::warn!(?err, "compiling the glass shader; painted borders"),
+    let (slot, compile, what): (_, fn(&mut GlesRenderer) -> _, _) = match mode {
+        BlurMode::Frost => (&mut store.frost, effects::compile_frost, "frost"),
+        _ => (&mut store.glass, effects::compile_glass, "glass"),
+    };
+    if slot.is_none() {
+        match compile(renderer) {
+            Ok(program) => *slot = Some(program),
+            Err(err) => tracing::warn!(?err, shader = what, "compiling a bezel shader; painted borders"),
         }
     }
-    store.glass.is_some()
+    slot.is_some()
 }
 
 /// The corner radius a layer-shell surface's backdrop is masked with.
@@ -774,9 +784,14 @@ fn insert_blur(
             }
             let program = slot.clone()?;
             let mut uniforms = match mode {
-                BlurMode::Frost => {
-                    effects::frost_uniforms(region, fb_height, mirrored, scaled_radius, cfg.frost.tint)
-                }
+                BlurMode::Frost => effects::frost_uniforms(
+                    region,
+                    fb_height,
+                    mirrored,
+                    scaled_radius,
+                    cfg.frost.tint,
+                    bezel.map(|b| (b.inner, b.opaque, b.rim)),
+                ),
                 BlurMode::Glass => {
                     let refraction = (cfg.glass.refraction as f64 * upscale) as f32;
                     // A bezel lenses gently: at most 4 px, across the ring only.
@@ -811,6 +826,7 @@ fn insert_blur(
         // COMP-02 §3: refraction samples up to this far outside the region,
         // so damage that far out must invalidate the backdrop too.
         let glass = mode == BlurMode::Glass && program.is_some();
+        let frost = mode == BlurMode::Frost && program.is_some();
         let reach = if glass {
             effects::glass_reach(cfg.glass.refraction, upscale)
         } else {
@@ -818,7 +834,7 @@ fn insert_blur(
         };
 
         // Over an opaque window only the bezel's ring is ever seen.
-        let ring = bezel.filter(|b| b.opaque && glass).map(|b| {
+        let ring = bezel.filter(|b| b.opaque && (glass || frost)).map(|b| {
             (
                 b.inner,
                 (config.decoration.rounding.max(0) as f64 * upscale).ceil() as i32,
@@ -855,6 +871,9 @@ fn insert_blur(
 /// A bezel's largest refraction, logical px: felt at the window edge, never a
 /// funhouse.
 const BEZEL_REFRACTION: f64 = 4.0;
+
+/// How much of the neutral hairline an unfocused window's bezel keeps.
+const BEZEL_DIM: f32 = 0.6;
 
 /// Windows that have left the space, still playing out (COMP-02 §9), front
 /// to back, above the mapped windows: a closing window was usually on top.
@@ -1301,7 +1320,8 @@ fn window_elements(
     let glow = glow_program(renderer, store, output, config, &live);
     let upscale = scale.x.max(scale.y);
     // Compiled (and checked) only once some window actually wants a bezel.
-    let mut glass: Option<bool> = None;
+    // Whether the bezel's program (glass, frost) can draw here, per mode.
+    let mut bezel_ok: [Option<bool>; 2] = [None; 2];
 
     let keep_frames = anim::resolve(
         &config.animations,
@@ -1531,13 +1551,16 @@ fn window_elements(
             None => 0,
         };
         let border_size = config.general.border_size;
-        let bezel = match border.is_some() && mode == BlurMode::Glass && geo.is_some() {
-            true => {
-                let ready = *glass.get_or_insert_with(|| glass_ready(renderer, store, output));
-                bezel_width(mode, ready, is_fullscreen(&window), border_size, upscale)
-            }
-            false => None,
-        };
+        let bezel =
+            match border.is_some() && matches!(mode, BlurMode::Glass | BlurMode::Frost) && geo.is_some() {
+                true => {
+                    let slot = (mode == BlurMode::Frost) as usize;
+                    let ready =
+                        *bezel_ok[slot].get_or_insert_with(|| bezel_ready(renderer, store, output, mode));
+                    bezel_width(mode, ready, is_fullscreen(&window), border_size, upscale)
+                }
+                false => None,
+            };
         // A scaled window is drawn through `ScaledElement` about `origin`
         // (output-local physical); its opaque regions scale with it.
         let scaled = t.scaled().then(|| {
@@ -1592,14 +1615,9 @@ fn window_elements(
             })
             .map(|(region, radius, bezel, shape)| {
                 let bezel = bezel.map(|(inner, opaque)| {
-                    // Config colours are straight alpha; premultiply before
-                    // the focus crossfade so it stays linear.
-                    let pm = |[r, g, b, a]: [f32; 4]| [r * a, g * a, b * a, a];
-                    let rim = store.anim.border_color(
-                        &window,
-                        pm(config.general.col_active),
-                        pm(config.general.col_inactive),
-                    );
+                    // The layer's neutral white hairline; focus only dims it,
+                    // crossfading like the painted border does.
+                    let rim = store.anim.border_color(&window, [1.0; 4], [BEZEL_DIM; 4]);
                     Bezel { inner, opaque, rim }
                 });
                 (region, radius, bezel, shape)
@@ -2487,9 +2505,10 @@ mod tests {
         assert_eq!(bezel_width(BlurMode::Glass, true, true, 6, 1.0), None);
         assert_eq!(bezel_width(BlurMode::Glass, true, false, 0, 1.0), None);
         assert_eq!(bezel_width(BlurMode::Glass, false, false, 6, 1.0), None);
-        for mode in [BlurMode::Off, BlurMode::Blur, BlurMode::Frost] {
+        for mode in [BlurMode::Off, BlurMode::Blur] {
             assert_eq!(bezel_width(mode, true, false, 6, 1.0), None);
         }
+        assert_eq!(bezel_width(BlurMode::Frost, true, false, 6, 1.0), Some(6));
         // Without a bezel the window rect is unchanged, and opaque asks nothing.
         let rect = r(100, 50, 300, 200);
         assert_eq!(
