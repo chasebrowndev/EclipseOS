@@ -159,11 +159,7 @@ pub fn compile_rounded_shaped(renderer: &mut GlesRenderer) -> Result<GlesTexProg
 pub fn compile_frost_shaped(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
     renderer.compile_custom_texture_shader(
         shaped_source(&format!("{BACKDROP_HEAD}{FROST_BODY}")),
-        &with_shape(&[
-            ("win_rect", UniformType::_4f),
-            ("radius", UniformType::_1f),
-            ("frost_tint", UniformType::_4f),
-        ]),
+        &with_shape(&FROST_UNIFORMS),
     )
 }
 
@@ -275,22 +271,50 @@ float grain(vec2 p) {
 /// static grain hashed from the framebuffer position (COMP-02 §9).
 const FROST_BODY: &str = r#"
 uniform vec4 frost_tint;
+uniform float y_sign;     // -1 when the framebuffer is y-mirrored
+uniform vec4 rim_color;   // premultiplied bezel hairline colour
+uniform float inner;      // bezel width, physical px; 0 off the bezel
+uniform float opaque;     // 1 when the window inside the bezel is opaque
+
+const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // top-left, y down
+// The glass program's neutral hairline, so a bezel reads the same in both.
+const float LINE_BASE = 0.1;
+const float LINE_TL = 0.26;
+const float LINE_BR = 0.07;
 
 void main() {
     vec4 color = texture2D(tex, v_coords);
     color.rgb = mix(color.rgb, frost_tint.rgb, frost_tint.a);
     color.rgb = clamp(color.rgb + (grain(floor(gl_FragCoord.xy)) - 0.5) * 0.035, 0.0, 1.0);
-    color = finish(color);
 
 #ifdef SHAPED
     float d = shape_sd(gl_FragCoord.xy);
 #else
     vec2 half_size = win_rect.zw * 0.5;
     vec2 p = gl_FragCoord.xy - (win_rect.xy + half_size);
+    p.y *= y_sign;
     float r = min(radius, min(half_size.x, half_size.y));
     vec2 q = abs(p) - half_size + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
 #endif
+    // Under an opaque window only the ring can show.
+    if (opaque > 0.5 && d < -inner - 1.0) {
+        gl_FragColor = vec4(0.0);
+        return;
+    }
+#ifndef SHAPED
+    // Bezel hairline: a 1.25 px band inside the mask edge, lit top-left.
+    if (inner > 0.0) {
+        vec2 s = vec2(p.x < 0.0 ? -1.0 : 1.0, p.y < 0.0 ? -1.0 : 1.0);
+        vec2 grad = (q.x > 0.0 && q.y > 0.0) ? normalize(q) : (q.x > q.y ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
+        grad *= s;
+        float band = 1.0 - smoothstep(0.0, 1.25, -d);
+        float lobe = LINE_BASE + LINE_TL * max(dot(grad, LIGHT), 0.0) + LINE_BR * max(dot(grad, -LIGHT), 0.0);
+        vec3 tint = rim_color.rgb / max(rim_color.a, 0.0001);
+        color.rgb = mix(color.rgb, tint, clamp(band * lobe * rim_color.a, 0.0, 1.0));
+    }
+#endif
+    color = finish(color);
     gl_FragColor = color * (1.0 - smoothstep(-0.5, 0.5, d));
 }
 "#;
@@ -309,10 +333,10 @@ void main() {
 /// A window bezel (`inner` > 0) is the same glass laid as a ring of that width
 /// around the window: the roll-off spans only the ring, so nothing under the
 /// window is ever bent, a faint dark seam marks where glass meets content, and
-/// the hairline takes the window's border colour (`rim_color`, premultiplied,
-/// its alpha the line's strength). Over an opaque window nothing inside the
-/// ring is drawn at all. Off the bezel `rim_color` is opaque white, which is
-/// the neutral hairline unchanged.
+/// the hairline is the same neutral one a layer wears (`rim_color`, white
+/// premultiplied, its alpha dimming it while the window is unfocused). Over an
+/// opaque window nothing inside the ring is drawn at all. Off the bezel
+/// `rim_color` is opaque white.
 const GLASS_BODY: &str = r#"
 uniform vec2 px_uv;       // 1 / backdrop texture size
 uniform float y_sign;     // -1 when the framebuffer is y-mirrored
@@ -334,13 +358,8 @@ const float SMOKE_MIX = 0.28;
 const float LINE_BASE = 0.05;
 const float LINE_TL = 0.13;
 const float LINE_BR = 0.035;
-// Bezel hairline, times the border colour's alpha: a crisp line all round,
-// brightest top-left.
-const float BEZEL_BASE = 0.4;
-const float BEZEL_TL = 0.5;
-const float BEZEL_BR = 0.1;
 // Darkening of the 1 px seam where the bezel meets the window.
-const float SEAM = 0.3;
+const float SEAM = 0.1;
 
 vec4 blurred_at(vec2 uv) {
     return texture2D(tex, clamp(uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5));
@@ -413,9 +432,7 @@ void main() {
     float band = 1.0 - smoothstep(0.0, 1.25, -d);
     float tl = max(dot(grad, LIGHT), 0.0);
     float br = max(dot(grad, -LIGHT), 0.0);
-    float lobe = inner > 0.0
-        ? BEZEL_BASE + BEZEL_TL * tl + BEZEL_BR * br
-        : LINE_BASE + LINE_TL * tl + LINE_BR * br;
+    float lobe = LINE_BASE + LINE_TL * tl + LINE_BR * br;
     vec3 tint = rim_color.rgb / max(rim_color.a, 0.0001);
     c = mix(c, tint, clamp(band * lobe * rim_color.a * rim * 2.0, 0.0, 1.0));
 
@@ -431,15 +448,22 @@ void main() {
 }
 "#;
 
+/// The frost program's uniforms, in the order [`frost_uniforms`] sets them.
+const FROST_UNIFORMS: [(&str, UniformType); 7] = [
+    ("win_rect", UniformType::_4f),
+    ("radius", UniformType::_1f),
+    ("frost_tint", UniformType::_4f),
+    ("y_sign", UniformType::_1f),
+    ("rim_color", UniformType::_4f),
+    ("inner", UniformType::_1f),
+    ("opaque", UniformType::_1f),
+];
+
 /// Compile the frost backdrop program (COMP-02 §9). Cached by the caller.
 pub fn compile_frost(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
     renderer.compile_custom_texture_shader(
         format!("{BACKDROP_HEAD}{FROST_BODY}"),
-        &[
-            UniformName::new("win_rect", UniformType::_4f),
-            UniformName::new("radius", UniformType::_1f),
-            UniformName::new("frost_tint", UniformType::_4f),
-        ],
+        &FROST_UNIFORMS.map(|(name, ty)| UniformName::new(name, ty)),
     )
 }
 
@@ -502,16 +526,28 @@ pub fn compile_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, Gles
     renderer.compile_custom_texture_shader(format!("{BACKDROP_HEAD}{GLASS_BODY}"), &names)
 }
 
-/// [`rounding_uniforms`] plus the frost tint (straight alpha, as configured).
+/// [`rounding_uniforms`] plus the frost tint (straight alpha, as configured)
+/// and a window bezel's `(width, opaque, premultiplied hairline colour)`;
+/// `None` is plain frost, no hairline.
 pub fn frost_uniforms(
     rect: Rectangle<i32, Physical>,
     fb_height: i32,
     mirrored: bool,
     radius: f32,
     tint: [f32; 4],
+    bezel: Option<(i32, bool, [f32; 4])>,
 ) -> Vec<Uniform<'static>> {
+    let (inner, opaque, rim_color) = bezel.map_or((0.0, 0.0, [0.0; 4]), |(inner, opaque, rim)| {
+        (inner.max(0) as f32, if opaque { 1.0f32 } else { 0.0 }, rim)
+    });
     let mut u = rounding_uniforms(rect, fb_height, mirrored, radius);
-    u.push(Uniform::new("frost_tint", tint));
+    u.extend([
+        Uniform::new("frost_tint", tint),
+        Uniform::new("y_sign", if mirrored { -1.0f32 } else { 1.0 }),
+        Uniform::new("rim_color", rim_color),
+        Uniform::new("inner", inner),
+        Uniform::new("opaque", opaque),
+    ]);
     u
 }
 

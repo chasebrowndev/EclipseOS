@@ -511,12 +511,15 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
     }
     for (w, rect) in floating {
         // Fullscreen windows fill their area exactly; no border inset.
-        let inner = if state.fullscreen.contains_key(&w) {
-            rect
+        let full = state.fullscreen.contains_key(&w);
+        let inner = if full { rect } else { shrink(rect, border) };
+        // Fullscreen ignores the client's size hints: a game floated at a
+        // pinned windowed size (min == max) would otherwise be held to it.
+        let size = if full {
+            inner.size
         } else {
-            shrink(rect, border)
+            clamp_size(&w, inner.size, false)
         };
-        let size = clamp_size(&w, inner.size, false);
         if mapping.as_ref() != Some(&w) {
             configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
         }
@@ -1492,6 +1495,15 @@ pub(crate) fn centered_in(
 
 pub fn toggle_floating(state: &mut AbyssState) {
     let Some(window) = state.focus.clone() else { return };
+    // Leave fullscreen first, or the `fullscreen` entry outlives the float and
+    // the next fullscreen bind reads it as "already on".
+    if state.fullscreen.contains_key(&window) {
+        if let Some(toplevel) = window.toplevel().cloned() {
+            unfullscreen_toplevel_now(state, &toplevel);
+        } else {
+            set_x11_fullscreen_now(state, &window, false);
+        }
+    }
     let Some(id) = output_of_window(state, &window).or_else(|| state.outputs.focused().map(|e| e.id)) else {
         return;
     };
