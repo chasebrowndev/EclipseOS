@@ -760,9 +760,13 @@ void main() {
     vec2 q = abs(p) - half_inner + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
 
-    // `step` drops everything under the window: the glow is a ring, so a
-    // translucent window is not tinted by its own glow.
-    float a = (1.0 - smoothstep(0.0, blur, d)) * step(0.0, d);
+    // A squared falloff reads as light spreading rather than a band, and the
+    // glow eases in from the window edge (as the shadow does) so it never
+    // starts at full strength against the rim. Nothing is drawn under the
+    // window: the glow is a ring, so a translucent window is not tinted by
+    // its own glow.
+    float fall = 1.0 - smoothstep(0.0, blur, d);
+    float a = fall * fall * smoothstep(0.0, blur * 0.3, d);
     gl_FragColor = shadow_color * (a * alpha);
 }
 "#;
