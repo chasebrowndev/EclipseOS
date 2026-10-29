@@ -2420,7 +2420,7 @@ mod tests {
             "glow does not drop"
         );
         assert_eq!(params[2], 0.0);
-        assert_eq!(shadow_drop(20), 6);
+        assert_eq!(shadow_drop(20), 0, "an even halo, not an offset shadow");
     }
 
     #[test]
