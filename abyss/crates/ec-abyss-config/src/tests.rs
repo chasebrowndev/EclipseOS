@@ -1381,6 +1381,65 @@ fn annotation_and_oracle_eyes_edits_round_trip() {
 }
 
 #[test]
+fn windowrule_translucent_region_takes_top_and_opacity() {
+    for (value, want) in [("top=84 opacity=0.6", (84, 0.6)), ("opacity=1 top=0", (0, 1.0))] {
+        let cfg = blur_cfg(&format!(
+            "windowrule \"translucent-region {value}\" {{ app-id \"a\"; }}\n"
+        ));
+        assert!(cfg.errors.is_empty(), "{value}: {:?}", cfg.errors);
+        assert_eq!(
+            cfg.window_rules[0].action,
+            RuleAction::TranslucentRegion {
+                top: want.0,
+                opacity: want.1
+            }
+        );
+    }
+    for bad in [
+        "",
+        " top=40",
+        " opacity=0.5",
+        " top=-1 opacity=0.5",
+        " top=40 opacity=1.5",
+        " top=40 opacity=-0.1",
+        " top=4.5 opacity=0.5",
+        " top=40 opacity=0.5 extra=1",
+        " top=40 top=41 opacity=0.5",
+        " 40 0.5",
+    ] {
+        let cfg = blur_cfg(&format!(
+            "windowrule \"translucent-region{bad}\" {{ app-id \"a\"; }}\n"
+        ));
+        assert!(cfg.window_rules.is_empty(), "{bad:?} must be rejected");
+    }
+}
+
+#[test]
+fn windowrule_floating_matcher_takes_a_bool() {
+    for (spelling, want) in [
+        ("floating", true),
+        ("floating #true", true),
+        ("floating #false", false),
+        // Bare `true` is a KDL v2 syntax error; the quoted words are accepted.
+        ("floating \"true\"", true),
+        ("floating \"false\"", false),
+    ] {
+        let cfg = blur_cfg(&format!(
+            "windowrule \"translucent-region top=74 opacity=0.6\" {{ app-id \"firefox\"; {spelling}; }}\n"
+        ));
+        assert!(cfg.errors.is_empty(), "{spelling}: {:?}", cfg.errors);
+        assert_eq!(cfg.window_rules[0].matchers.floating, Some(want), "{spelling}");
+    }
+    // A floating matcher alone is a matcher, so the rule is not match-all.
+    let cfg = blur_cfg("windowrule \"opacity 0.9\" { floating #false; }\n");
+    assert_eq!(cfg.window_rules.len(), 1);
+    let cfg = blur_cfg("windowrule \"opacity 0.9\" { floating \"maybe\"; }\n");
+    assert!(cfg.window_rules.is_empty());
+    let cfg = blur_cfg("windowrule \"opacity 0.9\" { floating 3; }\n");
+    assert!(cfg.window_rules.is_empty());
+}
+
+#[test]
 fn windowrule_blur_takes_a_mode_or_a_bool() {
     for (value, want) in [
         ("true", BlurRule::On),

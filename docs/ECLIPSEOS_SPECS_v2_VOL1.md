@@ -2676,8 +2676,12 @@ A toplevel is translucent when its alpha (`active-opacity` /
 `inactive-opacity`, or an `opacity` rule) is below 1.0 *(C-14)* **or** its
 surfaces' opaque region leaves part of its geometry uncovered (ignoring the
 corners the rounding mask hides); a buffer without an alpha channel counts
-as fully opaque. Content is never faded to obtain glass. A `blur` rule
-(COMP-05 §4) overrides the global switch for that window but never blurs an
+as fully opaque. Content is never faded to obtain glass, *(C-21)* except
+within a user-written `translucent-region` rule's strip (COMP-05 §4): for a
+client that submits opaque buffers, the top `top` logical px draw at the rule's
+alpha with the window's blur mode behind them, overriding the client's opaque
+region and an empty `ext_background_effect_v1` area for that strip only. A `blur`
+rule (COMP-05 §4) overrides the global switch for that window but never blurs an
 opaque one. Layer-shell surfaces get a backdrop wherever their opaque region
 leaves glass. Rounding applies to that backdrop: `decoration.rounding` by
 default; a layer anchored to three edges or to an opposite pair stays square,
@@ -3381,7 +3385,13 @@ Layout is a trait; two implementations plus floating in v1.
 
 ## 4. Rules Engine
 
-Matched at map time, re-evaluated on title change.
+~~Matched at map time, re-evaluated on title change.~~ *(C-22)* Matched at map
+time. Placement actions (`float`, `tile`, `size`, `position`, `output`,
+`workspace`, `fullscreen`) apply once, at map. Property actions (`opacity`,
+`blur`, `translucent-region`, …) re-apply on every surface commit and when the
+window is floated or tiled, so a matcher on live state follows it. Matchers add
+`floating #true|#false` (on a workspace's floating list now; a fullscreen window
+counts as floating).
 
 ```kdl
 windowrule "float" {
@@ -5267,6 +5277,7 @@ above gains:
 | `calibrate_output` | overscan calibration (COMP-03 §1.1) |
 | `annotation_create` / `annotation_update` / `annotation_destroy` / `annotation_clear` | untrusted overlay pass (COMP-18 §3); a Command, not Privileged |
 | `set_idle_inhibit` | idle inhibit on behalf of a D-Bus client, lapses with the connection (ADR 0051) |
+| `set_client_strips` | `{opacity, windows:[{width,height,content}]}`: pins a `translucent-region` strip on the caller's parent process's toplevels whose surface size matches; replaces the connection's previous set and lapses with it. Command, owner uid, refused while hook `client-strips` is off; a user rule wins (ADR 0079) |
 | `get_config` / `validate_config` / `set_config_value` | the §1.4 write API; which file a write may touch is decided by the file, not the method kind |
 | `unsubscribe` | ends a `subscribe` stream |
 
@@ -7388,6 +7399,8 @@ against source before it was written. Nothing was renumbered.
 | C-18 | COMP-02 §9, §11; COMP-13 §1.1; COMP-14 §6 | *(2026-10-04, owner ruling)* Animations ship on: `animations { preset "smooth" }`, with per-event styles and presets `off`/`subtle`/`smooth`/`lively` (ADR 0073). Animations are render-only rather than geometry-only (offset, scale, alpha, add-on transition shaders); closing and leaving windows are drawn as ghosts that are never listed, hit-tested or captured. Amends C-01's "animations off" | yes |
 | C-19 | COMP-05 §4 | *(2026-10-13, owner ruling)* A fullscreen window owns its workspace: it tops the stack under only its own dialogs, and focus that restacks to another window on that workspace ends it. A new window that may not take focus maps behind it and is marked urgent | yes |
 | C-20 | COMP-05 §4; COMP-07 §1 | *(2026-10-13, owner ruling)* Three window states: minimized, in the layout, fullscreen. Maximize is removed. xdg `set_maximized` is answered without `Maximized`; X11 maximize requests are declined and `_NET_WM_STATE` is cleared. The `maximized` state bit in the scene and agent protocol is always false, and `set_state(maximized)` is refused. Supersedes C-04's maximize semantics | yes |
+| C-21 | COMP-02 §9; COMP-05 §4 | *(2026-10-30, owner ruling)* Content is never faded to obtain glass, with one opt-in exception: a user `translucent-region top=<px> opacity=<0..1>` window rule fades and blurs behind only that top strip, for clients that submit opaque buffers (Firefox on Wayland, ADR 0079) | yes |
+| C-22 | COMP-05 §4 | *(2026-10-30, owner ruling)* The spec follows the code on rule timing: placement actions once at map, property actions on every commit and on a float toggle. New `floating` matcher. Supersedes "re-evaluated on title change" | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing

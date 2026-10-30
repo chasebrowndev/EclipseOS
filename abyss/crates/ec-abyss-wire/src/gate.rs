@@ -71,6 +71,8 @@ pub const TABLE: &[Entry] = &[
     e("move_workspace_to_output", Kind::Command, true),
     e("set_output", Kind::Command, true),
     e("calibrate_output", Kind::Command, true),
+    // ADR 0079: the handler narrows it to the caller's parent's windows.
+    e("set_client_strips", Kind::Command, true),
     // Annotation overlays (COMP-18 §3). Command and not Privileged: the pass
     // is untrusted by construction, carries no phrase, and a caller can affect
     // nothing but the glyphs inside a panel the compositor places.
@@ -227,6 +229,8 @@ pub const HOOKED: &[HookBinding] = &[
     hb("revoke_grants", None, Hook::Agents),
     // Installing an agent package needs the agent stack to review it.
     hb("agent_install", None, Hook::Agents),
+    // The Firefox glass helper (ADR 0079).
+    hb("set_client_strips", None, Hook::ClientStrips),
 ];
 
 /// Hook check, tightened onto the outer [`check`] (the ratchet). A binding

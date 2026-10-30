@@ -936,6 +936,7 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     crate::protocols::standard::foreign_toplevel::window_closed(window);
     let handle = state.ipc.handle_for(window);
     state.ipc.forget_chip(handle);
+    crate::ipc::client_strips::forget_window(state, window);
     crate::ipc::emit(
         state,
         "window",
@@ -1517,6 +1518,7 @@ pub fn toggle_floating(state: &mut AbyssState) {
     let geometry = state.space.element_geometry(&window);
     let mode = state.config.general.floating_placement;
     let pointer = state.pointer_location;
+    let toggled = window.clone();
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let ws = entry.active;
     if entry.workspaces[ws].tiled.contains(&window) {
@@ -1551,6 +1553,10 @@ pub fn toggle_floating(state: &mut AbyssState) {
         }
     }
     arrange(state);
+    // `floating` matchers follow the toggle at once instead of waiting for the
+    // client's next commit. The window is already placed, so this re-applies
+    // property actions only (never `float`/`tile`/placement) and cannot loop.
+    let _ = rules::reevaluate(state, &toggled);
 }
 
 fn toplevel_window(

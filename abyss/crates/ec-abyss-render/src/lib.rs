@@ -423,6 +423,50 @@ fn phys(p: Point<i32, Logical>, scale: Scale<f64>) -> Point<i32, Physical> {
     p.to_f64().to_physical(scale).to_i32_round()
 }
 
+/// The `translucent-region` strip of a window: the top `top` logical px of its
+/// physical `rect`, at the output `scale`, never taller than the window.
+pub fn strip_rect(rect: Rectangle<i32, Physical>, top: i32, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+    let h = ((top.max(0) as f64 * scale.y).round() as i32).clamp(0, rect.size.h.max(0));
+    Rectangle::new(rect.loc, (rect.size.w, h).into())
+}
+
+/// The blur region behind a window's strip when the window is otherwise
+/// opaque: the strip grown down by the corner radius, so the backdrop's own
+/// rounded bottom corners fall under the opaque page and not in the strip.
+/// Never past the window. `None` for an empty strip.
+pub(crate) fn strip_backdrop(
+    strip: Rectangle<i32, Physical>,
+    rect: Rectangle<i32, Physical>,
+    corner: i32,
+) -> Option<Rectangle<i32, Physical>> {
+    let h = (strip.size.h + corner.max(0)).min(rect.size.h);
+    let region = Rectangle::new(strip.loc, (strip.size.w, h).into());
+    (!strip.is_empty() && !region.is_empty()).then_some(region)
+}
+
+/// Where a window's surface elements are cut so the strip and the rest can be
+/// drawn at different alphas: the output-wide band down to the strip's bottom
+/// edge, and the band below it, each cut to `crop` (the tile or output) too.
+pub(crate) fn strip_crops(
+    strip: Rectangle<i32, Physical>,
+    out_rect: Rectangle<i32, Physical>,
+    crop: Option<Rectangle<i32, Physical>>,
+) -> [Rectangle<i32, Physical>; 2] {
+    let edge = strip.loc.y + strip.size.h;
+    let above = Rectangle::new(
+        out_rect.loc,
+        (out_rect.size.w, (edge - out_rect.loc.y).max(0)).into(),
+    );
+    let below = Rectangle::new(
+        (out_rect.loc.x, edge).into(),
+        (out_rect.size.w, (out_rect.loc.y + out_rect.size.h - edge).max(0)).into(),
+    );
+    [above, below].map(|band| match crop {
+        Some(c) => band.intersection(c).unwrap_or_default(),
+        None => band,
+    })
+}
+
 /// The opaque regions of a surface tree's elements, output-local physical.
 /// Each element reports them relative to its own location.
 fn opaque_of(
@@ -1405,6 +1449,19 @@ fn window_elements(
         } else {
             deco.inactive_opacity
         }) * t.alpha;
+        // `windowrule "translucent-region …"`: the strip's physical rect, the
+        // window's, and the strip's own alpha (times the window's). Only a
+        // toplevel at rest has one; an animating window draws whole.
+        let strip = userdata::strip_of(&window)
+            .filter(|_| !t.scaled() && window.toplevel().is_some())
+            .zip(geo)
+            .map(|((top, strip_alpha), geo)| {
+                let rect = Rectangle::new(
+                    phys(geo.loc - output_geo.loc, scale),
+                    geo.size.to_f64().to_physical(scale).to_i32_round(),
+                );
+                (strip_rect(rect, top, scale), rect, alpha * strip_alpha)
+            });
 
         // The dim overlay belongs above this window but below the ones in
         // front of it, so it is pushed just before the window's own surfaces.
@@ -1429,7 +1486,7 @@ fn window_elements(
         // Popups are split off a cropped window so a menu that opens past the
         // tile edge is not cut; smithay's `render_elements` puts them first.
         let (popups, surfaces) = match (clip, window.toplevel()) {
-            (Some(_), Some(toplevel)) => {
+            (clip, Some(toplevel)) if clip.is_some() || strip.is_some() => {
                 let surface = toplevel.wl_surface();
                 let popups = PopupManager::popups_for_surface(surface)
                     .flat_map(|(popup, popup_offset)| {
@@ -1464,6 +1521,19 @@ fn window_elements(
                     alpha,
                 ),
             ),
+        };
+        // The strip's copy of the surface tree, at the strip's alpha.
+        let strip_surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = match (strip, window.toplevel())
+        {
+            (Some((_, _, strip_alpha)), Some(toplevel)) => render_elements_from_surface_tree(
+                renderer,
+                toplevel.wl_surface(),
+                phys(render_loc, scale),
+                scale,
+                strip_alpha,
+                Kind::Unspecified,
+            ),
+            _ => Vec::new(),
         };
         let tile_crop = clip.map(|c| {
             let c = t.map(c, pivot);
@@ -1581,6 +1651,9 @@ fn window_elements(
                 }
             })
         });
+        // A `translucent-region` rule asks for glass behind the strip, so a
+        // toolkit's empty blur region (GTK declares one) does not veto it.
+        let explicit = explicit.filter(|a| strip.is_none() || *a != blur::BlurArea::Nothing);
         let backdrop = geo
             .filter(|_| mode != BlurMode::Off)
             .and_then(|geo| {
@@ -1597,20 +1670,45 @@ fn window_elements(
                 };
                 match explicit {
                     Some(area) if !explicit_bezel(&area, rect, bezel) => {
+                        // The strip is translucent whatever the client's
+                        // opaque region says.
+                        let opaque = match strip {
+                            Some((strip, _, _)) => Rectangle::subtract_rects_many(opaque, [strip]),
+                            None => opaque,
+                        };
                         explicit_window_backdrop(area, alpha, corner, opaque, deco.rounding)
                             .map(|(region, radius, shape)| (region, radius, None, shape))
                     }
-                    _ => window_backdrop(
-                        mode,
-                        alpha,
-                        rect,
-                        corner,
-                        opaque,
-                        deco.rounding,
-                        border_size,
-                        bezel,
-                    )
-                    .map(|(region, radius, bezel)| (region, radius, bezel, None)),
+                    _ => {
+                        let backdrop = |opaque| {
+                            window_backdrop(
+                                mode,
+                                alpha,
+                                rect,
+                                corner,
+                                opaque,
+                                deco.rounding,
+                                border_size,
+                                bezel,
+                            )
+                        };
+                        // The client's opaque region must not hide the glass
+                        // behind the strip. A bezel already blurs the whole
+                        // bordered rect, so the strip only has to stop
+                        // counting as opaque there; otherwise a window with
+                        // nothing translucent of its own blurs just the strip.
+                        match strip {
+                            Some((strip, _, _)) if bezel.is_some() => {
+                                backdrop(Rectangle::subtract_rects_many(opaque, [strip]))
+                            }
+                            Some((strip, _, _)) => backdrop(opaque.clone()).or_else(|| {
+                                strip_backdrop(strip, rect, corner)
+                                    .map(|region| (region, deco.rounding, None))
+                            }),
+                            None => backdrop(opaque),
+                        }
+                        .map(|(region, radius, bezel)| (region, radius, bezel, None))
+                    }
                 }
             })
             .map(|(region, radius, bezel, shape)| {
@@ -1625,6 +1723,18 @@ fn window_elements(
 
         // Every surface of one window is masked by the same rectangle, so a
         // window with subsurfaces rounds as a single shape.
+        //
+        // Each band is the surfaces drawn within one crop. A window with a
+        // translucent strip has two: the strip's copy at the strip's alpha
+        // above the strip's bottom edge, the plain one below it. They are
+        // disjoint, so the rounded mask (the whole window's) is shared.
+        let bands = match strip {
+            Some((strip, _, _)) if !shaded => {
+                let [above, below] = strip_crops(strip, out_rect, crop);
+                vec![(strip_surfaces, Some(above)), (surfaces, Some(below))]
+            }
+            _ => vec![(surfaces, crop)],
+        };
         match (scaled, &rounding, geo) {
             // Animating at a scale: the same arms through `ScaledElement`,
             // which carries the mask itself. Idle windows never get here.
@@ -1654,7 +1764,7 @@ fn window_elements(
                         None => out.push(AbyssRenderElement::Scaled(popup)),
                     }
                 }
-                for surface in surfaces {
+                for surface in bands.into_iter().flat_map(|(surfaces, _)| surfaces) {
                     let surface = anim::ScaledElement::new(surface, origin, by, mask.clone());
                     match crop {
                         Some(crop) => out.extend(
@@ -1676,30 +1786,34 @@ fn window_elements(
                     |surface| effects::RoundedElement::new(surface, program.clone(), uniforms.clone());
                 // Unmasked: the mask follows the tile, and would cut the popup too.
                 push_popups(out, popups, scale, overhangs.then_some(out_rect));
-                match crop {
-                    Some(crop) => out.extend(
-                        surfaces
-                            .into_iter()
-                            .filter_map(|s| CropRenderElement::from_element(round(s), scale, crop))
-                            .map(AbyssRenderElement::CroppedRounded),
-                    ),
-                    None => out.extend(
-                        surfaces
-                            .into_iter()
-                            .map(|s| AbyssRenderElement::Rounded(round(s))),
-                    ),
+                for (surfaces, crop) in bands {
+                    match crop {
+                        Some(crop) => out.extend(
+                            surfaces
+                                .into_iter()
+                                .filter_map(|s| CropRenderElement::from_element(round(s), scale, crop))
+                                .map(AbyssRenderElement::CroppedRounded),
+                        ),
+                        None => out.extend(
+                            surfaces
+                                .into_iter()
+                                .map(|s| AbyssRenderElement::Rounded(round(s))),
+                        ),
+                    }
                 }
             }
             _ => {
                 push_popups(out, popups, scale, overhangs.then_some(out_rect));
-                match crop {
-                    Some(crop) => out.extend(
-                        surfaces
-                            .into_iter()
-                            .filter_map(|s| CropRenderElement::from_element(s, scale, crop))
-                            .map(AbyssRenderElement::Cropped),
-                    ),
-                    None => out.extend(surfaces.into_iter().map(AbyssRenderElement::Surface)),
+                for (surfaces, crop) in bands {
+                    match crop {
+                        Some(crop) => out.extend(
+                            surfaces
+                                .into_iter()
+                                .filter_map(|s| CropRenderElement::from_element(s, scale, crop))
+                                .map(AbyssRenderElement::Cropped),
+                        ),
+                        None => out.extend(surfaces.into_iter().map(AbyssRenderElement::Surface)),
+                    }
                 }
             }
         }
@@ -2313,6 +2427,10 @@ pub fn scanout_candidate(space: &Space<Window>, output: &Output, config: &Config
     }
     let geo = space.output_geometry(output)?;
     let window = space.elements_for_output(output).last()?;
+    // A translucent strip is composited by us, like any other alpha.
+    if userdata::strip_of(window).is_some() {
+        return None;
+    }
     let win_geo = space.element_geometry(window)?;
     if !win_geo.contains_rect(geo) {
         return None;
@@ -2460,6 +2578,49 @@ mod tests {
 
     fn r(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Physical> {
         Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn the_strip_is_measured_from_the_top_and_scales() {
+        // A 300x200 logical window at (100, 50).
+        let rect = r(100, 50, 300, 200);
+        assert_eq!(strip_rect(rect, 40, Scale::from(1.0)), r(100, 50, 300, 40));
+        // At scale 2 the window is 600x400 physical and the strip doubles.
+        let rect2 = r(200, 100, 600, 400);
+        assert_eq!(strip_rect(rect2, 40, Scale::from(2.0)), r(200, 100, 600, 80));
+        // Fractional scale rounds; a strip taller than the window is the window.
+        assert_eq!(strip_rect(rect, 40, Scale::from(1.5)).size.h, 60);
+        assert_eq!(strip_rect(rect, 999, Scale::from(1.0)), rect);
+        assert!(strip_rect(rect, 0, Scale::from(1.0)).is_empty());
+    }
+
+    #[test]
+    fn the_strip_blurs_a_region_that_hides_the_bottom_corners() {
+        let rect = r(100, 50, 300, 200);
+        let strip = strip_rect(rect, 40, Scale::from(1.0));
+        // Grown by the corner radius, so the rounded bottom is under the page.
+        assert_eq!(strip_backdrop(strip, rect, 12), Some(r(100, 50, 300, 52)));
+        // Never past the window.
+        let tall = strip_rect(rect, 195, Scale::from(1.0));
+        assert_eq!(strip_backdrop(tall, rect, 12), Some(rect));
+        assert_eq!(
+            strip_backdrop(strip_rect(rect, 0, Scale::from(1.0)), rect, 12),
+            None
+        );
+    }
+
+    #[test]
+    fn the_strip_splits_the_surfaces_into_two_disjoint_bands() {
+        let out = r(0, 0, 1000, 800);
+        let strip = r(100, 50, 300, 40);
+        let [above, below] = strip_crops(strip, out, None);
+        assert_eq!(above, r(0, 0, 1000, 90));
+        assert_eq!(below, r(0, 90, 1000, 710));
+        // A tile crop cuts both.
+        let tile = r(100, 50, 300, 200);
+        let [above, below] = strip_crops(strip, out, Some(tile));
+        assert_eq!(above, r(100, 50, 300, 40));
+        assert_eq!(below, r(100, 90, 300, 160));
     }
 
     #[test]

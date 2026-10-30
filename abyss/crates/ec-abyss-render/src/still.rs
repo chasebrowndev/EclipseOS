@@ -40,7 +40,8 @@ use ec_abyss_config::{BlurMode, Config};
 use crate::{
     blur, effects, explicit_blur, explicit_window_backdrop, glow_colors, glow_program, insert_blur, is_scrim,
     layer_radius, layer_shape, layer_shows, opaque_of, phys, push_dim, push_glow, push_popups, push_shadow,
-    shadow_program, userdata, window_backdrop, AbyssRenderElement, BlurRequest, BorderStore,
+    shadow_program, strip_backdrop, strip_crops, strip_rect, userdata, window_backdrop, AbyssRenderElement,
+    BlurRequest, BorderStore,
 };
 
 /// The capture pass's own effect store. Kept between captures so a
@@ -183,6 +184,23 @@ impl Frame<'_> {
             phys(geo.loc - output_loc, scale),
             geo.size.to_f64().to_physical(scale).to_i32_round(),
         );
+        // `translucent-region`: the strip's copy of the surface tree at the
+        // strip's alpha, drawn above the strip's bottom edge (see the live
+        // path in `window_elements`).
+        let strip =
+            userdata::strip_of(window)
+                .zip(window.toplevel())
+                .map(|((top, strip_alpha), toplevel)| {
+                    let copy = render_elements_from_surface_tree(
+                        renderer,
+                        toplevel.wl_surface(),
+                        render_loc,
+                        scale,
+                        alpha * strip_alpha,
+                        Kind::Unspecified,
+                    );
+                    (strip_rect(rect, top, scale), copy)
+                });
         let global = deco.blur.mode;
         let mode = userdata::blur_of(window).map_or(global, |rule| rule.resolve(global));
         let corner = match self.rounding {
@@ -193,11 +211,22 @@ impl Frame<'_> {
         // `ext_background_effect_v1`, read exactly as the live path does.
         let explicit = smithay::wayland::seat::WaylandFocus::wl_surface(window)
             .and_then(|surface| explicit_blur(&surface, window.bbox().size, render_loc, scale));
+        // A `translucent-region` rule asks for glass behind the strip, so a
+        // toolkit's empty blur region (GTK declares one) does not veto it.
+        let explicit = explicit.filter(|a| strip.is_none() || *a != blur::BlurArea::Nothing);
         let backdrop = (mode != BlurMode::Off)
             .then(|| {
                 let opaque = opaque_of(&surfaces, scale);
                 match explicit {
-                    Some(area) => explicit_window_backdrop(area, alpha, corner, opaque, deco.rounding),
+                    Some(area) => {
+                        // The strip is translucent whatever the client's
+                        // opaque region says.
+                        let opaque = match &strip {
+                            Some((strip, _)) => Rectangle::subtract_rects_many(opaque, [*strip]),
+                            None => opaque,
+                        };
+                        explicit_window_backdrop(area, alpha, corner, opaque, deco.rounding)
+                    }
                     None => window_backdrop(
                         mode,
                         alpha,
@@ -208,25 +237,59 @@ impl Frame<'_> {
                         self.config.general.border_size,
                         None,
                     )
+                    .or_else(|| {
+                        strip.as_ref().and_then(|(strip, _)| {
+                            strip_backdrop(*strip, rect, corner).map(|region| (region, deco.rounding, None))
+                        })
+                    })
                     .map(|(region, radius, _)| (region, radius, None)),
                 }
             })
             .flatten();
 
         push_popups(out, popups, scale, None);
-        match &self.rounding {
-            Some(((fb_height, mirrored), program)) => {
-                let radius = deco.rounding as f64 * scale.x.max(scale.y);
-                let uniforms = effects::rounding_uniforms(rect, *fb_height, *mirrored, radius as f32);
-                out.extend(surfaces.into_iter().map(|s| {
-                    AbyssRenderElement::Rounded(effects::RoundedElement::new(
-                        s,
-                        program.clone(),
-                        uniforms.clone(),
-                    ))
-                }));
+        // Each band is the surfaces drawn within one crop: the whole tree, or
+        // for a strip the strip's copy above its bottom edge and the plain
+        // one below it.
+        let out_rect = Rectangle::new(
+            Point::from((0, 0)),
+            self.output_geo.size.to_f64().to_physical(scale).to_i32_round(),
+        );
+        let bands = match strip {
+            Some((strip, copy)) => {
+                let [above, below] = strip_crops(strip, out_rect, None);
+                vec![(copy, Some(above)), (surfaces, Some(below))]
             }
-            None => out.extend(surfaces.into_iter().map(AbyssRenderElement::Surface)),
+            None => vec![(surfaces, None)],
+        };
+        for (surfaces, crop) in bands {
+            match (&self.rounding, crop) {
+                (Some(((fb_height, mirrored), program)), crop) => {
+                    let radius = deco.rounding as f64 * scale.x.max(scale.y);
+                    let uniforms = effects::rounding_uniforms(rect, *fb_height, *mirrored, radius as f32);
+                    let round = |s| effects::RoundedElement::new(s, program.clone(), uniforms.clone());
+                    match crop {
+                        Some(crop) => out.extend(
+                            surfaces
+                                .into_iter()
+                                .filter_map(|s| CropRenderElement::from_element(round(s), scale, crop))
+                                .map(AbyssRenderElement::CroppedRounded),
+                        ),
+                        None => out.extend(
+                            surfaces
+                                .into_iter()
+                                .map(|s| AbyssRenderElement::Rounded(round(s))),
+                        ),
+                    }
+                }
+                (None, Some(crop)) => out.extend(
+                    surfaces
+                        .into_iter()
+                        .filter_map(|s| CropRenderElement::from_element(s, scale, crop))
+                        .map(AbyssRenderElement::Cropped),
+                ),
+                (None, None) => out.extend(surfaces.into_iter().map(AbyssRenderElement::Surface)),
+            }
         }
 
         if let Some(program) = &self.glow {
