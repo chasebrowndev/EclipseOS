@@ -55,10 +55,12 @@ cargo build --workspace --all-targets
 cargo test --workspace
 cargo deny check advisories bans licenses sources
 abyss/ci/doc-refs.sh             # every repo-rooted path docs/ cites exists
+npx --yes web-ext@8.3.0 lint -s browser/firefox-glass --warnings-as-errors
+packaging/firefox/check-xpi.sh   # signed XPI == browser/firefox-glass (ADR 0079)
 cargo run -- --backend winit    # nested window under the host session (abyss)
 journalctl --user -t ec-abyss -f  # logs (tracing → journald)
 ```
-The first six are exactly what CI runs (`../.github/workflows/gate.yml` — the
+The first eight are exactly what CI runs (`../.github/workflows/gate.yml` — the
 workflows sit at the repository root, one level above this crate tree). If you
 change one, change both — a local gate that differs from CI is worse than no
 local gate.

@@ -1,0 +1,44 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>New Tab</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="../shared/tokens.css" />
+    <link rel="stylesheet" href="newtab.css" />
+  </head>
+  <body>
+    <main class="stage">
+      <section class="clock" aria-label="Time">
+        <div class="time" id="time"><span id="hh">00</span><span class="colon">:</span><span id="mm">00</span></div>
+        <div class="date" id="date"></div>
+      </section>
+
+      <form class="search" id="search" role="search" autocomplete="off">
+        <input id="q" type="text" name="q" placeholder="Search the web" aria-label="Search the web" autofocus />
+        <button type="submit" class="go" aria-label="Search">Search</button>
+      </form>
+
+      <section class="pins" aria-label="Pinned sites">
+        <header class="pins-head">
+          <span class="label">Pinned</span>
+          <button type="button" class="chip" id="edit">Edit</button>
+        </header>
+        <ul class="grid" id="grid"></ul>
+        <form class="add" id="add" hidden autocomplete="off">
+          <input id="add-title" type="text" placeholder="Name" aria-label="Name" maxlength="24" />
+          <input id="add-url" type="text" placeholder="https://example.org" aria-label="Address" />
+          <button type="submit" class="chip">Add</button>
+        </form>
+      </section>
+
+      <p class="off" id="off" hidden>
+        The new-tab page is switched off in Glass options. A WebExtension cannot hand the page back to
+        Firefox's own, so this is the closest thing to blank.
+      </p>
+    </main>
+    <script src="../shared/glass.js"></script>
+    <script src="newtab.js"></script>
+  </body>
+</html>
