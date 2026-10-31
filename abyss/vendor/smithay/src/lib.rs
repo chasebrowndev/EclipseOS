@@ -2,6 +2,8 @@
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
 // Allow acronyms like EGL
 #![allow(clippy::upper_case_acronyms)]
+// vendored (ADR 0079): upstream code, not held to our -D warnings gate
+#![allow(warnings, clippy::all)]
 
 //! # Smithay: the Wayland compositor smithy
 //!

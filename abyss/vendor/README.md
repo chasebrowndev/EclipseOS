@@ -6,3 +6,4 @@ headers added) with the single change in
 `docs/decisions/0079-smithay-argb-frame.patch` applied to
 `src/xwayland/xwm/mod.rs`. ADR 0079. To re-derive: unpack the crate, `patch -p1`
 that file. Drop this directory when upstream smithay carries the fix.
+It also carries `#![allow(warnings, clippy::all)]` in `src/lib.rs` so our `-D warnings` gate does not lint upstream code.
