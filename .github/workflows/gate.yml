@@ -329,7 +329,7 @@ jobs:
       # ADR 0079: the extension lints clean, and the committed AMO-signed
       # XPI holds exactly the reviewed source.
       - name: web-ext lint
-        run: npx --yes web-ext@8.3.0 lint -s browser/firefox-glass --warnings-as-errors
+        run: npx --yes web-ext@10.7.0 lint -s browser/firefox-glass --warnings-as-errors
       - name: signed XPI matches source
         run: packaging/firefox/check-xpi.sh
 
