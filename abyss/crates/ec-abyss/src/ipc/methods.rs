@@ -41,6 +41,7 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "set_floating" => set_floating(state, params),
         "set_minimized" => set_minimized(state, params),
         "set_window_chip_rect" => set_window_chip_rect(state, params),
+        "set_client_strips" => super::client_strips::set_client_strips(state, conn, params),
         "switch_workspace" => switch_workspace(state, params),
         "resize" => resize(state, params),
         "move_workspace_to_output" => move_workspace_to_output(state, params),

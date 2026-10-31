@@ -1,0 +1,10 @@
+{
+  "policies": {
+    "ExtensionSettings": {
+      "glass@eclipseos": {
+        "installation_mode": "normal_installed",
+        "install_url": "file:///usr/share/eclipse/firefox/glass.xpi"
+      }
+    }
+  }
+}

@@ -1,0 +1,93 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Glass for Firefox</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="../shared/tokens.css" />
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="head">
+        <div>
+          <h1>Glass for Firefox</h1>
+          <p class="sub">
+            The theme is opaque and tuned for the compositor to make it
+            <span class="plain">translucent</span>. Changes apply as you make them.
+          </p>
+        </div>
+        <div class="seg" id="mode" role="radiogroup" aria-label="Colour scheme">
+          <button type="button" role="radio" data-v="auto">Auto</button>
+          <button type="button" role="radio" data-v="dark">Dark</button>
+          <button type="button" role="radio" data-v="light">Light</button>
+        </div>
+      </header>
+
+      <section class="card status" id="status" data-state="off">
+        <span class="dot" aria-hidden="true"></span>
+        <div class="what">
+          <b id="status-text">Not connected</b>
+          <span id="status-detail">Waiting for the abyss helper.</span>
+        </div>
+      </section>
+
+      <section class="preview" aria-label="Preview" id="preview">
+        <div class="pv-strip">
+          <span class="pv-tab pv-on">Glass</span>
+          <span class="pv-tab">Docs</span>
+          <span class="pv-tab">Mail</span>
+        </div>
+        <div class="pv-bar">
+          <span class="pv-btn"></span><span class="pv-btn"></span>
+          <span class="pv-url">about:glass</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="rows">
+          <div class="row">
+            <div class="what"><b>Tint</b><span>Base colour of the chrome strip</span></div>
+            <input type="color" id="tint" aria-label="Tint" />
+          </div>
+          <div class="row">
+            <div class="what"><b>Strength</b><span>How far surfaces lift off the tint</span></div>
+            <div class="slide"><input type="range" id="strength" min="0" max="100" /><output id="strength-v"></output></div>
+          </div>
+          <div class="row">
+            <div class="what"><b>Accent</b><span>Loading tabs, attention icons, selected menu labels</span></div>
+            <div class="swatches" id="accents" role="radiogroup" aria-label="Accent"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card-head"><span class="label">Regions</span></header>
+        <div class="rows" id="regions"></div>
+      </section>
+
+      <section class="card">
+        <header class="card-head"><span class="label">New tab</span></header>
+        <div class="rows">
+          <div class="row">
+            <div class="what"><b>Glass new-tab page</b><span>Replaces Firefox's own new tab</span></div>
+            <button type="button" class="toggle" id="newtab" role="switch" aria-label="Glass new-tab page"></button>
+          </div>
+          <div class="row">
+            <div class="what"><b>Search address</b><span>Query is appended to this</span></div>
+            <input type="text" id="searchUrl" class="field" spellcheck="false" />
+          </div>
+        </div>
+        <p class="note pad">
+          API limit: the override is fixed in the manifest and an extension cannot embed or hand back
+          Firefox's own page. Off sends each new tab to the home page (about:home) instead; if
+          Firefox refuses that, the tab shows a plain notice. To fully restore Firefox's page,
+          disable the extension's override in about:addons.
+        </p>
+      </section>
+    </main>
+    <script src="../shared/glass.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

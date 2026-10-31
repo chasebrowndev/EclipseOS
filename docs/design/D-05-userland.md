@@ -249,3 +249,22 @@ it holds to the four §3 limits:
 4. **Center from the taskbar.** ADR 0052 says hyperion spawns `ec-center`
    by name; as built it spawns only the launcher, settings and the secret
    prompt. Either the ADR is stale or a button is missing.
+
+## 9. Third-party app themes
+
+An app theme that matches the DE ships as an add-on (ADR 0066), never as part of
+the base image, and holds to these limits:
+
+- **Installed through the app's own mechanism**: its policy file, extension
+  directory or theme path. It never writes `/etc/eclipse` (D-01 §6.3) or a user's
+  `abyss.kdl`.
+- **Tokens from `ec-ui`**, rules from `docs/STYLE.md`: same palette, accent and
+  "glassy, not glowy" selection as the DE's own panes.
+- **Translucency is the compositor's.** An app that submits opaque buffers gets
+  glass only through generic compositor mechanisms: a `translucent-region`
+  window rule, or a client strip its add-on reports live over a hook-gated
+  control-socket method (`client-strips`). The add-on carries no compositor code.
+- **Signed by whoever the app requires**, with the signed artifact checked
+  against its source in CI.
+
+Shipped: Glass for Firefox (`eclipseos-firefox-glass`, ADR 0079).

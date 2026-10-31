@@ -14,6 +14,7 @@
 //! This socket deliberately has none of the agent protocol's reach: no
 //! `get_tree`, no capture, no grant manipulation (COMP-13 §2).
 
+pub(crate) mod client_strips;
 pub(crate) mod config_rpc;
 pub mod events;
 pub mod gate;
@@ -145,6 +146,9 @@ pub struct IpcState {
     /// by window handle. Render-only: the minimize animation aims at it and
     /// nothing else reads it.
     chips: std::collections::HashMap<u64, ChipRect>,
+    /// Windows carrying a client-set translucent strip, with the connection
+    /// that owns it (`set_client_strips`, ADR 0079).
+    client_strips: Vec<(u64, Window)>,
     /// The connection currently inside its own read callback, if any. Its
     /// calloop source must not be removed from underneath it.
     current: Option<u64>,
@@ -200,6 +204,11 @@ impl IpcState {
         self.chips.remove(&handle);
     }
 
+    /// The pid `SO_PEERCRED` gave for connection `id`.
+    pub(crate) fn peer_pid(&self, id: u64) -> Option<i32> {
+        self.conns.iter().find(|c| c.id == id).map(|c| c.peer.pid)
+    }
+
     pub fn window_for(&self, handle: u64) -> Option<Window> {
         self.handles
             .iter()
@@ -214,6 +223,7 @@ impl IpcState {
         self.handles.retain(|(_, w)| w.alive());
         let handles = &self.handles;
         self.chips.retain(|h, _| handles.iter().any(|(k, _)| k == h));
+        self.client_strips.retain(|(_, w)| w.alive());
     }
 }
 
@@ -630,8 +640,18 @@ fn reap(state: &mut AbyssState) {
 fn disown_annotations(state: &mut AbyssState, id: u64) {
     // Same story for an idle inhibit: it is the connection's, and it ends here.
     state.idle.clear_conn_inhibit(id);
+    // And a browser helper's glass strips (ADR 0079).
+    client_strips::clear_for(state, id);
     if state.annotations.clear_for(id) > 0 {
         crate::backend::damage_all(state);
+    }
+}
+
+/// Take every client-set strip off (the `client-strips` hook went off).
+pub(crate) fn clear_all_client_strips(state: &mut AbyssState) {
+    let owners: Vec<u64> = state.ipc.client_strips.iter().map(|(c, _)| *c).collect();
+    for c in owners {
+        client_strips::clear_for(state, c);
     }
 }
 

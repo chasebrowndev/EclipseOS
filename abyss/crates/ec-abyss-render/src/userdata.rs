@@ -23,6 +23,24 @@ pub struct RuleOpacity(pub Cell<f32>);
 /// blurs (see `window_elements`).
 pub struct RuleBlur(pub Cell<BlurRule>);
 
+/// `translucent-region`: `(top, opacity)`, the strip height in logical px
+/// measured from the top of the window geometry and the alpha it is drawn at.
+/// `None` once the rule stops matching, so a reload takes it off again.
+pub struct RuleStrip(pub Cell<Option<(i32, f32)>>);
+
+/// The same strip, set by a client's add-on helper over the control socket
+/// (`set_client_strips`, ADR 0079) instead of by a rule. A user rule wins.
+pub struct ClientStrip(pub Cell<Option<(i32, f32)>>);
+
+/// The translucent strip pinned on this window: a matched rule's, else the
+/// one a client helper reported.
+pub fn strip_of(window: &Window) -> Option<(i32, f32)> {
+    let live = |s: Option<(i32, f32)>| s.filter(|(top, _)| *top > 0);
+    let ud = window.user_data();
+    live(ud.get::<RuleStrip>().and_then(|s| s.0.get()))
+        .or_else(|| live(ud.get::<ClientStrip>().and_then(|s| s.0.get())))
+}
+
 /// The opacity a matched rule pinned on this window, if any.
 pub fn opacity_of(window: &Window) -> Option<f32> {
     window.user_data().get::<RuleOpacity>().map(|o| o.0.get())

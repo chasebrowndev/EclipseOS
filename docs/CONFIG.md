@@ -417,7 +417,7 @@ A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget "<name>" {
 
 ### `windowrule`
 
-A rule matched against windows at map time. Its *action* decides the owning file.
+A rule matched against windows at map time. Placement actions apply once, at map; property actions re-apply on every commit and on a float toggle (COMP-05 §4, C-22). Its *action* decides the owning file.
 
 Matchers, all of which must match. A rule with none is refused.
 
@@ -427,6 +427,7 @@ Matchers, all of which must match. A rule with none is refused.
 | `title "<regex>"` | `title "^Picture-in-Picture$"` | Regex against the window title. |
 | `pid <int>` | `pid 4242` | The client's process id, positive. |
 | `xwayland [<bool>]` | `xwayland`<br>`xwayland #false` | Whether the window is an X11 client. Bare means `#true`. |
+| `floating [<bool>]` | `floating`<br>`floating #false` | Whether the window is floating right now. Write `#true` or `#false` (bare means `#true`; the quoted strings `"true"`/`"false"` are accepted too, bare `true` is a KDL syntax error). Re-read on every evaluation, so it follows tile/float toggles; a fullscreen window (held floating) counts as floating. Only property actions (`opacity`, `blur`, `translucent-region`, …) follow a toggle; `float`, `tile`, `size` and the other placement actions apply once, at map. |
 | `output "<glob>"` | `output "DP-*"` | Glob (`*` only) against the connector or persistent identity of the output the window is on. |
 | `cgroup "<regex>"` | `cgroup "app-firefox"` | Regex against the client's cgroup path from `/proc/<pid>/cgroup`. |
 | `workspace <1..10>` | `workspace 3` | The active workspace number of the window's output. |
@@ -444,6 +445,7 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `position <X>,<Y>` | `abyss.kdl` | `position 100,-40` | Floating position in logical px. Implies `float`. |
 | `output <glob>` | `abyss.kdl` | `output HDMI-A-1` | Map on the output whose connector or identity matches. |
 | `opacity <0.0..1.0>` | `abyss.kdl` | `opacity 0.85` | Alpha for this window, replacing `decoration.active-opacity`/`inactive-opacity`. |
+| `translucent-region top=<px> opacity=<0.0..1.0>` | `abyss.kdl` | `translucent-region top=84 opacity=0.6` | Draw only the top `top` logical px of the window at `opacity`, with the window's blur mode behind that strip; the rest stays as the client drew it. Multiplies with `opacity`. For clients that submit an opaque buffer. |
 | `blur off \| blur \| frost \| glass \| true \| false` | `abyss.kdl` | `blur glass`<br>`blur off`<br>`blur true` | This window's blur mode, overriding `decoration.blur.mode`. `true` is the global mode (plain `blur` if that is `off`), `false` is `off`. An opaque window never blurs. |
 | `workspace <1..10>` | `abyss.kdl` | `workspace 2` | Map on this workspace. |
 | `no-focus-steal` | `abyss.kdl` | `no-focus-steal` | Do not take keyboard focus on map. |

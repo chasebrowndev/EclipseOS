@@ -982,6 +982,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-glass-host"
+version = "0.1.0"
+dependencies = [
+ "ec-ipc",
+ "serde_json",
+]
+
+[[package]]
 name = "ec-hyperion-bar"
 version = "0.1.0"
 dependencies = [
