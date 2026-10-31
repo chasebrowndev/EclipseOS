@@ -856,8 +856,8 @@ void main() {
     // a dark wedge filling the cutout. Measure from the box edge outward only
     // (coverage caps at one half, its value at the edge), so the corner is as
     // dark as the straight edge beside it.
-    float contact = soft(max(d_contact, 0.0), contact_sigma) * mix(0.08, 0.12, focus);
-    float ambient = soft(max(d_ambient, 0.0), ambient_sigma) * mix(0.34, 0.46, focus);
+    float contact = soft(max(d_contact, 0.0), contact_sigma) * mix(0.05, 0.08, focus);
+    float ambient = soft(max(d_ambient, 0.0), ambient_sigma) * mix(0.22, 0.32, focus);
     float a = 1.0 - (1.0 - contact) * (1.0 - ambient);
 
     // Zero at the element edge (`d_ambient` >= range all round it).
@@ -894,9 +894,11 @@ pub fn shadow_uniforms([range, radius, drop]: [f32; 3], focus: f32) -> Vec<Unifo
     ]
 }
 
-/// How far the shadow drops below the window, as a share of its `range`.
+/// How far the shadow drops below the window, as a share of its `range`. Zero:
+/// an offset shadow's body lies under the window's rounded corners and fills
+/// their cutouts, so depth is the glass rim plus an even halo instead.
 /// Not configurable: `shadow { range }` is the only knob COMP-13 §1.1 gives.
-pub const SHADOW_DROP: f32 = 0.3;
+pub const SHADOW_DROP: f32 = 0.0;
 
 const BORDER_SRC: &str = r#"
 #ifdef GL_FRAGMENT_PRECISION_HIGH

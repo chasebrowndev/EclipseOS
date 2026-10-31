@@ -1719,7 +1719,12 @@ fn window_elements(
         // window's rounded mask, so it never covers window content from below
         // either; glow and shadow draw only outside the bordered rect. A glass
         // bezel replaces the painted ring.
-        let bezeled = backdrop.as_ref().is_some_and(|(_, _, b, _)| b.is_some());
+        // In glass and frost the bezel is the frame: a window whose bezel is
+        // not drawn yet (no backdrop on its first frames) gets no painted ring
+        // either, unless the bezel shader failed to compile.
+        let glassy = matches!(mode, BlurMode::Glass | BlurMode::Frost)
+            && bezel_ok[(mode == BlurMode::Frost) as usize] != Some(false);
+        let bezeled = glassy || backdrop.as_ref().is_some_and(|(_, _, b, _)| b.is_some());
         let start = out.len();
         match &border {
             Some(_) if bezeled => {
@@ -2139,9 +2144,11 @@ fn push_border(
     } = *frame;
     // The `border` animation crossfades this on focus change; with the
     // animation off it is the focused/unfocused colour outright.
+    let fade = store.anim.transform(window).alpha;
     let color = store
         .anim
-        .border_color(window, config.general.col_active, config.general.col_inactive);
+        .border_color(window, config.general.col_active, config.general.col_inactive)
+        .map(|c| c * fade);
     // Outer rect: the tile, with the window inset by `width` on every side.
     let outer = Rectangle::new(
         // Window geometry is global; elements are output-local.
@@ -2420,7 +2427,7 @@ mod tests {
             "glow does not drop"
         );
         assert_eq!(params[2], 0.0);
-        assert_eq!(shadow_drop(20), 6);
+        assert_eq!(shadow_drop(20), 0, "an even halo, not an offset shadow");
     }
 
     #[test]
