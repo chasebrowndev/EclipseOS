@@ -1,0 +1,8 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Enable once per clone: git config core.hooksPath .githooks
+# Runs the cheapest CI gate step (cargo fmt --check) on every workspace.
+root=$(git rev-parse --show-toplevel)
+for ws in abyss shell installer oracle-eyes fog; do
+  (cd "$root/$ws" && cargo fmt --all --check) || { echo "pre-push: cargo fmt failed in $ws"; exit 1; }
+done
