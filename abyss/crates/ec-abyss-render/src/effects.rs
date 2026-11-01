@@ -481,6 +481,7 @@ uniform float rim;        // 0..1 hairline strength
 uniform vec4 rim_color;   // premultiplied hairline colour; opaque white off the bezel
 uniform float inner;      // bezel width, physical px; 0 off the bezel
 uniform float opaque;     // 1 when the window inside the bezel is opaque
+uniform float lift;       // 0..1 mix toward white; 0 (unset) on windows
 
 const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // top-left, y down
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);    // Rec.709
@@ -561,6 +562,7 @@ void main() {
     c = max(mix(vec3(dot(c, LUMA)), c, SATURATE), 0.0);
     c = c / (1.0 + COMPRESS * dot(c, LUMA));
     c = mix(c, SMOKE, SMOKE_MIX);
+    c = mix(c, vec3(1.0), lift);
 
     // Hairline: a 1.25 px band inside the mask edge.
     float band = 1.0 - smoothstep(0.0, 1.25, -d);
@@ -637,7 +639,7 @@ pub fn compile_hud_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, 
 }
 
 /// The glass program's uniforms, in the order [`glass_uniforms`] sets them.
-const GLASS_UNIFORMS: [(&str, UniformType); 11] = [
+const GLASS_UNIFORMS: [(&str, UniformType); 12] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("px_uv", UniformType::_2f),
@@ -649,6 +651,7 @@ const GLASS_UNIFORMS: [(&str, UniformType); 11] = [
     ("rim_color", UniformType::_4f),
     ("inner", UniformType::_1f),
     ("opaque", UniformType::_1f),
+    ("lift", UniformType::_1f),
 ];
 
 /// Compile the glass backdrop program (COMP-02 §9). Cached by the caller.
@@ -702,6 +705,26 @@ pub fn glass_uniforms(
     glass: &ec_abyss_config::GlassBlur,
     bezel: Option<(i32, bool, [f32; 4])>,
 ) -> Vec<Uniform<'static>> {
+    glass_uniforms_lifted(
+        rect, fb_height, mirrored, radius, tex_size, strength, bevel, glass, bezel, 0.0,
+    )
+}
+
+/// [`glass_uniforms`] with a fill `lift` (a mix toward white, 0.0..=1.0): a
+/// glass pane's hover/press/focus fill (`eclipse_glass_v1`).
+#[allow(clippy::too_many_arguments)]
+pub fn glass_uniforms_lifted(
+    rect: Rectangle<i32, Physical>,
+    fb_height: i32,
+    mirrored: bool,
+    radius: f32,
+    tex_size: (i32, i32),
+    strength: f32,
+    bevel: f32,
+    glass: &ec_abyss_config::GlassBlur,
+    bezel: Option<(i32, bool, [f32; 4])>,
+    lift: f32,
+) -> Vec<Uniform<'static>> {
     let (inner, opaque, rim_color) = bezel.map_or((0.0, 0.0, [1.0; 4]), |(inner, opaque, rim)| {
         (inner.max(0) as f32, if opaque { 1.0f32 } else { 0.0 }, rim)
     });
@@ -719,6 +742,7 @@ pub fn glass_uniforms(
         Uniform::new("rim_color", rim_color),
         Uniform::new("inner", inner),
         Uniform::new("opaque", opaque),
+        Uniform::new("lift", lift),
     ]);
     u
 }

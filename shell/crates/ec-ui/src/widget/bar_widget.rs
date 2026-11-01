@@ -602,30 +602,40 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Clip<'_, Message> {
         };
         if let (Some(tone), true) = (self.ground, bounds.width >= 1.0 && self.opacity > 0.0) {
             let st = tree.state.downcast_ref::<CellState>();
-            let look = crate::theme::bar_cell(tone)(theme, st.status(cursor.is_over(bounds)));
+            let status = st.status(cursor.is_over(bounds));
+            let look = crate::theme::bar_cell(tone)(theme, status);
             // A cell narrower than its corners is a capsule, not a pinched
             // square: the radius never exceeds half the short side.
             let r = self.radius.min(bounds.width / 2.0).min(bounds.height / 2.0);
-            let fill = look
-                .background
-                .unwrap_or(iced::Background::Color(Color::TRANSPARENT))
-                .scale_alpha(self.opacity);
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds,
-                    border: Border {
-                        color: look.border.color.scale_alpha(self.opacity),
-                        width: look.border.width,
-                        radius: r.into(),
+            if crate::glass::available() {
+                // The compositor draws the ground; the cell is only content.
+                crate::glass::push(
+                    crate::glass::Pane::new(bounds, r, tone)
+                        .status(status)
+                        .alpha((self.opacity * 255.0).round() as u8),
+                );
+            } else {
+                let fill = look
+                    .background
+                    .unwrap_or(iced::Background::Color(Color::TRANSPARENT))
+                    .scale_alpha(self.opacity);
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds,
+                        border: Border {
+                            color: look.border.color.scale_alpha(self.opacity),
+                            width: look.border.width,
+                            radius: r.into(),
+                        },
+                        shadow: iced::Shadow {
+                            color: look.shadow.color.scale_alpha(self.opacity),
+                            ..look.shadow
+                        },
+                        ..renderer::Quad::default()
                     },
-                    shadow: iced::Shadow {
-                        color: look.shadow.color.scale_alpha(self.opacity),
-                        ..look.shadow
-                    },
-                    ..renderer::Quad::default()
-                },
-                fill,
-            );
+                    fill,
+                );
+            }
         }
         let cursor = self.inner_cursor(layout, cursor);
         let clip = Rectangle {
@@ -656,6 +666,222 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Clip<'_, Message> {
         self.content.as_widget_mut().overlay(
             &mut tree.children[0],
             layout.children().next().expect("clip has one child"),
+            renderer,
+            viewport,
+            translation,
+        )
+    }
+}
+
+// ---------------------------------------------------------------- ground
+
+/// A button-like cell's ground, given to the compositor when it draws glass.
+///
+/// A widget and not a styled container because the pane needs the cell's
+/// surface-local bounds and its pointer state at draw time, which a style
+/// closure never sees. The wrapped button still paints its own ground through
+/// [`crate::theme::bare_if_glass`] when no glass is available; with glass this
+/// pushes the pane and the button paints only its content.
+struct Ground<'a, Message> {
+    content: Element<'a, Message, Theme>,
+    tone: crate::theme::CellTone,
+    radius: f32,
+    /// A static card: always drawn at rest, whatever the pointer does.
+    rest: bool,
+}
+
+/// Wrap a static card (not pressable) so the compositor draws its ground at
+/// rest, never hovered. Pair its container style with
+/// [`crate::theme::bare_container_if_glass`]. See [`Ground`].
+pub fn glass_card<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    tone: impl Into<crate::theme::CellTone>,
+    radius: f32,
+) -> Element<'a, Message, Theme> {
+    Element::new(Ground {
+        content: content.into(),
+        tone: tone.into(),
+        radius,
+        rest: true,
+    })
+}
+
+/// Wrap a button so the compositor draws its ground. See [`Ground`].
+pub fn glass_ground<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    tone: impl Into<crate::theme::CellTone>,
+    radius: f32,
+) -> Element<'a, Message, Theme> {
+    Element::new(Ground {
+        content: content.into(),
+        tone: tone.into(),
+        radius,
+        rest: false,
+    })
+}
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for Ground<'_, Message> {
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<CellState>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(CellState::default())
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        vec![Tree::new(&self.content)]
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(std::slice::from_ref(&self.content));
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        let child = self
+            .content
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits);
+        layout::Node::with_children(child.size(), vec![child])
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.content.as_widget_mut().operate(
+            &mut tree.children[0],
+            layout.children().next().expect("ground has one child"),
+            renderer,
+            operation,
+        );
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let bounds = layout.bounds();
+        let st = tree.state.downcast_mut::<CellState>();
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) if cursor.is_over(bounds) => {
+                st.pressed = true;
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if st.finger.is_none() => {
+                st.pressed = false;
+            }
+            Event::Touch(touch::Event::FingerPressed { id, position }) if bounds.contains(*position) => {
+                st.pressed = true;
+                st.finger = Some(*id);
+            }
+            Event::Touch(touch::Event::FingerLifted { id, .. } | touch::Event::FingerLost { id, .. })
+                if st.finger == Some(*id) =>
+            {
+                st.pressed = false;
+                st.finger = None;
+            }
+            _ => {}
+        }
+        let now = st.status(cursor.is_over(bounds));
+        if let Event::Window(window::Event::RedrawRequested(_)) = event {
+            st.drawn = Some(now);
+        } else if st.drawn != Some(now) {
+            shell.request_redraw();
+        }
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout.children().next().expect("ground has one child"),
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.content.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout.children().next().expect("ground has one child"),
+            cursor,
+            viewport,
+            renderer,
+        )
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        let bounds = layout.bounds();
+        if crate::glass::available() && bounds.intersects(viewport) {
+            let st = tree.state.downcast_ref::<CellState>();
+            let r = self.radius.min(bounds.width / 2.0).min(bounds.height / 2.0);
+            let pane = crate::glass::Pane::new(bounds, r, self.tone);
+            crate::glass::push_in(
+                if self.rest {
+                    pane
+                } else {
+                    pane.status(st.status(cursor.is_over(bounds)))
+                },
+                viewport,
+            );
+        }
+        self.content.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            layout.children().next().expect("ground has one child"),
+            cursor,
+            viewport,
+        );
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, iced::Renderer>> {
+        self.content.as_widget_mut().overlay(
+            &mut tree.children[0],
+            layout.children().next().expect("ground has one child"),
             renderer,
             viewport,
             translation,

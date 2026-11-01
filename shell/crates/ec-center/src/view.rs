@@ -12,7 +12,8 @@ use iced::{Alignment, Color, Element, Length, Theme};
 
 use ec_services::session::{Action, Availability};
 use ec_services::status::{Battery, Bluetooth, Charge, Network};
-use ec_ui::tokens::{color, font, size, space};
+use ec_ui::theme::{self, CellTone};
+use ec_ui::tokens::{color, font, radius, size, space};
 use ec_ui::widget as parts;
 
 use crate::app::{App, Message, ACTIONS};
@@ -63,9 +64,10 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
 
     // The sheet is the whole surface; its air is layer-shell margin (see
     // `main.rs`), so the compositor's blur mask and this corner coincide.
-    container(parts::surface(app.glass_radius, app.blur, body))
-        .width(Length::Fixed(WIDTH as f32))
-        .into()
+    ec_ui::glass::root_sole(
+        container(parts::surface(app.glass_radius, app.blur, body)).width(Length::Fixed(WIDTH as f32)),
+    )
+    .into()
 }
 
 /// The same three readings the bar draws, in words rather than in a cell.
@@ -198,7 +200,15 @@ fn block<'a>(heading: &str, rows: Vec<Element<'a, Message, Theme>>) -> Element<'
         col = col.push(parts::hairline());
         col = col.push(r);
     }
-    parts::inset(col).into()
+    // The block is a static card: compositor glass when abyss draws it, the
+    // client-painted inset otherwise.
+    parts::glass_card(
+        container(col)
+            .style(|t| theme::bare_container_if_glass(theme::inset(t)))
+            .width(Length::Fill),
+        CellTone::Plain,
+        radius::INSET,
+    )
 }
 
 /// logind's refusal, and the only way out that does nothing.

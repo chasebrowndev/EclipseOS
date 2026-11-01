@@ -49,3 +49,7 @@ pub mod semantic;
 /// `eclipse_commit_slot_v1` (COMP-19): a client marks a surface human-input
 /// only and may host a compositor-drawn commit slot in it.
 pub mod protected;
+
+/// `eclipse_glass_manager_v1` and `eclipse_glass_surface_v1` (COMP-02 §9): a
+/// client asks the compositor to draw glass panes under parts of a surface.
+pub mod glass;

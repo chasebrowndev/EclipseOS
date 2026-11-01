@@ -11,7 +11,7 @@
 use ec_launcher::{app, conn, view};
 use ec_ui::tokens::space;
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
-use iced_layershell::settings::LayerShellSettings;
+use iced_layershell::settings::{LayerShellSettings, Settings};
 
 fn namespace() -> String {
     "ec-launcher".to_owned()
@@ -41,7 +41,13 @@ fn main() -> iced_layershell::Result {
     };
     // Deliberately no `disable_clipboard()`, unlike the bar's menus: the
     // filter field is a place a human will paste into.
+    // eclipse_glass_v1: fail-soft, nothing changes under a non-abyss host.
+    let connection = ec_ui::glass::setup(iced_layershell::set_surface_hook);
     let mut builder = iced_layershell::build_pattern::application(boot, namespace, app::update, view::view)
+        .settings(Settings {
+            with_connection: connection.map(Into::into),
+            ..Default::default()
+        })
         .layer_settings(LayerShellSettings {
             anchor,
             layer: Layer::Overlay,

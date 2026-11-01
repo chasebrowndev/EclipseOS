@@ -614,6 +614,9 @@ pub enum BlurKey {
     /// The `n`th popup of a window with a keyed strip (ADR 0079), glassed
     /// over its whole surface.
     Popup(Window, usize),
+    /// A window's `eclipse_glass_v1` panes: one backdrop blurred over their
+    /// union, kept apart from the window's own whole-window backdrop.
+    Panes(Window),
 }
 
 /// Per-surface blur bookkeeping, kept alive between frames.
@@ -635,6 +638,22 @@ struct SurfaceBlur {
     /// program: a mode switch or a tint/rim change bumps `commit` even though
     /// the chain behind it did not change.
     look: Vec<Uniform<'static>>,
+    /// `eclipse_glass_v1` panes drawn from `result`, by index in the pane list.
+    panes: Vec<PaneSlot>,
+}
+
+/// What [`BlurStore::refresh`] hands back: the crop the texture covers and an
+/// opaque bezel's strips.
+type Refreshed = (Rectangle<i32, Physical>, Option<[Rectangle<i32, Physical>; 4]>);
+
+/// One glass pane's bookkeeping: its own element id, uniforms and commit
+/// counter, so the damage tracker follows it across frames.
+struct PaneSlot {
+    id: Id,
+    look: Vec<Uniform<'static>>,
+    commit: CommitCounter,
+    /// The backdrop's commit this pane last saw.
+    seen: CommitCounter,
 }
 
 /// Compiled programs, the offscreen chain and per-window state.
@@ -720,6 +739,127 @@ impl BlurStore {
     where
         E: Element + RenderElement<GlesRenderer>,
     {
+        let (crop, strips) = self.refresh(
+            renderer, output, key, region, behind, blur, scale, reach, ring, shape,
+        )?;
+        let entry = self.surfaces.get_mut(key)?;
+        let (program, uniforms) = match rounding {
+            Some((program, uniforms)) => (Some(program), uniforms),
+            None => (None, Vec::new()),
+        };
+        if entry.look != uniforms {
+            entry.look.clone_from(&uniforms);
+            entry.commit.increment();
+        }
+        let texture = entry.result.clone()?;
+        let mut element = BlurElement::placed(
+            entry.id.clone(),
+            renderer.context_id(),
+            texture,
+            crop,
+            region,
+            scale,
+            alpha,
+        );
+        element.commit = entry.commit;
+        element.program = program;
+        element.uniforms = uniforms;
+        element.ring = strips;
+        Some(element)
+    }
+
+    /// `eclipse_glass_v1`: blur the backdrop ONCE over `union` (the bounds of
+    /// every pane), then push one element per pane into `out`, each cut from
+    /// that one texture and drawn with its own `program` uniforms. The cache
+    /// is keyed on `union`, not on the panes, so a pane that resizes inside
+    /// the same bounds only changes its own uniforms. `alpha` fades every pane
+    /// (1.0 but for a window animating). `pane(i)` gives pane
+    /// `i`'s output-local rect and uniforms, or `None` to skip it.
+    /// Returns `None` when the backdrop could not be built (nothing pushed).
+    #[allow(clippy::too_many_arguments)]
+    pub fn pane_elements<E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        key: &BlurKey,
+        union: Rectangle<i32, Physical>,
+        behind: &[E],
+        blur: &Blur,
+        scale: Scale<f64>,
+        reach: i32,
+        program: &GlesTexProgram,
+        count: usize,
+        alpha: f32,
+        mut pane: impl FnMut(usize) -> Option<(Rectangle<i32, Physical>, Vec<Uniform<'static>>)>,
+        out: &mut Vec<BlurElement>,
+    ) -> Option<()>
+    where
+        E: Element + RenderElement<GlesRenderer>,
+    {
+        let (crop, _) = self.refresh(
+            renderer, output, key, union, behind, blur, scale, reach, None, None,
+        )?;
+        let entry = self.surfaces.get_mut(key)?;
+        let texture = entry.result.clone()?;
+        while entry.panes.len() < count {
+            entry.panes.push(PaneSlot {
+                id: Id::new(),
+                look: Vec::new(),
+                commit: CommitCounter::default(),
+                seen: entry.commit,
+            });
+        }
+        entry.panes.truncate(count);
+        let backdrop = entry.commit;
+        for (i, slot) in entry.panes.iter_mut().enumerate() {
+            let Some((rect, uniforms)) = pane(i) else {
+                continue;
+            };
+            if slot.seen != backdrop {
+                slot.seen = backdrop;
+                slot.commit.increment();
+            }
+            if slot.look != uniforms {
+                slot.look.clone_from(&uniforms);
+                slot.commit.increment();
+            }
+            let mut element = BlurElement::placed(
+                slot.id.clone(),
+                renderer.context_id(),
+                texture.clone(),
+                crop,
+                rect,
+                scale,
+                alpha,
+            );
+            element.commit = slot.commit;
+            element.program = Some(program.clone());
+            element.uniforms = uniforms;
+            out.push(element);
+        }
+        Some(())
+    }
+
+    /// Bring the cached backdrop for `key` up to date over `region`: recompute
+    /// the chain if damage landed in it or its crop changed. Returns the crop
+    /// the texture covers and an opaque bezel's strips.
+    #[allow(clippy::too_many_arguments)]
+    fn refresh<E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        key: &BlurKey,
+        region: Rectangle<i32, Physical>,
+        behind: &[E],
+        blur: &Blur,
+        scale: Scale<f64>,
+        reach: i32,
+        ring: Option<(i32, i32)>,
+        shape: Option<&Shape>,
+    ) -> Option<Refreshed>
+    where
+        E: Element + RenderElement<GlesRenderer>,
+    {
         let mode = output.current_mode()?;
         let fb_size = output.current_transform().transform_size(mode.size);
         if fb_size.w <= 0 || fb_size.h <= 0 || region.size.w <= 0 || region.size.h <= 0 {
@@ -741,6 +881,7 @@ impl BlurStore {
             commit: CommitCounter::default(),
             id: Id::new(),
             look: Vec::new(),
+            panes: Vec::new(),
         });
 
         // The invalidation rule: recompute only when damage behind this surface
@@ -827,31 +968,7 @@ impl BlurStore {
                 }
             }
         }
-
-        let entry = self.surfaces.get_mut(key)?;
-        let (program, uniforms) = match rounding {
-            Some((program, uniforms)) => (Some(program), uniforms),
-            None => (None, Vec::new()),
-        };
-        if entry.look != uniforms {
-            entry.look.clone_from(&uniforms);
-            entry.commit.increment();
-        }
-        let texture = entry.result.clone()?;
-        let mut element = BlurElement::placed(
-            entry.id.clone(),
-            renderer.context_id(),
-            texture,
-            crop,
-            region,
-            scale,
-            alpha,
-        );
-        element.commit = entry.commit;
-        element.program = program;
-        element.uniforms = uniforms;
-        element.ring = strips;
-        Some(element)
+        Some((crop, strips))
     }
 
     fn ensure_programs(&mut self, renderer: &mut GlesRenderer) -> Option<()> {

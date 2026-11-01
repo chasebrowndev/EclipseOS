@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use ec_services::apps::Entry;
 use ec_ui::theme;
 use ec_ui::tokens::{font, size, space};
-use ec_ui::widget::{hairline, list_row, list_row_at, micro_label, panel_at, pill};
+use ec_ui::widget::{glass_panel as panel, hairline, list_row, list_row_at, micro_label, pill};
 
 use crate::app::{row_id, App, Message};
 
@@ -183,7 +183,7 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
     })
     .placeholder("Add an app");
     body = body.push(hairline()).push(list_row("Add", add));
-    iced::widget::container(column![panel_at(app.glass_radius, app.hairline_cards, body)])
+    iced::widget::container(column![panel(app.glass_radius, app.hairline_cards, body)])
         .id(row_id(PATH))
         .into()
 }

@@ -41,3 +41,9 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# Vendored iced_layershell 0.19.1 + layershellev 0.19.1 with one hook that hands
+# a layer surface's wl_surface to the app (eclipse_glass_v1). See vendor/PATCHES.md.
+[patch.crates-io]
+iced_layershell = { path = "vendor/iced_layershell" }
+layershellev = { path = "vendor/layershellev" }

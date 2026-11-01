@@ -54,6 +54,27 @@ pub fn inset<'a, Message: 'a>(
     container(content).style(theme::inset).width(Length::Fill)
 }
 
+/// [`panel_at`] as a compositor glass pane when glass is on, the plain card
+/// otherwise. Returns an `Element` (the pane is a wrapper widget, so the
+/// container's builder methods are not available: size the content instead).
+pub fn glass_panel<'a, Message: 'a>(
+    radius: f32,
+    hairline: bool,
+    content: impl Into<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    let card = panel_at(radius, hairline, content)
+        .style(move |t: &Theme| theme::bare_container_if_glass(theme::card(radius, hairline)(t)));
+    super::bar_widget::glass_card(card, theme::CellTone::Plain, radius)
+}
+
+/// [`inset`] as a compositor glass pane when glass is on. See [`glass_panel`].
+pub fn glass_inset<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    let card = inset(content).style(|t: &Theme| theme::bare_container_if_glass(theme::inset(t)));
+    super::bar_widget::glass_card(card, theme::CellTone::Plain, radius::INSET)
+}
+
 /// A small uppercase mono section label.
 pub fn micro_label<'a, Message: 'a>(label: &str) -> Element<'a, Message, Theme> {
     // Tracking is not a `text` property in iced, so the spacing the spec asks
@@ -1747,7 +1768,7 @@ pub fn inset_list<'a, Message: 'a>(
         col = col.push(hairline());
         col = col.push(r);
     }
-    inset(col).into()
+    glass_inset(col)
 }
 
 /// A pill button. `selected` is the accent state; a group of these is a
@@ -1886,15 +1907,39 @@ pub fn nav_item_at<'a, Message: Clone + 'a>(
 
     row![
         bar,
-        button(face)
-            .padding(pad)
-            .width(Length::Fill)
-            .on_press(on_press)
-            .style(theme::nav(active)),
+        nav_ground(
+            button(face)
+                .padding(pad)
+                .width(Length::Fill)
+                .on_press(on_press)
+                .style(nav_style(active)),
+            active,
+        ),
     ]
     .spacing(space::NAV_BAR_GAP)
     .align_y(Alignment::Center)
     .into()
+}
+
+/// A sidebar row's ground as a compositor pane when glass is on: the current
+/// row a step clearer ([`theme::CellTone::Focused`]), every other row latent
+/// (nothing until the pointer lifts it). Pair with [`nav_style`] or
+/// [`nav_page_style`], which go bare under glass.
+fn nav_ground<'a, Message: 'a>(
+    row_button: impl Into<Element<'a, Message, Theme>>,
+    active: bool,
+) -> Element<'a, Message, Theme> {
+    let tone = if active {
+        theme::CellTone::Focused
+    } else {
+        theme::CellTone::Latent
+    };
+    super::bar_widget::glass_ground(row_button, tone, radius::INSET)
+}
+
+/// [`theme::nav`] without its ground when the compositor draws it.
+fn nav_style(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |t, status| theme::bare_if_glass(theme::nav(active)(t, status))
 }
 
 /// A nav item's 3px selected bar: [`color::ACCENT`] when `active`, and the
@@ -2008,11 +2053,14 @@ pub fn nav_section_at<'a, Message: Clone + 'a>(
     };
     let head = row![
         nav_bar(lit),
-        button(face)
-            .padding(pad)
-            .width(Length::Fill)
-            .on_press(on_press)
-            .style(theme::nav(lit)),
+        nav_ground(
+            button(face)
+                .padding(pad)
+                .width(Length::Fill)
+                .on_press(on_press)
+                .style(nav_style(lit)),
+            lit,
+        ),
     ]
     .spacing(space::NAV_BAR_GAP)
     .align_y(Alignment::Center);
@@ -2232,12 +2280,15 @@ pub fn nav_page_at<'a, Message: Clone + 'a>(
     let face = container(name).height(Length::Fill).align_y(Alignment::Center);
     row![
         nav_bar(active),
-        button(face)
-            .padding(iced::Padding::ZERO.left(indent).right(space::NAV_X))
-            .width(Length::Fill)
-            .height(space::NAV_SUB_H)
-            .on_press(on_press)
-            .style(nav_page_style(active)),
+        nav_ground(
+            button(face)
+                .padding(iced::Padding::ZERO.left(indent).right(space::NAV_X))
+                .width(Length::Fill)
+                .height(space::NAV_SUB_H)
+                .on_press(on_press)
+                .style(nav_page_style(active)),
+            active,
+        ),
     ]
     .spacing(space::NAV_BAR_GAP)
     .align_y(Alignment::Center)
@@ -2254,7 +2305,7 @@ fn nav_page_style(active: bool) -> impl Fn(&Theme, button::Status) -> button::St
             (false, true) => color::LIFT_SOFT,
             (false, false) => Color::TRANSPARENT,
         };
-        button::Style {
+        theme::bare_if_glass(button::Style {
             background: Some(iced::Background::Color(fill)),
             text_color: if active || hovered {
                 color::TEXT
@@ -2267,7 +2318,7 @@ fn nav_page_style(active: bool) -> impl Fn(&Theme, button::Status) -> button::St
                 radius: radius::INSET.into(),
             },
             ..button::Style::default()
-        }
+        })
     }
 }
 
@@ -2539,16 +2590,19 @@ pub fn prompt_cell<'a, Message: 'a>(
 /// The cap is the glass cell at keycap scale — never accented: a hint is
 /// furniture and must not spend a pane's yellow.
 pub fn key_hint<'a, Message: 'a>(key: &str, verb: &str) -> Element<'a, Message, Theme> {
+    let cap = container(
+        text(key.to_string())
+            .font(font::DATA_MEDIUM)
+            .size(size::MICRO)
+            .style(theme::text_secondary)
+            .wrapping(text::Wrapping::None),
+    )
+    .padding([space::BADGE_Y, space::BADGE_X])
+    .style(|t: &Theme| {
+        theme::bare_container_if_glass(glass_ground(theme::CellTone::Plain, radius::KEYCAP)(t))
+    });
     row![
-        container(
-            text(key.to_string())
-                .font(font::DATA_MEDIUM)
-                .size(size::MICRO)
-                .style(theme::text_secondary)
-                .wrapping(text::Wrapping::None),
-        )
-        .padding([space::BADGE_Y, space::BADGE_X])
-        .style(glass_ground(theme::CellTone::Plain, radius::KEYCAP)),
+        super::bar_widget::glass_card(cap, theme::CellTone::Plain, radius::KEYCAP),
         text(verb.to_string())
             .font(font::DATA)
             .size(size::MICRO)

@@ -15,3 +15,11 @@ publish = false
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "svg", "image", "canvas"] }
 ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 serde_json.workspace = true
+# eclipse_glass_v1 (COMP-02 section 9): the compositor draws each cell's ground.
+ec-protocols = { path = "../../../abyss/crates/ec-protocols", features = ["client"] }
+wayland-client = "0.31"
+# xdg windows (ec-settings): wl_display / wl_surface via raw-window-handle on a
+# private queue, as ec-console-client does. The system (libwayland) backend is
+# required for `Backend::from_foreign_display`.
+raw-window-handle = "0.6"
+wayland-backend = { version = "0.3", features = ["client_system"] }

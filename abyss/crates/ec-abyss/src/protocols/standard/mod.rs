@@ -14,6 +14,7 @@ pub mod foreign;
 pub mod foreign_toplevel;
 pub mod fractional_scale;
 pub mod gamma_control;
+pub mod glass;
 mod idle_inhibit;
 mod idle_notify;
 pub mod image_copy_capture;

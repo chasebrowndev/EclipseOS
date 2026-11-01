@@ -29,9 +29,9 @@ use ec_ui::theme;
 use ec_ui::tokens::{bar, canvas, color, font, radius, size, space};
 use ec_ui::widget::{
     arg_chip, art_thumb, badge, bar_cell_frame, bar_sheet, battery_gauge, big_value, chip, config_error,
-    drag_bar, drag_ghost, draggable, drop_well, drop_zone, edge_note, edge_quad, elide, glide_track,
-    hairline, inset, key_hints, list_row, mark, micro_label, mini_meter, outline, panel, panel_at, pill, pin,
-    placed, ring, track_label, viz_bars, widget_shell_rounded, Grip, NumericSlider, Toggle, Well,
+    drag_bar, drag_ghost, draggable, drop_well, drop_zone, edge_note, edge_quad, elide, glass_inset as inset,
+    glass_panel as panel, glide_track, hairline, key_hints, list_row, mark, micro_label, mini_meter, outline,
+    pill, pin, placed, ring, track_label, viz_bars, widget_shell_rounded, Grip, NumericSlider, Toggle, Well,
 };
 
 use crate::app::{App, Message};
@@ -1501,7 +1501,7 @@ pub fn blocks(app: &App, page: Page) -> Vec<Element<'_, Message, Theme>> {
     match page {
         Page::BarAppearance => vec![appearance(app), crate::pinned::view(app)],
         Page::BarFolding => vec![keys_panel(app, FOLDING.to_vec())],
-        Page::BarTray => vec![inset(Column::with_children(tray_rows(app))).into()],
+        Page::BarTray => vec![inset(Column::with_children(tray_rows(app)))],
         Page::BarMotion => vec![motion_band(app)],
         _ => widgets(app),
     }
@@ -1523,7 +1523,7 @@ fn widgets(app: &App) -> Vec<Element<'_, Message, Theme>> {
     }
     out.push(hero(app));
     if let Some(r) = key_row(app, WIDGET_ROUNDING) {
-        out.push(panel(app.glass_radius, r).into());
+        out.push(panel(app.glass_radius, app.hairline_cards, r));
     }
     if let Some(s) = sheet(app) {
         out.push(s);
@@ -1614,7 +1614,7 @@ fn approvals(app: &App) -> Element<'_, Message, Theme> {
     for st in &app.bar.statuses {
         col = col.push(hairline()).push(approval_row(app, st, true));
     }
-    inset(col).into()
+    inset(col)
 }
 
 fn caption<'a>(t: String) -> Element<'a, Message, Theme> {
@@ -2018,7 +2018,7 @@ fn hero(app: &App) -> Element<'_, Message, Theme> {
         picker(app),
     ]
     .spacing(space::ROW_Y);
-    panel_at(app.glass_radius, app.hairline_cards, col).into()
+    panel(app.glass_radius, app.hairline_cards, col)
 }
 
 fn padded<'a>(e: impl Into<Element<'a, Message, Theme>>) -> Element<'a, Message, Theme> {
@@ -2053,7 +2053,7 @@ fn sheet(app: &App) -> Option<Element<'_, Message, Theme>> {
             hairline(),
             editor_view(app, ed),
         ];
-        return Some(inset(col).into());
+        return Some(inset(col));
     }
 
     let id = selected(app)?;
@@ -2157,7 +2157,7 @@ fn sheet(app: &App) -> Option<Element<'_, Message, Theme>> {
             .align_y(Alignment::Center),
         ));
     }
-    Some(inset(col).into())
+    Some(inset(col))
 }
 
 fn caption_prose<'a>(t: &str) -> Element<'a, Message, Theme> {
@@ -2557,7 +2557,7 @@ fn keys_panel<'a>(app: &'a App, paths: Vec<&str>) -> Element<'a, Message, Theme>
             c = c.push(r);
         }
     }
-    panel_at(app.glass_radius, app.hairline_cards, c.width(Length::Fill)).into()
+    panel(app.glass_radius, app.hairline_cards, c.width(Length::Fill))
 }
 
 /// How the bar looks — and, under a hairline, any key the compositor puts on
@@ -2583,7 +2583,7 @@ fn appearance(app: &App) -> Element<'_, Message, Theme> {
             }
         }
     }
-    panel_at(app.glass_radius, app.hairline_cards, body.width(Length::Fill)).into()
+    panel(app.glass_radius, app.hairline_cards, body.width(Length::Fill))
 }
 
 #[cfg(test)]

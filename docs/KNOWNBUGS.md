@@ -112,6 +112,121 @@ into the window, `SetInputRegion`, hands out a `WlRegion`. Smallest fix: a
 `LayerShellCustomAction` that runs a `Fn(&WlSurface)` callback (modelled on
 `SetInputRegion`), upstream or as a `[patch]`; the rest is client-side only.
 
+**Glass mode, 2026-11-01:** with `eclipse_glass_v1` (ADR 0081), each toast
+card is its own pane, and panes replace the layer's whole-surface glass, so the
+slab is gone in `glass` mode. The vendored iced_layershell hook
+(`shell/vendor/PATCHES.md`) also clears the block above. **Still open in
+`frost` mode**, where no panes are drawn and ec-toasts sets no
+background-effect region.
+
+---
+
+# Glass panes — found landing `eclipse_glass_v1`, 2026-11-01
+
+ADR 0081, PR #166. Every entry here is open. None blocks the merge: each one
+either falls back to how things looked before the change, or is a
+visual-polish gap.
+
+## GLASS-01: captures do not draw panes
+
+`abyss/crates/ec-abyss-render/src/still.rs` (`Frame::window`/`layer`)
+draws each surface with its pre-pane whole-layer glass, so `grim`, screencopy
+and the image-copy capture all show the old flat cells, on the bar and on
+windows. Screenshots of panes currently have to be taken one session level up
+(cage → nested abyss, `grim` against cage).
+**Repro:** `decoration.blur.mode "glass"`, bar up, `grim`; the chips are flat.
+**Proposed:** `still.rs` reads `committed_panes` and calls the same
+`insert_panes` path as the live frame (both live in `ec-abyss-render`).
+`render/capture.rs` (TCB) only feeds the list and needs no change, but the
+change must be checked against CAP-01's redaction rule. A redacted surface's
+panes must sample the placeholder, never the content.
+
+## GLASS-02: panes are not clipped to the window's rounded mask
+
+A window pane is clipped to the surface rectangle, not to the window's corner
+radius (`insert_panes`, `abyss/crates/ec-abyss-render/src/lib.rs`). On the
+Settings pages checked, no pane reaches a corner. One that does (a full-bleed
+card, a client with a large radius) shows square glass outside the rounded
+corner.
+**Proposed:** pass the window's rounding into the pane draw as a second SDF
+and take the min.
+
+## GLASS-03: scroll-clipped panes keep their rounded corners
+
+`ec_ui::glass::scroll_region` (`shell/crates/ec-ui/src/glass.rs`) clips a pane
+that is cut by the scroll edge to the viewport but keeps all four radii. The
+cut edge shows rounded corners where the content runs straight through.
+Nested scroll regions are not supported: only the innermost viewport is used.
+**Proposed:** per-corner radius in the pane record (a protocol v2 field), or
+a client-side rule that a clipped side squares off.
+
+## GLASS-04: the bar does not repaint when the capability flips
+
+Changing `decoration.blur.mode` between `glass` and anything else makes abyss
+send `capability` at once (`update_capabilities` after config apply).
+ec-hyperion-bar only picks the new value up on its next redraw, so until
+something on the bar changes, it shows either no ground at all (going
+glass → frost) or a client ground under glass panes (going the other way).
+**Proposed:** the capability listener emits a message that forces a redraw
+on every iced window.
+
+## GLASS-05: a toast's pane pops at the end of its fade
+
+`glass_card` and `glass_ground` (`shell/crates/ec-ui/src/widget/parts.rs`)
+always send `alpha = 255`. A toast's text fades out, and its glass disappears
+in one frame when the card is removed.
+**Proposed:** `glass::Pane` already has `.alpha(u8)`. `glass_card` and
+`glass_ground` should take an alpha and pass it through, and the toast stack
+should feed it from its fade value.
+
+## GLASS-06: controls still drawing their own ground
+
+These still draw a client fill in glass mode, so they read as dark flat
+fields next to glass:
+- **Settings dropdowns.** iced `pick_list` in `ec-settings` (`app.rs`,
+  `taskbar.rs`, `animations.rs`, `pinned.rs`), the "pop"/"glide" pickers.
+  The picker's overlay menu is a separate popup surface.
+- **ec-center** text rows outside the System/Session blocks.
+- **`prompt_cell`** and **`list_row`** in `ec-ui` (`list_row` has no
+  ground at all).
+- **ec-policy-viewer.** It is on the bind allowlist, but none of its views
+  push panes yet.
+
+Frontend work (`eclipse-frontend`). Each one leaves this list when converted.
+
+## GLASS-07: focused-pane rim step is subtle
+
+`glass::look()` (`abyss/crates/ec-abyss-render/src/glass.rs`) lifts the
+focused rim to about 77, against about 60 for plain. On a busy backdrop the
+current Settings page and the focused chip are hard to tell from their
+neighbours. The proposal is to tune the focused rim to about 1.4× plain,
+still with no fill brightening beyond the existing lift and no gold
+(STYLE.md: glassy, not glowy). It needs an owner look before the numbers
+change.
+
+## GLASS-08: unproven limits and modes
+
+- **64-pane cap.** Settings pages have been observed at 15–24 panes. A page
+  over the cap never reaches the compositor. `ec_ui::glass` drops panes past
+  64 and logs the count, so the panes at the end of the list are left with no
+  ground. No page is known to hit the cap, and it has not been tested at the
+  limit.
+- **Blur and frost unchanged.** The no-capability fallback in `blur` and
+  `frost` mode has only been compared by eye in one Settings screenshot. There
+  is no pixel diff against main.
+- **Cost unmeasured.** ADR 0081 says the per-pane pass is "well inside
+  COMP-02 §10". `abyss/bench` has not been run with panes.
+
+## GLASS-09: paperwork
+
+- ADR 0081 is still `proposed`. It becomes accepted when the owner merges
+  PR #166.
+- COMP-02 §9 and COMP-06 §1 need the Appendix A row for client-declared panes
+  (ADR 0081, Consequences).
+- `shell/vendor/` patches must be re-applied on any iced_layershell bump
+  (`shell/vendor/PATCHES.md`). Upstreaming `SurfaceHook` would retire the
+  vendor copy.
+
 ---
 
 ## Probing notes for the launcher

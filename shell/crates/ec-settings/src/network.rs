@@ -25,7 +25,8 @@ use ec_services::status::{self, Actions, BtDevice, Event, PairingAgent, Security
 use ec_ui::theme;
 use ec_ui::tokens::{color, font, size, space};
 use ec_ui::widget::{
-    big_value, hairline, inset_list, list_row, meter_bar, micro_label, panel_at, pill, value as mono,
+    big_value, glass_panel as panel, hairline, inset_list, list_row, meter_bar, micro_label, pill,
+    value as mono,
 };
 
 use crate::app::Message;
@@ -255,7 +256,7 @@ fn hero(net: &Net, radius: f32, hairline_cards: bool) -> Element<'_, Message, Th
                 (None, None) => ("—", "reading", "asking the network service"),
                 _ => ("—", "no link", "wifi is not connected"),
             };
-            return panel_at(
+            return panel(
                 radius,
                 hairline_cards,
                 column![
@@ -265,8 +266,7 @@ fn hero(net: &Net, radius: f32, hairline_cards: bool) -> Element<'_, Message, Th
                     tertiary(why),
                 ]
                 .spacing(space::ROW_Y),
-            )
-            .into();
+            );
         }
     };
 
@@ -320,12 +320,11 @@ fn hero(net: &Net, radius: f32, hairline_cards: bool) -> Element<'_, Message, Th
         2,
     );
 
-    panel_at(
+    panel(
         radius,
         hairline_cards,
         column![head, hairline(), readings, hairline(), addresses].spacing(space::ROW_Y),
     )
-    .into()
 }
 
 fn saved_list(net: &Net) -> Element<'_, Message, Theme> {

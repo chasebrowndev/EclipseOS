@@ -22,9 +22,9 @@ use ec_ui::motion::{Animated, Motion};
 use ec_ui::theme;
 use ec_ui::tokens::{color, font, radius, size, space};
 use ec_ui::widget::{
-    color_picker, content_at, dimmed_at, edge_note, hairline, header, list_row, list_row_at, micro_label,
-    nav_item_at, nav_page_at, nav_section_at, panel_at, pill, pill_group, row_caption, sidebar_at,
-    status_chip, subtitle, swatch_button, value as mono, Density, NumericSlider, Toggle,
+    color_picker, content_at, dimmed_at, edge_note, glass_panel as panel, hairline, header, list_row,
+    list_row_at, micro_label, nav_item_at, nav_page_at, nav_section_at, pill, pill_group, row_caption,
+    sidebar_at, status_chip, subtitle, swatch_button, value as mono, Density, NumericSlider, Toggle,
 };
 
 mod display;
@@ -112,6 +112,10 @@ pub enum Message {
     /// at the application level instead.
     NumberBlur,
     Wire(EventKind, Value),
+    /// eclipse_glass_v1: the window exists; bind its glass object.
+    GlassWindow(iced::window::Id),
+    /// Glass is attached. Only makes iced redraw, with the panes this time.
+    GlassReady(bool),
     /// The Network pane's feed connected; its action handle.
     NetReady(network::Handle),
     NetDown(String),
@@ -1018,6 +1022,8 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             }
         }
 
+        Message::GlassWindow(id) => return ec_ui::glass::attach_window(id).map(Message::GlassReady),
+        Message::GlassReady(_) => {}
         Message::Wire(kind, data) => match kind {
             // Hot-plug: the output list is the compositor's, never cached
             // across an event.
@@ -1170,6 +1176,7 @@ impl iced::advanced::widget::Operation<Option<f32>> for Measure {
 /// so the wait lives in a thread rather than in a futures timer.
 pub fn subscription(app: &App) -> Subscription<Message> {
     let mut subs = vec![blur(), events(), crate::search_ui::keys(&app.search)];
+    subs.push(ec_ui::glass::xdg_window().map(Message::GlassWindow));
     if app.nav_moving() {
         subs.push(iced::window::frames().map(Message::NavFrame));
     }
@@ -1277,7 +1284,10 @@ fn events() -> Subscription<Message> {
 pub fn view(app: &App) -> Element<'_, Message, Theme> {
     // The frame is the only thing that reads the window's width; every row
     // below folds on its own.
-    iced::widget::responsive(move |size| frame(app, Density::for_width(size.width))).into()
+    ec_ui::glass::root_sole(iced::widget::responsive(move |size| {
+        frame(app, Density::for_width(size.width))
+    }))
+    .into()
 }
 
 /// The sidebar's section tree: what the rail shows when nothing is searched.
@@ -1385,13 +1395,16 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
             // A thin rail, inset top and bottom so it reads as a hint, not a
             // full-height bar.
             iced::widget::container(
-                scrollable(content_at(density, blocks))
-                    .id(SCROLL)
-                    .direction(scrollable::Direction::Vertical(
-                        scrollable::Scrollbar::new().width(4).scroller_width(4).margin(3),
-                    ))
-                    .style(theme::eclipse_scrollable)
-                    .height(Length::Fill),
+                // Panes inside follow the scroll offset and are cut to its bounds.
+                ec_ui::glass::scroll_region(
+                    scrollable(content_at(density, blocks))
+                        .id(SCROLL)
+                        .direction(scrollable::Direction::Vertical(
+                            scrollable::Scrollbar::new().width(4).scroller_width(4).margin(3),
+                        ))
+                        .style(theme::eclipse_scrollable)
+                        .height(Length::Fill),
+                ),
             )
             .padding([space::BLOCK, 0.0]),
         )
@@ -1405,7 +1418,7 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
 /// The two error shapes every DE app renders identically: a denial and a
 /// config error. Neither is ever swallowed.
 fn banner(problem: &Problem, radius: f32, hairline_cards: bool) -> Element<'_, Message, Theme> {
-    panel_at(
+    panel(
         radius,
         hairline_cards,
         column![
@@ -1423,7 +1436,6 @@ fn banner(problem: &Problem, radius: f32, hairline_cards: bool) -> Element<'_, M
         ]
         .spacing(space::ROW_Y),
     )
-    .into()
 }
 
 /// Every schema key this page claims, in one panel: grouped by
@@ -1601,7 +1613,7 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             col = col.push(r);
         }
     }
-    panel_at(app.glass_radius, app.hairline_cards, col).into()
+    panel(app.glass_radius, app.hairline_cards, col)
 }
 
 const FRECENCY_BLURB: &str =

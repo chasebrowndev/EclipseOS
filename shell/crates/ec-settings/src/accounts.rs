@@ -37,8 +37,8 @@ use serde_json::{json, Value};
 use ec_ui::theme;
 use ec_ui::tokens::{color, font, size, space};
 use ec_ui::widget::{
-    badge, edge_note, hairline, inset, micro_label, panel_at, pick_pill, pill, prompt_cell, status_cell,
-    status_grid, value as mono,
+    badge, edge_note, glass_inset as inset, glass_panel as panel, hairline, micro_label, pick_pill, pill,
+    prompt_cell, status_cell, status_grid, value as mono,
 };
 
 use crate::app::{App, Message};
@@ -886,7 +886,7 @@ fn hero(app: &App) -> Element<'_, Message, Theme> {
             .style(theme::text_tertiary)
             .into(),
     };
-    panel_at(
+    panel(
         app.glass_radius,
         app.hairline_cards,
         column![
@@ -901,7 +901,6 @@ fn hero(app: &App) -> Element<'_, Message, Theme> {
         ]
         .spacing(space::ROW_Y),
     )
-    .into()
 }
 
 /// The accounts, one hairlined row each.
@@ -954,7 +953,7 @@ fn listing(app: &App) -> Element<'_, Message, Theme> {
             .push(hairline())
             .push(padded(small(why.clone()).style(theme::text_danger)));
     }
-    inset(col).into()
+    inset(col)
 }
 
 fn account_row<'a>(a: &Accounts, x: &Account) -> Element<'a, Message, Theme> {
@@ -1143,12 +1142,11 @@ fn add(app: &App) -> Element<'_, Message, Theme> {
         Kind::ClaudeCode => login_way(a, ready, gate),
     };
 
-    panel_at(
+    panel(
         app.glass_radius,
         app.hairline_cards,
         column![head, hairline(), name_row, hairline(), way].spacing(space::ROW_Y),
     )
-    .into()
 }
 
 /// The Claude Code half of the add form: the step line, then whatever the

@@ -111,7 +111,8 @@ use crate::model::{Snapshot, Window, Workspace};
 /// wrapped in [`Message::On`] with that surface's id, so `update` knows which
 /// bar a press, a hover or a grip came from.
 pub fn view(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message, Theme> {
-    surface(app, id).map(move |m| Message::On(id, Box::new(m)))
+    let content = surface(app, id).map(move |m| Message::On(id, Box::new(m)));
+    ec_ui::glass::root(id, content).into()
 }
 
 fn surface(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message, Theme> {
@@ -279,7 +280,7 @@ fn glass<'a>(
 /// widget wears (`theme::bar_cell`), so the pointer lifts it the same way.
 /// Never the accent — the mark itself is the yellow.
 fn launcher_style(t: &Theme, status: button::Status) -> button::Style {
-    theme::bar_cell(false)(t, status)
+    theme::bare_if_glass(theme::bar_cell(false)(t, status))
 }
 
 // ---------------------------------------------------------------- launcher
@@ -298,13 +299,16 @@ fn launcher_style(t: &Theme, status: button::Status) -> button::Style {
 /// That is also why the ring never turns gold itself: the gold of a live
 /// eye belongs to the surface captures leave out (ADR 0056).
 fn launcher_button() -> Element<'static, Message, Theme> {
-    button(launcher_mark())
-        .width(Length::Fixed(bar::TASK_MIN))
-        .height(Length::Fixed(bar::TASK_H))
-        .padding(0)
-        .style(launcher_style)
-        .on_press(Message::Launch)
-        .into()
+    parts::glass_ground(
+        button(launcher_mark())
+            .width(Length::Fixed(bar::TASK_MIN))
+            .height(Length::Fixed(bar::TASK_H))
+            .padding(0)
+            .style(launcher_style)
+            .on_press(Message::Launch),
+        false,
+        bar::RADIUS_CELL,
+    )
 }
 
 // -------------------------------------------------------------- start menu
@@ -377,14 +381,17 @@ fn search_cell(bar: &crate::app::Bar, hints: bool) -> Element<'_, Message, Theme
     .align_y(Alignment::Center)
     .height(Length::Fill);
 
-    button(content)
-        .width(Length::Fixed(width))
-        .height(Length::Fixed(bar::TASK_H))
-        .padding(0)
-        .clip(true)
-        .style(launcher_style)
-        .on_press(Message::Launch)
-        .into()
+    parts::glass_ground(
+        button(content)
+            .width(Length::Fixed(width))
+            .height(Length::Fixed(bar::TASK_H))
+            .padding(0)
+            .clip(true)
+            .style(launcher_style)
+            .on_press(Message::Launch),
+        false,
+        bar::RADIUS_CELL,
+    )
 }
 
 /// The bar with its start menu out: one sheet in the shape of the pill and
@@ -574,13 +581,13 @@ fn start_row(
     } else {
         CellTone::Latent
     };
-    button(container(line).height(Length::Fill).align_y(Alignment::Center))
+    let cell = button(container(line).height(Length::Fill).align_y(Alignment::Center))
         .width(Length::Fill)
         .height(Length::Fixed(bar::MENU_ROW_H))
         .padding([0.0, space::CARD])
-        .style(theme::glass_cell(tone, radius::INSET))
-        .on_press(Message::MenuLaunch(index))
-        .into()
+        .style(move |t, st| theme::bare_if_glass(theme::glass_cell(tone, radius::INSET)(t, st)))
+        .on_press(Message::MenuLaunch(index));
+    parts::glass_ground(cell, tone, radius::INSET)
 }
 
 /// A refusal, verbatim, or the keys; how much of the list is off the panel
@@ -782,7 +789,7 @@ fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
         .font(face)
         .color(tint);
 
-    button(container(label).center(Length::Fill))
+    let cell = button(container(label).center(Length::Fill))
         .width(Length::Fixed(bar::PAGER_W))
         .height(Length::Fixed(bar::PAGER_H))
         .padding(0)
@@ -792,10 +799,10 @@ fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
             let mut style = theme::bar_cell(ws_active)(t, status);
             style.text_color = tint;
             style.border.radius = bar::RADIUS_TILE.into();
-            style
+            theme::bare_if_glass(style)
         })
-        .on_press(Message::Switch(ws.index))
-        .into()
+        .on_press(Message::Switch(ws.index));
+    parts::glass_ground(cell, ws_active, bar::RADIUS_TILE)
 }
 
 // ------------------------------------------------------------------- tasks

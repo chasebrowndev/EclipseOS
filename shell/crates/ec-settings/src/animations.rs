@@ -32,7 +32,8 @@ use ec_ui::motion::{Animated, Curve, Motion};
 use ec_ui::theme::{self, CellTone};
 use ec_ui::tokens::{canvas, color, font, motion as tmotion, radius, size, space};
 use ec_ui::widget::{
-    badge, big_value, hairline, micro_label, motion_stage, panel_at, pill, value as mono, StageFrame,
+    badge, big_value, glass_panel as panel, hairline, micro_label, motion_stage, pill, value as mono,
+    StageFrame,
 };
 
 use crate::app::{App, Message};
@@ -736,27 +737,28 @@ fn hero<'a>(app: &'a App, m: &Animations) -> Element<'a, Message, Theme> {
             caption(note),
         ]
         .spacing(space::LINE_GAP * 2.0);
-        strip = strip.push(
+        let tone = if selected {
+            CellTone::Focused
+        } else {
+            CellTone::Plain
+        };
+        strip = strip.push(ec_ui::widget::glass_ground(
             button(body)
                 .padding(space::CONTROL_GAP)
                 .width(Length::Fill)
                 .on_press(Message::Anim(press))
-                .style(theme::glass_cell(
-                    if selected {
-                        CellTone::Focused
-                    } else {
-                        CellTone::Plain
-                    },
-                    radius::INSET,
-                )),
-        );
+                .style(move |t: &Theme, st| {
+                    theme::bare_if_glass(theme::glass_cell(tone, radius::INSET)(t, st))
+                }),
+            tone,
+            radius::INSET,
+        ));
     }
-    panel_at(
+    panel(
         app.glass_radius,
         app.hairline_cards,
         column![micro_label("preset"), strip].spacing(space::ROW_Y),
     )
-    .into()
 }
 
 /// The speed as a magnitude, beside the two controls that bend every event.
@@ -823,7 +825,7 @@ fn events<'a>(app: &'a App, m: &Animations) -> Element<'a, Message, Theme> {
             .padding([space::ROW_Y, space::CARD]),
         );
     }
-    panel_at(app.glass_radius, app.hairline_cards, col).into()
+    panel(app.glass_radius, app.hairline_cards, col)
 }
 
 /// One event: its loop, its name and what it runs as, then its style,

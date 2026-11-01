@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<protocol name="eclipse_glass_v1">
+  <copyright>
+    Copyright EclipseOS contributors. Apache-2.0 (F-05 section 3, 4): clients
+    and toolkit bridges link the client side under any licence.
+  </copyright>
+
+  <description summary="compositor-drawn glass panes (COMP-02 section 9)">
+    A client asks the compositor to draw its glass material (blurred,
+    bent, smoked backdrop with a lit hairline and seam, the same program a
+    window bezel uses) under parts of one of its own surfaces: a taskbar
+    chip, a widget, a launcher row. Each part is a pane, a rounded box with
+    a tone. The client draws only the pane's content and leaves the pane's
+    ground to the compositor.
+
+    The compositor only reads backdrop pixels into its own composition; the
+    client never receives them. Panes restrict nothing and grant nothing.
+  </description>
+
+  <interface name="eclipse_glass_manager_v1" version="1">
+    <description summary="glass pane factory">
+      The global. It sends `capability` on bind and again whenever the
+      compositor starts or stops drawing glass panes (for example a change
+      of decoration.blur.mode). While the capability is 0 the compositor
+      draws no panes, and a client should draw its own ground.
+    </description>
+
+    <enum name="error">
+      <entry name="glass_exists" value="0" summary="the wl_surface already has a glass object"/>
+      <entry name="bad_pane" value="1" summary="a malformed panes array, an unknown tone, or a negative size"/>
+      <entry name="too_many_panes" value="2" summary="more than 64 panes in one set_panes"/>
+    </enum>
+
+    <event name="capability">
+      <description summary="whether panes are drawn">
+        1 while the compositor draws glass panes, 0 while it does not.
+      </description>
+      <arg name="available" type="uint"/>
+    </event>
+
+    <request name="get_glass">
+      <description summary="glass panes for a surface">
+        One per wl_surface; a second call while the first object lives is
+        protocol error glass_exists.
+      </description>
+      <arg name="id" type="new_id" interface="eclipse_glass_surface_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Existing glass objects are unaffected.
+      </description>
+    </request>
+  </interface>
+
+  <interface name="eclipse_glass_surface_v1" version="1">
+    <description summary="the glass panes of one wl_surface">
+      The pane list is double-buffered surface state: `set_panes` writes the
+      pending list and the next wl_surface.commit makes it current, together
+      with the buffer it was drawn for, so a pane that moves or resizes with
+      its content never lags it by a frame. A new object starts with no
+      panes.
+    </description>
+
+    <enum name="tone">
+      <entry name="plain" value="0" summary="a cell at rest"/>
+      <entry name="focused" value="1" summary="the focused cell: the same glass a step clearer"/>
+      <entry name="away" value="2" summary="a put-away cell: a ghost rim only"/>
+      <entry name="latent" value="3" summary="nothing at rest; lifts like plain when hovered"/>
+    </enum>
+
+    <enum name="state">
+      <description summary="pane state bits">
+        Bits OR-ed into a pane record's state field.
+      </description>
+      <entry name="hovered" value="1" summary="the pointer is over the pane"/>
+      <entry name="pressed" value="2" summary="the pane is being pressed"/>
+    </enum>
+
+    <request name="set_panes">
+      <description summary="set the pending pane list">
+        `panes` is a packed array of pane records, each nine native-endian
+        32-bit fields:
+
+          int x, int y, int width, int height
+            the box, surface-local logical pixels; clipped to the surface
+          uint radius   corner radius, logical pixels; capped at half the
+                        box's shorter side
+          uint bezel    width of the lit band inside the edge, logical
+                        pixels; 0 is the compositor's default
+          uint tone     a value of the tone enum
+          uint state    a bitfield of the state enum
+          uint alpha    0..255, the pane's ground opacity, for a pane that
+                        is arriving or leaving
+
+        At most 64 panes (too_many_panes). A length that is not a multiple
+        of 36 bytes, an unknown tone, or a negative size is bad_pane. Panes
+        are drawn in array order; an empty array removes every pane.
+      </description>
+      <arg name="panes" type="array"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="remove the panes">
+        The surface's panes are removed on its next commit.
+      </description>
+    </request>
+  </interface>
+</protocol>
