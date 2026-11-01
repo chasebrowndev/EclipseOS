@@ -852,6 +852,108 @@ pub fn drawer_link<'a, Message: Clone + 'a>(label: &str, on_press: Message) -> E
     )
 }
 
+/// A drawer's level row: a mute button wearing the device's glyph, a rail
+/// and the percent.
+///
+/// A widget because [`volume_slider`](crate::widget::volume_slider) is the
+/// bar's 64px tick-and-rail and a drawer needs one that fills its measure
+/// with a knob a pointer can find. One [`drawer::ROW_H`] slot like every
+/// row. `accent` makes the fill the drawer's one yellow; a muted level keeps
+/// its position on tertiary ink.
+pub fn drawer_level<'a, Message: Clone + 'a>(
+    mark: Element<'a, Message, Theme>,
+    on_mute: Message,
+    value: f32,
+    muted: bool,
+    accent: bool,
+    on_change: impl Fn(f32) -> Message + 'a,
+) -> Element<'a, Message, Theme> {
+    use iced::widget::slider;
+    let v = if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (fill, reading) = match (muted, accent) {
+        (true, _) => (color::TEXT_TERTIARY, color::TEXT_TERTIARY),
+        (false, true) => (color::ACCENT, color::ACCENT_TEXT),
+        (false, false) => (color::TEXT_SECONDARY, color::TEXT),
+    };
+    let track = slider(0.0..=1.0_f32, v, on_change)
+        .step(0.01_f32)
+        .width(Length::Fill)
+        .style(move |_t: &Theme, status: slider::Status| {
+            let knob = match status {
+                slider::Status::Active => fill,
+                _ => color::TEXT,
+            };
+            slider::Style {
+                rail: slider::Rail {
+                    backgrounds: (
+                        iced::Background::Color(fill),
+                        iced::Background::Color(color::TRACK),
+                    ),
+                    width: drawer::LEVEL_RAIL,
+                    border: iced::Border {
+                        radius: (drawer::LEVEL_RAIL / 2.0).into(),
+                        ..iced::Border::default()
+                    },
+                },
+                handle: slider::Handle {
+                    shape: slider::HandleShape::Circle {
+                        radius: drawer::LEVEL_KNOB_R,
+                    },
+                    background: iced::Background::Color(knob),
+                    border_color: Color::TRANSPARENT,
+                    border_width: 0.0,
+                },
+            }
+        });
+    let shown = if muted {
+        "mute".to_string()
+    } else {
+        format!("{}%", (v * 100.0).round() as u32)
+    };
+    // The mark is a button with the lozenge hover of a pickable row, sized
+    // to its own square plus the row's inset so it is a fair target.
+    let mute = button(
+        container(mark)
+            .width(Length::Fixed(drawer::MARK))
+            .height(Length::Fixed(drawer::MARK))
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
+    )
+    .padding(space::ROW_Y / 2.0)
+    .style(drawer_quiet)
+    .on_press(on_mute);
+    slot(
+        container(
+            row![
+                mute,
+                track,
+                container(
+                    text(shown)
+                        .font(font::DATA)
+                        .size(size::MICRO)
+                        .color(reading)
+                        .wrapping(text::Wrapping::None),
+                )
+                .width(Length::Fixed(drawer::LEVEL_READOUT_W))
+                .align_x(Alignment::End),
+            ]
+            .spacing(drawer::MARK_GAP)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(Alignment::Center)
+        // The button's own pad is part of the gridline, so the mark lands on
+        // the list's mark column.
+        .padding([0.0, drawer::ROW_X - space::ROW_Y / 2.0])
+        .into(),
+    )
+}
+
 /// A drawer row that says why the list is empty — "off", "searching…".
 ///
 /// A widget because an empty drawer that shows nothing reads as broken, and
