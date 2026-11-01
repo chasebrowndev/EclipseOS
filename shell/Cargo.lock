@@ -1035,6 +1035,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-protocols"
+version = "0.1.0"
+dependencies = [
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-scanner",
+]
+
+[[package]]
 name = "ec-secret-prompt"
 version = "0.1.0"
 dependencies = [
@@ -1088,8 +1098,10 @@ name = "ec-ui"
 version = "0.1.0"
 dependencies = [
  "ec-ipc",
+ "ec-protocols",
  "iced",
  "serde_json",
+ "wayland-client",
 ]
 
 [[package]]
@@ -1838,8 +1850,6 @@ dependencies = [
 [[package]]
 name = "iced_layershell"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51b59e8af02bf4c51db2ee5d130293e6e1e5ac4ae9f74a1e57990a19221aa0d5"
 dependencies = [
  "enumflags2",
  "futures",
@@ -2230,8 +2240,6 @@ dependencies = [
 [[package]]
 name = "layershellev"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69fbd3ced50d91a5a118e3e00f49c72040ea6b48b78b159a3936104fc2632925"
 dependencies = [
  "calloop 0.14.4",
  "calloop-wayland-source 0.4.1",

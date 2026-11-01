@@ -483,6 +483,14 @@ impl Frame<'_> {
     /// Splice in every backdrop requested, each sampling only what lies
     /// behind it in `out`.
     pub fn finish(self, renderer: &mut GlesRenderer, out: &mut Vec<AbyssRenderElement>) {
-        insert_blur(renderer, self.output, self.store, self.config, self.requests, out);
+        insert_blur(
+            renderer,
+            self.output,
+            self.store,
+            self.config,
+            self.requests,
+            Vec::new(),
+            out,
+        );
     }
 }

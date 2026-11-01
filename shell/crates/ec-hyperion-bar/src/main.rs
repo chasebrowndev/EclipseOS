@@ -15,7 +15,7 @@
 //! reconciles: a debug path, not how the session runs it.
 
 use ec_hyperion_bar::{app, view};
-use iced_layershell::settings::{LayerShellSettings, StartMode};
+use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 
 fn namespace() -> String {
     "hyperion".to_owned()
@@ -43,12 +43,23 @@ fn main() -> iced_layershell::Result {
     // clipboard at all.
     iced_layershell::disable_clipboard();
 
+    // eclipse_glass_v1: bind the glass manager on a connection the layer-shell
+    // runtime then shares, and learn each surface as it is created. Fail-soft:
+    // under any other host, or when the compositor does not offer the global
+    // to this client, nothing changes and the bar draws its own ground.
+    let connection = ec_ui::glass::bootstrap();
+    iced_layershell::set_surface_hook(ec_ui::glass::surface_created);
+
     let mut builder = iced_layershell::build_pattern::daemon(
         move || app::boot(pin.clone()),
         namespace,
         app::update,
         view::view,
     )
+    .settings(Settings {
+        with_connection: connection.map(Into::into),
+        ..Default::default()
+    })
     .layer_settings(LayerShellSettings {
         // No surface of its own: every bar is opened by `app::open_bar` on
         // the output it belongs to, and the process outlives a moment with

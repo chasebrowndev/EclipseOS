@@ -15,6 +15,7 @@ pub mod curve;
 pub mod drop;
 pub mod effects;
 pub mod font;
+pub mod glass;
 pub mod glyphs;
 pub mod hud;
 pub mod hud_font;
@@ -176,6 +177,27 @@ fn window_backdrop(
         }
         _ => translucent.then_some((rect, rounding, None)),
     }
+}
+
+/// A layer surface's glass panes waiting for their backdrop (`eclipse_glass_v1`):
+/// where they go in the element list (directly below the surface's own
+/// elements), the pane list, and the surface's logical size and output-local
+/// physical origin they are placed against.
+struct PaneRequest {
+    key: blur::BlurKey,
+    index: usize,
+    set: glass::PaneSet,
+    size: Size<i32, Logical>,
+    loc: Point<i32, Physical>,
+    crop: Option<Rectangle<i32, Physical>>,
+}
+
+/// The non-empty pane list `surface` has committed, if it has one.
+fn committed_panes(surface: &WlSurface) -> Option<glass::PaneSet> {
+    with_states(surface, |states| {
+        let mut cached = states.cached_state.get::<glass::GlassState>();
+        cached.current().panes.clone().filter(|p| !p.is_empty())
+    })
 }
 
 /// The `ext_background_effect_v1` blur area `surface` has committed, or `None`
@@ -385,6 +407,11 @@ pub struct BorderStore {
     /// draws a backdrop in that mode.
     frost: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     glass: Option<smithay::backend::renderer::gles::GlesTexProgram>,
+    /// The glass program failed to compile; layers with panes keep the
+    /// whole-surface glass instead (and it is not retried per frame).
+    glass_failed: bool,
+    /// Glass pane elements built this frame, kept to reuse the allocation.
+    pane_scratch: Vec<blur::BlurElement>,
     /// The same three (blur, frost, glass) masked to a layer's input-region
     /// shape (Vol 1 §5.2), compiled on the first frame that draws one.
     shaped: [Option<smithay::backend::renderer::gles::GlesTexProgram>; 3],
@@ -557,6 +584,7 @@ pub fn collect_elements(
     // (window, index in `elements` directly below its surfaces, region).
     // Filled front to back; `insert_blur` consumes it in reverse.
     let mut blur_requests: Vec<BlurRequest> = Vec::new();
+    let mut pane_requests: Vec<PaneRequest> = Vec::new();
 
     // Layers have no rules: they take the global mode.
     let layer_mode = config.decoration.blur.mode;
@@ -567,8 +595,12 @@ pub fn collect_elements(
         Point::from((0, 0)),
         output_geo.size.to_f64().to_physical(scale).to_i32_round(),
     );
+    // `eclipse_glass_v1` panes need the glass program; without it the layer
+    // keeps its whole-surface glass.
+    let panes_ok = layer_mode == BlurMode::Glass && ensure_glass(renderer, borders);
     let layers = |elements: &mut Vec<AbyssRenderElement>,
                   requests: &mut Vec<BlurRequest>,
+                  pane_requests: &mut Vec<PaneRequest>,
                   which: &[Layer],
                   anim: &anim::AnimStore,
                   renderer: &mut GlesRenderer| {
@@ -673,6 +705,27 @@ pub fn collect_elements(
                             None => area,
                         },
                     );
+                // `eclipse_glass_v1`: a surface with panes gets glass under
+                // each pane and none under the whole surface. Only at rest (the
+                // panes are laid out at the target) and where the glass program
+                // can draw (an unrotated output).
+                let panes = (panes_ok && t.is_identity())
+                    .then(|| effects::fb_y_mirrored(output.current_transform()))
+                    .flatten()
+                    .and_then(|_| committed_panes(surface.wl_surface()));
+                if let Some(set) = panes {
+                    let els = pushed(els);
+                    pane_requests.push(PaneRequest {
+                        key: blur::BlurKey::Layer(surface.clone()),
+                        index: elements.len() + els.len(),
+                        set,
+                        size: geo.size,
+                        loc,
+                        crop,
+                    });
+                    elements.extend(els);
+                    continue;
+                }
                 let wants = match explicit {
                     Some(area) => area != blur::BlurArea::Nothing,
                     None => !scrim,
@@ -751,7 +804,14 @@ pub fn collect_elements(
     borders
         .anim
         .sync_layers(output, &config.animations, output_geo.size);
-    layers(&mut elements, &mut blur_requests, above, &borders.anim, renderer);
+    layers(
+        &mut elements,
+        &mut blur_requests,
+        &mut pane_requests,
+        above,
+        &borders.anim,
+        renderer,
+    );
 
     // Toplevels go one window at a time so each one's border and shadow stack
     // directly under its own surfaces rather than under the whole window stack
@@ -770,9 +830,24 @@ pub fn collect_elements(
         &mut blur_requests,
     );
 
-    layers(&mut elements, &mut blur_requests, below, &borders.anim, renderer);
+    layers(
+        &mut elements,
+        &mut blur_requests,
+        &mut pane_requests,
+        below,
+        &borders.anim,
+        renderer,
+    );
 
-    insert_blur(renderer, output, borders, config, blur_requests, &mut elements);
+    insert_blur(
+        renderer,
+        output,
+        borders,
+        config,
+        blur_requests,
+        pane_requests,
+        &mut elements,
+    );
 
     elements
 }
@@ -788,17 +863,22 @@ fn insert_blur(
     store: &mut BorderStore,
     config: &Config,
     requests: Vec<BlurRequest>,
+    panes: Vec<PaneRequest>,
     elements: &mut Vec<AbyssRenderElement>,
 ) {
     let cfg = &config.decoration.blur;
-    if requests.is_empty() {
+    if requests.is_empty() && panes.is_empty() {
         // Nothing asked for a backdrop (blur `off`, or nothing translucent):
         // the chain must not sit in GPU memory for a frame that draws none.
         store.blur.remove(output);
         return;
     }
     let scale = Scale::from(output.current_scale().fractional_scale());
-    let live: Vec<blur::BlurKey> = requests.iter().map(|(key, ..)| key.clone()).collect();
+    let live: Vec<blur::BlurKey> = requests
+        .iter()
+        .map(|(key, ..)| key.clone())
+        .chain(panes.iter().map(|p| p.key.clone()))
+        .collect();
     store.blur.entry(output.clone()).or_default().retain(&live);
 
     // Same framebuffer-space mask as `window_elements`: needs the output's own
@@ -814,7 +894,13 @@ fn insert_blur(
         .unwrap_or((1, 1));
     let upscale = scale.x.max(scale.y);
 
+    // Both lists are front to back, so both are consumed from the back: a pane
+    // set goes in before any request whose index is not above its own.
+    let mut panes = panes.into_iter().rev().peekable();
     for (key, index, region, mode, radius, bezel, shape, crop) in requests.into_iter().rev() {
+        while let Some(req) = panes.next_if(|p| p.index >= index) {
+            insert_panes(renderer, output, store, config, req, elements);
+        }
         // The final draw's program: plain `blur` only needs one to round
         // (a square backdrop draws with smithay's own); frost and glass
         // always do, radius 0 included. A shaped layer (Vol 1 §5.2) takes
@@ -937,6 +1023,126 @@ fn insert_blur(
             }
         }
     }
+    for req in panes {
+        insert_panes(renderer, output, store, config, req, elements);
+    }
+}
+
+/// Make sure the glass program is compiled; false if it cannot be.
+fn ensure_glass(renderer: &mut GlesRenderer, store: &mut BorderStore) -> bool {
+    if store.glass.is_none() && !store.glass_failed {
+        match effects::compile_glass(renderer) {
+            Ok(program) => store.glass = Some(program),
+            Err(err) => {
+                store.glass_failed = true;
+                tracing::warn!(
+                    ?err,
+                    "compiling the glass shader; layers keep whole-surface glass"
+                );
+            }
+        }
+    }
+    store.glass.is_some()
+}
+
+/// Splice one layer surface's glass panes into the element list (`eclipse_glass_v1`).
+///
+/// The backdrop is blurred once over the union of the panes' boxes; the cache
+/// is keyed on that union, so a pane resizing inside it re-blurs nothing. Then
+/// the glass program draws once per pane, in array order (the last on top),
+/// each with its own box, radius and look. A pane is the window bezel's glass
+/// with its bend confined to its band, dispersion off, and no seam; tone and
+/// state only move the rim and a small fill lift, scaled by the pane's alpha.
+fn insert_panes(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    store: &mut BorderStore,
+    config: &Config,
+    req: PaneRequest,
+    elements: &mut Vec<AbyssRenderElement>,
+) {
+    let cfg = &config.decoration.blur;
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    let upscale = scale.x.max(scale.y);
+    let Some((fb_height, mirrored)) = effects::fb_y_mirrored(output.current_transform())
+        .zip(output.current_mode())
+        .map(|(mirrored, mode)| (mode.size.h, mirrored))
+    else {
+        return;
+    };
+    let fb_size = output
+        .current_mode()
+        .map(|mode| output.current_transform().transform_size(mode.size))
+        .map(|size| (size.w, size.h))
+        .unwrap_or((1, 1));
+    let Some(program) = store.glass.clone() else {
+        return;
+    };
+    let panes = req.set.as_slice();
+    let rect_of = |p: &glass::Pane| {
+        glass::pane_rect(p, req.size, req.loc, scale).and_then(|r| match req.crop {
+            Some(crop) => r.intersection(crop),
+            None => Some(r),
+        })
+    };
+    // Every pane's box, drawn or not: a hover must not move the cache key.
+    let Some(union) = panes.iter().filter_map(rect_of).reduce(|a, b| a.merge(b)) else {
+        return;
+    };
+    let strength = (cfg.glass.refraction as f64 * upscale).min(BEZEL_REFRACTION * upscale) as f32;
+    let reach = effects::glass_reach(cfg.glass.refraction.min(BEZEL_REFRACTION as i32), upscale);
+    let mut blurs = std::mem::take(&mut store.pane_scratch);
+    blurs.clear();
+    let behind = &elements[req.index..];
+    store.blur.entry(output.clone()).or_default().pane_elements(
+        renderer,
+        output,
+        &req.key,
+        union,
+        behind,
+        cfg,
+        scale,
+        reach,
+        &program,
+        panes.len(),
+        |i| {
+            let pane = &panes[i];
+            let look = glass::look(pane)?;
+            let rect = rect_of(pane)?;
+            let mut tuned = cfg.glass.clone();
+            tuned.dispersion = 0.0;
+            tuned.rim = cfg.glass.rim * look.rim;
+            Some((
+                rect,
+                effects::glass_uniforms_lifted(
+                    rect,
+                    fb_height,
+                    mirrored,
+                    (pane.radius as f64 * upscale) as f32,
+                    fb_size,
+                    strength,
+                    glass::band(pane, rect, upscale),
+                    &tuned,
+                    None,
+                    look.lift,
+                ),
+            ))
+        },
+        &mut blurs,
+    );
+    // Inserting each at the same index leaves the last pane in front.
+    for element in blurs.drain(..) {
+        let element = match req.crop {
+            Some(crop) => {
+                CropRenderElement::from_element(element, scale, crop).map(AbyssRenderElement::CroppedBlur)
+            }
+            None => Some(AbyssRenderElement::Blur(element)),
+        };
+        if let Some(element) = element {
+            elements.insert(req.index, element);
+        }
+    }
+    store.pane_scratch = blurs;
 }
 
 /// A bezel's largest refraction, logical px: felt at the window edge, never a

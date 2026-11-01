@@ -444,6 +444,18 @@ pub fn glass_cell(
     }
 }
 
+/// `style` without its ground when the compositor draws it as a glass pane
+/// ([`crate::glass`]): no fill, no rim, no drop, the label ink kept. Unchanged
+/// otherwise, so the blur-off look stays what it was.
+pub fn bare_if_glass(mut style: button::Style) -> button::Style {
+    if crate::glass::available() {
+        style.background = None;
+        style.border.color = Color::TRANSPARENT;
+        style.shadow = Shadow::default();
+    }
+    style
+}
+
 /// A destructive action. Never accented — see the note on [`color::DANGER`].
 pub fn danger(_t: &Theme, status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);

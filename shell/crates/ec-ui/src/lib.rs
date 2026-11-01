@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The Eclipse design system.
+pub mod glass;
 pub mod ipc;
 pub mod motion;
 pub mod reading;

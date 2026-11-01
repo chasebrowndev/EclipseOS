@@ -309,6 +309,8 @@ pub struct AbyssState {
     pub virtual_pointer: crate::protocols::standard::virtual_pointer::VirtualPointerState,
     /// `ext_background_effect_v1` (BLUR-03).
     pub background_effect: crate::protocols::standard::background_effect::BackgroundEffectGlobals,
+    /// `eclipse_glass_v1` (COMP-02 §9).
+    pub glass: crate::protocols::standard::glass::GlassGlobals,
     /// `zwlr_output_power_management_v1`.
     pub output_power: crate::protocols::standard::output_power::OutputPowerState,
 
@@ -459,6 +461,11 @@ impl AbyssState {
             &dh,
             config.decoration.blur.mode != crate::config::BlurMode::Off,
         );
+        let glass = crate::protocols::standard::glass::GlassGlobals::new(
+            &dh,
+            weak_dh.clone(),
+            config.decoration.blur.mode == crate::config::BlurMode::Glass,
+        );
         let virtual_pointer = crate::protocols::standard::virtual_pointer::VirtualPointerState::new(&dh);
         // Capture reads every pixel of an output: allowlisted, fail-closed.
         let screencopy = crate::protocols::standard::screencopy::ScreencopyState::new(
@@ -599,6 +606,7 @@ impl AbyssState {
             idle_inhibit_state,
             output_power,
             background_effect,
+            glass,
             virtual_pointer,
             xwayland_shell_state,
             xwayland: Default::default(),
