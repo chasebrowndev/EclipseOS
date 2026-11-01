@@ -1,0 +1,46 @@
+/* Managed by ec-glass-host (EclipseOS Glass for Firefox). Rewritten on every
+   start; edit your own rules in userChrome.css instead.
+
+   Every rule is scoped to `:root[lwtheme]` and takes its colours from the
+   theme's own variables, so with the Glass theme gone (or any other theme),
+   nothing here changes anything beyond a flat rim and no focus glow. The
+   fills are the theme's key colours, so abyss keys them translucent; rims and
+   shadows are not key colours and stay opaque. */
+
+/* URL bar and its suggestion dropdown: no coloured glow or thick focus ring,
+   a soft translucent shadow and a crisp 1px rim instead. */
+:root[lwtheme] {
+  --urlbar-background-outline-focused: none;
+  --urlbar-background-box-shadow-open: 0 6px 20px rgba(0, 0, 0, 0.25);
+  --glass-rim: color-mix(in srgb, var(--toolbar-color, currentColor) 42%, var(--toolbar-field-background-color, transparent));
+}
+:root[lwtheme] .urlbar-background,
+:root[lwtheme] .urlbarView-background {
+  box-shadow: none !important;
+  outline: none !important;
+}
+:root[lwtheme] #urlbar[open] > .urlbar-background,
+:root[lwtheme] #urlbar[open] .urlbarView-background {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25) !important;
+}
+:root[lwtheme] #urlbar[focused] > .urlbar-background {
+  border-color: var(--glass-rim) !important;
+}
+:root[lwtheme] #urlbar[focused] #urlbar-input-container {
+  outline: 1px solid var(--glass-rim) !important;
+  outline-offset: -1px !important;
+}
+
+/* Selected tab: a brighter glass fill (the theme's selected-tab key) and a
+   crisp 1px rim instead of the coloured line. */
+:root[lwtheme] {
+  --tab-border-color-selected: var(--glass-rim);
+  --tab-border-color-accent: var(--glass-rim);
+  --tab-box-shadow-selected: none;
+}
+:root[lwtheme] .tab-background:is([selected], [multiselected]) {
+  background: var(--tab-background-color-selected) !important;
+  border-color: var(--glass-rim) !important;
+  outline: none !important;
+  box-shadow: none !important;
+}

@@ -40,6 +40,11 @@ ec-ctl — control the abyss compositor
   ec-ctl agent install DIR       review and install an agent package from DIR
                                       (the decision is made in a compositor modal)
   ec-ctl reload                  re-read the config
+  ec-ctl click X Y [left|right|middle] [COUNT]
+  ec-ctl scroll X Y DX DY        scripted pointer input (needs misc { scripted-input })
+  ec-ctl type TEXT               scripted typing
+  ec-ctl key NAME [ctrl|alt|shift|logo...]
+                                      scripted key press by keysym name
   ec-ctl addons                  installed add-ons and the hooks they turn on
   ec-ctl config list [--changed] every setting, its value and its file
   ec-ctl config describe PATH    one setting: type, range, default, doc
@@ -172,6 +177,9 @@ fn main() -> ExitCode {
 }
 
 fn default_socket() -> String {
+    if let Some(dir) = std::env::var_os("ECLIPSE_SOCKET_DIR").filter(|d| !d.is_empty()) {
+        return format!("{}/abyss.sock", dir.to_string_lossy());
+    }
     let base = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".into());
     format!("{base}/eclipse/abyss.sock")
 }
@@ -348,6 +356,42 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
             (
                 "set_floating".into(),
                 json!({"handle": num(1)?, "floating": on}),
+                None,
+            )
+        }
+        "click" => {
+            let f = |i: usize| -> Result<f64, String> {
+                a(i).parse::<f64>()
+                    .map_err(|_| format!("expected a number, got {:?}", a(i)))
+            };
+            let mut p = json!({"x": f(1)?, "y": f(2)?});
+            if !a(3).is_empty() {
+                p["button"] = json!(a(3));
+            }
+            if !a(4).is_empty() {
+                p["count"] = json!(num(4)?);
+            }
+            ("click_at".into(), p, None)
+        }
+        "scroll" => {
+            let f = |i: usize| -> Result<f64, String> {
+                a(i).parse::<f64>()
+                    .map_err(|_| format!("expected a number, got {:?}", a(i)))
+            };
+            (
+                "scroll_at".into(),
+                json!({"x": f(1)?, "y": f(2)?, "dx": f(3)?, "dy": f(4)?}),
+                None,
+            )
+        }
+        "type" => ("type_text".into(), json!({"text": args[1..].join(" ")}), None),
+        "key" => {
+            if a(1).is_empty() {
+                return Err("key needs a keysym name".into());
+            }
+            (
+                "press_key".into(),
+                json!({"key": a(1), "modifiers": args[2..].to_vec()}),
                 None,
             )
         }

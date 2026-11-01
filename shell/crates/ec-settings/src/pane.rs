@@ -453,6 +453,8 @@ fn page_for(path: &str) -> Option<(Page, &'static str)> {
             "blur" => (Page::Blur, "blur"),
             "shadow" => (Page::Shadow, "shadow"),
             "glow" => (Page::Shadow, "glow"),
+            // The window's material sits beside the blur it is drawn over.
+            "surface" => (Page::Blur, "surface"),
             _ => (Page::Rounding, "windows"),
         },
         "animations" => (Page::Animations, "animations"),

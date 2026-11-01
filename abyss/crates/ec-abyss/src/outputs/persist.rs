@@ -99,6 +99,15 @@ impl Persist {
         p
     }
 
+    /// Forget everything read from disk and never write again. A headless
+    /// session is a scratch one: inheriting the live session's remembered
+    /// scale or layout (and overwriting it) is wrong in both directions.
+    pub fn disable(&mut self) {
+        self.path = None;
+        self.state = State::default();
+        self.dirty = false;
+    }
+
     pub fn get(&self, set: &str, identity: &str) -> Option<&SavedOutput> {
         self.state.sets.get(set).and_then(|s| s.get(identity))
     }

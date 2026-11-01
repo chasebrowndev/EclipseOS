@@ -12,7 +12,7 @@ use smithay::{
         TouchSlot,
     },
     input::{
-        keyboard::{FilterResult, Keycode, ModifiersState},
+        keyboard::{FilterResult, Keycode, Keysym, ModifiersState},
         pointer::{
             AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
             GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
@@ -50,6 +50,18 @@ pub fn held_mods(state: &ModifiersState) -> Mods {
         ctrl: state.ctrl,
         alt: state.alt,
     }
+}
+
+/// The keysym a binding sees: Caps Lock upper-cases letters, but a bind
+/// is written for the key, so case follows Shift alone. ASCII letters only
+/// (their keysyms are their codepoints).
+pub fn bind_sym(sym: Keysym, state: &ModifiersState) -> Keysym {
+    let raw = sym.raw();
+    if !state.caps_lock || !matches!(raw, 0x41..=0x5a | 0x61..=0x7a) {
+        return sym;
+    }
+    let lower = raw | 0x20;
+    Keysym::new(if state.shift { lower & !0x20 } else { lower })
 }
 
 /// A swipe the compositor has claimed at begin. Only the deltas are kept, so
@@ -157,7 +169,7 @@ impl AbyssState {
                 if key_state != KeyState::Pressed {
                     return FilterResult::Forward;
                 }
-                let sym = handle.modified_sym();
+                let sym = bind_sym(handle.modified_sym(), mods);
                 let held = held_mods(mods);
                 let raw = sym.raw();
                 if (VT_SWITCH_FIRST..=VT_SWITCH_LAST).contains(&raw) {
@@ -1073,6 +1085,21 @@ impl AbyssState {
         if pressed {
             grabs::start_mouse_bind(self, button);
         }
+        // An X11 client decides what to do with a press from whether it holds
+        // the X input focus when the press arrives; Qt drops the click that
+        // activates its window. So an X11 window under the pointer takes
+        // focus *before* the press is delivered, and the press lands on a
+        // focused window. Wayland clients keep the press-then-focus order.
+        let mut focused_first = false;
+        if pressed && self.popup_grabs.is_empty() {
+            let pos = self.pointer_location;
+            let action =
+                crate::shell::focus::decide_pointer_focus(&crate::shell::focus::click_focus_ctx(self, pos));
+            if matches!(&action, crate::shell::focus::FocusAction::Window(w) if w.x11_surface().is_some()) {
+                crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Click);
+                focused_first = true;
+            }
+        }
         let pointer = self.seat.get_pointer().unwrap();
         pointer.button(
             self,
@@ -1090,7 +1117,7 @@ impl AbyssState {
         // surface that held the keyboard — and then no motion event is coming
         // to fix it. A press says which window the human means. Not while a
         // popup grab is up: there the press is the dismissal, handled below.
-        if pressed && self.popup_grabs.is_empty() {
+        if pressed && self.popup_grabs.is_empty() && !focused_first {
             let pos = self.pointer_location;
             let action =
                 crate::shell::focus::decide_pointer_focus(&crate::shell::focus::click_focus_ctx(self, pos));
@@ -1746,5 +1773,26 @@ mod gesture_tests {
         // Motion after the lock reaches nothing: no grab, and focus is `None`.
         s.inject_touch_motion(0, at, 1);
         assert!(!touch.is_grabbed());
+    }
+}
+
+#[cfg(test)]
+mod bind_sym_tests {
+    use super::*;
+
+    fn mods(caps_lock: bool, shift: bool) -> ModifiersState {
+        ModifiersState {
+            caps_lock,
+            shift,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn caps_lock_folds_letters_to_shift_case() {
+        assert_eq!(bind_sym(Keysym::R, &mods(true, false)), Keysym::r);
+        assert_eq!(bind_sym(Keysym::r, &mods(true, true)), Keysym::R);
+        assert_eq!(bind_sym(Keysym::r, &mods(false, false)), Keysym::r);
+        assert_eq!(bind_sym(Keysym::Return, &mods(true, false)), Keysym::Return);
     }
 }
