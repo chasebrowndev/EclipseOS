@@ -238,6 +238,23 @@ impl Conn {
         ec_ui::ipc::fetch_blur(client)
     }
 
+    /// Whether a card is hairline-only: `decoration.blur.mode` is `off` or
+    /// `blur`. `glass` and `frost` keep the glass panel. `None` on any failure.
+    pub fn hairline_cards(&mut self) -> Option<bool> {
+        let client = self.client.as_mut()?;
+        let reply = client
+            .call("get_config", json!({ "path": "decoration.blur.mode" }))
+            .ok()?;
+        let mode = reply.get("keys")?.as_array()?.first()?.get("value")?.as_str()?;
+        Some(matches!(mode, "off" | "blur"))
+    }
+
+    /// Read `decoration.surface.*` into the shared surface values
+    /// ([`ec_ui::surface`]). `false`, with the last values kept, on any failure.
+    pub fn sync_surface(&mut self) -> bool {
+        self.client.as_mut().is_some_and(ec_ui::ipc::sync_surface)
+    }
+
     /// Write one scalar. Returns whether the change needs a restart to apply.
     pub fn set(&mut self, path: &str, value: Value) -> Result<bool, Problem> {
         let reply = self.call("set_config_value", json!({ "path": path, "value": value }))?;

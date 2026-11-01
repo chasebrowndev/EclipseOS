@@ -1,0 +1,24 @@
+{
+  "policies": {
+    "ExtensionSettings": {
+      "glass@eclipseos": {
+        "installation_mode": "normal_installed",
+        "install_url": "file:///usr/share/eclipse/firefox/glass.xpi"
+      }
+    },
+    "Preferences": {
+      "ui.menu": {
+        "Value": "#272521",
+        "Status": "default"
+      },
+      "ui.menutext": {
+        "Value": "#f2efe8",
+        "Status": "default"
+      },
+      "toolkit.legacyUserProfileCustomizations.stylesheets": {
+        "Value": true,
+        "Status": "default"
+      }
+    }
+  }
+}

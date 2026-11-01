@@ -32,6 +32,9 @@ pub struct Prepared {
     pub ucode: Option<Ucode>,
     /// Turing-or-newer NVIDIA present: DKMS module, cmdline and initramfs setup.
     pub nvidia: bool,
+    /// An earlier attempt left mounts at or under the target; they are
+    /// unmounted once the erase is confirmed.
+    pub stale_mounts: bool,
     /// Non-fatal findings, reported to the user before the erase.
     pub warnings: Vec<&'static str>,
 }
@@ -445,9 +448,174 @@ pub fn unmount(env: &Env) -> Result<()> {
 
 // ---- Pacstrap ----------------------------------------------------------------
 
+/// Download settings for the install-time pacman.conf: no low-speed abort (a
+/// slow or filtered link must not kill a transaction) and few parallel
+/// downloads (many streams over a bad link starve each other). Replaces any
+/// existing or commented-out setting, then puts ours right under `[options]`.
+pub fn with_download_options(text: &str) -> String {
+    const OURS: &str = "DisableDownloadTimeout\nParallelDownloads = 3\n";
+    let mut out = String::with_capacity(text.len() + OURS.len() + 16);
+    let mut placed = false;
+    for l in text.lines() {
+        let key = l.trim().trim_start_matches('#').trim();
+        let key = key.split(['=', ' ']).next().unwrap_or("");
+        if key == "DisableDownloadTimeout" || key == "ParallelDownloads" {
+            continue;
+        }
+        out.push_str(l);
+        out.push('\n');
+        if !placed && l.trim() == "[options]" {
+            out.push_str(OURS);
+            placed = true;
+        }
+    }
+    if placed {
+        out
+    } else {
+        format!("[options]\n{OURS}\n{out}")
+    }
+}
+
+/// Why a pacstrap run failed, from the tail of its stderr.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailClass {
+    Network,
+    DiskFull,
+    Signature,
+    Other,
+}
+
+impl FailClass {
+    /// Only a download failure can plausibly go away by trying again. A bad
+    /// signature, a full disk or anything unrecognised must not be retried
+    /// into success.
+    pub fn retryable(self) -> bool {
+        self == FailClass::Network
+    }
+
+    /// The one line the user sees: what happened and what to do next.
+    pub fn message(self) -> &'static str {
+        match self {
+            FailClass::Network => {
+                "Downloads stalled on every mirror — check the connection (a filtered network or \
+                 captive portal can do this), then Try again."
+            }
+            FailClass::DiskFull => "The target disk ran out of space — pick a larger disk, then Try again.",
+            FailClass::Signature => {
+                "Package signature check failed — check that the clock is right and the network is \
+                 not altering downloads (captive portal, proxy), then Try again."
+            }
+            FailClass::Other => {
+                "Installing packages failed — see the install log for the reason, then Try again."
+            }
+        }
+    }
+}
+
+/// Classify pacstrap's stderr. Disk and signature win over network: a "failed
+/// retrieving ... .sig" line is a download problem, but "invalid or corrupted
+/// package (PGP signature)" is a verification one, and a full disk surfaces as
+/// a failed transaction that would otherwise look like a download. The text
+/// is only matched against fixed phrases; none of it is kept or shown.
+pub fn classify_pacstrap(stderr: &[u8]) -> FailClass {
+    let t = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    let any = |needles: &[&str]| needles.iter().any(|n| t.contains(n));
+    if any(&[
+        "no space left on device",
+        "not enough free disk space",
+        "too full",
+    ]) {
+        FailClass::DiskFull
+    } else if any(&[
+        "pgp signature",
+        "signature from",
+        "is unknown trust",
+        "is marginal trust",
+        "key is disabled",
+        "required key missing",
+        "keyring is not writable",
+        "could not be looked up remotely",
+        "invalid or corrupted database",
+    ]) {
+        FailClass::Signature
+    } else if any(&[
+        "failed retrieving file",
+        "operation too slow",
+        "operation timed out",
+        "connection timed out",
+        "could not resolve",
+        "failed to connect",
+        "connection reset",
+        "connection refused",
+        "ssl connect error",
+        "failed to synchronize",
+        "invalid or corrupted package (checksum)",
+        "unexpected error",
+    ]) {
+        FailClass::Network
+    } else {
+        FailClass::Other
+    }
+}
+
+/// Move the first `Server` line to the end of the list, so the mirror that just
+/// failed is tried last. `None` when there are fewer than two servers.
+pub fn rotate_mirrorlist(text: &str) -> Option<String> {
+    let is_server = |l: &&str| l.trim_start().starts_with("Server");
+    let servers = text.lines().filter(is_server).count();
+    if servers < 2 {
+        return None;
+    }
+    let first = text.lines().position(|l| is_server(&l))?;
+    let mut out = String::with_capacity(text.len() + 1);
+    let mut moved = "";
+    for (i, l) in text.lines().enumerate() {
+        if i == first {
+            moved = l;
+        } else {
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    out.push_str(moved);
+    out.push('\n');
+    Some(out)
+}
+
+/// Best effort: a mirror list that cannot be rotated just means the retry
+/// starts where the last attempt did. Written beside the list and renamed over
+/// it, so a link at the path is replaced, never written through.
+fn rotate_live_mirrorlist(env: &Env) {
+    let path = &env.paths.mirrorlist;
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    let Some(rotated) = rotate_mirrorlist(&text) else {
+        return;
+    };
+    let mut tmp = path.clone().into_os_string();
+    tmp.push(".new");
+    let tmp = PathBuf::from(tmp);
+    let _ = fs::remove_file(&tmp);
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(rotated.as_bytes()));
+    if written.is_ok() && fs::rename(&tmp, path).is_ok() {
+        return;
+    }
+    let _ = fs::remove_file(&tmp);
+}
+
+/// Attempts at pacstrap before giving up on a download failure.
+pub const PACSTRAP_TRIES: u32 = 3;
+
 pub fn install_pacman_conf(env: &Env) -> Result<()> {
     let p = &env.paths;
-    let mut conf = fs::read_to_string(&p.live_pacman_conf).map_err(io("read pacman.conf"))?;
+    let conf = fs::read_to_string(&p.live_pacman_conf).map_err(io("read pacman.conf"))?;
+    let mut conf = with_download_options(&conf);
     // Baked into the medium by packaging/iso/build-iso.sh (D-03): the database is
     // unsigned, the packages in it are signed.
     conf.push_str(&format!(
@@ -465,7 +633,9 @@ pub fn install_pacman_conf(env: &Env) -> Result<()> {
         .map_err(io("write install pacman.conf"))
 }
 
-pub fn pacstrap(env: &Env, prep: &Prepared) -> Result<()> {
+/// `note` receives a progress line for each retry. Downloaded packages stay in
+/// the target's cache (pacstrap's default), so a retry fetches only what is left.
+pub fn pacstrap(env: &Env, prep: &Prepared, note: &mut dyn FnMut(&str)) -> Result<()> {
     let p = &env.paths;
     let r = env.runner;
     // Trust the packaging key on the live side (to verify the baked repo) and in
@@ -473,13 +643,31 @@ pub fn pacstrap(env: &Env, prep: &Prepared) -> Result<()> {
     r.run(&Cmd::new(Tool::PacmanKey).arg("--add").arg(&p.packaging_key))?;
     r.run(&Cmd::new(Tool::PacmanKey).arg("--lsign-key").arg(&prep.keyid))?;
     install_pacman_conf(env)?;
-    r.run(
-        &Cmd::new(Tool::Pacstrap)
-            .args(["-K", "-C"])
-            .arg(&p.install_pacman_conf)
-            .arg(&p.target)
-            .args(&prep.pkgs),
-    )?;
+    let strap = Cmd::new(Tool::Pacstrap)
+        .args(["-K", "-C"])
+        .arg(&p.install_pacman_conf)
+        .arg(&p.target)
+        .args(&prep.pkgs);
+    let mut attempt = 1;
+    loop {
+        let (res, stderr) = r.run_diag(&strap);
+        if res.is_ok() {
+            break;
+        }
+        let class = classify_pacstrap(&stderr);
+        if !class.retryable() || attempt >= PACSTRAP_TRIES {
+            return Err(Error::Failed(class.message()));
+        }
+        note(match attempt {
+            1 => "downloads failed; retrying on a different mirror (attempt 2 of 3)",
+            _ => "downloads failed; retrying on a different mirror (attempt 3 of 3)",
+        });
+        // The failed run's key daemons would hold the target's keyring.
+        stop_target_daemons(env);
+        rotate_live_mirrorlist(env);
+        std::thread::sleep(p.retry_backoff * attempt);
+        attempt += 1;
+    }
     let ring = p.target.join("etc/pacman.d/gnupg");
     r.run(
         &Cmd::new(Tool::PacmanKey)
@@ -495,6 +683,13 @@ pub fn pacstrap(env: &Env, prep: &Prepared) -> Result<()> {
             .arg("--lsign-key")
             .arg(&prep.keyid),
     )?;
+    // pacstrap synced `[eclipseos]` from the medium's baked repo, whose
+    // database build-iso.sh re-signs, so it differs from the published one but
+    // is newer. The target's first `pacman -Sy` would keep that db (the server
+    // answers 304) and fetch the published signature: a bad signature until a
+    // later sync. Drop the pair so the first sync fetches both.
+    target::remove(&p.target, TargetFile::SyncDb)?;
+    target::remove(&p.target, TargetFile::SyncDbSig)?;
     let fstab = r.capture(&Cmd::new(Tool::Genfstab).arg("-U").arg(&p.target))?;
     let mut all = target::read(&p.target, TargetFile::Fstab)?;
     all.extend_from_slice(&fstab);
@@ -824,5 +1019,67 @@ mod tests {
     fn units_are_floor_plus_catalog_and_nothing_else() {
         let es = Catalog::builtin().resolve(&["ec-hyperion-bar".into()]).unwrap();
         assert_eq!(unit_list(&es), FLOOR_UNITS);
+    }
+
+    #[test]
+    fn pacstrap_failures_are_classified() {
+        use FailClass::*;
+        let c = |t: &str| classify_pacstrap(t.as_bytes());
+        assert_eq!(
+            c(
+                "error: failed retrieving file 'x.sig' from m : Operation too slow. Less than 1 bytes/sec\n\
+               error: failed to commit transaction (unexpected error)"
+            ),
+            Network
+        );
+        assert_eq!(
+            c("curl: (6) Could not resolve host: geo.mirror.pkgbuild.com"),
+            Network
+        );
+        assert_eq!(
+            c("error: failed retrieving file 'a' : Connection timed out after 10001"),
+            Network
+        );
+        assert_eq!(c("error: x: signature from \"A\" is unknown trust"), Signature);
+        assert_eq!(
+            c("error: x: invalid or corrupted package (PGP signature)"),
+            Signature
+        );
+        assert_eq!(
+            c("error: failed to commit transaction (No space left on device)"),
+            DiskFull
+        );
+        assert_eq!(c("error: Partition / too full: 10 blocks needed"), DiskFull);
+        assert_eq!(c("error: target not found: nope"), Other);
+        assert_eq!(c(""), Other);
+        assert!(Network.retryable());
+        assert!(![DiskFull, Signature, Other].iter().any(|k| k.retryable()));
+        for k in [Network, DiskFull, Signature, Other] {
+            assert!(k.message().ends_with("Try again."));
+        }
+    }
+
+    #[test]
+    fn mirrorlist_rotation_puts_the_failed_mirror_last() {
+        let t = "# c\nServer = https://a\n#Server = https://off\nServer = https://b\n";
+        let r = rotate_mirrorlist(t).unwrap();
+        assert_eq!(
+            r,
+            "# c\n#Server = https://off\nServer = https://b\nServer = https://a\n"
+        );
+        assert_eq!(rotate_mirrorlist("Server = https://a\n"), None);
+        assert_eq!(rotate_mirrorlist(""), None);
+    }
+
+    #[test]
+    fn download_options_replace_existing_settings_under_options() {
+        let t = "[options]\nHoldPkg = pacman\n#ParallelDownloads = 5\nParallelDownloads = 8\n\n[core]\nInclude = x\n";
+        let r = with_download_options(t);
+        assert_eq!(
+            r,
+            "[options]\nDisableDownloadTimeout\nParallelDownloads = 3\nHoldPkg = pacman\n\n[core]\nInclude = x\n"
+        );
+        assert_eq!(with_download_options(&r), r);
+        assert!(with_download_options("[core]\n").starts_with("[options]\nDisableDownloadTimeout"));
     }
 }

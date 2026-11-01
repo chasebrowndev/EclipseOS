@@ -55,10 +55,12 @@ cargo build --workspace --all-targets
 cargo test --workspace
 cargo deny check advisories bans licenses sources
 abyss/ci/doc-refs.sh             # every repo-rooted path docs/ cites exists
+npx --yes web-ext@10.7.0 lint -s browser/firefox-glass --warnings-as-errors
+packaging/firefox/check-xpi.sh   # signed XPI == browser/firefox-glass (ADR 0079)
 cargo run -- --backend winit    # nested window under the host session (abyss)
 journalctl --user -t ec-abyss -f  # logs (tracing → journald)
 ```
-The first six are exactly what CI runs (`../.github/workflows/gate.yml` — the
+The first eight are exactly what CI runs (`../.github/workflows/gate.yml` — the
 workflows sit at the repository root, one level above this crate tree). If you
 change one, change both — a local gate that differs from CI is worse than no
 local gate.
@@ -171,7 +173,7 @@ abyss/crates/ec-abyss/src/shell/       COMP-05  layouts, workspaces, rules, focu
 abyss/crates/ec-abyss/src/protocols/standard/  COMP-06
 abyss/crates/ec-abyss/src/protocols/agent/     COMP-08  ec-agent.sock, eclipse_agent_v1 (M11: admission, scene queries)
 abyss/crates/ec-abyss/src/protocols/semantic/  COMP-09  eclipse_semantic_v1    (not yet)
-abyss/crates/ec-abyss/src/trusted_ui/  COMP-10  prompts (modal primitive; §3.10 erase, §3.11 command approval); indicator, emergency panel not yet
+abyss/crates/ec-abyss/src/trusted_ui/  COMP-10  prompts (modal primitive; §3.10 erase, §3.11 command approval), emergency panel, compat-lock indicator
 abyss/crates/ec-abyss/src/policy/      COMP-11  grant admission, agent scene filter; enforcement table, check() not yet
 abyss/crates/ec-abyss/src/audit/       COMP-12  provenance emission to policyd (M12: scene requests, focus, lifecycle)
 abyss/crates/ec-abyss/src/ipc/         COMP-13  human JSON-RPC socket, methods, config RPC (gate.rs is a re-export shim)

@@ -57,6 +57,7 @@ pub mod dedupe;
 pub mod generation;
 pub mod lock;
 pub mod seat;
+mod seat_global;
 pub mod wait;
 
 #[cfg(test)]
@@ -85,9 +86,6 @@ pub(crate) struct AgentAux {
     pub(crate) dedupe: dedupe::Dedupe,
     /// The open atomic batch, if any.
     pub(crate) batch: Option<atomic::Batch>,
-    /// `expected_generation` of requests in flight, `(req_id, act, expected)`:
-    /// checked at step 8 by [`seat::execute`].
-    pub(crate) expect: Vec<(u32, crate::policy::enforce::Act, u32)>,
 }
 
 /// The socket, the global and the live agent objects.
@@ -322,6 +320,20 @@ fn agent_display(state: &mut AbyssState) -> Option<DisplayHandle> {
 /// hook, beside the main display's flush: `wl_display_flush_clients` may
 /// destroy a client, which is only safe outside request dispatch.
 pub fn flush(state: &mut AbyssState) {
+    // Waits are woken by the dispatch round that changed the scene, then the
+    // `waited` events go out with the flush below (COMP-08 §3).
+    wait::wake(state);
+    // Who may see each agent seat follows the scene, so it is re-decided
+    // once per loop iteration, before clients next read (SEAT-01).
+    let mut changed = false;
+    let mut i = 0;
+    while let Some(&(aid, _)) = state.agent_seats.get(i) {
+        changed |= seat::refresh(state, aid);
+        i += 1;
+    }
+    if changed {
+        let _ = state.display_handle.flush_clients();
+    }
     if let Some(dh) = state.agents.display.as_mut() {
         let _ = dh.flush_clients();
     }

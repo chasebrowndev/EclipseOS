@@ -6,8 +6,11 @@ Type = Package
 Target = pacman-mirrorlist
 
 [Action]
-Description = Uncommenting HTTPS mirrors in /etc/pacman.d/mirrorlist...
+Description = Uncommenting HTTPS mirrors, preferred mirrors first...
 When = PostTransaction
 Depends = pacman-mirrorlist
 Depends = sed
-Exec = /usr/bin/sed -E -i 's/#(Server = https:)/\1/g' /etc/pacman.d/mirrorlist
+# eclipseos-mirrors (D-03 §4.3) goes on top: the installer's retry rotates the
+# first Server to the end, so the list it walks starts with known-good mirrors.
+# It is staged under its own name because pacman-mirrorlist owns `mirrorlist`.
+Exec = /usr/bin/sh -c "sed -E -i 's/#(Server = https:)/\\1/g' /etc/pacman.d/mirrorlist && cat /etc/pacman.d/eclipseos-mirrors /etc/pacman.d/mirrorlist > /etc/pacman.d/mirrorlist.new && mv /etc/pacman.d/mirrorlist.new /etc/pacman.d/mirrorlist"

@@ -34,6 +34,10 @@ pub struct XWaylandState {
     /// already known: placement must not configure it (the first configure the
     /// client sees has to be the final rect). Set only across `place_new_window`.
     pub mapping: Option<smithay::desktop::Window>,
+    /// The size an X11 window asked to be mapped at, logical pixels. Set only
+    /// across `place_new_window`, so a floating X11 window opens at its
+    /// requested size (a dialog is not squashed to half the output).
+    pub requested: Option<smithay::utils::Rectangle<i32, Logical>>,
     /// Override-redirect windows whose geometry is still the creation-time
     /// one (no `ConfigureNotify` yet); see [`creation_geometry`].
     pub unrefreshed: Vec<X11Surface>,
@@ -42,6 +46,9 @@ pub struct XWaylandState {
     /// parked here and applied at map, the way `map_toplevel` replays the xdg
     /// pending state.
     pub wants_fullscreen: Vec<X11Surface>,
+    /// The managed-window order (bottom to top) last pushed to the X server by
+    /// [`sync_stacking`], so an unchanged stack costs no X round trip.
+    pub stacking: Vec<u32>,
     /// Client-side scale currently advertised through XSETTINGS.
     pub advertised_scale: Option<i32>,
     /// The `client_scale` handed to smithay for the XWayland client: X pixels
@@ -123,6 +130,39 @@ pub fn creation_geometry(raw: Rectangle<i32, Logical>, scale: f64) -> Rectangle<
             .into(),
     );
     from_x11(x, scale)
+}
+
+/// Mirror the compositor's stacking of managed X11 windows into the X stack
+/// (`_NET_CLIENT_LIST_STACKING`, `XQueryTree`). Without it the two diverge: the
+/// compositor raises a window on focus or relayout, X keeps its old order, and
+/// clients that read the X stack (or XTEST-driven tools) act on the wrong one.
+pub fn sync_stacking(state: &mut AbyssState) {
+    if state.xwayland.wm.is_none() {
+        return;
+    }
+    let order: Vec<X11Surface> = state
+        .space
+        .elements()
+        .filter(|w| !crate::shell::is_unmanaged_x11(state, w))
+        .filter_map(|w| w.x11_surface().cloned())
+        .collect();
+    let ids: Vec<u32> = order.iter().map(|s| s.window_id()).collect();
+    if ids == state.xwayland.stacking {
+        return;
+    }
+    state.xwayland.stacking = ids;
+    // Raise each in turn, bottom first: the last one raised ends on top, so
+    // the X stack ends up exactly the compositor's. (smithay's
+    // `update_stacking_order_*` only moves windows it finds out of order
+    // relative to each other and left this one reversed.)
+    if let Some(wm) = state.xwayland.wm.as_mut() {
+        for surface in &order {
+            if let Err(e) = wm.raise_window(surface) {
+                tracing::debug!(error = %e, "could not sync the X stacking order");
+                break;
+            }
+        }
+    }
 }
 
 /// Spawn the X server and arm the event source (COMP-07 §1).

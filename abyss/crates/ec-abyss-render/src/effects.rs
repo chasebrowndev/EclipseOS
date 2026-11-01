@@ -54,13 +54,65 @@ uniform float tint;
 uniform vec4 win_rect;
 uniform float radius;
 
+#ifdef KEYED
+// Tint-keyed translucency (ADR 0079): inside `key_rect` (gl_FragCoord space)
+// a texel whose colour is within 1/255 per channel of key `i` is drawn at
+// that key's opacity (`key{i}.w`); every other texel is untouched.
+uniform vec4 key_rect;
+uniform float keys;
+uniform vec4 key0;
+uniform vec4 key1;
+uniform vec4 key2;
+uniform vec4 key3;
+uniform vec4 key_all; // 1.0 per key matched over the whole window
+
+bool near_key(vec3 c, vec3 k, float tol) {
+    return all(lessThanEqual(abs(c - k) * 255.0, vec3(tol)));
+}
+
+float key_opacity(vec4 texel) {
+    vec2 f = gl_FragCoord.xy;
+    bool inside = !(f.x < key_rect.x || f.y < key_rect.y || f.x >= key_rect.x + key_rect.z || f.y >= key_rect.y + key_rect.w);
+    // The client's own anti-aliased edge (Firefox rounds its corners itself)
+    // is a key colour at partial alpha, premultiplied. Match it on the
+    // straight colour, with the tolerance widened by what 8-bit
+    // premultiplication loses, so the edge fades like the pixels beside it
+    // instead of staying opaque as a dark speck.
+    float tol = 1.5;
+    vec3 rgb = texel.rgb;
+#if !defined(NO_ALPHA)
+    if (texel.a < 0.2)
+        return 1.0;
+    if (texel.a < 0.99) {
+        rgb = texel.rgb / texel.a;
+        tol = 1.5 / texel.a;
+    }
+#endif
+    if (keys > 0.5 && (inside || key_all.x > 0.5) && near_key(rgb, key0.rgb, tol))
+        return key0.w;
+    if (keys > 1.5 && (inside || key_all.y > 0.5) && near_key(rgb, key1.rgb, tol))
+        return key1.w;
+    if (keys > 2.5 && (inside || key_all.z > 0.5) && near_key(rgb, key2.rgb, tol))
+        return key2.w;
+    if (keys > 3.5 && (inside || key_all.w > 0.5) && near_key(rgb, key3.rgb, tol))
+        return key3.w;
+    return 1.0;
+}
+#endif
+
 void main() {
     vec4 color = texture2D(tex, v_coords);
+#ifdef KEYED
+    float key_k = key_opacity(color);
+#endif
 
 #if defined(NO_ALPHA)
     color = vec4(color.rgb, 1.0) * alpha;
 #else
     color = color * alpha;
+#endif
+#ifdef KEYED
+    color *= key_k;
 #endif
 
 #if defined(DEBUG_FLAGS)
@@ -81,6 +133,88 @@ void main() {
     gl_FragColor = color * (1.0 - smoothstep(-0.5, 0.5, d));
 }
 "#;
+
+/// The keyed program: the rounded-corner program with tint keying switched on
+/// (`KEYED`). Surfaces of a window with a keyed strip, and of its popups, draw
+/// through it; it is always handed every uniform, so nothing leaks from one
+/// draw to the next. Cached by the caller.
+pub fn compile_keyed(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    renderer.compile_custom_texture_shader(
+        ROUNDED_TEX_SRC.replacen("//_DEFINES_", "//_DEFINES_\n#define KEYED 1", 1),
+        &[
+            UniformName::new("win_rect", UniformType::_4f),
+            UniformName::new("radius", UniformType::_1f),
+            UniformName::new("key_rect", UniformType::_4f),
+            UniformName::new("keys", UniformType::_1f),
+            UniformName::new("key0", UniformType::_4f),
+            UniformName::new("key1", UniformType::_4f),
+            UniformName::new("key2", UniformType::_4f),
+            UniformName::new("key3", UniformType::_4f),
+            UniformName::new("key_all", UniformType::_4f),
+        ],
+    )
+}
+
+/// A rectangle covering any framebuffer: "no mask" / "everywhere".
+const EVERYWHERE: [f32; 4] = [-1.0e6, -1.0e6, 2.0e6, 2.0e6];
+
+fn fb_rect(rect: Rectangle<i32, Physical>, fb_height: i32, mirrored: bool) -> [f32; 4] {
+    let y = if mirrored {
+        fb_height - rect.loc.y - rect.size.h
+    } else {
+        rect.loc.y
+    };
+    [
+        rect.loc.x as f32,
+        y as f32,
+        rect.size.w as f32,
+        rect.size.h as f32,
+    ]
+}
+
+/// Uniforms for [`compile_keyed`]. `mask` is the window rectangle and corner
+/// radius (physical, `rounding_uniforms`' convention), or `None` for no
+/// rounding. `region` is where the keys apply, `None` for the whole surface.
+pub fn keyed_uniforms(
+    mask: Option<(Rectangle<i32, Physical>, f32)>,
+    region: Option<Rectangle<i32, Physical>>,
+    fb_height: i32,
+    mirrored: bool,
+    keys: &crate::userdata::Keys,
+) -> Vec<Uniform<'static>> {
+    let (win, radius) = match mask {
+        Some((rect, radius)) => (fb_rect(rect, fb_height, mirrored), radius),
+        None => (EVERYWHERE, 0.0),
+    };
+    let key_rect = region.map_or(EVERYWHERE, |r| fb_rect(r, fb_height, mirrored));
+    let key = |i: usize| -> [f32; 4] {
+        if i < keys.n as usize {
+            let [r, g, b] = keys.rgb[i];
+            [
+                r as f32 / 255.0,
+                g as f32 / 255.0,
+                b as f32 / 255.0,
+                keys.opacity[i],
+            ]
+        } else {
+            [0.0; 4]
+        }
+    };
+    vec![
+        Uniform::new("win_rect", win),
+        Uniform::new("radius", radius),
+        Uniform::new("key_rect", key_rect),
+        Uniform::new("keys", keys.n as f32),
+        Uniform::new("key0", key(0)),
+        Uniform::new("key1", key(1)),
+        Uniform::new("key2", key(2)),
+        Uniform::new("key3", key(3)),
+        Uniform::new("key_all", {
+            let a = |i: usize| (i < keys.n as usize && keys.everywhere[i]) as u8 as f32;
+            [a(0), a(1), a(2), a(3)]
+        }),
+    ]
+}
 
 /// The line every mask program declares its corner radius on; the shape
 /// functions are spliced in right after it (see [`shaped_source`]).
@@ -159,11 +293,7 @@ pub fn compile_rounded_shaped(renderer: &mut GlesRenderer) -> Result<GlesTexProg
 pub fn compile_frost_shaped(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
     renderer.compile_custom_texture_shader(
         shaped_source(&format!("{BACKDROP_HEAD}{FROST_BODY}")),
-        &with_shape(&[
-            ("win_rect", UniformType::_4f),
-            ("radius", UniformType::_1f),
-            ("frost_tint", UniformType::_4f),
-        ]),
+        &with_shape(&FROST_UNIFORMS),
     )
 }
 
@@ -275,22 +405,50 @@ float grain(vec2 p) {
 /// static grain hashed from the framebuffer position (COMP-02 §9).
 const FROST_BODY: &str = r#"
 uniform vec4 frost_tint;
+uniform float y_sign;     // -1 when the framebuffer is y-mirrored
+uniform vec4 rim_color;   // premultiplied bezel hairline colour
+uniform float inner;      // bezel width, physical px; 0 off the bezel
+uniform float opaque;     // 1 when the window inside the bezel is opaque
+
+const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // top-left, y down
+// The glass program's neutral hairline, so a bezel reads the same in both.
+const float LINE_BASE = 0.1;
+const float LINE_TL = 0.26;
+const float LINE_BR = 0.07;
 
 void main() {
     vec4 color = texture2D(tex, v_coords);
     color.rgb = mix(color.rgb, frost_tint.rgb, frost_tint.a);
     color.rgb = clamp(color.rgb + (grain(floor(gl_FragCoord.xy)) - 0.5) * 0.035, 0.0, 1.0);
-    color = finish(color);
 
 #ifdef SHAPED
     float d = shape_sd(gl_FragCoord.xy);
 #else
     vec2 half_size = win_rect.zw * 0.5;
     vec2 p = gl_FragCoord.xy - (win_rect.xy + half_size);
+    p.y *= y_sign;
     float r = min(radius, min(half_size.x, half_size.y));
     vec2 q = abs(p) - half_size + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
 #endif
+    // Under an opaque window only the ring can show.
+    if (opaque > 0.5 && d < -inner - 1.0) {
+        gl_FragColor = vec4(0.0);
+        return;
+    }
+#ifndef SHAPED
+    // Bezel hairline: a 1.25 px band inside the mask edge, lit top-left.
+    if (inner > 0.0) {
+        vec2 s = vec2(p.x < 0.0 ? -1.0 : 1.0, p.y < 0.0 ? -1.0 : 1.0);
+        vec2 grad = (q.x > 0.0 && q.y > 0.0) ? normalize(q) : (q.x > q.y ? vec2(1.0, 0.0) : vec2(0.0, 1.0));
+        grad *= s;
+        float band = 1.0 - smoothstep(0.0, 1.25, -d);
+        float lobe = LINE_BASE + LINE_TL * max(dot(grad, LIGHT), 0.0) + LINE_BR * max(dot(grad, -LIGHT), 0.0);
+        vec3 tint = rim_color.rgb / max(rim_color.a, 0.0001);
+        color.rgb = mix(color.rgb, tint, clamp(band * lobe * rim_color.a, 0.0, 1.0));
+    }
+#endif
+    color = finish(color);
     gl_FragColor = color * (1.0 - smoothstep(-0.5, 0.5, d));
 }
 "#;
@@ -309,10 +467,10 @@ void main() {
 /// A window bezel (`inner` > 0) is the same glass laid as a ring of that width
 /// around the window: the roll-off spans only the ring, so nothing under the
 /// window is ever bent, a faint dark seam marks where glass meets content, and
-/// the hairline takes the window's border colour (`rim_color`, premultiplied,
-/// its alpha the line's strength). Over an opaque window nothing inside the
-/// ring is drawn at all. Off the bezel `rim_color` is opaque white, which is
-/// the neutral hairline unchanged.
+/// the hairline is the same neutral one a layer wears (`rim_color`, white
+/// premultiplied, its alpha dimming it while the window is unfocused). Over an
+/// opaque window nothing inside the ring is drawn at all. Off the bezel
+/// `rim_color` is opaque white.
 const GLASS_BODY: &str = r#"
 uniform vec2 px_uv;       // 1 / backdrop texture size
 uniform float y_sign;     // -1 when the framebuffer is y-mirrored
@@ -334,13 +492,8 @@ const float SMOKE_MIX = 0.28;
 const float LINE_BASE = 0.05;
 const float LINE_TL = 0.13;
 const float LINE_BR = 0.035;
-// Bezel hairline, times the border colour's alpha: a crisp line all round,
-// brightest top-left.
-const float BEZEL_BASE = 0.4;
-const float BEZEL_TL = 0.5;
-const float BEZEL_BR = 0.1;
 // Darkening of the 1 px seam where the bezel meets the window.
-const float SEAM = 0.3;
+const float SEAM = 0.1;
 
 vec4 blurred_at(vec2 uv) {
     return texture2D(tex, clamp(uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5));
@@ -413,9 +566,7 @@ void main() {
     float band = 1.0 - smoothstep(0.0, 1.25, -d);
     float tl = max(dot(grad, LIGHT), 0.0);
     float br = max(dot(grad, -LIGHT), 0.0);
-    float lobe = inner > 0.0
-        ? BEZEL_BASE + BEZEL_TL * tl + BEZEL_BR * br
-        : LINE_BASE + LINE_TL * tl + LINE_BR * br;
+    float lobe = LINE_BASE + LINE_TL * tl + LINE_BR * br;
     vec3 tint = rim_color.rgb / max(rim_color.a, 0.0001);
     c = mix(c, tint, clamp(band * lobe * rim_color.a * rim * 2.0, 0.0, 1.0));
 
@@ -431,15 +582,22 @@ void main() {
 }
 "#;
 
+/// The frost program's uniforms, in the order [`frost_uniforms`] sets them.
+const FROST_UNIFORMS: [(&str, UniformType); 7] = [
+    ("win_rect", UniformType::_4f),
+    ("radius", UniformType::_1f),
+    ("frost_tint", UniformType::_4f),
+    ("y_sign", UniformType::_1f),
+    ("rim_color", UniformType::_4f),
+    ("inner", UniformType::_1f),
+    ("opaque", UniformType::_1f),
+];
+
 /// Compile the frost backdrop program (COMP-02 §9). Cached by the caller.
 pub fn compile_frost(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
     renderer.compile_custom_texture_shader(
         format!("{BACKDROP_HEAD}{FROST_BODY}"),
-        &[
-            UniformName::new("win_rect", UniformType::_4f),
-            UniformName::new("radius", UniformType::_1f),
-            UniformName::new("frost_tint", UniformType::_4f),
-        ],
+        &FROST_UNIFORMS.map(|(name, ty)| UniformName::new(name, ty)),
     )
 }
 
@@ -502,16 +660,28 @@ pub fn compile_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, Gles
     renderer.compile_custom_texture_shader(format!("{BACKDROP_HEAD}{GLASS_BODY}"), &names)
 }
 
-/// [`rounding_uniforms`] plus the frost tint (straight alpha, as configured).
+/// [`rounding_uniforms`] plus the frost tint (straight alpha, as configured)
+/// and a window bezel's `(width, opaque, premultiplied hairline colour)`;
+/// `None` is plain frost, no hairline.
 pub fn frost_uniforms(
     rect: Rectangle<i32, Physical>,
     fb_height: i32,
     mirrored: bool,
     radius: f32,
     tint: [f32; 4],
+    bezel: Option<(i32, bool, [f32; 4])>,
 ) -> Vec<Uniform<'static>> {
+    let (inner, opaque, rim_color) = bezel.map_or((0.0, 0.0, [0.0; 4]), |(inner, opaque, rim)| {
+        (inner.max(0) as f32, if opaque { 1.0f32 } else { 0.0 }, rim)
+    });
     let mut u = rounding_uniforms(rect, fb_height, mirrored, radius);
-    u.push(Uniform::new("frost_tint", tint));
+    u.extend([
+        Uniform::new("frost_tint", tint),
+        Uniform::new("y_sign", if mirrored { -1.0f32 } else { 1.0 }),
+        Uniform::new("rim_color", rim_color),
+        Uniform::new("inner", inner),
+        Uniform::new("opaque", opaque),
+    ]);
     u
 }
 
@@ -724,9 +894,13 @@ void main() {
     vec2 q = abs(p) - half_inner + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
 
-    // `step` drops everything under the window: the glow is a ring, so a
-    // translucent window is not tinted by its own glow.
-    float a = (1.0 - smoothstep(0.0, blur, d)) * step(0.0, d);
+    // A squared falloff reads as light spreading rather than a band, and the
+    // glow eases in from the window edge (as the shadow does) so it never
+    // starts at full strength against the rim. Nothing is drawn under the
+    // window: the glow is a ring, so a translucent window is not tinted by
+    // its own glow.
+    float fall = 1.0 - smoothstep(0.0, blur, d);
+    float a = fall * fall * smoothstep(0.0, blur * 0.3, d);
     gl_FragColor = shadow_color * (a * alpha);
 }
 "#;
@@ -808,16 +982,24 @@ void main() {
     float d_in = rounded_box(p - centre, half_size, r);
 
     float contact_sigma = max(range * mix(0.07, 0.09, focus), 0.75);
-    float ambient_sigma = max(range * mix(0.24, 0.33, focus), 1.0);
+    float ambient_sigma = max(range * mix(0.40, 0.50, focus), 1.0);
     float d_contact = rounded_box(p - centre - vec2(0.0, drop * 0.2), half_size, r);
     float d_ambient = rounded_box(p - centre - vec2(0.0, drop), half_size, r);
-    float contact = soft(d_contact, contact_sigma) * mix(0.16, 0.22, focus);
-    float ambient = soft(d_ambient, ambient_sigma) * mix(0.26, 0.42, focus);
+    // The boxes sit `drop` lower than the window, so a window's rounded
+    // bottom corners lie inside them: coverage there would be full strength,
+    // a dark wedge filling the cutout. Measure from the box edge outward only
+    // (coverage caps at one half, its value at the edge), so the corner is as
+    // dark as the straight edge beside it.
+    float contact = soft(max(d_contact, 0.0), contact_sigma) * mix(0.05, 0.08, focus);
+    float ambient = soft(max(d_ambient, 0.0), ambient_sigma) * mix(0.22, 0.32, focus);
     float a = 1.0 - (1.0 - contact) * (1.0 - ambient);
 
     // Zero at the element edge (`d_ambient` >= range all round it).
     a *= 1.0 - smoothstep(range * 0.5, range, d_ambient);
-    a *= step(0.0, d_in);
+    // Nothing under the window; a 2 px ease keeps the cut off the window's
+    // edge antialiased. The wide ambient sigma, not a fade, is what keeps the
+    // shadow from reading as a dark band hugging each rounded corner.
+    a *= smoothstep(0.0, 2.0, d_in);
     gl_FragColor = vec4(0.0, 0.0, 0.0, a * alpha);
 }
 "#;
@@ -846,9 +1028,11 @@ pub fn shadow_uniforms([range, radius, drop]: [f32; 3], focus: f32) -> Vec<Unifo
     ]
 }
 
-/// How far the shadow drops below the window, as a share of its `range`.
+/// How far the shadow drops below the window, as a share of its `range`. Zero:
+/// an offset shadow's body lies under the window's rounded corners and fills
+/// their cutouts, so depth is the glass rim plus an even halo instead.
 /// Not configurable: `shadow { range }` is the only knob COMP-13 §1.1 gives.
-pub const SHADOW_DROP: f32 = 0.3;
+pub const SHADOW_DROP: f32 = 0.0;
 
 const BORDER_SRC: &str = r#"
 #ifdef GL_FRAGMENT_PRECISION_HIGH

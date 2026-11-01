@@ -345,6 +345,7 @@ pub fn arrange(state: &mut AbyssState) {
         arrange_output(state, id);
     }
     raise_override_redirect(state);
+    crate::xwayland::sync_stacking(state);
     refresh_reactive_popups(state);
     // Layout changes are not driven by a client commit: an unmapped surface
     // sends nothing, so without this the last composite stays on screen and a
@@ -510,12 +511,15 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
     }
     for (w, rect) in floating {
         // Fullscreen windows fill their area exactly; no border inset.
-        let inner = if state.fullscreen.contains_key(&w) {
-            rect
+        let full = state.fullscreen.contains_key(&w);
+        let inner = if full { rect } else { shrink(rect, border) };
+        // Fullscreen ignores the client's size hints: a game floated at a
+        // pinned windowed size (min == max) would otherwise be held to it.
+        let size = if full {
+            inner.size
         } else {
-            shrink(rect, border)
+            clamp_size(&w, inner.size, false)
         };
-        let size = clamp_size(&w, inner.size, false);
         if mapping.as_ref() != Some(&w) {
             configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
         }
@@ -696,6 +700,10 @@ pub fn place_new_window(state: &mut AbyssState, window: Window) {
 /// still land. The window keeps its handle and its identity — only where it
 /// sits changes.
 pub fn replace_window(state: &mut AbyssState, window: &Window, placement: &rules::Placement) {
+    // A window the client positions itself is never put into the layout.
+    if is_unmanaged_x11(state, window) {
+        return;
+    }
     for entry in state.outputs.iter_mut() {
         for ws in entry.workspaces.iter_mut() {
             ws.remove(window);
@@ -744,10 +752,19 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
         .workspace
         .map(|n| (n as usize - 1).min(entry.workspaces.len() - 1))
         .unwrap_or(entry.active);
+    // An X11 window floats at the size it asked to map at, clamped to the
+    // output, rather than at half the area (a dialog narrower than its
+    // contents hides its buttons).
+    let x11_request = window.x11_surface().and(state.xwayland.requested);
+    let x11_min = window
+        .x11_surface()
+        .and_then(|x| x.min_size())
+        .unwrap_or_default();
     if placement.float {
         let size = placement
             .size
             .map(Size::from)
+            .or_else(|| x11_request.map(|r| x11_float_size(r.size, x11_min, area.size)))
             .or_else(|| geometry.map(|g| g.size))
             .unwrap_or_else(|| Size::from((area.size.w / 2, area.size.h / 2)));
         // A `position` rule is relative to the output's tiling area, so the
@@ -756,11 +773,11 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
         let loc: Point<i32, Logical> = match placement.position {
             Some((x, y)) => (area.loc.x + x, area.loc.y + y).into(),
             None => match parent_rect {
-                // A transient dialog opens centred over its parent.
-                Some(p) => Point::from((
-                    p.loc.x + (p.size.w - size.w) / 2,
-                    p.loc.y + (p.size.h - size.h) / 2,
-                )),
+                // A transient dialog opens centred over its parent, kept on
+                // the output.
+                Some(p) => centered_in(p, size, area),
+                // An X11 window opens centred, wherever the pointer is.
+                None if x11_request.is_some() => centered_in(area, size, area),
                 None => floating_origin(mode, area, size, pointer, entry.workspaces[ws].floating.len()),
             },
         };
@@ -919,6 +936,7 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     crate::protocols::standard::foreign_toplevel::window_closed(window);
     let handle = state.ipc.handle_for(window);
     state.ipc.forget_chip(handle);
+    crate::ipc::client_strips::forget_window(state, window);
     crate::ipc::emit(
         state,
         "window",
@@ -1305,9 +1323,12 @@ pub fn minimize_window(state: &mut AbyssState, window: &Window) {
     // The X11 equivalent of the xdg state above: `_NET_WM_STATE_HIDDEN` is how
     // a client learns it is iconic and, on restore, that it is shown again. A
     // Wine game that iconified itself and never hears it was restored keeps
-    // its swapchain parked, which is a black window.
+    // its swapchain parked, which is a black window. Wine reads only the ICCCM
+    // `WM_STATE`, never `_NET_WM_STATE_HIDDEN`: without the Iconic → Normal
+    // transition `set_mapped` writes, it never learns it was restored.
     if let Some(x11) = window.x11_surface() {
         let _ = x11.set_suspended(true);
+        let _ = x11.set_mapped(false);
     }
     if state.focus.as_ref() == Some(window) {
         state.focus = None;
@@ -1350,6 +1371,7 @@ pub fn unminimize_window(state: &mut AbyssState, window: &Window) {
             .insert(window.clone(), None, area, pointer),
     }
     if let Some(x11) = window.x11_surface() {
+        let _ = x11.set_mapped(true);
         let _ = x11.set_suspended(false);
     }
     arrange(state);
@@ -1446,8 +1468,47 @@ pub(crate) fn floating_origin(
     }
 }
 
+/// The size an X11 window floats at: what it asked for, no smaller than its
+/// minimum, no larger than the area.
+pub(crate) fn x11_float_size(
+    requested: Size<i32, Logical>,
+    min: Size<i32, Logical>,
+    area: Size<i32, Logical>,
+) -> Size<i32, Logical> {
+    let w = requested.w.max(min.w).max(1);
+    let h = requested.h.max(min.h).max(1);
+    Size::from((
+        if area.w > 0 { w.min(area.w) } else { w },
+        if area.h > 0 { h.min(area.h) } else { h },
+    ))
+}
+
+/// `size` centred on `anchor`, then moved to lie inside `area` (the area's
+/// origin wins when it does not fit).
+pub(crate) fn centered_in(
+    anchor: Rectangle<i32, Logical>,
+    size: Size<i32, Logical>,
+    area: Rectangle<i32, Logical>,
+) -> Point<i32, Logical> {
+    let max_x = (area.loc.x + area.size.w - size.w).max(area.loc.x);
+    let max_y = (area.loc.y + area.size.h - size.h).max(area.loc.y);
+    Point::from((
+        (anchor.loc.x + (anchor.size.w - size.w) / 2).clamp(area.loc.x, max_x),
+        (anchor.loc.y + (anchor.size.h - size.h) / 2).clamp(area.loc.y, max_y),
+    ))
+}
+
 pub fn toggle_floating(state: &mut AbyssState) {
     let Some(window) = state.focus.clone() else { return };
+    // Leave fullscreen first, or the `fullscreen` entry outlives the float and
+    // the next fullscreen bind reads it as "already on".
+    if state.fullscreen.contains_key(&window) {
+        if let Some(toplevel) = window.toplevel().cloned() {
+            unfullscreen_toplevel_now(state, &toplevel);
+        } else {
+            set_x11_fullscreen_now(state, &window, false);
+        }
+    }
     let Some(id) = output_of_window(state, &window).or_else(|| state.outputs.focused().map(|e| e.id)) else {
         return;
     };
@@ -1457,6 +1518,7 @@ pub fn toggle_floating(state: &mut AbyssState) {
     let geometry = state.space.element_geometry(&window);
     let mode = state.config.general.floating_placement;
     let pointer = state.pointer_location;
+    let toggled = window.clone();
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let ws = entry.active;
     if entry.workspaces[ws].tiled.contains(&window) {
@@ -1491,6 +1553,10 @@ pub fn toggle_floating(state: &mut AbyssState) {
         }
     }
     arrange(state);
+    // `floating` matchers follow the toggle at once instead of waiting for the
+    // client's next commit. The window is already placed, so this re-applies
+    // property actions only (never `float`/`tile`/placement) and cannot loop.
+    let _ = rules::reevaluate(state, &toggled);
 }
 
 fn toplevel_window(
@@ -2232,7 +2298,7 @@ pub fn move_workspace_to_output(
         .unwrap_or_default();
     let entry = state.outputs.get_mut(from).expect("checked above");
     let tiled = entry.workspaces[target].tiled.windows();
-    let floating: Vec<Floating> = entry.workspaces[target].floating.drain(..).collect();
+    let floating: Vec<Floating> = std::mem::take(&mut entry.workspaces[target].floating);
     let pending: Vec<Window> = std::mem::take(&mut entry.workspaces[target].pending);
     for w in &tiled {
         entry.workspaces[target].tiled.remove(w);
@@ -2342,3 +2408,42 @@ pub fn focus_layer_if_wanted(state: &mut AbyssState, surface: &WlSurface) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod x11_float_tests {
+    use super::*;
+
+    fn sz(w: i32, h: i32) -> Size<i32, Logical> {
+        Size::from((w, h))
+    }
+
+    fn r(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new((x, y).into(), sz(w, h))
+    }
+
+    #[test]
+    fn x11_float_size_keeps_the_request_within_min_and_area() {
+        let area = sz(1920, 1000);
+        assert_eq!(x11_float_size(sz(700, 500), sz(0, 0), area), sz(700, 500));
+        // Below the minimum: the minimum.
+        assert_eq!(x11_float_size(sz(300, 200), sz(600, 400), area), sz(600, 400));
+        // Larger than the output: clamped to it.
+        assert_eq!(x11_float_size(sz(4000, 3000), sz(0, 0), area), sz(1920, 1000));
+        // No area known: the request stands.
+        assert_eq!(x11_float_size(sz(700, 500), sz(0, 0), sz(0, 0)), sz(700, 500));
+    }
+
+    #[test]
+    fn centered_in_stays_on_the_area() {
+        let area = r(0, 30, 1920, 1000);
+        // Over the area itself.
+        assert_eq!(centered_in(area, sz(600, 400), area), Point::from((660, 330)));
+        // Over a parent hanging off the right edge: pulled back in.
+        assert_eq!(
+            centered_in(r(1700, 100, 600, 400), sz(800, 300), area),
+            Point::from((1120, 150))
+        );
+        // Bigger than the area: its origin.
+        assert_eq!(centered_in(area, sz(2000, 1200), area), Point::from((0, 30)));
+    }
+}

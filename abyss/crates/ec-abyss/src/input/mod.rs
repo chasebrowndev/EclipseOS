@@ -12,7 +12,7 @@ use smithay::{
         TouchSlot,
     },
     input::{
-        keyboard::{FilterResult, Keycode, ModifiersState},
+        keyboard::{FilterResult, Keycode, Keysym, ModifiersState},
         pointer::{
             AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
             GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
@@ -50,6 +50,18 @@ pub fn held_mods(state: &ModifiersState) -> Mods {
         ctrl: state.ctrl,
         alt: state.alt,
     }
+}
+
+/// The keysym a binding sees: Caps Lock upper-cases letters, but a bind
+/// is written for the key, so case follows Shift alone. ASCII letters only
+/// (their keysyms are their codepoints).
+pub fn bind_sym(sym: Keysym, state: &ModifiersState) -> Keysym {
+    let raw = sym.raw();
+    if !state.caps_lock || !matches!(raw, 0x41..=0x5a | 0x61..=0x7a) {
+        return sym;
+    }
+    let lower = raw | 0x20;
+    Keysym::new(if state.shift { lower & !0x20 } else { lower })
 }
 
 /// A swipe the compositor has claimed at begin. Only the deltas are kept, so
@@ -90,7 +102,10 @@ impl AbyssState {
             InputEvent::TouchDown { event } => self.on_touch_down::<B>(event),
             InputEvent::TouchMotion { event } => self.on_touch_motion::<B>(event),
             InputEvent::TouchUp { event } => {
-                self.inject_touch_up(slot_id(event.slot()), event.time_msec());
+                let (slot, time) = (slot_id(event.slot()), event.time_msec());
+                if !crate::protocols::agent::lock::hold_touch_up(self, slot, time) {
+                    self.inject_touch_up(slot, time);
+                }
             }
             InputEvent::TouchCancel { .. } => self.on_touch_cancel(),
             InputEvent::TouchFrame { .. } => {
@@ -157,7 +172,7 @@ impl AbyssState {
                 if key_state != KeyState::Pressed {
                     return FilterResult::Forward;
                 }
-                let sym = handle.modified_sym();
+                let sym = bind_sym(handle.modified_sym(), mods);
                 let held = held_mods(mods);
                 let raw = sym.raw();
                 if (VT_SWITCH_FIRST..=VT_SWITCH_LAST).contains(&raw) {
@@ -307,7 +322,7 @@ impl AbyssState {
     /// same key that started it gets the human back out.
     /// A compositor-owned modal holds the seat: the region selector or a
     /// trusted prompt. Nothing behind either takes touch, gesture or tablet.
-    fn seat_held(&self) -> bool {
+    pub(crate) fn seat_held(&self) -> bool {
         self.region_select.active() || crate::trusted_ui::holds_seat(self)
     }
 
@@ -694,6 +709,15 @@ impl AbyssState {
             return;
         }
         if let Some(pos) = self.absolute_to_global(|size| event.position_transformed(size)) {
+            // A compat lock queues touches on its window (COMP-04 §7).
+            if crate::protocols::agent::lock::hold_touch_down(
+                self,
+                slot_id(event.slot()),
+                pos,
+                event.time_msec(),
+            ) {
+                return;
+            }
             self.inject_touch_down(slot_id(event.slot()), pos, event.time_msec());
         }
     }
@@ -703,6 +727,14 @@ impl AbyssState {
             return;
         }
         if let Some(pos) = self.absolute_to_global(|size| event.position_transformed(size)) {
+            if crate::protocols::agent::lock::hold_touch_move(
+                self,
+                slot_id(event.slot()),
+                pos,
+                event.time_msec(),
+            ) {
+                return;
+            }
             self.inject_touch_motion(slot_id(event.slot()), pos, event.time_msec());
         }
     }
@@ -976,38 +1008,65 @@ impl AbyssState {
     /// Tip down is the stylus's click: it focuses and raises what it lands on,
     /// through the same focus path as the pointer.
     fn on_tablet_tip<B: InputBackend>(&mut self, event: B::TabletToolTipEvent) {
+        let down = event.tip_state() == TabletToolTipState::Down;
+        let (tool, time) = (event.tool(), event.time_msec());
+        // A compat lock queues the stylus's taps for the locked window like
+        // the pointer's buttons, delivered on release (COMP-04 §7).
+        if crate::protocols::agent::lock::hold_tablet_tip(self, &tool, down, time) {
+            return;
+        }
+        self.tablet_tip(&tool, down, time);
+    }
+
+    /// The delivery half of [`Self::on_tablet_tip`]; a compat lock's replay
+    /// comes back here.
+    pub(crate) fn tablet_tip(
+        &mut self,
+        desc: &smithay::backend::input::TabletToolDescriptor,
+        down: bool,
+        time: u32,
+    ) {
         // The tool's focus may predate the lock or selection if it has not
         // moved since; refuse rather than deliver to it.
         if self.lock.locked || self.seat_held() {
             return;
         }
-        let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) else {
+        let Some(tool) = self.seat.tablet_seat().get_tool(desc) else {
             return;
         };
-        match event.tip_state() {
-            TabletToolTipState::Down => {
-                let pos = self.pointer_location;
-                let action = crate::shell::focus::decide_pointer_focus(
-                    &crate::shell::focus::click_focus_ctx(self, pos),
-                );
-                crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Click);
-                tool.tip_down(SERIAL_COUNTER.next_serial(), event.time_msec());
-            }
-            TabletToolTipState::Up => tool.tip_up(event.time_msec()),
+        if down {
+            let pos = self.pointer_location;
+            let action =
+                crate::shell::focus::decide_pointer_focus(&crate::shell::focus::click_focus_ctx(self, pos));
+            crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Click);
+            tool.tip_down(SERIAL_COUNTER.next_serial(), time);
+        } else {
+            tool.tip_up(time);
         }
     }
 
     fn on_tablet_button<B: InputBackend>(&mut self, event: B::TabletToolButtonEvent) {
+        let (tool, time) = (event.tool(), event.time_msec());
+        let (button, state) = (event.button(), event.button_state());
+        if crate::protocols::agent::lock::hold_tablet_button(self, &tool, button, state, time) {
+            return;
+        }
+        self.tablet_button(&tool, button, state, time);
+    }
+
+    /// The delivery half of [`Self::on_tablet_button`].
+    pub(crate) fn tablet_button(
+        &mut self,
+        desc: &smithay::backend::input::TabletToolDescriptor,
+        button: u32,
+        state: ButtonState,
+        time: u32,
+    ) {
         if self.lock.locked || self.seat_held() {
             return;
         }
-        if let Some(tool) = self.seat.tablet_seat().get_tool(&event.tool()) {
-            tool.button(
-                event.button(),
-                event.button_state(),
-                SERIAL_COUNTER.next_serial(),
-                event.time_msec(),
-            );
+        if let Some(tool) = self.seat.tablet_seat().get_tool(desc) {
+            tool.button(button, state, SERIAL_COUNTER.next_serial(), time);
         }
     }
 
@@ -1042,6 +1101,11 @@ impl AbyssState {
             }
             return;
         }
+        // A press on a trusted indicator is the compositor's, never a
+        // client's; the left button opens the emergency panel (COMP-10 §3.3).
+        if crate::trusted_ui::indicator::button(self, button, pressed) {
+            return;
+        }
         // A protected surface takes physical buttons only, and a press inside
         // a commit slot is the slot's, never the client's (COMP-19 §3, §6).
         match crate::protocols::protected::gate::button(self, button, pressed) {
@@ -1073,6 +1137,21 @@ impl AbyssState {
         if pressed {
             grabs::start_mouse_bind(self, button);
         }
+        // An X11 client decides what to do with a press from whether it holds
+        // the X input focus when the press arrives; Qt drops the click that
+        // activates its window. So an X11 window under the pointer takes
+        // focus *before* the press is delivered, and the press lands on a
+        // focused window. Wayland clients keep the press-then-focus order.
+        let mut focused_first = false;
+        if pressed && self.popup_grabs.is_empty() {
+            let pos = self.pointer_location;
+            let action =
+                crate::shell::focus::decide_pointer_focus(&crate::shell::focus::click_focus_ctx(self, pos));
+            if matches!(&action, crate::shell::focus::FocusAction::Window(w) if w.x11_surface().is_some()) {
+                crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Click);
+                focused_first = true;
+            }
+        }
         let pointer = self.seat.get_pointer().unwrap();
         pointer.button(
             self,
@@ -1090,7 +1169,7 @@ impl AbyssState {
         // surface that held the keyboard — and then no motion event is coming
         // to fix it. A press says which window the human means. Not while a
         // popup grab is up: there the press is the dismissal, handled below.
-        if pressed && self.popup_grabs.is_empty() {
+        if pressed && self.popup_grabs.is_empty() && !focused_first {
             let pos = self.pointer_location;
             let action =
                 crate::shell::focus::decide_pointer_focus(&crate::shell::focus::click_focus_ctx(self, pos));
@@ -1746,5 +1825,26 @@ mod gesture_tests {
         // Motion after the lock reaches nothing: no grab, and focus is `None`.
         s.inject_touch_motion(0, at, 1);
         assert!(!touch.is_grabbed());
+    }
+}
+
+#[cfg(test)]
+mod bind_sym_tests {
+    use super::*;
+
+    fn mods(caps_lock: bool, shift: bool) -> ModifiersState {
+        ModifiersState {
+            caps_lock,
+            shift,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn caps_lock_folds_letters_to_shift_case() {
+        assert_eq!(bind_sym(Keysym::R, &mods(true, false)), Keysym::r);
+        assert_eq!(bind_sym(Keysym::r, &mods(true, true)), Keysym::R);
+        assert_eq!(bind_sym(Keysym::r, &mods(false, false)), Keysym::r);
+        assert_eq!(bind_sym(Keysym::Return, &mods(true, false)), Keysym::Return);
     }
 }

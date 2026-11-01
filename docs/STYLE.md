@@ -10,9 +10,19 @@ yellow accent. Use this as art direction; do not copy any specific screen.
   The compositor draws the material (blur, saturation, hairline rim, shadow) under the
   surface (COMP-02 §9, C-14); a client only lays the light tint on top and must not paint
   an opaque ground while blur is on. Radii stay concentric with the compositor's mask.
-  One material per window: in Settings the content column is a rgba(0,0,0,.28) tint on
-  the same blur as the sidebar (opaque #0b0906-backed equivalent with blur off), parted
-  from the sidebar by a 1px hairline, not by a change of ground.
+  One material per window: the rail and the column of a Settings or console window are
+  both the same tint, rgba(11,9,6,.70) by default, over the same blur (opaque #0b0906 with
+  blur off), parted by a 1px hairline, not by a change of ground.
+  The surface values are defaults, and users tune them live (the compositor's
+  `decoration.surface.tint` .70, `card-fill` .035, `inset-fill` .03; sRGB intent, converted
+  to linear alpha in the client, 0..1 and 0..0.30 respectively). Settings' Effects > Blur & glass page shows them as Window tint,
+  Card fill and Inset fill. Every window re-reads them on a config reload.
+  Settings cards with blur off or `blur` are hairline-only: a white `card-fill` fill, a 1px
+  rim at about 3.4x that fill (.12 by default), no drop shadow. `glass` and `frost` keep the
+  .045 glass panel above. Inset groups use `inset-fill` with the same rim ratio. A run that
+  does not apply (a "not in use" group) is veiled with blur off: its content fades toward the
+  ground and it keeps the inset fill and rim, so it reads as a quieter inset, not a grey slab.
+  With blur on nothing is painted over it; only its labels dim.
 - Panel borders: 1px solid rgba(255,255,255,.08-.16)
 - Top edge highlight: inset 0 1px 0 rgba(255,255,255,.07-.2) — only on the blur-off fallback;
   on glass the compositor's rim lights the edge. Exception: the taskbar's folded strip
@@ -49,7 +59,7 @@ competing yellow areas in one pane, no gradients of it.
 ## Structure
 - Window: 1120x720, radius 16px, 1px light border. No traffic-light dots — this is a
   window manager, so the titlebar is either absent or a thin label row.
-- Left sidebar 214px: rgba(0,0,0,.4) + blur(30px), text nav items each with a small
+- Left sidebar 214px: the window tint (rgba(11,9,6,.70) by default) + blur(30px), the same tint as the content column, text nav items each with a small
   rounded placeholder icon square; active item = translucent fill + 3px yellow left bar
 - Sidebar footer: small mono status block (uptime, daemon version, device count)
 - Content column: 26/30px padding, 18px gap between blocks

@@ -77,6 +77,19 @@ impl Config {
                     return;
                 }
             },
+            ("translucent-region", Some(_)) => match parse_translucent_region(action) {
+                Some((top, opacity, key)) => RuleAction::TranslucentRegion { top, opacity, key },
+                None => {
+                    self.reject(
+                        node,
+                        format!(
+                            "windowrule translucent-region needs top=<px >= 0> opacity=<0.0..=1.0> [key=#rrggbb] (action={})",
+                            action
+                        ),
+                    );
+                    return;
+                }
+            },
             ("blur", Some(p)) => match BlurRule::parse(p) {
                 Some(v) => RuleAction::Blur(v),
                 None => {
@@ -154,6 +167,22 @@ impl Config {
                     }
                 },
                 "xwayland" => matchers.xwayland = Some(arg(n).and_then(KdlValue::as_bool).unwrap_or(true)),
+                // KDL v2 spells booleans `#true`/`#false`; the bare words
+                // `true`/`false` parse as strings and are accepted too, since
+                // silently reading `floating false` as `#true` would invert
+                // the rule.
+                "floating" => match arg(n) {
+                    None => matchers.floating = Some(true),
+                    Some(v) => match (v.as_bool(), v.as_string()) {
+                        (Some(b), _) => matchers.floating = Some(b),
+                        (None, Some("true")) => matchers.floating = Some(true),
+                        (None, Some("false")) => matchers.floating = Some(false),
+                        _ => {
+                            self.reject(n, "windowrule floating matcher must be #true or #false");
+                            return;
+                        }
+                    },
+                },
                 "output" => match arg(n).and_then(KdlValue::as_string) {
                     Some(v) => matchers.output = Some(v.to_owned()),
                     None => {
@@ -193,4 +222,31 @@ impl Config {
         }
         self.window_rules.push(WindowRule { action, matchers });
     }
+}
+
+/// `translucent-region top=48 opacity=0.6 [key=#rrggbb]`: `top` and `opacity`
+/// required, `key` optional, any order, no others.
+fn parse_translucent_region(action: &str) -> Option<(i32, f32, Option<[u8; 3]>)> {
+    let (mut top, mut opacity, mut key) = (None, None, None);
+    for word in action.split_whitespace().skip(1) {
+        match word.split_once('=')? {
+            ("top", v) if top.is_none() => top = v.parse::<i32>().ok().filter(|v| *v >= 0),
+            ("opacity", v) if opacity.is_none() => {
+                opacity = v.parse::<f32>().ok().filter(|v| (0.0..=1.0).contains(v))
+            }
+            ("key", v) if key.is_none() => key = Some(parse_hex_rgb(v)?),
+            _ => return None,
+        }
+    }
+    Some((top?, opacity?, key))
+}
+
+/// `#rrggbb`, exactly.
+fn parse_hex_rgb(v: &str) -> Option<[u8; 3]> {
+    let h = v.strip_prefix('#')?;
+    if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let n = u32::from_str_radix(h, 16).ok()?;
+    Some([(n >> 16) as u8, (n >> 8) as u8, n as u8])
 }

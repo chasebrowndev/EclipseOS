@@ -1,0 +1,86 @@
+--- a/src/xwayland/xwm/mod.rs
++++ b/src/xwayland/xwm/mod.rs
+@@ -125,7 +125,7 @@
+         render::{ConnectionExt as _, CreatePictureAux, PictureWrapper},
+         xfixes::{ConnectionExt as _, SelectionEventMask},
+         xproto::{
+-            Atom, AtomEnum, ChangeWindowAttributesAux, ConfigWindow, ConfigureNotifyEvent,
++            Atom, AtomEnum, ChangeWindowAttributesAux, ColormapAlloc, ConfigWindow, ConfigureNotifyEvent,
+             ConfigureWindowAux, ConnectionExt as _, CreateGCAux, CreateWindowAux, CursorWrapper, EventMask,
+             FontWrapper, GcontextWrapper, GetPropertyReply, ImageFormat, PixmapWrapper, PropMode, Property,
+             QueryExtensionReply, Screen, SelectionNotifyEvent, SelectionRequestEvent, StackMode, WindowClass,
+@@ -410,6 +410,8 @@
+ 
+     pub(crate) unpaired_surfaces: HashMap<u64, X11Window>,
+     sequences_to_ignore: BinaryHeap<Reverse<u16>>,
++    // (frame window, colormap) pairs for ARGB frames; freed when the frame is destroyed
++    frame_colormaps: Vec<(X11Window, u32)>,
+ 
+     // selections
+     _xfixes_data: QueryExtensionReply,
+@@ -901,6 +903,7 @@
+             primary,
+             unpaired_surfaces: Default::default(),
+             sequences_to_ignore: Default::default(),
++            frame_colormaps: Vec::new(),
+             windows: Vec::new(),
+             client_list: Vec::new(),
+             client_list_stacking: Vec::new(),
+@@ -1479,11 +1482,27 @@
+                     let geo = conn.get_geometry(r.window)?.reply()?;
+                     let win = r.window;
+                     let frame_win = conn.generate_id()?;
+-                    let win_aux = CreateWindowAux::new().event_mask(
++                    // A 32-bit (ARGB) client needs a 32-bit frame: a depth-24 frame makes
++                    // Xwayland tag the toplevel buffer XRGB8888, and the renderer then
++                    // treats the surface as opaque. Depth-24 clients keep the old frame.
++                    let (frame_depth, frame_visual, frame_cmap) = if geo.depth == 32 {
++                        let visual = conn.get_window_attributes(win)?.reply()?.visual;
++                        let cmap = conn.generate_id()?;
++                        conn.create_colormap(ColormapAlloc::NONE, cmap, xwm.screen.root, visual)?;
++                        (32, visual, Some(cmap))
++                    } else {
++                        (COPY_DEPTH_FROM_PARENT, x11rb::COPY_FROM_PARENT, None)
++                    };
++                    let mut win_aux = CreateWindowAux::new().event_mask(
+                         EventMask::SUBSTRUCTURE_NOTIFY
+                             | EventMask::SUBSTRUCTURE_REDIRECT
+                             | EventMask::PROPERTY_CHANGE,
+                     );
++                    if let Some(cmap) = frame_cmap {
++                        // Non-default depth requires an explicit colormap and border_pixel.
++                        win_aux = win_aux.colormap(cmap).border_pixel(0);
++                        xwm.frame_colormaps.push((frame_win, cmap));
++                    }
+ 
+                     {
+                         let _guard = scopeguard::guard((), |_| {
+@@ -1492,7 +1511,7 @@
+ 
+                         conn.grab_server()?;
+                         let cookie1 = conn.create_window(
+-                            COPY_DEPTH_FROM_PARENT,
++                            frame_depth,
+                             frame_win,
+                             xwm.screen.root,
+                             geo.x,
+@@ -1501,7 +1520,7 @@
+                             geo.height,
+                             0,
+                             WindowClass::INPUT_OUTPUT,
+-                            x11rb::COPY_FROM_PARENT,
++                            frame_visual,
+                             &win_aux,
+                         )?;
+                         let cookie2 = conn.reparent_window(win, frame_win, 0, 0)?;
+@@ -1708,6 +1727,10 @@
+                         )?;
+                         if let Some(frame) = state.mapped_onto.take() {
+                             conn.destroy_window(frame)?;
++                            if let Some(pos) = xwm.frame_colormaps.iter().position(|(f, _)| *f == frame) {
++                                let (_, cmap) = xwm.frame_colormaps.swap_remove(pos);
++                                conn.free_colormap(cmap)?;
++                            }
+                         }
+                     }
+                 }

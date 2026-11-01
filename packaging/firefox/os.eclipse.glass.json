@@ -1,0 +1,7 @@
+{
+  "name": "os.eclipse.glass",
+  "description": "Glass for Firefox: relays window page-area heights to abyss",
+  "path": "/usr/lib/eclipse/ec-glass-host",
+  "type": "stdio",
+  "allowed_extensions": ["glass@eclipseos"]
+}

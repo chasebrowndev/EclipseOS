@@ -55,13 +55,28 @@ pub struct Bar {
     pub custom_widgets: Vec<CustomWidget>,
 }
 
-/// `bar { clock { hour-12 …; date-mdy … } }`.
+/// `bar { clock { week-start "auto" | "monday" | "sunday" } }`: the first
+/// column of the calendar drawer's month grid.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BarWeekStart {
+    /// The locale's own first weekday.
+    #[default]
+    Auto,
+    Monday,
+    Sunday,
+}
+
+/// `bar { clock { hour-12 …; date-mdy …; week-start …; week-numbers … } }`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BarClock {
     /// 12-hour clock with AM/PM; false is 24-hour.
     pub hour_12: bool,
     /// Month/day/year date order; false is day/month/year.
     pub date_mdy: bool,
+    /// First weekday of the calendar drawer's grid.
+    pub week_start: BarWeekStart,
+    /// ISO week numbers down the calendar drawer's left edge.
+    pub week_numbers: bool,
 }
 
 impl Default for BarClock {
@@ -69,6 +84,8 @@ impl Default for BarClock {
         Self {
             hour_12: true,
             date_mdy: true,
+            week_start: BarWeekStart::Auto,
+            week_numbers: false,
         }
     }
 }
